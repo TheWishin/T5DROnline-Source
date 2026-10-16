@@ -116,11 +116,14 @@ if(T5DR_GAME_DLL)
 endif()
 
 # Rollback netcode research prototype (our own code, src/rollback/): off unless
-# T5_RB_MODE is set.
-file(GLOB ROLLBACK_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rollback/*.cpp")
-target_sources(t5dr PRIVATE ${ROLLBACK_SOURCES})
-set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
-    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+# T5_RB_MODE is set. It reads the lifted function table directly, which the
+# release host (T5DR_GAME_DLL) does not contain, so developer builds only.
+if(NOT T5DR_GAME_DLL)
+    file(GLOB ROLLBACK_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rollback/*.cpp")
+    target_sources(t5dr PRIVATE ${ROLLBACK_SOURCES})
+    set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+        INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+endif()
 
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")

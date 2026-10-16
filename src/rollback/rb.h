@@ -43,8 +43,21 @@ void     set_sim_frame(uint32_t f);                /* logical frame the pad over
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 
 uint32_t pad_calls();                              /* cellPadGetData override invocations so far */
-void     sample_start();                           /* rb_sample.cpp */
+uint64_t main_tid();                               /* guest thread id of the main thread (1) */
+uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);   /* lifted function containing a host address, 0 if none */
+uint32_t guest_at_host(uintptr_t host_fn);                  /* lifted function whose entry IS this host address, 0 if none */
+
+/* stack-sampling profiler (rb_sample.cpp) */
+void     sample_start();
 void     sample_stop(const char* tag);
+void     sample_reset();
+
+/* indirect-call interposer (rb_icall.cpp): draw cut + per-target timing */
+void     icall_install();
+void     cut_set(bool on);                         /* route the cut set to stubs (re-simulating) */
+uint64_t cut_hits();
+void     icall_timing_start();
+void     icall_timing_stop(const char* tag);
 
 /* syscall timeline (rb_trace.cpp) */
 void     trace_install();

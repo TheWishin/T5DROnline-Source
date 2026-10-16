@@ -10,7 +10,7 @@ Steps (each skipped when its output is already there, unless --force):
   decrypt  decrypt EBOOT.BIN with the .rap and check it is the supported version
   vfs      lay out game/vfs/ the way the runtime's file system expects
   lift     find functions and translate the PPU code to C++ in build/recomp/
-  spu      extract and translate the SPU programs (sound core) to C in build/spu/
+  spu      extract and translate the SPU programs (sound core, skinning jobs) to C in build/spu/
   compile  configure and build build/cmake/t5dr.exe
 
 Everything it writes is game-derived and stays in game/, build/, deps/, keys/
@@ -152,21 +152,28 @@ def step_lift(a):
 
 
 def step_spu(a):
-    if os.path.exists(os.path.join(SPU, "spu_workloads.c")) and not a.force:
+    core_done = os.path.exists(os.path.join(SPU, "spu_workloads.c"))
+    jobs_done = os.path.exists(os.path.join(SPU, "lifted", "jcsignal", "spu_recomp.c"))
+    if core_done and jobs_done and not a.force:
         return
-    if os.path.isdir(SPU):
-        shutil.rmtree(SPU)
-    images = os.path.join(SPU, "images")
-    os.makedirs(images)
-    run([PY, os.path.join(TOOLS, "extract_spu_images.py"), ELF, "--output", images])
-    # One embedded image: Namco's sound core ("bnusCoreSpu.elf").
-    found = [n for n in os.listdir(images) if n.endswith(".elf")]
-    if len(found) != 1:
-        sys.exit(f"expected 1 SPU image, found {len(found)}")
-    os.rename(os.path.join(images, found[0]), os.path.join(images, "bnuscore.elf"))
-    run([PY, os.path.join(TOOLS, "build_spu_workloads.py"), "--images", images,
-         "--lifted", os.path.join(SPU, "lifted"), "--out", os.path.join(SPU, "spu_workloads.c"),
-         "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", ELF])
+    if a.force or not core_done:
+        if os.path.isdir(SPU):
+            shutil.rmtree(SPU)
+        images = os.path.join(SPU, "images")
+        os.makedirs(images)
+        run([PY, os.path.join(TOOLS, "extract_spu_images.py"), ELF, "--output", images])
+        # One embedded image: Namco's sound core ("bnusCoreSpu.elf").
+        found = [n for n in os.listdir(images) if n.endswith(".elf")]
+        if len(found) != 1:
+            sys.exit(f"expected 1 SPU image, found {len(found)}")
+        os.rename(os.path.join(images, found[0]), os.path.join(images, "bnuscore.elf"))
+        run([PY, os.path.join(TOOLS, "build_spu_workloads.py"), "--images", images,
+             "--lifted", os.path.join(SPU, "lifted"), "--out", os.path.join(SPU, "spu_workloads.c"),
+             "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", ELF])
+    # The SPURS jobs (vertex skinning + the chain's signal job) are raw images
+    # in the ELF's data segment, not SPU ELFs; they need their own extractor.
+    run([PY, os.path.join(ROOT, "tools", "lift_spu_jobs.py"), "--elf", ELF, "--spu", SPU, "--ps3recomp", DEPS]
+        + (["--relift"] if a.force else []))
 
 
 def find_vcvars():

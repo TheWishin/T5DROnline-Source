@@ -1,0 +1,882 @@
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index f7b5a48..d70a1ff 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2032,7 +2032,10 @@ static struct {
+     u16 size_desc;
+     u16 max_grab;
+     int run_count;
+-    volatile long running;   /* 1 while a host thread walks this chain */
++    volatile long running;   /* 1 while a host thread walks this chain; only
++                                the walker itself clears it, as it exits */
++    volatile long shutdown;  /* cellSpursShutdownJobChain asked the walker to
++                                stop at its next command boundary */
+ } s_jobchains[MAX_JOBCHAINS];
+ 
+ static void jc_dump_commands(const char* tag, u32 ea, int max_words)
+@@ -2099,6 +2102,7 @@ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
+             s_jobchains[i].size_desc = size_desc;
+             s_jobchains[i].max_grab  = max_grab;
+             s_jobchains[i].run_count = 0;
++            s_jobchains[i].shutdown  = 0;   /* a new chain has not been shut down */
+             return CELL_OK;
+         }
+     }
+@@ -2196,15 +2200,81 @@ enum {                              /* CellSpursJobHeader (48 B) */
+     JH_SIZE          = 0x30,
+ };
+ 
+-static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
++/* Is [ea, ea+size) committed guest memory? A pure query: unlike the DMA
++ * path's mfc_ea_range_committed() it never demand-commits, so a garbage job
++ * descriptor cannot conjure zero-filled pages into the guest address space. */
++static int jc_guest_range_committed(u32 ea, u32 size)
++{
++    if (!size || (u64)ea + size > 0x100000000ull) return 0;
++    const u64 end = (u64)ea + size;
++    u64 cur = ea;
++    while (cur < end) {
++        MEMORY_BASIC_INFORMATION mbi;
++        if (!VirtualQuery(vm_base + cur, &mbi, sizeof mbi)) return 0;
++        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
++            return 0;
++        const u64 next = (u64)((const u8*)mbi.BaseAddress - vm_base) + mbi.RegionSize;
++        if (next <= cur) return 0;
++        cur = next;
++    }
++    return 1;
++}
++
++/* The job binaries of one job list, each checked and fingerprinted once.
++ * A list is hundreds of descriptors naming one or two binaries; doing both per
++ * job cost a VirtualQuery and a serial FNV pass over the whole binary (~15 us
++ * for 17 KB) every time. Filled by the walker before the list's jobs start,
++ * read-only while they run; the bytes cannot change under a list in flight. */
++typedef struct { u32 ea, size; u64 fp; int ok; } jc_bin;
++typedef struct { int n; jc_bin b[8]; } jc_bins;
++
++static int jc_binary_plausible(u32 ea_bin, u32 size_bin)
++{
++    /* The binary only has to be somewhere jm2 could DMA it from: committed
++     * guest memory, and no bigger than local store. This used to demand
++     * ea < 0x10000000, which is the main ELF segment only -- but a job binary
++     * is just data the descriptor points at, and SDK job images are commonly
++     * linked into a secondary segment. Tekken 5 DR keeps all three of its job
++     * binaries in the EBOOT's read-only 0x10000000 segment (0x1003DF80,
++     * 0x10042480, 0x10046700), so every one of its jobs was skipped as
++     * "implausible", including the one that signals the PPU. */
++    return ea_bin && size_bin && size_bin <= SPU_LS_SIZE &&
++           jc_guest_range_committed(ea_bin, size_bin);
++}
++
++static const jc_bin* jc_bins_find(const jc_bins* bins, u32 ea, u32 size)
++{
++    if (bins)
++        for (int i = 0; i < bins->n; i++)
++            if (bins->b[i].ea == ea && bins->b[i].size == size) return &bins->b[i];
++    return NULL;
++}
++
++/* Add a binary (no-op if known, or if the table is full: jobs of a binary
++ * not in it resolve the binary themselves). */
++static void jc_bins_add(jc_bins* bins, u32 ea, u32 size)
++{
++    if (jc_bins_find(bins, ea, size) || bins->n >= (int)(sizeof bins->b / sizeof bins->b[0]))
++        return;
++    jc_bin* b = &bins->b[bins->n++];
++    b->ea = ea; b->size = size;
++    b->ok = jc_binary_plausible(ea, size);
++    b->fp = b->ok ? spu_workload_fingerprint(vm_base + ea, size) : 0;
++}
++
++/* Run one job descriptor. Returns 1 if a lifted binary ran, 0 if it was
++ * skipped (implausible descriptor, or no lifted image for the binary -- the
++ * dispatcher logs that MISS itself). `bins`, if given, may have the binary
++ * resolved already. */
++static int jc_run_one_job(u32 job_ea, int idx, u32 size_desc, const jc_bins* bins)
+ {
+     u64 ea_bin_raw = vm_read64(job_ea + JH_EA_BINARY);
+     u32 ea_bin     = (u32)(ea_bin_raw & ~7ull);          /* low 3 bits = flags */
+     u32 size_bin   = ((vm_read32(job_ea + JH_SIZE_BINARY) >> 16) & 0xFFFFu) << 4;
+     u8  job_type   = *(vm_base + job_ea + JH_JOB_TYPE);
+ 
+-    { static int _n = 0;
+-      if (_n < 8) {
++    { static int _n = 0;   /* read-only after the first 8: no shared write per job */
++      if (_n < 8 && __atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 8) {
+           printf("[cellSpurs]   job[%d] @0x%08X eaBinary=0x%08X size=%u type=0x%02X hdr:",
+                  idx, job_ea, ea_bin, size_bin, job_type);
+           for (int o = 0; o < JH_SIZE; o += 4) {
+@@ -2212,15 +2282,15 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+               printf(" %08X", vm_read32(job_ea + o));
+           }
+           printf("\n");
+-      }
+-      _n++; }
++      } }
+ 
+-    if (!ea_bin || !size_bin || ea_bin >= 0x10000000u) {
++    const jc_bin* known = jc_bins_find(bins, ea_bin, size_bin);
++    if (known ? !known->ok : !jc_binary_plausible(ea_bin, size_bin)) {
+         static int _b = 0;
+         if (__atomic_fetch_add(&_b, 1, __ATOMIC_RELAXED) < 4)
+             printf("[cellSpurs]   job[%d]: implausible binary (ea=0x%08X size=%u) -- skipped\n",
+                    idx, ea_bin, size_bin);
+-        return;
++        return 0;
+     }
+     /* A jobchain job is NOT a SPURS task: Sony's jm2 stages the whole working
+      * set in local store and enters the job's CRT with r3 = CellSpursJobContext2*
+@@ -2229,7 +2299,10 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
+      * DMA traffic at all. spu_workload_dispatch_job reproduces jm2's staging.
+      * Synchronous by design: a job runs to completion, and the chain's own
+      * NEXT/CALL/RET commands are what order them. */
+-    spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
++    if (known)
++        return spu_workload_dispatch_job_fp(vm_base + ea_bin, size_bin, known->fp,
++                                            job_ea, size_desc);
++    return spu_workload_dispatch_job(vm_base + ea_bin, size_bin, job_ea, size_desc);
+ }
+ 
+ /* Walk one chain's command stream. Bounded: a malformed or self-looping stream
+@@ -2347,12 +2420,17 @@ s32 cellSpursJobGuardReset(u64 guard_ea)
+ /* Wait for a guard to be released. Returns 1 if it opened, 0 on timeout (the
+  * chain then gives up this pass rather than spinning the walker thread
+  * forever). An unknown guard opens immediately -- a chain guarded by something
+- * we never saw initialised must not deadlock the walker. */
+-static int jg_wait(u32 ea)
++ * we never saw initialised must not deadlock the walker.
++ *
++ * `shutdown` is the chain's shutdown request: a walker parked on a guard has
++ * no work in flight, so it gives up at once. Join waits for the walker to
++ * exit, and must not sit out the 20 s guard timeout to get there. */
++static int jg_wait(u32 ea, volatile long* shutdown)
+ {
+     int i = jg_find(ea);
+     if (i < 0) return 1;
+     for (int spin = 0; spin < 20000; spin++) {     /* ~20 s at 1 ms */
++        if (shutdown && *shutdown) return 0;
+         if (s_jobguards[i].pending >= s_jobguards[i].reset) {
+             /* Consume exactly one release worth of credits, so notifies that
+              * arrived during the previous lap still count. */
+@@ -2401,6 +2479,24 @@ static u64 spurs_event_data3_probe(void)
+     return (u64)(unsigned)v;
+ }
+ 
++/* Running totals for the walker's periodic END line: enough to check, from
++ * the log of a title that kicks a chain every frame, that kicks and events
++ * balance. */
++static volatile long s_jc_tot_jobs, s_jc_tot_listed, s_jc_tot_job_events, s_jc_tot_synth;
++static volatile long long s_jc_tot_walk_us, s_jc_tot_walks;   /* finished walks */
++
++/* Mean walk time since the previous call: what a chain costs NOW, not
++ * averaged with a thousand empty walks from the title's boot. */
++static double jc_recent_mean_walk_ms(void)
++{
++    static long long last_us, last_walks;
++    const long long us = s_jc_tot_walk_us, walks = s_jc_tot_walks;
++    const double r = walks > last_walks
++                   ? (double)(us - last_us) / 1000.0 / (double)(walks - last_walks) : 0.0;
++    last_us = us; last_walks = walks;
++    return r;
++}
++
+ static void jc_signal_done(u32 jc_ea)
+ {
+     /* Carry the job's mailbox answer in the completion event. On hardware the
+@@ -2434,6 +2530,7 @@ static void jc_signal_done(u32 jc_ea)
+         g_spurs_job_mbox_valid = 0;
+     }
+     for (int i = 0; i < s_spurs_event_queue_n; i++) {
++        __atomic_fetch_add(&s_jc_tot_synth, 1, __ATOMIC_RELAXED);
+         int rc = sys_event_queue_push_by_id(s_spurs_event_queue[i],
+                                             SPURS_EVENT_PORT, jc_ea, 0,
+                                             d3_probe_valid
+@@ -2446,10 +2543,314 @@ static void jc_signal_done(u32 jc_ea)
+     }
+ }
+ 
+-static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
++/* ---------------------------------------------------------------------------
++ * Chains whose jobs signal the PPU themselves
++ *
++ * Real SPURS posts no event when a job, or a whole chain, finishes. The
++ * synthetic completions jc_signal_done pushes stand in for signalling a
++ * title's jobs do that we used to be unable to deliver. But SPU user events
++ * from SPURS code are now delivered for real -- spu_deliver_user_event routes
++ * a send/throw_event on a port bound by cellSpursAttachLv2EventQueue to that
++ * queue -- and a chain whose jobs signal on their own must not ALSO get
++ * synthetic completions: the application counts its events.
++ *
++ * Tekken 5 DR is the case. Every frame it creates and kicks
++ *
++ *     JOBLIST(n skinning jobs) | SYNC | JOB(signal) | END
++ *
++ * with a depth-1 queue attached, waits for exactly ONE event, then calls
++ * ShutdownJobChain and JoinJobChain. The signal job (0x10046700) throws that
++ * one event itself. With synthetic completions per job, at END and at walker
++ * exit on top of it, a stale event sat in the queue and the next frame's wait
++ * returned before that frame's skinning had run.
++ *
++ * So: watch which job binaries deliver an event (the lv2 layer counts each
++ * delivery on the delivering thread, and a job runs synchronously on the
++ * thread that took it), remember them BY BINARY -- the title re-creates its chain every
++ * frame, so per-chain state would not survive -- and before a lap runs, look
++ * ahead through its commands for one. A lap that contains a self-signalling
++ * job gets no synthetic completions at all, including for the jobs that run
++ * before the signalling one. Chains whose jobs never signal (the titles the
++ * synthetic completions were written for) are unaffected.
++ * -----------------------------------------------------------------------*/
++static SPURS_JOB_TLS u32 s_jc_user_events;
++
++/* Called by the lv2 layer (spu_deliver_user_event) for every SPU user event
++ * it delivers from SPU code running under SPURS, on the delivering thread. */
++void spurs_note_user_event(void) { s_jc_user_events++; }
++
++#define JC_SELF_SIGNAL_MAX 16
++static struct { u32 ea, size; u64 fp; } s_jc_self_bins[JC_SELF_SIGNAL_MAX];
++static volatile long s_jc_self_bins_n;
++static SRWLOCK s_jc_self_lock = SRWLOCK_INIT;
++
++static void jc_desc_binary(u32 job_ea, u32* ea, u32* size)
++{
++    *ea   = (u32)(vm_read64(job_ea + JH_EA_BINARY) & ~7ull);
++    *size = ((vm_read32(job_ea + JH_SIZE_BINARY) >> 16) & 0xFFFFu) << 4;
++}
++
++/* Does this job's binary signal the PPU itself? Matched by address and size,
++ * then confirmed by content: a title may reuse one buffer for different
++ * binaries, and only an exact match may switch synthetic completions off. */
++static int jc_job_signals_itself(u32 job_ea)
++{
++    const long n = __atomic_load_n(&s_jc_self_bins_n, __ATOMIC_ACQUIRE);
++    if (!n) return 0;
++    u32 ea, size;
++    jc_desc_binary(job_ea, &ea, &size);
++    for (long i = 0; i < n; i++) {
++        if (s_jc_self_bins[i].ea != ea || s_jc_self_bins[i].size != size) continue;
++        return jc_guest_range_committed(ea, size) &&
++               spu_workload_fingerprint(vm_base + ea, size) == s_jc_self_bins[i].fp;
++    }
++    return 0;
++}
++
++static void jc_learn_self_signal(u32 job_ea, u32 jc_ea)
++{
++    u32 ea, size;
++    jc_desc_binary(job_ea, &ea, &size);
++    const u64 fp = spu_workload_fingerprint(vm_base + ea, size);
++    AcquireSRWLockExclusive(&s_jc_self_lock);
++    long n = s_jc_self_bins_n, i;
++    for (i = 0; i < n; i++)
++        if (s_jc_self_bins[i].ea == ea && s_jc_self_bins[i].size == size &&
++            s_jc_self_bins[i].fp == fp) break;
++    if (i == n && n < JC_SELF_SIGNAL_MAX) {
++        s_jc_self_bins[n].ea = ea; s_jc_self_bins[n].size = size; s_jc_self_bins[n].fp = fp;
++        __atomic_store_n(&s_jc_self_bins_n, n + 1, __ATOMIC_RELEASE);
++        printf("[cellSpurs] chain 0x%08X: job binary 0x%08X (%u bytes) signals the PPU "
++               "itself -- no synthetic completions for laps that run it\n", jc_ea, ea, size);
++    }
++    ReleaseSRWLockExclusive(&s_jc_self_lock);
++}
++
++/* A CellSpursJobList {be u32 numJobs; be u32 sizeOfJob; be u64 eaJobList} the
++ * walker can trust: descriptors of a sane size, all in committed memory. */
++static int jc_joblist_read(u32 list_ea, u32* n, u32* sz, u32* base)
++{
++    *n    = vm_read32(list_ea + 0);
++    *sz   = vm_read32(list_ea + 4);
++    *base = (u32)vm_read64(list_ea + 8);
++    if (*n == 0) return 1;
++    if (*sz < JH_SIZE || *sz > 1024 || (*sz & 15) || *n > 0x100000u || !*base) return 0;
++    return jc_guest_range_committed(*base, *n * *sz);
++}
++
++/* Look ahead from `pc` to the end of the lap (END, RET, ABORT, or the next
++ * GUARD -- where the walker would wait for the PPU) for a self-signalling
++ * job. Follows NEXT/RESET_PC/CALL; bounded, so a looping stream is fine. */
++static int jc_lap_signals_itself(u32 pc)
++{
++    if (!__atomic_load_n(&s_jc_self_bins_n, __ATOMIC_ACQUIRE)) return 0;
++    for (int steps = 0; steps < 256; steps++) {
++        const u64 cmd = vm_read64(pc);
++        const u32 op = (u32)(cmd & 7), ext = (u32)(cmd & 127), ea = (u32)(cmd & ~7ull);
++        if (cmd != 0 && op == 0) {
++            if (jc_job_signals_itself(ea)) return 1;
++        } else if (op == 6) {
++            u32 n, sz, base;
++            if (jc_joblist_read(ea, &n, &sz, &base))
++                for (u32 k = 0; k < n; k++)
++                    if (jc_job_signals_itself(base + k * sz)) return 1;
++        } else if (op == 1 || op == 3 || op == 4) {
++            pc = ea; continue;
++        } else if (op == 7 && (ext == (7 | (15 << 3)) || ext == (7 | (14 << 3)) ||
++                               ext == (7 | (0 << 3))  || ext == (7 | (1 << 3)))) {
++            return 0;
++        }
++        pc += 8;
++    }
++    return 0;
++}
++
++/* One walk of a chain. A JOBLIST's jobs may run on the worker threads below,
++ * so `jobs` and `self` are only touched atomically. */
++typedef struct {
++    u32 jc_ea;
++    int jobs;      /* jobs run this walk                  */
++    int listed;    /* ... of which came from a JOBLIST    */
++    int self;      /* this walk's jobs signal the PPU     */
++} jc_walk;
++
++/* Run one job of the walk, then account for its completion. Runs on the
++ * thread that executes the job: the job's mailbox (g_spurs_job_mbox) and the
++ * delivered-event count (s_jc_user_events) are that thread's. */
++static void jc_walk_job(jc_walk* w, u32 job_ea, u32 size_desc, const jc_bins* bins)
++{
++    { extern u32 g_spurs_job_ls_handle;          /* no shared write per job */
++      if (g_spurs_job_ls_handle != w->jc_ea) g_spurs_job_ls_handle = w->jc_ea; }
++    const u32 before = s_jc_user_events;
++    jc_run_one_job(job_ea, __atomic_fetch_add(&w->jobs, 1, __ATOMIC_RELAXED), size_desc, bins);
++    __atomic_fetch_add(&s_jc_tot_jobs, 1, __ATOMIC_RELAXED);
++    if (s_jc_user_events != before) {
++        __atomic_fetch_add(&s_jc_tot_job_events, (long)(s_jc_user_events - before),
++                           __ATOMIC_RELAXED);
++        if (!__atomic_load_n(&w->self, __ATOMIC_ACQUIRE)) jc_learn_self_signal(job_ea, w->jc_ea);
++        __atomic_store_n(&w->self, 1, __ATOMIC_RELEASE);
++    }
++    if (__atomic_load_n(&w->self, __ATOMIC_ACQUIRE)) {
++        /* The title signals for itself: no stand-in. Drop the job's mailbox
++         * so it cannot leak into a later synthetic completion. */
++        g_spurs_job_mbox_valid = 0;
++        return;
++    }
++    /* Signal per JOB, not per lap. The application waits once for each
++     * unit of work it queued -- Tokyo Jungle notified the guard 7 times
++     * and sat in event_queue_receive 30 times -- so batching the
++     * completion into one event per pass leaves it waiting for
++     * completions that, from its point of view, never arrive. */
++    jc_signal_done(w->jc_ea);
++}
++
++/* ---------------------------------------------------------------------------
++ * JOBLIST workers
++ *
++ * The jobs of a JOBLIST are independent by contract -- jm2 deals them out to
++ * every SPU the instance has, in any order, and only a later SYNC orders them
++ * against anything -- so they can run on several host threads at once, the
++ * way they run on several SPUs on hardware. It matters for time: the title
++ * usually waits for the chain. Tekken 5 DR skins every fighter this way, 300
++ * to 400 jobs a frame at ~80 us each in lifted code, and its main thread
++ * blocks until the chain signals: one after another that is 25-30 ms a frame
++ * on its own. Twelve at a time it is ~2.5 ms.
++ *
++ * SPURS_JOB_THREADS=<n>: how many jobs of a list run at once, the walker
++ * thread included (default: half the host's logical processors, at most 12;
++ * 1 = one at a time on the walker). More than the title's SPU count is fine --
++ * the jobs cannot tell. The pool is shared by every chain; a walker that finds
++ * it busy runs its list itself.
++ * -----------------------------------------------------------------------*/
++#define JC_POOL_MAX 11
++static struct {
++    SRWLOCK            lock;        /* guards the batch fields below         */
++    CONDITION_VARIABLE work;        /* a batch opened                        */
++    CONDITION_VARIABLE idle;        /* the last worker left a batch          */
++    volatile long      owner;       /* a walker is using the pool            */
++    int                nworkers;    /* -1: not decided yet                   */
++    u64                gen;         /* batch generation                      */
++    int                open;        /* workers may still join this batch     */
++    int                busy;        /* workers inside the batch              */
++    jc_walk*           w;
++    const jc_bins*     bins;
++    u32                base, sz, n;
++    volatile long      next;        /* next list index to take               */
++} s_jl = { SRWLOCK_INIT, CONDITION_VARIABLE_INIT, CONDITION_VARIABLE_INIT, 0, -1 };
++
++/* Take list entries until none are left. Shared by the walker and workers. */
++static void jl_drain(jc_walk* w, const jc_bins* bins, u32 base, u32 sz, u32 n)
++{
++    for (;;) {
++        const u32 k = (u32)__atomic_fetch_add(&s_jl.next, 1, __ATOMIC_RELAXED);
++        if (k >= n) return;
++        jc_walk_job(w, base + k * sz, sz, bins);
++    }
++}
++
++static DWORD WINAPI jl_worker(LPVOID unused)
++{
++    (void)unused;
++    extern void spurs_job_keep_ls(int keep);
++    spurs_job_keep_ls(0);          /* list jobs keep no store: spurs_job.c */
++    u64 seen = 0;
++    for (;;) {
++        AcquireSRWLockExclusive(&s_jl.lock);
++        while (!(s_jl.open && s_jl.gen != seen))
++            SleepConditionVariableSRW(&s_jl.work, &s_jl.lock, INFINITE, 0);
++        seen = s_jl.gen;
++        jc_walk* w = s_jl.w;
++        const jc_bins* bins = s_jl.bins;
++        const u32 base = s_jl.base, sz = s_jl.sz, n = s_jl.n;
++        s_jl.busy++;
++        ReleaseSRWLockExclusive(&s_jl.lock);
++
++        jl_drain(w, bins, base, sz, n);
++
++        AcquireSRWLockExclusive(&s_jl.lock);
++        if (--s_jl.busy == 0) WakeAllConditionVariable(&s_jl.idle);
++        ReleaseSRWLockExclusive(&s_jl.lock);
++    }
++    return 0;
++}
++
++/* Start the workers once. Returns how many there are (0 = run serially). */
++static int jl_workers(void)
++{
++    if (__atomic_load_n(&s_jl.nworkers, __ATOMIC_ACQUIRE) >= 0) return s_jl.nworkers;
++    AcquireSRWLockExclusive(&s_jl.lock);
++    if (s_jl.nworkers < 0) {
++        const char* e = getenv("SPURS_JOB_THREADS");
++        SYSTEM_INFO si; GetSystemInfo(&si);
++        const int cores = (int)si.dwNumberOfProcessors;
++        int total = e && *e ? atoi(e) : cores / 2;
++        if (total > cores - 1) total = cores - 1;      /* leave the PPU a core */
++        if (total > JC_POOL_MAX + 1) total = JC_POOL_MAX + 1;
++        int started = 0;
++        for (int i = 1; i < total; i++) {
++            HANDLE th = CreateThread(NULL, 1u << 20, jl_worker, NULL, 0, NULL);
++            if (!th) break;
++            CloseHandle(th);
++            started++;
++        }
++        printf("[cellSpurs] job lists run %d job(s) at a time (%d worker thread(s); "
++               "SPURS_JOB_THREADS)\n", started + 1, started);
++        __atomic_store_n(&s_jl.nworkers, started, __ATOMIC_RELEASE);
++    }
++    ReleaseSRWLockExclusive(&s_jl.lock);
++    return s_jl.nworkers;
++}
++
++/* Run a whole job list and return once every job in it has finished. */
++static void jc_run_joblist(jc_walk* w, u32 base, u32 sz, u32 n)
++{
++    jc_bins bins = { 0 };
++    { u32 last_ea = 0, last_size = 0;
++      for (u32 k = 0; k < n; k++) {
++          u32 ea, size;
++          jc_desc_binary(base + k * sz, &ea, &size);
++          if (ea == last_ea && size == last_size) continue;
++          jc_bins_add(&bins, ea, size);
++          last_ea = ea; last_size = size;
++      } }
++    extern void spurs_job_keep_ls(int keep);
++    spurs_job_keep_ls(0);          /* list jobs keep no store: spurs_job.c */
++    if (n > 1 && jl_workers() > 0 &&
++        _InterlockedCompareExchange(&s_jl.owner, 1, 0) == 0) {
++        AcquireSRWLockExclusive(&s_jl.lock);
++        s_jl.w = w; s_jl.bins = &bins; s_jl.base = base; s_jl.sz = sz; s_jl.n = n;
++        __atomic_store_n(&s_jl.next, 0, __ATOMIC_RELAXED);
++        s_jl.gen++;
++        s_jl.open = 1;
++        ReleaseSRWLockExclusive(&s_jl.lock);
++        WakeAllConditionVariable(&s_jl.work);
++
++        jl_drain(w, &bins, base, sz, n);       /* the walker takes jobs too */
++
++        /* Close the batch, then wait for the workers still running a job of
++         * it. Joining and closing both happen under the lock, so once it is
++         * closed with nobody busy, no worker can still touch `w` or `bins`. */
++        AcquireSRWLockExclusive(&s_jl.lock);
++        s_jl.open = 0;
++        while (s_jl.busy)
++            SleepConditionVariableSRW(&s_jl.idle, &s_jl.lock, INFINITE, 0);
++        ReleaseSRWLockExclusive(&s_jl.lock);
++        __atomic_store_n(&s_jl.owner, 0, __ATOMIC_RELEASE);
++    } else {
++        for (u32 k = 0; k < n; k++)            /* serial: one job at a time */
++            jc_walk_job(w, base + k * sz, sz, &bins);
++    }
++    spurs_job_keep_ls(1);
++}
++
++/* Walk one chain's command stream. Returns 1 if the walk's jobs signalled the
++ * PPU themselves (so the walker's exit must not add a synthetic event).
++ * `shutdown` is checked at every command boundary: cellSpursShutdownJobChain
++ * lets the job in flight finish and stops the chain grabbing more work. */
++static int jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc, volatile long* shutdown)
+ {
+     u32 pc = entry_ea, ret_pc = 0;
+-    int jobs = 0;
++    jc_walk w = { jc_ea, 0, 0, jc_lap_signals_itself(entry_ea) };
+     /* Bound IDLE steps, not total steps. A SPURS job chain is frequently a
+      * SERVICE LOOP -- guard, job, sync, next, repeat -- and is meant to run for
+      * the lifetime of the subsystem. A flat cap on total commands therefore
+@@ -2460,20 +2861,49 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+     int idle = 0;
+     for (;; idle++) {
+         if (idle > 4096) break;
++        if (*shutdown) {
++            static int _s = 0;
++            if (__atomic_fetch_add(&_s, 1, __ATOMIC_RELAXED) < 4)
++                printf("[cellSpurs] chain 0x%08X: shut down after %d job(s)\n", jc_ea, w.jobs);
++            return w.self;
++        }
+         u64 cmd = vm_read64(pc);
+         u32 op  = (u32)(cmd & 7);
+         u32 ext = (u32)(cmd & 127);
+ 
+         if (cmd != 0 && op == 0) {                    /* JOB */
+-            { extern u32 g_spurs_job_ls_handle; g_spurs_job_ls_handle = jc_ea; }
+-            jc_run_one_job((u32)(cmd & ~7ull), jobs++, size_desc);
++            jc_walk_job(&w, (u32)(cmd & ~7ull), size_desc, NULL);
+             idle = 0;                    /* real work: the chain is healthy */
+-            /* Signal per JOB, not per lap. The application waits once for each
+-             * unit of work it queued -- this title notified the guard 7 times
+-             * and sat in event_queue_receive 30 times -- so batching the
+-             * completion into one event per pass leaves it waiting for
+-             * completions that, from its point of view, never arrive. */
+-            jc_signal_done(jc_ea);
++            pc += 8; continue;
++        }
++        if (op == 6) {                                /* JOBLIST */
++            /* CELL_SPURS_JOB_COMMAND_JOBLIST(ea): ea is a CellSpursJobList,
++             * numJobs descriptors of sizeOfJob bytes each at eaJobList. jm2
++             * hands them out to however many SPUs it has, in any order, and
++             * moves past the command once all are grabbed (a following SYNC is
++             * what waits for them). Running them all to completion before
++             * moving on -- several at a time, see jc_run_joblist -- is one
++             * valid schedule of that. This used to be skipped as a TODO, so a
++             * title that batches its jobs this way -- Tekken 5 DR's per-frame
++             * vertex skinning -- ran none of them. The descriptors carry their
++             * own size, which can differ from the chain's sizeJobDescriptor. */
++            const u32 list = (u32)(cmd & ~7ull);
++            u32 n, sz, base;
++            if (!jc_joblist_read(list, &n, &sz, &base)) {
++                static int _m = 0;
++                if (__atomic_fetch_add(&_m, 1, __ATOMIC_RELAXED) < 4)
++                    printf("[cellSpurs] chain 0x%08X: malformed JOBLIST @0x%08X "
++                           "(n=%u size=%u ea=0x%08X) -- skipped\n", jc_ea, list, n, sz, base);
++                pc += 8; continue;
++            }
++            { static int _l = 0;
++              if (n && __atomic_fetch_add(&_l, 1, __ATOMIC_RELAXED) < 8)
++                  printf("[cellSpurs] chain 0x%08X: JOBLIST @0x%08X: %u job(s) x %u bytes "
++                         "at 0x%08X\n", jc_ea, list, n, sz, base); }
++            jc_run_joblist(&w, base, sz, n);
++            w.listed += (int)n;
++            __atomic_fetch_add(&s_jc_tot_listed, (long)n, __ATOMIC_RELAXED);
++            if (n) idle = 0;
+             pc += 8; continue;
+         }
+         if (op == 1) { pc = (u32)(cmd & ~7ull); continue; }   /* RESET_PC */
+@@ -2481,31 +2911,45 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+         if (op == 4) { ret_pc = pc + 8; pc = (u32)(cmd & ~7ull); continue; }  /* CALL */
+         if (op == 7) {
+             if (ext == (7 | (15 << 3))) {                     /* END */
+-                printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs);
+-                if (jobs) jc_signal_done(jc_ea);
+-                return;
++                /* Every END of a per-frame chain lands here: keep the first
++                 * few, then one in 300 (every ~5 s at 60 frames a second). */
++                static long _e = 0;
++                const long e = __atomic_fetch_add(&_e, 1, __ATOMIC_RELAXED);
++                if (e < 16 || e % 300 == 0)
++                    printf("[cellSpurs] chain 0x%08X: END after %d job(s) (%d from job lists)%s"
++                           " [walk #%ld; totals: %ld jobs, %ld listed, %ld events sent by"
++                           " jobs, %ld synthetic; mean walk %.2f ms]\n", jc_ea, w.jobs, w.listed,
++                           w.self ? ", signalled by its own job" : "", e + 1,
++                           s_jc_tot_jobs, s_jc_tot_listed, s_jc_tot_job_events, s_jc_tot_synth,
++                           jc_recent_mean_walk_ms());
++                if (w.jobs && !w.self) jc_signal_done(jc_ea);
++                return w.self;
+             }
+             if (ext == (7 | (14 << 3))) {                     /* RET */
+-                if (!ret_pc) return;
++                if (!ret_pc) return w.self;
+                 pc = ret_pc; ret_pc = 0; continue;
+             }
+             if (ext == (7 | (0 << 3))) {                      /* ABORT */
+                 printf("[cellSpurs] chain 0x%08X: ABORT\n", jc_ea);
+-                return;
++                return w.self;
+             }
+         }
+         if (op == 7 && ext == (7 | (1 << 3))) {           /* GUARD */
+             u32 g_ea = (u32)(cmd & ~127ull);
+-            if (!jg_wait(g_ea)) return;                  /* still closed */
+-            pc += 8; continue;
++            if (!jg_wait(g_ea, shutdown)) return w.self;   /* closed, or shut down */
++            pc += 8;
++            /* A new lap: the work behind this guard may be different. */
++            if (!w.self) w.self = jc_lap_signals_itself(pc);
++            continue;
+         }
+         /* NOP(0) / SYNC+LWSYNC(2, one virtual SPU: nothing to wait for) /
+-         * FLUSH(5) / JOBLIST(6, nested arrays TODO) / SET_LABEL */
++         * FLUSH(5) / SET_LABEL */
+         pc += 8;
+     }
+     printf("[cellSpurs] chain 0x%08X: 4096 commands with no job run after %d "
+            "job(s) -- malformed?\n",
+-           jc_ea, jobs);
++           jc_ea, w.jobs);
++    return w.self;
+ }
+ 
+ static DWORD WINAPI jc_thread(LPVOID p)
+@@ -2518,12 +2962,22 @@ static DWORD WINAPI jc_thread(LPVOID p)
+      * Confirms timing-vs-never before committing to the async rewrite. */
+     { const char* d = getenv("SPURS_JC_DELAY");
+       if (d && *d) Sleep((unsigned)atoi(d)); }
+-    jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+-               s_jobchains[slot].size_desc);
+-    s_jobchains[slot].running = 0;
++    LARGE_INTEGER t0, t1, fq;
++    QueryPerformanceCounter(&t0);
++    const int self = jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
++                                s_jobchains[slot].size_desc, &s_jobchains[slot].shutdown);
++    QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
++    __atomic_fetch_add(&s_jc_tot_walk_us,
++                       (long long)((t1.QuadPart - t0.QuadPart) * 1000000 / fq.QuadPart),
++                       __ATOMIC_RELAXED);
++    __atomic_fetch_add(&s_jc_tot_walks, 1, __ATOMIC_RELAXED);
+     /* Tell the application the chain is done. Without this the walk finishes
+-     * in silence and a thread waiting on the attached queue never runs again. */
+-    jc_signal_done(s_jobchains[slot].jc_ea);
++     * in silence and a thread waiting on the attached queue never runs again
++     * -- unless the chain's own jobs already told it (see jc_walk_job). */
++    if (!self) jc_signal_done(s_jobchains[slot].jc_ea);
++    /* Last: once this reads 0, Join may return and the title may re-create
++     * and re-kick the chain, so nothing of this walk may still be running. */
++    __atomic_store_n(&s_jobchains[slot].running, 0, __ATOMIC_RELEASE);
+     return 0;
+ }
+ 
+@@ -2548,14 +3002,19 @@ static s32 jc_start(u64 jc_ea, const char* who)
+     for (int i = 0; i < MAX_JOBCHAINS; i++) {
+         if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
+         s_jobchains[i].run_count++;
+-        if (s_jobchains[i].run_count <= 3) {
+-            printf("[cellSpurs] %s(jc=0x%08X) run#%d entry=0x%08X\n",
+-                   who, (u32)jc_ea, s_jobchains[i].run_count, s_jobchains[i].entry_ea);
+-            jc_dump_commands(who, s_jobchains[i].entry_ea, 16);
+-        }
++        /* run_count restarts at every Create, and a title that re-creates its
++         * chain each frame (Tekken 5 DR) would dump it 60 times a second:
++         * also cap the dumps overall. */
++        { static int _d = 0;
++          if (s_jobchains[i].run_count <= 3 && __atomic_fetch_add(&_d, 1, __ATOMIC_RELAXED) < 16) {
++              printf("[cellSpurs] %s(jc=0x%08X) run#%d entry=0x%08X\n",
++                     who, (u32)jc_ea, s_jobchains[i].run_count, s_jobchains[i].entry_ea);
++              jc_dump_commands(who, s_jobchains[i].entry_ea, 16);
++          } }
+         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
+         /* Coalesce: a chain already being walked must not start twice. */
+         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
++            s_jobchains[i].shutdown = 0;     /* a fresh walk has not been shut down */
+             HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
+             if (th) CloseHandle(th);
+             else s_jobchains[i].running = 0;
+@@ -2579,18 +3038,23 @@ s32 cellSpursRunJobChain(u64 jc_ea)
+  * r3, so the caller reads a garbage result for "did the shutdown take?" and a
+  * title that checks it can decide the subsystem failed and tear itself down.
+  *
+- * Clearing `running` is what makes the pair honest: the host walker stops
+- * grabbing new work, and the Join that follows has something true to observe.
+- * Found in Tokyo Jungle, whose sound engine shuts its chain down during init
+- * and then reports "failed to recv data from SPU" when the handshake does not
+- * complete. */
++ * Shutdown REQUESTS the stop: the walker finishes the job in flight, takes
++ * no further command, and exits (a walker parked on a guard leaves at once).
++ * Join then waits for that exit, which is the fact it reports. Found in Tokyo
++ * Jungle, whose sound engine shuts its chain down during init and then
++ * reports "failed to recv data from SPU" when the handshake does not complete.
++ *
++ * This used to clear `running` directly. That let Join return while the
++ * walker was still running jobs, and let the next Kick start a SECOND walker
++ * on the same chain beside it. Tekken 5 DR shuts down and joins its skinning
++ * chain every frame, and relies on Join meaning the jobs are done. */
+ s32 cellSpursShutdownJobChain(u64 jc_ea)
+ {
+     static int _n = 0;
+     if (__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 8) printf("[cellSpurs] ShutdownJobChain(jc=0x%08X)\n", (u32)jc_ea);
+     for (int i = 0; i < MAX_JOBCHAINS; i++) {
+         if (s_jobchains[i].jc_ea == (u32)jc_ea) {
+-            s_jobchains[i].running = 0;   /* stop the walker; Join can now succeed */
++            __atomic_store_n(&s_jobchains[i].shutdown, 1, __ATOMIC_RELEASE);
+             return CELL_OK;
+         }
+     }
+@@ -2610,10 +3074,26 @@ s32 cellSpursJoinJobChain(u64 jc_ea)
+      * already queued in the FIFO: the RSX drain then reached the draws first
+      * (black frames, glyph quads built from half-written vertices), and the
+      * next frame's Run was coalesced away while this walker was still busy,
+-     * so that frame's data was never written at all. */
++     * so that frame's data was never written at all.
++     *
++     * After a Shutdown the walker leaves at its next command boundary, so the
++     * wait is at most the job (or job list) in flight. If it has not left 10 s
++     * after the request, a job is wedged (e.g. blocked on a mailbox nobody
++     * answers): say so and let the title continue, rather than hang its
++     * thread forever on our account. */
+     for (int i = 0; i < MAX_JOBCHAINS; i++) {
+         if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
+-        while (s_jobchains[i].running) {
++        ULONGLONG t_shut = 0;
++        while (__atomic_load_n(&s_jobchains[i].running, __ATOMIC_ACQUIRE)) {
++            if (__atomic_load_n(&s_jobchains[i].shutdown, __ATOMIC_ACQUIRE)) {
++                const ULONGLONG now = GetTickCount64();
++                if (!t_shut) t_shut = now;
++                else if (now - t_shut > 10000) {
++                    printf("[cellSpurs] JoinJobChain(jc=0x%08X): walker still running 10 s "
++                           "after shutdown -- a job is wedged; returning anyway\n", (u32)jc_ea);
++                    break;
++                }
++            }
+ #ifdef _WIN32
+             Sleep(0);
+ #else
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index fdf901f..76e3e57 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -784,8 +784,17 @@ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
+                               uint32_t job_ea, uint32_t job_desc_size)
+ {
+     if (!image || image_size == 0) return 0;
++    return spu_workload_dispatch_job_fp(image, image_size,
++                                        spu_workload_fingerprint(image, image_size),
++                                        job_ea, job_desc_size);
++}
++
++int spu_workload_dispatch_job_fp(const uint8_t* image, uint32_t image_size,
++                                 uint64_t fp,
++                                 uint32_t job_ea, uint32_t job_desc_size)
++{
++    if (!image || image_size == 0) return 0;
+ 
+-    uint64_t fp = spu_workload_fingerprint(image, image_size);
+     spu_lifted_entry_fn fn = NULL;
+     int image_id = 0;
+     for (unsigned i = 0; i < s_registry_count; i++)
+diff --git a/runtime/spu/spu_workload.h b/runtime/spu/spu_workload.h
+index 9a42e87..bced1b5 100644
+--- a/runtime/spu/spu_workload.h
++++ b/runtime/spu/spu_workload.h
+@@ -104,6 +104,14 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+ int spu_workload_dispatch_job(const uint8_t* image, uint32_t image_size,
+                               uint32_t job_ea, uint32_t job_desc_size);
+ 
++/* The same, with the image's fingerprint already known. Hashing a job binary
++ * is a serial FNV pass over every byte -- ~15 us for a 17 KB one -- and a job
++ * list runs hundreds of jobs of one or two binaries, so the job-chain walker
++ * fingerprints each distinct binary of a list once and passes it here. */
++int spu_workload_dispatch_job_fp(const uint8_t* image, uint32_t image_size,
++                                 uint64_t fingerprint,
++                                 uint32_t job_ea, uint32_t job_desc_size);
++
+ /* Load a 32-bit big-endian SPU ELF image into a 256 KB local store: each PT_LOAD
+  * segment is copied to its p_vaddr (BSS zero-filled). Returns 1 on success and
+  * writes the entry vaddr (e_entry, which may legitimately be 0) to *entry_out;
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index 8af915e..ed3441f 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -128,6 +128,20 @@ const uint8_t* spurs_job_ls_for_handle(uint32_t handle)
+     return s_job_ls;
+ }
+ 
++/* Jobs of a JOBLIST do not keep their store. The copy is a 256 KB pass per
++ * job, a list is hundreds of jobs run on several threads at once (cellSpurs.c,
++ * jc_run_joblist), and all of them writing this one buffer made the copy
++ * several times slower in cache-line traffic between cores, for a store no
++ * one could sensibly poll anyway: "the chain's SPU" is a different job on each
++ * thread. The chain's own JOB commands, which the walker runs one at a time,
++ * keep it as before. */
++#ifdef _WIN32
++static __declspec(thread) int s_job_ls_skip;
++#else
++static __thread int s_job_ls_skip;
++#endif
++void spurs_job_keep_ls(int keep) { s_job_ls_skip = !keep; }
++
+ /* Last outbound mailbox posted by a finished job (see below). */
+ /* THREAD-LOCAL. A job's answer is read back by the completion event that
+  * follows it, and jc_execute signals immediately after each job -- but the walk
+@@ -170,8 +184,14 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+         return -1;
+     }
+ 
+-    uint8_t* ls = (uint8_t*)calloc(1, SPU_LS_SIZE);
+-    if (!ls) return -1;
++    /* Stage straight into the job's own local store. This used to build it in
++     * a calloc'd buffer and copy that into the context at entry: two extra
++     * 256 KB passes per job, paid on the PPU's critical path by a title that
++     * runs a few hundred jobs a frame and waits for them (Tekken 5 DR's vertex
++     * skinning). spu_context_init already zeroes the store. */
++    spu_context ctx;
++    spu_context_init(&ctx, 0);
++    uint8_t* ls = ctx.ls;
+ 
+     /* ---- binary at LS 0 (PIC, so delta 0 keeps the lifted addresses) ---- */
+     memcpy(ls, vm_base + ea_bin, size_bin);
+@@ -333,10 +353,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+     }
+ 
+     /* ---- enter the job -------------------------------------------------- */
+-    spu_context ctx;
+-    spu_context_init(&ctx, 0);
+     ctx.image_id = image_id;
+-    memcpy(ctx.ls, ls, SPU_LS_SIZE);
+     ctx.gpr[1]._u32[0] = (stack_top - 16u) & ~15u;   /* SPU stack grows down */
+     /* Link register: where the job returns when it is done. The job manager
+      * would pass an address inside itself; 0 makes the job re-enter its own
+@@ -364,8 +381,10 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * comment here claimed they carried the title's bus counts; they do not,
+      * and feeding them into the completion event turned 0x40000000 into a 1 GB
+      * allocation request. Kept because the printf service needs them. */
+-    memcpy(s_job_ls, ctx.ls, SPU_LS_SIZE);   /* keep the store readable */
+-    s_job_ls_valid = 1;
++    if (!s_job_ls_skip) {
++        memcpy(s_job_ls, ctx.ls, SPU_LS_SIZE);   /* keep the store readable */
++        s_job_ls_valid = 1;
++    }
+ 
+     g_spurs_job_mbox      = spu_channel_has_data(&ctx.ch_out_mbox)
+                           ? spu_channel_peek(&ctx.ch_out_mbox) : 0;
+@@ -398,6 +417,5 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+     }
+ 
+     spu_coh_unregister(&ctx);   /* stack local: out of the reserver set */
+-    free(ls);
+     return 0;
+ }
+diff --git a/runtime/spu/tests/test_spu_lifted_start.c b/runtime/spu/tests/test_spu_lifted_start.c
+index 96b7ae0..d8e889c 100644
+--- a/runtime/spu/tests/test_spu_lifted_start.c
++++ b/runtime/spu/tests/test_spu_lifted_start.c
+@@ -980,6 +980,7 @@ uint32_t g_spu_image_src_ea, g_spu_image_ls_start, g_spu_image_span;
+ uint32_t ps3_spu_image_source_ea(uint32_t ea) { return ea; }
+ /* cellSpurs owns this; 0 = "not a SPURS port", the plain lv2 event path. */
+ uint32_t spurs_port_queue(uint32_t port)        { (void)port; return 0; }
++void spurs_note_user_event(void)                {}
+ void sys_raw_spu_init(lv2_syscall_table* t) { (void)t; }
+ void sys_rsx_init(lv2_syscall_table* t) { (void)t; }
+ void spu_raw_note_image(uint32_t ea, uint32_t src) { (void)ea; (void)src; }
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+index 5eb3115..d8134ea 100644
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -1839,6 +1839,14 @@ static int spu_deliver_user_event(spu_context* spu, uint32_t value)
+             int rc = sys_event_queue_push_by_id(queue, 0xFFFFFFFF53505501ull,
+                 spu->spu_id, ((uint64_t)port << 32) | (value & 0xFFFFFFu), data);
+             result = rc == 0 ? CELL_OK : CELL_EBUSY;
++            /* SPURS code told the PPU something itself. cellSpurs's job-chain
++             * walker runs each job on this thread and uses this to stop
++             * fabricating completion events for jobs that signal on their own
++             * (Tekken 5 DR's chain-completion job). */
++            if (!spu->spu_group_id) {
++                extern void spurs_note_user_event(void);
++                spurs_note_user_event();
++            }
+         }
+     }
+     if (code < 64) spu_channel_write(&spu->ch_in_mbox, result);

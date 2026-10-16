@@ -1,0 +1,40 @@
+# This repository is public. Nothing from the game goes in it — not the
+# package, not the license, not the decrypted program, not the data, and not
+# the C++ the recompiler produces from it (that is still Namco's code).
+# Everything game-derived lives under game/ or build/ on the player's own PC.
+
+game/
+build/
+out/
+dump/
+
+*.pkg
+*.rap
+*.rif
+*.edat
+*.sdat
+*.self
+*.sprx
+*.prx
+*.elf
+*.ELF
+EBOOT.BIN
+EBOOT.bin
+PARAM.SFO
+USRDIR/
+
+# Lifted output (ppu_lifter.py writes these next to the project)
+src/recomp/
+ppu_recomp*.cpp
+ppu_recomp*.h
+
+# Decryption keys never live in the repo either
+keys/
+*.keys
+
+# Tooling noise
+__pycache__/
+*.pyc
+.vs/
+*.user
+*.log

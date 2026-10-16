@@ -1,0 +1,437 @@
+# Troubleshooting
+
+This is a test release. It was tested on one development PC only (Windows 11,
+16-core Ryzen 9). Fixes marked **(untested)** are standard advice that we have
+not tried on this project. Everything else comes from the code, the launcher or
+our QA run on 2026-10-16.
+
+Contents:
+
+- [Where things are](#where-things-are)
+- [Building the game](#building-the-game)
+- [The launcher does not start](#the-launcher-does-not-start)
+- [SmartScreen and antivirus](#smartscreen-and-antivirus)
+- [The Play tab](#the-play-tab)
+- [The game starts, but...](#the-game-starts-but)
+- [No sound](#no-sound)
+- [Controllers and keyboard](#controllers-and-keyboard)
+- [Low frame rate](#low-frame-rate)
+- [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
+- [Saves](#saves)
+- [Other known problems](#other-known-problems)
+- [How to collect logs](#how-to-collect-logs)
+
+## Where things are
+
+In the folder where you extracted the release (say `C:\T5DR`):
+
+| Path | What it is |
+|---|---|
+| `T5DR Online.exe` | The launcher's starter. |
+| `launcher.json` | The launcher's settings (made on first use). |
+| `native\` | Everything built from your copy. Game data. Do not share it. |
+| `native\build.log` | The log of the last build. Overwritten by every build. |
+| `native\logs\game-<date>-<time>.log` | One log per game start. The last 10 are kept. |
+| `native\gamedata\` | Your saves. |
+| `native\controls.ini` | Your own control settings (optional, you make it). |
+| `native\game\`, `native\build\`, `native\keys\` | Unpacked game, build output, key file. Game data. |
+
+To start over completely, delete `native\` (you lose your saves: copy
+`native\gamedata` first).
+
+## Building the game
+
+The launcher shows one red sentence when the build stops. Find it here. The
+steps and times are in the [README](../README.md).
+
+### "This copy is a different version of the game"
+
+The port supports exactly one program: **TEKKEN 5 DARK RESURRECTION ONLINE, US
+PSN, `NPUB30009`, version 01.00.** The builder checks it within seconds and
+refuses everything else. Not supported: disc copies, other regions, other
+versions or updates.
+
+How to tell what you have: choose the `.pkg` in the Build tab. The line under it
+shows the content ID and size.
+
+- Green check, "the supported version": content ID
+  `UP0700-NPUB30009_00-UPDATE0000010000`, size 619,430,240 bytes. This is right.
+- Yellow warning "Tekken 5 DR, but not the supported package": the right game,
+  a different version. There is no workaround. The port supports only this one
+  version today.
+
+### "This package is ... The port needs ..."
+
+The `.pkg` is another game (or an add-on or theme). Choose the right file.
+
+### "The license (.rap) does not belong to this package"
+
+The `.rap` is for another package. Use the one whose name contains the
+package's content ID:
+`UP0700-NPUB30009_00-UPDATE0000010000.rap`. It is exactly 16 bytes.
+
+### "Choose your license file (.rap) first" or "is not a PS3 license"
+
+The build cannot run without the `.rap`. It is the license of your own purchase.
+We cannot provide it. On a PS3 that has the game activated, licenses are stored
+in the user's `exdata` folder (**untested**: general PS3 knowledge, not
+checked by us).
+
+"A .rap file is exactly 16 bytes" means the file is damaged, or it is not a
+`.rap` (for example a web page saved under that name).
+
+### "Decrypting the game program failed"
+
+Usually the package is incomplete. It should be exactly **619,430,240 bytes**.
+Download it again from your account. If the size is right, send `native\build.log`.
+
+### "Could not download the public PS3 key data from github.com"
+
+The first build fetches about 50 KB (two text files) from
+`raw.githubusercontent.com`. Check the internet connection. A VPN, proxy,
+firewall or antivirus "web shield" may block it. Press BUILD GAME again once it
+works. The build continues where it stopped.
+
+### "The ps3recomp copy in this folder does not match this version of the port"
+
+Parts of two different releases are mixed in one folder. Download the release
+again and extract it into an **empty** folder. To keep your game data, copy only
+the `native` folder over (see "Updating" in the README).
+
+### "clang-cl.exe and lld-link.exe were not found in toolchain\llvm\bin"
+
+The zip was not extracted completely, or antivirus removed files. Extract the
+whole zip again into an empty folder. See [SmartScreen and
+antivirus](#smartscreen-and-antivirus).
+
+### "step ... failed: a tool exited with code N"
+
+Something in the build failed. The lines above the message in the Build tab's
+log say what. Open `native\build.log` (button **Open build.log**) and send it.
+Try "Redo every step" once if you suspect a damaged earlier result.
+
+### The build is slow, or the PC is unresponsive
+
+The translate step uses all CPU cores. Tick **Keep the PC responsive (slower)**
+before you start. Close other programs. Disk space: you need about 1.5 GB free.
+The build takes about 90 seconds on a fast 16-core PC. On slower PCs we expect
+minutes (an estimate). It runs once. **Cancel** is safe: BUILD GAME continues
+where it stopped.
+
+### Precaution: extract to a short path
+
+Extract to something like `C:\T5DR`, not into a deep folder. A very long path
+could hit Windows' path length limit during the build. We have not seen this
+happen. **(untested)**
+
+### Developer build: "C++ build tools ... are not installed"
+
+This only applies to a checkout from source (no `runtime\t5dr.exe`). Click
+**Install missing...** in the Build tab. It runs winget to install Visual Studio
+2022 Build Tools (about 2.5 GB download, about 7 GB on disk, administrator
+rights, 10-20 minutes). A release zip does not need this.
+
+## The launcher does not start
+
+`T5DR Online.exe` starts `python\pythonw.exe launcher\t5dr_launcher.pyw` from its
+own folder. If that fails, it shows: "Could not start the launcher. The folder
+must contain python\pythonw.exe and launcher\t5dr_launcher.pyw -- extract the
+whole zip again."
+
+- Did you run it from inside the zip viewer? Extract all first.
+- Did antivirus remove `python\` files? Restore them, or extract again.
+- Is the folder in Program Files? Use another folder.
+
+## SmartScreen and antivirus
+
+**"Windows protected your PC" when you start `T5DR Online.exe`.** The file is a
+tiny starter (3.5 KB; its source is `launcher/stub/t5dr_stub.c` in the
+repository) and it is not signed. Code signing is not set up yet. Click "More info", then "Run anyway".
+
+**Antivirus complains or deletes files.** The release holds a compiler
+(`toolchain\llvm\bin\clang-cl.exe`, `lld-link.exe`), a private Python and, after
+the build, a 39 MB `t5dr_game.dll` that your own PC just compiled. Unsigned
+programs like these can trigger a scanner. On the development PC this did not
+happen, but we have not run the zip on other PCs yet. **(untested)**
+
+What to do:
+
+1. Look in your antivirus' quarantine list. Restore what is from the release
+   folder.
+2. Add an exclusion for the release folder only (for example `C:\T5DR`). Do not
+   switch your antivirus off.
+3. Extract the zip again if files are missing, and press BUILD GAME.
+
+If you do not trust the zip, do not run it. All source is public: this
+repository holds our code and our patches, and ps3recomp is on GitHub too. You
+can build everything yourself (see "Building from source" in the README).
+
+## The Play tab
+
+| Message | What to do |
+|---|---|
+| "The game is not built yet." | Open the Build tab, choose `.pkg` and `.rap`, click BUILD GAME. |
+| "t5dr.exe is there but the game data is missing." | Build again. |
+| "The decrypted program has SHA-1 ..., not the supported version." | Build again from the supported package. |
+| "This version of the launcher changes the game code." | Click BUILD GAME. Your game data is kept. Only the code is rebuilt. |
+| PLAY is grey | The build is not finished or the check above failed. Read the text on the Play tab. |
+| "Close the game first." (when you click BUILD GAME) | A game is still running. Click Stop game, or end `t5dr.exe` in the Task Manager. |
+
+## The game starts, but...
+
+### The window is black
+
+The first seconds can be black while the game loads. If it stays black:
+
+- **Start the game with PLAY in the launcher.** The launcher sets
+  `RSX_LIVE_DRAW=1`. Without it the default renderer shows only black. If you
+  start `t5dr.exe` by hand, it also lacks the other settings it needs.
+- Open **Settings**, "extra settings". There must be no line `RSX_LIVE_DRAW=0`.
+  Also check that you have no Windows environment variable called
+  `RSX_LIVE_DRAW` set to something else.
+- Update your graphics driver. The game needs a DirectX 12 card. Run `dxdiag`.
+  On the Display tab, "DDI Version" should say 12. **(untested)**
+- Laptops with two graphics chips: in Windows Settings > System > Display >
+  Graphics, set `t5dr.exe` to "High performance". **(untested)**
+
+### The window is not where I want it, or too big
+
+Settings > Display. The window size options never exceed your screen's work
+area. "Borderless fullscreen" is experimental and was not tested with the real
+game window. The game draws at 1280 x 720 and scales up.
+
+### The game closes by itself
+
+The Play tab says "The game stopped (exit code N)..." and adds "after a crash"
+when the log has a `[CRASH]` line. Open the newest game log (Play tab) and look
+at the last lines. Then see [How to collect logs](#how-to-collect-logs).
+
+Known causes:
+
+- The memory bug (see below).
+- The game's own **Online** menu entry crashes after the terms screen (known).
+- Once in 8 test runs of the release build, the game ended by itself after about
+  48 seconds with exit code -1 and no `[CRASH]` line. Not explained yet. If it
+  happens to you, please send the log.
+
+### The movies do not play
+
+Intro and title movies are decoded with Windows Media Foundation. The Play tab
+still says "Intro movies are skipped in this version". That text is out of date.
+Movies play. On Windows "N" editions the Media Feature Pack may be needed
+**(untested)**. Movies slow down when the game runs under 60 fps.
+
+## No sound
+
+The game plays through the **default Windows playback device** (WASAPI, shared
+mode, 48 kHz; Windows converts other rates).
+
+1. Right-click the speaker icon > Sound settings. Choose the device you want as
+   the default output. **Then restart the game.** It picks the device at start.
+   Changing the default while the game runs (plugging in headphones) does not move
+   the game's sound.
+2. Open the Volume Mixer while the game runs. `t5dr.exe` should appear. Check that
+   it is not muted.
+3. Settings > "Mute sound" must be off. (It sets `PS3_NO_AUDIO=1`, which tells the
+   game that audio is not available.)
+4. Open the newest game log and search for `[cellAudio]`. Lines such as "Failed to
+   get default audio endpoint" or "WASAPI Initialize failed" mean Windows refused
+   the device. Send the log.
+5. Bluetooth headphones add delay. A wired output or speakers are safer.
+6. Crackling: the sound drops a little when the frame rate dips (0.1-3.6 % of the
+   audio blocks in our QA run, 14.6 % at worst in 5 seconds). See [Low frame
+   rate](#low-frame-rate).
+
+## Controllers and keyboard
+
+Default keys and buttons are in the README. Pads are read even when the window is
+not focused. The keyboard works only while the game window has the focus.
+
+### A controller is not detected
+
+- Plug it in. Pads can be plugged in or out while the game runs. A new pad takes
+  the lowest free automatic port.
+- Does Windows see it? Open `joy.cpl` ("Set up USB game controllers") and press a
+  button.
+- Xbox pads and XInput-mode sticks use XInput. Other controllers (DualShock 4,
+  DualSense, Switch Pro, generic USB pads, PS3/PS4-mode arcade sticks and
+  hitboxes) use DirectInput. Both are on by default.
+- Look in the newest game log for the lines starting with `[pad]`. For example:
+  `[pad] port 1 (player 1): XInput #0 (gamepad), layout standard`, or
+  `[pad] found DInput 'name' VVVV:PPPP`. No `[pad]` line for your device means
+  the game did not see it. The line `[pad] controls: ...` tells which
+  `controls.ini` was loaded (or that the built-in defaults are used).
+- Support for PlayStation pads and arcade sticks has **not been tried on real
+  hardware by a person yet**. If yours fails, please send the log.
+- A test zip made before the evening of 2026-10-16 has only keyboard and Xbox
+  pads.
+
+### The buttons are wrong, or I want other buttons
+
+Make `native\controls.ini` (the sample with every default and all key names is
+[controls.ini](controls.ini)) and restart the game. To see the raw button names
+of an unknown pad, add this line under "extra settings" in the launcher's Settings
+and start the game:
+
+```
+PS3_PAD_LOG=2
+```
+
+The log then prints each press, for example `[pad] port 2 Wireless Controller: B6
+pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
+a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
+`[pad] found DInput` log lines).
+
+### Two pads, or my pad acts as player 1 *and* player 2 (DS4Windows, Steam Input)
+
+DS4Windows and Steam Input add a **virtual Xbox pad** for your real controller.
+The real controller is still visible as a DirectInput device, so the game sees
+two pads. Pick one of these:
+
+1. In DS4Windows, turn on "Hide DS4 Controller". Or close DS4Windows and use the
+   DualShock/DualSense directly (DirectInput, layout "ps"). Nothing has to be
+   installed. **(untested with this game)**
+2. Turn off Steam Input for the launcher if you started it from Steam.
+   **(untested)**
+3. Pin the ports in `native\controls.ini`:
+
+   ```
+   [port1]
+   device = xinput:0
+   [port2]
+   device = none
+   ```
+
+   Pin a specific pad with `device = dinput:Hori` (part of the product name) or
+   `device = dinput:054C:09CC` (vendor:product ID).
+
+For two real players, pin each pad to its own port:
+
+```
+[port1]
+device = dinput:Hori
+[port2]
+device = xinput:0
+```
+
+### The keyboard does nothing
+
+The game window needs the focus: click it. Keyboard and the first pad both drive
+player 1. For a second player on the same keyboard, see the README.
+
+### Pad input goes into the game while I use another window
+
+Pads are read while the window is unfocused by default. Put this in
+`native\controls.ini`:
+
+```
+[general]
+background = 0
+```
+
+### Left and right (or up and down) at the same time
+
+Arcade sticks and keyboards can press opposite directions at once. The default
+`socd = neutral` cancels them. Other choices are in
+[controls.ini](controls.ini).
+
+## Low frame rate
+
+Menus run at 60 fps. **Fights run at about 30-45 fps** even on the (fast)
+development PC: about 40-44 fps there, and about 36 fps on average in a 10-minute
+Survival run (lowest 11). This is a known open problem, not your setup. The cost
+is not the skinning jobs; the work to find it is ongoing.
+
+What may help a little:
+
+- Close other programs, especially browsers, game overlays and recorders.
+- Do not build the game while playing. Do not run a second copy.
+- Laptops: plug in the charger and choose the "High performance" power mode.
+  Make sure the game uses the fast graphics chip (see [The window is
+  black](#the-window-is-black)). **(untested)**
+- Slow frame rates also make the movies slow and the sound drop out (see [No
+  sound](#no-sound)).
+
+## White screen or crash after a few minutes
+
+**Known memory bug.** When the game leaves a screen it frees memory, but our
+runtime does not reuse the freed ranges yet. After about two trips through the
+title screen, the third large request fails. The result is a white screen (the
+game keeps running at 60 fps) or a crash (`[CRASH]` in the log). Leaving the game
+idle at the title or attract screen reaches the same state after about 3 minutes.
+
+- **Workaround: close the game (Esc or Stop game) and start it again.** Your
+  settings are kept. Save before you leave a mode (see [Saves](#saves)).
+- Go back to the title as little as you can. A 10-minute Survival run that never
+  went back to the title stayed stable (memory flat after about 6 minutes).
+- Do not leave the game idle at the title.
+- A fix is in progress.
+
+## Saves
+
+Saves live in `native\gamedata\dev_hdd0\home\00000001\savedata\`. In the Play
+tab, **Open saves folder** opens `native\gamedata`. Folder names look like
+`NPUB30009-SYSNET` (system data) and `NPUB30009-CN1970...` (play data).
+
+Known problems (from our QA run):
+
+- **The first save on a fresh profile can fail silently.** The folder is left with
+  only a `PARAM.SFO`, and the next start says "Unable to load Play Data". On a
+  fresh profile, the online terms screen may say "Unable to save properly". Saves
+  did work in other tests (saved and reloaded). Our runtime lacks a system call
+  that the save code needs.
+- **The clock reads 1970.** New save folders with `1970` in their name keep
+  appearing.
+- **Options > Delete Save Data does nothing.**
+
+What to do:
+
+- Back up `native\gamedata` now and then. Copying `native` to a new release folder
+  keeps your saves.
+- If "Unable to load Play Data" appears: close the game, back up
+  `native\gamedata`, and delete the save folders that hold only a `PARAM.SFO`.
+  **(untested)** Then start the game again.
+- To delete a save, close the game and delete its folder by hand. **(untested)**
+
+## Other known problems
+
+From our QA report of 2026-10-16. None of these is a problem with your PC.
+
+- **Every fighter's face is dark** (brown or black). The rest of the skin is fine.
+- **Light see-through rectangles** on floors and walls in some fights (temple,
+  Chinatown). They move with the camera.
+- **Some background figures are flat white** (spectators at the construction site,
+  wolves in the forest).
+- **Gallery** needs PSN. Offline it fails cleanly (no crash). The Online Manual
+  (it opens a browser) is missing.
+- **Online** (the game's own menu): crashes after you accept the terms. Do not use
+  it. See "Online" in the README.
+
+## How to collect logs
+
+1. Close the game. (The launcher keeps the log of each start.)
+2. Build problem: open `native\build.log` (Build tab, **Open build.log**). It is
+   overwritten by the next build: copy it first.
+3. Game problem: open the newest `native\logs\game-<date>-<time>.log` (Play tab,
+   **Open newest game log**).
+4. In the game log, these lines matter:
+   - `[CRASH]` — the game crashed. The lines after it say where.
+   - `[fps]` — one line every 5 seconds with the frame rate.
+   - `[hle] unresolved NID 0x...` — a system function that is not implemented yet.
+   - `[pad]` — what the game sees as controllers.
+   - `[cellAudio]` — sound device problems.
+5. Write down: your Windows version, graphics card and driver version, what you
+   were doing, and how long the game had been running.
+6. Open an issue at https://github.com/TheWishin/T5DROnline/issues and attach the
+   files (zip a large log first).
+
+The logs contain no game data and no keys. They contain folder paths, which can
+include your Windows user name. Look before you post them in public.
+
+**Do not send** anything from `native\game\`, `native\build\` or `native\keys\`,
+or your `.pkg` / `.rap`. Those are game data and keys.
+
+For more detail in a log, the **extra settings** box in Settings accepts one
+`NAME=VALUE` per line. `PS3_PAD_LOG=1` (or `2`) logs controller input.
+`PS3_VERBOSE=1` logs a lot more but slows the game a lot (about 34 fps in an
+earlier test), so use it only when asked.

@@ -115,7 +115,11 @@ class LobbyClient:
     def connect(self, timeout=10.0):
         """Open the control connection and say hello. -> the server's welcome dict."""
         self._ensure_loop()
-        return self._run(self._connect(timeout), timeout + 2)
+        try:
+            return self._run(self._connect(timeout), timeout + 2)
+        except BaseException:
+            self.close()            # no thread or socket left behind by a failed attempt
+            raise
 
     async def _connect(self, timeout):
         ctx = None
@@ -134,15 +138,29 @@ class LobbyClient:
             der = self._writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
             if hashlib.sha256(der).hexdigest() != self.tls_fingerprint:
                 self._writer.close()
+                try:
+                    await asyncio.wait_for(self._writer.wait_closed(), 2)
+                except (OSError, asyncio.TimeoutError, ssl.SSLError):
+                    pass
                 raise LobbyError("tls_mismatch", "the server's certificate does not match the pinned one")
         self.server_ip = self._writer.get_extra_info("peername")[0]
         sock = self._writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.connected = True
-        self._tasks.append(asyncio.ensure_future(self._read_loop()))
-        self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION, "client": CLIENT_NAME,
-                                            "build": self.build.as_wire()})
+        reader_task = asyncio.ensure_future(self._read_loop())
+        self._tasks.append(reader_task)
+        try:
+            self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
+                                                "client": CLIENT_NAME, "build": self.build.as_wire()})
+        except LobbyError:
+            # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
+            self._closing = True
+            reader_task.cancel()
+            self._writer.close()
+            await asyncio.gather(reader_task, return_exceptions=True)
+            self.connected = False
+            raise
         return self.welcome
 
     async def _send(self, msg):
@@ -517,8 +535,13 @@ class LobbyClient:
             await self._drop_game_socket()
             for t in self._tasks:
                 t.cancel()
+            await asyncio.gather(*self._tasks, return_exceptions=True)
             if self._writer is not None:
                 self._writer.close()
+                try:
+                    await asyncio.wait_for(self._writer.wait_closed(), 1)
+                except Exception:   # noqa: BLE001 -- closing anyway
+                    pass
             self.connected = False
         try:
             asyncio.run_coroutine_threadsafe(shutdown(), self._loop).result(5)

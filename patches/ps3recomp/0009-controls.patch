@@ -1,0 +1,2128 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d69c5c7..40fdf9e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -113,6 +113,8 @@ if(WIN32)
+     target_link_libraries(ps3recomp_runtime PRIVATE
+         ws2_32      # Winsock for network modules
+         xinput      # XInput for gamepad
++        dinput8     # DirectInput: HID arcade sticks / hitboxes / PlayStation pads
++        dxguid      # DirectInput GUIDs
+         ole32       # COM for WASAPI audio
+         bcrypt      # BCryptGenRandom for SSL RNG
+     )
+diff --git a/docs/controls.ini b/docs/controls.ini
+new file mode 100644
+index 0000000..8816685
+--- /dev/null
++++ b/docs/controls.ini
+@@ -0,0 +1,153 @@
++; ps3recomp controls (Windows) -- copy next to the game executable as
++; controls.ini, or point PS3_CONTROLS=<path> at it. Every value below is the
++; built-in DEFAULT: an empty or missing file behaves exactly like this one.
++; Lines starting with ; or # are comments. Names are case-insensitive.
++;
++; Ports: [port1] is PS3 pad port 1 = player 1, [port2] = player 2, ... (7).
++;
++; Devices:
++;   - XInput: Xbox pads, XInput-mode arcade sticks / hitboxes.
++;   - DirectInput: every other game controller -- PS3/PS4-mode arcade sticks
++;     and hitboxes (Hori, Mad Catz, Qanba, Brook, GP2040-CE), DualShock 4,
++;     DualSense, Switch Pro, generic USB pads. Nothing to install.
++;     (XInput devices are skipped here so a pad is never counted twice.
++;     DS4Windows / Steam Input can add a second, virtual XInput pad for the
++;     same controller: hide one of them or pin ports below.)
++;   - the keyboard, only while the game window has the focus.
++; Pads are read whether or not the window has the focus (see background).
++; Hot-plug: a pad that disconnects frees its port; a pad that (re)connects
++; takes the lowest free "auto" port.
++;
++; What the log says (stdout):
++;   [pad] port 1 (player 1): XInput #0 (gamepad), layout standard
++;   [pad] port 2 (player 2): DInput 'Wireless Controller' 054C:09CC, layout ps
++; Set log = 2 to see every raw button you press and what it maps to -- the
++; quickest way to write a binding for an unknown stick:
++;   [pad] port 2 Wireless Controller: B6 pressed -> R1
++
++[general]
++xinput = 1            ; read XInput devices
++dinput = 1            ; read DirectInput (HID) devices
++background = 1        ; 1: pads also work while the window is unfocused
++keyboard = 1          ; port driven by the [keys1] keyboard layout; 0 = no keyboard
++keyboard2 = 2         ; port driven by [keys2] (a 2nd player on the same keyboard,
++                      ; only if [keys2] has bindings -- it has none by default)
++min_ports = 1         ; ports reported connected even with nothing on them
++socd = neutral        ; Left+Right / Up+Down at once (keyboards, hitboxes):
++                      ;   neutral = both cancel, up = L+R cancel / U+D = up,
++                      ;   last = the most recent press wins, off = pass through
++mirror_stick = keyboard ; keyboard directions also tilt the left stick (for titles
++                      ; that only read the stick): keyboard | all | off
++log = 0               ; 1: log every pad packet the game reads that changed;
++                      ; 2: also every raw device press (env PS3_PAD_LOG)
++latency_log = 0       ; 1: every 5 s, how old the samples are when the game reads
++                      ; them (env PS3_PAD_LATENCY)
++min_interval_us = 1000 ; a port is re-sampled at most this often (only matters
++                      ; for titles that spin on the pad; env PS3_PAD_MIN_INTERVAL_US)
++
++; ---------------------------------------------------------------------------
++; Ports. device = auto | none | xinput | xinput:<0-3> | dinput |
++;                 dinput:<VVVV:PPPP> | dinput:<part of the product name>
++; "auto" ports take devices in the order they are found (XInput slots first,
++; then DirectInput); pin a device to make the order explicit, e.g.
++;   [port1]  device = dinput:Hori        [port2]  device = xinput:0
++; stick = analog : the device's left stick is the PS3 left stick (the game
++;                  turns it into directions itself, as with a DUALSHOCK 3)
++; stick = dpad   : the left stick is turned into 8-way d-pad presses here
++;                  (sticks/hitboxes in "LS" mode that you want strictly digital)
++; socd           : per-port override of [general] socd
++; macros = tekken: shoulder buttons become Tekken macros (see below)
++
++[port1]
++device = auto
++stick = analog
++
++[port2]
++device = auto
++stick = analog
++
++; ---------------------------------------------------------------------------
++; Bindings: TARGET = SOURCE SOURCE ...
++;
++; TARGET: a PS3 button -- UP DOWN LEFT RIGHT CROSS CIRCLE SQUARE TRIANGLE
++;   L1 R1 L2 R2 L3 R3 START SELECT -- or a Tekken name: 1 2 3 4 (or LP RP LK RK)
++;   = SQUARE TRIANGLE CROSS CIRCLE, the game's DEFAULT button setting. Combine
++;   with +: "1+2", "3+4", "SQUARE+CROSS" press several at once (macros).
++;   Sticks: LX LY RX RY = <device axis> (prefix - to invert); pads only.
++; An explicit line replaces the preset's binding for that TARGET, and takes
++; its SOURCE keys/buttons away from whatever they did in the preset.
++; "preset = <name>" picks the starting layout; "TARGET =" (empty) unbinds.
++;
++; Sections, least to most specific (later ones win):
++;   [keys1] [keys2]                      keyboard player 1 / 2
++;   [xinput]                             all XInput pads
++;   [dinput]  [dinput.VVVV:PPPP]         all / one model of DirectInput device
++;   [port1.xinput] [port2.dinput] ...    only the device on that port
++
++[keys1]
++preset = classic
++; classic (default): arrows move, A S / Z X = 1 2 / 3 4 (SQUARE TRIANGLE /
++;   CROSS CIRCLE), Q W = L1 R1, 1 2 = L2 R2, Enter = START, Tab = SELECT
++; tekken (alias wasd): W A S D move, U I / J K = 1 2 / 3 4, O = 1+2, L = 3+4,
++;   Y P = L1 R1, H ; = L2 R2, Enter = START, Backspace = SELECT
++; numpad: arrows move, Num4 Num5 / Num1 Num2 = 1 2 / 3 4, Num6 = 1+2,
++;   Num3 = 3+4, Num7 Num8 Num9 Num0 = L1 R1 L2 R2, Num+ = START, Num- = SELECT
++;   (NumLock on)
++; Examples:
++;   1 = U          ; U is left punch
++;   1+2 = O        ; O presses 1+2
++;   START = ENTER SPACE
++; Key names: A-Z 0-9 F1-F24 UP DOWN LEFT RIGHT SPACE ENTER TAB ESC BACKSPACE
++;   LSHIFT RSHIFT LCTRL RCTRL LALT RALT CAPSLOCK INSERT DELETE HOME END PGUP
++;   PGDN NUM0-NUM9 NUMADD NUMSUB NUMMUL NUMDIV NUMDEC SEMICOLON EQUALS COMMA
++;   MINUS PERIOD SLASH GRAVE LBRACKET BACKSLASH RBRACKET APOSTROPHE VK_<hex>
++
++[keys2]
++; empty: no second keyboard player. For two players on one keyboard:
++;   [keys1] preset = tekken     [keys2] preset = numpad
++; (whether a keyboard registers many keys at once is up to the keyboard)
++
++[xinput]
++preset = standard
++; standard: A B X Y = CROSS CIRCLE SQUARE TRIANGLE (Tekken: X Y / A B =
++;   1 2 / 3 4), LB RB = L1 R1, LT RT = L2 R2, BACK = SELECT, START = START,
++;   LS RS = L3 R3, d-pad = d-pad, LX LY RX RY = sticks
++; XInput names: A B X Y LB RB LT RT BACK START LS RS DUP DDOWN DLEFT DRIGHT,
++;   stick directions LUP LDOWN LLEFT LRIGHT RUP RDOWN RLEFT RRIGHT;
++;   axes LX LY RX RY LT RT
++
++[dinput]
++preset = ps
++; ps (default): the PlayStation HID order -- B1 B2 B3 B4 = SQUARE CROSS
++;   CIRCLE TRIANGLE, B5 B6 B7 B8 = L1 R1 L2 R2, B9 B10 = SELECT START,
++;   B11 B12 = L3 R3, hat = d-pad, X Y = left stick, Z RZ = right stick.
++;   Right for DS4, DualSense, PS3/PS4-mode sticks and most generic pads; on a
++;   PS-layout 8-button stick the top row is 1 2 R1 L1, the bottom 3 4 R2 L2.
++; switch: B1 B2 B3 B4 = CROSS CIRCLE SQUARE TRIANGLE (Nintendo B A Y X);
++;   default for Nintendo devices (VID 057E)
++; xbox: B1-B4 = CROSS CIRCLE SQUARE TRIANGLE, B5 B6 = L1 R1, B7 B8 = SELECT
++;   START, Z+ / Z- = L2 / R2; default for Microsoft devices (VID 045E)
++; DirectInput names: B1-B128 (as numbered in Windows' game controller panel,
++;   joy.cpl), HAT_UP HAT_DOWN HAT_LEFT HAT_RIGHT (HAT2_UP ... for more hats),
++;   axis directions X+ X- Y+ Y- Z+ Z- RX+ RX- RY+ RY- RZ+ RZ- S0+ S0- S1+ S1-;
++;   axes X Y Z RX RY RZ S0 S1
++
++; Example: one stick model with its own layout (VID:PID from the log)
++;[dinput.0F0D:00EE]
++;1 = B1
++;2 = B4
++;3 = B2
++;4 = B3
++
++; macros = tekken (in [portN] or a binding section) maps the four shoulder
++; buttons to the usual Tekken macros:
++;   XInput:      RB = 1+2   RT = 3+4   LB = 1+3   LT = 2+4
++;   DirectInput: B6 = 1+2   B8 = 3+4   B5 = 1+3   B7 = 2+4
++;   (PS-layout 8-button stick: top row 1 2 [1+2] [1+3], bottom 3 4 [3+4] [2+4])
++
++; ---------------------------------------------------------------------------
++; Scripted input (tests): PS3_PAD_FILE=<file> drives port 1, PS3_PAD_FILE2
++; port 2. The file holds the buttons held right now (any TARGET name above,
++; e.g. "DOWN CROSS" or "1+2"), LX=n LY=n RX=n RY=n (0-255), and optionally
++; T=<time.perf_counter_ns()> to time the input in the latency log. While a
++; script is in use, physical pads are ignored unless PS3_PAD_DEVICES=1.
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 621d53e..55a4f43 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -4,7 +4,9 @@
+  * Reads real gamepad input from the host and translates to PS3 pad format.
+  *
+  * Backend selection:
+- *   - Windows default: XInput (no extra dependencies)
++ *   - Windows default: pad_host_win32.c -- XInput pads, DirectInput (HID)
++ *     arcade sticks / hitboxes / PlayStation pads, keyboard, PS3_PAD_FILE,
++ *     remapping and port assignment from controls.ini (docs/controls.ini).
+  *   - Everywhere else / if PS3RECOMP_PAD_USE_SDL2 is defined: SDL2 GameController
+  *
+  * Define PS3RECOMP_PAD_USE_SDL2 to force SDL2 backend on Windows.
+@@ -39,8 +41,7 @@
+     #define WIN32_LEAN_AND_MEAN
+   #endif
+   #include <windows.h>
+-  #include <xinput.h>
+-  #pragma comment(lib, "xinput.lib")
++  #include "pad_host.h"   /* XInput + DirectInput + keyboard + controls.ini */
+ #endif
+ 
+ #if PAD_BACKEND_SDL2
+@@ -51,7 +52,11 @@
+  * Internal state
+  * -----------------------------------------------------------------------*/
+ 
+-#define PAD_MAX_HOST_PORTS  4  /* XInput supports max 4; SDL may support more */
++#if PAD_BACKEND_XINPUT
++#define PAD_MAX_HOST_PORTS  CELL_PAD_MAX_PORT_NUM   /* pad_host assigns devices to all 7 */
++#else
++#define PAD_MAX_HOST_PORTS  4  /* SDL: the first four controllers */
++#endif
+ 
+ typedef struct {
+     int  connected;
+@@ -93,172 +98,74 @@ static int s_sdl_inited = 0;
+ 
+ #if PAD_BACKEND_XINPUT
+ 
+-/* Deadzone for analog sticks (same as XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) */
+-#define PAD_STICK_DEADZONE  7849
+-#define PAD_TRIGGER_THRESHOLD 30
++/* Windows: every host device -- XInput pads, DirectInput (HID) sticks,
++ * hitboxes and PlayStation pads, the keyboard, PS3_PAD_FILE scripts -- lives
++ * in pad_host_win32.c, which also owns controls.ini, port assignment and
++ * hot-plug. cellPad samples it per port at the moment the title reads. */
+ 
+-static u8 pad_xinput_stick_to_u8(short raw, short deadzone)
++static void pad_init_backend(void)
+ {
+-    float normalized;
+-    if (raw > deadzone)
+-        normalized = (float)(raw - deadzone) / (float)(32767 - deadzone);
+-    else if (raw < -deadzone)
+-        normalized = (float)(raw + deadzone) / (float)(32767 - deadzone);
+-    else
+-        normalized = 0.0f;
+-
+-    /* Map -1.0..1.0 to 0..255 with center at 128 */
+-    int val = (int)(normalized * 127.0f) + 128;
+-    if (val < 0) val = 0;
+-    if (val > 255) val = 255;
+-    return (u8)val;
++    padh_init();
+ }
+ 
+-/* Keyboard fallback for port 0.
+- *
+- * The only backend here is XInput, so on a machine with no controller plugged
+- * in a title gets a pad that is reported present and never presses anything --
+- * it can be watched but not played. That is what The Simpsons Arcade Game hit:
+- * it reached its attract loop and no input existed to start a game.
+- *
+- * Only fills in for port 0, only when XInput found nothing there, so a real
+- * controller always wins and nothing changes for a port that has one. Keys are
+- * read only while a window of THIS process is in the foreground, so typing in
+- * another application does not drive the game. Set PAD_NO_KEYBOARD=1 to
+- * disable it entirely.
+- *
+- * Arrows = d-pad, Z/X/A/S = cross/circle/square/triangle, Q/W = L1/R1,
+- * 1/2 = L2/R2, Enter = START, Tab = SELECT. The left stick mirrors the d-pad
+- * so a title that reads the stick instead is playable too. */
+-#ifdef _WIN32
+-static int pad_host_window_focused(void)
++static void pad_shutdown_backend(void)
+ {
+-    HWND fg = GetForegroundWindow();
+-    if (!fg) return 0;
+-    DWORD pid = 0;
+-    GetWindowThreadProcessId(fg, &pid);
+-    return pid == GetCurrentProcessId();
++    padh_shutdown();   /* rumble off; devices stay open for a later Init */
+ }
+ 
+-static void pad_poll_keyboard(void)
+-{
+-    static int off = -1;
+-    if (off < 0) off = getenv("PAD_NO_KEYBOARD") ? 1 : 0;
+-    if (off) return;
+-
+-    PadHostState* hs = &s_host_state[0];
+-    if (!pad_host_window_focused()) {
+-        /* Release everything on focus loss, or a key held while alt-tabbing
+-         * would stay down forever. */
+-        hs->buttons = 0;
+-        hs->analog_lx = hs->analog_ly = 128;
+-        hs->analog_rx = hs->analog_ry = 128;
+-        hs->connected = 1;
+-        return;
+-    }
+-
+-    static const struct { int vk; u16 btn; } map[] = {
+-        { VK_UP,     CELL_PAD_CTRL_UP },      { VK_DOWN,  CELL_PAD_CTRL_DOWN },
+-        { VK_LEFT,   CELL_PAD_CTRL_LEFT },    { VK_RIGHT, CELL_PAD_CTRL_RIGHT },
+-        { 'Z',       CELL_PAD_CTRL_CROSS },   { 'X',      CELL_PAD_CTRL_CIRCLE },
+-        { 'A',       CELL_PAD_CTRL_SQUARE },  { 'S',      CELL_PAD_CTRL_TRIANGLE },
+-        { 'Q',       CELL_PAD_CTRL_L1 },      { 'W',      CELL_PAD_CTRL_R1 },
+-        { '1',       CELL_PAD_CTRL_L2 },      { '2',      CELL_PAD_CTRL_R2 },
+-        { VK_RETURN, CELL_PAD_CTRL_START },   { VK_TAB,   CELL_PAD_CTRL_SELECT },
+-    };
+-
+-    u16 btns = 0;
+-    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++)
+-        if (GetAsyncKeyState(map[i].vk) & 0x8000) btns |= map[i].btn;
+-
+-    hs->buttons   = btns;
+-    hs->connected = 1;
+-    hs->analog_lx = (u8)((btns & CELL_PAD_CTRL_LEFT) ? 0 :
+-                         (btns & CELL_PAD_CTRL_RIGHT) ? 255 : 128);
+-    hs->analog_ly = (u8)((btns & CELL_PAD_CTRL_UP) ? 0 :
+-                         (btns & CELL_PAD_CTRL_DOWN) ? 255 : 128);
+-    hs->analog_rx = hs->analog_ry = 128;
+-    hs->trigger_l2 = (u8)((btns & CELL_PAD_CTRL_L2) ? 255 : 0);
+-    hs->trigger_r2 = (u8)((btns & CELL_PAD_CTRL_R2) ? 255 : 0);
+-
+-    { static int said = 0;
+-      if (!said && btns) { said = 1;
+-          printf("[cellPad] keyboard fallback active on port 0 (no XInput device)\n");
+-          fflush(stdout); } }
+-}
+-#endif
++/* Sequence of the last host sample handed to the title, per port: a read
++ * that finds a newer sample gets len > 0, a read that does not gets len = 0
++ * (see the note at "emit" in cellPadGetData). */
++static u32 s_handed_seq[PAD_MAX_HOST_PORTS];
+ 
+-static void pad_poll_xinput(void)
++/* Sample port `port` now (rate-limited to PS3_PAD_MIN_INTERVAL_US) into
++ * s_host_state[port]. Called from cellPadGetData, right where the title
++ * reads, so the data it gets is microseconds old. */
++static void pad_sample_port(u32 port)
+ {
+-    for (int i = 0; i < PAD_MAX_HOST_PORTS; i++) {
+-        XINPUT_STATE state;
+-        memset(&state, 0, sizeof(state));
+-
+-        DWORD result = XInputGetState((DWORD)i, &state);
+-        if (result != ERROR_SUCCESS) {
+-            s_host_state[i].connected = 0;
+-            continue;
+-        }
+-
+-        s_host_state[i].connected = 1;
+-        XINPUT_GAMEPAD* gp = &state.Gamepad;
+-
+-        /* Map XInput buttons to PS3 CELL_PAD_CTRL_* */
+-        u16 btns = 0;
+-        if (gp->wButtons & XINPUT_GAMEPAD_BACK)           btns |= CELL_PAD_CTRL_SELECT;
+-        if (gp->wButtons & XINPUT_GAMEPAD_LEFT_THUMB)     btns |= CELL_PAD_CTRL_L3;
+-        if (gp->wButtons & XINPUT_GAMEPAD_RIGHT_THUMB)    btns |= CELL_PAD_CTRL_R3;
+-        if (gp->wButtons & XINPUT_GAMEPAD_START)          btns |= CELL_PAD_CTRL_START;
+-        if (gp->wButtons & XINPUT_GAMEPAD_DPAD_UP)        btns |= CELL_PAD_CTRL_UP;
+-        if (gp->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT)     btns |= CELL_PAD_CTRL_RIGHT;
+-        if (gp->wButtons & XINPUT_GAMEPAD_DPAD_DOWN)      btns |= CELL_PAD_CTRL_DOWN;
+-        if (gp->wButtons & XINPUT_GAMEPAD_DPAD_LEFT)      btns |= CELL_PAD_CTRL_LEFT;
+-        if (gp->bLeftTrigger > PAD_TRIGGER_THRESHOLD)     btns |= CELL_PAD_CTRL_L2;
+-        if (gp->bRightTrigger > PAD_TRIGGER_THRESHOLD)    btns |= CELL_PAD_CTRL_R2;
+-        if (gp->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER)  btns |= CELL_PAD_CTRL_L1;
+-        if (gp->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) btns |= CELL_PAD_CTRL_R1;
+-        if (gp->wButtons & XINPUT_GAMEPAD_Y)              btns |= CELL_PAD_CTRL_TRIANGLE;
+-        if (gp->wButtons & XINPUT_GAMEPAD_B)              btns |= CELL_PAD_CTRL_CIRCLE;
+-        if (gp->wButtons & XINPUT_GAMEPAD_A)              btns |= CELL_PAD_CTRL_CROSS;
+-        if (gp->wButtons & XINPUT_GAMEPAD_X)              btns |= CELL_PAD_CTRL_SQUARE;
+-
+-        s_host_state[i].buttons = btns;
+-
+-        /* Analog sticks. PS3 Y axis is inverted vs XInput (up = 0). Reflect about
+-         * 128 (256 - x), NOT 255 - x: the latter turns a centered stick into 127,
+-         * whose bits (0x7F) alias SELECT+START and can make the guest self-exit.
+-         * (via sagemono, PR #42) */
+-        s_host_state[i].analog_lx = pad_xinput_stick_to_u8(gp->sThumbLX, PAD_STICK_DEADZONE);
+-        s_host_state[i].analog_ly = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbLY, PAD_STICK_DEADZONE));
+-        s_host_state[i].analog_rx = pad_xinput_stick_to_u8(gp->sThumbRX, PAD_STICK_DEADZONE);
+-        s_host_state[i].analog_ry = (u8)(256 - pad_xinput_stick_to_u8(gp->sThumbRY, PAD_STICK_DEADZONE));
+-
+-        /* Triggers */
+-        s_host_state[i].trigger_l2 = gp->bLeftTrigger;
+-        s_host_state[i].trigger_r2 = gp->bRightTrigger;
+-
+-        /* Pressure-sensitive buttons: XInput has digital only, so 0 or 255 */
+-        s_host_state[i].press_up       = (btns & CELL_PAD_CTRL_UP)       ? 255 : 0;
+-        s_host_state[i].press_down     = (btns & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
+-        s_host_state[i].press_left     = (btns & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
+-        s_host_state[i].press_right    = (btns & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
+-        s_host_state[i].press_triangle = (btns & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
+-        s_host_state[i].press_circle   = (btns & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
+-        s_host_state[i].press_cross    = (btns & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
+-        s_host_state[i].press_square   = (btns & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
+-        s_host_state[i].press_l1       = (btns & CELL_PAD_CTRL_L1)       ? 255 : 0;
+-        s_host_state[i].press_r1       = (btns & CELL_PAD_CTRL_R1)       ? 255 : 0;
++    PadHostPort st;
++    if (port >= PAD_MAX_HOST_PORTS) return;
++    padh_sample(port, &st, padh_min_interval_us());
++    PadHostState* hs = &s_host_state[port];
++    hs->connected = st.connected;
++    hs->buttons   = st.buttons;
++    hs->analog_lx = st.lx; hs->analog_ly = st.ly;
++    hs->analog_rx = st.rx; hs->analog_ry = st.ry;
++    hs->trigger_l2 = st.l2; hs->trigger_r2 = st.r2;
++    const u16 b = st.buttons;
++    hs->press_up       = (b & CELL_PAD_CTRL_UP)       ? 255 : 0;
++    hs->press_down     = (b & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
++    hs->press_left     = (b & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
++    hs->press_right    = (b & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
++    hs->press_triangle = (b & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
++    hs->press_circle   = (b & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
++    hs->press_cross    = (b & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
++    hs->press_square   = (b & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
++    hs->press_l1       = (b & CELL_PAD_CTRL_L1)       ? 255 : 0;
++    hs->press_r1       = (b & CELL_PAD_CTRL_R1)       ? 255 : 0;
++    if (st.seq != s_handed_seq[port]) {
++        s_handed_seq[port] = st.seq;
++        s_data_fresh[port] = 1;
+     }
+ }
+ 
+-static void pad_init_backend(void)
+-{
+-    /* XInput needs no explicit init */
+-}
+-
+-static void pad_shutdown_backend(void)
++/* PS3_PAD_LOG=1 ([general] log = 1): log every packet the title reads that
++ * differs from the previous one on that port -- exactly what it was handed. */
++static void pad_note_read(u32 port, const CellPadData* d)
+ {
+-    /* XInput needs no explicit shutdown */
++    if (port >= PAD_MAX_HOST_PORTS) return;
++    padh_note_read(port, NULL, d->len != 0);
++    if (!padh_log_reads()) return;
++    static u16 last[PAD_MAX_HOST_PORTS][6];
++    static int have[PAD_MAX_HOST_PORTS];
++    if (!d->len) return;                     /* "no change": nothing new to show */
++    u16 cur[6] = { d->button[2], d->button[3], d->button[6], d->button[7], d->button[4], d->button[5] };
++    if (have[port] && !memcmp(cur, last[port], sizeof cur)) return;
++    memcpy(last[port], cur, sizeof cur);
++    have[port] = 1;
++    printf("[cellPad] read port %u: len=%d buttons=0x%04X L=(%u,%u) R=(%u,%u)\n", port + 1, d->len,
++           (unsigned)((cur[1] << 8) | cur[0]), cur[2], cur[3], cur[4], cur[5]);
++    fflush(stdout);
+ }
+ 
+ #endif /* PAD_BACKEND_XINPUT */
+@@ -409,6 +316,7 @@ static void pad_shutdown_backend(void)
+  * including one sampling for button-press edges. */
+ #define PAD_POLL_INTERVAL_MS 4
+ 
++#if !PAD_BACKEND_XINPUT   /* Windows: pad_host_win32.c samples per port, at the read */
+ static unsigned long long pad_now_ms(void)
+ {
+ #ifdef _WIN32
+@@ -495,7 +403,9 @@ static void pad_poll_file(u16* out_btns, int* out_lx, int* out_ly, int* out_rx,
+  *   left stick W/A/S/D      right stick I/J/K/L     d-pad: arrow keys
+  *   CROSS Space  CIRCLE Q   SQUARE E   TRIANGLE R
+  *   L1 U  R1 O  L2 Y  R2 P  L3 G  R3 H              START Return/Enter  SELECT Tab */
++#endif /* !PAD_BACKEND_XINPUT */
+ volatile uint32_t g_pad_host_keys[4];
++#if !PAD_BACKEND_XINPUT
+ static int pad_key(unsigned vk) { return (g_pad_host_keys[(vk >> 5) & 3] >> (vk & 31)) & 1; }
+ static void pad_poll_keys(void)
+ {
+@@ -532,6 +442,20 @@ static void pad_poll_keys(void)
+     pad_apply(hs, btns, lx, ly, rx, ry);
+ }
+ 
++#endif /* !PAD_BACKEND_XINPUT */
++
++#if PAD_BACKEND_XINPUT
++/* Windows: connection state only -- no device I/O. The devices themselves
++ * are read by pad_sample_port() inside cellPadGetData, so the sample the
++ * title gets is taken at the moment it asks, not up to a poll interval
++ * earlier (the old 4 ms gate ran on GetTickCount64, whose 15.6 ms tick
++ * made it up to ~16 ms in practice). */
++static void pad_poll_backend(void)
++{
++    for (u32 p = 0; p < PAD_MAX_HOST_PORTS; p++)
++        s_host_state[p].connected = padh_port_connected(p);
++}
++#else
+ static void pad_poll_backend(void)
+ {
+     /* Benign race: two threads may poll in the same tick. That costs one extra
+@@ -545,18 +469,14 @@ static void pad_poll_backend(void)
+      * every port. cellPadGetData hands each one out exactly once. */
+     for (int _i = 0; _i < PAD_MAX_HOST_PORTS; _i++) s_data_fresh[_i] = 1;
+ 
+-#if PAD_BACKEND_XINPUT
+-    pad_poll_xinput();
+-#elif PAD_BACKEND_SDL2
++#if PAD_BACKEND_SDL2
+     pad_poll_sdl2();
+-#endif
+-#ifdef _WIN32
+-    if (!s_host_state[0].connected) pad_poll_keyboard();
+ #endif
+     { static int real0 = 0;
+       if (s_host_state[0].connected && !getenv("PS3_PAD_FILE")) real0 = 1;
+       if (!real0) pad_poll_keys(); }   /* keyboard, plus PS3_PAD_FILE if set */
+ }
++#endif
+ 
+ /* ---------------------------------------------------------------------------
+  * API implementations
+@@ -631,7 +551,11 @@ s32 cellPadGetData(u32 port_no, CellPadData* data_guest)
+     memset(data, 0, sizeof(CellPadData));
+ 
+     /* Poll fresh state */
++#if PAD_BACKEND_XINPUT
++    pad_sample_port(port_no);   /* this port's devices, sampled now */
++#else
+     pad_poll_backend();
++#endif
+ 
+     /* YDKJ_INJECT_PAD: the game's wait loop polls the pad (cellPadSetActDirect /
+      * GetData) -- if it's parked on a "press button" prompt after loading, no
+@@ -943,6 +867,9 @@ emit:
+             else                        s_data_fresh[port_no] = 0;
+         }
+     }
++#if PAD_BACKEND_XINPUT
++    pad_note_read(port_no, data);
++#endif
+     {
+         unsigned int ea = (unsigned int)(uintptr_t)data_guest;
+         vm_write32((unsigned long long)ea + 0, (unsigned int)data->len);   /* len (s32) */
+@@ -1186,13 +1113,9 @@ s32 cellPadSetActDirect(u32 port_no, CellPadActParam* param)
+     param = GUEST_PTR(param, CellPadActParam*);
+ 
+ #if PAD_BACKEND_XINPUT
+-    /* Map to XInput vibration */
+-    if (port_no < PAD_MAX_HOST_PORTS && s_host_state[port_no].connected) {
+-        XINPUT_VIBRATION vib;
+-        vib.wLeftMotorSpeed  = (WORD)(param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE] * 257);
+-        vib.wRightMotorSpeed = (WORD)(param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL] * 257);
+-        XInputSetState((DWORD)port_no, &vib);
+-    }
++    /* XInput vibration on whichever XInput pad is assigned to this port. */
++    padh_rumble(port_no, param->motor[CELL_PAD_ACTUATOR_PARAM_SMALL],
++                param->motor[CELL_PAD_ACTUATOR_PARAM_LARGE]);
+ #endif
+ 
+ #if PAD_BACKEND_SDL2
+@@ -1220,3 +1143,65 @@ s32 cellPadClearBuf(u32 port_no)
+     /* Nothing to clear in our implementation -- state is polled fresh */
+     return CELL_OK;
+ }
++
++/* ---------------------------------------------------------------------------
++ * Local input for other host code (netplay)
++ * -----------------------------------------------------------------------*/
++
++/* The input of the local devices assigned to PS3 port `port_no` (0-based),
++ * sampled now: controls.ini mapping, SOCD cleaning, stick mode, keyboard and
++ * PS3_PAD_FILE included, the title's port settings and the legacy injection
++ * knobs (PAD_SCRIPT, PAD_AUTOPRESS, ...) not. HOST-endian CellPadData in the
++ * layout cellPadGetData produces: len (8, or 0 when nothing is on the port),
++ * button[1] = 0x70 | len/2, [2] DIGITAL1, [3] DIGITAL2, [4..7] RX RY LX LY,
++ * [8..19] pressure (255 per held button). Works without cellPadInit; never
++ * touches guest memory or the len=0 "already read" state of cellPadGetData.
++ *
++ * Netplay overrides the cellPadGetData NID and calls this for the LOCAL
++ * player(s) instead of reading devices itself. */
++s32 cellPad_sample_local(u32 port_no, CellPadData* out)
++{
++    if (!out || port_no >= CELL_PAD_MAX_PORT_NUM)
++        return CELL_PAD_ERROR_INVALID_PARAMETER;
++    memset(out, 0, sizeof *out);
++#if PAD_BACKEND_XINPUT
++    PadHostPort st;
++    padh_sample(port_no, &st, 0);
++    if (!st.connected) return CELL_OK;           /* len = 0: nothing there */
++    const u16 b = st.buttons;
++    out->len = CELL_PAD_LEN_CHANGE_DEFAULT;
++    out->button[1] = (u16)(0x70 | (CELL_PAD_LEN_CHANGE_DEFAULT / 2));
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)(b & 0xFF);
++    out->button[CELL_PAD_BTN_OFFSET_DIGITAL2] = (u16)(b >> 8);
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X] = st.rx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y] = st.ry;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_X]  = st.lx;
++    out->button[CELL_PAD_BTN_OFFSET_ANALOG_LEFT_Y]  = st.ly;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_RIGHT]    = (b & CELL_PAD_CTRL_RIGHT)    ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_LEFT]     = (b & CELL_PAD_CTRL_LEFT)     ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_UP]       = (b & CELL_PAD_CTRL_UP)       ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_DOWN]     = (b & CELL_PAD_CTRL_DOWN)     ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_TRIANGLE] = (b & CELL_PAD_CTRL_TRIANGLE) ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_CIRCLE]   = (b & CELL_PAD_CTRL_CIRCLE)   ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_CROSS]    = (b & CELL_PAD_CTRL_CROSS)    ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_SQUARE]   = (b & CELL_PAD_CTRL_SQUARE)   ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_L1]       = (b & CELL_PAD_CTRL_L1)       ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_R1]       = (b & CELL_PAD_CTRL_R1)       ? 255 : 0;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_L2]       = st.l2;
++    out->button[CELL_PAD_BTN_OFFSET_PRESS_R2]       = st.r2;
++    return CELL_OK;
++#else
++    (void)port_no;
++    return CELL_PAD_ERROR_NO_DEVICE;
++#endif
++}
++
++/* Is anything (device, keyboard, script) assigned to this port? */
++s32 cellPad_local_connected(u32 port_no)
++{
++#if PAD_BACKEND_XINPUT
++    return padh_port_connected(port_no);
++#else
++    return port_no == 0;
++#endif
++}
+diff --git a/libs/input/cellPad.h b/libs/input/cellPad.h
+index 89c58ab..658ac9e 100644
+--- a/libs/input/cellPad.h
++++ b/libs/input/cellPad.h
+@@ -176,7 +176,7 @@ s32 cellPadInit(u32 max_connect);
+ /* NID: 0x4D9B75D5 */
+ s32 cellPadEnd(void);
+ 
+-/* NID: 0x8B72CBA1 */
++/* NID: 0x8B72CDA1 */
+ s32 cellPadGetData(u32 port_no, CellPadData* data);
+ 
+ /* NID: 0x8B8013DA */
+@@ -200,6 +200,20 @@ s32 cellPadClearBuf(u32 port_no);
+ /* Internal: call once per frame to update pad state from host input */
+ void cellPad_poll(void);
+ 
++/* Host-side API (not guest NIDs) -- for netplay and tools.
++ *
++ * cellPad_sample_local: the local input mapped to PS3 port `port_no`
++ * (0-based), sampled from the host devices right now, as a HOST-endian
++ * CellPadData laid out like cellPadGetData's (len 8, DIGITAL1/2, sticks,
++ * pressure). len = 0 when nothing is assigned to the port. Applies
++ * controls.ini (remapping, SOCD, stick mode) and PS3_PAD_FILE; does not
++ * need cellPadInit and does not affect cellPadGetData's state.
++ *
++ * cellPad_local_connected: 1 if a device/keyboard/script drives that port
++ * (port 0 always counts as connected, as cellPadGetInfo reports it). */
++s32 cellPad_sample_local(u32 port_no, CellPadData* out);
++s32 cellPad_local_connected(u32 port_no);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+new file mode 100644
+index 0000000..78476f2
+--- /dev/null
++++ b/libs/input/pad_host.h
+@@ -0,0 +1,74 @@
++/*
++ * ps3recomp - host input layer behind cellPad (Windows)
++ *
++ * Owns every host input device and decides which PS3 pad port each one
++ * drives:
++ *   - XInput pads (Xbox controllers, XInput-mode arcade sticks/hitboxes)
++ *   - DirectInput 8 game controllers: every HID joystick/gamepad that is not
++ *     XInput -- PS3/PS4-mode arcade sticks and hitboxes, DualShock 4,
++ *     DualSense, Switch Pro, generic USB pads. dinput8.dll ships with Windows.
++ *   - the keyboard (only while a window of this process has the focus)
++ *   - PS3_PAD_FILE / PS3_PAD_FILE2 scripted input (ports 1 / 2)
++ *
++ * Mapping, port assignment and options come from controls.ini; see
++ * docs/controls.ini in this tree for the format and every default.
++ *
++ * Devices are sampled when the title reads the pad (cellPadGetData), not on a
++ * timer: what the title gets is at most PS3_PAD_MIN_INTERVAL_US old (default
++ * 1000 us, only to stop spin-polling titles from hammering the drivers).
++ * Enumeration and hot-plug run on a background thread, never on the read path.
++ *
++ * Ports here are 0-based (PS3 port 0 = "port1" in controls.ini = player 1).
++ */
++#ifndef PS3RECOMP_PAD_HOST_H
++#define PS3RECOMP_PAD_HOST_H
++
++#include "ps3emu/ps3types.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define PADH_MAX_PORTS 7
++
++/* One port's merged input, CELL_PAD_CTRL_* packed as cellPad does
++ * (DIGITAL1 in the low byte, DIGITAL2 in the high byte), sticks 0..255 with
++ * 128 = centre and up/left = 0. */
++typedef struct PadHostPort {
++    int connected;          /* a device/keyboard/file/virtual pad is on this port */
++    u16 buttons;
++    u8  lx, ly, rx, ry;
++    u8  l2, r2;             /* trigger pressure 0..255 */
++    u32 seq;                /* increments with every new host sample of the port */
++} PadHostPort;
++
++/* Load controls.ini, enumerate devices, start the hot-plug thread.
++ * Idempotent; safe to call from any thread. */
++void padh_init(void);
++void padh_shutdown(void);
++
++/* Is anything assigned to this port right now? (No device I/O.) */
++int  padh_port_connected(u32 port);
++
++/* Sample the devices on `port` now and merge them into *out.
++ * min_interval_us > 0: reuse the previous sample if it is younger than that
++ * (returns 0 then); returns 1 when a new sample was taken. */
++int  padh_sample(u32 port, PadHostPort* out, u32 min_interval_us);
++
++/* The rate limit cellPadGetData uses (PS3_PAD_MIN_INTERVAL_US, default 1000). */
++u32  padh_min_interval_us(void);
++
++/* Record that the title consumed the sample of `port` (latency statistics). */
++void padh_note_read(u32 port, const PadHostPort* st, int fresh);
++
++/* Rumble: motor values 0..255 (XInput devices only). */
++void padh_rumble(u32 port, u8 small_motor, u8 large_motor);
++
++/* Logging of what the title reads: PS3_PAD_LOG=1 or [general] log = 1. */
++int  padh_log_reads(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PS3RECOMP_PAD_HOST_H */
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+new file mode 100644
+index 0000000..639dacb
+--- /dev/null
++++ b/libs/input/pad_host_win32.c
+@@ -0,0 +1,1405 @@
++/*
++ * ps3recomp - host input layer behind cellPad, Windows implementation.
++ * See pad_host.h for the overview and docs/controls.ini for the user-facing
++ * configuration.
++ *
++ * Why DirectInput 8 for the non-XInput devices
++ * --------------------------------------------
++ * Fighting-game sticks and hitboxes in PS3/PS4 mode, DualShock 4/DualSense
++ * pads and most "PC" pads are plain HID game controllers. The options were:
++ *   - DirectInput 8: dinput8.dll + headers ship with Windows and the SDK, no
++ *     extra dependency, sees every HID joystick/gamepad, and GetDeviceState
++ *     returns the latest report synchronously -- so a device can be sampled
++ *     at the exact moment the title reads the pad. Background (unfocused)
++ *     reads are allowed.
++ *   - Windows.Gaming.Input: WinRT, painful from C, and only delivers input
++ *     while the app has focus (two instances side by side would starve).
++ *   - Raw Input + HID parsing: same latency as DirectInput (DInput reads the
++ *     same HID reports), but needs a message window and our own HID report
++ *     parser for every device class.
++ *   - SDL3 vendored: best device database, but ~300 source files to build
++ *     in-tree and a download to vendor, for what DInput already gives us.
++ * So: XInput for XInput devices (unchanged), DirectInput 8 for everything
++ * else, with XInput devices filtered out of the DInput list (their HID path
++ * contains "IG_") so a pad is never counted twice.
++ */
++#ifdef _WIN32
++
++#ifndef WIN32_LEAN_AND_MEAN
++  #define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <xinput.h>
++#define DIRECTINPUT_VERSION 0x0800
++#include <dinput.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <math.h>
++
++#include "pad_host.h"
++#include "cellPad.h"
++
++#pragma comment(lib, "xinput.lib")
++#pragma comment(lib, "dinput8.lib")
++#pragma comment(lib, "dxguid.lib")
++
++/* ---------------------------------------------------------------------------
++ * Time
++ * -----------------------------------------------------------------------*/
++
++static LONGLONG g_qpf = 1;
++static LONGLONG qpc_now(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
++static LONGLONG qpc_from_us(u64 us) { return (LONGLONG)((us * (u64)g_qpf) / 1000000ull); }
++static double   qpc_to_us(LONGLONG d) { return (double)d * 1e6 / (double)g_qpf; }
++/* QPC as nanoseconds -- the same clock as Python's time.perf_counter_ns(),
++ * so a test script can stamp an input event and we can time it. */
++static u64 qpc_to_ns(LONGLONG t)
++{
++    u64 q = (u64)t, f = (u64)g_qpf;
++    return (q / f) * 1000000000ull + ((q % f) * 1000000000ull) / f;
++}
++
++/* ---------------------------------------------------------------------------
++ * Control ids. One id space per device class (keyboard uses VK codes):
++ *   0..127   buttons. DInput: B1..B128. XInput: the XINPUT_GAMEPAD_* bit
++ *            index (DUP=0 .. Y=15), LT=16, RT=17 (pressed past 30/255).
++ *   128..143 hat directions: 128 + hat*4 + {0 up, 1 right, 2 down, 3 left}
++ *   144..159 axis directions: 144 + axis*2 + {0 positive, 1 negative}, past
++ *            half deflection. Axes: DInput X Y Z RX RY RZ S0 S1;
++ *            XInput LX LY RX RY LT RT. Y axes are PS3-oriented: up < 0.
++ * -----------------------------------------------------------------------*/
++
++#define CID_HAT   128
++#define CID_AXIS  144
++#define CID_COUNT 160
++#define NAXES     8
++
++enum { CLS_KEYS = 0, CLS_XINPUT = 1, CLS_DINPUT = 2 };
++static const char* const k_cls_name[] = { "keys", "xinput", "dinput" };
++
++typedef struct {
++    u32 bits[(CID_COUNT + 31) / 32];
++    s32 axis[NAXES];                 /* -32768..32767, centre 0 */
++    u8  lt, rt;                      /* XInput trigger values (pressure) */
++} RawState;
++
++static int  raw_get(const RawState* r, unsigned id) { return (r->bits[id >> 5] >> (id & 31)) & 1; }
++static void raw_set(RawState* r, unsigned id) { r->bits[id >> 5] |= 1u << (id & 31); }
++
++/* ---------------------------------------------------------------------------
++ * Names
++ * -----------------------------------------------------------------------*/
++
++typedef struct { const char* name; u16 v; } NameVal;
++
++static const NameVal k_ps3_buttons[] = {
++    {"SELECT", CELL_PAD_CTRL_SELECT}, {"L3", CELL_PAD_CTRL_L3}, {"R3", CELL_PAD_CTRL_R3},
++    {"START", CELL_PAD_CTRL_START}, {"UP", CELL_PAD_CTRL_UP}, {"RIGHT", CELL_PAD_CTRL_RIGHT},
++    {"DOWN", CELL_PAD_CTRL_DOWN}, {"LEFT", CELL_PAD_CTRL_LEFT}, {"L2", CELL_PAD_CTRL_L2},
++    {"R2", CELL_PAD_CTRL_R2}, {"L1", CELL_PAD_CTRL_L1}, {"R1", CELL_PAD_CTRL_R1},
++    {"TRIANGLE", CELL_PAD_CTRL_TRIANGLE}, {"CIRCLE", CELL_PAD_CTRL_CIRCLE},
++    {"CROSS", CELL_PAD_CTRL_CROSS}, {"SQUARE", CELL_PAD_CTRL_SQUARE},
++    /* Tekken names for the face buttons, as the game's DEFAULT button setting
++     * has them: 1 = left punch = SQUARE, 2 = right punch = TRIANGLE,
++     * 3 = left kick = CROSS, 4 = right kick = CIRCLE. */
++    {"1", CELL_PAD_CTRL_SQUARE}, {"2", CELL_PAD_CTRL_TRIANGLE},
++    {"3", CELL_PAD_CTRL_CROSS},  {"4", CELL_PAD_CTRL_CIRCLE},
++    {"LP", CELL_PAD_CTRL_SQUARE}, {"RP", CELL_PAD_CTRL_TRIANGLE},
++    {"LK", CELL_PAD_CTRL_CROSS},  {"RK", CELL_PAD_CTRL_CIRCLE},
++    {"TRI", CELL_PAD_CTRL_TRIANGLE}, {"SQR", CELL_PAD_CTRL_SQUARE},
++};
++
++/* Analog targets: the PS3 sticks. */
++enum { TGT_LX = 0, TGT_LY, TGT_RX, TGT_RY };
++static const char* const k_axis_targets[] = { "LX", "LY", "RX", "RY" };
++
++static const NameVal k_keys[] = {
++    {"UP", VK_UP}, {"DOWN", VK_DOWN}, {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT},
++    {"SPACE", VK_SPACE}, {"ENTER", VK_RETURN}, {"RETURN", VK_RETURN}, {"TAB", VK_TAB},
++    {"ESC", VK_ESCAPE}, {"ESCAPE", VK_ESCAPE}, {"BACKSPACE", VK_BACK},
++    {"LSHIFT", VK_LSHIFT}, {"RSHIFT", VK_RSHIFT}, {"SHIFT", VK_SHIFT},
++    {"LCTRL", VK_LCONTROL}, {"RCTRL", VK_RCONTROL}, {"CTRL", VK_CONTROL},
++    {"LALT", VK_LMENU}, {"RALT", VK_RMENU}, {"ALT", VK_MENU},
++    {"CAPSLOCK", VK_CAPITAL}, {"INSERT", VK_INSERT}, {"DELETE", VK_DELETE},
++    {"HOME", VK_HOME}, {"END", VK_END}, {"PGUP", VK_PRIOR}, {"PGDN", VK_NEXT},
++    {"NUM0", VK_NUMPAD0}, {"NUM1", VK_NUMPAD1}, {"NUM2", VK_NUMPAD2}, {"NUM3", VK_NUMPAD3},
++    {"NUM4", VK_NUMPAD4}, {"NUM5", VK_NUMPAD5}, {"NUM6", VK_NUMPAD6}, {"NUM7", VK_NUMPAD7},
++    {"NUM8", VK_NUMPAD8}, {"NUM9", VK_NUMPAD9}, {"NUMADD", VK_ADD}, {"NUMSUB", VK_SUBTRACT},
++    {"NUMMUL", VK_MULTIPLY}, {"NUMDIV", VK_DIVIDE}, {"NUMDEC", VK_DECIMAL},
++    {"SEMICOLON", VK_OEM_1}, {"EQUALS", VK_OEM_PLUS}, {"COMMA", VK_OEM_COMMA},
++    {"MINUS", VK_OEM_MINUS}, {"PERIOD", VK_OEM_PERIOD}, {"SLASH", VK_OEM_2},
++    {"GRAVE", VK_OEM_3}, {"LBRACKET", VK_OEM_4}, {"BACKSLASH", VK_OEM_5},
++    {"RBRACKET", VK_OEM_6}, {"APOSTROPHE", VK_OEM_7},
++};
++
++static const NameVal k_xinput_src[] = {
++    {"DUP", 0}, {"DDOWN", 1}, {"DLEFT", 2}, {"DRIGHT", 3}, {"START", 4}, {"BACK", 5},
++    {"LS", 6}, {"RS", 7}, {"LB", 8}, {"RB", 9}, {"A", 12}, {"B", 13}, {"X", 14}, {"Y", 15},
++    {"LT", 16}, {"RT", 17},
++    {"LRIGHT", CID_AXIS + 0}, {"LLEFT", CID_AXIS + 1}, {"LDOWN", CID_AXIS + 2}, {"LUP", CID_AXIS + 3},
++    {"RRIGHT", CID_AXIS + 4}, {"RLEFT", CID_AXIS + 5}, {"RDOWN", CID_AXIS + 6}, {"RUP", CID_AXIS + 7},
++};
++static const char* const k_xinput_axes[NAXES] = { "LX", "LY", "RX", "RY", "LT", "RT", NULL, NULL };
++static const char* const k_dinput_axes[NAXES] = { "X", "Y", "Z", "RX", "RY", "RZ", "S0", "S1" };
++static const char* const k_hat_dirs[4] = { "UP", "RIGHT", "DOWN", "LEFT" };
++
++static int name_eq(const char* a, const char* b) { return _stricmp(a, b) == 0; }
++
++/* Keyboard source name -> VK (0 = unknown). */
++static int parse_key(const char* s)
++{
++    if (!s[1] && isalnum((unsigned char)s[0])) return toupper((unsigned char)s[0]);
++    if ((s[0] == 'F' || s[0] == 'f') && isdigit((unsigned char)s[1])) {
++        int n = atoi(s + 1);
++        if (n >= 1 && n <= 24) return VK_F1 + n - 1;
++    }
++    for (unsigned i = 0; i < sizeof k_keys / sizeof k_keys[0]; i++)
++        if (name_eq(s, k_keys[i].name)) return k_keys[i].v;
++    if (!_strnicmp(s, "VK_", 3) || !_strnicmp(s, "0x", 2)) {
++        int v = (int)strtol(s + (s[0] == 'V' || s[0] == 'v' ? 3 : 0), NULL, 16);
++        if (v > 0 && v < 255) return v;
++    }
++    return 0;
++}
++
++/* Device source name -> control id (-1 = unknown). */
++static int parse_source(int cls, const char* s)
++{
++    if (cls == CLS_KEYS) { int vk = parse_key(s); return vk ? vk : -1; }
++    if (cls == CLS_XINPUT) {
++        for (unsigned i = 0; i < sizeof k_xinput_src / sizeof k_xinput_src[0]; i++)
++            if (name_eq(s, k_xinput_src[i].name)) return k_xinput_src[i].v;
++        return -1;
++    }
++    /* DInput: B<n>, HAT[n]_<dir>, <axis>+ / <axis>- */
++    if ((s[0] == 'B' || s[0] == 'b') && isdigit((unsigned char)s[1])) {
++        int n = atoi(s + 1);
++        return (n >= 1 && n <= 128) ? n - 1 : -1;
++    }
++    if (!_strnicmp(s, "HAT", 3)) {
++        const char* p = s + 3; int hat = 0;
++        if (isdigit((unsigned char)*p)) { hat = *p - '1'; p++; }
++        if (*p == '_') p++;
++        if (hat < 0 || hat > 3) return -1;
++        for (int d = 0; d < 4; d++) if (name_eq(p, k_hat_dirs[d])) return CID_HAT + hat * 4 + d;
++        return -1;
++    }
++    size_t n = strlen(s);
++    if (n >= 2 && (s[n - 1] == '+' || s[n - 1] == '-')) {
++        char ax[8]; if (n - 1 >= sizeof ax) return -1;
++        memcpy(ax, s, n - 1); ax[n - 1] = 0;
++        for (int a = 0; a < NAXES; a++)
++            if (name_eq(ax, k_dinput_axes[a])) return CID_AXIS + a * 2 + (s[n - 1] == '-');
++    }
++    return -1;
++}
++
++/* Analog source "X", "-Y", "~RZ" -> axis index, inversion. */
++static int parse_axis(int cls, const char* s, int* inv)
++{
++    *inv = 0;
++    if (*s == '-' || *s == '~') { *inv = 1; s++; }
++    const char* const* names = cls == CLS_XINPUT ? k_xinput_axes : k_dinput_axes;
++    for (int a = 0; a < NAXES; a++) if (names[a] && name_eq(s, names[a])) return a;
++    return -1;
++}
++
++/* Target "CROSS", "1", "1+2", "SQUARE+CROSS" -> mask; 0 = unknown. */
++static u16 parse_target_mask(const char* s)
++{
++    u16 mask = 0; char tok[32];
++    while (*s) {
++        size_t n = strcspn(s, "+");
++        if (n == 0 || n >= sizeof tok) return 0;
++        memcpy(tok, s, n); tok[n] = 0;
++        u16 m = 0;
++        for (unsigned i = 0; i < sizeof k_ps3_buttons / sizeof k_ps3_buttons[0]; i++)
++            if (name_eq(tok, k_ps3_buttons[i].name)) { m = k_ps3_buttons[i].v; break; }
++        if (!m) return 0;
++        mask |= m;
++        s += n; if (*s == '+') s++;
++    }
++    return mask;
++}
++
++static void source_name(int cls, int id, char* out, size_t cap)
++{
++    if (cls == CLS_KEYS) {
++        for (unsigned i = 0; i < sizeof k_keys / sizeof k_keys[0]; i++)
++            if (k_keys[i].v == id) { snprintf(out, cap, "%s", k_keys[i].name); return; }
++        if (isalnum(id)) snprintf(out, cap, "%c", id);
++        else if (id >= VK_F1 && id <= VK_F24) snprintf(out, cap, "F%d", id - VK_F1 + 1);
++        else snprintf(out, cap, "VK_%02X", id);
++        return;
++    }
++    if (cls == CLS_XINPUT) {
++        for (unsigned i = 0; i < sizeof k_xinput_src / sizeof k_xinput_src[0]; i++)
++            if (k_xinput_src[i].v == id) { snprintf(out, cap, "%s", k_xinput_src[i].name); return; }
++        snprintf(out, cap, "xi%d", id); return;
++    }
++    if (id < CID_HAT) snprintf(out, cap, "B%d", id + 1);
++    else if (id < CID_AXIS) snprintf(out, cap, "HAT%d_%s", (id - CID_HAT) / 4 + 1, k_hat_dirs[(id - CID_HAT) & 3]);
++    else snprintf(out, cap, "%s%c", k_dinput_axes[(id - CID_AXIS) / 2], ((id - CID_AXIS) & 1) ? '-' : '+');
++}
++
++static void mask_names(u16 m, char* out, size_t cap)
++{
++    static const char* const n[16] = { "SELECT", "L3", "R3", "START", "UP", "RIGHT", "DOWN", "LEFT",
++                                       "L2", "R2", "L1", "R1", "TRIANGLE", "CIRCLE", "CROSS", "SQUARE" };
++    size_t o = 0; out[0] = 0;
++    for (int i = 0; i < 16; i++)
++        if (m & (1u << i)) {
++            int w = snprintf(out + o, cap - o, "%s%s", o ? "+" : "", n[i]);
++            if (w < 0 || (size_t)w >= cap - o) break;
++            o += (size_t)w;
++        }
++    if (!o) snprintf(out, cap, "-");
++}
++
++/* ---------------------------------------------------------------------------
++ * controls.ini
++ * -----------------------------------------------------------------------*/
++
++#define INI_MAX_KV  768
++#define INI_MAX_SEC 96
++typedef struct { char key[40]; char val[200]; } IniKV;
++typedef struct { char name[48]; int first, count; } IniSec;
++static IniKV  g_kv[INI_MAX_KV];
++static IniSec g_sec[INI_MAX_SEC];
++static int    g_nkv, g_nsec;
++static char   g_cfg_path[MAX_PATH * 2];
++
++static char* trim(char* s)
++{
++    while (*s && isspace((unsigned char)*s)) s++;
++    char* e = s + strlen(s);
++    while (e > s && isspace((unsigned char)e[-1])) *--e = 0;
++    return s;
++}
++
++static int ini_load(const char* path)
++{
++    FILE* f = fopen(path, "rb");
++    if (!f) return 0;
++    char line[512];
++    IniSec* cur = NULL;
++    while (fgets(line, sizeof line, f)) {
++        char* s = trim(line);
++        if (!*s || *s == ';' || *s == '#') continue;
++        if (*s == '[') {
++            char* e = strchr(s, ']');
++            if (!e || g_nsec >= INI_MAX_SEC) { cur = NULL; continue; }
++            *e = 0;
++            cur = &g_sec[g_nsec++];
++            snprintf(cur->name, sizeof cur->name, "%s", trim(s + 1));
++            cur->first = g_nkv; cur->count = 0;
++            continue;
++        }
++        char* eq = strchr(s, '=');
++        if (!eq || !cur || g_nkv >= INI_MAX_KV) continue;
++        *eq = 0;
++        char* v = eq + 1;
++        /* Inline comment: whitespace followed by ; or # */
++        for (char* p = v; *p; p++)
++            if ((*p == ';' || *p == '#') && p > v && isspace((unsigned char)p[-1])) { *p = 0; break; }
++        if (cur->first + cur->count != g_nkv) continue;   /* section split: ignore */
++        IniKV* kv = &g_kv[g_nkv++];
++        snprintf(kv->key, sizeof kv->key, "%s", trim(s));
++        snprintf(kv->val, sizeof kv->val, "%s", trim(v));
++        cur->count++;
++    }
++    fclose(f);
++    return 1;
++}
++
++static const IniSec* ini_section(const char* name)
++{
++    for (int i = 0; i < g_nsec; i++) if (name_eq(g_sec[i].name, name)) return &g_sec[i];
++    return NULL;
++}
++
++static const char* ini_get(const char* sec, const char* key)
++{
++    const IniSec* s = ini_section(sec);
++    if (!s) return NULL;
++    for (int i = s->first + s->count - 1; i >= s->first; i--)   /* last one wins */
++        if (name_eq(g_kv[i].key, key)) return g_kv[i].val;
++    return NULL;
++}
++
++static int ini_int(const char* sec, const char* key, int def)
++{
++    const char* v = ini_get(sec, key);
++    if (!v || !*v) return def;
++    if (name_eq(v, "on") || name_eq(v, "yes") || name_eq(v, "true")) return 1;
++    if (name_eq(v, "off") || name_eq(v, "no") || name_eq(v, "false")) return 0;
++    return atoi(v);
++}
++
++/* ---------------------------------------------------------------------------
++ * Bindings and presets
++ * -----------------------------------------------------------------------*/
++
++#define BIND_MAX 160
++typedef struct { u16 src; u16 mask; } Bind;
++typedef struct {
++    Bind b[BIND_MAX]; int n;
++    s8   axis[4];            /* LX LY RX RY <- device axis, -1 = none */
++    u8   inv[4];
++    char desc[96];           /* for the log: preset + layers */
++} BindTable;
++
++/* Presets are lists of "TARGET=SOURCE SOURCE ..." lines in the config syntax. */
++typedef struct { const char* name; int cls; const char* const* lines; } Preset;
++
++static const char* const k_keys_classic[] = {
++    /* The original ps3recomp keyboard map. Tekken reading: A S on top = 1 2,
++     * Z X below = 3 4 -- the arcade button square. */
++    "UP=UP", "DOWN=DOWN", "LEFT=LEFT", "RIGHT=RIGHT",
++    "SQUARE=A", "TRIANGLE=S", "CROSS=Z", "CIRCLE=X",
++    "L1=Q", "R1=W", "L2=1", "R2=2", "START=ENTER", "SELECT=TAB", NULL };
++static const char* const k_keys_tekken[] = {
++    /* WASD movement, U I / J K = 1 2 / 3 4 (the PC Tekken default), O = 1+2,
++     * L = 3+4. */
++    "UP=W", "LEFT=A", "DOWN=S", "RIGHT=D",
++    "1=U", "2=I", "3=J", "4=K", "1+2=O", "3+4=L",
++    "L1=Y", "R1=P", "L2=H", "R2=SEMICOLON", "START=ENTER", "SELECT=BACKSPACE", NULL };
++static const char* const k_keys_numpad[] = {
++    /* A second player on the same keyboard: arrows + numpad (NumLock on).
++     * 4 5 / 1 2 = 1 2 / 3 4, 6 = 1+2, 3 = 3+4. */
++    "UP=UP", "DOWN=DOWN", "LEFT=LEFT", "RIGHT=RIGHT",
++    "1=NUM4", "2=NUM5", "3=NUM1", "4=NUM2", "1+2=NUM6", "3+4=NUM3",
++    "L1=NUM7", "R1=NUM8", "L2=NUM9", "R2=NUM0", "START=NUMADD", "SELECT=NUMSUB", NULL };
++static const char* const k_xinput_standard[] = {
++    "UP=DUP", "DOWN=DDOWN", "LEFT=DLEFT", "RIGHT=DRIGHT",
++    "CROSS=A", "CIRCLE=B", "SQUARE=X", "TRIANGLE=Y",
++    "L1=LB", "R1=RB", "L2=LT", "R2=RT", "L3=LS", "R3=RS", "START=START", "SELECT=BACK",
++    "LX=LX", "LY=LY", "RX=RX", "RY=RY", NULL };
++static const char* const k_dinput_ps[] = {
++    /* The PlayStation HID button order: DualShock 4, DualSense, PS3/PS4-mode
++     * arcade sticks and hitboxes (Hori, Mad Catz, Qanba, Brook, GP2040-CE),
++     * and most generic USB pads. */
++    "SQUARE=B1", "CROSS=B2", "CIRCLE=B3", "TRIANGLE=B4",
++    "L1=B5", "R1=B6", "L2=B7", "R2=B8", "SELECT=B9", "START=B10", "L3=B11", "R3=B12",
++    "UP=HAT_UP", "DOWN=HAT_DOWN", "LEFT=HAT_LEFT", "RIGHT=HAT_RIGHT",
++    "LX=X", "LY=Y", "RX=Z", "RY=RZ", NULL };
++static const char* const k_dinput_switch[] = {
++    /* Nintendo order (B A Y X): Switch Pro controller, Switch-mode sticks. */
++    "CROSS=B1", "CIRCLE=B2", "SQUARE=B3", "TRIANGLE=B4",
++    "L1=B5", "R1=B6", "L2=B7", "R2=B8", "SELECT=B9", "START=B10", "L3=B11", "R3=B12",
++    "UP=HAT_UP", "DOWN=HAT_DOWN", "LEFT=HAT_LEFT", "RIGHT=HAT_RIGHT",
++    "LX=X", "LY=Y", "RX=RX", "RY=RY", NULL };
++static const char* const k_dinput_xbox[] = {
++    /* An Xbox-style pad seen through DirectInput (A B X Y LB RB BACK START). */
++    "CROSS=B1", "CIRCLE=B2", "SQUARE=B3", "TRIANGLE=B4",
++    "L1=B5", "R1=B6", "SELECT=B7", "START=B8", "L3=B9", "R3=B10", "L2=Z+", "R2=Z-",
++    "UP=HAT_UP", "DOWN=HAT_DOWN", "LEFT=HAT_LEFT", "RIGHT=HAT_RIGHT",
++    "LX=X", "LY=Y", "RX=RX", "RY=RY", NULL };
++/* "macros = tekken": the four shoulder buttons become the common Tekken
++ * macros -- on a PS-layout 8-button stick the top row reads 1 2 [1+2] [1+3],
++ * the bottom row 3 4 [3+4] [2+4]. */
++static const char* const k_macros_tekken_xinput[] = { "1+2=RB", "3+4=RT", "1+3=LB", "2+4=LT", NULL };
++static const char* const k_macros_tekken_dinput[] = { "1+2=B6", "3+4=B8", "1+3=B5", "2+4=B7", NULL };
++
++static const Preset k_presets[] = {
++    { "classic",  CLS_KEYS,   k_keys_classic },
++    { "tekken",   CLS_KEYS,   k_keys_tekken },
++    { "wasd",     CLS_KEYS,   k_keys_tekken },
++    { "numpad",   CLS_KEYS,   k_keys_numpad },
++    { "standard", CLS_XINPUT, k_xinput_standard },
++    { "ps",       CLS_DINPUT, k_dinput_ps },
++    { "switch",   CLS_DINPUT, k_dinput_switch },
++    { "xbox",     CLS_DINPUT, k_dinput_xbox },
++};
++
++static const Preset* find_preset(int cls, const char* name)
++{
++    for (unsigned i = 0; i < sizeof k_presets / sizeof k_presets[0]; i++)
++        if (k_presets[i].cls == cls && name_eq(k_presets[i].name, name)) return &k_presets[i];
++    return NULL;
++}
++
++static void bind_add(BindTable* t, u16 src, u16 mask)
++{
++    for (int i = 0; i < t->n; i++)
++        if (t->b[i].src == src) { t->b[i].mask |= mask; return; }
++    if (t->n < BIND_MAX) { t->b[t->n].src = src; t->b[t->n].mask = mask; t->n++; }
++}
++
++/* Apply one "TARGET = SOURCES" line. replace: drop what the target had and
++ * take the sources away from whatever they did before (an explicit binding
++ * means "this key now does that", not "this key ALSO does that"). */
++static void bind_line(BindTable* t, int cls, const char* target, const char* sources,
++                      int replace, const char* where)
++{
++    char tgt[40]; snprintf(tgt, sizeof tgt, "%s", target);
++    char* tg = trim(tgt);
++    if (name_eq(tg, "preset") || name_eq(tg, "macros")) return;
++    for (int a = 0; a < 4; a++) {
++        if (!name_eq(tg, k_axis_targets[a])) continue;
++        if (cls == CLS_KEYS) return;
++        char v[64]; snprintf(v, sizeof v, "%s", sources);
++        char* s = trim(v);
++        if (!*s || name_eq(s, "none")) { t->axis[a] = -1; return; }
++        int inv, ax = parse_axis(cls, s, &inv);
++        if (ax < 0) { printf("[pad] %s: unknown axis '%s' for %s\n", where, s, tg); return; }
++        t->axis[a] = (s8)ax; t->inv[a] = (u8)inv;
++        return;
++    }
++    u16 mask = parse_target_mask(tg);
++    if (!mask) { printf("[pad] %s: unknown PS3 button '%s'\n", where, tg); return; }
++    int srcs[16], ns = 0;
++    char buf[200]; snprintf(buf, sizeof buf, "%s", sources);
++    char* save = NULL;
++    for (char* tok = strtok_s(buf, " ,\t", &save); tok; tok = strtok_s(NULL, " ,\t", &save)) {
++        if (name_eq(tok, "none")) continue;
++        int id = parse_source(cls, tok);
++        if (id < 0) { printf("[pad] %s: unknown %s input '%s' (for %s)\n", where, k_cls_name[cls], tok, tg); continue; }
++        if (ns < 16) srcs[ns++] = id;
++    }
++    if (replace) {
++        /* The target's old sources lose it (combos that merely include it,
++         * like a 1+2 macro when 1 is re-bound, stay); the new sources lose
++         * whatever they did before. */
++        for (int i = 0; i < t->n; i++) {
++            int stolen = 0;
++            for (int k = 0; k < ns; k++) if (t->b[i].src == srcs[k]) stolen = 1;
++            if (stolen || t->b[i].mask == mask) t->b[i].mask = 0;
++        }
++        int o = 0;
++        for (int i = 0; i < t->n; i++) if (t->b[i].mask) t->b[o++] = t->b[i];
++        t->n = o;
++    }
++    for (int k = 0; k < ns; k++) bind_add(t, (u16)srcs[k], mask);
++}
++
++static void apply_lines(BindTable* t, int cls, const char* const* lines, int replace, const char* where)
++{
++    for (; lines && *lines; lines++) {
++        char l[128]; snprintf(l, sizeof l, "%s", *lines);
++        char* eq = strchr(l, '=');
++        if (!eq) continue;
++        *eq = 0;
++        bind_line(t, cls, l, eq + 1, replace, where);
++    }
++}
++
++static void apply_section(BindTable* t, int cls, const IniSec* s)
++{
++    for (int i = s->first; i < s->first + s->count; i++)
++        bind_line(t, cls, g_kv[i].key, g_kv[i].val, 1, s->name);
++}
++
++static void desc_add(BindTable* t, const char* what)
++{
++    size_t n = strlen(t->desc);
++    snprintf(t->desc + n, sizeof t->desc - n, "%s%s", n ? " + " : "", what);
++}
++
++/* Effective table for one device: preset, then the macro overlay, then the
++ * user's lines, least specific first:
++ *   [<cls>]  ->  [<cls>.VVVV:PPPP]  ->  [port<N>.<cls>]
++ * (keyboard players: [keys1] / [keys2]). */
++static void build_table(BindTable* t, int cls, int port, u16 vid, u16 pid, const char* keys_sec)
++{
++    memset(t, 0, sizeof *t);
++    for (int a = 0; a < 4; a++) t->axis[a] = -1;
++    const IniSec* layer[3] = { NULL, NULL, NULL };
++    char name[48];
++    if (cls == CLS_KEYS) {
++        layer[0] = ini_section(keys_sec);
++    } else {
++        layer[0] = ini_section(k_cls_name[cls]);
++        if (cls == CLS_DINPUT) {
++            snprintf(name, sizeof name, "dinput.%04X:%04X", vid, pid);
++            layer[1] = ini_section(name);
++        }
++        if (port >= 0) {
++            snprintf(name, sizeof name, "port%d.%s", port + 1, k_cls_name[cls]);
++            layer[2] = ini_section(name);
++        }
++    }
++    /* Preset: the most specific layer that names one, else the default. */
++    const char* pname = NULL;
++    for (int l = 2; l >= 0 && !pname; l--)
++        if (layer[l]) {
++            for (int i = layer[l]->first + layer[l]->count - 1; i >= layer[l]->first; i--)
++                if (name_eq(g_kv[i].key, "preset")) { pname = g_kv[i].val; break; }
++        }
++    if (!pname) {
++        if (cls == CLS_KEYS) pname = name_eq(keys_sec, "keys1") ? "classic" : "none";
++        else if (cls == CLS_XINPUT) pname = "standard";
++        else if (vid == 0x057E) pname = "switch";      /* Nintendo */
++        else if (vid == 0x045E) pname = "xbox";        /* Microsoft, non-XInput */
++        else pname = "ps";
++    }
++    const Preset* p = find_preset(cls, pname);
++    if (p) { apply_lines(t, cls, p->lines, 0, p->name); desc_add(t, p->name); }
++    else if (!name_eq(pname, "none")) printf("[pad] unknown %s preset '%s'\n", k_cls_name[cls], pname);
++    /* Macro overlay: [portN] macros = tekken, or macros = tekken in a layer. */
++    const char* macros = NULL;
++    for (int l = 2; l >= 0 && !macros; l--)
++        if (layer[l]) {
++            for (int i = layer[l]->first + layer[l]->count - 1; i >= layer[l]->first; i--)
++                if (name_eq(g_kv[i].key, "macros")) { macros = g_kv[i].val; break; }
++        }
++    if (!macros && port >= 0) { snprintf(name, sizeof name, "port%d", port + 1); macros = ini_get(name, "macros"); }
++    if (macros && name_eq(macros, "tekken") && cls != CLS_KEYS) {
++        apply_lines(t, cls, cls == CLS_XINPUT ? k_macros_tekken_xinput : k_macros_tekken_dinput, 1, "macros");
++        desc_add(t, "tekken macros");
++    }
++    for (int l = 0; l < 3; l++)
++        if (layer[l] && layer[l]->count) { apply_section(t, cls, layer[l]); desc_add(t, layer[l]->name); }
++}
++
++/* ---------------------------------------------------------------------------
++ * Configuration
++ * -----------------------------------------------------------------------*/
++
++enum { SOCD_OFF = 0, SOCD_NEUTRAL, SOCD_UP, SOCD_LAST };
++enum { SPEC_AUTO = 0, SPEC_NONE, SPEC_XINPUT, SPEC_DINPUT };
++enum { MIRROR_OFF = 0, MIRROR_KEYBOARD, MIRROR_ALL };
++
++typedef struct {
++    int  spec;              /* SPEC_* */
++    int  xi_slot;           /* SPEC_XINPUT: slot or -1 = any */
++    u16  vid, pid;          /* SPEC_DINPUT by id (vid != 0) */
++    char match[48];         /* SPEC_DINPUT by product-name substring */
++    int  stick_dpad;        /* device left stick drives the d-pad */
++    int  socd;
++} PortCfg;
++
++static struct {
++    int  xinput, dinput, dinput_all, background;
++    int  kb_port, kb2_port;          /* 0-based, -1 = off */
++    int  min_ports;                  /* ports reported connected at least */
++    int  mirror;
++    int  log;                        /* 1 = reads, 2 = + raw device presses */
++    int  latency;
++    int  devices;                    /* physical devices enabled */
++    u32  min_interval_us;
++    char file[2][MAX_PATH * 2];      /* PS3_PAD_FILE / PS3_PAD_FILE2 */
++    PortCfg port[PADH_MAX_PORTS];
++    BindTable keys[2];
++} g_cfg;
++
++static int parse_socd(const char* v, int def)
++{
++    if (!v || !*v) return def;
++    if (name_eq(v, "off") || name_eq(v, "0")) return SOCD_OFF;
++    if (name_eq(v, "neutral")) return SOCD_NEUTRAL;
++    if (name_eq(v, "up")) return SOCD_UP;
++    if (name_eq(v, "last")) return SOCD_LAST;
++    printf("[pad] unknown socd mode '%s'\n", v);
++    return def;
++}
++
++static int parse_port_number(const char* v, int def)
++{
++    if (!v || !*v) return def;
++    if (name_eq(v, "off") || name_eq(v, "none")) return -1;
++    int n = atoi(v);
++    return (n >= 1 && n <= PADH_MAX_PORTS) ? n - 1 : (n == 0 ? -1 : def);
++}
++
++static void parse_device_spec(PortCfg* pc, const char* v)
++{
++    pc->spec = SPEC_AUTO; pc->xi_slot = -1; pc->vid = pc->pid = 0; pc->match[0] = 0;
++    if (!v || !*v || name_eq(v, "auto")) return;
++    if (name_eq(v, "none")) { pc->spec = SPEC_NONE; return; }
++    if (!_strnicmp(v, "xinput", 6)) {
++        pc->spec = SPEC_XINPUT;
++        if (v[6] == ':') pc->xi_slot = atoi(v + 7);
++        return;
++    }
++    if (!_strnicmp(v, "dinput", 6)) {
++        pc->spec = SPEC_DINPUT;
++        if (v[6] != ':') return;
++        const char* s = v + 7;
++        unsigned a, b;
++        if (strlen(s) == 9 && s[4] == ':' && sscanf(s, "%4x:%4x", &a, &b) == 2) { pc->vid = (u16)a; pc->pid = (u16)b; return; }
++        snprintf(pc->match, sizeof pc->match, "%s", s);
++        return;
++    }
++    printf("[pad] unknown device '%s' (auto | none | xinput[:N] | dinput[:VVVV:PPPP | :name])\n", v);
++}
++
++static int env_int(const char* name, int def)
++{
++    const char* v = getenv(name);
++    return (v && *v) ? atoi(v) : def;
++}
++
++static void load_config(void)
++{
++    /* Where: PS3_CONTROLS, else controls.ini next to the executable, else in
++     * the working directory. No file = the defaults documented in
++     * docs/controls.ini. */
++    const char* env = getenv("PS3_CONTROLS");
++    int ok = 0;
++    if (env && *env) {
++        snprintf(g_cfg_path, sizeof g_cfg_path, "%s", env);
++        ok = ini_load(g_cfg_path);
++        if (!ok) printf("[pad] PS3_CONTROLS=%s: cannot open, using defaults\n", env);
++    } else {
++        char exe[MAX_PATH * 2];
++        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
++        if (n && n < sizeof exe) {
++            char* slash = strrchr(exe, '\\');
++            if (slash) { slash[1] = 0; snprintf(g_cfg_path, sizeof g_cfg_path, "%scontrols.ini", exe); ok = ini_load(g_cfg_path); }
++        }
++        if (!ok) { snprintf(g_cfg_path, sizeof g_cfg_path, "controls.ini"); ok = ini_load(g_cfg_path); }
++    }
++    if (!ok) g_cfg_path[0] = 0;
++
++    g_cfg.xinput      = ini_int("general", "xinput", 1);
++    g_cfg.dinput      = ini_int("general", "dinput", 1);
++    g_cfg.dinput_all  = env_int("PS3_PAD_DINPUT_ALL", ini_int("general", "dinput_all", 0));
++    g_cfg.background  = ini_int("general", "background", 1);
++    g_cfg.kb_port     = parse_port_number(ini_get("general", "keyboard"), 0);
++    g_cfg.kb2_port    = parse_port_number(ini_get("general", "keyboard2"), 1);
++    if (getenv("PAD_NO_KEYBOARD")) g_cfg.kb_port = g_cfg.kb2_port = -1;
++    g_cfg.min_ports   = ini_int("general", "min_ports", 1);
++    { const char* m = ini_get("general", "mirror_stick");
++      g_cfg.mirror = !m ? MIRROR_KEYBOARD : name_eq(m, "all") ? MIRROR_ALL :
++                     (name_eq(m, "off") || name_eq(m, "0")) ? MIRROR_OFF : MIRROR_KEYBOARD; }
++    g_cfg.log         = env_int("PS3_PAD_LOG", ini_int("general", "log", 0));
++    g_cfg.latency     = env_int("PS3_PAD_LATENCY", ini_int("general", "latency_log", 0));
++    g_cfg.min_interval_us = (u32)env_int("PS3_PAD_MIN_INTERVAL_US", ini_int("general", "min_interval_us", 1000));
++    int socd = parse_socd(ini_get("general", "socd"), SOCD_NEUTRAL);
++
++    const char* f0 = getenv("PS3_PAD_FILE");
++    const char* f1 = getenv("PS3_PAD_FILE2");
++    snprintf(g_cfg.file[0], sizeof g_cfg.file[0], "%s", f0 ? f0 : "");
++    snprintf(g_cfg.file[1], sizeof g_cfg.file[1], "%s", f1 ? f1 : "");
++    /* A scripted run must not be disturbed by whatever pad is plugged in:
++     * with PS3_PAD_FILE/FILE2 set, physical devices are off unless
++     * PS3_PAD_DEVICES=1. The keyboard stays (focus-gated). */
++    g_cfg.devices = (g_cfg.file[0][0] || g_cfg.file[1][0]) ? env_int("PS3_PAD_DEVICES", 0) : 1;
++
++    for (int p = 0; p < PADH_MAX_PORTS; p++) {
++        char sec[16]; snprintf(sec, sizeof sec, "port%d", p + 1);
++        PortCfg* pc = &g_cfg.port[p];
++        parse_device_spec(pc, ini_get(sec, "device"));
++        const char* st = ini_get(sec, "stick");
++        pc->stick_dpad = st && name_eq(st, "dpad");
++        pc->socd = parse_socd(ini_get(sec, "socd"), socd);
++        if (p < 2 && g_cfg.file[p][0]) pc->spec = SPEC_NONE;   /* the file owns that port */
++    }
++    build_table(&g_cfg.keys[0], CLS_KEYS, g_cfg.kb_port, 0, 0, "keys1");
++    build_table(&g_cfg.keys[1], CLS_KEYS, g_cfg.kb2_port, 0, 0, "keys2");
++    if (!g_cfg.keys[0].n) g_cfg.kb_port = -1;
++    if (!g_cfg.keys[1].n) g_cfg.kb2_port = -1;
++}
++
++/* ---------------------------------------------------------------------------
++ * Devices
++ * -----------------------------------------------------------------------*/
++
++enum { DEV_XINPUT = 1, DEV_DINPUT = 2 };
++#define MAX_DEVS 16
++
++typedef struct {
++    int  kind;                 /* 0 = free slot */
++    volatile LONG lost;        /* a read failed: the hot-plug thread drops it */
++    int  port;                 /* -1 = not assigned */
++    u32  order;
++    DWORD xi;
++    IDirectInputDevice8W* di;
++    GUID inst;
++    u16  vid, pid;
++    char name[80];
++    BindTable bind;
++    u32  last_bits[(CID_COUNT + 31) / 32];
++    u8   rumble[2];
++} PadDev;
++
++static PadDev   g_dev[MAX_DEVS];
++static SRWLOCK  g_dev_lock = SRWLOCK_INIT;
++static u32      g_dev_order;
++static IDirectInput8W* g_di;
++static HANDLE   g_hotplug_thread, g_hotplug_stop;
++
++typedef struct {
++    SRWLOCK lock;
++    int have;
++    PadHostPort last;
++    LONGLONG t_begin, t_end;      /* last sample */
++    u16 socd_prev;                /* raw directions of the previous sample */
++    u16 socd_h, socd_v;           /* last-input-wins winners */
++    u64 file_t[1];                /* last T= stamp seen in the port's file */
++    LONGLONG file_t_seen;         /* when we first sampled it */
++    int file_t_pending;           /* not yet handed to the title */
++    u16 file_btns;                /* buttons the file held last time */
++    /* latency statistics */
++    u64 n_reads, n_fresh, n_samples;
++    double cost_sum, cost_max, age_sum, age_max;
++    LONGLONG last_read, stat_t0;
++    double ival_sum; u64 ival_n;
++} PortState;
++
++static PortState g_port[PADH_MAX_PORTS];
++
++static int window_focused(void)
++{
++    HWND fg = GetForegroundWindow();
++    if (!fg) return 0;
++    DWORD pid = 0;
++    GetWindowThreadProcessId(fg, &pid);
++    return pid == GetCurrentProcessId();
++}
++
++static s32 xi_stick(short raw)
++{
++    /* XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE, rescaled so travel stays full. */
++    const int dz = 7849;
++    int v = raw;
++    if (v > dz) return (s32)((v - dz) * 32767LL / (32767 - dz));
++    if (v < -dz) return (s32)((v + dz) * 32768LL / (32768 - dz));
++    return 0;
++}
++
++static void axis_dirs(RawState* r)
++{
++    for (int a = 0; a < NAXES; a++) {
++        if (r->axis[a] > 16384) raw_set(r, CID_AXIS + a * 2);
++        if (r->axis[a] < -16384) raw_set(r, CID_AXIS + a * 2 + 1);
++    }
++}
++
++/* Read one device now. 0 = gone. */
++static int dev_read(PadDev* d, RawState* r)
++{
++    memset(r, 0, sizeof *r);
++    if (d->lost) return 0;
++    if (d->kind == DEV_XINPUT) {
++        XINPUT_STATE xs;
++        if (XInputGetState(d->xi, &xs) != ERROR_SUCCESS) { InterlockedExchange(&d->lost, 1); return 0; }
++        const XINPUT_GAMEPAD* g = &xs.Gamepad;
++        r->bits[0] = g->wButtons;
++        if (g->bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) raw_set(r, 16);
++        if (g->bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) raw_set(r, 17);
++        r->axis[0] = xi_stick(g->sThumbLX);
++        r->axis[1] = -xi_stick(g->sThumbLY);           /* PS3: up = negative */
++        r->axis[2] = xi_stick(g->sThumbRX);
++        r->axis[3] = -xi_stick(g->sThumbRY);
++        if (r->axis[1] > 32767) r->axis[1] = 32767;
++        if (r->axis[3] > 32767) r->axis[3] = 32767;
++        r->axis[4] = g->bLeftTrigger * 128;
++        r->axis[5] = g->bRightTrigger * 128;
++        r->lt = g->bLeftTrigger; r->rt = g->bRightTrigger;
++        axis_dirs(r);
++        return 1;
++    }
++    IDirectInputDevice8W* di = d->di;
++    DIJOYSTATE2 js;
++    HRESULT hr = di->lpVtbl->Poll(di);
++    if (FAILED(hr)) { di->lpVtbl->Acquire(di); di->lpVtbl->Poll(di); }
++    hr = di->lpVtbl->GetDeviceState(di, sizeof js, &js);
++    if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
++        if (SUCCEEDED(di->lpVtbl->Acquire(di)))
++            hr = di->lpVtbl->GetDeviceState(di, sizeof js, &js);
++    }
++    if (FAILED(hr)) { InterlockedExchange(&d->lost, 1); return 0; }
++    for (int i = 0; i < 128; i++) if (js.rgbButtons[i] & 0x80) raw_set(r, (unsigned)i);
++    for (int h = 0; h < 4; h++) {
++        DWORD pov = js.rgdwPOV[h];
++        if (LOWORD(pov) == 0xFFFF) continue;          /* centred */
++        pov %= 36000;
++        if (pov >= 31500 || pov <= 4500)  raw_set(r, CID_HAT + h * 4 + 0);
++        if (pov >= 4500  && pov <= 13500) raw_set(r, CID_HAT + h * 4 + 1);
++        if (pov >= 13500 && pov <= 22500) raw_set(r, CID_HAT + h * 4 + 2);
++        if (pov >= 22500 && pov <= 31500) raw_set(r, CID_HAT + h * 4 + 3);
++    }
++    r->axis[0] = js.lX;  r->axis[1] = js.lY;  r->axis[2] = js.lZ;
++    r->axis[3] = js.lRx; r->axis[4] = js.lRy; r->axis[5] = js.lRz;
++    r->axis[6] = js.rglSlider[0]; r->axis[7] = js.rglSlider[1];
++    axis_dirs(r);
++    return 1;
++}
++
++static void dev_release(PadDev* d)
++{
++    if (d->kind == DEV_XINPUT && (d->rumble[0] || d->rumble[1])) {
++        XINPUT_VIBRATION v = {0, 0};
++        XInputSetState(d->xi, &v);
++    }
++    if (d->di) { d->di->lpVtbl->Unacquire(d->di); d->di->lpVtbl->Release(d->di); }
++    memset(d, 0, sizeof *d);
++}
++
++static const char* xi_subtype(BYTE s)
++{
++    switch (s) {
++    case XINPUT_DEVSUBTYPE_GAMEPAD: return "gamepad";
++    case XINPUT_DEVSUBTYPE_ARCADE_STICK: return "arcade stick";
++    case 0x13: return "arcade pad";
++    case XINPUT_DEVSUBTYPE_FLIGHT_STICK: return "flight stick";
++    case XINPUT_DEVSUBTYPE_WHEEL: return "wheel";
++    default: return "controller";
++    }
++}
++
++static PadDev* dev_alloc(void)
++{
++    for (int i = 0; i < MAX_DEVS; i++)
++        if (!g_dev[i].kind) { memset(&g_dev[i], 0, sizeof g_dev[i]); g_dev[i].port = -1; return &g_dev[i]; }
++    return NULL;
++}
++
++static void dev_describe(const PadDev* d, char* out, size_t cap)
++{
++    if (d->kind == DEV_XINPUT) snprintf(out, cap, "XInput #%lu (%s)", (unsigned long)d->xi, d->name);
++    else snprintf(out, cap, "DInput '%s' %04X:%04X", d->name, d->vid, d->pid);
++}
++
++/* --- DirectInput enumeration (hot-plug thread / init only) --- */
++
++typedef struct { DIDEVICEINSTANCEW inst[32]; int n; } EnumList;
++
++static BOOL CALLBACK di_enum_cb(LPCDIDEVICEINSTANCEW inst, LPVOID ctx)
++{
++    EnumList* l = (EnumList*)ctx;
++    if (l->n < 32) l->inst[l->n++] = *inst;
++    return DIENUM_CONTINUE;
++}
++
++static int di_is_xinput(IDirectInputDevice8W* di)
++{
++    DIPROPGUIDANDPATH gp;
++    memset(&gp, 0, sizeof gp);
++    gp.diph.dwSize = sizeof gp; gp.diph.dwHeaderSize = sizeof(DIPROPHEADER);
++    gp.diph.dwHow = DIPH_DEVICE;
++    if (FAILED(di->lpVtbl->GetProperty(di, DIPROP_GUIDANDPATH, &gp.diph))) return 0;
++    for (WCHAR* p = gp.wszPath; *p; p++)
++        if ((p[0] == L'I' || p[0] == L'i') && (p[1] == L'G' || p[1] == L'g') && p[2] == L'_') return 1;
++    return 0;
++}
++
++static BOOL CALLBACK di_axis_cb(LPCDIDEVICEOBJECTINSTANCEW obj, LPVOID ctx)
++{
++    IDirectInputDevice8W* di = (IDirectInputDevice8W*)ctx;
++    DIPROPRANGE rg;
++    rg.diph.dwSize = sizeof rg; rg.diph.dwHeaderSize = sizeof(DIPROPHEADER);
++    rg.diph.dwObj = obj->dwType; rg.diph.dwHow = DIPH_BYID;
++    rg.lMin = -32768; rg.lMax = 32767;
++    di->lpVtbl->SetProperty(di, DIPROP_RANGE, &rg.diph);
++    return DIENUM_CONTINUE;
++}
++
++static void di_scan(void)
++{
++    if (!g_di) return;
++    EnumList list; list.n = 0;
++    g_di->lpVtbl->EnumDevices(g_di, DI8DEVCLASS_GAMECTRL, di_enum_cb, &list, DIEDFL_ATTACHEDONLY);
++    /* Drop devices that are no longer attached. */
++    AcquireSRWLockExclusive(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) {
++        if (g_dev[i].kind != DEV_DINPUT) continue;
++        int present = 0;
++        for (int k = 0; k < list.n; k++) if (IsEqualGUID(&list.inst[k].guidInstance, &g_dev[i].inst)) present = 1;
++        if (!present) InterlockedExchange(&g_dev[i].lost, 1);
++    }
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    for (int k = 0; k < list.n; k++) {
++        const DIDEVICEINSTANCEW* in = &list.inst[k];
++        int known = 0;
++        AcquireSRWLockShared(&g_dev_lock);
++        for (int i = 0; i < MAX_DEVS; i++)
++            if (g_dev[i].kind == DEV_DINPUT && !g_dev[i].lost && IsEqualGUID(&in->guidInstance, &g_dev[i].inst)) known = 1;
++        ReleaseSRWLockShared(&g_dev_lock);
++        if (known) continue;
++        IDirectInputDevice8W* di = NULL;
++        if (FAILED(g_di->lpVtbl->CreateDevice(g_di, &in->guidInstance, &di, NULL)) || !di) continue;
++        char name[80];
++        WideCharToMultiByte(CP_UTF8, 0, in->tszProductName, -1, name, sizeof name, NULL, NULL);
++        u16 vid = LOWORD(in->guidProduct.Data1), pid = HIWORD(in->guidProduct.Data1);
++        if (!g_cfg.dinput_all && di_is_xinput(di)) {
++            static int said;
++            if (said++ < 8) printf("[pad] DInput '%s' %04X:%04X is an XInput device -- read through XInput\n", name, vid, pid);
++            di->lpVtbl->Release(di);
++            continue;
++        }
++        if (FAILED(di->lpVtbl->SetDataFormat(di, &c_dfDIJoystick2))) { di->lpVtbl->Release(di); continue; }
++        /* No SetCooperativeLevel: the default is non-exclusive background,
++         * which is what we want (read whether or not we have the focus). */
++        DIPROPRANGE rg;
++        rg.diph.dwSize = sizeof rg; rg.diph.dwHeaderSize = sizeof(DIPROPHEADER);
++        rg.diph.dwObj = 0; rg.diph.dwHow = DIPH_DEVICE;
++        rg.lMin = -32768; rg.lMax = 32767;
++        if (FAILED(di->lpVtbl->SetProperty(di, DIPROP_RANGE, &rg.diph)))
++            di->lpVtbl->EnumObjects(di, di_axis_cb, di, DIDFT_AXIS);
++        DIPROPDWORD dz;
++        dz.diph.dwSize = sizeof dz; dz.diph.dwHeaderSize = sizeof(DIPROPHEADER);
++        dz.diph.dwObj = 0; dz.diph.dwHow = DIPH_DEVICE; dz.dwData = 0;
++        di->lpVtbl->SetProperty(di, DIPROP_DEADZONE, &dz.diph);
++        HRESULT ahr = di->lpVtbl->Acquire(di);
++        AcquireSRWLockExclusive(&g_dev_lock);
++        PadDev* d = dev_alloc();
++        if (!d) { ReleaseSRWLockExclusive(&g_dev_lock); di->lpVtbl->Release(di); continue; }
++        d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance;
++        d->vid = vid; d->pid = pid; d->order = ++g_dev_order;
++        snprintf(d->name, sizeof d->name, "%s", name);
++        ReleaseSRWLockExclusive(&g_dev_lock);
++        printf("[pad] found DInput '%s' %04X:%04X%s\n", name, vid, pid,
++               SUCCEEDED(ahr) ? "" : " (acquire failed, will retry)");
++    }
++}
++
++static void xi_scan(void)
++{
++    if (!g_cfg.xinput) return;
++    for (DWORD s = 0; s < XUSER_MAX_COUNT; s++) {
++        int have = 0;
++        AcquireSRWLockShared(&g_dev_lock);
++        for (int i = 0; i < MAX_DEVS; i++)
++            if (g_dev[i].kind == DEV_XINPUT && g_dev[i].xi == s && !g_dev[i].lost) have = 1;
++        ReleaseSRWLockShared(&g_dev_lock);
++        if (have) continue;
++        /* An empty slot costs ~25 us here; that is why this runs on the
++         * hot-plug thread and never on the read path. */
++        XINPUT_STATE xs;
++        if (XInputGetState(s, &xs) != ERROR_SUCCESS) continue;
++        XINPUT_CAPABILITIES caps;
++        memset(&caps, 0, sizeof caps);
++        XInputGetCapabilities(s, 0, &caps);
++        AcquireSRWLockExclusive(&g_dev_lock);
++        PadDev* d = dev_alloc();
++        if (d) {
++            d->kind = DEV_XINPUT; d->xi = s; d->order = ++g_dev_order;
++            snprintf(d->name, sizeof d->name, "%s", xi_subtype(caps.SubType));
++        }
++        ReleaseSRWLockExclusive(&g_dev_lock);
++        if (d) printf("[pad] found XInput #%lu (%s)\n", (unsigned long)s, xi_subtype(caps.SubType));
++    }
++}
++
++static int spec_matches(const PortCfg* pc, const PadDev* d)
++{
++    if (pc->spec == SPEC_XINPUT) return d->kind == DEV_XINPUT && (pc->xi_slot < 0 || (DWORD)pc->xi_slot == d->xi);
++    if (pc->spec == SPEC_DINPUT) {
++        if (d->kind != DEV_DINPUT) return 0;
++        if (pc->vid) return d->vid == pc->vid && d->pid == pc->pid;
++        if (pc->match[0]) {
++            char a[80], b[48];
++            size_t i;
++            for (i = 0; d->name[i] && i < sizeof a - 1; i++) a[i] = (char)tolower((unsigned char)d->name[i]);
++            a[i] = 0;
++            for (i = 0; pc->match[i] && i < sizeof b - 1; i++) b[i] = (char)tolower((unsigned char)pc->match[i]);
++            b[i] = 0;
++            return strstr(a, b) != NULL;
++        }
++        return 1;
++    }
++    return 0;
++}
++
++/* Drop lost devices, give unassigned ones a port. Called with the lock held
++ * exclusively. Pinned ports ([portN] device = ...) first, then the lowest
++ * free "auto" port, in order of arrival. */
++static void assign_ports(void)
++{
++    for (int i = 0; i < MAX_DEVS; i++) {
++        PadDev* d = &g_dev[i];
++        if (!d->kind || !d->lost) continue;
++        char desc[128]; dev_describe(d, desc, sizeof desc);
++        if (d->port >= 0) printf("[pad] port %d: %s disconnected\n", d->port + 1, desc);
++        else printf("[pad] %s disconnected\n", desc);
++        dev_release(d);
++    }
++    if (!g_cfg.devices) return;
++    for (;;) {
++        PadDev* next = NULL;
++        for (int i = 0; i < MAX_DEVS; i++)
++            if (g_dev[i].kind && g_dev[i].port < 0 && !g_dev[i].lost && (!next || g_dev[i].order < next->order))
++                next = &g_dev[i];
++        if (!next) break;
++        int port = -1;
++        for (int p = 0; p < PADH_MAX_PORTS && port < 0; p++) {
++            const PortCfg* pc = &g_cfg.port[p];
++            if (!spec_matches(pc, next)) continue;
++            int taken = 0;
++            for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind && g_dev[i].port == p) taken = 1;
++            if (!taken) port = p;
++        }
++        for (int p = 0; p < PADH_MAX_PORTS && port < 0; p++) {
++            if (g_cfg.port[p].spec != SPEC_AUTO) continue;
++            int taken = 0;
++            for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind && g_dev[i].port == p) taken = 1;
++            if (!taken) port = p;
++        }
++        if (port < 0) { next->port = -2; continue; }   /* no room: parked */
++        next->port = port;
++        build_table(&next->bind, next->kind == DEV_XINPUT ? CLS_XINPUT : CLS_DINPUT, port, next->vid, next->pid, NULL);
++        char desc[128]; dev_describe(next, desc, sizeof desc);
++        printf("[pad] port %d (player %d): %s, layout %s%s\n", port + 1, port + 1, desc, next->bind.desc,
++               g_cfg.port[port].stick_dpad ? ", stick -> d-pad" : "");
++    }
++    for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind && g_dev[i].port == -2) g_dev[i].port = -1;
++    fflush(stdout);
++}
++
++static UINT raw_device_count(void)
++{
++    UINT n = 0;
++    GetRawInputDeviceList(NULL, &n, sizeof(RAWINPUTDEVICELIST));
++    return n;
++}
++
++static DWORD WINAPI hotplug_main(LPVOID arg)
++{
++    (void)arg;
++    UINT last_raw = raw_device_count();
++    for (;;) {
++        if (WaitForSingleObject(g_hotplug_stop, 500) == WAIT_OBJECT_0) break;
++        xi_scan();
++        /* DInput enumeration is slow (milliseconds); only when the system's
++         * input device list changed, or when a device was lost. */
++        UINT raw = raw_device_count();
++        int lost = 0;
++        for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind == DEV_DINPUT && g_dev[i].lost) lost = 1;
++        if (g_cfg.dinput && (raw != last_raw || lost)) { last_raw = raw; di_scan(); }
++        AcquireSRWLockExclusive(&g_dev_lock);
++        assign_ports();
++        ReleaseSRWLockExclusive(&g_dev_lock);
++    }
++    return 0;
++}
++
++/* ---------------------------------------------------------------------------
++ * Init
++ * -----------------------------------------------------------------------*/
++
++static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
++
++static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_qpf = f.QuadPart ? f.QuadPart : 1;
++    for (int p = 0; p < PADH_MAX_PORTS; p++) InitializeSRWLock(&g_port[p].lock);
++    load_config();
++    printf("[pad] controls: %s\n", g_cfg_path[0] ? g_cfg_path : "built-in defaults (no controls.ini; PS3_CONTROLS=<file> to choose one)");
++    if (g_cfg.dinput && g_cfg.devices) {
++        HRESULT hr = DirectInput8Create(GetModuleHandleW(NULL), DIRECTINPUT_VERSION, &IID_IDirectInput8W, (void**)&g_di, NULL);
++        if (FAILED(hr)) { printf("[pad] DirectInput8Create failed 0x%08lX: HID sticks unavailable\n", (unsigned long)hr); g_di = NULL; }
++    }
++    if (g_cfg.devices) { xi_scan(); di_scan(); }
++    else printf("[pad] scripted input (PS3_PAD_FILE*): physical pads ignored (PS3_PAD_DEVICES=1 to use them)\n");
++    AcquireSRWLockExclusive(&g_dev_lock);
++    assign_ports();
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    if (g_cfg.kb_port >= 0) printf("[pad] keyboard -> port %d, layout %s (only while the game window has focus)\n", g_cfg.kb_port + 1, g_cfg.keys[0].desc);
++    if (g_cfg.kb2_port >= 0) printf("[pad] keyboard player 2 -> port %d, layout %s\n", g_cfg.kb2_port + 1, g_cfg.keys[1].desc);
++    for (int p = 0; p < 2; p++) if (g_cfg.file[p][0]) printf("[pad] port %d: scripted from %s\n", p + 1, g_cfg.file[p]);
++    fflush(stdout);
++    if (g_cfg.devices) {
++        g_hotplug_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
++        g_hotplug_thread = CreateThread(NULL, 0, hotplug_main, NULL, 0, NULL);
++        if (g_hotplug_thread) SetThreadPriority(g_hotplug_thread, THREAD_PRIORITY_BELOW_NORMAL);
++    }
++    return TRUE;
++}
++
++void padh_init(void) { InitOnceExecuteOnce(&g_init_once, init_cb, NULL, NULL); }
++
++void padh_shutdown(void)
++{
++    for (u32 p = 0; p < PADH_MAX_PORTS; p++) padh_rumble(p, 0, 0);
++}
++
++u32 padh_min_interval_us(void) { padh_init(); return g_cfg.min_interval_us; }
++int padh_log_reads(void) { padh_init(); return g_cfg.log; }
++
++int padh_port_connected(u32 port)
++{
++    padh_init();
++    if (port >= PADH_MAX_PORTS) return 0;
++    if (port == 0 || (int)port < g_cfg.min_ports) return 1;
++    if ((int)port == g_cfg.kb_port || (int)port == g_cfg.kb2_port) return 1;
++    if (port < 2 && g_cfg.file[port][0]) return 1;
++    int on = 0;
++    AcquireSRWLockShared(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind && g_dev[i].port == (int)port && !g_dev[i].lost) on = 1;
++    ReleaseSRWLockShared(&g_dev_lock);
++    return on;
++}
++
++/* ---------------------------------------------------------------------------
++ * Sampling
++ * -----------------------------------------------------------------------*/
++
++typedef struct {
++    u16 btn;
++    s32 ax[4];          /* LX LY RX RY, -32768..32767 */
++    u8  l2, r2;
++    int kb_dirs;        /* directions came from the keyboard */
++} Merge;
++
++static void merge_axis(Merge* m, int t, s32 v)
++{
++    if (v < -32768) v = -32768;
++    if (v > 32767) v = 32767;
++    if (abs(v) > abs(m->ax[t])) m->ax[t] = v;
++}
++
++static void apply_table(Merge* m, const BindTable* t, const RawState* r, int cls)
++{
++    for (int i = 0; i < t->n; i++) {
++        if (!raw_get(r, t->b[i].src)) continue;
++        m->btn |= t->b[i].mask;
++        if (cls == CLS_XINPUT && (t->b[i].src == 16 || t->b[i].src == 17)) {
++            u8 v = t->b[i].src == 16 ? r->lt : r->rt;
++            if ((t->b[i].mask & CELL_PAD_CTRL_L2) && v > m->l2) m->l2 = v;
++            if ((t->b[i].mask & CELL_PAD_CTRL_R2) && v > m->r2) m->r2 = v;
++        }
++    }
++    for (int a = 0; a < 4; a++) {
++        if (t->axis[a] < 0) continue;
++        s32 v = r->axis[t->axis[a]];
++        if (t->inv[a]) v = -v - 1;
++        merge_axis(m, a, v);
++    }
++}
++
++static void log_presses(PadDev* d, const RawState* r)
++{
++    int cls = d->kind == DEV_XINPUT ? CLS_XINPUT : CLS_DINPUT;
++    for (unsigned id = 0; id < CID_COUNT; id++) {
++        int now = raw_get(r, id), was = (d->last_bits[id >> 5] >> (id & 31)) & 1;
++        if (!now || was) continue;
++        u16 mask = 0;
++        for (int i = 0; i < d->bind.n; i++) if (d->bind.b[i].src == id) mask |= d->bind.b[i].mask;
++        char sn[24], tn[96]; source_name(cls, (int)id, sn, sizeof sn); mask_names(mask, tn, sizeof tn);
++        printf("[pad] port %d %s: %s pressed -> %s\n", d->port + 1, d->name, sn, mask ? tn : "(unbound)");
++    }
++    memcpy(d->last_bits, r->bits, sizeof d->last_bits);
++}
++
++static void apply_keys(Merge* m, const BindTable* t)
++{
++    for (int i = 0; i < t->n; i++)
++        if (GetAsyncKeyState(t->b[i].src) & 0x8000) {
++            m->btn |= t->b[i].mask;
++            if (t->b[i].mask & 0x00F0) m->kb_dirs = 1;
++        }
++}
++
++/* PS3_PAD_FILE / PS3_PAD_FILE2: whitespace-separated held buttons (any
++ * target name, Tekken names and combos included), LX=n LY=n RX=n RY=n
++ * (0-255), and optionally T=<ns> -- a time.perf_counter_ns() stamp of when
++ * the script wrote the file, for the latency log. */
++static void apply_file(Merge* m, PortState* ps, u32 port, LONGLONG now)
++{
++    const char* path = g_cfg.file[port];
++    char buf[512]; size_t n = 0;
++    u16 fb = 0;
++    FILE* f = fopen(path, "rb");
++    if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
++    buf[n] = 0;
++    char* save = NULL;
++    for (char* tok = strtok_s(buf, " \t\r\n,", &save); tok; tok = strtok_s(NULL, " \t\r\n,", &save)) {
++        if (tok[0] && tok[1] == 'X' && tok[2] == '=' && (tok[0] == 'L' || tok[0] == 'R')) {
++            s32 v = (atoi(tok + 3) - 128) * 256; merge_axis(m, tok[0] == 'L' ? TGT_LX : TGT_RX, v); continue;
++        }
++        if (tok[0] && tok[1] == 'Y' && tok[2] == '=' && (tok[0] == 'L' || tok[0] == 'R')) {
++            s32 v = (atoi(tok + 3) - 128) * 256; merge_axis(m, tok[0] == 'L' ? TGT_LY : TGT_RY, v); continue;
++        }
++        if (tok[0] == 'T' && tok[1] == '=') {
++            u64 t = _strtoui64(tok + 2, NULL, 10);
++            if (t && t != ps->file_t[0]) { ps->file_t[0] = t; ps->file_t_seen = now; ps->file_t_pending = 1; }
++            continue;
++        }
++        fb |= parse_target_mask(tok);
++    }
++    m->btn |= fb;
++    if (fb != ps->file_btns) {               /* same line as the old cellPad, tools grep it */
++        ps->file_btns = fb;
++        printf("[cellPad] file pad%s: buttons 0x%04X\n", port ? " 2" : "", fb);
++        fflush(stdout);
++    }
++}
++
++static u16 socd_clean(PortState* ps, u16 b, int mode)
++{
++    if (mode == SOCD_OFF) return b;
++    const u16 L = CELL_PAD_CTRL_LEFT, R = CELL_PAD_CTRL_RIGHT, U = CELL_PAD_CTRL_UP, D = CELL_PAD_CTRL_DOWN;
++    u16 raw = b & (L | R | U | D), out = b & (u16)~(L | R | U | D);
++    u16 prev = ps->socd_prev;
++    ps->socd_prev = raw;
++    /* horizontal */
++    if ((raw & L) && (raw & R)) {
++        if (mode == SOCD_LAST) {
++            if ((prev & L) && !(prev & R)) ps->socd_h = R;
++            else if ((prev & R) && !(prev & L)) ps->socd_h = L;
++            else if (!(prev & (L | R))) ps->socd_h = 0;
++            out |= ps->socd_h;
++        }
++    } else out |= raw & (L | R);
++    /* vertical */
++    if ((raw & U) && (raw & D)) {
++        if (mode == SOCD_UP) out |= U;
++        else if (mode == SOCD_LAST) {
++            if ((prev & U) && !(prev & D)) ps->socd_v = D;
++            else if ((prev & D) && !(prev & U)) ps->socd_v = U;
++            else if (!(prev & (U | D))) ps->socd_v = 0;
++            out |= ps->socd_v;
++        }
++    } else out |= raw & (U | D);
++    return out;
++}
++
++/* Analog stick -> 8-way d-pad, 45-degree sectors past half deflection. */
++static u16 stick_to_dirs(s32 x, s32 y)
++{
++    double fx = x, fy = y;
++    if (fx * fx + fy * fy < 16384.0 * 16384.0) return 0;
++    double a = atan2(-fy, fx) * 180.0 / 3.14159265358979;   /* 0 = right, 90 = up */
++    if (a < 0) a += 360.0;
++    int s = (int)((a + 22.5) / 45.0) % 8;
++    static const u16 dirs[8] = {
++        CELL_PAD_CTRL_RIGHT, CELL_PAD_CTRL_RIGHT | CELL_PAD_CTRL_UP, CELL_PAD_CTRL_UP,
++        CELL_PAD_CTRL_UP | CELL_PAD_CTRL_LEFT, CELL_PAD_CTRL_LEFT, CELL_PAD_CTRL_LEFT | CELL_PAD_CTRL_DOWN,
++        CELL_PAD_CTRL_DOWN, CELL_PAD_CTRL_DOWN | CELL_PAD_CTRL_RIGHT };
++    return dirs[s];
++}
++
++static u8 axis_u8(s32 v) { int u = (v + 32768) >> 8; return (u8)(u < 0 ? 0 : u > 255 ? 255 : u); }
++
++int padh_sample(u32 port, PadHostPort* out, u32 min_interval_us)
++{
++    padh_init();
++    memset(out, 0, sizeof *out);
++    out->lx = out->ly = out->rx = out->ry = 128;
++    if (port >= PADH_MAX_PORTS) return 0;
++    PortState* ps = &g_port[port];
++    AcquireSRWLockExclusive(&ps->lock);
++    LONGLONG t0 = qpc_now();
++    if (min_interval_us && ps->have && t0 - ps->t_end < qpc_from_us(min_interval_us)) {
++        *out = ps->last;
++        ReleaseSRWLockExclusive(&ps->lock);
++        return 0;
++    }
++    Merge m; memset(&m, 0, sizeof m);
++    int focus = -1, connected = 0;
++    if (g_cfg.devices) {
++        AcquireSRWLockShared(&g_dev_lock);
++        for (int i = 0; i < MAX_DEVS; i++) {
++            PadDev* d = &g_dev[i];
++            if (!d->kind || d->port != (int)port || d->lost) continue;
++            connected = 1;
++            if (!g_cfg.background) { if (focus < 0) focus = window_focused(); if (!focus) continue; }
++            RawState r;
++            if (!dev_read(d, &r)) continue;
++            apply_table(&m, &d->bind, &r, d->kind == DEV_XINPUT ? CLS_XINPUT : CLS_DINPUT);
++            if (g_cfg.log >= 2) log_presses(d, &r);
++        }
++        ReleaseSRWLockShared(&g_dev_lock);
++    }
++    if (g_cfg.port[port].stick_dpad) {
++        m.btn |= stick_to_dirs(m.ax[TGT_LX], m.ax[TGT_LY]);
++        m.ax[TGT_LX] = m.ax[TGT_LY] = 0;
++    }
++    if ((int)port == g_cfg.kb_port || (int)port == g_cfg.kb2_port) {
++        if (focus < 0) focus = window_focused();
++        if (focus) {
++            if ((int)port == g_cfg.kb_port) apply_keys(&m, &g_cfg.keys[0]);
++            if ((int)port == g_cfg.kb2_port) apply_keys(&m, &g_cfg.keys[1]);
++        }
++    }
++    if (port < 2 && g_cfg.file[port][0]) apply_file(&m, ps, port, t0);
++    m.btn = socd_clean(ps, m.btn, g_cfg.port[port].socd);
++    /* Keyboard (or, with mirror_stick = all, any) directions also drive the
++     * left stick when it is otherwise centred, for titles that only read it. */
++    if ((g_cfg.mirror == MIRROR_ALL || (g_cfg.mirror == MIRROR_KEYBOARD && m.kb_dirs)) &&
++        !m.ax[TGT_LX] && !m.ax[TGT_LY]) {
++        if (m.btn & CELL_PAD_CTRL_LEFT)  m.ax[TGT_LX] = -32768;
++        if (m.btn & CELL_PAD_CTRL_RIGHT) m.ax[TGT_LX] = 32767;
++        if (m.btn & CELL_PAD_CTRL_UP)    m.ax[TGT_LY] = -32768;
++        if (m.btn & CELL_PAD_CTRL_DOWN)  m.ax[TGT_LY] = 32767;
++    }
++    out->buttons = m.btn;
++    out->lx = axis_u8(m.ax[TGT_LX]); out->ly = axis_u8(m.ax[TGT_LY]);
++    out->rx = axis_u8(m.ax[TGT_RX]); out->ry = axis_u8(m.ax[TGT_RY]);
++    out->l2 = (m.btn & CELL_PAD_CTRL_L2) ? (m.l2 ? m.l2 : 255) : 0;
++    out->r2 = (m.btn & CELL_PAD_CTRL_R2) ? (m.r2 ? m.r2 : 255) : 0;
++    (void)connected;
++    out->connected = padh_port_connected(port);
++    out->seq = ps->last.seq + 1;
++    ps->last = *out;
++    ps->have = 1;
++    ps->t_begin = t0;
++    ps->t_end = qpc_now();
++    ps->n_samples++;
++    { double c = qpc_to_us(ps->t_end - t0); ps->cost_sum += c; if (c > ps->cost_max) ps->cost_max = c; }
++    ReleaseSRWLockExclusive(&ps->lock);
++    return 1;
++}
++
++/* ---------------------------------------------------------------------------
++ * Statistics: what the title got, and how old it was
++ * -----------------------------------------------------------------------*/
++
++void padh_note_read(u32 port, const PadHostPort* st, int fresh)
++{
++    (void)st;
++    if (port >= PADH_MAX_PORTS || !g_cfg.latency) return;
++    PortState* ps = &g_port[port];
++    LONGLONG now = qpc_now();
++    AcquireSRWLockExclusive(&ps->lock);
++    ps->n_reads++;
++    if (fresh) ps->n_fresh++;
++    double age = qpc_to_us(now - ps->t_end);
++    ps->age_sum += age; if (age > ps->age_max) ps->age_max = age;
++    if (ps->last_read) { ps->ival_sum += qpc_to_us(now - ps->last_read); ps->ival_n++; }
++    ps->last_read = now;
++    if (ps->file_t_pending) {
++        /* Scripted event: written by the test script at T, first sampled at
++         * file_t_seen, handed to the title now. */
++        ps->file_t_pending = 0;
++        u64 t_ns = ps->file_t[0], seen_ns = qpc_to_ns(ps->file_t_seen), now_ns = qpc_to_ns(now);
++        printf("[pad-lat] port %u event T=%llu: written -> sampling began %.3f ms (sample took %.3f ms)"
++               " -> read by title %.3f ms\n",
++               port + 1, (unsigned long long)t_ns,
++               seen_ns > t_ns ? (double)(seen_ns - t_ns) / 1e6 : 0.0,
++               qpc_to_us(ps->t_end - ps->t_begin) / 1000.0,
++               now_ns > t_ns ? (double)(now_ns - t_ns) / 1e6 : 0.0);
++    }
++    if (!ps->stat_t0) ps->stat_t0 = now;
++    if (qpc_to_us(now - ps->stat_t0) >= 5e6) {
++        printf("[pad-lat] port %u: %llu reads (%llu fresh) every %.2f ms | sample cost avg %.1f us max %.1f us"
++               " | sample age at read avg %.1f us max %.1f us\n",
++               port + 1, (unsigned long long)ps->n_reads, (unsigned long long)ps->n_fresh,
++               ps->ival_n ? ps->ival_sum / (double)ps->ival_n / 1000.0 : 0.0,
++               ps->n_samples ? ps->cost_sum / (double)ps->n_samples : 0.0, ps->cost_max,
++               ps->n_reads ? ps->age_sum / (double)ps->n_reads : 0.0, ps->age_max);
++        ps->n_reads = ps->n_fresh = ps->n_samples = 0;
++        ps->cost_sum = ps->cost_max = ps->age_sum = ps->age_max = ps->ival_sum = 0;
++        ps->ival_n = 0;
++        ps->stat_t0 = now;
++    }
++    ReleaseSRWLockExclusive(&ps->lock);
++    fflush(stdout);
++}
++
++void padh_rumble(u32 port, u8 small_motor, u8 large_motor)
++{
++    if (port >= PADH_MAX_PORTS) return;
++    padh_init();
++    AcquireSRWLockShared(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) {
++        PadDev* d = &g_dev[i];
++        if (d->kind != DEV_XINPUT || d->port != (int)port || d->lost) continue;
++        if (d->rumble[0] == small_motor && d->rumble[1] == large_motor) continue;   /* no driver call per frame */
++        d->rumble[0] = small_motor; d->rumble[1] = large_motor;
++        /* DUALSHOCK 3: the small motor is on/off (0/1), the large one 0..255. */
++        XINPUT_VIBRATION v;
++        v.wLeftMotorSpeed = (WORD)(large_motor * 257);
++        v.wRightMotorSpeed = small_motor ? 0xFFFF : 0;
++        XInputSetState(d->xi, &v);
++    }
++    ReleaseSRWLockShared(&g_dev_lock);
++}
++
++#endif /* _WIN32 */

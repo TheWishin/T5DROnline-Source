@@ -34,7 +34,7 @@
 extern "C" uint8_t* vm_base;
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
-int32_t cellPadInit(uint32_t max_connect);
+int32_t cellSysutilRegisterCallback(int32_t slot, uint32_t func, uint32_t userdata);
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -53,7 +53,7 @@ constexpr uint32_t kModeReq      = 0x58;         /* mode manager + 0x58: {cur, n
 constexpr uint32_t kModeNone     = 0xE;
 constexpr uint32_t kHeapBase     = 0x40000000, kHeapLen = 0x05F00000;
 constexpr uint32_t kDataBase     = 0x10000000, kDataLen = 0x00770000;
-constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
+constexpr uint32_t NID_cellSysutilRegisterCallback = 0x9D98AFA0;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
 constexpr uint32_t NID_cellPadGetData = 0x8B72CDA1;
 
@@ -186,11 +186,13 @@ uint32_t find_object(uint32_t vtable)
     uint32_t found = 0;
     LARGE_INTEGER t0, t1, fq;
     QueryPerformanceCounter(&t0);
-    for_committed(kHeapBase, kHeapLen, [&](uint32_t a, uint32_t n) {
+    auto scan = [&](uint32_t a, uint32_t n) {
         if (found) return;
         const uint32_t* p = (const uint32_t*)(vm_base + a);
         for (uint32_t i = 0; i < n / 4; i++) if (p[i] == pat) { found = a + i * 4; return; }
-    });
+    };
+    for_committed(0x10050000u, 0x00710000u, scan);   /* ELF data + bss (tcb pools live there) */
+    if (!found) for_committed(kHeapBase, kHeapLen, scan);
     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
     static int n = 0;
     if (n++ < 3) note("heap scan for vtable 0x%08X: %.2f ms -> 0x%08X", vtable,
@@ -249,8 +251,14 @@ void on_frame(ppu_context* ctx)
 {
     (void)ctx;
     const uint32_t f = g_frame.load();
+    LARGE_INTEGER t0, t1, fq;
+    QueryPerformanceCounter(&t0);
     if (g_probe) probe(f);
     for (uint32_t d : g_dump_frames) if (d == f) dump_memory(f, "f");
+    QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
+    const double ms = 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
+    static int slow = 0;
+    if (ms > 50 && slow++ < 10) note("frame %u: hook took %.1f ms", f, ms);
     if (g_log && (f % 60) == 0) {
         fprintf(g_log, "F %u clock %llu\n", f, (unsigned long long)rd64(kFrameClock));
         fflush(g_log);
@@ -279,11 +287,15 @@ void install_syscall_hooks()
     note("frame-boundary hook installed");
 }
 
-void h_cellPadInit(ppu_context* ctx)
+/* The game's first firmware call (right after its first sys_memory_allocate):
+ * the lv2 syscall table is live by then, and no other module of ours overrides
+ * this one (netplay and rollback take cellPadInit; ctx overrides dispatch in
+ * registration order, so sharing a NID with them would be a static-init race). */
+void h_cellSysutilRegisterCallback(ppu_context* ctx)
 {
-    int32_t r = cellPadInit((uint32_t)ctx->gpr[3]);
-    ctx->gpr[3] = (uint64_t)(int64_t)r;
     install_syscall_hooks();
+    int32_t r = cellSysutilRegisterCallback((int32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], (uint32_t)ctx->gpr[5]);
+    ctx->gpr[3] = (uint64_t)(int64_t)r;
 }
 void h_cellPadGetInfo(ppu_context* ctx)
 {
@@ -339,9 +351,11 @@ struct Register {
             p = e; while (*p == ',') p++;
         }
         note("directfight: probe=%d scripts %zu/%zu dumps %zu", g_probe, g_script[0].size(), g_script[1].size(), g_dump_frames.size());
-        ps3_hle_register_ctx(NID_cellPadInit,    "cellPadInit(df)",    h_cellPadInit);
-        ps3_hle_register_ctx(NID_cellPadGetInfo, "cellPadGetInfo(df)", h_cellPadGetInfo);
-        ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(df)", h_cellPadGetData);
+        ps3_hle_register_ctx(NID_cellSysutilRegisterCallback, "cellSysutilRegisterCallback(df)", h_cellSysutilRegisterCallback);
+        if (g_scripted[0] || g_scripted[1]) {   /* scripted pads: tests only (netplay owns the pads in a match) */
+            ps3_hle_register_ctx(NID_cellPadGetInfo, "cellPadGetInfo(df)", h_cellPadGetInfo);
+            ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(df)", h_cellPadGetData);
+        }
     }
 } g_register;
 

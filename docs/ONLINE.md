@@ -46,7 +46,7 @@ lobby/
       store.py    SQLite: accounts (scrypt hashes), ratings, match history
       config.py   T5L_* environment variables
       ratelimit.py token buckets, temporary bans
-  tests/          54 tests: server + simulated clients on localhost
+  tests/          55 tests: server + simulated clients on localhost
   tools/
     two_players.py   two players on one PC: lobby -> punch -> two game instances
     stub_game.py     stand-in for t5dr.exe that does the netplay handshake
@@ -421,7 +421,7 @@ not for thousands.
 ## Tests, demo, measurements
 
 ```sh
-python -m unittest discover -s lobby/tests          # 54 tests, ~35 s, all on localhost
+python -m unittest discover -s lobby/tests          # 55 tests, ~35 s, all on localhost
 ```
 
 Unit: Glicko-2 against the paper's example, wire format, delay formula, token

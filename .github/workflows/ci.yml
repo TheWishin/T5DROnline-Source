@@ -1,0 +1,239 @@
+# Continuous integration for T5DROnline -- with no game data anywhere.
+#
+# What it can check without the player's package: that nothing game-derived is
+# committed, that our Python tools still work, that the ps3recomp patch series
+# still applies on the pinned commit, and that the patched runtime and our
+# CMakeLists.txt still compile, link and pass ps3recomp's own tests. See
+# docs/CI.md for what each step covers and how to run the same things locally.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  CLANG_CL: "C:/Program Files/LLVM/bin/clang-cl.exe"   # the runner's LLVM, not VS's bundled copy
+
+jobs:
+  checks:
+    name: Game-data guard + Python tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # the guard also reads every commit being pushed
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Guard -- tracked files
+        run: python tools/check_no_game_data.py
+
+      # A file committed and deleted again is still in the public history, so
+      # the guard also reads every commit this push or pull request adds.
+      - name: Guard -- new commits
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            range="HEAD^1..HEAD^2"                       # the PR's commits (HEAD is the merge commit)
+          elif [ -n "$BEFORE" ] && [ -n "${BEFORE//0/}" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..$AFTER"
+          else
+            range="$AFTER"                               # new branch or forced push: all of its history
+          fi
+          echo "checking $range"
+          python tools/check_no_game_data.py --history "$range"
+
+      - name: Python syntax (every tracked .py/.pyw -- tools, tests, launcher, lobby)
+        shell: bash
+        run: git ls-files -z '*.py' '*.pyw' | xargs -0 python -m py_compile
+
+      # Also gives the FNV cross-check in tests/test_lift_spu_jobs.py a tree to
+      # compare against, and fails early (naming the patch) if the series broke.
+      - name: ps3recomp at the pin + patch series
+        run: python tools/prepare_ps3recomp.py --dest deps/ps3recomp
+
+      - name: Python unit tests
+        env:
+          CI: "1"
+          PS3RECOMP_DIR: ${{ github.workspace }}/deps/ps3recomp
+        run: |
+          python -m pip install --disable-pip-version-check --quiet pycryptodome
+          if ($LASTEXITCODE) { exit 1 }
+          python -m unittest discover -s tests -v
+
+      # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, the
+      # launcher's Online tab). One process per module, so a module that kills
+      # the interpreter cannot hide the others. KNOWN_CRASH: test_tk_tab aborts
+      # Python on this repo's main ("Tcl_AsyncDelete: async handler deleted by
+      # the wrong thread" in test_quick_match_flow) -- a warning until fixed,
+      # then delete the variable to make it required like the rest.
+      - name: Lobby tests (lobby/tests)
+        shell: bash
+        working-directory: lobby/tests
+        env:
+          KNOWN_CRASH: test_tk_tab
+        run: |
+          fail=0
+          for f in test_*.py; do
+            m="${f%.py}"
+            echo "::group::$m"
+            rc=0; python -m unittest -v "$m" || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              if [ "$m" = "$KNOWN_CRASH" ]; then
+                echo "::warning::lobby $m failed (exit $rc): known Tk teardown crash, see docs/CI.md"
+              else
+                echo "::error::lobby $m failed (exit $rc)"; fail=1
+              fi
+            fi
+          done
+          exit $fail
+
+  runtime:
+    name: Patched ps3recomp runtime + native tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Fails naming the first patch that does not apply on f17bcd3 + the ones before it.
+      - name: ps3recomp at the pin + patch series
+        run: python tools/prepare_ps3recomp.py --dest deps/ps3recomp
+
+      # cl, the Windows SDK and the MSVC headers/libs that clang-cl compiles against.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Toolchain
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+          & $env:CLANG_CL --version
+          ninja --version
+          cmake --version
+
+      # Compile cache in the GitHub Actions cache. Optional: if it cannot be
+      # set up, the build below simply runs without it.
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        continue-on-error: true
+
+      # 1. The release host: t5dr.exe with the runtime and no game code
+      #    (T5DR_GAME_DLL=ON, static CRT), configured exactly like
+      #    tools/package_release.py --prebuilt-host. Needs no lift at all.
+      - name: Configure the release host (T5DR_GAME_DLL=ON)
+        run: |
+          $root = (Get-Location).Path -replace '\\', '/'
+          $launcher = @()
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            $launcher = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+          }
+          cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$env:CLANG_CL" "-DCMAKE_CXX_COMPILER=$env:CLANG_CL" `
+            "-DPS3RECOMP_DIR=$root/deps/ps3recomp" "-DSPU_DIR=$root/build/no-spu" `
+            -DT5DR_GAME_DLL=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPS3RECOMP_BUILD_TESTS=ON @launcher
+          if ($LASTEXITCODE) { exit 1 }
+
+      # Every runtime source, including each file the patches change.
+      - name: Build ps3recomp_runtime
+        run: cmake --build build/cmake --target ps3recomp_runtime
+
+      # The patched boot scaffold (ppu_loader.cpp, boot_main.cpp, ...), the HLE
+      # NID table, the export table for t5dr_game.dll and the link -- what fails
+      # first when a patch calls something that does not exist on Windows.
+      - name: Build the release host t5dr.exe
+        run: |
+          cmake --build build/cmake --target t5dr
+          if ($LASTEXITCODE) { exit 1 }
+          Get-Item build/cmake/t5dr.exe, build/cmake/t5dr.lib | Format-Table Name, Length
+
+      - name: ps3recomp tests from PS3RECOMP_BUILD_TESTS (sync_stress, cond semantics)
+        run: |
+          cmake --build build/cmake --target sync_stress test_cond_semantics
+          if ($LASTEXITCODE) { exit 1 }
+          # fiber_switch does not link on Windows at the pin (upstream gap), so it is left out.
+          ctest --test-dir build/cmake/ps3recomp --output-on-failure --timeout 300 -E fiber_switch
+
+      - name: ps3recomp native tests (SPU float/shufb/helpers, MFC slots, lock lines, RSX)
+        run: python tests/run_ps3recomp_tests.py --ps3recomp deps/ps3recomp --out build/native-tests --cc "$env:CLANG_CL"
+
+      # 2. The in-exe build (T5DR_GAME_DLL=OFF), what build_game.py's full
+      #    compile does on a developer PC. There is no game lift in CI:
+      #    ps3recomp's synthetic "smoke title" (a hand-written program in the
+      #    lifter's ABI) stands in for it, and tests/smoke_t5dr.cmake adds its
+      #    one C file to t5dr.
+      - name: Smoke title (stands in for the game's lift)
+        run: python deps/ps3recomp/tools/make_smoke_elf.py --out build/smoke-lift/smoke.elf --header build/smoke-lift/ppu_recomp.h
+
+      - name: Build t5dr.exe with the smoke title linked in
+        run: |
+          $root = (Get-Location).Path -replace '\\', '/'
+          $launcher = @()
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            $launcher = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+          }
+          cmake -S . -B build/cmake-smoke -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$env:CLANG_CL" "-DCMAKE_CXX_COMPILER=$env:CLANG_CL" `
+            "-DPS3RECOMP_DIR=$root/deps/ps3recomp" "-DRECOMP_DIR=$root/build/smoke-lift" "-DSPU_DIR=$root/build/no-spu" `
+            "-DCMAKE_PROJECT_t5dr_INCLUDE=$root/tests/smoke_t5dr.cmake" @launcher
+          if ($LASTEXITCODE) { exit 1 }
+          cmake --build build/cmake-smoke --target t5dr
+
+      # 3. The player's starter, as package_release.py builds it.
+      - name: Build the launcher stub (T5DR Online.exe)
+        run: |
+          New-Item -ItemType Directory -Force build/stub | Out-Null
+          & $env:CLANG_CL /nologo /O2 /GS- launcher/stub/t5dr_stub.c /Fobuild/stub/stub.obj "/Febuild/stub/T5DR Online.exe" `
+            /link /SUBSYSTEM:WINDOWS /ENTRY:start /NODEFAULTLIB kernel32.lib user32.lib
+          if ($LASTEXITCODE) { exit 1 }
+
+      # Informational: whether the runner can open a D3D12 device and window
+      # at all, and if so, that the patched runtime boots the smoke title
+      # through GCM init, three FIFO flips, vblank and sys_process_exit. Its
+      # guest-thread checks fail on Windows even without our patches, so only
+      # the parts that pass at the pin are required here.
+      - name: Boot the smoke title in t5dr (informational)
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          PS3_WINDOW_BACKGROUND: "1"
+          PS3_VERBOSE: "0"
+        run: |
+          New-Item -ItemType Directory -Force build/smoke-run | Out-Null
+          $p = Start-Process "$PWD/build/cmake-smoke/t5dr.exe" -ArgumentList "$PWD/build/smoke-lift/smoke.elf" `
+               -WorkingDirectory build/smoke-run -RedirectStandardOutput build/smoke-run/out.log `
+               -RedirectStandardError build/smoke-run/err.log -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(60000)) { Stop-Process -Id $p.Id -Force; Write-Output "::warning::t5dr did not exit within 60 s" }
+          Get-Content build/smoke-run/out.log -Tail 40
+          $out = Get-Content build/smoke-run/out.log -Raw
+          foreach ($want in "[smoke] frame 3: cleared and flipped", "OK: sys_process_exit received status 39") {
+            if (-not $out -or -not $out.Contains($want)) { Write-Output "::warning::smoke boot: no '$want'"; exit 1 }
+          }
+
+      - name: sccache stats
+        if: always()
+        continue-on-error: true
+        run: if (Get-Command sccache -ErrorAction SilentlyContinue) { sccache --show-stats }

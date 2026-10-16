@@ -1,8 +1,16 @@
 diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
-index d2f8c67..87db3ca 100644
+index d2f8c67..c2cf856 100644
 --- a/libs/audio/cellAudio.c
 +++ b/libs/audio/cellAudio.c
-@@ -280,12 +280,23 @@ static int audio_backend_init(void)
+@@ -52,6 +52,7 @@ extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+   #include <windows.h>
+   #include <mmdeviceapi.h>
+   #include <audioclient.h>
++  #include <timeapi.h>     /* timeBeginPeriod: even 5.33 ms notify pacing */
+   #include <process.h>
+ 
+   /* Define WASAPI COM GUIDs (avoids needing uuid.lib linkage for these) */
+@@ -280,12 +281,23 @@ static int audio_backend_init(void)
  
      /* Request event-driven mode with a ~20ms buffer */
      REFERENCE_TIME buf_duration = 200000; /* 20ms in 100ns units */
@@ -27,7 +35,7 @@ index d2f8c67..87db3ca 100644
          buf_duration, 0, &wfx, NULL);
  
      if (FAILED(hr)) {
-@@ -293,7 +304,7 @@ static int audio_backend_init(void)
+@@ -293,7 +305,7 @@ static int audio_backend_init(void)
          hr = s_wasapi_client->lpVtbl->Initialize(
              s_wasapi_client,
              AUDCLNT_SHAREMODE_SHARED,
@@ -36,6 +44,28 @@ index d2f8c67..87db3ca 100644
          if (FAILED(hr)) {
              printf("[cellAudio] WASAPI Initialize failed: 0x%08lX\n", hr);
              s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+@@ -566,10 +578,20 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+      * With no device, pace on the performance counter instead. */
+     LARGE_INTEGER qf, q0; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&q0);
+     unsigned long long blocks = 0;
++    /* PS3_AUDIO_DEVICE_PACE=1 restores pacing purely on device room. That
++     * hands out blocks in bursts -- WASAPI frees ~10 ms at a time, so two
++     * blocks are mixed and two notify events sent back to back -- and a title
++     * that renders exactly one block per notify (Tekken 5 DR's SPU sound core)
++     * then leaves every other block silent. The PS3 fires its notify evenly
++     * every 5.33 ms; do the same on the performance counter, and use the
++     * device room only as a ceiling. */
++    static int dev_pace = -1;
++    if (dev_pace < 0) dev_pace = getenv("PS3_AUDIO_DEVICE_PACE") ? 1 : 0;
++    timeBeginPeriod(1);   /* Sleep(1) must mean ~1 ms, not the 15.6 ms default tick */
+     while (s_mix_thread_running) {
+         const int room = audio_backend_room();
+         if (room >= 0 && room < CELL_AUDIO_BLOCK_SAMPLES) { audio_backend_wait(); continue; }
+-        if (room < 0) {
++        if (room < 0 || !dev_pace) {
+             LARGE_INTEGER now; QueryPerformanceCounter(&now);
+             const long long due = q0.QuadPart +
+                 (long long)(blocks * CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE);
 diff --git a/libs/codec/cellPamf.c b/libs/codec/cellPamf.c
 index 1b6275d..b250b4f 100644
 --- a/libs/codec/cellPamf.c

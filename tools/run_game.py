@@ -26,6 +26,7 @@ def main():
     env.setdefault("PS3_TITLE", "Tekken 5: Dark Resurrection Online")
     env.setdefault("PS3_GCM_TICKER_PUMP", "1")   # GCM handlers on the ticker thread (see patches)
     env.setdefault("RSX_LIVE_DRAW", "1")         # the NV4097 -> D3D12 draw engine; the default backend shows black
+    env.setdefault("PS3_VERBOSE", "0")           # per-wait logging costs whole frames and starves the sound core
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v

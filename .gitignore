@@ -47,3 +47,6 @@ deps/
 
 # ps3recomp writes save data under the working directory
 gamedata/
+
+# Runtime output in the working directory (shader cache from game shaders, timings)
+scratch/

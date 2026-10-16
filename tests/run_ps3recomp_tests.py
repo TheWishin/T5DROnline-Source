@@ -51,11 +51,13 @@ TESTS = [
     # Windows but crashes the same way on the unpatched pin), and
     # libs/video/tests/test_gcm_user_command.c / libs/audio/tests/
     # test_audio_ring.c (POSIX-only, and not run by upstream CI either).
+    # The two SPU tests run 12k+ multi-threaded cases: ~20 s on a 32-thread
+    # desktop, ~41 s pinned to 4 cores, over 120 s on a GitHub runner.
     ("spu_mfc_slots", ["runtime/spu/tests/test_spu_mfc_slots.c"] + SPU_CORE,
-     ["runtime/spu", "runtime/platform", SHIM], [], 120,
+     ["runtime/spu", "runtime/platform", SHIM], [], 600,
      "MFC engine slots; links spu_workload.c + spurs_job.c (patch 0002)"),
     ("spu_lockline_peer", ["runtime/spu/tests/test_spu_lockline_peer.c"] + SPU_CORE,
-     ["runtime/spu", "runtime/platform", SHIM], [], 120,
+     ["runtime/spu", "runtime/platform", SHIM], [], 600,
      "SPU-to-SPU lock-line coherence; links spu_workload.c + spurs_job.c (patch 0002)"),
     ("texture_layout", ["libs/video/tests/test_texture_layout.c", "libs/video/rsx_texture_layout.c"],
      ["libs/video"], [], 120, "RSX texture layout"),

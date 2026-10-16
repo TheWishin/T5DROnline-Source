@@ -1,0 +1,7 @@
+# Lobby server state (accounts, matches) -- never commit
+*.db
+*.db-wal
+*.db-shm
+# TLS keys for a self-hosted server
+*.pem
+*.key

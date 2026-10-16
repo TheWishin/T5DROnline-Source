@@ -125,6 +125,11 @@ if(NOT T5DR_GAME_DLL)
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
 endif()
 
+# Netplay prototype (our own code, src/netplay/): off unless T5_NET_MODE is set.
+file(GLOB NETPLAY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/*.cpp")
+target_sources(t5dr PRIVATE ${NETPLAY_SOURCES})
+set_source_files_properties(${NETPLAY_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")
 target_include_directories(t5dr PRIVATE

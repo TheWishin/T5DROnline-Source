@@ -211,9 +211,11 @@ class OnlineTab:
                 if then:
                     self.ui_q.put(lambda: then(r))
             except LobbyError as e:
-                self.ui_q.put(lambda: self.status(f"Lobby: {e.msg or e.code}"))
+                text = f"Lobby: {e.msg or e.code}"       # (e is unbound once the except block ends)
+                self.ui_q.put(lambda: self.status(text))
             except Exception as e:   # noqa: BLE001 -- shown to the player, not swallowed
-                self.ui_q.put(lambda: self.status(f"Lobby error: {e}"))
+                text = f"Lobby error: {e}"
+                self.ui_q.put(lambda: self.status(text))
             self.ui_q.put(self._set_actions)
         threading.Thread(target=work, daemon=True).start()
 

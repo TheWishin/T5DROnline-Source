@@ -865,10 +865,14 @@ class LobbyServer:
         if m.state != "nat":
             return
         missing = [p for i, p in enumerate(m.players) if m.public_ep[i] is None]
-        if len(missing) == 1:
-            missing[0].send({"t": "notice", "code": "udp_blocked",
-                             "msg": "your PC's UDP packets did not reach the lobby server; check the firewall"})
-        self.cancel_match(m, "udp_unreachable", by=missing[0] if len(missing) == 1 else None)
+        if missing:
+            if len(missing) == 1:
+                missing[0].send({"t": "notice", "code": "udp_blocked",
+                                 "msg": "your PC's UDP packets did not reach the lobby server; check the firewall"})
+            self.cancel_match(m, "udp_unreachable", by=missing[0] if len(missing) == 1 else None)
+        else:   # UDP fine, but a client never sent nat_local (crashed or too old)
+            silent = [p for i, p in enumerate(m.players) if m.nat_info[i] is None]
+            self.cancel_match(m, "no_connection", by=silent[0] if len(silent) == 1 else None)
 
     def udp_register(self, token, addr, probe):
         """Called by the UDP service for REGISTER / PROBE packets. True -> acknowledge."""

@@ -120,6 +120,14 @@ class TkTabTest(unittest.TestCase):
         self.pump(lambda: "Result confirmed" in tab.status_var.get())
         self.assertIn("1W 0L", tab.me_var.get())
 
+    def test_login_error_shows_in_status(self):
+        self.other = client(self.s, "TabUser")
+        self.tab.server_var.set(self.s.addr)
+        self.tab.do_login("guest")
+        self.pump(lambda: "someone with that name is online" in self.tab.status_var.get())
+        self.assertIsNone(self.tab.client)
+        self.assertEqual(str(self.tab.b_guest.cget("state")), "normal")
+
     def test_result_file_is_reported_automatically(self):
         import json
         tab = self.tab

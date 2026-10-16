@@ -5,7 +5,6 @@ Covers: login (guest, account, lockout), lobby list, chat, quick match with hole
 handshake over the handed-over ports, rooms + ready check + rematch, challenges, result
 reporting and Glicko-2 updates (confirmed, disputed, one-sided), version checks, rate limits,
 UDP-blocked cancellation, session resume and socket handover."""
-import asyncio
 import json
 import os
 import socket

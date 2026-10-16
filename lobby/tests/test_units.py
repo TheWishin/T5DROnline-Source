@@ -43,7 +43,7 @@ class ProtoTest(unittest.TestCase):
     def test_line_codec(self):
         m = {"t": "chat", "text": "héllo"}
         self.assertEqual(proto.decode(proto.encode(m).rstrip(b"\n")), m)
-        for bad in (b"[1]", b"{}", b'{"t": 5}', b"nope"):
+        for bad in (b"[1]", b"{}", b'{"t": 5}', b"nope", b"[" * 100000 + b"]" * 100000):
             with self.assertRaises(ValueError):
                 proto.decode(bad)
 

@@ -197,6 +197,16 @@ class MatchTest(Base):
         host, join = (ta, tb) if ta.role == "host" else (tb, ta)
         game_link(host, join)
 
+    def test_local_candidates_must_be_private(self):
+        # A client cannot make its opponent punch toward public hosts by claiming them as "local".
+        with mock.patch("t5lobby.client.local_ipv4s", lambda ip: ["8.8.8.8", "10.1.2.3", "169.254.1.1"]):
+            a, b = self.pair()
+            ta, tb = self.start_quick(a, b)
+        self.assertEqual(ta.path, "direct")            # 10.1.2.3 leads nowhere; the public endpoint works
+        infos = self.s.call(lambda: [i["addrs"] for i in self.s.srv.by_name["alice"].match.nat_info])
+        for addrs in infos:
+            self.assertEqual([ip for ip, _port in addrs], ["10.1.2.3"])
+
     def test_forced_relay_when_punch_fails(self):
         # Bob ignores every direct packet from Alice: punching fails both ways -> relay.
         a, b = self.pair(b={"block_direct": True})

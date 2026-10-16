@@ -171,7 +171,8 @@ class UdpService:
                 self._forward(transport, hit[0], hit[1], data)
                 return
         if kind is None:
-            if which == 0 and self._try_relatch(transport, data, addr):
+            relatch_ok = which == 0 and self.relays and self.ctl_buckets.take(addr[0])
+            if relatch_ok and self._try_relatch(transport, data, addr):
                 return
             self.stats["dropped"] += 1
             return

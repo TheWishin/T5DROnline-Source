@@ -56,7 +56,10 @@ def encode(msg):
 
 def decode(line):
     """bytes (one line) -> dict; raises ValueError on anything that is not a JSON object with a string "t"."""
-    obj = json.loads(line.decode("utf-8"))
+    try:
+        obj = json.loads(line.decode("utf-8"))
+    except RecursionError:          # [[[[...]]]] nested deeper than the parser's stack
+        raise ValueError("nested too deeply") from None
     if not isinstance(obj, dict) or not isinstance(obj.get("t"), str):
         raise ValueError("not a message")
     return obj

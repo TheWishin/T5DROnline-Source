@@ -11,6 +11,7 @@ Match life cycle (states):
     done       results reconciled (or cancelled / void)
 """
 import asyncio
+import ipaddress
 import logging
 import os
 import ssl
@@ -889,9 +890,16 @@ class LobbyServer:
         m = self._get_match(p, msg, ("nat", "punch", "relay"))
         side = m.side(p)
         addrs = []
-        for a in msg.get("addrs", [])[:8]:
+        loopback_ok = m.public_ep[side] is not None and m.public_ep[side][0].startswith("127.")
+        for a in list(msg.get("addrs", []))[:8]:
             ip, port = str(a[0]), int(a[1])
-            if 0 < port < 65536 and ip.count(".") == 3:
+            try:
+                ipa = ipaddress.IPv4Address(ip)
+            except ValueError:
+                continue
+            # Only private interface addresses: the peer will send punches there, and a client must
+            # not be able to aim them at arbitrary hosts on the internet.
+            if 0 < port < 65536 and ipa.is_private and not ipa.is_link_local and (loopback_ok or not ipa.is_loopback):
                 addrs.append([ip, port])
         m.nat_info[side] = {"addrs": addrs, "nat": str(msg.get("nat", "unknown"))[:16],
                             "port": int(msg.get("port", 0))}

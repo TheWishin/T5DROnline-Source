@@ -17,6 +17,8 @@ Passed for the game side to pick up (not read yet; see docs/ONLINE.md):
     T5_NET_PATH         direct | lan | relay
     T5_NET_RTT_MS       measured round trip
     T5_NET_SEED         32-bit value both sides share (the netplay may use it as match seed)
+    T5_NET_BUILD        build id both players share (could go into the netplay HELLO to refuse a
+                        mismatched peer on direct-IP connections that bypass the lobby)
     T5_NET_RESULT_FILE  where the game writes {"winner": 0|1|null, "score": [p1, p2]} at the end
     T5_NET_SOCKET_FILE  (handover="share" only) file that receives the duplicated socket, see below
 
@@ -64,6 +66,7 @@ class MatchTicket:
             "T5_NET_PATH": self.path,
             "T5_NET_RTT_MS": f"{self.rtt_ms:.1f}",
             "T5_NET_SEED": str(self.seed),
+            "T5_NET_BUILD": self.build,
         }
         rf = result_file or self.result_file
         if rf:

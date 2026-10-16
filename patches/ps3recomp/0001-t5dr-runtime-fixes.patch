@@ -1,3 +1,93 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index d2f8c67..87db3ca 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -280,12 +280,23 @@ static int audio_backend_init(void)
+ 
+     /* Request event-driven mode with a ~20ms buffer */
+     REFERENCE_TIME buf_duration = 200000; /* 20ms in 100ns units */
++    /* Shared mode only accepts the endpoint's own mix rate unless the audio
++     * engine is told to convert. A device running at 44.1 or 96 kHz otherwise
++     * rejects our 48 kHz stream with AUDCLNT_E_UNSUPPORTED_FORMAT (0x88890008)
++     * and every title is silent. */
++#ifndef AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
++#define AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM 0x80000000
++#endif
++#ifndef AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
++#define AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000
++#endif
++    const DWORD conv = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+     s_wasapi_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+ 
+     hr = s_wasapi_client->lpVtbl->Initialize(
+         s_wasapi_client,
+         AUDCLNT_SHAREMODE_SHARED,
+-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
++        AUDCLNT_STREAMFLAGS_EVENTCALLBACK | conv,
+         buf_duration, 0, &wfx, NULL);
+ 
+     if (FAILED(hr)) {
+@@ -293,7 +304,7 @@ static int audio_backend_init(void)
+         hr = s_wasapi_client->lpVtbl->Initialize(
+             s_wasapi_client,
+             AUDCLNT_SHAREMODE_SHARED,
+-            0, buf_duration, 0, &wfx, NULL);
++            conv, buf_duration, 0, &wfx, NULL);
+         if (FAILED(hr)) {
+             printf("[cellAudio] WASAPI Initialize failed: 0x%08lX\n", hr);
+             s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+diff --git a/libs/codec/cellPamf.c b/libs/codec/cellPamf.c
+index 1b6275d..b250b4f 100644
+--- a/libs/codec/cellPamf.c
++++ b/libs/codec/cellPamf.c
+@@ -191,6 +191,7 @@ s32 cellPamfReaderGetPresentationStartTime(CellPamfReader* reader, u64* startTim
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialised (bad header) */
+     vm_write64((u32)(uintptr_t)startTime, (u64)be32(base + PAMF_OFF_PRESENT_START));
+     return CELL_OK;
+ }
+@@ -202,6 +203,7 @@ s32 cellPamfReaderGetPresentationEndTime(CellPamfReader* reader, u64* endTime)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialised (bad header) */
+     vm_write64((u32)(uintptr_t)endTime, (u64)be32(base + PAMF_OFF_PRESENT_END));
+     return CELL_OK;
+ }
+@@ -213,6 +215,7 @@ u32 cellPamfReaderGetMuxRateBound(CellPamfReader* reader)
+         return 0;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialised (bad header) */
+     return be32(base + PAMF_OFF_MUX_RATE);
+ }
+ 
+@@ -236,6 +239,7 @@ static const u8* get_stream_desc_raw(CellPamfReader* reader, u32 index)
+         return NULL;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return NULL;   /* never initialised (bad header) */
+     return base + reader->streamTableOffset + index * PAMF_STREAM_DESC_SIZE;
+ }
+ 
+@@ -482,6 +486,7 @@ s32 cellPamfReaderGetNumberOfEp(CellPamfReader* reader, s32* numEp)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialised (bad header) */
+     vm_write32((u32)(uintptr_t)numEp, be32(base + PAMF_OFF_EP_COUNT));
+     return CELL_OK;
+ }
+@@ -493,6 +498,7 @@ s32 cellPamfReaderGetEp(CellPamfReader* reader, u32 epIndex, CellPamfEp* ep)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
+     const u8* base = (const u8*)reader->pamfAddr;
++    if (!base) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialised (bad header) */
+     u32 epCount = be32(base + PAMF_OFF_EP_COUNT);
+     if (epIndex >= epCount)
+         return (s32)CELL_PAMF_ERROR_EP_NOT_FOUND;
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
 index b726efe..f7b5a48 100644
 --- a/libs/spurs/cellSpurs.c

@@ -55,6 +55,27 @@ add_custom_command(
             ${HLE_LIB_SOURCES}
     COMMENT "Generating the HLE NID table")
 
+# Lifted SPU images (tools/build_game.py step "spu"): <SPU_DIR>/lifted/<image>/
+# plus spu_workloads.c, which registers each by content fingerprint so the
+# runtime runs the lifted code when the game starts that image.
+set(SPU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/spu" CACHE PATH "Lifted SPU images")
+get_filename_component(SPU_DIR "${SPU_DIR}" ABSOLUTE)
+file(GLOB SPU_LIFTED CONFIGURE_DEPENDS "${SPU_DIR}/lifted/*/spu_recomp.c")
+set(SPU_SOURCES "")
+if(SPU_LIFTED AND EXISTS "${SPU_DIR}/spu_workloads.c")
+    list(LENGTH SPU_LIFTED SPU_IMAGE_COUNT)
+    message(STATUS "Lifted SPU:     ${SPU_IMAGE_COUNT} image(s)")
+    # spu_dispatch_mt.c is the musttail indirect-branch path; it must be built
+    # by clang, or deep guest loops walk the thread stack off its guard page.
+    set(SPU_SOURCES ${SPU_LIFTED} "${SPU_DIR}/spu_workloads.c"
+        "${PS3RECOMP_DIR}/runtime/spu/spu_dispatch_mt.c")
+    set_source_files_properties(${SPU_SOURCES} PROPERTIES
+        INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
+        COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
+else()
+    message(WARNING "No lifted SPU images in ${SPU_DIR} -- the sound core will not run")
+endif()
+
 add_executable(t5dr
     "${PS3RECOMP_DIR}/runtime/ppu/tests/boot_main.cpp"   # generic boot harness
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp"        # vm + ELF loader + run
@@ -63,6 +84,7 @@ add_executable(t5dr
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_fs.cpp"            # cellFs VFS
     ${HLE_NID_TABLE}
     ${RECOMP_SOURCES}
+    ${SPU_SOURCES}
 )
 
 # The generated NID table includes every module's header.

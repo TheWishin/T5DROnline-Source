@@ -25,6 +25,7 @@ def main():
     env["PS3_HDD0_ROOT"] = os.path.join(VFS, "dev_hdd0").replace("\\", "/")
     env.setdefault("PS3_TITLE", "Tekken 5: Dark Resurrection Online")
     env.setdefault("PS3_GCM_TICKER_PUMP", "1")   # GCM handlers on the ticker thread (see patches)
+    env.setdefault("RSX_LIVE_DRAW", "1")         # the NV4097 -> D3D12 draw engine; the default backend shows black
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v

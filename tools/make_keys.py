@@ -15,7 +15,10 @@ import sys
 import urllib.request
 
 RAW = "https://raw.githubusercontent.com/RPCS3/rpcs3/master/rpcs3/Crypto/"
-NAMED = ["NP_KLIC_KEY", "RAP_KEY", "RAP_PBOX", "RAP_E1", "RAP_E2"]
+# PKG_AES_KEY / PKG_AES_KEY2: the package (outer layer) keys. A release zip
+# carries a copy of ps3recomp's pkg_extract.py with them taken out; it reads
+# them from this file instead (T5DR_KEYS, set by build_game.py).
+NAMED = ["NP_KLIC_KEY", "RAP_KEY", "RAP_PBOX", "RAP_E1", "RAP_E2", "PKG_AES_KEY", "PKG_AES_KEY2"]
 
 
 def read(source, name):

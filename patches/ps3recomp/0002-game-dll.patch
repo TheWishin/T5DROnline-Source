@@ -1,0 +1,116 @@
+diff --git a/runtime/ppu/ppu_game_dll.h b/runtime/ppu/ppu_game_dll.h
+new file mode 100644
+index 0000000..3760cae
+--- /dev/null
++++ b/runtime/ppu/ppu_game_dll.h
+@@ -0,0 +1,32 @@
++/* PS3_GAME_DLL: the lifted game code is not linked into the executable. It is a
++ * separate DLL next to it (PS3_GAME_DLL_NAME), which a port can build on the
++ * player's PC with nothing but clang-cl and lld-link: the generated code needs no
++ * C runtime or Windows SDK headers, so no Visual Studio is needed there.
++ *
++ * The executable (this runtime) exports what the generated code calls (vm_*,
++ * ps3_hle_call, lv2_syscall, the spu_* channel functions, vm_base, ...); the DLL
++ * exports function_table, function_table_count, ppu_game_tramp_slot (the address
++ * of ITS thread-local g_trampoline_fn for the calling thread) and ppu_game_init
++ * (runs its static constructors -- it has no CRT to do that).
++ *
++ * Include after ppu_recomp.h. ppu_game_dll_load() must run before the first use
++ * of the table; boot_main.cpp calls it first thing. */
++#pragma once
++#ifdef PS3_GAME_DLL
++#ifndef PS3_GAME_DLL_NAME
++#  define PS3_GAME_DLL_NAME "game.dll"
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern const func_entry* ppu_game_table;
++extern uint64_t ppu_game_table_count;
++extern void (**(*ppu_game_tramp_slot)(void))(void*);
++int ppu_game_dll_load(void);
++#ifdef __cplusplus
++}
++#endif
++#define function_table       ppu_game_table
++#define function_table_count ppu_game_table_count
++#define g_trampoline_fn      (*ppu_game_tramp_slot())
++#endif
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 7200ca8..ffbfbcd 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -39,6 +39,7 @@
+ #define PPU_NO_INLINE_LOADS   /* this file defines the out-of-line accessors */
+ #include "ppu_recomp.h"
+ #include "ps3emu/milestone.h"   /* ps3_ms / ps3_msf -- boot milestone log */     /* ppu_context, func decls, ppu_recomp_register */
++#include "ppu_game_dll.h"      /* PS3_GAME_DLL: lifted code in a separate DLL */
+ #include "../memory/vm.h"   /* vm_commit -- sys_mmapper_search_and_map maps for real */
+ #include "../platform/win32_compat.h"      /* Win32 types, interlocked ops, Sleep/QPC on POSIX */
+ #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
+@@ -2105,7 +2106,43 @@ void flow_lookup_alloc(unsigned int p) {
+ }
+ 
+ /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
++#ifndef PS3_GAME_DLL
+ extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = nullptr;
++#else
++/* The game DLL owns g_trampoline_fn (its code sets it on every tail call); the
++ * runtime reaches the calling thread's copy through ppu_game_tramp_slot(). */
++extern "C" const func_entry* ppu_game_table = nullptr;
++extern "C" uint64_t ppu_game_table_count = 0;
++extern "C" void (**(*ppu_game_tramp_slot)(void))(void*) = nullptr;
++
++extern "C" int ppu_game_dll_load(void)
++{
++    char path[MAX_PATH];
++    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
++    while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
++    snprintf(path + n, MAX_PATH - n, "%s", PS3_GAME_DLL_NAME);
++    HMODULE m = LoadLibraryA(path);
++    if (!m) {
++        fprintf(stderr, "[game-dll] cannot load %s (error %lu)\n", path, (unsigned long)GetLastError());
++        return -1;
++    }
++    const func_entry* table = (const func_entry*)GetProcAddress(m, "function_table");
++    const uint64_t* count = (const uint64_t*)GetProcAddress(m, "function_table_count");
++    void* slot = (void*)GetProcAddress(m, "ppu_game_tramp_slot");
++    void (*init)(void) = (void (*)(void))GetProcAddress(m, "ppu_game_init");
++    if (!table || !count || !slot || !init) {
++        fprintf(stderr, "[game-dll] %s lacks an export (table %p count %p slot %p init %p)\n",
++                path, (const void*)table, (const void*)count, slot, (void*)init);
++        return -1;
++    }
++    ppu_game_table = table;
++    ppu_game_table_count = *count;
++    ppu_game_tramp_slot = (void (**(*)(void))(void*))slot;
++    init();   /* the DLL's static constructors (lifted SPU image registration) */
++    fprintf(stderr, "[game-dll] %s: %llu lifted functions\n", path, (unsigned long long)ppu_game_table_count);
++    return 0;
++}
++#endif
+ 
+ /* Per-thread active guest context, for the crash handler to report the guest PC
+  * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 0425469..39ca171 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -23,6 +23,7 @@
+  */
+ #include <stdarg.h>
+ #include "ppu_recomp.h"
++#include "ppu_game_dll.h"       /* PS3_GAME_DLL: lifted code in a separate DLL */
+ #include "ps3emu/milestone.h"   /* ps3_ms / ps3_ms_kv -- boot milestone log */
+ /* PPU_THREAD_LOCAL only -- NOT ppu_context.h, which would redefine the struct
+  * a generated ppu_recomp.h already declares. Ports generated before the
+@@ -1107,6 +1108,9 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
+ int main(int argc, char** argv)
+ {
+     if (argc < 2) { printf("usage: %s <PPU ELF>\n", argv[0]); return 2; }
++#ifdef PS3_GAME_DLL
++    if (ppu_game_dll_load() != 0) return 3;   /* before anything touches function_table */
++#endif
+ 
+ #ifdef _WIN32
+ #pragma comment(lib, "winmm.lib")

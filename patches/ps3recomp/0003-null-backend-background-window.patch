@@ -1,0 +1,29 @@
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 32e8a95..48b2718 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -251,10 +251,14 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     RECT wr = {0, 0, (LONG)width, (LONG)height};
+     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+ 
++    /* PS3_WINDOW_BACKGROUND=1: open minimized and without taking focus, as the
++     * D3D12 backend does -- with RSX_LIVE_DRAW=1 this is the window the game
++     * shows, so the switch has to work here too. */
++    const int background = getenv("PS3_WINDOW_BACKGROUND") != NULL;
+     s_state.hwnd = CreateWindowExA(
+         0, "ps3recomp_null",
+         title ? title : "ps3recomp",
+-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
++        WS_OVERLAPPEDWINDOW | (background ? 0 : WS_VISIBLE),
+         CW_USEDEFAULT, CW_USEDEFAULT,
+         wr.right - wr.left, wr.bottom - wr.top,
+         NULL, NULL, GetModuleHandle(NULL), NULL);
+@@ -263,6 +267,8 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+         printf("[RSX null] ERROR: CreateWindow failed (%lu)\n", GetLastError());
+         return -1;
+     }
++    if (background)
++        ShowWindow(s_state.hwnd, SW_SHOWMINNOACTIVE);
+ 
+     s_state.hdc = GetDC(s_state.hwnd);
+     s_state.last_fps_time = GetTickCount64();

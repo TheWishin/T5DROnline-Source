@@ -30,7 +30,26 @@ get_filename_component(RECOMP_DIR "${RECOMP_DIR}" ABSOLUTE)
 if(NOT EXISTS "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp")
     message(FATAL_ERROR "No ps3recomp checkout at ${PS3RECOMP_DIR} -- pass -DPS3RECOMP_DIR=")
 endif()
-if(NOT EXISTS "${RECOMP_DIR}/ppu_recomp.h")
+# T5DR_GAME_DLL=ON: t5dr.exe is the runtime alone and exports what the lifted code
+# calls (tools/gamedll/t5dr_host.def); the lifted PPU/SPU code is built separately
+# into t5dr_game.dll by tools/build_game_dll.py, with clang-cl + lld-link and no
+# MSVC/Windows SDK headers or libraries -- the part a player's PC would build.
+# The host then needs nothing from the game: ppu_loader.cpp and boot_main.cpp only
+# use the fixed part of the lifter's header (ppu_lifter.HEADER_PREAMBLE).
+option(T5DR_GAME_DLL "Lifted code in t5dr_game.dll (tools/build_game_dll.py) instead of in t5dr.exe" OFF)
+if(T5DR_GAME_DLL)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(RECOMP_DIR "${CMAKE_BINARY_DIR}/generic_recomp")
+    file(MAKE_DIRECTORY "${RECOMP_DIR}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+                "import sys; sys.path.insert(0, sys.argv[1]); import ppu_lifter; open(sys.argv[2], 'w').write(ppu_lifter.HEADER_PREAMBLE)"
+                "${PS3RECOMP_DIR}/tools" "${RECOMP_DIR}/ppu_recomp.h"
+        RESULT_VARIABLE HEADER_RC)
+    if(HEADER_RC)
+        message(FATAL_ERROR "Could not write the generic ppu_recomp.h from ppu_lifter.py")
+    endif()
+elseif(NOT EXISTS "${RECOMP_DIR}/ppu_recomp.h")
     message(FATAL_ERROR "No lifted code in ${RECOMP_DIR} -- run tools/build_game.py first")
 endif()
 
@@ -72,8 +91,14 @@ if(SPU_LIFTED AND EXISTS "${SPU_DIR}/spu_workloads.c")
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
-else()
+elseif(NOT T5DR_GAME_DLL)
     message(WARNING "No lifted SPU images in ${SPU_DIR} -- the sound core will not run")
+endif()
+
+if(T5DR_GAME_DLL)
+    set(GAME_SOURCES "")
+else()
+    set(GAME_SOURCES ${RECOMP_SOURCES} ${SPU_SOURCES})
 endif()
 
 add_executable(t5dr
@@ -83,9 +108,12 @@ add_executable(t5dr
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_sysprx.cpp"        # boot-critical CRT
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_fs.cpp"            # cellFs VFS
     ${HLE_NID_TABLE}
-    ${RECOMP_SOURCES}
-    ${SPU_SOURCES}
+    ${GAME_SOURCES}
 )
+if(T5DR_GAME_DLL)
+    target_compile_definitions(t5dr PRIVATE PS3_GAME_DLL "PS3_GAME_DLL_NAME=\"t5dr_game.dll\"")
+    target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
+endif()
 
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")

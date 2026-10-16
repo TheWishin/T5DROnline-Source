@@ -1,0 +1,41 @@
+; What t5dr.exe (the prebuilt runtime) exports to t5dr_game.dll (the lifted code,
+; built on the player's PC). Linking t5dr.exe with /DEF:this also writes t5dr.lib,
+; the import library the game DLL links against. List = every runtime symbol the
+; generated code references (llvm-nm -u over the lifted objects), plus the rest of
+; the ppu_recomp.h / spu_context.h API so another lift cannot miss one.
+EXPORTS
+    vm_read8
+    vm_read16
+    vm_read32
+    vm_read64
+    vm_write8
+    vm_write16
+    vm_write32
+    vm_write64
+    ppu_stwcx32
+    ppu_stdcx64
+    ppu_resv_line_note
+    ppu_timebase_now
+    ps3_hle_call
+    ps3_indirect_call
+    lv2_syscall
+    spu_begin_image
+    spu_drain_call
+    spu_halt
+    spu_img_restore
+    spu_indirect_branch
+    spu_lookup
+    spu_ls_watch_slow
+    spu_overlay_register_region_at
+    spu_rchcnt
+    spu_rdch
+    spu_register_function
+    spu_stop
+    spu_workload_register_img
+    spu_wrch
+    vm_base                 DATA
+    vm_inline_ok            DATA
+    ppu_vm_size             DATA
+    ppu_hle_inject_base     DATA
+    g_spu_ls_dbg            DATA
+    g_spu_ls_watch_n        DATA

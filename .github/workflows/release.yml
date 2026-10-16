@@ -1,0 +1,280 @@
+# Release: build the player zip and publish it as a GitHub Release.
+#
+#   git tag -a v0.1.0-preview -m "T5DR Online 0.1.0-preview" && git push origin v0.1.0-preview
+#
+# A pushed tag vMAJOR.MINOR.PATCH[-suffix] on a commit of main:
+#   build    (windows-latest, read-only token) builds the zip exactly as
+#            tools/package_release.py --release does on a developer PC, scans it
+#            for game data, unpacks and smoke-tests it, and keeps zip + SHA256SUMS
+#            + release notes as a workflow artifact;
+#   publish  (environment "release": waits for the owner's approval) creates the
+#            GitHub Release from that artifact. A suffix (-preview, -rc1, ...)
+#            makes it a pre-release. Release notes = the tag's section of CHANGELOG.md.
+#
+# Dry runs build and check everything and publish nothing: "Run workflow" on the
+# Actions tab, or any push to a branch that changes the release tooling (the
+# paths below). Only the repository owner may push release tags or start runs
+# by hand. See docs/RELEASING.md (also: re-running, yanking a bad release).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+    # Path filters apply to branch pushes only; a tag push always runs.
+    branches: ["**"]
+    paths:
+      - .github/workflows/release.yml
+      - tools/package_release.py
+      - tools/fetch_llvm.py
+      - tools/release_notes.py
+      - tools/smoke_release.py
+      - tools/release-requirements.txt
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version stamped into the test zip, without v (empty: 0.0.0-dryrun.<run number>). Never publishes."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+  # The CPython the zip ships in python/ (copied from this interpreter). 3.12.10
+  # is the last 3.12 with python.org Windows binaries; the dev PC has the same.
+  PYTHON_VERSION: "3.12.10"
+
+jobs:
+  build:
+    name: Build and check the player zip
+    runs-on: windows-latest
+    timeout-minutes: 75
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prerelease: ${{ steps.ver.outputs.prerelease }}
+      publish: ${{ steps.ver.outputs.publish }}
+    steps:
+      # The owner pushes tags with their own credentials, so this cannot tell the
+      # owner from a tool using those credentials -- the "release" environment's
+      # required reviewer (the publish job) is what guarantees a human approval.
+      # It does stop anyone else with write access, and re-runs started by others.
+      - name: Only the repository owner releases
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        shell: bash
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$ACTOR" != "$OWNER" ] || [ "$TRIGGERING_ACTOR" != "$OWNER" ]; then
+            echo "::error::Only $OWNER makes releases (actor: $ACTOR, started by: $TRIGGERING_ACTOR)."
+            exit 1
+          fi
+          echo "started by $ACTOR (owner)"
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # the tag must be on main: needs origin/main's history
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Version
+        id: ver
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = push ] && [ "$REF_TYPE" = tag ]; then
+            tag="$REF_NAME"
+            publish=true
+          else
+            tag="v${INPUT_VERSION#v}"
+            [ "$tag" = v ] && tag="v0.0.0-dryrun.$RUN_NUMBER"
+            publish=false
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::'$tag' is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-suffix (v0.1.0, v0.1.0-preview)."
+            exit 1
+          fi
+          if [ "$publish" = true ] && ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag '$tag' points at $(git rev-parse --short HEAD), which is not on main. Releases are cut from main."
+            exit 1
+          fi
+          version="${tag#v}"
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          {
+            echo "version=$version"; echo "tag=$tag"; echo "prerelease=$prerelease"; echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "NOTES_FLAGS=$([ "$publish" = true ] || echo --allow-missing)" >> "$GITHUB_ENV"
+          echo "version $version, tag $tag, pre-release $prerelease, publish $publish ($(git rev-parse --short HEAD))"
+
+      # Fails in seconds when the tag has no CHANGELOG.md section (dry runs: warning only).
+      - name: Release notes exist (CHANGELOG.md)
+        shell: bash
+        run: python tools/release_notes.py --version "$VERSION" --check ${NOTES_FLAGS:+"$NOTES_FLAGS"}
+
+      - name: Guard -- tracked files
+        run: python tools/check_no_game_data.py
+
+      - name: Python packages for the bundled Python (pinned, hash-checked)
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary ":all:" -r tools/release-requirements.txt
+
+      # The LLVM the zip ships (toolchain/llvm) and compiles the runtime with:
+      # pinned version + SHA-256 in tools/fetch_llvm.py.
+      - name: LLVM (pinned, checksum-verified)
+        run: python tools/fetch_llvm.py --dest "$env:RUNNER_TEMP/llvm"
+
+      # The MSVC headers/libs and the Windows SDK the runtime host compiles against.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Toolchain
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja -y --no-progress }
+          & "$env:RUNNER_TEMP/llvm/bin/clang-cl.exe" --version
+          ninja --version
+          cmake --version
+
+      # Fails naming the first patch that does not apply on the pin.
+      - name: ps3recomp at the pin + patch series
+        run: python tools/prepare_ps3recomp.py --dest deps/ps3recomp
+
+      - name: Package (tools/package_release.py --release)
+        run: python tools/package_release.py --release --version $env:VERSION --llvm "$env:RUNNER_TEMP/llvm" --ps3recomp deps/ps3recomp --out dist
+
+      - name: Guard -- the zip (game files, lifted code, keys)
+        run: python tools/package_release.py --scan-only "dist/T5DR-Online-$env:VERSION.zip"
+
+      - name: Checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          cat SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Smoke test -- unpacked zip, bare PATH
+        run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke" --no-gui
+
+      # Starts the launcher (offscreen, then through T5DR Online.exe). Whether a
+      # hosted runner's desktop session can show Tk windows is not guaranteed,
+      # so this one only warns. Approve the release after trying the artifact.
+      - name: Smoke test -- launcher (informational)
+        continue-on-error: true
+        timeout-minutes: 8
+        run: python tools/smoke_release.py "dist/T5DR-Online-$env:VERSION.zip" --version $env:VERSION --work "$env:RUNNER_TEMP/smoke-gui"
+
+      - name: Release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/release_notes.py --version "$VERSION" ${NOTES_FLAGS:+"$NOTES_FLAGS"} \
+            --release-json "dist/T5DR-Online-$VERSION/release.json" --sums dist/SHA256SUMS --out dist/RELEASE_NOTES.md
+          {
+            echo "## T5DR Online $VERSION"
+            echo
+            echo "| zip | size | SHA-256 |"
+            echo "|---|---|---|"
+            echo "| \`T5DR-Online-$VERSION.zip\` | $(( $(stat -c %s "dist/T5DR-Online-$VERSION.zip") / 1000000 )) MB | \`$(cut -d' ' -f1 dist/SHA256SUMS)\` |"
+            echo
+            echo "<details><summary>Release notes</summary>"
+            echo
+            cat dist/RELEASE_NOTES.md
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: T5DR-Online-${{ steps.ver.outputs.version }}
+          path: |
+            dist/T5DR-Online-${{ steps.ver.outputs.version }}.zip
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
+          if-no-files-found: error
+          compression-level: 0     # the zip is compressed already
+          retention-days: 30
+
+  publish:
+    name: Publish the GitHub Release
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Required reviewer = the owner; deployments limited to tags v* (docs/RELEASING.md).
+    # The job waits here until the owner approves it on GitHub.
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.build.outputs.tag }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - name: Only the repository owner releases
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$ACTOR" != "$OWNER" ] || [ "$TRIGGERING_ACTOR" != "$OWNER" ]; then
+            echo "::error::Only $OWNER makes releases (actor: $ACTOR, started by: $TRIGGERING_ACTOR)."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: T5DR-Online-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+
+      # Idempotent, so "Re-run failed jobs" finishes a half-done publish. A published
+      # release's zip is never replaced by a different one: yank it first.
+      - name: Create the release (or finish a partial one)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          zip="T5DR-Online-$VERSION.zip"
+          title="T5DR Online $VERSION"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" "$zip" SHA256SUMS --verify-tag --title "$title" \
+              --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
+          else
+            draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            has_zip=$(gh release view "$TAG" --json assets --jq "[.assets[] | select(.name == \"$zip\")] | length > 0")
+            if [ "$draft" = false ] && [ "$has_zip" = true ]; then
+              gh release download "$TAG" --pattern "$zip" --output published.zip
+              if [ "$(sha256sum < published.zip | cut -d' ' -f1)" != "$(cut -d' ' -f1 SHA256SUMS)" ]; then
+                echo "::error::$TAG is already published with a different $zip. Yank it first (docs/RELEASING.md) or release a new version."
+                exit 1
+              fi
+              echo "$TAG already has this exact zip; refreshing notes and SHA256SUMS only"
+              gh release upload "$TAG" SHA256SUMS --clobber
+            else
+              gh release upload "$TAG" "$zip" SHA256SUMS --clobber
+            fi
+            gh release edit "$TAG" --title "$title" --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE" --draft=false
+          fi
+          gh release view "$TAG" --json url,isPrerelease,assets --jq '"\(.url) prerelease=\(.isPrerelease) assets=\([.assets[].name])"'

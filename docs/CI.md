@@ -159,8 +159,10 @@ Anything that needs the game: decrypting the real EBOOT, lifting it, the SPU
 lift, compiling the lift into `t5dr_game.dll` (`tools/build_game_dll.py`),
 booting, rendering, audio, frame rate, netplay. Those still need a run on a
 PC with the player's package. `tools/package_release.py` (which has its own
-no-game-data checks) is not run either; only the pieces it builds (the
-release host, the stub) are.
+no-game-data checks) is not run by this workflow; only the pieces it builds
+(the release host, the stub) are. The release workflow
+(`.github/workflows/release.yml`, [RELEASING.md](RELEASING.md)) runs it in
+full, on version tags and on pushes that change the release tooling.
 
 Also not run: `test_spu_lifted_start.c` (POSIX-only; with shims it links on
 Windows but crashes the same way on the unpatched pin), and

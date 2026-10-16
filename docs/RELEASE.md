@@ -188,7 +188,9 @@ find_functions, ppu_lifter, the SPU lifter) and the launcher. Options:
 - **Bundled CPython (chosen):** `package_release.py --bundle-python` copies
   this PC's CPython 3.12 into `python/`: interpreter, stdlib without tests/IDLE,
   tkinter + Tcl/Tk, pycryptodome; a `python312._pth` isolates it from any
-  other Python. **38.4 MB unpacked, ~13 MB zipped.** Redistributable (PSF
+  other Python (without `import site`, so not even the player's own user
+  site-packages gets onto `sys.path`; `package_release.py` self-tests the copy
+  with a bare `PATH`). **38.4 MB unpacked, ~13 MB zipped.** Redistributable (PSF
   license, Tcl/Tk license, pycryptodome BSD/public domain). Verified: the full
   build ran with PATH holding only Windows folders.
 - **PyInstaller-frozen tools:** possible, but not better. The frozen exes
@@ -201,11 +203,15 @@ find_functions, ppu_lifter, the SPU lifter) and the launcher. Options:
 ## The release zip
 
 `tools/package_release.py` builds `dist/T5DR-Online-<version>/` and the zip
-from the repository:
+from the repository. Published releases are built by GitHub Actions from a
+version tag with the same command; the procedure is in
+[RELEASING.md](RELEASING.md).
 
-    python tools/package_release.py --version 0.2.0 --bundle-python ^
-        --llvm "C:\Program Files\LLVM" --prebuilt-host --zip ^
+    python tools/package_release.py --release --version 0.2.0 --llvm "C:\Program Files\LLVM" ^
         --keys keys\ps3.keys --game-dir build\recomp --game-dir build\spu --game-dir game
+
+(`--release` = `--bundle-python --prebuilt-host --zip`; `--llvm` must be
+LLVM 23.1.3, or use `tools/fetch_llvm.py` to get exactly that.)
 
 | | without `--llvm --prebuilt-host` | with them (recommended) |
 |---|---|---|
@@ -218,9 +224,14 @@ clang-cl, kernel32/user32 only), `launcher/`, `tools/`, `patches/`,
 `CMakeLists.txt`, `deps/ps3recomp/` (MIT; pinned commit + our patches; only
 `include libs runtime third_party`, top-level `tools/*.py|json`,
 `CMakeLists.txt`, `LICENSE`), `python/`, `toolchain/llvm/`,
-`runtime/t5dr.exe + t5dr.lib`, `LICENSES/` (ps3recomp MIT, at3_standalone
-LGPL-2.1, Python PSF, LLVM Apache-2.0), `README.txt` (the players' section of
-README.md), `release.json` (version, code ID).
+`runtime/t5dr.exe + t5dr.lib`, `lobby/t5lobby/` (the lobby client), player
+docs (`CHANGELOG.md`, `docs/TROUBLESHOOTING.md`, `docs/README.de.md`,
+`docs/ONLINE.md`, `docs/controls.ini`), `LICENSES/` (ps3recomp MIT,
+at3_standalone LGPL-2.1, Python PSF, pycryptodome, LLVM Apache-2.0 -- the
+LLVM text comes from `tools/licenses/` because the LLVM installer ships none;
+the 0.1.0-rc1 zip lacked it and the pycryptodome one), `README.txt` (the
+players' section of README.md), `release.json` (version, code ID, commit, LLVM
+and Python versions).
 
 **Kept out on purpose, and checked:**
 

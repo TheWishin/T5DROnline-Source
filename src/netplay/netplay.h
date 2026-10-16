@@ -44,6 +44,25 @@ void  init();
  * for frame f is known. Fills out[0] = P1, out[1] = P2. */
 void  begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2]);
 
+/* The game changed scene at the start of frame f (k-th time). Scene changes
+ * that wait on loading land a frame or two apart on the two PCs; this waits
+ * until the peer has reached the same scene change and returns the frame
+ * number both continue with (the later of the two -- the side that got there
+ * first skips the difference). Returns f in local mode. */
+uint32_t scene_barrier(uint32_t f);
+
+/* Block until the peer has connected (no-op in local mode). begin_frame(0)
+ * does this too; call it first to act on match_seed() before frame 0. */
+void connect();
+
+/* A number both peers share once frame 0 has begun (the host's session id):
+ * seeds the game's random generators identically on both sides. */
+uint32_t match_seed();
+
+/* Next frame whose state hash differed from the peer's, if any (for the
+ * hooks' T5_NET_DESYNC_DUMP diagnostics). */
+bool take_mismatch(uint32_t* frame);
+
 /* Frame log line extension (T5_NET_LOG): free-form text for frame f, written
  * after the inputs and hash. */
 void  log_extra(uint32_t f, const char* text);
@@ -56,3 +75,10 @@ PadInput poll_now(int player);
 void  note(const char* fmt, ...);
 
 } // namespace np
+
+/* Game-side entry point (t5_hooks.cpp), C linkage so any part of the port can
+ * call it: the direct-fight mode calls t5_netplay_start() on the main thread at
+ * the frame its fight starts. With T5_NET_START=external lockstep begins there
+ * (both PCs meet at the frame-0 handshake); while lockstep runs it marks a sync
+ * point (next match in the same process). No-op when netplay is off. */
+extern "C" void t5_netplay_start(void);

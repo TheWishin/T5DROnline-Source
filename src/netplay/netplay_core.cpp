@@ -8,9 +8,12 @@
  *   T5_NET_PEER     ip:port of the host (join; host learns it from the first packet)
  *   T5_NET_DELAY    input delay in frames (host decides, join adopts; default 3)
  *   T5_NET_TIMEOUT  seconds without the peer's input before giving up (default 30)
- *   T5_NET_XINPUT   XInput pad index for the local player (default 0, -1 = none)
- *   T5_NET_KEYBOARD 0 disables the keyboard (it is read only while a window of
- *                   this process has the focus; same keys as ps3recomp's cellPad)
+ *   T5_NET_LOCALPAD 0 ignores this PC's devices (tests: scripts only). Otherwise
+ *                   the local player is whatever the runtime's controls put on
+ *                   port 1 (cellPad_sample_local: pads, sticks, keyboard, remaps)
+ *   T5_NET_BUILD    build id; a peer whose HELLO carries a different one is refused
+ *   T5_NET_SEED     shared random seed (from the lobby); the host's value is used
+ *   T5_NET_MATCH, T5_NET_PATH, T5_NET_RTT_MS   lobby details, logged
  *   T5_NET_SCRIPT   scripted local input: file of "<frame> <frames> <mask>" lines,
  *                   or "@frame:frames:mask,..." inline. Frames are the frames
  *                   the input takes effect in (independent of the delay).
@@ -23,7 +26,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <xinput.h>
 
 #include <atomic>
 #include <cstdarg>
@@ -36,6 +38,10 @@
 
 #include "netplay.h"
 
+/* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian. */
+struct HostPadData { int32_t len; uint16_t button[64]; };
+extern "C" int32_t cellPad_sample_local(uint32_t port_no, HostPadData* out);
+
 namespace np {
 namespace {
 
@@ -44,14 +50,18 @@ constexpr uint8_t  kVersion  = 1;
 constexpr uint32_t kRing     = 1024;          /* frames of history kept */
 constexpr uint32_t kMaxBatch = 64;            /* inputs per packet */
 constexpr uint32_t kHashes   = 8;             /* recent hashes per packet */
+constexpr uint32_t kBarriers = 4096;          /* scene changes kept */
+constexpr uint32_t kBarSend  = 4;             /* recent scene changes per packet */
 
 enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3 };
 
 #pragma pack(push, 1)
 struct Hdr      { uint32_t magic; uint8_t type, ver, delay, slot; uint32_t session; };
-struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint16_t reserved; };
+struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; uint8_t reserved; };
 struct WireIn   { uint16_t buttons; uint8_t lx, ly, rx, ry; };
 struct WireHash { uint32_t frame; uint64_t hash; };
+struct WireBar  { uint32_t index; uint32_t frame; };
+struct HelloExt { uint32_t build; uint32_t seed; };   /* follows Hdr in a HELLO */
 #pragma pack(pop)
 
 /* CELL_PAD_CTRL_* (cellPad.h) */
@@ -109,8 +119,9 @@ struct State {
     int  delay = 3;
     int  slot = 0;
     int  timeout_s = 30;
-    int  xinput = 0;
-    bool keyboard = true;
+    bool localpad = true;              /* T5_NET_LOCALPAD=0: this PC's devices are ignored */
+    uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
+    uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
 
     SOCKET sock = INVALID_SOCKET;
     std::mutex mu;                     /* guards everything below */
@@ -127,8 +138,13 @@ struct State {
     uint32_t remote_contig = 0;        /* remote inputs known for f < remote_contig */
     uint32_t peer_ack = 0;             /* the peer has our inputs for f < peer_ack */
     uint32_t checked = 0;              /* hashes compared for f < checked */
+    uint32_t remote_hash_max = 0;      /* highest frame + 1 with a peer hash */
+    uint32_t local_bar[kBarriers] = {};   /* frame + 1 of scene change k, 0 = not yet */
+    uint32_t remote_bar[kBarriers] = {};
+    uint32_t nbar = 0;                 /* scene changes seen here */
     uint32_t mismatches = 0;
     uint32_t first_mismatch = UINT32_MAX;
+    std::vector<uint32_t> mismatch_queue;   /* frames reported to the hooks by take_mismatch() */
     uint64_t packets_in = 0, packets_out = 0;
     ULONGLONG last_send_ms = 0;
 
@@ -196,22 +212,15 @@ uint16_t script_mask(const std::vector<ScriptEvent>& ev, uint32_t f)
     return m;
 }
 
-bool own_window_focused()
+/* This PC's devices on local port `port`, through the runtime's own pad layer
+ * (cellPad_sample_local: controls.ini mapping, sticks, keyboard, PS3_PAD_FILE). */
+void device_input(uint32_t port, PadInput* in)
 {
-    HWND fg = GetForegroundWindow();
-    if (!fg) return false;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId();
-}
-
-uint8_t stick(short raw)
-{
-    const int dz = 7849;
-    float n = raw > dz ? (float)(raw - dz) / (32767 - dz)
-            : raw < -dz ? (float)(raw + dz) / (32767 - dz) : 0.0f;
-    int v = (int)(n * 127.0f) + 128;
-    return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    HostPadData d;
+    if (cellPad_sample_local(port, &d) != 0 || d.len == 0) return;
+    in->buttons |= (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
+    in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
 }
 
 /* The local player's input for (effective) frame f. */
@@ -220,46 +229,7 @@ PadInput sample_local(uint32_t f)
     State& s = S();
     PadInput in = kNeutral;
 
-    if (s.xinput >= 0) {
-        XINPUT_STATE xs; memset(&xs, 0, sizeof xs);
-        if (XInputGetState((DWORD)s.xinput, &xs) == ERROR_SUCCESS) {
-            const XINPUT_GAMEPAD& g = xs.Gamepad;
-            uint16_t b = 0;
-            if (g.wButtons & XINPUT_GAMEPAD_BACK)           b |= B_SELECT;
-            if (g.wButtons & XINPUT_GAMEPAD_LEFT_THUMB)     b |= B_L3;
-            if (g.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB)    b |= B_R3;
-            if (g.wButtons & XINPUT_GAMEPAD_START)          b |= B_START;
-            if (g.wButtons & XINPUT_GAMEPAD_DPAD_UP)        b |= B_UP;
-            if (g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT)     b |= B_RIGHT;
-            if (g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN)      b |= B_DOWN;
-            if (g.wButtons & XINPUT_GAMEPAD_DPAD_LEFT)      b |= B_LEFT;
-            if (g.bLeftTrigger > 30)                        b |= B_L2;
-            if (g.bRightTrigger > 30)                       b |= B_R2;
-            if (g.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER)  b |= B_L1;
-            if (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) b |= B_R1;
-            if (g.wButtons & XINPUT_GAMEPAD_Y)              b |= B_TRIANGLE;
-            if (g.wButtons & XINPUT_GAMEPAD_B)              b |= B_CIRCLE;
-            if (g.wButtons & XINPUT_GAMEPAD_A)              b |= B_CROSS;
-            if (g.wButtons & XINPUT_GAMEPAD_X)              b |= B_SQUARE;
-            in.buttons |= b;
-            in.lx = stick(g.sThumbLX);
-            in.ly = (uint8_t)(256 - stick(g.sThumbLY));   /* PS3: up = 0 */
-            in.rx = stick(g.sThumbRX);
-            in.ry = (uint8_t)(256 - stick(g.sThumbRY));
-        }
-    }
-
-    if (s.keyboard && own_window_focused()) {
-        static const struct { int vk; uint16_t b; } map[] = {
-            { VK_UP, B_UP }, { VK_DOWN, B_DOWN }, { VK_LEFT, B_LEFT }, { VK_RIGHT, B_RIGHT },
-            { 'Z', B_CROSS }, { 'X', B_CIRCLE }, { 'A', B_SQUARE }, { 'S', B_TRIANGLE },
-            { 'Q', B_L1 }, { 'W', B_R1 }, { '1', B_L2 }, { '2', B_R2 },
-            { VK_RETURN, B_START }, { VK_TAB, B_SELECT },
-        };
-        for (const auto& m : map)
-            if (GetAsyncKeyState(m.vk) & 0x8000) in.buttons |= m.b;
-    }
-
+    if (s.localpad) device_input(0, &in);
     in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
     return in;
@@ -271,6 +241,15 @@ void send_raw(const void* p, int n)
 {
     State& s = S();
     if (s.sock == INVALID_SOCKET || !s.peer_known) return;
+    /* T5_NET_DROP=<percent>: throw away that share of outgoing packets, to
+     * test that the redundant resends cover for a lossy link. */
+    static int drop = -1;
+    if (drop < 0) { const char* d = getenv("T5_NET_DROP"); drop = d ? atoi(d) : 0; }
+    if (drop > 0) {
+        static uint32_t x = 0x9E3779B9u ^ GetCurrentProcessId();
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        if ((int)(x % 100) < drop) return;
+    }
     sendto(s.sock, (const char*)p, n, 0, (const sockaddr*)&s.peer, sizeof s.peer);
     s.packets_out++;
 }
@@ -278,8 +257,9 @@ void send_raw(const void* p, int n)
 void send_hello_locked()
 {
     State& s = S();
-    Hdr h = { kMagic, PKT_HELLO, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session };
-    send_raw(&h, sizeof h);
+    struct { Hdr h; HelloExt x; } p = { { kMagic, PKT_HELLO, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session },
+                                         { s.build, s.seed } };
+    send_raw(&p, sizeof p);
 }
 
 /* Inputs the peer may still need, plus our latest hashes. Caller holds mu. */
@@ -287,7 +267,8 @@ void send_inputs_locked()
 {
     State& s = S();
     if (!s.connected || s.peer_lost) return;
-    uint8_t buf[sizeof(Hdr) + sizeof(InputHdr) + kMaxBatch * sizeof(WireIn) + kHashes * sizeof(WireHash)];
+    uint8_t buf[sizeof(Hdr) + sizeof(InputHdr) + kMaxBatch * sizeof(WireIn) + kHashes * sizeof(WireHash)
+                + kBarSend * sizeof(WireBar)];
     Hdr* h = (Hdr*)buf;
     *h = { kMagic, PKT_INPUT, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session };
     InputHdr* ih = (InputHdr*)(h + 1);
@@ -301,6 +282,7 @@ void send_inputs_locked()
     ih->first = first;
     ih->count = (uint8_t)count;
     ih->reserved = 0;
+    ih->nbar = 0;
     WireIn* wi = (WireIn*)(ih + 1);
     for (uint32_t i = 0; i < count; i++) {
         const PadInput& in = s.local.in[(first + i) % kRing];
@@ -313,7 +295,12 @@ void send_inputs_locked()
         if (s.local.hash_tag[f % kRing] == f + 1)
             wh[nh++] = { f, s.local.hash[f % kRing] };
     ih->nhash = (uint8_t)nh;
-    send_raw(buf, (int)((uint8_t*)(wh + nh) - buf));
+    WireBar* wb = (WireBar*)(wh + nh);
+    uint32_t nb = 0;
+    for (uint32_t k = s.nbar > kBarSend ? s.nbar - kBarSend : 0; k < s.nbar; k++)
+        wb[nb++] = { k, s.local_bar[k % kBarriers] - 1 };
+    ih->nbar = (uint8_t)nb;
+    send_raw(buf, (int)((uint8_t*)(wb + nb) - buf));
     s.last_send_ms = GetTickCount64();
 }
 
@@ -328,7 +315,7 @@ void compare_hashes_locked()
             /* The peer's hash for f has not arrived yet -- or never will
              * (packets carry only the latest few). Give up on f once we are
              * far past it. */
-            if (s.local_hash_max - f > kRing / 2) { s.checked++; continue; }
+            if (s.local_hash_max - f > kRing / 2 || s.remote_hash_max > f + 1) { s.checked++; continue; }
             break;
         }
         if (s.local.hash[i] != s.remote.hash[i]) {
@@ -337,6 +324,7 @@ void compare_hashes_locked()
                      (unsigned long long)s.local.hash[i], (unsigned long long)s.remote.hash[i]);
             if (s.first_mismatch == UINT32_MAX) s.first_mismatch = f;
             s.mismatches++;
+            if (s.mismatch_queue.size() < 256) s.mismatch_queue.push_back(f);
         }
         s.checked++;
         if (s.checked % 600 == 0)
@@ -354,7 +342,16 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     std::lock_guard<std::mutex> lk(s.mu);
     s.packets_in++;
     if (h->type == PKT_HELLO) {
+        HelloExt x = { 0, 0 };
+        if (n >= (int)(sizeof(Hdr) + sizeof(HelloExt))) memcpy(&x, h + 1, sizeof x);
+        if (x.build && s.build && x.build != s.build) {
+            static int said = 0;
+            if (!said++) note("the peer runs a different build (T5_NET_BUILD id %08X, ours %08X): not connecting",
+                              x.build, s.build);
+            return;
+        }
         if (s.mode == Mode::Host) {
+            if (s.connected && memcmp(&s.peer, &from, sizeof from) != 0) return;   /* a stranger */
             if (!s.peer_known || memcmp(&s.peer, &from, sizeof from) != 0) {
                 s.peer = from; s.peer_known = true;
                 char ip[64]; inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
@@ -370,6 +367,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             s.session = h->session;
             if (h->delay != s.delay) note("using the host's input delay %d (was %d)", h->delay, s.delay);
             s.delay = h->delay;
+            s.seed = x.seed;   /* the host's seed (none: both use the session id) */
             s.connected = true;
             note("connected (join, P2), delay %d", s.delay);
             send_hello_locked();   /* echoes the session: completes the host's handshake */
@@ -385,10 +383,18 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         }
         return;
     }
-    if (h->type != PKT_INPUT || h->session != s.session || !s.connected) return;
+    if (h->type != PKT_INPUT || h->session != s.session) return;
+    if (!s.connected && s.mode == Mode::Host) {
+        /* The joiner's session echo was lost, but its inputs carry our
+         * session id: that completes the handshake as well. */
+        s.connected = true;
+        note("connected (host, P1), delay %d", s.delay);
+    }
+    if (!s.connected) return;
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return;
     const InputHdr* ih = (const InputHdr*)(h + 1);
-    if (n < (int)(sizeof(Hdr) + sizeof(InputHdr) + ih->count * sizeof(WireIn) + ih->nhash * sizeof(WireHash)))
+    if (n < (int)(sizeof(Hdr) + sizeof(InputHdr) + ih->count * sizeof(WireIn) + ih->nhash * sizeof(WireHash)
+                  + ih->nbar * sizeof(WireBar)))
         return;
     if (ih->ack > s.peer_ack) s.peer_ack = ih->ack;
     const WireIn* wi = (const WireIn*)(ih + 1);
@@ -405,7 +411,11 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         uint32_t i = wh[k].frame % kRing;
         s.remote.hash[i] = wh[k].hash;
         s.remote.hash_tag[i] = wh[k].frame + 1;
+        if (wh[k].frame + 1 > s.remote_hash_max) s.remote_hash_max = wh[k].frame + 1;
     }
+    const WireBar* wb = (const WireBar*)(wh + ih->nhash);
+    for (uint32_t k = 0; k < ih->nbar; k++)
+        s.remote_bar[wb[k].index % kBarriers] = wb[k].frame + 1;
     compare_hashes_locked();
     SetEvent(s.rx_event);
 }
@@ -470,8 +480,16 @@ void do_init()
     if (s.delay < 0) s.delay = 0;
     if (s.delay > 30) s.delay = 30;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
-    if (const char* v = env("T5_NET_XINPUT")) s.xinput = atoi(v);
-    if (const char* v = env("T5_NET_KEYBOARD")) s.keyboard = atoi(v) != 0;
+    if (const char* v = env("T5_NET_LOCALPAD")) s.localpad = atoi(v) != 0;
+    if (const char* v = env("T5_NET_BUILD")) {
+        uint32_t h = 2166136261u;
+        for (const char* c = v; *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; }
+        s.build = h ? h : 1;
+    }
+    if (const char* v = env("T5_NET_SEED")) s.seed = (uint32_t)strtoul(v, nullptr, 0);
+    if (const char* v = env("T5_NET_MATCH"))
+        note("lobby match %s (path %s, measured rtt %s ms)", v,
+             env("T5_NET_PATH") ? env("T5_NET_PATH") : "?", env("T5_NET_RTT_MS") ? env("T5_NET_RTT_MS") : "?");
     s.script = parse_script(env("T5_NET_SCRIPT"));
     s.script2 = parse_script(env("T5_NET_SCRIPT2"));
     if (const char* v = env("T5_NET_PADFILE")) s.padfile.path = v;
@@ -484,8 +502,8 @@ void do_init()
     { LARGE_INTEGER q; QueryPerformanceCounter(&q);
       s.session = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 32) ^ (GetCurrentProcessId() << 16)) | 1u; }
 
-    note("mode %s, slot P%d, delay %d, xinput %d, keyboard %s, %zu scripted press(es)",
-         m, s.slot + 1, s.delay, s.xinput, s.keyboard ? "on" : "off", s.script.size());
+    note("mode %s, slot P%d, delay %d, local devices %s, %zu scripted press(es)",
+         m, s.slot + 1, s.delay, s.localpad ? "on" : "off", s.script.size());
 
     if (s.mode == Mode::Local) { s.connected = true; return; }
 
@@ -516,6 +534,11 @@ void do_init()
         note("joining %s", peer);
     } else {
         note("hosting on UDP port %d", port);
+        const char* peer = env("T5_NET_PEER");
+        if (peer && parse_addr(peer, &s.peer)) {
+            s.peer_known = true;
+            note("calling %s while waiting (lobby punch / relay path)", peer);
+        }
     }
     CreateThread(nullptr, 0, rx_thread, nullptr, 0, nullptr);
     atexit(say_bye);
@@ -531,7 +554,10 @@ void wait_connected()
             std::lock_guard<std::mutex> lk(s.mu);
             if (s.connected) return;
             ULONGLONG now = GetTickCount64();
-            if (s.mode == Mode::Join && now - last_hello >= 100) { send_hello_locked(); last_hello = now; }
+            /* The joiner calls the host; a host given T5_NET_PEER (the lobby's
+             * punched endpoint or relay) calls out as well, which keeps its NAT
+             * mapping open while the other game is still starting. */
+            if ((s.mode == Mode::Join || s.peer_known) && now - last_hello >= 100) { send_hello_locked(); last_hello = now; }
             if (now - last_note >= 3000) {
                 last_note = now;
                 note("waiting for the peer to connect (%llus)...", (now - t0) / 1000);
@@ -569,6 +595,75 @@ PadInput poll_now(int player)
     return in;
 }
 
+uint32_t scene_barrier(uint32_t f)
+{
+    init();
+    State& s = S();
+    uint32_t k;
+    {
+        std::lock_guard<std::mutex> lk(s.mu);
+        k = s.nbar++;
+        s.local_bar[k % kBarriers] = f + 1;
+        if (s.mode == Mode::Local || s.peer_lost) return f;
+        send_inputs_locked();
+    }
+    ULONGLONG t0 = GetTickCount64(), last_note = t0;
+    uint32_t peer_f = f;
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            if (s.remote_bar[k % kBarriers]) { peer_f = s.remote_bar[k % kBarriers] - 1; break; }
+            if (s.peer_lost) break;
+            /* The peer may still be in the old scene, consuming our input for
+             * frames we will never run: keep it fed with neutral input. */
+            while (s.local_max < s.remote_contig + 1) {
+                uint32_t g = s.local_max++;
+                s.local.in[g % kRing] = kNeutral; s.local.in_tag[g % kRing] = g + 1;
+            }
+            ULONGLONG now = GetTickCount64();
+            if (now - s.last_send_ms >= 15) send_inputs_locked();
+            if (now - last_note >= 1000) {
+                last_note = now;
+                note("scene change %u at frame %u: waiting for the peer to get there (%llus)", k, f, (now - t0) / 1000);
+            }
+            if (s.timeout_s > 0 && now - t0 >= (ULONGLONG)s.timeout_s * 1000) {
+                note("the peer never reached scene change %u -- peer lost", k);
+                s.peer_lost = true;
+                break;
+            }
+        }
+        WaitForSingleObject(s.rx_event, 2);
+    }
+    const uint32_t nf = peer_f > f ? peer_f : f;
+    if (peer_f != f)
+        note("scene change %u: here at frame %u, peer at %u -> both continue at %u", k, f, peer_f, nf);
+    return nf;
+}
+
+void connect()
+{
+    init();
+    State& s = S();
+    if (s.mode == Mode::Host || s.mode == Mode::Join) wait_connected();
+}
+
+bool take_mismatch(uint32_t* frame)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mismatch_queue.empty()) return false;
+    *frame = s.mismatch_queue.front();
+    s.mismatch_queue.erase(s.mismatch_queue.begin());
+    return true;
+}
+
+uint32_t match_seed()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.seed ? s.seed : s.session;
+}
+
 void log_extra(uint32_t f, const char* text)
 {
     State& s = S();
@@ -603,7 +698,12 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         s.local.hash[i] = state_hash; s.local.hash_tag[i] = f + 1;
         if (f + 1 > s.local_hash_max) s.local_hash_max = f + 1;
         uint32_t t = f + (uint32_t)s.delay;
-        s.local.in[t % kRing] = local; s.local.in_tag[t % kRing] = t + 1;
+        /* After a scene-change jump frames may have been skipped: hold this
+         * sample over the gap. An input already decided (and maybe sent) for
+         * a frame is never changed. */
+        for (uint32_t g = s.local_max; g <= t; g++) {
+            s.local.in[g % kRing] = local; s.local.in_tag[g % kRing] = g + 1;
+        }
         if (t + 1 > s.local_max) s.local_max = t + 1;
         send_inputs_locked();
     }
@@ -613,7 +713,8 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         std::lock_guard<std::mutex> lk(s.mu);
         mine = s.local.in[f % kRing];
         theirs = kNeutral;
-        theirs.buttons = script_mask(s.script2, f) | s.padfile2.poll(f);
+        if (s.localpad) device_input(1, &theirs);
+        theirs.buttons |= script_mask(s.script2, f) | s.padfile2.poll(f);
         s.remote.hash[f % kRing] = state_hash; s.remote.hash_tag[f % kRing] = f + 1;
     } else {
         ULONGLONG t0 = GetTickCount64(), last_note = t0;

@@ -16,11 +16,19 @@
  *     handler posts: 0x34BAA0 waits for the flip, then sys_semaphore_wait on it.
  *
  * So which pad sample a game frame sees depends on a race between two threads
- * woken by the same vblank. For lockstep that has to go: with netplay on, the
- * vblank's keyread post is swallowed and the MAIN thread runs exactly one
- * keyread tick at the top of each of its frames (right after its frame
- * semaphore wait returns), with both players' inputs for that frame already
- * decided by the lockstep core. One tick per frame, always at the same point.
+ * woken by the same vblank. For lockstep that has to go. With netplay on:
+ *   - the vblank's keyread wake is swallowed (keyread parks for good) and the
+ *     MAIN thread runs the keyread tick itself, once, at the top of each of its
+ *     frames, with both players' input for that frame already decided by the
+ *     lockstep core (the keyread thread cannot be woken and waited for: the pad
+ *     update takes the lwmutex 0x106D4D00 that the main thread holds there);
+ *   - the loader threads the main loop feeds are drained at the top of every
+ *     frame, so a load finishes in the same frame on both PCs;
+ *   - the game's random generators are seeded from the match seed at frame 0
+ *     and at every scene change, and scene changes are sync points (both PCs
+ *     continue from the same frame number) in case something still lands a
+ *     frame apart;
+ *   - a hash of the match state is exchanged every frame (desync detector).
  *
  * Hooks used (no ps3recomp changes):
  *   - HLE overrides (ps3_hle_register_ctx is dispatched before the NID table):
@@ -28,16 +36,27 @@
  *   - lv2 syscall table wrappers for sys_semaphore_wait (92) and
  *     sys_semaphore_post (94), installed from our cellPadInit (after
  *     lv2_init_syscalls has filled the table).
+ *   - guest calls (ppu_guest_call_ct) into the game's own keyread pieces and
+ *     RNG seeding functions.
  *
- * Diagnostics (all optional):
+ * Options and diagnostics (all optional):
+ *   T5_NET_RESULT_FILE  write {"winner":0|1|null,"score":[p1,p2]} when a match ends
+ *   T5_NET_DRAIN     semaphore ids of loader threads to drain (default "8,10")
  *   T5_NET_HASH      regions hashed into the per-frame state hash,
- *                    "addr:len,addr:len" (hex). Default: see kDefaultHash.
+ *                    "addr:len,addr:len" (hex). Default: kDefaultHash.
+ *   T5_NET_HASH_SKIP words inside those regions left out (default kDefaultHashSkip)
+ *   T5_NET_DESYNC_DUMP=1  on a hash mismatch, write the hashed bytes of that
+ *                    frame to np_desync_f<frame>.bin (diff the two PCs' files)
  *   T5_NET_PAGEHASH  "addr:len[:every]" (hex, every in frames, default 60):
  *                    write per-4KB-page hashes of that range to the frame log.
  *   T5_NET_DUMP      comma-separated frames at which to dump memory to
  *                    np_dump_f<frame>_<addr>.bin in the working directory.
  *   T5_NET_DUMP_RANGES  "addr:len,..." (hex) for T5_NET_DUMP.
- *   T5_NET_TRACE=1   log semaphore traffic and allocations.
+ *   T5_NET_SHOT      frames to screenshot exactly (needs LD_SURF_DUMP and
+ *                    LD_SURF_DUMP_GATE; tools/netplay_test.py sets them)
+ *   T5_NET_PASSIVE=1 reference runs: pad overrides only, keyread untouched
+ *   T5_NET_PADS      pads reported connected (default 2)
+ *   T5_NET_TRACE=1   log semaphore / syscall traffic per thread and allocations.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -59,6 +78,19 @@ int32_t cellPadGetData(uint32_t port, void* data_guest);
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 typedef int64_t (*np_lv2_fn)(ppu_context*);
+/* runtime/syscalls/sys_semaphore.h (Windows layout), read-only use: the
+ * semaphore table tells whether a loader thread is parked with nothing to do. */
+struct np_sys_semaphore_info {
+    int      active;
+    char     name[8];
+    uint32_t protocol;
+    int32_t  value;
+    int32_t  max_value;
+    int32_t  waiters;
+    HANDLE   sem_handle;
+    CRITICAL_SECTION value_lock;
+};
+extern np_sys_semaphore_info g_sys_semaphores[];
 extern np_lv2_fn g_lv2_syscalls[];                   /* lv2_syscall_table { handlers[1024] } */
 }
 
@@ -75,12 +107,17 @@ constexpr uint32_t kRingWriteIdx  = 0x104CCE3C;
 constexpr uint32_t kRingReadIdx   = 0x104CCE40;
 constexpr uint32_t kFrameClock    = 0x106D4D88;  /* u64 read by the pad repeat logic; +8: vblank count */
 constexpr uint32_t kTOC           = 0x470540;    /* main TOC (r2) */
+constexpr uint32_t kMatchOver     = 0x1008EBD5;  /* u8: 0 during a match, set when it is decided */
+constexpr uint32_t kWinsP1        = 0x1008EBDA;  /* u8: rounds won by P1 in this match */
+constexpr uint32_t kWinsP2        = 0x1008EBDB;  /* u8: rounds won by P2 */
 constexpr uint32_t kFnTickCounter = 0x09A204;
 constexpr uint32_t kFnPadUpdate   = 0x08F3A4;
 constexpr uint32_t kFnRingReset   = 0x120764;
 constexpr uint32_t kFnPortMask    = 0x08F6F0;
 constexpr uint32_t kFnRingAdvance = 0x12071C;
 constexpr uint32_t kFnTickTail    = 0x13F91C;
+constexpr uint32_t kFnMtSeed      = 0x066784;    /* init_genrand(s): Mersenne Twister, state 0x10095168 */
+constexpr uint32_t kFnSrand       = 0x36921C;    /* srand(s): the C library rand() (0x369228), state 0x1074F218 */
 
 constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
@@ -92,8 +129,10 @@ constexpr int SC_SEM_WAIT = 92, SC_SEM_POST = 94, SC_MEM_ALLOC = 348;
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
 inline uint64_t rd64(uint32_t a) { uint64_t v; memcpy(&v, vm_base + a, 8); return _byteswap_uint64(v); }
 inline void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); memcpy(vm_base + a, &v, 4); }
+inline void wr64(uint32_t a, uint64_t v) { v = _byteswap_uint64(v); memcpy(vm_base + a, &v, 8); }
 inline void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); memcpy(vm_base + a, &v, 2); }
 inline void wr8(uint32_t a, uint8_t v) { vm_base[a] = v; }
+inline uint8_t rd8(uint32_t a) { return vm_base[a]; }
 
 uint64_t fnv64(const uint8_t* p, size_t n, uint64_t h = 1469598103934665603ull)
 {
@@ -127,23 +166,88 @@ std::atomic<int> g_kr_in_wait{ 0 };
 std::atomic<uint32_t> g_swallowed{ 0 };
 HANDLE g_kr_event = nullptr;                  /* set when keyread re-enters its wait */
 uint32_t g_frame = 0;                          /* next lockstep frame (main thread only) */
+uint32_t g_scenes = 0;                         /* scene changes so far */
+uint32_t g_frame_hashing = 0;                  /* frame whose state is being hashed */
 uint64_t g_main_tid = ~0ull;
 np::PadInput g_cur[2] = { np::kNeutral, np::kNeutral };
 bool g_trace = false;
+/* T5_NET_START: when lockstep begins.
+ *   boot      (default) the main loop's first frames, right after boot;
+ *   external  when the game side calls t5_netplay_start() (the direct-fight
+ *             mode, at the frame its fight starts); until then the game runs
+ *             on its own with both pads neutral;
+ *   frame:N   (tests) at the main loop's N-th frame since boot.
+ * A later t5_netplay_start() while lockstep runs (next match in the same
+ * process) is a sync point like a scene change. */
+enum class StartMode { Boot, External, Frame };
+StartMode g_start_mode = StartMode::Boot;
+uint32_t g_start_frame = 0;
+uint32_t g_boot_frames = 0;                    /* main loop frames since our hooks went in */
+std::atomic<bool> g_start_requested{ false };
 bool g_passive = false;   /* T5_NET_PASSIVE=1: pad overrides only, keyread untouched (reference runs) */
 int  g_pads = 2;          /* T5_NET_PADS: pads reported connected (2 for netplay) */
 
-std::vector<Range> g_hash_ranges, g_dump_ranges;
+/* Loader threads drained at the top of every frame (T5_NET_DRAIN, semaphore
+ * ids). The ids are the game's own creation order, the same every run:
+ *   8  ZsAread   -- the main thread's async read requests; it hands each to
+ *                   NU::File::RequestManager (sem 1) and waits for the data
+ *                   (sem 11) before it parks again
+ *   10 "decoder" -- also fed by the main thread
+ * A load the main loop started in frame f is then always finished, as far as
+ * the game can tell, when frame f+1 starts -- on both PCs. Without it the
+ * frame a load completes in depends on the disk and the OS scheduler.
+ * Semaphores 1 and 11 themselves are not drained: the sound streamer feeds
+ * them all the time, and waiting for it cost whole seconds per frame. */
+constexpr int kMaxSem = 64;
+bool g_drain[kMaxSem] = {};
+std::atomic<bool> g_drain_seen[kMaxSem];   /* a thread has waited on it since our hooks went in */
+HANDLE g_drain_event = nullptr;
+uint32_t g_drain_timeouts = 0;
+
+std::vector<Range> g_hash_ranges, g_hash_skip, g_dump_ranges;
 std::vector<uint32_t> g_dump_frames;
+std::vector<uint32_t> g_shot_frames;    /* T5_NET_SHOT: frame-exact screenshots via the renderer's LD_SURF_DUMP_GATE */
+std::string g_shot_gate;
+uint32_t g_shot_armed = UINT32_MAX;
 Range g_page_range = { 0, 0 };
 uint32_t g_page_every = 60;
 
-/* What goes into the per-frame state hash by default. Kept to memory whose
- * contents follow from the inputs; see docs/NETPLAY.md for how the regions
- * were found. */
+/* What goes into the per-frame state hash by default: memory that follows
+ * from the inputs alone. Found by dumping both PCs at the same frames of a
+ * fight (T5_NET_DUMP) and keeping what changes over time yet is equal on both
+ * (tools/netplay_memdiff.py); see docs/NETPLAY.md. */
 const char* kDefaultHash =
     "10099F24:70,"      /* the game's two pad state blocks (56 B each) */
-    "104CCDFC:40";      /* the P1/P2 input ring */
+    "104CCDFC:40,"      /* the P1/P2 input ring */
+    "106D4D88:8,"       /* the game's frame clock */
+    "10095168:9C0,"     /* Mersenne Twister state (624 words) */
+    "10053578:4,"       /* ... and its index */
+    "10076920:4,"       /* the LCG at 0x1621D0 */
+    "1074F218:10C,"     /* C library rand() state and its two lagged generators */
+    "1008E000:4000,"    /* round state and both fighters (0x8D0-byte blocks from ~0x1008F800) */
+    "10099600:600,"     /* fight state next to the pad blocks */
+    "100A0900:200,"
+    "100A3B00:300";
+/* Words inside those regions that differ between two PCs that are otherwise
+ * in step (cosmetic or timing-derived: sound variations, timestamps). */
+const char* kDefaultHashSkip =
+    "1008F0C4:4,1008F0D0:4,"          /* timestamps */
+    "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
+    /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart
+     * while position, pose, health and timer stay identical (handles, effect
+     * and sound counters): +0x1B4, +0x1E0, +0x314, +0x870/+0x874 from P1. */
+    "100901B4:4,100901E0:4,10090314:4,10090870:8,"
+    "10090A84:4,10090AB0:4,10090BE4:4,10091140:8";
+
+/* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,
+ * when the peer reports a different hash for one of them, write them to
+ * np_desync_f<frame>.bin -- both PCs do, so the two files diff to the exact
+ * words that went apart. */
+constexpr uint32_t kSnapFrames = 64;
+bool g_desync_dump = false;
+std::vector<uint8_t> g_snap[kSnapFrames];
+uint32_t g_snap_tag[kSnapFrames];
+uint32_t g_desync_dumps = 0;
 
 /* ---- the pad, as the game sees it ------------------------------------------ */
 
@@ -198,10 +302,29 @@ void h_cellPadGetInfo(ppu_context* ctx)
 
 /* ---- per-frame hook ---------------------------------------------------------- */
 
-uint64_t state_hash()
+/* The per-frame state hash, plus each region's own hash (32 bits) in
+ * `parts` for the frame log: which region diverged first. */
+uint64_t state_hash(std::string* parts = nullptr)
 {
     uint64_t h = 1469598103934665603ull;
-    for (const Range& r : g_hash_ranges) h = fnv64(vm_base + r.addr, r.len, h);
+    static std::vector<uint8_t> buf;
+    for (const Range& r : g_hash_ranges) {
+        buf.assign(vm_base + r.addr, vm_base + r.addr + r.len);
+        for (const Range& k : g_hash_skip) {   /* blank the noisy words */
+            const uint32_t a = k.addr > r.addr ? k.addr : r.addr;
+            const uint32_t e = (k.addr + k.len) < (r.addr + r.len) ? (k.addr + k.len) : (r.addr + r.len);
+            for (uint32_t x = a; x < e; x++) buf[x - r.addr] = 0;
+        }
+        h = fnv64(buf.data(), buf.size(), h);
+        if (g_desync_dump && parts) g_snap[g_frame_hashing % kSnapFrames].insert(
+            g_snap[g_frame_hashing % kSnapFrames].end(), buf.begin(), buf.end());
+        if (parts) {
+            uint64_t p = fnv64(buf.data(), buf.size());
+            char t[12];
+            snprintf(t, sizeof t, " %08x", (uint32_t)(p ^ (p >> 32)));
+            *parts += t;
+        }
+    }
     return h;
 }
 
@@ -219,6 +342,26 @@ void page_hashes(uint32_t f)
     np::log_extra(f, line.c_str());
 }
 
+/* Screenshots of an exact frame on both PCs: the live renderer dumps its
+ * surfaces at the first present after LD_SURF_DUMP_GATE appears. Created at
+ * the top of frame f, after frame f-1 has had time to present, so the dump
+ * is frame f's picture. */
+void shot(uint32_t f)
+{
+    if (g_shot_gate.empty()) return;
+    if (g_shot_armed != UINT32_MAX && f >= g_shot_armed + 30) {
+        remove(g_shot_gate.c_str());   /* re-arms the renderer for the next one */
+        g_shot_armed = UINT32_MAX;
+    }
+    for (uint32_t sf : g_shot_frames) {
+        if (sf != f || g_shot_armed != UINT32_MAX) continue;
+        Sleep(150);
+        if (FILE* fp = fopen(g_shot_gate.c_str(), "wb")) { fprintf(fp, "%u", f); fclose(fp); }
+        g_shot_armed = f;
+        np::note("frame %u: screenshot requested", f);
+    }
+}
+
 void dump_memory(uint32_t f)
 {
     for (uint32_t df : g_dump_frames) {
@@ -228,7 +371,13 @@ void dump_memory(uint32_t f)
             snprintf(path, sizeof path, "np_dump_f%06u_%08X.bin", f, r.addr);
             FILE* fp = fopen(path, "wb");
             if (!fp) continue;
-            fwrite(vm_base + r.addr, 1, r.len, fp);
+            static const uint8_t zero[0x1000] = {};
+            for (uint32_t a = r.addr; a < r.addr + r.len; a += 0x1000) {
+                MEMORY_BASIC_INFORMATION mi;
+                const bool ok = VirtualQuery(vm_base + a, &mi, sizeof mi) && mi.State == MEM_COMMIT &&
+                                !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+                fwrite(ok ? vm_base + a : zero, 1, 0x1000, fp);
+            }
             fclose(fp);
         }
         np::note("frame %u: memory dumped (%zu range(s))", f, g_dump_ranges.size());
@@ -263,9 +412,102 @@ void keyread_tick()
     gcall(kFnTickTail);                          /* 0x13F91C */
 }
 
+/* Idle = parked in its semaphore wait with no post pending. A semaphore not
+ * created yet, or nobody waiting on it yet, does not hold the frame up. */
+bool sem_idle(int id)
+{
+    const np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return true;
+    return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
+}
+
+bool workers_idle()
+{
+    for (int i = 1; i < kMaxSem; i++)
+        if (g_drain[i] && g_drain_seen[i] && !sem_idle(i)) return false;
+    return true;
+}
+
+uint64_t g_drain_us = 0, g_drain_max_us = 0, g_drain_waits = 0;
+
+void drain_stats(uint32_t f)
+{
+    if (f == 0 || f % 600) return;
+    if (g_drain_waits)
+        np::note("loader drain: %llu frame(s) waited, %.1f ms total, longest %.1f ms (last 600 frames)",
+                 (unsigned long long)g_drain_waits, g_drain_us / 1000.0, g_drain_max_us / 1000.0);
+    g_drain_us = g_drain_max_us = g_drain_waits = 0;
+}
+
+void drain_workers(uint32_t f)
+{
+    drain_stats(f);
+    if (workers_idle()) return;
+    LARGE_INTEGER q0, q1, qf;
+    QueryPerformanceCounter(&q0);
+    struct Acc { LARGE_INTEGER* a; ~Acc() {
+        LARGE_INTEGER q1, qf; QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+        uint64_t us = (uint64_t)((q1.QuadPart - a->QuadPart) * 1000000 / qf.QuadPart);
+        g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us; } } acc{ &q0 };
+    (void)q1; (void)qf;
+    const ULONGLONG t0 = GetTickCount64();
+    while (!workers_idle()) {
+        WaitForSingleObject(g_drain_event, 1);
+        if (GetTickCount64() - t0 > 2000) {
+            if (g_drain_timeouts++ < 10) {
+                std::string st;
+                for (int i = 0; i < kMaxSem; i++)
+                    if (g_drain[i]) { char b[48]; snprintf(b, sizeof b, " sem%d:value%d/waiters%d", i,
+                                       g_sys_semaphores[i - 1].value, g_sys_semaphores[i - 1].waiters); st += b; }
+                np::note("frame %u: loader threads still busy after 2 s, going on (%s)", f, st.c_str());
+            }
+            return;
+        }
+    }
+}
+
+/* T5_NET_RESULT_FILE: {"winner":0|1|null,"score":[p1,p2]} once a match is
+ * decided (the lobby reports it). From the round state block at 0x1008EBD0:
+ * +0xA/+0xB count the rounds P1/P2 won; +0x5 stays 0 through every round of a
+ * match and turns non-zero when the match is over (and back to 0 when the next
+ * one starts). Found by dumping a whole two-round match every 300 frames. */
+std::string g_result_file;
+bool g_result_done = false;
+uint32_t g_matches = 0;
+
+void watch_match(uint32_t f)
+{
+    const uint8_t over = rd8(kMatchOver), w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+    if (!over) { g_result_done = false; return; }
+    if (g_result_done || (w1 == 0 && w2 == 0)) return;
+    g_result_done = true;
+    g_matches++;
+    const char* winner = w1 > w2 ? "0" : w2 > w1 ? "1" : "null";
+    np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
+             *winner == 'n' ? "none (draw)" : (*winner == '0' ? "P1" : "P2"));
+    if (g_result_file.empty()) return;
+    const std::string tmp = g_result_file + ".tmp";
+    if (FILE* fp = fopen(tmp.c_str(), "wb")) {
+        fprintf(fp, "{\"winner\": %s, \"score\": [%u, %u]}", winner, w1, w2);
+        fclose(fp);
+        MoveFileExA(tmp.c_str(), g_result_file.c_str(), MOVEFILE_REPLACE_EXISTING);
+    }
+}
+
+/* Both random generators the game draws from, seeded the same on both PCs. */
+void reseed(uint32_t seed)
+{
+    gcall(kFnMtSeed, seed);
+    gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
+}
+
 void on_frame_start(ppu_context* ctx)
 {
+    bool fresh_start = false;
     if (!g_active) {
+        g_boot_frames++;
+        if (g_start_mode == StartMode::External && !g_start_requested.load()) return;
+        if (g_start_mode == StartMode::Frame && g_boot_frames < g_start_frame) return;
         /* Take over once the keyread thread exists and is parked in its wait
          * (not half-way through a tick of its own). It usually is not: its
          * tick blocks on the lwmutex this thread holds right now. So stop
@@ -275,8 +517,10 @@ void on_frame_start(ppu_context* ctx)
         if (!g_kr_in_wait.load()) return;
         g_main_tid = ctx->thread_id;
         g_active = true;
-        np::note("keyread thread is parked (sem %u); lockstep from here, main thread tid %llu",
-                 rd32(kKeyreadSemPtr), (unsigned long long)g_main_tid);
+        g_start_requested = false;
+        fresh_start = g_start_mode != StartMode::Boot;
+        np::note("keyread thread is parked (sem %u); lockstep from here (main loop frame %u since boot), "
+                 "main thread tid %llu", rd32(kKeyreadSemPtr), g_boot_frames, (unsigned long long)g_main_tid);
     }
     if (ctx->thread_id != g_main_tid) {
         static int n = 0;
@@ -284,15 +528,76 @@ void on_frame_start(ppu_context* ctx)
                               (unsigned long long)ctx->thread_id, (unsigned long long)g_main_tid);
         return;
     }
-    const uint32_t f = g_frame++;
-    const uint64_t h = state_hash();
+    uint32_t f = g_frame;
+    if (fresh_start) {
+        /* Lockstep starts in the middle of a running game: what the two
+         * games did before (boot, loading, menus at their own pace) must not
+         * leave a trace. The per-frame counters get the same value on both
+         * sides, the input ring is cleared, the RNGs are reseeded at frame 0
+         * below; the handshake at frame 0 is the ready barrier. */
+        wr64(kFrameClock, 0x10000);
+        for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, 0x10000);
+        wr32(kRingResetFlag, 1);
+    }
+    const bool resync = g_start_requested.exchange(false);   /* next match in the same process */
+    if ((rd32(kRingResetFlag) || resync) && f > 0) {
+        /* The game changed scene during the last frame (every scene start
+         * asks keyread to clear the input ring). Scene changes that wait on
+         * loading or sound land a frame or two apart on the two PCs, so they
+         * are sync points: both sides continue from the same frame number,
+         * with the game's frame clock moved along on the side that skipped,
+         * and the random generator reseeded the same way on both. */
+        const uint32_t nf = np::scene_barrier(f);
+        if (nf > f) {
+            /* Move the game's own per-frame counters along by the frames this
+             * side skipped: the frame clock and three u32 frame counters
+             * (0x1008EB9C, 0x1008F07C, 0x1009442C all equal the frame count). */
+            const uint32_t d = nf - f;
+            wr64(kFrameClock, rd64(kFrameClock) + d);
+            for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
+        }
+        f = nf;
+        g_scenes++;
+        reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+        char t[64];
+        snprintf(t, sizeof t, "scene %u", g_scenes);
+        np::log_extra(f, t);
+    }
+    g_frame = f + 1;
+    drain_workers(f);
+    if (f == 0) {
+        /* The game seeds its Mersenne Twister from the wall clock at boot
+         * (0xAE6C8: sys_time_get_current_time -> init_by_array). Reseed it
+         * with the seed both peers agreed on, before frame 0 runs. */
+        np::connect();
+        const uint32_t seed = np::match_seed();
+        reseed(seed);
+        np::note("game RNGs reseeded with 0x%08X", seed);
+    }
+    std::string parts = "H";
+    g_frame_hashing = f;
+    if (g_desync_dump) { g_snap[f % kSnapFrames].clear(); g_snap_tag[f % kSnapFrames] = f + 1; }
+    const uint64_t h = state_hash(&parts);
+    for (uint32_t mf; g_desync_dump && np::take_mismatch(&mf);) {
+        if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= 20) continue;
+        char path[64];
+        snprintf(path, sizeof path, "np_desync_f%06u.bin", mf);
+        if (FILE* fp = fopen(path, "wb")) {
+            fwrite(g_snap[mf % kSnapFrames].data(), 1, g_snap[mf % kSnapFrames].size(), fp);
+            fclose(fp);
+            g_desync_dumps++;
+        }
+    }
+    np::log_extra(f, parts.c_str());
     page_hashes(f);
     dump_memory(f);
+    shot(f);
     np::PadInput in[2];
     np::begin_frame(f, h, in);
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();
+    watch_match(f);
     char extra[128];
     snprintf(extra, sizeof extra, "R%u W%u S%u T%llu V%llu", rd32(kRingReadIdx), rd32(kRingWriteIdx),
              g_swallowed.load(), (unsigned long long)rd64(kFrameClock), (unsigned long long)rd64(kFrameClock + 8));
@@ -301,8 +606,59 @@ void on_frame_start(ppu_context* ctx)
 
 /* ---- syscall wrappers ---------------------------------------------------------- */
 
+/* T5_NET_TRACE: count other blocking syscalls per (thread, object). */
+template <int N> struct TraceSc {
+    static np_lv2_fn orig;
+    static std::atomic<uint32_t> cnt[64][64];
+    static int64_t fn(ppu_context* ctx)
+    {
+        const uint32_t t = (uint32_t)ctx->thread_id, o = (uint32_t)ctx->gpr[3];
+        cnt[t & 63][o & 63]++;
+        return orig(ctx);
+    }
+    static void install() { orig = g_lv2_syscalls[N]; g_lv2_syscalls[N] = fn; }
+    static void dump(const char* name)
+    {
+        std::string line = name; line += " (tid:obj calls):";
+        for (int t = 0; t < 64; t++) for (int o = 0; o < 64; o++) {
+            uint32_t c = cnt[t][o].exchange(0);
+            if (c) { char b[32]; snprintf(b, sizeof b, " %d:%d %u", t, o, c); line += b; }
+        }
+        np::note("%s", line.c_str());
+    }
+};
+template <int N> np_lv2_fn TraceSc<N>::orig = nullptr;
+template <int N> std::atomic<uint32_t> TraceSc<N>::cnt[64][64];
+
+/* T5_NET_TRACE: who waits on / posts which semaphore, summarised every 10 s. */
+struct SemStat { std::atomic<uint32_t> waits{0}, posts{0}; };
+SemStat g_semstat[64][64];   /* [tid][sem] */
+void sem_trace_dump()
+{
+    static ULONGLONG last = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now - last < 10000) return;
+    last = now;
+    std::string line = "sem stats (tid:sem waits/posts):";
+    for (int t = 0; t < 64; t++)
+        for (int m = 0; m < 64; m++) {
+            uint32_t w = g_semstat[t][m].waits.exchange(0), p = g_semstat[t][m].posts.exchange(0);
+            if (w || p) { char b[48]; snprintf(b, sizeof b, " %d:%d %u/%u", t, m, w, p); line += b; }
+        }
+    np::note("%s", line.c_str());
+    TraceSc<107>::dump("sys_cond_wait");
+    TraceSc<130>::dump("sys_event_queue_receive");
+    TraceSc<100>::dump("sys_mutex_lock");
+    TraceSc<141>::dump("sys_timer_usleep");
+}
+
 int64_t w_sem_wait(ppu_context* ctx)
 {
+    if (g_trace) {
+        const uint32_t t = (uint32_t)ctx->thread_id, m = (uint32_t)ctx->gpr[3];
+        if (t < 64 && m < 64) g_semstat[t][m].waits++;
+        sem_trace_dump();
+    }
     const uint32_t id = (uint32_t)ctx->gpr[3];
     const uint32_t kr = rd32(kKeyreadSemPtr);
     if (kr && id == kr) {
@@ -314,13 +670,9 @@ int64_t w_sem_wait(ppu_context* ctx)
         g_kr_wake++;
         return r;
     }
+    if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
     int64_t r = g_orig_wait(ctx);
     const uint32_t fs = rd32(kFrameSemPtr);
-    if (g_trace) {
-        static std::atomic<int> n{ 0 };
-        if (n++ < 40) np::note("sem_wait id=%u tid=%llu (frame sem %u, keyread sem %u)", id,
-                               (unsigned long long)ctx->thread_id, fs, kr);
-    }
     if (fs && id == fs && r == 0) on_frame_start(ctx);
     return r;
 }
@@ -328,6 +680,10 @@ int64_t w_sem_wait(ppu_context* ctx)
 int64_t w_sem_post(ppu_context* ctx)
 {
     const uint32_t id = (uint32_t)ctx->gpr[3];
+    if (g_trace) {
+        const uint32_t t = (uint32_t)ctx->thread_id;
+        if (t < 64 && id < 64) g_semstat[t][id].posts++;
+    }
     if (g_swallow && id == rd32(kKeyreadSemPtr) && rd32(kKeyreadQuit) == 0) {
         g_swallowed++;
         return 0;   /* the vblank's keyread wake: the main loop drives keyread now */
@@ -353,6 +709,10 @@ void install_syscall_hooks()
     g_lv2_syscalls[SC_SEM_WAIT] = w_sem_wait;
     g_lv2_syscalls[SC_SEM_POST] = w_sem_post;
     if (g_trace) {
+        TraceSc<107>::install();   /* sys_cond_wait */
+        TraceSc<130>::install();   /* sys_event_queue_receive */
+        TraceSc<100>::install();   /* sys_mutex_lock */
+        TraceSc<141>::install();   /* sys_timer_usleep */
         g_orig_alloc = g_lv2_syscalls[SC_MEM_ALLOC];
         g_lv2_syscalls[SC_MEM_ALLOC] = w_mem_alloc;
     }
@@ -367,6 +727,18 @@ void h_cellPadInit(ppu_context* ctx)
     if (!np::enabled()) return;
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
+    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
+    if (const char* r = getenv("T5_NET_ROUNDS"))
+        np::note("T5_NET_ROUNDS=%s is not applied yet: the match length is the game's own setting (first to 2 by default)", r);
+    if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
+    if (const char* st = getenv("T5_NET_START")) {
+        if (!_stricmp(st, "external")) g_start_mode = StartMode::External;
+        else if (!_strnicmp(st, "frame:", 6)) { g_start_mode = StartMode::Frame; g_start_frame = (uint32_t)atoi(st + 6); }
+        np::note("lockstep starts %s", g_start_mode == StartMode::External ? "when the game calls t5_netplay_start()"
+                                       : g_start_mode == StartMode::Frame ? "at a fixed main loop frame" : "at boot");
+    }
+    const char* hk = getenv("T5_NET_HASH_SKIP");
+    g_hash_skip = parse_ranges(hk ? hk : (hs ? "" : kDefaultHashSkip));
     if (const char* p = getenv("T5_NET_PAGEHASH")) {
         std::vector<Range> pr = parse_ranges(p);
         if (!pr.empty()) {
@@ -375,6 +747,17 @@ void h_cellPadInit(ppu_context* ctx)
             if (e) g_page_every = (uint32_t)strtoul(e + 1, nullptr, 10);
             if (!g_page_every) g_page_every = 60;
         }
+    }
+    if (const char* d = getenv("T5_NET_SHOT")) {
+        for (const char* p = d; *p;) {
+            char* e; unsigned long v = strtoul(p, &e, 10);
+            if (e == p) break;
+            g_shot_frames.push_back((uint32_t)v);
+            p = e; while (*p == ',') p++;
+        }
+        const char* g = getenv("LD_SURF_DUMP_GATE");
+        if (g) { g_shot_gate = g; remove(g); }
+        else np::note("T5_NET_SHOT needs LD_SURF_DUMP=<dir> and LD_SURF_DUMP_GATE=<file>");
     }
     if (const char* d = getenv("T5_NET_DUMP")) {
         for (const char* p = d; *p;) {
@@ -385,6 +768,18 @@ void h_cellPadInit(ppu_context* ctx)
         }
         const char* dr = getenv("T5_NET_DUMP_RANGES");
         g_dump_ranges = parse_ranges(dr ? dr : "10000000:760000");
+    }
+    {
+        const char* d = getenv("T5_NET_DRAIN");
+        const char* spec = d ? d : "8,10";
+        for (const char* p = spec; *p;) {
+            char* e; long v = strtol(p, &e, 10);
+            if (e == p) break;
+            if (v > 0 && v < kMaxSem) g_drain[v] = true;
+            p = e; while (*p == ',' || *p == ' ') p++;
+        }
+        g_drain_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        np::note("draining loader semaphores at each frame: %s", *spec ? spec : "(none)");
     }
     if (g_passive) { np::note("passive reference mode: %d pad(s), keyread left alone", g_pads); return; }
     install_syscall_hooks();
@@ -408,3 +803,12 @@ struct Register {
 } g_register;
 
 } // namespace
+
+/* The direct-fight mode calls this on the main thread when its fight starts
+ * (both PCs do, for the same match). With T5_NET_START=external it begins
+ * lockstep at the next frame; while lockstep runs it makes the next frame a
+ * sync point. Harmless when netplay is off. */
+extern "C" void t5_netplay_start(void)
+{
+    g_start_requested = true;
+}

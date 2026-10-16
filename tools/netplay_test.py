@@ -47,6 +47,9 @@ def main():
     ap.add_argument("--delay", type=int, default=3)
     ap.add_argument("--port", type=int, default=7000)
     ap.add_argument("--shots", type=int, default=0, help="dump the screen every N flips")
+    ap.add_argument("--lobby", action="store_true",
+                    help="hand over like the lobby does: fixed ports both sides, host told the peer, build/seed/match/result file")
+    ap.add_argument("--rounds", type=int, default=0, help="T5_NET_ROUNDS")
     ap.add_argument("--off", action="store_true", help="netplay off (reference run); PAD_FILE=padfile.txt drives port 0")
     ap.add_argument("--keep-ppm", action="store_true", help="leave screen dumps as .ppm")
     ap.add_argument("--stagger", type=float, default=0.0, help="seconds between starting host and joiner")
@@ -66,8 +69,7 @@ def main():
         "PS3_VERBOSE": "0",
         "PS3_WINDOW_BACKGROUND": "1",
         "PAD_NO_KEYBOARD": "1",
-        "T5_NET_XINPUT": "-1",
-        "T5_NET_KEYBOARD": "0",
+        "T5_NET_LOCALPAD": "0",
         "T5_NET_DELAY": str(a.delay),
     })
     for kv in a.env:
@@ -91,13 +93,28 @@ def main():
             open(env["T5_NET_PADFILE2"], "w").close()
         if role == "host":
             env["T5_NET_PORT"] = str(a.port)
+            if a.lobby:
+                env["T5_NET_PEER"] = f"127.0.0.1:{a.port + 1}"
         if role == "join":
             env["T5_NET_PEER"] = f"127.0.0.1:{a.port}"
+            if a.lobby:
+                env["T5_NET_PORT"] = str(a.port + 1)
+        if a.lobby:
+            env.update({"T5_NET_BUILD": "netplay-test", "T5_NET_SEED": "12345", "T5_NET_MATCH": "test-match",
+                        "T5_NET_PATH": "lan", "T5_NET_RTT_MS": "1",
+                        "T5_NET_RESULT_FILE": os.path.join(d, "result.json")})
+        if a.rounds:
+            env["T5_NET_ROUNDS"] = str(a.rounds)
         if a.shots:
             sd = os.path.join(d, "shots")
             os.makedirs(sd, exist_ok=True)
             env["LD_FRAME_DUMP"] = sd
             env["LD_FRAME_DUMP_EVERY"] = str(a.shots)
+        if "T5_NET_SHOT" in base or any(kv.startswith("T5_NET_SHOT=") for kv in extra):
+            sd = os.path.join(d, "surf")
+            os.makedirs(sd, exist_ok=True)
+            env["LD_SURF_DUMP"] = sd
+            env["LD_SURF_DUMP_GATE"] = os.path.join(d, "shotgate.txt")
         for kv in extra:
             k, v = kv.split("=", 1)
             env[k] = v

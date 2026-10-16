@@ -42,7 +42,9 @@ Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself):
 All fake keys are derived from hashes at run time. No key-shaped value is in
 the repository (the guard would flag it).
 
-### `runtime` -- patched ps3recomp (about 6-10 min cold, less with a warm cache)
+### `runtime` -- patched ps3recomp (estimate: 5-8 min cold, 3-4 min with a warm compile cache)
+
+(The same steps take about 70 s on the owner's PC at `-j 8`.)
 
 1. `tools/prepare_ps3recomp.py --dest deps/ps3recomp`: clones
    NoahBPeterson/ps3recomp at the commit `tools/build_game.py` pins and applies
@@ -74,8 +76,10 @@ the repository (the guard would flag it).
    they use.
 8. *Informational* (`continue-on-error`): boot the smoke title in `t5dr` for
    up to 60 s and require three FIFO flips and `sys_process_exit`. This needs
-   a D3D12 device on the runner. The smoke title's guest-thread checks fail on
-   Windows even without our patches, so they are not required.
+   a D3D12 device on the runner. The smoke title's guest-thread checks
+   (`sys_ppu_thread_create` returns 0) fail on Windows without our patches
+   too -- the pin plus only 0001's two Windows build fixes fails them the same
+   way -- so they are not required.
 
 ## The game-data guard
 
@@ -122,8 +126,8 @@ From a shell with the MSVC environment (`vcvars64.bat`) and LLVM on `PATH`:
     cmake --build build/<you>/ci-cmake --target ps3recomp_runtime t5dr -j 8
     python tests/run_ps3recomp_tests.py --ps3recomp build/<you>/patchcheck --out build/<you>/native-tests
 
-Other agents compile on this PC: check `Get-Process clang-cl` and keep `-j`
-low when they are busy.
+If other builds share the machine, check `Get-Process clang-cl` first and keep
+`-j` low.
 
 ## What CI cannot check
 

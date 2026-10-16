@@ -11,8 +11,11 @@ the license (`.rap`) from their own account.
 
 ## Status
 
-**Not playable. Nothing runs yet.** The repository holds the plan and the
-ground rules; the recompilation has not started.
+**Not playable yet.** The game is recompiled to a native Windows `.exe` and
+boots: its threads start, the DirectX 12 window opens and it loads its data.
+It then waits for its sound engine, which runs on the PS3's SPU and is not
+translated yet. Next: the sound engine, then the SPU skinning jobs (needed to
+see the fighters).
 
 ## How it will work
 

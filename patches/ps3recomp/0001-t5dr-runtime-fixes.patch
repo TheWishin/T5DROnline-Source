@@ -1,0 +1,148 @@
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index b726efe..f7b5a48 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -21,8 +21,10 @@
+ #include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
+ #include <string.h>
+ #include <stdint.h>
++#ifndef _WIN32
+ #include <sched.h>
+ #include <unistd.h>
++#endif
+ 
+ /* Bridge the real (BE) taskset EA + selected taskId from CreateTask to the image-22
+  * SPU dispatch (spu_workload.c), so spurs_pm_build_context can build the leaf's
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index ae229bc..cef4723 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1776,8 +1776,16 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                       fprintf(stderr, "[subch7] method=0x%04X data=0x%08X\n",
+                               m, vm_read32(dea)); }
+                 if (subch == 7 && m == 0x0B00u) {
+-                    extern void rsx_raise_user_cmd(u32 arg);
+-                    rsx_raise_user_cmd(vm_read32(dea));
++                    /* A title on the HLE cellGcmSys registered its handler with
++                     * cellGcmSetUserHandler: deliver through the pump. Only a
++                     * title on the firmware's libgcm listens on the sys_rsx
++                     * ISR queue. */
++                    if (s_user_handler_opd) {
++                        cellGcmQueueUserCommand(vm_read32(dea));
++                    } else {
++                        extern void rsx_raise_user_cmd(u32 arg);
++                        rsx_raise_user_cmd(vm_read32(dea));
++                    }
+                     continue;
+                 }
+                 /* GCM_SUBCH1_3D=1: treat subchannel 1 as the 3D object too.
+@@ -3290,10 +3298,41 @@ void cellGcmSetVBlankFrequency(u32 freq)
+     s_vblank_frequency = freq;
+ }
+ 
+-/* Store user command value */
+-void cellGcmSetUserCommand(u32 cmd)
+-{
+-    GCM_USER_STORE(cmd);
++/* cellGcmSetUserCommand(CellGcmContextData* ctx, u32 cause): append
++ * GCM_SET_USER_COMMAND (method 0xEB00) to the title's command buffer. The RSX
++ * raises the user interrupt when it reaches it, in order with the draws before
++ * it -- titles wait on that (Tekken 5 DR blocks its main loop on a semaphore
++ * its user handler posts). When ctx is not a command buffer we can write,
++ * deliver the cause straight away rather than dropping it. */
++void cellGcmSetUserCommand(void* ctx, u32 cause)
++{
++    const u32 c = (u32)(uintptr_t)ctx;
++    { static int n, dbg = -1; if (dbg < 0) dbg = getenv("GCM_USERCMD_DBG") ? 1 : 0;
++      if (dbg && n++ < 8) fprintf(stderr, "[gcm] SetUserCommand ctx=0x%08X cause=0x%X begin=0x%08X end=0x%08X cur=0x%08X io=0x%08X getoff=0x%X put=0x%X\n",
++        c, cause, c ? vm_read32(c) : 0, c ? vm_read32(c + 4) : 0, c ? vm_read32(c + 8) : 0,
++        c ? gcm_ea2io(vm_read32(c + 8)) : 0, s_fifo_getoff, vm_read32(GCM_CONTROL_GUEST_ADDR)); }
++    if (c) {
++        const u32 end = vm_read32(c + 4), cur = vm_read32(c + 8);
++        if (cur && cur + 8 + GCM_RECYCLE_SLACK <= end && gcm_ea2io(cur) != 0xFFFFFFFFu) {
++            vm_write32(cur, 0x0004EB00u);   /* 1 word, subchannel 7, method 0xB00 */
++            vm_write32(cur + 4, cause);
++            vm_write32(c + 8, cur + 8);
++            /* Kick the ring up to and including the command when the context is
++             * the one the RSX walks. Tekken 5 DR flushes only AFTER its handler
++             * has posted the semaphore it waits on, so without this the walker
++             * never reaches the command. Everything before it is complete --
++             * the title wrote it before calling us. */
++            if (c == s_gcm_context_ea) {
++                const u32 io = gcm_ea2io(cur + 8);
++                if (io != 0xFFFFFFFFu && io > vm_read32(GCM_CONTROL_GUEST_ADDR)) {
++                    atomic_thread_fence(memory_order_release);
++                    vm_write32(GCM_CONTROL_GUEST_ADDR, io);
++                }
++            }
++            return;
++        }
++    }
++    cellGcmQueueUserCommand(cause);
+ }
+ 
+ /* Called when a FIFO consumer retires a user-interrupt method. Publishing
+diff --git a/libs/video/cellGcmSys.h b/libs/video/cellGcmSys.h
+index 9684667..5737e17 100644
+--- a/libs/video/cellGcmSys.h
++++ b/libs/video/cellGcmSys.h
+@@ -428,7 +428,7 @@ void cellGcmSetSecondVFrequency(u32 freq);
+ void cellGcmSetVBlankFrequency(u32 freq);
+ 
+ /* User command */
+-void cellGcmSetUserCommand(u32 cmd);
++void cellGcmSetUserCommand(void* ctx, u32 cause);
+ /* Host FIFO consumer: defer the retired command to ppu_gcm_pump. */
+ void cellGcmQueueUserCommand(u32 cmd);
+ 
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 21e5584..7200ca8 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -20,9 +20,9 @@
+ 
+ /* Hoisted: code below was added above the original include block, so these
+  * have to be visible from here rather than 160 lines further down. */
++#include "../memory/guest_mem_atomic.h"   /* gm_load*, gm_store_bytes: every host */
+ #ifndef _WIN32
+ #include <atomic>
+-#include "../memory/guest_mem_atomic.h"
+ #include <execinfo.h>
+ #endif
+ #include <stdint.h>
+@@ -3335,7 +3335,9 @@ extern "C" void lv2_syscall(ppu_context* ctx)
+                 if (bt == (const char*)-1) bt = getenv("PS3_TTY_BT");
+                 if (bt && !done && strstr(cur, bt)) {
+                     done = 1;
++#ifndef _WIN32
+                     void* fr[32]; int n = backtrace(fr, 32); backtrace_symbols_fd(fr, n, 2);
++#endif
+                     ppu_dump_guest_stack(ctx, "tty");
+                 } }
+               if (run_len && strcmp(cur, last) == 0) {
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index e90b895..2b7ce15 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -304,6 +304,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
+ #  define rsx_backend_pump    rsx_null_backend_pump_messages
+ #endif
+ extern "C" void cellGcm_rsx_process_fifo(void);   /* cellGcmSys.c: drain get->put */
++extern "C" void ppu_gcm_pump(void);               /* cellGcmSys.c: deliver vblank/flip/user handlers */
+ extern "C" void cellGcm_fifo_kick_wait(unsigned ms); /* idle wait, woken by a kick */
+ extern "C" unsigned cellGcm_flip_request_count(void);
+ extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
+@@ -528,6 +529,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+             }
+             cellGcm_rsx_process_fifo();
+         }
++        /* PS3_GCM_TICKER_PUMP=1: deliver pending GCM handlers from this thread
++         * too, the way the PS3 runs them on its own interrupt thread. Without
++         * it they only reach the guest at an HLE call -- and a title whose
++         * every thread is parked in a semaphore its user handler posts
++         * (Tekken 5 DR) never makes one. */
++        { static int tp = -1; if (tp < 0) { const char* e = getenv("PS3_GCM_TICKER_PUMP"); tp = (e && *e == '1') ? 1 : 0; }
++          if (tp) ppu_gcm_pump(); }
+         /* YDKJ_INJECT_Q3: the main thread polls q3 (load/state-complete) each frame but
+          * it's never posted (producer signals a condvar, never enqueues). Inject a q3
+          * event periodically to test whether delivering the completion advances the

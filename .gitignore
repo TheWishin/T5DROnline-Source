@@ -38,3 +38,6 @@ __pycache__/
 .vs/
 *.user
 *.log
+
+# Local clones of reference projects (ps3recomp, RPCS3 crypto source)
+_ref/

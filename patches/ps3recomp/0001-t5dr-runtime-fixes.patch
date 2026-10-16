@@ -215,6 +215,34 @@ index 9684667..5737e17 100644
  /* Host FIFO consumer: defer the retired command to ppu_gcm_pump. */
  void cellGcmQueueUserCommand(u32 cmd);
  
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 1616f65..9003360 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -526,13 +526,21 @@ static HWND create_window(u32 width, u32 height, const char* title)
+ 
+     /* Keep the display awake (see rsx_null_backend.c). */
+     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+-    return CreateWindowExA(
++    /* PS3_WINDOW_BACKGROUND=1: open minimized and without taking focus, so an
++     * automated test run does not pop up over whatever the person at the PC
++     * is doing. The frame clock is real-time driven, so an occluded window
++     * keeps the game running. */
++    const int background = getenv("PS3_WINDOW_BACKGROUND") != NULL;
++    HWND hwnd = CreateWindowExA(
+         0, "ps3recomp_d3d12",
+         title ? title : "ps3recomp (D3D12)",
+-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
++        WS_OVERLAPPEDWINDOW | (background ? 0 : WS_VISIBLE),
+         CW_USEDEFAULT, CW_USEDEFAULT,
+         wr.right - wr.left, wr.bottom - wr.top,
+         NULL, NULL, GetModuleHandle(NULL), NULL);
++    if (hwnd && background)
++        ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
++    return hwnd;
+ }
+ 
+ /* ---------------------------------------------------------------------------
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
 index 21e5584..7200ca8 100644
 --- a/runtime/ppu/ppu_loader.cpp

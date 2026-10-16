@@ -1,0 +1,939 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d69c5c7..5babda6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -266,6 +266,13 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+         # equivalent NEON ops in the base ISA and rejects -msse4.1.
+         $<$<NOT:$<BOOL:${PS3RECOMP_HOST_ARM64}>>:-msse4.1>
+     )
++    # The same for the C a port compiles against runtime/spu/spu_helpers.h --
++    # its lifted SPU images. Without it they get the per-lane float ops and the
++    # byte-loop shufb, and Tekken 5 DR's SPU sound core needed ~9 ms for each
++    # 5.33 ms audio tick. C only, so the lifted PPU C++ is not rebuilt for it.
++    if(NOT PS3RECOMP_HOST_ARM64)
++        target_compile_options(ps3recomp_runtime INTERFACE $<$<COMPILE_LANGUAGE:C>:-msse4.1>)
++    endif()
+ elseif(MSVC)
+     # Real cl.exe -- clang-cl reports its id as Clang and is handled above.
+     #
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index c2cf856..d466a4a 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -144,6 +144,12 @@ static u64            s_audio_start_us = 0;
+ 
+ /* Mixing thread */
+ static unsigned long long g_audio_dropped;   /* frames the device had no room for */
++/* AUDIO_RATE: the device queue level seen at each submit (lowest, and how often it was empty
++ * -- an empty queue is an audible underrun the AUDIO_WAV capture cannot show). */
++static unsigned g_audio_pad_min = ~0u, g_audio_starved;
++static unsigned g_audio_last_pad;   /* device queue level before the last submit */
++static unsigned g_audio_waited, g_audio_unwritten;
++static double   g_audio_wait_max;
+ static volatile int  s_mix_thread_running = 0;
+ static thread_t      s_mix_thread;
+ #ifndef _WIN32
+@@ -279,8 +285,11 @@ static int audio_backend_init(void)
+     wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
+     wfx.cbSize          = 0;
+ 
+-    /* Request event-driven mode with a ~20ms buffer */
+-    REFERENCE_TIME buf_duration = 200000; /* 20ms in 100ns units */
++    /* Request event-driven mode with a ~50ms buffer. That is capacity, not
++     * latency: the mixer keeps only PS3_AUDIO_LEAD blocks queued. A 20 ms
++     * buffer left no room for that lead plus the engine's 10 ms pulls, and
++     * the queue ran down to 32 frames between pulls. */
++    REFERENCE_TIME buf_duration = 500000; /* 50ms in 100ns units */
+     /* Shared mode only accepts the endpoint's own mix rate unless the audio
+      * engine is told to convert. A device running at 44.1 or 96 kHz otherwise
+      * rejects our 48 kHz stream with AUDCLNT_E_UNSUPPORTED_FORMAT (0x88890008)
+@@ -361,6 +370,9 @@ static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
+     UINT32 padding = 0;
+     s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
+ 
++    if (padding < g_audio_pad_min) g_audio_pad_min = padding;
++    if (padding == 0) g_audio_starved++;
++    g_audio_last_pad = padding;
+     UINT32 available = s_wasapi_buf_frames - padding;
+     if (num_samples > available) {
+         g_audio_dropped += num_samples - available;
+@@ -420,6 +432,42 @@ static inline float ld_be_f32(const float* p)
+     return f;
+ }
+ 
++/* Block tags. The mixer marks every block it hands back to the title by
++ * writing -0.0f into the block's last word (after clearing it), and treats the
++ * block as written once that word has changed -- the title's copy of the
++ * block's last sample lands there last. RPCS3 tags port blocks the same way
++ * to tell whether a title has finished the next period. A title that really
++ * writes -0.0f there only costs the wait below; nothing is lost. */
++static const u8 k_audio_tag[4] = { 0x80, 0x00, 0x00, 0x00 };   /* big-endian -0.0f */
++
++static float* audio_block_ptr(AudioPortSlot* port, u32 block_idx)
++{
++    return port->buffer + block_idx * CELL_AUDIO_BLOCK_SAMPLES * (u32)port->param.nChannel;
++}
++
++static void audio_tag_block(AudioPortSlot* port, u32 block_idx)
++{
++    float* b = audio_block_ptr(port, block_idx);
++    memcpy(&b[CELL_AUDIO_BLOCK_SAMPLES * (u32)port->param.nChannel - 1], k_audio_tag, 4);
++}
++
++#ifdef _WIN32
++/* Has every running port's next block been written since it was tagged? */
++static int audio_ports_written(void)
++{
++    int ok = 1;
++    mutex_lock(&s_audio_mutex);
++    for (int p = 0; p < CELL_AUDIO_PORT_MAX && ok; p++) {
++        AudioPortSlot* port = &s_ports[p];
++        if (!port->in_use || !port->running || !port->buffer || !port->param.nBlock) continue;
++        const float* b = audio_block_ptr(port, (u32)(port->read_index % port->param.nBlock));
++        ok = memcmp(&b[CELL_AUDIO_BLOCK_SAMPLES * (u32)port->param.nChannel - 1], k_audio_tag, 4) != 0;
++    }
++    mutex_unlock(&s_audio_mutex);
++    return ok;
++}
++#endif
++
+ /* Mix one block from all active ports into s_mix_buffer (stereo float) */
+ /* Hand one mixed block to the host device. Shared by the Windows and POSIX
+  * mixer loops so the debug taps behave the same on both:
+@@ -527,6 +575,7 @@ static void audio_mix_one_block(void)
+          * preventing stale PCM from replaying when a producer stalls, the
+          * cleared block is an observable consumption signal for producers. */
+         memset(src, 0, CELL_AUDIO_BLOCK_SAMPLES * nch * sizeof(float));
++        audio_tag_block(port, block_idx);
+ 
+         /* Keep the monotonic counter for tags/timestamps, but publish the
+          * ring slot to the guest. SurMixer multiplies this value by the block
+@@ -587,6 +636,27 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+      * device room only as a ceiling. */
+     static int dev_pace = -1;
+     if (dev_pace < 0) dev_pace = getenv("PS3_AUDIO_DEVICE_PACE") ? 1 : 0;
++    /* A block is due every 5.33 ms, but a title may still be writing it:
++     * Tekken 5 DR's update thread answers each notify by running its SPU sound
++     * core (~4 ms, sometimes 6) and only then copies the block in, so a strict
++     * deadline loses the blocks that come in a little late -- 10% of them, as
++     * single-block holes. Like RPCS3's buffering, let a due block that has not
++     * been written yet (its tag is intact) wait up to PS3_AUDIO_WAIT_US
++     * (default 4000; 0 = mix on time regardless). The device queue is kept
++     * PS3_AUDIO_LEAD blocks deep (default 3, 16 ms) so that wait never starves
++     * it, steering the schedule by the measured queue level so the QPC clock
++     * cannot drift away from the device clock either. */
++    static int wait_us = -1, lead = -1;
++    if (wait_us < 0) { const char* e = getenv("PS3_AUDIO_WAIT_US"); wait_us = e ? atoi(e) : 4000; }
++    if (lead < 0) { const char* e = getenv("PS3_AUDIO_LEAD"); lead = e ? atoi(e) : 3; if (lead < 1) lead = 1; }
++    const long long wait_ticks = (long long)wait_us * qf.QuadPart / 1000000;
++    const long long block_ticks = (long long)CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE;
++    double pad_avg = -1.0;
++    int primed = 0;
++    /* High-resolution timer (Windows 10 1803+): sub-millisecond sleeps for the
++     * wait above; Sleep(1) would overshoot it by a whole tick. */
++    HANDLE hr_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
++                                             TIMER_ALL_ACCESS);
+     timeBeginPeriod(1);   /* Sleep(1) must mean ~1 ms, not the 15.6 ms default tick */
+     while (s_mix_thread_running) {
+         const int room = audio_backend_room();
+@@ -595,12 +665,36 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+             LARGE_INTEGER now; QueryPerformanceCounter(&now);
+             const long long due = q0.QuadPart +
+                 (long long)(blocks * CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE);
+-            if (now.QuadPart < due) { Sleep(1); continue; }
++            const int written = now.QuadPart >= due && wait_ticks ? audio_ports_written() : 1;
++            if (now.QuadPart < due || (now.QuadPart - due < wait_ticks && !written)) {
++                LARGE_INTEGER d; d.QuadPart = -2500;   /* 250 us, relative */
++                if (hr_timer && SetWaitableTimer(hr_timer, &d, 0, NULL, NULL, FALSE))
++                    WaitForSingleObject(hr_timer, 2);
++                else if (now.QuadPart < due) Sleep(1);
++                else SwitchToThread();
++                continue;
++            }
+             /* More than 50 ms behind (device just went away, a debugger
+              * stop): drop the backlog instead of mixing it in a burst. */
+             if (now.QuadPart - due > qf.QuadPart / 20)
+                 q0.QuadPart = now.QuadPart -
+                     (long long)(blocks * CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE);
++            /* AUDIO_RATE: blocks that had to wait for the title, and blocks it
++             * still had not written when the wait ran out. */
++            const double late_ms = (double)(now.QuadPart - due) * 1000.0 / (double)qf.QuadPart;
++            if (!written) g_audio_unwritten++;
++            else if (late_ms > 0.5) { g_audio_waited++; if (late_ms > g_audio_wait_max) g_audio_wait_max = late_ms; }
++        }
++        /* Queue the lead as silence ahead of the first block, and again after
++         * an underrun (the gap is already audible; this restores the cushion
++         * instead of starving on every engine pull that follows). */
++        if (room >= 0 && !dev_pace && (!primed || (blocks > (unsigned long long)lead * 4 &&
++                                                   g_audio_last_pad == 0))) {
++            memset(s_mix_buffer, 0, sizeof(s_mix_buffer));
++            for (int i = 0; i < lead - (primed ? 1 : 0); i++)
++                audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
++            primed = 1;
++            pad_avg = -1.0;
+         }
+         blocks++;
+         /* Mix and submit one block */
+@@ -621,19 +715,38 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+             { int nz = 0; for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
+               if (!nz) z++; }
+             if (now - t0 >= 5000) {
+-                fprintf(stderr, "[audio-rate] %.1f blocks/s (real time 187.5), silent %.1f%%, dropped %.0f frames/s, device buf %u%c",
++                fprintf(stderr, "[audio-rate] %.1f blocks/s (real time 187.5), silent %.1f%%, dropped %.0f frames/s, device buf %u, queue min %u, starved %u, "
++                                "waited for %u (max %.1f ms), not written %u%c",
+                         n * 1000.0 / (now - t0), n ? 100.0 * z / n : 0.0, (g_audio_dropped - d0) * 1000.0 / (now - t0),
+                 #if AUDIO_BACKEND_WASAPI
+-                        (unsigned)s_wasapi_buf_frames, 10);
++                        (unsigned)s_wasapi_buf_frames,
+ #else
+-                        0u, 10);
++                        0u,
+ #endif
++                        g_audio_pad_min == ~0u ? 0u : g_audio_pad_min, g_audio_starved,
++                        g_audio_waited, g_audio_wait_max, g_audio_unwritten, 10);
++                g_audio_pad_min = ~0u; g_audio_starved = 0;
++                g_audio_waited = g_audio_unwritten = 0; g_audio_wait_max = 0;
+                 n = z = 0; d0 = g_audio_dropped; t0 = now; } } }
+ 
+         /* Notify event queues */
+         audio_notify_event_queues();
++
++        /* Hold the device queue at the lead: nudge the schedule by a sixty-
++         * fourth of the (smoothed) error per block. The level seen before each
++         * submit swings by the engine's 10 ms pulls, hence the average. */
++        if (room >= 0 && !dev_pace) {
++            const double pad = (double)g_audio_last_pad;
++            pad_avg = pad_avg < 0 ? pad : pad_avg + (pad - pad_avg) / 32.0;
++            const double err = pad_avg - (double)(lead * CELL_AUDIO_BLOCK_SAMPLES);
++            long long adj = (long long)(err * (double)qf.QuadPart / CELL_AUDIO_SAMPLE_RATE / 64.0);
++            if (adj > block_ticks / 50) adj = block_ticks / 50;
++            if (adj < -block_ticks / 50) adj = -block_ticks / 50;
++            q0.QuadPart += adj;
++        }
+     }
+ 
++    if (hr_timer) CloseHandle(hr_timer);
+     printf("[cellAudio] Mixing thread stopped\n");
+     return 0;
+ }
+@@ -857,6 +970,7 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
+ 
+     port->buffer = (float*)(vm_base + guest_buf);     /* host view of guest buffer */
+     memset(port->buffer, 0, port->buf_size);
++    for (u32 b = 0; b < (u32)nblk; b++) audio_tag_block(port, b);
+     vm_write64(guest_ridx, 0);                        /* read index counter (u64, see below) */
+ 
+     port->port_addr     = guest_buf;
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 6138658..636a578 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -1,9 +1,14 @@
+ /*
+  * ps3recomp - cellAtrac HLE
+  *
+- * All-data-on-memory decoding of ATRAC3plus RIFF files, with looping. The
+- * title hands over the whole .at3 file (SetDataAndGetMemSize), creates a
+- * decoder, and then pulls one frame of float PCM per cellAtracDecode.
++ * Decoding of ATRAC3plus RIFF files to float PCM, with looping, from all three
++ * buffer layouts the library knows:
++ *   - all data on memory: SetDataAndGetMemSize hands over the whole .at3 file;
++ *   - a half-way buffer: the buffer holds the whole file but only its start
++ *     has been read, the rest follows through AddStreamData;
++ *   - streaming: the buffer is a ring smaller than the file, refilled through
++ *     GetStreamDataInfo / AddStreamData as frames are decoded (Tekken 5 DR
++ *     streams all of its music this way, 16 KB at a time).
+  *
+  * Sample positions. FFmpeg's decoder output is a linear stream of 2048-sample
+  * frames. The file's first audible sample sits at index
+@@ -14,18 +19,42 @@
+  * Game's three tracks: first + fact[0] lands exactly on the last frame
+  * boundary of the data chunk, and each loop spans the whole track.
+  *
+- * ponytail: no streaming (GetStreamDataInfo/AddStreamData/second buffer) and
+- * no plain ATRAC3 -- nothing that runs needs them yet. A title that streams
+- * gets a loud log line from SetDataAndGetMemSize; add the ring-buffer
+- * bookkeeping then (PPSSPP's sceAtrac is the model).
++ * Streaming. The title's ring only matters for its flow control: where it may
++ * write next, how much, and which file offset to read (PPSSPP's sceAtrac
++ * models the same API on the PSP). Every byte the title adds is also copied
++ * into a host image of the file at the offset we asked for, and frames are
++ * decoded from that image by absolute index -- the same path as all-data-on-
++ * memory, so seeking and looping need no second buffer and no re-read. Once
++ * the image is complete, a looping track keeps asking for the loop region the
++ * way the library does, and whatever the title supplies there is only checked
++ * against the image, never decoded.
++ *
++ * ponytail: no plain ATRAC3, and GetBufferInfoForResetting is not implemented
++ * -- nothing that runs needs them yet.
+  */
+ 
+ #include "cellAtrac.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../third_party/at3_standalone/at3_bridge.h"
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
++#ifdef _WIN32
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++static SRWLOCK s_atrac_lock = SRWLOCK_INIT;
++#define ATRAC_LOCK()   AcquireSRWLockExclusive(&s_atrac_lock)
++#define ATRAC_UNLOCK() ReleaseSRWLockExclusive(&s_atrac_lock)
++#else
++#include <pthread.h>
++static pthread_mutex_t s_atrac_lock = PTHREAD_MUTEX_INITIALIZER;
++#define ATRAC_LOCK()   pthread_mutex_lock(&s_atrac_lock)
++#define ATRAC_UNLOCK() pthread_mutex_unlock(&s_atrac_lock)
++#endif
++
+ #define AT3P_SAMPLES   2048
+ #define AT3P_DELAY     0x170
+ #define ATRAC_MAX_SLOTS 16
+@@ -39,7 +68,7 @@ typedef struct {
+ 
+ typedef struct {
+     u32 handle_ea;             /* 0 = free */
+-    const u8* file;
++    const u8* file;            /* what frames are decoded from (guest buffer or img) */
+     AtracTrackInfo t;
+     void* dec;
+     s32 pos;                   /* next decoder-stream index to output */
+@@ -47,10 +76,27 @@ typedef struct {
+     s32 next_frame;            /* frame the decoder expects next */
+     s32 pcm_frame;             /* frame held in pcm[], -1 = none */
+     float pcm[2][AT3P_SAMPLES];
++    /* Streaming / half-way buffer (img != NULL). */
++    u8* img;                   /* host copy of the file */
++    u32 file_bytes;            /* data_off + data_bytes */
++    u32 have;                  /* img[0, have) holds the file */
++    u32 ring_ea, ring_size;    /* the title's buffer */
++    int linear;                /* half-way buffer: file offset == buffer offset */
++    u32 ring_wr;               /* where the title writes next */
++    u32 ring_fill;             /* bytes in the ring not decoded yet */
++    u32 read_pos;              /* file offset the title reads next */
++    u32 added, readded_bad, decode_errors;   /* diagnostics */
+ } AtracSlot;
+ 
+ static AtracSlot s_slots[ATRAC_MAX_SLOTS];
+ 
++static int atrac_trace(void)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("ATRAC_TRACE") ? 1 : 0;
++    return on;
++}
++
+ static u32 le32(const u8* p) { return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24; }
+ static u16 le16(const u8* p) { return (u16)(p[0] | p[1] << 8); }
+ 
+@@ -113,6 +159,19 @@ static AtracSlot* slot_of(u32 handle_ea)
+     return NULL;
+ }
+ 
++static void slot_free(AtracSlot* s)
++{
++    if (s->dec) at3p_close(s->dec);
++    free(s->img);
++    memset(s, 0, sizeof(*s));
++}
++
++/* Is decoder-stream frame k's data on hand? */
++static int frame_ready(const AtracSlot* s, s32 k)
++{
++    return !s->img || s->have >= s->t.data_off + (u32)(k + 1) * s->t.block_align;
++}
++
+ /* Puts decoder-stream frame k in s->pcm, decoding forward from wherever the
+  * decoder is. The decoder overlaps adjacent frames, so a jump backwards
+  * restarts one frame early and discards that frame's output. */
+@@ -130,8 +189,12 @@ static int decode_frame(AtracSlot* s, s32 k)
+                         (int)s->t.block_align) < 0 || n != AT3P_SAMPLES) {
+             /* A bad frame decodes as silence rather than ending the track. */
+             memset(s->pcm, 0, sizeof(s->pcm));
++            s->decode_errors++;
+         }
+         s->next_frame++;
++        /* The frame's bytes leave the title's ring. */
++        if (s->img && !s->linear)
++            s->ring_fill = s->ring_fill > s->t.block_align ? s->ring_fill - s->t.block_align : 0;
+     }
+     s->pcm_frame = k;
+     return 0;
+@@ -139,37 +202,91 @@ static int decode_frame(AtracSlot* s, s32 k)
+ 
+ static int looping(const AtracSlot* s) { return s->t.loop_start >= 0 && s->loop_num != 0; }
+ 
++/* Where the library asks for data again once the whole file went through a
++ * looping stream: one frame ahead of the loop start, as the decoder restarts. */
++static u32 loop_reread_pos(const AtracSlot* s)
++{
++    const s32 k = s->t.loop_start / AT3P_SAMPLES - 1;
++    return s->t.data_off + (u32)(k > 0 ? k : 0) * s->t.block_align;
++}
++
++/* The region the title may fill next: buffer offset, byte count, file offset. */
++static void stream_info(const AtracSlot* s, u32* wr, u32* writable, u32* rpos)
++{
++    *rpos = s->read_pos;
++    if (s->linear) {
++        *wr = s->read_pos;
++        *writable = s->file_bytes - s->read_pos;
++        return;
++    }
++    *wr = s->ring_wr;
++    if (s->read_pos >= s->file_bytes) { *writable = 0; return; }   /* non-looping, all read */
++    const u32 free_bytes = s->ring_size - s->ring_fill;
++    const u32 tail = s->ring_size - s->ring_wr;
++    u32 n = free_bytes < tail ? free_bytes : tail;
++    /* Never ask past the end of the file. */
++    if (n > s->file_bytes - s->read_pos) n = s->file_bytes - s->read_pos;
++    *writable = n;
++}
++
+ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte,
+                                   u32 uiBufferByte, u32 puiWorkMemByte)
+ {
+     if (!pHandle || !pucBufferAddr) return (s32)CELL_ATRAC_ERROR_API_FAIL;
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) s = slot_of(0);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_API_FAIL;
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_API_FAIL; }
++    /* Tekken 5 DR passes (buffer size, bytes filled so far) and retries until
++     * the call succeeds, i.e. until its 16 KB ring is full -- whatever it
++     * appends in the meantime goes straight into the buffer, not through
++     * AddStreamData. So a read size beyond the buffer size is refused, as the
++     * library documents, unless the whole file is already there. */
++    const u32 readable = uiReadByte < uiBufferByte ? uiReadByte : uiBufferByte;
+     AtracTrackInfo t;
+     const u8* file = vm_base + pucBufferAddr;
+-    int rc = atrac_parse_riff(file, uiReadByte, &t);
++    int rc = atrac_parse_riff(file, readable, &t);
+     if (rc) {
++        ATRAC_UNLOCK();
++        if (readable < 0x400) return (s32)CELL_ATRAC_ERROR_READSIZE_IS_TOO_SMALL;
+         fprintf(stderr, "[cellAtrac] SetData: not an ATRAC3plus file (0x%08X)\n", (u32)rc);
+         return rc;
+     }
+-    if (uiReadByte < t.data_off + t.data_bytes)
+-        fprintf(stderr, "[cellAtrac] SetData: %u of %u bytes on memory -- STREAMING is "
+-                        "not implemented; this track will decode garbage\n",
+-                uiReadByte, t.data_off + t.data_bytes);
+-    if (s->dec) at3p_close(s->dec);
+-    memset(s, 0, sizeof(*s));
++    const u32 file_bytes = t.data_off + t.data_bytes;
++    if (uiReadByte > uiBufferByte && uiBufferByte < file_bytes) {
++        ATRAC_UNLOCK();
++        return (s32)CELL_ATRAC_ERROR_READSIZE_OVER_BUFFER;
++    }
++    slot_free(s);
+     s->handle_ea = pHandle;
+     s->file = file;
+     s->t = t;
+     s->pos = t.first;
+     s->next_frame = 0;         /* start of the stream, like the console */
+     s->pcm_frame = -1;
+-    (void)uiBufferByte;
++    s->file_bytes = file_bytes;
++    const char* mode = "all data on memory";
++    if (readable < file_bytes) {
++        s->img = (u8*)malloc(file_bytes);
++        if (!s->img) { slot_free(s); ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_API_FAIL; }
++        memcpy(s->img, file, readable);
++        s->file = s->img;
++        s->have = readable;
++        s->read_pos = readable;
++        s->ring_ea = pucBufferAddr;
++        s->ring_size = uiBufferByte;
++        s->linear = uiBufferByte >= file_bytes;
++        s->ring_wr = s->linear ? readable : readable % uiBufferByte;
++        /* The header is consumed on the spot; its bytes are free ring space. */
++        s->ring_fill = readable - t.data_off;
++        mode = s->linear ? "half-way buffer" : "streaming";
++    }
+     if (puiWorkMemByte) vm_write32(puiWorkMemByte, 0x1000);
+-    fprintf(stderr, "[cellAtrac] SetData handle=0x%08X ch=%u frames=%u first=%d end=%d loop=[%d,%d)\n",
++    fprintf(stderr, "[cellAtrac] SetData handle=0x%08X ch=%u frames=%u first=%d end=%d loop=[%d,%d) "
++                    "%s (%u of %u bytes, buffer %u)\n",
+             pHandle, t.channels, t.data_bytes / t.block_align, t.first, t.end,
+-            t.loop_start, t.loop_end);
++            t.loop_start, t.loop_end, mode, readable, file_bytes, uiBufferByte);
++    ATRAC_UNLOCK();
+     return CELL_OK;
+ }
+ 
+@@ -177,12 +294,18 @@ s32 cellAtracCreateDecoder(u32 pHandle, u32 pucWorkMem, u32 uiPpuThreadPriority,
+                            u32 uiSpuThreadPriority)
+ {
+     (void)pucWorkMem; (void)uiPpuThreadPriority; (void)uiSpuThreadPriority;
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (s->dec) return (s32)CELL_ATRAC_ERROR_DECODER_WAS_CREATED;
+-    int ba = (int)s->t.block_align;
+-    s->dec = at3p_open((int)s->t.channels, &ba);
+-    return s->dec ? CELL_OK : (s32)CELL_ATRAC_ERROR_API_FAIL;
++    s32 rc = CELL_OK;
++    if (!s) rc = (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    else if (s->dec) rc = (s32)CELL_ATRAC_ERROR_DECODER_WAS_CREATED;
++    else {
++        int ba = (int)s->t.block_align;
++        s->dec = at3p_open((int)s->t.channels, &ba);
++        if (!s->dec) rc = (s32)CELL_ATRAC_ERROR_API_FAIL;
++    }
++    ATRAC_UNLOCK();
++    return rc;
+ }
+ 
+ s32 cellAtracCreateDecoderExt(u32 pHandle, u32 pucWorkMem, u32 uiPpuThreadPriority,
+@@ -194,25 +317,47 @@ s32 cellAtracCreateDecoderExt(u32 pHandle, u32 pucWorkMem, u32 uiPpuThreadPriori
+ 
+ s32 cellAtracDeleteDecoder(u32 pHandle)
+ {
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (s->dec) at3p_close(s->dec);
+-    memset(s, 0, sizeof(*s));
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    if (s->img || s->decode_errors)
++        fprintf(stderr, "[cellAtrac] DeleteDecoder handle=0x%08X: %u bytes streamed in, %u/%u of "
++                        "the file on hand, %u re-read bytes differing, %u bad frames\n",
++                pHandle, s->added, s->have, s->file_bytes, s->readded_bad, s->decode_errors);
++    slot_free(s);
++    ATRAC_UNLOCK();
+     return CELL_OK;
+ }
+ 
++/* Frames the title's buffer still holds, or how the rest is on memory. */
++static s32 remain_frames(const AtracSlot* s)
++{
++    if (!s->img) return CELL_ATRAC_ALLDATA_IS_ON_MEMORY;
++    if (s->have >= s->file_bytes) {
++        if (s->t.loop_start < 0 || s->loop_num == 0) return CELL_ATRAC_NONLOOP_STREAM_DATA_IS_ON_MEMORY;
++        return CELL_ATRAC_LOOP_STREAM_DATA_IS_ON_MEMORY;
++    }
++    if (s->linear) {
++        const u32 dec_off = s->t.data_off + (u32)s->next_frame * s->t.block_align;
++        return s->have > dec_off ? (s32)((s->have - dec_off) / s->t.block_align) : 0;
++    }
++    return (s32)(s->ring_fill / s->t.block_align);
++}
++
+ /* One call returns at most one frame's worth of samples per channel,
+  * interleaved big-endian floats. */
+ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishflag,
+                     u32 piRemainFrame)
+ {
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (!s->dec) return (s32)CELL_ATRAC_ERROR_NO_DECODER;
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    if (!s->dec) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_NO_DECODER; }
+     if (puiSamples) vm_write32(puiSamples, 0);
+     if (s->pos >= (looping(s) ? s->t.loop_end : s->t.end)) {
+         if (!looping(s)) {
+             if (puiFinishflag) vm_write32(puiFinishflag, 1);
++            ATRAC_UNLOCK();
+             return (s32)CELL_ATRAC_ERROR_ALLDATA_WAS_DECODED;
+         }
+         s->pos = s->t.loop_start;
+@@ -220,6 +365,13 @@ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishfla
+     }
+     const s32 limit = looping(s) ? s->t.loop_end : s->t.end;
+     const s32 k = s->pos / AT3P_SAMPLES, at = s->pos - k * AT3P_SAMPLES;
++    /* A stream whose next frame has not been added yet: the title waits for
++     * its reader and calls again (Tekken 5 DR blocks on a condition). */
++    if (!frame_ready(s, k)) {
++        if (piRemainFrame) vm_write32(piRemainFrame, (u32)remain_frames(s));
++        ATRAC_UNLOCK();
++        return (s32)CELL_ATRAC_ERROR_NODATA_IN_BUFFER;
++    }
+     s32 n = AT3P_SAMPLES - at;
+     if (n > limit - s->pos) n = limit - s->pos;
+     decode_frame(s, k);
+@@ -233,14 +385,122 @@ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishfla
+     s->pos += n;
+     if (puiSamples) vm_write32(puiSamples, (u32)n);
+     if (puiFinishflag) vm_write32(puiFinishflag, !looping(s) && s->pos >= s->t.end);
+-    if (piRemainFrame) vm_write32(piRemainFrame, (u32)CELL_ATRAC_ALLDATA_IS_ON_MEMORY);
++    if (piRemainFrame) vm_write32(piRemainFrame, (u32)remain_frames(s));
++    ATRAC_UNLOCK();
+     return CELL_OK;
+ }
+ 
+-s32 cellAtracGetRemainFrame(u32 pHandle, u32 piRemainFrame)
++s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritableByte,
++                               u32 puiReadPosition)
++{
++    ATRAC_LOCK();
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    u32 wr = 0, n = 0, rpos = 0;
++    if (s->img) stream_info(s, &wr, &n, &rpos);
++    else rpos = s->t.data_off + s->t.data_bytes;   /* all on memory: nothing to add */
++    if (ppucWritePointer) vm_write32(ppucWritePointer, (s->img ? s->ring_ea : (u32)(s->file - vm_base)) + wr);
++    if (puiWritableByte) vm_write32(puiWritableByte, n);
++    if (puiReadPosition) vm_write32(puiReadPosition, rpos);
++    if (atrac_trace())
++        fprintf(stderr, "[cellAtrac] GetStreamDataInfo handle=0x%08X -> write +0x%X, %u bytes, file @0x%X (fill %u)\n",
++                pHandle, wr, n, rpos, s->ring_fill);
++    ATRAC_UNLOCK();
++    return CELL_OK;
++}
++
++s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
++{
++    ATRAC_LOCK();
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    if (!s->img) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY; }
++    u32 wr, n, rpos;
++    stream_info(s, &wr, &n, &rpos);
++    if (uiAddByte > n) {
++        fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes, only %u writable\n",
++                pHandle, uiAddByte, n);
++        ATRAC_UNLOCK();
++        return (s32)CELL_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG;
++    }
++    if (uiAddByte) {
++        const u8* src = vm_base + s->ring_ea + wr;
++        if (rpos + uiAddByte <= s->have) {
++            /* A looping stream's second lap: the image already holds it. */
++            for (u32 i = 0; i < uiAddByte; i++) s->readded_bad += src[i] != s->img[rpos + i];
++        } else if (rpos <= s->have) {
++            memcpy(s->img + rpos, src, uiAddByte);
++            s->have = rpos + uiAddByte;
++        }
++        s->added += uiAddByte;
++        s->read_pos += uiAddByte;
++        if (!s->linear) {
++            s->ring_fill += uiAddByte;
++            s->ring_wr += uiAddByte;
++            /* Wrap early rather than hand out a tail shorter than a frame. */
++            if (s->ring_size - s->ring_wr < s->t.block_align) s->ring_wr = 0;
++            /* The file went through: a looping track starts over at its loop. */
++            if (s->read_pos >= s->file_bytes && s->t.loop_start >= 0)
++                s->read_pos = loop_reread_pos(s);
++        }
++        if (s->have >= s->file_bytes && rpos + uiAddByte >= s->file_bytes)
++            fprintf(stderr, "[cellAtrac] handle=0x%08X: whole file streamed in (%u bytes)%s\n",
++                    pHandle, s->file_bytes, s->t.loop_start >= 0 ? ", looping from here on" : "");
++    }
++    if (atrac_trace())
++        fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X %u bytes at +0x%X (file @0x%X) have %u/%u\n",
++                pHandle, uiAddByte, wr, rpos, s->have, s->file_bytes);
++    ATRAC_UNLOCK();
++    return CELL_OK;
++}
++
++s32 cellAtracGetVacantSize(u32 pHandle, u32 puiVacantSize)
++{
++    ATRAC_LOCK();
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    u32 v = 0;
++    if (s->img) v = s->linear ? s->file_bytes - s->read_pos : s->ring_size - s->ring_fill;
++    vm_write32(puiVacantSize, v);
++    ATRAC_UNLOCK();
++    return CELL_OK;
++}
++
++/* The host image holds every byte a looping stream needs, trailer included,
++ * so the second buffer the library would ask for is never needed. */
++s32 cellAtracIsSecondBufferNeeded(u32 pHandle)
++{
++    return slot_of(pHandle) ? 0 : (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++}
++
++s32 cellAtracGetSecondBufferInfo(u32 pHandle, u32 puiReadPosition, u32 puiDataByte)
++{
++    if (!slot_of(pHandle)) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    if (puiReadPosition) vm_write32(puiReadPosition, 0);
++    if (puiDataByte) vm_write32(puiDataByte, 0);
++    return (s32)CELL_ATRAC_ERROR_NONEED_SECOND_BUFFER;
++}
++
++s32 cellAtracSetSecondBuffer(u32 pHandle, u32 pucSecondBufferAddr, u32 uiSecondBufferByte)
++{
++    (void)pucSecondBufferAddr; (void)uiSecondBufferByte;
++    return slot_of(pHandle) ? CELL_OK : (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++}
++
++s32 cellAtracGetInternalErrorInfo(u32 pHandle, u32 piResult)
+ {
+     if (!slot_of(pHandle)) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    vm_write32(piRemainFrame, (u32)CELL_ATRAC_ALLDATA_IS_ON_MEMORY);
++    if (piResult) vm_write32(piResult, 0);
++    return CELL_OK;
++}
++
++s32 cellAtracGetRemainFrame(u32 pHandle, u32 piRemainFrame)
++{
++    ATRAC_LOCK();
++    AtracSlot* s = slot_of(pHandle);
++    if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    vm_write32(piRemainFrame, (u32)remain_frames(s));
++    ATRAC_UNLOCK();
+     return CELL_OK;
+ }
+ 
+@@ -310,20 +570,29 @@ s32 cellAtracGetLoopInfo(u32 pHandle, u32 piLoopNum, u32 puiLoopStatus)
+ 
+ s32 cellAtracSetLoopNum(u32 pHandle, s32 iLoopNum)
+ {
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    if (s->t.loop_start < 0 && iLoopNum != 0) return (s32)CELL_ATRAC_ERROR_UNSET_LOOP_NUM;
+-    s->loop_num = iLoopNum;
+-    return CELL_OK;
++    s32 rc = CELL_OK;
++    if (!s) rc = (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    else if (s->t.loop_start < 0 && iLoopNum != 0) rc = (s32)CELL_ATRAC_ERROR_UNSET_LOOP_NUM;
++    else s->loop_num = iLoopNum;
++    ATRAC_UNLOCK();
++    return rc;
+ }
+ 
+ s32 cellAtracResetPlayPosition(u32 pHandle, u32 uiSample, u32 uiWriteByte)
+ {
+     (void)uiWriteByte;
++    ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+-    if (!s) return (s32)CELL_ATRAC_ERROR_UNSET_DATA;
+-    const s32 p = s->t.first + (s32)uiSample;
+-    if (p >= s->t.end) return (s32)CELL_ATRAC_ERROR_ILLEGAL_SAMPLE;
+-    s->pos = p;
+-    return CELL_OK;
++    s32 rc = CELL_OK;
++    if (!s) rc = (s32)CELL_ATRAC_ERROR_UNSET_DATA;
++    else {
++        const s32 p = s->t.first + (s32)uiSample;
++        if (p >= s->t.end) rc = (s32)CELL_ATRAC_ERROR_ILLEGAL_SAMPLE;
++        else if (!frame_ready(s, p / AT3P_SAMPLES)) rc = (s32)CELL_ATRAC_ERROR_ILLEGAL_SAMPLE;
++        else s->pos = p;
++    }
++    ATRAC_UNLOCK();
++    return rc;
+ }
+diff --git a/libs/codec/cellAtrac.h b/libs/codec/cellAtrac.h
+index 3a473eb..339892e 100644
+--- a/libs/codec/cellAtrac.h
++++ b/libs/codec/cellAtrac.h
+@@ -1,9 +1,10 @@
+ /*
+  * ps3recomp - cellAtrac HLE
+  *
+- * libatrac3plus: decodes an ATRAC3plus RIFF (.at3) file to float PCM. On the
+- * console the decode runs on an SPU; here it runs FFmpeg's decoder
+- * (third_party/at3_standalone) on the calling thread.
++ * libatrac3plus: decodes an ATRAC3plus RIFF (.at3) file to float PCM, from
++ * memory or streamed through a ring buffer. On the console the decode runs on
++ * an SPU; here it runs FFmpeg's decoder (third_party/at3_standalone) on the
++ * calling thread.
+  *
+  * Pointer parameters are guest EAs.
+  */
+@@ -27,11 +28,18 @@ extern "C" {
+ #define CELL_ATRAC_ERROR_UNSET_DATA            0x80610322
+ #define CELL_ATRAC_ERROR_DECODER_WAS_CREATED   0x80610323
+ #define CELL_ATRAC_ERROR_ALLDATA_WAS_DECODED   0x80610331
++#define CELL_ATRAC_ERROR_NODATA_IN_BUFFER      0x80610332
++#define CELL_ATRAC_ERROR_NEED_SECOND_BUFFER    0x80610334
+ #define CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY   0x80610341
++#define CELL_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG   0x80610342
++#define CELL_ATRAC_ERROR_NONEED_SECOND_BUFFER  0x80610351
+ #define CELL_ATRAC_ERROR_UNSET_LOOP_NUM        0x80610361
+ #define CELL_ATRAC_ERROR_ILLEGAL_SAMPLE        0x80610371
+ 
+-#define CELL_ATRAC_ALLDATA_IS_ON_MEMORY  (-1)
++/* piRemainFrame values other than a frame count */
++#define CELL_ATRAC_ALLDATA_IS_ON_MEMORY              (-1)
++#define CELL_ATRAC_NONLOOP_STREAM_DATA_IS_ON_MEMORY  (-2)
++#define CELL_ATRAC_LOOP_STREAM_DATA_IS_ON_MEMORY     (-3)
+ 
+ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte,
+                                   u32 uiBufferByte, u32 puiWorkMemByte);
+@@ -53,6 +61,14 @@ s32 cellAtracGetBitrate(u32 pHandle, u32 puiBitrate);
+ s32 cellAtracGetLoopInfo(u32 pHandle, u32 piLoopNum, u32 puiLoopStatus);
+ s32 cellAtracSetLoopNum(u32 pHandle, s32 iLoopNum);
+ s32 cellAtracResetPlayPosition(u32 pHandle, u32 uiSample, u32 uiWriteByte);
++s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritableByte,
++                               u32 puiReadPosition);
++s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte);
++s32 cellAtracGetVacantSize(u32 pHandle, u32 puiVacantSize);
++s32 cellAtracIsSecondBufferNeeded(u32 pHandle);
++s32 cellAtracGetSecondBufferInfo(u32 pHandle, u32 puiReadPosition, u32 puiDataByte);
++s32 cellAtracSetSecondBuffer(u32 pHandle, u32 pucSecondBufferAddr, u32 uiSecondBufferByte);
++s32 cellAtracGetInternalErrorInfo(u32 pHandle, u32 piResult);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+index 8d96768..1317792 100644
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -828,6 +828,120 @@ SPU__NV_INLINE u128 spu__nv_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t
+ SPU__NV_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__nv_fma(a, b, c, 0, 0); }            /* a*b + c */
+ SPU__NV_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__nv_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
+ SPU__NV_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__nv_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
++#elif defined(__SSE4_1__) && !defined(SPU_SCALAR_HELPERS)
++/* The NEON fast path above, on x86 with SSE4.1: widen each half to f64x2 (exact), operate,
++ * clear the 29 low significand bits (truncation toward zero), narrow (exact). Lanes whose
++ * operands or result fall outside the ordinary range -- and fma lanes that rounded onto a
++ * 24-bit boundary -- are redone one by one (scalar fast path, else exact), as on arm64.
++ * The per-lane form costs four branchy lanes per op; Tekken 5 DR's sound core (FFT
++ * butterflies of fa/fs/fma) could not finish its 5.33 ms audio tick in time with it. */
++#include <smmintrin.h>
++#define SPU__SX_INLINE static inline __attribute__((always_inline))
++#define SPU__SX_SLOW   static inline __attribute__((noinline, cold))
++SPU__SX_INLINE __m128i spu__sx_ld(u128 a) { __m128i v; memcpy(&v, &a, 16); return v; }
++SPU__SX_INLINE u128 spu__sx_st(__m128i v) { u128 r; memcpy(&r, &v, 16); return r; }
++/* A lane the fast path takes: an ordinary single (biased exponent 1..254) or a true zero
++ * (+-0.0); exponent-0 words with a nonzero fraction are zero on the SPU but not in double. */
++SPU__SX_INLINE __m128i spu__sx_plain0(__m128i x) {
++    const __m128i x2 = _mm_slli_epi32(x, 1), be = _mm_srli_epi32(x2, 24), z = _mm_setzero_si128();
++    const __m128i ext = _mm_cmpeq_epi32(be, _mm_set1_epi32(255));
++    const __m128i den = _mm_andnot_si128(_mm_cmpeq_epi32(x2, z), _mm_cmpeq_epi32(be, z));
++    return _mm_andnot_si128(_mm_or_si128(ext, den), _mm_set1_epi32(-1));
++}
++SPU__SX_INLINE __m128i spu__sx_iszero(__m128i x) { return _mm_cmpeq_epi32(_mm_slli_epi32(x, 1), _mm_setzero_si128()); }
++SPU__SX_INLINE __m128i spu__sx_bexp(__m128i x) { return _mm_srli_epi32(_mm_slli_epi32(x, 1), 24); }
++/* dword 0 of each 64-bit lane of lo and hi, as one vector in lane order lo0 lo1 hi0 hi1 */
++SPU__SX_INLINE __m128i spu__sx_pack(__m128i lo, __m128i hi) {
++    return _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(lo), _mm_castsi128_ps(hi), _MM_SHUFFLE(2, 0, 2, 0)));
++}
++SPU__SX_INLINE __m128d spu__sx_lo(__m128i x) { return _mm_cvtps_pd(_mm_castsi128_ps(x)); }
++SPU__SX_INLINE __m128d spu__sx_hi(__m128i x) { const __m128 f = _mm_castsi128_ps(x); return _mm_cvtps_pd(_mm_movehl_ps(f, f)); }
++/* spu__nv_trunc0 for two f64x2 halves: *ok marks the lanes that came out a normal single or an
++ * exact zero (and, given the operation's exact rounding error, were not rounded onto a 24-bit
++ * boundary); zero lanes get their sign cleared (the SPU never produces -0). */
++SPU__SX_INLINE __m128i spu__sx_trunc0(__m128d lo, __m128d hi, __m128i* ok, const __m128d* elo, const __m128d* ehi) {
++    const __m128i ulo = _mm_castpd_si128(lo), uhi = _mm_castpd_si128(hi), z = _mm_setzero_si128();
++    const __m128i az = spu__sx_pack(_mm_cmpeq_epi64(_mm_slli_epi64(ulo, 1), z), _mm_cmpeq_epi64(_mm_slli_epi64(uhi, 1), z));
++    const __m128i be = _mm_and_si128(spu__sx_pack(_mm_srli_epi64(ulo, 52), _mm_srli_epi64(uhi, 52)), _mm_set1_epi32(0x7FF));
++    __m128i good = _mm_and_si128(_mm_cmpgt_epi32(be, _mm_set1_epi32(1023 - 127)),     /* e >= -126 */
++                                 _mm_cmplt_epi32(be, _mm_set1_epi32(1023 + 128)));    /* e <= 127  */
++    if (elo) {
++        const __m128i low = _mm_set1_epi64x(0x1FFFFFFFll);
++        const __m128i bnd = spu__sx_pack(_mm_cmpeq_epi64(_mm_and_si128(ulo, low), z), _mm_cmpeq_epi64(_mm_and_si128(uhi, low), z));
++        const __m128i ez = spu__sx_pack(_mm_castpd_si128(_mm_cmpeq_pd(*elo, _mm_setzero_pd())),
++                                        _mm_castpd_si128(_mm_cmpeq_pd(*ehi, _mm_setzero_pd())));
++        good = _mm_and_si128(good, _mm_or_si128(_mm_andnot_si128(bnd, _mm_set1_epi32(-1)), ez));
++    }
++    *ok = _mm_or_si128(good, az);
++    const __m128i keep = _mm_set1_epi64x(~0x1FFFFFFFll);
++    const __m128 r = _mm_movelh_ps(_mm_cvtpd_ps(_mm_castsi128_pd(_mm_and_si128(ulo, keep))),
++                                   _mm_cvtpd_ps(_mm_castsi128_pd(_mm_and_si128(uhi, keep))));
++    return _mm_andnot_si128(_mm_and_si128(az, _mm_set1_epi32((int)0x80000000u)), _mm_castps_si128(r));
++}
++SPU__SX_INLINE int spu__sx_all4(__m128i m) { return _mm_movemask_ps(_mm_castsi128_ps(m)) == 0xF; }
++#define SPU__SX_LANES(v, m) uint32_t m[4]; _mm_storeu_si128((__m128i*)m, v)
++SPU__SX_SLOW __m128i spu__sx_fa_fix(__m128i r, __m128i ok, __m128i a, __m128i b, uint32_t negb) {
++    SPU__SX_LANES(r, o); SPU__SX_LANES(ok, m); SPU__SX_LANES(a, x); SPU__SX_LANES(b, y);
++    for (int i = 0; i < 4; i++) if (!m[i]) o[i] = spu__fa_any(x[i], y[i] ^ negb);
++    return _mm_loadu_si128((const __m128i*)o);
++}
++SPU__SX_SLOW __m128i spu__sx_fm_fix(__m128i r, __m128i ok, __m128i a, __m128i b) {
++    SPU__SX_LANES(r, o); SPU__SX_LANES(ok, m); SPU__SX_LANES(a, x); SPU__SX_LANES(b, y);
++    for (int i = 0; i < 4; i++) if (!m[i]) o[i] = spu__fm_any(x[i], y[i]);
++    return _mm_loadu_si128((const __m128i*)o);
++}
++SPU__SX_SLOW __m128i spu__sx_fma_fix(__m128i r, __m128i ok, __m128i a, __m128i b, __m128i c,
++                                     uint32_t negp, uint32_t negc) {
++    SPU__SX_LANES(r, o); SPU__SX_LANES(ok, m); SPU__SX_LANES(a, x); SPU__SX_LANES(b, y); SPU__SX_LANES(c, z);
++    for (int i = 0; i < 4; i++) if (!m[i]) o[i] = spu__fma_any(x[i], y[i], z[i], negp, negc);
++    return _mm_loadu_si128((const __m128i*)o);
++}
++SPU__SX_INLINE u128 spu__sx_fa(u128 a, u128 b, uint32_t negb) {
++    const __m128i xa = spu__sx_ld(a), yb = spu__sx_ld(b);
++    const __m128i x = xa, y = _mm_xor_si128(yb, _mm_set1_epi32((int)negb));
++    /* the exponent-gap limit applies only between two nonzero terms */
++    const __m128i gap = _mm_cmplt_epi32(_mm_abs_epi32(_mm_sub_epi32(spu__sx_bexp(x), spu__sx_bexp(y))), _mm_set1_epi32(30));
++    const __m128i pre = _mm_and_si128(_mm_and_si128(spu__sx_plain0(x), spu__sx_plain0(y)),
++                                      _mm_or_si128(gap, _mm_or_si128(spu__sx_iszero(x), spu__sx_iszero(y))));
++    __m128i ok;
++    __m128i r = spu__sx_trunc0(_mm_add_pd(spu__sx_lo(x), spu__sx_lo(y)), _mm_add_pd(spu__sx_hi(x), spu__sx_hi(y)),
++                               &ok, NULL, NULL);
++    ok = _mm_and_si128(ok, pre);
++    if (!spu__sx_all4(ok)) r = spu__sx_fa_fix(r, ok, xa, yb, negb);
++    return spu__sx_st(r);
++}
++SPU__SX_INLINE u128 spu_fa(u128 a, u128 b) { return spu__sx_fa(a, b, 0); }
++SPU__SX_INLINE u128 spu_fs(u128 a, u128 b) { return spu__sx_fa(a, b, 0x80000000u); }
++SPU__SX_INLINE u128 spu_fm(u128 a, u128 b) {
++    const __m128i x = spu__sx_ld(a), y = spu__sx_ld(b);
++    __m128i ok;
++    __m128i r = spu__sx_trunc0(_mm_mul_pd(spu__sx_lo(x), spu__sx_lo(y)), _mm_mul_pd(spu__sx_hi(x), spu__sx_hi(y)),
++                               &ok, NULL, NULL);
++    ok = _mm_and_si128(ok, _mm_and_si128(spu__sx_plain0(x), spu__sx_plain0(y)));
++    if (!spu__sx_all4(ok)) r = spu__sx_fm_fix(r, ok, x, y);
++    return spu__sx_st(r);
++}
++/* (+-a*b) + (+-c): the product is exact in double; TwoSum gives the add's exact error. */
++SPU__SX_INLINE __m128d spu__sx_twosum(__m128d p, __m128d z, __m128d* err) {
++    const __m128d s = _mm_add_pd(p, z), bb = _mm_sub_pd(s, p);
++    *err = _mm_add_pd(_mm_sub_pd(p, _mm_sub_pd(s, bb)), _mm_sub_pd(z, bb));
++    return s;
++}
++SPU__SX_INLINE u128 spu__sx_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t negc) {
++    const __m128i xa = spu__sx_ld(a), y = spu__sx_ld(b), zc = spu__sx_ld(c);
++    const __m128i x = _mm_xor_si128(xa, _mm_set1_epi32((int)negp)), z = _mm_xor_si128(zc, _mm_set1_epi32((int)negc));
++    __m128d elo, ehi;
++    const __m128d slo = spu__sx_twosum(_mm_mul_pd(spu__sx_lo(x), spu__sx_lo(y)), spu__sx_lo(z), &elo);
++    const __m128d shi = spu__sx_twosum(_mm_mul_pd(spu__sx_hi(x), spu__sx_hi(y)), spu__sx_hi(z), &ehi);
++    __m128i ok;
++    __m128i r = spu__sx_trunc0(slo, shi, &ok, &elo, &ehi);
++    ok = _mm_and_si128(ok, _mm_and_si128(_mm_and_si128(spu__sx_plain0(x), spu__sx_plain0(y)), spu__sx_plain0(z)));
++    if (!spu__sx_all4(ok)) r = spu__sx_fma_fix(r, ok, xa, y, zc, negp, negc);
++    return spu__sx_st(r);
++}
++SPU__SX_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__sx_fma(a, b, c, 0, 0); }            /* a*b + c */
++SPU__SX_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__sx_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
++SPU__SX_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__sx_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
+ #else
+ static inline u128 spu_fa(u128 a, u128 b) { return spu__fa_s(a, b); }
+ static inline u128 spu_fs(u128 a, u128 b) { return spu__fs_s(a, b); }
+diff --git a/runtime/spu/tests/test_spu_float_neon.c b/runtime/spu/tests/test_spu_float_neon.c
+index 3a717d2..8e6075f 100644
+--- a/runtime/spu/tests/test_spu_float_neon.c
++++ b/runtime/spu/tests/test_spu_float_neon.c
+@@ -1,7 +1,8 @@
+-/* The NEON spu_fa/fs/fm/fma/fms/fnms must be bit-identical to the scalar
+- * references (spu_*_ref) for every input: random words, ordinary floats, the
+- * normal/extended-range boundaries, zeros and denormals, mixed per lane.
+- * Prints a rough speed comparison too. Build on arm64:
++/* The NEON (arm64) and SSE4.1 (x86-64) spu_fa/fs/fm/fma/fms/fnms must be
++ * bit-identical to the scalar references (spu_*_ref) for every input: random
++ * words, ordinary floats, the normal/extended-range boundaries, zeros and
++ * denormals, mixed per lane. Prints a rough speed comparison too. Build on
++ * arm64, or on x86-64 with -msse4.1:
+  *   cc -O2 -I.. -I../.. -I../../.. test_spu_float_neon.c -o t && ./t */
+ #include "../spu_helpers.h"
+ #include <stdio.h>
+@@ -31,8 +32,8 @@ static uint32_t rnd_float(void)
+ 
+ int main(void)
+ {
+-#if !defined(__ARM_NEON)
+-    puts("test_spu_float_neon: no NEON, nothing to compare");
++#if !defined(__ARM_NEON) && !defined(__SSE4_1__)
++    puts("test_spu_float_neon: no NEON or SSE4.1, nothing to compare");
+     return 0;
+ #else
+     long bad = 0;
+@@ -189,7 +190,7 @@ int main(void)
+     for (int i = 0; i < R; i++) { const u128* q = in[i & 255];
+         u128 r1 = spu_fma_ref(q[0], q[1], q[2]), r2 = spu_fm_ref(q[0], q[1]); acc += r1._u32[i & 3] ^ r2._u32[(i + 1) & 3]; }
+     clock_t t2 = clock();
+-    printf("fma+fm pair: neon %.1f ns, scalar %.1f ns (acc %u)\n",
++    printf("fma+fm pair: vector %.1f ns, scalar %.1f ns (acc %u)\n",
+            (t1 - t0) * 1e9 / CLOCKS_PER_SEC / R, (t2 - t1) * 1e9 / CLOCKS_PER_SEC / R, acc);
+     return 0;
+ #endif

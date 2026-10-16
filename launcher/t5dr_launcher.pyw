@@ -276,7 +276,7 @@ class App(tk.Tk):
             side="left", padx=8)
         ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
-            "see Settings for the keys. Esc closes the game. Intro movies are skipped in this version.")).pack(
+            "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
             anchor="w", pady=(22, 0))
 
     def _settings_tab(self, tab):

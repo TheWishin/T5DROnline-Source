@@ -1,0 +1,25 @@
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 39ca171..a599706 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -1144,7 +1144,19 @@ int main(int argc, char** argv)
+     /* Reserve the full 4 GB guest space; pages commit on first touch via the VEH. */
+     AddVectoredExceptionHandler(1, guard_report_veh);  /* diagnose 0x80000001 silent deaths */
+     AddVectoredExceptionHandler(1, vm_commit_veh);
+-    vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, MEM_RESERVE, PAGE_READWRITE);
++    /* PS3_VM_WRITE_WATCH=1: reserve with MEM_WRITE_WATCH so a host-side
++     * snapshot layer (rollback netcode, per-frame state diffing) can ask the
++     * kernel which guest pages were written since its last
++     * GetWriteWatch(WRITE_WATCH_FLAG_RESET) instead of hashing or diffing
++     * the whole committed set every frame. The flag only exists at
++     * reservation time, so it is decided here; the pages the VEH commits
++     * inside the reservation inherit the tracking. Off by default: the
++     * dirty-bit bookkeeping is cheap but not free and nothing else uses it. */
++    DWORD vm_reserve_flags = MEM_RESERVE;
++    { const char* ww = getenv("PS3_VM_WRITE_WATCH");
++      if (ww && *ww == '1') { vm_reserve_flags |= MEM_WRITE_WATCH;
++                              fprintf(stderr, "[boot] guest memory reserved with MEM_WRITE_WATCH\n"); } }
++    vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, vm_reserve_flags, PAGE_READWRITE);
+     ppu_vm_size = 0;   /* full 32-bit space backed -> OOB guard unnecessary */
+ #else
+     vm_base = (uint8_t*)calloc(1, 0xE0000000u);

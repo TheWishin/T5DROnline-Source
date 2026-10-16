@@ -115,6 +115,13 @@ if(T5DR_GAME_DLL)
     target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
 endif()
 
+# Rollback netcode research prototype (our own code, src/rollback/): off unless
+# T5_RB_MODE is set.
+file(GLOB ROLLBACK_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rollback/*.cpp")
+target_sources(t5dr PRIVATE ${ROLLBACK_SOURCES})
+set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")
 target_include_directories(t5dr PRIVATE

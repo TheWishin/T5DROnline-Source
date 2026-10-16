@@ -1,0 +1,457 @@
+"""Launcher logic without any UI: settings, the build process, the game process.
+
+The Tk front end (t5dr_launcher.pyw) and the online module (online.py) use
+this; nothing here imports tkinter, so it can be tested from a console.
+"""
+import ctypes
+import datetime
+import glob
+import hashlib
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOOLS = os.path.join(ROOT, "tools")
+sys.path.insert(0, TOOLS)
+import build_game  # noqa: E402  (constants, pkg/sfo readers, code_id)
+import prereqs     # noqa: E402
+import run_game    # noqa: E402
+
+IS_WIN = os.name == "nt"
+CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000   # inherited by every tool the build starts
+SETTINGS_FILE = os.path.join(ROOT, "launcher.json")
+
+
+def release_info():
+    """{'version': ..} from release.json (written by package_release.py), or a dev marker."""
+    p = os.path.join(ROOT, "release.json")
+    if os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    return {"version": "dev", "name": "T5DR Online (development checkout)"}
+
+
+# --------------------------------------------------------------------------- settings
+
+DEFAULTS = {
+    "pkg": "",
+    "rap": "",
+    "out": "",                 # empty: <package folder>/native
+    "nickname": "",
+    "display": "window",       # window | window1080 | window1440 | maximized | borderless
+    "mute": False,
+    "background": False,       # start minimized without focus (testing)
+    "extra_env": "",           # NAME=VALUE lines
+    "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
+}
+
+
+class Settings(dict):
+    def __init__(self, path=SETTINGS_FILE):
+        super().__init__(DEFAULTS)
+        self.path = path
+        try:
+            with open(path, encoding="utf-8") as f:
+                self.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
+        except (OSError, ValueError):
+            pass
+
+    def save(self):
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(dict(self), f, indent=1)
+        except OSError:
+            pass
+
+    @property
+    def out_dir(self):
+        return os.path.abspath(self["out"] or os.path.join(ROOT, "native"))
+
+    def env_overrides(self):
+        env = {}
+        if self["nickname"].strip():
+            env["PS3_NICKNAME"] = self["nickname"].strip()[:16]
+        if self["mute"]:
+            env["PS3_NO_AUDIO"] = "1"
+        if self["background"]:
+            env["PS3_WINDOW_BACKGROUND"] = "1"
+        for line in self["extra_env"].splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+        return env
+
+
+# --------------------------------------------------------------------------- input files
+
+def describe_pkg(path):
+    """(ok, level, text) for the chosen package; level is 'ok', 'warn' or 'error'."""
+    if not path:
+        return False, "error", "No package chosen."
+    if not os.path.exists(path):
+        return False, "error", "File not found."
+    try:
+        cid = build_game.pkg_content_id(path)
+    except OSError as e:
+        return False, "error", f"Cannot read the file: {e}"
+    size = os.path.getsize(path)
+    if cid is None:
+        return False, "error", "This is not a PS3 package (.pkg)."
+    if cid == build_game.CONTENT_ID:
+        return True, "ok", f"{cid}  ({size:,} bytes) -- the supported version"
+    if build_game.TITLE_ID in cid:
+        return True, "warn", (f"{cid}  ({size:,} bytes) -- Tekken 5 DR, but not the supported package "
+                              f"({build_game.CONTENT_ID}). The build will most likely refuse it.")
+    return True, "warn", f"{cid}  ({size:,} bytes) -- not Tekken 5 DR Online ({build_game.TITLE_ID})."
+
+
+def describe_rap(path, pkg=None):
+    if not path:
+        return False, "error", "No license chosen."
+    if not os.path.exists(path):
+        return False, "error", "File not found."
+    if os.path.getsize(path) != 16:
+        return False, "error", "Not a PS3 license: a .rap file is exactly 16 bytes."
+    name = os.path.basename(path)
+    if build_game.CONTENT_ID in name:
+        return True, "ok", f"{name} -- matches the supported package"
+    if pkg:
+        try:
+            cid = build_game.pkg_content_id(pkg)
+        except OSError:
+            cid = None
+        if cid and cid in name:
+            return True, "ok", f"{name} -- matches the package"
+    return True, "warn", f"{name} -- the name does not match the package's content ID; it may be the wrong license."
+
+
+def find_candidates():
+    """Look in the usual places for a .pkg/.rap pair the player probably wants."""
+    home = os.path.expanduser("~")
+    roots = [os.path.join(home, d) for d in ("Downloads", "Desktop", "Documents")] + [ROOT]
+    pkgs, raps = [], []
+    for r in roots:
+        for pat, lst in (("*.pkg", pkgs), ("*.rap", raps)):
+            for depth in ("", "*", os.path.join("*", "*")):
+                lst.extend(glob.glob(os.path.join(r, depth, pat)))
+    good = [p for p in pkgs if _safe_cid(p) == build_game.CONTENT_ID]
+    rap = [r for r in raps if build_game.CONTENT_ID in os.path.basename(r) and os.path.getsize(r) == 16]
+    return (good[0] if good else None), (rap[0] if rap else None)
+
+
+def _safe_cid(p):
+    try:
+        return build_game.pkg_content_id(p)
+    except OSError:
+        return None
+
+
+# --------------------------------------------------------------------------- build state
+
+def game_state(out):
+    """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
+    exe = os.path.join(out, "build", "cmake", "t5dr.exe")
+    elf = os.path.join(out, "game", "EBOOT.elf")
+    stamp = os.path.join(out, "build", "t5dr_build.json")
+    st = dict(built=False, ok=False, needs_rebuild=False, elf_sha1=None, text="")
+    if not os.path.exists(exe):
+        st["text"] = "The game is not built yet. Open the Build tab, choose your .pkg and .rap, press BUILD GAME."
+        return st
+    st["built"] = True
+    if not os.path.exists(elf):
+        st["text"] = "t5dr.exe is there but the game data is missing. Build again."
+        return st
+    h = build_game.sha1(elf)
+    st["elf_sha1"] = h
+    if h != build_game.ELF_SHA1:
+        st["text"] = (f"The decrypted program has SHA-1 {h[:12]}..., not the supported version. "
+                      "Build again from the supported package.")
+        return st
+    info = {}
+    try:
+        with open(stamp) as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        pass
+    if info.get("code_id") != build_game.code_id():
+        st["needs_rebuild"] = True
+        st["text"] = ("This version of the launcher changes the game code. Build again (your game data is kept; "
+                      "only the code is translated and compiled again).")
+        return st
+    st["ok"] = True
+    when = info.get("built", "?").replace("T", " ")
+    st["text"] = (f"Ready: {build_game.TITLE_ID} v{build_game.TITLE_VERSION}, program SHA-1 {h[:12]}... "
+                  f"verified, built {when}.")
+    return st
+
+
+# --------------------------------------------------------------------------- build process
+
+STEP_TITLES = {
+    "deps": "Recompiler", "keys": "Key data", "decrypt": "Check & decrypt", "unpack": "Unpack",
+    "vfs": "Game files", "lift": "Translate code", "spu": "Sound core", "compile": "Compile",
+}
+# Rough share of the total time per step (measured on a 16-core PC; see docs/RELEASE.md).
+STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35}
+RE_STEP = re.compile(r"^\[(\w+)\]\s*$")
+RE_NINJA = re.compile(r"^\[(\d+)/(\d+)\]")
+RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
+
+
+class BuildRun:
+    """Runs tools/build_game.py in the background; events go to `self.events` (a Queue):
+       ('line', text) ('step', name) ('skip', name) ('sub', fraction) ('error', text) ('end', code)."""
+
+    def __init__(self, pkg, rap, out, force=False, steps=None, low_priority=False):
+        self.out = out
+        self.low_priority = low_priority
+        self.events = queue.Queue()
+        self.proc = None
+        self.cancelled = False
+        os.makedirs(out, exist_ok=True)
+        self.log_path = os.path.join(out, "build.log")
+        cmd = [sys.executable, os.path.join(TOOLS, "build_game.py"), "--out", out]
+        if pkg:
+            cmd += ["--pkg", pkg]
+        if rap:
+            cmd += ["--rap", rap]
+        if force:
+            cmd.append("--force")
+        if steps:
+            cmd += ["--steps"] + list(steps)
+        self.cmd = cmd
+
+    def start(self):
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        if sys.executable.lower().endswith("pythonw.exe"):     # tools must not run windowless-python
+            exe = os.path.join(os.path.dirname(sys.executable), "python.exe")
+            if os.path.exists(exe):
+                self.cmd[0] = exe
+        self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, env=env, cwd=self.out,
+                                     creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                                                    (BELOW_NORMAL_PRIORITY_CLASS if self.low_priority else 0))
+                                     if IS_WIN else 0)
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        step = None
+        with open(self.log_path, "w", encoding="utf-8", errors="replace") as log:
+            log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
+                      f"launcher {release_info().get('version')}\n# {' '.join(self.cmd)}\n")
+            for raw in iter(self.proc.stdout.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                log.write(line + "\n")
+                log.flush()
+                self.events.put(("line", line))
+                m = RE_STEP.match(line)
+                if m and m.group(1) in STEP_TITLES:
+                    step = m.group(1)
+                    self.events.put(("step", step))
+                elif line.strip().startswith("already done") or "nothing to fetch" in line:
+                    self.events.put(("skip", step))
+                elif line.startswith("ERROR:"):
+                    self.events.put(("error", line[6:].strip()))
+                elif step == "compile" and RE_NINJA.match(line):
+                    n, d = map(int, RE_NINJA.match(line).groups())
+                    self.events.put(("sub", n / max(d, 1)))
+                elif step == "lift" and RE_FUNCS.search(line):
+                    n, d = map(int, RE_FUNCS.search(line).groups())
+                    # the lifter reports twice (translate, then write): weight 70/30
+                    frac = n / max(d, 1)
+                    self.events.put(("sub", 0.7 * frac if "lifted" in line else 0.7 + 0.3 * frac))
+            code = self.proc.wait()
+            log.write(f"# exit code {code}\n")
+        self.events.put(("end", -1 if self.cancelled else code))
+
+    def cancel(self):
+        if self.proc and self.proc.poll() is None:
+            self.cancelled = True
+            kill_tree(self.proc.pid)
+
+
+def kill_tree(pid):
+    if IS_WIN:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=CREATE_NO_WINDOW)
+    else:
+        os.kill(pid, 9)
+
+
+# --------------------------------------------------------------------------- game process
+
+class GameRun:
+    """The running game: its process, log file and the last fps line."""
+
+    def __init__(self, out, settings):
+        self.out = out
+        self.settings = settings
+        self.proc = None
+        self.log_path = None
+        self.fps = None
+        self.last_lines = []
+        self.started = None
+
+    def start(self, extra_env=None):
+        env_over = self.settings.env_overrides()
+        env_over.update(extra_env or {})
+        cmd, env, cwd = run_game.game_command(self.out, env_over)
+        if not os.path.exists(cmd[0]):
+            raise FileNotFoundError("t5dr.exe is not built yet")
+        logs = os.path.join(self.out, "logs")
+        os.makedirs(logs, exist_ok=True)
+        for old in sorted(glob.glob(os.path.join(logs, "game-*.log")))[:-9]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        self.log_path = os.path.join(logs, f"game-{datetime.datetime.now():%Y%m%d-%H%M%S}.log")
+        logf = open(self.log_path, "w", encoding="utf-8", errors="replace")
+        si = None
+        if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
+            # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the
+            # live-draw window down (measured: it still took the foreground); the runtime
+            # must honour PS3_WINDOW_BACKGROUND itself -- patches/ps3recomp/0003.
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
+        self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=logf, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, startupinfo=si,
+                                     creationflags=CREATE_NO_WINDOW if IS_WIN else 0)
+        logf.close()
+        self.started = time.time()
+        threading.Thread(target=self._tail, daemon=True).start()
+        if IS_WIN and not env_over.get("PS3_WINDOW_BACKGROUND") and self.settings["display"] != "window":
+            threading.Thread(target=self._place_window, daemon=True).start()
+        return self.proc.pid
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def stop(self):
+        if self.running():
+            kill_tree(self.proc.pid)
+
+    def _tail(self):
+        with open(self.log_path, encoding="utf-8", errors="replace") as f:
+            while True:
+                line = f.readline()
+                if not line:
+                    if not self.running():
+                        break
+                    time.sleep(0.25)
+                    continue
+                line = line.rstrip()
+                if line.startswith("[fps]"):
+                    try:
+                        self.fps = float(line.split()[1])
+                    except (IndexError, ValueError):
+                        pass
+                self.last_lines = (self.last_lines + [line])[-200:]
+
+    def _place_window(self):
+        hwnd = None
+        for _ in range(120):                       # the window appears after the runtime boots
+            if not self.running():
+                return
+            hwnd = find_game_window(self.proc.pid)
+            if hwnd:
+                break
+            time.sleep(0.25)
+        if hwnd:
+            time.sleep(0.5)
+            place_window(hwnd, self.settings["display"])
+
+
+# --------------------------------------------------------------------------- windows (Win32)
+
+DISPLAY_MODES = [
+    ("window", "Window, 1280 x 720 (native)"),
+    ("window1080", "Window, 1920 x 1080"),
+    ("window1440", "Window, 2560 x 1440"),
+    ("maximized", "Maximized window"),
+    ("borderless", "Borderless fullscreen (experimental)"),
+]
+
+
+def find_game_window(pid):
+    if not IS_WIN:
+        return None
+    user32 = ctypes.windll.user32
+    found = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def cb(hwnd, _):
+        p = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(p))
+        if p.value == pid:
+            cls = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(ctypes.c_void_p(hwnd), cls, 64)
+            if cls.value.startswith("ps3recomp"):
+                found.append(hwnd)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return found[0] if found else None
+
+
+def place_window(hwnd, mode):
+    """Size the game window. The swap chain stretches its 1280x720 image to the
+    window (DXGI_SCALING_STRETCH, no ResizeBuffers), so any size works."""
+    user32 = ctypes.windll.user32
+    h = ctypes.c_void_p(hwnd)
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_ulong), ("mon", RECT), ("work", RECT), ("flags", ctypes.c_ulong)]
+
+    mi = MONITORINFO()
+    mi.cb = ctypes.sizeof(mi)
+    user32.GetMonitorInfoW(ctypes.c_void_p(user32.MonitorFromWindow(h, 2)), ctypes.byref(mi))
+    GWL_STYLE, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE = -16, 0x00CF0000, 0x80000000, 0x10000000
+    SWP_NOZORDER, SWP_FRAMECHANGED = 0x0004, 0x0020
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+    if mode == "maximized":
+        user32.ShowWindow(h, 3)                 # SW_MAXIMIZE
+        return
+    if mode == "borderless":
+        m = mi.mon
+        user32.SetWindowLongPtrW(h, GWL_STYLE, WS_POPUP | WS_VISIBLE)
+        user32.SetWindowPos(h, None, m.l, m.t, m.r - m.l, m.b - m.t, SWP_NOZORDER | SWP_FRAMECHANGED)
+        return
+    cw, ch = {"window1080": (1920, 1080), "window1440": (2560, 1440)}.get(mode, (1280, 720))
+    w = mi.work
+    # never bigger than the screen's work area, keep 16:9
+    scale = min(1.0, (w.r - w.l - 16) / cw, (w.b - w.t - 40) / ch)
+    cw, ch = int(cw * scale), int(ch * scale)
+    rc = RECT(0, 0, cw, ch)
+    user32.AdjustWindowRect(ctypes.byref(rc), WS_OVERLAPPEDWINDOW, False)
+    ww, wh = rc.r - rc.l, rc.b - rc.t
+    x = w.l + max(0, (w.r - w.l - ww) // 2)
+    y = w.t + max(0, (w.b - w.t - wh) // 2)
+    user32.SetWindowPos(h, None, x, y, ww, wh, SWP_NOZORDER)
+
+
+def open_path(path):
+    if IS_WIN and os.path.exists(path):
+        os.startfile(path)  # noqa: S606 -- the player's own file/folder
+
+
+def file_sha1(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()

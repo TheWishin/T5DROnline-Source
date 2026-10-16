@@ -1,0 +1,1177 @@
+"""The lobby server: control connections, players, rooms, queues, challenges and matches.
+
+Single-threaded asyncio; all state lives on the event loop thread.
+
+Match life cycle (states):
+    ready      both players must accept (skipped for an accepted challenge)
+    nat        each client binds its game socket and registers it with the server over UDP
+    punch      clients punch holes toward each other's candidate endpoints and measure RTT
+    relay      punching failed (or both NATs are symmetric): both bind to the relay
+    playing    match_start sent: the game runs; waiting for result reports
+    done       results reconciled (or cancelled / void)
+"""
+import asyncio
+import ipaddress
+import logging
+import os
+import ssl
+import time
+
+from .. import proto, rating as glicko
+from ..buildid import BuildInfo
+from ..proto import LobbyError
+from .config import Config
+from .ratelimit import BanList, KeyedBuckets, TokenBucket
+from .store import Store, check_password, hash_password
+from .udp import UdpService
+
+log = logging.getLogger("t5lobby")
+
+SERVER_NAME = "t5lobby/0.1"
+QUEUE_MODES = ("quick", "ranked")
+
+
+def _rid():
+    return os.urandom(6).hex()
+
+
+class Player:
+    def __init__(self, conn, name, guest, account=None):
+        self.id = "p" + _rid()
+        self.conn = conn
+        self.name = name
+        self.guest = guest
+        self.account_id = account["id"] if account else None
+        self.build_id = conn.build_id
+        self.release = conn.release
+        self.ip = conn.ip
+        self.status = "idle"            # idle | room | queue | match | playing
+        self.room = None
+        self.queue_mode = None
+        self.queue_since = 0.0
+        self.match = None
+        self.server_rtt = None          # ms, reported by the client (UDP ping)
+        self.token = os.urandom(24).hex()   # session resume token
+        self.dropped_at = None
+        self.last_challenge = 0.0
+        if account:
+            self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
+            self.record = [account["wins"], account["losses"], account["draws"]]
+        else:
+            self.rating = glicko.Rating()
+            self.record = [0, 0, 0]
+
+    def public(self):
+        return {"id": self.id, "name": self.name, "guest": self.guest, "status": self.status,
+                "rating": round(self.rating.r), "rd": round(self.rating.rd),
+                "record": self.record, "room": self.room.id if self.room else None,
+                "rtt": None if self.server_rtt is None else round(self.server_rtt, 1),
+                "build": self.build_id, "release": self.release}
+
+    def brief(self):
+        return {"id": self.id, "name": self.name, "guest": self.guest,
+                "rating": round(self.rating.r), "rd": round(self.rating.rd)}
+
+    @property
+    def online(self):
+        return self.conn is not None
+
+    def send(self, msg):
+        if self.conn is not None:
+            self.conn.send(msg)
+
+
+class Room:
+    def __init__(self, owner, name, ranked):
+        self.id = "r" + _rid()
+        self.name = name
+        self.owner = owner
+        self.members = [owner]
+        self.ranked = ranked
+        self.match = None
+        self.build_id = owner.build_id
+
+    def public(self):
+        return {"id": self.id, "name": self.name, "owner": self.owner.brief(),
+                "members": [p.id for p in self.members], "ranked": self.ranked,
+                "build": self.build_id,
+                "status": "playing" if self.match else ("full" if len(self.members) >= 2 else "open")}
+
+
+class Challenge:
+    def __init__(self, src, dst):
+        self.id = "c" + _rid()
+        self.src, self.dst = src, dst
+        self.timer = None
+
+
+class Match:
+    def __init__(self, host, join, ranked, origin, room=None):
+        self.id = "m" + _rid()
+        self.players = [host, join]          # slot 0 = host = P1, slot 1 = join = P2
+        self.ranked = ranked
+        self.origin = origin                 # queue | room | challenge
+        self.room = room
+        self.build_id = host.build_id
+        self.state = "ready"
+        self.created = time.time()
+        self.ready = [False, False]
+        self.tokens = [proto.new_token(), proto.new_token()]
+        self.tag = os.urandom(proto.TAG_LEN)
+        self.public_ep = [None, None]        # game socket as the server's main UDP port sees it
+        self.probe_ep = [None, None]         # ... and as the second port sees it
+        self.nat_info = [None, None]         # client's nat_local message
+        self.results = [None, None]          # nat_result (punch or relay phase)
+        self.relay = None
+        self.path = None
+        self.rtt = None
+        self.jitter = None
+        self.delay = None
+        self.reports = [None, None]
+        self.queue_since = [0.0, 0.0]
+        self.queue_mode = None
+        self.timers = {}
+        self.final = None
+        self.relay_stats = None
+
+    def side(self, player):
+        return 0 if self.players[0] is player else 1 if self.players[1] is player else None
+
+    def other(self, player):
+        return self.players[1 - self.side(player)]
+
+
+# =============================================================================== connection
+
+class Conn:
+    def __init__(self, srv, reader, writer):
+        self.srv = srv
+        self.reader, self.writer = reader, writer
+        peer = writer.get_extra_info("peername") or ("?", 0)
+        self.ip, self.port = peer[0], peer[1]
+        self.out = asyncio.Queue(maxsize=512)
+        self.player = None
+        self.build_id = None
+        self.release = ""
+        self.helloed = False
+        self.closed = False
+        self.t_open = time.monotonic()
+        self.bucket = TokenBucket(rate=20, burst=40)
+        self.violations = TokenBucket(rate=0.2, burst=10)   # 10 strikes, one forgiven every 5 s
+        self.errors = 0
+
+    def send(self, msg):
+        if self.closed:
+            return
+        try:
+            self.out.put_nowait(proto.encode(msg))
+        except asyncio.QueueFull:
+            log.warning("%s: output queue full, dropping connection", self.ip)
+            self.close()
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            try:
+                self.out.put_nowait(None)
+            except asyncio.QueueFull:
+                self.writer.close()
+
+    async def writer_loop(self):
+        try:
+            while True:
+                data = await self.out.get()
+                if data is None:
+                    break
+                self.writer.write(data)
+                await self.writer.drain()
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            self.closed = True
+            try:
+                self.writer.close()
+            except Exception:
+                pass
+
+    async def run(self):
+        wtask = asyncio.ensure_future(self.writer_loop())
+        try:
+            while not self.closed:
+                if self.player is None:
+                    timeout = self.srv.cfg.login_timeout - (time.monotonic() - self.t_open)
+                    if timeout <= 0:
+                        self.send({"t": "error", "code": proto.E_BAD_REQUEST, "msg": "login timeout"})
+                        break
+                else:
+                    timeout = self.srv.cfg.idle_timeout
+                try:
+                    line = await asyncio.wait_for(self.reader.readuntil(b"\n"), timeout)
+                except asyncio.TimeoutError:
+                    self.send({"t": "error", "code": proto.E_BAD_REQUEST,
+                               "msg": "login timeout" if self.player is None else "idle timeout"})
+                    break
+                except asyncio.LimitOverrunError:
+                    self.send({"t": "error", "code": proto.E_BAD_REQUEST, "msg": "line too long"})
+                    break
+                except (asyncio.IncompleteReadError, ConnectionError, OSError):
+                    break
+                if not await self.srv.dispatch(self, line):
+                    break
+        finally:
+            self.close()
+            await asyncio.gather(wtask, return_exceptions=True)
+            self.srv.conn_closed(self)
+
+
+# =============================================================================== server
+
+class LobbyServer:
+    def __init__(self, cfg=None):
+        self.cfg = cfg or Config.from_env()
+        self.store = Store(self.cfg.db)
+        self.udp = UdpService(self, self.cfg)
+        self.conns = set()
+        self.players = {}          # id -> Player (online or resumable)
+        self.by_name = {}          # lower name -> Player
+        self.sessions = {}         # resume token -> Player
+        self.rooms = {}
+        self.challenges = {}
+        self.matches = {}
+        self.tokens = {}           # udp token -> (Match, side)
+        self.queues = {m: [] for m in QUEUE_MODES}
+        self.ip_conns = {}
+        self.ip_connects = KeyedBuckets(rate=0.5, burst=10)     # new connections per IP
+        self.login_fail = KeyedBuckets(rate=1 / 60.0, burst=5)  # failed password logins per IP and per name
+        self.registrations = KeyedBuckets(rate=1 / 600.0, burst=3)  # new accounts per IP
+        self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
+        self.bans = BanList()
+        self.dirty = True
+        self.tcp = None
+        self.tasks = []
+        self.started = time.time()
+        self.events = []           # (time, kind, data) -- recent events for tests / diagnostics
+
+    # ------------------------------------------------------------------ lifecycle
+    async def start(self):
+        loop = asyncio.get_running_loop()
+        sslctx = None
+        if self.cfg.tls_cert:
+            sslctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            sslctx.load_cert_chain(self.cfg.tls_cert, self.cfg.tls_key or None)
+        self.tcp = await asyncio.start_server(self._accept, self.cfg.host, self.cfg.port, ssl=sslctx,
+                                              limit=proto.MAX_LINE + 2)
+        self.port = self.tcp.sockets[0].getsockname()[1]
+        await self.udp.start(loop)
+        self.tasks = [asyncio.ensure_future(self._tick_lobby()), asyncio.ensure_future(self._tick_queue()),
+                      asyncio.ensure_future(self._tick_housekeeping())]
+        log.info("listening: TCP %s:%d%s, UDP %d%s", self.cfg.host, self.port, " (TLS)" if sslctx else "",
+                 self.udp.port, f" + probe {self.udp.port2}" if self.udp.port2 else "")
+
+    async def stop(self):
+        for t in self.tasks:
+            t.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        if self.tcp:
+            self.tcp.close()
+        for c in list(self.conns):
+            c.close()
+        if self.tcp:
+            try:
+                await asyncio.wait_for(self.tcp.wait_closed(), 2)
+            except asyncio.TimeoutError:
+                pass
+        self.udp.close()
+        self.store.close()
+
+    def note(self, kind, **data):
+        self.events.append((time.time(), kind, data))
+        if len(self.events) > 1000:
+            del self.events[:500]
+
+    async def _accept(self, reader, writer):
+        conn = Conn(self, reader, writer)
+        ip = conn.ip
+        if self.bans.banned(ip) or not self.ip_connects.take(ip):
+            writer.write(proto.encode({"t": "error", "code": proto.E_RATE, "msg": "too many connections"}))
+            writer.close()
+            return
+        if len(self.conns) >= self.cfg.max_clients or self.ip_conns.get(ip, 0) >= self.cfg.max_per_ip:
+            writer.write(proto.encode({"t": "error", "code": proto.E_FULL, "msg": "server full"}))
+            writer.close()
+            return
+        self.conns.add(conn)
+        self.ip_conns[ip] = self.ip_conns.get(ip, 0) + 1
+        await conn.run()
+
+    def conn_closed(self, conn):
+        if conn not in self.conns:
+            return
+        self.conns.discard(conn)
+        n = self.ip_conns.get(conn.ip, 1) - 1
+        if n <= 0:
+            self.ip_conns.pop(conn.ip, None)
+        else:
+            self.ip_conns[conn.ip] = n
+        p = conn.player
+        if p is not None and p.conn is conn:
+            self.player_dropped(p)
+
+    # ------------------------------------------------------------------ dispatch
+    PRE_LOGIN = ("hello", "login", "ping", "logout")
+
+    async def dispatch(self, conn, line):
+        """Handle one line; False closes the connection."""
+        if not conn.bucket.take():
+            if not conn.violations.take():
+                self.bans.ban(conn.ip, 60)
+                conn.send({"t": "error", "code": proto.E_RATE, "msg": "flooding: disconnected"})
+                return False
+            conn.send({"t": "error", "code": proto.E_RATE, "msg": "slow down"})
+            return True
+        try:
+            msg = proto.decode(line)
+        except ValueError:
+            conn.errors += 1
+            conn.send({"t": "error", "code": proto.E_BAD_REQUEST, "msg": "malformed message"})
+            return conn.errors < 5
+        t = msg["t"]
+        rid = msg.get("rid")
+        fn = getattr(self, "h_" + t, None) if t.isidentifier() else None
+        try:
+            if fn is None:
+                raise LobbyError(proto.E_BAD_REQUEST, f"unknown message {t!r}")
+            if t not in self.PRE_LOGIN and conn.player is None:
+                raise LobbyError(proto.E_STATE, "log in first")
+            reply = await fn(conn, msg)
+        except LobbyError as e:
+            conn.send({"t": "error", "code": e.code, "msg": e.msg, "re": rid})
+            if e.code in (proto.E_PROTO, proto.E_VERSION) and t == "hello":
+                return False
+            return True
+        except (KeyError, TypeError, ValueError) as e:
+            conn.errors += 1
+            conn.send({"t": "error", "code": proto.E_BAD_REQUEST, "msg": f"bad field: {e}", "re": rid})
+            return conn.errors < 5
+        if reply is False:
+            return False
+        if reply is not None:
+            if rid is not None:
+                reply["re"] = rid
+            conn.send(reply)
+        elif rid is not None:
+            conn.send({"t": "ok", "re": rid})
+        return True
+
+    # ------------------------------------------------------------------ hello / login
+    async def h_hello(self, conn, msg):
+        if conn.player is not None:
+            raise LobbyError(proto.E_STATE, "already logged in")
+        if int(msg.get("proto", 0)) != proto.PROTO_VERSION:
+            raise LobbyError(proto.E_PROTO, f"this server speaks lobby protocol {proto.PROTO_VERSION}; "
+                                            "update the launcher")
+        build = msg.get("build") or {}
+        bid = BuildInfo.wire_id(build)
+        if self.cfg.builds and bid not in self.cfg.builds:
+            raise LobbyError(proto.E_VERSION, f"build {bid} is not accepted by this server; update the "
+                                              "launcher and rebuild the game")
+        conn.build_id = bid
+        conn.release = str(build.get("release", ""))[:32]
+        conn.helloed = True
+        return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,
+                "udp_port": self.udp.port, "udp_port2": self.udp.port2, "build": bid,
+                "accounts": self.cfg.accounts, "guests": self.cfg.guests, "motd": self.cfg.motd,
+                "ip": conn.ip, "time": time.time()}
+
+    async def h_login(self, conn, msg):
+        if not conn.helloed:
+            raise LobbyError(proto.E_STATE, "hello first")
+        if conn.player is not None:
+            raise LobbyError(proto.E_STATE, "already logged in")
+        mode = msg.get("mode", "guest")
+        if mode == "resume":
+            return self._resume(conn, str(msg.get("token", "")))
+        name = msg.get("name", "")
+        if not proto.valid_name(name):
+            raise LobbyError(proto.E_BAD_NAME, "names are 2-16 letters, digits, spaces or _-.[]()!?")
+        account = None
+        if mode == "guest":
+            if not self.cfg.guests:
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no guest logins")
+            if self.store.account(name) is not None:
+                raise LobbyError(proto.E_NAME_TAKEN, "that name belongs to an account")
+        elif mode in ("account", "register"):
+            if not self.cfg.accounts:
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no accounts")
+            pw = msg.get("password", "")
+            if not isinstance(pw, str) or not 6 <= len(pw) <= 128:
+                raise LobbyError(proto.E_AUTH, "passwords are 6-128 characters")
+            key_ip, key_name = "ip:" + conn.ip, "name:" + name.lower()
+            if not (self.login_fail.peek_ok(key_ip) and self.login_fail.peek_ok(key_name)):
+                raise LobbyError(proto.E_RATE, "too many failed logins; wait a few minutes")
+            if mode == "register":
+                if not self.registrations.take(conn.ip):
+                    raise LobbyError(proto.E_RATE, "too many new accounts from this address")
+                pw_hash = await asyncio.to_thread(hash_password, pw, self.cfg.scrypt_n)
+                account = self.store.create_account(name, pw_hash)
+                if account is None:
+                    raise LobbyError(proto.E_NAME_TAKEN, "that name is taken")
+                log.info("account %r created from %s", name, conn.ip)
+            else:
+                account = self.store.account(name)
+                ok = account is not None and await asyncio.to_thread(check_password, pw, account["pw"])
+                if not ok:
+                    self.login_fail.take(key_ip)
+                    self.login_fail.take(key_name)
+                    raise LobbyError(proto.E_AUTH, "wrong name or password")
+            name = account["name"]
+        else:
+            raise LobbyError(proto.E_BAD_REQUEST, "mode is guest, account, register or resume")
+        if conn.closed:
+            return False
+        old = self.by_name.get(name.lower())
+        if old is not None:
+            if account is not None and old.account_id == account["id"]:
+                # The same account logging in again: the new connection wins.
+                if old.conn is not None:
+                    old.send({"t": "kicked", "reason": "logged in from another place"})
+                    old.conn.player = None
+                    old.conn.close()
+                self.player_dropped(old, final=True)
+            else:
+                raise LobbyError(proto.E_NAME_TAKEN, "someone with that name is online")
+        p = Player(conn, name, account is None, account)
+        if account is not None:
+            p.rating = self.store.rating(account["id"])
+            self.store.touch(account["id"])
+        conn.player = p
+        self.players[p.id] = p
+        self.by_name[name.lower()] = p
+        self.sessions[p.token] = p
+        self.dirty = True
+        log.info("login %s %r (%s) from %s build %s", p.id, name, "guest" if p.guest else "account",
+                 conn.ip, p.build_id)
+        self.note("login", player=p.id, name=name)
+        return {"t": "login_ok", "you": p.public(), "token": p.token}
+
+    def _resume(self, conn, token):
+        p = self.sessions.get(token)
+        if p is None or p.conn is not None or p.build_id != conn.build_id:
+            raise LobbyError(proto.E_AUTH, "session expired; log in again")
+        p.conn = conn
+        p.ip = conn.ip
+        p.dropped_at = None
+        conn.player = p
+        self.dirty = True
+        log.info("resume %s %r", p.id, p.name)
+        reply = {"t": "login_ok", "you": p.public(), "token": p.token, "resumed": True}
+        m = p.match
+        if m is not None and m.state == "playing":
+            asyncio.get_running_loop().call_soon(self._send_match_start, m, m.side(p))
+        return reply
+
+    async def h_logout(self, conn, msg):
+        if conn.player is not None:
+            p = conn.player
+            conn.player = None
+            self.player_dropped(p, final=True)
+        conn.send({"t": "bye", "re": msg.get("rid")})
+        return False
+
+    async def h_ping(self, conn, msg):
+        return {"t": "pong", "time": time.time()}
+
+    async def h_udp_rtt(self, conn, msg):
+        ms = float(msg["ms"])
+        if 0 <= ms < 10000:
+            conn.player.server_rtt = ms
+            self.dirty = True
+
+    async def h_lobby(self, conn, msg):
+        return self._snapshot()
+
+    async def h_leaderboard(self, conn, msg):
+        return {"t": "leaderboard", "rows": self.store.leaderboard(max(1, min(100, int(msg.get("limit", 20)))))}
+
+    async def h_chat(self, conn, msg):
+        text = str(msg["text"]).strip()
+        if not text:
+            return None
+        if not self.chat_rate.take(conn.player.id):
+            raise LobbyError(proto.E_RATE, "chat: slow down")
+        text = "".join(ch for ch in text[:200] if ch.isprintable())
+        p = conn.player
+        out = {"t": "chat", "from": p.brief(), "text": text, "time": time.time()}
+        for q in self.players.values():
+            q.send(out)
+
+    # ------------------------------------------------------------------ player removal
+    def player_dropped(self, p, final=False):
+        """Connection gone (or logout). Keep the player resumable while a match needs them."""
+        p.conn = None
+        p.dropped_at = time.monotonic()
+        self._leave_queue(p)
+        self._leave_room(p)
+        for c in [c for c in self.challenges.values() if p in (c.src, c.dst)]:
+            self._end_challenge(c, "cancelled")
+        m = p.match
+        if m is not None and m.state not in ("playing", "done"):
+            self.cancel_match(m, "opponent_left", by=p)
+        if final or p.match is None:
+            self._forget(p)
+        self.dirty = True
+        self.note("drop", player=p.id)
+
+    def _forget(self, p):
+        self.players.pop(p.id, None)
+        if self.by_name.get(p.name.lower()) is p:
+            del self.by_name[p.name.lower()]
+        self.sessions.pop(p.token, None)
+        self._leave_queue(p)
+        self._leave_room(p)
+
+    # ------------------------------------------------------------------ queues
+    async def h_queue(self, conn, msg):
+        p = conn.player
+        mode = msg.get("mode", "quick")
+        if mode not in QUEUE_MODES:
+            raise LobbyError(proto.E_BAD_REQUEST, "mode is quick or ranked")
+        if mode == "ranked" and p.guest and not self.cfg.guest_ranked:
+            raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        if p.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        self._leave_queue(p)
+        self._enqueue(p, mode, time.monotonic())
+        return {"t": "queued", "mode": mode}
+
+    async def h_unqueue(self, conn, msg):
+        self._leave_queue(conn.player)
+
+    def _enqueue(self, p, mode, since):
+        p.status, p.queue_mode, p.queue_since = "queue", mode, since
+        q = self.queues[mode]
+        q.append(p)
+        q.sort(key=lambda x: x.queue_since)
+        self.dirty = True
+
+    def _leave_queue(self, p):
+        if p.queue_mode:
+            q = self.queues[p.queue_mode]
+            if p in q:
+                q.remove(p)
+            p.queue_mode = None
+            if p.status == "queue":
+                p.status = "idle"
+            self.dirty = True
+
+    @staticmethod
+    def _est_ping(a, b):
+        ra = a.server_rtt if a.server_rtt is not None else 50.0
+        rb = b.server_rtt if b.server_rtt is not None else 50.0
+        return ra + rb
+
+    def match_queue(self, now=None):
+        """One matchmaking pass over both queues. Returns the matches made."""
+        now = time.monotonic() if now is None else now
+        made = []
+        for mode in QUEUE_MODES:
+            q = self.queues[mode]
+            taken = set()
+            for i, a in enumerate(q):
+                if a in taken:
+                    continue
+                wa = now - a.queue_since
+                best, best_score = None, None
+                for b in q[i + 1:]:
+                    if b in taken or b.build_id != a.build_id:
+                        continue
+                    ping = self._est_ping(a, b)
+                    if mode == "ranked":
+                        wb = now - b.queue_since
+                        window = min(self._rating_window(wa), self._rating_window(wb))
+                        limit = min(self._ping_limit(wa), self._ping_limit(wb))
+                        dr = abs(a.rating.r - b.rating.r)
+                        if dr > window or ping > limit:
+                            continue
+                        score = dr / window + ping / limit
+                    else:
+                        score = ping
+                    if best_score is None or score < best_score:
+                        best, best_score = b, score
+                if best is not None:
+                    taken.update((a, best))
+                    made.append((a, best, mode))
+        for a, b, mode in made:
+            # Host: the one with the lower server RTT (more likely the better-connected PC).
+            ra = a.server_rtt if a.server_rtt is not None else 1e9
+            rb = b.server_rtt if b.server_rtt is not None else 1e9
+            host, join = (a, b) if ra <= rb else (b, a)
+            since = [host.queue_since, join.queue_since]
+            self._leave_queue(a)
+            self._leave_queue(b)
+            m = self.create_match(host, join, ranked=(mode == "ranked"), origin="queue")
+            m.queue_since = since
+            m.queue_mode = mode
+        return made
+
+    @staticmethod
+    def _rating_window(waited):
+        return min(800.0, 100.0 + 25.0 * waited)
+
+    @staticmethod
+    def _ping_limit(waited):
+        return min(400.0, 80.0 + 10.0 * waited)
+
+    async def _tick_queue(self):
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                self.match_queue()
+            except Exception:
+                log.exception("matchmaker")
+
+    # ------------------------------------------------------------------ rooms
+    async def h_room_create(self, conn, msg):
+        p = conn.player
+        if p.status != "idle":
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        ranked = bool(msg.get("ranked", False))
+        if ranked and p.guest and not self.cfg.guest_ranked:
+            raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        name = str(msg.get("name") or f"{p.name}'s room")[:32]
+        name = "".join(ch for ch in name if ch.isprintable())
+        r = Room(p, name, ranked)
+        self.rooms[r.id] = r
+        p.room, p.status = r, "room"
+        self.dirty = True
+        return {"t": "room", "room": r.public()}
+
+    async def h_room_join(self, conn, msg):
+        p = conn.player
+        r = self.rooms.get(msg.get("room"))
+        if r is None:
+            raise LobbyError(proto.E_NOT_FOUND, "no such room")
+        if p.status != "idle":
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        if len(r.members) >= 2:
+            raise LobbyError(proto.E_FULL, "room is full")
+        if r.build_id != p.build_id:
+            raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
+        if r.ranked and p.guest and not self.cfg.guest_ranked:
+            raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        r.members.append(p)
+        p.room, p.status = r, "room"
+        self.dirty = True
+        reply = {"t": "room", "room": r.public()}
+        asyncio.get_running_loop().call_soon(self._room_start, r)
+        return reply
+
+    async def h_room_leave(self, conn, msg):
+        p = conn.player
+        if p.room is None:
+            raise LobbyError(proto.E_STATE, "not in a room")
+        if p.match is not None:
+            raise LobbyError(proto.E_BUSY, "finish the match first")
+        self._leave_room(p)
+
+    async def h_rematch(self, conn, msg):
+        p = conn.player
+        r = p.room
+        if r is None or len(r.members) != 2 or r.match is not None:
+            raise LobbyError(proto.E_STATE, "no opponent in the room")
+        self._room_start(r)
+
+    def _room_start(self, r):
+        if r.id not in self.rooms or len(r.members) != 2 or r.match is not None:
+            return
+        if any(not q.online or q.match is not None for q in r.members):
+            return
+        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked, origin="room", room=r)
+
+    def _leave_room(self, p):
+        r = p.room
+        if r is None:
+            return
+        p.room = None
+        if p.status == "room":
+            p.status = "idle"
+        if p in r.members:
+            r.members.remove(p)
+        if r.match is not None and r.match.state not in ("playing", "done"):
+            self.cancel_match(r.match, "opponent_left", by=p)
+        if not r.members:
+            self.rooms.pop(r.id, None)
+        elif r.owner is p:
+            r.owner = r.members[0]
+            for q in r.members:
+                q.send({"t": "room", "room": r.public()})
+        else:
+            for q in r.members:
+                q.send({"t": "room", "room": r.public()})
+        self.dirty = True
+
+    # ------------------------------------------------------------------ challenges
+    async def h_challenge(self, conn, msg):
+        p = conn.player
+        q = self.players.get(msg.get("player"))
+        if q is None or not q.online or q is p:
+            raise LobbyError(proto.E_NOT_FOUND, "no such player")
+        if q.build_id != p.build_id:
+            raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
+        if p.status not in ("idle", "queue") or q.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, "busy")
+        now = time.monotonic()
+        if now - p.last_challenge < 2.0 or any(c.src is p for c in self.challenges.values()):
+            raise LobbyError(proto.E_RATE, "one challenge at a time")
+        if sum(1 for c in self.challenges.values() if c.dst is q) >= 3:
+            raise LobbyError(proto.E_BUSY, "that player has challenges pending")
+        p.last_challenge = now
+        c = Challenge(p, q)
+        self.challenges[c.id] = c
+        c.timer = asyncio.get_running_loop().call_later(30.0, self._end_challenge, c, "expired")
+        q.send({"t": "challenged", "challenge": c.id, "from": p.brief()})
+        return {"t": "challenge", "challenge": c.id}
+
+    async def h_challenge_reply(self, conn, msg):
+        p = conn.player
+        c = self.challenges.get(msg.get("challenge"))
+        if c is None or c.dst is not p:
+            raise LobbyError(proto.E_NOT_FOUND, "no such challenge")
+        if not msg.get("accept"):
+            self._end_challenge(c, "declined")
+            return None
+        src = c.src
+        self._end_challenge(c, "accepted")
+        if not src.online or src.status not in ("idle", "queue") or p.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, "challenge no longer possible")
+        self._leave_queue(src)
+        self._leave_queue(p)
+        self.create_match(src, p, ranked=False, origin="challenge")
+
+    async def h_challenge_cancel(self, conn, msg):
+        c = self.challenges.get(msg.get("challenge"))
+        if c is None or c.src is not conn.player:
+            raise LobbyError(proto.E_NOT_FOUND, "no such challenge")
+        self._end_challenge(c, "cancelled")
+
+    def _end_challenge(self, c, state):
+        if self.challenges.pop(c.id, None) is None:
+            return
+        if c.timer:
+            c.timer.cancel()
+        for q in (c.src, c.dst):
+            q.send({"t": "challenge_update", "challenge": c.id, "state": state})
+
+    # ------------------------------------------------------------------ matches: setup
+    def create_match(self, host, join, ranked, origin, room=None):
+        m = Match(host, join, ranked, origin, room)
+        self.matches[m.id] = m
+        for side, p in enumerate(m.players):
+            p.match = m
+            p.status = "match"
+            p.send({"t": "match_found", "match": m.id, "ranked": ranked, "origin": origin,
+                    "role": "host" if side == 0 else "join", "slot": side,
+                    "opponent": m.players[1 - side].brief(),
+                    "ready_check": origin != "challenge", "ready_timeout": self.cfg.ready_timeout})
+        self.dirty = True
+        self.note("match_found", match=m.id, origin=origin)
+        log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
+        if origin == "challenge":
+            m.ready = [True, True]
+            self._start_nat(m)
+        else:
+            self._timer(m, "ready", self.cfg.ready_timeout, self._ready_timeout, m)
+        return m
+
+    def _timer(self, m, name, delay, fn, *args):
+        old = m.timers.pop(name, None)
+        if old:
+            old.cancel()
+        m.timers[name] = asyncio.get_running_loop().call_later(delay, fn, *args)
+
+    def _cancel_timers(self, m):
+        for h in m.timers.values():
+            h.cancel()
+        m.timers.clear()
+
+    def _get_match(self, p, msg, states=None):
+        m = p.match
+        if m is None or m.id != msg.get("match"):
+            raise LobbyError(proto.E_NOT_FOUND, "no such match")
+        if states and m.state not in states:
+            raise LobbyError(proto.E_STATE, f"match is {m.state}")
+        return m
+
+    async def h_ready(self, conn, msg):
+        p = conn.player
+        m = self._get_match(p, msg, ("ready",))
+        if not msg.get("accept", True):
+            self.cancel_match(m, "declined", by=p)
+            return None
+        m.ready[m.side(p)] = True
+        m.players[1 - m.side(p)].send({"t": "opponent_ready", "match": m.id})
+        if all(m.ready):
+            self._start_nat(m)
+
+    def _ready_timeout(self, m):
+        if m.state == "ready":
+            slow = [p for i, p in enumerate(m.players) if not m.ready[i]]
+            self.cancel_match(m, "ready_timeout", by=slow[0] if len(slow) == 1 else None)
+
+    def cancel_match(self, m, reason, by=None):
+        """Abort a match that has not started. Players who did nothing wrong go back where they were."""
+        if m.state in ("done", "cancelled"):
+            return
+        m.state = "cancelled"
+        self._cancel_timers(m)
+        self._release(m)
+        for side, p in enumerate(m.players):
+            if p.match is m:
+                p.match = None
+                p.status = "idle"
+            p.send({"t": "match_cancel", "match": m.id, "reason": reason,
+                    "you": by is p})
+            if p.room is not None and p.room is m.room:
+                p.status = "room"
+            elif (m.origin == "queue" and m.queue_mode and by is not None and p is not by and p.online
+                  and p.status == "idle"):
+                self._enqueue(p, m.queue_mode, m.queue_since[side])   # keeps its place in the queue
+        if m.room is not None:
+            m.room.match = None
+        self.matches.pop(m.id, None)
+        self.note("match_cancel", match=m.id, reason=reason)
+        log.info("match %s cancelled: %s", m.id, reason)
+        self.dirty = True
+
+    def _release(self, m):
+        for tok in m.tokens:
+            self.tokens.pop(tok, None)
+        if m.relay is not None:
+            m.relay_stats = self.udp.close_relay(m.id)
+            m.relay = None
+
+    # ------------------------------------------------------------------ matches: NAT traversal
+    def _start_nat(self, m):
+        self._cancel_timers(m)
+        m.state = "nat"
+        for side, p in enumerate(m.players):
+            self.tokens[m.tokens[side]] = (m, side)
+            p.send({"t": "nat_begin", "match": m.id, "token": m.tokens[side].hex(), "tag": m.tag.hex(),
+                    "side": side, "udp_port": self.udp.port, "udp_port2": self.udp.port2})
+        self._timer(m, "nat", self.cfg.register_timeout, self._nat_timeout, m)
+        self.dirty = True
+
+    def _nat_timeout(self, m):
+        if m.state != "nat":
+            return
+        missing = [p for i, p in enumerate(m.players) if m.public_ep[i] is None]
+        if missing:
+            if len(missing) == 1:
+                missing[0].send({"t": "notice", "code": "udp_blocked",
+                                 "msg": "your PC's UDP packets did not reach the lobby server; check the firewall"})
+            self.cancel_match(m, "udp_unreachable", by=missing[0] if len(missing) == 1 else None)
+        else:   # UDP fine, but a client never sent nat_local (crashed or too old)
+            silent = [p for i, p in enumerate(m.players) if m.nat_info[i] is None]
+            self.cancel_match(m, "no_connection", by=silent[0] if len(silent) == 1 else None)
+
+    def udp_register(self, token, addr, probe):
+        """Called by the UDP service for REGISTER / PROBE packets. True -> acknowledge."""
+        hit = self.tokens.get(token)
+        if hit is None:
+            return False
+        m, side = hit
+        if m.state not in ("nat", "punch", "relay"):
+            return False
+        if probe:
+            m.probe_ep[side] = addr
+        else:
+            m.public_ep[side] = addr
+            self._maybe_punch(m)
+        return True
+
+    async def h_nat_local(self, conn, msg):
+        p = conn.player
+        m = self._get_match(p, msg, ("nat", "punch", "relay"))
+        side = m.side(p)
+        addrs = []
+        loopback_ok = m.public_ep[side] is not None and m.public_ep[side][0].startswith("127.")
+        for a in list(msg.get("addrs", []))[:8]:
+            ip, port = str(a[0]), int(a[1])
+            try:
+                ipa = ipaddress.IPv4Address(ip)
+            except ValueError:
+                continue
+            # Only private interface addresses: the peer will send punches there, and a client must
+            # not be able to aim them at arbitrary hosts on the internet.
+            if 0 < port < 65536 and ipa.is_private and not ipa.is_link_local and (loopback_ok or not ipa.is_loopback):
+                addrs.append([ip, port])
+        m.nat_info[side] = {"addrs": addrs, "nat": str(msg.get("nat", "unknown"))[:16],
+                            "port": int(msg.get("port", 0))}
+        self._maybe_punch(m)
+
+    def _maybe_punch(self, m):
+        if m.state != "nat" or None in m.public_ep or None in m.nat_info:
+            return
+        nats = [i["nat"] for i in m.nat_info]
+        if self.cfg.force_relay or nats == ["symmetric", "symmetric"]:
+            self._start_relay(m, "forced" if self.cfg.force_relay else "both NATs symmetric")
+            return
+        m.state = "punch"
+        same_ip = m.public_ep[0][0] == m.public_ep[1][0]
+        for side, p in enumerate(m.players):
+            o = 1 - side
+            cands = [{"ip": m.public_ep[o][0], "port": m.public_ep[o][1], "kind": "public"}]
+            if same_ip:
+                # Same public address: the two PCs share a router (or are one PC). Hairpinning through
+                # the router often fails, so offer the peer's own interface addresses first.
+                for ip, port in m.nat_info[o]["addrs"]:
+                    if [ip, port] != list(m.public_ep[o]):
+                        cands.insert(0, {"ip": ip, "port": port, "kind": "local"})
+            p.send({"t": "nat_punch", "match": m.id, "candidates": cands, "timeout": self.cfg.punch_timeout})
+        self._timer(m, "punch", self.cfg.punch_timeout + 3.0, self._punch_timeout, m)
+        self.dirty = True
+
+    def _punch_timeout(self, m):
+        if m.state == "punch":
+            self._start_relay(m, "punch timeout")
+
+    def _start_relay(self, m, why):
+        self._cancel_timers(m)
+        if not self.cfg.relay:
+            self.cancel_match(m, "no_connection")
+            return
+        m.results = [None, None]
+        m.relay = self.udp.open_relay(m.id, m.tokens)
+        if m.relay is None:
+            self.cancel_match(m, "relay_full")
+            return
+        m.state = "relay"
+        log.info("match %s: relay (%s)", m.id, why)
+        for side, p in enumerate(m.players):
+            p.send({"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why})
+        self._timer(m, "relay", self.cfg.relay_timeout, self._relay_timeout, m)
+
+    def _relay_timeout(self, m):
+        if m.state == "relay":
+            self.cancel_match(m, "no_connection")
+
+    def udp_relay_bound(self, match_id, side, addr):
+        self.note("relay_bound", match=match_id, side=side)
+
+    async def h_nat_result(self, conn, msg):
+        p = conn.player
+        m = self._get_match(p, msg, ("punch", "relay"))
+        if msg.get("phase", m.state) != m.state:
+            return None      # a late answer from the punch phase after the relay was chosen
+        side = m.side(p)
+        ok = bool(msg.get("ok"))
+        res = {"ok": ok}
+        if ok:
+            res["rtt"] = max(0.0, min(5000.0, float(msg.get("rtt_ms", 0))))
+            res["jitter"] = max(0.0, min(5000.0, float(msg.get("jitter_ms", 0))))
+            res["kind"] = str(msg.get("kind", ""))[:16]
+            peer = msg.get("peer")
+            res["peer"] = [str(peer[0]), int(peer[1])] if peer else None
+        m.results[side] = res
+        if m.state == "punch":
+            if not ok:
+                self._start_relay(m, "punch failed")
+            elif all(r and r["ok"] for r in m.results):
+                kinds = {r["kind"] for r in m.results}
+                self._start_match(m, "lan" if kinds == {"local"} else "direct")
+        elif m.state == "relay":
+            if not ok:
+                self.cancel_match(m, "no_connection")
+            elif all(r and r["ok"] for r in m.results):
+                self._start_match(m, "relay")
+
+    # ------------------------------------------------------------------ matches: play and results
+    def _start_match(self, m, path):
+        self._cancel_timers(m)
+        m.state = "playing"
+        m.path = path
+        m.rtt = max(r["rtt"] for r in m.results)
+        m.jitter = max(r["jitter"] for r in m.results)
+        m.delay = proto.suggest_delay(m.rtt, m.jitter)
+        for side, p in enumerate(m.players):
+            p.status = "playing"
+            self._send_match_start(m, side)
+        self._timer(m, "match", self.cfg.match_timeout, self._match_timeout, m)
+        self._save(m, "playing")
+        self.dirty = True
+        self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay)
+        log.info("match %s starts: %s, rtt %.1f ms, delay %d", m.id, path, m.rtt, m.delay)
+
+    def _send_match_start(self, m, side):
+        p = m.players[side]
+        r = m.results[side] or {}
+        p.send({"t": "match_start", "match": m.id, "role": "host" if side == 0 else "join", "slot": side,
+                "path": m.path, "peer": r.get("peer") if m.path != "relay" else None,
+                "relay_port": self.udp.port if m.path == "relay" else None,
+                "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
+                "rounds": 3, "ranked": m.ranked, "build": m.build_id,
+                "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big")})
+
+    async def h_game_started(self, conn, msg):
+        self._get_match(conn.player, msg, ("playing",))
+
+    async def h_result(self, conn, msg):
+        p = conn.player
+        m = self._get_match(p, msg, ("playing",))
+        side = m.side(p)
+        winner = msg.get("winner")
+        if winner not in (0, 1, None):
+            raise LobbyError(proto.E_BAD_REQUEST, "winner is 0 (P1), 1 (P2) or null (draw)")
+        score = msg.get("score")
+        if score is not None:
+            if (not isinstance(score, list) or len(score) != 2
+                    or not all(isinstance(x, int) and 0 <= x <= 9 for x in score)):
+                raise LobbyError(proto.E_BAD_REQUEST, "score is [P1 rounds, P2 rounds]")
+        m.reports[side] = {"winner": winner, "score": score, "reason": str(msg.get("reason", ""))[:32]}
+        if all(m.reports):
+            self._reconcile(m)
+        elif "result" not in m.timers:
+            self._timer(m, "result", self.cfg.result_timeout, self._result_timeout, m)
+            m.players[1 - side].send({"t": "notice", "code": "result_pending", "match": m.id,
+                                      "msg": "your opponent reported the result; please report yours"})
+        return {"t": "result_ack", "match": m.id}
+
+    async def h_leave_match(self, conn, msg):
+        """Quit a match. Before it started: cancel. While playing: counts as a loss report."""
+        p = conn.player
+        m = self._get_match(p, msg)
+        if m.state != "playing":
+            self.cancel_match(m, "opponent_left", by=p)
+            return None
+        side = m.side(p)
+        if m.reports[side] is None:
+            m.reports[side] = {"winner": 1 - side, "score": None, "reason": "quit"}
+        if all(m.reports):
+            self._reconcile(m)
+        elif "result" not in m.timers:
+            self._timer(m, "result", self.cfg.result_timeout, self._result_timeout, m)
+
+    @staticmethod
+    def _agree(a, b):
+        if a["winner"] != b["winner"]:
+            return False
+        return a["score"] is None or b["score"] is None or a["score"] == b["score"]
+
+    def _reconcile(self, m):
+        a, b = m.reports
+        if self._agree(a, b):
+            score = a["score"] or b["score"]
+            self._finish(m, "confirmed", a["winner"], score)
+        else:
+            log.warning("match %s: results disagree: %s vs %s", m.id, a, b)
+            self._finish(m, "disputed", None, None)
+
+    def _result_timeout(self, m):
+        if m.state != "playing":
+            return
+        have = [i for i in (0, 1) if m.reports[i] is not None]
+        if len(have) == 1:
+            silent = m.players[1 - have[0]]
+            rep = m.reports[have[0]]
+            if self.cfg.accept_onesided and (not silent.online or rep["reason"] == "quit"):
+                self._finish(m, "onesided", rep["winner"], rep["score"])
+                return
+        self._finish(m, "void", None, None)
+
+    def _match_timeout(self, m):
+        if m.state == "playing":
+            self._finish(m, "void", None, None)
+
+    def _finish(self, m, status, winner, score):
+        self._cancel_timers(m)
+        m.state = "done"
+        counts = status in ("confirmed", "onesided")
+        changes = None
+        if counts:
+            outcome = ["draw", "draw"] if winner is None else \
+                ["win" if winner == 0 else "loss", "win" if winner == 1 else "loss"]
+            if m.ranked:
+                s0 = 0.5 if winner is None else (1.0 if winner == 0 else 0.0)
+                p0, p1 = m.players
+                n0, n1 = glicko.match(p0.rating, p1.rating, s0)
+                changes = []
+                for p, new in ((p0, n0), (p1, n1)):
+                    changes.append({"before": p.rating.as_dict(), "after": new.as_dict(),
+                                    "delta": round(new.r - p.rating.r, 1)})
+                    p.rating = new
+                for i, p in enumerate(m.players):
+                    if p.account_id is not None:
+                        self.store.set_rating(p.account_id, p.rating, outcome[i])
+            else:
+                for i, p in enumerate(m.players):
+                    if p.account_id is not None:
+                        self.store.add_unranked_game(p.account_id, outcome[i])
+            for i, p in enumerate(m.players):
+                p.record[{"win": 0, "loss": 1, "draw": 2}[outcome[i]]] += 1
+        m.final = {"status": status, "winner": winner, "score": score}
+        self._release(m)
+        self.matches.pop(m.id, None)
+        self._save(m, status, winner, score, changes)
+        for side, p in enumerate(m.players):
+            if p.match is m:
+                p.match = None
+                p.status = "room" if p.room is not None else "idle"
+            p.send({"t": "match_result", "match": m.id, "status": status, "winner": winner, "score": score,
+                    "ranked": m.ranked, "rating": changes[side] if changes else None, "you": p.public()})
+            if not p.online and p.match is None:
+                self._forget(p)
+        if m.room is not None:
+            m.room.match = None
+        self.note("match_result", match=m.id, status=status, winner=winner)
+        log.info("match %s %s: winner %s score %s", m.id, status, winner, score)
+        self.dirty = True
+
+    def _save(self, m, status, winner=None, score=None, changes=None):
+        try:
+            self.store.save_match({
+                "id": m.id, "created": m.created, "ended": time.time() if status != "playing" else None,
+                "ranked": m.ranked, "p1_name": m.players[0].name, "p2_name": m.players[1].name,
+                "p1_account": m.players[0].account_id, "p2_account": m.players[1].account_id,
+                "build": m.build_id, "path": m.path, "rtt_ms": m.rtt, "delay": m.delay, "status": status,
+                "winner": winner, "score": score, "reports": m.reports, "rating": changes})
+        except Exception:
+            log.exception("saving match %s", m.id)
+
+    # ------------------------------------------------------------------ lobby broadcast
+    def _snapshot(self):
+        players = [p.public() for p in self.players.values() if p.online][:300]
+        rooms = [r.public() for r in self.rooms.values()][:100]
+        return {"t": "lobby_state", "players": players, "rooms": rooms,
+                "queue": {m: len(q) for m, q in self.queues.items()}}
+
+    async def _tick_lobby(self):
+        while True:
+            await asyncio.sleep(0.3)
+            if not self.dirty:
+                continue
+            self.dirty = False
+            snap = self._snapshot()
+            data = proto.encode(snap)
+            for p in self.players.values():
+                c = p.conn
+                if c is not None and not c.closed:
+                    try:
+                        c.out.put_nowait(data)
+                    except asyncio.QueueFull:
+                        c.close()
+
+    async def _tick_housekeeping(self):
+        while True:
+            await asyncio.sleep(5.0)
+            now = time.monotonic()
+            for p in list(self.players.values()):
+                if p.conn is None and p.dropped_at and now - p.dropped_at > self.cfg.resume_window:
+                    if p.match is not None and p.match.state == "playing":
+                        continue   # the result timer settles it
+                    self._forget(p)
+            for mid in self.udp.expire_idle():
+                m = self.matches.get(mid)
+                if m is None or m.state != "playing":
+                    self.udp.close_relay(mid)
+            self.ip_connects.prune()
+            self.login_fail.prune()

@@ -320,7 +320,7 @@ class GameRun:
         if IS_WIN and env_over.get("PS3_WINDOW_BACKGROUND"):
             # Also ask for minimized through STARTUPINFO. On its own this does NOT keep the
             # live-draw window down (measured: it still took the foreground); the runtime
-            # must honour PS3_WINDOW_BACKGROUND itself -- patches/ps3recomp/0003.
+            # must honour PS3_WINDOW_BACKGROUND itself -- patches/ps3recomp/0021.
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 7   # SW_SHOWMINNOACTIVE

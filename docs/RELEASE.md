@@ -148,7 +148,7 @@ runtime:
     directory, `_fltused`, a loop over the `.CRT$XCU` constructors (the SPU
     image registration) and the thread-local `g_trampoline_fn`, which now
     lives in the DLL (the runtime reaches it through `ppu_game_tramp_slot()`).
-  - Runtime side: `patches/ps3recomp/0002-game-dll.patch` (opt-in, compiled
+  - Runtime side: `patches/ps3recomp/0020-game-dll.patch` (opt-in, compiled
     only with `PS3_GAME_DLL`): `ppu_game_dll.h`, `ppu_game_dll_load()` in
     `ppu_loader.cpp`, one call at the top of `boot_main.cpp`'s `main()`.
     CMake: `-DT5DR_GAME_DLL=ON` builds the host; it writes a generic
@@ -296,8 +296,8 @@ running game -- used for the screenshots in `build/ln/shots`.
 - `tools/run_game.py`: `--out`, `game_command()` for the launcher.
 - `tools/make_keys.py`: also `PKG_AES_KEY`, `PKG_AES_KEY2`.
 - `CMakeLists.txt`: option `T5DR_GAME_DLL`.
-- `patches/ps3recomp/0002-game-dll.patch`, `0003-null-backend-background-window.patch`
-  (applies on f17bcd3 + 0001).
+- `patches/ps3recomp/0020-game-dll.patch`, `0021-live-draw-window-background.patch`
+  (apply on f17bcd3 + 0001, 0002, 0003, 0006, 0007; numbered high to stay out of the way).
 
 ## Found on the way
 
@@ -305,7 +305,7 @@ running game -- used for the screenshots in `build/ln/shots`.
   0001 handles it in `rsx_d3d12_backend.c`, but the live-draw engine shows
   its frames in the window `rsx_null_backend.c` creates, which was always
   visible. Measured: the game window was not minimized and was the foreground
-  window in 5 of 133 samples over 15 s. With patch 0003 it stayed minimized
+  window in 5 of 133 samples over 15 s. With patch 0021 it stayed minimized
   in all 148 samples and never took the foreground. Every agent's "background"
   test runs have been popping up the game window.
 - `tools/build_game.py`'s old `deps` step always ran `pip install -r

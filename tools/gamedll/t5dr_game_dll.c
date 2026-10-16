@@ -6,6 +6,37 @@
 
 int _fltused = 0x9875;
 
+/* ---- stack probe. A function with more than a page of locals (the lifted SPU
+ * skinning jobs have them) calls __chkstk with the frame size in RAX before it
+ * moves RSP; touching every page in order lets the guard page grow the stack.
+ * Same contract as the CRT's: probes from the caller's RSP down, keeps every
+ * register but R10/R11 and the flags, leaves RSP alone. */
+__attribute__((naked)) void __chkstk(void)
+{
+    __asm__ volatile(
+        "subq   $16, %rsp\n\t"
+        "movq   %r10, (%rsp)\n\t"
+        "movq   %r11, 8(%rsp)\n\t"
+        "xorq   %r11, %r11\n\t"
+        "leaq   24(%rsp), %r10\n\t"          /* the caller's RSP */
+        "subq   %rax, %r10\n\t"              /* lowest address the frame will use */
+        "cmovbq %r11, %r10\n\t"              /* wrapped below 0: probe everything */
+        "movq   %gs:0x10, %r11\n\t"          /* TEB StackLimit: lowest committed page */
+        "cmpq   %r11, %r10\n\t"
+        "jae    2f\n\t"
+        "andw   $0xF000, %r10w\n\t"
+        "1:\n\t"
+        "leaq   -0x1000(%r11), %r11\n\t"
+        "movb   $0, (%r11)\n\t"
+        "cmpq   %r11, %r10\n\t"
+        "jne    1b\n\t"
+        "2:\n\t"
+        "movq   (%rsp), %r10\n\t"
+        "movq   8(%rsp), %r11\n\t"
+        "addq   $16, %rsp\n\t"
+        "ret");
+}
+
 /* ---- implicit TLS: the directory the loader reads (what the CRT's tlssup provides) */
 typedef void (__stdcall *t5_tls_callback)(void*, unsigned long, void*);
 unsigned long _tls_index = 0;

@@ -198,6 +198,11 @@ def code_id():
         h.update(f.read().replace(b"\r\n", b"\n"))
     if prebuilt_host():
         h.update(sha1(os.path.join(HOST_DIR, "t5dr.exe")).encode())
+        gd = os.path.join(ROOT, "tools", "gamedll")
+        for dp, _, fns in sorted(os.walk(gd)):
+            for n in sorted(fns):
+                with open(os.path.join(dp, n), "rb") as f:
+                    h.update(n.encode() + f.read().replace(b"\r\n", b"\n"))
     return h.hexdigest()[:16]
 
 

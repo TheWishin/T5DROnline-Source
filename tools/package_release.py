@@ -51,7 +51,7 @@ import prereqs     # noqa: E402
 OUR_FILES = [
     "CMakeLists.txt",
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
-    "tools/build_game_dll.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
+    "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def",
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/stub/t5dr_stub.c",
     "docs/RELEASE.md",

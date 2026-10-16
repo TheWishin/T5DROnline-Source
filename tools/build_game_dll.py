@@ -90,7 +90,7 @@ def main():
             return 0, o
         cmd = [cl] + common
         if is_c:
-            cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT"]
+            cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT", "-msse4.1"]   # as ps3recomp_runtime's INTERFACE option
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"]
         cmd += ["-c", src, "/Fo" + o]

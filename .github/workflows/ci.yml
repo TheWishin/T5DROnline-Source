@@ -59,9 +59,9 @@ jobs:
           echo "checking $range"
           python tools/check_no_game_data.py --history "$range"
 
-      - name: Python syntax (tools/, tests/)
+      - name: Python syntax (every tracked .py/.pyw -- tools, tests, launcher, lobby)
         shell: bash
-        run: python -m py_compile tools/*.py tests/*.py
+        run: git ls-files -z '*.py' '*.pyw' | xargs -0 python -m py_compile
 
       # Also gives the FNV cross-check in tests/test_lift_spu_jobs.py a tree to
       # compare against, and fails early (naming the patch) if the series broke.
@@ -76,6 +76,34 @@ jobs:
           python -m pip install --disable-pip-version-check --quiet pycryptodome
           if ($LASTEXITCODE) { exit 1 }
           python -m unittest discover -s tests -v
+
+      # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, the
+      # launcher's Online tab). One process per module, so a module that kills
+      # the interpreter cannot hide the others. KNOWN_CRASH: test_tk_tab aborts
+      # Python on this repo's main ("Tcl_AsyncDelete: async handler deleted by
+      # the wrong thread" in test_quick_match_flow) -- a warning until fixed,
+      # then delete the variable to make it required like the rest.
+      - name: Lobby tests (lobby/tests)
+        shell: bash
+        working-directory: lobby/tests
+        env:
+          KNOWN_CRASH: test_tk_tab
+        run: |
+          fail=0
+          for f in test_*.py; do
+            m="${f%.py}"
+            echo "::group::$m"
+            rc=0; python -m unittest -v "$m" || rc=$?
+            echo "::endgroup::"
+            if [ "$rc" -ne 0 ]; then
+              if [ "$m" = "$KNOWN_CRASH" ]; then
+                echo "::warning::lobby $m failed (exit $rc): known Tk teardown crash, see docs/CI.md"
+              else
+                echo "::error::lobby $m failed (exit $rc)"; fail=1
+              fi
+            fi
+          done
+          exit $fail
 
   runtime:
     name: Patched ps3recomp runtime + native tests
@@ -113,14 +141,10 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
         continue-on-error: true
 
-      # There is no game lift in CI. ps3recomp's synthetic "smoke title" (a
-      # hand-written program in the lifter's ABI) stands in for it, so our
-      # CMakeLists.txt configures, and t5dr compiles and links, exactly as for
-      # the game. tests/smoke_t5dr.cmake adds its one C file to t5dr.
-      - name: Smoke title (stands in for the game's lift)
-        run: python deps/ps3recomp/tools/make_smoke_elf.py --out build/smoke-lift/smoke.elf --header build/smoke-lift/ppu_recomp.h
-
-      - name: Configure
+      # 1. The release host: t5dr.exe with the runtime and no game code
+      #    (T5DR_GAME_DLL=ON, static CRT), configured exactly like
+      #    tools/package_release.py --prebuilt-host. Needs no lift at all.
+      - name: Configure the release host (T5DR_GAME_DLL=ON)
         run: |
           $root = (Get-Location).Path -replace '\\', '/'
           $launcher = @()
@@ -129,8 +153,8 @@ jobs:
           }
           cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release `
             "-DCMAKE_C_COMPILER=$env:CLANG_CL" "-DCMAKE_CXX_COMPILER=$env:CLANG_CL" `
-            "-DPS3RECOMP_DIR=$root/deps/ps3recomp" "-DRECOMP_DIR=$root/build/smoke-lift" "-DSPU_DIR=$root/build/no-spu" `
-            "-DCMAKE_PROJECT_t5dr_INCLUDE=$root/tests/smoke_t5dr.cmake" -DPS3RECOMP_BUILD_TESTS=ON @launcher
+            "-DPS3RECOMP_DIR=$root/deps/ps3recomp" "-DSPU_DIR=$root/build/no-spu" `
+            -DT5DR_GAME_DLL=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DPS3RECOMP_BUILD_TESTS=ON @launcher
           if ($LASTEXITCODE) { exit 1 }
 
       # Every runtime source, including each file the patches change.
@@ -138,10 +162,13 @@ jobs:
         run: cmake --build build/cmake --target ps3recomp_runtime
 
       # The patched boot scaffold (ppu_loader.cpp, boot_main.cpp, ...), the HLE
-      # NID table and the link against the runtime -- what fails first when a
-      # patch calls something that does not exist on Windows.
-      - name: Link t5dr against the smoke title
-        run: cmake --build build/cmake --target t5dr
+      # NID table, the export table for t5dr_game.dll and the link -- what fails
+      # first when a patch calls something that does not exist on Windows.
+      - name: Build the release host t5dr.exe
+        run: |
+          cmake --build build/cmake --target t5dr
+          if ($LASTEXITCODE) { exit 1 }
+          Get-Item build/cmake/t5dr.exe, build/cmake/t5dr.lib | Format-Table Name, Length
 
       - name: ps3recomp tests from PS3RECOMP_BUILD_TESTS (sync_stress, cond semantics)
         run: |
@@ -152,6 +179,36 @@ jobs:
 
       - name: ps3recomp native tests (SPU float/shufb/helpers, MFC slots, lock lines, RSX)
         run: python tests/run_ps3recomp_tests.py --ps3recomp deps/ps3recomp --out build/native-tests --cc "$env:CLANG_CL"
+
+      # 2. The in-exe build (T5DR_GAME_DLL=OFF), what build_game.py's full
+      #    compile does on a developer PC. There is no game lift in CI:
+      #    ps3recomp's synthetic "smoke title" (a hand-written program in the
+      #    lifter's ABI) stands in for it, and tests/smoke_t5dr.cmake adds its
+      #    one C file to t5dr.
+      - name: Smoke title (stands in for the game's lift)
+        run: python deps/ps3recomp/tools/make_smoke_elf.py --out build/smoke-lift/smoke.elf --header build/smoke-lift/ppu_recomp.h
+
+      - name: Build t5dr.exe with the smoke title linked in
+        run: |
+          $root = (Get-Location).Path -replace '\\', '/'
+          $launcher = @()
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            $launcher = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+          }
+          cmake -S . -B build/cmake-smoke -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER=$env:CLANG_CL" "-DCMAKE_CXX_COMPILER=$env:CLANG_CL" `
+            "-DPS3RECOMP_DIR=$root/deps/ps3recomp" "-DRECOMP_DIR=$root/build/smoke-lift" "-DSPU_DIR=$root/build/no-spu" `
+            "-DCMAKE_PROJECT_t5dr_INCLUDE=$root/tests/smoke_t5dr.cmake" @launcher
+          if ($LASTEXITCODE) { exit 1 }
+          cmake --build build/cmake-smoke --target t5dr
+
+      # 3. The player's starter, as package_release.py builds it.
+      - name: Build the launcher stub (T5DR Online.exe)
+        run: |
+          New-Item -ItemType Directory -Force build/stub | Out-Null
+          & $env:CLANG_CL /nologo /O2 /GS- launcher/stub/t5dr_stub.c /Fobuild/stub/stub.obj "/Febuild/stub/T5DR Online.exe" `
+            /link /SUBSYSTEM:WINDOWS /ENTRY:start /NODEFAULTLIB kernel32.lib user32.lib
+          if ($LASTEXITCODE) { exit 1 }
 
       # Informational: whether the runner can open a D3D12 device and window
       # at all, and if so, that the patched runtime boots the smoke title
@@ -166,7 +223,7 @@ jobs:
           PS3_VERBOSE: "0"
         run: |
           New-Item -ItemType Directory -Force build/smoke-run | Out-Null
-          $p = Start-Process "$PWD/build/cmake/t5dr.exe" -ArgumentList "$PWD/build/smoke-lift/smoke.elf" `
+          $p = Start-Process "$PWD/build/cmake-smoke/t5dr.exe" -ArgumentList "$PWD/build/smoke-lift/smoke.elf" `
                -WorkingDirectory build/smoke-run -RedirectStandardOutput build/smoke-run/out.log `
                -RedirectStandardError build/smoke-run/err.log -PassThru -NoNewWindow
           if (-not $p.WaitForExit(60000)) { Stop-Process -Id $p.Id -Force; Write-Output "::warning::t5dr did not exit within 60 s" }

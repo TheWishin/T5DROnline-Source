@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import PY, TOOLS, fake_keys, get, load_tool, put
+from helpers import PY, TOOLS, fake_bytes, fake_keys, get, load_tool, put
 
 
 def c_array(name, val):
@@ -13,10 +13,22 @@ def c_array(name, val):
     return f"constexpr u8 {name}[0x{len(val):X}] = {{\n\t{body}\n}};\n"
 
 
+NAMED = load_tool("make_keys").NAMED      # the 16-byte arrays make_keys.py takes from key_vault.h
+
+
+def all_fake_keys(*revisions):
+    keys = {}
+    for rev in revisions:
+        keys.update(fake_keys(rev))
+    for name in NAMED:
+        keys.setdefault(name, fake_bytes(name))          # e.g. the package keys
+    return keys
+
+
 def vault(keys, revisions):
     """key_vault.h / key_vault.cpp text shaped like RPCS3's, holding fake values."""
     h = "#pragma once\n\n"
-    for name in ("NP_KLIC_KEY", "RAP_KEY", "RAP_PBOX", "RAP_E1", "RAP_E2"):
+    for name in NAMED:
         h += c_array(name, keys[name]) + "\n"
     h += c_array("NP_UNRELATED", keys["RAP_E1"][::-1])
     cpp = "void KeyVault::LoadSelfAPPKeys()\n{\n\tsk_APP_arr.clear();\n" \
@@ -33,7 +45,7 @@ def vault(keys, revisions):
 
 class MakeKeys(unittest.TestCase):
     def test_from_local_source(self):
-        keys = {**fake_keys(1), **fake_keys(4)}
+        keys = all_fake_keys(1, 4)
         with tempfile.TemporaryDirectory() as d:
             h, cpp = vault(keys, [1, 4])
             put(os.path.join(d, "key_vault.h"), h)
@@ -42,16 +54,16 @@ class MakeKeys(unittest.TestCase):
             r = subprocess.run([PY, os.path.join(TOOLS, "make_keys.py"), "--source", d, "--out", out],
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn("9 entries", r.stdout)
+            self.assertIn(f"{len(NAMED) + 4} entries", r.stdout)
             text = get(out).decode()
             self.assertTrue(text.startswith("# Local only. Never commit."))
             got = load_tool("unself").load_keys(out)
-            # Exactly the five named keys plus ERK/RIV per NPDRM revision --
+            # Exactly the named keys plus ERK/RIV per NPDRM revision --
             # not the APP keys, not unrelated arrays.
             self.assertEqual(got, keys)
 
     def test_missing_key_fails(self):
-        keys = fake_keys(1)
+        keys = all_fake_keys(1)
         with tempfile.TemporaryDirectory() as d:
             h, cpp = vault(keys, [1])
             put(os.path.join(d, "key_vault.h"), h.replace("RAP_E2", "RAP_XX"))

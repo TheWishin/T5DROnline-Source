@@ -269,7 +269,7 @@ index 21e5584..7200ca8 100644
                  } }
                if (run_len && strcmp(cur, last) == 0) {
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index e90b895..2b7ce15 100644
+index e90b895..0425469 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -304,6 +304,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
@@ -280,7 +280,52 @@ index e90b895..2b7ce15 100644
  extern "C" void cellGcm_fifo_kick_wait(unsigned ms); /* idle wait, woken by a kick */
  extern "C" unsigned cellGcm_flip_request_count(void);
  extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
-@@ -528,6 +529,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -484,17 +485,31 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+      * window DXGI Present throttles hard, which previously stalled these ticks and
+      * paced the game's main loop to ~0.5fps. Drive the ticks off REAL elapsed time
+      * and catch up in a bounded burst so present latency never slows the game. */
+-    ULONGLONG next_tick = GetTickCount64();
++    /* The vblank clock. Was GetTickCount64() + 16 ms: 62.5 Hz instead of the
++     * PS3's 59.94 (the game ran 4% fast), and on a ~15.6 ms tick-count
++     * granularity, so vblanks arrived in bursts and frames were uneven. Pace
++     * on the performance counter at 60000/1001 Hz; PS3_VBLANK_HZ overrides. */
++    LARGE_INTEGER vb_freq, vb_now;
++    QueryPerformanceFrequency(&vb_freq);
++    double vb_hz = 60000.0 / 1001.0;
++    if (const char* e = getenv("PS3_VBLANK_HZ")) { double v = atof(e); if (v >= 10.0 && v <= 240.0) vb_hz = v; }
++    const double vb_period = (double)vb_freq.QuadPart / vb_hz;
++    timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
++    QueryPerformanceCounter(&vb_now);
++    double next_tick = (double)vb_now.QuadPart;
+     for (;;) {
+         /* Was Sleep(4). The FIFO kick event existed, was signalled on a dry
+          * fence queue, and had no waiter -- so a guest starved for `get` or a
+          * fence still paid the whole tick. Waiting on it keeps the same 4 ms
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+-        cellGcm_fifo_kick_wait(4);
+-        ULONGLONG now = GetTickCount64();
++        QueryPerformanceCounter(&vb_now);
++        { double ms = (next_tick - (double)vb_now.QuadPart) * 1000.0 / (double)vb_freq.QuadPart;
++          cellGcm_fifo_kick_wait(ms <= 1.0 ? 0 : (ms >= 4.0 ? 4 : (unsigned)ms)); }
++        QueryPerformanceCounter(&vb_now);
++        const double now = (double)vb_now.QuadPart;
+         int fired = 0;
+-        while ((long long)(now - next_tick) >= 0 && fired < 240) {
++        while (now >= next_tick && fired < 240) {
+             cellGcmTickVBlank();
+             cellGcmTickFlip();
+             /* Present a pending flip BEFORE draining further: the flip fires
+@@ -513,7 +528,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+              * Doing it here (not after present) keeps those fences advancing at 60Hz
+              * even when present() throttles on a hidden/occluded window. */
+             if (rsx_ok) cellGcm_rsx_process_fifo();
+-            next_tick += 16;                 /* ~60 Hz */
++            next_tick += vb_period;          /* 59.94 Hz */
+             fired++;
+         }
+         if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
+@@ -528,6 +543,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
              }
              cellGcm_rsx_process_fifo();
          }

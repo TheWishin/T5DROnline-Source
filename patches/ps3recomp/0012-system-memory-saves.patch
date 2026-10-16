@@ -1,0 +1,1205 @@
+diff --git a/libs/network/cellHttp.c b/libs/network/cellHttp.c
+index d39d88d..8b546e0 100644
+--- a/libs/network/cellHttp.c
++++ b/libs/network/cellHttp.c
+@@ -841,6 +841,31 @@ s32 cellHttpSetRecvTimeOut(CellHttpTransId transId, u32 usec)
+     return CELL_OK;
+ }
+ 
++/* Client-level timeouts: the default for transactions created on the client
++ * afterwards. Tekken 5 DR sets both right after cellHttpCreateClient (NIDs
++ * 0x224E1610 / 0x71714CDC were unresolved). */
++s32 cellHttpClientSetRecvTimeout(CellHttpClientId clientId, s64 usec)
++{
++    if (!s_http_initialized)
++        return CELL_HTTP_ERROR_NOT_INITIALIZED;
++    if (clientId >= CELL_HTTP_MAX_CLIENTS || !s_clients[clientId].in_use)
++        return CELL_HTTP_ERROR_NOT_FOUND;
++    s_clients[clientId].recv_timeout = (u32)usec;
++    printf("[cellHttp] ClientSetRecvTimeout(id=%u, %lld us)\n", clientId, (long long)usec);
++    return CELL_OK;
++}
++
++s32 cellHttpClientSetSendTimeout(CellHttpClientId clientId, s64 usec)
++{
++    if (!s_http_initialized)
++        return CELL_HTTP_ERROR_NOT_INITIALIZED;
++    if (clientId >= CELL_HTTP_MAX_CLIENTS || !s_clients[clientId].in_use)
++        return CELL_HTTP_ERROR_NOT_FOUND;
++    s_clients[clientId].send_timeout = (u32)usec;
++    printf("[cellHttp] ClientSetSendTimeout(id=%u, %lld us)\n", clientId, (long long)usec);
++    return CELL_OK;
++}
++
+ s32 cellHttpSetRequestContentLength(CellHttpTransId transId, u64 length)
+ {
+     if (!s_http_initialized)
+diff --git a/libs/network/cellHttp.h b/libs/network/cellHttp.h
+index 67e2ab5..14c767d 100644
+--- a/libs/network/cellHttp.h
++++ b/libs/network/cellHttp.h
+@@ -104,6 +104,8 @@ s32 cellHttpSetResolveTimeOut(CellHttpTransId transId, u32 usec);
+ s32 cellHttpSetConnectTimeOut(CellHttpTransId transId, u32 usec);
+ s32 cellHttpSetSendTimeOut(CellHttpTransId transId, u32 usec);
+ s32 cellHttpSetRecvTimeOut(CellHttpTransId transId, u32 usec);
++s32 cellHttpClientSetRecvTimeout(CellHttpClientId clientId, s64 usec);
++s32 cellHttpClientSetSendTimeout(CellHttpClientId clientId, s64 usec);
+ 
+ s32 cellHttpSetRequestContentLength(CellHttpTransId transId, u64 length);
+ s32 cellHttpAddRequestHeader(CellHttpTransId transId, const char* name,
+diff --git a/libs/system/cellRtc.c b/libs/system/cellRtc.c
+index d1e776c..b5a6a10 100644
+--- a/libs/system/cellRtc.c
++++ b/libs/system/cellRtc.c
+@@ -30,18 +30,13 @@
+  * Internal helpers
+  * -----------------------------------------------------------------------*/
+ 
+-/* Get current Unix time in microseconds */
++/* Get current Unix time in microseconds -- the same clock as
++ * sys_time_get_current_time (runtime/syscalls/sys_timer.c), so PS3_FIXED_TIME
++ * pins both. */
++extern u64 ps3_wallclock_unix_nsec(void);
+ static u64 get_host_time_usec(void)
+ {
+-#ifdef _WIN32
+-    struct _timeb tb;
+-    _ftime_s(&tb);
+-    return (u64)tb.time * USEC_PER_SEC + (u64)tb.millitm * 1000ULL;
+-#else
+-    struct timeval tv;
+-    gettimeofday(&tv, NULL);
+-    return (u64)tv.tv_sec * USEC_PER_SEC + (u64)tv.tv_usec;
+-#endif
++    return ps3_wallclock_unix_nsec() / 1000ULL;
+ }
+ 
+ /* Convert Unix time_t to PS3 tick */
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index 79ea8ca..e521101 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -113,13 +113,20 @@ static int dir_exists(const char* path)
+  * "your save is there" -- and then handed it a directory with nothing in it.
+  * Reporting isNewData=1 for that case is both true and the answer that lets a
+  * title create the save it was looking for. */
++/* A PARAM.SFO with no data file beside it is not a save either: that is what a
++ * failed first save used to leave behind (Tekken 5 DR's NPUB30009-SYSNET with
++ * only PARAM.SFO), and reporting it as existing made the title's funcStat
++ * answer ERR_BROKEN -> "Unable to load Play Data" on every later boot. */
++static u32 enumerate_save_files(const char* save_path, CellSaveDataFileStat* fileList, u32 max);
++
+ static int dir_has_save(const char* path)
+ {
+     if (!dir_exists(path)) return 0;
+     char sfo[1024];
+     snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", path);
+     HOST_STAT_T st;
+-    return HOST_STAT(sfo, &st) == 0;
++    if (HOST_STAT(sfo, &st) != 0) return 0;
++    return enumerate_save_files(path, NULL, 0) > 0;
+ }
+ 
+ 
+@@ -644,6 +651,42 @@ static u32 enumerate_save_files(const char* save_path,
+     return count;
+ }
+ 
++/* Remove a save directory this module created, with the plain files in it
++ * (save directories hold no subdirectories). Only used to roll back a new
++ * save that failed. */
++static void remove_save_dir(const char* save_path)
++{
++#ifdef _WIN32
++    char search[1024];
++    snprintf(search, sizeof(search), "%s\\*", save_path);
++    WIN32_FIND_DATAA fd;
++    HANDLE h = FindFirstFileA(search, &fd);
++    if (h != INVALID_HANDLE_VALUE) {
++        do {
++            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++            char f[1024];
++            snprintf(f, sizeof(f), "%s\\%s", save_path, fd.cFileName);
++            DeleteFileA(f);
++        } while (FindNextFileA(h, &fd));
++        FindClose(h);
++    }
++    RemoveDirectoryA(save_path);
++#else
++    DIR* dp = opendir(save_path);
++    if (dp) {
++        struct dirent* de;
++        while ((de = readdir(dp)) != NULL) {
++            if (de->d_name[0] == '.') continue;
++            char f[1024];
++            snprintf(f, sizeof(f), "%s/%s", save_path, de->d_name);
++            unlink(f);
++        }
++        closedir(dp);
++    }
++    rmdir(save_path);
++#endif
++}
++
+ /* Execute file callback: read/write/delete files in the save directory */
+ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
+ {
+@@ -897,17 +940,27 @@ static s32 savedata_execute(const char* dirName, int is_save,
+         return CELL_SAVEDATA_ERROR_CBRESULT;
+     }
+ 
+-    /* Write PARAM.SFO if stat set provided params and we're saving */
++    /* PARAM.SFO the stat callback asked for. It is written once the save has
++     * gone through, not up front: a NEW directory that ends up with no data
++     * (the title answered OK_LAST, or its file step failed) must not be
++     * created at all. Tekken 5 DR first tries to overwrite its customize data
++     * under the name it remembers, sees isNewData=1 and answers OK_LAST to
++     * pick a fresh name -- writing PARAM.SFO there left an empty "save" per
++     * session; and a failed first save left a PARAM.SFO-only folder that the
++     * next boot reported as broken. */
++    CellSaveDataSystemFileParam params;
++    int have_params = 0;
+     if (is_save && statSet.setParam) {
+-        ensure_dirs(save_path);
+-        CellSaveDataSystemFileParam params;
+         memcpy(&params, statSet.setParam, sizeof(params));
+         params.attribute = ps3_bswap32(params.attribute);
+-        write_param_sfo(save_path, &params);
++        have_params = 1;
+     }
++    const int dir_existed = dir_exists(save_path);
++    u32 files_written = 0;
+ 
+     /* Each NEXT callback requests one operation. LAST ends the sequence;
+      * its zero-initialized FileSet is not an implicit read request. */
++    s32 fail = 0;
+     if (funcFile && cbResult.result == CELL_SAVEDATA_CBRESULT_OK_NEXT) {
+         u32 exc_size = 0;
+         while (1) {
+@@ -920,21 +973,41 @@ static s32 savedata_execute(const char* dirName, int is_save,
+                    fileSet.fileOperation, fileSet.fileType,
+                    fileSet.fileName ? fileSet.fileName : "", fileSet.fileOffset,
+                    fileSet.fileSize, fileSet.fileBufSize, exc);
+-            if (exc < 0) { free(fileList); return exc; }
++            if (exc < 0) { fail = exc; break; }
++            if (fileSet.fileOperation == CELL_SAVEDATA_FILEOP_WRITE ||
++                fileSet.fileOperation == CELL_SAVEDATA_FILEOP_WRITE_NOTRUNC)
++                files_written++;
+             exc_size = (u32)exc;
+         }
++        if (!fail && cbResult.result < 0)
++            printf("[cellSaveData] file callback returned error %d\n", cbResult.result);
+     }
+ 
+     free(fileList);
+ 
+-    if (cbResult.result < 0) {
+-        if (cbResult.result == CELL_SAVEDATA_CBRESULT_ERR_NODATA)
+-            return CELL_SAVEDATA_ERROR_NODATA;
+-        return CELL_SAVEDATA_ERROR_CBRESULT;
++    if (!fail && cbResult.result < 0)
++        fail = cbResult.result == CELL_SAVEDATA_CBRESULT_ERR_NODATA
++             ? CELL_SAVEDATA_ERROR_NODATA : CELL_SAVEDATA_ERROR_CBRESULT;
++
++    if (fail) {
++        /* Roll back a directory this call created, like the save utility
++         * does with its temporary directory. */
++        if (is_save && !dir_existed && dir_exists(save_path)) {
++            remove_save_dir(save_path);
++            printf("[cellSaveData] SAVE failed (0x%08X): removed the new directory '%s'\n",
++                   (unsigned)fail, dirName);
++        }
++        return fail;
++    }
++
++    if (have_params && (files_written || dir_existed)) {
++        ensure_dirs(save_path);
++        write_param_sfo(save_path, &params);
+     }
+ 
+-    printf("[cellSaveData] %s complete for '%s'\n",
+-           is_save ? "SAVE" : "LOAD", dirName);
++    printf("[cellSaveData] %s complete for '%s'%s\n",
++           is_save ? "SAVE" : "LOAD", dirName,
++           is_save && is_new && !files_written && !dir_existed ? " (nothing written, no directory created)" : "");
+     return CELL_OK;
+ }
+ 
+@@ -1257,13 +1330,109 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
+     return r == CELL_SAVEDATA_ERROR_NODATA ? CELL_OK : r;
+ }
+ 
++/* cellSaveDataDelete2(container): on hardware the system shows this title's
++ * save data list, the user picks one to delete (or backs out), and the call
++ * returns CELL_OK after a deletion or CELL_SAVEDATA_RET_CANCEL (1). There is
++ * no system UI here, so the choice comes from PS3_SAVEDATA_DELETE:
++ *
++ *   all (default)  every save of this title (dirName starting with the title
++ *                  ID) -- "Delete Save Data" in a title's options resets it
++ *   newest         only the most recently written one
++ *   <dirName>      exactly that directory
++ *   none | cancel  delete nothing, report that the user backed out
++ *
++ * Nothing is destroyed: a deleted directory moves to <savedata>/.deleted/
++ * <dirName>.<host date-time>, which the save listing never shows (it skips
++ * dot names); delete that folder by hand to reclaim the space, or move a
++ * directory back to restore it. With no save data at all the call reports
++ * CANCEL, as the system dialog's "There is no saved data" does.
++ *
++ * Tekken 5 DR (Options -> Delete Save Data) creates a 5 MB container, calls
++ * this, stores the result and destroys the container; it treats 0 as
++ * deleted, 1 or CELL_SAVEDATA_ERROR_FAILURE as cancelled and shows anything
++ * else as an error code. */
++#define SAVEDATA_RET_CANCEL 1
++
++static int savedata_trash_dir(const char* dirName)
++{
++    char src[1024], trash[1024], dst[1100], stamp[32];
++    build_save_path(src, sizeof(src), dirName);
++    snprintf(trash, sizeof(trash), "%s/.deleted", s_save_root);
++    ensure_dirs(trash);
++    time_t now = time(NULL);
++    struct tm lt;
++#ifdef _WIN32
++    localtime_s(&lt, &now);
++#else
++    localtime_r(&now, &lt);
++#endif
++    strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &lt);
++    for (int n = 0; n < 100; n++) {
++        if (n) snprintf(dst, sizeof(dst), "%s/%s.%s-%d", trash, dirName, stamp, n);
++        else   snprintf(dst, sizeof(dst), "%s/%s.%s", trash, dirName, stamp);
++#ifdef _WIN32
++        for (char* p = dst; *p; p++) if (*p == '/') *p = '\\';
++#endif
++        if (dir_exists(dst)) continue;
++        if (rename(src, dst) == 0) {
++            printf("[cellSaveData] Delete2: '%s' moved to '%s'\n", dirName, dst);
++            return 1;
++        }
++        printf("[cellSaveData] Delete2: cannot move '%s' (errno %d)\n", src, errno);
++        return 0;
++    }
++    return 0;
++}
++
+ s32 cellSaveDataDelete2(u32 container)
+ {
+-    printf("[cellSaveData] Delete2(container=%u)\n", container);
++    const char* policy = getenv("PS3_SAVEDATA_DELETE");
++    if (!policy || !policy[0]) policy = "all";
++    printf("[cellSaveData] Delete2(container=0x%08X) policy=%s\n", container, policy);
++
++    if (!strcmp(policy, "none") || !strcmp(policy, "cancel"))
++        return SAVEDATA_RET_CANCEL;
++
++    extern const char* cellGame_get_title_id(void);
++    const char* prefix = cellGame_get_title_id();
++    u32 count = enumerate_save_dirs(prefix, NULL, 0);
++    CellSaveDataDirList* dirs = count ? (CellSaveDataDirList*)calloc(count, sizeof(*dirs)) : NULL;
++    if (count && !dirs) return CELL_SAVEDATA_ERROR_INTERNAL;
++    count = enumerate_save_dirs(prefix, dirs, count);
++
++    int all = !strcmp(policy, "all"), newest = !strcmp(policy, "newest");
++    s64 best_mtime = -1;
++    int best = -1;
++    if (newest) {
++        for (u32 i = 0; i < count; i++) {
++            char path[1024], sfo[1100];
++            build_save_path(path, sizeof(path), dirs[i].dirName);
++            snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", path);
++            HOST_STAT_T st;
++            s64 m = 0;
++            if (HOST_STAT(sfo, &st) == 0 || HOST_STAT(path, &st) == 0) {
++#ifdef _WIN32
++                m = (s64)st.st_mtime;
++#elif defined(__APPLE__)
++                m = (s64)st.st_mtimespec.tv_sec;
++#else
++                m = (s64)st.st_mtim.tv_sec;
++#endif
++            }
++            if (m > best_mtime) { best_mtime = m; best = (int)i; }
++        }
++    }
+ 
+-    /* Without a directory name we can't delete anything meaningful.
+-       This variant typically shows a UI for deletion - just succeed. */
+-    return CELL_OK;
++    u32 deleted = 0;
++    for (u32 i = 0; i < count; i++) {
++        const char* d = dirs[i].dirName;
++        if (all || (newest && (int)i == best) || (!newest && !strcmp(policy, d)))
++            deleted += (u32)savedata_trash_dir(d);
++    }
++    free(dirs);
++
++    printf("[cellSaveData] Delete2: %u of %u '%s*' save(s) deleted\n", deleted, count, prefix);
++    return deleted ? CELL_OK : SAVEDATA_RET_CANCEL;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+diff --git a/runtime/syscalls/lv2_syscall_table.h b/runtime/syscalls/lv2_syscall_table.h
+index 5dd69eb..1a955d0 100644
+--- a/runtime/syscalls/lv2_syscall_table.h
++++ b/runtime/syscalls/lv2_syscall_table.h
+@@ -155,6 +155,8 @@ extern uint32_t g_ps3_sdk_version;
+ #define SYS_MEMORY_CONTAINER_CREATE     324
+ #define SYS_MEMORY_CONTAINER_DESTROY    325
+ #define SYS_MEMORY_CONTAINER_GET_SIZE   343
++#define SYS_MEMORY_CONTAINER_CREATE2    341   /* retail numbers; 324/325 are the debug-kernel ones */
++#define SYS_MEMORY_CONTAINER_DESTROY2   342
+ 
+ #define SYS_MMAPPER_ALLOCATE_ADDRESS     330
+ #define SYS_MMAPPER_FREE_ADDRESS         331
+diff --git a/runtime/syscalls/sys_memory.c b/runtime/syscalls/sys_memory.c
+index 44d51d6..9aaa461 100644
+--- a/runtime/syscalls/sys_memory.c
++++ b/runtime/syscalls/sys_memory.c
+@@ -14,8 +14,9 @@ sys_mem_alloc_info       g_sys_mem_allocs[SYS_MEMORY_ALLOC_MAX];
+ sys_mem_container_info   g_sys_mem_containers[SYS_MEMORY_CONTAINER_MAX];
+ sys_mmapper_shared_info  g_sys_mmapper_shared[SYS_MMAPPER_SHARED_MAX];
+ 
+-/* Bump allocator for main memory pool.
+- * Starts after a reasonable offset to avoid the low addresses used by ELF. */
++/* High-water mark of the sys_memory window: the end of the highest range ever
++ * handed out. Everything above it is still untouched OS-zeroed memory.
++ * (Historical name: this used to be the bump pointer itself.) */
+ uint32_t g_sys_mem_bump_ptr = 0;
+ 
+ /* Total user memory size (default 213 MB, after kernel reservation) */
+@@ -39,11 +40,14 @@ static uint32_t sys_mem_alloc_base(void)
+     return s_base;
+ }
+ #define SYS_MEM_ALLOC_BASE  (sys_mem_alloc_base())
+-#define SYS_MEM_ALLOC_END   (sys_mem_alloc_base() + 0x10000000u)
++#define SYS_MEM_ALLOC_END   ((uint64_t)sys_mem_alloc_base() + 0x10000000u)
+ 
++/* Bytes charged to the default container (sys_memory_allocate) and bytes
++ * reserved by the other containers (sys_memory_container_create). */
+ static uint32_t s_total_allocated = 0;
++static uint32_t s_container_reserved = 0;
+ 
+-/* Guest threads are real host threads; serialize the bump allocator. */
++/* Guest threads are real host threads; serialize the allocator. */
+ #ifdef _WIN32
+ static SRWLOCK s_bump_lock = SRWLOCK_INIT;
+ static void bump_lock(void)   { AcquireSRWLockExclusive(&s_bump_lock); }
+@@ -66,61 +70,145 @@ static void write_be32(uint32_t addr, uint32_t val)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_memory_allocate
++ * Window range allocator
+  *
+- * r3 = size
+- * r4 = flags (page size)
+- * r5 = pointer to receive allocated address (u32*)
++ * This used to be a bump pointer: sys_memory_free only cleared the record and
++ * the next allocation always came from fresh space. Tekken 5 DR frees its two
++ * scene heaps (10 MB + 65 MB, 64 KB pages) and allocates them again on every
++ * scene change through the title, so each attract cycle / return to the title
++ * lost 75 MB of the 256 MB window and the third cycle failed with
++ * CELL_ENOMEM (white screen ~2.8 min into an idle boot).
++ *
++ * Now every occupied range of the window (sys_memory blocks and mmapper
++ * address reservations) sits in one address-sorted table, and an allocation
++ * takes the LOWEST suitably aligned gap that fits (first fit). Freed neighbours
++ * coalesce by construction -- the free space is simply the gaps between
++ * occupied ranges. The result depends only on the sequence of calls, so the
++ * same sequence always yields the same addresses (rollback/netplay rely on
++ * that); freeing a block and allocating the same size again returns the same
++ * address.
++ *
++ * Reused memory is zeroed, as lv2 hands out zero-filled pages; memory above
++ * the high-water mark has never been touched and is still OS-zero.
+  * -----------------------------------------------------------------------*/
+-int64_t sys_memory_allocate(ppu_context* ctx)
++typedef struct { uint32_t addr, size; } win_range;
++#define WIN_RANGES_MAX (SYS_MEMORY_ALLOC_MAX + 64)
++static win_range s_used[WIN_RANGES_MAX];
++static int       s_used_n = 0;
++static uint64_t  s_used_bytes = 0;
++
++/* Lowest `align`-aligned address whose [a, a+size) overlaps no occupied range.
++ * 0 when nothing fits. Caller holds the lock. */
++static uint32_t win_find(uint32_t size, uint32_t align)
+ {
+-    uint32_t size      = LV2_ARG_U32(ctx, 0);
+-    uint32_t flags     = LV2_ARG_U32(ctx, 1);
+-    uint32_t addr_out  = LV2_ARG_PTR(ctx, 2);
+-
+-    fprintf(stderr, "[sys_memory] allocate(size=0x%X, flags=0x%X)\n",
+-            size, flags);
+-    /* PS3_ALLOC_BT=1: the guest's saved-LR chain (frame+16 of each back-chain link),
+-     * same walk as the RPCS3 oracle's "[oracle] sys_memory_allocate backchain". */
+-    if (getenv("PS3_ALLOC_BT")) {
+-        extern uint64_t vm_read64(uint64_t a);
+-        char buf[512]; int p = snprintf(buf, sizeof buf, "lr=0x%x", (uint32_t)ctx->lr);
+-        uint32_t sp = (uint32_t)ctx->gpr[1];
+-        for (int i = 0; i < 16 && sp && sp < 0xF0000000u && p < (int)sizeof buf - 12; i++) {
+-            uint32_t next = (uint32_t)vm_read64(sp);
+-            if (!next || next < 0x10000u) break;
+-            p += snprintf(buf + p, sizeof buf - p, " 0x%x", (uint32_t)vm_read64(next + 16));
+-            sp = next;
+-        }
+-        fprintf(stderr, "[sys_memory] allocate backchain: %s\n", buf);
++    uint64_t cur = SYS_MEM_ALLOC_BASE;
++    for (int i = 0; i <= s_used_n; i++) {
++        uint64_t a = (cur + align - 1) & ~(uint64_t)(align - 1);
++        uint64_t gap_end = i < s_used_n ? s_used[i].addr : SYS_MEM_ALLOC_END;
++        if (a + size <= gap_end) return (uint32_t)a;
++        if (i < s_used_n) cur = (uint64_t)s_used[i].addr + s_used[i].size;
+     }
++    return 0;
++}
++
++static int win_insert(uint32_t addr, uint32_t size)
++{
++    if (s_used_n >= WIN_RANGES_MAX) return -1;
++    int i = s_used_n;
++    while (i > 0 && s_used[i - 1].addr > addr) { s_used[i] = s_used[i - 1]; i--; }
++    s_used[i].addr = addr;
++    s_used[i].size = size;
++    s_used_n++;
++    s_used_bytes += size;
++    if ((uint64_t)addr + size > g_sys_mem_bump_ptr)
++        g_sys_mem_bump_ptr = (uint32_t)((uint64_t)addr + size);
++    return 0;
++}
+ 
+-    /* Determine alignment based on page size flags */
+-    uint32_t alignment;
+-    if (flags & SYS_MEMORY_PAGE_SIZE_1M) {
+-        alignment = 0x100000; /* 1 MB */
+-    } else {
+-        alignment = 0x10000;  /* 64 KB */
++/* Remove the range starting exactly at addr; returns its size, 0 if none. */
++static uint32_t win_remove(uint32_t addr)
++{
++    for (int i = 0; i < s_used_n; i++) {
++        if (s_used[i].addr != addr) continue;
++        uint32_t size = s_used[i].size;
++        for (int j = i + 1; j < s_used_n; j++) s_used[j - 1] = s_used[j];
++        s_used_n--;
++        s_used_bytes -= size;
++        return size;
+     }
++    return 0;
++}
+ 
+-    size = VM_ALIGN_UP(size, alignment);
++/* Reserve `size` bytes at the lowest fitting `align` boundary of the window.
++ * Returns the address (0 when full) and, in *dirty, how much of it lies below
++ * the old high-water mark (memory that may hold an earlier owner's data). */
++static uint32_t win_alloc(uint32_t size, uint32_t align, uint32_t* dirty)
++{
++    uint32_t hw = g_sys_mem_bump_ptr ? g_sys_mem_bump_ptr : SYS_MEM_ALLOC_BASE;
++    uint32_t a = win_find(size, align);
++    if (!a || win_insert(a, size) != 0) return 0;
++    *dirty = a < hw ? ((uint64_t)a + size <= hw ? size : hw - a) : 0;
++    return a;
++}
+ 
++/* Commit, then zero what a previous owner may have written. */
++static int32_t win_prepare(uint32_t addr, uint32_t size, uint32_t dirty)
++{
++    if (vm_commit(addr, size) != CELL_OK) return CELL_ENOMEM;
++    if (dirty) memset(vm_to_host(addr), 0, dirty);
++    return CELL_OK;
++}
++
++/* ---------------------------------------------------------------------------
++ * Memory containers
++ *
++ * IDs look like lv2's (0x3F0000xx) so they cannot be mistaken for an address
++ * or for SYS_MEMORY_CONTAINER_ID_INVALID (0xFFFFFFFF).
++ * -----------------------------------------------------------------------*/
++#define SYS_MEM_CONTAINER_ID_BASE 0x3F000000u
++
++static sys_mem_container_info* container_get(uint32_t cid)
++{
++    uint32_t slot = cid - SYS_MEM_CONTAINER_ID_BASE - 1u;
++    if (slot >= SYS_MEMORY_CONTAINER_MAX) return NULL;
++    sys_mem_container_info* c = &g_sys_mem_containers[slot];
++    return c->active ? c : NULL;
++}
++
++/* lv2 page-size flags: 0x400 = 1 MB pages, 0x200 = 64 KB pages, 0 = 1 MB. */
++static uint32_t page_align_for(uint32_t flags)
++{
++    if (flags == 0 || (flags & SYS_MEMORY_PAGE_SIZE_1M)) return 0x100000;
++    if (flags & SYS_MEMORY_PAGE_SIZE_64K) return 0x10000;
++    return 0;
++}
++
++/* Shared body of sys_memory_allocate and sys_memory_allocate_from_container.
++ * cid 0 = the default container. */
++static int64_t mem_allocate(uint32_t size, uint32_t flags, uint32_t cid,
++                            uint32_t addr_out, const char* who)
++{
++    uint32_t alignment = page_align_for(flags);
++    if (!alignment)
++        return (int64_t)(int32_t)CELL_EINVAL;
++
++    size = VM_ALIGN_UP(size, alignment);
+     if (size == 0)
+         return (int64_t)(int32_t)CELL_EINVAL;
+ 
+     bump_lock();
+ 
+-    /* Initialize bump pointer on first call */
+-    if (g_sys_mem_bump_ptr == 0)
+-        g_sys_mem_bump_ptr = SYS_MEM_ALLOC_BASE;
+-
+-    /* Align bump pointer */
+-    g_sys_mem_bump_ptr = VM_ALIGN_UP(g_sys_mem_bump_ptr, alignment);
+-
+-    /* Check if we have room */
+-    if (g_sys_mem_bump_ptr + size > SYS_MEM_ALLOC_END) {
+-        bump_unlock();
+-        return (int64_t)(int32_t)CELL_ENOMEM;
++    sys_mem_container_info* c = NULL;
++    if (cid) {
++        c = container_get(cid);
++        if (!c) { bump_unlock(); return (int64_t)(int32_t)CELL_ESRCH; }
++        if ((uint64_t)c->used_size + size > c->total_size) {
++            uint32_t used = c->used_size, total = c->total_size;
++            bump_unlock();
++            fprintf(stderr, "[sys_memory] %s(size=0x%X, cid=0x%X): container full (%u/%u KB)\n",
++                    who, size, cid, used >> 10, total >> 10);
++            return (int64_t)(int32_t)CELL_ENOMEM;
++        }
+     }
+ 
+     /* Find a free allocation slot */
+@@ -128,32 +216,44 @@ int64_t sys_memory_allocate(ppu_context* ctx)
+     for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+         if (!g_sys_mem_allocs[i].active) { slot = i; break; }
+     }
+-    if (slot < 0) {
++    uint32_t dirty = 0;
++    uint32_t alloc_addr = slot < 0 ? 0 : win_alloc(size, alignment, &dirty);
++    if (!alloc_addr) {
++        uint64_t used = s_used_bytes;
+         bump_unlock();
++        fprintf(stderr, "[sys_memory] %s(size=0x%X, flags=0x%X) FAILED: no %s (window %llu MB in use)\n",
++                who, size, flags, slot < 0 ? "record slot" : "free range",
++                (unsigned long long)(used >> 20));
+         return (int64_t)(int32_t)CELL_ENOMEM;
+     }
+ 
+-    uint32_t alloc_addr = g_sys_mem_bump_ptr;
+-    g_sys_mem_bump_ptr += size;
+-    s_total_allocated += size;
+-
+     sys_mem_alloc_info* a = &g_sys_mem_allocs[slot];
+     a->active       = 1;       /* claim the slot before unlocking */
+     a->addr         = alloc_addr;
+     a->size         = size;
+-    a->container_id = 0;
++    a->container_id = (int32_t)cid;
+     a->page_size    = alignment;  /* 0x100000 (1M) or 0x10000 (64K) */
++    if (c) c->used_size += size;
++    else   s_total_allocated += size;
++    uint64_t in_use = s_used_bytes;
++    uint32_t hw = g_sys_mem_bump_ptr;
+ 
+     bump_unlock();
+ 
+-    /* Commit the pages (window is outside the pre-committed main region);
+-     * fresh commits are already zeroed by the OS */
+-    if (vm_commit(alloc_addr, size) != CELL_OK) {
++    if (win_prepare(alloc_addr, size, dirty) != CELL_OK) {
++        bump_lock();
++        win_remove(alloc_addr);
++        if (c) c->used_size -= size; else s_total_allocated -= size;
+         a->active = 0;
++        bump_unlock();
+         return (int64_t)(int32_t)CELL_ENOMEM;
+     }
+ 
+-    fprintf(stderr, "[sys_memory] allocate -> 0x%08X\n", alloc_addr);
++    fprintf(stderr, "[sys_memory] %s(size=0x%X, flags=0x%X%s) -> 0x%08X%s "
++            "(window in use %llu MB, high-water %u MB)\n",
++            who, size, flags, cid ? ", from container" : "", alloc_addr,
++            dirty ? " reused" : "", (unsigned long long)(in_use >> 20),
++            (hw - SYS_MEM_ALLOC_BASE) >> 20);
+ 
+     if (addr_out != 0) {
+         write_be32(addr_out, alloc_addr);
+@@ -163,7 +263,62 @@ int64_t sys_memory_allocate(ppu_context* ctx)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_memory_free
++ * sys_memory_allocate (348)
++ *
++ * r3 = size
++ * r4 = flags (page size)
++ * r5 = pointer to receive allocated address (u32*)
++ * -----------------------------------------------------------------------*/
++int64_t sys_memory_allocate(ppu_context* ctx)
++{
++    uint32_t size      = LV2_ARG_U32(ctx, 0);
++    uint32_t flags     = LV2_ARG_U32(ctx, 1);
++    uint32_t addr_out  = LV2_ARG_PTR(ctx, 2);
++
++    /* PS3_ALLOC_BT=1: the guest's saved-LR chain (frame+16 of each back-chain link),
++     * same walk as the RPCS3 oracle's "[oracle] sys_memory_allocate backchain". */
++    if (getenv("PS3_ALLOC_BT")) {
++        extern uint64_t vm_read64(uint64_t a);
++        char buf[512]; int p = snprintf(buf, sizeof buf, "lr=0x%x", (uint32_t)ctx->lr);
++        uint32_t sp = (uint32_t)ctx->gpr[1];
++        for (int i = 0; i < 16 && sp && sp < 0xF0000000u && p < (int)sizeof buf - 12; i++) {
++            uint32_t next = (uint32_t)vm_read64(sp);
++            if (!next || next < 0x10000u) break;
++            p += snprintf(buf + p, sizeof buf - p, " 0x%x", (uint32_t)vm_read64(next + 16));
++            sp = next;
++        }
++        fprintf(stderr, "[sys_memory] allocate backchain: %s\n", buf);
++    }
++
++    return mem_allocate(size, flags, 0, addr_out, "allocate");
++}
++
++/* ---------------------------------------------------------------------------
++ * sys_memory_allocate_from_container (350)
++ *
++ * r3 = size
++ * r4 = container id
++ * r5 = flags (page size)
++ * r6 = pointer to receive allocated address (u32*)
++ *
++ * Tekken 5 DR's save callbacks take a 1 MB work buffer from the container its
++ * save thread created (sc 350 at 0x1FA8E4 / 0x1FA988). The default stub
++ * answered CELL_OK without writing the address.
++ * -----------------------------------------------------------------------*/
++int64_t sys_memory_allocate_from_container(ppu_context* ctx)
++{
++    uint32_t size     = LV2_ARG_U32(ctx, 0);
++    uint32_t cid      = LV2_ARG_U32(ctx, 1);
++    uint32_t flags    = LV2_ARG_U32(ctx, 2);
++    uint32_t addr_out = LV2_ARG_PTR(ctx, 3);
++
++    if (!cid || cid == 0xFFFFFFFFu)
++        return (int64_t)(int32_t)CELL_ESRCH;
++    return mem_allocate(size, flags, cid, addr_out, "allocate_from_container");
++}
++
++/* ---------------------------------------------------------------------------
++ * sys_memory_free (349)
+  *
+  * r3 = address
+  * -----------------------------------------------------------------------*/
+@@ -171,13 +326,23 @@ int64_t sys_memory_free(ppu_context* ctx)
+ {
+     uint32_t addr = LV2_ARG_U32(ctx, 0);
+ 
++    bump_lock();
+     for (int i = 0; i < SYS_MEMORY_ALLOC_MAX; i++) {
+-        if (g_sys_mem_allocs[i].active && g_sys_mem_allocs[i].addr == addr) {
+-            s_total_allocated -= g_sys_mem_allocs[i].size;
+-            g_sys_mem_allocs[i].active = 0;
+-            return CELL_OK;
+-        }
++        sys_mem_alloc_info* a = &g_sys_mem_allocs[i];
++        if (!a->active || a->addr != addr) continue;
++        win_remove(addr);
++        sys_mem_container_info* c = a->container_id ? container_get((uint32_t)a->container_id) : NULL;
++        if (c) c->used_size -= a->size;
++        else   s_total_allocated -= a->size;
++        uint32_t size = a->size;
++        a->active = 0;
++        uint64_t in_use = s_used_bytes;
++        bump_unlock();
++        fprintf(stderr, "[sys_memory] free(0x%08X) size=0x%X (window in use %llu MB)\n",
++                addr, size, (unsigned long long)(in_use >> 20));
++        return CELL_OK;
+     }
++    bump_unlock();
+ 
+     return (int64_t)(int32_t)CELL_EINVAL;
+ }
+@@ -194,7 +359,8 @@ int64_t sys_memory_get_user_memory_size(ppu_context* ctx)
+     fprintf(stderr, "[sys_memory] get_user_memory_size()\n");
+     if (out_addr != 0) {
+         uint32_t total = SYS_MEM_USER_TOTAL;
+-        uint32_t avail = total - s_total_allocated;
++        uint64_t taken = (uint64_t)s_total_allocated + s_container_reserved;
++        uint32_t avail = taken < total ? total - (uint32_t)taken : 0;
+         write_be32(out_addr + 0, total);
+         write_be32(out_addr + 4, avail);
+     }
+@@ -246,90 +412,131 @@ int64_t sys_memory_get_page_attribute(ppu_context* ctx)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_memory_container_create
++ * sys_memory_container_create (341; 324 is the debug-kernel number)
+  *
+  * r3 = pointer to receive container ID (u32*)
+  * r4 = size
++ *
++ * 341/342 were registered as "sys_mmapper_allocate_memory" /
++ * "..._from_container" (an ABI guessed from GT5P's caller), which handed out
++ * 3-5 MB of fresh window space as the "container id" and never took it back.
++ * In lv2's table (RPCS3 lv2.cpp) 341/342/343 are sys_memory_container_create /
++ * _destroy / _get_size, and Tekken 5 DR uses them exactly that way: its save,
++ * HDD-check and delete threads each do 341(&cid, 5 MB) -> cellSaveData*(...,
++ * cid) / cellHddGameCheck(..., cid) -> 342(cid), and the save callbacks take
++ * their work buffer from it with 350. A container is a budget, not an address
++ * range: memory comes from the window only when allocated from it.
+  * -----------------------------------------------------------------------*/
+ int64_t sys_memory_container_create(ppu_context* ctx)
+ {
+     uint32_t id_out_addr = LV2_ARG_PTR(ctx, 0);
+     uint32_t size        = LV2_ARG_U32(ctx, 1);
+ 
++    /* lv2 rounds the size down to 1 MB granularity */
++    size &= ~0xFFFFFu;
++    if (!size)
++        return (int64_t)(int32_t)CELL_ENOMEM;
++    if (!id_out_addr)
++        return (int64_t)(int32_t)CELL_EFAULT;
++
++    bump_lock();
+     int slot = -1;
+     for (int i = 0; i < SYS_MEMORY_CONTAINER_MAX; i++) {
+         if (!g_sys_mem_containers[i].active) { slot = i; break; }
+     }
+-    if (slot < 0)
++    if (slot < 0) {
++        bump_unlock();
+         return (int64_t)(int32_t)CELL_EAGAIN;
++    }
+ 
+     sys_mem_container_info* c = &g_sys_mem_containers[slot];
+     c->active     = 1;
+     c->total_size = size;
+     c->used_size  = 0;
++    s_container_reserved += size;
++    bump_unlock();
+ 
+-    uint32_t container_id = (uint32_t)(slot + 1);
+-    if (id_out_addr != 0) {
+-        write_be32(id_out_addr, container_id);
+-    }
++    uint32_t container_id = SYS_MEM_CONTAINER_ID_BASE + (uint32_t)slot + 1u;
++    write_be32(id_out_addr, container_id);
++    fprintf(stderr, "[sys_memory] container_create(size=0x%X) -> 0x%08X\n", size, container_id);
+ 
+     return CELL_OK;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_memory_container_destroy
++ * sys_memory_container_destroy (342; 325 debug)
+  *
+  * r3 = container_id
++ *
++ * As on lv2, a container that still has memory allocated from it is busy.
+  * -----------------------------------------------------------------------*/
+ int64_t sys_memory_container_destroy(ppu_context* ctx)
+ {
+     uint32_t container_id = LV2_ARG_U32(ctx, 0);
+ 
+-    if (container_id == 0 || container_id > SYS_MEMORY_CONTAINER_MAX)
+-        return (int64_t)(int32_t)CELL_ESRCH;
+-
+-    sys_mem_container_info* c = &g_sys_mem_containers[container_id - 1];
+-    if (!c->active)
++    bump_lock();
++    sys_mem_container_info* c = container_get(container_id);
++    if (!c) {
++        bump_unlock();
+         return (int64_t)(int32_t)CELL_ESRCH;
+-
++    }
++    if (c->used_size) {
++        uint32_t used = c->used_size;
++        bump_unlock();
++        fprintf(stderr, "[sys_memory] container_destroy(0x%08X): still %u KB allocated -> EBUSY\n",
++                container_id, used >> 10);
++        return (int64_t)(int32_t)CELL_EBUSY;
++    }
++    s_container_reserved -= c->total_size;
+     c->active = 0;
++    bump_unlock();
++    fprintf(stderr, "[sys_memory] container_destroy(0x%08X)\n", container_id);
+     return CELL_OK;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_memory_container_get_size
++ * sys_memory_container_get_size (343)
+  *
+- * r3 = container_id
+- * r4 = pointer to output struct: { u32 total, u32 used }
++ * r3 = pointer to sys_memory_info_t { u32 total_user_memory; u32 available_user_memory; }
++ * r4 = container_id
++ *
++ * (Argument order per RPCS3's sys_memory_container_get_size(mem_info, cid);
++ * this used to read them the other way round.)
+  * -----------------------------------------------------------------------*/
+ int64_t sys_memory_container_get_size(ppu_context* ctx)
+ {
+-    uint32_t container_id = LV2_ARG_U32(ctx, 0);
+-    uint32_t out_addr     = LV2_ARG_PTR(ctx, 1);
+-
+-    if (container_id == 0 || container_id > SYS_MEMORY_CONTAINER_MAX)
+-        return (int64_t)(int32_t)CELL_ESRCH;
++    uint32_t out_addr     = LV2_ARG_PTR(ctx, 0);
++    uint32_t container_id = LV2_ARG_U32(ctx, 1);
+ 
+-    sys_mem_container_info* c = &g_sys_mem_containers[container_id - 1];
+-    if (!c->active)
++    bump_lock();
++    sys_mem_container_info* c = container_get(container_id);
++    uint32_t total = c ? c->total_size : 0, used = c ? c->used_size : 0;
++    bump_unlock();
++    if (!c)
+         return (int64_t)(int32_t)CELL_ESRCH;
+ 
+     if (out_addr != 0) {
+-        write_be32(out_addr + 0, c->total_size);
+-        write_be32(out_addr + 4, c->used_size);
++        write_be32(out_addr + 0, total);
++        write_be32(out_addr + 4, total - used);
+     }
+ 
+     return CELL_OK;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_mmapper_allocate_address
++ * sys_mmapper_allocate_address (330)
+  *
+  * r3 = size
+  * r4 = flags
+  * r5 = alignment
+  * r6 = pointer to receive address (u32*)
++ *
++ * Reserves (and, the VM being flat, commits) a range of the shared window;
++ * sys_mmapper_free_address gives it back.
+  * -----------------------------------------------------------------------*/
++#define MMAPPER_ADDR_MAX 16
++static win_range s_mmapper_addr[MMAPPER_ADDR_MAX];
++
+ int64_t sys_mmapper_allocate_address(ppu_context* ctx)
+ {
+     uint32_t size      = LV2_ARG_U32(ctx, 0);
+@@ -337,28 +544,26 @@ int64_t sys_mmapper_allocate_address(ppu_context* ctx)
+     uint32_t alignment = LV2_ARG_U32(ctx, 2);
+     uint32_t addr_out  = LV2_ARG_PTR(ctx, 3);
+ 
+-    if (alignment == 0) alignment = 0x10000;
++    if (alignment < 0x10000 || (alignment & (alignment - 1))) alignment = 0x10000;
+     size = VM_ALIGN_UP(size, alignment);
++    if (!size)
++        return (int64_t)(int32_t)CELL_EINVAL;
+ 
+     bump_lock();
+-
+-    if (g_sys_mem_bump_ptr == 0)
+-        g_sys_mem_bump_ptr = SYS_MEM_ALLOC_BASE;
+-
+-    g_sys_mem_bump_ptr = VM_ALIGN_UP(g_sys_mem_bump_ptr, alignment);
+-
+-    if (g_sys_mem_bump_ptr + size > SYS_MEM_ALLOC_END) {
++    int slot = -1;
++    for (int i = 0; i < MMAPPER_ADDR_MAX; i++)
++        if (!s_mmapper_addr[i].size) { slot = i; break; }
++    uint32_t dirty = 0;
++    uint32_t alloc_addr = slot < 0 ? 0 : win_alloc(size, alignment, &dirty);
++    if (!alloc_addr) {
+         bump_unlock();
+         return (int64_t)(int32_t)CELL_ENOMEM;
+     }
+-
+-    uint32_t alloc_addr = g_sys_mem_bump_ptr;
+-    g_sys_mem_bump_ptr += size;
+-
++    s_mmapper_addr[slot].addr = alloc_addr;
++    s_mmapper_addr[slot].size = size;
+     bump_unlock();
+ 
+-    /* Commit the reserved region */
+-    vm_commit(alloc_addr, size);
++    win_prepare(alloc_addr, size, dirty);
+ 
+     if (addr_out != 0) {
+         write_be32(addr_out, alloc_addr);
+@@ -368,16 +573,24 @@ int64_t sys_mmapper_allocate_address(ppu_context* ctx)
+ }
+ 
+ /* ---------------------------------------------------------------------------
+- * sys_mmapper_free_address
++ * sys_mmapper_free_address (331)
+  *
+  * r3 = address
+  * -----------------------------------------------------------------------*/
+ int64_t sys_mmapper_free_address(ppu_context* ctx)
+ {
+-    /* uint32_t addr = LV2_ARG_U32(ctx, 0); */
+-    (void)ctx;
+-    /* In our bump allocator we don't actually free, just acknowledge */
+-    return CELL_OK;
++    uint32_t addr = LV2_ARG_U32(ctx, 0);
++
++    bump_lock();
++    for (int i = 0; i < MMAPPER_ADDR_MAX; i++) {
++        if (!s_mmapper_addr[i].size || s_mmapper_addr[i].addr != addr) continue;
++        win_remove(addr);
++        s_mmapper_addr[i].addr = s_mmapper_addr[i].size = 0;
++        bump_unlock();
++        return CELL_OK;
++    }
++    bump_unlock();
++    return (int64_t)(int32_t)CELL_EINVAL;
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -416,75 +629,6 @@ int64_t sys_mmapper_allocate_shared_memory(ppu_context* ctx)
+     return CELL_OK;
+ }
+ 
+-/* ---------------------------------------------------------------------------
+- * sys_mmapper_allocate_memory (lv2 341)
+- *
+- * r3 = pointer to receive the allocated address (u32*)
+- * r4 = size
+- *
+- * The ABI here was read off the caller rather than a header. GT5P's PDI device
+- * worker calls this the moment it starts -- func_00941808 loads r3 with a
+- * pointer and r4 with 0x300000, issues the syscall, retries on any non-zero
+- * result, and on success immediately does `lwz r29, 0(r29)`, reading back
+- * through the pointer it passed in r3.
+- *
+- * Answering CELL_OK without writing anything is the worst of both worlds: the
+- * worker believes it has three megabytes, reads a null buffer back, and exits
+- * on the spot -- which leaves the packed-filesystem device with no worker at
+- * all and stalls asset loading. Answering an error is worse still, because the
+- * caller retries forever.
+- *
+- * The flat VM has no distinction between reserving and mapping, so this hands
+- * back committed guest memory directly and sys_mmapper_allocate_memory_from_
+- * container below accepts it as already mapped.
+- * -----------------------------------------------------------------------*/
+-int64_t sys_mmapper_allocate_memory(ppu_context* ctx)
+-{
+-    uint32_t addr_out = LV2_ARG_PTR(ctx, 0);
+-    uint32_t size     = LV2_ARG_U32(ctx, 1);
+-
+-    if (size == 0)
+-        return (int64_t)(int32_t)CELL_EINVAL;
+-
+-    size = VM_ALIGN_UP(size, VM_PAGE_SIZE);
+-
+-    bump_lock();
+-    if (g_sys_mem_bump_ptr == 0)
+-        g_sys_mem_bump_ptr = SYS_MEM_ALLOC_BASE;
+-    g_sys_mem_bump_ptr = VM_ALIGN_UP(g_sys_mem_bump_ptr, VM_PAGE_SIZE);
+-    if (g_sys_mem_bump_ptr + size > SYS_MEM_ALLOC_END) {
+-        bump_unlock();
+-        return (int64_t)(int32_t)CELL_ENOMEM;
+-    }
+-    uint32_t addr = g_sys_mem_bump_ptr;
+-    g_sys_mem_bump_ptr += size;
+-    bump_unlock();
+-
+-    vm_commit(addr, size);
+-
+-    if (addr_out != 0)
+-        write_be32(addr_out, addr);
+-
+-    { static int n = 0; if (__atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 4)
+-        fprintf(stderr, "[sys_memory] mmapper_allocate_memory size=0x%X -> 0x%08X\n",
+-                size, addr); }
+-
+-    return CELL_OK;
+-}
+-
+-/* ---------------------------------------------------------------------------
+- * sys_mmapper_allocate_memory_from_container (lv2 342)
+- *
+- * The same allocation charged to a container. GT5P calls it straight after 341
+- * with the address 341 handed back, so with a flat VM there is nothing further
+- * to do -- the memory is already committed and addressable.
+- * -----------------------------------------------------------------------*/
+-int64_t sys_mmapper_allocate_memory_from_container(ppu_context* ctx)
+-{
+-    (void)ctx;
+-    return CELL_OK;
+-}
+-
+ /* ---------------------------------------------------------------------------
+  * sys_mmapper_map_shared_memory
+  *
+@@ -524,20 +668,25 @@ void sys_memory_init(lv2_syscall_table* tbl)
+     memset(g_sys_mem_allocs,     0, sizeof(g_sys_mem_allocs));
+     memset(g_sys_mem_containers, 0, sizeof(g_sys_mem_containers));
+     memset(g_sys_mmapper_shared, 0, sizeof(g_sys_mmapper_shared));
+-    g_sys_mem_bump_ptr = 0;
+-    s_total_allocated  = 0;
++    memset(s_mmapper_addr,       0, sizeof(s_mmapper_addr));
++    g_sys_mem_bump_ptr   = 0;
++    s_total_allocated    = 0;
++    s_container_reserved = 0;
++    s_used_n             = 0;
++    s_used_bytes         = 0;
+ 
+     lv2_syscall_register(tbl, SYS_MEMORY_ALLOCATE,             sys_memory_allocate);
+     lv2_syscall_register(tbl, SYS_MEMORY_FREE,                 sys_memory_free);
++    lv2_syscall_register(tbl, SYS_MEMORY_ALLOCATE_FROM_CONTAINER, sys_memory_allocate_from_container);
+     lv2_syscall_register(tbl, SYS_MEMORY_GET_USER_MEMORY_SIZE, sys_memory_get_user_memory_size);
+     lv2_syscall_register(tbl, SYS_MEMORY_GET_PAGE_ATTRIBUTE,   sys_memory_get_page_attribute);
+     lv2_syscall_register(tbl, SYS_MEMORY_CONTAINER_CREATE,     sys_memory_container_create);
+     lv2_syscall_register(tbl, SYS_MEMORY_CONTAINER_DESTROY,    sys_memory_container_destroy);
++    lv2_syscall_register(tbl, SYS_MEMORY_CONTAINER_CREATE2,    sys_memory_container_create);
++    lv2_syscall_register(tbl, SYS_MEMORY_CONTAINER_DESTROY2,   sys_memory_container_destroy);
+     lv2_syscall_register(tbl, SYS_MEMORY_CONTAINER_GET_SIZE,   sys_memory_container_get_size);
+     lv2_syscall_register(tbl, SYS_MMAPPER_ALLOCATE_ADDRESS,    sys_mmapper_allocate_address);
+     lv2_syscall_register(tbl, SYS_MMAPPER_FREE_ADDRESS,        sys_mmapper_free_address);
+     lv2_syscall_register(tbl, SYS_MMAPPER_ALLOCATE_SHARED_MEMORY, sys_mmapper_allocate_shared_memory);
+     lv2_syscall_register(tbl, SYS_MMAPPER_MAP_SHARED_MEMORY,  sys_mmapper_map_shared_memory);
+-    lv2_syscall_register(tbl, 341, sys_mmapper_allocate_memory);
+-    lv2_syscall_register(tbl, 342, sys_mmapper_allocate_memory_from_container);
+ }
+diff --git a/runtime/syscalls/sys_memory.h b/runtime/syscalls/sys_memory.h
+index 7ae67ac..1845295 100644
+--- a/runtime/syscalls/sys_memory.h
++++ b/runtime/syscalls/sys_memory.h
+@@ -31,7 +31,7 @@ typedef struct sys_mem_alloc_info {
+     int      active;
+     uint32_t addr;
+     uint32_t size;
+-    int32_t  container_id;  /* 0 = main pool */
++    int32_t  container_id;  /* 0 = default container, else the id it was allocated from */
+     uint32_t page_size;     /* 0x100000 (1M) or 0x10000 (64K) from the alloc flags */
+ } sys_mem_alloc_info;
+ 
+@@ -53,11 +53,12 @@ typedef struct sys_mmapper_shared_info {
+ extern sys_mem_alloc_info       g_sys_mem_allocs[SYS_MEMORY_ALLOC_MAX];
+ extern sys_mem_container_info   g_sys_mem_containers[SYS_MEMORY_CONTAINER_MAX];
+ extern sys_mmapper_shared_info  g_sys_mmapper_shared[SYS_MMAPPER_SHARED_MAX];
+-extern uint32_t                 g_sys_mem_bump_ptr;  /* bump allocator pointer */
++extern uint32_t                 g_sys_mem_bump_ptr;  /* high-water mark of the window */
+ 
+ /* Syscall handlers */
+ int64_t sys_memory_allocate(ppu_context* ctx);
+ int64_t sys_memory_free(ppu_context* ctx);
++int64_t sys_memory_allocate_from_container(ppu_context* ctx);
+ int64_t sys_memory_get_user_memory_size(ppu_context* ctx);
+ int64_t sys_memory_get_page_attribute(ppu_context* ctx);
+ int64_t sys_memory_container_create(ppu_context* ctx);
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index 877b632..49fc67d 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -298,6 +298,63 @@ int64_t sys_time_get_timezone(ppu_context* ctx)
+     return CELL_OK;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Wall clock: nanoseconds since 1970-01-01 00:00:00 UTC.
++ *
++ * sys_time_get_current_time used to return QueryPerformanceCounter / its
++ * frequency -- time since the HOST booted -- so a title saw 1970-01-02 and
++ * Tekken 5 DR named its save folders NPUB30009-CN19700102... (a new name per
++ * session). lv2 returns UTC seconds since the Unix epoch here; cellRtc adds
++ * the 0001-01-01 offset itself (PS3_UNIX_EPOCH_DIFF in cellRtc.c), and the
++ * timezone stays UTC (sys_time_get_timezone / the TIMEZONE system param).
++ *
++ * PS3_FIXED_TIME=<unix seconds> pins the clock for deterministic netplay and
++ * replays: every read returns exactly that instant. PS3_FIXED_TIME=<secs>+
++ * starts the clock there instead and lets it run (seeded, not frozen).
++ * Anything that feeds the clock into game state (save names, RNG seeds)
++ * differs between peers unless both use the same value, so netplay should
++ * hand both sides the same PS3_FIXED_TIME.
++ * -----------------------------------------------------------------------*/
++static uint64_t host_unix_nsec(void)
++{
++#ifdef _WIN32
++    FILETIME ft;
++    GetSystemTimePreciseAsFileTime(&ft);
++    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
++    return (t - 116444736000000000ULL) * 100ULL;   /* 100 ns since 1601 -> ns since 1970 */
++#else
++    struct timespec ts;
++    clock_gettime(CLOCK_REALTIME, &ts);
++    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
++#endif
++}
++
++uint64_t ps3_wallclock_unix_nsec(void)
++{
++    /* 0 = real clock, 1 = frozen, 2 = seeded and running */
++    static int mode = -1;
++    static uint64_t base_ns, anchor_tb;
++    if (mode < 0) {
++        const char* e = getenv("PS3_FIXED_TIME");
++        char* end = NULL;
++        unsigned long long secs = e ? strtoull(e, &end, 10) : 0;
++        if (e && end != e) {
++            base_ns = (uint64_t)secs * 1000000000ULL;
++            anchor_tb = ppu_timebase_now();
++            mode = (*end == '+') ? 2 : 1;
++            fprintf(stderr, "[sys_time] PS3_FIXED_TIME=%llu: clock %s at that instant\n",
++                    secs, mode == 2 ? "starts" : "frozen");
++        } else {
++            mode = 0;
++        }
++    }
++    if (mode == 0) return host_unix_nsec();
++    if (mode == 1) return base_ns;
++    uint64_t d = ppu_timebase_now() - anchor_tb;
++    return base_ns + (d / PS3_TIMEBASE_FREQ) * 1000000000ULL +
++           (d % PS3_TIMEBASE_FREQ) * 1000000000ULL / PS3_TIMEBASE_FREQ;
++}
++
+ /* ---------------------------------------------------------------------------
+  * sys_time_get_current_time
+  *
+@@ -309,23 +366,9 @@ int64_t sys_time_get_current_time(ppu_context* ctx)
+     uint32_t sec_addr  = LV2_ARG_PTR(ctx, 0);
+     uint32_t nsec_addr = LV2_ARG_PTR(ctx, 1);
+ 
+-    uint64_t sec, nsec;
+-
+-#ifdef _WIN32
+-    ensure_qpc_init();
+-    LARGE_INTEGER now;
+-    QueryPerformanceCounter(&now);
+-
+-    /* Convert QPC to seconds + nanoseconds */
+-    sec  = (uint64_t)(now.QuadPart / s_qpc_freq.QuadPart);
+-    uint64_t remainder = (uint64_t)(now.QuadPart % s_qpc_freq.QuadPart);
+-    nsec = (remainder * 1000000000ULL) / (uint64_t)s_qpc_freq.QuadPart;
+-#else
+-    struct timespec ts;
+-    clock_gettime(CLOCK_REALTIME, &ts);
+-    sec  = (uint64_t)ts.tv_sec;
+-    nsec = (uint64_t)ts.tv_nsec;
+-#endif
++    uint64_t now  = ps3_wallclock_unix_nsec();
++    uint64_t sec  = now / 1000000000ULL;
++    uint64_t nsec = now % 1000000000ULL;
+ 
+     if (sec_addr != 0) {
+         write_be64(sec_addr, sec);
+diff --git a/runtime/syscalls/sys_timer.h b/runtime/syscalls/sys_timer.h
+index 39a0102..86cbdb9 100644
+--- a/runtime/syscalls/sys_timer.h
++++ b/runtime/syscalls/sys_timer.h
+@@ -32,6 +32,10 @@ extern "C" {
+  * to the PS3 timebase. Called from every lifted mftb site (ppu_lifter.py). */
+ uint64_t ppu_timebase_now(void);
+ 
++/* Wall clock in ns since 1970-01-01 UTC (real host time, or PS3_FIXED_TIME).
++ * sys_time_get_current_time and cellRtc read it. */
++uint64_t ps3_wallclock_unix_nsec(void);
++
+ #ifdef _WIN32
+ /* Sub-millisecond timed-wait support for the lv2 sync primitives.
+  * SleepConditionVariableCS / WaitForSingleObject floor a timed wait to 1 ms,

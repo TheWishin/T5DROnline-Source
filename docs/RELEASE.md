@@ -17,7 +17,8 @@ player's PC, with a clang-cl + lld-link that ship in the zip. The player
 installs nothing.** (Option C below, in its "header-free" form.)
 
 - The player's PC compiles only what comes out of their own copy -- the 15
-  lifted PPU chunks, the lifted SPU sound core and two small glue files -- into
+  lifted PPU chunks, the lifted SPU sound core and SPURS jobs, and two small
+  glue files -- into
   `t5dr_game.dll`. That code needs **no** Microsoft C runtime or Windows SDK
   headers or libraries: clang's own headers plus 8 small declaration headers
   of ours are enough, and it links against two import libraries made from our
@@ -28,11 +29,13 @@ installs nothing.** (Option C below, in its "header-free" form.)
   game-independently, and shipped. It uses the static C runtime, so not even
   the Visual C++ redistributable is needed.
 - **Verified end to end** on this PC with a packaged zip
-  (`T5DR-Online-0.2.0-test.zip`) run in an environment whose PATH held only
-  Windows' own folders: BUILD GAME took **85 s** (unpack 14 s, lift 26 s, SPU
-  4 s, compile 40 s), the game booted from `t5dr.exe` + `t5dr_game.dll` and ran
-  at **60 fps**, the same fps profile as the normal build.
-- **Size: 89.8 MB zip, 250 MB unpacked.** Player disk after the build: 0.8 GB
+  (`T5DR-Online-0.1.0-rc1.zip`, main's patches up to 0007 included: skinning
+  jobs, ATRAC music, movies) run in an environment whose PATH held only
+  Windows' own folders: BUILD GAME took **90 s** (unpack 16 s, lift 28 s, SPU
+  5 s, compile 40 s), the game booted from `t5dr.exe` + `t5dr_game.dll` and ran
+  at **60 fps** for the 60 s measured, the lifted SPURS jobs dispatched from
+  the DLL (no "dispatch MISS"), no crash. Same fps profile as the normal build.
+- **Size: 90.0 MB zip, 250 MB unpacked.** Player disk after the build: 0.8 GB
   more (unpacked game 596 MB, build 171 MB).
 
 The alternative that works without any runtime change -- the launcher installs
@@ -51,7 +54,10 @@ first build. It is kept as the fallback for developer builds
 | compile | clang-cl + lld-link (LLVM; the CMake build already links with lld-link, llvm-lib, llvm-mt) | LLVM 23.1, 3.0 GB installed |
 
 Clean compile of a copy of the main build (`Measure-Command`, no other agent
-compiling): **54 s** = configure 3.4 s + build 49 s. CPU time by part:
+compiling; main at c6ca38e, before patches 0002-0007): **54 s** = configure
+3.4 s + build 49 s. (At the current main, with the job lifting, music and
+movies, the same CMake compile step took 76 s while other agents were busy.)
+CPU time by part:
 
 | part | objects | CPU time | game-derived? |
 |---|---|---|---|
@@ -145,8 +151,10 @@ runtime:
     `ucrtbase.dll`, which is part of Windows 10/11). `/verbose`: it reads only
     our objects and these two libraries.
   - `tools/gamedll/t5dr_game_dll.c` supplies what a CRT would: the TLS
-    directory, `_fltused`, a loop over the `.CRT$XCU` constructors (the SPU
-    image registration) and the thread-local `g_trampoline_fn`, which now
+    directory, `_fltused`, `__chkstk` (the stack probe; the lifted skinning
+    jobs have frames over a page), a loop over the `.CRT$XCU` constructors
+    (the SPU image and job registration) and the thread-local
+    `g_trampoline_fn`, which now
     lives in the DLL (the runtime reaches it through `ppu_game_tramp_slot()`).
   - Runtime side: `patches/ps3recomp/0020-game-dll.patch` (opt-in, compiled
     only with `PS3_GAME_DLL`): `ppu_game_dll.h`, `ppu_game_dll_load()` in
@@ -155,8 +163,8 @@ runtime:
     `ppu_recomp.h` from `ppu_lifter.HEADER_PREAMBLE` (the lifter's fixed
     header part), so **the host build needs no game file at all**.
 
-  Measured: host build 24 s (our side, 1.8 MB exe with static CRT, imports
-  only Windows DLLs); game DLL 38 MB, compile 39.3 s + link 0.2 s on the
+  Measured: host build 24 s (our side, 1.9 MB exe with static CRT, imports
+  only Windows DLLs); game DLL 39 MB, compile 40 s + link 0.2 s on the
   player's side; boots with all 23,059 lifted functions, 60 fps; same log
   (unresolved NIDs, job chains, no crash) as the static build.
 
@@ -168,9 +176,9 @@ runtime:
   path is one extra load through the import slot, and calls into the runtime
   go through import thunks; the fps counter could not show a difference (both
   builds sit at the 60 fps vblank cap), a frame-time comparison with an idle
-  PC is still to do. One of six DLL runs ended by itself after ~48 s with
+  PC is still to do. One of eight DLL runs ended by itself after ~48 s with
   exit code -1 and no `[CRASH]` line while other agents' processes were
-  running; the other five (15-75 s) did not. Not explained yet -- watch for it.
+  running; the other seven (15-75 s) did not. Not explained yet -- watch for it.
 
 ### Python on the player's PC
 
@@ -199,13 +207,13 @@ from the repository:
         --llvm "C:\Program Files\LLVM" --prebuilt-host --zip ^
         --keys keys\ps3.keys --game-dir build\recomp --game-dir build\spu --game-dir game
 
-| | v0.1 layout (no `--llvm --prebuilt-host`) | v0.2 layout (recommended) |
+| | without `--llvm --prebuilt-host` | with them (recommended) |
 |---|---|---|
 | player installs | VS Build Tools via the launcher (6.4 GB) | nothing |
-| zip / unpacked | 16.3 MB / 46.7 MB | 89.8 MB / 249.5 MB |
-| BUILD GAME on this PC | 120 s (below-normal priority, other agents busy) | 85 s |
+| zip / unpacked | 16.3 MB / 46.7 MB | 90.0 MB / 250.0 MB |
+| BUILD GAME on this PC | 120 s (below-normal priority, other agents busy; before main's 0002-0007) | 90 s |
 
-Contents (v0.2): `T5DR Online.exe` (3.5 KB starter, our C, built with
+Contents (recommended layout): `T5DR Online.exe` (3.5 KB starter, our C, built with
 clang-cl, kernel32/user32 only), `launcher/`, `tools/`, `patches/`,
 `CMakeLists.txt`, `deps/ps3recomp/` (MIT; pinned commit + our patches; only
 `include libs runtime third_party`, top-level `tools/*.py|json`,
@@ -314,9 +322,9 @@ running game -- used for the screenshots in `build/ln/shots`.
 
 ## Next steps
 
-1. Frame-time comparison static vs. DLL build on an idle PC; then switch the
-   default release to v0.2.
-2. Run the v0.2 zip once on a PC that never had Visual Studio, LLVM or
+1. Frame-time comparison static vs. DLL build on an idle PC; then make the
+   recommended layout the default of package_release.py.
+2. Run the zip once on a PC that never had Visual Studio, LLVM or
    Python (a fresh Windows VM).
 3. A license for our own code; code signing for `T5DR Online.exe` would
    avoid the SmartScreen warning.

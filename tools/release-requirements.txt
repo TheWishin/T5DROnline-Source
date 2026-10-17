@@ -1,0 +1,8 @@
+# What the release build installs into its Python before tools/package_release.py
+# --bundle-python copies that Python into the zip (.github/workflows/release.yml).
+#   pip install --require-hashes --only-binary :all: -r tools/release-requirements.txt
+# Hashes from https://pypi.org/project/pycryptodome/4.0.0/#files (the cp39-abi3
+# win_amd64 wheel and the sdist). To update: change the version and both hashes.
+pycryptodome==4.0.0 \
+    --hash=sha256:077819384ceb90461af9c398c1dfdb7da01a6e17b7c98817831404fb5bd93c1f \
+    --hash=sha256:4ad4dd220fa22f99f5832847ccaea5bee39f140b8e4ea1a29aa77dc969c6490c

@@ -1,8 +1,13 @@
 diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
-index 636a578..729248d 100644
+index 636a578..53dc0f5 100644
 --- a/libs/codec/cellAtrac.c
 +++ b/libs/codec/cellAtrac.c
-@@ -90,6 +90,20 @@ typedef struct {
+@@ -86,10 +86,35 @@ typedef struct {
+     u32 ring_fill;             /* bytes in the ring not decoded yet */
+     u32 read_pos;              /* file offset the title reads next */
+     u32 added, readded_bad, decode_errors;   /* diagnostics */
++    int stale;                 /* rollback: the title's pending add was decided before the rollback */
+ } AtracSlot;
  
  static AtracSlot s_slots[ATRAC_MAX_SLOTS];
  
@@ -10,6 +15,16 @@ index 636a578..729248d 100644
 + * by its feeder thread, which a rollback must not rewind, so the rollback
 + * excludes those pages from its snapshots. Lists the live streaming rings
 + * (guest address + size); returns how many. */
++/* The rollback just rewound the title: whatever it is about to add was
++ * decided with a buffer position it got before the rollback (the question
++ * and the answer are on the title's side, rewound; the write pointer here is
++ * not), so the next adds are dropped until it asks again. */
++void cellAtrac_rb_rolled_back(void)
++{
++    ATRAC_LOCK();
++    for (int i = 0; i < ATRAC_MAX_SLOTS; i++) if (s_slots[i].handle_ea && s_slots[i].img) s_slots[i].stale = 1;
++    ATRAC_UNLOCK();
++}
 +int cellAtrac_rb_live_rings(u32* ea, u32* size, int cap)
 +{
 +    int n = 0;
@@ -23,7 +38,7 @@ index 636a578..729248d 100644
  static int atrac_trace(void)
  {
      static int on = -1;
-@@ -257,6 +271,22 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
+@@ -257,6 +282,22 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
          ATRAC_UNLOCK();
          return (s32)CELL_ATRAC_ERROR_READSIZE_OVER_BUFFER;
      }
@@ -46,3 +61,25 @@ index 636a578..729248d 100644
      slot_free(s);
      s->handle_ea = pHandle;
      s->file = file;
+@@ -396,6 +437,7 @@ s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritabl
+     ATRAC_LOCK();
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
++    s->stale = 0;   /* the title asks where to write: from here on its adds are current again */
+     u32 wr = 0, n = 0, rpos = 0;
+     if (s->img) stream_info(s, &wr, &n, &rpos);
+     else rpos = s->t.data_off + s->t.data_bytes;   /* all on memory: nothing to add */
+@@ -415,6 +457,13 @@ s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
+     if (!s->img) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY; }
++    if (s->stale) {   /* decided before a rollback: the title asks again and re-reads from read_pos */
++        static int said = 0;
++        if (said++ < 4) fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes decided before a rollback, dropped
++", pHandle, uiAddByte);
++        ATRAC_UNLOCK();
++        return CELL_OK;
++    }
+     u32 wr, n, rpos;
+     stream_info(s, &wr, &n, &rpos);
+     if (uiAddByte > n) {

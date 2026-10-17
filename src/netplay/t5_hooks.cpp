@@ -206,6 +206,13 @@ uint32_t g_boot_frames = 0;                    /* main loop frames since our hoo
 std::atomic<bool> g_start_requested{ false };
 bool g_passive = false;   /* T5_NET_PASSIVE=1: pad overrides only, keyread untouched (reference runs) */
 int  g_pads = 2;          /* T5_NET_PADS: pads reported connected (2 for netplay) */
+/* Persistent game (T5_CTL_DIR, docs/DIRECTFIGHT.md "Persistent game"): the
+ * hooks are in from boot without a session; sessions come and go with the
+ * control channel (t5_netplay_session_begin/end at the end of this file). */
+bool g_persistent = false;
+bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
+std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
+void persistent_lost(const char* reason);
 
 /* Loader threads drained at the top of every frame (T5_NET_DRAIN, semaphore
  * ids). The ids are the game's own creation order, the same every run:
@@ -261,7 +268,15 @@ const char* kDefaultHashSkip =
      * while position, pose, health and timer stay identical (handles, effect
      * and sound counters): +0x1B4, +0x1E0, +0x314, +0x870/+0x874 from P1. */
     "100901B4:4,100901E0:4,10090314:4,10090870:8,"
-    "10090A84:4,10090AB0:4,10090BE4:4,10091140:8";
+    "10090A84:4,10090AB0:4,10090BE4:4,10091140:8,"
+    /* Two 0x128-byte float blocks (0x1F0 apart) and a counter at +0x638 of the
+     * second and third 0x8D0 block: camera-relative copies. The camera floats
+     * around 0x10053780 (not hashed) already differ between two PCs; about 20 s
+     * into a match (lockstep frame 1229 in different fights) 0x10053590 and
+     * these blocks get values from them for exactly 100 frames, then all is
+     * equal again, the fight and the final hash unchanged. Seen on main and on
+     * fight-polish (build/dp runs rm2, ps3, abl_main4; docs/DIRECTFIGHT.md). */
+    "10099770:128,10099960:128,10090708:4,10090FD8:4";
 
 /* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,
  * when the peer reports a different hash for one of them, write them to
@@ -611,7 +626,8 @@ void write_result(const char* winner, unsigned w1, unsigned w2, const char* reas
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fputs(buf, fp);
         fclose(fp);
-        MoveFileExA(tmp.c_str(), g_result_file.c_str(), MOVEFILE_REPLACE_EXISTING);
+        /* the launcher may have the old file open this very moment (Windows refuses the replace then) */
+        for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), g_result_file.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
     }
 }
 
@@ -715,6 +731,7 @@ void check_session()
     const char* r = np::failure();
     if (!r) r = np::lost_reason();
     if (!r) return;
+    if (g_persistent) { persistent_lost(r); return; }   /* the game stays open for the next opponent */
     if (!g_on_lost_idle) { end_session(r); return; }
     if (!g_lost_written) {
         g_lost_written = true;
@@ -797,6 +814,21 @@ void on_frame_start(ppu_context* ctx)
         if (n++ < 5) np::note("frame semaphore waited by tid %llu (main is %llu) -- ignored",
                               (unsigned long long)ctx->thread_id, (unsigned long long)g_main_tid);
         return;
+    }
+    if (g_idle) {
+        /* Between two sessions of a persistent game: the keyread thread stays
+         * parked, the main thread keeps running its tick with neutral pads (or
+         * the direct-fight driver's presses). t5_netplay_start() begins the next
+         * session's lockstep here like a fresh external start, at frame 0. */
+        if (!g_start_requested.exchange(false) || !np::enabled()) {
+            g_cur[0] = g_cur[1] = np::kNeutral;
+            keyread_tick();
+            return;
+        }
+        g_idle = false;
+        g_frame = 0;
+        fresh_start = true;
+        np::note("lockstep of session %u from here (the keyread thread is still parked)", np::sessions());
     }
     uint32_t f = g_frame;
     if (fresh_start) {
@@ -1058,35 +1090,47 @@ void install_syscall_hooks()
     np::note("semaphore hooks installed");
 }
 
-void h_cellPadInit(ppu_context* ctx)
+/* What a session takes from the environment: at boot, and in a persistent game
+ * again for every new opponent (the control channel's T5_NET_* / T5_FIGHT). */
+void read_session_env()
 {
-    int32_t r = cellPadInit((uint32_t)ctx->gpr[3]);
-    ctx->gpr[3] = (uint64_t)(int64_t)r;
-    np::init();
-    if (!np::enabled()) return;
-    rb::net::offer();   /* rollback in the HELLO when T5_RB_MODE=net */
-    const char* hs = getenv("T5_NET_HASH");
-    g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
-    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
-    InitializeCriticalSection(&g_result_cs);
-    if (const char* m = getenv("T5_NET_MATCH")) g_match_id = m;
-    { const char* f1 = getenv("T5_FIGHT"); const char* f2 = getenv("T5_FIGHT_FILE");
-      g_directfight = (f1 && *f1) || (f2 && *f2); }
-    if (const char* r = getenv("T5_NET_ROUNDS")) {
+    EnterCriticalSection(&g_result_cs);
+    const char* m = t5_env("T5_NET_MATCH");
+    g_match_id = m ? m : "";
+    LeaveCriticalSection(&g_result_cs);
+    { const char* f1 = t5_env("T5_FIGHT"); const char* f2 = t5_env("T5_FIGHT_FILE");
+      g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent; }
+    g_rounds = 0;
+    if (const char* r = t5_env("T5_NET_ROUNDS")) {
         g_rounds = atoi(r);
         if (g_rounds < 1 || g_rounds > 5) g_rounds = 0;
         if (g_rounds && !g_directfight) np::note("rounds to win: %d (T5_NET_ROUNDS, written at every sync point of a VS game)", g_rounds);
     }
-    if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
-    { const char* o = getenv("T5_NET_ON_LOST"); g_on_lost_idle = o && !_stricmp(o, "idle"); }
-    { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }
-    if (!g_on_lost_idle) np::set_stuck_handler(stuck_handler);
-    if (const char* st = getenv("T5_NET_START")) {
+    { const char* r = t5_env("T5_NET_RESULT_FILE"); g_result_file = r ? r : ""; }
+    { const char* o = t5_env("T5_NET_ON_LOST"); g_on_lost_idle = o && !_stricmp(o, "idle"); }
+    g_start_mode = g_persistent ? StartMode::External : StartMode::Boot;
+    if (const char* st = t5_env("T5_NET_START")) {
         if (!_stricmp(st, "external")) g_start_mode = StartMode::External;
         else if (!_strnicmp(st, "frame:", 6)) { g_start_mode = StartMode::Frame; g_start_frame = (uint32_t)atoi(st + 6); }
         np::note("lockstep starts %s", g_start_mode == StartMode::External ? "when the game calls t5_netplay_start()"
                                        : g_start_mode == StartMode::Frame ? "at a fixed main loop frame" : "at boot");
     }
+}
+
+void h_cellPadInit(ppu_context* ctx)
+{
+    int32_t r = cellPadInit((uint32_t)ctx->gpr[3]);
+    ctx->gpr[3] = (uint64_t)(int64_t)r;
+    np::init();
+    if (!np::enabled() && !g_persistent) return;
+    rb::net::offer();   /* rollback in the HELLO when T5_RB_MODE=net */
+    const char* hs = getenv("T5_NET_HASH");
+    g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
+    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
+    InitializeCriticalSection(&g_result_cs);
+    read_session_env();
+    { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }
+    if (!g_on_lost_idle) np::set_stuck_handler(stuck_handler);
     const char* hk = getenv("T5_NET_HASH_SKIP");
     g_hash_skip = parse_ranges(hk ? hk : (hs ? "" : kDefaultHashSkip));
     if (const char* p = getenv("T5_NET_PAGEHASH")) {
@@ -1139,7 +1183,9 @@ struct Register {
     Register()
     {
         const char* m = getenv("T5_NET_MODE");
-        if (!m || !*m) return;   /* netplay off: register nothing, change nothing */
+        const char* ctl = getenv("T5_CTL_DIR");
+        g_persistent = ctl && *ctl;
+        if ((!m || !*m) && !g_persistent) return;   /* netplay off: register nothing, change nothing */
         const char* t = getenv("T5_NET_TRACE");
         g_trace = t && *t == '1';
         const char* pv = getenv("T5_NET_PASSIVE");
@@ -1152,7 +1198,73 @@ struct Register {
     }
 } g_register;
 
+/* ---- persistent game: sessions ----------------------------------------------
+ * The session lost its peer or never connected: the result file says why (unless
+ * this match's result is out), the socket is closed and the game stays open --
+ * the direct-fight driver leaves the fight and waits for the next command. */
+void persistent_lost(const char* reason)
+{
+    write_end_result(reason);
+    np::note("the session cannot go on (%s): it ends, the game stays open for the next match", reason);
+    np::session_end(reason);
+    g_idle = g_active.load();
+    g_start_requested = false;
+    g_inject_on = 0;
+    g_session_lost = reason;
+}
+
 } // namespace
+
+/* Persistent game (T5_CTL_DIR): a new session from the T5_NET_* variables the
+ * control channel just put into the environment (main thread, at a frame
+ * boundary, before t5_netplay_start() of its first fight). Any session still
+ * running ends first. Returns 1 when the environment has netplay. */
+extern "C" int t5_netplay_session_begin(void)
+{
+    if (!g_persistent) return 0;
+    flush_result(true);
+    read_session_env();
+    g_frame = 0;
+    g_scenes = 0;
+    g_result_done = true;          /* the last match's "decided" flag is still up until the new fight clears it */
+    g_match_running = false;
+    g_match_f0 = 0;
+    g_pending.on = false;
+    EnterCriticalSection(&g_result_cs);
+    g_last_result_match = "\x01";
+    LeaveCriticalSection(&g_result_cs);
+    g_lost_written = false;
+    g_start_requested = false;
+    g_inject_on = 0;
+    g_cur[0] = g_cur[1] = np::kNeutral;
+    g_session_lost = nullptr;
+    const bool ok = np::session_begin();
+    g_idle = g_active.load();     /* lockstep of this session begins at t5_netplay_start() */
+    np::note("session %u set up (%s)%s", np::sessions(), ok ? "handshake running" : "no netplay in the environment",
+             g_active.load() ? "; the keyread thread stays parked" : "");
+    return ok ? 1 : 0;
+}
+
+/* Persistent game: end the session ("idle", "quit" or a new opponent). A pending
+ * result goes out first. */
+extern "C" void t5_netplay_session_end(const char* why)
+{
+    if (!g_persistent) return;
+    flush_result(true);
+    np::session_end(why);
+    g_idle = g_active.load();
+    g_start_requested = false;
+    g_inject_on = 0;
+}
+
+/* Persistent game: the reason the session ended by itself (peer lost, no
+ * connection), once; nullptr otherwise. */
+extern "C" const char* t5_netplay_take_session_lost(void)
+{
+    return g_session_lost.exchange(nullptr);
+}
+
+extern "C" int t5_netplay_persistent(void) { return g_persistent ? 1 : 0; }
 
 /* The direct-fight mode calls this on the main thread when its fight starts
  * (both PCs do, for the same match). With T5_NET_START=external it begins
@@ -1166,7 +1278,7 @@ extern "C" void t5_netplay_start(void)
 extern "C" void t5_netplay_inject(int port, int on, unsigned buttons)
 {
     if (port < 0 || port > 1) return;
-    if (g_active.load()) {
+    if (g_active.load() && !g_idle) {
         /* in lockstep: the local slot's presses go out as the local input; the
          * other slot is the peer's business (its own direct-fight driver) */
         if (port == np::local_slot()) np::set_local_inject(on != 0, (uint16_t)buttons);
@@ -1183,7 +1295,7 @@ extern "C" int t5_netplay_enabled(void)
 
 extern "C" int t5_netplay_lockstep_active(void)
 {
-    return g_active.load() ? 1 : 0;
+    return g_active.load() && !g_idle ? 1 : 0;
 }
 
 extern "C" int t5_netplay_local_slot(void)

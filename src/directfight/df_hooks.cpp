@@ -279,6 +279,33 @@ void probe(uint32_t f)
     }
 }
 
+/* T5_DF_FIND=frame:text,...: at that frame, search all committed guest memory
+ * for the text as ASCII and as UTF-16BE and log every address (diagnostics:
+ * where the game keeps a string it shows). */
+struct FindReq { uint32_t frame; std::string text; };
+std::vector<FindReq> g_finds;
+void find_text(uint32_t f)
+{
+    for (const FindReq& q : g_finds) {
+        if (q.frame != f) continue;
+        std::string pats[2] = { q.text, std::string() };
+        for (char c : q.text) { pats[1] += '\0'; pats[1] += c; }
+        int hits = 0;
+        for_committed(0x00010000u, 0xFFFE0000u, [&](uint32_t a, uint32_t n) {
+            for (int k = 0; k < 2; k++) {
+                const std::string& p = pats[k];
+                const uint8_t* b = vm_base + a;
+                for (uint32_t i = 0; i + p.size() <= n && hits < 200; i++) {
+                    if (b[i] != (uint8_t)p[0] || memcmp(b + i, p.data(), p.size())) continue;
+                    hits++;
+                    note("frame %u: '%s' (%s) at 0x%08X", f, q.text.c_str(), k ? "UTF-16BE" : "ASCII", a + i);
+                }
+            }
+        });
+        note("frame %u: '%s': %d hit(s)", f, q.text.c_str(), hits);
+    }
+}
+
 void shot(uint32_t f)
 {
     if (g_shot_gate.empty()) return;
@@ -325,6 +352,7 @@ void on_frame(ppu_context* ctx)
         }
     }
     shot(f);
+    find_text(f);
     for (uint32_t d : g_dump_frames) if (d == f) dump_memory(f, "f");
     QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&fq);
     const double ms = 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
@@ -416,8 +444,13 @@ struct Register {
         const char* s1 = getenv("T5_DF_SCRIPT");
         const char* s2 = getenv("T5_DF_SCRIPT2");
         const char* dm = getenv("T5_DF_DUMP");
-        if (!(fight && *fight) && !(ffile && *ffile) && !(pr && *pr) && !(s1 && *s1) && !(s2 && *s2) && !(dm && *dm)) return;
-        { const char* nm = getenv("T5_NET_MODE"); g_np = nm && *nm; }
+        const char* ctl = getenv("T5_CTL_DIR");
+        if (!(fight && *fight) && !(ffile && *ffile) && !(pr && *pr) && !(s1 && *s1) && !(s2 && *s2) && !(dm && *dm) &&
+            !(ctl && *ctl)) return;
+        /* netplay owns the pads with T5_NET_MODE, and in a persistent game (its
+         * hooks are in from boot for the sessions to come) */
+        { const char* nm = getenv("T5_NET_MODE"); g_np = (nm && *nm) || (ctl && *ctl); }
+        ctl_init();
         fight_init();
         const char* lf = getenv("T5_DF_LOG");
         g_log = fopen(lf && *lf ? lf : "df_frames.log", "w");
@@ -447,6 +480,16 @@ struct Register {
             p = e; while (*p == ',' || *p == ' ') p++;
         }
         if (const char* sv = getenv("T5_DF_STARTVS")) g_startvs = atoi(sv);
+        if (const char* fd = getenv("T5_DF_FIND")) {
+            std::string s = fd, item;
+            for (size_t i = 0; i <= s.size(); i++) {
+                if (i == s.size() || s[i] == ',') {
+                    const size_t c = item.find(':');
+                    if (c != std::string::npos) g_finds.push_back({ (uint32_t)strtoul(item.c_str(), nullptr, 10), item.substr(c + 1) });
+                    item.clear();
+                } else item += s[i];
+            }
+        }
         if (const char* d = getenv("T5_DF_SHOT")) {
             for (const char* p = d; *p;) {
                 char* e; unsigned long v = strtoul(p, &e, 10);

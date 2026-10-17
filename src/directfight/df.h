@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <string>
+#include <utility>
+#include <vector>
 
 extern "C" uint8_t* vm_base;
 
@@ -32,9 +35,22 @@ bool netplay_on();
 uint64_t gcall(uint32_t code, uint64_t a0 = 0, uint64_t a1 = 0, uint64_t a2 = 0);
 
 /* fight driver (df_fight.cpp) */
-bool fight_configured();                 /* T5_FIGHT or T5_FIGHT_FILE given */
+bool fight_configured();                 /* T5_FIGHT, T5_FIGHT_FILE or T5_CTL_DIR given */
 void fight_init();                       /* parse the environment (static init time) */
 void fight_on_frame(uint32_t f);         /* main thread, top of every frame */
+
+/* game control channel of a persistent game (df_ctl.cpp, T5_CTL_DIR) */
+struct CtlCmd {
+    uint32_t seq = 0;
+    std::string cmd, match;
+    bool rematch = false;
+    std::vector<std::pair<std::string, std::string>> env;
+};
+bool ctl_enabled();
+void ctl_init();
+bool ctl_poll(CtlCmd& out, uint32_t f, uint32_t every);   /* a new command (checks cmd.json every `every` frames) */
+void ctl_apply_env(const CtlCmd& c);                      /* the command's env -> the session environment overlay */
+void ctl_state(const char* state, uint32_t f, const std::string& match, const char* error, uint32_t session);
 
 /* pad bits */
 enum : uint16_t {

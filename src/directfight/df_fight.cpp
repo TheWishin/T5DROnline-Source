@@ -50,6 +50,10 @@ extern "C" int  t5_netplay_lockstep_active(void);
 extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_set_match(const char* id);
 extern "C" unsigned t5_netplay_match_seed(void);
+extern "C" int  t5_netplay_session_begin(void);
+extern "C" void t5_netplay_session_end(const char* why);
+extern "C" const char* t5_netplay_take_session_lost(void);
+extern "C" const char* t5_env(const char* key);
 
 namespace df {
 
@@ -105,12 +109,18 @@ int cell_row(int c) { return c >= 24 ? 0 : c >= 12 ? 2 : 1; }         /* 0 top, 
 int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
 
 /* ---- configuration ----------------------------------------------------- */
+/* HUD identity (docs/DIRECTFIGHT.md "Names and ranks in the HUD"): names[p]
+ * empty = the game's own "Unknown", rank[p] < 0 = left as the game has it. */
 struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false;
-               std::string text, match; };
+               std::string text, match; std::string names[2]; int rank[2] = { -1, -1 }; bool hud = false; };
 std::string g_fight_file, g_status_file, g_result_file;
 Fight g_cfg;            /* the fight being set up / fought */
 bool g_configured = false;
 uint16_t g_alt_button = B_CIRCLE;   /* T5_DF_ALT_BUTTON (hex): the confirm button that picks the shared-cell character (Panda) */
+
+/* The session's environment: in a persistent game the control channel's
+ * overlay (the runtime caches getenv() for good), else the process's. */
+const char* sess_env(const char* k) { const char* v = t5_env(k); return (v && *v) ? v : nullptr; }
 
 int parse_char(const std::string& t)
 {
@@ -124,22 +134,62 @@ int parse_char(const std::string& t)
 
 int default_rounds()
 {
-    const char* r = getenv("T5_NET_ROUNDS");
+    const char* r = sess_env("T5_NET_ROUNDS");
     const int n = r ? atoi(r) : 0;
     return (n >= 1 && n <= 5) ? n : 3;
+}
+
+/* "%41b" -> "Ab" (names in a fight line: spaces and separators percent-encoded) */
+std::string pct_decode(const std::string& s)
+{
+    std::string o;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '%' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
+            o += (char)strtoul(s.substr(i + 1, 2).c_str(), nullptr, 16);
+            i += 2;
+        } else o += s[i];
+    }
+    return o;
+}
+
+/* names "A|B" (T5_HUD_NAMES, or a fight line's names=) and ranks "11,3" / "11|3" */
+void parse_hud(Fight& f, const char* names, const char* ranks, bool encoded)
+{
+    if (names) {
+        std::string n = names;
+        const size_t bar = n.find('|');
+        f.names[0] = n.substr(0, bar);
+        f.names[1] = bar == std::string::npos ? std::string() : n.substr(bar + 1);
+        for (auto& x : f.names) { if (encoded) x = pct_decode(x); if (x.size() > 16) x.resize(16); }
+        f.hud = true;
+    }
+    if (ranks) {
+        int r[2] = { -1, -1 };
+        char* e;
+        r[0] = (int)strtol(ranks, &e, 10);
+        if (e != ranks && (*e == ',' || *e == '|')) r[1] = (int)strtol(e + 1, nullptr, 10);
+        for (int p = 0; p < 2; p++) f.rank[p] = (r[p] >= 0 && r[p] <= 36) ? r[p] : -1;
+        f.hud = true;
+    }
 }
 
 bool parse_fight(const char* s, Fight& out)
 {
     Fight f; f.text = s ? s : "";
     f.rounds = default_rounds();
+    /* the HUD identity carries over from the last fight (a rematch: same players) unless the line has its own */
+    for (int p = 0; p < 2; p++) { f.names[p] = out.names[p]; f.rank[p] = out.rank[p]; }
+    f.hud = out.hud;
     std::vector<std::string> tok;
-    std::string cur;
+    std::string cur, names, ranks;
     auto push = [&]() {
         if (cur.empty()) return;
         const size_t eq = cur.find('=');
+        const std::string k = eq == std::string::npos ? std::string() : cur.substr(0, eq);
         if (eq == std::string::npos) tok.push_back(cur);
-        else if (_stricmp(cur.substr(0, eq).c_str(), "match") == 0) f.match = cur.substr(eq + 1);   /* key=value options */
+        else if (_stricmp(k.c_str(), "match") == 0) f.match = cur.substr(eq + 1);   /* key=value options */
+        else if (_stricmp(k.c_str(), "names") == 0) names = cur.substr(eq + 1);
+        else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
         cur.clear();
     };
     for (const char* p = s; p && *p; p++) {
@@ -155,15 +205,65 @@ bool parse_fight(const char* s, Fight& out)
     if (tok.size() > 3) f.rounds = atoi(tok[3].c_str());
     if (f.rounds < 1 || f.rounds > 5) f.rounds = default_rounds();
     if (tok.size() > 5) { f.color[0] = atoi(tok[4].c_str()) == 2 ? 2 : 1; f.color[1] = atoi(tok[5].c_str()) == 2 ? 2 : 1; }
+    parse_hud(f, names.empty() ? nullptr : names.c_str(), ranks.empty() ? nullptr : ranks.c_str(), true);
     f.valid = true;
     out = f;
     return true;
+}
+
+/* ---- HUD identity ------------------------------------------------------------
+ * The fight HUD shows, under each health bar, a name and a rank badge from the
+ * VS "custom data" of that side: blocks of 0x1F4 bytes at the address in the
+ * TOC entry 0x46ECD0 (0x106C9934 on this path), one per player. Read by the
+ * game's own getters 0x2A1740 (name: UTF-16BE at +0x134, 20 characters; blank
+ * -> message 0x104FF "Unknown", 0x105BB4) and 0x2A180C (rank: u8 at +0x11C,
+ * the 37 ranks in the game's order, the badge sprite table at 0x100692F0;
+ * 34-36 all show the Dark Lord badge). Nothing in a fight reads them, and they
+ * are outside the netplay state hash; both PCs write the same values anyway
+ * (the lobby's P1/P2 names and tiers), at the same frame in lockstep. */
+constexpr uint32_t kTocCustomData = 0x0046ECD0;
+constexpr uint32_t kCustomStride  = 0x1F4;
+constexpr uint32_t kCustomRank    = 0x11C;
+constexpr uint32_t kCustomName    = 0x134;
+
+void write_hud(const Fight& f, uint32_t frame)
+{
+    if (!f.hud) return;
+    const uint32_t base = rd32(kTocCustomData);
+    if (base < 0x10000000u || base >= 0x10760000u) { note("HUD identity: custom data pointer 0x%08X unexpected, left alone", base); return; }
+    for (int p = 0; p < 2; p++) {
+        const uint32_t b = base + (uint32_t)p * kCustomStride;
+        if (!f.names[p].empty()) {
+            for (uint32_t i = 0; i < 20; i++) wr16(b + kCustomName + 2 * i, 0);
+            for (size_t i = 0; i < f.names[p].size() && i < 16; i++) {
+                const unsigned char c = (unsigned char)f.names[p][i];
+                wr16(b + kCustomName + 2 * (uint32_t)i, (uint16_t)(c >= 0x20 && c < 0x7F ? c : '?'));
+            }
+        }
+        if (f.rank[p] >= 0) wr8(b + kCustomRank, (uint8_t)f.rank[p]);
+    }
+    note("frame %u: HUD identity: P1 '%s' rank %d, P2 '%s' rank %d", frame, f.names[0].c_str(), f.rank[0],
+         f.names[1].c_str(), f.rank[1]);
 }
 
 /* ---- status / result files ------------------------------------------------ */
 const char* g_state_name = "boot";
 uint32_t g_match = 0;
 int g_last_winner = -2; int g_last_score[2] = { 0, 0 };
+
+/* Persistent game (T5_CTL_DIR): the control channel's state */
+bool g_ctl = false;
+bool g_session = false;          /* a netplay session is set up (persistent game) */
+uint32_t g_sessions = 0;
+std::string g_session_key;       /* T5_NET_MODE|PORT|PEER|KEY|SEED of that session: a "fight" with the same is a rematch in it */
+std::string g_ctl_match;         /* the command's match id of the fight being set up / played */
+std::string g_ctl_error;         /* why the last session ended by itself; cleared by the next command */
+bool g_after_match = false;      /* the session has played a match (state "result" while it waits) */
+bool g_pending_cmd = false;      /* a "fight" waiting to be set up (persistent game) */
+
+/* The match is played over netplay: always with T5_NET_MODE; in a persistent
+ * game only while a session is set up. */
+bool session_netplay() { return netplay_on() && (!g_ctl || g_session); }
 
 void write_text(const std::string& path, const std::string& text)
 {
@@ -172,14 +272,31 @@ void write_text(const std::string& path, const std::string& text)
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fwrite(text.data(), 1, text.size(), fp);
         fclose(fp);
-        MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        /* the launcher may be reading the file this very moment (Windows refuses the replace then) */
+        for (int i = 0; i < 20 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
     }
+}
+
+void ctl_report(uint32_t f)
+{
+    if (!g_ctl) return;
+    const std::string st = g_state_name;
+    const char* c;
+    if (st == "boot") c = "boot";
+    else if (st == "title" || st == "reset" || st == "leave") c = g_pending_cmd ? "connecting" : (g_ctl_error.empty() ? "idle" : "error");
+    else if (st == "select" || st == "stage") c = "connecting";
+    else if (st == "loading") c = "loading";
+    else if (st == "fight") c = "fight";
+    else if (st == "over") c = "result";
+    else c = !g_ctl_error.empty() ? "error" : (g_session && g_after_match) ? "result" : "idle";
+    ctl_state(c, f, g_ctl_match, g_ctl_error.empty() ? nullptr : g_ctl_error.c_str(), g_sessions);
 }
 
 void status(const char* state, uint32_t f)
 {
     g_state_name = state;
     note("frame %u: state %s", f, state);
+    ctl_report(f);
     if (g_status_file.empty()) return;
     char buf[512];
     snprintf(buf, sizeof buf,
@@ -193,7 +310,7 @@ void status(const char* state, uint32_t f)
 
 void write_result(int winner, int w1, int w2)
 {
-    if (g_result_file.empty() || netplay_on()) return;   /* netplay writes it when it owns the match */
+    if (g_result_file.empty() || session_netplay()) return;   /* netplay writes it when it owns the match */
     std::string id = "null";
     if (!g_cfg.match.empty()) {
         id = "\"";
@@ -209,10 +326,10 @@ void write_result(int winner, int w1, int w2)
 
 bool read_fight_file(Fight& out)
 {
-    if (g_fight_file.empty()) return false;
+    if (g_fight_file.empty() || g_ctl) return false;   /* a persistent game takes its fights from the control channel */
     FILE* fp = fopen(g_fight_file.c_str(), "rb");
     if (!fp) return false;
-    char line[256] = {};
+    char line[512] = {};
     fgets(line, sizeof line, fp);
     fclose(fp);
     const std::string done = g_fight_file + ".done";
@@ -223,13 +340,24 @@ bool read_fight_file(Fight& out)
 }
 
 /* ---- the driver ----------------------------------------------------------- */
-enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral };
+/* Reset: back to the title for a fresh select screen (persistent game, before
+ * a new opponent). Leave: out of a fight whose session ended (persistent game). */
+enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave };
 Ph g_ph = Ph::Boot;
 uint32_t g_ph_frame = 0;        /* frame the phase began */
 uint32_t g_title_seen = UINT32_MAX;
 uint32_t g_fight_frame = 0;     /* frame the fight (game mode) started */
 bool g_result_done = false;
 bool g_over_clear = false;      /* kMatchOver was 0 in this fight: the previous match's flag has been reset */
+bool g_held = false;            /* the pads are held neutral until the next select (the match is decided) */
+uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
+bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
+bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
+CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
+bool g_cmd_rematch = false;
+bool g_reset_titles = true;     /* T5_DF_RESET=0: a new opponent starts from the select screen as it is */
+uint32_t g_stage_wait = 30;     /* T5_DF_STAGE_WAIT: frames from both fighters confirmed to the first stage confirm (was 90) */
+constexpr uint32_t kFnModeRequest = 0x0025DA54; /* (mode, param): the mode manager's request */
 
 /* per-player press scheduling: a press is `buttons` held for kHold frames then
  * released for kGap frames before the next one */
@@ -258,7 +386,40 @@ void service_presses(uint32_t f)
 }
 bool press_idle(int p) { return !g_press[p].active; }
 
-void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; status(name, f); }
+/* From the moment a match is decided until the driver's next select, the game
+ * reads both pads as neutral: mashing through the KO and the win pose otherwise
+ * reaches the select screen the game returns to, picks fighters there and
+ * starts the game's own next VS battle ("VS BATTLE 2", the Champion/Challenger
+ * round), and the next fight never starts (dry run; build/dp mash runs). Under
+ * lockstep this is the local slot's exchanged input (each PC holds its own,
+ * from the same game frame on both); offline it is the module's own pad
+ * override. The driver's presses still get through (press()). */
+bool g_hold = true;              /* T5_DF_HOLD=0: pads stay live after the match (the old behaviour, for comparisons) */
+void hold_pads(uint32_t f, const char* why)
+{
+    if (!g_hold) { if (!g_held) g_decided = f; g_held = true; return; }
+    for (int p = 0; p < 2; p++) { g_press[p].active = false; inject(p, true, 0); }
+    if (!g_held) { note("frame %u: pads held neutral (%s)", f, why); g_decided = f; }
+    g_held = true;
+}
+
+/* With the pads held the game would play the whole KO replay and win pose
+ * (~850 frames, mash2). The driver skips them like a player would, from the
+ * same game state on both PCs: one press of g_skip_button every 20 frames from
+ * 40 frames after the decision, until the game asks for the select mode. Each
+ * press is over before the game reacts to it with the mode change, so none
+ * reaches the select screen. T5_DF_SKIP=0: no skipping. */
+bool g_skip = true;
+uint16_t g_skip_button = B_START;     /* T5_DF_SKIP_BUTTON (hex); CROSS does not skip the replay (mash3) */
+void post_match_skip(uint32_t f)
+{
+    if (!g_skip || !g_held || mode_cur() != kModeGame || mode_next() == kModeSelect) return;
+    if (f < g_decided + 40 || (f - g_decided) % 20 != 0 || !press_idle(0) || !press_idle(1)) return;
+    for (int p = 0; p < 2; p++) if (drives(p)) press(p, g_skip_button, f);
+}
+
+void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; g_mode_asked = false; status(name, f); }
+bool select_live() { return mode_cur() == kModeSelect && rd32(kSelectState) >= 3 && rd8(rec(0) + kRecState) == 3; }
 
 /* one navigation step for player p towards cell `target`; returns true when there */
 bool navigate(int p, int target, uint32_t f)
@@ -293,9 +454,9 @@ bool navigate(int p, int target, uint32_t f)
  * fight start (where the handshake is the barrier anyway). */
 void resolve_stage(bool may_block)
 {
-    if (g_cfg.stage >= 0 || !netplay_on()) return;
+    if (g_cfg.stage >= 0 || !session_netplay()) return;
     uint32_t seed = 0;
-    if (const char* v = getenv("T5_NET_SEED")) seed = (uint32_t)strtoul(v, nullptr, 0);
+    if (const char* v = sess_env("T5_NET_SEED")) seed = (uint32_t)strtoul(v, nullptr, 0);
     if (!seed && (may_block || t5_netplay_lockstep_active())) seed = t5_netplay_match_seed();
     if (!seed) return;
     uint32_t x = seed ^ ((g_match + 1) * 0x9E3779B9u);
@@ -308,6 +469,9 @@ void begin_select(uint32_t f)
 {
     g_steps[0] = g_steps[1] = 0;
     g_result_done = false;
+    g_held = false;
+    g_fresh = false;
+    for (int p = 0; p < 2; p++) g_press[p].active = false;
     resolve_stage(false);
     for (int p = 0; p < 2; p++) {
         const int c = cell_of(g_cfg.chr[p]);
@@ -317,6 +481,176 @@ void begin_select(uint32_t f)
     set_phase(Ph::Select, "select", f);
 }
 
+/* ---- persistent game: sessions from the control channel ------------------------ */
+const char* const kSessionVars[] = { "T5_NET_MODE", "T5_NET_PORT", "T5_NET_PEER", "T5_NET_KEY", "T5_NET_SEED" };
+
+std::string session_key()
+{
+    std::string k;
+    for (const char* v : kSessionVars) {
+        const char* x = sess_env(v);
+        k += x ? x : "";
+        k += '|';
+    }
+    return k;
+}
+
+/* The command's fight line and the files of this match (process mode has them
+ * from boot; here every command brings its own). */
+bool take_fight_env(const CtlCmd& c, bool new_opponent)
+{
+    if (const char* r = sess_env("T5_NET_RESULT_FILE")) g_result_file = r;
+    if (const char* st = sess_env("T5_DF_STATUS_FILE")) g_status_file = st;
+    Fight nf = g_cfg;
+    if (new_opponent) { nf.names[0].clear(); nf.names[1].clear(); nf.rank[0] = nf.rank[1] = -1; nf.hud = false; }
+    parse_hud(nf, sess_env("T5_HUD_NAMES"), sess_env("T5_HUD_RANKS"), false);
+    const char* line = sess_env("T5_FIGHT");
+    if (!line || !parse_fight(line, nf)) {
+        note("control command %u: no usable T5_FIGHT ('%s')", c.seq, line ? line : "");
+        return false;
+    }
+    if (!c.match.empty()) nf.match = c.match;
+    else if (const char* m = sess_env("T5_NET_MATCH")) nf.match = m;
+    g_cfg = nf;
+    return true;
+}
+
+/* A new opponent: a new netplay session from the command's env, then the fight
+ * from a fresh select screen. */
+void start_session_fight(uint32_t f)
+{
+    g_pending_cmd = false;
+    ctl_apply_env(g_cmd);
+    g_session = t5_netplay_session_begin() != 0;
+    g_sessions++;
+    g_session_key = session_key();
+    g_after_match = false;
+    g_ctl_error.clear();
+    g_ctl_match = g_cmd.match;
+    if (!take_fight_env(g_cmd, true)) {
+        g_ctl_error = "bad_fight";
+        set_phase(Ph::Neutral, "neutral", f);
+        return;
+    }
+    note("frame %u: session %u: %s, match %s", f, g_sessions, g_session ? "netplay set up, handshake running" : "no netplay (offline fight)",
+         g_cfg.match.c_str());
+    begin_select(f);
+}
+
+/* The next match against the same opponent, in the running session (like a
+ * T5_FIGHT_FILE line in process mode). */
+void start_rematch(uint32_t f)
+{
+    g_pending_cmd = false;
+    ctl_apply_env(g_cmd);
+    g_ctl_error.clear();
+    g_ctl_match = g_cmd.match;
+    if (!take_fight_env(g_cmd, false)) { set_phase(Ph::Neutral, "neutral", f); return; }
+    note("frame %u: rematch in session %u, match %s", f, g_sessions, g_cfg.match.c_str());
+    begin_select(f);
+}
+
+/* A played game must meet a fresh one in step. What a match leaves behind in
+ * the hashed match state (the fight block, unused third/fourth fighter blocks,
+ * effect records) is zero in a game that has never fought, and the next fight
+ * does not overwrite all of it: a persistent game that had played met a just
+ * started one with 1,662 of 1,662 frames mismatching (run dm2; 0x100902F8..,
+ * 0x10090A3C, 0x10090C08, 0x100A3B90.. leftover vs zero), the fight itself the
+ * same. So the areas are copied when the game first reaches the title at boot
+ * and put back when a persistent game returns to the title for a new opponent
+ * (Reset): from there both games run the same title -> start VS -> select ->
+ * fight path from the same bytes. T5_DF_FRESH=0: off; T5_DF_FRESH_RANGES:
+ * "addr:len,..." (hex), default the netplay hash's game areas. */
+struct Area { uint32_t addr, len; std::vector<uint8_t> boot; };
+std::vector<Area> g_fresh_areas;
+bool g_fresh_on = true;
+bool g_fresh_taken = false;
+void fresh_take(uint32_t f)
+{
+    if (!g_ctl || !g_fresh_on || g_fresh_taken) return;
+    g_fresh_taken = true;
+    size_t n = 0;
+    for (Area& a : g_fresh_areas) { a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len); n += a.len; }
+    note("frame %u: boot state of %zu area(s), %zu bytes, kept for later opponents", f, g_fresh_areas.size(), n);
+}
+void fresh_restore(uint32_t f)
+{
+    if (!g_fresh_taken) return;
+    size_t changed = 0;
+    for (const Area& a : g_fresh_areas) {
+        for (uint32_t i = 0; i < a.len; i++) if (vm_base[a.addr + i] != a.boot[i]) changed++;
+        memcpy(vm_base + a.addr, a.boot.data(), a.len);
+    }
+    note("frame %u: the match state areas are back as at boot (%zu bytes differed)", f, changed);
+}
+
+/* Out of whatever runs now, towards a fresh select screen: a fight is left
+ * (mode request 6), a select screen is left for the title (request 1). */
+void go_reset(uint32_t f)
+{
+    hold_pads(f, "the session ended");
+    if (g_ph == Ph::Fight || g_ph == Ph::WaitGame || (g_ph == Ph::Stage && mode_cur() == kModeGame)) {
+        set_phase(Ph::Leave, "leave", f);
+        return;
+    }
+    if (g_ph == Ph::Boot || g_ph == Ph::Title || g_ph == Ph::Reset || g_ph == Ph::Leave) return;   /* on its way already */
+    if (!g_reset_titles && (g_ph == Ph::Neutral || g_ph == Ph::Over)) return;
+    set_phase(Ph::Reset, "reset", f);
+}
+
+void end_session(uint32_t f, const char* why, bool lost)
+{
+    if (!lost) t5_netplay_session_end(why);    /* (a lost session was ended by the netplay hooks) */
+    g_session = false;
+    g_after_match = false;
+    if (lost) g_ctl_error = why;
+    note("frame %u: session %u ended (%s)%s", f, g_sessions, why, lost ? " by itself" : "");
+    go_reset(f);
+    ctl_report(f);
+}
+
+/* Commands and session ends, every frame (cmd.json is looked at every 6 frames
+ * while the game waits, every 30 otherwise). */
+void persistent_frame(uint32_t f)
+{
+    if (const char* lost = t5_netplay_take_session_lost()) end_session(f, lost, true);
+    CtlCmd c;
+    const bool waiting = g_ph == Ph::Neutral || g_ph == Ph::Over || g_ph == Ph::Reset || g_ph == Ph::Title;
+    if (!ctl_poll(c, f, waiting ? 6 : 30)) return;
+    if (c.cmd == "quit") {
+        note("frame %u: quit", f);
+        t5_netplay_session_end("quit");
+        ctl_state("quit", f, g_ctl_match, nullptr, g_sessions);
+        fflush(stdout); fflush(stderr);
+        TerminateProcess(GetCurrentProcess(), 0);
+        return;
+    }
+    if (c.cmd == "idle") {
+        g_pending_cmd = false;
+        g_ctl_error.clear();
+        if (g_session) end_session(f, "idle", false);
+        else { go_reset(f); ctl_report(f); }
+        return;
+    }
+    if (c.cmd != "fight") { note("control command %u: '%s' unknown, ignored", c.seq, c.cmd.c_str()); return; }
+    g_cmd = c;
+    g_pending_cmd = true;
+    g_ctl_error.clear();
+    /* the same session (a rematch) when the launcher says so or the netplay variables are the session's */
+    std::string key;
+    for (const char* v : kSessionVars) {
+        std::string x;
+        for (const auto& kv : c.env) if (!_stricmp(kv.first.c_str(), v)) x = kv.second;
+        key += x + '|';
+    }
+    g_cmd_rematch = g_session && (c.rematch || key == g_session_key) && (g_ph == Ph::Over || g_ph == Ph::Neutral);
+    if (!g_cmd_rematch) {
+        if (g_session) end_session(f, "a new opponent", false);
+        else if (g_ph != Ph::Neutral || !g_fresh) go_reset(f);
+    }
+    ctl_report(f);
+}
+
 void fight_on_frame(uint32_t f)
 {
     if (!g_configured) return;
@@ -324,17 +658,23 @@ void fight_on_frame(uint32_t f)
     const uint32_t mgr = mode_manager();
     if (!mgr) return;
     const uint32_t mode = mode_cur();
+    if (g_ctl) persistent_frame(f);
 
     switch (g_ph) {
     case Ph::Boot:
-        if (mode == kModeTitle) { g_title_seen = f; set_phase(Ph::Title, "title", f); }
+        if (mode == kModeTitle) { g_title_seen = f; fresh_take(f); set_phase(Ph::Title, "title", f); }
         break;
     case Ph::Title:
         /* the title mode needs a few frames of its own init; 30 was verified */
+        if (mode != kModeTitle) { g_title_seen = f; break; }
         if (f >= g_title_seen + 30) {
             note("frame %u: start VS battle (func_0004E9DC(4, 3)) from the title mode", f);
             gcall(kFnStartGame, 4, 3);
-            if (!g_cfg.valid && !read_fight_file(g_cfg)) {
+            g_fresh = true;
+            if (g_ctl) {
+                if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
+                else set_phase(Ph::Neutral, "neutral", f);
+            } else if (!g_cfg.valid && !read_fight_file(g_cfg)) {
                 set_phase(Ph::Neutral, "neutral", f);
             } else {
                 begin_select(f);
@@ -381,7 +721,7 @@ void fight_on_frame(uint32_t f)
          * (both players' records done), and the panel only writes the word. */
         if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
         if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
-        if (f >= g_ph_frame + 90 && press_idle(0) && press_idle(1) && ((f - g_ph_frame) % 30) == 0) {
+        if (f >= g_ph_frame + g_stage_wait && press_idle(0) && press_idle(1) && ((f - g_ph_frame - g_stage_wait) % 30) == 0) {
             for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }
         break;
@@ -389,23 +729,32 @@ void fight_on_frame(uint32_t f)
         /* first frame in the game mode: apply the setup the loader reads, start lockstep */
         resolve_stage(true);
         wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
-        if (netplay_on() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
+        if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
+        write_hud(g_cfg, f);
         for (int p = 0; p < 2; p++) inject(p, false, 0);
         g_match++;
         g_over_clear = false;
+        g_held = false;
         g_fight_frame = f;
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
              g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
-        if (netplay_on()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
+        if (session_netplay()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
         set_phase(Ph::Fight, "fight", f);
         break;
     case Ph::Fight: {
-        if (mode != kModeGame) { note("frame %u: left the game mode (mode %u) without a result", f, mode); set_phase(Ph::Over, "over", f); break; }
+        if (mode != kModeGame) {
+            note("frame %u: left the game mode (mode %u) without a result", f, mode);
+            hold_pads(f, "left the fight");
+            set_phase(Ph::Over, "over", f);
+            break;
+        }
         const uint8_t over0 = rd8(kMatchOver);
         if (!over0) g_over_clear = true;
         const uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        if (over && !g_held) hold_pads(f, "the match is decided");
+        post_match_skip(f);
         uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
         if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 here: use the winner byte */
             const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
@@ -415,6 +764,7 @@ void fight_on_frame(uint32_t f)
             g_result_done = true;
             const int winner = w1 > w2 ? 0 : w2 > w1 ? 1 : -1;
             g_last_winner = winner; g_last_score[0] = w1; g_last_score[1] = w2;
+            g_after_match = true;
             note("frame %u: MATCH OVER match %u after %u frames: P1 %u - P2 %u, winner %s", f, g_match, f - g_fight_frame, w1, w2,
                  winner < 0 ? "none" : winner == 0 ? "P1" : "P2");
             write_result(winner, w1, w2);
@@ -423,7 +773,14 @@ void fight_on_frame(uint32_t f)
         break; }
     case Ph::Over:
         /* the game shows the win pose and returns to character select by itself */
-        if (mode == kModeSelect && rd32(kSelectState) >= 3 && rd8(rec(0) + kRecState) == 3) {
+        post_match_skip(f);
+        if (select_live()) {
+            if (g_ctl) {
+                if (g_pending_cmd && g_cmd_rematch) start_rematch(f);
+                else if (g_pending_cmd) { set_phase(Ph::Neutral, "neutral", f); go_reset(f); }
+                else set_phase(Ph::Neutral, "neutral", f);
+                break;
+            }
             g_cfg.valid = false;
             if (read_fight_file(g_cfg)) begin_select(f);
             else set_phase(Ph::Neutral, "neutral", f);
@@ -432,10 +789,39 @@ void fight_on_frame(uint32_t f)
         }
         break;
     case Ph::Neutral:
+        if (g_ctl) {
+            if (!g_pending_cmd) break;
+            if (g_cmd_rematch) { if (select_live()) start_rematch(f); }
+            else if (g_fresh || !g_reset_titles) { if (select_live()) start_session_fight(f); }
+            else go_reset(f);
+            break;
+        }
         if ((f - g_ph_frame) % 15 == 0 && read_fight_file(g_cfg)) {
             if (mode == kModeSelect) begin_select(f);
             else note("frame %u: fight requested but the game is in mode %u", f, mode);
         }
+        break;
+    case Ph::Reset:
+        /* back to the title: the game's own start-VS routine then sets up a
+         * select screen exactly as at boot, whatever the last opponent left */
+        if (mode == kModeTitle) { g_title_seen = f; fresh_restore(f); set_phase(Ph::Title, "title", f); break; }
+        post_match_skip(f);                                 /* still in the win pose: skip it as in Over */
+        if (!g_mode_asked && mode == kModeSelect && rd32(kSelectState) >= 3) {
+            g_mode_asked = true;
+            gcall(kFnModeRequest, kModeTitle, 0);
+            note("frame %u: to the title for a fresh select screen (mode request 1)", f);
+        }
+        if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: reset: waiting in mode %u", f, mode);
+        break;
+    case Ph::Leave:
+        /* out of a fight whose session ended: the game's own way back to select */
+        if (mode == kModeSelect) { set_phase(Ph::Reset, "reset", f); break; }
+        if (!g_mode_asked && mode == kModeGame) {
+            g_mode_asked = true;
+            gcall(kFnModeRequest, kModeSelect, 0);
+            note("frame %u: leaving the fight (mode request 6)", f);
+        }
+        if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: leave: waiting in mode %u", f, mode);
         break;
     }
 }
@@ -446,16 +832,37 @@ void fight_init()
 {
     const char* fight = getenv("T5_FIGHT");
     const char* file = getenv("T5_FIGHT_FILE");
-    if (!(fight && *fight) && !(file && *file)) return;
+    g_ctl = ctl_enabled();
+    if (!(fight && *fight) && !(file && *file) && !g_ctl) return;
     g_configured = true;
+    { const char* r = getenv("T5_DF_RESET"); g_reset_titles = !(r && *r == '0'); }
+    { const char* k = getenv("T5_DF_SKIP"); g_skip = !(k && *k == '0'); }
+    if (const char* w = getenv("T5_DF_STAGE_WAIT")) g_stage_wait = (uint32_t)atoi(w);
+    { const char* r = getenv("T5_DF_FRESH"); g_fresh_on = !(r && *r == '0'); }
+    {
+        const char* spec = getenv("T5_DF_FRESH_RANGES");
+        if (!spec || !*spec) spec = "1008E000:4000,10099600:600,100A0900:200,100A3B00:300";
+        for (const char* p = spec; *p;) {
+            char* e;
+            const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
+            const uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            g_fresh_areas.push_back({ a, l, {} });
+            while (*p == ',' || *p == ' ') p++;
+        }
+    }
+    { const char* h = getenv("T5_DF_HOLD"); g_hold = !(h && *h == '0'); if (!g_hold) g_skip = false; }
+    if (const char* b = getenv("T5_DF_SKIP_BUTTON")) g_skip_button = (uint16_t)strtoul(b, nullptr, 16);
+    parse_hud(g_cfg, getenv("T5_HUD_NAMES"), getenv("T5_HUD_RANKS"), false);
     if (file) g_fight_file = file;
     if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
     if (const char* s = getenv("T5_DF_STATUS_FILE")) g_status_file = s;
     if (const char* a = getenv("T5_DF_ALT_BUTTON")) g_alt_button = (uint16_t)strtoul(a, nullptr, 16);
     { const char* t = getenv("T5_DF_TRACE"); g_trace_presses = t && *t == '1'; }
-    if (fight && *fight) parse_fight(fight, g_cfg);
-    note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : "(waiting for T5_FIGHT_FILE)",
-         g_fight_file.empty() ? "" : ", next fights from ", g_fight_file.c_str());
+    if (fight && *fight && !g_ctl) parse_fight(fight, g_cfg);
+    note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : g_ctl ? "(persistent game: fights from the control channel)"
+                                                                 : "(waiting for T5_FIGHT_FILE)",
+         g_fight_file.empty() || g_ctl ? "" : ", next fights from ", g_fight_file.c_str());
+    ctl_report(0);
 }
 
 } // namespace df

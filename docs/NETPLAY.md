@@ -61,6 +61,29 @@ generators are seeded from the match seed. Calling it again while lockstep runs
 transport and lockstep core (`netplay_core.cpp`) do not care how the fight was
 started. `T5_NET_START=frame:N` starts at the N-th main loop frame (tests).
 
+**Many sessions in one game (persistent game, `T5_CTL_DIR`).** The game stays
+open between opponents (docs/DIRECTFIGHT.md "Persistent game"): the hooks are
+in from boot without a session, and the direct-fight control channel starts
+one per opponent. `t5_netplay_session_begin()` reads the session's variables
+from the **session environment overlay** (`t5_env_overlay_begin/set`,
+`t5_env`: the runtime caches every `getenv()` value for good, so a running game
+cannot take new `T5_NET_*` from the process environment), ends any running
+session and sets netplay up exactly as at boot: a socket on the new
+`T5_NET_PORT`, a new session id and nonce (to the peer it is a new process),
+the handshake from then on. In the core all per-session state lives in one
+struct (`Session`) that `np::session_end()` puts back to "netplay off" after a
+BYE and closing the socket; the receive and keepalive threads stay and follow
+the socket. After the first session the keyread thread stays parked: between
+sessions the main thread runs its tick with neutral pads ("idle"), and the
+next `t5_netplay_start()` begins the new session's lockstep at frame 0 like a
+fresh external start. A session that fails or loses its peer writes its result
+file with the reason as usual, then ends without closing the game
+(`t5_netplay_take_session_lost()` tells the direct-fight driver);
+`T5_NET_ON_LOST` and the exit codes are process mode only. A new session also
+waits for the last match's "decided" flag to clear before it watches for a
+result. The result file is replaced with retries (the launcher may have the
+old one open at that moment; a single failed replace used to lose it).
+
 Testing on one PC: `tools/netplay_test.py` starts a host and a joiner (or one
 `local` instance) with minimized windows, host devices ignored, scripted input
 (`T5_NET_SCRIPT`, `T5_NET_PADFILE`), per-frame logs and frame-exact
@@ -75,6 +98,13 @@ python tools/netplay_test.py --exe build/cmake/t5dr.exe --out build/nptest --pai
 `frames.log` in each instance directory has one line per frame (both inputs,
 state hash); `game.log` has the `[netplay]` lines, including
 `sync check through frame N: 0 mismatching frame(s) -- in sync` every 600 frames.
+
+`tools/fight_flow_test.py` plays many direct-fight matches in a row the way the
+launcher drives them: `--flow rematch` (process mode, rematches through
+`T5_FIGHT_FILE`) or `--flow persistent` (control commands, a new session per
+match, `--fresh-at N` restarts one game), `--mash` (both sides press buttons
+the whole time), `--rematch-wait S`; it checks every match's result on both
+sides (same winner and hash, 0 mismatches) and prints command-to-FIGHT times.
 
 ## Design
 
@@ -276,5 +306,8 @@ build/nq/runs, after = build/nh/runs:
 - A desync is detected and logged, not repaired.
 - Both instances on one PC run ~35-40 fps (each at full speed alone);
   lockstep runs at the slower PC's speed.
-- Rematch flows back to character select and stays in sync; menus after the
-  match (continue, options) were not exercised.
+- Rematch flows back to character select and stays in sync. From the deciding
+  KO to the next select the direct-fight driver holds the pads and skips the
+  win pose itself (docs/DIRECTFIGHT.md "After the match"); mashing there used
+  to start the game's own next battle. Pausing (START) in an online fight is
+  not blocked.

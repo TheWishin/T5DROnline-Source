@@ -132,6 +132,17 @@ uint32_t rb_peer_ack();                          /* the peer has our inputs for 
  * driving during lockstep; see t5_netplay_inject). */
 void  set_local_inject(bool on, uint16_t buttons);
 
+/* ---- sessions in a persistent game (T5_CTL_DIR; docs/DIRECTFIGHT.md) -------
+ * One process, many opponents. session_end() says BYE (if connected), closes
+ * the socket (the UDP port is free again) and puts the whole session state
+ * back to "netplay off". session_begin() ends any session and starts a new one
+ * from the T5_NET_* variables now in the environment: new session id and
+ * nonce, the handshake from now on. Returns false when that environment has
+ * no netplay (T5_NET_MODE unset or invalid). */
+void     session_end(const char* why);
+bool     session_begin();
+uint32_t sessions();                             /* sessions begun in this process */
+
 } // namespace np
 
 /* Game-side entry point (t5_hooks.cpp), C linkage so any part of the port can
@@ -160,3 +171,19 @@ extern "C" void t5_netplay_set_match(const char* id);
  * session id; waits for the handshake). Direct fight derives a stage from it
  * when none was given. */
 extern "C" unsigned t5_netplay_match_seed(void);
+/* Persistent game (T5_CTL_DIR): the direct-fight control channel starts a
+ * session for each new opponent from the T5_NET_* it put into the environment
+ * (returns 1 when there is netplay), ends it for "idle"/"quit", and learns
+ * once why a session ended by itself (peer lost, no connection: the result
+ * file has the reason, the game stays open). */
+extern "C" int         t5_netplay_session_begin(void);
+extern "C" void        t5_netplay_session_end(const char* why);
+extern "C" const char* t5_netplay_take_session_lost(void);
+extern "C" int         t5_netplay_persistent(void);
+/* The session environment (netplay_core.cpp): getenv() is cached for good by
+ * the runtime, so the control channel puts a match's variables here. Once a
+ * key was set through the overlay it reads from it (unset after
+ * t5_env_overlay_begin() unless set again); other keys come from getenv(). */
+extern "C" void        t5_env_overlay_begin(void);
+extern "C" void        t5_env_overlay_set(const char* key, const char* value);
+extern "C" const char* t5_env(const char* key);

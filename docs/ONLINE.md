@@ -121,8 +121,10 @@ lobby/
    will use, registers it with the server, punches through to the other
    player, measures the round trip. If that fails, both bind to the relay.
 7. **match_start.** Each launcher gets a `MatchTicket`, frees the port and
-   starts `t5dr.exe` with `ticket.game_env()`. The server suggests the input
-   delay from the measured round trip.
+   hands the game `ticket.game_env()`: a new `t5dr.exe` started with it
+   (process mode), or a "fight" command to the game that is already open
+   (persistent mode, below). The server suggests the input delay from the
+   measured round trip.
 8. **Result.** After the game both launchers report the winner (from the
    game's result file, or the player answers "I won / I lost"). The server
    reconciles the two reports and updates ratings.
@@ -147,6 +149,20 @@ lobby/
 | `T5_NET_KEY` | yes | the match's secret (server -> both clients over TCP only): every netplay packet carries a SipHash-2-4 tag under it |
 | `T5_NET_RESULT_FILE` | yes | where the game writes the result (below) |
 | `T5_NET_SOCKET_FILE` | proposed | only with socket handover (below) |
+| `T5_FIGHT`, `T5_NET_START`, `PS3_FIXED_TIME` | direct fight | the fight from the server's `fight` (docs/DIRECTFIGHT.md) |
+| `T5_HUD_NAMES`, `T5_HUD_RANKS` | direct fight | both players' lobby names and rank tiers, shown in the fight HUD |
+
+**Persistent game (the default for builds that understand it).** Like Tekken 6
+Native Online the game stays open between all matches. The launcher starts it
+once with `T5_CTL_DIR` and hands every match over as a command with the same
+variables (docs/DIRECTFIGHT.md "Persistent game", docs/RANKED.md "Game control
+channel"): on `match_found` the game ends its netplay session and goes back to
+a fresh select screen while the players accept and the NAT is punched; on
+`match_start` it sets netplay up for the new opponent on the punched port and
+drives the select screen. A rematch is the next match in the running session.
+A game that does not take a command within 10 s (90 s while it boots), or dies
+twice, is replaced by one process per opponent for the rest of the session
+(`match_driver.MatchDriver`, `game_mode` in online.json forces either).
 
 The host calls `T5_NET_PEER` while it waits and takes as its peer the first
 game whose HELLO carries a valid tag (on the relay path that comes from the
@@ -598,7 +614,8 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 ## What is left
 
 - Netplay side of the handover extras above: socket adoption (everything else is done).
-- A new opponent without restarting the game: the control channel in RANKED.md, for direct-fight.
+- The persistent game starts with the first match; starting it already when the player
+  queues would make the first match as quick as the later ones.
 - TURN-style relay on a separate host, or several relay regions; today the relay is the lobby server.
 - Port prediction for symmetric NATs; IPv6. (UPnP/NAT-PMP exists for "Host for friends" only,
   opt-in, and is so far tested against fake routers only.)

@@ -6,8 +6,8 @@ From "match found" to "result reported" without the player doing anything:
                   back to idle (persistent mode); a rematch inside the running games keeps it
     match_start   the game gets the match: T5_NET_* (netplay), T5_FIGHT (direct-fight mode:
                   characters, stage, rounds; with T5_NET_START=external and the same
-                  PS3_FIXED_TIME on both PCs, docs/DIRECTFIGHT.md), T5_HUD_* (names and
-                  ranks for the fight HUD, not used by the game yet)
+                  PS3_FIXED_TIME on both PCs, docs/DIRECTFIGHT.md), T5_HUD_* (the lobby names
+                  and rank tiers the game writes into its fight HUD)
     during play   the game's log is followed: the netplay desync detector, a lost opponent,
                   "match over" lines, crashes
     lag check     when the lobby settled the match, the game log's own numbers (frames played,
@@ -31,9 +31,14 @@ Two ways to run the game:
   T5_FIGHT_FILE. The game's state (T5_DF_STATUS_FILE) is shown to the player.
 * persistent mode (T5_CTL_DIR, for direct-fight builds): the game is started once and
   stays open between opponents; each match is a command written to <dir>/cmd.json, the
-  game answers in <dir>/state.json. Protocol: docs/RANKED.md, "Game control channel".
-  Used when the game build understands it (mode="auto" looks for the T5_CTL_DIR string in
-  the game binaries) or when forced (mode="persistent").
+  game answers in <dir>/state.json. Protocol: docs/RANKED.md, "Game control channel";
+  the game side: docs/DIRECTFIGHT.md, "Persistent game". A new opponent is a new netplay
+  session in the running game (a few seconds from the command to the fight instead of
+  ~20 s for a new process); a rematch is a "fight" with "rematch": true in the running
+  session. Used when the game build understands it (mode="auto" looks for the T5_CTL_DIR
+  string in the game binaries) or when forced (mode="persistent"). Fallback: a game that
+  does not take a command in time (CTL_ACK_SECONDS) or dies twice in persistent mode is
+  restarted in process mode, which then stays for the rest of the session.
 
 The driver has no UI. A front end feeds it every LobbyClient event (on_event), calls
 poll() a few times a second and shows the notes it gets back:
@@ -50,9 +55,10 @@ import queue
 import re
 import threading
 import time
+import urllib.parse
 
 from . import fighters, proto, ranks
-from .handover import read_result_file
+from .handover import MatchTicket, read_result_file
 
 CTL_MARKER = b"T5_CTL_DIR"
 
@@ -69,6 +75,11 @@ RE_SPEED = re.compile(r"\[netplay\] speed: [\d.]+ fps, this PC ([\d.]+) fps")
 RE_WAIT = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps without the waits for the peer "
                      r"\(waited ([\d.]+) s of ([\d.]+) s\)")
 RE_FPS = re.compile(r"^\[fps\] ([\d.]+) ")
+# a persistent game starts a netplay session per opponent (src/netplay/t5_hooks.cpp)
+RE_SESSION = re.compile(r"\[netplay\] session (\d+) set up")
+# how long a game may take to take a control command (persistent mode): a running one, a booting one
+CTL_ACK_SECONDS = 10.0
+CTL_ACK_BOOT_SECONDS = 90.0
 
 # Why a game could not finish its match (result file "reason", netplay log), for the player.
 REASON_TEXT = {
@@ -99,6 +110,8 @@ class GameLog:
         self.last_frame = 0
         self.overs = []              # (frame, n, p1 rounds, p2 rounds)
         self.peer_lost = 0
+        self.session_lost = 0        # peer_lost in the current netplay session (persistent game: one per opponent)
+        self.sessions = 0
         self.lost_reason = None      # "peer lost (<reason>)"
         self.fail_reason = None      # "cannot connect (<reason>)"
         self.connected = False
@@ -150,9 +163,19 @@ class GameLog:
             self.overs.append(tuple(int(x) for x in m.groups()))
             self.last_frame = max(self.last_frame, int(m.group(1)))
             return
+        m = RE_SESSION.search(ln)
+        if m:
+            # a new opponent in a persistent game: what the last session saw no longer applies
+            self.sessions = int(m.group(1))
+            self.connected = False
+            self.session_lost = 0
+            self.build_mismatch = False
+            self.fail_reason = None
+            return
         m = RE_LOST.search(ln)
         if m:
             self.peer_lost += 1
+            self.session_lost += 1
             self.lost_reason = m.group(2) or "peer_lost"
             return
         m = RE_WAIT.search(ln)
@@ -314,6 +337,8 @@ class MatchDriver:
         self.history = []            # (match id, what was reported) -- for tools and tests
         self.rematch_sent = set()    # finished matches this side already answered a rematch for
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
+        self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
+        self.ctl_failures = 0        # persistent games that died or did not answer
 
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
@@ -330,7 +355,7 @@ class MatchDriver:
         if not self.game_running() or self.glog is None:
             return False
         self.glog.poll()
-        return self.glog.connected and self.glog.peer_lost == 0 and not self.glog.build_mismatch
+        return self.glog.connected and self.glog.session_lost == 0 and not self.glog.build_mismatch
 
     def stop_game(self):
         if self.game is not None:
@@ -351,7 +376,6 @@ class MatchDriver:
     # ------------------------------------------------------------------ environment
     def match_env(self, ev, ticket):
         env = ticket.game_env(result_file=self.result_path)
-        players = ev.get("players") or []
         line = self.fight_line(ev)
         if line:
             # Direct fight: both PCs boot into the same fight; lockstep starts there (netplay is told
@@ -363,10 +387,11 @@ class MatchDriver:
         if self.fight_path:
             env["T5_FIGHT_FILE"] = self.fight_path
             env["T5_DF_STATUS_FILE"] = self.status_path
-        if len(players) == 2:
-            # In-game identity (docs/RANKED.md): names and rank tiers for the fight HUD.
-            env["T5_HUD_NAMES"] = "|".join(p.get("name", "")[:16] for p in players)
-            env["T5_HUD_RANKS"] = ",".join(str(p.get("tier") or ranks.BEGINNER) for p in players)
+        hud = hud_values(ev)
+        if hud:
+            # In-game identity (docs/DIRECTFIGHT.md): the lobby's names and rank tiers in the fight HUD.
+            env["T5_HUD_NAMES"] = "|".join(hud[0])
+            env["T5_HUD_RANKS"] = ",".join(str(t) for t in hud[1])
         env.update(self.extra_env)
         return env
 
@@ -378,8 +403,13 @@ class MatchDriver:
             return None
         return self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
 
-    def _write_fight_file(self, line, mid=None):
-        # match=<id>: the game puts it into this match's result file (older builds ignore it)
+    def _write_fight_file(self, line, mid=None, ev=None):
+        # match=<id>: the game puts it into this match's result file (older builds ignore it);
+        # names= / ranks=: the HUD identity again (a rank may have moved after a ranked match)
+        hud = hud_values(ev)
+        if hud:
+            line += " names=" + "|".join(urllib.parse.quote(n, safe="") for n in hud[0])
+            line += " ranks=" + "|".join(str(t) for t in hud[1])
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
             f.write(line + (f" match={mid}" if mid else "") + "\n")
@@ -448,12 +478,12 @@ class MatchDriver:
             self.saw_fight = False
             self.t_over = None
             self.df_base = int((self.df_status or {}).get("match") or 0)
-            if self.mode == "persistent":
-                self.ctl.send("fight", match=mid, env=self.match_env(ev, self.ticket))
+            if self.mode == "persistent" and self.ctl is not None:
+                self._send_fight(mid, self.match_env(ev, self.ticket), rematch=True)
             else:
                 line = self.fight_line(ev)
                 if line and self.fight_path:
-                    self._write_fight_file(line, mid)   # the game picks it up at character select
+                    self._write_fight_file(line, mid, ev)   # the game picks it up at character select
             self.status(f"Rematch against {ev['opponent']['name']}: same connection, the game stays open.")
             self._call(self.client.game_started, mid)
             return
@@ -464,9 +494,9 @@ class MatchDriver:
         self.saw_fight = False
         self.t_over = None
         self.df_base = int((self.df_status or {}).get("match") or 0) if self.game_running() else 0
-        if self.mode == "persistent" and self.game_running():
-            env = self.match_env(ev, t)
-            self.ctl.send("fight", match=mid, env=env)
+        if self.mode == "persistent" and self.game_running() and self.ctl is not None:
+            # a new opponent in the running game: a new netplay session (docs/DIRECTFIGHT.md)
+            self._send_fight(mid, self.match_env(ev, t))
         else:
             self.stop_game()
             self.session = mid
@@ -486,7 +516,8 @@ class MatchDriver:
                 self.ctl = Control(os.path.join(self.workdir, "ctl"))
                 launch_env = {"T5_CTL_DIR": self.ctl.dir}
                 launch_env.update({k: v for k, v in env.items() if k.startswith("T5_HUD")})
-                self.ctl.send("fight", match=mid, env=env)
+                launch_env.update(self.extra_env)
+                self._send_fight(mid, env, booting=True)
                 env = launch_env
             game = self.launch(env)
             if game is None:
@@ -501,6 +532,41 @@ class MatchDriver:
         self.mark = self.glog.mark() if self.glog else (0, 0, 0, 0)
         self.status(f"Playing against {t.summary()}")
         self._call(self.client.game_started, mid)
+
+    def _send_fight(self, mid, env, rematch=False, booting=False):
+        seq = self.ctl.send("fight", match=mid, env=env, rematch=rematch)
+        self.ctl_wait = (seq, time.monotonic(), booting)
+
+    def _watch_ctl(self):
+        """Persistent mode: the game must take each command. One that does not (or a game that died
+        twice) sends this player back to one game process per opponent, starting with this match."""
+        if self.mode != "persistent":
+            return
+        w = self.ctl_wait
+        if w is not None and self.ctl is not None and self.game_running():
+            st = self.ctl.state() or {}
+            try:
+                taken = int(st.get("seq") or 0) >= w[0]
+            except (TypeError, ValueError):
+                taken = False
+            if taken:
+                self.ctl_wait = None
+                return
+            if time.monotonic() - w[1] < (CTL_ACK_BOOT_SECONDS if w[2] else CTL_ACK_SECONDS):
+                return
+            self.ctl_wait = None
+            self.ctl_failures = 2
+        elif w is not None and self.game is not None and not self.game_running():
+            self.ctl_wait = None
+            self.ctl_failures += 1
+        if self.ctl_failures < 2:
+            return
+        self.mode = "process"
+        self.status("The game did not answer its control channel; it is restarted for every opponent from now on.")
+        ev, t = self.match_ev, self.ticket
+        self.stop_game()
+        if ev is not None and isinstance(t, MatchTicket) and not self.reported:
+            self._start(dict(ev, ticket=t))
 
     def _send_lag(self, mid):
         """Report this match's lag numbers (the lobby shows both players the comparison)."""
@@ -548,6 +614,7 @@ class MatchDriver:
     # ------------------------------------------------------------------ polling
     def poll(self):
         """Call a few times a second. Returns the notes for the UI (list of dicts)."""
+        self._watch_ctl()
         self._watch_state()
         t = self.ticket
         if t is not None and not self.reported:
@@ -785,6 +852,20 @@ def fps_from_logs(log_dir):
         if len(vals) >= 4:
             return round(sorted(vals)[len(vals) // 2], 1)
     return None
+
+
+def hud_values(ev):
+    """([P1 name, P2 name], [P1 tier, P2 tier]) for the fight HUD from match_start's players (P1
+    first, the same list on both PCs), or None. Guests and unplaced players get the Beginner badge."""
+    players = (ev or {}).get("players") or []
+    if len(players) != 2:
+        return None
+    names = [str(p.get("name", ""))[:16] for p in players]
+    tiers = []
+    for p in players:
+        t = p.get("tier")
+        tiers.append(t if isinstance(t, int) and 0 <= t < len(ranks.RANKS) else ranks.BEGINNER)
+    return names, tiers
 
 
 def _result_extra(path):

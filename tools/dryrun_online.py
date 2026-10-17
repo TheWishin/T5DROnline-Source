@@ -7,6 +7,13 @@ game gets its own working directory (two players share one PC); windows are mini
 
     <install>/python/python.exe tools/dryrun_online.py --install <install> --out DIR
         [--matches 2] [--seconds 900] [--bot live|script] [--env NAME=VALUE ...] [--check-only]
+        [--mode auto|process|persistent] [--new-opponent]
+
+--new-opponent: no rematches; after every result both players leave the set and queue again,
+so every match is a new pairing (a new netplay session, as for a new opponent). With
+--mode persistent (or auto with a game that understands T5_CTL_DIR) the games stay open
+between them. Every match logs "Accept -> FIGHT" (the player's Accept to the game's
+FIGHT START in its status file) for both players.
 
 Guests only (DryRunA / DryRunB): it never creates accounts. The default server is the install's
 lobby/servers.json default (the public one); --server 127.0.0.1:PORT uses a local one
@@ -123,18 +130,24 @@ class Player:
         self.rnd = random.Random(1000 + idx)
         self.games = []
         self.events = []
-        self.driver = MatchDriver(self.client, self.launch, self.dir, mode="process", ask_manual=False,
-                                  auto_rematch=a.matches - 1)
+        game_files = [os.path.join(NATIVE, "build", "cmake", "t5dr.exe"), os.path.join(NATIVE, "build", "cmake", "t5dr_game.dll")]
+        self.driver = MatchDriver(self.client, self.launch, self.dir, mode=a.mode, ask_manual=False,
+                                  auto_rematch=0 if a.new_opponent else a.matches - 1, game_files=game_files,
+                                  extra_env=dict(kv.split("=", 1) for kv in a.env))
+        log(f"{name}: match driver mode {self.driver.mode}")
+        self.t_accept = None          # when Accept was pressed for the match being set up
+        self.fight_base = 0           # the status' match number before it
+        self.timings = []             # Accept -> FIGHT per match
 
     def launch(self, env):
         n = len(self.games) + 1
-        role = env.get("T5_NET_MODE")
+        role = env.get("T5_NET_MODE") or ("persistent" if env.get("T5_CTL_DIR") else None)
         over = {"PS3_NICKNAME": self.name, "PS3_WINDOW_BACKGROUND": "1", "T5_NET_LOCALPAD": "0",
                 "PAD_NO_KEYBOARD": "1"}
         over.update(env)
         over.update(dict(kv.split("=", 1) for kv in self.a.env))
-        if role in ("host", "join"):
-            if self.a.bot == "script":
+        if role in ("host", "join", "persistent"):
+            if self.a.bot == "script" and role != "persistent":
                 over["T5_NET_SCRIPT"] = attack_script(os.path.join(self.dir, f"script{n}.txt"), role)
             else:       # live bot: presses only while the game is in the fight (see Player.bot)
                 self.padfile = os.path.join(self.dir, f"pad{n}.txt")
@@ -172,6 +185,8 @@ class Player:
                     time.sleep(0.5)                       # a person reads the ping, then clicks Accept
                     self.client.ready(True)
                     log(f"{self.name}: pressed Accept")
+                self.t_accept = time.time()
+                self.fight_base = int((self.status() or {}).get("match") or 0) if self.driver.game_running() else 0
             elif t == "match_reveal":
                 log(f"{self.name}: match_reveal opp={ev['opponent']['name']} slot P{ev['slot'] + 1} {ev['role']}")
             elif t == "match_start":
@@ -183,6 +198,13 @@ class Player:
                 log(f"{self.name}: match_result status={ev['status']} reason={ev.get('reason')} "
                     f"winner={ev['winner']} score={ev['score']} rematch_window={ev.get('rematch_window')} "
                     f"rating={ev.get('rating')}")
+                if self.a.new_opponent and len(self.results()) + 1 < self.a.matches:
+                    # a new pairing for the next match: out of the set, back into the queue
+                    try:
+                        self.client.leave_set("next")
+                    except Exception as e:
+                        log(f"{self.name}: leave_set: {e}")
+                    self.requeue_at = time.time() + 1.0
             elif t == "nat_status":
                 log(f"{self.name}: nat: {ev['text']}")
             elif t in ("notice", "match_cancel", "rematch", "server_notice", "lag_check", "error", "disconnected",
@@ -194,13 +216,31 @@ class Player:
             else:
                 log(f"{self.name}: [driver:{n['kind']}] {json.dumps({k: v for k, v in n.items() if k not in ('t', 'kind')}, default=str)[:200]}")
 
+    def check_timing(self):
+        """Accept -> FIGHT START of this match (the status file's match counter moves past the base)."""
+        if self.t_accept is None:
+            return
+        s = self.status() or {}
+        if s.get("state") == "fight" and int(s.get("match") or 0) > self.fight_base:
+            dt = time.time() - self.t_accept
+            self.timings.append(round(dt, 1))
+            log(f"{self.name}: Accept -> FIGHT {dt:.1f} s (match #{s.get('match')}, driver mode {self.driver.mode})")
+            self.t_accept = None
+        t = getattr(self, "requeue_at", None)
+        if t and time.time() >= t:
+            self.requeue_at = None
+            self.client.quick_match()
+            log(f"{self.name}: queued again (new opponent)")
+
     def bot(self):
         """Press random buttons like a person would, but only while the game is in a fight."""
         import random
         pf = getattr(self, "padfile", None)
         if not pf or self.a.bot != "live":
             return
-        if getattr(self, "role", None) == self.a.idle:
+        tk = self.driver.ticket
+        role = getattr(tk, "role", None) or getattr(self, "role", None)
+        if role == self.a.idle:
             return
         s = self.status()
         if not s or s.get("state") != "fight" or not self.driver.game_running():
@@ -211,7 +251,7 @@ class Player:
         except OSError:
             return
         rnd = self.rnd
-        fwd = "0x20" if self.role == "host" else "0x80"
+        fwd = "0x20" if role == "host" else "0x80"
         btn = rnd.choice(["0x8000", "0x1000", "0x4000", "0x2000", fwd, fwd, "0x40", "0x10"])
         try:
             with open(pf, "w") as fp:
@@ -261,6 +301,10 @@ def main():
     ap.add_argument("--bot", choices=["live", "script"], default="live")
     ap.add_argument("--idle", choices=["host", "join"], help="live bot: this role (host = P1, join = P2) never presses")
     ap.add_argument("--check-only", action="store_true", help="connect, list the lobby, leave")
+    ap.add_argument("--mode", choices=["auto", "process", "persistent"], default="auto",
+                    help="the match driver's game mode (auto: persistent when the game understands T5_CTL_DIR)")
+    ap.add_argument("--new-opponent", action="store_true",
+                    help="no rematches: every match a new pairing (leave the set, queue again)")
     a = ap.parse_args()
     STOP[0] = a.script_stop
     os.makedirs(a.out, exist_ok=True)
@@ -301,6 +345,7 @@ def main():
         while time.time() < t_end:
             for p in players:
                 p.pump()
+                p.check_timing()
                 p.bot()
                 s = p.status()
                 key = (s or {}).get("state"), (s or {}).get("match")
@@ -324,6 +369,7 @@ def main():
         for p in players:
             alive = [(g.proc.pid, g.running()) for g in p.games]
             log(f"{p.name}: game processes {alive}; reported {p.driver.history}")
+            log(f"{p.name}: Accept -> FIGHT per match (s): {p.timings}")
         # profile / history as the server sees it
         for p in players:
             try:

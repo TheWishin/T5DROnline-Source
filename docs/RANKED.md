@@ -302,20 +302,24 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
 Two ways to run the game, picked automatically (`game_mode` in online.json
 forces one):
 
-- **process** (today's builds): one `t5dr.exe` per opponent, set up from the
-  environment at boot; rematches continue in it through `T5_FIGHT_FILE`. A new
-  opponent restarts the game (boot straight into the fight, ~20 s).
+- **process** (older builds, and the fallback): one `t5dr.exe` per opponent,
+  set up from the environment at boot; rematches continue in it through
+  `T5_FIGHT_FILE`. A new opponent restarts the game (boot straight into the
+  fight, ~20 s).
 - **persistent** (builds that understand `T5_CTL_DIR`, detected by looking
-  for that string in `t5dr.exe` / `t5dr_game.dll`): the game starts once and
-  stays open between opponents; every match is a command (next section).
+  for that string in `t5dr.exe` / `t5dr_game.dll`; every build from the
+  fight-polish branch on): the game starts once and stays open between
+  opponents; every match is a command (next section). A game that does not
+  take a command within `CTL_ACK_SECONDS` (10 s; 90 s while it boots) or dies
+  twice sends the player back to process mode for the rest of the session.
 
 ## Game control channel (persistent game)
 
-Proposal for the remaining step -- a new opponent without restarting the game
-(direct fight already keeps the game open for rematches through
-`T5_FIGHT_FILE`). Implemented on the launcher side and in
-`lobby/tools/stub_game.py`. File based, like the result
-file and netplay's pad files, so the game side is a few lines of C:
+A new opponent without restarting the game. Implemented in the game
+(`src/directfight/df_ctl.cpp`, netplay sessions in `src/netplay/`;
+docs/DIRECTFIGHT.md "Persistent game"), on the launcher side
+(`match_driver.py`) and in `lobby/tools/stub_game.py`. File based, like the
+result file and netplay's pad files:
 
 - The launcher starts the game once with `T5_CTL_DIR=<dir>` (plus
   `T5_HUD_*`), no `T5_NET_*`. The game boots to an idle state (a menu or a
@@ -329,25 +333,33 @@ file and netplay's pad files, so the game side is a few lines of C:
   {"seq": 4, "cmd": "idle"}      end the netplay session (free the UDP port), back to waiting
   {"seq": 5, "cmd": "quit"}      exit
   ```
+  A rematch is `"fight"` with `"rematch": true` (the next match in the running
+  session; the game also takes one with the session's own `T5_NET_MODE/PORT/
+  PEER/KEY/SEED` as a rematch).
   "fight" = set up netplay from `env` exactly as if those variables had been
   there at boot, load the fight from `T5_FIGHT`, start lockstep
   (`t5_netplay_start()`), write the result file at the end, stay connected
   (a rematch is another "fight" with the same `env`).
 - Game -> launcher: `<dir>/state.json`, replaced atomically whenever it changes:
-  `{"seq": <last command handled>, "state": "idle|connecting|loading|fight|result|error", "match": ..., "error": ...}`.
-- Poll `cmd.json`'s modification time once a second while idle, every 30 frames
-  otherwise; ignore a `seq` already handled.
+  `{"ctl": 1, "seq": <last command handled>, "state": "boot|idle|connecting|loading|fight|result|error", "match": ...,
+  "error": ..., "session": n, "frame": f}`.
+- The game looks at `cmd.json` every 6 frames while it waits, every 30
+  otherwise, and ignores a `seq` already handled.
 
 ## In-game identity: names and ranks in the HUD
 
-The fight HUD shows the player's name ("Unknown" today) and a rank badge
-("Beginner") under each health bar. The launcher passes what the lobby knows:
+The fight HUD shows the player's name and a rank badge under each health bar
+(until fight-polish always "Unknown" and "Beginner"). The launcher passes what
+the lobby knows, and the game writes it at FIGHT START (docs/DIRECTFIGHT.md
+"Names and ranks in the HUD": the VS custom-data blocks at 0x106C9934, name
+UTF-16 at +0x134, rank byte at +0x11C; tiers 34-36 all show the Dark Lord
+badge):
 
     T5_HUD_NAMES=<P1 name>|<P2 name>       lobby names, 16 characters at most
     T5_HUD_RANKS=<P1 tier>,<P2 tier>       tiers as above (0 = Beginner, 10 = 1st Dan, ...); guests 0
 
-Findings so far (2026-10-17, a lobby match of the real game, memory dumped at
-the start of round 1):
+Findings before that (2026-10-17, a lobby match of the real game, memory
+dumped at the start of round 1):
 
 - Both players show "Unknown" and a "Beginner" badge, plus a "PLAYER DATA 0 W 0 L
   0.00 %" bar -- the per-profile record from the save.
@@ -375,14 +387,13 @@ Netplay and direct fight are merged; the launcher uses `T5_FIGHT`,
 `T5_NET_START=external`, `PS3_FIXED_TIME`, `T5_FIGHT_FILE` and
 `T5_DF_STATUS_FILE` as DIRECTFIGHT.md describes. Still open, in order of value:
 
-1. **A new opponent without restarting the game**: netplay set up again for a
-   new peer (port, peer, delay, seed, build) while the game waits at character
-   select -- the control channel above, or `T5_FIGHT_FILE` growing the
-   `T5_NET_*` values. Until then the launcher restarts the game for a new
-   opponent (direct fight makes that ~20 s instead of ~80 s through the menus).
-2. HUD hook for `T5_HUD_NAMES` / `T5_HUD_RANKS` (findings above).
-3. **netplay** (menu-driven play only): the menus still diverge at ~frame 1590
+1. **netplay** (menu-driven play only): the menus still diverge at ~frame 1590
    under load. Direct fight avoids it.
+
+Done (fight-polish): a new opponent without restarting the game (persistent
+mode, the control channel above); the HUD names and ranks; mashing at the
+deciding KO no longer starts the game's own next battle (the pads are held
+neutral between matches, docs/DIRECTFIGHT.md "After the match").
 
 Done (2026-10-17, branch netplay-hardening): `match`, `desync`, `hash`,
 `frames`, `fps` and `reason` in the result file; the boot take-over race (main

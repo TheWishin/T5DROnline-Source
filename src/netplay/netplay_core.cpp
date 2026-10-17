@@ -43,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -164,8 +165,11 @@ struct Ring {
     uint64_t hash[kRing]; uint32_t hash_tag[kRing];
 };
 
-struct State {
-    std::once_flag once;
+/* Everything that belongs to one session with one opponent. A persistent game
+ * (T5_CTL_DIR, docs/DIRECTFIGHT.md "Persistent game") plays many sessions in
+ * one process: session_end() puts all of this back to these defaults, and
+ * session_begin() fills it again from the environment. */
+struct Session {
     Mode mode = Mode::Off;
     int  delay = 3;
     int  slot = 0;
@@ -173,7 +177,6 @@ struct State {
     bool localpad = true;              /* T5_NET_LOCALPAD=0: this PC's devices are ignored */
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
-    bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
     int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
 
@@ -184,8 +187,6 @@ struct State {
     bool env_peer = false;             /* T5_NET_PEER given (lobby): unauthenticated hellos only from its IP */
     in_addr env_peer_ip{};
 
-    SOCKET sock = INVALID_SOCKET;
-    std::mutex mu;                     /* guards everything below */
     sockaddr_in peer{};
     bool peer_known = false;
     bool connected = false;
@@ -200,7 +201,6 @@ struct State {
     std::string fail_reason, lost_reason;
     ULONGLONG init_ms = 0, last_hello_ms = 0, last_wait_note = 0;
     uint32_t relatches = 0, bad_tags = 0, strangers = 0;
-    void (*stuck_handler)(const char*) = nullptr;
     ULONGLONG trouble_ms = 0;          /* when failure/loss was first seen (stuck-handler grace) */
     bool stuck_called = false;
     /* per match (match_begin) */
@@ -208,7 +208,6 @@ struct State {
     uint64_t speed_frames = 0, speed_us = 0, speed_wait_us = 0;   /* since match_begin */
     uint64_t last_frame_qpc = 0;
     uint64_t win_frames = 0, win_us = 0, win_wait_us = 0;   /* the 600-frame window in the log line */
-    HANDLE rx_event = nullptr;
 
     Ring local, remote;
     uint32_t local_max = 0;            /* local inputs known for f < local_max */
@@ -228,7 +227,18 @@ struct State {
 
     std::vector<ScriptEvent> script, script2;
     PadFile padfile, padfile2;
+};
 
+/* The process: the session above plus what outlives it. */
+struct State : Session {
+    std::once_flag once;
+    std::mutex mu;                     /* guards the session fields and the socket */
+    std::atomic<SOCKET> sock{ INVALID_SOCKET };   /* closed and replaced between sessions (rx_thread follows) */
+    bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
+    void (*stuck_handler)(const char*) = nullptr;
+    HANDLE rx_event = nullptr;
+    bool net_up = false;               /* WSAStartup done, receive and tick threads running */
+    uint32_t sessions = 0;             /* sessions begun in this process */
     FILE* log = nullptr;
     std::mutex log_mu;
 };
@@ -251,7 +261,28 @@ void vlog(const char* fmt, va_list ap)
 
 void note_(const char* fmt, ...) { va_list ap; va_start(ap, fmt); vlog(fmt, ap); va_end(ap); }
 
-const char* env(const char* k) { const char* v = getenv(k); return (v && *v) ? v : nullptr; }
+/* The session environment. getenv() cannot change after boot (the runtime
+ * caches every value it looked up, ps3recomp boot_main.cpp), so a persistent
+ * game's control channel hands each match's variables to this overlay instead
+ * (t5_env_overlay_*): a key it has ever set reads from it (a later command
+ * without the key reads as unset), every other key from the process
+ * environment. Changed only by the main thread between sessions. */
+std::mutex g_env_mu;
+std::map<std::string, std::pair<bool, std::string>> g_env_over;   /* upper-case key -> (set, value) */
+
+std::string env_key(const char* k) { std::string s(k); for (char& c : s) c = (char)toupper((unsigned char)c); return s; }
+
+const char* env_raw(const char* k)
+{
+    {
+        std::lock_guard<std::mutex> lk(g_env_mu);
+        auto it = g_env_over.find(env_key(k));
+        if (it != g_env_over.end()) return it->second.first ? it->second.second.c_str() : nullptr;
+    }
+    return getenv(k);
+}
+
+const char* env(const char* k) { const char* v = env_raw(k); return (v && *v) ? v : nullptr; }
 
 std::vector<ScriptEvent> parse_script(const char* spec)
 {
@@ -721,12 +752,18 @@ DWORD WINAPI rx_thread(LPVOID)
     State& s = S();
     uint8_t buf[2048];
     for (;;) {
+        const SOCKET sk = s.sock.load();
+        if (sk == INVALID_SOCKET) { Sleep(10); continue; }     /* between two sessions */
         sockaddr_in from{}; int fl = sizeof from;
-        int n = recvfrom(s.sock, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
-        if (n > 0) { handle_packet(buf, n, from); continue; }
+        int n = recvfrom(sk, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
+        if (n > 0) {
+            if (sk == s.sock.load()) handle_packet(buf, n, from);   /* not a late packet of a closed session */
+            continue;
+        }
         if (n == SOCKET_ERROR) {
             int e = WSAGetLastError();
             if (e == WSAETIMEDOUT || e == WSAECONNRESET || e == WSAEMSGSIZE) continue;
+            if (sk != s.sock.load()) continue;                  /* the session's socket was closed: the next one */
             note("recvfrom failed (%d); receive thread stops", e);
             return 0;
         }
@@ -747,6 +784,7 @@ DWORD WINAPI tick_thread(LPVOID)
         {
             std::lock_guard<std::mutex> lk(s.mu);
             const ULONGLONG now = GetTickCount64();
+            if (s.mode != Mode::Host && s.mode != Mode::Join) continue;   /* no session (persistent game, idle) */
             if (!s.fail_reason.empty() || (s.connected && s.peer_lost)) {
                 /* the main thread ends the match at its next frame; if it does
                  * not get there (blocked elsewhere), the handler does it */
@@ -814,11 +852,17 @@ void derive_key(const std::string& secret, uint8_t out[16])
     memcpy(out, &a, 8); memcpy(out + 8, &b, 8);
 }
 
-void do_init()
+/* Fill the session from the environment (T5_NET_*) and open its socket: at
+ * boot (init()), and in a persistent game again for every new opponent
+ * (session_begin(), after the control channel put that match's T5_NET_* into
+ * the environment). */
+void configure()
 {
     State& s = S();
     const char* m = env("T5_NET_MODE");
     if (!m) return;
+    std::unique_lock<std::mutex> lk(s.mu);
+    if (!s.rx_event) s.rx_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     if (!_stricmp(m, "host")) s.mode = Mode::Host;
     else if (!_stricmp(m, "join")) s.mode = Mode::Join;
     else if (!_stricmp(m, "local")) s.mode = Mode::Local;
@@ -852,48 +896,56 @@ void do_init()
     s.script2 = parse_script(env("T5_NET_SCRIPT2"));
     if (const char* v = env("T5_NET_PADFILE")) s.padfile.path = v;
     if (const char* v = env("T5_NET_PADFILE2")) s.padfile2.path = v;
-    if (const char* v = env("T5_NET_LOG")) {
+    if (const char* v = env("T5_NET_LOG"); v && !s.log) {   /* the first session's file: later sessions add to it */
         s.log = fopen(v, "w");
         if (!s.log) fprintf(stderr, "[netplay] cannot write %s\n", v);
     }
-    s.rx_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     { LARGE_INTEGER q; QueryPerformanceCounter(&q);
       s.session = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 32) ^ (GetCurrentProcessId() << 16)) | 1u;
       uint64_t x = (uint64_t)q.QuadPart * 0x9E3779B97F4A7C15ull ^ ((uint64_t)GetCurrentProcessId() << 32) ^ GetTickCount64();
       x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 32;
       s.nonce = (uint32_t)x | 1u; }
     s.init_ms = GetTickCount64();
+    s.sessions++;
 
-    note("mode %s, slot P%d, delay %d, local devices %s, %zu scripted press(es)",
-         m, s.slot + 1, s.delay, s.localpad ? "on" : "off", s.script.size());
+    note("mode %s, slot P%d, delay %d, local devices %s, %zu scripted press(es)%s",
+         m, s.slot + 1, s.delay, s.localpad ? "on" : "off", s.script.size(),
+         s.sessions > 1 ? " (a new session in the running game)" : "");
 
     if (s.mode == Mode::Local) { s.connected = true; return; }
 
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { note("WSAStartup failed -- netplay off"); s.mode = Mode::Off; return; }
-    s.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s.sock == INVALID_SOCKET) { note("socket() failed -- netplay off"); s.mode = Mode::Off; return; }
-    { DWORD tmo = 200; setsockopt(s.sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo); }
+    static bool wsa_ok = false;
+    if (!wsa_ok) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { note("WSAStartup failed -- netplay off"); s.mode = Mode::Off; return; }
+        wsa_ok = true;
+    }
+    const SOCKET sk = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sk == INVALID_SOCKET) { note("socket() failed -- netplay off"); s.mode = Mode::Off; return; }
+    { DWORD tmo = 200; setsockopt(sk, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo); }
     /* No ICMP port-unreachable resets on Windows UDP sockets: a peer that is
      * not up yet must not break our receive loop. */
     { BOOL off = FALSE; DWORD ret = 0;
-      WSAIoctl(s.sock, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, nullptr, 0, &ret, nullptr, nullptr); }
+      WSAIoctl(sk, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, nullptr, 0, &ret, nullptr, nullptr); }
     int port = s.mode == Mode::Host ? 7000 : 0;
     if (const char* v = env("T5_NET_PORT")) port = atoi(v);
     sockaddr_in local{}; local.sin_family = AF_INET; local.sin_port = htons((u_short)port);
     local.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(s.sock, (sockaddr*)&local, sizeof local) != 0) {
+    if (bind(sk, (sockaddr*)&local, sizeof local) != 0) {
         /* The lobby handed us exactly this port: without it there is no match. */
         s.fail_reason = "bind_failed";
         s.peer_lost = true;
         s.trouble_ms = GetTickCount64();
         note("cannot connect (bind_failed): UDP port %d is not free (%d)", port, WSAGetLastError());
+        closesocket(sk);
         return;
     }
+    s.sock = sk;
     if (s.mode == Mode::Join) {
         const char* peer = env("T5_NET_PEER");
         if (!peer || !parse_addr(peer, &s.peer)) {
             note("join needs T5_NET_PEER=<host ip>:<port> -- netplay off");
+            s.sock = INVALID_SOCKET; closesocket(sk);
             s.mode = Mode::Off; return;
         }
         s.peer_known = true;
@@ -908,13 +960,20 @@ void do_init()
             note("calling %s while waiting (lobby punch / relay path)", peer);
         }
     }
-    note("handshake from boot on: %s, connect timeout %d s, peer timeout %d s, start timeout %d s",
+    note("handshake from %s on: %s, connect timeout %d s, peer timeout %d s, start timeout %d s",
+         s.sessions > 1 ? "now" : "boot",
          s.keyed ? "authenticated (match key)" : "not authenticated (no T5_NET_KEY / match id + seed)",
          s.connect_timeout_s, s.timeout_s, s.start_timeout_s);
-    CreateThread(nullptr, 0, rx_thread, nullptr, 0, nullptr);
-    CreateThread(nullptr, 0, tick_thread, nullptr, 0, nullptr);
-    atexit(say_bye);
+    lk.unlock();
+    if (!s.net_up) {
+        s.net_up = true;
+        CreateThread(nullptr, 0, rx_thread, nullptr, 0, nullptr);
+        CreateThread(nullptr, 0, tick_thread, nullptr, 0, nullptr);
+        atexit(say_bye);
+    }
 }
+
+void do_init() { configure(); }
 
 /* Block until the handshake is done or has failed (frame 0 only). The
  * handshake itself runs in tick_thread from boot on. */
@@ -1003,7 +1062,7 @@ uint32_t scene_barrier(uint32_t f)
         std::lock_guard<std::mutex> lk(s.mu);
         k = s.nbar++;
         s.local_bar[k % kBarriers] = f + 1;
-        if (s.mode == Mode::Local || s.peer_lost) return f;
+        if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
         send_inputs_locked();
     }
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
@@ -1352,4 +1411,58 @@ uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); r
 
 void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
 
+/* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
+
+void session_end(const char* why)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mode == Mode::Off) return;
+    if (s.connected && !s.peer_lost) {
+        Hdr h = make_hdr(PKT_BYE);
+        for (int i = 0; i < 3; i++) send_raw(&h, sizeof h);
+    }
+    note("session %u ends (%s): %llu packets in, %llu out, %u mismatching frame(s)", s.sessions, why ? why : "",
+         (unsigned long long)s.packets_in, (unsigned long long)s.packets_out, s.mismatches);
+    const SOCKET sk = s.sock.exchange(INVALID_SOCKET);
+    if (sk != INVALID_SOCKET) closesocket(sk);         /* frees the UDP port for the launcher's next punch */
+    static const Session kFresh{};
+    static_cast<Session&>(s) = kFresh;                 /* mode Off: every wait returns, the tick thread rests */
+    g_local_inject_on = false; g_local_inject = 0;
+    SetEvent(s.rx_event);
+}
+
+bool session_begin()
+{
+    State& s = S();
+    bool first = false;
+    std::call_once(s.once, [&] { first = true; configure(); });
+    if (!first) {
+        session_end("a new session");
+        configure();
+    }
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.mode != Mode::Off;
+}
+
+uint32_t sessions() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.sessions; }
+
 } // namespace np
+
+extern "C" void t5_env_overlay_begin(void)
+{
+    std::lock_guard<std::mutex> lk(np::g_env_mu);
+    for (auto& kv : np::g_env_over) kv.second = { false, std::string() };
+}
+
+extern "C" void t5_env_overlay_set(const char* key, const char* value)
+{
+    if (!key || !*key) return;
+    std::lock_guard<std::mutex> lk(np::g_env_mu);
+    np::g_env_over[np::env_key(key)] = { value != nullptr, value ? value : "" };
+}
+
+extern "C" const char* t5_env(const char* key)
+{
+    return np::env_raw(key);
+}

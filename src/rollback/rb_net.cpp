@@ -19,8 +19,9 @@ bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;
 bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
 /* time sync */
-constexpr int kLeadWin = 30;
-int g_lead_mine[kLeadWin], g_lead_theirs[kLeadWin]; int g_lead_n = 0;
+constexpr int kLeadWinMax = 60;
+int g_lead_win = 20, g_ts_interval = 20, g_ts_max = 2;   /* T5_RB_NET_TS=win,interval,max: averaging window, frames between sleeps, max frames per sleep */
+int g_lead_mine[kLeadWinMax], g_lead_theirs[kLeadWinMax]; int g_lead_n = 0;
 uint32_t g_last_sleep_frame = 0;
 int g_delay = 0;
 
@@ -122,6 +123,10 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_TS")) {
+                int w = 0, i = 0, m = 0;
+                if (sscanf(s, "%d,%d,%d", &w, &i, &m) == 3) { g_lead_win = std::max(5, std::min(kLeadWinMax, w)); g_ts_interval = std::max(1, i); g_ts_max = std::max(1, std::min(8, m)); }
+            }
             QueryPerformanceFrequency(&g_qpf);
         }
         g_enabled = e == 1;
@@ -189,8 +194,8 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             const int peer_frame = (int)rc0 - 1 - g_delay;
             const int mine = (int)f - peer_frame;
             np::rb_set_lead(mine);
-            g_lead_mine[g_lead_n % kLeadWin] = mine;
-            g_lead_theirs[g_lead_n % kLeadWin] = np::rb_peer_lead();
+            g_lead_mine[g_lead_n % g_lead_win] = mine;
+            g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
             g_lead_n++;
         }
         /* the local input for frame f + delay, sent at once */
@@ -198,13 +203,13 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     }
     np::rb_poll();
 
-    if (g_timesync && !g_resim && g_lead_n >= kLeadWin && np::mode() != np::Mode::Local && !np::rb_peer_lost()) {
+    if (g_timesync && !g_resim && g_lead_n >= g_lead_win && np::mode() != np::Mode::Local && !np::rb_peer_lost()) {
         double m = 0, t = 0;
-        for (int i = 0; i < kLeadWin; i++) { m += g_lead_mine[i]; t += g_lead_theirs[i]; }
-        const double adv = (m - t) / (2.0 * kLeadWin);   /* frames this side is ahead of the peer */
+        for (int i = 0; i < g_lead_win; i++) { m += g_lead_mine[i]; t += g_lead_theirs[i]; }
+        const double adv = (m - t) / (2.0 * g_lead_win);   /* frames this side is ahead of the peer */
         g_st.lead_sum += adv;
-        if (adv >= 1.0 && f - g_last_sleep_frame >= 60) {
-            const int frames = std::min(3, (int)adv);
+        if (adv >= 1.0 && f - g_last_sleep_frame >= (uint32_t)g_ts_interval) {
+            const int frames = std::min(g_ts_max, (int)adv);
             const double ms = frames * 1000.0 / 60.0;
             LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
             np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms);   /* a sleep that keeps the socket pumped */

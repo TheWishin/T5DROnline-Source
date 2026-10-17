@@ -29,6 +29,20 @@ RUNS = ROOT + "/build/rollback-runs"
 MENU = "@1200:4:0x8,1500:4:0x40,1540:4:0x40,1580:4:0x4000,1800:4:0x4000,2000:4:0x4000,2200:4:0x4000"
 
 
+def ko_script(start=3300, end=12000):
+    """P1 only: forward, then a hopkick-style launcher (DOWN+RIGHT+LK) every 50 frames,
+    against an idle P2 -- lands enough hits to KO, so round win, KO slow-motion and
+    the match end happen under the rollbacks."""
+    ev = []
+    f = start
+    while f < end:
+        ev.append(f"{f}:6:0x20")          # RIGHT (forward)
+        ev.append(f"{f + 10}:4:0x4060")   # DOWN+RIGHT+CROSS (LK): d/f+3
+        ev.append(f"{f + 30}:4:0x9000")   # SQUARE+TRIANGLE: 1+2
+        f += 50
+    return ",".join(ev)
+
+
 def fight_script(start=3300, end=9000, p1=True):
     ev = []
     f = start
@@ -51,6 +65,7 @@ def main():
     ap.add_argument("--env", action="append", default=[])
     ap.add_argument("--shots", default="", help="comma-separated seconds at which to screenshot")
     ap.add_argument("--no-script", action="store_true")
+    ap.add_argument("--ko", action="store_true", help="P1 attacks with launchers, P2 idle (rounds end by KO)")
     ap.add_argument("--icall-at", type=float, default=0, help="seconds: trace the main thread's indirect calls for 0.5 s")
     a = ap.parse_args()
 
@@ -70,7 +85,10 @@ def main():
         "T5_RB_MODE": "measure",
         "T5_RB_LOG": os.path.join(d, "rb_frames.log"),
     })
-    if not a.no_script:
+    if a.ko:
+        env["T5_RB_SCRIPT"] = MENU + "," + ko_script()
+        env["T5_RB_SCRIPT2"] = "@1810:4:0x4000,2010:4:0x4000,2210:4:0x4000"
+    elif not a.no_script:
         env["T5_RB_SCRIPT"] = MENU + "," + fight_script(p1=True)
         env["T5_RB_SCRIPT2"] = "@1810:4:0x4000,2010:4:0x4000,2210:4:0x4000," + fight_script(p1=False)
     gate = os.path.join(d, "icall.gate")

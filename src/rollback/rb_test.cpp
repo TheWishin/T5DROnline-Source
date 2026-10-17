@@ -150,7 +150,9 @@ int  g_sample = 0;               /* T5_RB_SAMPLE=1: stack samples + icall timing
 uint32_t g_sample_n = 3;
 uint64_t g_cut_hits0 = 0;
 bool g_skipsound = false;        /* T5_RB_SKIPSOUND=1: re-simulated frames skip the sound update */
-uint32_t g_cut_tail = 1;         /* T5_RB_CUT_TAIL: the last k re-simulated frames run WITHOUT the cut (like the live frame
+uint32_t g_cut_tail = 1;
+int g_stage = -1;                /* T5_RB_STAGE=17..34: force the stage (written to 0x1008F088 from the stage confirm until the test starts, as direct-fight does) */
+bool g_stage_said = false;         /* T5_RB_CUT_TAIL: the last k re-simulated frames run WITHOUT the cut (like the live frame
                                   * after a real rollback), so the final boundary's hash must equal the original's */
 int g_wft_state = 0;
 int g_normal_window = 0;
@@ -220,6 +222,7 @@ void test_on_frame(ppu_context* ctx)
         if (const char* e = getenv("T5_RB_SAMPLE_N")) g_sample_n = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_CUT_TAIL")) g_cut_tail = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_SKIPSOUND")) g_skipsound = *e == '1';
+        if (const char* e = getenv("T5_RB_STAGE")) g_stage = atoi(e);
         if (g_skipsound && sound_word()) { state_add_mask(sound_word(), 4); note("sound update skipped in re-simulated frames (word %08X)", sound_word()); }
         wft_install();
         if (const char* e = getenv("T5_RB_TRACE")) { g_trace_on = *e == '1'; if (g_trace_on) trace_install(); }
@@ -249,6 +252,10 @@ void test_on_frame(ppu_context* ctx)
     if (frame() < g_start) {
         g_logical = frame();
         set_sim_frame(g_logical);
+        if (g_stage >= 0 && rd32(0x1008F070) >= 4) {   /* stage confirmed: the game-mode loader copies 0x1008F088 at entry */
+            wr32(0x1008F088, (uint32_t)g_stage);
+            if (!g_stage_said) { g_stage_said = true; note("stage forced to %d from frame %u", g_stage, g_logical); }
+        }
         /* T5_RB_SAMPLE=2: profile 30 normal frames (boundary to boundary) before the test starts, for comparison */
         if (g_sample == 2) {
             if (g_logical == g_start - 45) { g_normal_window = 30; sample_start(); icall_timing_start(); }

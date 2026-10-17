@@ -1,9 +1,55 @@
 # Changelog
 
-All notable changes, newest first. The project is a test release: no release zip
-is published yet. A first zip, `T5DR-Online-0.1.0-rc1`, was built and checked on
-the development PC. Short commit hashes are in parentheses. The state of each
+All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
+
+## v0.1.0-preview (2026-10-17)
+
+First public test build. Tekken 5: Dark Resurrection runs natively on Windows,
+built on your PC from your own copy (`.pkg` + `.rap`). Online play between
+friends works through the launcher, the same way as Tekken 6 Native Online.
+Expect bugs, and please report them.
+
+### Play
+- All offline modes: Arcade, Ghost, Versus (two players on one PC), Survival,
+  Practice. Music, sound effects and movies.
+- 60 fps in menus and fights, also with other programs busy on the PC.
+- Fighters and stages render correctly: faces and floor shadows fixed. Resizable
+  window, borderless fullscreen (Alt+Enter or F11), higher render resolutions.
+- Saving works. The in-game clock shows the real date. The old white-screen
+  memory bug is fixed.
+
+### Controls
+- Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes
+  (DirectInput), two local players, `controls.ini` for remapping.
+- Short taps are never lost: the pads are read every millisecond, and a press
+  between two game reads still reaches the game, also online.
+
+### Online
+- Launcher Online tab: log in or play as a guest on the public server (preselected).
+- Quick and ranked matches, lobby rooms. A found match shows the ping; accept it
+  within 15 seconds. The game starts directly in the fight, first to 3 rounds,
+  and stays open for Rematch / Next game.
+- Ranked: Glicko-2 rating shown with Tekken 5's rank names. Leaving or
+  disconnecting counts as a loss, a desync voids the match. Block players,
+  optional strict matchmaking, character locked for a ranked set, a post-game lag
+  check (too laggy -> leave without penalty).
+- Direct connection between the two PCs, with a relay through the lobby server
+  when the routers don't allow it. Tested with packet loss, jitter and outages.
+- Delay-based netcode (2-3 frames of input delay). Rollback is being finished
+  and comes in a later update.
+- Run your own server: Linux VPS, Docker, Mac, or **Host for friends** in the
+  launcher (`docs/HOSTING.md`).
+
+### Known limits
+- Tested on one development PC. Not yet tried on a clean PC or between two real
+  PCs over the internet. Weaker PCs are not measured yet.
+- Real arcade sticks are not yet tried by a person.
+- Some background figures may look flat white.
+- The game's own **Online** menu entry crashes after the terms screen. Use the
+  launcher's Online tab.
+- The first time, Windows Firewall asks about the network: allow it for private
+  networks.
 
 ## 2026-10-16 (day one)
 

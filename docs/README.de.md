@@ -6,8 +6,8 @@ ist in Arbeit.
 
 English: [../README.md](../README.md)
 
-**Es ist noch kein Release veröffentlicht (2026-10-16).** Bis dahin siehe "Aus
-dem Quellcode bauen" am Ende dieser Seite.
+**Erstes Test-Release: 0.1.0-preview (2026-10-17).** Lade
+`T5DR-Online-0.1.0-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Test-Version. Rechne mit Fehlern.** Bitte melde sie (siehe "Fehler melden").
 
@@ -22,30 +22,29 @@ dem Quellcode bauen" am Ende dieser Seite.
 - Du baust das Spiel auf deinem eigenen PC aus **deiner eigenen Kopie**: dem
   PSN-Paket (`.pkg`) und der Lizenz (`.rap`) aus deinem eigenen Konto. Der
   Launcher macht das für dich.
-- Das Ziel ist Online-Spiel mit Freunden (eine Lobby, die beiden PCs reden
-  direkt miteinander). Es ist **noch nicht spielbar**. Siehe "Online".
+- Online-Spiel mit Freunden funktioniert wie bei Tekken 6 Native Online: Im
+  Online-Reiter des Launchers anmelden (oder als Gast spielen), Gegner finden,
+  und das Spiel startet direkt im Kampf. Siehe "Online".
 
-## Stand (2026-10-16)
+## Stand (2026-10-17)
 
-Getestet auf einem einzigen Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen).
-Noch nicht auf einem frischen PC ausprobiert.
+Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).
+Ein Lauf auf einem frischen PC und ein Match zwischen zwei echten PCs über das
+Internet stehen noch aus.
 
 | Bereich | Stand |
 |---|---|
 | Start | Funktioniert. Startet, öffnet das Fenster, erreicht Titel, Menüs, Charakterwahl und Kämpfe. |
-| Menüs | 60 fps. |
-| Kämpfe | Laufen, aber mit etwa 30-45 fps, nicht mit 60. Daran wird gearbeitet. |
-| Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen in den Testläufen. Optionen laufen auch, aber "Delete Save Data" tut nichts. Gallery braucht PSN und scheitert offline sauber. |
-| Kämpfer, Stages | Werden richtig dargestellt. 14 Kämpfer und 12 Stages wurden ausprobiert. |
-| Grafikfehler | Alle Gesichter sind dunkel (braun/schwarz). Helle durchsichtige Rechtecke auf Boden/Wänden in manchen Stages. Manche Figuren im Hintergrund sind flach weiß. |
-| Musik, Soundeffekte | Funktionieren. Kurze Aussetzer sind möglich, wenn die Bildrate einbricht. |
-| Videos | Intro- und Titelvideos laufen mit Ton. Sie werden langsamer, wenn das Spiel unter 60 fps läuft. |
-| Tastatur, Xbox-Controller | Funktionieren. |
-| PlayStation-Pads, Arcade-Sticks | Eingebaut (`controls.ini`). Noch nie von einem Menschen mit echter Hardware getestet. |
-| Speichern | Unzuverlässig. Das erste Speichern auf einem frischen Profil kann ohne Meldung scheitern. In anderen Tests hat Speichern geklappt. Die Uhr im Spiel zeigt 1970. |
-| Lange Sitzungen | Speicherfehler. Nach etwa zwei Besuchen des Titelbildschirms oder etwa 3 Minuten Leerlauf am Titel kann das Bild weiß werden oder das Spiel abstürzen. Starte das Spiel neu. Eine Korrektur ist in Arbeit. |
-| Online-Spiel | In Arbeit. Noch nicht spielbar. |
-| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC (etwa 90 Sekunden). Auf einem frischen PC noch nicht ausprobiert. |
+| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Schwächere PCs sind noch nicht gemessen. |
+| Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery braucht PSN und scheitert offline sauber. |
+| Kämpfer, Stages | Werden richtig dargestellt. Gesichter und Bodenschatten sind behoben. Manche Figuren im Hintergrund können noch flach weiß aussehen. |
+| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
+| Musik, Soundeffekte, Videos | Funktionieren. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Echte Arcade-Sticks hat noch kein Mensch ausprobiert. |
+| Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
+| Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Netcode mit Verzögerung (2-3 Frames Input-Delay); Rollback wird gerade fertig. Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
+| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. |
 
 ## Voraussetzungen
 
@@ -149,33 +148,37 @@ Tastatur (Standard) und Xbox-Controller:
 
 ## Online
 
-**In Arbeit. Du kannst noch nicht online spielen.**
+1. Starte den Launcher und öffne den Reiter **Online**. Der öffentliche Server
+   "T5DR Online" ist schon ausgewählt.
+2. Klicke **Als Gast spielen** oder **Anmelden**. Für Ranked brauchst du ein
+   Konto: Lege es im Reiter an und bewahre die Wiederherstellungs-Codes auf.
+3. Suche ein **Quick**- oder **Ranked**-Match, oder öffne einen Lobby-Raum für
+   einen Freund. Wird ein Gegner gefunden, siehst du den Ping und nimmst
+   innerhalb von 15 Sekunden an.
+4. Das Spiel startet direkt im Kampf: wer zuerst 3 Runden gewinnt. Danach
+   **Rematch** oder **Next game**. Das Spiel bleibt zwischen den Matches offen.
 
-Was geplant ist (dasselbe Prinzip wie bei Tekken 6 Native Online):
+Gut zu wissen:
 
-- Du öffnest den Launcher, meldest dich an (oder spielst als Gast), suchst in der
-  Lobby einen Gegner und spielst.
-- Die beiden PCs schicken sich die Controller-Eingaben direkt zu. Erst
-  verzögerungsbasiert, später Rollback. Kabel ist besser als WLAN.
-- Ein kleiner Lobby-Server stellt die Spieler nur einander vor, hilft ihnen durch
-  ihre Router und leitet den Verkehr weiter, wenn das scheitert. Beide Spieler
-  brauchen denselben Build.
-- Bei einer direkten Verbindung erfährt jeder PC die IP-Adresse des anderen.
-
-Was es heute gibt:
-
-- Lobby-Server und Client (Matchmaking, NAT-Durchdringung, Relay, Wertungen)
-  liegen im Repository, mit 55 Tests auf einem PC.
-- Noch nicht fertig: Der Netplay-Code ist nicht im Spiel eingebunden, der
-  Online-Reiter im Launcher ist noch ein Platzhalter, und nichts wurde über zwei
-  echte Netzwerke getestet.
+- Die beiden PCs schicken sich die Controller-Eingaben direkt zu. Lassen die
+  Router das nicht zu, leitet der Lobby-Server sie weiter. Bei einer direkten
+  Verbindung erfährt jeder PC die IP-Adresse des anderen.
+- Kabel ist besser als WLAN.
+- Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
+  dürfen. Erlaube es für **private Netzwerke**.
+- Netcode: vorerst mit Verzögerung (2-3 Frames Input-Delay). Rollback wird
+  gerade fertig.
+- Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
+  oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
+  ungültig.
+- Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 Benutze nicht den Menüpunkt **Online** des Spiels. Sonys Server gibt es nicht
 mehr. Nach dem Nutzungsbedingungs-Bildschirm stürzt er ab (bekannt).
 
-Freunde, die die Lobby später ausprobieren wollen, können einen eigenen Server
-betreiben. Siehe [ONLINE.md](ONLINE.md) (Abschnitt "Running your own server",
-auf Englisch).
+Du kannst einen eigenen Server betreiben: auf einem kleinen Linux-VPS, mit
+Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
+[HOSTING.md](HOSTING.md) (auf Englisch).
 
 ## Aktualisieren
 

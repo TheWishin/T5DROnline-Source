@@ -21,9 +21,18 @@
  *      repeated (prediction).
  *
  * Environment: T5_RB_NET_START=frame:N (switch from the lockstep to rollback
- * at lockstep frame N; default 0 = from the start), T5_RB_NET_MAXPRED (max
- * frames of prediction before stalling, default 8), T5_RB_NET_LOG=1 (a line
- * per rollback).
+ * at lockstep frame N; default 0 = from the first frame after the handshake,
+ * which with T5_NET_START=external is the fight start), T5_RB_NET_MAXPRED
+ * (max frames of prediction before stalling, default 8), T5_RB_NET_LOG=1 (a
+ * line per rollback), T5_RB_NET_TIMESYNC=0 (no frame-advantage balancing).
+ *
+ * Time sync (GGPO's): every packet carries the sender's lead estimate
+ * (own frame minus the peer's frame as implied by its latest input); the
+ * true advantage is (mine - theirs) / 2 averaged over a window; the side
+ * ahead by a frame or more sleeps that many frames (at most 3) at the
+ * boundary, no more than once per second, so both peers predict and roll
+ * back about equally instead of the one that happens to run ahead doing it
+ * all.
  */
 #pragma once
 #include <stdint.h>
@@ -31,7 +40,7 @@
 
 namespace rb { namespace net {
 
-bool     enabled();                 /* T5_RB_MODE=net */
+bool     enabled();                 /* rollback offered (T5_RB_MODE unset or "net") and agreed with the peer in the HELLO */
 bool     active();                  /* the rollback loop has taken over (after the start frame) */
 bool     bypass();                  /* a re-simulated frame is running: no GPU/vblank waits */
 uint32_t start_frame();             /* T5_RB_NET_START */
@@ -50,5 +59,9 @@ void     scene_change(uint32_t nf);
 
 /* Take over at lockstep frame f (state shadow taken now). */
 void     start(uint32_t f);
+
+/* Called from the netplay init (before the handshake): offer rollback to the
+ * peer unless T5_RB_MODE says lockstep/off or is one of the test modes. */
+void     offer();
 
 } } // namespace rb::net

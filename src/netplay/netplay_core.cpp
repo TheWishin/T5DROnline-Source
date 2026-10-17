@@ -23,6 +23,7 @@
  *   T5_NET_LOG      per-frame log file: frame, both inputs, state hash.
  */
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -32,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -57,11 +59,12 @@ enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3 };
 
 #pragma pack(push, 1)
 struct Hdr      { uint32_t magic; uint8_t type, ver, delay, slot; uint32_t session; };
-struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; uint8_t reserved; };
+struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; int8_t lead; };   /* lead: the sender's frame advantage estimate (rollback time sync) */
 struct WireIn   { uint16_t buttons; uint8_t lx, ly, rx, ry; };
 struct WireHash { uint32_t frame; uint64_t hash; };
 struct WireBar  { uint32_t index; uint32_t frame; };
-struct HelloExt { uint32_t build; uint32_t seed; };   /* follows Hdr in a HELLO */
+struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows Hdr in a HELLO; flags: bit 0 = this side offers rollback */
+constexpr uint32_t kHelloRollback = 1u;
 #pragma pack(pop)
 
 /* CELL_PAD_CTRL_* (cellPad.h) */
@@ -122,6 +125,9 @@ struct State {
     bool localpad = true;              /* T5_NET_LOCALPAD=0: this PC's devices are ignored */
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
+    bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
+    bool rb_peer = false;              /* the peer's HELLO offered rollback */
+    int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
 
     SOCKET sock = INVALID_SOCKET;
     std::mutex mu;                     /* guards everything below */
@@ -258,7 +264,7 @@ void send_hello_locked()
 {
     State& s = S();
     struct { Hdr h; HelloExt x; } p = { { kMagic, PKT_HELLO, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session },
-                                         { s.build, s.seed } };
+                                         { s.build, s.seed, s.rb_offer ? kHelloRollback : 0u } };
     send_raw(&p, sizeof p);
 }
 
@@ -281,7 +287,7 @@ void send_inputs_locked()
     ih->ack = s.remote_contig;
     ih->first = first;
     ih->count = (uint8_t)count;
-    ih->reserved = 0;
+    ih->lead = s.local_lead;
     ih->nbar = 0;
     WireIn* wi = (WireIn*)(ih + 1);
     for (uint32_t i = 0; i < count; i++) {
@@ -343,8 +349,10 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     s.packets_in++;
     s.last_rx_ms = GetTickCount64();
     if (h->type == PKT_HELLO) {
-        HelloExt x = { 0, 0 };
-        if (n >= (int)(sizeof(Hdr) + sizeof(HelloExt))) memcpy(&x, h + 1, sizeof x);
+        HelloExt x = { 0, 0, 0 };
+        /* an older peer sends build + seed only: its flags read as 0 (no rollback) */
+        if (n >= (int)(sizeof(Hdr) + 8)) memcpy(&x, h + 1, (size_t)std::min<int>(n - (int)sizeof(Hdr), (int)sizeof x));
+        s.rb_peer = (x.flags & kHelloRollback) != 0;
         if (x.build && s.build && x.build != s.build) {
             static int said = 0;
             if (!said++) note("the peer runs a different build (T5_NET_BUILD id %08X, ours %08X): not connecting",
@@ -398,6 +406,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
                   + ih->nbar * sizeof(WireBar)))
         return;
     if (ih->ack > s.peer_ack) s.peer_ack = ih->ack;
+    s.peer_lead = ih->lead;
     const WireIn* wi = (const WireIn*)(ih + 1);
     for (uint32_t k = 0; k < ih->count; k++) {
         uint32_t f = ih->first + k;
@@ -867,6 +876,16 @@ void rb_poll()
 }
 
 bool rb_peer_lost() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lost; }
+void rb_offer(bool on) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.rb_offer = on; }
+bool rb_negotiated()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mode == Mode::Local) return s.rb_offer;
+    return s.rb_offer && s.rb_peer && s.connected;
+}
+void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.local_lead = (int8_t)std::max(-100, std::min(100, lead)); }
+int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
 

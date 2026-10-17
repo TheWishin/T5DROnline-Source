@@ -138,6 +138,8 @@ def main():
     ap.add_argument("--maxpred", type=int, default=8)
     ap.add_argument("--start", type=int, default=3400, help="lockstep frame at which the rollback loop takes over")
     ap.add_argument("--env", action="append", default=[], help="extra NAME=VALUE for both instances")
+    ap.add_argument("--env1", action="append", default=[], help="extra NAME=VALUE for the host only")
+    ap.add_argument("--env2", action="append", default=[], help="extra NAME=VALUE for the joiner only")
     ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--no-proxy", action="store_true")
     ap.add_argument("--vfs", default=VFS)
@@ -179,6 +181,9 @@ def main():
             env.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0",
                         "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}",
                         "T5_NET_SCRIPT": "@" + MENU2 + "," + fight_script(3300, 12000, False, 22)})
+        for kv in (a.env1 if who == "host" else a.env2):
+            k, v = kv.split("=", 1)
+            env[k] = v
         glog = open(os.path.join(wd, "game.log"), "w")
         p = subprocess.Popen([exe, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd, stdout=glog, stderr=subprocess.STDOUT)
         procs.append((p, glog))

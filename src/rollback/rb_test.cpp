@@ -19,6 +19,7 @@
  * every boundary with the script's input for that frame (np's finding).
  */
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -107,6 +108,33 @@ void diff_against_original(uint32_t f, int max_pages)
     note("resim %u vs original: %d page(s) differ", f, total);
 }
 
+/* On a gameplay-hash mismatch: which words of the gameplay regions differ from
+ * the original run (captured pages), the first few with addresses. */
+void diff_gameplay(uint32_t f)
+{
+    static const Range kGame[] = {
+        { 0x10099F24u, 0x70 }, { 0x104CCDFCu, 0x40 }, { 0x106D4D88u, 0x8 }, { 0x10095168u, 0x9C0 }, { 0x10053578u, 0x4 },
+        { 0x10076920u, 0x4 }, { 0x1074F218u, 0x10C }, { 0x1008E000u, 0x4000 }, { 0x10099600u, 0x600 }, { 0x100A0900u, 0x200 },
+        { 0x100A3B00u, 0x300 },
+    };
+    int shown = 0, total = 0;
+    char line[600]; int n = 0;
+    for (const Range& r : kGame) {
+        for (uint32_t ea = r.base & ~0xFFFu; ea < r.base + r.len; ea += 0x1000) {
+            const uint8_t* ref = original_content(ea, f, nullptr);
+            if (!ref) continue;
+            const uint32_t lo = std::max(ea, r.base), hi = std::min(ea + 0x1000, r.base + r.len);
+            for (uint32_t a = lo & ~3u; a < hi; a += 4) {
+                uint32_t x, y; memcpy(&x, vm_base + a, 4); memcpy(&y, ref + (a - ea), 4);
+                if (x == y) continue;
+                total++;
+                if (shown++ < 16) n += snprintf(line + n, sizeof line - n, " %08X:%08X/%08X", a, (unsigned)_byteswap_ulong(x), (unsigned)_byteswap_ulong(y));
+            }
+        }
+    }
+    note("gameplay diff at %u: %d word(s) differ (resim/original):%s", f, total, line);
+}
+
 /* ---- recorded history ------------------------------------------------------------ */
 constexpr uint32_t kHist = 4096;
 uint64_t g_hist_hash[kHist], g_hist_game[kHist];
@@ -131,7 +159,7 @@ uint32_t g_resim_left = 0;       /* > 0: re-simulating */
 uint32_t g_resim_target = 0;     /* logical frame at which the resim ends */
 uint32_t g_rollbacks = 0, g_mismatches = 0, g_resim_frames = 0, g_rollback_fail = 0, g_cut_diffs = 0;
 uint64_t g_saved_minvb = 1;
-bool g_diag_done = false;
+bool g_diag_done = false, g_gdiag_done = false;
 uint32_t g_snap_frame = 0;
 uint64_t g_snap_hash = 0;
 bool     g_have_snap = false;
@@ -269,9 +297,10 @@ void test_on_frame(ppu_context* ctx)
         /* uninterrupted run: record */
         g_hist_hash[f % kHist] = state_hash(); g_hist_game[f % kHist] = state_game_hash(); g_hist_tag[f % kHist] = f + 1;
         if (f > g_start + 1) { g_cyc_normal += dcyc; g_cyc_normal_n++; }
-        logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
+        logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u round %u-%u over %u timer %u reset %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
                 (unsigned long long)state_hash(), (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
-                (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C));
+                (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
+                vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
         if (g_have_snap && f == g_snap_frame + g_resim && g_rollbacks < g_rollbacks_max) {
             /* ROLLBACK: restore the boundary of P = g_snap_frame, re-simulate P..f-1 */
             for (size_t ri = 0; ri < kSaveN; ri++)
@@ -286,7 +315,7 @@ void test_on_frame(ppu_context* ctx)
             g_restore_ms_total += rms; g_restore_pages_total += rpages;
             if (!ok) { g_mismatches++; state_hash_full(); note("full rehash after an unfaithful restore: %016llX", (unsigned long long)state_hash()); }
             g_rollbacks++;
-            g_diag_done = false;
+            g_diag_done = false; g_gdiag_done = false;
             g_resim_left = g_resim;
             g_resim_target = f;
             g_saved_minvb = rd64(kMinVblanks);
@@ -310,8 +339,8 @@ void test_on_frame(ppu_context* ctx)
             g_snap_frame = f; g_snap_hash = state_hash(); g_have_snap = true;
             g_cap_frame0 = f; g_cap_n = 0; g_cap_used = 0;
             g_capture_left = (int)std::min<uint32_t>(g_resim, kCapFrames);
-            note("ROLLBACK POINT at %u: hash %016llX (commit %.2f ms, %u dirty pages; avg commit %.2f ms, max %.2f)", f, (unsigned long long)state_hash(),
-                 commit_ms, nre, g_commit_n ? g_commit_ms_total / g_commit_n : 0, g_commit_ms_max);
+            note("ROLLBACK POINT at %u: hash %016llX (commit %.2f ms, %u dirty pages; avg commit %.2f ms, max %.2f; stage %u, game type %u)", f, (unsigned long long)state_hash(),
+                 commit_ms, nre, g_commit_n ? g_commit_ms_total / g_commit_n : 0, g_commit_ms_max, rd32(0x1008F088), rd32(0x1008EBAC));
         }
         g_logical = f + 1;
         set_sim_frame(f);
@@ -329,13 +358,18 @@ void test_on_frame(ppu_context* ctx)
     const uint64_t gh = state_game_hash();
     const bool gmatch = known && g_hist_game[f % kHist] == gh;
     const bool counted = g_resim_left < g_cut_tail || g_cut_tail == 0;   /* boundaries after a cut frame are expected to differ in render bookkeeping */
-    if (!gmatch) { g_game_mismatches++; note("resim frame %u: GAMEPLAY hash %016llX, original %016llX -> MISMATCH", f, (unsigned long long)gh, (unsigned long long)(known ? g_hist_game[f % kHist] : 0)); }
+    if (!gmatch) {
+        g_game_mismatches++;
+        note("resim frame %u: GAMEPLAY hash %016llX, original %016llX -> MISMATCH", f, (unsigned long long)gh, (unsigned long long)(known ? g_hist_game[f % kHist] : 0));
+        if (!g_gdiag_done) { g_gdiag_done = true; diff_gameplay(f); }
+    }
     if (!match && counted) { g_mismatches++; if (!g_diag_done) { g_diag_done = true; diff_against_original(f, 12); } }
     if (!match && !counted) g_cut_diffs++;
-    logline("R %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX %s vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
-            (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH",
+    logline("R %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX %s game %s vb %llu last %llu clk %llu tick %u anim %u cnt %u round %u-%u over %u timer %u reset %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
+            (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH", gmatch ? "MATCH" : "MISMATCH",
             (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
-            (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C));
+            (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
+            vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
     if (!match && counted) note("resim frame %u: hash %016llX, original %016llX -> %s", f, (unsigned long long)state_hash(),
                      (unsigned long long)(known ? g_hist_hash[f % kHist] : 0), known ? "MISMATCH" : "unknown");
     if (g_resim_left == 0) {

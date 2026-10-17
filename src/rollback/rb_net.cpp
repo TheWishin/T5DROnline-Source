@@ -16,7 +16,12 @@ namespace rb { namespace net {
 namespace {
 constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per frame (u64) */
 bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
+bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
+/* time sync */
+constexpr int kLeadWin = 30;
+int g_lead_mine[kLeadWin], g_lead_theirs[kLeadWin]; int g_lead_n = 0;
+uint32_t g_last_sleep_frame = 0;
 int g_delay = 0;
 
 /* per-frame history, by frame number */
@@ -38,8 +43,8 @@ LARGE_INTEGER g_qpf, g_resim_t0;
 
 /* statistics (reported every 300 frames) */
 struct Stats {
-    uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0;
-    double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0;
+    uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0, sleeps = 0;
+    double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0;
     uint32_t depth_hist[17] = {};
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
@@ -72,35 +77,55 @@ void report()
     char hist[160]; int n = 0;
     for (int d = 1; d <= 16; d++) if (g_st.depth_hist[d]) n += snprintf(hist + n, sizeof hist - n, " %d:%u", d, g_st.depth_hist[d]);
     note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f), "
-         "%u stalls (%.1f ms), %u frames ran on predicted input, commit avg %.2f ms, peer ack %u, desync mismatches %u",
+         "%u stalls (%.1f ms), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u",
          g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
          g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.predicted,
+         g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches());
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
     g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
-    g_tot.stall_ms += g_st.stall_ms; g_tot.commit_ms += g_st.commit_ms;
+    g_tot.stall_ms += g_st.stall_ms; g_tot.commit_ms += g_st.commit_ms; g_tot.sleeps += g_st.sleeps; g_tot.sleep_ms += g_st.sleep_ms;
     for (int d = 0; d < 17; d++) g_tot.depth_hist[d] += g_st.depth_hist[d];
     g_st = Stats();
 }
 } // namespace
 
+/* rollback is on offer when T5_RB_MODE is unset or "net" (and netplay is on) */
+static bool offered_by_env()
+{
+    const char* m = getenv("T5_RB_MODE");
+    const char* nm = getenv("T5_NET_MODE");
+    if (!nm || !*nm) return false;
+    return !m || !*m || !strcmp(m, "net");
+}
+
+void offer()
+{
+    if (g_offered) return;
+    g_offered = true;
+    if (!offered_by_env()) return;
+    np::rb_offer(true);
+    note("rbnet: rollback offered to the peer (T5_RB_MODE=lockstep keeps the delay-based lockstep)");
+}
+
 bool enabled()
 {
     static int e = -1;
     if (e < 0) {
-        const char* m = getenv("T5_RB_MODE");
-        e = (m && !strcmp(m, "net")) ? 1 : 0;
+        e = offered_by_env() ? 1 : 0;
         if (e) {
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             QueryPerformanceFrequency(&g_qpf);
         }
         g_enabled = e == 1;
     }
-    return g_enabled;
+    /* agreed in the HELLO (both sides offer it); until the handshake is done this is false */
+    return g_enabled && (g_active || np::rb_negotiated());
 }
 bool active() { return g_active; }
 bool bypass() { return bypass_on(); }
@@ -155,10 +180,37 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        /* time sync: my lead = my frame minus the peer's frame as implied by its
+         * latest input (sampled delay frames ahead of its boundary) */
+        {
+            const uint32_t rc0 = np::rb_remote_contig();
+            const int peer_frame = (int)rc0 - 1 - g_delay;
+            const int mine = (int)f - peer_frame;
+            np::rb_set_lead(mine);
+            g_lead_mine[g_lead_n % kLeadWin] = mine;
+            g_lead_theirs[g_lead_n % kLeadWin] = np::rb_peer_lead();
+            g_lead_n++;
+        }
         /* the local input for frame f + delay, sent at once */
         np::rb_sample_local(f);
     }
     np::rb_poll();
+
+    if (g_timesync && !g_resim && g_lead_n >= kLeadWin && np::mode() != np::Mode::Local && !np::rb_peer_lost()) {
+        double m = 0, t = 0;
+        for (int i = 0; i < kLeadWin; i++) { m += g_lead_mine[i]; t += g_lead_theirs[i]; }
+        const double adv = (m - t) / (2.0 * kLeadWin);   /* frames this side is ahead of the peer */
+        g_st.lead_sum += adv;
+        if (adv >= 1.0 && f - g_last_sleep_frame >= 60) {
+            const int frames = std::min(3, (int)adv);
+            const double ms = frames * 1000.0 / 60.0;
+            LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+            np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms);   /* a sleep that keeps the socket pumped */
+            g_last_sleep_frame = f;
+            g_st.sleeps++; g_st.sleep_ms += ms_since(t0);
+            if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
+        }
+    }
 
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */

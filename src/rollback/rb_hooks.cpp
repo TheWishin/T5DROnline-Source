@@ -379,7 +379,12 @@ struct Register {
     Register()
     {
         const char* m = getenv("T5_RB_MODE");
+        /* online (T5_NET_MODE set) and nothing else asked for: the rollback loop
+         * is offered to the peer (rb_net.cpp); its hooks are harmless until the
+         * handshake agrees on it */
+        if ((!m || !*m) && getenv("T5_NET_MODE") && *getenv("T5_NET_MODE")) m = "net";
         if (!m || !*m) return;
+        if (!strcmp(m, "lockstep") || !strcmp(m, "off")) return;
         if (!strcmp(m, "measure")) g_mode = Mode::Measure;
         else if (!strcmp(m, "test")) g_mode = Mode::Test;
         else if (!strcmp(m, "net")) g_mode = Mode::Net;

@@ -106,3 +106,10 @@ uint32_t rb_peer_ack();                          /* the peer has our inputs for 
  * (both PCs meet at the frame-0 handshake); while lockstep runs it marks a sync
  * point (next match in the same process). No-op when netplay is off. */
 extern "C" void t5_netplay_start(void);
+
+/* Menu driving by the direct-fight mode: while `on`, pad `port` reads exactly
+ * `buttons` (CELL_PAD_CTRL_* packed as PadInput::buttons) instead of the local
+ * pad or the lockstep input -- both PCs inject the same sequence from the same
+ * game state. t5_netplay_enabled() tells whether netplay owns the pads at all. */
+extern "C" void t5_netplay_inject(int port, int on, unsigned buttons);
+extern "C" int  t5_netplay_enabled(void);

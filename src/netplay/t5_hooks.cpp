@@ -266,11 +266,23 @@ void write_pad_data(uint32_t ea, const np::PadInput& in)
     wr16(ea + 4 + 7 * 2, in.ly);
 }
 
+/* t5_netplay_inject(): the direct-fight mode drives the game's menus itself
+ * (character/stage select between matches). While a port is injected it reads
+ * exactly the injected buttons -- before lockstep starts and during it; both
+ * PCs inject the same sequence from the same game state, so the input rings
+ * stay equal. */
+std::atomic<uint32_t> g_inject_on{ 0 };       /* bit per port */
+std::atomic<uint16_t> g_inject[2] = { 0, 0 };
+
 void h_cellPadGetData(ppu_context* ctx)
 {
     uint32_t port = (uint32_t)ctx->gpr[3], ea = (uint32_t)ctx->gpr[4];
     if (!ea) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x80121104; return; }   /* INVALID_PARAMETER */
-    if (g_passive && port < (uint32_t)g_pads) {
+    if (port < 2 && (g_inject_on.load() & (1u << port))) {
+        np::PadInput in = np::kNeutral;
+        in.buttons = g_inject[port].load();
+        write_pad_data(ea, in);
+    } else if (g_passive && port < (uint32_t)g_pads) {
         write_pad_data(ea, np::poll_now((int)port));
     } else if (port < 2) {
         write_pad_data(ea, g_active ? g_cur[port] : np::kNeutral);
@@ -857,4 +869,16 @@ struct Register {
 extern "C" void t5_netplay_start(void)
 {
     g_start_requested = true;
+}
+
+extern "C" void t5_netplay_inject(int port, int on, unsigned buttons)
+{
+    if (port < 0 || port > 1) return;
+    g_inject[port] = (uint16_t)buttons;
+    if (on) g_inject_on |= (1u << port); else g_inject_on &= ~(1u << port);
+}
+
+extern "C" int t5_netplay_enabled(void)
+{
+    return np::enabled() ? 1 : 0;
 }

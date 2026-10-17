@@ -1,11 +1,15 @@
 ﻿/*
  * T5DR direct fight -- the match driver (NPUB30009 v01.00; docs/DIRECTFIGHT.md).
  *
- *   T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color]
+ *   T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>]
  *       p1/p2   character: id 0-35, 3-letter code (pau, law, ...) or name prefix
- *       stage   stage id, or "random" / -1 (the game's own pick)
- *       rounds  rounds to win (default 3)
+ *       stage   stage id, or "random" / -1: without netplay the game's own pick; with
+ *               netplay a stage derived from the shared seed (the game's pick happens
+ *               on each PC on its own and would differ)
+ *       rounds  rounds to win (default T5_NET_ROUNDS, else 3)
  *       colors  1 or 2 (costume; the second confirm's button)
+ *       match=  the lobby's match id (any position, key=value): goes into the result
+ *               file so the launcher can tell this match's result from an old one
  *   T5_FIGHT_FILE=<path>   the next fight: the file holds one T5_FIGHT line; it is
  *                          read when the game idles at character select (after a
  *                          match, or from boot when T5_FIGHT is not set) and renamed
@@ -36,6 +40,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <string>
 #include <vector>
 #include "df.h"
@@ -43,6 +48,8 @@
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
 extern "C" int  t5_netplay_local_slot(void);
+extern "C" void t5_netplay_set_match(const char* id);
+extern "C" unsigned t5_netplay_match_seed(void);
 
 namespace df {
 
@@ -97,7 +104,8 @@ int cell_row(int c) { return c >= 24 ? 0 : c >= 12 ? 2 : 1; }         /* 0 top, 
 int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
 
 /* ---- configuration ----------------------------------------------------- */
-struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false; std::string text; };
+struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false;
+               std::string text, match; };
 std::string g_fight_file, g_status_file, g_result_file;
 Fight g_cfg;            /* the fight being set up / fought */
 bool g_configured = false;
@@ -113,23 +121,38 @@ int parse_char(const std::string& t)
     return -1;
 }
 
+int default_rounds()
+{
+    const char* r = getenv("T5_NET_ROUNDS");
+    const int n = r ? atoi(r) : 0;
+    return (n >= 1 && n <= 5) ? n : 3;
+}
+
 bool parse_fight(const char* s, Fight& out)
 {
     Fight f; f.text = s ? s : "";
+    f.rounds = default_rounds();
     std::vector<std::string> tok;
     std::string cur;
+    auto push = [&]() {
+        if (cur.empty()) return;
+        const size_t eq = cur.find('=');
+        if (eq == std::string::npos) tok.push_back(cur);
+        else if (_stricmp(cur.substr(0, eq).c_str(), "match") == 0) f.match = cur.substr(eq + 1);   /* key=value options */
+        cur.clear();
+    };
     for (const char* p = s; p && *p; p++) {
-        if (*p == ',' || *p == ' ' || *p == ';') { if (!cur.empty()) tok.push_back(cur); cur.clear(); }
+        if (*p == ',' || *p == ' ' || *p == ';') push();
         else if (*p != '\r' && *p != '\n') cur += *p;
     }
-    if (!cur.empty()) tok.push_back(cur);
+    push();
     if (tok.size() < 3) { note("T5_FIGHT needs p1,p2,stage[,rounds][,c1,c2]: '%s'", s ? s : ""); return false; }
     f.chr[0] = parse_char(tok[0]); f.chr[1] = parse_char(tok[1]);
     if (f.chr[0] < 0 || f.chr[1] < 0) { note("T5_FIGHT: unknown character in '%s'", s); return false; }
     if (_stricmp(tok[2].c_str(), "random") == 0 || tok[2] == "-1") f.stage = -1;
     else f.stage = atoi(tok[2].c_str());
     if (tok.size() > 3) f.rounds = atoi(tok[3].c_str());
-    if (f.rounds < 1 || f.rounds > 5) f.rounds = 3;
+    if (f.rounds < 1 || f.rounds > 5) f.rounds = default_rounds();
     if (tok.size() > 5) { f.color[0] = atoi(tok[4].c_str()) == 2 ? 2 : 1; f.color[1] = atoi(tok[5].c_str()) == 2 ? 2 : 1; }
     f.valid = true;
     out = f;
@@ -170,8 +193,15 @@ void status(const char* state, uint32_t f)
 void write_result(int winner, int w1, int w2)
 {
     if (g_result_file.empty() || netplay_on()) return;   /* netplay writes it when it owns the match */
-    char buf[128];
-    snprintf(buf, sizeof buf, "{\"winner\": %s, \"score\": [%d, %d]}", winner < 0 ? "null" : (winner == 0 ? "0" : "1"), w1, w2);
+    std::string id = "null";
+    if (!g_cfg.match.empty()) {
+        id = "\"";
+        for (char c : g_cfg.match) id += (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_';
+        id += "\"";
+    }
+    char buf[256];
+    snprintf(buf, sizeof buf, "{\"match\": %s, \"winner\": %s, \"score\": [%d, %d]}", id.c_str(),
+             winner < 0 ? "null" : (winner == 0 ? "0" : "1"), w1, w2);
     write_text(g_result_file, buf);
     note("result written to %s: %s", g_result_file.c_str(), buf);
 }
@@ -253,10 +283,30 @@ bool navigate(int p, int target, uint32_t f)
     return false;
 }
 
+/* With netplay a stage is never left to the game: its random pick at the stage
+ * panel runs on each PC on its own (fd_random: different stages, desync from
+ * frame 0). "random" becomes a stage from the seed both PCs share, mixed with
+ * the match number (the same on both). The seed comes from T5_NET_SEED; without
+ * it from the handshake, which may block -- so only once lockstep runs or at the
+ * fight start (where the handshake is the barrier anyway). */
+void resolve_stage(bool may_block)
+{
+    if (g_cfg.stage >= 0 || !netplay_on()) return;
+    uint32_t seed = 0;
+    if (const char* v = getenv("T5_NET_SEED")) seed = (uint32_t)strtoul(v, nullptr, 0);
+    if (!seed && (may_block || t5_netplay_lockstep_active())) seed = t5_netplay_match_seed();
+    if (!seed) return;
+    uint32_t x = seed ^ ((g_match + 1) * 0x9E3779B9u);
+    x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
+    g_cfg.stage = 17 + (int)(x % 18);
+    note("stage: random -> %d (from the shared seed, match %u)", g_cfg.stage, g_match + 1);
+}
+
 void begin_select(uint32_t f)
 {
     g_steps[0] = g_steps[1] = 0;
     g_result_done = false;
+    resolve_stage(false);
     for (int p = 0; p < 2; p++) {
         const int c = cell_of(g_cfg.chr[p]);
         note("player %d: %s (id %d) -> cell %d, color %d", p + 1, kName[g_cfg.chr[p]], g_cfg.chr[p], c, g_cfg.color[p]);
@@ -321,20 +371,30 @@ void fight_on_frame(uint32_t f)
         break; }
     case Ph::Stage:
         if (mode == kModeGame) { set_phase(Ph::WaitGame, "loading", f); break; }
-        if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
+        if (rd32(kSelectState) >= 4) {
+            /* stage confirmed, the mode switch follows. The confirm wrote the
+             * panel's own pick (random, different on the two PCs: fd_rematch
+             * showed 0x1d vs 0x11 for 50 frames in lockstep); ours replaces it
+             * at once, before the frame's state hash. */
+            if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
+            break;
+        }
         if (f >= g_ph_frame + 90 && press_idle(0) && press_idle(1) && ((f - g_ph_frame) % 30) == 0) {
             for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }
         break;
     case Ph::WaitGame:
         /* first frame in the game mode: apply the setup the loader reads, start lockstep */
+        resolve_stage(true);
         wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
+        if (netplay_on() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         for (int p = 0; p < 2; p++) inject(p, false, 0);
         g_match++;
         g_fight_frame = f;
-        note("frame %u: FIGHT START match %u: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
-             f, g_match, kName[g_cfg.chr[0]], kName[g_cfg.chr[1]], g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
+        note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
+             f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
+             g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
         if (netplay_on()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
         set_phase(Ph::Fight, "fight", f);
         break;

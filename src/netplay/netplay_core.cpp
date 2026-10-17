@@ -5,9 +5,18 @@
  * Environment:
  *   T5_NET_MODE     host | join | local   (unset = netplay off)
  *   T5_NET_PORT     local UDP port (host default 7000, join default 0 = any)
- *   T5_NET_PEER     ip:port of the host (join; host learns it from the first packet)
+ *   T5_NET_PEER     ip:port of the host (join). A host given one calls it while waiting (lobby
+ *                   punch / relay); either way it takes the first authenticated HELLO as its peer
  *   T5_NET_DELAY    input delay in frames (host decides, join adopts; default 3)
- *   T5_NET_TIMEOUT  seconds without the peer's input before giving up (default 30)
+ *   T5_NET_TIMEOUT  seconds the peer may be silent, or stall the match, before it counts
+ *                   as lost (default 30; the lobby passes 20)
+ *   T5_NET_CONNECT_TIMEOUT  seconds from boot for the handshake (default max(60, 2x
+ *                   T5_NET_TIMEOUT); 0 = wait forever)
+ *   T5_NET_START_TIMEOUT    seconds to wait at the start of the match for a peer that is
+ *                   connected and alive but still loading (default 120)
+ *   T5_NET_KEY      match secret (the lobby's): every packet carries a SipHash-2-4 tag
+ *                   under it; without it the key comes from T5_NET_MATCH + T5_NET_SEED when
+ *                   both are given, else packets are not authenticated
  *   T5_NET_LOCALPAD 0 ignores this PC's devices (tests: scripts only). Otherwise
  *                   the local player is whatever the runtime's controls put on
  *                   port 1 (cellPad_sample_local: pads, sticks, keyboard, remaps)
@@ -48,24 +57,61 @@ namespace np {
 namespace {
 
 constexpr uint32_t kMagic    = 0x504E3554u;   /* "T5NP" little-endian */
-constexpr uint8_t  kVersion  = 1;
+/* v2: the header carries the sender's per-process nonce, packets may carry an
+ * authentication tag, PING and REJECT exist. A v1 peer is a different build. */
+constexpr uint8_t  kVersion  = 2;
 constexpr uint32_t kRing     = 1024;          /* frames of history kept */
 constexpr uint32_t kMaxBatch = 64;            /* inputs per packet */
 constexpr uint32_t kHashes   = 8;             /* recent hashes per packet */
 constexpr uint32_t kBarriers = 4096;          /* scene changes kept */
 constexpr uint32_t kBarSend  = 4;             /* recent scene changes per packet */
+constexpr int      kTag      = 8;             /* SipHash-2-4 tag at the end of every packet when keyed */
+constexpr ULONGLONG kPingMs  = 200;           /* keepalive while nothing else is sent */
 
-enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3 };
+/* HELLO: handshake (session, delay, build, seed). INPUT: inputs + hashes +
+ * scene changes. BYE: leaving. PING: keepalive with the sender's progress.
+ * REJECT: "I am in another session / a different build" (fail fast). */
+enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5 };
+enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
-struct Hdr      { uint32_t magic; uint8_t type, ver, delay, slot; uint32_t session; };
+struct Hdr      { uint32_t magic; uint8_t type, ver, delay, slot; uint32_t session; uint32_t nonce; };   /* nonce: the sender's own per-process id */
 struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; int8_t lead; };   /* lead: the sender's frame advantage estimate (rollback time sync) */
 struct WireIn   { uint16_t buttons; uint8_t lx, ly, rx, ry; };
 struct WireHash { uint32_t frame; uint64_t hash; };
 struct WireBar  { uint32_t index; uint32_t frame; };
 struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows Hdr in a HELLO; flags: bit 0 = this side offers rollback */
+struct PingExt  { uint8_t started; uint32_t frame; };                 /* started: the sender's lockstep has begun (frame 0 ran) */
+struct RejectExt { uint8_t why; };
 constexpr uint32_t kHelloRollback = 1u;
 #pragma pack(pop)
+
+/* ---- SipHash-2-4 (Aumasson/Bernstein reference algorithm) ---------------- */
+inline uint64_t rotl64(uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
+uint64_t siphash24(const uint8_t key[16], const uint8_t* in, size_t len)
+{
+    uint64_t k0, k1;
+    memcpy(&k0, key, 8); memcpy(&k1, key + 8, 8);
+    uint64_t v0 = 0x736f6d6570736575ull ^ k0, v1 = 0x646f72616e646f6dull ^ k1;
+    uint64_t v2 = 0x6c7967656e657261ull ^ k0, v3 = 0x7465646279746573ull ^ k1;
+    auto round = [&]() {
+        v0 += v1; v1 = rotl64(v1, 13); v1 ^= v0; v0 = rotl64(v0, 32);
+        v2 += v3; v3 = rotl64(v3, 16); v3 ^= v2;
+        v0 += v3; v3 = rotl64(v3, 21); v3 ^= v0;
+        v2 += v1; v1 = rotl64(v1, 17); v1 ^= v2; v2 = rotl64(v2, 32);
+    };
+    const size_t end = len - (len % 8);
+    for (size_t i = 0; i < end; i += 8) {
+        uint64_t m; memcpy(&m, in + i, 8);
+        v3 ^= m; round(); round(); v0 ^= m;
+    }
+    uint64_t b = (uint64_t)len << 56;
+    for (size_t i = 0; i < len % 8; i++) b |= (uint64_t)in[end + i] << (8 * i);
+    v3 ^= b; round(); round(); v0 ^= b;
+    v2 ^= 0xff;
+    round(); round(); round(); round();
+    return v0 ^ v1 ^ v2 ^ v3;
+}
 
 /* CELL_PAD_CTRL_* (cellPad.h) */
 enum : uint16_t {
@@ -129,6 +175,13 @@ struct State {
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
     int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
 
+    int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
+    int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
+    bool keyed = false;                /* packets carry a SipHash tag under `key` */
+    uint8_t key[16] = {};
+    bool env_peer = false;             /* T5_NET_PEER given (lobby): unauthenticated hellos only from its IP */
+    in_addr env_peer_ip{};
+
     SOCKET sock = INVALID_SOCKET;
     std::mutex mu;                     /* guards everything below */
     sockaddr_in peer{};
@@ -136,6 +189,23 @@ struct State {
     bool connected = false;
     bool peer_lost = false;
     uint32_t session = 0;
+    uint32_t nonce = 0;                /* this process's id (every packet carries it) */
+    uint32_t peer_nonce = 0;           /* the peer process's id, latched at the handshake */
+    bool started = false;              /* begin_frame(0) / rb_begin(0) ran: lockstep frames are being played */
+    bool peer_sent_inputs = false;     /* the peer has sent lockstep input (its frame 0 ran) */
+    bool peer_started = false;         /* the peer says its lockstep has begun (PING) */
+    uint32_t peer_frame = 0;
+    std::string fail_reason, lost_reason;
+    ULONGLONG init_ms = 0, last_hello_ms = 0, last_wait_note = 0;
+    uint32_t relatches = 0, bad_tags = 0, strangers = 0;
+    void (*stuck_handler)(const char*) = nullptr;
+    ULONGLONG trouble_ms = 0;          /* when failure/loss was first seen (stuck-handler grace) */
+    bool stuck_called = false;
+    /* per match (match_begin) */
+    uint32_t count_from = 0, match_mismatches = 0;
+    uint64_t speed_frames = 0, speed_us = 0, speed_wait_us = 0;   /* since match_begin */
+    uint64_t last_frame_qpc = 0;
+    uint64_t win_frames = 0, win_us = 0, win_wait_us = 0;   /* the 600-frame window in the log line */
     HANDLE rx_event = nullptr;
 
     Ring local, remote;
@@ -250,10 +320,24 @@ PadInput sample_local(uint32_t f)
 
 /* ---- transport --------------------------------------------------------- */
 
-void send_raw(const void* p, int n)
+std::string addr_str(const sockaddr_in& a)
+{
+    char ip[64] = "?";
+    inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
+    return std::string(ip) + ":" + std::to_string(ntohs(a.sin_port));
+}
+
+bool same_addr(const sockaddr_in& a, const sockaddr_in& b)
+{
+    return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
+/* Send to `to` (default: the peer). Appends the authentication tag when keyed. */
+void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    if (s.sock == INVALID_SOCKET || !s.peer_known) return;
+    if (s.sock == INVALID_SOCKET) return;
+    if (!to) { if (!s.peer_known) return; to = &s.peer; }
     /* T5_NET_DROP=<percent>: throw away that share of outgoing packets, to
      * test that the redundant resends cover for a lossy link. */
     static int drop = -1;
@@ -263,16 +347,45 @@ void send_raw(const void* p, int n)
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         if ((int)(x % 100) < drop) return;
     }
-    sendto(s.sock, (const char*)p, n, 0, (const sockaddr*)&s.peer, sizeof s.peer);
+    uint8_t buf[2048];
+    if (n + kTag > (int)sizeof buf) return;
+    memcpy(buf, p, (size_t)n);
+    if (s.keyed) {
+        const uint64_t t = siphash24(s.key, buf, (size_t)n);
+        memcpy(buf + n, &t, kTag);
+        n += kTag;
+    }
+    sendto(s.sock, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
     s.packets_out++;
 }
+void send_raw(const void* p, int n) { send_to(p, n); }
 
-void send_hello_locked()
+Hdr make_hdr(uint8_t type)
 {
     State& s = S();
-    struct { Hdr h; HelloExt x; } p = { { kMagic, PKT_HELLO, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session },
-                                         { s.build, s.seed, s.rb_offer ? kHelloRollback : 0u } };
+    return { kMagic, type, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session, s.nonce };
+}
+
+void send_hello_locked(const sockaddr_in* to = nullptr)
+{
+    State& s = S();
+    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? kHelloRollback : 0u } };
+    send_to(&p, sizeof p, to);
+    s.last_hello_ms = GetTickCount64();
+}
+
+void send_ping_locked()
+{
+    State& s = S();
+    struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)(s.started ? 1 : 0), s.local_hash_max } };
     send_raw(&p, sizeof p);
+    s.last_send_ms = GetTickCount64();
+}
+
+void send_reject(const sockaddr_in& to, uint8_t why)
+{
+    struct { Hdr h; RejectExt x; } p = { make_hdr(PKT_REJECT), { why } };
+    send_to(&p, sizeof p, &to);
 }
 
 /* Inputs the peer may still need, plus our latest hashes. Caller holds mu. */
@@ -283,7 +396,7 @@ void send_inputs_locked()
     uint8_t buf[sizeof(Hdr) + sizeof(InputHdr) + kMaxBatch * sizeof(WireIn) + kHashes * sizeof(WireHash)
                 + kBarSend * sizeof(WireBar)];
     Hdr* h = (Hdr*)buf;
-    *h = { kMagic, PKT_INPUT, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session };
+    *h = make_hdr(PKT_INPUT);
     InputHdr* ih = (InputHdr*)(h + 1);
     uint32_t lo = (uint32_t)s.delay;               /* frames < delay are implicitly neutral */
     uint32_t first = s.peer_ack;
@@ -337,6 +450,7 @@ void compare_hashes_locked()
                      (unsigned long long)s.local.hash[i], (unsigned long long)s.remote.hash[i]);
             if (s.first_mismatch == UINT32_MAX) s.first_mismatch = f;
             s.mismatches++;
+            if (f >= s.count_from) s.match_mismatches++;
             if (s.mismatch_queue.size() < 256) s.mismatch_queue.push_back(f);
         }
         s.checked++;
@@ -346,72 +460,215 @@ void compare_hashes_locked()
     }
 }
 
+/* The session is over for good before it began (no peer, wrong build, rejected). */
+void fail_locked(const char* reason, const char* fmt, ...)
+{
+    State& s = S();
+    if (!s.fail_reason.empty()) return;
+    char buf[512];
+    va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+    s.fail_reason = reason;
+    s.peer_lost = true;                /* every lockstep wait returns */
+    s.trouble_ms = GetTickCount64();
+    note("cannot connect (%s): %s", reason, buf);
+    SetEvent(s.rx_event);
+}
+
+/* A connected peer is gone. One log line the launcher looks for: "peer lost (<reason>)". */
+void lose_locked(const char* reason, const char* fmt, ...)
+{
+    State& s = S();
+    if (s.peer_lost) return;
+    char buf[512];
+    va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+    s.lost_reason = reason;
+    s.peer_lost = true;
+    s.trouble_ms = GetTickCount64();
+    note("peer lost (%s): %s", reason, buf);
+    SetEvent(s.rx_event);
+}
+
+void connect_locked()
+{
+    State& s = S();
+    if (s.connected) return;
+    s.connected = true;
+    s.last_rx_ms = GetTickCount64();
+    note("connected (%s), delay %d, peer %s%s", s.mode == Mode::Host ? "host, P1" : "join, P2", s.delay,
+         addr_str(s.peer).c_str(), s.keyed ? ", packets authenticated" : "");
+    SetEvent(s.rx_event);
+}
+
+/* The peer's packets now come from another address (NAT rebinding, a new
+ * relay mapping): answer there. Only called for packets that proved they are
+ * the peer's (session + nonce, and the tag when keyed). */
+void relatch_locked(const sockaddr_in& from)
+{
+    State& s = S();
+    if (s.relatches++ < 20)
+        note("the peer's address changed from %s to %s (NAT rebinding?) -- following it",
+             addr_str(s.peer).c_str(), addr_str(from).c_str());
+    s.peer = from;
+}
+
+/* A new peer process may take the old one's place as long as no lockstep
+ * input has been exchanged with the old one (and the match seed cannot change
+ * under a lockstep that already began). */
+bool can_restart_locked()
+{
+    State& s = S();
+    return !s.peer_sent_inputs && (!s.started || s.seed != 0);
+}
+
+void forget_peer_locked()
+{
+    State& s = S();
+    s.connected = false;
+    s.peer_nonce = 0;
+    s.peer_ack = 0;
+    s.peer_started = false;
+    s.rb_peer = false;
+}
+
 void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
 {
     State& s = S();
-    if (n < (int)sizeof(Hdr)) return;
+    if (n < 6) return;
     const Hdr* h = (const Hdr*)p;
-    if (h->magic != kMagic || h->ver != kVersion) return;
+    if (h->magic != kMagic) return;
+    if (h->ver != kVersion) {
+        /* Another netplay protocol: a different build. Only before the
+         * handshake (afterwards it can only be a stranger). */
+        std::lock_guard<std::mutex> lk(s.mu);
+        if (!s.connected && h->type == PKT_HELLO)
+            fail_locked("build_mismatch", "%s speaks netplay protocol v%u, this game v%u (a different build)",
+                        addr_str(from).c_str(), h->ver, kVersion);
+        return;
+    }
+    if (n < (int)sizeof(Hdr)) return;
     std::lock_guard<std::mutex> lk(s.mu);
-    s.packets_in++;
-    s.last_rx_ms = GetTickCount64();
-    if (h->type == PKT_HELLO) {
-        HelloExt x = { 0, 0, 0 };
-        /* an older peer sends build + seed only: its flags read as 0 (no rollback) */
-        if (n >= (int)(sizeof(Hdr) + 8)) memcpy(&x, h + 1, (size_t)std::min<int>(n - (int)sizeof(Hdr), (int)sizeof x));
-        s.rb_peer = (x.flags & kHelloRollback) != 0;
-        if (x.build && s.build && x.build != s.build) {
-            static int said = 0;
-            if (!said++) note("the peer runs a different build (T5_NET_BUILD id %08X, ours %08X): not connecting",
-                              x.build, s.build);
+    if (s.keyed) {
+        uint64_t t;
+        if (n < (int)sizeof(Hdr) + kTag) return;
+        n -= kTag;
+        memcpy(&t, p + n, kTag);
+        if (t != siphash24(s.key, p, (size_t)n)) {
+            if (s.bad_tags++ < 5)
+                note("packet from %s with a wrong authentication tag dropped (another match, or a stranger)",
+                     addr_str(from).c_str());
             return;
         }
+    }
+    const bool from_peer = s.peer_known && same_addr(from, s.peer);
+    /* Without a key the only proof of identity is the session id + nonce; for a
+     * lobby match (T5_NET_PEER given) a hello must at least come from that IP. */
+    const bool trusted_src = s.keyed || !s.env_peer || from.sin_addr.s_addr == s.env_peer_ip.s_addr;
+
+    if (h->type == PKT_HELLO) {
+        if (n < (int)(sizeof(Hdr) + 8)) return;
+        HelloExt x = { 0, 0, 0 };
+        memcpy(&x, h + 1, (size_t)std::min<int>(n - (int)sizeof(Hdr), (int)sizeof x));
+        if (!trusted_src && !s.connected) {
+            if (s.strangers++ < 5) note("hello from %s ignored: not the opponent's address", addr_str(from).c_str());
+            return;
+        }
+        if (x.build && s.build && x.build != s.build) {
+            if (!s.connected) {
+                send_reject(from, REJ_BUILD);
+                fail_locked("build_mismatch", "%s runs a different build (T5_NET_BUILD id %08X, ours %08X)",
+                            addr_str(from).c_str(), x.build, s.build);
+            }
+            return;
+        }
+        if (s.connected && h->nonce != s.peer_nonce) {
+            /* Another process at the other end: the peer's game was restarted
+             * (or, without a key, a stranger). */
+            if (!s.keyed && !from_peer) { s.strangers++; return; }
+            if (can_restart_locked()) {
+                note("the opponent's game was restarted before the match began (%s); connecting to the new one",
+                     addr_str(from).c_str());
+                forget_peer_locked();
+            } else {
+                send_reject(from, REJ_SESSION);
+                lose_locked("peer_restarted", "the opponent's game at %s restarted in the middle of the match",
+                            addr_str(from).c_str());
+                return;
+            }
+        }
+        if (s.connected) {
+            /* the same peer process */
+            if (!from_peer) relatch_locked(from);
+            s.last_rx_ms = GetTickCount64();
+            if (s.mode == Mode::Host) send_hello_locked();   /* it may have missed ours */
+            return;
+        }
+        s.rb_peer = (x.flags & kHelloRollback) != 0;
         if (s.mode == Mode::Host) {
-            if (s.connected && memcmp(&s.peer, &from, sizeof from) != 0) return;   /* a stranger */
-            if (!s.peer_known || memcmp(&s.peer, &from, sizeof from) != 0) {
-                s.peer = from; s.peer_known = true;
-                char ip[64]; inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
-                note("peer %s:%u says hello", ip, ntohs(from.sin_port));
-            }
+            /* Before the handshake the latest valid hello is the candidate; the
+             * echo of our session id (the joiner adopted it) completes it. */
+            if (!s.peer_known || !from_peer || s.peer_nonce != h->nonce)
+                note("peer %s says hello", addr_str(from).c_str());
+            s.peer = from; s.peer_known = true; s.peer_nonce = h->nonce;
             send_hello_locked();
-            if (!s.connected && h->session == s.session) {
-                s.connected = true;
-                note("connected (host, P1), delay %d", s.delay);
-                SetEvent(s.rx_event);
-            }
-        } else if (s.mode == Mode::Join && !s.connected) {
+            if (h->session == s.session) connect_locked();
+        } else if (s.mode == Mode::Join) {
             s.session = h->session;
             if (h->delay != s.delay) note("using the host's input delay %d (was %d)", h->delay, s.delay);
             s.delay = h->delay;
             s.seed = x.seed;   /* the host's seed (none: both use the session id) */
-            s.connected = true;
-            note("connected (join, P2), delay %d", s.delay);
+            s.peer = from; s.peer_known = true; s.peer_nonce = h->nonce;
+            connect_locked();
             send_hello_locked();   /* echoes the session: completes the host's handshake */
-            SetEvent(s.rx_event);
         }
         return;
     }
-    if (h->type == PKT_BYE) {
-        if (h->session == s.session && s.connected && !s.peer_lost) {
-            note("peer quit");
-            s.peer_lost = true;
-            SetEvent(s.rx_event);
+    if (h->type == PKT_REJECT) {
+        if (!trusted_src || (s.connected && h->nonce != s.peer_nonce)) return;
+        const uint8_t why = n >= (int)(sizeof(Hdr) + 1) ? *(const uint8_t*)(h + 1) : 0;
+        if (why == REJ_BUILD) {
+            if (!s.connected)
+                fail_locked("build_mismatch", "%s refused us: it runs a different build", addr_str(from).c_str());
+        } else if (!s.connected || !s.peer_sent_inputs) {
+            fail_locked("rejected", "%s is playing another session (its game was not restarted with ours)",
+                        addr_str(from).c_str());
+        } else {
+            lose_locked("peer_restarted", "the opponent's game no longer knows this session");
         }
         return;
     }
-    if (h->type != PKT_INPUT || h->session != s.session) return;
-    if (!s.connected && s.mode == Mode::Host) {
-        /* The joiner's session echo was lost, but its inputs carry our
+    if (h->session != s.session) return;
+    if (!s.connected) {
+        /* The joiner's session echo was lost, but its packets carry our
          * session id: that completes the handshake as well. */
-        s.connected = true;
-        note("connected (host, P1), delay %d", s.delay);
+        if (s.mode != Mode::Host || h->type == PKT_BYE || !trusted_src) return;
+        if (s.peer_nonce && h->nonce != s.peer_nonce) return;
+        s.peer = from; s.peer_known = true; s.peer_nonce = h->nonce;
+        connect_locked();
     }
-    if (!s.connected) return;
+    if (h->nonce != s.peer_nonce) return;     /* an old process of the peer, or a stranger */
+    if (!from_peer) relatch_locked(from);
+    s.packets_in++;
+    s.last_rx_ms = GetTickCount64();
+    if (h->type == PKT_BYE) {
+        lose_locked("peer_quit", "the opponent left (its game was closed)");
+        return;
+    }
+    if (h->type == PKT_PING) {
+        if (n >= (int)(sizeof(Hdr) + sizeof(PingExt))) {
+            PingExt x; memcpy(&x, h + 1, sizeof x);
+            if (x.started) s.peer_started = true;
+            s.peer_frame = x.frame;
+        }
+        SetEvent(s.rx_event);
+        return;
+    }
+    if (h->type != PKT_INPUT) return;
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return;
     const InputHdr* ih = (const InputHdr*)(h + 1);
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr) + ih->count * sizeof(WireIn) + ih->nhash * sizeof(WireHash)
                   + ih->nbar * sizeof(WireBar)))
         return;
+    if (ih->count) { s.peer_sent_inputs = true; s.peer_started = true; }
     if (ih->ack > s.peer_ack) s.peer_ack = ih->ack;
     s.peer_lead = ih->lead;
     const WireIn* wi = (const WireIn*)(ih + 1);
@@ -454,6 +711,48 @@ DWORD WINAPI rx_thread(LPVOID)
     }
 }
 
+/* The background half of the session, every 50 ms from init on: the handshake
+ * (HELLO every 100 ms until connected, with its deadline), keepalives, and the
+ * silence check -- so a missing, mismatched or vanished peer is noticed whether
+ * or not the main thread is in a lockstep wait. */
+DWORD WINAPI tick_thread(LPVOID)
+{
+    State& s = S();
+    for (;;) {
+        Sleep(50);
+        void (*stuck)(const char*) = nullptr;
+        std::string why;
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            const ULONGLONG now = GetTickCount64();
+            if (!s.fail_reason.empty() || (s.connected && s.peer_lost)) {
+                /* the main thread ends the match at its next frame; if it does
+                 * not get there (blocked elsewhere), the handler does it */
+                if (!s.stuck_called && s.stuck_handler && now - s.trouble_ms > 8000) {
+                    s.stuck_called = true;
+                    stuck = s.stuck_handler;
+                    why = !s.fail_reason.empty() ? s.fail_reason : s.lost_reason;
+                }
+            } else if (!s.connected) {
+                if ((s.mode == Mode::Join || s.peer_known) && now - s.last_hello_ms >= 100) send_hello_locked();
+                if (now - s.last_wait_note >= 5000) {
+                    s.last_wait_note = now;
+                    if (now - s.init_ms >= 4000)
+                        note("waiting for the opponent's game to answer (%llus)...", (now - s.init_ms) / 1000);
+                }
+                if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000)
+                    fail_locked("no_peer", "no answer from the opponent's game within %d s (%s)", s.connect_timeout_s,
+                                s.peer_known ? addr_str(s.peer).c_str() : "its address is not known");
+            } else {
+                if (now - s.last_send_ms >= kPingMs) send_ping_locked();
+                if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000)
+                    lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
+            }
+        }
+        if (stuck) stuck(why.c_str());
+    }
+}
+
 bool parse_addr(const char* spec, sockaddr_in* out)
 {
     std::string str(spec);
@@ -479,8 +778,18 @@ void say_bye()
     if (s.sock == INVALID_SOCKET) return;
     std::lock_guard<std::mutex> lk(s.mu);
     if (!s.connected) return;
-    Hdr h = { kMagic, PKT_BYE, kVersion, (uint8_t)s.delay, (uint8_t)s.slot, s.session };
+    Hdr h = make_hdr(PKT_BYE);
     for (int i = 0; i < 3; i++) send_raw(&h, sizeof h);
+}
+
+/* 16-byte packet key from a secret string (SipHash under two fixed keys). */
+void derive_key(const std::string& secret, uint8_t out[16])
+{
+    static const uint8_t k1[16] = { 'T','5','N','P','-','k','e','y','-','d','e','r','i','v','e','1' };
+    static const uint8_t k2[16] = { 'T','5','N','P','-','k','e','y','-','d','e','r','i','v','e','2' };
+    const uint64_t a = siphash24(k1, (const uint8_t*)secret.data(), secret.size());
+    const uint64_t b = siphash24(k2, (const uint8_t*)secret.data(), secret.size());
+    memcpy(out, &a, 8); memcpy(out + 8, &b, 8);
 }
 
 void do_init()
@@ -497,6 +806,9 @@ void do_init()
     if (s.delay < 0) s.delay = 0;
     if (s.delay > 30) s.delay = 30;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
+    s.connect_timeout_s = std::max(60, 2 * s.timeout_s);
+    if (const char* v = env("T5_NET_CONNECT_TIMEOUT")) s.connect_timeout_s = atoi(v);
+    if (const char* v = env("T5_NET_START_TIMEOUT")) s.start_timeout_s = atoi(v);
     if (const char* v = env("T5_NET_LOCALPAD")) s.localpad = atoi(v) != 0;
     if (const char* v = env("T5_NET_BUILD")) {
         uint32_t h = 2166136261u;
@@ -507,6 +819,13 @@ void do_init()
     if (const char* v = env("T5_NET_MATCH"))
         note("lobby match %s (path %s, measured rtt %s ms)", v,
              env("T5_NET_PATH") ? env("T5_NET_PATH") : "?", env("T5_NET_RTT_MS") ? env("T5_NET_RTT_MS") : "?");
+    if (const char* k = env("T5_NET_KEY")) {
+        derive_key(std::string("key|") + k, s.key);
+        s.keyed = true;
+    } else if (env("T5_NET_MATCH") && env("T5_NET_SEED")) {
+        derive_key(std::string("match|") + env("T5_NET_MATCH") + "|" + env("T5_NET_SEED"), s.key);
+        s.keyed = true;
+    }
     s.script = parse_script(env("T5_NET_SCRIPT"));
     s.script2 = parse_script(env("T5_NET_SCRIPT2"));
     if (const char* v = env("T5_NET_PADFILE")) s.padfile.path = v;
@@ -517,7 +836,11 @@ void do_init()
     }
     s.rx_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     { LARGE_INTEGER q; QueryPerformanceCounter(&q);
-      s.session = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 32) ^ (GetCurrentProcessId() << 16)) | 1u; }
+      s.session = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 32) ^ (GetCurrentProcessId() << 16)) | 1u;
+      uint64_t x = (uint64_t)q.QuadPart * 0x9E3779B97F4A7C15ull ^ ((uint64_t)GetCurrentProcessId() << 32) ^ GetTickCount64();
+      x ^= x >> 29; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 32;
+      s.nonce = (uint32_t)x | 1u; }
+    s.init_ms = GetTickCount64();
 
     note("mode %s, slot P%d, delay %d, local devices %s, %zu scripted press(es)",
          m, s.slot + 1, s.delay, s.localpad ? "on" : "off", s.script.size());
@@ -538,8 +861,12 @@ void do_init()
     sockaddr_in local{}; local.sin_family = AF_INET; local.sin_port = htons((u_short)port);
     local.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(s.sock, (sockaddr*)&local, sizeof local) != 0) {
-        note("bind to UDP port %d failed (%d) -- netplay off", port, WSAGetLastError());
-        s.mode = Mode::Off; return;
+        /* The lobby handed us exactly this port: without it there is no match. */
+        s.fail_reason = "bind_failed";
+        s.peer_lost = true;
+        s.trouble_ms = GetTickCount64();
+        note("cannot connect (bind_failed): UDP port %d is not free (%d)", port, WSAGetLastError());
+        return;
     }
     if (s.mode == Mode::Join) {
         const char* peer = env("T5_NET_PEER");
@@ -548,39 +875,72 @@ void do_init()
             s.mode = Mode::Off; return;
         }
         s.peer_known = true;
+        s.env_peer = true; s.env_peer_ip = s.peer.sin_addr;
         note("joining %s", peer);
     } else {
         note("hosting on UDP port %d", port);
         const char* peer = env("T5_NET_PEER");
         if (peer && parse_addr(peer, &s.peer)) {
             s.peer_known = true;
+            s.env_peer = true; s.env_peer_ip = s.peer.sin_addr;
             note("calling %s while waiting (lobby punch / relay path)", peer);
         }
     }
+    note("handshake from boot on: %s, connect timeout %d s, peer timeout %d s, start timeout %d s",
+         s.keyed ? "authenticated (match key)" : "not authenticated (no T5_NET_KEY / match id + seed)",
+         s.connect_timeout_s, s.timeout_s, s.start_timeout_s);
     CreateThread(nullptr, 0, rx_thread, nullptr, 0, nullptr);
+    CreateThread(nullptr, 0, tick_thread, nullptr, 0, nullptr);
     atexit(say_bye);
 }
 
-/* Block until the handshake is done (frame 0 only). */
-void wait_connected()
+/* Block until the handshake is done or has failed (frame 0 only). The
+ * handshake itself runs in tick_thread from boot on. */
+bool wait_connected()
 {
     State& s = S();
-    ULONGLONG t0 = GetTickCount64(), last_hello = 0, last_note = t0;
+    ULONGLONG t0 = GetTickCount64(), last_note = t0;
     for (;;) {
         {
             std::lock_guard<std::mutex> lk(s.mu);
-            if (s.connected) return;
+            if (s.connected) return true;
+            if (!s.fail_reason.empty() || s.mode == Mode::Off) return false;
             ULONGLONG now = GetTickCount64();
-            /* The joiner calls the host; a host given T5_NET_PEER (the lobby's
-             * punched endpoint or relay) calls out as well, which keeps its NAT
-             * mapping open while the other game is still starting. */
-            if ((s.mode == Mode::Join || s.peer_known) && now - last_hello >= 100) { send_hello_locked(); last_hello = now; }
             if (now - last_note >= 3000) {
                 last_note = now;
                 note("waiting for the peer to connect (%llus)...", (now - t0) / 1000);
             }
         }
         WaitForSingleObject(s.rx_event, 50);
+    }
+}
+
+/* Frame timing for the speed line and local_fps(): this PC's frames per
+ * second with the time spent waiting for the peer left out. */
+uint64_t qpc_us()
+{
+    static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
+    LARGE_INTEGER c; QueryPerformanceCounter(&c);
+    return (uint64_t)(c.QuadPart / f.QuadPart) * 1000000ull + (uint64_t)(c.QuadPart % f.QuadPart) * 1000000ull / (uint64_t)f.QuadPart;
+}
+
+void account_frame(uint64_t wait_us)
+{
+    State& s = S();
+    const uint64_t now = qpc_us();
+    if (s.last_frame_qpc) {
+        const uint64_t dt = now - s.last_frame_qpc;
+        if (dt < 5000000) {             /* a frame longer than 5 s is a stall, not speed */
+            s.speed_frames++; s.speed_us += dt; s.speed_wait_us += wait_us;
+            s.win_frames++; s.win_us += dt; s.win_wait_us += wait_us;
+        }
+    }
+    s.last_frame_qpc = now;
+    if (s.win_frames >= 600) {
+        const double busy = (double)(s.win_us > s.win_wait_us ? s.win_us - s.win_wait_us : 1);
+        note("speed: %.1f fps, this PC %.1f fps without the waits for the peer (waited %.1f s of %.1f s)",
+             s.win_frames * 1e6 / (double)s.win_us, s.win_frames * 1e6 / busy, s.win_wait_us / 1e6, s.win_us / 1e6);
+        s.win_frames = s.win_us = s.win_wait_us = 0;
     }
 }
 
@@ -644,8 +1004,7 @@ uint32_t scene_barrier(uint32_t f)
                 note("scene change %u at frame %u: waiting for the peer to get there (%llus)", k, f, (now - t0) / 1000);
             }
             if (s.timeout_s > 0 && now - t0 >= (ULONGLONG)s.timeout_s * 1000) {
-                note("the peer never reached scene change %u -- peer lost", k);
-                s.peer_lost = true;
+                lose_locked("peer_stalled", "the opponent's game never reached scene change %u (%d s)", k, s.timeout_s);
                 break;
             }
         }
@@ -662,6 +1021,55 @@ void connect()
     init();
     State& s = S();
     if (s.mode == Mode::Host || s.mode == Mode::Join) wait_connected();
+}
+
+const char* failure()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.fail_reason.empty() ? nullptr : (s.fail_reason == "bind_failed" ? "bind_failed"
+         : s.fail_reason == "no_peer" ? "no_peer" : s.fail_reason == "build_mismatch" ? "build_mismatch" : "rejected");
+}
+
+const char* lost_reason()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.fail_reason.empty() || !s.peer_lost) return nullptr;
+    static const char* const kReasons[] = { "peer_quit", "peer_timeout", "peer_stalled", "start_timeout", "peer_restarted" };
+    for (const char* r : kReasons) if (s.lost_reason == r) return r;
+    return "peer_lost";
+}
+
+bool connected() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.connected; }
+
+void match_begin(uint32_t f)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    s.count_from = f;
+    s.match_mismatches = 0;
+    s.speed_frames = s.speed_us = s.speed_wait_us = 0;
+}
+
+uint32_t match_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.match_mismatches; }
+uint32_t checked_through() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.checked; }
+
+double local_fps()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.speed_frames < 60 || s.speed_us <= s.speed_wait_us) return 0.0;
+    return s.speed_frames * 1e6 / (double)(s.speed_us - s.speed_wait_us);
+}
+
+void bye() { say_bye(); }
+
+void set_stuck_handler(void (*fn)(const char* reason))
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    s.stuck_handler = fn;
 }
 
 bool take_mismatch(uint32_t* frame)
@@ -705,6 +1113,8 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         }
         if (s.local_max < (uint32_t)s.delay) s.local_max = (uint32_t)s.delay;
         while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
+        s.started = true;
+        if (s.connected && !s.peer_lost) send_ping_locked();   /* tell the peer at once */
         note("lockstep starts: frame 0, delay %d", s.delay);
     }
 
@@ -735,6 +1145,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         s.remote.hash[f % kRing] = state_hash; s.remote.hash_tag[f % kRing] = f + 1;
     } else {
         ULONGLONG t0 = GetTickCount64(), last_note = t0;
+        const uint64_t w0 = qpc_us();
         for (;;) {
             {
                 std::lock_guard<std::mutex> lk(s.mu);
@@ -743,21 +1154,30 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
                 if (s.remote.in_tag[f % kRing] == f + 1) { theirs = s.remote.in[f % kRing]; break; }
                 ULONGLONG now = GetTickCount64();
                 if (now - s.last_send_ms >= 15) send_inputs_locked();   /* resend while stalled */
+                /* At the start of the match the peer may still be loading: as
+                 * long as it is alive (its keepalives arrive; silence is the tick
+                 * thread's peer_timeout) it gets T5_NET_START_TIMEOUT. Once it
+                 * plays, a stall of T5_NET_TIMEOUT ends the match. */
+                const bool at_start = !s.peer_started;
+                const int limit = at_start ? s.start_timeout_s : s.timeout_s;
                 if (now - last_note >= 1000) {
                     last_note = now;
-                    note("frame %u: waiting for the peer's input (%llus; peer has our inputs up to %u)",
-                         f, (now - t0) / 1000, s.peer_ack);
+                    note("frame %u: waiting for the peer's input (%llus; peer has our inputs up to %u%s)",
+                         f, (now - t0) / 1000, s.peer_ack, at_start ? "; it has not started the match yet" : "");
                 }
-                if (s.timeout_s > 0 && now - t0 >= (ULONGLONG)s.timeout_s * 1000) {
-                    note("no input from the peer for %ds -- peer lost, continuing with P%d idle",
-                         s.timeout_s, 2 - s.slot);
-                    s.peer_lost = true;
+                if (limit > 0 && now - t0 >= (ULONGLONG)limit * 1000) {
+                    if (at_start)
+                        lose_locked("start_timeout", "the opponent's game did not reach the start of the match within %d s", limit);
+                    else
+                        lose_locked("peer_stalled", "no input from the opponent for %d s at frame %u", limit, f);
                     theirs = kNeutral;
                     break;
                 }
             }
             WaitForSingleObject(s.rx_event, 4);
         }
+        std::lock_guard<std::mutex> lk(s.mu);
+        account_frame(qpc_us() - w0);
     }
     out[s.slot] = mine;
     out[1 - s.slot] = theirs;
@@ -791,6 +1211,8 @@ void rb_begin(uint32_t f)
     }
     if (s.local_max < (uint32_t)s.delay) s.local_max = (uint32_t)s.delay;
     while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
+    s.started = true;
+    if (s.connected && !s.peer_lost) send_ping_locked();
     note("rollback mode starts: frame 0, delay %d", s.delay);
 }
 
@@ -852,8 +1274,7 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
             if (now - s.last_send_ms >= 15) send_inputs_locked();
             if (now - t0 >= ms) return s.remote_contig;
             if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000 && s.last_rx_ms) {
-                note("no packet from the peer for %ds -- peer lost, continuing with P%d idle", s.timeout_s, 2 - s.slot);
-                s.peer_lost = true;
+                lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
                 return s.remote_contig;
             }
         }

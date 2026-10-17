@@ -6,8 +6,8 @@ ist in Arbeit.
 
 English: [../README.md](../README.md)
 
-**Test-Release 0.1.2-preview (2026-10-17).** Lade
-`T5DR-Online-0.1.2-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Test-Release 0.1.3-preview (2026-10-17).** Lade
+`T5DR-Online-0.1.3-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online ist in der Testphase:** Es funktioniert auf einem PC und über den
@@ -47,7 +47,7 @@ Internet stehen noch aus.
 | Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Netcode mit Verzögerung (2-3 Frames Input-Delay); Rollback wird gerade fertig. Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode (2 Frames Input-Delay, getestet bei 0/50/150 ms Ping mit Paketverlust). Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
 | Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. |
 
 ## Voraussetzungen
@@ -170,8 +170,9 @@ Gut zu wissen:
 - Kabel ist besser als WLAN.
 - Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
   dürfen. Erlaube es für **private Netzwerke**.
-- Netcode: vorerst mit Verzögerung (2-3 Frames Input-Delay). Rollback wird
-  gerade fertig.
+- Netcode: Rollback wie bei Tekken 6 Native Online (2 Frames Input-Delay bei
+  jedem Ping). Ruckelt ein Match auf einem langsamen PC, kann ein Spieler auf
+  Delay-Netcode umschalten: Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.

@@ -199,6 +199,18 @@ def main():
         except (OSError, ValueError, struct.error) as e:
             check(f"imports: {rel}", False, str(e))
 
+    # The host build globs src/ (netplay, direct fight, rollback); a zip staged without it still
+    # builds, just a runtime with no online play. The strings are the env variables the lobby sets.
+    try:
+        with open(os.path.join(root, "runtime", "t5dr.exe"), "rb") as f:
+            blob = f.read()
+        want = (b"T5_NET_MODE", b"T5_FIGHT", b"T5_FIGHT_FILE", b"T5_NET_RESULT_FILE")
+        miss = [w.decode() for w in want if w not in blob]
+        check("runtime: netplay and direct fight compiled in", not miss,
+              f"missing in runtime/t5dr.exe: {miss} (is src/ staged?)" if miss else ", ".join(w.decode() for w in want))
+    except OSError as e:
+        check("runtime: netplay and direct fight compiled in", False, str(e))
+
     if not a.no_gui:
         shots = os.path.join(work, "shots")
         t0 = time.time()

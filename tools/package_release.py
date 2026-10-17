@@ -83,8 +83,11 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
 # the Online tab's "Host for friends" and lobby/deploy/windows/ run a lobby server from the zip
 # (docs/HOSTING.md). The Linux/Docker packaging stays in the repository.
+# src/ is the runtime's own code (netplay, direct fight, rollback, perf): CMakeLists.txt globs it,
+# so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
-             "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py", "lobby/deploy/windows/*"]
+             "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py", "lobby/deploy/windows/*",
+             "src/*/*.cpp", "src/*/*.h", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]

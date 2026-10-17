@@ -108,23 +108,29 @@ job asks for `contents: write` itself; the build job only reads.
        python tools/check_no_game_data.py --keys keys/ps3.keys
        python tools/release_notes.py --version 0.1.0-preview --check
 
-4. **Push `main`** and wait for CI to be green.
+4. **Preflight (required):** `python tools/release_preflight.py --version 0.1.0-preview`
+   runs what the release workflow runs (changelog, guard, patch series, the zip with
+   `--release`, the binary checks, the zip smoke test, unit tests) on this PC. Tag only
+   when it prints `PREFLIGHT OK`. (0.1.5-preview's first run failed on the runner at the
+   binary check; the preflight finds that in ~4 minutes locally.)
 
-5. **Tag and push the tag:**
+5. **Push `main`** and wait for CI to be green.
+
+6. **Tag and push the tag:**
 
        git tag -a v0.1.0-preview -m "T5DR Online 0.1.0-preview"
        git push origin v0.1.0-preview
 
    The tag must point at a commit on `main`.
 
-6. **The owner approves.** The run (Actions -> Release) builds and checks the
+7. **The owner approves (if a reviewer is set).** The run (Actions -> Release) builds and checks the
    zip (estimated 15-25 min), stores zip + `SHA256SUMS` + release notes as the
    run's artifact, then the **publish** job waits. GitHub notifies the owner
    ("deployment review"). Download the artifact from the run's summary page,
    try it, then **Review deployments** -> tick `release` -> **Approve and
    deploy**. **Reject** stops it; nothing is published.
 
-7. **Check the release page**: the zip and `SHA256SUMS` are attached, the notes
+8. **Check the release page**: the zip and `SHA256SUMS` are attached, the notes
    are right, the pre-release badge is there for a suffixed version.
 
 ## What the workflow does

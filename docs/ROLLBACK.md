@@ -1072,5 +1072,142 @@ the "music/stream position is output state, not match state" rule of
 Tekken 6 Native Online's 2.2.4 release notes, taken to its end: the stream
 is not rolled back, not restored, not re-fed -- it is read.
 
-Full matches with the fix (direct fight Asuka vs Lili, stage 20, 2 rounds,
-KOs, delay 1, 3 % loss, 300 s): see the j-runs below.
+Full matches with the archive-backed stream alone (direct fight Asuka vs
+Lili, stage 20, 2 rounds, KOs, delay 1, 3 % loss, 300 s; runs j0c/j50c/
+j150c): 0 decode errors on all six instances, 174/68, 556/511 and 648/665
+rollbacks -- and two leftovers, both at the first round's end:
+
+- **RTT 0: the host stuck in fight phase 2** (the joiner went on to phase 3
+  at 5371 and the rest of the match; 10 000 mismatching frames from there).
+  The title's adds were still advancing the library's position, chunks fed
+  again included, so after 174 rollbacks the position was a ring or more
+  ahead of the decoder, the derived fill reported the ring full, the reader
+  had no room to write and the title's round-end music switch waited for it
+  for good. Fixed in 0025: the position follows the title's *reader* --
+  bytes that are not the file's at the position they were asked for are
+  looked for in the file nearby (one ring back, four ahead; the reader is
+  behind after a rollback, re-feeding, or ahead, having gone on while a
+  re-issued answer put the position back) and the position moves there;
+  bytes found nowhere near (the wrong block) make no progress. The fill
+  treats a position behind the decoder as an empty ring (the reader catches
+  up) rather than as a lap ahead. Test mode: fill median 15 696, a transient
+  two rings at most, 0 decode errors (`runs/arc5`).
+- **RTT 50 and 150: the joiner's stream reader aborted** (the phase-7
+  chain `0x3aabc0 <- 0x37f804 <- 0x37c4a0 <- 0x67354 <- 0x1eb6f8 <-
+  0x1ebb08`) at ~5366, with 0 decode errors -- so the abort was never the
+  decoder's doing. The log shows 1-frame rollbacks *inside* the lockstep
+  window the phase change opened at 5348 (5350 -> 5349, 5365 -> 5364) and
+  the archive opened four times for one music switch: the window waited for
+  the peer's inputs up to f - 1 and still ran frame f on a prediction, the
+  rollback re-ran the frame that had issued the switch, and the reader
+  found a second switch in flight. Fixed in rb_net.cpp: in the warm-up and
+  phase-change windows the boundary waits for the input of the frame about
+  to run (`need = f + 1`), which with delay 1 the peer has sent a frame
+  earlier -- the windows are lockstep now, not lockstep-but-one.
+
+With those two (runs k0c/k50c/k150c, same setup): **RTT 50 a whole clean
+match** -- 13 200 frames, 1 216 + 1 127 rollbacks, 0 mismatching frames, 0
+decode errors, no abort, both peers through the same 10 phases; 0 decode
+errors and no abort on the other four instances either. But RTT 0 had one
+peer stuck in phase 2 again (this time the joiner, after 688 rollbacks; its
+music stop was never issued -- no DeleteDecoder -- while its stream thread
+went on feeding), and RTT 150 diverged at 5726, two frames before the
+second round's phase 3 -> 4, in lockstep, with identical inputs. Both are
+one thing: **the sound update's enable word is in the rollback state.**
+The loop zeroes that word while it re-simulates (the title's sound update
+is skipped in re-simulated frames, section 9) and puts the saved value back
+afterwards -- but a frame committed *during* a re-simulation is committed
+with the word at zero, and a later rollback to such a frame (a second
+misprediction inside an earlier rollback's span, common with hundreds of
+rollbacks) restores the zero; `sound_skip(true)` then saved that zero and
+`sound_skip(false)` put the zero back, and the sound update was off for the
+rest of the match: no round-end music stop (the phase machine waits for it:
+k0c), and whatever the sound update does to the fight state at a round
+start differed between the peers (k150c). Fixed in rb_hooks.cpp: the value
+put back is the last *live* one; a restore that brings the word back as
+zero is noted in the log.
+
+With that (runs l0c/l50c/l150c): every instance through the whole match,
+0 decode errors, no abort, the same phases on both peers (26/26, 26/26,
+22/22), 54 + 25/51 + 67/63 such zero restores caught on the way -- and one
+mismatching word from frame 5726 (RTT 0 and 50; 5826 at 150) to the end:
+**0x1008F088, the stage id**, 0x13 on one peer and 0x1A on the other
+(dumps of l0d, T5_NET_DESYNC_DUMP=1, nothing else differing in the 20
+frames dumped). It is re-rolled from the C rand() -- the word a side thread
+consumes at its own pace, out of both hashes since section 12 -- at the
+second round's intro, and the fight does not use it (same phases, same
+rounds, the same stage on screen). Left out of both gameplay hashes
+(`kDefaultHashSkip`, `kGameSkip`) like the rand() word itself.
+
+The next three (m0c/m50c/m150c, dumps on): 0 decode errors, no abort, the
+same phases on both peers, and two more words of the same kind, set at
+the *second match's* intro (frames 5826-5845, phase 10) and unchanged for
+the rest of it: +0x830 of P2's fighter block, a pointer into 0x10670000
+(0x10670AF0 on one peer, 0x106707F0 on the other; 0x1066F470 vs
+0x1066F170 at RTT 150), and a unit vector at 0x100A0A10 ((0.17, -0.91,
+0.37) vs (-0.41, -0.90, 0.13); in n0c a scale of (1, 1, 1) vs (0, 0, 0)
+twenty words further, at 0x100A0A30: one record, 0x100A0A00+0x80 left out
+whole) -- nothing else in the 20 frames dumped,
+the fight on, the same rounds, the same phases. These never showed in the
+phase 5-8 matches, which ran as far: those had the sound update silently
+off on one or both peers after the first rollbacks (the zero restore
+above), so whatever the sound side hands the fight at a match intro --
+these look like a voice/effect handle and an emitter direction -- was
+never handed over then. Both peers now run their sound update, each with
+its own history (the effects of re-simulated frames are skipped on one
+side and not the other), so sound handles stored in the fight state differ
+from the first match intro after a rollback on. Left out of both hashes
+with the five handle fields NETPLAY.md already lists. The right way, when
+someone takes the sound side on, is Tekken 6 Native Online's: run the
+sound update in re-simulated frames and start no sound twice.
+
+One transient at RTT 150 (m150c, frame 5845, one dump of 20): a table of
+pointers at 0x10091AB8 (fighter objects in the heap, 0x8D0 apart) filled
+on one peer a frame before the other during the intro's loading --
+asynchronous loading, lockstep window, no consequence seen.
+
+## 19. Where phase 9 ends: the stream is solved, the sound side is not match state yet
+
+Final pairs with everything above (o0c, o50c; same setup, dumps on):
+0 decode errors, no abort, 0 "writable 0" stalls of the reader, the same
+phases on both peers through both matches -- and still a sync-check
+mismatch from the second match's intro (frame 5845) on: a table of twenty
+heap pointers at 0x10091AB8 (objects 0x8D0 apart, in the fight block's
+last page) filled on one peer and zero on the other for the rest of the
+match (o0c; a one-frame transient of the same table in m150c), and in
+o50c one more pointer into 0x10670000 at +0x1100 of P2's block (frame
+5879, 0x1066FD70 vs 0x106713F0). Like the
+stage re-roll, the handle and the effect record before it, it is set at
+the intro by the side whose history now differs between the peers: with
+the enable word fixed, both peers run the title's sound update, but each
+skips it in its *own* re-simulated frames (section 9), so the sound side's
+allocations (voices, handles, effect records) diverge from the first
+rollback on, and whatever it hands the fight block at a match intro
+differs. The fight does not read these back (identical phases, rounds and
+positions through two matches in every run), but the detector cannot tell
+that apart from a divergence, and three words were skipped on evidence
+rather than on a layout.
+
+So the online default **stays opt-in** (`T5_RB_MODE=net` offers rollback;
+`offered_by_env` in rb_net.cpp), with the rule's "clean" unmet by the
+detector though met by the fight. Two ways to finish, in order of
+preference:
+
+1. Tekken 6 Native Online's (release note 2.2.4): run the sound update in
+   re-simulated frames too and have the sound side start no sound twice
+   (a sound started in a frame that is re-simulated keeps playing, the
+   re-simulation's start of the same sound is a no-op, nothing is cut).
+   Then both peers' sound histories are the confirmed timeline and the
+   words above agree. Needs the sound request path (0xAA200 -> 0x32819C
+   and the bnusCore request areas at 0x10114000 / 0x40000000) understood
+   well enough to key "the same sound".
+2. Hash only the fight: the netplay/df owners of the fight-block layout
+   take the sound side's fields (handles, the pointer table at +0x1AB8 of
+   P2, the effect record at 0x100A0A00) out of `kDefaultHash`, as the five
+   handle fields already are.
+
+Everything else of the phase-9 brief is done: the ATRAC stream is read
+from its archive (patch 0025), the j/k/l/m/n/o pairs at RTT 0/50/150 with
+3 % loss and delay 1 ran 10 000-15 000 frames each with 0 decode errors
+and no abort (18 instances), the round-end hang and the reader's abort are
+gone, and the lockstep windows are lockstep.

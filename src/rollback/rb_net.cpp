@@ -72,6 +72,7 @@ LARGE_INTEGER g_qpf, g_resim_t0;
 /* statistics (reported every 300 frames) */
 struct Stats {
     uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0, sleeps = 0;
+    uint32_t sound_zero = 0;
     double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0;
     uint32_t depth_hist[17] = {};
 } g_st, g_tot;
@@ -294,7 +295,12 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */
     const bool warm = f < g_started_at + g_warmup || f < g_lock_until;   /* lockstep until the fight has settled / past a phase change */
-    const uint32_t need = (scene_flag || warm) ? f : (f > g_maxpred ? f - g_maxpred : 0);
+    /* lockstep means the frame about to run (f, inputs_for(f) below) has the
+     * peer's input in hand, not just the frames before it: waiting for f - 1
+     * only still ran f on a prediction, and the 1-frame rollbacks that
+     * followed inside the round-end window re-issued the title's music
+     * switch and its stream reader gave up (j50c, docs/ROLLBACK.md 18) */
+    const uint32_t need = (scene_flag || warm) ? f + 1 : (f > g_maxpred ? f - g_maxpred : 0);
     if (rc < need && !np::rb_peer_lost()) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
         rc = np::rb_wait_remote(need - 1, 2000);
@@ -328,6 +334,10 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             QueryPerformanceCounter(&g_resim_t0);
             g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
             set_bypass(true);
+            if (g_skipsound && sound_word() && rd32(sound_word()) == 0) {   /* a frame committed while re-simulated: sound_skip(false) puts the live value back */
+                g_st.sound_zero++;
+                if (g_st.sound_zero <= 3) note("rbnet: frame %u: the restore of %u brought the sound update's enable word back as zero (committed during a re-simulation); the live value is put back after this one", f, first_wrong);
+            }
             if (g_skipsound) sound_skip(true);
             cut_set(true);
             if (g_verbose) note("rbnet: frame %u: rollback to %u (%u frames), %u pages restored in %.2f ms", f, first_wrong, depth, pages, rms);

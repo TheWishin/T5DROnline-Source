@@ -755,3 +755,14 @@ above.
 stage 18: 38 rollbacks, **0 mismatches in 304 boundaries**; stage 24: 34,
 **0 in 272**; stage 17 (control): 51, 0 in 408. Every selectable stage
 (17-34) now re-simulates with the gameplay hash intact.
+
+**Time sync at RTT 100 ms, retuned** (n8, sleeps at the boundary in measured
+frame time, every 10 frames): the joiner stayed 1.1-2.0 frames ahead and took
+every rollback (22-40 per 300 frames) through 19-30 sleeps per window, at the
+same fps as the host -- the sleep is absorbed: the main thread sleeps while
+the draw thread still works on the previous frame, so the frame pipeline is
+not delayed at all. Taking the sleep inside the present's flip wait instead
+(`T5_RB_NET_TS_FLIP=1`, n9) did delay the pipeline, but the host stalled for
+a 75 s window and the pair fell apart (not understood yet), so it is off.
+What is needed is a real frame skip (not advancing the game for one frame),
+or a sleep placed after the draw thread's wait on the live path; left open.

@@ -44,6 +44,11 @@ bool     keyread_parked();                         /* keyread thread parked, mai
 void     set_sim_frame(uint32_t f);                /* logical frame the pad override answers for */
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 bool     bypass_on();
+/* Time sync: a sleep requested by the rollback loop is taken inside the
+ * present's flip wait (cellGcmSetWaitFlip, after the draw thread is done
+ * with the frame), where it delays the whole frame pipeline. A sleep at the
+ * frame boundary was absorbed by the draw thread's wait (run n8). */
+void     ts_sleep_request(double ms);
 /* The sound update (main loop 0xAA200 -> 0x32819C: the main thread's sound
  * requests to the bnusCore handoff area) is skipped while the word its TOC
  * slot (r2 - 0x61E8) points to is 0. Re-simulated frames must not re-issue

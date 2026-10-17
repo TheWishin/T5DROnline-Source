@@ -291,10 +291,19 @@ void h_cellGcmSetFlip(ppu_context* ctx)
 /* The present (0x383C04) queues the flip and then waits for it; while
  * re-simulating there is no flip to wait for -- this wait was 35 % of a
  * re-simulated frame's wall time in the phase-1 numbers. */
+std::atomic<int> g_ts_sleep_us{ 0 };
+void ts_sleep_request(double ms) { g_ts_sleep_us = (int)(ms * 1000.0); }
 void h_cellGcmSetWaitFlip(ppu_context* ctx)
 {
     if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }
     cellGcmSetWaitFlip();
+    if (ctx->thread_id == g_main_tid) {
+        const int us = g_ts_sleep_us.exchange(0);
+        if (us > 0) {
+            LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
+            do { Sleep(1); QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart < us);
+        }
+    }
     ctx->gpr[3] = 0;
 }
 double t_usercmd_ms(LARGE_INTEGER since) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return 1000.0 * (double)(g_t_usercmd.QuadPart - since.QuadPart) / (double)f.QuadPart; }

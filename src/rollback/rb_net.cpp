@@ -24,6 +24,7 @@ uint32_t g_started_at = 0;
 /* time sync */
 constexpr int kLeadWinMax = 60;
 int g_lead_win = 20, g_ts_interval = 10, g_ts_max = 2;
+bool g_ts_flip = false;          /* T5_RB_NET_TS_FLIP=1: take the sleep in the flip wait (delays the whole pipeline; stalled run n9, off) */
 LARGE_INTEGER g_t_frame0; uint32_t g_frames_timed = 0; double g_frame_ms = 1000.0 / 60.0;   /* measured frame time (last 60 live frames) */   /* T5_RB_NET_TS=win,interval,max: averaging window, frames between sleeps, max frames per sleep */
 int g_lead_mine[kLeadWinMax], g_lead_theirs[kLeadWinMax]; int g_lead_n = 0;
 uint32_t g_last_sleep_frame = 0;
@@ -131,6 +132,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
             if (const char* s = getenv("T5_RB_NET_TS")) {
                 int w = 0, i = 0, m = 0;
                 if (sscanf(s, "%d,%d,%d", &w, &i, &m) == 3) { g_lead_win = std::max(5, std::min(kLeadWinMax, w)); g_ts_interval = std::max(1, i); g_ts_max = std::max(1, std::min(8, m)); }
@@ -223,10 +225,10 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         if (adv >= 1.0 && f - g_last_sleep_frame >= (uint32_t)g_ts_interval) {
             const int frames = std::min(g_ts_max, (int)adv);
             const double ms = frames * g_frame_ms;
-            LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
-            np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms);   /* a sleep that keeps the socket pumped */
+            if (g_ts_flip) ts_sleep_request(ms);   /* taken in this frame's flip wait (rb_hooks.cpp) */
+            else { LARGE_INTEGER t0; QueryPerformanceCounter(&t0); np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms); (void)t0; }   /* at the boundary, socket pumped */
             g_last_sleep_frame = f;
-            g_st.sleeps++; g_st.sleep_ms += ms_since(t0);
+            g_st.sleeps++; g_st.sleep_ms += ms;
             if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
         }
     }

@@ -20,7 +20,8 @@ OTHER_BUILD = BuildInfo("be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "fedcba98765
 FAST = dict(host="127.0.0.1", port=0, udp_port=0, udp_port2=-1, db=":memory:", scrypt_n=1 << 10,
             ready_timeout=5.0, register_timeout=4.0, punch_timeout=1.5, relay_timeout=5.0,
             result_timeout=2.0, log_level="WARNING", min_match_seconds=0.0, reconnect_grace=2.0,
-            status_port=0)
+            status_port=0, pair_cooldown=0.0,       # (the tests of the same-opponent cooldown and of the blind ready check
+            blind_ready=False)              # switch these two on; everything older runs the way it always did)
 
 
 class ServerThread:

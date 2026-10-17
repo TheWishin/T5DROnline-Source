@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.request
 
 import util
@@ -554,6 +555,165 @@ class HostTest(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(LOBBY, "run.py")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 2)
         self.assertIn("run.py host", r.stdout)
+
+
+# ============================================================================ macOS host (not run on a Mac)
+MACOS = os.path.join(LOBBY, "deploy", "macos")
+PLIST_TEMPLATE = os.path.join(MACOS, "org.t5dronline.lobby-host.plist")
+
+
+def load_render_plist():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("render_plist", os.path.join(MACOS, "render_plist.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def git_bash():
+    """A bash that understands Windows paths (Git for Windows), or any bash elsewhere. Not WSL's."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe"):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def J(*parts):
+    return os.path.normpath(os.path.join(*parts))
+
+
+class MacHostTest(unittest.TestCase):
+    """The pieces of the macOS setup that can be checked without a Mac: the data folder rule, the
+    launchd job file, the banner line and the shell scripts (syntax, dry run)."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, True)
+        env = {"HOME": self.home, "USERPROFILE": self.home, "LOCALAPPDATA": os.path.join(self.home, "Local")}
+        p = unittest.mock.patch.dict(os.environ, env)
+        p.start()
+        self.addCleanup(p.stop)
+        os.environ.pop("XDG_DATA_HOME", None)
+
+    def data_dir(self, platform):
+        from t5lobby.server import host
+        with unittest.mock.patch.object(sys, "platform", platform):
+            return os.path.normpath(host.default_data_dir())      # (expanduser mixes / and \ on Windows)
+
+    def test_data_dir_on_macos(self):
+        mac = J(self.home, "Library", "Application Support", "T5DR Online", "lobby-host")
+        legacy = J(self.home, ".local", "share", "t5lobby-host")
+        self.assertEqual(self.data_dir("darwin"), mac)
+        os.makedirs(legacy)                        # an older run made the Linux-style folder: keep using it
+        self.assertEqual(self.data_dir("darwin"), legacy)
+        os.makedirs(mac)                           # once the macOS folder exists, it wins
+        self.assertEqual(self.data_dir("darwin"), mac)
+
+    def test_data_dir_legacy_follows_xdg_data_home(self):
+        xdg = J(self.home, "xdg")
+        os.makedirs(J(xdg, "t5lobby-host"))
+        with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": xdg}):
+            self.assertEqual(self.data_dir("darwin"), J(xdg, "t5lobby-host"))
+
+    def test_data_dir_elsewhere_is_unchanged(self):
+        self.assertEqual(self.data_dir("linux"), J(self.home, ".local", "share", "t5lobby-host"))
+        self.assertEqual(self.data_dir("win32"), J(self.home, "Local", "T5DR Online", "lobby-host"))
+        with unittest.mock.patch.dict(os.environ, {"XDG_DATA_HOME": J(self.home, "x")}):
+            self.assertEqual(self.data_dir("linux"), J(self.home, "x", "t5lobby-host"))
+
+    def test_banner_names_the_right_firewall(self):
+        import argparse
+        from t5lobby.server import host
+        h = host.Host(argparse.Namespace(data=self.home, json=False))
+        info = {"internet": None, "port": 7781, "lan": "192.168.1.5:7781", "local": "127.0.0.1:7781",
+                "lan_ip": "192.168.1.5"}
+        for platform, want, not_want in (("darwin", "macOS may ask", "Windows asks"),
+                                         ("win32", "Windows asks", "macOS"), ("linux", "Router:", "Windows asks")):
+            with unittest.mock.patch.object(sys, "platform", platform):
+                text = h.banner(info, [("TCP", 7781), ("UDP", 7781), ("UDP", 7782)])
+            self.assertIn(want, text)
+            self.assertNotIn(not_want, text)
+
+    def test_plist_template_is_a_valid_launch_agent(self):
+        import plistlib
+        with open(PLIST_TEMPLATE, "rb") as f:
+            plist = plistlib.load(f)
+        self.assertEqual(plist["Label"], "org.t5dronline.lobby-host")
+        self.assertIs(plist["RunAtLoad"], True)
+        self.assertIs(plist["KeepAlive"], True)                      # starts at login, restarts if it dies
+        self.assertGreaterEqual(plist["ThrottleInterval"], 10)       # a crash loop must not spin
+        args = plist["ProgramArguments"]
+        self.assertEqual(args[:2], ["/usr/bin/caffeinate", "-s"])    # the Mac stays awake while it runs
+        self.assertEqual(args[2:4], ["@PYTHON@", "@APP@/run.py"])
+        self.assertEqual(args[4:], ["host", "--data", "@DATA@"])
+        self.assertEqual(plist["StandardOutPath"], "@DATA@/logs/launchd.log")   # logs go to the data folder
+        self.assertEqual(plist["StandardErrorPath"], plist["StandardOutPath"])
+        self.assertNotIn("UserName", plist)                          # user level: no root, no sudo
+
+    def test_render_fills_in_paths_with_spaces_and_ampersands(self):
+        import plistlib
+        r = load_render_plist()
+        with open(PLIST_TEMPLATE, "rb") as f:
+            template = f.read()
+        data = "/Users/me/Library/Application Support/T5DR Online/lobby-host & <co>"
+        out = r.render(template, "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+                       "/Users/me/Library/Application Support/T5DR Online/lobby-app", data,
+                       extra_args=["--map-ports", "--guests-only"])
+        plist = plistlib.loads(out)
+        self.assertEqual(plist["ProgramArguments"], [
+            "/usr/bin/caffeinate", "-s", "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+            "/Users/me/Library/Application Support/T5DR Online/lobby-app/run.py", "host", "--data", data,
+            "--map-ports", "--guests-only"])
+        self.assertEqual(plist["WorkingDirectory"], data)
+        self.assertEqual(plist["StandardOutPath"], data + "/logs/launchd.log")
+        self.assertNotIn(b"@PYTHON@", out)
+        self.assertNotIn(b"@DATA@", out)
+        plain = plistlib.loads(r.render(template, "/p/python3", "/a", "/d", caffeinate=False))
+        self.assertEqual(plain["ProgramArguments"][:2], ["/p/python3", "/a/run.py"])    # no caffeinate wrapper
+        with self.assertRaises(ValueError):                           # a placeholder nobody filled is an error
+            r.render(template.replace(b"<string>host</string>", b"<string>@FORGOTTEN@</string>"), "/p", "/a", "/d")
+
+    def test_render_script_writes_a_file(self):
+        import plistlib
+        out = os.path.join(self.home, "job.plist")
+        r = subprocess.run([sys.executable, os.path.join(MACOS, "render_plist.py"), "--template", PLIST_TEMPLATE,
+                            "--python", "/usr/local/bin/python3", "--app", "/a b", "--data", "/d e",
+                            "--arg=--map-ports", "--out", out], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(out, "rb") as f:
+            self.assertEqual(plistlib.load(f)["ProgramArguments"][-1], "--map-ports")
+
+    @unittest.skipUnless(git_bash(), "needs bash")
+    def test_install_scripts_parse_and_dry_run_changes_nothing(self):
+        bash = git_bash()
+        posix = lambda p: p.replace("\\", "/")      # noqa: E731 -- Git Bash takes forward slashes
+        for name in ("install.sh", "uninstall.sh"):
+            r = subprocess.run([bash, "-n", posix(os.path.join(MACOS, name))], capture_output=True, text=True,
+                               timeout=30)
+            self.assertEqual(r.returncode, 0, name + ": " + r.stderr)
+        env = dict(os.environ, HOME=posix(self.home))
+        data = posix(os.path.join(self.home, "data"))
+        r = subprocess.run([bash, posix(os.path.join(MACOS, "install.sh")), "--dry-run", "--python",
+                            posix(sys.executable), "--data", data, "--", "--map-ports"],
+                           capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn("render_plist.py", out)
+        self.assertIn("--arg=--map-ports", out)
+        self.assertIn("launchctl bootstrap", out)
+        self.assertIn("caffeinate -s", out)
+        self.assertEqual(os.listdir(self.home), [], "a dry run must not create anything in the home folder")
+        r = subprocess.run([bash, posix(os.path.join(MACOS, "install.sh")), "--bogus"], capture_output=True,
+                           text=True, timeout=30, env=env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unknown option", r.stderr)
+        r = subprocess.run([bash, posix(os.path.join(MACOS, "uninstall.sh")), "--dry-run"], capture_output=True,
+                           text=True, timeout=30, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("launchctl bootout", r.stdout)
+        self.assertEqual(os.listdir(self.home), [])
 
 
 # ============================================================================ port mapping (fakes)

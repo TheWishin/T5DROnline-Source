@@ -1,6 +1,8 @@
 """The launcher's Online tab driven like a player would, against a real server and a second
 (plain) client: guest login, quick match, accept, the game starts with the handed-over
-environment, the game closes, "I won", and the confirmed result shows up."""
+environment, the game closes, "I won", and the confirmed result shows up. TkT6Test: the Tekken 6
+style extras in the tab (blind accept with the ping, strict option, block button and list,
+lag check with its way out, server notice in the status bar, no IP address in a status line)."""
 import gc
 import os
 import time
@@ -24,6 +26,9 @@ class FakeGame:
 
     def running(self):
         return not self.done
+
+    def stop(self):
+        self.done = True
 
 
 class FakeSettings(dict):
@@ -52,10 +57,12 @@ class FakeApp:
 
 
 @unittest.skipIf(tk is None, "no tkinter")
-class TkTabTest(unittest.TestCase):
+class TkBase(unittest.TestCase):
+    server_cfg = {}
+
     def setUp(self):
         import tempfile
-        self.s = ServerThread().start()
+        self.s = ServerThread(**self.server_cfg).start()
         try:
             self.root = tk.Tk()
         except tk.TclError as e:
@@ -96,6 +103,10 @@ class TkTabTest(unittest.TestCase):
                 return w
         return None
 
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class TkTabTest(TkBase):
     def test_quick_match_flow(self):
         tab = self.tab
         self.assertEqual(tab.name_var.get(), "TabUser")       # from the launcher's nickname
@@ -247,6 +258,180 @@ class TkTabTest(unittest.TestCase):
         tab.do_host()                                         # the same button stops it
         self.pump(lambda: tab.host_proc is None, timeout=20)
         self.assertEqual(str(tab.b_host.cget("text")), "Host for friends")
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class TkT6Test(TkBase):
+    server_cfg = {"blind_ready": True, "ready_timeout": 8.0}
+
+    def login_guest(self, name="TabUser"):
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set(name)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+
+    def login_account(self, name="Ranker"):
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set(name)
+        tab.pw_var.set("secret-pw1")
+        tab.ask_string = lambda *a, **k: "secret-pw1"
+        tab.do_login("register")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        self.pump(lambda: tab.codes_window is not None)
+        tab.codes_window.destroy()
+        self.pump(lambda: str(tab.actions["ranked"].cget("state")) == "normal")
+
+    def ranked_result(self):
+        """The tab (an account) and Rival play one ranked match; the bar then offers the rematch."""
+        tab = self.tab
+        self.login_account()
+        self.other = client(self.s, "Rival", password="rival-pw1", register=True, auto_ready=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        tab.char_var.set("Lili")
+        tab.on_char()
+        tab.actions["ranked"].invoke()
+        self.other.ranked_match()
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.assertEqual(str(tab.char_cb.cget("state")), "disabled")        # a ranked set locks the character
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: len(self.app.games) == 1)
+        slot = 0 if self.app.games[0].env["T5_NET_MODE"] == "host" else 1
+        self.app.games[0].done = True
+        self.pump(lambda: self.bar_button("I won") is not None)
+        self.bar_button("I won").invoke()
+        self.other.report_result(slot, None)
+        self.pump(lambda: self.bar_button("Rematch Rival") is not None)
+
+    def test_blind_accept_shows_the_ping_then_the_name(self):
+        tab = self.tab
+        self.login_guest()
+        self.other = client(self.s, "Rival", auto_ready=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        tab.actions["quick"].invoke()
+        self.other.quick_match()
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        text = tab.bar_text.get()
+        self.assertNotIn("Rival", text)                                      # the name is still hidden
+        self.assertRegex(text, r"ping about \d+ ms")
+        self.assertRegex(text, r"accept within \d+ s")
+        self.pump(lambda: tab.bar_text.get() != text, timeout=3)             # the countdown runs
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: "Opponent: Rival" in tab.bar_text.get())           # revealed after both accepted
+        self.pump(lambda: len(self.app.games) == 1)
+        self.assertIn("Rival", tab.match_var.get())
+
+    def test_decline_in_the_blind_bar(self):
+        tab = self.tab
+        self.login_guest()
+        self.other = client(self.s, "Rival", auto_ready=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        tab.actions["quick"].invoke()
+        self.other.quick_match()
+        self.pump(lambda: self.bar_button("Decline") is not None)
+        self.bar_button("Decline").invoke()
+        self.pump(lambda: "declined" in tab.status_var.get().lower())
+        self.assertNotIn("Rival", tab.status_var.get())
+
+    def test_strict_checkbox_goes_with_the_ranked_request(self):
+        tab = self.tab
+        self.login_account()
+        tab.strict_check.invoke()                                            # on (and saved)
+        self.assertTrue(tab.cfg["strict"])
+        path = os.path.join(os.environ["T5_ONLINE_DIR"], "online.json")
+        for _ in range(5):                                                   # (a virus scanner can hold the file for a moment)
+            with open(path) as f:
+                if '"strict": true' in f.read():
+                    break
+            time.sleep(0.2)
+            tab._save_cfg()
+        else:
+            self.fail("the strict option was not saved")
+        tab.actions["ranked"].invoke()
+        self.pump(lambda: self.s.call(lambda: self.s.srv.by_name["ranker"].strict))
+        self.pump(lambda: str(tab.actions["cancel"].cget("state")) == "normal")      # (once the lobby list says "searching")
+        tab.actions["cancel"].invoke()
+        self.pump(lambda: str(tab.actions["ranked"].cget("state")) == "normal")
+        tab.strict_check.invoke()                                            # off again
+        tab.actions["ranked"].invoke()
+        self.pump(lambda: self.s.call(lambda: self.s.srv.by_name["ranker"].status) == "queue")
+        self.assertFalse(self.s.call(lambda: self.s.srv.by_name["ranker"].strict))
+
+    def test_block_the_opponent_after_the_game_and_unblock_in_the_list(self):
+        tab = self.tab
+        self.ranked_result()
+        asked = []
+        tab.ask_yes_no = lambda *a, **k: asked.append(a) or True
+        self.bar_button("Block Rival").invoke()
+        self.pump(lambda: [r["name"] for r in tab.client.blocks()] == ["Rival"])
+        self.assertIn("Block Rival?", asked[0][1])
+        self.assertEqual(tab.bar.winfo_manager(), "")                        # the rematch bar is gone
+        self.pump(lambda: str(tab.char_cb.cget("state")) == "readonly")      # ... and so is the set: the character is free
+        # the list under "Blocked players..." and Unblock
+        tab.do_blocked()
+        self.pump(lambda: tab.blocks_window is not None)
+        tab.blocks_list.selection_set(0)
+        unblock = [w for f in tab.blocks_window.winfo_children() for w in f.winfo_children()
+                   if getattr(w, "cget", None) and w.winfo_class() == "TButton" and w.cget("text") == "Unblock"]
+        unblock[0].invoke()
+        self.pump(lambda: tab.client.blocks() == [])
+        tab.blocks_window.destroy()
+
+    def test_lag_check_in_the_tab_and_leaving_without_penalty(self):
+        tab = self.tab
+        self.ranked_result()
+        mid = tab.driver.last["match"]
+        rating = self.s.call(lambda: self.s.srv.by_name["ranker"].rating.r)
+        # both games report; the lobby answers with the same numbers for both players
+        tab.client.report_lag(mid, 3000, 3000 * 40.0, 60.0)
+        self.other.report_lag(mid, 3000, 3000 * 40.0, 60.0)
+        self.pump(lambda: "Lag check: Ping" in tab.match_var.get())
+        self.assertIn("should mean about", tab.match_var.get())
+        self.assertIn("more than the ping explains", tab.match_var.get())
+        leave = self.bar_button("Leave: too laggy")                          # only offered when it was worse
+        self.assertIsNotNone(leave)
+        self.assertIsNotNone(self.bar_button("Rematch Rival"))               # ... next to the rematch: nothing ends by itself
+        leave.invoke()
+        self.pump(lambda: "No penalty" in tab.status_var.get())
+        self.assertEqual(self.s.call(lambda: self.s.srv.by_name["ranker"].rating.r), rating)
+        self.assertEqual(str(tab.char_cb.cget("state")), "readonly")
+
+    def test_a_good_lag_check_offers_no_way_out(self):
+        tab = self.tab
+        self.ranked_result()
+        mid = tab.driver.last["match"]
+        tab.client.report_lag(mid, 3000, 3000 * 1.0, 60.0)
+        self.other.report_lag(mid, 3000, 3000 * 1.0, 60.0)
+        self.pump(lambda: "That is what the ping explains" in tab.match_var.get())
+        self.assertIsNone(self.bar_button("Leave: too laggy"))
+
+    def test_server_notice_stays_in_the_status_bar(self):
+        tab = self.tab
+        self.login_guest()
+        text = "server restart in 20 min"
+        self.s.call(lambda: self.s.srv.store.add_notice(text, time.time() + 600))
+        self.s.call(lambda: self.s.srv.poll_notices())
+        self.pump(lambda: text in tab.notice_var.get())
+        self.assertTrue(any(text in st for st in self.app.statuses))
+        tab.status("Searching for an opponent...")                           # other messages do not push it out
+        self.assertIn(f"[Server: {text}]", self.app.statuses[-1])
+        self.s.call(lambda: self.s.srv.store.clear_notices())
+        self.s.call(lambda: self.s.srv.poll_notices())
+        self.pump(lambda: tab.notice_var.get() == "")
+        tab.status("Searching for an opponent...")
+        self.assertNotIn("Server:", self.app.statuses[-1])
+
+    def test_no_address_in_a_status_line(self):
+        tab = self.tab
+        tab.status("could not reach 203.0.113.7:61000 or 2001:db8::7")
+        for shown in (tab.status_var.get(), self.app.statuses[-1]):
+            self.assertNotIn("203.0.113", shown)
+            self.assertNotIn("2001:db8", shown)
+            self.assertIn("(address hidden)", shown)
+        self.login_guest()
+        tab.on_event({"t": "notice", "code": "nat_error", "msg": "OSError: sendto 198.51.100.4 failed"})
+        self.assertNotIn("198.51.100.4", tab.status_var.get())
 
 
 if __name__ == "__main__":

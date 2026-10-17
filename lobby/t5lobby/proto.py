@@ -66,6 +66,44 @@ def decode(line):
     return obj
 
 
+# ---------------------------------------------------------------------------- addresses in messages
+# Messages the players read (errors, notices, status lines) must never carry an IP address: the
+# opponent's address is private, and a connection error is the most likely place for one to leak
+# (an OSError names the address it failed to reach). scrub_addresses() is applied where a message
+# leaves the server (Conn.send) and where the client library and the launcher show text.
+_IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w)(?::\d{1,5})?")
+_IPV6_RE = re.compile(r"\[?(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:%\w+)?\]?(?::\d{1,5})?(?![\w:])")
+HIDDEN_ADDRESS = "(address hidden)"
+
+
+def scrub_addresses(text):
+    """Replace IPv4 and IPv6 addresses (with or without a port) in `text` by HIDDEN_ADDRESS.
+    Host names stay. Anything that does not parse as an address (a clock time, a version number
+    such as 3.12.10) is left alone."""
+    import ipaddress
+    if not isinstance(text, str) or (":" not in text and "." not in text):
+        return text
+
+    def v4(m):
+        t = m.group(0)
+        try:
+            ipaddress.IPv4Address(t.rsplit(":", 1)[0] if ":" in t else t)
+        except ValueError:
+            return t
+        return HIDDEN_ADDRESS
+
+    def v6(m):
+        t = m.group(0)
+        inner = t[1:].split("]", 1)[0] if t.startswith("[") else t
+        try:
+            ipaddress.IPv6Address(inner.split("%", 1)[0])
+        except ValueError:
+            return t
+        return HIDDEN_ADDRESS
+
+    return _IPV6_RE.sub(v6, _IPV4_RE.sub(v4, text))
+
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_\-\.\[\]\(\)!\? ]{2,16}$")
 
 

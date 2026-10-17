@@ -10,6 +10,9 @@ From "match found" to "result reported" without the player doing anything:
                   ranks for the fight HUD, not used by the game yet)
     during play   the game's log is followed: the netplay desync detector, a lost opponent,
                   "match over" lines, crashes
+    lag check     when the lobby settled the match, the game log's own numbers (frames played,
+                  time spent waiting for the opponent, this PC's speed) go to the lobby, which
+                  tells both players "ping X should mean about Y frames behind, it was Z"
     result        the game's result file (T5_NET_RESULT_FILE) is read and reported with the
                   evidence (desync count, state hash when the game writes one); the file is
                   archived so the next match in the same game process starts clean. A file
@@ -48,7 +51,7 @@ import re
 import threading
 import time
 
-from . import fighters, ranks
+from . import fighters, proto, ranks
 from .handover import read_result_file
 
 CTL_MARKER = b"T5_CTL_DIR"
@@ -61,6 +64,10 @@ RE_FAIL = re.compile(r"\[netplay\] cannot connect \((\w+)\)")
 RE_CONNECTED = re.compile(r"\[netplay\] connected \(")
 RE_BUILD = re.compile(r"\[netplay\] (the peer runs a different build|cannot connect \(build_mismatch\))")
 RE_SPEED = re.compile(r"\[netplay\] speed: [\d.]+ fps, this PC ([\d.]+) fps")
+# netplay logs one such line per 600 lockstep frames: overall speed, this PC's own speed without the
+# waits for the peer, and how long it waited (src/netplay/netplay_core.cpp account_frame)
+RE_WAIT = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps without the waits for the peer "
+                     r"\(waited ([\d.]+) s of ([\d.]+) s\)")
 RE_FPS = re.compile(r"^\[fps\] ([\d.]+) ")
 
 # Why a game could not finish its match (result file "reason", netplay log), for the player.
@@ -98,6 +105,7 @@ class GameLog:
         self.crashed = False
         self.build_mismatch = False
         self.local_fps = None        # this PC's own speed in lockstep (netplay's speed line)
+        self.speeds = []             # (fps, this PC's fps, waited s, window s) per netplay speed line
         self.fps = []                # the runtime's [fps] lines (sustained speed offline / before lockstep)
 
     def poll(self):
@@ -147,6 +155,11 @@ class GameLog:
             self.peer_lost += 1
             self.lost_reason = m.group(2) or "peer_lost"
             return
+        m = RE_WAIT.search(ln)
+        if m:
+            self.local_fps = float(m.group(2))
+            self.speeds.append(tuple(float(x) for x in m.groups()))
+            return
         m = RE_SPEED.search(ln)
         if m:
             self.local_fps = float(m.group(1))
@@ -169,9 +182,22 @@ class GameLog:
         return None
 
     def mark(self):
-        """Counters at the start of a match: (mismatches, overs, peer_lost)."""
+        """Counters at the start of a match: (mismatches, overs, peer_lost, speed lines)."""
         self.poll()
-        return (self.mismatches, len(self.overs), self.peer_lost)
+        return (self.mismatches, len(self.overs), self.peer_lost, len(self.speeds))
+
+    def lag_stats(self, since=0):
+        """The numbers behind the post-game lag check, from the speed lines after `since`:
+        {frames, waited_ms, pc_fps, fps} -- or None when there are too few (a match shorter than
+        one 600-frame line says nothing)."""
+        rows = self.speeds[since:]
+        frames = sum(round(fps * window) for fps, _pc, _w, window in rows)
+        if not rows or frames < 300:
+            return None
+        pcs = sorted(pc for _f, pc, _w, _t in rows)
+        return {"frames": frames, "waited_ms": sum(w for _f, _p, w, _t in rows) * 1000.0,
+                "pc_fps": round(pcs[len(pcs) // 2], 1),
+                "fps": round(frames / sum(t for _f, _p, _w, t in rows), 1)}
 
 
 class Control:
@@ -294,7 +320,7 @@ class MatchDriver:
         self.notes.put(dict(kw, t="driver", kind=kind))
 
     def status(self, text):
-        self.note("status", text=text)
+        self.note("status", text=proto.scrub_addresses(str(text)))      # never an IP address in what the player reads
 
     def game_running(self):
         return self.game is not None and self.game.running()
@@ -472,13 +498,24 @@ class MatchDriver:
                 t.share_socket(game.proc.pid)
             self.game = game
             self.glog = GameLog(getattr(game, "log_path", None))
-        self.mark = self.glog.mark() if self.glog else (0, 0, 0)
+        self.mark = self.glog.mark() if self.glog else (0, 0, 0, 0)
         self.status(f"Playing against {t.summary()}")
         self._call(self.client.game_started, mid)
+
+    def _send_lag(self, mid):
+        """Report this match's lag numbers (the lobby shows both players the comparison)."""
+        fn = getattr(self.client, "report_lag", None)
+        if fn is None or self.glog is None or self.mark is None:
+            return
+        self.glog.poll()
+        st = self.glog.lag_stats(self.mark[3] if len(self.mark) > 3 else 0)
+        if st:
+            self._call(fn, mid, st["frames"], st["waited_ms"], st["pc_fps"], st["fps"])
 
     def _finished(self, ev):
         self.last = ev
         if self.ticket is not None and getattr(self.ticket, "match_id", None) == ev["match"]:
+            self._send_lag(ev["match"])
             if not self.reported:
                 # The lobby settled the match without our report (e.g. void on the opponent's
                 # desync report): whatever our game writes for it now must not count for the next.
@@ -701,7 +738,8 @@ def _call_now(notes, fn, *args):
     try:
         return fn(*args)
     except Exception as e:   # noqa: BLE001 -- reported, never raised into the UI loop
-        notes.put({"t": "driver", "kind": "status", "text": f"Lobby: {getattr(e, 'msg', '') or e}"})
+        notes.put({"t": "driver", "kind": "status",
+                   "text": proto.scrub_addresses(f"Lobby: {getattr(e, 'msg', '') or e}")})
         return None
 
 

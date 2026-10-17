@@ -51,7 +51,7 @@ def main(argv=None):
 
     build = BuildInfo.from_out_dir(a.build_out) if a.build_out else BuildInfo(a.elf_sha1, a.code_id)
     c = LobbyClient(a.server, build, auto_ready=True, game_port=a.game_port,
-                    tls=a.tls, tls_fingerprint=a.tls_fingerprint)
+                    tls=a.tls, tls_fingerprint=a.tls_fingerprint, blind_ready=True)
     try:
         w = c.connect()
         print(f"connected to {w['server']} (build {build.build_id}){': ' + w['motd'] if w.get('motd') else ''}")
@@ -101,24 +101,35 @@ def main(argv=None):
             elif t == "challenge_update" and ev["state"] in ("declined", "expired"):
                 print(f"challenge {ev['state']}")
                 return 1
+            elif t == "match_found" and ev.get("blind"):
+                ping = ev.get("ping") or {}
+                print(f"opponent found -- ping about {ping['ms']} ms (through the server), accepting"
+                      if ping.get("known") else "opponent found -- accepting")
+            elif t == "match_reveal":
+                print(f"opponent: {ev['opponent']['name']} ({ev['opponent']['rating']}) -- you are "
+                      f"P{ev['slot'] + 1} ({ev['role']})")
             elif t == "match_found":
                 print(f"opponent found: {ev['opponent']['name']} ({ev['opponent']['rating']}) -- you are "
                       f"P{ev['slot'] + 1} ({ev['role']})")
+            elif t == "lag_check":
+                print("lag check: " + ev["text"])
+            elif t == "server_notice" and not ev.get("cleared"):
+                print("server notice: " + ev["text"])
             elif t == "nat_status":
                 print("  " + ev["text"])
             elif t == "match_cancel":
-                print(f"match cancelled: {ev['reason']}")
+                print(f"match cancelled: {proto.scrub_addresses(str(ev['reason']))}")
                 if not (a.quick or a.ranked or a.room is not None):
                     return 1
             elif t == "match_start":
                 return play(c, ev["ticket"], a)
             elif t in ("disconnected", "kicked"):
-                print(f"lobby connection lost: {ev.get('reason')}")
+                print(f"lobby connection lost: {proto.scrub_addresses(str(ev.get('reason')))}")
                 return 1
             elif t in ("notice", "error"):
-                print(f"[{ev.get('code')}] {ev.get('msg')}")
+                print(f"[{ev.get('code')}] {proto.scrub_addresses(str(ev.get('msg')))}")
     except proto.LobbyError as e:
-        print(f"lobby: {e}")
+        print(f"lobby: {proto.scrub_addresses(str(e))}")       # (never an address in an error message)
         return 1
     except KeyboardInterrupt:
         return 130

@@ -54,6 +54,20 @@ CREATE TABLE IF NOT EXISTS ip_bans (
     reason TEXT,
     created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS blocks (
+    account_id INTEGER NOT NULL,       -- who blocked
+    blocked_id INTEGER NOT NULL,       -- the blocked account (guests cannot be blocked for good: see lobby.py)
+    blocked_name TEXT NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (account_id, blocked_id)
+);
+CREATE TABLE IF NOT EXISTS notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created REAL NOT NULL,
+    expires REAL NOT NULL,             -- unix time; the notice ends then
+    text TEXT NOT NULL,
+    cleared REAL                       -- set by `admin notice --clear`
+);
 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
 CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
@@ -74,6 +88,7 @@ RANKED_COLUMNS = [
     ("matches", "stage", "TEXT"),
     ("matches", "reason", "TEXT"),
     ("matches", "blame", "INTEGER"),
+    ("matches", "lag", "TEXT"),            # the post-game lag check (JSON): ping, expected and observed frames
 ]
 # Moderation (the admin tool, docs/HOSTING.md): account bans. Address bans live in ip_bans.
 MODERATION_COLUMNS = [
@@ -408,9 +423,11 @@ class Store:
         return True
 
     def _drop_orphans(self):
-        """Remembered logins and recovery codes of accounts that no longer exist."""
+        """Remembered logins, recovery codes and blocks of accounts that no longer exist."""
         for table in ("sessions", "recovery"):
             self.db.execute(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
+        self.db.execute("DELETE FROM blocks WHERE account_id NOT IN (SELECT id FROM accounts) "
+                        "OR blocked_id NOT IN (SELECT id FROM accounts)")
 
     def list_accounts(self, pattern=None, limit=50, banned_only=False):
         sql, args = "SELECT * FROM accounts WHERE 1 = 1", []
@@ -449,6 +466,44 @@ class Store:
         n = self.db.execute(sql, (cut, time.time())).rowcount
         self._drop_orphans()
         return n
+
+    # ----------------------------------------------------------------- blocked players (per account)
+    def add_block(self, aid, target_id, name):
+        """-> True when the block is new."""
+        cur = self.db.execute("INSERT OR IGNORE INTO blocks (account_id, blocked_id, blocked_name, created) "
+                              "VALUES (?, ?, ?, ?)", (aid, target_id, name, time.time()))
+        return cur.rowcount == 1
+
+    def remove_block(self, aid, target_id):
+        return self.db.execute("DELETE FROM blocks WHERE account_id = ? AND blocked_id = ?",
+                               (aid, target_id)).rowcount > 0
+
+    def blocks_of(self, aid):
+        return [dict(r) for r in self.db.execute(
+            "SELECT blocked_id, blocked_name, created FROM blocks WHERE account_id = ? ORDER BY created", (aid,))]
+
+    # ----------------------------------------------------------------- server notices (admin tool -> server)
+    def add_notice(self, text, expires, now=None):
+        cur = self.db.execute("INSERT INTO notices (created, expires, text) VALUES (?, ?, ?)",
+                              (now or time.time(), expires, text))
+        return cur.lastrowid
+
+    def clear_notices(self, now=None):
+        """End every notice that is still showing. -> how many."""
+        now = now or time.time()
+        return self.db.execute("UPDATE notices SET cleared = ? WHERE cleared IS NULL AND expires > ?",
+                               (now, now)).rowcount
+
+    def active_notices(self, now=None):
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, created, expires, text FROM notices WHERE cleared IS NULL AND expires > ? ORDER BY id",
+            (now or time.time(),))]
+
+    def recent_notices(self, limit=10):
+        return [dict(r) for r in self.db.execute("SELECT * FROM notices ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def set_match_lag(self, mid, data):
+        self.db.execute("UPDATE matches SET lag = ? WHERE id = ?", (json.dumps(data), mid))
 
     def stats(self, now=None):
         """Numbers for the status page: accounts and the last 24 hours of matches."""

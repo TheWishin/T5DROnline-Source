@@ -13,6 +13,18 @@ Match life cycle (states):
 A rematch whose two games are still connected skips ready/nat/punch/relay and starts in
 `playing` with the previous match's path. Ranked rules, result reconciliation and the
 integrity rules (disconnects, disputes, desyncs, minimum length): docs/RANKED.md.
+
+Around the matches (docs/RANKED.md, "Tekken 6 style options"):
+    ready check   a queue match is "blind": both players see only the ping and accept or decline
+                  within T5L_READY_TIMEOUT (15 s); names and sides come after both accepted
+    set           the chain of games two players play in a row (the first match and its
+                  rematches); a ranked set locks both characters for its games
+    blocks        per account (guests: per session); a blocked pair is never matched again
+    strict        ranked queue option: only opponents within +-T5L_STRICT_RANGE rating points
+    cooldown      two players who just finished a ranked game are queue-matched again after 30 s
+    lag check     after a match both games report how long they waited for each other; both
+                  players get "ping X should mean Y frames behind, it was Z"
+    notices       a message from the admin tool reaches every connected client
 """
 import asyncio
 import ipaddress
@@ -21,7 +33,7 @@ import os
 import ssl
 import time
 
-from .. import __version__, fighters, proto, ranks, rating as glicko
+from .. import __version__, fighters, lag as lagmod, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
 from ..proto import LobbyError
 from .config import Config
@@ -32,10 +44,11 @@ from .udp import UdpService
 log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
-CAPS = frozenset(("delta",))     # optional protocol features a client may announce in hello
+CAPS = frozenset(("delta", "blind_ready", "notices"))     # optional protocol features a client may announce in hello
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
-FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch"]
+FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
+            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -70,6 +83,9 @@ class Player:
         self.rank = ranks.RankState()   # tier state (accounts: from the database)
         self.rules = ranks.RankRules()
         self.session = None             # "remember me" token this connection logged in with
+        self.blocks = {}                # block key -> {name, guest, since}: players this one never meets again
+        self.strict = False             # ranked queue: only opponents within T5L_STRICT_RANGE rating points
+        self.set = None                 # the GameSet this player is in (games in a row with one opponent)
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -114,6 +130,7 @@ class Room:
         self.members = [owner]
         self.ranked = ranked
         self.match = None
+        self.set = None                 # the room's running set (rematches in the room keep it)
         self.build_id = owner.build_id
 
     def public(self):
@@ -135,6 +152,30 @@ class Challenge:
         self.id = "c" + _rid()
         self.src, self.dst = src, dst
         self.timer = None
+
+
+class GameSet:
+    """The games two players play in a row: the first match (from the queue, a room or a
+    challenge) and every rematch of it. A ranked set locks both players' characters: whatever they
+    had picked when the set began is what they play in every game of it. The set ends when a player
+    leaves it (declines the rematch, queues again, blocks, leaves the lobby), the rematch window runs
+    out, or a game is cancelled. No game's rating changes when a set ends."""
+
+    def __init__(self, a, b, ranked):
+        self.id = "s" + _rid()
+        self.players = [a, b]
+        self.locked = bool(ranked)
+        self.ranked = bool(ranked)
+        self.picks = {}                 # player id -> the character picked for the whole (locked) set
+        self.matches = []
+        self.games = 0                  # games started
+        self.current = None             # the match being set up or played
+        self.last = None                # the last finished match
+        self.state = "active"
+
+    def info(self):
+        return {"id": self.id, "game": self.games, "locked": self.locked and self.state == "active",
+                "ranked": self.ranked}
 
 
 class Match:
@@ -173,6 +214,10 @@ class Match:
         self.started = None                  # time.time() of match_start
         self.rematch_of = None
         self.continued = False               # rematch inside the running games (no new connection)
+        self.set = None                      # GameSet
+        self.blind = [False, False]          # side -> got the blind ready check (no name, no side yet)
+        self.lag = [None, None]              # side -> the game's lag report (docs/RANKED.md, lag check)
+        self.lag_sent = False
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -205,6 +250,8 @@ class Conn:
 
     def send(self, msg):
         if not self.closed:
+            if msg.get("t") in ("error", "notice") and isinstance(msg.get("msg"), str):
+                msg = dict(msg, msg=proto.scrub_addresses(msg["msg"]))     # never an IP address in a message
             self.send_raw(proto.encode(msg))
 
     def send_raw(self, data):
@@ -308,6 +355,8 @@ class LobbyServer:
         self.started = time.time()
         self.events = []           # (time, kind, data) -- recent events for tests / diagnostics
         self.recent = {}           # match id -> finished Match, kept rematch_window seconds for a rematch
+        self.pair_last = {}        # frozenset of two player keys -> monotonic time their last ranked game ended
+        self.notices_by_id = {}    # active server notices (admin tool): id -> row
         self.table = fighters.table()
         self.rules = ranks.RankRules(placement=self.cfg.placement, placement_cap=self.cfg.placement_cap,
                                      hysteresis=self.cfg.hysteresis, shield=self.cfg.shield,
@@ -316,7 +365,8 @@ class LobbyServer:
             "tcp_in_bytes", "tcp_out_bytes", "connections", "refused_connections", "logins_guest",
             "logins_account", "accounts_created", "login_failures", "kicked", "matches_found",
             "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
-            "results_disputed", "results_onesided", "results_void", "chat_lines"), 0)
+            "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
+            "lag_more", "lag_leaves", "notices_sent"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
         self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
         self.name_block = self._load_blocklist(self.cfg.name_blocklist)
@@ -341,6 +391,7 @@ class LobbyServer:
                         "see docs/HOSTING.md")
         self.sslctx = sslctx
         self.reload_bans()
+        self.notices_by_id = {n["id"]: n for n in self.store.active_notices()}
         self.tcp = await asyncio.start_server(self._accept, self.cfg.host, self.cfg.port, ssl=sslctx,
                                               limit=proto.MAX_LINE + 2)
         self.port = self.tcp.sockets[0].getsockname()[1]
@@ -575,7 +626,8 @@ class LobbyServer:
                 "ip": conn.ip, "time": time.time(), "features": FEATURES,
                 "tls": conn.writer.get_extra_info("ssl_object") is not None,
                 "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
-                "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay}
+                "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay,
+                "strict_range": self.cfg.strict_range, "pair_cooldown": self.cfg.pair_cooldown}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -676,6 +728,8 @@ class LobbyServer:
             p.rank = self.store.rank_state(account["id"])
             p.main = self.store.main_char(account["id"])
             self.store.touch(account["id"])
+            for b in self.store.blocks_of(account["id"]):
+                p.blocks[f"a:{b['blocked_id']}"] = {"name": b["blocked_name"], "guest": False, "since": b["created"]}
         conn.player = p
         self.players[p.id] = p
         self.by_name[name.lower()] = p
@@ -690,6 +744,7 @@ class LobbyServer:
             reply["session"] = session
         if codes:
             reply["recovery_codes"] = codes
+        asyncio.get_running_loop().call_soon(self._send_active_notices, p)
         return reply
 
     def _take_over(self, conn, p, session):
@@ -780,6 +835,7 @@ class LobbyServer:
         self.dirty = True
         log.info("resume %s %r", p.id, p.name)
         reply = {"t": "login_ok", "you": p.public(), "token": p.token, "resumed": True}
+        asyncio.get_running_loop().call_soon(self._send_active_notices, p)
         m = p.match
         if m is not None and m.state == "playing":
             side = m.side(p)
@@ -849,8 +905,10 @@ class LobbyServer:
         slow = [q for q in m.players if q.fps is not None and q.fps < self.cfg.warn_fps]
         if not slow:
             return
-        for p in m.players:
-            parts = [("your PC" if q is p else f"{q.name}'s PC") + f" ran its last match at {q.fps:.0f} fps"
+        for side, p in enumerate(m.players):
+            # (while the ready check is blind the opponent has no name yet)
+            other = "your opponent's PC" if m.blind[side] else None
+            parts = [("your PC" if q is p else (other or f"{q.name}'s PC")) + f" ran its last match at {q.fps:.0f} fps"
                      for q in slow]
             p.send({"t": "notice", "code": "slow_pc", "match": m.id,
                     "msg": "; ".join(parts) + " -- this match runs at the slower PC's speed"})
@@ -915,6 +973,9 @@ class LobbyServer:
         self.sessions.pop(p.token, None)
         self._leave_queue(p)
         self._leave_room(p)
+        if p.set is not None and p.set.state == "active" and p.set.current is None:
+            self._decline_recent(p.set, p)
+            self._end_set(p.set, "left", by=p)
 
     # ------------------------------------------------------------------ queues
     async def h_queue(self, conn, msg):
@@ -928,16 +989,21 @@ class LobbyServer:
             self._check_speed(p)
         if p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        self._abandon_set(p)                     # looking for a new opponent leaves the old set (and unlocks the character)
         if "char" in msg:
             self._set_char(p, msg["char"])
+        p.strict = bool(msg.get("strict")) and mode == "ranked"
         self._leave_queue(p)
         self._enqueue(p, mode, time.monotonic())
-        return {"t": "queued", "mode": mode}
+        return {"t": "queued", "mode": mode, "strict": p.strict}
 
     def _set_char(self, p, char):
         char = str(char or fighters.RANDOM)
         if not self.table.valid_fighter(char):
             raise LobbyError(proto.E_BAD_REQUEST, f"unknown character {char!r}")
+        gs = p.set
+        if gs is not None and gs.state == "active" and gs.locked and char != gs.picks.get(p.id, p.char):
+            raise LobbyError(proto.E_STATE, "your character is locked until this ranked set ends")
         if p.char != char:
             p.char = char
             self.dirty = True
@@ -1010,9 +1076,21 @@ class LobbyServer:
 
     @staticmethod
     def _est_ping(a, b):
+        """Ping between two players as the server can tell before they are connected: each one's
+        UDP round trip to the server, added (the relay path; a direct path is usually shorter).
+        The real peer-to-peer ping is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
         ra = a.server_rtt if a.server_rtt is not None else 50.0
         rb = b.server_rtt if b.server_rtt is not None else 50.0
         return ra + rb
+
+    @staticmethod
+    def _pair_id(p):
+        return p.account_id if p.account_id is not None else p.id
+
+    def _cooling(self, a, b, now):
+        """Did these two finish a ranked game less than T5L_PAIR_COOLDOWN seconds ago?"""
+        t = self.pair_last.get(frozenset((self._pair_id(a), self._pair_id(b))))
+        return t is not None and now - t < self.cfg.pair_cooldown
 
     def match_queue(self, now=None):
         """One matchmaking pass over both queues. Returns the matches made."""
@@ -1027,16 +1105,20 @@ class LobbyServer:
                 wa = now - a.queue_since
                 best, best_score = None, None
                 for b in q[i + 1:]:
-                    if b in taken or b.build_id != a.build_id:
+                    if b in taken or b.build_id != a.build_id or self._is_blocked(a, b):
                         continue
                     ping = self._est_ping(a, b)
                     if mode == "ranked":
+                        if self._cooling(a, b, time.monotonic()):
+                            continue                     # just played each other: not again within T5L_PAIR_COOLDOWN
                         wb = now - b.queue_since
                         window = min(self._rating_window(wa), self._rating_window(wb))
                         limit = min(self._ping_limit(wa), self._ping_limit(wb))
                         dr = abs(a.rating.r - b.rating.r)
                         if dr > window or ping > limit:
                             continue
+                        if (a.strict or b.strict) and dr > self.cfg.strict_range:
+                            continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
                         score = dr / window + ping / limit
                     else:
                         score = ping
@@ -1086,6 +1168,7 @@ class LobbyServer:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
         if ranked:
             self._check_speed(p)
+        self._abandon_set(p)
         name = str(msg.get("name") or f"{p.name}'s room")[:32]
         name = "".join(ch for ch in name if ch.isprintable())
         r = Room(p, name, ranked)
@@ -1109,6 +1192,9 @@ class LobbyServer:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
         if r.ranked:
             self._check_speed(p)
+        if any(self._is_blocked(p, q) for q in r.members):
+            raise LobbyError(proto.E_NOT_ALLOWED, "you cannot join this room")
+        self._abandon_set(p)
         r.members.append(p)
         p.room, p.status = r, "room"
         self.dirty = True
@@ -1144,9 +1230,14 @@ class LobbyServer:
         if not msg.get("accept", True):
             self.recent.pop(prev.id, None)
             other.send({"t": "rematch", "match": prev.id, "state": "declined", "from": p.brief()})
+            if prev.set is not None and prev.set.last is prev:
+                self._end_set(prev.set, "declined", by=p)
             return None
         if p.status not in ("idle", "room") or p.match is not None:
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        if self._is_blocked(p, other):
+            self.recent.pop(prev.id, None)
+            raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
         prev.rematch = getattr(prev, "rematch", [None, None])
         prev.rematch[side] = {"keep": bool(msg.get("keep"))}
         if prev.rematch[1 - side] is None:
@@ -1167,7 +1258,10 @@ class LobbyServer:
             return
         if any(not q.online or q.match is not None for q in r.members):
             return
-        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked, origin="room", room=r)
+        gs = r.set if r.set is not None and r.set.state == "active" and \
+            {id(q) for q in r.set.players} == {id(q) for q in r.members} else None
+        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked, origin="room", room=r,
+                                    game_set=gs)
 
     def _leave_room(self, p):
         r = p.room
@@ -1180,6 +1274,9 @@ class LobbyServer:
             r.members.remove(p)
         if r.match is not None and r.match.state not in ("playing", "done"):
             self.cancel_match(r.match, "opponent_left", by=p)
+        if r.set is not None and r.set.state == "active" and r.set.current is None:
+            self._decline_recent(r.set, p)
+            self._end_set(r.set, "left", by=p)
         if not r.members:
             self.rooms.pop(r.id, None)
         elif r.owner is p:
@@ -1201,6 +1298,8 @@ class LobbyServer:
             raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
         if p.status not in ("idle", "queue") or q.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, "busy")
+        if self._is_blocked(p, q):
+            raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
         now = time.monotonic()
         if now - p.last_challenge < 2.0 or any(c.src is p for c in self.challenges.values()):
             raise LobbyError(proto.E_RATE, "one challenge at a time")
@@ -1225,8 +1324,12 @@ class LobbyServer:
         self._end_challenge(c, "accepted")
         if not src.online or src.status not in ("idle", "queue") or p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, "challenge no longer possible")
+        if self._is_blocked(src, p):
+            raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
         self._leave_queue(src)
         self._leave_queue(p)
+        self._abandon_set(src)
+        self._abandon_set(p)
         self.create_match(src, p, ranked=False, origin="challenge")
 
     async def h_challenge_cancel(self, conn, msg):
@@ -1244,7 +1347,7 @@ class LobbyServer:
             q.send({"t": "challenge_update", "challenge": c.id, "state": state})
 
     # ------------------------------------------------------------------ matches: setup
-    def create_match(self, host, join, ranked, origin, room=None, rematch_of=None, keep=False):
+    def create_match(self, host, join, ranked, origin, room=None, rematch_of=None, keep=False, game_set=None):
         note = None
         if ranked and host.account_id is not None and join.account_id is not None and self.cfg.pair_cap > 0:
             n = self.store.pair_ranked(host.account_id, join.account_id, time.time() - DAY)
@@ -1256,15 +1359,25 @@ class LobbyServer:
         m = Match(host, join, ranked, origin, room)
         m.rematch_of = rematch_of.id if rematch_of is not None else None
         self.matches[m.id] = m
+        self._join_set(m, rematch_of, game_set)
         skip_ready = origin in ("challenge", "rematch")
+        est = self._est_ping(host, join)
+        ping = {"ms": round(est), "kind": "estimate", "known": host.server_rtt is not None and join.server_rtt is not None}
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
-            p.send({"t": "match_found", "match": m.id, "ranked": ranked, "origin": origin,
-                    "role": "host" if side == 0 else "join", "slot": side,
-                    "opponent": m.players[1 - side].brief(), "you": p.brief(),
-                    "ready_check": not skip_ready, "ready_timeout": self.cfg.ready_timeout,
-                    "rematch_of": m.rematch_of, "keep": keep})
+            # A queue match between strangers is blind: ping and rules first, names and sides after both accepted.
+            m.blind[side] = (origin == "queue" and not skip_ready and self.cfg.blind_ready
+                             and "blind_ready" in getattr(p.conn, "caps", ()))
+            found = {"t": "match_found", "match": m.id, "ranked": ranked, "origin": origin,
+                     "you": p.brief(), "ready_check": not skip_ready, "ready_timeout": self.cfg.ready_timeout,
+                     "rematch_of": m.rematch_of, "keep": keep, "ping": ping, "set": m.set.info()}
+            if m.blind[side]:
+                found.update(blind=True, opponent=None)
+            else:
+                found.update(role="host" if side == 0 else "join", slot=side,
+                             opponent=m.players[1 - side].brief())
+            p.send(found)
             if note:
                 p.send({"t": "notice", "code": "pair_cap", "match": m.id, "msg": note})
         self._speed_notice(m)
@@ -1287,6 +1400,26 @@ class LobbyServer:
         else:
             self._timer(m, "ready", self.cfg.ready_timeout, self._ready_timeout, m)
         return m
+
+    def _join_set(self, m, rematch_of, game_set):
+        """Put the match into its set: a rematch (or the next game in a room) continues the set it
+        belongs to, anything else starts one. A ranked set fixes both characters at its first game."""
+        host, join = m.players
+        gs = game_set
+        if gs is None and rematch_of is not None:
+            gs = rematch_of.set
+        if gs is None or gs.state != "active" or {id(x) for x in gs.players} != {id(host), id(join)}:
+            gs = GameSet(host, join, m.ranked)
+        if gs.locked:
+            for q in (host, join):
+                gs.picks.setdefault(q.id, q.char)
+            m.picks = [gs.picks[host.id], gs.picks[join.id]]
+        gs.matches.append(m)
+        gs.current = m
+        m.set = gs
+        host.set = join.set = gs
+        if m.room is not None:
+            m.room.set = gs
 
     def _timer(self, m, name, delay, fn, *args):
         old = m.timers.pop(name, None)
@@ -1316,7 +1449,15 @@ class LobbyServer:
         m.ready[m.side(p)] = True
         m.players[1 - m.side(p)].send({"t": "opponent_ready", "match": m.id})
         if all(m.ready):
+            self._reveal(m)
             self._start_nat(m)
+
+    def _reveal(self, m):
+        """Both accepted: the blind players now learn who they play and on which side."""
+        for side, p in enumerate(m.players):
+            if m.blind[side]:
+                p.send({"t": "match_reveal", "match": m.id, "role": "host" if side == 0 else "join", "slot": side,
+                        "opponent": m.players[1 - side].brief(), "you": p.brief()})
 
     def _ready_timeout(self, m):
         if m.state == "ready":
@@ -1344,6 +1485,12 @@ class LobbyServer:
         if m.room is not None:
             m.room.match = None
         self.matches.pop(m.id, None)
+        gs = m.set
+        if gs is not None:
+            if gs.current is m:
+                gs.current = None
+            if gs.state == "active":
+                self._end_set(gs, "cancelled")
         self.counters["matches_cancelled"] += 1
         self.note("match_cancel", match=m.id, reason=reason)
         log.info("match %s cancelled: %s", m.id, reason)
@@ -1511,6 +1658,8 @@ class LobbyServer:
         m.jitter = max(r["jitter"] for r in m.results)
         m.delay = proto.suggest_delay(m.rtt, m.jitter)
         m.started = time.time()
+        if m.set is not None:
+            m.set.games += 1
         seed = int.from_bytes(m.tag[:4], "big")
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
         m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[2]
@@ -1539,7 +1688,8 @@ class LobbyServer:
                 "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],
                 "continue": m.continued, "rematch_of": m.rematch_of,
-                "min_seconds": self.cfg.min_match_seconds})
+                "min_seconds": self.cfg.min_match_seconds,
+                "set": m.set.info() if m.set is not None else None})
 
     async def h_game_started(self, conn, msg):
         self._get_match(conn.player, msg, ("playing",))
@@ -1794,7 +1944,13 @@ class LobbyServer:
         # Keep it for a rematch offer for a little while.
         m.rematch = [None, None]
         self.recent[m.id] = m
-        asyncio.get_running_loop().call_later(self.cfg.rematch_window, self.recent.pop, m.id, None)
+        if m.ranked and m.started:
+            self.pair_last[frozenset(self._pair_id(q) for q in m.players)] = time.monotonic()
+        if m.set is not None:
+            if m.set.current is m:
+                m.set.current = None
+            m.set.last = m
+        asyncio.get_running_loop().call_later(self.cfg.rematch_window, self._expire_recent, m)
         for side, p in enumerate(m.players):
             if p.match is m:
                 p.match = None
@@ -1803,6 +1959,7 @@ class LobbyServer:
                     "reason": reason, "blame": None if blame is None else ("you" if blame == side else "opponent"),
                     "ranked": m.ranked, "rating": changes[side] if changes else None, "you": p.public(),
                     "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
+                    "set": m.set.info() if m.set is not None else None,
                     "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online else 0})
             if not p.online and p.match is None:
                 self._forget(p)
@@ -1827,6 +1984,233 @@ class LobbyServer:
                 "stage": m.stage, "reason": reason, "blame": blame})
         except Exception:
             log.exception("saving match %s", m.id)
+
+    # ------------------------------------------------------------------ blocking players
+    # A block lives with the blocker: on an account it is stored (blocks table) and follows the
+    # account; a guest keeps it for the session only. The blocked side is an account (by id) or, for
+    # a guest, a name -- a guest has nothing else to go by, so that block ends with the blocker's
+    # session. Blocked pairs are never matched (queues, rooms, challenges, rematches), either way
+    # round. Blocking never tells the other player.
+    @staticmethod
+    def _block_key(p):
+        return f"a:{p.account_id}" if p.account_id is not None else "g:" + p.name.lower()
+
+    def _is_blocked(self, a, b):
+        """Has either of the two blocked the other?"""
+        return self._block_key(b) in a.blocks or self._block_key(a) in b.blocks
+
+    async def h_block(self, conn, msg):
+        """Block a player by `name` (an account, or someone online) or by lobby `player` id. A
+        running match with that player ends like a quit (docs/RANKED.md); a rematch offer, a
+        challenge, a shared room and the set are dropped."""
+        p = conn.player
+        name = str(msg.get("name") or "").strip()
+        target = self.players.get(msg.get("player")) if msg.get("player") else None
+        if target is None and name:
+            target = self.by_name.get(name.lower())
+        if target is not None:
+            if target is p:
+                raise LobbyError(proto.E_BAD_REQUEST, "you cannot block yourself")
+            key, shown, aid, guest = self._block_key(target), target.name, target.account_id, target.guest
+        else:
+            row = self.store.account(name) if proto.valid_name(name) else None
+            if row is None:
+                raise LobbyError(proto.E_NOT_FOUND, "no such player")
+            if row["id"] == p.account_id:
+                raise LobbyError(proto.E_BAD_REQUEST, "you cannot block yourself")
+            key, shown, aid, guest = f"a:{row['id']}", row["name"], row["id"], False
+        if key not in p.blocks and len(p.blocks) >= self.cfg.max_blocks:
+            raise LobbyError(proto.E_NOT_ALLOWED, f"the block list is full ({self.cfg.max_blocks})")
+        if key not in p.blocks:
+            p.blocks[key] = {"name": shown, "guest": guest, "since": time.time()}
+            if p.account_id is not None and aid is not None:
+                self.store.add_block(p.account_id, aid, shown)
+            self._count("blocks_made")
+            log.info("%s blocked %s", p.name, shown)
+        left = await self._after_block(p, key)
+        return {"t": "blocked", "name": shown, "blocks": len(p.blocks), "left_match": left}
+
+    async def _after_block(self, p, key):
+        """What a block changes right now. -> the id of the match it ended, or None."""
+        left = None
+        m = p.match
+        if m is not None and m.state != "done" and self._block_key(m.other(p)) == key:
+            left = m.id
+            if m.state == "playing":
+                await self.h_leave_match(_ConnOf(p), {"match": m.id})       # like quitting: a forfeit (docs/RANKED.md)
+            else:
+                self.cancel_match(m, "opponent_left", by=p)
+        for c in [c for c in self.challenges.values()
+                  if p in (c.src, c.dst) and self._block_key(c.dst if c.src is p else c.src) == key]:
+            self._end_challenge(c, "cancelled")
+        gs = p.set
+        if gs is not None and gs.state == "active" and gs.current is None and \
+                any(self._block_key(q) == key for q in gs.players if q is not p):
+            self._decline_recent(gs, p)
+            self._end_set(gs, "left", by=p)
+        r = p.room
+        if r is not None and p.match is None and any(self._block_key(q) == key for q in r.members if q is not p):
+            self._leave_room(p)
+        return left
+
+    async def h_unblock(self, conn, msg):
+        p = conn.player
+        name = str(msg.get("name") or "").strip().lower()
+        key = next((k for k, b in p.blocks.items() if b["name"].lower() == name), None)
+        if key is None:
+            raise LobbyError(proto.E_NOT_FOUND, "that player is not on your block list")
+        p.blocks.pop(key)
+        if p.account_id is not None and key.startswith("a:"):
+            self.store.remove_block(p.account_id, int(key[2:]))
+        return {"t": "unblocked", "name": name, "blocks": len(p.blocks)}
+
+    async def h_blocks(self, conn, msg):
+        rows = [{"name": b["name"], "guest": b["guest"], "since": b["since"]}
+                for b in sorted(conn.player.blocks.values(), key=lambda b: b["since"])]
+        return {"t": "blocks", "rows": rows}
+
+    # ------------------------------------------------------------------ sets
+    def _end_set(self, gs, reason, by=None):
+        """A set is over: characters unlock, both players are told. Ratings are not touched."""
+        if gs.state == "ended":
+            return
+        gs.state = "ended"
+        for q in gs.players:
+            if q.set is gs:
+                q.set = None
+            q.send({"t": "set_end", "set": gs.id, "reason": reason,
+                    "by": None if by is None else ("you" if q is by else "opponent")})
+        self.note("set_end", set=gs.id, reason=reason)
+
+    def _decline_recent(self, gs, by):
+        """`by` leaves the set: the last game's rematch offer is withdrawn and the other player told."""
+        m = gs.last
+        if m is not None and self.recent.pop(m.id, None) is not None:
+            for q in gs.players:
+                if q is not by:
+                    q.send({"t": "rematch", "match": m.id, "state": "declined", "from": by.brief()})
+
+    def _abandon_set(self, p):
+        """`p` starts something new (queue, room, challenge): the old set is over."""
+        gs = p.set
+        if gs is not None and gs.state == "active" and gs.current is None:
+            self._decline_recent(gs, p)
+            self._end_set(gs, "left", by=p)
+
+    def _expire_recent(self, m):
+        self.recent.pop(m.id, None)
+        gs = m.set
+        if gs is not None and gs.state == "active" and gs.last is m and gs.current is None:
+            self._end_set(gs, "expired")
+
+    async def h_leave_set(self, conn, msg):
+        """Leave the set between two games, without a penalty: no forfeit, no strike, no rating change
+        (a game already played keeps its result). `reason: "lag"` says it was the post-game lag check;
+        the opponent is told that."""
+        p = conn.player
+        gs = p.set
+        if gs is None or gs.state != "active":
+            raise LobbyError(proto.E_STATE, "you are not in a set")
+        if gs.current is not None:
+            raise LobbyError(proto.E_BUSY, "finish or leave the running match first")
+        reason = "lag" if msg.get("reason") == "lag" else "left"
+        self._decline_recent(gs, p)
+        self._end_set(gs, reason, by=p)
+        if reason == "lag":
+            self._count("lag_leaves")
+        log.info("%s left set %s (%s)", p.name, gs.id, reason)
+
+    # ------------------------------------------------------------------ post-game lag check
+    async def h_lag(self, conn, msg):
+        """The game's lag report for a finished match: frames played, ms spent waiting for the other
+        side, this PC's own speed. When both reports are in (or T5L_LAG_WAIT seconds after the first)
+        both players get `lag_check` (lag.py: ping X should mean Y frames behind, it was Z)."""
+        p = conn.player
+        mid = msg.get("match")
+        m = p.match if p.match is not None and p.match.id == mid else self.recent.get(mid)
+        if m is None or m.side(p) is None or m.state != "done":
+            raise LobbyError(proto.E_NOT_FOUND, "no such finished match")
+        rep = lagmod.clean_report(msg)
+        if rep is None:
+            raise LobbyError(proto.E_BAD_REQUEST, "lag report: frames (at least %d) and waited_ms are numbers"
+                             % lagmod.MIN_FRAMES)
+        side = m.side(p)
+        if m.lag[side] is not None or m.lag_sent:
+            return None
+        m.lag[side] = rep
+        if all(m.lag):
+            self._lag_flush(m)
+        elif "lag" not in m.timers:
+            self._timer(m, "lag", self.cfg.lag_wait, self._lag_flush, m)
+
+    def _lag_flush(self, m):
+        if m.lag_sent:
+            return
+        m.lag_sent = True
+        h = m.timers.pop("lag", None)
+        if h:
+            h.cancel()
+        delay = m.delay if m.delay is not None else 0
+        a = lagmod.assess(delay, m.lag, self.cfg.warn_fps, self.cfg.lag_tolerance)
+        ping = m.rtt or 0.0
+        try:
+            self.store.set_match_lag(m.id, {"ping_ms": round(ping, 1), "jitter_ms": round(m.jitter or 0.0, 1),
+                                            "path": m.path, "assess": a, "reports": m.lag})
+        except Exception:
+            log.exception("saving the lag check of %s", m.id)
+        self._count("lag_checks")
+        if a["verdict"] == "more_lag":
+            self._count("lag_more")
+        for side, p in enumerate(m.players):
+            cause = a["cause"]
+            if cause == "pc":
+                slow = a["slow"]
+                cause = "both_pcs" if len(slow) == 2 else "your_pc" if side in slow else "opponent_pc"
+            mine, theirs = m.lag[side], m.lag[1 - side]
+            p.send({"t": "lag_check", "match": m.id, "ping_ms": round(ping, 1), "path": m.path,
+                    "expected_frames": a["expected"], "observed_frames": a["observed"],
+                    "verdict": a["verdict"], "cause": cause,
+                    "yours": {"extra_frames": a["extra"][side], "pc_fps": (mine or {}).get("pc_fps")},
+                    "opponent": {"extra_frames": a["extra"][1 - side], "pc_fps": (theirs or {}).get("pc_fps")},
+                    "text": lagmod.describe(ping, a, side, m.lag), "ranked": m.ranked,
+                    "set": m.set.info() if m.set is not None else None,
+                    "can_leave": m.set is not None and m.set.state == "active"})
+        log.info("match %s lag check: ping %.0f ms, expected %s, observed %s (%s)", m.id, ping, a["expected"],
+                 a["observed"], a["verdict"])
+
+    # ------------------------------------------------------------------ server notices (admin tool)
+    def _notice_msg(self, n, conn, cleared=False):
+        if "notices" in conn.caps:
+            return {"t": "server_notice", "id": n["id"], "text": n["text"], "expires": n["expires"],
+                    "cleared": cleared}
+        if cleared:
+            return None
+        return {"t": "notice", "code": "server_notice", "msg": n["text"]}      # older clients show it as a notice
+
+    def _send_active_notices(self, p):
+        if p.conn is None or p.conn.closed:
+            return
+        for n in self.notices_by_id.values():
+            msg = self._notice_msg(n, p.conn)
+            if msg:
+                p.conn.send(msg)
+
+    def poll_notices(self):
+        """A notice made with `admin notice` is picked up within T5L_ADMIN_POLL seconds and sent to
+        every connected client; one that was cleared or has run out is taken down the same way."""
+        active = {n["id"]: n for n in self.store.active_notices()}
+        changes = [(n, False) for i, n in active.items() if i not in self.notices_by_id]
+        changes += [(n, True) for i, n in self.notices_by_id.items() if i not in active]
+        self.notices_by_id = active
+        for n, cleared in changes:
+            for p in self.players.values():
+                if p.conn is not None and not p.conn.closed:
+                    msg = self._notice_msg(n, p.conn, cleared)
+                    if msg:
+                        p.conn.send(msg)
+            if not cleared:
+                self._count("notices_sent")
+                log.info("server notice %d: %s", n["id"], n["text"])
 
     # ------------------------------------------------------------------ lobby broadcast
     # A client that announced caps ["delta"] gets the whole list once (after login, or after asking
@@ -1911,6 +2295,7 @@ class LobbyServer:
                     self.udp.close_relay(mid)
             self.ip_connects.prune()
             self.login_fail.prune()
+            self.pair_last = {k: t for k, t in self.pair_last.items() if now - t < self.cfg.pair_cooldown}
             self._relay_samples.append((now, self.udp.stats["relayed_bytes"]))
             del self._relay_samples[:-13]          # one minute of 5 s samples
             try:
@@ -1926,6 +2311,7 @@ class LobbyServer:
         while True:
             await asyncio.sleep(self.cfg.admin_poll)
             try:
+                self.poll_notices()
                 self.reload_bans()
                 banned = self.store.banned_account_ids()
                 for p in list(self.players.values()):
@@ -2003,6 +2389,7 @@ class LobbyServer:
             "counters": dict(self.counters),
             "db": db,
             "tls": cert_info(self.cfg.tls_cert) if self.sslctx else None,
+            "notices": len(self.notices_by_id),
             "config": {"accounts": self.cfg.accounts, "guests": self.cfg.guests,
                        "max_clients": self.cfg.max_clients, "pinned_builds": len(self.cfg.builds)},
             "process": process_info(),

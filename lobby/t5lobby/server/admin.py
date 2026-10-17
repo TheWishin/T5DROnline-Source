@@ -28,6 +28,10 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
     matches [--player NAME] [--limit N]
     backup [DIR] [--keep N]              online backup (default DIR: $T5L_BACKUP_DIR or ./backups)
     restore FILE [--yes] [--force]       put a backup back (stop the server first)
+    notice TEXT... [--minutes N | --hours H]   a message for every connected player (e.g. "server restart in
+                                         20 min"); the launcher shows it in its status bar. Default: 60 minutes
+    notice --clear                       take the message down
+    notices                              the latest messages and whether they are showing
     gen-cert [--dir DIR] [--name HOST] [--days N] [--force]   self-signed certificate + fingerprint
     fingerprint CERT                     SHA-256 fingerprint of a certificate (what clients pin)
     server-entry --name NAME --host HOST [--port N] (--cert CERT | --ca | --plain)
@@ -341,6 +345,40 @@ def cmd_restore(a):
     return 0
 
 
+NOTICE_MAX = 200
+
+
+def cmd_notice(a):
+    st = _open(a)
+    if a.clear:
+        n = st.clear_notices()
+        print(f"cleared {n} notice(s); connected players see it go within a few seconds")
+        return 0
+    text = "".join(ch for ch in " ".join(a.text) if ch.isprintable()).strip()
+    if not text:
+        sys.exit("what should the notice say?  notice \"server restart in 20 min\"  (or: notice --clear)")
+    if len(text) > NOTICE_MAX:
+        sys.exit(f"too long: {len(text)} characters, at most {NOTICE_MAX}")
+    seconds = a.hours * 3600.0 if a.hours else (a.minutes or 60.0) * 60.0
+    until = time.time() + seconds
+    nid = st.add_notice(text, until)
+    print(f"notice #{nid} sent to everyone online within a few seconds (and to players who log in), "
+          f"showing until {_fmt_t(until)} or `notice --clear`:\n  {text}")
+    return 0
+
+
+def cmd_notices(a):
+    st = _open(a)
+    now = time.time()
+    rows = st.recent_notices(a.limit)
+    for r in rows:
+        state = "cleared" if r["cleared"] else ("showing" if r["expires"] > now else "ended")
+        print(f"#{r['id']:<4}{state:<9}{_fmt_t(r['created'])}  until {_fmt_t(r['expires'])}  {r['text']}")
+    if not rows:
+        print("(no notices yet)")
+    return 0
+
+
 def cmd_gen_cert(a):
     from . import selfsigned
     t0 = time.monotonic()
@@ -438,6 +476,14 @@ def main(argv=None):
     p.add_argument("file")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--force", action="store_true", help="even while the server runs")
+    p = add("notice", cmd_notice, "show a message to every connected player")
+    p.add_argument("text", nargs="*", help="the message (200 characters at most)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--minutes", type=float, help="how long it shows (default 60)")
+    g.add_argument("--hours", type=float)
+    g.add_argument("--clear", action="store_true", help="take the showing notice(s) down")
+    p = add("notices", cmd_notices, "the latest notices")
+    p.add_argument("--limit", type=int, default=10)
     p = add("gen-cert", cmd_gen_cert, "make a self-signed TLS certificate")
     p.add_argument("--dir", default=".")
     p.add_argument("--name", default="t5lobby", help="host name or address to put in it (informational)")

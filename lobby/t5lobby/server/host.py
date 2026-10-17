@@ -8,8 +8,9 @@ folder; its fingerprint goes into the line you give your friends:
 
     203.0.113.7:7781#3f0c...e1     -> they paste it into the launcher's Server field
 
-The data folder (default %LOCALAPPDATA%\\T5DR Online\\lobby-host, ~/.local/share/t5lobby-host)
-keeps the database (accounts, ratings), the certificate, logs (rotated) and daily backups.
+The data folder keeps the database (accounts, ratings), the certificate, logs (rotated) and daily
+backups. Default: %LOCALAPPDATA%\\T5DR Online\\lobby-host on Windows, ~/Library/Application
+Support/T5DR Online/lobby-host on macOS, ~/.local/share/t5lobby-host elsewhere (default_data_dir).
 
 Your friends must reach the PC: forward TCP 7781 and UDP 7781-7782 on the router to it, or let
 this program ask the router to do so with --map-ports (UPnP IGD or NAT-PMP; only then is the
@@ -38,10 +39,23 @@ log = logging.getLogger("t5lobby.host")
 
 
 def default_data_dir():
-    if os.name == "nt":
+    """Where Host for friends keeps its database, certificate, logs and backups.
+
+    Windows: %LOCALAPPDATA%\\T5DR Online\\lobby-host. macOS: ~/Library/Application Support/T5DR
+    Online/lobby-host -- unless an older run already made the Linux-style folder and the macOS one
+    does not exist yet: then that folder stays in use, so no data is left behind. Elsewhere:
+    $XDG_DATA_HOME or ~/.local/share, then t5lobby-host. (sys.platform, not os.name, so a test can
+    patch it.)"""
+    if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         return os.path.join(base, "T5DR Online", "lobby-host")
-    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "t5lobby-host")
+    xdg = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "t5lobby-host")
+    if sys.platform == "darwin":
+        mac = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "T5DR Online", "lobby-host")
+        if os.path.isdir(xdg) and not os.path.isdir(mac):
+            return xdg
+        return mac
+    return xdg
 
 
 class Host:
@@ -204,7 +218,10 @@ class Host:
             lines.append(f"  Router forwarding: {', '.join(self.mapped)} (removed when you stop)")
         else:
             lines.append(f"  Router: forward {ports_s} to {info['lan_ip']} (or start with --map-ports).")
-        lines.append("  Windows asks whether Python may accept connections: allow it (private networks).")
+        if sys.platform == "win32":
+            lines.append("  Windows asks whether Python may accept connections: allow it (private networks).")
+        elif sys.platform == "darwin":
+            lines.append("  macOS may ask whether Python may accept incoming connections: click Allow.")
         if self.fp:
             from .selfsigned import pretty
             lines.append(f"  Certificate fingerprint: {pretty(self.fp)}")

@@ -11,6 +11,14 @@ notice, ...) plus the client's own:
     {"t": "reconnecting", "reason": str}   the connection broke; resuming the session in the background
     {"t": "reconnected"}                   ... and it worked (a running match carries on)
     {"t": "disconnected", "reason": str}   gone for good (log in again)
+    {"t": "match_reveal", ...}             a blind ready check ended: both accepted, now the opponent's
+                                           name and the sides are known (blind_ready=True, see below)
+    {"t": "server_notice", "id", "text", "expires", "cleared"}   a message from the server's admin
+    {"t": "lag_check", ...}                after a match: "ping X ms should mean about Y frames behind, it was Z"
+    {"t": "set_end", "set", "reason", "by"} the games in a row with one opponent are over (characters unlock)
+
+Texts that reach a player (notice, nat_status, disconnected, ...) never contain an IP address:
+proto.scrub_addresses is applied to them here, and the server does the same before it sends them.
 
 Passwords and remembered logins are credentials: the client refuses to send them over
 a plain (non-TLS) connection unless the server is on this PC or the local network
@@ -46,7 +54,7 @@ CLIENT_NAME = "t5lobby-client/0.1"
 class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
-                 reconnect=60.0, plain_passwords=False):
+                 reconnect=60.0, plain_passwords=False, blind_ready=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -54,7 +62,11 @@ class LobbyClient:
         socket for MatchTicket.share_socket). block_direct: testing only -- ignore the peer's direct
         packets so that punching fails and the relay is used. reconnect: seconds to keep trying to
         resume the session after the connection breaks (0 = off). plain_passwords: allow passwords
-        over a plain connection to a server that is not on the local network (not recommended)."""
+        over a plain connection to a server that is not on the local network (not recommended).
+        blind_ready: take part in the blind ready check -- a match found in the queue shows only the
+        ping at first (`match_found` has `opponent: None`, `blind: True`) and the opponent's name and
+        side arrive in `match_reveal` once both accepted. Off by default: `match_found` then names the
+        opponent as it always did (the launcher and the CLI turn it on)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -67,6 +79,8 @@ class LobbyClient:
         self.request_timeout = request_timeout
         self.reconnect_window = reconnect
         self.plain_passwords = plain_passwords
+        self.blind_ready = blind_ready
+        self.notices = {}            # id -> {"text", "expires"}: server notices showing now
 
         self.events = queue.Queue()
         self.session = None          # "remember me" token from a password login (store it, not the password)
@@ -122,7 +136,15 @@ class LobbyClient:
             fut.cancel()
             raise LobbyError("timeout", "the lobby server did not answer") from None
 
+    # Event types whose text a player reads as a message about the connection. The server scrubs the
+    # same fields before sending; this is the second line (client-side exceptions have addresses too).
+    _SCRUBBED = ("notice", "nat_status", "disconnected", "reconnecting", "kicked", "error")
+
     def _emit(self, ev):
+        if ev.get("t") in self._SCRUBBED:
+            for k in ("msg", "text", "reason"):
+                if isinstance(ev.get(k), str):
+                    ev[k] = proto.scrub_addresses(ev[k])
         self.events.put(ev)
         if self.on_event is not None:
             try:
@@ -152,7 +174,9 @@ class LobbyClient:
                 asyncio.open_connection(self.host, self.port, ssl=ctx, limit=proto.MAX_LINE_FROM_SERVER,
                                         server_hostname=self.host if ctx else None), timeout)
         except (OSError, asyncio.TimeoutError) as e:
-            raise LobbyError("connect_failed", f"cannot reach {self.host}:{self.port} ({e})") from None
+            # (the exception names every address it tried, the lobby's included: say what was typed, not that)
+            raise LobbyError("connect_failed", f"cannot reach {self.host}:{self.port} "
+                                               f"({proto.scrub_addresses(str(e))})") from None
         if self.tls_fingerprint:
             der = self._writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
             if hashlib.sha256(der).hexdigest() != self.tls_fingerprint:
@@ -172,7 +196,7 @@ class LobbyClient:
         try:
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
                                                 "client": CLIENT_NAME, "build": self.build.as_wire(),
-                                                "caps": ["delta"]})
+                                                "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -272,12 +296,12 @@ class LobbyClient:
             fut = self._pending.get(rid)
             if not fut.done():
                 if t == "error":
-                    fut.set_exception(LobbyError(msg.get("code", "error"), msg.get("msg", "")))
+                    fut.set_exception(LobbyError(msg.get("code", "error"), proto.scrub_addresses(msg.get("msg", ""))))
                 else:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
-                     "rematch"):
+                     "rematch", "blocked", "unblocked", "blocks"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -323,6 +347,25 @@ class LobbyClient:
         self.ticket = None
         if self.auto_ready and msg.get("ready_check"):
             asyncio.ensure_future(self._safe(self._send({"t": "ready", "match": msg["match"], "accept": True})))
+
+    async def _on_match_reveal(self, msg):
+        """Both accepted a blind match: now the opponent and the side are known."""
+        if self.match and self.match["match"] == msg["match"]:
+            self.match.update(opponent=msg.get("opponent"), role=msg.get("role"), slot=msg.get("slot"),
+                              blind=False)
+
+    async def _on_server_notice(self, msg):
+        nid = msg.get("id")
+        if msg.get("cleared") or not msg.get("text"):
+            self.notices.pop(nid, None)
+        else:
+            self.notices[nid] = {"text": str(msg["text"]), "expires": float(msg.get("expires") or 0)}
+
+    def active_notices(self):
+        """Texts of the server notices that are still showing, oldest first."""
+        now = time.time()
+        return [n["text"] for _i, n in sorted(self.notices.items())
+                if not n["expires"] or n["expires"] > now]
 
     async def _on_match_cancel(self, msg):
         if self.match and self.match["match"] == msg["match"]:
@@ -637,11 +680,50 @@ class LobbyClient:
             msg["char"] = char
         return self._call(msg)
 
-    def ranked_match(self, char=None):
+    def ranked_match(self, char=None, strict=False):
+        """Queue for a ranked match. strict=True: only opponents within the server's strict range
+        (150 rating points) -- the wait can be long."""
         msg = {"t": "queue", "mode": "ranked"}
         if char:
             msg["char"] = char
+        if strict:
+            msg["strict"] = True
         return self._call(msg)
+
+    # ---------------------------------------------------------------- blocking, sets, lag check
+    def block(self, name):
+        """Never be matched with this player again (accounts: kept on the account; guests: this session).
+        A running match with them ends like a quit. -> {"name", "blocks", "left_match"}"""
+        return self._call({"t": "block", "name": name})
+
+    def unblock(self, name):
+        return self._call({"t": "unblock", "name": name})
+
+    def blocks(self):
+        """[{"name", "guest", "since"}, ...]"""
+        return self._call({"t": "blocks"})["rows"]
+
+    def leave_set(self, reason=None):
+        """Leave the games in a row with this opponent, between two games. No penalty, no rating change
+        (a game already played keeps its result). reason="lag": after the lag check."""
+        msg = {"t": "leave_set"}
+        if reason:
+            msg["reason"] = reason
+        return self._call(msg)
+
+    def report_lag(self, match_id, frames, waited_ms, pc_fps=None, fps=None):
+        """The game's own numbers for a finished match: frames played, milliseconds spent waiting for
+        the opponent's input, this PC's speed without those waits. Both players then get `lag_check`.
+        A refusal (match too old, too few frames) is not an error worth showing."""
+        msg = {"t": "lag", "match": match_id, "frames": int(frames), "waited_ms": round(float(waited_ms), 1)}
+        if pc_fps:
+            msg["pc_fps"] = round(float(pc_fps), 1)
+        if fps:
+            msg["fps"] = round(float(fps), 1)
+        try:
+            return self._call(msg)
+        except LobbyError:
+            return None
 
     def cancel_queue(self):
         return self._call({"t": "unqueue"})

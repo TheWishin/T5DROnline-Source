@@ -35,7 +35,8 @@ class Config:
     relay_kbps: int = 512           # T5L_RELAY_KBPS: per-player relay bandwidth cap
     relay_pps: int = 400            # T5L_RELAY_PPS: per-player relay packet rate cap
     max_relays: int = 100           # T5L_MAX_RELAYS: concurrent relay sessions
-    ready_timeout: float = 20.0     # T5L_READY_TIMEOUT: seconds to accept a found match
+    ready_timeout: float = 15.0     # T5L_READY_TIMEOUT: seconds to accept a found match
+    blind_ready: bool = True        # T5L_BLIND_READY: queue matches show only the ping until both accepted (clients that ask)
     register_timeout: float = 6.0   # T5L_REGISTER_TIMEOUT: seconds for both game sockets to reach the server
     punch_timeout: float = 3.0      # T5L_PUNCH_TIMEOUT: seconds the clients try to punch through
     relay_timeout: float = 6.0      # T5L_RELAY_TIMEOUT: seconds to set up the relay path
@@ -63,6 +64,12 @@ class Config:
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
+    # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
+    strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
+    pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
+    max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
+    lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"
+    lag_wait: float = 6.0           # T5L_LAG_WAIT: seconds to wait for the second player's lag report
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed
     min_fps: float = 40.0           # T5L_MIN_FPS: a PC whose last match ran slower stays out of ranked (0 = off)
     warn_fps: float = 55.0          # T5L_WARN_FPS: below this both players are warned at match found (0 = off)

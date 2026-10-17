@@ -20,6 +20,12 @@ host:port#FINGERPRINT (self-signed TLS, pinned) or tls://host:port. "Host for fr
 lobby server on this PC (t5lobby.server.host) and points the Server box at it; the router is only
 asked to forward ports when "Open router ports" is ticked.
 
+Tekken 6 style extras: a match found in the queue shows only the ping at first (accept or decline
+within 15 s; the opponent's name comes after both accepted), "Strict" limits ranked matchmaking to
++-150 rating points, the result bar can block the opponent, a ranked set locks the character, the
+lag check ("ping X ms should mean about Y frames behind, it was Z") appears after a match with a
+way to leave without penalty, and a message from the server's admin shows in the status bar.
+
     python -m t5lobby.tk_tab --server 127.0.0.1:7781     # standalone window, stub game (testing)
 """
 import json
@@ -32,7 +38,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import fighters, ranks, servers
+from . import fighters, proto, ranks, servers
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .match_driver import MatchDriver, fps_from_logs
@@ -107,6 +113,13 @@ class OnlineTab:
         self.ask_string = simpledialog.askstring     # dialogs (tests replace them)
         self.ask_yes_no = messagebox.askyesno
         self.codes_window = None
+        self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
+        self.ready_sent = False          # we accepted: waiting for the opponent
+        self.set_locked = False          # a ranked set is running: the character cannot change
+        self.rematch_bar = None          # (text, opponent name) while the "Rematch?" bar is up
+        self.lag = None                  # the last lag_check event
+        self.blocks_window = None        # the "Blocked players..." dialog
+        self.blocks_list = None
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -129,6 +142,7 @@ class OnlineTab:
         self.cfg["name"] = self.name_var.get().strip()
         self.cfg["char"] = self._char_key()
         self.cfg["remember"] = bool(self.remember_var.get())
+        self.cfg["strict"] = bool(self.strict_var.get())
         self.cfg["fingerprint"] = self.fp_var.get().strip()
         try:
             os.makedirs(os.path.dirname(self.cfg_path), exist_ok=True)
@@ -209,7 +223,8 @@ class OnlineTab:
         self.b_passwd = ttk.Button(self.me_row, text="Change password...", command=self.do_passwd)
         self.b_codes = ttk.Button(self.me_row, text="New recovery codes...", command=self.do_new_codes)
         self.b_myprofile = ttk.Button(self.me_row, text="My profile", command=lambda: self.show_profile(None))
-        for b in (self.b_logout, self.b_passwd, self.b_codes, self.b_myprofile):
+        self.b_blocked = ttk.Button(self.me_row, text="Blocked players...", command=self.do_blocked)
+        for b in (self.b_logout, self.b_passwd, self.b_codes, self.b_myprofile, self.b_blocked):
             b.pack(side="right", padx=(6, 0))
         self.hint_var = tk.StringVar(value="Passwords are only sent to servers on this PC / your network, or "
                                            "over an encrypted (TLS) connection.")
@@ -225,6 +240,11 @@ class OnlineTab:
         cb = ttk.Combobox(play, textvariable=self.char_var, values=names, state="readonly", width=14)
         cb.pack(side="left", padx=(4, 12))
         cb.bind("<<ComboboxSelected>>", lambda _e: self.on_char())
+        self.char_cb = cb
+        self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
+        self.strict_check = ttk.Checkbutton(play, text="Strict (ranked: +-150 rating)", variable=self.strict_var,
+                                            command=self._save_cfg)
+        self.strict_check.pack(side="left", padx=(0, 12))
         self.actions = {}
         for key, label, cmd in (("ranked", "Ranked match", lambda: self.do_queue("ranked")),
                                 ("quick", "Quick match", lambda: self.do_queue("quick")),
@@ -317,6 +337,9 @@ class OnlineTab:
         self.status_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.status_var, style="Muted.TLabel").grid(row=5, column=0, sticky="w",
                                                                               pady=(6, 0))
+        self.notice_var = tk.StringVar(value="")          # a message from the server's admin, until it ends
+        ttk.Label(box, textvariable=self.notice_var, style="H2.TLabel", wraplength=700, justify="left").grid(
+            row=6, column=0, sticky="w", pady=(2, 0))
         self._set_account_view(False)
 
     def _set_account_view(self, logged_in):
@@ -349,6 +372,8 @@ class OnlineTab:
         self.b_logout.configure(state="normal" if connected else "disabled")
         for b in (self.b_passwd, self.b_codes):
             b.configure(state="normal" if me and not guest else "disabled")
+        self.char_cb.configure(state="disabled" if self.set_locked else "readonly")
+        self.strict_check.configure(state="normal" if me and not guest else "disabled")
 
     def _show_me(self):
         c = self.client
@@ -366,12 +391,26 @@ class OnlineTab:
         self.me_var.set(text)
 
     def status(self, text):
+        text = proto.scrub_addresses(str(text))       # no IP address in anything the player reads
         self.status_var.set(text)
         if hasattr(self.app, "set_status"):
             try:
-                self.app.set_status(text)
+                # the server's notice stays in the launcher's status bar whatever else is said
+                self.app.set_status(text + (f"   [Server: {self.notice_var.get()}]" if self.notice_var.get() else ""))
             except Exception:
                 pass
+
+    def _show_notice(self):
+        """The server admin's message(s), or nothing."""
+        texts = self.client.active_notices() if self.client else []
+        line = "  |  ".join(texts)
+        if line != self.notice_var.get():
+            self.notice_var.set(line)
+            if line and hasattr(self.app, "set_status"):
+                try:
+                    self.app.set_status(f"Server notice: {line}")
+                except Exception:
+                    pass
 
     def show_bar(self, text, buttons):
         self.bar_text.set(text)
@@ -439,6 +478,8 @@ class OnlineTab:
         if self.driver is not None:
             for n in self.driver.poll():
                 self.on_driver(n)
+        self._tick_ready()
+        self._show_notice()
         try:
             self._after = self.parent.after(100, self._poll)
         except tk.TclError:
@@ -476,7 +517,7 @@ class OnlineTab:
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
-                        plain_passwords=bool(self.cfg.get("plain_passwords")))
+                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -610,6 +651,11 @@ class OnlineTab:
 
     def _reset_lobby_view(self):
         self.match = None
+        self.ready_deadline = None
+        self.set_locked = False
+        self.rematch_bar = None
+        self.lag = None
+        self.notice_var.set("")
         self.hide_bar()
         self.match_var.set("")
         self.tv_players.delete(*self.tv_players.get_children())
@@ -715,10 +761,13 @@ class OnlineTab:
 
     def do_queue(self, mode):
         c = self.client
+        strict = mode == "ranked" and bool(self.strict_var.get())
+        args = (self._char_key(), True) if strict else (self._char_key(),)
         fn = c.ranked_match if mode == "ranked" else c.quick_match
-        self.call(fn, self._char_key(), then=lambda _r: self.status(
-            "Searching for an opponent" + (" (ranked: similar rank and a good connection)..." if mode == "ranked"
-                                           else "...")))
+        self.call(fn, *args, then=lambda _r: self.status(
+            "Searching for an opponent" + (" (ranked: similar rank and a good connection"
+                                           + (", strict: within 150 rating points -- this can take a while" if strict
+                                              else "") + ")..." if mode == "ranked" else "...")))
 
     def do_join(self):
         sel = self.tv_rooms.selection()
@@ -733,6 +782,50 @@ class OnlineTab:
             self.status("Select an opponent in the list first.")
             return
         self.call(self.client.challenge, sel[0], then=lambda _r: self.status("Challenge sent."))
+
+    def do_blocked(self):
+        """The block list, with Unblock."""
+        if not self.client:
+            return
+        self.call(self.client.blocks, then=self._blocks_window)
+
+    def _blocks_window(self, rows):
+        w = tk.Toplevel(self.parent)
+        w.title("Blocked players")
+        ttk.Label(w, padding=10, wraplength=360, justify="left", text=(
+            "You are never matched with these players (ranked, quick matches, rooms, challenges, rematches). "
+            "They are not told. Accounts stay blocked; a guest is blocked until you log out.")).pack(anchor="w")
+        lb = tk.Listbox(w, height=max(4, min(12, len(rows))), width=32)
+        for r in rows:
+            lb.insert("end", r["name"] + ("  (guest)" if r.get("guest") else ""))
+        lb.pack(padx=10)
+        self.blocks_list = lb
+        bar = ttk.Frame(w, padding=10)
+        bar.pack(fill="x")
+
+        def unblock():
+            sel = lb.curselection()
+            if not sel:
+                return
+            name = lb.get(sel[0]).replace("  (guest)", "")
+            lb.delete(sel[0])
+            self.call(self.client.unblock, name, then=lambda _r: self.status(f"Unblocked {name}."))
+        ttk.Button(bar, text="Unblock", command=unblock).pack(side="left")
+        ttk.Button(bar, text="Close", command=w.destroy).pack(side="right")
+        self.blocks_window = w
+
+    def block_opponent(self, name):
+        """After a game: never meet this player again. A running match would end like a quit (not offered here)."""
+        if not self.ask_yes_no("Block player", f"Block {name}?\n\nYou will not be matched with them again. "
+                                               "They are not told. You can unblock them under "
+                                               "\"Blocked players...\".", parent=self.parent):
+            return
+        self.hide_bar()
+        self.rematch_bar = None
+
+        def done(_r):
+            self.status(f"Blocked {name}. You will not be matched again.")
+        self.call(self.client.block, name, then=done)
 
     def do_chat(self):
         text = self.chat_var.get().strip()
@@ -825,19 +918,47 @@ class OnlineTab:
                 self.hide_bar()
         elif t == "match_found":
             self.match = ev
-            opp = ev["opponent"]
-            text = (f"Opponent: {opp['name']} ({rank_text(opp)}, {opp['rating'] if not opp['guest'] else 'guest'})"
-                    f"{' -- RANKED' if ev['ranked'] else ''}" + (" -- rematch" if ev.get("origin") == "rematch" else ""))
-            if ev["ready_check"]:
-                self.show_bar(text, [("Accept", lambda: self._ready(True)), ("Decline", lambda: self._ready(False))])
+            self.hide_bar()
+            self.rematch_bar = None
+            self.lag = None
+            self.ready_sent = False
+            if (ev.get("set") or {}).get("locked"):
+                self.set_locked = True
+            if ev.get("blind"):
+                # a match from the queue: the ping and the rules now, the name after both accepted
+                self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
+                self.show_bar(self._ready_text(), [("Accept", lambda: self._ready(True)),
+                                                   ("Decline", lambda: self._ready(False))])
             else:
-                self.show_bar(text + " -- connecting...", [])
+                opp = ev["opponent"]
+                text = (f"Opponent: {opp['name']} ({rank_text(opp)}, {opp['rating'] if not opp['guest'] else 'guest'})"
+                        f"{' -- RANKED' if ev['ranked'] else ''}"
+                        + (" -- rematch" if ev.get("origin") == "rematch" else ""))
+                if ev["ready_check"]:
+                    self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
+                    self.show_bar(text, [("Accept", lambda: self._ready(True)),
+                                         ("Decline", lambda: self._ready(False))])
+                else:
+                    self.show_bar(text + " -- connecting...", [])
+        elif t == "match_reveal":
+            self.ready_deadline = None
+            opp = ev["opponent"]
+            self.show_bar(f"Opponent: {opp['name']} ({rank_text(opp)}, "
+                          f"{opp['rating'] if not opp['guest'] else 'guest'})"
+                          f"{' -- RANKED' if (self.match or {}).get('ranked') else ''} -- connecting...", [])
         elif t == "opponent_ready":
             self.status("Your opponent accepted.")
+        elif t == "lag_check":
+            self._show_lag(ev)
+        elif t == "set_end":
+            self._set_ended(ev)
+        elif t == "server_notice":
+            self._show_notice()
         elif t == "nat_status":
             self.status(ev["text"])
         elif t == "match_cancel":
             self.match = None
+            self.ready_deadline = None
             self.hide_bar()
             self.status({"declined": "Match declined.", "ready_timeout": "Nobody accepted in time.",
                          "opponent_left": "Your opponent left.",
@@ -846,6 +967,9 @@ class OnlineTab:
                          }.get(ev["reason"], f"Match cancelled ({ev['reason']})."))
         elif t == "match_start":
             self.hide_bar()
+            self.ready_deadline = None
+            self.rematch_bar = None
+            self.lag = None
             f = ev.get("fight") or {}
             how = {"direct": "direct", "lan": "local network", "relay": "via the lobby server's relay"}
             self.match_var.set(
@@ -857,6 +981,7 @@ class OnlineTab:
             self._show_result(ev)
         elif t == "rematch":
             if ev.get("state") == "declined":
+                self.rematch_bar = None
                 self.hide_bar()
         elif t == "notice":
             self.status(ev.get("msg", ""))
@@ -947,12 +1072,67 @@ class OnlineTab:
         if cid:
             self.call(self.client.answer_challenge, cid, accept)
 
+    def _ready_text(self):
+        """The blind ready check: only the ping and the rules, and the seconds left."""
+        m = self.match or {}
+        ping = m.get("ping") or {}
+        if ping.get("known"):
+            where = f"ping about {ping.get('ms', 0):.0f} ms (through the server; measured directly once you both accept)"
+        else:
+            where = "ping not known yet"
+        left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
+        return (f"Opponent found{' -- RANKED' if m.get('ranked') else ''} -- {where} -- accept within {left} s?")
+
+    def _tick_ready(self):
+        """Keep the countdown in the ready bar current."""
+        if self.ready_deadline is None or self.ready_sent or not self.match or not self.match.get("blind"):
+            return
+        self.bar_text.set(self._ready_text())
+
     def _ready(self, accept):
         m = self.match
         if not m:
             return
+        self.ready_sent = bool(accept)
         self.show_bar(self.bar_text.get() + (" -- waiting for the opponent..." if accept else ""), [])
         self.call(self.client.ready, accept, m["match"])
+
+    def _show_lag(self, ev):
+        """After a match: ping X should mean Y frames behind, it was Z -- and a way out when it was worse."""
+        self.lag = ev
+        self.match_var.set("Lag check: " + ev["text"])
+        self.status("Lag check: " + ev["text"])
+        if self.rematch_bar is not None:
+            self._show_rematch_bar()
+
+    def _set_ended(self, ev):
+        self.set_locked = False
+        if self.rematch_bar is not None:
+            self.rematch_bar = None
+            self.hide_bar()
+        reason, by = ev.get("reason"), ev.get("by")
+        if reason == "lag":
+            self.status("You left after the lag check. No penalty, no rating change." if by == "you" else
+                        "Your opponent left after the lag check. No penalty for anyone.")
+        elif by == "opponent":
+            self.status("Your opponent left. The set is over.")
+        if self.client:
+            self._set_actions()
+
+    def _show_rematch_bar(self):
+        text, opp = self.rematch_bar
+        buttons = [(f"Rematch {opp}", lambda: self._rematch(True)), ("Leave", lambda: self._rematch(False)),
+                   (f"Block {opp}", lambda: self.block_opponent(opp))]
+        lag = self.lag
+        if lag and lag.get("verdict") == "more_lag" and lag.get("can_leave"):
+            buttons.insert(2, ("Leave: too laggy", self._leave_for_lag))
+        self.show_bar(text, buttons)
+
+    def _leave_for_lag(self):
+        self.hide_bar()
+        self.rematch_bar = None
+        self.call(self.client.leave_set, "lag", then=lambda _r: self.status(
+            "You left after the lag check. No penalty, no rating change."))
 
     def _show_result(self, ev):
         self.match = None
@@ -983,8 +1163,8 @@ class OnlineTab:
         if ev.get("rematch_window"):
             opp = (self.driver.session_ticket.opponent.get("name") if self.driver and self.driver.session_ticket
                    else "your opponent")
-            self.show_bar(text if len(text) < 60 else "Rematch?", [
-                (f"Rematch {opp}", lambda: self._rematch(True)), ("Leave", lambda: self._rematch(False))])
+            self.rematch_bar = (text if len(text) < 60 else "Rematch?", opp)
+            self._show_rematch_bar()
         if self.client and self.client.me:
             self._show_me()
 

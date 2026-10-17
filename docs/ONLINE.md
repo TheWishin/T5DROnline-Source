@@ -39,6 +39,7 @@ lobby/
     buildid.py    build identity both players must share
     rating.py     Glicko-2
     ranks.py      the game's rank tiers on top of Glicko-2 (placement, promotion, demotion)
+    lag.py        the post-game lag check: ping X should mean Y frames behind, it was Z
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
     tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
@@ -48,7 +49,8 @@ lobby/
     server/       python -m t5lobby.server
       lobby.py    players, rooms, queues, challenges, matches, results, bans, status numbers
       udp.py      UDP ping, endpoint registration, NAT probe, relay
-      store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans
+      store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans,
+                  blocked players, server notices
       admin.py    python -m t5lobby.server.admin: status, users, bans, passwords, recovery codes,
                   backups, certificates (accounts_admin.py: the account commands alone)
       status.py   local HTTP /health, /status, /metrics
@@ -60,8 +62,8 @@ lobby/
   run.py          python lobby/run.py server|host|admin -- works with the release's isolated Python
   servers.json    the servers the release lists (a placeholder until the public server exists)
   Dockerfile, compose.yaml, deploy/   packaging: Docker, systemd + install.sh, Windows (docs/HOSTING.md)
-  tests/          ~140 tests: server + simulated clients on localhost, the Online tab, the stub game,
-                  hosting and operations
+  tests/          ~215 tests: server + simulated clients on localhost, the Online tab, the stub game,
+                  hosting and operations, the Tekken 6 style options (test_t6.py)
   tools/
     two_players.py   two players on one PC: lobby -> punch -> two game instances
     ranked_session.py  two ranked accounts on one PC through the launcher's glue (stub or real game)
@@ -98,11 +100,19 @@ lobby/
    - *Ranked*: pairs by rating and ping; the allowed rating gap grows while you
      wait (100 points + 25 per second, at most 800) and so does the allowed
      ping (80 ms + 10 per second, at most 400). Accounts only (configurable).
+     The *strict* option keeps the gap at 150 points. The same two players are not
+     paired again for 30 s after a ranked game.
+   - Players who blocked each other are never paired by any of these.
    - *Rooms*: create one, someone joins; *challenges*: pick a player, they accept.
    Players are only ever paired with the **same build id**.
-5. **Ready check.** Both must accept within 20 s (an accepted challenge skips
+5. **Ready check.** Both must accept within 15 s (an accepted challenge skips
    it). Whoever declines or times out leaves the queue; the other keeps their
-   place in it.
+   place in it. A match from the queue is *blind* for clients that ask
+   (`caps: ["blind_ready"]`): both see the ping between them, and neither sees the other's
+   name or side until both accepted (`match_reveal`). The ping at that point is the
+   server's estimate (both players' UDP round trips to the server, added), because the PCs
+   are only connected after the accept; the real ping between them is measured in step 6
+   and arrives in `match_start`. See RANKED.md, "Tekken 6 style options".
 6. **NAT traversal** (next section): each launcher opens the UDP socket the game
    will use, registers it with the server, punches through to the other
    player, measures the round trip. If that fails, both bind to the relay.
@@ -259,14 +269,14 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `["delta"]`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
 | `lobby` | | `lobby_state` now |
 | `leaderboard` | `limit` | `leaderboard {rows}` |
 | `chat` | `text` (200 chars) | `chat` to everyone |
-| `queue` / `unqueue` | `mode: quick\|ranked` | `queued {mode}` |
+| `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked) | `queued {mode, strict}` |
 | `room_create` | `name`, `ranked` | `room {room}` |
 | `room_join` / `room_leave` / `rematch` | `room` | `room {room}`; two members start a ready check |
 | `challenge` | `player` (id) | `challenge {challenge}`; target gets `challenged` |
@@ -278,6 +288,9 @@ Client to server:
 | `game_started` | `match` | |
 | `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]` | `result_ack`; the other player gets `notice result_pending` |
 | `leave_match` | `match` | cancels before start; a loss report while playing |
+| `block` / `unblock` / `blocks` | `name` (or `player`) | `blocked` / `unblocked` / `blocks {rows}`; a match with that player ends like a quit |
+| `leave_set` | `reason` (`lag`) | leave the games in a row between two games, no penalty; `set_end` to both |
+| `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `logout` | | `bye`, connection closed |
 
 Server to client (pushed):
@@ -288,7 +301,8 @@ Server to client (pushed):
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
-| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout` |
+| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}`, `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
+| `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2` |
 | `nat_punch` | `match`, `candidates [{ip, port, kind}]`, `timeout` |
@@ -296,7 +310,10 @@ Server to client (pushed):
 | `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
 | `match_result` | `match`, `status`, `winner`, `score`, `ranked`, `rating {before, after, delta}`, `you` |
-| `notice` | `code`, `msg` |
+| `set_end` | `set`, `reason: declined\|left\|lag\|expired\|cancelled`, `by: you\|opponent\|null` |
+| `lag_check` | after a match, to both players: ping, expected and observed frames behind, verdict, cause, a sentence (RANKED.md) |
+| `server_notice` | `id`, `text`, `expires`, `cleared` -- a message from the admin tool (clients without the `notices` cap get a `notice` instead) |
+| `notice` | `code`, `msg` (never contains an IP address) |
 | `kicked` | `reason` |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
@@ -311,7 +328,9 @@ the ranked entries grew; deltas cut that 26x (docs/HOSTING.md, "Resource estimat
 a player's ping moves by more than 5 ms or 20%; matchmaking uses the exact value.
 
 The client library adds its own events: `match_start` carries a `ticket`
-(MatchTicket); `nat_status {phase, text}` for the UI; `disconnected {reason}`.
+(MatchTicket); `nat_status {phase, text}` for the UI; `disconnected {reason}`. Texts it shows
+(`notice`, `nat_status`, `disconnected`, ...) never contain an IP address: the server and the
+client both remove them.
 
 ### UDP packets
 
@@ -421,7 +440,10 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_RELAY` / `T5L_FORCE_RELAY` | `1` / `0` | offer the relay / use only the relay |
 | `T5L_RELAY_KBPS` / `T5L_RELAY_PPS` / `T5L_MAX_RELAYS` | `512` / `400` / `100` | relay caps |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
-| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 20, 3, 6, 90 s | |
+| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 3, 6, 90 s | |
+| `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
+| `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
+| `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |
 | `T5L_LOG_FILE`, `T5L_LOG_MAX_MB`, `T5L_LOG_BACKUPS` | , `10`, `5` | also log to a file, rotated (Windows hosts) |

@@ -15,6 +15,7 @@ packages. It needs one TCP port and two UDP ports, about 35 MB of RAM, and very 
 - [servers.json](#serversjson)
 - [Docker](#docker)
 - [Windows: host for friends, or always on](#windows-host-for-friends-or-always-on)
+- [macOS: host on a Mac at home](#macos-host-on-a-mac-at-home)
 - [Operations](#operations): admin tool, status and metrics, logs, backups, updates
 - [Abuse protection: defaults for a public server](#abuse-protection-defaults-for-a-public-server)
 - [Firewall rules](#firewall-rules)
@@ -275,6 +276,106 @@ scheduled task gives the same behaviour with Windows' own tools.
 The release's bundled Python ignores `PYTHONPATH` and the current folder (its `._pth` file), so
 `-m t5lobby.server` doesn't work there. `lobby\run.py server|host|admin` works with any Python.
 
+## macOS: host on a Mac at home
+
+For an old Mac at home that stays on. **This was not tested on a real Mac.** The server is the
+same Python code as on Windows. The two shell scripts were only syntax-checked and run as dry
+runs on Windows. The data-folder logic and the launchd job file have unit tests. Expect one or
+two small things to need a fix, and tell us what broke.
+
+### 1. Python 3.10 or newer
+
+The `python3` that comes with macOS is too old. Install Python from python.org/downloads. Take
+the newest release your macOS supports (each release page lists the macOS versions it needs).
+The server uses only the standard library, so there is nothing else to install.
+
+Open a new Terminal window and check `python3 --version`. It must say 3.10 or higher. If it
+still shows an older number, use the full path, for example
+`/Library/Frameworks/Python.framework/Versions/3.12/bin/python3`.
+
+### 2. Try it by hand
+
+```sh
+cd T5DROnline                       # the folder with lobby/ in it
+python3 lobby/run.py host           # add --map-ports to ask the router for the ports
+```
+
+It prints the line your friends paste as their Server. Stop it with Ctrl+C.
+
+The data goes to `~/Library/Application Support/T5DR Online/lobby-host`. That folder holds the
+database (accounts and ratings), the certificate, the logs and the daily backups. Back it up.
+An older run may have used `~/.local/share/t5lobby-host`. If that folder exists and the new one
+does not, the old one stays in use, so nothing is left behind. `--data DIR` picks any folder.
+
+### 3. The router
+
+- **Give the Mac a fixed address on your network.** The easy way: in the router's DHCP
+  settings, reserve the Mac's current address for the Mac. Or set an address by hand in System
+  Settings, Network. The forwarding rules below point at that address, so it must not change.
+- **Forward TCP 7781 and UDP 7781-7782** to that address, in the router's web page. Or start
+  the host with `--map-ports` and let the router do it (UPnP / NAT-PMP), as on Windows.
+- **Check for carrier-grade NAT first.** Find the router's Internet address (also called WAN
+  address) on its status page. Then open any "what is my IP" page in a browser. If the two
+  differ, or the router's address starts with 100.64 to 100.127, 10., 172.16 to 172.31 or
+  192.168, your provider shares one public address between many homes. Forwarding cannot work
+  then. Ask the provider for a public address, or rent a small VPS (see the top of this page).
+
+### 4. The macOS firewall
+
+The first time Python listens for connections, macOS may ask whether Python may accept incoming
+connections. Click **Allow**. You do this at the Mac. We do not script it. If the firewall is off
+(it is off by default), there is no question. If friends cannot connect after the ports are
+forwarded, open System Settings, Network, Firewall, and make sure Python is allowed to accept
+incoming connections. The menu names differ a little between macOS versions.
+
+### 5. Keep the Mac awake
+
+A sleeping Mac hosts nothing.
+
+- The launchd job below runs the server inside `caffeinate -s`. The Mac does not go to sleep
+  while the server runs. **This works on mains power only.** Keep the Mac plugged in. On a
+  laptop, keep the lid open (a closed lid usually sleeps the Mac; this was not tried).
+- By hand: `caffeinate -s python3 lobby/run.py host`.
+- The screen may still turn off. In the energy settings, also turn on "Wake for network
+  access", and "Start up automatically after a power failure" if your Mac has it.
+
+### 6. Start at login, restart if it stops
+
+```sh
+bash lobby/deploy/macos/install.sh                      # add:  -- --map-ports   if you want that
+bash lobby/deploy/macos/uninstall.sh                    # takes it away again
+```
+
+No sudo. Everything stays in your home folder.
+
+- It copies the lobby code to `~/Library/Application Support/T5DR Online/lobby-app`. The job
+  then does not depend on your checkout, and macOS does not ask for access to Documents or
+  Desktop.
+- It writes `~/Library/LaunchAgents/org.t5dronline.lobby-host.plist` from the template in
+  `lobby/deploy/macos/`, and loads it. The server starts now, at every login, and again within
+  15 seconds whenever it stops.
+- `--python PATH` picks the Python. By default it looks for python.org's, then Homebrew's, then
+  `python3` on the PATH. It never uses `/usr/bin/python3`.
+- `--no-caffeinate` leaves out the `caffeinate` wrapper. `--data DIR` changes the data folder.
+  `--dry-run` shows the steps and changes nothing.
+- Run `install.sh` again after you update the code. Uninstalling keeps your data folder.
+
+A LaunchAgent runs while the user is logged in. If the Mac should come back by itself after a
+power cut, turn on automatic login for this user (System Settings, Users & Groups). That does
+not work with FileVault, and it lets anyone who touches the Mac use that account. That is your
+call.
+
+**Logs.** `logs/launchd.log` in the data folder holds the start banner and any crash text. It is
+not rotated, so delete it now and then. The server's own log is `logs/t5lobby.log` next to it,
+rotated by the server.
+
+**Admin.** Same tool as everywhere:
+
+```sh
+python3 lobby/run.py admin --db "$HOME/Library/Application Support/T5DR Online/lobby-host/t5lobby.db" status
+launchctl print gui/$(id -u)/org.t5dronline.lobby-host      # what launchd thinks
+```
+
 ## Operations
 
 ### Admin tool
@@ -299,6 +400,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 | `purge-guests [--days 30]` | deletes records of guest-only matches older than this. Guests themselves are never stored |
 | `purge-inactive --days N [--include-played] --yes` | deletes accounts not seen for N days (by default only accounts that never finished a game: name squatters) |
 | `backup [DIR] [--keep N]`, `restore FILE --yes` | see Backups |
+| `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
 
 ### Status, health, metrics
@@ -323,6 +425,8 @@ handshake on it proves the server is up.
 - systemd: the journal (`journalctl -u t5lobby -f`). journald rotates it. Cap it with
   `SystemMaxUse=200M` in `/etc/systemd/journald.conf`.
 - Docker: json-file, 10 MB × 5 (compose.yaml).
+- macOS (launchd job): `logs/launchd.log` in the data folder (start banner, crashes), and the
+  server's own rotated log next to it, see the macOS section above.
 - Windows / Host for friends: `T5L_LOG_FILE` (set automatically to
   `...\lobby-host\logs\t5lobby.log`), rotated by the server itself at `T5L_LOG_MAX_MB` (10) ×
   `T5L_LOG_BACKUPS` (5).
@@ -515,7 +619,16 @@ Verified on the development PC (Windows 11), 2026-10-17:
   registering.
 - **Load measurements** above.
 
+The macOS setup (docs above, "macOS: host on a Mac at home") was only checked as far as Windows
+allows: the data-folder rule with `sys.platform` patched to darwin, the banner line, the
+launchd job file (`plistlib`) and its template filling, `bash -n` on both scripts, and a dry run of
+`install.sh` / `uninstall.sh` under Git Bash that touched nothing. Eight tests cover this
+(`test_hosting.MacHostTest`).
+
 Not verified (nothing was rented, installed or changed on this PC):
+
+- **Anything on a real Mac.** Python from python.org, `launchctl`, `caffeinate -s` keeping the Mac
+  awake, the firewall question, a restart after a crash, and starting at login are all untested.
 
 - A real VPS, systemd, ufw/nftables and certbot. The scripts ran only as dry runs and staged
   installs on Git Bash.

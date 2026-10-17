@@ -4,3 +4,5 @@
 # Linux scripts and units keep LF
 deploy/linux/* text eol=lf
 Dockerfile text eol=lf
+# macOS scripts, template and helper keep LF (bash 3.2 and launchd read them)
+deploy/macos/* text eol=lf

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  T5DR lobby host: launchd LaunchAgent TEMPLATE. Do not copy it by hand: install.sh fills in the
+  @PYTHON@, @APP@ and @DATA@ placeholders (render_plist.py) and writes the result to
+  ~/Library/LaunchAgents/org.t5dronline.lobby-host.plist.
+
+  - Starts at login (RunAtLoad) and starts again whenever it stops (KeepAlive), at most every 15 s.
+  - caffeinate -s keeps the Mac awake while the server runs (on mains power only: see HOSTING.md).
+  - Output and errors go to the data folder: logs/launchd.log (the server's own rotated log is
+    logs/t5lobby.log next to it).
+  Not tested on a real Mac (docs/HOSTING.md, "macOS: host on a Mac at home").
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.t5dronline.lobby-host</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-s</string>
+    <string>@PYTHON@</string>
+    <string>@APP@/run.py</string>
+    <string>host</string>
+    <string>--data</string>
+    <string>@DATA@</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@DATA@</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PYTHONDONTWRITEBYTECODE</key>
+    <string>1</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>@DATA@/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>@DATA@/logs/launchd.log</string>
+</dict>
+</plist>

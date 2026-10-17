@@ -22,6 +22,7 @@ and the glue between the lobby and the game.
 - [In-game identity: names and ranks in the HUD](#in-game-identity-names-and-ranks-in-the-hud)
 - [What the game side still needs](#what-the-game-side-still-needs)
 - [Slow PCs](#slow-pcs)
+- [Tekken 6 style options](#tekken-6-style-options): blind accept with ping, blocking, strict matchmaking, cooldown, character lock, post-game lag check, server notices, no IP in messages
 - [Stick and competitive checklist](#stick-and-competitive-checklist)
 - [Server settings](#server-settings)
 - [Protocol additions](#protocol-additions)
@@ -145,7 +146,10 @@ change, status and reason).
 ## Matchmaking
 
 Ranked queue as in ONLINE.md: pairs by rating (window 100 points + 25/s, up to
-800) and ping (80 ms + 10/s, up to 400), equal builds only, accounts only.
+800) and ping (80 ms + 10/s, up to 400), equal builds only, accounts only. It never pairs
+players who blocked each other, and not the same two again within 30 s of their last ranked
+game. With the **Strict** option the window stays at 150 points. Details: [Tekken 6 style
+options](#tekken-6-style-options).
 Rooms may be ranked (`T5L_RANKED_ROOMS=0` turns that off: then only the queue
 gives ranked matches). Challenges are always casual.
 
@@ -283,7 +287,9 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    this match), moved to `logs\online\results\<match id>.json` (so the next
    match in the same process starts clean) and reported with the evidence; a
    file with a `reason` is a `disconnect`. This PC's speed in the match (`fps`)
-   goes to the lobby (`perf`, see "Slow PCs") and into online.json. No result
+   goes to the lobby (`perf`, see "Slow PCs") and into online.json. The log's own numbers
+   for the match (frames, time waited for the opponent) go to the lobby too (`lag`, see
+   "Post-game lag check"). No result
    and the game closed: crash / disconnect / quit as above.
 5. **After** -- the game stays open (win pose, then character select, state
    `neutral`). **Rematch** (both within 20 s, `T5L_REMATCH_WINDOW`): when both
@@ -403,6 +409,160 @@ a match:
   this match runs at the slower PC's speed"); `brief()` carries `fps`.
 - A PC that has never played online has no measure and is not held back.
 
+## Tekken 6 style options
+
+These come from the lobby of Tekken 6 Native Online. They all live on the server, and the
+launcher's Online tab shows them. Old launchers keep working: anything that changes what a client
+sees is switched on by the client (see "Protocol additions").
+
+A **set** is the games you play in a row against one opponent: the first match and every rematch
+of it. A set ends when someone leaves it, when the rematch window runs out, when a game is
+cancelled, or when someone queues for a new opponent. Nothing in a set changes a rating by
+itself. Each game is rated when it ends, as before.
+
+### Found match: the ping first, the name later
+
+When the queue finds an opponent, both players see only this:
+
+- the ping between them, as "about N ms",
+- whether it is ranked,
+- how long they have to answer: 15 seconds (`T5L_READY_TIMEOUT`).
+
+They do **not** see the opponent's name, rank, rating, character or side (P1 or P2). When both
+have accepted, the server sends `match_reveal` with the opponent and the sides. The launcher then
+shows the name. If someone declines or does not answer, the other one goes back into the queue
+and never learned who it was.
+
+Where the ping comes from. The two PCs are not connected yet when the question is asked. They
+connect only after both accepted, because that needs each other's address. So the number is the
+**server's estimate**: each player's UDP round trip to the server, added together. That is exactly
+the path a relayed match takes. A direct connection is usually shorter. The real ping between the
+two PCs is measured after both accepted (`nat.py`, the `measure` step). It is the `rtt_ms` in
+`match_start`, and the tab shows it as before ("ping 23 ms (direct), input delay 3 frames"). If
+one of the two has no server ping yet, the estimate uses 50 ms for that side and says
+`known: false`.
+
+Rooms, challenges and rematches are not blind. You picked the room or the player, so you know who
+it is. They still get the ping in `match_found`. The slow-PC warning at match found says "your
+opponent's PC" instead of the name while the check is blind. `T5L_BLIND_READY=0` turns the blind
+check off for the whole server.
+
+### Blocking players
+
+After a game, **Block** in the result bar stops you from ever meeting that player again. The
+block list is under **Blocked players...** in the tab. It lists them and has **Unblock**.
+
+- Blocked pairs are never matched: not in the ranked queue, not in the quick queue, not in rooms
+  (joining is refused), not by challenge, not by rematch. It works both ways round.
+- The blocked player is not told. If a set was open, they see the rematch offer withdrawn.
+- **Accounts:** the block is stored on the account (`blocks` table) and follows it to every PC.
+- **Guests:** the block lives with the session. It is gone when the guest logs out.
+- **Blocking a guest** (by an account) goes by the guest's name and lasts for your session only.
+  A guest has no account to hang it on. Blocking an account goes by the account, forever.
+- **Blocking in the middle of a game counts as leaving it.** It is the same as `leave_match`: a
+  forfeit (a loss) once the match is older than `T5L_MIN_MATCH_SECONDS`, a void with a strike
+  before that. Before the game started it just cancels it. The launcher does not offer the button
+  during a game, but the server enforces it for other clients.
+- Blocking between two games ends the set and changes no rating.
+- At most 200 blocks (`T5L_MAX_BLOCKS`).
+
+### Strict matchmaking
+
+An option next to **Ranked match** in the tab (off by default). With it on, the ranked queue
+pairs you only with players within **150 rating points** of you (`T5L_STRICT_RANGE`). It stays
+150 however long you wait. Without it the window grows while you wait (100 points + 25 per
+second, at most 800).
+
+The points are the Glicko-2 rating the lobby already shows (a new account starts at 1500). They
+are not the game's own rank scale. To get a feeling: neighbouring ranks are 40 to 50 points
+apart (the table above), so 150 points is 3 to 4 ranks. The rating deviation is not used. If either player in a pair is strict, the pair must be within 150. It is for the ranked
+queue only. Ranked rooms and quick matches ignore it. Searching can take much longer, and the
+tab says so.
+
+### Same-opponent cooldown
+
+After a ranked game, the ranked queue does not match the same two players again for 30 seconds
+(`T5L_PAIR_COOLDOWN`). Other opponents are not affected. A rematch that both accept is not held
+back, because it is their own choice. Casual matches are not held back either. This is
+separate from the cap of 10 ranked matches per pair per day (`T5L_PAIR_CAP`).
+
+### Character lock
+
+In a **ranked set**, the character cannot change between the games. The server fixes both
+characters when the set is found. Every game of the set, including rematches in a ranked room,
+gets those characters in `match_start.fight`. The launcher cannot override it: it only writes
+the `T5_FIGHT` line the server sent. The character box in the tab is greyed out while the set
+runs. A request to change it is refused (`bad_state`).
+
+- "Random" stays "Random": the pick is locked, so each game draws a new character. That is the
+  player's choice.
+- The lock ends with the set. Queueing again leaves the set, so you can pick another character
+  and look for another opponent.
+- Casual sets are never locked.
+
+### Post-game lag check
+
+After every match both games tell the lobby what they saw. The lobby then sends **both players
+the same numbers**, for example:
+
+> Ping 85 ms should mean about 3 frames behind. It was 4.6. That is more than the ping explains.
+> Both PCs kept up, so the connection stalled now and then (jitter or lost packets).
+
+What the three numbers are:
+
+- **Ping X** is the ping between the two PCs, measured before the match (`rtt_ms`).
+- **Y, "should mean about"**, is the input delay the lobby chose for that ping and jitter
+  (`suggest_delay`). It is the lag the players feel when the connection keeps its promise.
+- **Z, "it was"**, is Y plus the extra frames the games spent waiting for each other. Each game
+  logs "waited W s of T s" every 600 frames. The launcher adds those up for the match and sends
+  frames played, milliseconds waited, and this PC's own speed (`lag` message). The server turns
+  that into frames per frame played and takes the larger of the two players' values. It is an
+  average over the whole match. A few long freezes show up smaller than they felt.
+
+It says "more than the ping explains" when the extra waiting is above 1 frame
+(`T5L_LAG_TOLERANCE`). The cause is named: a PC whose own speed was below `T5L_WARN_FPS` (55 fps)
+made the other game wait ("Your PC was the slow one (41 fps)"). Otherwise it is the connection.
+If only one game reports, the lobby waits `T5L_LAG_WAIT` (6 s) and then sends what it has. If
+neither reports, it says there is nothing to compare.
+
+This extends the slow-PC check from "Slow PCs" below. That one warns before the match; this one
+reports after it.
+
+**Leaving.** When the check shows more lag than the ping explains, the result bar gets **Leave:
+too laggy**. Either player may leave without penalty. The set ends, the opponent is told, and the
+rating does not change: the game that was just played keeps its result, and leaving adds no
+forfeit and no strike. **Nothing ends by itself.** A bad check does not void the game, undo a
+rating, or end the set. The players can still rematch. The server keeps the numbers with the
+match record (`matches.lag`, JSON) so an admin can look.
+
+### Server notices
+
+An admin message reaches every connected client, and every player who logs in while it shows:
+
+```sh
+python lobby/run.py admin notice "server restart in 20 min"          # shows for 60 minutes
+python lobby/run.py admin notice "back at 18:00" --hours 2
+python lobby/run.py admin notice --clear                              # take it down
+python lobby/run.py admin notices                                     # the latest ones
+```
+
+The admin tool writes it to the database. The server picks it up within `T5L_ADMIN_POLL` seconds
+(5), like bans. The launcher shows it in the Online tab below the status line, and adds it to the
+launcher's own status bar ("[Server: ...]") so other messages do not push it out. It disappears
+when it expires or is cleared. Launchers that predate it show it once as a normal notice.
+
+### No IP addresses in messages
+
+An error or notice a player reads never contains an IP address, the opponent's or anyone's. The
+server removes addresses from `error` and `notice` texts before it sends them. The client
+library, the Online tab, the match driver and the command-line client remove them again from
+every connection message they show (status lines, `nat_status`, `disconnected`, exception texts).
+An address becomes "(address hidden)". Host names stay, and so does the server address you typed
+yourself. Chat is what players say, so it is left alone. The address the game needs
+(`T5_NET_PEER`) goes to the game and nowhere else. The one exception is the command-line client
+without a game command: it prints the `set T5_NET_PEER=...` line for a player who starts the game
+by hand. That is setup output, not an error message.
+
 ## Stick and competitive checklist
 
 What a stick (or hitbox) player needs, and where it stands:
@@ -458,6 +618,13 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
+| `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
+| `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
+| `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |
+| `T5L_PAIR_COOLDOWN` | 30 | seconds before the ranked queue matches the same two players again (0 = off) |
+| `T5L_MAX_BLOCKS` | 200 | blocked players per account or guest session |
+| `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
+| `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
 | `T5L_WARN_FPS` | 55 | below this both players are told at match found (0 = off) |
 
@@ -466,7 +633,9 @@ The database upgrades itself (new columns and tables are added on start).
 ## Protocol additions
 
 Additive (protocol 1; `welcome.features` lists them: ranks, sessions, recovery,
-passwd, profile, history, chars, integrity, rematch).
+passwd, profile, history, chars, integrity, rematch, blind_ready, blocks, strict, set_lock,
+lag_check, notices). The protocol version did not change: a client announces what it understands
+in `hello.caps`, and an older client gets the old messages.
 
 | Client -> server | Reply |
 |---|---|
@@ -481,6 +650,11 @@ passwd, profile, history, chars, integrity, rematch).
 | `result` + `source`, `desync`, `hash`, `frames`, `reason` | `result_ack` |
 | `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |
+| `hello` `caps`: `blind_ready` (blind ready check), `notices` (server notices) | `welcome.caps` echoes what the server accepted; `welcome` also has `strict_range`, `pair_cooldown` |
+| `queue` + `strict` (ranked only) | `queued {mode, strict}` |
+| `block` `name` (or `player`); `unblock` `name`; `blocks` | `blocked {name, blocks, left_match}`; `unblocked`; `blocks {rows: [{name, guest, since}]}` |
+| `leave_set` `reason` (`lag` after the lag check) | -- (`set_end` follows) |
+| `lag` `match`, `frames`, `waited_ms`, `pc_fps`, `fps` (after a match) | -- (`lag_check` follows for both players) |
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
@@ -492,12 +666,25 @@ Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 notices `opponent_dropped`, `opponent_back`, `pair_cap`, `slow_pc`. The client adds
 `reconnecting` / `reconnected` events.
 
+New for the Tekken 6 style options: `match_found` + `ping {ms, kind: estimate, known}` and
+`set {id, game, locked, ranked}`; for a blind check (client with `blind_ready`, queue matches only)
+`blind: true` and `opponent: null`, and no `role` or `slot`; `match_reveal {match, role, slot,
+opponent, you}` once both accepted; `match_start` and `match_result` + `set`; `set_end {set, reason:
+declined|left|lag|expired|cancelled, by: you|opponent|null}`; `lag_check {match, ping_ms, path,
+expected_frames, observed_frames, verdict: ok|more_lag|unknown, cause: network|your_pc|opponent_pc|
+both_pcs|null, yours {extra_frames, pc_fps}, opponent {...}, text, can_leave, ranked, set}`;
+`server_notice {id, text, expires, cleared}` (clients without the `notices` cap get a `notice` with
+`code: server_notice`). Error texts and notices carry no IP addresses.
+
 ## Tests and tools
 
 ```sh
 cd lobby/tests
 python -m unittest test_ranked      # ranks, accounts, integrity rules, rematch, driver + stub game
-python -m unittest test_tk_tab      # the Online tab: register, saved login, TLS refusal, leaderboard/profile
+python -m unittest test_tk_tab      # the Online tab: register, saved login, TLS refusal, leaderboard/profile,
+                                    # blind accept, strict, block list, lag check, server notice
+python -m unittest test_t6          # Tekken 6 style options: blind ready, blocks, strict, cooldown, character
+                                    # lock, lag check, notices, no IP addresses in messages
 ```
 
 `lobby/tools/ranked_session.py` plays a whole ranked session on one PC through

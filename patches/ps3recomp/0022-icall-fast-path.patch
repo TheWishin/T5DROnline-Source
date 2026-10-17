@@ -1,0 +1,113 @@
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index cede9d3..7941031 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2269,6 +2269,9 @@ typedef void (*ppu_fn)(ppu_context*);
+ static uint32_t g_addr[PPU_HASH_SIZE];
+ static ppu_fn   g_fn[PPU_HASH_SIZE];
+ static uint32_t g_fn_count = 0;
++/* Bumped on every (re)registration: the per-thread indirect-call caches
++ * (ppu_lookup_cached) drop every entry made under an older generation. */
++static std::atomic<uint32_t> g_fn_gen{ 1 };
+ 
+ extern "C" void ppu_register_function(uint64_t addr, ppu_fn fn)
+ {
+@@ -2277,8 +2280,8 @@ extern "C" void ppu_register_function(uint64_t addr, ppu_fn fn)
+     /* Bounded probe: never loop past the whole table. A full table (function
+      * count >= PPU_HASH_SIZE) would otherwise spin forever here at startup. */
+     for (uint32_t probes = 0; probes < PPU_HASH_SIZE; probes++) {
+-        if (g_fn[i] == nullptr) { g_addr[i] = a; g_fn[i] = fn; g_fn_count++; return; }
+-        if (g_addr[i] == a) { g_fn[i] = fn; return; }   /* overwrite */
++        if (g_fn[i] == nullptr) { g_addr[i] = a; g_fn[i] = fn; g_fn_count++; g_fn_gen.fetch_add(1); return; }
++        if (g_addr[i] == a) { g_fn[i] = fn; g_fn_gen.fetch_add(1); return; }   /* overwrite */
+         i = (i + 1) & PPU_HASH_MASK;
+     }
+     static int warned = 0;
+@@ -2338,6 +2341,24 @@ static ppu_fn ppu_lookup(uint32_t a)
+     return nullptr;
+ }
+ 
++/* Per-thread direct-mapped cache in front of ppu_lookup for the indirect-call
++ * fast path. The hash table is 3 MB of two parallel arrays, so a vtable call
++ * used to pay one or two cache misses in the lookup alone; a fight frame makes
++ * ~1000 of them on the main thread over a few hundred distinct targets, which
++ * this keeps in 16 KB. Per thread, so an entry is never read torn. */
++struct ppu_icache_ent { uint32_t addr, gen; ppu_fn fn; };
++#define PPU_ICACHE_N 1024
++static PPU_THREAD_LOCAL ppu_icache_ent g_icache[PPU_ICACHE_N];
++static inline ppu_fn ppu_lookup_cached(uint32_t a)
++{
++    const uint32_t gen = g_fn_gen.load(std::memory_order_relaxed);
++    ppu_icache_ent& e = g_icache[(a >> 2) & (PPU_ICACHE_N - 1)];
++    if (e.addr == a && e.gen == gen) return e.fn;
++    ppu_fn f = ppu_lookup(a);
++    if (f) { e.addr = a; e.gen = gen; e.fn = f; }
++    return f;
++}
++
+ extern "C" uint32_t ppu_function_count(void) { return g_fn_count; }
+ 
+ /* Correct native memmove override for the game's hand-optimized memmove at
+@@ -2718,8 +2739,53 @@ extern "C" void ps3_indirect_call_direct(ppu_context* ctx, uint32_t target)
+     ps3_indirect_call_to(ctx, target);
+ }
+ 
++/* Fast path for an indirect call to a registered function when none of the
++ * diagnostics below (or in ps3_indirect_call_impl) is armed: the same
++ * observable work -- g_active_ctx, the depth guard, the vcall stack, the
++ * trampoline drain -- without a dozen env-gated probes and the cold hash
++ * lookup. Anything unusual (target 0, unregistered target, depth cap) takes
++ * the full path, which re-reads the target itself. PPU_ICALL_SLOW=1 forces
++ * the full path. */
++static PPU_THREAD_LOCAL int s_icall_depth = 0;
++static int g_icall_slow = -1;
++static int icall_slow_init(void)
++{
++    static const char* const vars[] = {
++        "PPU_CSCHECK", "PS3_ICALL_GATE", "BCTRL_RING", "PS3_BREADCRUMB", "PPU_TOCWATCH",
++        "PS3_CALLTRACE", "PS3_CALLTRACE_LR", "PS3_CALLTRACE_R5", "PS3_CALLTRACE_FROM",
++        "PS3_CALLTRACE_TO", "FLOW_FORCE_RTCFG", "SPURS_TRACE", "PS3_PRX_CALLTRACE",
++        "PPU_TOCFIX", "PPU_RETWATCH", "PPU_ICALL_SLOW", 0 };
++    int s = 0;
++    for (int i = 0; vars[i]; i++) if (getenv(vars[i])) s = 1;
++    g_icall_slow = s;
++    return s;
++}
++
+ extern "C" void ps3_indirect_call(ppu_context* ctx)
+ {
++    {   int slow = g_icall_slow;
++        if (__builtin_expect(slow < 0, 0)) slow = icall_slow_init();
++        /* an installed ps3_icall_hook sees every call: full path */
++        if (__builtin_expect(!slow && !ps3_icall_hook, 1)) {
++            const uint32_t addr = g_icall_target_set ? g_icall_target : (uint32_t)ctx->ctr;
++            ppu_fn fn = addr ? ppu_lookup_cached(addr) : nullptr;
++            if (__builtin_expect(fn != nullptr && s_icall_depth <= 4000, 1)) {
++                g_icall_target_set = 0;
++                g_active_ctx = ctx;
++                s_icall_depth++;
++                if (g_vcall_sp < 128) g_vcall_stk[g_vcall_sp] = addr;
++                g_vcall_sp++;
++                fn(ctx);
++                while (g_trampoline_fn) {
++                    void (*tf)(void*) = g_trampoline_fn;
++                    g_trampoline_fn = 0;
++                    tf(ctx);
++                }
++                if (g_vcall_sp > 0) g_vcall_sp--;
++                s_icall_depth--;
++                return;
++            }
++        } }
+     static std::atomic<int> on = -1;
+     if (on < 0) on = getenv("PPU_CSCHECK") ? 1 : 0;
+     { static std::atomic<int> hg = -1; if (hg < 0) hg = getenv("PS3_ICALL_GATE") ? 1 : 0;
+@@ -3029,7 +3095,7 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         /* Recursion-depth guard: a malformed/cyclic jump table (or a tail-call
+          * chain that never converges) can dispatch recursively without bound
+          * and blow the host stack. Cap the depth, log once, then unwind. */
+-        static thread_local int s_depth = 0;
++        int& s_depth = s_icall_depth;   /* shared with the fast path in ps3_indirect_call */
+         if (s_depth > 4000) {
+             static int warned = 0;
+             if (__atomic_fetch_add(&warned, 1, __ATOMIC_RELAXED) < 8)

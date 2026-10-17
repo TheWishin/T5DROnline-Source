@@ -47,6 +47,9 @@ def main():
     ap.add_argument("--llvm", help="folder with clang-cl.exe and lld-link.exe")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--force", action="store_true", help="recompile objects that look current")
+    ap.add_argument("--march", default="auto",
+                    help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC has AVX2), "
+                         "x86-64-v3, native, none")
     a = ap.parse_args()
 
     llvm = find_llvm(a.llvm)
@@ -66,6 +69,20 @@ def main():
               "-I" + os.path.join(GDIR, "include"), "-I" + os.path.abspath(a.recomp),
               "-I" + os.path.join(ps3, "runtime", "ppu"), "-I" + os.path.join(ps3, "runtime", "spu"),
               "-I" + os.path.join(ps3, "include")]
+    # The lifted PPU code is built for this PC: x86-64-v3 (AVX2/FMA/BMI2/MOVBE) when
+    # it has AVX2 -- byte-swapped guest accesses become movbe, the VMX helpers'
+    # fmaf calls single vfmadd instructions with the same fused result -- else the
+    # x86-64 baseline. -ffp-contract=off either way: no fusing of a*b+c that the
+    # PPU code wrote as two operations (the lifter spells real fused ops fma()).
+    march = a.march
+    if march == "auto":
+        march = "none"
+        if os.name == "nt":
+            import ctypes
+            if ctypes.windll.kernel32.IsProcessorFeaturePresent(40):   # PF_AVX2_INSTRUCTIONS_AVAILABLE
+                march = "x86-64-v3"
+    ppu_opts = ["/clang:-ffp-contract=off"] + ([] if march == "none" else [f"/clang:-march={march}"])
+    print(f"lifted PPU code: -march={march}", flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -92,7 +109,7 @@ def main():
         if is_c:
             cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT", "-msse4.1"]   # as ps3recomp_runtime's INTERFACE option
         else:
-            cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"]
+            cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
         cmd += ["-c", src, "/Fo" + o]
         t = time.time()
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, creationflags=NO_WINDOW)

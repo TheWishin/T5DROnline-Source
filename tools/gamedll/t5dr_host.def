@@ -12,6 +12,7 @@ EXPORTS
     vm_write16
     vm_write32
     vm_write64
+    vm_store_coh_notify
     ppu_stwcx32
     ppu_stdcx64
     ppu_resv_line_note
@@ -39,3 +40,5 @@ EXPORTS
     ppu_hle_inject_base     DATA
     g_spu_ls_dbg            DATA
     g_spu_ls_watch_n        DATA
+    vm_store_inline_ok      DATA
+    vm_coh_bitmap           DATA

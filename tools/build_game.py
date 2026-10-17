@@ -349,9 +349,19 @@ def step_vfs(a):
 
 
 def step_lift(a):
+    # The lift is redone when the lifter changed (the patches change what it
+    # emits -- e.g. 0013's inline guest stores); a stamp next to the output
+    # records which ppu_lifter.py made it. A lift without a stamp predates it
+    # and is redone once (~1 minute).
+    lifter = os.path.join(P.tools, "ppu_lifter.py")
+    stamp = os.path.join(P.recomp, ".lifter.sha1")
+    lifter_id = sha1(lifter) if os.path.exists(lifter) else ""
     if os.path.exists(os.path.join(P.recomp, "ppu_recomp.h")) and not a.force:
-        print("  already done")
-        return
+        made_by = open(stamp).read().strip() if os.path.exists(stamp) else None
+        if made_by == lifter_id:
+            print("  already done")
+            return
+        print("  the lifter changed since the last lift: lifting again")
     os.makedirs(P.analysis, exist_ok=True)
     run([PY, os.path.join(P.tools, "ppu_loader.py"), P.elf, "-o", P.analysis])
     run([PY, os.path.join(P.tools, "find_functions.py"), P.elf,
@@ -365,6 +375,8 @@ def step_lift(a):
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
          "--code-end", CODE_END, "--max-chunk-lines", "80000",
          "-o", P.recomp])
+    with open(stamp, "w") as f:
+        f.write(lifter_id + "\n")
 
 
 def step_spu(a):

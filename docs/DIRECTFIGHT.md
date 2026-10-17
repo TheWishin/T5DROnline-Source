@@ -14,16 +14,28 @@ All guest addresses are for NPUB30009 v01.00.
 ## Interface
 
 ```
-T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color]      the first match (from boot)
+T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>]   the first match (from boot)
 T5_FIGHT_FILE=<path>                                 the next matches, one line in the same format
-T5_NET_RESULT_FILE=<path>                            {"winner": 0|1|null, "score": [p1, p2]} per match
+T5_NET_RESULT_FILE=<path>                            {"match": id, "winner": 0|1|null, "score": [p1, p2], ...} per match
 T5_DF_STATUS_FILE=<path>                             JSON status for the launcher (rewritten on change)
 ```
 
 - `p1`, `p2`: character id 0-35, 3-letter code or name prefix (table below).
-- `stage`: stage id (table below), or `random` / `-1` for the game's own pick.
-- `rounds`: rounds to win, 1-5 (default 3). Written to the game's rounds-to-win
-  byte at game-mode entry; the HUD shows that many round marks.
+- `stage`: stage id (table below), or `random` / `-1`. Without netplay that is
+  the game's own pick. **With netplay it is never the game's pick**: the stage
+  panel picks on each PC on its own (QA run fd_random: two different stages,
+  desync from frame 0), so `random` becomes a stage derived from the shared
+  seed (`T5_NET_SEED`, else the session's) and the match number -- the same on
+  both PCs. The lobby always sends a concrete stage anyway (resolved from the
+  match seed on the server).
+- `rounds`: rounds to win, 1-5 (default `T5_NET_ROUNDS`, else 3). Written to the
+  game's rounds-to-win byte at game-mode entry; the HUD shows that many round
+  marks.
+- `match=<id>` (key=value, anywhere on the line; older builds ignore it): the
+  lobby's match id. Netplay puts it into this match's result file, so the
+  launcher never takes a result of one match (say, one the lobby voided) for
+  the next. The launcher appends it to every line it writes to `T5_FIGHT_FILE`;
+  the first match's id is `T5_NET_MATCH`.
 - `p1color`, `p2color`: 1 or 2, the costume (the button of the second confirm).
   Unverified beyond costume 1.
 - `T5_FIGHT_FILE` is read when the game idles at character select (after a
@@ -34,9 +46,10 @@ T5_DF_STATUS_FILE=<path>                             JSON status for the launche
   `stage`, `loading`, `fight`, `over`, `neutral`. `neutral` = at character
   select, waiting for `T5_FIGHT_FILE`. `fight` with `match` = k means match k is
   running.
-- Result file: written by netplay when netplay is on (it already does), by the
-  direct-fight code when netplay is off. Winner 0 = P1, 1 = P2, null = draw;
-  score = rounds won.
+- Result file: written by netplay when netplay is on (with `match`, `desync`,
+  `frames`, `hash`, `fps`, and `reason` when the match could not be finished;
+  docs/NETPLAY.md), by the direct-fight code when netplay is off (`match`,
+  `winner`, `score`). Winner 0 = P1, 1 = P2, null = draw; score = rounds won.
 - Netplay: run both games with `T5_NET_START=external` and the same `T5_FIGHT`
   (and the same `PS3_FIXED_TIME`, see Determinism). At the first frame of the
   game mode the direct-fight code calls `t5_netplay_start()`; the next frame is
@@ -87,7 +100,14 @@ param)`; the factory is `func_0025E6AC`.
    (closed loop: read the cell, step toward the target cell, re-read; one step
    per 8 frames), CROSS confirms the character, the costume button confirms
    again. When both are done, CROSS confirms the stage panel (every 30 frames
-   until the select state reaches 4); the stage shown does not matter.
+   until the select state reaches 4); the stage shown does not matter. The
+   confirm writes the panel's own (random) pick to 0x1008F088 (two frames
+   before the select state turns 4); the configured stage is written there at
+   the top of every frame of the stage phase (before netplay hashes the frame),
+   so the pick never shows in the hashed state.
+   In a rematch under lockstep the two panels' picks differed (QA run
+   fd_rematch: 0x1d vs 0x11 for the 50 frames between confirm and fight start,
+   a transient desync); now the hashed state never sees them.
 3. First frame in mode 4: rounds to win -> 0x1008EBD4 (u8), stage id ->
    0x1008F088 (the stage confirm writes the panel's pick there; the game-mode
    loader copies it to 0x10053A08 later, so the overwrite wins), then

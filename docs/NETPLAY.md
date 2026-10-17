@@ -16,9 +16,11 @@ T5_NET_MODE=join T5_NET_PEER=<host ip>:7000            python tools/run_game.py
 ```
 
 Optional: `T5_NET_DELAY` (frames, default 3; the host's value is used),
-`T5_NET_TIMEOUT` (seconds without the peer before P2 goes idle, default 30),
-`T5_NET_START` (`boot`, default: lockstep from the first frames after boot;
-`external`: from the frame the game calls `t5_netplay_start()`, see below).
+`T5_NET_TIMEOUT` (seconds the peer may be silent or stall the match before it
+counts as lost, default 30; the lobby passes 20), `T5_NET_START` (`boot`,
+default: lockstep from the first frames after boot; `external`: from the frame
+the game calls `t5_netplay_start()`, see below). What happens when the
+connection fails is in [Connection problems](#connection-problems).
 The host must accept UDP on its port (port forward, or the lobby's punch/relay:
 the lobby sets `T5_NET_PORT`/`T5_NET_PEER` itself, see `docs/ONLINE.md`). The
 local player is whatever the runtime's controls put on port 1 (pads, sticks,
@@ -27,9 +29,24 @@ keyboard, remapping). Without `T5_NET_MODE` nothing changes.
 Lobby handover (`docs/ONLINE.md`) is supported: a host given `T5_NET_PEER`
 calls it while waiting; `T5_NET_BUILD` goes into the HELLO and a different
 build is refused; `T5_NET_SEED` (host's value) seeds the game's random
-generators; `T5_NET_MATCH`/`PATH`/`RTT_MS` are logged; `T5_NET_RESULT_FILE`
-gets `{"winner": 0|1|null, "score": [p1, p2]}` when a match ends.
-`T5_NET_ROUNDS` is not applied yet (see limits).
+generators; `T5_NET_KEY` (the match secret) authenticates every packet;
+`T5_NET_MATCH` goes into the result file; `T5_NET_PATH`/`RTT_MS` are logged;
+`T5_NET_ROUNDS` sets the rounds to win of a menu-driven VS game (0x1008EBD4,
+written at every sync point; direct fight takes the rounds from `T5_FIGHT`).
+`T5_NET_RESULT_FILE` gets the match's result when it ends:
+
+```json
+{"match": "m752f00f03e2f", "winner": 1, "score": [0, 2], "desync": 0, "frames": 4589,
+ "hash": "ceace43900b83115", "fps": 38.2}
+```
+
+`match` is the lobby's id (`T5_NET_MATCH`, or the `match=` of the direct-fight
+line for later matches); `desync` counts mismatching frames from this match's
+sync point (the file is written once the deciding frame's hash has been
+compared with the peer's, a few frames after the end); `hash` is the state hash
+of the deciding frame (equal on both PCs when they agree); `fps` is this PC's
+own speed in the match (time waiting for the peer left out). A match that could
+not be played to the end has `"winner": null` and a `reason` (next section).
 
 **Starting at the fight (direct-fight mode).** Lockstep does not have to run
 from boot. With `T5_NET_START=external` both games boot, load and do whatever
@@ -67,8 +84,11 @@ thread blocks until that has arrived. Every packet carries all inputs the peer
 has not acknowledged (and at least the last 8), the last 8 state hashes and the
 last scene changes, and is resent every 15 ms while a frame is stalled, so
 lost packets only cost latency (tested with 10 % loss, `T5_NET_DROP`). The
-handshake (HELLO with session id, delay, build id, seed) completes from either
-side; a peer silent for `T5_NET_TIMEOUT` is dropped and its player idles.
+handshake (HELLO with session id, delay, build id, seed) runs on a network
+thread from boot on and completes from either side; keepalives (PING, every
+200 ms when nothing else is sent) carry whether the sender's lockstep has
+begun. Protocol v2 (2026-10-17): every packet header carries the sender's
+per-process nonce, and with a key a SipHash-2-4 tag (below).
 
 **Game hooks** (`t5_hooks.cpp`). How the game reads pads, from its code: a
 `keyread` thread, woken by the VBlank handler, polls `cellPadGetData` for both
@@ -85,8 +105,62 @@ woken by the same (wall-clock) vblank. With netplay on:
    calls into the game's own functions). The real keyread thread is parked:
    its vblank wakes are dropped. (Waking keyread and waiting for it deadlocks:
    its pad update takes the lwmutex the main thread holds at that point.)
-3. Frame numbers are the main loop's own frames, starting at its 2nd frame
-   after boot; both games count the same frames.
+3. **The take-over is at a fixed frame on both PCs**: the frame the start is
+   due (boot: the main loop's first frame with a keyread thread; external: the
+   frame `t5_netplay_start()` was called) stops the keyread wakes, the next
+   frame takes over. Before 2026-10-17 it took over as soon as keyread "was in
+   its wait" -- but a vblank post just before the stop had often already
+   released the thread while the flag still said "waiting": ~9 % of boots took
+   over at frame 1 instead of 2, mostly followed by a deadlock (the thread's
+   own tick beside ours: it held lwmutex 0x10752088 and waited for 0x106D4D00,
+   the main thread the other way round). Now "parked" means: wakes stopped, no
+   post half-way through the wrapper (a counter brackets check and post), the
+   thread in its wait, and the semaphore at 0 tokens with a waiter -- with posts
+   stopped that state cannot change. Should the thread's last tick still be
+   pending at the take-over frame (a loaded PC), the main thread hands the
+   frame lwmutex over through the game's own `sys_lwmutex_unlock/lock` stubs
+   (0x3C6F20/0x3C6F00) until the tick is done (`T5_NET_TAKEOVER_TEST=1` forces
+   that path once). 100 boots: same take-over frame on both sides every time,
+   no hang (see Tested).
+4. Frame numbers are the main loop's own frames, starting at the take-over;
+   both games count the same frames.
+
+## Connection problems
+
+How a session starts, survives trouble, and ends when it cannot go on
+(2026-10-17, after the netplay QA run in build/nq):
+
+| Situation | What happens |
+|---|---|
+| Handshake | From boot on (network thread): HELLO every 100 ms until the peer answers. No answer within `T5_NET_CONNECT_TIMEOUT` (default max(60, 2 x `T5_NET_TIMEOUT`) s; 0 = wait forever) -> `no_peer` |
+| Other build | A peer with another `T5_NET_BUILD`, or another netplay protocol version (older builds), is refused at the first HELLO, and told so (REJECT) -> `build_mismatch` within a second or two of boot, on both sides |
+| Packets | With `T5_NET_KEY` (the lobby's per-match secret, sent only over the lobby's TCP channel) every packet ends in a SipHash-2-4 tag; without it the key comes from `T5_NET_MATCH` + `T5_NET_SEED` when both are set, else packets are unauthenticated (direct-IP play). Packets with a wrong tag, an unknown session or another peer process's nonce are dropped |
+| Who is the peer | The first authenticated HELLO (unauthenticated: only from the IP in `T5_NET_PEER` when it is given); after the handshake only that process (session id + nonce + tag) |
+| NAT rebinding / new relay mapping | The peer's packets arrive from a new address: they still prove who sent them, so the game answers there from then on ("the peer's address changed ... following it") |
+| Short outage / loss / jitter | Lockstep stalls and resumes; resends every 15 ms; nothing is lost while the outage is shorter than `T5_NET_TIMEOUT` |
+| Peer silent for `T5_NET_TIMEOUT` | `peer_timeout` (keepalives every 200 ms; a frozen process is silent) |
+| Peer alive but no input for `T5_NET_TIMEOUT` mid-match | `peer_stalled` |
+| Match start, peer alive but still loading | Waits up to `T5_NET_START_TIMEOUT` (default 120 s), then `start_timeout` |
+| Peer closed its game | BYE -> `peer_quit` at once |
+| Peer's game restarted | A HELLO from a new process of the peer: before any lockstep input was exchanged it simply takes the old one's place; mid-match the session cannot be resumed (the new game knows nothing of it): the old side ends with `peer_restarted`, the new one is refused (REJECT -> `rejected`) instead of hanging in the handshake |
+
+**When a session cannot go on** (`T5_NET_ON_LOST=exit`, the default) the match
+ends there, nobody plays on against an idle opponent: the result file gets
+`"winner": null` and the reason (unless this match's result was already
+written -- an opponent leaving after the match does not undo it), the peer is
+told (BYE), and the game closes with exit code **3** (peer lost: `peer_quit`,
+`peer_timeout`, `peer_stalled`, `peer_restarted`), **4** (no session:
+`no_peer`, `rejected`, `start_timeout`, `bind_failed`) or **5**
+(`build_mismatch`). The log line the launcher looks for is `peer lost
+(<reason>)` / `cannot connect (<reason>)`. If the main thread is blocked
+somewhere else for 8 s, the network thread ends the session itself.
+`T5_NET_ON_LOST=idle` keeps the old behaviour (result file written, then the
+peer's player idles).
+
+**Speed.** Every 600 lockstep frames the log has `speed: X fps, this PC Y fps
+without the waits for the peer` -- Y is this PC's own speed (the launcher
+reports it to the lobby, which warns before a match with a slow PC and keeps
+PCs below `T5L_MIN_FPS` out of ranked; docs/RANKED.md).
 
 ## What had to be made deterministic
 
@@ -146,6 +220,25 @@ Dragunov, two rounds, P2 wins 2-0, back to character select). Evidence in
   apart) meets at the barrier and runs; it only stays in sync if the two games
   are in the same state at that frame, which is the direct-fight mode's job.
 
+**Hardening (2026-10-17, branch netplay-hardening).** The netplay QA agent's
+impairment proxy and runners (build/nq/tools: netem.py, nqrun.py, bootrace.py),
+direct fight Lili vs Dragunov, two instances on this PC, before = the QA runs in
+build/nq/runs, after = build/nh/runs:
+
+| Scenario | Before | After |
+|---|---|---|
+| clean, 10 % loss, burst loss, 50+-30 ms reordered, 4 x 200 ms and 3 x 1 s outages | in sync | in sync, both result files identical (winner, score, frames, hash), desync 0 |
+| rematch in the same games (5 % loss, 20+-10 ms) | 50 mismatching frames at the 2nd stage select | 0 mismatching frames over 25,799; match 2's result names match 2 |
+| NAT rebinding mid-fight | both stall 30 s, play on alone, 2,060 mismatching frames | host follows the new address, no stall, finished in sync |
+| 12 s outage, `T5_NET_TIMEOUT=10` | both play on alone, 4,816 mismatching frames | both end after 10 s: `peer_timeout`, exit 3 |
+| 12 s outage, `T5_NET_TIMEOUT=20` | -- | 12 s pause, then finished in sync |
+| other build | both frozen at boot | both refuse in < 1 s: `build_mismatch`, exit 5 |
+| joiner restarted mid-fight | handshake, then deadlock | old side `peer_restarted` (exit 3), new joiner `rejected` (exit 4) |
+| joiner restarted while booting | -- | the new joiner takes over, match in sync |
+| host killed | joiner plays on alone | joiner ends after 20 s: `peer_timeout`, exit 3 |
+| `T5_FIGHT=...,random` | two different stages, every frame mismatching | stage from the seed on both, in sync |
+| boot take-over (boot mode, no input, 3 pairs at a time) | ~9 % at frame 1, mostly deadlocked (QA); 1 of 50 boots at frame 3, desync from frame 0 (same harness, main build) | 200 boots: all at frame 2 on both sides, no hang, no mismatch |
+
 ## Limits and next steps
 
 - **Menu transitions are not fully deterministic.** Picking a mode or skipping
@@ -164,9 +257,9 @@ Dragunov, two rounds, P2 wins 2-0, back to character select). Evidence in
   state; the regions above are where to start, but a full snapshot also needs
   the heap objects the fighters point to (animation state) and the sound/
   effect side effects of re-simulated frames must be suppressed.
-- `T5_NET_ROUNDS` is not applied: 0x1008EBD0 holds 2 during a default match but
-  writing it does not change when the game ends the match; the real setting is
-  elsewhere (options block, to be found).
+- `T5_NET_ROUNDS` is written to the battle config's rounds-to-win byte
+  (0x1008EBD4, found by the direct-fight work) at every sync point of a VS
+  game, so two saves with different options play the same match length.
 - The memory addresses are for NPUB30009 v01.00 only.
 - The hash skip list was built from a handful of Lili-vs-Dragunov matches;
   other characters/stages may show more cosmetic noise (log with

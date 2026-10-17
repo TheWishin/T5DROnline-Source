@@ -84,6 +84,7 @@ class LobbyClient:
         self.server_ip = None
         self.server_rtt = None
         self.connected = False
+        self.perf_fps = None         # this PC's sustained game speed (last match), sent to the server
 
         self._loop = None
         self._thread = None
@@ -359,7 +360,8 @@ class LobbyClient:
                              peer=peer, path=msg["path"], rtt_ms=msg.get("rtt_ms", 0.0),
                              jitter_ms=msg.get("jitter_ms", 0.0), delay=msg.get("delay", 3),
                              rounds=msg.get("rounds", 3), ranked=msg.get("ranked", False),
-                             opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0))
+                             opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0),
+                             key=str(msg.get("key") or ""))
         if self.handover == "share" and gs.dup is not None:
             ticket._dup_socket = gs.dup
             gs.dup = None
@@ -513,6 +515,8 @@ class LobbyClient:
             self.session = msg.get("session")
         self.recovery_codes = r.get("recovery_codes")
         self._kicked = False
+        if self.perf_fps:
+            await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
         await self._measure_server()
         self._start_keepalive()
         return self.me
@@ -589,6 +593,20 @@ class LobbyClient:
 
     def set_char(self, char):
         return self._call({"t": "set_char", "char": char})
+
+    def report_perf(self, fps):
+        """This PC's sustained game speed (frames per second, from the last match): the server
+        warns both players before a match with a slow PC and keeps PCs below its minimum out of
+        ranked (lockstep plays at the slower PC's speed). Remembered and re-sent after a login."""
+        try:
+            fps = round(float(fps), 1)
+        except (TypeError, ValueError):
+            return
+        if not 0 < fps < 1000:
+            return
+        self.perf_fps = fps
+        if self.me is not None and self.connected:
+            self._fire({"t": "perf", "fps": fps})
 
     def quick_match(self, char=None):
         msg = {"t": "queue", "mode": "quick"}

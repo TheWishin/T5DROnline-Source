@@ -155,9 +155,9 @@ def play(a, addr, clients):
                 env["PS3_HDD0_ROOT"] = os.path.join(vfs, "dev_hdd0").replace("\\", "/")
                 env["PS3_TITLE"] = f"T5DR two players: P{t.slot + 1}"
                 env["T5_NET_LOG"] = os.path.join(d, "frames.log")
-                env["T5_NET_XINPUT"] = "-1" if a.no_input else str(t.slot)
                 if a.no_input:
-                    env["T5_NET_KEYBOARD"] = "0"
+                    # no local devices at all (netplay reads port 1 through the runtime's controls)
+                    env["T5_NET_LOCALPAD"] = "0"
                     env["PAD_NO_KEYBOARD"] = "1"
                 cmd = [os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")]
                 si = None

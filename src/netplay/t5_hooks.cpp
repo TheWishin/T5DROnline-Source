@@ -40,7 +40,14 @@
  *     RNG seeding functions.
  *
  * Options and diagnostics (all optional):
- *   T5_NET_RESULT_FILE  write {"winner":0|1|null,"score":[p1,p2]} when a match ends
+ *   T5_NET_RESULT_FILE  {"match":id,"winner":0|1|null,"score":[p1,p2],"desync":n,"frames":n,
+ *                    "hash":"..","fps":x} when a match ends; with "reason" when it could not
+ *                    be played to the end (peer lost, no peer, other build)
+ *   T5_NET_ON_LOST   exit (default): a failed or lost session ends the match -- result file,
+ *                    then the game closes (exit code 3 peer lost, 4 no connection, 5 other
+ *                    build); idle: the old behaviour, play on with the peer's player idle
+ *   T5_NET_ROUNDS    rounds to win, written to the battle config (0x1008EBD4) at every sync
+ *                    point of a VS game (menu-driven play; direct fight takes T5_FIGHT's)
  *   T5_NET_DRAIN     semaphore ids of loader threads to drain (default "8,10")
  *   T5_NET_HASH      regions hashed into the per-frame state hash,
  *                    "addr:len,addr:len" (hex). Default: kDefaultHash.
@@ -119,6 +126,14 @@ constexpr uint32_t kFnRingAdvance = 0x12071C;
 constexpr uint32_t kFnTickTail    = 0x13F91C;
 constexpr uint32_t kFnMtSeed      = 0x066784;    /* init_genrand(s): Mersenne Twister, state 0x10095168 */
 constexpr uint32_t kFnSrand       = 0x36921C;    /* srand(s): the C library rand() (0x369228), state 0x1074F218 */
+constexpr uint32_t kConfig        = 0x1008EBAC;  /* battle config: +0 game type (4 = VS BATTLE) */
+constexpr uint32_t kRoundsToWin   = 0x1008EBD4;  /* battle config +0x28: rounds to win (u8) */
+/* The lwmutex the main thread holds across its per-frame wait (it guards the
+ * frame clock 0x106D4D88; the keyread tick takes it too). sys_lwmutex_t as the
+ * runtime models it: owner (guest tid) at +0, recursion count at +0xC. */
+constexpr uint32_t kFrameLwm      = 0x106D4D00;
+constexpr uint32_t kFnLwmLock     = 0x3C6F00;    /* sysPrxForUser import stubs: sys_lwmutex_lock(lwm, timeout) */
+constexpr uint32_t kFnLwmUnlock   = 0x3C6F20;    /*                             sys_lwmutex_unlock(lwm) */
 
 constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
@@ -165,6 +180,9 @@ std::atomic<bool> g_swallow{ false };         /* vblank wakes of keyread are dro
 std::atomic<uint32_t> g_kr_enter{ 0 }, g_kr_wake{ 0 };
 std::atomic<int> g_kr_in_wait{ 0 };
 std::atomic<uint32_t> g_swallowed{ 0 };
+std::atomic<int> g_kr_posting{ 0 };           /* keyread posts between the swallow check and the real post */
+uint32_t g_takeover_frame = 0;                 /* main loop frame of the take-over (the swallow frame + 1) */
+bool g_takeover_test = false;                  /* T5_NET_TAKEOVER_TEST=1: always hand the frame lock over once */
 HANDLE g_kr_event = nullptr;                  /* set when keyread re-enters its wait */
 uint32_t g_frame = 0;                          /* next lockstep frame (main thread only) */
 uint32_t g_scenes = 0;                         /* scene changes so far */
@@ -402,6 +420,10 @@ uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
     return ppu_guest_call_ct(code, kTOC, a0, 0, 0, 0, 0, 0, 0, 0);
 }
+uint64_t gcall2(uint32_t code, uint64_t a0, uint64_t a1)
+{
+    return ppu_guest_call_ct(code, kTOC, a0, a1, 0, 0, 0, 0, 0, 0);
+}
 
 /* One keyread tick (the body of the loop at 0x120BE0..0x120C90), run on the
  * MAIN thread at the top of its frame. It cannot be handed to the keyread
@@ -442,6 +464,54 @@ bool workers_idle()
     return true;
 }
 
+/* The keyread thread is parked for good: its wakes are swallowed, no post is
+ * half-way through (g_kr_posting), it sits in its semaphore wait (our wrapper
+ * says so) and the semaphore holds no token while a waiter is blocked on it.
+ * With posts stopped the token count can only fall, so "0 tokens, a waiter"
+ * stays true. "In the wait" alone is not enough: a vblank post just before the
+ * swallow has already released the thread while it still reads as waiting --
+ * that was the boot race (take-over at frame 1, then the thread's own tick
+ * running beside ours: lwmutex 0x10752088 vs 0x106D4D00 deadlock). */
+bool keyread_parked()
+{
+    const uint32_t kr = rd32(kKeyreadSemPtr);
+    if (!kr || kr > 256 || !g_swallow.load() || g_kr_posting.load() != 0 || !g_kr_in_wait.load()) return false;
+    const np_sys_semaphore_info& s = g_sys_semaphores[kr - 1];
+    if (!s.active) return false;
+    const int32_t v = *(volatile const int32_t*)&s.value;
+    const int32_t w = *(volatile const int32_t*)&s.waiters;
+    return v == 0 && w > 0 && g_kr_in_wait.load();
+}
+
+/* Called at the take-over frame (the frame after the swallow, on both PCs).
+ * Usually the keyread thread finished its last tick during the previous frame
+ * and is parked. If not (a loaded PC), its tick is blocked on the lwmutex at
+ * 0x106D4D00, which this thread holds across its frame wait: hand the lock
+ * over for a moment through the game's own sys_lwmutex calls, let the tick
+ * finish and park, take the lock back. Never runs a tick beside the thread's. */
+bool ensure_keyread_parked(ppu_context* ctx)
+{
+    const bool parked0 = keyread_parked();
+    if (parked0 && !g_takeover_test) return true;
+    const uint32_t self = ctx->thread_id ? (uint32_t)ctx->thread_id : 0x7FFFFFFEu;
+    uint32_t recur = 0;
+    if (rd32(kFrameLwm + 0x0) == self) {
+        recur = rd32(kFrameLwm + 0xC);
+        for (uint32_t i = 0; i < recur; i++) gcall(kFnLwmUnlock, kFrameLwm);
+    }
+    const ULONGLONG t0 = GetTickCount64();
+    while (!keyread_parked() && GetTickCount64() - t0 < 5000) WaitForSingleObject(g_kr_event, 2);
+    const bool parked = keyread_parked();
+    if (recur) {
+        gcall2(kFnLwmLock, kFrameLwm, 0);
+        if (recur > 1) wr32(kFrameLwm + 0xC, recur);
+    }
+    np::note("take-over: the keyread thread was %s at the take-over frame; %s after %llu ms%s",
+             parked0 ? "parked" : "still busy", parked ? "parked" : "STILL NOT PARKED",
+             (unsigned long long)(GetTickCount64() - t0), recur ? " (frame lock handed over and taken back)" : "");
+    return parked;
+}
+
 uint64_t g_drain_us = 0, g_drain_max_us = 0, g_drain_waits = 0;
 
 void drain_stats(uint32_t f)
@@ -480,32 +550,182 @@ void drain_workers(uint32_t f)
     }
 }
 
-/* T5_NET_RESULT_FILE: {"winner":0|1|null,"score":[p1,p2]} once a match is
- * decided (the lobby reports it). From the round state block at 0x1008EBD0:
- * +0xA/+0xB count the rounds P1/P2 won; +0x5 stays 0 through every round of a
- * match and turns non-zero when the match is over (and back to 0 when the next
- * one starts). Found by dumping a whole two-round match every 300 frames. */
+/* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). From the
+ * round state block at 0x1008EBD0: +0xA/+0xB count the rounds P1/P2 won; +0x5
+ * stays 0 through every round of a match and turns non-zero when the match is
+ * over (and back to 0 when the next one starts). Found by dumping a whole
+ * two-round match every 300 frames.
+ *
+ *   {"match": "<lobby match id>", "winner": 0|1|null, "score": [p1, p2],
+ *    "desync": <mismatching frames since this match's sync point>, "frames": <played>,
+ *    "hash": "<state hash of the deciding frame>", "fps": <this PC's own speed>}
+ *
+ * "match" lets the launcher refuse a file left over from another match. The
+ * file is written once the deciding frame's hash has been compared with the
+ * peer's (a few frames later), so "desync" covers the whole match; "hash" is the
+ * same on both PCs when they agree. A match that cannot be played to the end
+ * gets "reason" (peer_quit, peer_timeout, peer_stalled, start_timeout,
+ * peer_restarted, no_peer, build_mismatch, rejected, bind_failed) and winner null. */
 std::string g_result_file;
+std::string g_match_id;                       /* T5_NET_MATCH, then t5_netplay_set_match() */
+std::string g_last_result_match = "\x01";     /* match id of the last result written */
+CRITICAL_SECTION g_result_cs;
 bool g_result_done = false;
+bool g_match_running = false;                 /* between a match's sync point and its end */
+uint32_t g_match_f0 = 0;                      /* lockstep frame of that sync point */
 uint32_t g_matches = 0;
+struct PendingResult { bool on; uint32_t f; uint8_t w1, w2; uint64_t hash; bool have_hash; ULONGLONG t; };
+PendingResult g_pending = {};
 
-void watch_match(uint32_t f)
+std::string json_id(const std::string& id)
 {
-    const uint8_t over = rd8(kMatchOver), w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
-    if (!over) { g_result_done = false; return; }
-    if (g_result_done || (w1 == 0 && w2 == 0)) return;
-    g_result_done = true;
-    g_matches++;
-    const char* winner = w1 > w2 ? "0" : w2 > w1 ? "1" : "null";
-    np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
-             *winner == 'n' ? "none (draw)" : (*winner == '0' ? "P1" : "P2"));
+    if (id.empty()) return "null";
+    std::string out = "\"";
+    for (char c : id) out += (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_';
+    return out + "\"";
+}
+
+void write_result(const char* winner, unsigned w1, unsigned w2, const char* reason, uint32_t frames,
+                  bool have_hash, uint64_t hash)
+{
+    EnterCriticalSection(&g_result_cs);
+    const std::string id = g_match_id;
+    g_last_result_match = id;
+    LeaveCriticalSection(&g_result_cs);
+    char buf[640];
+    int n = snprintf(buf, sizeof buf, "{\"match\": %s, \"winner\": %s, \"score\": [%u, %u]", json_id(id).c_str(),
+                     winner, w1, w2);
+    if (reason) n += snprintf(buf + n, sizeof buf - n, ", \"reason\": \"%s\"", reason);
+    n += snprintf(buf + n, sizeof buf - n, ", \"desync\": %u, \"frames\": %u", np::match_mismatches(), frames);
+    if (have_hash) n += snprintf(buf + n, sizeof buf - n, ", \"hash\": \"%016llx\"", (unsigned long long)hash);
+    const double fps = np::local_fps();
+    if (fps > 0) n += snprintf(buf + n, sizeof buf - n, ", \"fps\": %.1f", fps);
+    snprintf(buf + n, sizeof buf - n, "}");
+    np::note("result: %s", buf);
     if (g_result_file.empty()) return;
     const std::string tmp = g_result_file + ".tmp";
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
-        fprintf(fp, "{\"winner\": %s, \"score\": [%u, %u]}", winner, w1, w2);
+        fputs(buf, fp);
         fclose(fp);
         MoveFileExA(tmp.c_str(), g_result_file.c_str(), MOVEFILE_REPLACE_EXISTING);
     }
+}
+
+/* A match begins at lockstep frame f (frame 0, or a later sync point). */
+void match_begins(uint32_t f)
+{
+    g_match_f0 = f;
+    g_match_running = true;
+    g_pending.on = false;
+    np::match_begin(f);
+}
+
+void flush_result(bool now)
+{
+    if (!g_pending.on) return;
+    const PendingResult& p = g_pending;
+    if (!now && np::checked_through() <= p.f && GetTickCount64() - p.t < 3000) return;
+    g_pending.on = false;
+    const char* winner = p.w1 > p.w2 ? "0" : p.w2 > p.w1 ? "1" : "null";
+    write_result(winner, p.w1, p.w2, nullptr, p.f - g_match_f0, p.have_hash, p.hash);
+}
+
+void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
+{
+    const uint8_t over = rd8(kMatchOver), w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+    if (!over) {
+        if (g_result_done) g_match_running = true;   /* menu-driven play: the next match is on */
+        g_result_done = false;
+        flush_result(false);
+        return;
+    }
+    if (g_result_done || (w1 == 0 && w2 == 0)) { flush_result(false); return; }
+    g_result_done = true;
+    g_match_running = false;
+    g_matches++;
+    np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
+             w1 == w2 ? "none (draw)" : (w1 > w2 ? "P1" : "P2"));
+    g_pending = { true, f, w1, w2, hash, have_hash, GetTickCount64() };
+    flush_result(false);
+}
+
+/* ---- the end of a session that cannot go on ---------------------------------
+ * A failed handshake or a lost peer ends the match: the result file says why
+ * (unless this match's result is already out), the peer is told, and the game
+ * closes with an exit code the launcher understands. T5_NET_ON_LOST=idle keeps
+ * the old behaviour (the peer's player idles) after writing the result. */
+bool g_on_lost_idle = false;
+bool g_lost_written = false;
+std::atomic<bool> g_ending{ false };
+
+int exit_code_for(const char* reason)
+{
+    if (!strcmp(reason, "build_mismatch")) return 5;
+    if (!strcmp(reason, "no_peer") || !strcmp(reason, "rejected") || !strcmp(reason, "start_timeout") ||
+        !strcmp(reason, "bind_failed")) return 4;
+    return 3;
+}
+
+void write_end_result(const char* reason)
+{
+    flush_result(true);
+    EnterCriticalSection(&g_result_cs);
+    const bool already = g_last_result_match == g_match_id && !g_match_running;
+    LeaveCriticalSection(&g_result_cs);
+    if (already) return;               /* this match's result is out; nothing to add */
+    const uint32_t frames = g_frame > g_match_f0 ? g_frame - g_match_f0 : 0;
+    write_result("null", rd8(kWinsP1), rd8(kWinsP2), reason, frames, false, 0);
+}
+
+void end_session(const char* reason, bool from_network_thread = false)
+{
+    if (g_ending.exchange(true)) {
+        /* the other thread is ending it: the main thread must not play on meanwhile */
+        if (!from_network_thread) for (;;) Sleep(1000);
+        return;
+    }
+    write_end_result(reason);
+    const int code = exit_code_for(reason);
+    np::note("the session cannot go on (%s): the game closes (exit code %d)", reason, code);
+    np::bye();
+    fflush(stdout); fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+}
+
+/* The network thread's fallback when the main thread does not get to
+ * check_session() (blocked outside the lockstep waits). */
+void stuck_handler(const char* reason)
+{
+    np::note("the main thread did not end the session in time; ending it from the network thread");
+    end_session(reason, true);
+}
+
+/* Main thread, every frame (before and during lockstep). */
+void check_session()
+{
+    const char* r = np::failure();
+    if (!r) r = np::lost_reason();
+    if (!r) return;
+    if (!g_on_lost_idle) { end_session(r); return; }
+    if (!g_lost_written) {
+        g_lost_written = true;
+        write_end_result(r);
+        np::note("T5_NET_ON_LOST=idle: playing on with the peer's player idle");
+    }
+}
+
+/* T5_NET_ROUNDS (menu-driven VS): the rounds-to-win byte both PCs use. The
+ * game copies it from each PC's own options when VS starts, so two saves with
+ * different settings would play different matches. */
+int g_rounds = 0;
+bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE: the direct-fight code sets the rounds */
+void apply_rounds()
+{
+    if (g_rounds <= 0 || g_directfight || rd32(kConfig) != 4) return;
+    const uint8_t was = rd8(kRoundsToWin);
+    if (was == (uint8_t)g_rounds) return;
+    wr8(kRoundsToWin, (uint8_t)g_rounds);
+    np::note("frame %u: rounds to win %u -> %d (T5_NET_ROUNDS)", g_frame, was, g_rounds);
 }
 
 /* Both random generators the game draws from, seeded the same on both PCs. */
@@ -518,23 +738,50 @@ void reseed(uint32_t seed)
 void on_frame_start(ppu_context* ctx)
 {
     bool fresh_start = false;
+    check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {
         g_boot_frames++;
         if (g_start_mode == StartMode::External && !g_start_requested.load()) return;
         if (g_start_mode == StartMode::Frame && g_boot_frames < g_start_frame) return;
-        /* Take over once the keyread thread exists and is parked in its wait
-         * (not half-way through a tick of its own). It usually is not: its
-         * tick blocks on the lwmutex this thread holds right now. So stop
-         * its wakes first; it parks after the tick in flight. */
+        /* The take-over, at the same frame on both PCs: the frame the start is
+         * due (boot: the first frame with a keyread thread; external: the frame
+         * t5_netplay_start() was called) stops the keyread thread's vblank
+         * wakes; the NEXT frame takes over. A wake posted just before the stop
+         * (this frame's vblank) still runs one tick of the thread's own -- it
+         * blocks on the lwmutex this thread holds and finishes once the frame
+         * lets go of it -- and the thread parks for good after it. At the
+         * take-over frame ensure_keyread_parked() checks that (and, should the
+         * tick still be pending on a loaded PC, hands the lock over until it is
+         * done), so the thread's tick never runs beside ours. */
         if (!rd32(kKeyreadSemPtr)) return;
-        g_swallow = true;
-        if (!g_kr_in_wait.load()) return;
+        if (!g_swallow.load()) {
+            g_swallow = true;
+            while (g_kr_posting.load() != 0) YieldProcessor();   /* a post that missed the flag is through */
+            g_takeover_frame = g_boot_frames + 1;
+            /* Diagnostics: what the old rule ("in its wait") would have done
+             * here -- taking over now while a wake is already on its way is the
+             * boot race (QA run e_bootdeadlock_1). */
+            const bool in_wait = g_kr_in_wait.load() != 0, parked = keyread_parked();
+            const np_sys_semaphore_info& ks = g_sys_semaphores[(rd32(kKeyreadSemPtr) - 1) & 0xFF];
+            np::note("main loop frame %u: keyread wakes stopped (keyread %s; tokens %d, waiters %d)%s", g_boot_frames,
+                     parked ? "parked" : in_wait ? "flagged in its wait, but released" : "in a tick",
+                     *(volatile const int32_t*)&ks.value, *(volatile const int32_t*)&ks.waiters,
+                     in_wait && !parked ? " -- the old rule would have taken over here (the boot race)" : "");
+            return;
+        }
+        if (g_boot_frames < g_takeover_frame) return;
+        if (!ensure_keyread_parked(ctx)) {
+            np::note("main loop frame %u: the keyread thread does not park -- take-over postponed (the two PCs "
+                     "may now start a frame apart)", g_boot_frames);
+            return;
+        }
         g_main_tid = ctx->thread_id;
         g_active = true;
         g_start_requested = false;
         fresh_start = g_start_mode != StartMode::Boot;
-        np::note("keyread thread is parked (sem %u); lockstep from here (main loop frame %u since boot), "
-                 "main thread tid %llu", rd32(kKeyreadSemPtr), g_boot_frames, (unsigned long long)g_main_tid);
+        np::note("keyread thread is parked (sem %u); lockstep from here (main loop frame %u since boot, wakes "
+                 "stopped at %u), main thread tid %llu", rd32(kKeyreadSemPtr), g_boot_frames, g_takeover_frame - 1,
+                 (unsigned long long)g_main_tid);
     }
     if (ctx->thread_id != g_main_tid) {
         static int n = 0;
@@ -582,6 +829,8 @@ void on_frame_start(ppu_context* ctx)
             }
             g_scenes++;
             reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+            apply_rounds();
+            if (resync) match_begins(nf);
             rb::net::scene_change(nf);
             char t[64];
             snprintf(t, sizeof t, "scene %u", g_scenes);
@@ -619,6 +868,8 @@ void on_frame_start(ppu_context* ctx)
         f = nf;
         g_scenes++;
         reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+        apply_rounds();
+        if (resync) match_begins(f);   /* the next match in the same process: its desync count starts here */
         char t[64];
         snprintf(t, sizeof t, "scene %u", g_scenes);
         np::log_extra(f, t);
@@ -633,6 +884,8 @@ void on_frame_start(ppu_context* ctx)
         const uint32_t seed = np::match_seed();
         reseed(seed);
         np::note("game RNGs reseeded with 0x%08X", seed);
+        apply_rounds();
+        match_begins(0);
     }
     std::string parts = "H";
     g_frame_hashing = f;
@@ -657,7 +910,8 @@ void on_frame_start(ppu_context* ctx)
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();
-    watch_match(f);
+    watch_match(f, true, h);
+    check_session();   /* the peer may have been lost while we waited for its input */
     char extra[128];
     snprintf(extra, sizeof extra, "R%u W%u S%u T%llu V%llu", rd32(kRingReadIdx), rd32(kRingWriteIdx),
              g_swallowed.load(), (unsigned long long)rd64(kFrameClock), (unsigned long long)rd64(kFrameClock + 8));
@@ -749,9 +1003,19 @@ int64_t w_sem_post(ppu_context* ctx)
         const uint32_t t = (uint32_t)ctx->thread_id;
         if (t < 64 && id < 64) g_semstat[t][id].posts++;
     }
-    if (g_swallow && id == rd32(kKeyreadSemPtr) && rd32(kKeyreadQuit) == 0) {
-        g_swallowed++;
-        return 0;   /* the vblank's keyread wake: the main loop drives keyread now */
+    const uint32_t kr = rd32(kKeyreadSemPtr);
+    if (kr && id == kr) {
+        /* g_kr_posting brackets the check and the real post, so the take-over
+         * can wait out a post that read the flag just before it was set. */
+        g_kr_posting.fetch_add(1);
+        if (g_swallow.load() && rd32(kKeyreadQuit) == 0) {
+            g_swallowed++;
+            g_kr_posting.fetch_sub(1);
+            return 0;   /* the vblank's keyread wake: the main loop drives keyread now */
+        }
+        const int64_t r = g_orig_post(ctx);
+        g_kr_posting.fetch_sub(1);
+        return r;
     }
     if (rb::net::bypass() && id == rd32(kFrameSemPtr)) return 0;   /* re-simulating: vblank posts must not pile up */
     return g_orig_post(ctx);
@@ -795,9 +1059,19 @@ void h_cellPadInit(ppu_context* ctx)
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
     { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
-    if (const char* r = getenv("T5_NET_ROUNDS"))
-        np::note("T5_NET_ROUNDS=%s is not applied yet: the match length is the game's own setting (first to 2 by default)", r);
+    InitializeCriticalSection(&g_result_cs);
+    if (const char* m = getenv("T5_NET_MATCH")) g_match_id = m;
+    { const char* f1 = getenv("T5_FIGHT"); const char* f2 = getenv("T5_FIGHT_FILE");
+      g_directfight = (f1 && *f1) || (f2 && *f2); }
+    if (const char* r = getenv("T5_NET_ROUNDS")) {
+        g_rounds = atoi(r);
+        if (g_rounds < 1 || g_rounds > 5) g_rounds = 0;
+        if (g_rounds && !g_directfight) np::note("rounds to win: %d (T5_NET_ROUNDS, written at every sync point of a VS game)", g_rounds);
+    }
     if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
+    { const char* o = getenv("T5_NET_ON_LOST"); g_on_lost_idle = o && !_stricmp(o, "idle"); }
+    { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }
+    if (!g_on_lost_idle) np::set_stuck_handler(stuck_handler);
     if (const char* st = getenv("T5_NET_START")) {
         if (!_stricmp(st, "external")) g_start_mode = StartMode::External;
         else if (!_strnicmp(st, "frame:", 6)) { g_start_mode = StartMode::Frame; g_start_frame = (uint32_t)atoi(st + 6); }
@@ -906,4 +1180,20 @@ extern "C" int t5_netplay_lockstep_active(void)
 extern "C" int t5_netplay_local_slot(void)
 {
     return np::local_slot();
+}
+
+extern "C" void t5_netplay_set_match(const char* id)
+{
+    if (!id || !np::enabled()) return;
+    EnterCriticalSection(&g_result_cs);
+    if (g_match_id != id) np::note("next match: %s", id);
+    g_match_id = id;
+    LeaveCriticalSection(&g_result_cs);
+}
+
+extern "C" unsigned t5_netplay_match_seed(void)
+{
+    if (!np::enabled()) return 0;
+    np::connect();
+    return np::match_seed();
 }

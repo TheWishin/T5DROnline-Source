@@ -74,6 +74,33 @@ PadInput poll_now(int player);
 
 void  note(const char* fmt, ...);
 
+/* ---- session health (docs/NETPLAY.md "Connection problems") ---------------
+ * The handshake runs in the background from init() on (boot), so a missing or
+ * mismatched peer is known long before the match starts.
+ *   failure()      non-null once connecting has failed for good: "no_peer" (no
+ *                  answer within T5_NET_CONNECT_TIMEOUT), "build_mismatch",
+ *                  "rejected" (the peer is in another session)
+ *   lost_reason()  non-null once a connected peer is gone: "peer_quit",
+ *                  "peer_timeout" (silent for T5_NET_TIMEOUT), "peer_stalled"
+ *                  (alive but no input for T5_NET_TIMEOUT), "start_timeout"
+ *                  (never reached the start of the match), "peer_restarted"
+ * Either way the lockstep waits return (neutral peer input); the hooks end the
+ * match. */
+const char* failure();
+const char* lost_reason();
+bool  connected();
+/* Per match: mismatching frames counted from frame f on (the match's sync
+ * point), the frames whose hashes were compared, this PC's own speed. */
+void     match_begin(uint32_t f);
+uint32_t match_mismatches();
+uint32_t checked_through();          /* hashes compared for every frame < this */
+double   local_fps();                /* frames per second since match_begin(), time waiting for the peer left out */
+void     bye();                      /* tell the peer we are leaving (BYE, 3x) */
+/* Called (once) from the network thread when the session failed or the peer
+ * was lost and the main thread did not act on it within a few seconds (it may
+ * be blocked outside the lockstep waits). */
+void     set_stuck_handler(void (*fn)(const char* reason));
+
 /* ---- rollback mode (src/rollback/rb_net.cpp) ------------------------------
  * The same transport, rings, redundancy and desync check as the lockstep,
  * without the per-frame block: the rollback loop decides when to wait. */
@@ -125,3 +152,11 @@ extern "C" int  t5_netplay_enabled(void);
  * its own. Before lockstep both ports are injected locally. */
 extern "C" int  t5_netplay_lockstep_active(void);
 extern "C" int  t5_netplay_local_slot(void);     /* 0 = P1 (host), 1 = P2 (join) */
+/* The lobby's id of the match about to start (direct fight: from the fight line's
+ * match=<id>); goes into the result file so the launcher never takes a result
+ * of one match for another. T5_NET_MATCH until set. */
+extern "C" void t5_netplay_set_match(const char* id);
+/* The seed both PCs share for this session (T5_NET_SEED, else the host's
+ * session id; waits for the handshake). Direct fight derives a stage from it
+ * when none was given. */
+extern "C" unsigned t5_netplay_match_seed(void);

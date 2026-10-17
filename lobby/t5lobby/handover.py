@@ -19,6 +19,9 @@ Passed for the game side to pick up (not read yet; see docs/ONLINE.md):
     T5_NET_SEED         32-bit value both sides share (the netplay may use it as match seed)
     T5_NET_BUILD        build id both players share (could go into the netplay HELLO to refuse a
                         mismatched peer on direct-IP connections that bypass the lobby)
+    T5_NET_KEY          the match's secret (from the server, never sent over UDP): netplay
+                        authenticates every packet with it, so only the opponent's game can
+                        take part (and follow it to a new address after NAT rebinding)
     T5_NET_RESULT_FILE  where the game writes {"winner": 0|1|null, "score": [p1, p2]} at the end
     T5_NET_SOCKET_FILE  (handover="share" only) file that receives the duplicated socket, see below
 
@@ -52,6 +55,7 @@ class MatchTicket:
     seed: int = 0
     result_file: str = ""
     timeout: int = 20
+    key: str = field(default="", repr=False)
     _dup_socket: object = field(default=None, repr=False)
 
     def game_env(self, result_file=None):
@@ -68,6 +72,8 @@ class MatchTicket:
             "T5_NET_SEED": str(self.seed),
             "T5_NET_BUILD": self.build,
         }
+        if self.key:
+            env["T5_NET_KEY"] = self.key
         rf = result_file or self.result_file
         if rf:
             env["T5_NET_RESULT_FILE"] = rf

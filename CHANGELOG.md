@@ -3,8 +3,18 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## Unreleased
+## v0.1.2-preview (2026-10-17)
 
+**Use this version for online play.** 0.1.0 and 0.1.1 could not play online:
+their zip lacked part of the online code, and match results were not counted.
+
+- **Online works from the zip.** The prebuilt game program now contains netplay
+  and the direct start into the fight. A new check in the release test fails if
+  they are ever missing again.
+- **Match results count.** The winner is read correctly, so quick and ranked
+  matches are confirmed instead of void (14 of 14 test matches, both winners).
+- **Windows Firewall:** `TROUBLESHOOTING.md` has a new "Online play" section:
+  what to click, where the prompt hides, what the status messages mean.
 - **Tried on real hardware** (2026-10-17): an Xbox pad and an arcade stick, every
   input came through, the game ran smoothly.
 - Launcher: use it with a pad or stick (A / Cross accepts and searches, B / Circle

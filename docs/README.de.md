@@ -6,8 +6,8 @@ ist in Arbeit.
 
 English: [../README.md](../README.md)
 
-**Test-Release 0.1.1-preview (2026-10-17).** Lade
-`T5DR-Online-0.1.1-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Test-Release 0.1.2-preview (2026-10-17).** Lade
+`T5DR-Online-0.1.2-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Test-Version. Rechne mit Fehlern.** Bitte melde sie (siehe "Fehler melden").
 

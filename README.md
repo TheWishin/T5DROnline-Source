@@ -4,8 +4,8 @@ Tekken 5: Dark Resurrection (PS3, PlayStation Network release) running natively
 on Windows. It is recompiled, not emulated. Online play between friends is
 being built.
 
-**Test release 0.1.1-preview (2026-10-17).** Download
-`T5DR-Online-0.1.1-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Test release 0.1.2-preview (2026-10-17).** Download
+`T5DR-Online-0.1.2-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 <!-- players:start -->
 **Test release. Expect bugs.** Please report them (see "Bug reports" below).

@@ -38,7 +38,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import fighters, proto, ranks, servers
+from . import fighters, padmap, padnav, proto, ranks, servers
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .match_driver import MatchDriver, fps_from_logs
@@ -60,6 +60,8 @@ REASON_TEXT = {"desync": "the two games went out of sync", "too_short": "too sho
                "crash_repeat": "repeated crashes count as losses", "early_quit_repeat": "repeated early quits",
                "no_report_repeat": "repeated missing reports", "score_mismatch": "scores differed",
                "no_result": "the fight ended without a winner"}
+PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
+PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
 
 
 def _work(results, key, fn, args):
@@ -85,6 +87,17 @@ def rank_text(p):
     if p.get("guest"):
         return "guest"
     return ranks.label(p)
+
+
+def _controls_path_for(settings):
+    """The controls.ini the game will read (docs/controls.ini), for the controller buttons. Takes the
+    launcher's settings only, never the launcher itself: the pad thread calls this, and no Tk object
+    may be reachable from it."""
+    try:
+        env = settings.env_overrides()
+    except Exception:       # noqa: BLE001 -- a settings object without it: the process environment only
+        env = {}
+    return padmap.find_controls_ini(getattr(settings, "out_dir", None), env)
 
 
 class OnlineTab:
@@ -120,6 +133,12 @@ class OnlineTab:
         self.lag = None                  # the last lag_check event
         self.blocks_window = None        # the "Blocked players..." dialog
         self.blocks_list = None
+        self.pad = None                  # padnav.PadNav once the tab has been shown (controller buttons)
+        self.pad_visible = self._tab_viewable      # tests replace it (their window is withdrawn)
+        self.bar_pad = {}                # controller button -> command of the bar button it presses
+        self.bar_spec = []               # (button, text, controller button) of the bar's buttons
+        self._pad_gen = -1
+        self._pad_until = 0.0            # no controller action before this (pad clock)
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -143,6 +162,7 @@ class OnlineTab:
         self.cfg["char"] = self._char_key()
         self.cfg["remember"] = bool(self.remember_var.get())
         self.cfg["strict"] = bool(self.strict_var.get())
+        self.cfg["pad"] = bool(self.pad_var.get())
         self.cfg["fingerprint"] = self.fp_var.get().strip()
         try:
             os.makedirs(os.path.dirname(self.cfg_path), exist_ok=True)
@@ -234,18 +254,23 @@ class OnlineTab:
         # --- play
         play = ttk.Frame(box)
         play.grid(row=1, column=0, sticky="we", pady=(8, 2))
-        ttk.Label(play, text="Character").pack(side="left")
+        top = ttk.Frame(play)             # character and searching; rooms and challenges below (the controller
+        top.pack(fill="x")                # button names make the row longer than the window)
+        rooms = ttk.Frame(play)
+        rooms.pack(fill="x", pady=(4, 0))
+        ttk.Label(top, text="Character").pack(side="left")
         names = ["Random"] + [f["name"] for f in self.table.selectable()]
         self.char_var = tk.StringVar(value=self.table.fighter_name(self.cfg.get("char") or fighters.RANDOM))
-        cb = ttk.Combobox(play, textvariable=self.char_var, values=names, state="readonly", width=14)
+        cb = ttk.Combobox(top, textvariable=self.char_var, values=names, state="readonly", width=14)
         cb.pack(side="left", padx=(4, 12))
         cb.bind("<<ComboboxSelected>>", lambda _e: self.on_char())
         self.char_cb = cb
         self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
-        self.strict_check = ttk.Checkbutton(play, text="Strict (ranked: +-150 rating)", variable=self.strict_var,
+        self.strict_check = ttk.Checkbutton(top, text="Strict (ranked: +-150 rating)", variable=self.strict_var,
                                             command=self._save_cfg)
         self.strict_check.pack(side="left", padx=(0, 12))
         self.actions = {}
+        self.action_text = {}
         for key, label, cmd in (("ranked", "Ranked match", lambda: self.do_queue("ranked")),
                                 ("quick", "Quick match", lambda: self.do_queue("quick")),
                                 ("cancel", "Stop searching", lambda: self.call(self.client.cancel_queue)),
@@ -253,16 +278,19 @@ class OnlineTab:
                                 ("join", "Join room", self.do_join),
                                 ("leave", "Leave room", lambda: self.call(self.client.leave_room)),
                                 ("challenge", "Challenge", self.do_challenge)):
-            b = ttk.Button(play, text=label, command=cmd, state="disabled")
+            b = ttk.Button(top if key in ("ranked", "quick", "cancel") else rooms, text=label, command=cmd,
+                           state="disabled")
             b.pack(side="left", padx=(0, 5))
             self.actions[key] = b
+            self.action_text[key] = label
 
         # --- bar (match found, rematch, questions)
         self.bar = ttk.Frame(box, padding=(8, 6))
         self.bar_text = tk.StringVar()
-        ttk.Label(self.bar, textvariable=self.bar_text, style="H2.TLabel").pack(side="left")
-        self.bar_buttons = ttk.Frame(self.bar)
+        self.bar_buttons = ttk.Frame(self.bar)          # (packed first: the buttons keep their room, the text wraps)
         self.bar_buttons.pack(side="right")
+        ttk.Label(self.bar, textvariable=self.bar_text, style="H2.TLabel", wraplength=620,
+                  justify="left").pack(side="left")
         self.match_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.match_var, style="Muted.TLabel").grid(row=3, column=0, sticky="w")
 
@@ -340,6 +368,15 @@ class OnlineTab:
         self.notice_var = tk.StringVar(value="")          # a message from the server's admin, until it ends
         ttk.Label(box, textvariable=self.notice_var, style="H2.TLabel", wraplength=700, justify="left").grid(
             row=6, column=0, sticky="w", pady=(2, 0))
+        # --- controller: A / Cross accepts, B / Circle declines (padnav.py, docs/ONLINE.md)
+        padrow = ttk.Frame(box)
+        padrow.grid(row=7, column=0, sticky="we", pady=(4, 0))
+        self.pad_var = tk.IntVar(value=1 if self.cfg.get("pad", True) else 0)
+        self.pad_check = ttk.Checkbutton(padrow, text="Use a controller here", variable=self.pad_var,
+                                         command=self._pad_toggle)
+        self.pad_check.pack(side="left")
+        self.pad_info_var = tk.StringVar(value="")
+        ttk.Label(padrow, textvariable=self.pad_info_var, style="Muted.TLabel").pack(side="left", padx=(8, 0))
         self._set_account_view(False)
 
     def _set_account_view(self, logged_in):
@@ -374,6 +411,7 @@ class OnlineTab:
             b.configure(state="normal" if me and not guest else "disabled")
         self.char_cb.configure(state="disabled" if self.set_locked else "readonly")
         self.strict_check.configure(state="normal" if me and not guest else "disabled")
+        self._pad_relabel()
 
     def _show_me(self):
         c = self.client
@@ -413,15 +451,29 @@ class OnlineTab:
                     pass
 
     def show_bar(self, text, buttons):
+        """buttons: (label, command) or (label, command, controller button): 'cross' / 'circle' is the
+        controller button that presses it, and its name is added to the label while a pad is plugged in."""
         self.bar_text.set(text)
         for w in self.bar_buttons.winfo_children():
             w.destroy()
-        for label, cmd in buttons:
-            ttk.Button(self.bar_buttons, text=label, command=cmd).pack(side="left", padx=(6, 0))
+        self.bar_spec = []
+        self.bar_pad = {}
+        for item in buttons:
+            label, cmd = item[0], item[1]
+            pad = item[2] if len(item) > 2 else None
+            b = ttk.Button(self.bar_buttons, text=self._pad_label(label, pad), command=cmd)
+            b.pack(side="left", padx=(6, 0))
+            self.bar_spec.append((b, label, pad))
+            if pad:
+                self.bar_pad[pad] = cmd
         self.bar.grid(row=2, column=0, sticky="we", pady=(6, 0))
+        self._pad_relabel()
 
     def hide_bar(self):
         self.bar.grid_forget()
+        self.bar_pad = {}
+        self.bar_spec = []
+        self._pad_relabel()
 
     def chat_line(self, text):
         self.chat_log.configure(state="normal")
@@ -480,6 +532,7 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._show_notice()
+        self._pad_tick()
         try:
             self._after = self.parent.after(100, self._poll)
         except tk.TclError:
@@ -761,6 +814,8 @@ class OnlineTab:
 
     def do_queue(self, mode):
         c = self.client
+        self.cfg["last_search"] = mode           # the controller's A button searches the same way again
+        self._save_cfg()
         strict = mode == "ranked" and bool(self.strict_var.get())
         args = (self._char_key(), True) if strict else (self._char_key(),)
         fn = c.ranked_match if mode == "ranked" else c.quick_match
@@ -909,7 +964,8 @@ class OnlineTab:
         elif t == "challenged":
             self.challenge = ev["challenge"]
             self.show_bar(f"{ev['from']['name']} ({rank_text(ev['from'])}) challenges you",
-                          [("Accept", lambda: self._answer(True)), ("Decline", lambda: self._answer(False))])
+                          [("Accept", lambda: self._answer(True), "cross"),
+                           ("Decline", lambda: self._answer(False), "circle")])
         elif t == "challenge_update":
             if ev["state"] != "accepted":
                 self.status(f"Challenge {ev['state']}.")
@@ -927,8 +983,8 @@ class OnlineTab:
             if ev.get("blind"):
                 # a match from the queue: the ping and the rules now, the name after both accepted
                 self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                self.show_bar(self._ready_text(), [("Accept", lambda: self._ready(True)),
-                                                   ("Decline", lambda: self._ready(False))])
+                self.show_bar(self._ready_text(), [("Accept", lambda: self._ready(True), "cross"),
+                                                   ("Decline", lambda: self._ready(False), "circle")])
             else:
                 opp = ev["opponent"]
                 text = (f"Opponent: {opp['name']} ({rank_text(opp)}, {opp['rating'] if not opp['guest'] else 'guest'})"
@@ -936,8 +992,8 @@ class OnlineTab:
                         + (" -- rematch" if ev.get("origin") == "rematch" else ""))
                 if ev["ready_check"]:
                     self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                    self.show_bar(text, [("Accept", lambda: self._ready(True)),
-                                         ("Decline", lambda: self._ready(False))])
+                    self.show_bar(text, [("Accept", lambda: self._ready(True), "cross"),
+                                         ("Decline", lambda: self._ready(False), "circle")])
                 else:
                     self.show_bar(text + " -- connecting...", [])
         elif t == "match_reveal":
@@ -1017,8 +1073,9 @@ class OnlineTab:
                 ("I quit", lambda: self._answer_result("quit")),
             ])
         elif k == "rematch_offer":
-            self.show_bar(f"{n['opponent']} wants a rematch", [("Rematch", lambda: self._rematch(True)),
-                                                               ("No thanks", lambda: self._rematch(False))])
+            self.show_bar(f"{n['opponent']} wants a rematch", [("Rematch", lambda: self._rematch(True), "cross"),
+                                                               ("No thanks", lambda: self._rematch(False),
+                                                                "circle")])
 
     def _answer_result(self, what):
         self.hide_bar()
@@ -1121,7 +1178,8 @@ class OnlineTab:
 
     def _show_rematch_bar(self):
         text, opp = self.rematch_bar
-        buttons = [(f"Rematch {opp}", lambda: self._rematch(True)), ("Leave", lambda: self._rematch(False)),
+        buttons = [(f"Rematch {opp}", lambda: self._rematch(True), "cross"),
+                   ("Leave", lambda: self._rematch(False), "circle"),
                    (f"Block {opp}", lambda: self.block_opponent(opp))]
         lag = self.lag
         if lag and lag.get("verdict") == "more_lag" and lag.get("can_leave"):
@@ -1168,8 +1226,149 @@ class OnlineTab:
         if self.client and self.client.me:
             self._show_me()
 
+    # ------------------------------------------------------------------ controller (padnav.py)
+    # A pad or arcade stick runs the whole online loop: Cross (A) accepts a found match or a challenge,
+    # starts the rematch, and searches; Circle (B) declines, leaves, and stops the search. Which stick
+    # button is Cross comes from the game's controls.ini. Triangle (Y) is read but unused: every match
+    # gets a random stage from the server (a rematch too), so there is no stage choice to make.
+    def _tab_viewable(self):
+        return bool(self.parent.winfo_viewable())
+
+    def start_pad(self, sources=None, foreground=None, clock=None, thread=True):
+        """Start reading controllers (once). The launcher does it when the tab is first shown. Tests
+        pass fake sources and a clock, and drive `tab.pad.step(now)` themselves with thread=False."""
+        if self.pad is not None:
+            return self.pad
+        if sources is None:
+            if os.environ.get("T5_PAD_NAV") == "0":
+                return None
+            sources = padnav.default_sources()
+            if not sources:                 # (not Windows, no scripted pad)
+                return None
+        if foreground is None:
+            foreground = padnav.window_foreground_check(padnav.toplevel_hwnd(self.parent.winfo_toplevel()))
+        settings = self.app.settings
+        files = padmap.ControlsFile(lambda: _controls_path_for(settings))
+        self.pad = padnav.PadNav(sources, controls=files, foreground=foreground, **({"clock": clock} if clock else {}))
+        self.pad.enabled = bool(self.pad_var.get())
+        self.pad.visible = self._safe_visible()
+        if thread:
+            self.pad.start()
+        return self.pad
+
+    def _safe_visible(self):
+        try:
+            return bool(self.pad_visible())
+        except tk.TclError:
+            return False
+
+    def _pad_toggle(self):
+        self._save_cfg()
+        if self.pad is not None:
+            self.pad.enabled = bool(self.pad_var.get())
+        self._pad_relabel()
+        self._pad_info()
+
+    def _pad_on(self):
+        return self.pad is not None and bool(self.pad_var.get()) and self.pad.has_devices()
+
+    def _pad_label(self, text, button):
+        """'Accept' -> 'Accept (A)' while a pad is plugged in: the controller button that presses it."""
+        if button and self._pad_on():
+            name = self.pad.label(button)
+            if name:
+                return f"{text} ({name})"
+        return text
+
+    def _pad_search_mode(self):
+        """The search the controller's A button starts: the one used last, else ranked (accounts), else quick."""
+        on = {k: str(self.actions[k].cget("state")) == "normal" for k in ("ranked", "quick")}
+        last = self.cfg.get("last_search")
+        for mode in ([last] if last in on else []) + ["ranked", "quick"]:
+            if on.get(mode):
+                return mode
+        return None
+
+    def _pad_plan(self):
+        """What the controller buttons do right now: {'cross': (action key or None, command), ...}."""
+        plan = {}
+        if self.client is None:
+            return plan
+        if self.bar.winfo_manager():               # a question is up: its own buttons answer, nothing else
+            return {b: (None, fn) for b, fn in self.bar_pad.items()}
+        if str(self.actions["cancel"].cget("state")) == "normal":
+            plan["circle"] = ("cancel", self.actions["cancel"].invoke)
+        mode = self._pad_search_mode()
+        if mode:
+            plan["cross"] = (mode, self.actions[mode].invoke)
+        return plan
+
+    def _pad_relabel(self):
+        """Put the controller button names on the buttons that the pad presses (and take them off)."""
+        if not hasattr(self, "pad_var"):
+            return                                   # (the UI is still being built)
+        plan = self._pad_plan() if self._pad_on() else {}
+        for key, b in self.actions.items():
+            pb = next((pb for pb, (k, _fn) in plan.items() if k == key), None)
+            text = self._pad_label(self.action_text[key], pb)
+            if str(b.cget("text")) != text:
+                b.configure(text=text)
+        for b, label, pb in self.bar_spec:
+            text = self._pad_label(label, pb)
+            try:
+                if str(b.cget("text")) != text:
+                    b.configure(text=text)
+            except tk.TclError:
+                pass
+
+    def _pad_info(self):
+        p = self.pad
+        if not self.pad_var.get():
+            text = "Controller off."
+        elif p is None or not p.stats["polls"]:
+            text = ""
+        elif not p.has_devices():
+            text = "No controller found."
+        else:
+            text = "Controller: " + p.summary
+        if text != self.pad_info_var.get():
+            self.pad_info_var.set(text)
+
+    def _pad_tick(self):
+        """Every poll: tell the pad thread whether the tab is showing, refresh the names, run the presses."""
+        p = self.pad
+        if p is None:
+            return
+        p.visible = self._safe_visible()
+        p.enabled = bool(self.pad_var.get())
+        if p.generation != self._pad_gen:
+            self._pad_gen = p.generation
+            self._pad_relabel()
+        self._pad_info()
+        try:
+            while True:
+                self._pad_press(p.events.get_nowait())
+        except queue.Empty:
+            pass
+
+    def _pad_press(self, ev):
+        p = self.pad
+        now = p.clock()
+        if now - ev.t > PAD_STALE_S or now < self._pad_until:
+            return
+        # The pad thread looked at the foreground window when it saw the press; look again, since a dialog
+        # or the game may have come forward since. The same for the tab and the switch.
+        if not (self.pad_var.get() and p.foreground_now() and self._safe_visible()):
+            return
+        act = self._pad_plan().get(ev.button)
+        if act is None:
+            return
+        self._pad_until = now + PAD_COOLDOWN_S
+        act[1]()
+
     # ------------------------------------------------------------------ launcher hooks
     def on_show(self):
+        self.start_pad()
         if self.client:
             self._set_actions()
         else:
@@ -1180,6 +1379,9 @@ class OnlineTab:
             self.parent.after_cancel(self._after)
         except (tk.TclError, ValueError):
             pass
+        if self.pad is not None:
+            self.pad.stop()
+            self.pad = None
         if self.driver is not None:
             self.driver.close()
             self.driver = None
@@ -1324,6 +1526,7 @@ def main():
     tab.server_var.set(a.server)
     tab._build_info = lambda: (BuildInfo("be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "standalone", "dev"), None)
     root.protocol("WM_DELETE_WINDOW", lambda: (tab.on_close(), root.destroy()))
+    root.after(200, tab.on_show)        # (the launcher calls this when the tab is selected)
     root.mainloop()
 
 

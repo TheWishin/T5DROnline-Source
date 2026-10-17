@@ -131,6 +131,10 @@ Keyboard (default) and Xbox controller:
   through DirectInput. Nothing to install. Not yet tried on real hardware by a
   person.
 - Pads can be plugged in or out while the game runs.
+- In the launcher's Online tab a pad or stick runs the lobby without mouse or
+  keyboard: A / Cross accepts, rematches and searches, B / Circle declines and
+  stops. Only while the launcher is in front. See "Controller in the launcher"
+  in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
 - To change keys or buttons, make a `controls.ini`. The documented sample with
   every default is
   https://github.com/TheWishin/T5DROnline/blob/main/docs/controls.ini

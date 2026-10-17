@@ -43,6 +43,9 @@ and Pillow for the smoke suite's frame checks):
 - `test_check_no_game_data.py` -- the guard catches each kind of game file
   and passes ordinary sources.
 - `test_prepare_ps3recomp.py` -- name order, and the failing patch is named.
+- `test_padmap_sync.py` -- the launcher's copy of the game's controller presets
+  (`lobby/t5lobby/padmap.py`) equals the tables in patch 0009, and no later patch
+  edits them.
 - `test_smoke.py` -- the game-independent half of `tools/smoke/` (see
   docs/SMOKE.md): log parsing, every check on synthetic runs (crash, hang,
   fps/audio thresholds and the under-load WARN, NIDs, memory, white/frozen

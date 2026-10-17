@@ -25,6 +25,7 @@ install for players or for whoever runs the server.
 - [Running your own server](#running-your-own-server)
 - [Tests, demo, measurements](#tests-demo-measurements)
 - [Plugging in: launcher and netplay](#plugging-in-launcher-and-netplay)
+- [Controller in the launcher](#controller-in-the-launcher)
 - [What is left](#what-is-left)
 
 ## Pieces
@@ -43,6 +44,8 @@ lobby/
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
     tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
+    padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
+    padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
     cli.py        python -m t5lobby.cli: the same from a console
     servers.py    servers.json: the launcher's server list, typed addresses (host:port#fingerprint)
     portmap.py    opt-in UPnP IGD / NAT-PMP port forwarding for "Host for friends"
@@ -62,8 +65,9 @@ lobby/
   run.py          python lobby/run.py server|host|admin -- works with the release's isolated Python
   servers.json    the servers the release lists (a placeholder until the public server exists)
   Dockerfile, compose.yaml, deploy/   packaging: Docker, systemd + install.sh, Windows (docs/HOSTING.md)
-  tests/          ~215 tests: server + simulated clients on localhost, the Online tab, the stub game,
-                  hosting and operations, the Tekken 6 style options (test_t6.py)
+  tests/          ~290 tests: server + simulated clients on localhost, the Online tab, the stub game,
+                  hosting and operations, the Tekken 6 style options (test_t6.py), the controller
+                  buttons with a fake pad (test_padnav.py, test_tk_pad.py)
   tools/
     two_players.py   two players on one PC: lobby -> punch -> two game instances
     ranked_session.py  two ranked accounts on one PC through the launcher's glue (stub or real game)
@@ -540,6 +544,56 @@ zip carries `lobby/t5lobby/` (tools/package_release.py).
 `T5_NET_MATCH`, the host calling `T5_NET_PEER`, `T5_NET_BUILD` in the HELLO and
 `T5_NET_KEY` are done. Left: optionally adopt the socket from
 `T5_NET_SOCKET_FILE` (snippet above).
+
+## Controller in the launcher
+
+The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed once you are logged in
+("Remember me" logs you in by itself). Like Tekken 6 Native Online.
+
+| Button | What it does |
+|---|---|
+| **A** (Cross) | Accept a found match or a challenge. Rematch (also when the opponent offers one). Search: ranked for an account at first, quick for a guest, afterwards the kind you searched last. After you left a game (B), A is "back to ranked". |
+| **B** (Circle) | Decline a found match or a challenge. Leave / No thanks after a game. Stop searching. |
+| **Y** (Triangle) | Nothing. Every match gets a random stage from the server, a rematch too, so there is no stage to choose. |
+
+- The buttons say which pad button presses them: "Accept (A)", "Decline (B)", "Ranked match (A)". A stick
+  shows its own button names, "Accept (B2)". The line under the lobby names the pad and its Cross, Circle and
+  Triangle. With several pads, the one you pressed last gives the names.
+- The question "How did the match end?" (I won, I lost), "Block" and "Leave: too laggy" are never answered
+  by a pad. Those you click.
+- **Only when the launcher window is in front** and the Online tab is showing. While the game or any other
+  window is in front (or a dialog of the launcher is open), the pads are not even read, so presses in the
+  game never reach the launcher.
+- **A press counts only after the button was up for 0.3 s** with the launcher in front. A button that is held
+  when the launcher comes forward, or mashed (the end of a fight), does nothing. Two buttons pressed at once
+  are no press. After an action the next one waits 0.6 s. A press that waited more than 1 s for the window
+  (a dialog was open) is dropped.
+- **Which stick button is Cross follows the game's `controls.ini`** (`docs/controls.ini`, runtime patch 0009).
+  The launcher finds the file the way the game does: `PS3_CONTROLS` (also from Settings, "extra settings"),
+  else `controls.ini` next to `t5dr.exe` (`<output>\build\cmake`), else in the output folder
+  (`native\controls.ini`), else the built-in defaults. It reads the same presets (`standard`, `ps`, `switch`,
+  `xbox`), sections (`[xinput]`, `[dinput]`, `[dinput.VVVV:PPPP]`, `[port1.dinput]`, `[port1] device = ...`)
+  and `TARGET = SOURCE` lines, and again when the file changes. A remapped stick works the same in the
+  launcher and in the game. A button bound to two PS3 buttons at once (a macro such as `3+4 = B8`) is
+  neither Cross nor Circle here. `tests/test_padmap_sync.py` fails when the game's presets change and
+  `lobby/t5lobby/padmap.py` was not updated.
+- Xbox pads and XInput-mode sticks are read with XInput. Everything else (PS3/PS4-mode sticks and hitboxes,
+  DualShock 4, DualSense, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
+  numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through both
+  is read once, through XInput. Plain `ctypes`, one thread, 60 polls a second while the launcher is in front
+  (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while it is
+  not (0.01%).
+- Switch: **Use a controller here** at the bottom of the tab (saved as `pad` in `online.json`).
+  `T5_PAD_NAV=0` in the environment turns the feature off.
+- With `background = 1` in `controls.ini` (the default) a running game reads the pad too, also while the
+  launcher is in front: a press that accepts a match is also a Cross in the game, which waits at its
+  character select. Set `background = 0` if that gets in the way.
+- Test hook: `T5_PAD_FILE=<file>` makes a virtual pad of the buttons named in the file (`A`, or
+  `dinput:054C:09CC B2`); with it the real pads are ignored (`T5_PAD_DEVICES=1`: both).
+- Code: `lobby/t5lobby/padmap.py` (controls.ini), `lobby/t5lobby/padnav.py` (devices, polling rules, thread),
+  `lobby/t5lobby/tk_tab.py` (what each button does). Tests: `lobby/tests/test_padnav.py`,
+  `lobby/tests/test_tk_pad.py`, `tests/test_padmap_sync.py`; they use a fake pad and a fake clock.
+  Not tried with a real stick yet (the XInput pad on the development PC was only read, not pressed).
 
 ## What is left
 

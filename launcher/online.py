@@ -13,8 +13,14 @@ The contract the launcher offers the online code:
     - app.game                the running GameRun or None (.running(), .stop(), .fps, .log_path)
     - app.set_status(text)    one line in the launcher's status bar
 * `OnlineTab.on_show()` is called whenever the tab is selected (logs in with a saved login
-  the first time), `OnlineTab.on_close()` when the launcher exits (closes the game it started,
-  leaves the lobby).
+  the first time, starts reading the controller), `OnlineTab.on_close()` when the launcher exits
+  (closes the game it started, leaves the lobby, stops the controller thread).
+
+The controller needs nothing from the launcher but the settings above: the tab finds the top-level
+window of its parent to know when the launcher is in front, reads app.settings.out_dir and
+app.settings.env_overrides() to find the game's controls.ini, and keeps its on/off switch in
+online.json. A pad press counts only while the launcher's window is the foreground window (lobby/t5lobby/
+padnav.py, docs/ONLINE.md "Controller in the launcher").
 
 Accounts, ranked play, the match flow and its rules: docs/ONLINE.md and docs/RANKED.md.
 """

@@ -10,7 +10,7 @@ being built.
 <!-- players:start -->
 **Test release. Expect bugs.** Please report them (see "Bug reports" below).
 
-Deutsch: https://github.com/TheWishin/T5DROnline/blob/main/docs/README.de.md
+Deutsch: `docs\README.de.md` in this folder.
 
 ## What is this?
 
@@ -134,8 +134,7 @@ Keyboard (default) and Xbox controller:
   stops. Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
 - To change keys or buttons, make a `controls.ini`. The documented sample with
-  every default is
-  https://github.com/TheWishin/T5DROnline/blob/main/docs/controls.ini
+  every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.
   Examples (from the sample):
   - `[keys1]` / `preset = tekken` -- WASD to move, U I J K for the buttons.
@@ -201,7 +200,7 @@ files.
 The logs contain no game data and no keys. They do contain folder paths, which
 can include your Windows user name. Look before you post them in public.
 
-More help: https://github.com/TheWishin/T5DROnline/blob/main/docs/TROUBLESHOOTING.md
+More help: `docs\TROUBLESHOOTING.md` in this folder.
 
 ## FAQ
 

@@ -220,6 +220,25 @@ Dragunov, two rounds, P2 wins 2-0, back to character select). Evidence in
   apart) meets at the barrier and runs; it only stays in sync if the two games
   are in the same state at that frame, which is the direct-fight mode's job.
 
+**Hardening (2026-10-17, branch netplay-hardening).** The netplay QA agent's
+impairment proxy and runners (build/nq/tools: netem.py, nqrun.py, bootrace.py),
+direct fight Lili vs Dragunov, two instances on this PC, before = the QA runs in
+build/nq/runs, after = build/nh/runs:
+
+| Scenario | Before | After |
+|---|---|---|
+| clean, 10 % loss, burst loss, 50+-30 ms reordered, 4 x 200 ms and 3 x 1 s outages | in sync | in sync, both result files identical (winner, score, frames, hash), desync 0 |
+| rematch in the same games (5 % loss, 20+-10 ms) | 50 mismatching frames at the 2nd stage select | 0 mismatching frames over 25,799; match 2's result names match 2 |
+| NAT rebinding mid-fight | both stall 30 s, play on alone, 2,060 mismatching frames | host follows the new address, no stall, finished in sync |
+| 12 s outage, `T5_NET_TIMEOUT=10` | both play on alone, 4,816 mismatching frames | both end after 10 s: `peer_timeout`, exit 3 |
+| 12 s outage, `T5_NET_TIMEOUT=20` | -- | 12 s pause, then finished in sync |
+| other build | both frozen at boot | both refuse in < 1 s: `build_mismatch`, exit 5 |
+| joiner restarted mid-fight | handshake, then deadlock | old side `peer_restarted` (exit 3), new joiner `rejected` (exit 4) |
+| joiner restarted while booting | -- | the new joiner takes over, match in sync |
+| host killed | joiner plays on alone | joiner ends after 20 s: `peer_timeout`, exit 3 |
+| `T5_FIGHT=...,random` | two different stages, every frame mismatching | stage from the seed on both, in sync |
+| boot take-over (boot mode, no input, 3 pairs at a time) | ~9 % at frame 1, mostly deadlocked (QA); 1 of 50 boots at frame 3, desync from frame 0 (same harness, main build) | 200 boots: all at frame 2 on both sides, no hang, no mismatch |
+
 ## Limits and next steps
 
 - **Menu transitions are not fully deterministic.** Picking a mode or skipping

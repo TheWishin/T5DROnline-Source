@@ -81,7 +81,9 @@ struct WireIn   { uint16_t buttons; uint8_t lx, ly, rx, ry; };
 struct WireHash { uint32_t frame; uint64_t hash; };
 struct WireBar  { uint32_t index; uint32_t frame; };
 struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows Hdr in a HELLO; flags: bit 0 = this side offers rollback */
-struct PingExt  { uint8_t started; uint32_t frame; };                 /* started: the sender's lockstep has begun (frame 0 ran) */
+struct PingExt  { uint8_t flags; uint32_t frame; };                   /* flags: PING_STARTED, PING_ROLLBACK */
+constexpr uint8_t PING_STARTED = 1;    /* the sender's lockstep has begun (frame 0 ran) */
+constexpr uint8_t PING_ROLLBACK = 2;   /* the sender offers rollback (as in its HELLO; the first HELLOs may predate the offer) */
 struct RejectExt { uint8_t why; };
 constexpr uint32_t kHelloRollback = 1u;
 #pragma pack(pop)
@@ -377,7 +379,8 @@ void send_hello_locked(const sockaddr_in* to = nullptr)
 void send_ping_locked()
 {
     State& s = S();
-    struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)(s.started ? 1 : 0), s.local_hash_max } };
+    struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)((s.started ? PING_STARTED : 0) |
+                                                                      (s.rb_offer ? PING_ROLLBACK : 0)), s.local_hash_max } };
     send_raw(&p, sizeof p);
     s.last_send_ms = GetTickCount64();
 }
@@ -656,7 +659,8 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     if (h->type == PKT_PING) {
         if (n >= (int)(sizeof(Hdr) + sizeof(PingExt))) {
             PingExt x; memcpy(&x, h + 1, sizeof x);
-            if (x.started) s.peer_started = true;
+            if (x.flags & PING_STARTED) s.peer_started = true;
+            if (!s.started) s.rb_peer = (x.flags & PING_ROLLBACK) != 0;   /* settled before lockstep begins */
             s.peer_frame = x.frame;
         }
         SetEvent(s.rx_event);

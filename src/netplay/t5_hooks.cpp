@@ -874,6 +874,12 @@ extern "C" void t5_netplay_start(void)
 extern "C" void t5_netplay_inject(int port, int on, unsigned buttons)
 {
     if (port < 0 || port > 1) return;
+    if (g_active.load()) {
+        /* in lockstep: the local slot's presses go out as the local input; the
+         * other slot is the peer's business (its own direct-fight driver) */
+        if (port == np::local_slot()) np::set_local_inject(on != 0, (uint16_t)buttons);
+        return;
+    }
     g_inject[port] = (uint16_t)buttons;
     if (on) g_inject_on |= (1u << port); else g_inject_on &= ~(1u << port);
 }
@@ -881,4 +887,14 @@ extern "C" void t5_netplay_inject(int port, int on, unsigned buttons)
 extern "C" int t5_netplay_enabled(void)
 {
     return np::enabled() ? 1 : 0;
+}
+
+extern "C" int t5_netplay_lockstep_active(void)
+{
+    return g_active.load() ? 1 : 0;
+}
+
+extern "C" int t5_netplay_local_slot(void)
+{
+    return np::local_slot();
 }

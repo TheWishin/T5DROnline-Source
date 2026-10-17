@@ -229,12 +229,19 @@ void device_input(uint32_t port, PadInput* in)
     in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
 }
 
+/* Menu driving by the direct-fight mode while lockstep runs: the local
+ * player's sample is exactly these buttons (exchanged with the peer like any
+ * input, so both PCs see the same presses at the same frame). */
+std::atomic<bool> g_local_inject_on{ false };
+std::atomic<uint16_t> g_local_inject{ 0 };
+
 /* The local player's input for (effective) frame f. */
 PadInput sample_local(uint32_t f)
 {
     State& s = S();
     PadInput in = kNeutral;
 
+    if (g_local_inject_on.load()) { in.buttons = g_local_inject.load(); return in; }
     if (s.localpad) device_input(0, &in);
     in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
@@ -888,5 +895,7 @@ void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
+
+void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
 
 } // namespace np

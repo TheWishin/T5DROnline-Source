@@ -98,6 +98,10 @@ int      rb_peer_lead();
 uint32_t rb_mismatches();
 uint32_t rb_peer_ack();                          /* the peer has our inputs for frames < this */
 
+/* While on, the local player's sample is exactly `buttons` (direct-fight menu
+ * driving during lockstep; see t5_netplay_inject). */
+void  set_local_inject(bool on, uint16_t buttons);
+
 } // namespace np
 
 /* Game-side entry point (t5_hooks.cpp), C linkage so any part of the port can
@@ -113,3 +117,8 @@ extern "C" void t5_netplay_start(void);
  * game state. t5_netplay_enabled() tells whether netplay owns the pads at all. */
 extern "C" void t5_netplay_inject(int port, int on, unsigned buttons);
 extern "C" int  t5_netplay_enabled(void);
+/* Lockstep running (after t5_netplay_start()): then only the local slot's
+ * injection applies, as the local player's exchanged input; the peer drives
+ * its own. Before lockstep both ports are injected locally. */
+extern "C" int  t5_netplay_lockstep_active(void);
+extern "C" int  t5_netplay_local_slot(void);     /* 0 = P1 (host), 1 = P2 (join) */

@@ -44,7 +44,12 @@ T5_DF_STATUS_FILE=<path>                             JSON status for the launche
   barrier. Every later match calls it again (sync point). Menu driving goes
   through `t5_netplay_inject()` (added to `src/netplay/t5_hooks.cpp`) so it
   works while netplay owns the pads; without netplay the module's own
-  `cellPadGetData` override injects.
+  `cellPadGetData` override injects. Before lockstep starts (the first match)
+  each PC drives both cursors locally; while lockstep runs (every later match)
+  each PC drives only its own slot and the presses go out as its local input,
+  so the peer sees them through the exchange -- the two launchers may write
+  `T5_FIGHT_FILE` at different times, each player's cursor simply starts
+  moving when its own file arrives, and the game states stay identical.
 - Diagnostics: `T5_DF_PROBE=1` (mode changes), `T5_DF_TRACE=1` (every injected
   press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames`,
   `T5_DF_DUMP_RANGES`, `T5_DF_DUMP_MODES=1`, `T5_DF_WATCH=addr,...`,

@@ -41,8 +41,14 @@
 #include "df.h"
 
 extern "C" void t5_netplay_start(void);
+extern "C" int  t5_netplay_lockstep_active(void);
+extern "C" int  t5_netplay_local_slot(void);
 
 namespace df {
+
+/* In lockstep (every match after the first under netplay) this PC drives only
+ * its own player; the peer's presses arrive through the input exchange. */
+bool drives(int p) { return !(netplay_on() && t5_netplay_lockstep_active()) || p == t5_netplay_local_slot(); }
 
 /* ---- guest addresses (NPUB30009 v01.00) ---------------------------------- */
 constexpr uint32_t kFnStartGame  = 0x0004E9DC;   /* (game_type, player_mask) -> config + select mode */
@@ -299,7 +305,7 @@ void fight_on_frame(uint32_t f)
             if (st == 0x15 || st == 0x0D) continue;      /* done (0x15 on P1, 0x0D on P2 right after the costume) */
             all_done = false;
             if (st != 3 && st != 9) continue;            /* 0: the screen is not live yet */
-            if (!press_idle(p)) continue;
+            if (!press_idle(p) || !drives(p)) continue;
             if (st == 3) {
                 const int target = cell_of(g_cfg.chr[p]);
                 if (target < 0) { if (g_steps[p]++ == 0) note("player %d: no cell for character %d", p + 1, g_cfg.chr[p]); continue; }
@@ -317,7 +323,7 @@ void fight_on_frame(uint32_t f)
         if (mode == kModeGame) { set_phase(Ph::WaitGame, "loading", f); break; }
         if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
         if (f >= g_ph_frame + 90 && press_idle(0) && press_idle(1) && ((f - g_ph_frame) % 30) == 0) {
-            press(0, B_CROSS, f); press(1, B_CROSS, f);     /* confirm whatever stage the panel shows */
+            for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }
         break;
     case Ph::WaitGame:

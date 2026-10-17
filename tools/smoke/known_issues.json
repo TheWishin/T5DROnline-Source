@@ -1,0 +1,8 @@
+{
+  "_doc": "Known failures the smoke suite reports as KNOWN instead of FAIL, and unresolved NIDs that are not regressions. A failure entry matches checks by test and check id (fnmatch patterns) and, if given, a regex on the check's detail. When none of an issue's entries fail in a test, the report adds known.<issue> = XPASS: confirm the fix, then delete the entries. See docs/SMOKE.md.",
+  "nids": {
+    "0x224E1610": "cellHttpClientSetRecvTimeout -- network setup at boot / Gallery (QA report #9)",
+    "0x71714CDC": "cellHttpClientSetSendTimeout -- same"
+  },
+  "failures": []
+}

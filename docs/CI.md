@@ -20,7 +20,8 @@ Two jobs run in parallel.
 | `python -m unittest discover -s tests` | broken tools (below) |
 | `lobby/tests`, one process per module | the lobby: server, NAT/relay, Glicko-2, TLS pinning, the launcher's Online tab |
 
-Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself):
+Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself
+and Pillow for the smoke suite's frame checks):
 
 - `test_unself.py` -- `rap_to_rif_key` against an independent reference and a
   fixed vector; a full decrypt of a **synthetic NPDRM SELF** built in the test
@@ -42,6 +43,12 @@ Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself):
 - `test_check_no_game_data.py` -- the guard catches each kind of game file
   and passes ordinary sources.
 - `test_prepare_ps3recomp.py` -- name order, and the failing patch is named.
+- `test_smoke.py` -- the game-independent half of `tools/smoke/` (see
+  docs/SMOKE.md): log parsing, every check on synthetic runs (crash, hang,
+  fps/audio thresholds and the under-load WARN, NIDs, memory, white/frozen
+  screens, fighters), known-issue marking, the report and exit codes,
+  process selection by parent PID, the HUD/spike heuristics on synthetic
+  frames, the runner's missing-exe path.
 
 All fake keys are derived from hashes at run time. No key-shaped value is in
 the repository (the guard would flag it).

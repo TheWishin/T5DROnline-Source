@@ -172,7 +172,8 @@ class MatchTest(Base):
         ta, tb = self.start_quick(a, b)
         self.assertEqual(ta.match_id, tb.match_id)
         self.assertEqual({ta.role, tb.role}, {"host", "join"})
-        self.assertEqual(ta.path, "lan")               # same PC: the local candidates win
+        # same PC: the local candidates win ("direct" where the PC's own address is public, a VPS)
+        self.assertIn(ta.path, ("lan", "direct"))
         self.assertEqual(ta.peer[1], tb.local_port)
         self.assertEqual(tb.peer[1], ta.local_port)
         self.assertGreaterEqual(ta.delay, 2)

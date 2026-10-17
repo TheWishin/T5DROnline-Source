@@ -195,7 +195,9 @@ class Base(unittest.TestCase):
     def ranked(self, a, b, ca=None, cb=None):
         a.ranked_match(ca)
         b.ranked_match(cb)
-        return expect(a, "match_start"), expect(b, "match_start")
+        # 20 s: after a placement game the two ratings are ~330 apart, and the queue's rating
+        # window (100 + 25/s) needs ~9.5 s to reach that -- too close to 10 s on a slow box.
+        return expect(a, "match_start", 20.0), expect(b, "match_start", 20.0)
 
     def account(self, name):
         return self.s.call(lambda: dict(self.s.srv.store.account(name)))

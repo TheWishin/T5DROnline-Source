@@ -905,3 +905,37 @@ at the round end) and either replay it deterministically or hold the switch
 until the frame is confirmed (extend the lockstep window to start a few
 frames *before* a KO: health at 0 is visible one frame before the phase
 changes).
+
+---
+
+# Phase 7 -- the sound streamer's abort (branch `rollback7`)
+
+## 16. What aborts, and why it is not the rollback's state
+
+The `exit(1)` is the title's own `abort()`: its stream reader
+(`0x1ebb08 -> 0x1eb6f8 -> 0x67354 -> 0x37c4a0 -> 0x37f804`) gives up after
+the HLE ATRAC3+ decoder reports `Invalid start bit` / `Frame data doesn't
+match channel configuration` for the music stream -- the log shows the
+errors start right after 1-frame rollbacks at the round end (5360, 5365)
+and the abort follows a few frames later. The music is streamed by a side
+thread (the one that opens T55DATA1.BIN and feeds `cellAtracAddStreamData`);
+its bookkeeping is not rewound by a rollback (correctly: it is not the
+simulation), while the main thread's half of the stream switch at the round
+end is. Rewinding the HLE decoder's positions with the rollback (tried as
+patch 0023: pos/next_frame/have/ring positions saved per boundary and put
+back) made it far worse -- 1 100-2 700 decode errors per run instead of 2,
+aborts just the same -- so that half belongs to the side thread too and the
+patch was dropped. Runs with it, for the record (delay 1, 3 % loss): j0 and
+j150 in sync (0 mismatches) until the joiner aborted at ~4 800; **j50: the
+whole match (10 800 frames, 761 + 671 rollbacks, 10 phase changes) with 5
+mismatching frames** -- the phase/UI words at the round end (5370), one peer
+a phase ahead for five frames, then agreeing again (a transient, not a
+divergence).
+
+What remains to do: the main thread re-issues the stream switch when the
+re-simulated frame reaches the round end again (its restored state says
+"not switched yet"), so `cellAtracSetDataAndGetMemSize` runs twice for the
+same handle while the feeder thread is mid-stream. The fix is to make that
+second, identical request a no-op in the HLE (same handle, same buffer, same
+file header: keep the slot), or to hold the switch in the title until the
+frame is confirmed. Until then rollback stays opt-in (`T5_RB_MODE=net`).

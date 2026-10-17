@@ -864,3 +864,44 @@ next step; alternatively the transition's wait has to be made a function of
 the frame. The sound streamer's `exit(1)` (r0 with the skip, g0/g150
 without it) is the other blocker: the streaming feed has to survive both
 skipped and repeated sound updates.
+
+---
+
+# Phase 6 -- the phase barrier (branch `rollback6`)
+
+## 15. Rollbacks across fight start, KO and round end
+
+A phase change of `0x1008F070` seen at a live boundary now puts the loop into
+lockstep for `T5_RB_NET_PHASE_LOCK` (600) frames: every frame after a
+transition runs on confirmed inputs, so a re-simulation can only ever reach
+across a transition from the few frames right before it (input delay + half
+the RTT). The first variant also raised the rollback floor at the change;
+that turned a 1-frame misprediction just before the transition into an
+uncorrectable desync ("cannot be rolled back ... floor 210", runs h0/h150:
+46/35 mismatching frames, the differing words being the inputs themselves),
+so the floor is gone again. The warm-up after the start is 420 frames (the
+fight-start phases at ~210 were straddled in e150).
+
+Full matches, Asuka vs Lili, stage 20, 2 rounds, the ranked driver's attacks
+(KOs at ~frame 5370), **input delay 1**, 3 % loss, +-5 ms jitter:
+
+| run | RTT | rollbacks (host / joiner) | phase changes | sync check | sound streamer |
+|---|---|---|---|---|---|
+| i0 | 0 | 266 / 358 | 10 | **0 mismatching frames through 11 400 (the whole match)** | fine |
+| i50 | 50 | 257 / 252 | 7 | **0 through 4 800** | joiner `exit(1)` at ~5 000 (round end) |
+| i150 | 150 | 600 / 573 | 7 | **0 through 4 800** | joiner `exit(1)` at ~5 000 (round end) |
+
+So peer-to-peer agreement now holds across the fight-start phases, KOs and
+round ends (i0: both rounds, 10 phase changes, 624 rollbacks, 0 mismatches)
+-- but the **sound streamer's `exit(1)`** at the round end (h50 host, i50 and
+i150 joiners; before: r0, g0, g150) is not solved: a rollback that straddles
+the round-end transition re-simulates the frame in which the sound update
+switches the music/announcer stream; with the update skipped (default) the
+streamer thread (`0x320228 -> 0x3201F8 -> 0x32089C -> ... -> 0x3A87E0`)
+aborts the process, with the update re-run (g-runs) likewise. That is the one
+remaining blocker, so **rollback stays opt-in**. Next: find what the
+streamer asserts on (the stream switch request written by 0x32819C's callees
+at the round end) and either replay it deterministically or hold the switch
+until the frame is confirmed (extend the lockstep window to start a few
+frames *before* a KO: health at 0 is visible one frame before the phase
+changes).

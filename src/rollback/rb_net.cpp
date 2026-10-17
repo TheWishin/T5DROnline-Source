@@ -236,10 +236,14 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         const uint32_t phase = rd32(kPhaseWord);
         if (g_last_phase != 0xFFFFFFFFu && phase != g_last_phase) {
             g_phase_changes++;
-            g_floor = std::max(g_floor, f);
+            /* no floor: a misprediction just before the transition must still
+             * be corrected (with a floor it became an uncorrectable desync:
+             * runs h0/h150, "cannot be rolled back ... floor 210"); the
+             * lockstep window keeps every frame after the transition
+             * confirmed, so only the few frames right before it can ever be
+             * re-simulated across it */
             g_lock_until = f + g_phase_lock;
-            state_drop_logs();
-            if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: rollback floor raised, lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
+            if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
         }
         g_last_phase = phase;
         /* the frame time this machine actually runs at (sleeps are in frames) */

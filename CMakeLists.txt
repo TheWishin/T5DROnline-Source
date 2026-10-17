@@ -128,6 +128,14 @@ file(GLOB NETPLAY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/net
 target_sources(t5dr PRIVATE ${NETPLAY_SOURCES})
 set_source_files_properties(${NETPLAY_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
 
+# Direct fight (our own code, src/directfight/): boot straight into a VS fight
+# with the characters/stage from T5_FIGHT, hold between matches, report the
+# result. Off unless T5_FIGHT or a T5_DF_* variable is set (docs/DIRECTFIGHT.md).
+file(GLOB DIRECTFIGHT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/directfight/*.cpp")
+target_sources(t5dr PRIVATE ${DIRECTFIGHT_SOURCES})
+set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")
 target_include_directories(t5dr PRIVATE

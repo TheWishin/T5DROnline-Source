@@ -32,8 +32,17 @@
 /* From the lifted output (ppu_recomp.h cannot be included next to the runtime's
  * ppu_context.h: both define the struct, identically). */
 typedef struct { uint64_t addr; void (*func)(ppu_context*); const char* name; } func_entry;
+#ifdef PS3_GAME_DLL
+/* Release host: the lifted table lives in t5dr_game.dll; the runtime publishes
+ * it once the DLL is loaded (runtime/ppu/ppu_game_dll.h). */
+extern "C" const func_entry* ppu_game_table;
+extern "C" uint64_t ppu_game_table_count;
+#define function_table       ppu_game_table
+#define function_table_count ppu_game_table_count
+#else
 extern "C" const func_entry function_table[];
 extern "C" const uint64_t  function_table_count;
+#endif
 extern "C" uint8_t* vm_base;
 
 extern "C" {

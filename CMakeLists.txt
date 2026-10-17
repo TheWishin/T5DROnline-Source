@@ -115,15 +115,13 @@ if(T5DR_GAME_DLL)
     target_link_options(t5dr PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/tools/gamedll/t5dr_host.def")
 endif()
 
-# Rollback netcode research prototype (our own code, src/rollback/): off unless
-# T5_RB_MODE is set. It reads the lifted function table directly, which the
-# release host (T5DR_GAME_DLL) does not contain, so developer builds only.
-if(NOT T5DR_GAME_DLL)
-    file(GLOB ROLLBACK_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rollback/*.cpp")
-    target_sources(t5dr PRIVATE ${ROLLBACK_SOURCES})
-    set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
-        INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
-endif()
+# Rollback (our own code, src/rollback/): off unless T5_RB_MODE is set. The
+# netplay layer calls its loop (T5_RB_MODE=net), so it is built in both modes;
+# rb_hooks.cpp reads the lifted table through ppu_game_table in DLL mode.
+file(GLOB ROLLBACK_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/rollback/*.cpp")
+target_sources(t5dr PRIVATE ${ROLLBACK_SOURCES})
+set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
 
 # Netplay prototype (our own code, src/netplay/): off unless T5_NET_MODE is set.
 file(GLOB NETPLAY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/*.cpp")

@@ -4,6 +4,11 @@ Branch `rollback`, code in `src/rollback/`, runtime change in
 `patches/ps3recomp/0008-rollback.patch`. All guest addresses are for
 NPUB30009 v01.00 and this runtime's memory map (`PS3_VM_WRITE_WATCH=1`).
 
+**Status (phase 10, branch `rollback10`): rollback is the online default**
+-- offered with direct fight unless `T5_RB_MODE=off`, lockstep when the peer
+does not offer it. Sections 20-25 are the current state; the earlier
+sections are the history that led there.
+
 ## Verdict
 
 Rollback is feasible. The core mechanism works in the prototype:
@@ -1211,3 +1216,292 @@ from its archive (patch 0028), the j/k/l/m/n/o pairs at RTT 0/50/150 with
 3 % loss and delay 1 ran 10 000-15 000 frames each with 0 decode errors
 and no abort (18 instances), the round-end hang and the reader's abort are
 gone, and the lockstep windows are lockstep.
+
+---
+
+# Phase 10 -- rollback becomes the online default (branch `rollback10`, patch 0029)
+
+Code: `src/rollback/rb_sound.cpp` (new), `rb_detour.cpp` (new), `rb_net.cpp`,
+`rb_state.cpp`, `rb_hooks.cpp`; `src/netplay/netplay_core.cpp` (rollback input
+delay, neutral samples), `t5_hooks.cpp` (hash skips, loads, test gate);
+runtime: `patches/ps3recomp/0029-rollback-pump-hold-atrac-mute.patch`. Tools:
+`tools/rollback_net_test.py` (match series, audio, summary),
+`tools/rollback_sound_compare.py` (new), `tools/rollback_audio_check.py`.
+Runs: `build/rb3/netruns/<name>/`, single instances `build/rb3/runs/<name>/`.
+
+## 20. The sound side in re-simulated frames (Tekken 6 Native Online's way)
+
+**What the game does.** Every sound effect and voice of the fight starts
+through the game's sound manager `0xAC594(group, id, channel, flags, pos,
+handle_out)`, which passes it to the sound library's play core at once
+(`0x32886C`/`0x328884` -> `0x3285B8`: one of 192 tracks is allocated and set
+up). Once per frame the main loop's sound update (`0xAA1D4 -> 0xAA200`, the
+enable word `0x10065B70`) runs the game-side bookkeeping (`0xAAA18`: the
+sound-bank state machine, one step per frame; `0xAC424`; `0x9BFE8`) and then
+the library's tick (`0x32819C`: sequencers, envelopes, 3D pan, commands to the
+SPU core). The library's state (`0x40049210`, tracks from `0x400017C0`) lives in
+the first heap chunk, which the rollback never restores. Stops (`0x328CC4`
+group, `0x328D68` handle), a status query (`0x326C34`, via `0xAC814`) and the
+music/bank calls (`0x3349B0`, `0x334628`, `0x33465C`, `0x3271DC`, `0x329158`,
+`0x331E20`, `0x3270E0`) are the rest of what the game tells the library
+during a match (call trace over every library and sound-manager entry point,
+`T5_RB_CALLTRACE`, run ct1).
+
+**Why phase 9's skip was wrong twice.** Zeroing the enable word in
+re-simulated frames stopped the update, not the fight logic's play calls: a
+re-simulated frame started its sounds a second time (trace snd1: 13 starts in
+re-simulated frames, the same ids as the first run, the library allocating new
+tracks for them). And the update's game-side half (bank state machine,
+handles it writes back) skipped the re-simulated frames on one peer and ran
+them live on the other. Same test, both modes (cost_skip / cost_resim, 8-frame
+rollbacks every 30 frames through a whole match): skip **6 gameplay-hash
+mismatches in 840** re-simulated boundaries, resim **0 in 1088**.
+
+**What runs now (`T5_RB_SOUND=resim`, the default).** The sound update runs in
+re-simulated frames like in any frame; the library sees every sound once:
+
+- every play call is logged per frame (group, channel, flags, id for
+  channel-less sounds, the handle it wrote back, its return value). A rollback
+  pass re-simulates frames g..f-1; a play call in it that finds an entry no
+  run of the pass has matched yet -- in its own frame, else in the nearest
+  frame of the pass (the corrected timeline moved it by a frame or two) -- is
+  not passed on: the sound keeps playing and the handle is written back. A
+  play call with no entry is the corrected timeline's and starts now (late by
+  the rollback depth). An entry no run of the pass asked for again belongs to
+  the mispredicted timeline and plays on: nothing is cut;
+- voices (channel >= 0) match without their id: the game picks a voice
+  variation, and whether to say anything at all, from the C `rand()`, which a
+  side thread consumes at its own pace (section 12) -- a re-simulated frame
+  may ask for another variation, or for a voice its first run did not have;
+- stops are never applied in re-simulated frames (a repeat was done already,
+  a new one would cut a sound); music/bank calls a run of the pass made
+  already are not repeated (a second music switch made the stream reader
+  abort in phase 7); the status query gets the first run's answer for the same
+  handle;
+- the library tick is skipped in re-simulated frames: it runs once per
+  displayed frame, like the SPU core, so tracks never advance faster.
+
+The calls are reached by entry detours of the lifted functions
+(`rb_detour.cpp`: a 5-byte jmp at the host entry to a relay, the moved
+prologue in a trampoline; only the push / sub rsp / mov / vmovaps prologues
+clang-cl emits are accepted, anything else is refused and the mode falls back
+to skip). The game-DLL build publishes the lifted table after static init, so
+there the hooks go in when the loop starts. One mistake on the way: matching
+`0x329158` on r3 and r4, where r4 is no argument but whatever the previous call
+left; a skipped previous call left a different r4, the bank call went through
+a second time, failed (`0x80000020`), and "Fight!" came a frame later on one
+peer (r50a, desync at 5778). The table now has each function's real arity
+from its call sites.
+
+**Cost.** Main-thread cycles per re-simulated frame (test mode, same match,
+`T5_RB_RESIM=8` every 30 frames): resim median 18.0 M (p10 6.0, p90 38.9),
+skip 24.2 M (p10 7.5, p90 45.0), a normal frame 64-65 M. The expensive part,
+the library tick, is skipped in both: running the sound side in re-simulated
+frames costs nothing measurable.
+
+## 21. The words left out of the hash, with evidence
+
+Phase 9's last flagged word, `0x100911D0` (+0x830 of the third 0x8D0 block),
+differed again from match 2's intro in the first three-match pair (p50a). Its
+writer (write-fault trace, `T5_RB_WFT_AT`, run wft2) is the character
+animation update (`0x27F904 <- 0x2887E8 <- 0x264B28`): an address of an object
+taken from a pool at a match intro. A **pure lockstep pair without rollback**
+(e1lock: `T5_RB_MODE=off` both, RTT 50, delay 3, the same three matches)
+showed the same word differing from match 2's intro (`0x106704F0` vs
+`0x106701F0`) and nothing else -- so it is not rollback-made, and not match
+state: the slot depends on what else came and went (the stage's effects run
+on a side thread on stage 24). Left out of both hashes together with the same
+field of the fourth block (`0x10091AA0`) and the twenty heap pointers at
+`0x10091AB8` (o0c, m150c: the same kind of pool addresses).
+With the sound side fixed nothing else differed in any later pair: the other
+phase-9 words (stage re-roll, `+0x830` of P1/P2, the effect record) stay
+skipped as before; no new word was needed.
+
+Also found on the way: after a re-simulation with the draw cut, ~210 pages of
+render bookkeeping (linked lists at `0x1042B000..0x10434FFF` among them)
+differ from the uninterrupted run (now listed in full by the test mode's
+diff). None of it is hashed; a pair with the cut off (e2nocut) stayed in sync
+as well, so the cut is not what moves the pool addresses.
+
+## 22. Lockstep windows: what they cost, what replaces them
+
+The 600-frame lockstep window after every fight-phase change (phase 6) and
+the 420-frame warm-up made the game crawl at high latency: lockstep with
+input delay 1 waits one-way latency per frame (~13 fps at RTT 150). p50a (RTT
+50): 31 of 32 s of stall time came from those windows, 47 phase changes kept
+most of the match in them. Now:
+
+- **Phase windows: off** (`T5_RB_NET_PHASE_LOCK`, default 0). With the sound
+  side running in re-simulated frames, KO, round end and match end
+  re-simulate like any frame (s0/s150/r50b/F*/G*: 43-45 phase changes per
+  three-match session, 0 mismatches).
+- **The intro takes no input** (`T5_RB_NET_INTRO`, on with direct fight). From
+  the match-start barrier to "Fight!" the phase word is 7..12 (17 = fighting,
+  select screens 1..5). A frame whose input is decided at a boundary in those
+  phases gets neutral input: this side sends neutral without reading the
+  devices (taps stay latched), and predicts neutral for the peer's frames
+  decided in the same phases. The intro has no mispredictions, no rollback
+  reaches into it, and its loads (stage, characters, voice banks: frames 7,
+  38, 56, 92, 217 of match 1) need no lockstep.
+- **Loads outside the intro** (the match end) lock 60 frames
+  (`T5_RB_NET_LOAD_LOCK`): `drain_workers` tells the loop when it had to wait
+  for the loader threads.
+- **Warm-up**: 0 with direct fight (the intro rule covers it), 420 otherwise.
+- A bug: a phase change set `g_lock_until = f + lock`, shortening a running
+  warm-up or load window; the host of q150 rolled back across match 2's loads
+  and came out two phases apart. Windows only ever extend now.
+
+## 23. A race with the vblank handler (patch 0029)
+
+r150a's host died in match 2 after ~700 rollbacks: garbage indirect calls
+from `0x34CA64` (the vblank callback-list walk) on the thread that ran the
+guest vblank handler (`0x34BC08`), then an SPU halt and silence. The handler
+runs inside `ppu_gcm_pump` -- on the ticker thread or at any guest thread's HLE
+call -- and walks the callback list at `0x106D4BE0` with its lock word, while
+the main thread copies or restores those pages at the boundary. Patch 0029
+adds `cellGcm_pump_hold(on, timeout_ms)` (`libs/video/cellGcmSys.c`): it takes
+the pump's own entry guard (waiting up to the timeout for a handler in flight)
+so handlers stay pending while `state_commit`, `state_rollback` and
+`state_init` copy guest memory; the next pump delivers them. Not seen again in
+the ~20 000 rollbacks of the later pairs. Patch 0029 also has `ATRAC_MUTE=1`
+(tests: streams decoded and paced, the PCM handed to the title is silence) so
+sound effects can be measured without the music.
+
+## 24. Time sync, input delay, the default
+
+**Time sync both ways.** Per 300-frame window both peers sleep when ahead
+(s150: host 421 sleeps / 15 s, joiner 279 / 7.5 s over 430 s; advantage per
+window between -0.8 and +0.6 frames except one window at +-2.4), and both roll
+back (1738 / 1583). Phase 9's one-sided picture (o0c: the host +2.3 frames
+ahead all match, 28 sleeps per window, the joiner 0 rollbacks) is gone: the
+windows that made one side wait every frame are gone.
+
+**Rollback input delay.** The lobby picks the session's input delay for the
+lockstep (`proto.suggest_delay`: one-way latency + jitter, at least 2 frames,
+6 at RTT 150). Once both peers offer rollback they switch to
+min(that, `T5_RB_NET_DELAY`), default 2 frames, the host's value carried in
+the HELLO flags (bits 8-15) so both agree; frames already decided keep their
+inputs (`np::rb_apply_delay`, at the loop's start).
+
+**The default.** `offered_by_env`: with `T5_NET_MODE` set and `T5_RB_MODE`
+unset, rollback is offered when the match starts through direct fight
+(`T5_NET_START=external`, what the lobby does); `T5_RB_MODE=net` forces the
+offer, `T5_RB_MODE=off` (or `lockstep`) withholds it. A peer that does not
+offer (an older build, `T5_RB_MODE=off`) gets the lockstep on both sides.
+The rollback hooks switch `PS3_VM_WRITE_WATCH=1` on before `main()` when they
+will offer (through the OS environment: the runtime's getenv cache keeps a
+miss), and a session whose guest memory has no write watch does not offer.
+
+**Results and speed under rollback.** The result file now carries the
+deciding frame's gameplay hash once that frame is final (`rb::net::final_hash`;
+the lobby compares the two players' hashes when their reports disagree) and
+this PC's speed (`fps`): the loop feeds the lockstep's speed accounting with
+every live frame and the time it waited for the peer, so the `speed:` lines
+the launcher reads for the lag check are there again. A match end seen on a
+predicted frame that a rollback then undoes cancels the pending result.
+
+## 25. Results
+
+All pairs: two instances on this PC through `tools/rollback_net_test.py`'s
+proxy, +-5 ms jitter, 3 % loss, direct fight Asuka vs Lili on stage 20, then
+Lili vs Dragunov on stage 24 twice (match 2 and the rematch, `T5_FIGHT_FILE`),
+2 rounds to win, the ranked driver's attacks in fights only
+(`T5_NET_SCRIPT_FIGHT=1`), desync dumps on. "Desync" is each match's result
+file (mismatching frames from its sync point); every run also had
+`sync check ... in sync` through its last full window.
+
+**The default configuration** (no `T5_RB_MODE`, no `PS3_VM_WRITE_WATCH`, the
+lobby's lockstep delay for the RTT -> rollback delay 2):
+
+| run | layout | RTT | frames | rollbacks host / join | re-simulated | desync per match | decode errors | abort / hang | stall s host / join |
+|---|---|---|---|---|---|---|---|---|---|
+| F0 | exe | 0 | 18 900 | 67 / 43 | 115 / 60 | 0, 0, 0 | 0 | none | 2.7 / 0.8 |
+| F50 | exe | 50 | 18 900 | 422 / 288 | 498 / 355 | 0, 0, 0 | 0 | none | 2.4 / 1.6 |
+| F150 | exe | 150 | 18 900 | 1637 / 1601 | 3082 / 2866 | 0, 0, 0 | 0 | none | 6.8 / 4.3 |
+| G0 | game DLL | 0 | 18 900 | 17 / 41 | 34 / 43 | 0, 0, 0 | 0 | none | 1.5 / 0.04 |
+| G50 | game DLL | 50 | 18 900 | 271 / 128 | 339 / 179 | 0, 0, 0 | 0 | none | 2.8 / 1.0 |
+| G150 | game DLL | 150 | 18 900 | 1574 / 1440 | 2323 / 2049 | 0, 0, 0 | 0 | none | 3.8 / 4.5 |
+
+F* ran the developer exe before the result/speed changes of section 24; G*
+are the final code in the release layout (`T5DR_GAME_DLL=ON`), the three pairs
+at once with two other agents' instances on the machine (31-32 fps): each
+match's result file has the same gameplay `hash` on both PCs. G150's sound:
+0 doubled starts, 134 / 127 re-simulated starts kept from the first run, 19 /
+16 started late (1-4 frames), 7 / 1 mispredicted sounds played on, 0 stops
+applied in re-simulated frames.
+
+**Stress, input delay 1** (`T5_RB_MODE=net`, before the default flip; more and
+deeper rollbacks):
+
+| run | RTT | frames | rollbacks host / join | re-simulated | desync per match | decode errors | abort / hang |
+|---|---|---|---|---|---|---|---|
+| s0 | 0 | 17 100 | 451 / 197 | 543 / 266 | 0, 0, 0 | 0 | none |
+| r50b | 50 | 17 100 | 1207 / 1219 | 1975 / 1946 | 0, 0, (0 through 16 799) | 0 | none |
+| s150 | 150 | 17 100 | 1738 / 1583 | 5433 / 4596 | 0, 0, 0 | 0 | none |
+
+Stall time per match is the match-start barrier (the peer still loading the
+fight) plus the prediction window at RTT 150: 0.3-2.5 s per match, none of it
+in lockstep windows during fights.
+
+**Lockstep fallback** (fallback: host default, joiner `T5_RB_MODE=off` as an
+older build): the host offered, the joiner did not, both ran "lockstep starts:
+frame 0, delay 3", in sync, identical result files.
+
+**Release layout** (`-DT5DR_GAME_DLL=ON` + `t5dr_game.dll` from
+`tools/build_game_dll.py`): the sound hooks go in when the loop starts
+("lifted code not loaded yet" at static init); dll150 (RTT 150, delay 1, one
+match): 533 / 530 rollbacks, in sync, results with the same `hash` on both
+PCs.
+
+**Sound** (RTT 150, delay 1, one match each, `ATRAC_MUTE=1`; request-level
+counts from `tools/rollback_sound_compare.py` against a no-rollback reference
+pair with the same scripts):
+
+| run | doubled starts | re-simulated starts kept from a first run | late starts (frames) | mispredicted, played on | stops applied in re-simulated frames |
+|---|---|---|---|---|---|
+| aud_rb (resim) host / join | 0 / 0 | 64 / 80 | 12 / 8 (median 1-2, max 6) | 2 / 0 | 0 |
+| aud_skip (phase 9) host / join | 55 / 89 | -- | -- | 52 / 90 | -- |
+| nv_rb (voices off) host / join | 0 / 0 | 57 / 68 | 0 / 2 | 1 / 1 | 0 |
+| nv_skip (voices off) | 37 / 42 by frame 2 750, then hung at the round end (skip without the phase windows) |
+
+Sound effects started on the same frame as in the reference: 250 of 254 and
+253 of 258 (nv_rb; the rest a frame off). The audio-level onset count of the
+recordings (`tools/rollback_audio_check.py --match 1`) cannot resolve single
+hits: host and join of the same no-rollback reference -- the same sounds --
+differ by 24 of ~130 onsets, because how many transients the detector
+separates depends on how far apart in wall time the sounds land, which
+follows the frame rate; nv_rb lies inside that spread (129 and 148 against
+148 and 124). Music during the fights (music on; mus_ref/mus_rb under load,
+q_ref/q_150 on a quieter machine): 0 silent 20 ms windows in every run;
+level dips of >= 40 ms more than 30 dB below the median: 0 / 0 with and 0 / 0
+without rollbacks on the quieter machine, 1-3 vs 0-1 under heavy load (six
+or more game instances and a compile on the machine). Decode errors: 0 in
+every run.
+
+**Cost** (release layout; two other agents' game instances on the 16-core
+machine; one match):
+
+| | fps (match average) | displayed frame p50 / p99 | rollbacks | re-simulated frames |
+|---|---|---|---|---|
+| q_ref: no rollback (RTT 0, delay 6) | 52.1 / 53.1 | 17 ms / 34-46 ms | 0 | 0 |
+| q_150: default at RTT 150 | 47.2 / 47.9 | 17 ms / 50-51 ms | 523 / 507 | 1 359 / 1 349 (30 %) |
+| ab_ref / ab_150, side by side (same load, 4 instances) | 33.6-34.0 / 31.7-32.1 | 32 / 33 ms; 48-52 / 54-66 ms | 0 / 367 | 0 / 604 |
+
+Per re-simulated frame 18 M main-thread cycles (median, test mode), a normal
+fight frame 64 M. Side by side RTT 150 runs 5 % slower than no rollback:
+stalls and time-sync sleeps are ~3 % of the time, the rest is the
+re-simulation. No slow motion beyond that: the lockstep crawl (one-way latency
+per frame in every window) is gone, the typical frame stays at 17 ms.
+
+## What is left
+
+- Sound: voices are a random draw on each PC (the C `rand()` a side thread
+  consumes), so the two players may hear different grunts; that was so in the
+  lockstep too.
+- Cost: a rollback-heavy RTT 150 match averages ~47 fps on this machine with
+  others running (p99 51 ms); a faster sim or fewer re-simulated frames (a
+  smarter prediction than "last input repeats") would bring it to 60.
+- `T5_RB_SOUND=skip` (the phase-9 behaviour) is kept for comparison only:
+  without the old phase windows it hangs at a round end.
+- The draw cut leaves ~210 pages of render bookkeeping different after a
+  re-simulation; none of it is hashed and no run showed a consequence.

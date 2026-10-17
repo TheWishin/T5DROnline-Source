@@ -350,6 +350,7 @@ uint32_t g_fight_frame = 0;     /* frame the fight (game mode) started */
 bool g_result_done = false;
 bool g_over_clear = false;      /* kMatchOver was 0 in this fight: the previous match's flag has been reset */
 bool g_held = false;            /* the pads are held neutral until the next select (the match is decided) */
+bool g_intro_hold = false;      /* the pads are held through the fight's loading and intros (netplay) */
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
@@ -732,7 +733,8 @@ void fight_on_frame(uint32_t f)
         if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         write_hud(g_cfg, f);
-        for (int p = 0; p < 2; p++) inject(p, false, 0);
+        g_intro_hold = session_netplay();                 /* held through the loading and intro, released at "Fight!" */
+        for (int p = 0; p < 2; p++) inject(p, g_intro_hold, 0);
         g_match++;
         g_over_clear = false;
         g_held = false;
@@ -749,6 +751,15 @@ void fight_on_frame(uint32_t f)
             hold_pads(f, "left the fight");
             set_phase(Ph::Over, "over", f);
             break;
+        }
+        {   /* the game mode's start, loading and intros (phase 0..12) take no input under netplay: held, released
+             * for the fight (17). The rollback loop does the same for its intro frames; in lockstep a faster PC
+             * otherwise runs the last loading frames before the scene barrier with input the other never sees */
+            const bool intro = rd32(kSelectState) <= 12;
+            if (!g_held && session_netplay() && intro != g_intro_hold) {
+                g_intro_hold = intro;
+                for (int p = 0; p < 2; p++) inject(p, intro, 0);
+            }
         }
         const uint8_t over0 = rd8(kMatchOver);
         if (!over0) g_over_clear = true;
@@ -827,6 +838,13 @@ void fight_on_frame(uint32_t f)
 }
 
 bool fight_configured() { return g_configured; }
+
+} // namespace df
+
+/* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
+extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+
+namespace df {
 
 void fight_init()
 {

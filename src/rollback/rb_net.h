@@ -57,11 +57,30 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
  * rollback may reach back before nf. */
 void     scene_change(uint32_t nf);
 
+/* The game waited for its loader threads before live frame f (t5_hooks.cpp's
+ * drain): a load completed. Loader and kernel state are not rolled back, so no
+ * re-simulation may run across it: the loop runs in lockstep for
+ * T5_RB_NET_LOAD_LOCK frames from here. */
+void     load_seen(uint32_t f, double ms);
+
+/* The gameplay hash of frame f once it is final (every input before it
+ * confirmed and handed to the desync check); false before that. */
+bool     final_hash(uint32_t f, uint64_t* h);
+
 /* Take over at lockstep frame f (state shadow taken now). */
 void     start(uint32_t f);
 
 /* Called from the netplay init (before the handshake): offer rollback to the
  * peer unless T5_RB_MODE says lockstep/off or is one of the test modes. */
 void     offer();
+
+/* What the environment asks for (T5_NET_MODE set, T5_RB_MODE unset/net/off),
+ * before any handshake: true when this side will offer rollback. */
+bool     offered_by_env();
+
+/* A persistent game (T5_CTL_DIR) ends a session: the loop stops (a
+ * re-simulation in progress is abandoned), its history and the state's undo
+ * logs go; the next session's start() takes over at its frame again. */
+void     session_reset();
 
 } } // namespace rb::net

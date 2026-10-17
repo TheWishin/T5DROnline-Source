@@ -78,6 +78,7 @@
 #include "netplay.h"
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
+extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -261,6 +262,15 @@ const char* kDefaultHashSkip =
     "1074F218:4,"                     /* the C library rand() word: a side thread (0x1230AC -> 0x12C558) consumes it at its own pace */
     "1008F088:4,"                     /* the stage id: re-rolled from that rand() at the second round's intro (l0d: 0x13 vs 0x1A), the fight unchanged */
     "10090030:4,10090900:4,"          /* +0x830 of each fighter block: a pointer into 0x10670000 set at a match intro (m50c: 0x10670AF0 vs 0x106707F0), the fight unchanged */
+    /* +0x830 of the third and fourth 0x8D0 block (0x100909A0, 0x10091270) and the
+     * twenty heap pointers at 0x10091AB8: addresses of objects the character
+     * animation update (0x27F904 <- 0x2887E8 <- 0x264B28) takes from a pool at a
+     * match intro; which slot it gets depends on what else came and went (the
+     * stage's own effects run on a side thread). They differ between two PCs
+     * in plain lockstep too (rollback10 run e1lock, no rollback: 0x100911D0
+     * 0x106704F0 vs 0x106701F0 from match 2's intro, nothing else), so they are
+     * addresses, not match state (docs/ROLLBACK.md section 20) */
+    "100911D0:4,10091AA0:4,10091AB8:50,"
     "100A0A00:80,"                    /* an effect record set at a match intro: a unit vector at +0x10 (m0c), a scale at +0x30 (n0c: 1,1,1 vs 0,0,0), the fight unchanged */
     "1008F0C4:4,1008F0D0:4,"          /* timestamps */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
@@ -435,6 +445,18 @@ void dump_memory(uint32_t f)
     }
 }
 
+/* Direct fight: the frames of the game mode's start, the loading and the
+ * intros (fight phase word 0x1008F070 at 0..12; 17 = fighting) take no input
+ * (the rollback loop sends neutral there, the direct-fight driver holds the
+ * pads in lockstep) and their state follows the loading, whose progress may
+ * differ between two PCs: a game that has played already loads from its
+ * caches faster than one that has just started (build/dp run dm3: the phase
+ * word 2 vs 7 at frame 0, until the loading's scene change). Their state hash
+ * is a fixed value on both sides instead (rb_net.cpp does the same); a
+ * difference that lasts reaches the fight, where every frame is compared. */
+constexpr uint64_t kIntroHash = 0x4F52544E49ull;   /* "INTRO" */
+bool intro_phase_now() { return rd32(0x1008F070u) <= 12; }
+
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
     return ppu_guest_call_ct(code, kTOC, a0, 0, 0, 0, 0, 0, 0, 0);
@@ -546,6 +568,10 @@ void drain_workers(uint32_t f)
 {
     drain_stats(f);
     if (workers_idle()) return;
+    struct Tell { uint32_t f; LARGE_INTEGER t0; ~Tell() {   /* the rollback loop keeps re-simulations clear of loads */
+        LARGE_INTEGER t1, qf; QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&qf);
+        rb::net::load_seen(f, 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)qf.QuadPart); } } tell{ f, {} };
+    QueryPerformanceCounter(&tell.t0);
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
     struct Acc { LARGE_INTEGER* a; ~Acc() {
@@ -647,7 +673,9 @@ void flush_result(bool now)
     if (!now && np::checked_through() <= p.f && GetTickCount64() - p.t < 3000) return;
     g_pending.on = false;
     const char* winner = p.w1 > p.w2 ? "0" : p.w2 > p.w1 ? "1" : "null";
-    write_result(winner, p.w1, p.w2, nullptr, p.f - g_match_f0, p.have_hash, p.hash);
+    uint64_t h = p.hash; bool have = p.have_hash;
+    if (!have && rb::net::active()) have = rb::net::final_hash(p.f, &h);   /* rollback: the deciding frame's gameplay hash, final */
+    write_result(winner, p.w1, p.w2, nullptr, p.f - g_match_f0, have, h);
 }
 
 void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
@@ -657,6 +685,13 @@ void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
     if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 in direct fights: use the winner byte */
         const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
         if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
+    }
+    if (!over && g_pending.on && rb::net::active() && f < g_pending.f + 600) {
+        /* rollback: the match end was seen on a predicted frame and the
+         * correction undid it -- not a result */
+        np::note("frame %u: the match end seen at frame %u was rolled back -- no result yet", f, g_pending.f);
+        g_pending.on = false; g_result_done = false; g_match_running = true; g_matches--;
+        return;
     }
     if (!over) {
         if (g_result_done) g_match_running = true;   /* menu-driven play: the next match is on */
@@ -831,6 +866,11 @@ void on_frame_start(ppu_context* ctx)
         np::note("lockstep of session %u from here (the keyread thread is still parked)", np::sessions());
     }
     uint32_t f = g_frame;
+    {   /* T5_NET_SCRIPT_FIGHT=1 (tests): scripted presses only while direct fight is in a fight */
+        static int gate = -1;
+        if (gate < 0) { const char* e = getenv("T5_NET_SCRIPT_FIGHT"); gate = e && *e == '1'; }
+        if (gate) np::set_script_gate(t5_df_in_fight() != 0);
+    }
     if (fresh_start) {
         /* Lockstep starts in the middle of a running game: what the two
          * games did before (boot, loading, menus at their own pace) must not
@@ -931,7 +971,8 @@ void on_frame_start(ppu_context* ctx)
     std::string parts = "H";
     g_frame_hashing = f;
     if (g_desync_dump) { g_snap[f % kSnapFrames].clear(); g_snap_tag[f % kSnapFrames] = f + 1; }
-    const uint64_t h = state_hash(&parts);
+    uint64_t h = state_hash(&parts);
+    if (g_directfight && intro_phase_now()) h = kIntroHash;   /* the fight's loading and intros: not compared (below) */
     for (uint32_t mf; g_desync_dump && np::take_mismatch(&mf);) {
         if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= 20) continue;
         char path[64];
@@ -1123,7 +1164,7 @@ void h_cellPadInit(ppu_context* ctx)
     ctx->gpr[3] = (uint64_t)(int64_t)r;
     np::init();
     if (!np::enabled() && !g_persistent) return;
-    rb::net::offer();   /* rollback in the HELLO when T5_RB_MODE=net */
+    rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
     { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
@@ -1206,6 +1247,7 @@ void persistent_lost(const char* reason)
 {
     write_end_result(reason);
     np::note("the session cannot go on (%s): it ends, the game stays open for the next match", reason);
+    rb::net::session_reset();
     np::session_end(reason);
     g_idle = g_active.load();
     g_start_requested = false;
@@ -1238,6 +1280,7 @@ extern "C" int t5_netplay_session_begin(void)
     g_inject_on = 0;
     g_cur[0] = g_cur[1] = np::kNeutral;
     g_session_lost = nullptr;
+    rb::net::session_reset();
     const bool ok = np::session_begin();
     g_idle = g_active.load();     /* lockstep of this session begins at t5_netplay_start() */
     np::note("session %u set up (%s)%s", np::sessions(), ok ? "handshake running" : "no netplay in the environment",
@@ -1251,6 +1294,7 @@ extern "C" void t5_netplay_session_end(const char* why)
 {
     if (!g_persistent) return;
     flush_result(true);
+    rb::net::session_reset();
     np::session_end(why);
     g_idle = g_active.load();
     g_start_requested = false;

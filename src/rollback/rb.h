@@ -41,7 +41,16 @@ void     list_threads();
 
 /* test-mode plumbing (rb_hooks.cpp) */
 bool     keyread_parked();                         /* keyread thread parked, main thread ticks it */
-void     set_sim_frame(uint32_t f);                /* logical frame the pad override answers for */
+void     set_sim_frame(uint32_t f);                /* logical frame the pad override answers for (net mode: the frame running) */
+uint32_t sim_frame();
+/* rb_sound.cpp: the sound side in re-simulated frames (T5_RB_SOUND=resim|skip|raw) */
+enum class SoundMode { Skip, Resim, Raw };
+struct SoundStats { uint32_t started_live = 0, started_resim = 0, deduped = 0, deduped_moved = 0, orphaned = 0, ticks_skipped = 0, log_full = 0,
+                    stops_kept = 0, stops_suppressed = 0, queries_replayed = 0, events_kept = 0, events_new = 0; };
+void       sound_install();                        /* detours of the play entry and the library tick */
+SoundMode  sound_mode();
+void       sound_begin_frame(uint32_t f, bool resim);   /* frame f is about to run (set_sim_frame calls it) */
+SoundStats sound_stats(bool reset);
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 bool     bypass_on();
 /* Time sync: a sleep requested by the rollback loop is taken inside the

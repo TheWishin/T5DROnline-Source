@@ -12,8 +12,24 @@
 #include "rb_state.h"
 
 extern "C" uint8_t* vm_base;
+extern "C" int cellGcm_pump_hold(int on, unsigned timeout_ms);   /* ps3recomp patch 0029 */
 
 namespace rb {
+
+/* The guest vblank handler runs on the runtime's ticker thread and walks the
+ * vblank callback list (0x106D4BE0) and its lock while the main thread sits at
+ * the frame boundary. A snapshot or restore that overlaps it can save a torn
+ * list / a lock word the ticker holds, or let the handler read a list half
+ * rewritten -- run r150a's host called garbage from 0x34CA64 after ~700
+ * rollbacks. So the GCM pump is held (handlers deferred, not lost) while the
+ * state is copied either way. */
+namespace {
+struct PumpHold {
+    int held;
+    PumpHold() : held(cellGcm_pump_hold(1, 100)) { static int warned; if (!held && warned++ < 5) note("state: a GCM handler did not return within 100 ms -- copying without holding it"); }
+    ~PumpHold() { if (held) cellGcm_pump_hold(0, 0); }
+};
+}
 
 /* ---- state regions (NPUB30009 v01.00, this runtime's memory map) ------------ */
 const Range kSave[] = {
@@ -136,6 +152,10 @@ static const Range kGameSkip[] = {
      * m50c, m0c): +0x830 of each fighter block (a pointer into 0x10670000)
      * and a unit vector at 0x100A0A10 */
     { 0x10090030u, 4 }, { 0x10090900u, 4 }, { 0x100A0A00u, 0x80 },
+    /* the same pointer in the third and fourth 0x8D0 block, and twenty heap
+     * pointers at 0x10091AB8: pool addresses the animation update takes at a
+     * match intro; they differ in plain lockstep too (rollback10 e1lock) */
+    { 0x100911D0u, 4 }, { 0x10091AA0u, 4 }, { 0x10091AB8u, 0x50 },
     { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC },
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
@@ -247,6 +267,7 @@ void state_init()
     g_pages = (uint8_t*)VirtualAlloc(nullptr, (size_t)kRingPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
     size_t off = 0;
+    PumpHold hold;
     for (const Range& r : kSave) { memcpy(g_shadow + off, vm_base + r.base, r.len); off += r.len; }
     /* the pages dirtied before now are of no interest: reset the watch */
     for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
@@ -263,6 +284,7 @@ bool state_ready() { return g_ready; }
 
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
 {
+    PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
     Log* lg = nullptr;
@@ -322,6 +344,17 @@ uint32_t state_oldest_frame()
     /* the boundary of frame (tag - 1) is reachable through that log */
     return oldest ? oldest - 1 : 0;
 }
+/* A persistent game's next session counts its frames from 0 again: the undo
+ * logs of the last one go, and the shadow takes in what changed since its last
+ * commit (state_commit(0) records no log). */
+void state_reset()
+{
+    if (!g_ready) return;
+    memset(g_log, 0, sizeof g_log);
+    g_ring_pos = 0; g_newest = 0; g_oldest = 0;
+    state_commit(0, nullptr, nullptr);
+}
+
 void state_drop_logs()
 {
     for (Log& l : g_log) l.tag = 0;
@@ -335,6 +368,7 @@ uint32_t state_log_pages(uint32_t f)
 
 bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
 {
+    PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     if (!g_newest || to >= g_newest) return false;
     /* every log from the newest (frame g_newest-1) down to frame `to` must be present */

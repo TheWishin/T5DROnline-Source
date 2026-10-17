@@ -178,6 +178,8 @@ struct Session {
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
+    int  rb_delay = 2;                 /* T5_RB_NET_DELAY: input delay once rollback is agreed (HELLO flags bits 8-15; the host's wins) */
+    int  peer_rb_delay = 0;            /* the peer's value (0: an older build that sent none) */
     int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
@@ -337,6 +339,7 @@ void device_input(uint32_t port, PadInput* in)
  * input, so both PCs see the same presses at the same frame). */
 std::atomic<bool> g_local_inject_on{ false };
 std::atomic<uint16_t> g_local_inject{ 0 };
+std::atomic<bool> g_script_gate{ true };
 
 /* The local player's input for (effective) frame f. */
 PadInput sample_local(uint32_t f)
@@ -346,7 +349,7 @@ PadInput sample_local(uint32_t f)
 
     if (g_local_inject_on.load()) { in.buttons = g_local_inject.load(); return in; }
     if (s.localpad) device_input(0, &in);
-    in.buttons |= script_mask(s.script, f);
+    if (g_script_gate.load()) in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
     return in;
 }
@@ -420,7 +423,7 @@ Hdr make_hdr(uint8_t type)
 void send_hello_locked(const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? kHelloRollback : 0u } };
+    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? (kHelloRollback | ((uint32_t)s.rb_delay << 8)) : 0u } };
     send_to(&p, sizeof p, to);
     s.last_hello_ms = GetTickCount64();
 }
@@ -655,6 +658,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             return;
         }
         s.rb_peer = (x.flags & kHelloRollback) != 0;
+        s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
         if (s.mode == Mode::Host) {
             /* Before the handshake the latest valid hello is the candidate; the
              * echo of our session id (the joiner adopted it) completes it. */
@@ -869,6 +873,7 @@ void configure()
     else { fprintf(stderr, "[netplay] T5_NET_MODE=%s: expected host, join or local -- netplay off\n", m); return; }
     s.slot = s.mode == Mode::Join ? 1 : 0;
     if (const char* v = env("T5_NET_DELAY")) s.delay = atoi(v);
+    if (const char* v = env("T5_RB_NET_DELAY")) s.rb_delay = std::max(0, std::min(30, atoi(v)));
     if (s.delay < 0) s.delay = 0;
     if (s.delay > 30) s.delay = 30;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
@@ -1136,6 +1141,10 @@ void match_begin(uint32_t f)
 uint32_t match_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.match_mismatches; }
 uint32_t checked_through() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.checked; }
 
+/* The rollback loop's live frames (it does not go through begin_frame):
+ * wait_us = the time this frame waited for the peer (stalls, time-sync sleeps). */
+void rb_account_frame(uint64_t wait_us) { account_frame(wait_us); }
+
 double local_fps()
 {
     State& s = S();
@@ -1297,11 +1306,13 @@ void rb_begin(uint32_t f)
     note("rollback mode starts: frame 0, delay %d", s.delay);
 }
 
-void rb_sample_local(uint32_t f)
+void rb_sample_local(uint32_t f, bool neutral)
 {
     State& s = S();
     if (s.mode == Mode::Off) return;
-    PadInput local = sample_local_open(f + (uint32_t)s.delay);
+    /* neutral: the frame takes no input (the fight intro, rb_net.cpp); the
+     * devices are not read, so a tap stays latched for the next real sample */
+    PadInput local = neutral ? kNeutral : sample_local_open(f + (uint32_t)s.delay);
     std::lock_guard<std::mutex> lk(s.mu);
     const uint32_t t = f + (uint32_t)s.delay;
     for (uint32_t g = s.local_max; g <= t; g++) {   /* hold the sample over any gap; a decided input never changes */
@@ -1404,12 +1415,32 @@ bool rb_negotiated()
     if (s.mode == Mode::Local) return s.rb_offer;
     return s.rb_offer && s.rb_peer && s.connected;
 }
+/* Rollback agreed: the input delay drops to the rollback delay -- the host's
+ * T5_RB_NET_DELAY (sent in its HELLO), never above the lockstep delay the
+ * session was set up with (the lobby picks that from the measured latency for
+ * the lockstep; rollback predicts the latency away instead). Both PCs apply
+ * the same value at the same point (the loop's start), so the time sync's
+ * frame estimate stays right. Inputs already decided under the old delay keep
+ * their frames: the next samples just wait until they are past them. */
+int rb_apply_delay()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    const int rbd = s.mode == Mode::Join ? (s.peer_rb_delay > 0 ? s.peer_rb_delay : s.delay) : s.rb_delay;
+    const int nd = std::min(s.delay, rbd);
+    if (nd != s.delay) {
+        note("rollback agreed: input delay %d -> %d (T5_RB_NET_DELAY, the host's)", s.delay, nd);
+        s.delay = nd;
+    }
+    return s.delay;
+}
 void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.local_lead = (int8_t)std::max(-100, std::min(100, lead)); }
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
 
 void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
+void set_script_gate(bool on) { g_script_gate = on; }
 
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
 

@@ -65,6 +65,7 @@ uint64_t hash_page(uint32_t ea);
 bool     state_rollback(uint32_t to, uint32_t* pages, double* ms);
 uint32_t state_oldest_frame();       /* the oldest boundary a rollback can reach */
 void     state_drop_logs();          /* forget every undo log (a barrier: no rollback past now) */
+void     state_reset();              /* a new netplay session (persistent game): no logs, frame numbers from 0, shadow brought up to date */
 uint32_t state_log_pages(uint32_t f); /* pages in frame f's undo log (0 when gone) */
 
 /* Pointer into the shadow copy (the state as of the last commit), or null. */

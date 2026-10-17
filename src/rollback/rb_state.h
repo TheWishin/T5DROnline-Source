@@ -25,6 +25,9 @@ extern const Range kHashExclude[]; extern const size_t kHashExcludeN;
 bool excluded_page(uint32_t ea);
 bool hash_excluded_page(uint32_t ea);
 void state_add_hash_exclude(uint32_t ea, uint32_t len);   /* T5_RB_HASH_EXCLUDE */
+/* A range written by another thread (neither saved, restored nor hashed from
+ * now on; e.g. a streaming buffer the HLE reports). Returns false if known. */
+bool state_add_exclude(uint32_t ea, uint32_t len);
 void state_add_mask(uint32_t ea, uint32_t len);           /* a word masked out of the hash */
 
 /* Allocate the tables, the shadow (a copy of S taken now) and the undo ring.

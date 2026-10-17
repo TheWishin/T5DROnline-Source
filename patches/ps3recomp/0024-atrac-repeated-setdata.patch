@@ -1,8 +1,29 @@
 diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
-index 636a578..e870b08 100644
+index 636a578..729248d 100644
 --- a/libs/codec/cellAtrac.c
 +++ b/libs/codec/cellAtrac.c
-@@ -257,6 +257,22 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
+@@ -90,6 +90,20 @@ typedef struct {
+ 
+ static AtracSlot s_slots[ATRAC_MAX_SLOTS];
+ 
++/* Rollback support (src/rollback): the title's streaming buffers are written
++ * by its feeder thread, which a rollback must not rewind, so the rollback
++ * excludes those pages from its snapshots. Lists the live streaming rings
++ * (guest address + size); returns how many. */
++int cellAtrac_rb_live_rings(u32* ea, u32* size, int cap)
++{
++    int n = 0;
++    ATRAC_LOCK();
++    for (int i = 0; i < ATRAC_MAX_SLOTS && n < cap; i++)
++        if (s_slots[i].handle_ea && s_slots[i].img && s_slots[i].ring_ea) { ea[n] = s_slots[i].ring_ea; size[n] = s_slots[i].ring_size; n++; }
++    ATRAC_UNLOCK();
++    return n;
++}
++
+ static int atrac_trace(void)
+ {
+     static int on = -1;
+@@ -257,6 +271,22 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
          ATRAC_UNLOCK();
          return (s32)CELL_ATRAC_ERROR_READSIZE_OVER_BUFFER;
      }

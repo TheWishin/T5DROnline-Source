@@ -1679,6 +1679,11 @@ side per match). It is now the mean of the middle 60 % (trimmed): 14-17 sleeps
 per side per match at RTT 150 with 3 % loss, against 20-60 before and 130-140
 with the median. Each sleep is a repeated picture on the screen.
 
+Tried and dropped: sending each frame's inputs a second time ~4 ms after the
+first (in the frame's wait for its vblank), against the deepest rollbacks that
+a lost packet makes at 3 % loss -- two interleaved pairs each way (RN1/RN2 vs
+RD1/RD2): the same depth histogram, the same p99 (24-25.5 ms).
+
 ## 29. Results
 
 `tools/rollback_net_test.py --fight 26,33,20,2 --rtt 150 --jitter 5 --loss 3

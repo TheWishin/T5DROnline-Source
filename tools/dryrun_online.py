@@ -200,6 +200,8 @@ class Player:
         pf = getattr(self, "padfile", None)
         if not pf or self.a.bot != "live":
             return
+        if getattr(self, "role", None) == self.a.idle:
+            return
         s = self.status()
         if not s or s.get("state") != "fight" or not self.driver.game_running():
             return
@@ -257,6 +259,7 @@ def main():
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
     ap.add_argument("--script-stop", type=int, default=60000, help="last lockstep frame with scripted presses")
     ap.add_argument("--bot", choices=["live", "script"], default="live")
+    ap.add_argument("--idle", choices=["host", "join"], help="live bot: this role (host = P1, join = P2) never presses")
     ap.add_argument("--check-only", action="store_true", help="connect, list the lobby, leave")
     a = ap.parse_args()
     STOP[0] = a.script_stop

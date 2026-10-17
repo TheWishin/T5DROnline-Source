@@ -8,6 +8,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+# The Online tab must not start reading this PC's real controllers during a test (a plugged-in pad would put
+# "(A)" on the buttons the tests look for by name); the pad tests give the tab fake ones.
+os.environ.setdefault("T5_PAD_NAV", "0")
 
 from t5lobby import proto  # noqa: E402
 from t5lobby.buildid import BuildInfo  # noqa: E402

@@ -69,6 +69,12 @@ class TkBase(unittest.TestCase):
             self.s.stop()
             self.skipTest(f"no display: {e}")
         self.root.withdraw()
+        # Never the real Windows clipboard: "Host for friends" copies the server line to it, and the person
+        # at this PC may be copying something of their own. The root gets an in-memory clipboard.
+        self._clip = []
+        self.root.clipboard_clear = lambda **kw: self._clip.clear()
+        self.root.clipboard_append = lambda text, **kw: self._clip.append(text)
+        self.root.clipboard_get = lambda **kw: "".join(self._clip)
         self.dir = tempfile.mkdtemp()
         os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")   # per-user settings: a fresh folder
         self.app = FakeApp(self.dir)
@@ -137,6 +143,10 @@ class TkTabTest(TkBase):
         self.other.report_result(my_slot, None)
         self.pump(lambda: "Result confirmed" in tab.status_var.get())
         self.assertIn("1W 0L", tab.me_var.get())
+
+    def test_the_tests_never_touch_the_real_clipboard(self):
+        for name in ("clipboard_clear", "clipboard_append", "clipboard_get"):
+            self.assertIn(name, vars(self.root), f"{name} must be the in-memory stand-in (TkBase.setUp)")
 
     def test_login_error_shows_in_status(self):
         self.other = client(self.s, "TabUser")

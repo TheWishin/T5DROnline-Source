@@ -37,6 +37,7 @@ CONTROLS = [
     ("Start / pause", "START", "Enter", "Start"),
     ("Select", "SELECT", "Tab", "Back"),
     ("Quit the game", "", "Esc", ""),
+    ("Online tab: accept / decline", "Cross / Circle", "Mouse", "A / B"),
 ]
 
 
@@ -323,6 +324,11 @@ class App(tk.Tk):
             "Keyboard and the first XInput controller both drive player 1 (they are combined). The keyboard "
             "only counts while the game window has focus. Button layout inside the game can be changed in its "
             "own Options menu.")).pack(anchor="w", pady=(6, 0))
+        ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=(
+            "In this window, on the Online tab, a controller or arcade stick works without mouse or keyboard: "
+            "Cross / A accepts a match or rematch and starts a search, Circle / B declines, leaves or stops the "
+            "search. It only counts while this window is in front, and only after the button was let go for a "
+            "moment. Which stick button is Cross follows your controls.ini.")).pack(anchor="w", pady=(4, 0))
         box.columnconfigure(0, weight=1)
         box.columnconfigure(1, weight=1)
 

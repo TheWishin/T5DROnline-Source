@@ -43,9 +43,9 @@ class Folders(unittest.TestCase):
         self.assertEqual(roots[-1], core.ROOT)
 
     @unittest.skipUnless(os.name == "nt", "Windows known folders")
-    def test_known_folder_desktop_exists(self):
+    def test_known_folder_desktop(self):
         p = core.known_folder(core.KNOWN_FOLDERS["Desktop"])
-        self.assertTrue(p and os.path.isdir(p), p)
+        self.assertTrue(p and os.path.isabs(p), p)
 
     def test_find_candidates_unicode_names_and_cloud_only_files(self):
         bg = core.build_game

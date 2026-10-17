@@ -29,6 +29,7 @@
 
 #include "rb.h"
 #include "rb_state.h"
+#include "../directfight/df.h"
 
 extern "C" uint8_t* vm_base;
 
@@ -151,10 +152,14 @@ uint32_t g_sample_n = 3;
 uint64_t g_cut_hits0 = 0;
 bool g_skipsound = false;        /* T5_RB_SKIPSOUND=1: re-simulated frames skip the sound update */
 uint32_t g_cut_tail = 1;
+bool g_start_auto = false;       /* T5_RB_START=auto: T5_RB_START_DELAY (300) frames after the game mode (4) is first seen (direct fight) */
+uint32_t g_start_delay = 300;
 int g_stage = -1;                /* T5_RB_STAGE=17..34: force the stage (written to 0x1008F088 from the stage confirm until the test starts, as direct-fight does) */
 bool g_stage_said = false;         /* T5_RB_CUT_TAIL: the last k re-simulated frames run WITHOUT the cut (like the live frame
                                   * after a real rollback), so the final boundary's hash must equal the original's */
 int g_wft_state = 0;
+uint32_t g_wft_frames = 1;       /* T5_RB_WFT_FRAMES: how many frames the normal-frame trace window stays open */
+uint32_t g_wft_left = 0;
 int g_normal_window = 0;
 int  g_trace_state = 0;
 uint32_t g_resim_left = 0;       /* > 0: re-simulating */
@@ -182,6 +187,9 @@ bool g_paddbg = false;
 void keyread_tick()
 {
     if (rd32(kKeyreadQuit)) return;
+    if (df_drives()) {   /* the direct fight's pad override answers with what we inject for this logical frame */
+        for (int p = 0; p < 2; p++) df::inject(p, true, script_input(p, g_logical).buttons);
+    }
     gcall(kFnTickCounter);
     wr32(kKeyreadObj + 0x1810, 0);
     const uint32_t calls0 = pad_calls();
@@ -213,7 +221,8 @@ void test_on_frame(ppu_context* ctx)
         g_inited = true;
         QueryPerformanceFrequency(&g_qpf);
         g_last = now;
-        if (const char* e = getenv("T5_RB_START")) g_start = (uint32_t)atoi(e);
+        if (const char* e = getenv("T5_RB_START")) { if (!strcmp(e, "auto")) { g_start_auto = true; g_start = UINT32_MAX; } else g_start = (uint32_t)atoi(e); }
+        if (const char* e = getenv("T5_RB_START_DELAY")) g_start_delay = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_SAVE_EVERY")) g_save_every = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_RESIM")) g_resim = (uint32_t)atoi(e);
         if (const char* e = getenv("T5_RB_ROLLBACKS")) g_rollbacks_max = (uint32_t)atoi(e);
@@ -225,6 +234,7 @@ void test_on_frame(ppu_context* ctx)
         if (const char* e = getenv("T5_RB_STAGE")) g_stage = atoi(e);
         if (g_skipsound && sound_word()) { state_add_mask(sound_word(), 4); note("sound update skipped in re-simulated frames (word %08X)", sound_word()); }
         wft_install();
+        if (const char* e = getenv("T5_RB_WFT_FRAMES")) g_wft_frames = (uint32_t)std::max(1, atoi(e));
         if (const char* e = getenv("T5_RB_TRACE")) { g_trace_on = *e == '1'; if (g_trace_on) trace_install(); }
         g_cap_buf = (uint8_t*)VirtualAlloc(nullptr, (size_t)kCapPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         g_snap_page_hash = (uint64_t*)calloc(1u << 20, sizeof(uint64_t));
@@ -249,6 +259,11 @@ void test_on_frame(ppu_context* ctx)
      * pads on vblanks, as in measure mode -- that is what navigates the menus
      * into the fight. From g_start on the thread is parked and this thread
      * ticks it once per logical frame, so input is a function of the frame. */
+    if (g_start_auto && g_start == UINT32_MAX && df::mode_cur() == 4) {
+        g_start = frame() + g_start_delay;
+        set_script_base(g_start);
+        note("game mode seen at frame %u: the test starts at %u (scripts count from there)", frame(), g_start);
+    }
     if (frame() < g_start) {
         g_logical = frame();
         set_sim_frame(g_logical);
@@ -290,10 +305,10 @@ void test_on_frame(ppu_context* ctx)
 
     const uint32_t f = g_logical;
     if (wft_enabled()) {
-        if (g_wft_state == 1) { wft_disarm("normal"); g_wft_state = 2; }
+        if (g_wft_state == 1 && --g_wft_left == 0) { wft_disarm("normal"); g_wft_state = 2; }
         else if (g_wft_state == 3) { wft_disarm("resim-cut"); g_wft_state = 4; }
         else if (g_wft_state == 5) { wft_disarm("diffpages-normal"); g_wft_state = 6; }
-        if (g_wft_state == 0 && g_resim_left == 0 && f == g_start + 25) { wft_arm(); g_wft_state = 1; }
+        if (g_wft_state == 0 && g_resim_left == 0 && f == g_start + 25) { wft_arm(); g_wft_state = 1; g_wft_left = g_wft_frames; }
         /* T5_RB_WFT=diff: trace the writers of the pages the first final-boundary diff found, over the next normal frame */
         if (g_wft_state == 4 && g_resim_left == 0 && !g_diff_pages.empty()) { wft_arm_pages(g_diff_pages.data(), g_diff_pages.size()); g_wft_state = 5; }
     }

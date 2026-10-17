@@ -66,6 +66,7 @@ def main():
     ap.add_argument("--shots", default="", help="comma-separated seconds at which to screenshot")
     ap.add_argument("--no-script", action="store_true")
     ap.add_argument("--ko", action="store_true", help="P1 attacks with launchers, P2 idle (rounds end by KO)")
+    ap.add_argument("--fight", default="", help="direct fight p1,p2,stage[,rounds]: boots into the match (T5_FIGHT); the test starts 120 frames into it")
     ap.add_argument("--icall-at", type=float, default=0, help="seconds: trace the main thread's indirect calls for 0.5 s")
     a = ap.parse_args()
 
@@ -85,7 +86,12 @@ def main():
         "T5_RB_MODE": "measure",
         "T5_RB_LOG": os.path.join(d, "rb_frames.log"),
     })
-    if a.ko:
+    if a.fight:
+        env["T5_FIGHT"] = a.fight
+        env["T5_RB_START"] = "auto"
+        env["T5_RB_SCRIPT"] = "@" + (ko_script(0, 20000) if a.ko else fight_script(0, 20000, p1=True))
+        env["T5_RB_SCRIPT2"] = "@" + ("" if a.ko else fight_script(0, 20000, p1=False))
+    elif a.ko:
         env["T5_RB_SCRIPT"] = MENU + "," + ko_script()
         env["T5_RB_SCRIPT2"] = "@1810:4:0x4000,2010:4:0x4000,2210:4:0x4000"
     elif not a.no_script:

@@ -24,6 +24,8 @@ static const PadInput kNeutral = { 0, 128, 128, 128, 128 };
 Mode     mode();
 uint32_t frame();                                  /* frames seen at the boundary so far */
 PadInput script_input(int port, uint32_t f);
+bool     df_drives();                              /* T5_FIGHT set: direct fight owns the pads, scripts go through df::inject */
+void     set_script_base(uint32_t f);              /* script frames count from this logical frame (T5_RB_START=auto) */
 void     set_override(const PadInput* in);         /* both pads fixed (nullptr: back to script) */
 uint64_t gcall(uint32_t code, uint64_t a0 = 0, uint64_t a1 = 0);
 

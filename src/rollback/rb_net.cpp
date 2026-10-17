@@ -18,9 +18,13 @@ constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per
 bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
 bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
+uint32_t g_warmup = 180;         /* T5_RB_NET_WARMUP: frames after the start during which no prediction is allowed (the stage
+                                  * still streams in; a rollback into a load in flight broke the game in test f1) */
+uint32_t g_started_at = 0;
 /* time sync */
 constexpr int kLeadWinMax = 60;
-int g_lead_win = 20, g_ts_interval = 20, g_ts_max = 2;   /* T5_RB_NET_TS=win,interval,max: averaging window, frames between sleeps, max frames per sleep */
+int g_lead_win = 20, g_ts_interval = 10, g_ts_max = 2;
+LARGE_INTEGER g_t_frame0; uint32_t g_frames_timed = 0; double g_frame_ms = 1000.0 / 60.0;   /* measured frame time (last 60 live frames) */   /* T5_RB_NET_TS=win,interval,max: averaging window, frames between sleeps, max frames per sleep */
 int g_lead_mine[kLeadWinMax], g_lead_theirs[kLeadWinMax]; int g_lead_n = 0;
 uint32_t g_last_sleep_frame = 0;
 int g_delay = 0;
@@ -98,9 +102,12 @@ static bool offered_by_env()
     const char* m = getenv("T5_RB_MODE");
     const char* nm = getenv("T5_NET_MODE");
     if (!nm || !*nm) return false;
-    /* Opt-in (T5_RB_MODE=net) until the stage-specific resim mismatch of run
-     * m2 (docs/ROLLBACK.md section 11) is fixed; lockstep is the default. */
-    return m && !strcmp(m, "net");
+    /* The default online mode (the stage-specific mismatch of run m2 was the
+     * rand() word, docs/ROLLBACK.md section 12); T5_RB_MODE=lockstep or off
+     * keeps the delay-based lockstep, the test modes (test, measure) are not
+     * netplay. */
+    if (!m || !*m) return true;
+    return !strcmp(m, "net");
 }
 
 void offer()
@@ -109,7 +116,7 @@ void offer()
     g_offered = true;
     if (!offered_by_env()) return;
     np::rb_offer(true);
-    note("rbnet: rollback offered to the peer (T5_RB_MODE=net; lockstep is the default)");
+    note("rbnet: rollback offered to the peer (T5_RB_MODE=lockstep keeps the delay-based lockstep)");
 }
 
 bool enabled()
@@ -120,6 +127,7 @@ bool enabled()
         if (e) {
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
+            if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
@@ -147,6 +155,7 @@ void start(uint32_t f)
     state_init();
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
     g_active = true;
+    g_started_at = f;
     g_checked = g_hash_sent = g_floor = f;
     g_last_remote = np::kNeutral;
     np::PadInput r;
@@ -187,6 +196,9 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        /* the frame time this machine actually runs at (sleeps are in frames) */
+        if (g_frames_timed == 0) QueryPerformanceCounter(&g_t_frame0);
+        if (++g_frames_timed == 60) { g_frame_ms = std::max(5.0, std::min(100.0, ms_since(g_t_frame0) / 60.0)); g_frames_timed = 0; }
         /* time sync: my lead = my frame minus the peer's frame as implied by its
          * latest input (sampled delay frames ahead of its boundary) */
         {
@@ -210,7 +222,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         g_st.lead_sum += adv;
         if (adv >= 1.0 && f - g_last_sleep_frame >= (uint32_t)g_ts_interval) {
             const int frames = std::min(g_ts_max, (int)adv);
-            const double ms = frames * 1000.0 / 60.0;
+            const double ms = frames * g_frame_ms;
             LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
             np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms);   /* a sleep that keeps the socket pumped */
             g_last_sleep_frame = f;
@@ -221,14 +233,15 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */
-    const uint32_t need = scene_flag ? f : (f > g_maxpred ? f - g_maxpred : 0);
+    const bool warm = f < g_started_at + g_warmup;   /* lockstep until the fight has settled */
+    const uint32_t need = (scene_flag || warm) ? f : (f > g_maxpred ? f - g_maxpred : 0);
     if (rc < need && !np::rb_peer_lost()) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
         rc = np::rb_wait_remote(need - 1, 2000);
         const double ms = ms_since(t0);
         g_st.stalls++; g_st.stall_ms += ms;
         if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
-                                        scene_flag ? "scene change" : "prediction window");
+                                        scene_flag ? "scene change" : warm ? "warm-up" : "prediction window");
     }
 
     /* mispredictions among the frames now confirmed */

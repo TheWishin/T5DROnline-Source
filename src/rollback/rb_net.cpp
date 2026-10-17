@@ -14,6 +14,7 @@
 extern "C" uint8_t* vm_base;
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
+extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode (4) */
 
 namespace rb { namespace net {
 
@@ -41,6 +42,7 @@ uint32_t g_start = 0, g_maxpred = 8;
  *                         delay 1, RTT 150: one-way latency per frame), so the
  *                         default is 0 (docs/ROLLBACK.md section 20). */
 uint32_t g_warmup = 420;
+uint32_t g_saved_minvb[2] = { 0, 1 };   /* the present's min vblanks (u64) before start() zeroed it */
 uint32_t g_started_at = 0;
 constexpr uint32_t kPhaseWord = 0x1008F070u;
 uint32_t g_phase_lock = 0, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
@@ -56,10 +58,21 @@ uint32_t g_loads = 0;
  * intro then has no mispredictions, no rollback ever reaches into it, and the
  * loads that happen there (stage, characters, voice banks) need no lockstep:
  * the intro runs at full speed at any latency. T5_RB_NET_INTRO=0 turns it off. */
+/* The game mode's first frames come before phase 7: the select mode hands
+ * over with the phase word at 5, the game mode sets 0, then 2, then 7 (probe
+ * of an offline fight: FIGHT START at phase 2, 7 one frame later). The first
+ * boundary of a session (lockstep frame 0) is one of them: a press sampled
+ * there went out (release dry run 0.1.6: the harness pressed at frame 2), the
+ * peer had predicted neutral, rolled back 9 frames into the fight's first
+ * loading frames, and its loading never finished -- the other PC waited at
+ * the loading's end until it gave the match up. So in the game mode
+ * (t5_df_game_mode(): mode 4) every phase up to 12 is intro; at a select
+ * screen (mode 6, phases 0-5) the driver's presses must go through. */
 bool g_intro_rule = false;
 uint8_t  g_phase_at[4096]; uint32_t g_phase_tag[4096];   /* phase word at the boundary of frame f (before f ran) */
-bool intro_phase(uint32_t p) { return p >= 7 && p <= 12; }
-bool intro_at(uint32_t b) { return g_intro_rule && g_phase_tag[b % 4096] == b + 1 && intro_phase(g_phase_at[b % 4096]); }
+bool     g_intro_flag[4096];                             /* ... and whether that boundary was in the intro */
+bool intro_phase(uint32_t p, bool game_mode) { return p <= 12 && (p >= 7 || game_mode); }
+bool intro_at(uint32_t b) { return g_intro_rule && g_phase_tag[b % 4096] == b + 1 && g_intro_flag[b % 4096]; }
 uint32_t g_intro_frames = 0;
 double g_wait_acc_ms = 0;   /* time the next live frame waited for the peer (speed accounting) */
 /* time sync */
@@ -257,6 +270,7 @@ void start(uint32_t f)
     np::rb_begin(f);
     if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
     state_init();
+    g_saved_minvb[0] = rd32(kMinVblanks); g_saved_minvb[1] = rd32(kMinVblanks + 4);
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
     g_active = true;
     g_started_at = f;
@@ -274,6 +288,14 @@ void session_reset()
 {
     if (!g_active) return;
     if (g_resim) { set_bypass(false); sound_skip(false); cut_set(false); g_resim = false; }
+    /* The game goes on without the loop (back to a select screen for the
+     * next opponent): what start() changed in it goes back -- the present's
+     * vblank pacing -- and the sound hooks forget the session's frames (a
+     * session that ended inside a re-simulation left them "re-simulating":
+     * every later play call matched against stale entries, every library
+     * tick skipped, every stop dropped). */
+    wr32(kMinVblanks, g_saved_minvb[0]); wr32(kMinVblanks + 4, g_saved_minvb[1]);
+    sound_reset();
     report();
     note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls)",
          g_tot.frames, g_tot.rollbacks, g_tot.stalls);
@@ -331,6 +353,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
+    g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     double cms = 0;
     const uint32_t dirty = state_commit(f, nullptr, &cms);
     (void)dirty;

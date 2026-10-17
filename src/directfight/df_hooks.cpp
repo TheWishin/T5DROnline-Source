@@ -30,6 +30,10 @@
 
 #include "sys_ppu_thread.h"     /* ppu_context */
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
+namespace rb {   /* src/rollback/rb_hooks.cpp (diagnostics: T5_DF_GUARD) */
+uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);
+std::string guest_backtrace(int max);
+}
 #include "df.h"
 
 extern "C" {
@@ -37,6 +41,9 @@ void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_cont
 int32_t cellSysutilRegisterCallback(int32_t slot, uint32_t func, uint32_t userdata);
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
+/* runtime/syscalls/sys_semaphore.h (Windows layout), read-only: stuck_dump() */
+struct df_sys_semaphore_info { int active; char name[8]; uint32_t protocol; int32_t value, max_value, waiters; HANDLE h; CRITICAL_SECTION cs; };
+extern df_sys_semaphore_info g_sys_semaphores[];
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 void    t5_netplay_inject(int port, int on, unsigned buttons);   /* src/netplay/t5_hooks.cpp */
@@ -190,6 +197,49 @@ uint32_t mode_manager() { return g_mgr; }
 uint32_t mode_cur()  { return g_mgr ? rd32(g_mgr + kModeReq) : 0xFFFFFFFFu; }
 uint32_t mode_next() { return g_mgr ? rd32(g_mgr + kModeReq + 4) : 0xFFFFFFFFu; }
 
+/* A reset or leave that waits too long (df_fight.cpp stuck_check): what the
+ * mode manager is at and where every guest thread last entered the kernel */
+void stuck_dump(uint32_t f)
+{
+    if (g_mgr) {
+        std::string w;
+        char t[16];
+        for (uint32_t o = 0x40; o < 0x74; o += 4) { snprintf(t, sizeof t, " %08X", rd32(g_mgr + o)); w += t; }
+        note("frame %u: mode manager +0x40..0x70:%s (object %s)", f, w.c_str(), class_name(rd32(g_mgr + 0x6C)).c_str());
+    }
+    {
+        std::string sems;
+        for (int i = 0; i < 64; i++) {
+            const df_sys_semaphore_info& m = g_sys_semaphores[i];
+            if (!m.active) continue;
+            char b[48]; snprintf(b, sizeof b, " %d:%d/%dw", i + 1, m.value, m.waiters);
+            sems += b;
+        }
+        note("frame %u: semaphores (id:value/waiters):%s", f, sems.c_str());
+        const uint32_t obj = g_mgr ? rd32(g_mgr + 0x6C) : 0;
+        if (obj) {
+            std::string w;
+            for (uint32_t o = 0; o < 0x60; o += 4) { char t[12]; snprintf(t, sizeof t, " %08X", rd32(obj + o)); w += t; }
+            note("frame %u: mode object 0x%08X:%s", f, obj, w.c_str());
+        }
+    }
+    for (int i = 0; i < PPU_THREAD_MAX; i++) {
+        const ppu_thread_info& t = g_ppu_threads[i];
+        if (t.state != PPU_THREAD_STATE_RUNNING && t.state != PPU_THREAD_STATE_DETACHED) continue;
+        std::string chain;
+        uint32_t sp = (uint32_t)t.ctx.gpr[1];
+        for (int d = 0; d < 12 && sp >= 0x10000u && sp < 0xEFFFFFF0u; d++) {   /* the guest stack's back chain */
+            const uint32_t next = rd32(sp + 4);
+            if (!next || next <= sp || next >= 0xEFFFFFF0u) break;
+            char c[16]; snprintf(c, sizeof c, " %X", rd32(next + 20));
+            chain += c;
+            sp = next;
+        }
+        note("frame %u: thread %d \"%s\": last kernel call at 0x%08X, lr 0x%08X, r3 0x%08X; callers%s",
+             f, i + 1, t.name, t.prof_pc, (uint32_t)t.ctx.lr, (uint32_t)t.ctx.gpr[3], chain.c_str());
+    }
+}
+
 /* Walk the committed regions of [base, base+len) (VirtualQuery region by region,
  * not page by page: the guest space is one 4 GB reservation committed lazily). */
 template <class F> void for_committed(uint32_t base, uint32_t len, F fn)
@@ -322,6 +372,60 @@ void shot(uint32_t f)
     }
 }
 
+/* T5_DF_GUARD=addr:len,... (hex), T5_DF_GUARD_AT=<frame> (default: the first
+ * title): from then on those pages are read-only; the first write to each
+ * page is logged with the writer (the lifted function at the faulting store,
+ * its lifted callers, the host thread), then the page is writable again.
+ * Found who zeroed the vblank handler's descriptor (0x4635A8) on the second
+ * visit to the title after a fight: the title's own memset 0x3AF974 from
+ * 0x2DBBEC (docs/DIRECTFIGHT.md "After a session ends"). */
+struct Guard { uint32_t addr, len; };
+std::vector<Guard> g_guards;
+uint32_t g_guard_at = UINT32_MAX;
+std::atomic<bool> g_guard_armed{ false };
+std::atomic<int> g_guard_hits{ 0 };
+LONG CALLBACK guard_veh(EXCEPTION_POINTERS* ep)
+{
+    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    if (!g_guard_armed || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 ||
+        er->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
+    if (at < (uintptr_t)vm_base || at >= (uintptr_t)vm_base + 0x100000000ull) return EXCEPTION_CONTINUE_SEARCH;
+    const uint32_t ea = (uint32_t)(at - (uintptr_t)vm_base);
+    bool ours = false;
+    for (const Guard& g : g_guards) if (ea >= (g.addr & ~0xFFFu) && ea < ((g.addr + g.len + 0xFFFu) & ~0xFFFu)) ours = true;
+    if (!ours) return EXCEPTION_CONTINUE_SEARCH;
+    DWORD old;
+    VirtualProtect(vm_base + (ea & ~0xFFFu), 0x1000, PAGE_READWRITE, &old);
+    uint32_t off = 0;
+    const uint32_t top = rb::guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
+    HMODULE mod = nullptr; char mname[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)ep->ContextRecord->Rip, &mod) && mod)
+        GetModuleFileNameA(mod, mname, sizeof mname);
+    const char* base = strrchr(mname, 0x5C);   /* the last backslash */
+    if (g_guard_hits++ < 32)
+        note("frame %u: GUARD write to 0x%08X by host thread %lu at %s+0x%llX (lifted %s%06X+0x%X) <- %s", g_frame.load(), ea,
+             (unsigned long)GetCurrentThreadId(), base ? base + 1 : mname,
+             (unsigned long long)(ep->ContextRecord->Rip - (uintptr_t)mod), top ? "func_" : "none ", top, off,
+             rb::guest_backtrace(12).c_str());
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+void guard_arm(uint32_t f)
+{
+    if (g_guards.empty() || g_guard_armed) return;
+    (void)rb::guest_of_host(0, nullptr);   /* build the lifted-function map now, not in the handler */
+    AddVectoredExceptionHandler(1, guard_veh);
+    g_guard_armed = true;
+    for (const Guard& g : g_guards) {
+        DWORD old;
+        const uint32_t a = g.addr & ~0xFFFu, e = (g.addr + g.len + 0xFFFu) & ~0xFFFu;
+        VirtualProtect(vm_base + a, e - a, PAGE_READONLY, &old);
+        note("frame %u: guard on 0x%08X..0x%08X (read-only until written)", f, a, e);
+    }
+}
+
 void on_frame(ppu_context* ctx)
 {
     (void)ctx;
@@ -336,6 +440,8 @@ void on_frame(ppu_context* ctx)
         note("frame %u: poke [0x%08X] w%u = 0x%X", f, p.addr, p.width, p.value);
     }
     find_manager(f);
+    if (!g_guards.empty() && !g_guard_armed &&
+        (f == g_guard_at || (g_guard_at == UINT32_MAX && g_mgr && rd32(g_mgr + kModeReq) == 1))) guard_arm(f);
     if (g_probe) probe(f);
     fight_on_frame(f);
     for (auto& w : g_watch) {
@@ -480,6 +586,14 @@ struct Register {
             p = e; while (*p == ',' || *p == ' ') p++;
         }
         if (const char* sv = getenv("T5_DF_STARTVS")) g_startvs = atoi(sv);
+        if (const char* gd = getenv("T5_DF_GUARD")) for (const char* p = gd; *p;) {
+            char* e; Guard g;
+            g.addr = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
+            g.len = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            g_guards.push_back(g);
+            while (*p == ',' || *p == ' ') p++;
+        }
+        if (const char* ga = getenv("T5_DF_GUARD_AT")) g_guard_at = (uint32_t)atoi(ga);
         if (const char* fd = getenv("T5_DF_FIND")) {
             std::string s = fd, item;
             for (size_t i = 0; i <= s.size(); i++) {

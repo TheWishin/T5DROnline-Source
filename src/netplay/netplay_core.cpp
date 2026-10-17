@@ -1203,7 +1203,7 @@ void log_extra(uint32_t f, const char* text)
     fprintf(s.log, "%u X %s\n", f, text);
 }
 
-void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
+void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_local)
 {
     init();
     State& s = S();
@@ -1225,7 +1225,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         note_fp_env();
     }
 
-    PadInput local = sample_local_open(f + (uint32_t)s.delay);
+    PadInput local = neutral_local ? kNeutral : sample_local_open(f + (uint32_t)s.delay);
     {
         std::lock_guard<std::mutex> lk(s.mu);
         uint32_t i = f % kRing;

@@ -50,6 +50,7 @@ struct SoundStats { uint32_t started_live = 0, started_resim = 0, deduped = 0, d
 void       sound_install();                        /* detours of the play entry and the library tick */
 SoundMode  sound_mode();
 void       sound_begin_frame(uint32_t f, bool resim);   /* frame f is about to run (set_sim_frame calls it) */
+void       sound_reset();                          /* the session is over: no re-simulation, no frames logged */
 SoundStats sound_stats(bool reset);
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 bool     bypass_on();

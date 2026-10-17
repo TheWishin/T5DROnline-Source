@@ -42,7 +42,9 @@ void  init();
  * one thread). Samples the local pad for frame f + delay, sends it, records
  * this instance's state hash for frame f, and blocks until the peer's input
  * for frame f is known. Fills out[0] = P1, out[1] = P2. */
-void  begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2]);
+void  begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_local = false);
+/*      neutral_local: this boundary takes no input (the direct-fight intro): the
+ *      local sample is neutral and the devices are not read (a tap stays latched) */
 
 /* The game changed scene at the start of frame f (k-th time). Scene changes
  * that wait on loading land a frame or two apart on the two PCs; this waits

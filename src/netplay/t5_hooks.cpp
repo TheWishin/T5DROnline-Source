@@ -79,6 +79,7 @@
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
+extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -211,7 +212,19 @@ int  g_pads = 2;          /* T5_NET_PADS: pads reported connected (2 for netplay
  * hooks are in from boot without a session; sessions come and go with the
  * control channel (t5_netplay_session_begin/end at the end of this file). */
 bool g_persistent = false;
-bool g_await_load = false;  /* rollback: the next ring reset ends a fight's loading and is a sync point (on_frame_start) */
+bool g_await_load = false;  /* direct fight: the end of the fight's loading is still to come; it is a sync point (on_frame_start) */
+/* The end of a fight's loading, as a sync point: the first boundary at which
+ * the phase word shows the intros (11, 12) or the fight (17) after a fight
+ * start. It used to be the first ring reset after the fight start -- which is
+ * "Fight!" itself (phase 17), after the intros: a game whose loading ended 2
+ * frames later ran the whole intro 2 frames later and its "Fight!" frame on a
+ * random state with 2 frames' fewer draws and a frame clock 2 frames on; the
+ * barrier and reseed came only after that frame. For most pairs of fighters it
+ * never showed; Asuka vs Law on stage 25 desynced every time a game that had
+ * played met a fresh one, in rollback and in lockstep, on main too (reset-fix
+ * runs ff_asu_main, ff_asu6, ff_asu6ls: 1,641-4,128 mismatching frames). From
+ * the end of the loading the intros run a fixed 28 frames on both PCs. */
+bool fight_loaded_now() { const uint32_t p = rd32(0x1008F070u); return p >= 11 && p <= 17; }
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
 std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
 void persistent_lost(const char* reason);
@@ -467,6 +480,10 @@ void dump_memory(uint32_t f)
  * difference that lasts reaches the fight, where every frame is compared. */
 constexpr uint64_t kIntroHash = 0x4F52544E49ull;   /* "INTRO" */
 bool intro_phase_now() { return rd32(0x1008F070u) <= 12; }
+/* the boundaries that take no input: phase 7..12, or anything up to 12 while
+ * the game mode runs (its first frames: 0, 2) -- not the select screens (the
+ * driver's presses), see rb_net.cpp intro_phase */
+bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 && (p >= 7 || t5_df_game_mode()); }
 
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
@@ -800,6 +817,16 @@ void apply_rounds()
     np::note("frame %u: rounds to win %u -> %d (T5_NET_ROUNDS)", g_frame, was, g_rounds);
 }
 
+/* A scene barrier made this side skip d frame numbers (it got there first): the
+ * game's own per-frame counters move along with it -- the frame clock and three
+ * u32 frame counters (0x1008EB9C, 0x1008F07C, 0x1009442C all equal the frame
+ * count). */
+void skip_frames(uint32_t d)
+{
+    wr64(kFrameClock, rd64(kFrameClock) + d);
+    for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
+}
+
 /* Both random generators the game draws from, seeded the same on both PCs. */
 void reseed(uint32_t seed)
 {
@@ -909,24 +936,19 @@ void on_frame_start(ppu_context* ctx)
          * runs d50/d150b, desync from frame 920 after the reset at 919, the
          * whole Mersenne Twister state differing. Only the explicit
          * t5_netplay_start() (the next match) stays a sync point. */
-        /* One exception (fight-polish): the end of a fight's loading -- the first
-         * ring reset after a fight start, in the intro, where both sides send
-         * neutral input and nothing is predicted wrong -- is a sync point here
-         * too. How long the loading takes depends on the game's caches: a game
-         * that has played already ends it frames earlier than one that has just
-         * started (persistent game, a new opponent: 2 frames, run rb_ps1), and
-         * without the barrier the two then fight frames apart. */
-        const bool load_end = g_await_load && !rb::net::bypass() && rd32(kRingResetFlag) != 0;
+        /* One exception (fight-polish): the end of a fight's loading is a sync
+         * point here too (fight_loaded_now()). How long the loading takes
+         * depends on the game's caches: a game that has played already ends it
+         * frames earlier or later than one that has just started (persistent
+         * game, a new opponent: 2 frames, run rb_ps1), and without the barrier
+         * the two then fight frames apart. */
+        const bool load_end = g_await_load && !rb::net::bypass() && (fight_loaded_now() || rd32(kRingResetFlag) != 0);
         const bool scene = resync || load_end;
         np::PadInput in[2];
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (run == f && scene) {
             const uint32_t nf = np::scene_barrier(f);
-            if (nf > f) {
-                const uint32_t d = nf - f;
-                wr64(kFrameClock, rd64(kFrameClock) + d);
-                for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
-            }
+            if (nf > f) skip_frames(nf - f);
             g_scenes++;
             reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
             apply_rounds();
@@ -950,7 +972,8 @@ void on_frame_start(ppu_context* ctx)
         }
         return;
     }
-    if ((rd32(kRingResetFlag) || resync) && f > 0) {
+    const bool load_end = g_await_load && fight_loaded_now() && f > 0;   /* the end of the fight's loading: a sync point too */
+    if ((rd32(kRingResetFlag) || resync || load_end) && f > 0) {
         /* The game changed scene during the last frame (every scene start
          * asks keyread to clear the input ring). Scene changes that wait on
          * loading or sound land a frame or two apart on the two PCs, so they
@@ -958,19 +981,13 @@ void on_frame_start(ppu_context* ctx)
          * with the game's frame clock moved along on the side that skipped,
          * and the random generator reseeded the same way on both. */
         const uint32_t nf = np::scene_barrier(f);
-        if (nf > f) {
-            /* Move the game's own per-frame counters along by the frames this
-             * side skipped: the frame clock and three u32 frame counters
-             * (0x1008EB9C, 0x1008F07C, 0x1009442C all equal the frame count). */
-            const uint32_t d = nf - f;
-            wr64(kFrameClock, rd64(kFrameClock) + d);
-            for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
-        }
+        if (nf > f) skip_frames(nf - f);   /* the game's counters move along by the frames this side skipped */
         f = nf;
         g_scenes++;
         reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
         apply_rounds();
-        if (resync) match_begins(f);   /* the next match in the same process: its desync count starts here */
+        if (resync) { match_begins(f); g_await_load = g_directfight; }   /* the next match in the same process: its desync count starts here */
+        else if (load_end) { g_await_load = false; np::note("frame %u: the fight is loaded (scene barrier)", f); }
         char t[64];
         snprintf(t, sizeof t, "scene %u", g_scenes);
         np::log_extra(f, t);
@@ -982,7 +999,7 @@ void on_frame_start(ppu_context* ctx)
          * (0xAE6C8: sys_time_get_current_time -> init_by_array). Reseed it
          * with the seed both peers agreed on, before frame 0 runs. */
         np::connect();
-        g_await_load = g_directfight;   /* the fight's loading ends with a ring reset: a sync point under rollback too */
+        g_await_load = g_directfight;   /* the end of the fight's loading is a sync point (fight_loaded_now()) */
         const uint32_t seed = np::match_seed();
         reseed(seed);
         np::note("game RNGs reseeded with 0x%08X", seed);
@@ -1009,7 +1026,13 @@ void on_frame_start(ppu_context* ctx)
     dump_memory(f);
     shot(f);
     np::PadInput in[2];
-    np::begin_frame(f, h, in);
+    /* Direct fight: the game mode's start, loading and intros take no input --
+     * not even at the first boundary of a session, which samples the input of
+     * frame `delay` while the phase word still says 2 (rb_net.cpp intro rule:
+     * a press there made the peer roll back into the fight's loading, which
+     * then never finished). The rollback loop applies the same rule from its
+     * first frame on; in lockstep it only matters for that first boundary. */
+    np::begin_frame(f, h, in, g_directfight && intro_input_now());
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();

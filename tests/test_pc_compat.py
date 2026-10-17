@@ -104,6 +104,8 @@ class ExitCodes(unittest.TestCase):
         self.assertIn("BUILD GAME", core.explain_exit(3, ["[game-dll] cannot load D:\\x\\t5dr_game.dll (error 126)"]))
         self.assertIn("after a crash", core.explain_exit(-1, ["[CRASH] access violation"]))
         self.assertIn("exit code 5", core.explain_exit(5, []))
+        # a persistent game that could not get back to character select ends itself (exit code 6)
+        self.assertIn("character select", core.explain_exit(6, ["[df] frame 9: STUCK: leave for 60 s"]))
 
 
 class TargetCpu(unittest.TestCase):

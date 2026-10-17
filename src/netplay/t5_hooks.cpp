@@ -226,6 +226,15 @@ bool g_await_load = false;  /* direct fight: the end of the fight's loading is s
  * the end of the loading the intros run a fixed 28 frames on both PCs. */
 bool fight_loaded_now() { const uint32_t p = rd32(0x1008F070u); return p >= 11 && p <= 17; }
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
+/* Offline (no netplay): the keyread tick on the main thread too (T5_LATE_INPUT,
+ * default on, docs/RENDER_PERF.md "Input latency"). The game's own keyread
+ * thread reads the pads at the vblank, then waits for the frame lock the main
+ * thread holds there, and writes the ring after the main thread has already
+ * taken this frame's entry: 3-14 % of presses (more on a busy PC) reached the
+ * game a frame late. Run at the top of the frame like netplay's, the pads are
+ * read at the frame's start and that frame always sees them. */
+bool g_offline = false;
+bool g_offline_gave_up = false;
 std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
 void persistent_lost(const char* reason);
 
@@ -834,8 +843,44 @@ void reseed(uint32_t seed)
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
 }
 
+extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
+extern "C" volatile int g_lat_log_on;
+
+/* Offline: the take-over of the boot mode (keyread's vblank wakes stopped, the
+ * thread parked, see on_frame_start), then the keyread tick at every frame. */
+void offline_frame(ppu_context* ctx)
+{
+    if (g_offline_gave_up) return;
+    if (!g_active) {
+        g_boot_frames++;
+        if (!rd32(kKeyreadSemPtr)) return;
+        if (!g_swallow.load()) {
+            g_swallow = true;
+            while (g_kr_posting.load() != 0) YieldProcessor();
+            g_takeover_frame = g_boot_frames + 1;
+            return;
+        }
+        if (g_boot_frames < g_takeover_frame) return;
+        if (!ensure_keyread_parked(ctx)) {
+            /* never seen; give the pads back to the game's own thread */
+            g_offline_gave_up = true;
+            g_swallow = false;
+            np::note("late input: the keyread thread does not park -- the game reads the pads itself");
+            return;
+        }
+        g_main_tid = ctx->thread_id;
+        g_active = true;
+        np::note("late input: the pads are read at the top of each frame by the main thread (main loop frame %u; "
+                 "T5_LATE_INPUT=0 leaves it to the game's keyread thread)", g_boot_frames);
+    }
+    if (ctx->thread_id != g_main_tid) return;
+    if (g_lat_log_on) lat_log_('B', "%u", rd32(0x1008EB9Cu));   /* PS3_LATENCY_LOG: the pads are read now */
+    keyread_tick();
+}
+
 void on_frame_start(ppu_context* ctx)
 {
+    if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {
@@ -1206,6 +1251,7 @@ void h_cellPadInit(ppu_context* ctx)
 {
     int32_t r = cellPadInit((uint32_t)ctx->gpr[3]);
     ctx->gpr[3] = (uint64_t)(int64_t)r;
+    if (g_offline) { install_syscall_hooks(); return; }
     np::init();
     if (!np::enabled() && !g_persistent) return;
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
@@ -1270,7 +1316,16 @@ struct Register {
         const char* m = getenv("T5_NET_MODE");
         const char* ctl = getenv("T5_CTL_DIR");
         g_persistent = ctl && *ctl;
-        if ((!m || !*m) && !g_persistent) return;   /* netplay off: register nothing, change nothing */
+        if ((!m || !*m) && !g_persistent) {
+            /* netplay off: only the offline keyread tick (T5_LATE_INPUT=0: nothing
+             * at all); the rollback test modes have their own frame hooks */
+            const char* li = getenv("T5_LATE_INPUT");
+            const char* rm = getenv("T5_RB_MODE");
+            if ((li && *li == '0') || (rm && (!strcmp(rm, "test") || !strcmp(rm, "measure")))) return;
+            g_offline = true;
+            ps3_hle_register_ctx(NID_cellPadInit, "cellPadInit(late input)", h_cellPadInit);
+            return;
+        }
         const char* t = getenv("T5_NET_TRACE");
         g_trace = t && *t == '1';
         const char* pv = getenv("T5_NET_PASSIVE");

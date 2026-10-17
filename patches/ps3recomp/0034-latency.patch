@@ -1,0 +1,735 @@
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index c2f0b99..694e08f 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -20,6 +20,7 @@
+ #include <math.h>
+ #include "../../runtime/platform/win32_compat.h"   /* GetTickCount64 on POSIX */
+ #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
++#include "../../runtime/platform/lat_log.h" /* PS3_LATENCY_LOG: R events (patch 0034) */
+ 
+ /* ---------------------------------------------------------------------------
+  * Backend selection
+@@ -170,6 +171,11 @@ static BOOL CALLBACK pad_read_log_init(PINIT_ONCE once, PVOID param, PVOID* ctx)
+ }
+ static void pad_read_log(char who, u32 port, u16 buttons, u16 tapped)
+ {
++    if (g_lat_log_on && port < 8) {   /* PS3_LATENCY_LOG: a read that hands over other buttons */
++        static u16 last[2][8];
++        u16* l = &last[who == 'L'][port];
++        if (buttons != *l) { *l = buttons; lat_log('R', "%u %04X %c", port, (unsigned)buttons, who); }
++    }
+     InitOnceExecuteOnce(&s_read_log_once, pad_read_log_init, NULL, NULL);
+     if (!s_read_log) return;
+     LARGE_INTEGER t, f;
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 46bcead..9527105 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -40,6 +40,7 @@
+ 
+ #include "pad_host.h"
+ #include "cellPad.h"
++#include "../../runtime/platform/lat_log.h"   /* PS3_LATENCY_LOG: E events (patch 0034) */
+ 
+ #pragma comment(lib, "xinput.lib")
+ #pragma comment(lib, "dinput8.lib")
+@@ -1412,6 +1413,10 @@ static void sample_locked(u32 port, PortState* ps, LONGLONG t0)
+     o.r2 = (m.btn & CELL_PAD_CTRL_R2) ? (m.r2 ? m.r2 : 255) : 0;
+     o.connected = padh_port_connected(port);
+     o.seq = ps->last.seq + 1;
++    if (g_lat_log_on) {   /* PS3_LATENCY_LOG: when the pad layer first saw a press */
++        const u16 down = (u16)((m.btn | m.tap_btn) & ~(ps->have ? ps->last.buttons : 0));
++        if (down) lat_log('E', "%u %04X", port, (unsigned)down);
++    }
+     if (g_cfg.tap_latch) {
+         /* Down now or in a device event since the last sample, up in the
+          * previous sample: a press. Every reader gets it at its next read. */
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index ef23a9d..d59ac65 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -13,6 +13,7 @@
+ #include "cellGcmSys.h"
+ #include "../../runtime/platform/win32_compat.h"
+ #include "../../runtime/platform/host_sched.h"   /* PS3_SCHED_TRACE handshake events */
++#include "../../runtime/platform/lat_log.h"      /* PS3_LATENCY_LOG F/X/K events (patch 0034) */
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_write32 (translate + byte-swap, OOB-safe) */
+ #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
+ #include "rsx_commands.h"                    /* rsx_state, rsx_process_command_buffer */
+@@ -85,6 +86,11 @@ u32 cellGcm_flip_request_count(void)
+ {
+     return s_flip_request_count;
+ }
++/* PS3_LATENCY_LOG (patch 0034): every in-FIFO flip gets a sequence number when
++ * the guest asks for it (F), and the same number when the walker reaches it
++ * (X, translated) and when it is presented (P, rsx_live_draw.c). */
++static volatile LONG s_lat_req_seq = 0, s_lat_walk_seq = 0;
++u32 cellGcm_lat_walk_seq(void) { return (u32)s_lat_walk_seq; }
+ static u32  s_debug_level = CELL_GCM_DEBUG_LEVEL0;
+ 
+ /* Display buffers */
+@@ -773,6 +779,7 @@ void ppu_gcm_pump(void)
+     if (p & 2) {
+         s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+         rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
++        lat_log('K', "%u %ld", s_vblank_count, (long)s_lat_walk_seq);   /* the guest's next frame is released */
+         SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
+         host_sched_trace(HS_EV_FLIP_DONE, 0);
+         if (s_flip_handler_opd && g_ps3_guest_caller) {
+@@ -1815,6 +1822,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                 /* Queued by _cellGcmSetFlipCommand, which already did the
+                  * guest-visible half of the request. */
+                 s_current_display_buffer_id = w & 7u;
++                { const LONG sq = InterlockedIncrement(&s_lat_walk_seq); lat_log('X', "%ld", (long)sq); }
+                 if (s_flip_call_tail != __atomic_load_n(&s_flip_call_head, __ATOMIC_RELAXED))
+                     g_rsx_pf[RSX_PF_SHOWN_CALL_QPC] = s_flip_call_ring[s_flip_call_tail++ & 15u];
+                 s_flip_pending = 1;
+@@ -2468,6 +2476,7 @@ u32 cellGcm_display_buffer_count(void)
+ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+ {
+     rsx_pf_guest_flip();   /* PS3_FRAMELOG: the guest asked for a flip */
++    if (in_fifo) { const LONG sq = InterlockedIncrement(&s_lat_req_seq); if (lat_log_enabled()) lat_log_flip_call((unsigned)sq); }
+     if (in_fifo) {   /* remember when, for the frame the walker will reach */
+         LARGE_INTEGER q; QueryPerformanceCounter(&q);
+         const unsigned h = __atomic_fetch_add(&s_flip_call_head, 1u, __ATOMIC_RELAXED);
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 76dd83d..de17994 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -21,6 +21,7 @@
+ 
+ #include "rsx_live_draw.h"
+ #include "../../runtime/platform/host_sched.h"   /* PS3_SCHED_TRACE present events */
++#include "../../runtime/platform/lat_log.h"      /* PS3_LATENCY_LOG P/D/C events (patch 0034) */
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+ 
+@@ -116,6 +117,9 @@ void rsx_live_draw_note_resolve(u32 sl, u32 sa, u32 dl, u32 da)
+ { (void)sl; (void)sa; (void)dl; (void)da; }
+ void rsx_live_draw_flush(void) {}
+ void rsx_live_draw_present(u32 b) { (void)b; }
++int  rsx_live_draw_dwm_vblank(long long* v, long long* p) { (void)v; (void)p; return 0; }
++int  rsx_live_draw_display_lockable(void) { return 0; }
++void rsx_live_draw_set_display_lock(int on) { (void)on; }
+ void rsx_live_draw_set_movie_mode(int on) { (void)on; }
+ void rsx_live_draw_present_rgba(const uint8_t* r, u32 w, u32 h) { (void)r; (void)w; (void)h; }
+ u32  rsx_live_draw_get_frames(void) { return 0; }
+@@ -1987,6 +1991,14 @@ static UINT   g_ld_present_interval = 1;
+ static UINT   g_ld_present_flags = 0;
+ static UINT   g_ld_swap_flags = 0;
+ static HANDLE g_ld_frame_wait = NULL;
++/* Patch 0034: the ticker paces frames to the display's own vblanks (boot_main.cpp
++ * "display lock"), so a frame is presented as soon as it is translated, just
++ * before the vblank that shows it. Then: sync interval 0 on the flip model
++ * without ALLOW_TEARING -- the newest frame is shown at the next refresh and a
++ * frame that misses its vblank is replaced by the next one instead of queueing
++ * a frame of delay behind it -- and no frame-latency wait (nothing queues). */
++static volatile int g_ld_lock_mode = 0;
++void rsx_live_draw_set_display_lock(int on) { g_ld_lock_mode = on ? 1 : 0; }
+ 
+ /* ---------------------------------------------------------------------------
+  * PC compatibility (patch 0031): which GPU, a clear end when the GPU is lost,
+@@ -2298,6 +2310,78 @@ static void ld_test_display_wait(void)
+     const DWORD ms = (DWORD)((next - el) * 1000.0 / (double)f.QuadPart + 0.5);
+     if (ms) Sleep(ms);
+ }
++/* PS3_LATENCY_LOG (patch 0034): after every present, the flip it showed (P),
++ * what DXGI says reached the display (D: the newest present count with the
++ * display vblank it was shown at), and the display's own vblank clock as DWM
++ * keeps it (C: last vblank, period) -- the stretch from Present() to the
++ * screen, which a minimised test window cannot show any other way. */
++#pragma pack(push, 1)   /* DWM_TIMING_INFO is byte-packed (pshpack1.h in dwmapi.h) */
++typedef struct { UINT32 cbSize; UINT32 rateRefresh[2]; LONGLONG qpcRefreshPeriod; UINT32 rateCompose[2];
++                 LONGLONG qpcVBlank; UINT64 cRefresh; UINT cDXRefresh; LONGLONG qpcCompose; UINT64 cFrame;
++                 UINT cDXPresent; UINT64 cRefreshFrame; UINT64 cFrameSubmitted; UINT cDXPresentSubmitted;
++                 UINT64 cFrameConfirmed; UINT cDXPresentConfirmed; UINT64 cRefreshConfirmed;
++                 UINT cDXRefreshConfirmed; UINT64 cFramesLate; UINT cFramesOutstanding; UINT64 cFrameDisplayed;
++                 LONGLONG qpcFrameDisplayed; UINT64 cRefreshFrameDisplayed; UINT64 cFrameComplete;
++                 LONGLONG qpcFrameComplete; UINT64 cFramePending; LONGLONG qpcFramePending;
++                 UINT64 cFramesDisplayed; UINT64 cFramesComplete; UINT64 cFramesPending; UINT64 cFramesAvailable;
++                 UINT64 cFramesDropped; UINT64 cFramesMissed; UINT64 cRefreshNextDisplayed; UINT64 cRefreshNextPresented;
++                 UINT64 cRefreshesDisplayed; UINT64 cRefreshesPresented; UINT64 cRefreshStarted; UINT64 cPixelsReceived;
++                 UINT64 cPixelsDrawn; UINT64 cBuffersEmpty; } ld_dwm_timing;
++#pragma pack(pop)
++typedef char ld_dwm_timing_size_check[sizeof(ld_dwm_timing) == 292 ? 1 : -1];
++extern u32 cellGcm_lat_walk_seq(void);   /* cellGcmSys.c */
++typedef HRESULT (WINAPI* ld_dwm_timing_fn)(HWND, ld_dwm_timing*);
++static int ld_dwm_vblank(LONGLONG* vblank, LONGLONG* period)
++{
++    static ld_dwm_timing_fn fn = (ld_dwm_timing_fn)(intptr_t)-1;
++    if (fn == (ld_dwm_timing_fn)(intptr_t)-1) {
++        HMODULE m = LoadLibraryA("dwmapi.dll");
++        fn = m ? (ld_dwm_timing_fn)(void*)GetProcAddress(m, "DwmGetCompositionTimingInfo") : NULL;
++    }
++    if (!fn) return 0;
++    ld_dwm_timing ti;
++    memset(&ti, 0, sizeof ti);
++    ti.cbSize = sizeof ti;
++    if (FAILED(fn(NULL, &ti)) || !ti.qpcVBlank || !ti.qpcRefreshPeriod) return 0;
++    *vblank = ti.qpcVBlank;
++    *period = ti.qpcRefreshPeriod;
++    return 1;
++}
++/* Patch 0034, for the ticker's display lock (boot_main.cpp): the display's
++ * vblank clock, and whether the window's display runs at the game's rate with
++ * vsync on (59/60 Hz as Windows reports it; not with RSX_PRESENT_INTERVAL,
++ * a tearing/novsync mode or a simulated display). */
++int rsx_live_draw_dwm_vblank(long long* vblank, long long* period)
++{
++    LONGLONG v = 0, p = 0;
++    if (!ld_dwm_vblank(&v, &p)) return 0;
++    *vblank = v; *period = p;
++    return 1;
++}
++static int ld_fs_exclusive_now(void);
++int rsx_live_draw_display_lockable(void)
++{
++    return g.ready && g_ld_present_interval == 1 && !g_ld_interval_forced && g_ld_test_hz <= 0.0 &&
++           g_ld_refresh_hz >= 59 && g_ld_refresh_hz <= 61 && !(g_ld_present_flags & DXGI_PRESENT_ALLOW_TEARING) &&
++           !ld_fs_exclusive_now();
++}
++static void ld_lat_after_present(u32 frame)
++{
++    if (!lat_log_enabled()) return;
++    UINT pc = 0;
++    g.swap->lpVtbl->GetLastPresentCount(g.swap, &pc);
++    lat_log('P', "%u %u %u", cellGcm_lat_walk_seq(), frame, pc);
++    DXGI_FRAME_STATISTICS st;
++    memset(&st, 0, sizeof st);
++    static UINT last_pc = 0;
++    if (SUCCEEDED(g.swap->lpVtbl->GetFrameStatistics(g.swap, &st)) && st.PresentCount != last_pc) {
++        last_pc = st.PresentCount;
++        lat_log('D', "%u %u %u %lld", st.PresentCount, st.PresentRefreshCount, st.SyncRefreshCount,
++                (long long)st.SyncQPCTime.QuadPart);
++    }
++    LONGLONG vb = 0, per = 0;
++    if (ld_dwm_vblank(&vb, &per)) lat_log('C', "%lld %lld", (long long)vb, (long long)per);
++}
+ static void ld_wait_frame_latency(void)
+ {
+     /* Bounded: a minimized/occluded window may not retire frames. */
+@@ -9688,6 +9772,7 @@ static struct {
+     ID3D12DescriptorHeap* heap;   /* shader-visible, one SRV per backbuffer */
+     u32 heap_step;
+ } g_ldp = { 0, 0, 0, 0, 1, 0, 0, 0, 0, -1 };
++static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+ 
+ #define LD_SYNC_INTERVAL (g_ldp.vsync ? 1u : 0u)
+ #define LD_PRESENT_FLAGS \
+@@ -10733,7 +10818,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+         }
+     }
+ 
+-    ld_wait_frame_latency();
++    if (!g_ld_lock_mode) ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+ 
+@@ -10766,8 +10851,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+         ld_pacing_check();
+         ld_test_display_wait();
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+-            g.swap, g_ld_present_interval,
+-            g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
++            g.swap, g_ld_lock_mode ? 0u : g_ld_present_interval,
++            (g_ldp.fs_exclusive || g_ld_lock_mode) ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+         ld_test_device_removed();
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames);
+@@ -11151,7 +11236,13 @@ void rsx_live_draw_present(u32 buffer_id)
+      * late scene, e.g. frames for a GIF, without thousands of early files). */
+     static long dump_from = -1;
+     if (dump_from < 0) { const char* e = getenv("LD_FRAME_DUMP_FROM"); dump_from = e ? atol(e) : 0; }
+-    const int dump_now = dump_every > 0 && (long)g_ld_frames >= dump_from &&
++    /* LD_FRAME_DUMP_GATE=<file> (patch 0034): dump only while <file> exists
++     * (a test script brackets the frames it wants, e.g. around a press). */
++    static const char* dump_gate = (const char*)-1;
++    if (dump_gate == (const char*)-1) dump_gate = getenv("LD_FRAME_DUMP_GATE");
++    const int gate_open = !dump_gate || !dump_gate[0] ||
++                          (dump_every > 0 && GetFileAttributesA(dump_gate) != INVALID_FILE_ATTRIBUTES);
++    const int dump_now = dump_every > 0 && gate_open && (long)g_ld_frames >= dump_from &&
+                          (dump_n++ % (unsigned)dump_every) == 0;
+     /* A flip names a registered display buffer. The current color target may
+      * be an offscreen shadow/postprocess surface at that instant; copying it
+@@ -11205,7 +11296,11 @@ void rsx_live_draw_present(u32 buffer_id)
+       } }
+     if (dump_now) {
+         char path[MAX_PATH * 2];
+-        snprintf(path, sizeof(path), "%s\\frame_%06u.ppm", dump_dir, dump_n - 1u);
++        if (dump_gate && dump_gate[0])   /* named by the frame and the flip it shows, for lining up with the latency log */
++            snprintf(path, sizeof(path), "%s\\frame_%06u_flip%06u.ppm", dump_dir, g_ld_frames + 1u,
++                     cellGcm_lat_walk_seq());
++        else
++            snprintf(path, sizeof(path), "%s\\frame_%06u.ppm", dump_dir, dump_n - 1u);
+         const u64 nb = ld_dump_surface_ppm(path, &g.surfaces[target]);
+         fprintf(stderr, "[frame-dump] %s %ux%u nonblack=%llu\n", path,
+                 g.surfaces[target].w, g.surfaces[target].h,
+@@ -11308,7 +11403,7 @@ void rsx_live_draw_present(u32 buffer_id)
+       } }
+     ID3D12Resource* srcimg = presented_surface->tex;
+     ld_display_sync();
+-    ld_wait_frame_latency();
++    if (!g_ld_lock_mode) ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+ 
+@@ -11342,13 +11437,14 @@ void rsx_live_draw_present(u32 buffer_id)
+         ld_pacing_check();
+         ld_test_display_wait();
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+-            g.swap, g_ld_present_interval,
+-            g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
++            g.swap, g_ld_lock_mode ? 0u : g_ld_present_interval,
++            (g_ldp.fs_exclusive || g_ld_lock_mode) ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+         g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
+         ld_test_device_removed();
+-        if (SUCCEEDED(present_hr))
++        if (SUCCEEDED(present_hr)) {
+             ld_present_measure_record(g_ld_frames + 1u);
+-        else {
++            ld_lat_after_present(g_ld_frames + 1u);
++        } else {
+             fprintf(stderr,
+                     "[d3d-fail] Present hr=0x%08lX frame=%u "
+                     "target=%u size=%ux%u window=%ux%u\n",
+diff --git a/runtime/platform/lat_log.c b/runtime/platform/lat_log.c
+new file mode 100644
+index 0000000..13227ca
+--- /dev/null
++++ b/runtime/platform/lat_log.c
+@@ -0,0 +1,147 @@
++/* ps3recomp - input-to-display latency probe; see lat_log.h. */
++#include "lat_log.h"
++
++volatile int g_lat_log_on = -1;
++
++#ifndef _WIN32
++int  lat_log_init(void) { g_lat_log_on = 0; return 0; }
++void lat_log_(char kind, const char* fmt, ...) { (void)kind; (void)fmt; }
++void lat_log_at_(char kind, int64_t qpc, const char* fmt, ...) { (void)kind; (void)qpc; (void)fmt; }
++void lat_log_flip_call(unsigned seq) { (void)seq; }
++int64_t lat_qpc(void) { return 0; }
++#else
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++extern unsigned char* vm_base;
++
++static SRWLOCK s_lock = SRWLOCK_INIT;
++static INIT_ONCE s_once = INIT_ONCE_STATIC_INIT;
++static FILE* s_file;
++static FILE* s_dump;
++static LONGLONG s_qpf = 1, s_last_flush;
++static struct { uint32_t addr, len; } s_watch[8], s_dumpr;
++static int s_nwatch;
++
++int64_t lat_qpc(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
++
++static void parse_ranges(const char* spec, int max, int* n, uint32_t* addr, uint32_t* len)
++{
++    *n = 0;
++    const char* p = spec;
++    while (p && *p && *n < max) {
++        char* e;
++        const unsigned long a = strtoul(p, &e, 16);
++        if (e == p || *e != ':') break;
++        p = e + 1;
++        const unsigned long l = strtoul(p, &e, 16);
++        if (e == p) break;
++        p = e;
++        addr[*n] = (uint32_t)a; len[*n] = (uint32_t)l; (*n)++;
++        while (*p == ',' || *p == ' ') p++;
++    }
++}
++
++static BOOL CALLBACK init_once(PINIT_ONCE o, PVOID a, PVOID* c)
++{
++    (void)o; (void)a; (void)c;
++    const char* path = getenv("PS3_LATENCY_LOG");
++    if (!path || !*path || !(s_file = fopen(path, "w"))) { g_lat_log_on = 0; return TRUE; }
++    static char buf[1 << 16];
++    setvbuf(s_file, buf, _IOFBF, sizeof buf);
++    LARGE_INTEGER f; QueryPerformanceFrequency(&f); s_qpf = f.QuadPart;
++    fprintf(s_file, "# qpc_frequency=%lld\n", (long long)s_qpf);
++    {   uint32_t a[8], l[8]; int n = 0;
++        parse_ranges(getenv("PS3_LATENCY_WATCH"), 8, &n, a, l);
++        for (int i = 0; i < n; i++) { s_watch[i].addr = a[i]; s_watch[i].len = (l[i] + 3) & ~3u; }
++        s_nwatch = n;
++        fprintf(s_file, "# watch");
++        for (int i = 0; i < n; i++) fprintf(s_file, " %08X:%X", s_watch[i].addr, s_watch[i].len);
++        fprintf(s_file, "\n"); }
++    {   uint32_t a[1], l[1]; int n = 0;
++        parse_ranges(getenv("PS3_LATENCY_DUMP"), 1, &n, a, l);
++        if (n && l[0]) {
++            char dp[MAX_PATH * 2];
++            snprintf(dp, sizeof dp, "%s.dump", path);
++            if ((s_dump = fopen(dp, "wb"))) { s_dumpr.addr = a[0]; s_dumpr.len = l[0]; }
++        } }
++    g_lat_log_on = 1;
++    return TRUE;
++}
++
++int lat_log_init(void)
++{
++    InitOnceExecuteOnce(&s_once, init_once, NULL, NULL);
++    return g_lat_log_on > 0;
++}
++
++/* caller holds the lock: flush every ~50 ms of events (a killed game keeps them) */
++static void maybe_flush(LONGLONG now)
++{
++    if (now - s_last_flush > s_qpf / 20) {
++        fflush(s_file);
++        if (s_dump) fflush(s_dump);
++        s_last_flush = now;
++    }
++}
++
++static void vput(char kind, LONGLONG q, const char* fmt, va_list ap)
++{
++    AcquireSRWLockExclusive(&s_lock);
++    fprintf(s_file, "%c %lld ", kind, (long long)q);
++    vfprintf(s_file, fmt, ap);
++    fputc('\n', s_file);
++    maybe_flush(q);
++    ReleaseSRWLockExclusive(&s_lock);
++}
++
++void lat_log_(char kind, const char* fmt, ...)
++{
++    if (!lat_log_init()) return;
++    const LONGLONG q = lat_qpc();
++    va_list ap; va_start(ap, fmt);
++    vput(kind, q, fmt, ap);
++    va_end(ap);
++}
++
++void lat_log_at_(char kind, int64_t qpc, const char* fmt, ...)
++{
++    if (!lat_log_init()) return;
++    va_list ap; va_start(ap, fmt);
++    vput(kind, (LONGLONG)qpc, fmt, ap);
++    va_end(ap);
++}
++
++static uint32_t rd_be32(uint32_t ea)
++{
++    const unsigned char* p = vm_base + ea;
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++
++void lat_log_flip_call(unsigned seq)
++{
++    if (!lat_log_enabled()) return;
++    const LONGLONG q = lat_qpc();
++    char line[512];
++    int n = snprintf(line, sizeof line, "F %lld %u", (long long)q, seq);
++    for (int i = 0; i < s_nwatch && vm_base; i++)
++        for (uint32_t o = 0; o < s_watch[i].len && n < (int)sizeof line - 12; o += 4)
++            n += snprintf(line + n, sizeof line - n, " %08X", rd_be32(s_watch[i].addr + o));
++    AcquireSRWLockExclusive(&s_lock);
++    fputs(line, s_file);
++    fputc('\n', s_file);
++    if (s_dump && vm_base) {
++        const uint32_t s32 = seq;
++        const long long q64 = (long long)q;
++        fwrite(&s32, 4, 1, s_dump);
++        fwrite(&q64, 8, 1, s_dump);
++        fwrite(vm_base + s_dumpr.addr, 1, s_dumpr.len, s_dump);
++    }
++    maybe_flush(q);
++    ReleaseSRWLockExclusive(&s_lock);
++}
++#endif
+diff --git a/runtime/platform/lat_log.h b/runtime/platform/lat_log.h
+new file mode 100644
+index 0000000..cf82439
+--- /dev/null
++++ b/runtime/platform/lat_log.h
+@@ -0,0 +1,54 @@
++/*
++ * ps3recomp - input-to-display latency probe (Windows).
++ *
++ * PS3_LATENCY_LOG=<file>: one text line per event, every stamp on the
++ * QueryPerformanceCounter clock (the first line gives its frequency), so a
++ * script that writes PS3_PAD_FILE with time.perf_counter_ns() lines up with
++ * it. Events (first character):
++ *
++ *   E qpc port mask         the pad layer saw buttons go down (sampler/tap latch)
++ *   R qpc port buttons who  a read handed the title new buttons (G = cellPadGetData,
++ *                           L = cellPad_sample_local, netplay's local input)
++ *   V qpc count             vblank tick (the game's 59.94 Hz clock)
++ *   F qpc seq w0 w1 ...     the title asked for flip `seq` (in-FIFO flip): the
++ *                           frame's simulation is done; w* = PS3_LATENCY_WATCH words
++ *   X qpc seq               the FIFO walker reached flip `seq`: translated
++ *   P qpc seq frame pc      Present() of flip `seq` returned (pc = DXGI present count)
++ *   D qpc pc sync_qpc       DXGI frame statistics: present `pc` reached the display
++ *                           at the vblank stamped sync_qpc
++ *   C qpc vblank period     DWM composition clock (last display vblank, period)
++ *   N qpc frame run ...     netplay boundary (src/netplay), K.. other notes
++ *
++ * PS3_LATENCY_WATCH=addr:len[,addr:len...] (hex): guest bytes printed with
++ * every F line as big-endian 32-bit words. PS3_LATENCY_DUMP=addr:len appends
++ * those bytes per flip to <log>.dump (u32 seq, i64 qpc, bytes) for finding
++ * which words to watch.
++ *
++ * Off (no PS3_LATENCY_LOG) every call is one predictable branch.
++ */
++#ifndef PS3RECOMP_LAT_LOG_H
++#define PS3RECOMP_LAT_LOG_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++extern volatile int g_lat_log_on;   /* -1 not decided yet, 0 off, 1 on */
++int  lat_log_init(void);
++void lat_log_(char kind, const char* fmt, ...);
++/* the same with an explicit stamp (an event that happened earlier) */
++void lat_log_at_(char kind, int64_t qpc, const char* fmt, ...);
++/* the guest's flip request `seq`: stamps it and reads the watched words */
++void lat_log_flip_call(unsigned seq);
++int64_t lat_qpc(void);
++
++#define lat_log_enabled() (g_lat_log_on > 0 || (g_lat_log_on < 0 && lat_log_init()))
++#define lat_log(kind, ...) do { if (lat_log_enabled()) lat_log_((kind), __VA_ARGS__); } while (0)
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index b30b9ee..a38ead5 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -33,6 +33,9 @@
+ #include "../../platform/win32_compat.h"      /* Sleep, GetTickCount64, threads on POSIX */
+ #include "../../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
+ #include "../../platform/host_sched.h"        /* thread roles: priority, CPU set, name */
++#include "../../platform/lat_log.h"           /* PS3_LATENCY_LOG V events (patch 0034) */
++#include <algorithm>                          /* std::sort: display lock (patch 0034) */
++#include <math.h>
+ /* The lifted ppu_recomp.h already defines `struct ppu_context` (identical to
+  * runtime/ppu/ppu_context.h by design -- "keep the two in sync"). A syscall
+  * header included later (sys_ppu_thread.h -> lv2_syscall_table.h -> ppu_context.h)
+@@ -453,6 +456,135 @@ static DWORD WINAPI guest_prof_thread(LPVOID)
+ }
+ 
+ extern "C" const char* cellGame_get_title(void);   /* PARAM.SFO TITLE, for the caption */
++extern "C" int  rsx_live_draw_dwm_vblank(long long* vblank, long long* period);
++extern "C" int  rsx_live_draw_display_lockable(void);
++extern "C" void rsx_live_draw_set_display_lock(int on);
++
++/* ---- Patch 0034: frames presented when translated, vblanks locked to the display.
++ *
++ * Before: the walker parks on a translated flip until the next tick of the
++ * 59.94 Hz QPC vblank clock, the tick presents it, and the display shows it at
++ * its own next refresh -- two waits in series, ~0.5 + ~0.5 refresh on average
++ * (docs/RENDER_PERF.md "Input latency"). Now:
++ *
++ *   PS3_PRESENT_AT_XLAT (default 1): a flip is presented as soon as the walker
++ *     reaches it (translated); the guest still sees it complete on the next
++ *     vblank tick, so the game's pace is unchanged.
++ *   PS3_DISPLAY_LOCK (default 1): when the window's display runs at the game's
++ *     rate (59/60 Hz, vsync on; rsx_live_draw_display_lockable), the vblank
++ *     ticks follow the display's own vblank clock (DWM: last vblank, period):
++ *     the period becomes the display's, and the phase is set so that a tick
++ *     comes `lead` before a display vblank. A tick releases the game's next
++ *     frame (it reads the pads at its start), the frame is presented when
++ *     translated, before that vblank. `lead` follows what frames cost here
++ *     (tick -> present, 99th percentile of the last 240, + PS3_DISPLAY_MARGIN_MS,
++ *     default 1.5): up at once after two late frames, down by 1 ms a second.
++ *     The game runs at the display's rate: 59.94 or 60.00 Hz instead of 59.94,
++ *     like a PS3 on that TV. Other displays (30/50 Hz, 120/144 Hz, VRR with
++ *     RSX_PRESENT_MODE=tearing) keep the 59.94 Hz clock of patch 0031.
++ *   PS3_DISPLAY_LEAD_MS=<ms> fixes the lead (tests). */
++struct DisplayLock {
++    int cfg = -1, on = 0;
++    double qpf = 1, margin = 0, lead = 0, lead_fixed = 0;
++    long long vb = 0, per = 0;
++    double t_release = 0, lead_at_release = 0;
++    double costs[240] = {}; int ncost = 0, since = 0, recent_miss = 0;
++    double recent_max = 0;
++    unsigned misses = 0, frames = 0;
++    ULONGLONG last_check = 0, last_note = 0;
++    void init(double f)
++    {
++        qpf = f;
++        const char* e = getenv("PS3_DISPLAY_LOCK");
++        cfg = !(e && *e == '0');
++        const char* m = getenv("PS3_DISPLAY_MARGIN_MS");
++        margin = (m && atof(m) >= 0.0 ? atof(m) : 1.5) * qpf / 1000.0;
++        const char* l = getenv("PS3_DISPLAY_LEAD_MS");
++        lead_fixed = l && atof(l) > 0.0 ? atof(l) * qpf / 1000.0 : 0.0;
++        if (getenv("PS3_VBLANK_HZ")) cfg = 0;   /* a fixed vblank rate was asked for */
++    }
++    /* once a second: is the display at the game's rate? (the DWM clock and
++     * the window's monitor must agree) */
++    void check(ULONGLONG now_ms)
++    {
++        if (!cfg || now_ms - last_check < 1000) return;
++        last_check = now_ms;
++        long long v = 0, p = 0;
++        const int dwm = rsx_live_draw_dwm_vblank(&v, &p);
++        const double hz = dwm && p > 0 ? qpf / (double)p : 0.0;
++        const int want = dwm && rsx_live_draw_display_lockable() && hz > 59.3 && hz < 60.7;
++        if (want != on) {
++            on = want;
++            if (on && lead <= 0) lead = lead_fixed > 0 ? lead_fixed : (double)p - 0.2 * qpf / 1000.0;
++            rsx_live_draw_set_display_lock(on);
++            fprintf(stderr, "[pacing] display lock %s (display %.3f Hz%s)\n", on ? "on" : "off", hz,
++                    on ? ": vblanks follow the display, frames are shown at the refresh after they are translated"
++                       : "");
++        }
++    }
++    void refresh()
++    {
++        long long v = 0, p = 0;
++        if (rsx_live_draw_dwm_vblank(&v, &p) && p > 0) { vb = v; per = p; }
++    }
++    /* after a tick: the next tick's time, on the display's grid minus lead */
++    void adjust(double* next_tick, double* vb_period, double nominal)
++    {
++        if (!on) { *vb_period = nominal; return; }
++        refresh();
++        if (!per) return;
++        *vb_period = (double)per;
++        const double x = *next_tick + lead;                    /* the display vblank this tick precedes */
++        const double k = floor((x - (double)vb) / (double)per + 0.5);
++        double err = ((double)vb + k * (double)per) - x;       /* within half a period */
++        const double slew = 0.25 * qpf / 1000.0;
++        if (err > slew) err = slew;
++        if (err < -slew) err = -slew;
++        *next_tick += err;
++    }
++    void on_release(double t) { t_release = t; lead_at_release = lead; }
++    void on_present(double t)
++    {
++        if (!on || t_release <= 0 || !per) return;
++        const double cost = t - t_release;
++        t_release = 0;
++        if (cost <= 0 || cost > 4.0 * (double)per) return;
++        frames++;
++        costs[ncost++ % 240] = cost;
++        if (lead_fixed > 0) { lead = lead_fixed; return; }
++        const double maxl = (double)per - 0.2 * qpf / 1000.0, minl = 4.0 * qpf / 1000.0;
++        if (cost > lead_at_release) {
++            misses++;
++            /* a second late frame within half a second: up at once (one stray
++             * frame -- a page fault, another program -- moves nothing) */
++            recent_max = recent_max > cost ? recent_max : cost;
++            if (++recent_miss >= 2) {
++                const double want = recent_max + margin < maxl ? recent_max + margin : maxl;
++                if (want > lead) lead = want;
++                recent_miss = 0; recent_max = 0;
++            }
++        }
++        if (++since >= 30 && ncost >= 60) {   /* every half second: the 99th percentile of the last 4 s + margin */
++            since = 0; recent_miss = 0; recent_max = 0;
++            const int n = ncost < 240 ? ncost : 240;
++            double s[240];
++            memcpy(s, costs, sizeof(double) * n);
++            std::sort(s, s + n);
++            double want = s[(int)(0.99 * (n - 1))] + margin;
++            if (want < minl) want = minl;
++            if (want > maxl) want = maxl;
++            if (want > lead) lead = want;                      /* up */
++            else lead = lead - want > 0.5 * qpf / 1000.0 ? lead - 0.5 * qpf / 1000.0 : want;   /* down 1 ms a second */
++        }
++        const ULONGLONG now_ms = GetTickCount64();
++        if (now_ms - last_note >= 60000) {
++            last_note = now_ms;
++            fprintf(stderr, "[pacing] display lock: lead %.2f ms (tick -> present), %u of %u frames late for their vblank\n",
++                    lead * 1000.0 / qpf, misses, frames);
++            misses = frames = 0;
++        }
++    }
++};
+ 
+ static volatile DWORD g_ticker_tid = 0;   /* PS3_HOST_PROF_WHO=ticker */
+ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -506,7 +638,22 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+     fprintf(stderr, "[pacing] vblank ticker host tid=%lu\n", (unsigned long)GetCurrentThreadId());
+     double vb_hz = 60000.0 / 1001.0;
+     if (const char* e = getenv("PS3_VBLANK_HZ")) { double v = atof(e); if (v >= 10.0 && v <= 240.0) vb_hz = v; }
+-    const double vb_period = (double)vb_freq.QuadPart / vb_hz;
++    const double vb_nominal = (double)vb_freq.QuadPart / vb_hz;
++    double vb_period = vb_nominal;
++    static DisplayLock lock;
++    lock.init((double)vb_freq.QuadPart);
++    int present_at_xlat;
++    { const char* e = getenv("PS3_PRESENT_AT_XLAT"); present_at_xlat = !(e && *e == '0'); }
++    /* a flip the walker has reached is presented now (PS3_PRESENT_AT_XLAT) */
++    auto early_present = [&](void) {
++        if (!rsx_ok || !s_rsx_live || !present_at_xlat) return;
++        if (cellGcm_flip_held() && cellGcm_take_flip_pending()) {
++            present_guest_frame();
++            last_flip = cellGcm_flip_request_count();
++            LARGE_INTEGER t; QueryPerformanceCounter(&t);
++            lock.on_present((double)t.QuadPart);
++        }
++    };
+     timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
+     QueryPerformanceCounter(&vb_now);
+     double next_tick = (double)vb_now.QuadPart;
+@@ -534,12 +681,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
+         while (now >= next_tick && fired < 240) {
+             cellGcmTickVBlank();
++            lat_log('V', "%lld", (long long)next_tick);   /* the vblank as scheduled; the line's stamp is when it ran */
+             /* Present a pending flip BEFORE draining further: the flip fires
+              * at a get==put frame boundary (guest thread), so the batch held
+              * right now is exactly the completed frame. Presenting on a raw
+              * flip-count change after the drain raced the guest's next-frame
+              * writes and showed empty or mixed batches. */
+             int present_due = 0;
++            const int completes = cellGcm_flip_held();   /* this tick completes a flip: the next frame starts */
+             {
+                 if (rsx_ok && cellGcm_take_flip_pending()) {
+                     if (late_present) present_due = 1;
+@@ -551,22 +700,25 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                 cellGcm_flip_presented();
+             }
+             cellGcmTickFlip();
+-            if (present_due) {
++            if (present_due || completes) {
+                 { static int tp2 = -1; if (tp2 < 0) { const char* e = getenv("PS3_GCM_TICKER_PUMP"); tp2 = (e && *e == '1') ? 1 : 0; }
+                   if (tp2) { LARGE_INTEGER p0, p1; QueryPerformanceCounter(&p0);
+                              ppu_gcm_pump();
+                              QueryPerformanceCounter(&p1);
+                              rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
+-                present_guest_frame();
++                if (completes) lock.on_release(now);
++                if (present_due) present_guest_frame();
+             }
+             /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
+              * labels (e.g. @0x03000410) that the game's per-frame logic blocks on.
+              * Doing it here (not after present) keeps those fences advancing at 60Hz
+              * even when present() throttles on a hidden/occluded window. */
+-            if (rsx_ok) cellGcm_rsx_process_fifo();
+-            next_tick += vb_period;          /* 59.94 Hz */
++            if (rsx_ok) { cellGcm_rsx_process_fifo(); early_present(); }
++            next_tick += vb_period;          /* 59.94 Hz, or the display's period (display lock) */
++            lock.adjust(&next_tick, &vb_period, vb_nominal);
+             fired++;
+         }
++        lock.check(GetTickCount64());
+         if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
+         if (fired) { rsx_pf_add(PF_VBLANKS, fired); rsx_pf_max(PF_VBLANK_BURST_MAX, fired); }
+         /* Drain at the outer ~4ms cadence too (not just the 16ms tick):
+@@ -580,6 +732,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                 last_flip = cellGcm_flip_request_count();
+             }
+             cellGcm_rsx_process_fifo();
++            early_present();
+         }
+         /* PS3_GCM_TICKER_PUMP=1: deliver pending GCM handlers from this thread
+          * too, the way the PS3 runs them on its own interrupt thread. Without

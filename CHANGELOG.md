@@ -3,6 +3,25 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.7-preview (2026-10-17)
+
+More robust online play. Both players need 0.1.7. After the update press
+**BUILD GAME** once.
+
+- **After an aborted match** (opponent gone, connection lost) the open game is
+  clean again and the next match starts normally. Tested: 10 of 10 cycles of
+  "match -> abort -> next match" in one game, with rollback and with delay netcode.
+- A button pressed in the very first frames of a fight no longer makes the game
+  hang while loading (rollback).
+- Some pairings (e.g. Asuka vs Law) no longer go out of sync against a freshly
+  started game.
+- If the game still gets stuck, it closes itself after 60 seconds and the
+  launcher starts a new one.
+
+Known: with a very bad connection (many corrections right at the final KO) the
+game can still get stuck at the end of a match; it then recovers as above. A
+fix is in progress.
+
 ## v0.1.6-preview (2026-10-17)
 
 **Important online fix:** choosing Devil Jin online gave you Feng and the other

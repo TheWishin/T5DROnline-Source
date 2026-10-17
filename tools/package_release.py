@@ -24,7 +24,7 @@ bar and header) and into the folder/zip name.
 What goes in:
   T5DR Online.exe          small native starter (launcher/stub), built here with clang-cl
   launcher/                the launcher (Python/tkinter)
-  lobby/t5lobby/           the lobby client (the server is not shipped)
+  lobby/                   the lobby client, and the server for "Host for friends" (run.py, deploy/windows)
   tools/                   build_game.py, run_game.py, make_keys.py, unself.py, prereqs.py, ...
   patches/, CMakeLists.txt the port's own sources
   docs/, CHANGELOG.md      player docs (troubleshooting, German README, controls.ini, online)
@@ -74,13 +74,17 @@ OUR_FILES = [
     "tools/gamedll/ucrt_min.def",
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/stub/t5dr_stub.c",
     "docs/RELEASE.md",
+    # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
+    "lobby/run.py", "lobby/servers.json",
 ]
 # Shipped when present (player docs; the players' README section links them).
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
-                      "docs/RANKED.md", "docs/controls.ini"]
-# lobby/t5lobby/*.py is the client side (Online tab, match driver); lobby/t5lobby/server/ is not shipped.
+                      "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md"]
+# lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
+# the Online tab's "Host for friends" and lobby/deploy/windows/ run a lobby server from the zip
+# (docs/HOSTING.md). The Linux/Docker packaging stays in the repository.
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
-             "lobby/t5lobby/data/*.json"]
+             "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py", "lobby/deploy/windows/*"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]
@@ -109,9 +113,9 @@ LLVM_LICENSE_COPY = os.path.join(ROOT, "tools", "licenses", "LLVM-LICENSE.TXT")
 
 # Modules the bundled Python must have: the launcher (tkinter, ctypes), the build
 # (pycryptodome, zlib, hashlib, multiprocessing for the lifter) and the lobby client
-# (asyncio, ssl).
+# (asyncio, ssl; sqlite3 for "Host for friends").
 PY_SELFTEST = (
-    "import sys, json, ssl, ctypes, zlib, hashlib, asyncio, multiprocessing, tkinter\n"
+    "import sys, json, ssl, sqlite3, ctypes, zlib, hashlib, asyncio, multiprocessing, tkinter\n"
     "from Crypto.Cipher import AES\n"
     "assert AES.new(bytes(16), AES.MODE_ECB).encrypt(bytes(16)).hex() == '66e94bd4ef8a2c3b884cfa59ca342b2e'\n"
     "print(json.dumps({'version': sys.version.split()[0], 'tcl': tkinter.Tcl().eval('info patchlevel'),\n"

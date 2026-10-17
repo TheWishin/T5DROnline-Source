@@ -1,0 +1,7 @@
+# Only t5lobby/, servers.json and run.py go into the image.
+*
+!t5lobby/
+!servers.json
+!run.py
+**/__pycache__
+**/*.pyc

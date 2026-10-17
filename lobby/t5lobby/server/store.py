@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS recovery (
     created REAL NOT NULL,
     used REAL
 );
+CREATE TABLE IF NOT EXISTS ip_bans (
+    net TEXT PRIMARY KEY,          -- an address or a CIDR network
+    until REAL NOT NULL,           -- unix time
+    reason TEXT,
+    created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
 CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
@@ -69,10 +75,17 @@ RANKED_COLUMNS = [
     ("matches", "reason", "TEXT"),
     ("matches", "blame", "INTEGER"),
 ]
+# Moderation (the admin tool, docs/HOSTING.md): account bans. Address bans live in ip_bans.
+MODERATION_COLUMNS = [
+    ("accounts", "banned_until", "REAL"),          # unix time; PERMANENT = for ever; NULL = not banned
+    ("accounts", "ban_reason", "TEXT"),
+]
 RANKED_INDEXES = """
 CREATE INDEX IF NOT EXISTS matches_p1 ON matches (p1_account, ended);
 CREATE INDEX IF NOT EXISTS matches_p2 ON matches (p2_account, ended);
+CREATE INDEX IF NOT EXISTS matches_created ON matches (created);
 """
+PERMANENT = 32503680000.0     # 3000-01-01: "banned for ever"
 
 SESSION_DAYS = 30.0
 RECOVERY_CODES = 8
@@ -118,12 +131,13 @@ class Store:
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL" if path != ":memory:" else "PRAGMA journal_mode=MEMORY")
+        self.db.execute("PRAGMA busy_timeout=5000")    # the admin tool may hold the write lock briefly
         self.db.executescript(SCHEMA)
         self._add_columns()
         self.db.executescript(RANKED_INDEXES)
 
     def _add_columns(self):
-        for table, col, decl in RANKED_COLUMNS:
+        for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS:
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
             if col not in have:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
@@ -345,6 +359,117 @@ class Store:
         key = row["rating"] - 2 * row["rd"]
         return 1 + self.db.execute("SELECT COUNT(*) FROM accounts WHERE ranked_games > 0 AND rating - 2 * rd > ?",
                                    (key,)).fetchone()[0]
+
+    # ----------------------------------------------------------------- moderation (admin tool + server)
+    @staticmethod
+    def ban_state(row, now=None):
+        """(until, reason) when the account row is banned now, else None."""
+        until = row["banned_until"] if "banned_until" in row.keys() else None
+        if until and until > (now or time.time()):
+            return until, row["ban_reason"] or ""
+        return None
+
+    def ban_account(self, name, until, reason=""):
+        return self.db.execute("UPDATE accounts SET banned_until = ?, ban_reason = ? WHERE name = ?",
+                               (until, reason, name)).rowcount > 0
+
+    def unban_account(self, name):
+        return self.db.execute("UPDATE accounts SET banned_until = NULL, ban_reason = NULL WHERE name = ?",
+                               (name,)).rowcount > 0
+
+    def banned_account_ids(self, now=None):
+        return {r[0] for r in self.db.execute("SELECT id FROM accounts WHERE banned_until > ?",
+                                               (now or time.time(),))}
+
+    def ban_ip(self, net, until, reason=""):
+        self.db.execute("INSERT OR REPLACE INTO ip_bans (net, until, reason, created) VALUES (?, ?, ?, ?)",
+                        (net, until, reason, time.time()))
+
+    def unban_ip(self, net):
+        return self.db.execute("DELETE FROM ip_bans WHERE net = ?", (net,)).rowcount > 0
+
+    def ip_bans(self, now=None):
+        return [dict(r) for r in self.db.execute("SELECT * FROM ip_bans WHERE until > ? ORDER BY created",
+                                                  (now or time.time(),))]
+
+    def reset_rating(self, name):
+        """Back to 1500 / RD 350 and unranked (placement again); the win/loss record stays."""
+        return self.db.execute(
+            "UPDATE accounts SET rating = ?, rd = ?, vol = ?, last_ranked = NULL, ranked_games = 0, tier = 0, "
+            "tier_since = 0, tier_peak = 0, tier_floor = 0 WHERE name = ?",
+            (glicko.DEFAULT_R, glicko.DEFAULT_RD, glicko.DEFAULT_VOL, name)).rowcount > 0
+
+    def delete_account(self, name):
+        row = self.account(name)
+        if row is None:
+            return False
+        self.db.execute("DELETE FROM accounts WHERE id = ?", (row["id"],))
+        self._drop_orphans()
+        return True
+
+    def _drop_orphans(self):
+        """Remembered logins and recovery codes of accounts that no longer exist."""
+        for table in ("sessions", "recovery"):
+            self.db.execute(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
+
+    def list_accounts(self, pattern=None, limit=50, banned_only=False):
+        sql, args = "SELECT * FROM accounts WHERE 1 = 1", []
+        if pattern:
+            esc = pattern.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            sql += " AND name LIKE ? ESCAPE '!'"
+            args.append(f"%{esc}%")
+        if banned_only:
+            sql += " AND banned_until > ?"
+            args.append(time.time())
+        sql += " ORDER BY COALESCE(last_seen, created) DESC LIMIT ?"
+        args.append(limit)
+        return [dict(r) for r in self.db.execute(sql, args)]
+
+    def recent_matches(self, limit=20, name=None):
+        sql, args = "SELECT * FROM matches", []
+        if name:
+            sql += " WHERE p1_name = ? COLLATE NOCASE OR p2_name = ? COLLATE NOCASE"
+            args += [name, name]
+        sql += " ORDER BY created DESC LIMIT ?"
+        args.append(limit)
+        return [dict(r) for r in self.db.execute(sql, args)]
+
+    def purge_guest_matches(self, older_than_days):
+        """Match records in which no account took part (guests only), older than the given age."""
+        cut = time.time() - older_than_days * 86400.0
+        return self.db.execute("DELETE FROM matches WHERE p1_account IS NULL AND p2_account IS NULL "
+                               "AND created < ?", (cut,)).rowcount
+
+    def purge_inactive_accounts(self, days, include_played=False):
+        """Accounts not seen for `days` (by default only those that never finished a game)."""
+        cut = time.time() - days * 86400.0
+        sql = "DELETE FROM accounts WHERE COALESCE(last_seen, created) < ? AND (banned_until IS NULL OR banned_until < ?)"
+        if not include_played:
+            sql += " AND games = 0"
+        n = self.db.execute(sql, (cut, time.time())).rowcount
+        self._drop_orphans()
+        return n
+
+    def stats(self, now=None):
+        """Numbers for the status page: accounts and the last 24 hours of matches."""
+        now = now or time.time()
+        day = now - 86400.0
+        one = lambda sql, *a: self.db.execute(sql, a).fetchone()[0]   # noqa: E731
+        by_status = {r[0]: r[1] for r in self.db.execute(
+            "SELECT status, COUNT(*) FROM matches WHERE created >= ? GROUP BY status", (day,))}
+        by_path = {r[0] or "none": r[1] for r in self.db.execute(
+            "SELECT path, COUNT(*) FROM matches WHERE created >= ? GROUP BY path", (day,))}
+        return {
+            "accounts": one("SELECT COUNT(*) FROM accounts"),
+            "accounts_seen_24h": one("SELECT COUNT(*) FROM accounts WHERE last_seen >= ?", day),
+            "accounts_seen_7d": one("SELECT COUNT(*) FROM accounts WHERE last_seen >= ?", now - 7 * 86400.0),
+            "accounts_banned": one("SELECT COUNT(*) FROM accounts WHERE banned_until > ?", now),
+            "ip_bans": one("SELECT COUNT(*) FROM ip_bans WHERE until > ?", now),
+            "matches_24h": sum(by_status.values()),
+            "matches_24h_by_status": by_status,
+            "matches_24h_by_path": by_path,
+            "matches_total": one("SELECT COUNT(*) FROM matches"),
+        }
 
 
 # Statuses whose result counts (record, rating when ranked).

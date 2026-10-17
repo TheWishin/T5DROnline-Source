@@ -1,0 +1,62 @@
+# T5DR lobby server -- installed by lobby/deploy/linux/install.sh as /etc/systemd/system/t5lobby.service
+#   systemctl status t5lobby      journalctl -u t5lobby -f      systemctl reload t5lobby (TLS files)
+[Unit]
+Description=T5DR Online lobby server
+Documentation=https://github.com/TheWishin/T5DROnline/blob/main/docs/HOSTING.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=t5lobby
+Group=t5lobby
+WorkingDirectory=/opt/t5lobby
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+Environment=T5L_DB=/var/lib/t5lobby/t5lobby.db T5L_BACKUP_DIR=/var/lib/t5lobby/backups
+EnvironmentFile=-/etc/t5lobby/t5lobby.env
+ExecStart=/usr/bin/python3 -m t5lobby.server
+# SIGHUP: load a renewed TLS certificate now (it is also picked up on its own within seconds)
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=8192
+
+# Logs go to the journal (rotated by journald: see SystemMaxUse in /etc/systemd/journald.conf).
+StandardOutput=journal
+StandardError=journal
+
+# State: /var/lib/t5lobby (database, backups). Everything else is read-only for the service.
+StateDirectory=t5lobby
+StateDirectoryMode=0750
+ConfigurationDirectory=t5lobby
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

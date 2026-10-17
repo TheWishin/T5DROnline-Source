@@ -1,6 +1,7 @@
 """The launcher's Online tab driven like a player would, against a real server and a second
 (plain) client: guest login, quick match, accept, the game starts with the handed-over
 environment, the game closes, "I won", and the confirmed result shows up."""
+import gc
 import os
 import time
 import unittest
@@ -74,6 +75,11 @@ class TkTabTest(unittest.TestCase):
             self.other.close()
         self.root.destroy()
         self.s.stop()
+        # Drop every Tk object here, on the main thread: otherwise the cyclic GC may finalize the
+        # previous test's Tk interpreter on a lobby worker thread, and Tcl aborts the process
+        # ("Tcl_AsyncDelete: async handler deleted by the wrong thread").
+        self.tab = self.root = None
+        gc.collect()
 
     def pump(self, cond, timeout=15.0):
         t_end = time.monotonic() + timeout
@@ -225,6 +231,22 @@ class TkTabTest(unittest.TestCase):
         self.pump(lambda: "Champ" in tab.prof_title.get())
         self.pump(lambda: len(tab.tv_hist.get_children()) == 1)
         self.assertIn("Beginner", tab.prof_title.get())
+
+    def test_host_for_friends(self):
+        import tempfile
+        tab = self.tab
+        tab.host_args = ["--data", tempfile.mkdtemp(), "--port", "0", "--status-port", "0"]
+        tab.do_host()
+        self.pump(lambda: tab.host_info is not None, timeout=60)
+        server = tab.server_var.get()
+        self.assertTrue(server.startswith("127.0.0.1:") and "#" in server, server)   # pinned TLS to itself
+        self.assertIn(tab.host_info["fingerprint"], self.root.clipboard_get())
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        tab.do_logout()
+        tab.do_host()                                         # the same button stops it
+        self.pump(lambda: tab.host_proc is None, timeout=20)
+        self.assertEqual(str(tab.b_host.cget("text")), "Host for friends")
 
 
 if __name__ == "__main__":

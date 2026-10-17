@@ -9,7 +9,8 @@ Use it when a player lost both the password and the recovery codes and proves wh
 are some other way (a friend group knows its players). The player then logs in with the
 printed password and changes it in the launcher (Online tab -> Change password). Works
 on the live database while the server runs (SQLite locking). The database defaults to
-T5L_DB (or ./t5lobby.db). The server-hosting admin tool may take these commands over.
+T5L_DB (or ./t5lobby.db). The same commands (and bans, backups, status) are in the full admin
+tool: python -m t5lobby.server.admin user | reset-password | recovery-codes | logout-all NAME.
 """
 import argparse
 import os

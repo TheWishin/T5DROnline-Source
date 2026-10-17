@@ -66,6 +66,23 @@ class Config:
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed
     min_fps: float = 40.0           # T5L_MIN_FPS: a PC whose last match ran slower stays out of ranked (0 = off)
     warn_fps: float = 55.0          # T5L_WARN_FPS: below this both players are warned at match found (0 = off)
+    # hosting and operations (docs/HOSTING.md)
+    log_file: str = ""              # T5L_LOG_FILE: also log to this file, rotated (stderr is always used if open)
+    log_max_mb: int = 10            # T5L_LOG_MAX_MB: rotate the log file at this size ...
+    log_backups: int = 5            # T5L_LOG_BACKUPS: ... and keep this many old ones
+    conn_rate: float = 0.5          # T5L_CONN_RATE: new connections per second per address ...
+    conn_burst: int = 10            # T5L_CONN_BURST: ... after a burst of this many
+    max_pending_kb: int = 1024      # T5L_MAX_PENDING_KB: unsent output per connection before it is dropped
+    lobby_interval: float = 0.3     # T5L_LOBBY_INTERVAL: seconds between lobby list updates (at most)
+    udp_ctl_pps: int = 5000         # T5L_UDP_CTL_PPS: server-addressed UDP packets per second, all senders
+    name_blocklist: str = ""        # T5L_NAME_BLOCKLIST: file, one word per line; names containing one are refused
+    status_host: str = "127.0.0.1"  # T5L_STATUS_HOST: HTTP status/health/metrics endpoint (keep it local) ...
+    status_port: int = 7780         # T5L_STATUS_PORT: ... on this TCP port; 0 = off
+    status_log_minutes: float = 15  # T5L_STATUS_LOG_MINUTES: a one-line status in the log this often; 0 = never
+    backup_dir: str = ""            # T5L_BACKUP_DIR: online database backups go here; empty = no automatic backups
+    backup_hours: float = 24        # T5L_BACKUP_HOURS: one backup this often ...
+    backup_keep: int = 14           # T5L_BACKUP_KEEP: ... and keep the newest this many
+    admin_poll: float = 5.0         # T5L_ADMIN_POLL: seconds between checks for bans made with the admin tool
 
     @classmethod
     def from_env(cls, env=None, **overrides):

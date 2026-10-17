@@ -21,7 +21,7 @@ import os
 import ssl
 import time
 
-from .. import fighters, proto, ranks, rating as glicko
+from .. import __version__, fighters, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
 from ..proto import LobbyError
 from .config import Config
@@ -32,6 +32,7 @@ from .udp import UdpService
 log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
+CAPS = frozenset(("delta",))     # optional protocol features a client may announce in hello
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch"]
@@ -60,6 +61,7 @@ class Player:
         self.match = None
         self.server_rtt = None          # ms, reported by the client (UDP ping)
         self.fps = None                 # this PC's sustained game speed in its last match (client report)
+        self.rtt_shown = None           # what the lobby list shows: only updated on a real change
         self.token = os.urandom(24).hex()   # session resume token
         self.dropped_at = None
         self.last_challenge = 0.0
@@ -84,7 +86,7 @@ class Player:
         d = {"id": self.id, "name": self.name, "guest": self.guest, "status": self.status,
              "rating": round(self.rating.r), "rd": round(self.rating.rd),
              "record": self.record, "room": self.room.id if self.room else None,
-             "rtt": None if self.server_rtt is None else round(self.server_rtt, 1),
+             "rtt": None if self.rtt_shown is None else round(self.rtt_shown, 1),
              "build": self.build_id, "release": self.release, "char": self.char, "main": self.main}
         d.update(self.rank_info())
         return d
@@ -188,9 +190,12 @@ class Conn:
         peer = writer.get_extra_info("peername") or ("?", 0)
         self.ip, self.port = peer[0], peer[1]
         self.out = asyncio.Queue(maxsize=512)
+        self.pending = 0                # bytes queued but not yet handed to the socket
         self.player = None
         self.build_id = None
         self.release = ""
+        self.caps = frozenset()         # optional protocol features the client announced
+        self.need_full = True           # next lobby update: the whole list, not a delta
         self.helloed = False
         self.closed = False
         self.t_open = time.monotonic()
@@ -199,10 +204,20 @@ class Conn:
         self.errors = 0
 
     def send(self, msg):
+        if not self.closed:
+            self.send_raw(proto.encode(msg))
+
+    def send_raw(self, data):
+        """Queue encoded bytes. A client that stops reading is dropped before it costs much memory."""
         if self.closed:
             return
+        if self.pending + len(data) > self.srv.cfg.max_pending_kb * 1024:
+            log.warning("%s: %d bytes unread, dropping connection", self.ip, self.pending)
+            self.close()
+            return
         try:
-            self.out.put_nowait(proto.encode(msg))
+            self.out.put_nowait(data)
+            self.pending += len(data)
         except asyncio.QueueFull:
             log.warning("%s: output queue full, dropping connection", self.ip)
             self.close()
@@ -221,6 +236,8 @@ class Conn:
                 data = await self.out.get()
                 if data is None:
                     break
+                self.pending -= len(data)
+                self.srv.counters["tcp_out_bytes"] += len(data)
                 self.writer.write(data)
                 await self.writer.drain()
         except (ConnectionError, OSError):
@@ -254,6 +271,7 @@ class Conn:
                     break
                 except (asyncio.IncompleteReadError, ConnectionError, OSError):
                     break
+                self.srv.counters["tcp_in_bytes"] += len(line)
                 if not await self.srv.dispatch(self, line):
                     break
         finally:
@@ -279,7 +297,7 @@ class LobbyServer:
         self.tokens = {}           # udp token -> (Match, side)
         self.queues = {m: [] for m in QUEUE_MODES}
         self.ip_conns = {}
-        self.ip_connects = KeyedBuckets(rate=0.5, burst=10)     # new connections per IP
+        self.ip_connects = KeyedBuckets(rate=self.cfg.conn_rate, burst=self.cfg.conn_burst)  # new connections per IP
         self.login_fail = KeyedBuckets(rate=1 / 60.0, burst=5)  # failed password logins per IP and per name
         self.registrations = KeyedBuckets(rate=1 / 600.0, burst=3)  # new accounts per IP
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
@@ -294,6 +312,20 @@ class LobbyServer:
         self.rules = ranks.RankRules(placement=self.cfg.placement, placement_cap=self.cfg.placement_cap,
                                      hysteresis=self.cfg.hysteresis, shield=self.cfg.shield,
                                      provisional_rd=self.cfg.provisional_rd)
+        self.counters = dict.fromkeys((
+            "tcp_in_bytes", "tcp_out_bytes", "connections", "refused_connections", "logins_guest",
+            "logins_account", "accounts_created", "login_failures", "kicked", "matches_found",
+            "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
+            "results_disputed", "results_onesided", "results_void", "chat_lines"), 0)
+        self._last_lobby = None    # the last lobby list sent: deltas are computed against it
+        self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
+        self.name_block = self._load_blocklist(self.cfg.name_blocklist)
+        self.sslctx = None
+        self._tls_mtime = None
+        self.status_http = None
+        self._last_backup = 0.0
+        self._last_status_log = time.monotonic()
+        self._relay_samples = []   # (monotonic, bytes relayed so far) for the relay bandwidth
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self):
@@ -301,15 +333,34 @@ class LobbyServer:
         sslctx = None
         if self.cfg.tls_cert:
             sslctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            sslctx.minimum_version = ssl.TLSVersion.TLSv1_2
             sslctx.load_cert_chain(self.cfg.tls_cert, self.cfg.tls_key or None)
+            self._tls_mtime = self._tls_files_mtime()
+        elif self.cfg.accounts and self.cfg.host not in ("127.0.0.1", "localhost", "::1"):
+            log.warning("no TLS certificate (T5L_TLS_CERT): account passwords cross the network readable; "
+                        "see docs/HOSTING.md")
+        self.sslctx = sslctx
+        self.reload_bans()
         self.tcp = await asyncio.start_server(self._accept, self.cfg.host, self.cfg.port, ssl=sslctx,
                                               limit=proto.MAX_LINE + 2)
         self.port = self.tcp.sockets[0].getsockname()[1]
         await self.udp.start(loop)
+        if self.cfg.status_port:
+            from .status import StatusHttp
+            self.status_http = StatusHttp(self)
+            try:
+                await self.status_http.start(self.cfg.status_host, max(0, self.cfg.status_port))
+            except OSError as e:
+                log.warning("status endpoint %s:%s unavailable (%s)", self.cfg.status_host, self.cfg.status_port, e)
+                self.status_http = None
+        if self.cfg.backup_dir and self.cfg.db != ":memory:":
+            from .backup import newest_backup_time
+            self._last_backup = newest_backup_time(self.cfg.backup_dir)
         self.tasks = [asyncio.ensure_future(self._tick_lobby()), asyncio.ensure_future(self._tick_queue()),
-                      asyncio.ensure_future(self._tick_housekeeping())]
-        log.info("listening: TCP %s:%d%s, UDP %d%s", self.cfg.host, self.port, " (TLS)" if sslctx else "",
-                 self.udp.port, f" + probe {self.udp.port2}" if self.udp.port2 else "")
+                      asyncio.ensure_future(self._tick_housekeeping()), asyncio.ensure_future(self._tick_admin())]
+        log.info("listening: TCP %s:%d%s, UDP %d%s%s", self.cfg.host, self.port, " (TLS)" if sslctx else "",
+                 self.udp.port, f" + probe {self.udp.port2}" if self.udp.port2 else "",
+                 f", status http://{self.cfg.status_host}:{self.status_http.port}/" if self.status_http else "")
 
     async def stop(self):
         for t in self.tasks:
@@ -324,8 +375,95 @@ class LobbyServer:
                 await asyncio.wait_for(self.tcp.wait_closed(), 2)
             except asyncio.TimeoutError:
                 pass
+        if self.status_http:
+            await self.status_http.stop()
         self.udp.close()
         self.store.close()
+
+    # ------------------------------------------------------------------ operations: TLS, bans, names
+    def _tls_files_mtime(self):
+        try:
+            return tuple(os.stat(f).st_mtime_ns for f in (self.cfg.tls_cert, self.cfg.tls_key) if f)
+        except OSError:
+            return None
+
+    def reload_tls(self, force=False):
+        """Load a renewed certificate (certbot, or a replaced self-signed one) for new connections.
+        Called when the files change (checked every few seconds) and on SIGHUP. A broken pair is
+        refused and the old certificate stays in use."""
+        if self.sslctx is None:
+            return False
+        mt = self._tls_files_mtime()
+        if mt is None or (mt == self._tls_mtime and not force):
+            return False
+        try:
+            self.sslctx.load_cert_chain(self.cfg.tls_cert, self.cfg.tls_key or None)
+        except (OSError, ssl.SSLError, ValueError) as e:
+            log.error("TLS certificate reload failed, keeping the old one: %s", e)
+            self._tls_mtime = mt            # do not retry every few seconds; the next change will
+            return False
+        self._tls_mtime = mt
+        log.info("TLS certificate reloaded from %s", self.cfg.tls_cert)
+        return True
+
+    def reload_bans(self):
+        """Address bans from the database (written by the admin tool)."""
+        nets = []
+        for row in self.store.ip_bans():
+            try:
+                nets.append((ipaddress.ip_network(row["net"], strict=False), row["until"]))
+            except ValueError:
+                continue
+        self.ip_bans = nets
+
+    def ip_banned(self, ip):
+        if not self.ip_bans:
+            return False
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        now = time.time()
+        return any(until > now and a.version == net.version and a in net for net, until in self.ip_bans)
+
+    @staticmethod
+    def _load_blocklist(path):
+        """Extra words refused anywhere in new names (T5L_NAME_BLOCKLIST), on top of the reserved
+        names in proto.reserved_name."""
+        words = set()
+        if path:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    words |= {w.strip().lower() for w in f if w.strip() and not w.startswith("#")}
+            except OSError as e:
+                log.warning("name blocklist %s: %s", path, e)
+        return words
+
+    def name_blocked(self, name):
+        flat = proto.name_key(name)
+        return any(w and proto.name_key(w) in flat for w in self.name_block)
+
+    def _refuse_banned(self, account):
+        """Bans come from the admin tool; checked after the password (or saved login) is proven,
+        so a ban never tells a stranger that an account exists."""
+        ban = self.store.ban_state(self.store.account_by_id(account["id"]) or account)
+        if ban:
+            until, reason = ban
+            when = "for good" if until >= 3e10 else "until " + time.strftime("%Y-%m-%d %H:%M UTC",
+                                                                             time.gmtime(until))
+            raise LobbyError(proto.E_NOT_ALLOWED, f"this account is banned {when}" + (f": {reason}" if reason else ""))
+
+    def _count(self, key):
+        self.counters[key] = self.counters.get(key, 0) + 1
+
+    def kick(self, p, reason):
+        if p.conn is not None:
+            p.send({"t": "kicked", "reason": reason})
+            c = p.conn
+            c.player = None
+            c.close()
+            self.counters["kicked"] += 1
+            self.player_dropped(p, final=True)
 
     def note(self, kind, **data):
         self.events.append((time.time(), kind, data))
@@ -335,14 +473,22 @@ class LobbyServer:
     async def _accept(self, reader, writer):
         conn = Conn(self, reader, writer)
         ip = conn.ip
+        if self.ip_banned(ip):
+            self.counters["refused_connections"] += 1
+            writer.write(proto.encode({"t": "error", "code": proto.E_NOT_ALLOWED, "msg": "banned from this server"}))
+            writer.close()
+            return
         if self.bans.banned(ip) or not self.ip_connects.take(ip):
+            self.counters["refused_connections"] += 1
             writer.write(proto.encode({"t": "error", "code": proto.E_RATE, "msg": "too many connections"}))
             writer.close()
             return
         if len(self.conns) >= self.cfg.max_clients or self.ip_conns.get(ip, 0) >= self.cfg.max_per_ip:
+            self.counters["refused_connections"] += 1
             writer.write(proto.encode({"t": "error", "code": proto.E_FULL, "msg": "server full"}))
             writer.close()
             return
+        self.counters["connections"] += 1
         self.conns.add(conn)
         self.ip_conns[ip] = self.ip_conns.get(ip, 0) + 1
         await conn.run()
@@ -420,13 +566,16 @@ class LobbyServer:
                                               "launcher and rebuild the game")
         conn.build_id = bid
         conn.release = str(build.get("release", ""))[:32]
+        caps = msg.get("caps")
+        conn.caps = CAPS.intersection(str(c) for c in caps[:16]) if isinstance(caps, list) else frozenset()
         conn.helloed = True
         return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,
                 "udp_port": self.udp.port, "udp_port2": self.udp.port2, "build": bid,
                 "accounts": self.cfg.accounts, "guests": self.cfg.guests, "motd": self.cfg.motd,
                 "ip": conn.ip, "time": time.time(), "features": FEATURES,
                 "tls": conn.writer.get_extra_info("ssl_object") is not None,
-                "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement}
+                "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
+                "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -451,7 +600,9 @@ class LobbyServer:
             account = self.store.session_account(session, self.cfg.session_days)
             if account is None:
                 self.login_fail.take(key_ip)
+                self.counters["login_failures"] += 1
                 raise LobbyError(proto.E_AUTH, "the saved login has expired; log in with your password")
+            self._refuse_banned(account)
             name = account["name"]
         else:
             name = msg.get("name", "")
@@ -459,6 +610,8 @@ class LobbyServer:
                 raise LobbyError(proto.E_BAD_NAME, "names are 2-16 letters, digits, spaces or _-.[]()!?")
             if mode in ("guest", "register") and proto.reserved_name(name):
                 raise LobbyError(proto.E_BAD_NAME, "that name is reserved")
+            if mode in ("guest", "register") and self.name_blocked(name):
+                raise LobbyError(proto.E_BAD_NAME, "that name is not allowed here")
             if mode == "guest":
                 if not self.cfg.guests:
                     raise LobbyError(proto.E_NOT_ALLOWED, "this server has no guest logins")
@@ -482,6 +635,7 @@ class LobbyServer:
                     if account is None:
                         raise LobbyError(proto.E_NAME_TAKEN, "that name is taken")
                     codes = self.store.issue_recovery_codes(account["id"], self.cfg.recovery_codes)
+                    self.counters["accounts_created"] += 1
                     log.info("account %r created from %s", name, conn.ip)
                 else:
                     account = self.store.account(name)
@@ -489,7 +643,9 @@ class LobbyServer:
                     if not ok:
                         self.login_fail.take(key_ip)
                         self.login_fail.take(key_name)
+                        self.counters["login_failures"] += 1
                         raise LobbyError(proto.E_AUTH, "wrong name or password")
+                    self._refuse_banned(account)
                 name = account["name"]
                 if remember:
                     session = self.store.create_session(account["id"], self.cfg.session_days)
@@ -525,6 +681,7 @@ class LobbyServer:
         self.by_name[name.lower()] = p
         self.sessions[p.token] = p
         self.dirty = True
+        self.counters["logins_guest" if p.guest else "logins_account"] += 1
         log.info("login %s %r (%s) from %s build %s", p.id, name, "guest" if p.guest else mode,
                  conn.ip, p.build_id)
         self.note("login", player=p.id, name=name)
@@ -658,8 +815,12 @@ class LobbyServer:
     async def h_udp_rtt(self, conn, msg):
         ms = float(msg["ms"])
         if 0 <= ms < 10000:
-            conn.player.server_rtt = ms
-            self.dirty = True
+            p = conn.player
+            p.server_rtt = ms                 # matchmaking uses the exact value
+            shown = p.rtt_shown
+            if shown is None or abs(ms - shown) > max(5.0, 0.2 * shown):
+                p.rtt_shown = ms              # the lobby list only when it changed noticeably
+                self.dirty = True
 
     async def h_perf(self, conn, msg):
         """The client's measure of its PC: sustained frames per second of its last match."""
@@ -695,7 +856,8 @@ class LobbyServer:
                     "msg": "; ".join(parts) + " -- this match runs at the slower PC's speed"})
 
     async def h_lobby(self, conn, msg):
-        return self._snapshot()
+        conn.need_full = True       # the next broadcast is whole again: deltas follow the broadcasts
+        return self._snapshot(full="delta" in conn.caps)
 
     async def h_leaderboard(self, conn, msg):
         rows = self.store.leaderboard(max(1, min(100, int(msg.get("limit", 20)))), max(0, int(msg.get("offset", 0))))
@@ -714,9 +876,11 @@ class LobbyServer:
             raise LobbyError(proto.E_RATE, "chat: slow down")
         text = "".join(ch for ch in text[:200] if ch.isprintable())
         p = conn.player
-        out = {"t": "chat", "from": p.brief(), "text": text, "time": time.time()}
+        self.counters["chat_lines"] += 1
+        data = proto.encode({"t": "chat", "from": p.brief(), "text": text, "time": time.time()})
         for q in self.players.values():
-            q.send(out)
+            if q.conn is not None:
+                q.conn.send_raw(data)
 
     # ------------------------------------------------------------------ player removal
     def player_dropped(self, p, final=False):
@@ -1105,6 +1269,7 @@ class LobbyServer:
                 p.send({"t": "notice", "code": "pair_cap", "match": m.id, "msg": note})
         self._speed_notice(m)
         self.dirty = True
+        self.counters["matches_found"] += 1
         self.note("match_found", match=m.id, origin=origin)
         log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
         if keep:
@@ -1179,6 +1344,7 @@ class LobbyServer:
         if m.room is not None:
             m.room.match = None
         self.matches.pop(m.id, None)
+        self.counters["matches_cancelled"] += 1
         self.note("match_cancel", match=m.id, reason=reason)
         log.info("match %s cancelled: %s", m.id, reason)
         self.dirty = True
@@ -1354,6 +1520,7 @@ class LobbyServer:
         self._timer(m, "match", self.cfg.match_timeout, self._match_timeout, m)
         self._save(m, "playing")
         self.dirty = True
+        self._count("matches_" + path)
         self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay)
         log.info("match %s starts: %s, rtt %.1f ms, delay %d, %s vs %s on %s", m.id, path, m.rtt, m.delay,
                  m.chars[0], m.chars[1], m.stage)
@@ -1641,6 +1808,7 @@ class LobbyServer:
                 self._forget(p)
         if m.room is not None:
             m.room.match = None
+        self._count("results_" + status)
         self.note("match_result", match=m.id, status=status, winner=winner, reason=reason)
         log.info("match %s %s%s: winner %s score %s", m.id, status, f" ({reason})" if reason else "", winner, score)
         self.dirty = True
@@ -1661,27 +1829,72 @@ class LobbyServer:
             log.exception("saving match %s", m.id)
 
     # ------------------------------------------------------------------ lobby broadcast
-    def _snapshot(self):
-        players = [p.public() for p in self.players.values() if p.online][:300]
-        rooms = [r.public() for r in self.rooms.values()][:100]
+    # A client that announced caps ["delta"] gets the whole list once (after login, or after asking
+    # with "lobby"), then only what changed since the previous broadcast:
+    #     {"t":"lobby_delta", "players":[changed or new], "gone":[ids], "rooms":[changed or new],
+    #      "rooms_gone":[ids], "queue":{...}}          (fields only when something changed)
+    # The client library merges them and hands the UI a complete lobby_state as before. Whole lists
+    # for everybody cost O(players^2): 46 Mbit/s at 100 players (lobby/tools/load_test.py).
+    LEGACY_PLAYERS, LEGACY_ROOMS = 300, 100
+
+    def _snapshot(self, full=False):
+        players = [p.public() for p in self.players.values() if p.online]
+        rooms = [r.public() for r in self.rooms.values()]
+        if not full:
+            players, rooms = players[:self.LEGACY_PLAYERS], rooms[:self.LEGACY_ROOMS]
         return {"t": "lobby_state", "players": players, "rooms": rooms,
                 "queue": {m: len(q) for m, q in self.queues.items()}}
 
+    def _broadcast_lobby(self):
+        players = {p.id: p.public() for p in self.players.values() if p.online}
+        rooms = {r.id: r.public() for r in self.rooms.values()}
+        queue = {m: len(q) for m, q in self.queues.items()}
+        last = self._last_lobby
+        self._last_lobby = {"players": players, "rooms": rooms, "queue": queue}
+        delta_data = full_data = legacy_data = None
+        if last is not None:
+            delta = {"t": "lobby_delta"}
+            changed = [v for k, v in players.items() if last["players"].get(k) != v]
+            gone = [k for k in last["players"] if k not in players]
+            rchanged = [v for k, v in rooms.items() if last["rooms"].get(k) != v]
+            rgone = [k for k in last["rooms"] if k not in rooms]
+            for key, val in (("players", changed), ("gone", gone), ("rooms", rchanged), ("rooms_gone", rgone)):
+                if val:
+                    delta[key] = val
+            if queue != last["queue"]:
+                delta["queue"] = queue
+            if len(delta) > 1:
+                delta_data = proto.encode(delta)
+        for p in self.players.values():
+            c = p.conn
+            if c is None or c.closed:
+                continue
+            if "delta" in c.caps:
+                if c.need_full or last is None:
+                    if full_data is None:
+                        full_data = proto.encode({"t": "lobby_state", "players": list(players.values()),
+                                                  "rooms": list(rooms.values()), "queue": queue})
+                    c.need_full = False
+                    c.send_raw(full_data)
+                elif delta_data is not None:
+                    c.send_raw(delta_data)
+            else:
+                if legacy_data is None:
+                    legacy_data = proto.encode({"t": "lobby_state",
+                                                "players": list(players.values())[:self.LEGACY_PLAYERS],
+                                                "rooms": list(rooms.values())[:self.LEGACY_ROOMS], "queue": queue})
+                c.send_raw(legacy_data)
+
     async def _tick_lobby(self):
         while True:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(self.cfg.lobby_interval)
             if not self.dirty:
                 continue
             self.dirty = False
-            snap = self._snapshot()
-            data = proto.encode(snap)
-            for p in self.players.values():
-                c = p.conn
-                if c is not None and not c.closed:
-                    try:
-                        c.out.put_nowait(data)
-                    except asyncio.QueueFull:
-                        c.close()
+            try:
+                self._broadcast_lobby()
+            except Exception:
+                log.exception("lobby broadcast")
 
     async def _tick_housekeeping(self):
         while True:
@@ -1698,3 +1911,99 @@ class LobbyServer:
                     self.udp.close_relay(mid)
             self.ip_connects.prune()
             self.login_fail.prune()
+            self._relay_samples.append((now, self.udp.stats["relayed_bytes"]))
+            del self._relay_samples[:-13]          # one minute of 5 s samples
+            try:
+                self.reload_tls()
+                self._maybe_backup()
+                self._maybe_log_status()
+            except Exception:
+                log.exception("housekeeping")
+
+    async def _tick_admin(self):
+        """Bans made with the admin tool (python -m t5lobby.server.admin) take effect within seconds:
+        banned accounts and addresses are kicked."""
+        while True:
+            await asyncio.sleep(self.cfg.admin_poll)
+            try:
+                self.reload_bans()
+                banned = self.store.banned_account_ids()
+                for p in list(self.players.values()):
+                    if p.conn is None:
+                        continue
+                    if (p.account_id is not None and p.account_id in banned) or self.ip_banned(p.conn.ip):
+                        log.info("kicking %r (%s): banned", p.name, p.conn.ip)
+                        self.kick(p, "banned from this server")
+                for c in [c for c in self.conns if c.player is None and self.ip_banned(c.ip)]:
+                    c.close()
+            except Exception:
+                log.exception("admin poll")
+
+    def _maybe_backup(self):
+        if not self.cfg.backup_dir or self.cfg.db == ":memory:" or self.cfg.backup_hours <= 0:
+            return
+        if time.time() - self._last_backup < self.cfg.backup_hours * 3600:
+            return
+        self._last_backup = time.time()
+        from .backup import backup_db
+
+        async def run():
+            try:
+                path = await asyncio.to_thread(backup_db, self.cfg.db, self.cfg.backup_dir, self.cfg.backup_keep)
+                log.info("database backed up to %s", path)
+            except Exception as e:     # noqa: BLE001 -- logged; the next attempt is in backup_hours
+                log.error("database backup failed: %s", e)
+        asyncio.ensure_future(run())
+
+    def _maybe_log_status(self):
+        every = self.cfg.status_log_minutes * 60
+        if every <= 0 or time.monotonic() - self._last_status_log < every:
+            return
+        self._last_status_log = time.monotonic()
+        st = self.status()
+        log.info("status: %d online (%d guests), %d rooms, %d queued, %d matches running, %d relayed, "
+                 "relay %.0f kbit/s, %s matches in 24 h", st["players"]["online"], st["players"]["guests"],
+                 st["rooms"], sum(st["queue"].values()), st["matches"]["running"], st["relay"]["sessions"],
+                 st["relay"]["kbit_s"], st["db"].get("matches_24h", "?"))
+
+    def relay_kbit_s(self):
+        """Relay throughput (bytes forwarded, both directions together) over the last minute."""
+        s = self._relay_samples
+        if len(s) < 2 or s[-1][0] <= s[0][0]:
+            return 0.0
+        return 8 * (s[-1][1] - s[0][1]) / (s[-1][0] - s[0][0]) / 1000.0
+
+    def status(self):
+        """Everything the status endpoint and the admin tool show. No names, no addresses."""
+        from .status import cert_info, process_info
+        online = [p for p in self.players.values() if p.online]
+        by_state = {}
+        for m in self.matches.values():
+            by_state[m.state] = by_state.get(m.state, 0) + 1
+        try:
+            db = self.store.stats()
+        except Exception as e:     # noqa: BLE001
+            db = {"error": str(e)}
+        return {
+            "server": SERVER_NAME, "proto": proto.PROTO_VERSION, "time": round(time.time()),
+            "uptime_s": round(time.time() - self.started),
+            "players": {"online": len(online), "guests": sum(1 for p in online if p.guest),
+                        "accounts": sum(1 for p in online if not p.guest),
+                        "playing": sum(1 for p in online if p.status == "playing"),
+                        "in_queue": sum(1 for p in online if p.status == "queue"),
+                        "resumable": len(self.players) - len(online)},
+            "connections": len(self.conns),
+            "rooms": len(self.rooms),
+            "queue": {m: len(q) for m, q in self.queues.items()},
+            "matches": {"running": sum(by_state.values()), "by_state": by_state},
+            "relay": {"sessions": len(self.udp.relays), "max": self.cfg.max_relays,
+                      "kbit_s": round(self.relay_kbit_s(), 1),
+                      "bytes_total": self.udp.stats["relayed_bytes"], "packets_total": self.udp.stats["relayed"],
+                      "dropped_total": self.udp.stats["dropped"], "force_relay": self.cfg.force_relay},
+            "counters": dict(self.counters),
+            "db": db,
+            "tls": cert_info(self.cfg.tls_cert) if self.sslctx else None,
+            "config": {"accounts": self.cfg.accounts, "guests": self.cfg.guests,
+                       "max_clients": self.cfg.max_clients, "pinned_builds": len(self.cfg.builds)},
+            "process": process_info(),
+        }

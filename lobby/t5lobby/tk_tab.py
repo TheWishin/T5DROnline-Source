@@ -14,17 +14,25 @@ Per-user settings (server, name, character, and the remembered login -- a token 
 the server, never the password) live in %APPDATA%\\T5DROnline\\online.json (or
 $T5_ONLINE_DIR), outside the program folder.
 
+The Server box lists the servers from servers.json (lobby/servers.json from the release, plus
+servers.json in that same per-user folder); anything else can be typed as host:port,
+host:port#FINGERPRINT (self-signed TLS, pinned) or tls://host:port. "Host for friends" runs a
+lobby server on this PC (t5lobby.server.host) and points the Server box at it; the router is only
+asked to forward ports when "Open router ports" is ticked.
+
     python -m t5lobby.tk_tab --server 127.0.0.1:7781     # standalone window, stub game (testing)
 """
 import json
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import fighters, ranks
+from . import fighters, ranks, servers
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .match_driver import MatchDriver, fps_from_logs
@@ -86,6 +94,11 @@ class OnlineTab:
         self.table = fighters.table()
         self.cfg_path = os.path.join(online_dir(), "online.json")
         self.cfg = self._load_cfg()
+        self.user_dir = os.path.dirname(self.cfg_path)
+        self.server_list, problems = servers.load(self.user_dir)
+        self.host_proc = None            # "Host for friends": the lobby server process
+        self.host_info = None
+        self.host_args = []              # extra arguments for it (tests)
         self.match = None                # match_found event
         self.challenge = None            # pending incoming challenge
         self.last_result = None
@@ -152,7 +165,8 @@ class OnlineTab:
         acc = ttk.LabelFrame(box, text="  Account  ", padding=(10, 6))
         acc.grid(row=0, column=0, sticky="we")
         self.acc = acc
-        self.server_var = tk.StringVar(value=self.cfg.get("server") or DEFAULT_SERVER)
+        default = servers.default_entry(self.server_list)
+        self.server_var = tk.StringVar(value=self.cfg.get("server") or (default.name if default else DEFAULT_SERVER))
         self.name_var = tk.StringVar(value=self.cfg.get("name") or self.app.settings.get("nickname") or "")
         self.pw_var = tk.StringVar()
         self.remember_var = tk.IntVar(value=1 if self.cfg.get("remember", True) else 0)
@@ -164,7 +178,11 @@ class OnlineTab:
                                                          ("Password", self.pw_var, 14, "*"))):
             ttk.Label(self.login_row, text=label).grid(row=0, column=col * 2, sticky="w",
                                                        padx=(0 if col == 0 else 10, 4))
-            e = ttk.Entry(self.login_row, textvariable=var, width=width, show=show or "")
+            if col == 0:      # the server: pick from servers.json or type an address
+                e = ttk.Combobox(self.login_row, textvariable=var, width=26,
+                                 values=[x.name for x in self.server_list])
+            else:
+                e = ttk.Entry(self.login_row, textvariable=var, width=width, show=show or "")
             e.grid(row=0, column=col * 2 + 1, sticky="w")
             if label == "Password":
                 e.bind("<Return>", lambda _e: self.do_login("account"))
@@ -179,6 +197,10 @@ class OnlineTab:
         self.b_tls = ttk.Button(btns, text="Server certificate...", command=self.do_fingerprint)
         for b in (self.b_login, self.b_register, self.b_guest, self.b_forgot, self.b_tls):
             b.pack(side="left", padx=(0, 6))
+        self.b_host = ttk.Button(btns, text="Host for friends", command=self.do_host)
+        self.b_host.pack(side="left", padx=(12, 6))
+        self.map_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(btns, text="Open router ports (UPnP)", variable=self.map_var).pack(side="left")
 
         self.me_row = ttk.Frame(acc)
         self.me_var = tk.StringVar(value="Not connected. Ranked needs an account; guests play casual matches.")
@@ -441,9 +463,17 @@ class OnlineTab:
     def _new_client(self, server, build):
         spec = server
         tls = False
-        if spec.lower().startswith("tls://"):
-            spec, tls = spec[6:], True
         fp = self.fp_var.get().strip() or None
+        try:      # a servers.json entry by name, or host:port#FINGERPRINT / tls://host:port
+            entry = servers.resolve(server, self.server_list)
+        except ValueError:
+            entry = None
+        if entry is not None:
+            spec, tls = entry.address, entry.tls == "ca"
+            if entry.tls == "pin":
+                fp = entry.fingerprint      # the entry's own pin wins over the "Server certificate" box
+        elif spec.lower().startswith("tls://"):
+            spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")))
@@ -976,6 +1006,85 @@ class OnlineTab:
         if self.client:
             self.client.close()
             self.client = None
+        self.stop_hosting(wait=3.0)
+
+    # ------------------------------------------------------------------ Host for friends
+    def do_host(self):
+        if self.host_proc is not None:
+            self.stop_hosting()
+            return
+        run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")
+        cmd = [sys.executable, "-u", run_py, "host", "--json", "--stdin-control"] + list(self.host_args)
+        if self.map_var.get():
+            cmd.append("--map-ports")
+        try:
+            self.host_proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as e:
+            self.status(f"Cannot start the lobby server: {e}")
+            return
+        self.b_host.configure(text="Stop hosting")
+        self.status("Starting a lobby server on this PC" + (" and asking the router to forward its ports"
+                                                           if self.map_var.get() else "") + "...")
+        proc = self.host_proc
+
+        def read():
+            for line in proc.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                self.ui_q.put(lambda ev=ev: self._host_event(proc, ev))
+            self.ui_q.put(lambda: self._host_event(proc, {"event": "exited"}))
+        threading.Thread(target=read, daemon=True).start()
+
+    def _host_event(self, proc, ev):
+        if proc is not self.host_proc:
+            return
+        kind = ev.get("event")
+        if kind == "ready":
+            self.host_info = ev
+            self.server_var.set(ev["local"])
+            share = ev.get("internet") or f"<your public IP>:{ev['port']}" + (
+                f"#{ev['fingerprint']}" if ev.get("fingerprint") else "")
+            try:
+                self.parent.clipboard_clear()
+                self.parent.clipboard_append(share)
+            except tk.TclError:
+                pass
+            self.chat_line(f"Hosting. Friends paste this as their Server (copied to the clipboard):\n  {share}"
+                           + (f"\n  same network: {ev['lan']}" if ev.get("lan") else "")
+                           + ("" if ev.get("mapped") else "\n  Forward TCP+UDP 7781 and UDP 7782 on your router"
+                              " (or tick 'Open router ports')."))
+            self.status("Hosting a lobby on this PC. Log in to join it yourself.")
+        elif kind == "error":
+            self.status(f"Hosting failed: {ev.get('message')}")
+        elif kind in ("stopped", "exited"):
+            self.host_proc = None
+            self.host_info = None
+            self.b_host.configure(text="Host for friends")
+            if kind == "exited" and proc.poll() not in (0, None):
+                self.status(f"The lobby server stopped (exit code {proc.returncode}); see its log in "
+                            "%LOCALAPPDATA%\\T5DR Online\\lobby-host\\logs.")
+            else:
+                self.status("Stopped hosting.")
+
+    def stop_hosting(self, wait=0.0):
+        proc = self.host_proc
+        if proc is None:
+            return
+        try:
+            proc.stdin.write("stop\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+        if wait:
+            try:
+                proc.wait(wait)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 # ---------------------------------------------------------------------- standalone (testing)

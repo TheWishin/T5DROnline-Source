@@ -76,7 +76,9 @@ class UdpService:
         self.relay_eps = {}         # (ip, port) -> (RelaySession, side)
         self.relay_tokens = {}      # token -> (RelaySession, side)
         self.ctl_buckets = KeyedBuckets(rate=100, burst=200)   # control packets per source IP
-        self.stats = {"rx": 0, "relayed": 0, "dropped": 0}
+        # ... and from everybody together: spoofed sources cannot turn the pings into a flood
+        self.ctl_global = TokenBucket(cfg.udp_ctl_pps, cfg.udp_ctl_pps * 2)
+        self.stats = {"rx": 0, "relayed": 0, "relayed_bytes": 0, "dropped": 0}
         self.port = self.port2 = 0
 
     async def start(self, loop):
@@ -142,6 +144,7 @@ class UdpService:
         s.pkts[side] += 1
         s.bytes[side] += len(data)
         self.stats["relayed"] += 1
+        self.stats["relayed_bytes"] += len(data)
         transport.sendto(data, dst)
 
     def _try_relatch(self, transport, data, addr):
@@ -176,7 +179,7 @@ class UdpService:
                 return
             self.stats["dropped"] += 1
             return
-        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(addr[0]):
+        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(addr[0]) or not self.ctl_global.take():
             self.stats["dropped"] += 1
             return
         if kind == proto.U_SPING and len(data) == proto.PING.size:

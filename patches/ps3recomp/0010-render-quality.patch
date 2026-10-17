@@ -1,0 +1,1015 @@
+diff --git a/docs/BUILDING.md b/docs/BUILDING.md
+index ab07d99..a30f7b3 100644
+--- a/docs/BUILDING.md
++++ b/docs/BUILDING.md
+@@ -232,6 +232,20 @@ default** and the D3D12 backend is used instead. You do not need to set it to
+ get a picture, and setting it changes which draw path executes -- so leave it
+ unset unless you are specifically working on that engine.
+ 
++Display options of the live engine (all optional):
++
++| Variable / key | Effect |
++|---|---|
++| `PS3_RES_SCALE=1.5\|2\|3` (or `1080`/`1440`/`2160`) | internal resolution: every guest render target, depth buffer, viewport and scissor at that factor; the window opens at the scaled size where it fits |
++| `PS3_VSYNC=0` | present without waiting for vblank (tearing allowed when the OS supports it) |
++| `PS3_FULLSCREEN=1` | start in borderless fullscreen; `=exclusive` uses DXGI exclusive fullscreen for the start and for the toggle |
++| Alt+Enter, F11 | toggle fullscreen; Esc leaves fullscreen (and, windowed, closes as before) |
++| `PS3_PRESENT_FILTER=point` | nearest-neighbour scaling to the window (default bilinear) |
++| `PS3_SHOT_REQ=<file>` | test hook: write an output path into `<file>`; the next flip saves the presented surface there (PPM) |
++
++The window is freely resizable; the image keeps the guest's aspect with
++black bars.
++
+ ### The RSX code that is *not* in the library
+ 
+ `runtime/ppu/` and `runtime/host/` are deliberately excluded from
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 933abcb..4012dce 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1294,3 +1294,129 @@ int rsx_fp_apply_unnorm_scale(char* hlsl, u32 hlsl_size, u32 unnorm_mask,
+     }
+     return patched;
+ }
++
++/* Depth-compare sampling for depth-format texture units.
++ *
++ * Tekken 5 DR renders a 512x512 shadow depth map from the light (zeta at
++ * 0xAF0000, DEPTH24_D8 | LN) and its character/stage materials sample it with
++ * TXP into r2, then light with diffuse * (1 - r2). On RSX a depth texture whose
++ * TEX_ADDRESS zfunc is between NEVER and ALWAYS is a shadow sampler: the result
++ * is the comparison `texel ZFUNC ref` (ref = z/w of the coordinate), 2x2
++ * bilinear-weighted (PCF) when the unit filters linearly. Returning the raw
++ * depth instead (what a plain Sample of the snapshot gives) multiplied every
++ * lit texel by (1 - depth) ~= 0, so faces and anything else inside the light
++ * frustum dropped to ambient-only: dark, muddy skin with hard-edged lit patches
++ * where the map ended. Note the operand order: RSX compares texel-vs-ref, the
++ * reverse of D3D's SampleCmp (RPCS3 likewise reverses the compare op for
++ * shadow samplers).
++ *
++ * Same post-pass approach as rsx_fp_apply_unnorm_scale: only the Sample call
++ * sites of the selected units change, so every other program stays
++ * byte-identical. Gather + manual compare keeps it independent of the sampler
++ * table (no comparison sampler descriptors needed).
++ */
++int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
++                                const u32 zfunc[16], u32 linear_mask,
++                                u32 cube_mask)
++{
++    if (!hlsl || !shadow_mask) return 0;
++    static const char helper[] =
++        "float rsx_zcmp(float d, float r, int f) {\n"
++        "    return f == 1 ? (float)(d < r) : f == 2 ? (float)(d == r) :\n"
++        "           f == 3 ? (float)(d <= r) : f == 4 ? (float)(d > r) :\n"
++        "           f == 5 ? (float)(d != r) : f == 6 ? (float)(d >= r) :\n"
++        "           f == 7 ? 1.0 : 0.0;\n"
++        "}\n"
++        "float4 rsx_shadow2d(Texture2D t, SamplerState s, float4 c, int proj, int f, int lin) {\n"
++        "    float2 uv = proj ? c.xy / c.w : c.xy;\n"
++        "    float r = proj ? c.z / c.w : c.z;\n"
++        "    if (f & 8) r = saturate(r);\n"   /* fixed-point depth: ref clamps to [0,1] */
++        "    f &= 7;\n"
++        "    uint w, h; t.GetDimensions(w, h);\n"
++        "    float2 sz = float2(w, h);\n"
++        "    float v;\n"
++        "    if (lin) {\n"
++        "        float2 st = uv * sz - 0.5;\n"
++        "        float2 fr = frac(st);\n"
++        "        float4 d = t.GatherRed(s, (floor(st) + 1.0) / sz);\n"
++        "        float top = lerp(rsx_zcmp(d.w, r, f), rsx_zcmp(d.z, r, f), fr.x);\n"
++        "        float bot = lerp(rsx_zcmp(d.x, r, f), rsx_zcmp(d.y, r, f), fr.x);\n"
++        "        v = lerp(top, bot, fr.y);\n"
++        "    } else {\n"
++        "        v = rsx_zcmp(t.SampleLevel(s, uv, 0).r, r, f);\n"
++        "    }\n"
++        "    return (float4)v;\n"
++        "}\n";
++    int patched = 0;
++    for (u32 u = 0; u < 16; u++) {
++        if (!((shadow_mask >> u) & 1u) || ((cube_mask >> u) & 1u)) continue;
++        char needles[2][48];
++        snprintf(needles[0], sizeof needles[0], "rsx_tex[%u].Sample(rsx_samp[%u], ", u, u);
++        snprintf(needles[1], sizeof needles[1], "rsx_tex%u.Sample(rsx_samp[%u], ", u, u);
++        for (int nidx = 0; nidx < 2; nidx++) {
++            const char* needle = needles[nidx];
++            const u32 nlen = (u32)strlen(needle);
++            for (;;) {
++                char* at = strstr(hlsl, needle);
++                if (!at) break;
++                /* Call extent: from the '(' after Sample to its matching ')'. */
++                char* open = at + nlen - 1;
++                while (open > at && *open != '(') open--;
++                int depth = 0;
++                char* end = open;
++                for (; *end; end++) {
++                    if (*end == '(') depth++;
++                    else if (*end == ')') { depth--; if (!depth) break; }
++                }
++                if (*end != ')') return -1;
++                /* Argument text after "rsx_samp[u], ": "(A).xy" or
++                 * "(A).xy / (A).w" (TEX / TXP, see the emitter). */
++                const char* arg = at + nlen;
++                if (*arg != '(') return -1;
++                const char* ap = arg;
++                depth = 0;
++                for (; ap < end; ap++) {
++                    if (*ap == '(') depth++;
++                    else if (*ap == ')') { depth--; if (!depth) break; }
++                }
++                if (ap >= end || strncmp(ap, ").xy", 4) != 0) return -1;
++                const int proj = strncmp(ap + 4, " / ", 3) == 0;
++                const u32 alen = (u32)(ap + 1 - arg);   /* "(A)" */
++                char call[160];
++                const int n0 = snprintf(call, sizeof call, "rsx_shadow2d(%.*s, rsx_samp[%u], ",
++                                        (int)(open - at - (int)strlen(".Sample")), at, u);
++                if (n0 < 0 || (u32)n0 >= sizeof call) return -1;
++                char tail[64];
++                const int n1 = snprintf(tail, sizeof tail, ", %d, %u, %u)", proj,
++                                        zfunc[u] & 15u, (linear_mask >> u) & 1u);
++                if (n1 < 0 || (u32)n1 >= sizeof tail) return -1;
++                const u32 new_len = (u32)n0 + alen + (u32)n1;
++                const u32 old_len = (u32)(end + 1 - at);
++                const u32 used = (u32)strlen(hlsl);
++                if (used - old_len + new_len + 1 > hlsl_size) return -1;
++                char* repl = (char*)malloc(new_len + 1);
++                if (!repl) return -1;
++                memcpy(repl, call, (size_t)n0);
++                memcpy(repl + n0, arg, alen);
++                memcpy(repl + n0 + alen, tail, (size_t)n1 + 1);
++                memmove(at + new_len, end + 1, used - (u32)(end + 1 - hlsl) + 1);
++                memcpy(at, repl, new_len);
++                free(repl);
++                patched++;
++            }
++        }
++    }
++    if (!patched) return 0;
++    /* Helper goes in front of main (after the resource declarations). */
++    char* main_at = strstr(hlsl, "float4 main(PSInput");
++    char* s2 = strstr(hlsl, "struct PSOutput");
++    if (s2 && (!main_at || s2 < main_at)) main_at = s2;
++    if (!main_at) main_at = strstr(hlsl, "PSOutput main(PSInput");
++    if (!main_at) return -1;
++    const u32 hl = (u32)strlen(helper);
++    const u32 used = (u32)strlen(hlsl);
++    if (used + hl + 1 > hlsl_size) return -1;
++    memmove(main_at + hl, main_at, used - (u32)(main_at - hlsl) + 1);
++    memcpy(main_at, helper, hl);
++    return patched;
++}
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+index 7161c4e..f090b77 100644
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -87,6 +87,16 @@ float rsx_fp_alpha_ref(u32 raw, u32 surface_color_format);
+ int rsx_fp_apply_unnorm_scale(char* hlsl, u32 hlsl_size, u32 unnorm_mask,
+                               const u32 dim[][2], u32 cube_mask);
+ 
++/* Depth-compare ("shadow") sampling for depth-format units. RSX returns the
++ * result of `texel ZFUNC ref` (ref = coord.z, or z/w for TXP), 2x2 PCF when
++ * the unit filters linearly -- not the raw depth. shadow_mask selects units,
++ * zfunc[u] is the TEX_ADDRESS zfunc (1..6), plus 8 for a fixed-point depth
++ * format (the reference clamps to [0,1]); linear_mask the units that
++ * filter linearly. Returns sites patched, or -1 on overflow. */
++int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
++                                const u32 zfunc[16], u32 linear_mask,
++                                u32 cube_mask);
++
+ /* Decode NV4097_SET_ALPHA_REF for the active surface color format. Ordinary
+  * integer render targets use the low 8 bits as UNORM8; W16Z16Y16X16 uses a
+  * half float and X32/W32Z32Y32X32 use a 32-bit float. */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 4495ede..0be8637 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -118,6 +118,8 @@ u32  rsx_live_draw_get_frames(void) { return 0; }
+ void* rsx_live_draw_get_present_thread_handle(void) { return NULL; }
+ u32  rsx_live_draw_get_last_draws(void) { return 0; }
+ double rsx_live_draw_get_present_fps(void) { return 0.0; }
++float rsx_live_draw_get_res_scale(void) { return 1.0f; }
++int  rsx_live_draw_fullscreen_request(int on) { (void)on; return 0; }
+ void rsx_live_draw_dump_present_samples(void) {}
+ void rsx_live_draw_a010_probe_begin(void) {}
+ int  rsx_live_draw_a010_probe_active(void) { return 0; }
+@@ -263,6 +265,7 @@ typedef struct {
+     u32 location, offset;
+     ID3D12Resource* tex;
+     u32 w, h;
++    u32 pw, ph;               /* host pixels: w, h times PS3_RES_SCALE */
+     DXGI_FORMAT fmt;
+     ID3D12Resource* fb_tex;   /* feedback copy, see surface_feedback_srv */
+ #if !defined(YZ_PERF_CLEAN)
+@@ -449,6 +452,18 @@ typedef struct {
+ 
+ static ld_state g;
+ 
++/* PS3_RES_SCALE=<f> (1..4, or 1080/1440/2160 = target height over 720):
++ * every live render target, depth buffer and their viewports/scissors are
++ * created at f times the size the guest declared. The guest keeps seeing its
++ * own sizes (surface keys, texture-descriptor matching, blit addressing);
++ * only host pixels change, so the game's 2D/HUD passes simply rasterise at
++ * the higher resolution and the present blit scales to the window. */
++static float g_ld_res_scale = 1.0f;
++static u32 ld_px(u32 v)
++{
++    return g_ld_res_scale == 1.0f ? v : (u32)((float)v * g_ld_res_scale + 0.5f);
++}
++
+ #define LD_VERTEX_HOIST_FETCH       (1u << 0)
+ #define LD_VERTEX_MASK_SIGNATURE    (1u << 1)
+ #define LD_VERTEX_COMPACT_PAYLOAD   (1u << 2)
+@@ -3199,7 +3214,7 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = want_w; rd.Height = want_h; rd.DepthOrArraySize = 1;
++    rd.Width = ld_px(want_w); rd.Height = ld_px(want_h); rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1; rd.Format = want_fmt; rd.SampleDesc.Count = 1;
+     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+     D3D12_CLEAR_VALUE cv = {0}; cv.Format = rd.Format;
+@@ -3234,6 +3249,7 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+     }
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
++    s->pw = (u32)rd.Width; s->ph = rd.Height;
+     s->fmt = want_fmt;
+ #if !defined(YZ_PERF_CLEAN)
+     s->resource_serial = ++g_ld_surface_resource_serial;
+@@ -3426,8 +3442,12 @@ int rsx_live_draw_resolve_blit(u32 src_loc, u32 src_abs, u32 src_pitch, u32 ds,
+     D3D12_TEXTURE_COPY_LOCATION sl = {0}, dl = {0};
+     sl.pResource = s;        sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     dl.pResource = dst->tex; dl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { sx, sy, 0, sx + w, sy + h, 1 };
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dl, dx, dy, 0, &sl, &box);
++    D3D12_BOX box = { ld_px(sx), ld_px(sy), 0, ld_px(sx + w), ld_px(sy + h), 1 };
++    if (box.right > g.surfaces[si].pw) box.right = g.surfaces[si].pw;
++    if (box.bottom > g.surfaces[si].ph) box.bottom = g.surfaces[si].ph;
++    if (ld_px(dx) + (box.right - box.left) > dst->pw) box.right = box.left + dst->pw - ld_px(dx);
++    if (ld_px(dy) + (box.bottom - box.top) > dst->ph) box.bottom = box.top + dst->ph - ld_px(dy);
++    g.list->lpVtbl->CopyTextureRegion(g.list, &dl, ld_px(dx), ld_px(dy), 0, &sl, &box);
+     for (int q = 0; q < 2; q++) {
+         b[q].Transition.StateBefore = b[q].Transition.StateAfter;
+         b[q].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -3493,8 +3513,14 @@ static int ld_blit_gpu(u32 src_loc, u32 src_abs, u32 src_pitch,
+     D3D12_TEXTURE_COPY_LOCATION s = {0}, d = {0};
+     s.pResource = src; s.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     d.pResource = dst; d.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { sx, sy, 0, sx + w, sy + h, 1 };
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &d, dx, dy, 0, &s, &box);
++    D3D12_BOX box = { ld_px(sx), ld_px(sy), 0, ld_px(sx + w), ld_px(sy + h), 1 };
++    if (box.right > g.surfaces[si].pw) box.right = g.surfaces[si].pw;
++    if (box.bottom > g.surfaces[si].ph) box.bottom = g.surfaces[si].ph;
++    if (ld_px(dx) + (box.right - box.left) > g.surfaces[di].pw)
++        box.right = box.left + g.surfaces[di].pw - ld_px(dx);
++    if (ld_px(dy) + (box.bottom - box.top) > g.surfaces[di].ph)
++        box.bottom = box.top + g.surfaces[di].ph - ld_px(dy);
++    g.list->lpVtbl->CopyTextureRegion(g.list, &d, ld_px(dx), ld_px(dy), 0, &s, &box);
+     for (int k = 0; k < 2; k++) {
+         b[k].Transition.StateBefore = b[k].Transition.StateAfter;
+         b[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -3591,8 +3617,8 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = want_w;
+-    rd.Height = want_h;
++    rd.Width = ld_px(want_w);
++    rd.Height = ld_px(want_h);
+     rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1;
+     rd.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
+@@ -3637,8 +3663,8 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+      * not a depth-resource copy operation. */
+     D3D12_RESOURCE_DESC snapshot_rd = {0};
+     snapshot_rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    snapshot_rd.Width = z->snapshot_w;
+-    snapshot_rd.Height = z->snapshot_h;
++    snapshot_rd.Width = ld_px(z->snapshot_w);
++    snapshot_rd.Height = ld_px(z->snapshot_h);
+     snapshot_rd.DepthOrArraySize = 1;
+     snapshot_rd.MipLevels = 1;
+     snapshot_rd.Format = DXGI_FORMAT_R32_FLOAT;
+@@ -3730,8 +3756,8 @@ static int zdepth_snapshot(u32 slot)
+     g.list->lpVtbl->SetComputeRootDescriptorTable(
+         g.list, 1, destination_table);
+     g.list->lpVtbl->Dispatch(
+-        g.list, (z->snapshot_w + 7u) / 8u,
+-        (z->snapshot_h + 7u) / 8u, 1);
++        g.list, (ld_px(z->snapshot_w) + 7u) / 8u,
++        (ld_px(z->snapshot_h) + 7u) / 8u, 1);
+ 
+     D3D12_RESOURCE_BARRIER uav_done = {0};
+     uav_done.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+@@ -4683,6 +4709,32 @@ static ID3D12PipelineState* get_pso(
+     }
+     key = fnv1a(&unnorm_mask, sizeof(unnorm_mask), key);
+     if (unnorm_mask) key = fnv1a(unnorm_dim, sizeof(unnorm_dim), key);
++    /* Depth-format units with a compare zfunc are shadow samplers (see
++     * rsx_fp_apply_shadow_compare). The compare op and filter are baked into
++     * the HLSL, so they are PSO identity too. */
++    u32 shadow_mask = 0, shadow_linear = 0;
++    u32 shadow_func[16] = {0};
++    for (u32 uu = 0; uu < 16; uu++) {
++        rsx_dsp_texture ut; rsx_dsp_get_texture(&g.rsx, uu, &ut);
++        if (!ut.enabled || ut.cubemap) continue;
++        const u32 bf = ut.format & TEX_FMT_BASE_MASK;
++        if (bf < 0x90u || bf > 0x93u) continue;          /* DEPTH24_D8 .. DEPTH16_FLOAT */
++        const u32 zf = (ut.wrap >> 28) & 0xFu;
++        if (zf == 0u || zf >= 7u || (ut.control0 & 0x4u)) continue;   /* NEVER/ALWAYS, alpha kill */
++        shadow_mask |= 1u << uu;
++        /* 0x90/0x92 are fixed-point (D24/D16): RSX clamps the reference to
++         * [0,1] like GL, so points past the light's far plane read as lit.
++         * Our snapshot is R32F, which would not clamp on its own. */
++        shadow_func[uu] = zf | ((bf & 1u) ? 0u : 8u);
++        const u32 minf = (ut.filter >> 16) & 7u, magf = (ut.filter >> 24) & 7u;
++        if (magf == 2u || minf == 2u || minf == 4u || minf == 6u)
++            shadow_linear |= 1u << uu;
++    }
++    if (shadow_mask) {
++        key = fnv1a(&shadow_mask, sizeof(shadow_mask), key);
++        key = fnv1a(&shadow_linear, sizeof(shadow_linear), key);
++        key = fnv1a(shadow_func, sizeof(shadow_func), key);
++    }
+     if (masked_layout) {
+         static const u32 masked_layout_tag = 0x314B534Du; /* "MSK1" */
+         const u32 payload_stride =
+@@ -4783,6 +4835,10 @@ static ID3D12PipelineState* get_pso(
+                           unnorm_dim[0][1], np); }
+             if (np < 0) fi = -1;
+         }
++        if (fi > 0 && rsx_fp_apply_shadow_compare(
++                ps_hlsl, sizeof(ps_hlsl), shadow_mask, shadow_func,
++                shadow_linear, cube_mask) < 0)
++            fi = -1;
+     } else {
+         fi = rsx_fp_decompile_ex(
+             fp_uc, fp_size, fp_ctrl, cube_mask,
+@@ -4796,6 +4852,10 @@ static ID3D12PipelineState* get_pso(
+                 ps_hlsl, sizeof(ps_hlsl), unnorm_mask,
+                 unnorm_dim, cube_mask) < 0)
+             fi = -1;
++        if (fi > 0 && rsx_fp_apply_shadow_compare(
++                ps_hlsl, sizeof(ps_hlsl), shadow_mask, shadow_func,
++                shadow_linear, cube_mask) < 0)
++            fi = -1;
+     }
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.decompile_qpc +=
+@@ -7631,7 +7691,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         memcpy(s_cb_xf, xf, sizeof(xf));
+     }
+ 
+-    D3D12_VIEWPORT dvp = {0, 0, W, H, 0.0f, 1.0f};
++    D3D12_VIEWPORT dvp = {0, 0, W * g_ld_res_scale, H * g_ld_res_scale, 0.0f, 1.0f};
+     D3D12_RECT sc = {
+         0, 0,
+         (LONG)(g.surfaces[target].w ? g.surfaces[target].w : g.width),
+@@ -7660,6 +7720,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             if (sc.bottom < sc.top)      sc.bottom = sc.top;
+         }
+     }
++    if (g_ld_res_scale != 1.0f) {   /* guest pixels -> host pixels */
++        sc.left = (LONG)ld_px((u32)sc.left);   sc.top = (LONG)ld_px((u32)sc.top);
++        sc.right = (LONG)ld_px((u32)sc.right); sc.bottom = (LONG)ld_px((u32)sc.bottom);
++    }
+     g.list->lpVtbl->RSSetViewports(g.list, 1, &dvp);
+     g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+     /* Dynamic stencil reference (kept out of the PSO key on purpose). */
+@@ -8070,6 +8134,313 @@ static int make_depth_snapshot_pipeline(void)
+     return SUCCEEDED(hr) ? 0 : -1;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * PC display: a swap chain that follows the window's client size, a scaled and
++ * letterboxed present blit, vsync on/off and exclusive fullscreen.
++ *   PS3_RES_SCALE=<f>         internal resolution (see ld_px)
++ *   PS3_VSYNC=0               present without waiting for vblank (tearing
++ *                             allowed when the OS supports it)
++ *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
++ *                             fullscreen; otherwise borderless (window side,
++ *                             rsx_null_backend.c)
++ *   PS3_PRESENT_FILTER=point  nearest-neighbour present scaling
++ * -----------------------------------------------------------------------*/
++#ifndef DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
++#define DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING 2048
++#endif
++#ifndef DXGI_PRESENT_ALLOW_TEARING
++#define DXGI_PRESENT_ALLOW_TEARING 0x00000200UL
++#endif
++static struct {
++    HWND hwnd;
++    u32 bb_w, bb_h;               /* current swap-chain buffer size */
++    UINT swap_flags;              /* creation flags, reused by ResizeBuffers */
++    int vsync, tearing, filter_point, exclusive_cfg, fs_exclusive;
++    volatile LONG fs_request;     /* -1 none, 0 leave / 1 enter exclusive */
++    ID3D12RootSignature* rootsig;
++    ID3D12PipelineState* pso;
++    ID3D12DescriptorHeap* heap;   /* shader-visible, one SRV per backbuffer */
++    u32 heap_step;
++} g_ldp = { 0, 0, 0, 0, 1, 0, 0, 0, 0, -1 };
++
++#define LD_SYNC_INTERVAL (g_ldp.vsync ? 1u : 0u)
++#define LD_PRESENT_FLAGS \
++    ((!g_ldp.vsync && g_ldp.tearing && !g_ldp.fs_exclusive) ? DXGI_PRESENT_ALLOW_TEARING : 0u)
++
++static void ld_display_config(void)
++{
++    const char* e = getenv("PS3_RES_SCALE");
++    float s = 1.0f;
++    if (e && e[0]) {
++        s = (float)atof(e);
++        if (s >= 240.0f) s /= 720.0f;          /* 1080 / 1440 / 2160 */
++        if (!(s >= 1.0f)) s = 1.0f;
++        if (s > 4.0f) s = 4.0f;
++    }
++    g_ld_res_scale = s;
++    e = getenv("PS3_VSYNC");
++    g_ldp.vsync = !(e && e[0] == '0');
++    e = getenv("PS3_FULLSCREEN");
++    g_ldp.exclusive_cfg = e && (_stricmp(e, "exclusive") == 0 || strcmp(e, "2") == 0);
++    if (g_ldp.exclusive_cfg && !getenv("PS3_WINDOW_BACKGROUND"))
++        g_ldp.fs_request = 1;
++    e = getenv("PS3_PRESENT_FILTER");
++    g_ldp.filter_point = e && _stricmp(e, "point") == 0;
++    /* Tearing (vsync off in a window) needs DXGI 1.5 and OS support. */
++    IDXGIFactory5* f5 = NULL;
++    if (SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory5, (void**)&f5)) && f5) {
++        BOOL allow = FALSE;
++        if (SUCCEEDED(f5->lpVtbl->CheckFeatureSupport(
++                f5, DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))))
++            g_ldp.tearing = allow ? 1 : 0;
++        f5->lpVtbl->Release(f5);
++    }
++    g_ldp.swap_flags = g_ldp.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
++    fprintf(stderr, "[display] res_scale=%.3g vsync=%d tearing=%d fullscreen=%s filter=%s\n",
++            (double)g_ld_res_scale, g_ldp.vsync, g_ldp.tearing,
++            g_ldp.exclusive_cfg ? "exclusive" : "borderless", g_ldp.filter_point ? "point" : "linear");
++}
++
++/* Initial swap-chain size: the window's client area (the window may already
++ * be larger than the guest output), else the guest size. */
++static void ld_display_client_size(HWND hwnd, u32 fallback_w, u32 fallback_h, u32* w, u32* h)
++{
++    RECT rc;
++    *w = fallback_w; *h = fallback_h;
++    if (hwnd && !IsIconic(hwnd) && GetClientRect(hwnd, &rc) &&
++        rc.right > rc.left && rc.bottom > rc.top) {
++        *w = (u32)(rc.right - rc.left);
++        *h = (u32)(rc.bottom - rc.top);
++    }
++}
++
++static int ld_display_pipeline(void)
++{
++    static const char vs_src[] =
++        "void main(uint id : SV_VertexID, out float4 pos : SV_Position,\n"
++        "          out float2 uv : TEXCOORD0) {\n"
++        "    uv = float2((id << 1) & 2, id & 2);\n"
++        "    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
++        "}\n";
++    static const char ps_src[] =
++        "Texture2D src : register(t0);\n"
++        "SamplerState smp : register(s0);\n"
++        "float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
++        "    return float4(src.SampleLevel(smp, uv, 0).rgb, 1.0);\n"
++        "}\n";
++    ID3DBlob *vs = NULL, *ps = NULL, *err = NULL;
++    if (FAILED(D3DCompile(vs_src, sizeof(vs_src) - 1, "present_vs", NULL, NULL, "main",
++                          "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err)) ||
++        FAILED(D3DCompile(ps_src, sizeof(ps_src) - 1, "present_ps", NULL, NULL, "main",
++                          "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
++        fprintf(stderr, "[display] present shader compile failed: %s\n",
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?");
++        if (err) err->lpVtbl->Release(err);
++        if (vs) vs->lpVtbl->Release(vs);
++        return -1;
++    }
++    D3D12_DESCRIPTOR_RANGE range = {0};
++    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++    range.NumDescriptors = 1;
++    D3D12_ROOT_PARAMETER param = {0};
++    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    param.DescriptorTable.NumDescriptorRanges = 1;
++    param.DescriptorTable.pDescriptorRanges = &range;
++    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    D3D12_STATIC_SAMPLER_DESC smp = {0};
++    smp.Filter = g_ldp.filter_point ? D3D12_FILTER_MIN_MAG_MIP_POINT
++                                    : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
++    smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++    smp.MaxLOD = D3D12_FLOAT32_MAX;
++    smp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++    rsd.NumParameters = 1; rsd.pParameters = &param;
++    rsd.NumStaticSamplers = 1; rsd.pStaticSamplers = &smp;
++    ID3DBlob* sig = NULL;
++    HRESULT hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++    if (SUCCEEDED(hr)) {
++        hr = g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                                                sig->lpVtbl->GetBufferSize(sig),
++                                                &IID_ID3D12RootSignature, (void**)&g_ldp.rootsig);
++        sig->lpVtbl->Release(sig);
++    }
++    if (err) err->lpVtbl->Release(err);
++    if (SUCCEEDED(hr)) {
++        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_ldp.rootsig;
++        pd.VS.pShaderBytecode = vs->lpVtbl->GetBufferPointer(vs);
++        pd.VS.BytecodeLength = vs->lpVtbl->GetBufferSize(vs);
++        pd.PS.pShaderBytecode = ps->lpVtbl->GetBufferPointer(ps);
++        pd.PS.BytecodeLength = ps->lpVtbl->GetBufferSize(ps);
++        pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++        pd.SampleMask = 0xFFFFFFFFu;
++        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++        pd.RasterizerState.DepthClipEnable = TRUE;
++        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++        pd.NumRenderTargets = 1;
++        pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
++        pd.SampleDesc.Count = 1;
++        hr = g.dev->lpVtbl->CreateGraphicsPipelineState(g.dev, &pd, &IID_ID3D12PipelineState,
++                                                        (void**)&g_ldp.pso);
++    }
++    vs->lpVtbl->Release(vs);
++    ps->lpVtbl->Release(ps);
++    if (SUCCEEDED(hr)) {
++        D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
++        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
++        hd.NumDescriptors = LD_SWAP_BUFFERS;
++        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
++        hr = g.dev->lpVtbl->CreateDescriptorHeap(g.dev, &hd, &IID_ID3D12DescriptorHeap,
++                                                 (void**)&g_ldp.heap);
++        g_ldp.heap_step = g.dev->lpVtbl->GetDescriptorHandleIncrementSize(
++            g.dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    }
++    if (FAILED(hr)) {
++        fprintf(stderr, "[display] present pipeline failed hr=0x%08lX; unscaled copy only\n",
++                (unsigned long)hr);
++        if (g_ldp.pso) { g_ldp.pso->lpVtbl->Release(g_ldp.pso); g_ldp.pso = NULL; }
++        return -1;
++    }
++    return 0;
++}
++
++/* Called at the end of rsx_live_draw_init. */
++static void ld_display_init(HWND hwnd, u32 bb_w, u32 bb_h)
++{
++    g_ldp.hwnd = hwnd;
++    g_ldp.bb_w = bb_w;
++    g_ldp.bb_h = bb_h;
++    /* The window handles Alt+Enter itself (borderless, or a request for
++     * exclusive mode that the present thread carries out). */
++    IDXGIFactory4* f = NULL;
++    if (SUCCEEDED(g.swap->lpVtbl->GetParent(g.swap, &IID_IDXGIFactory4, (void**)&f)) && f) {
++        f->lpVtbl->MakeWindowAssociation(f, hwnd, DXGI_MWA_NO_ALT_ENTER);
++        LUID luid;
++        IDXGIAdapter1* ad = NULL;
++        g.dev->lpVtbl->GetAdapterLuid(g.dev, &luid);
++        if (SUCCEEDED(f->lpVtbl->EnumAdapterByLuid(f, luid, &IID_IDXGIAdapter1, (void**)&ad)) && ad) {
++            DXGI_ADAPTER_DESC1 d;
++            if (SUCCEEDED(ad->lpVtbl->GetDesc1(ad, &d)))
++                fprintf(stderr, "[display] adapter: %ls (%llu MB)\n", d.Description,
++                        (unsigned long long)(d.DedicatedVideoMemory >> 20));
++            ad->lpVtbl->Release(ad);
++        }
++        f->lpVtbl->Release(f);
++    }
++    ld_display_pipeline();
++}
++
++/* Present thread, before the backbuffer is chosen: carry out a pending
++ * exclusive-fullscreen switch and follow the window's client size. */
++static void ld_display_sync(void)
++{
++    if (!g_ldp.hwnd || !g.swap) return;
++    const LONG req = InterlockedExchange(&g_ldp.fs_request, -1);
++    int force = 0;
++    if (req >= 0 && req != g_ldp.fs_exclusive) {
++        ld_flush(LD_FLUSH_READBACK);
++        const HRESULT hr = g.swap->lpVtbl->SetFullscreenState(g.swap, req ? TRUE : FALSE, NULL);
++        fprintf(stderr, "[display] exclusive fullscreen %s hr=0x%08lX\n",
++                req ? "on" : "off", (unsigned long)hr);
++        if (SUCCEEDED(hr)) { g_ldp.fs_exclusive = (int)req; force = 1; }
++    }
++    u32 cw, ch;
++    ld_display_client_size(g_ldp.hwnd, g_ldp.bb_w, g_ldp.bb_h, &cw, &ch);
++    if (!force && cw == g_ldp.bb_w && ch == g_ldp.bb_h) return;
++    ld_flush(LD_FLUSH_READBACK);              /* nothing may still use the buffers */
++    for (u32 i = 0; i < LD_SWAP_BUFFERS; i++)
++        if (g.backbuf[i]) { g.backbuf[i]->lpVtbl->Release(g.backbuf[i]); g.backbuf[i] = NULL; }
++    const HRESULT hr = g.swap->lpVtbl->ResizeBuffers(
++        g.swap, LD_SWAP_BUFFERS, cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM, g_ldp.swap_flags);
++    if (SUCCEEDED(hr)) { g_ldp.bb_w = cw; g_ldp.bb_h = ch; }
++    for (u32 i = 0; i < LD_SWAP_BUFFERS; i++) {
++        g.swap->lpVtbl->GetBuffer(g.swap, i, &IID_ID3D12Resource, (void**)&g.backbuf[i]);
++        g.dev->lpVtbl->CreateRenderTargetView(g.dev, g.backbuf[i], NULL, rtv_handle(i));
++    }
++    fprintf(stderr, "[display] swap chain %ux%u (hr=0x%08lX)\n", g_ldp.bb_w, g_ldp.bb_h,
++            (unsigned long)hr);
++}
++
++/* Replaces the present's CopyResource(bb, src). Same contract: src is in
++ * COPY_SOURCE, bb in COPY_DEST, and both are left that way. When the sizes
++ * match this IS that copy; otherwise src is drawn scaled into the backbuffer,
++ * aspect kept (aw:ah, the guest's display size) with black bars. */
++static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u32 aw, u32 ah)
++{
++    D3D12_RESOURCE_DESC sd, bd;
++    src->lpVtbl->GetDesc(src, &sd);
++    bb->lpVtbl->GetDesc(bb, &bd);
++    if (!g_ldp.pso || !g_ldp.heap || !aw || !ah ||
++        (sd.Width == bd.Width && sd.Height == bd.Height && sd.Format == bd.Format)) {
++        g.list->lpVtbl->CopyResource(g.list, bb, src);
++        return;
++    }
++    const float bw = (float)bd.Width, bh = (float)bd.Height;
++    const float k = bw / (float)aw < bh / (float)ah ? bw / (float)aw : bh / (float)ah;
++    const float vw = (float)aw * k, vh = (float)ah * k;
++    D3D12_VIEWPORT vp = { (float)(LONG)((bw - vw) * 0.5f), (float)(LONG)((bh - vh) * 0.5f),
++                          vw, vh, 0.0f, 1.0f };
++    D3D12_RECT sc = { (LONG)vp.TopLeftX, (LONG)vp.TopLeftY,
++                      (LONG)(vp.TopLeftX + vw + 0.5f), (LONG)(vp.TopLeftY + vh + 0.5f) };
++    D3D12_RESOURCE_BARRIER b[2] = {0};
++    for (int i = 0; i < 2; i++) {
++        b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        b[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    }
++    b[0].Transition.pResource = src;
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[1].Transition.pResource = bb;
++    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++
++    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
++    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
++    g_ldp.heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g_ldp.heap, &cpu);
++    g_ldp.heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(g_ldp.heap, &gpu);
++    cpu.ptr += (SIZE_T)bbi * g_ldp.heap_step;
++    gpu.ptr += (UINT64)bbi * g_ldp.heap_step;
++    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {0};
++    srv.Format = sd.Format;
++    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++    srv.Texture2D.MipLevels = 1;
++    g.dev->lpVtbl->CreateShaderResourceView(g.dev, src, &srv, cpu);
++
++    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(bbi);
++    if (vw + 0.5f < bw || vh + 0.5f < bh) {
++        static const float black[4] = { 0, 0, 0, 1 };
++        g.list->lpVtbl->ClearRenderTargetView(g.list, rtv, black, 0, NULL);
++    }
++    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
++    g.list->lpVtbl->SetDescriptorHeaps(g.list, 1, &g_ldp.heap);
++    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ldp.rootsig);
++    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
++    g.list->lpVtbl->SetPipelineState(g.list, g_ldp.pso);
++    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
++    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++
++    for (int i = 0; i < 2; i++) {
++        const D3D12_RESOURCE_STATES t = b[i].Transition.StateBefore;
++        b[i].Transition.StateBefore = b[i].Transition.StateAfter;
++        b[i].Transition.StateAfter = t;
++    }
++    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++}
++
++float rsx_live_draw_get_res_scale(void) { return g_ld_res_scale; }
++
++int rsx_live_draw_fullscreen_request(int on)
++{
++    if (!g_ldp.exclusive_cfg) return 0;     /* borderless: the window does it */
++    InterlockedExchange(&g_ldp.fs_request, on ? 1 : 0);
++    return 1;
++}
++
+ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+                        rsx_live_guest_ptr_fn guest_fn, void* guest_user)
+ {
+@@ -8213,9 +8584,13 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     g.dev->lpVtbl->CreateFence(g.dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void**)&g.fence);
+     g.fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+ 
+-    /* swap chain bound to the runtime's HWND */
++    /* swap chain bound to the runtime's HWND, sized to its client area (the
++     * present blit scales; see ld_display_*) */
++    ld_display_config();
++    u32 bb_w, bb_h;
++    ld_display_client_size((HWND)hwnd, width, height, &bb_w, &bb_h);
+     DXGI_SWAP_CHAIN_DESC1 scd = {0};
+-    scd.Width = width; scd.Height = height; scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
++    scd.Width = bb_w; scd.Height = bb_h; scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+     scd.SampleDesc.Count = 1; scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+     scd.BufferCount = LD_SWAP_BUFFERS; scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+     {
+@@ -8235,8 +8610,14 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+         } else if (pm && (!strcmp(pm, "novsync") || !strcmp(pm, "tearing"))) {
+             g_ld_present_interval = 0; g_ld_present_flags = 0;
+         }
++        /* PS3_VSYNC=0 (display options, ld_display_config) */
++        if (!g_ldp.vsync) {
++            g_ld_present_interval = 0;
++            g_ld_present_flags = tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
++        }
+         if (getenv("RSX_NO_WAITABLE_SWAPCHAIN"))
+             g_ld_swap_flags &= ~(UINT)DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
++        g_ldp.swap_flags = g_ld_swap_flags;   /* ResizeBuffers reuses these */
+         scd.Flags = g_ld_swap_flags;
+         fprintf(stderr, "[pacing] present mode=%s interval=%u tearing-supported=%d\n",
+                 pm ? pm : "vsync", g_ld_present_interval, (int)tearing);
+@@ -8367,7 +8748,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+         D3D12_HEAP_PROPERTIES dhp = {0}; dhp.Type = D3D12_HEAP_TYPE_DEFAULT;
+         D3D12_RESOURCE_DESC drd = {0};
+         drd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-        drd.Width = width; drd.Height = height; drd.DepthOrArraySize = 1;
++        drd.Width = ld_px(width); drd.Height = ld_px(height); drd.DepthOrArraySize = 1;
+         drd.MipLevels = 1; drd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT; drd.SampleDesc.Count = 1;
+         drd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+         D3D12_CLEAR_VALUE dcv = {0}; dcv.Format = drd.Format; dcv.DepthStencil.Depth = 1.0f;
+@@ -8400,6 +8781,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     sink.draw_index_array = sink_draw_index;
+     sink.flip = sink_flip;
+     rsx_dispatch_init(&g.rsx, &sink);
++    ld_display_init((HWND)hwnd, bb_w, bb_h);
+ 
+     g.ready = 1;
+     g.enabled = 1;
+@@ -8710,6 +9092,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     }
+     if (w > g.width)  w = g.width;
+     if (h > g.height) h = g.height;
++    if (g_ldp.bb_w && w > g_ldp.bb_w) w = g_ldp.bb_w;   /* window may be smaller */
++    if (g_ldp.bb_h && h > g_ldp.bb_h) h = g_ldp.bb_h;
+     const u32 pitch = (w * 4 + 255) & ~255u;          /* D3D12 copy pitch align */
+     if ((UINT64)pitch * h > UPLOAD_SIZE) {
+         if (serialized) {
+@@ -8783,7 +9167,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     ld_flush(LD_FLUSH_MOVIE_PRESENT);
+     {
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+-            g.swap, g_ld_present_interval, g_ld_present_flags);
++            g.swap, g_ld_present_interval,
++            g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames);
+         else {
+@@ -8835,8 +9220,8 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+     if (g.ready) ld_begin_recording();
+     ID3D12Resource* rt = surface ? surface->tex : NULL;
+     if (!rt) return UINT64_MAX;
+-    const u32 width = surface->w;
+-    const u32 height = surface->h;
++    const u32 width = surface->pw ? surface->pw : surface->w;
++    const u32 height = surface->ph ? surface->ph : surface->h;
+     if (!width || !height) return UINT64_MAX;
+     const int fp16 = surface->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT;
+     const u32 texel = fp16 ? 8u : 4u;
+@@ -9199,6 +9584,24 @@ void rsx_live_draw_present(u32 buffer_id)
+         return;
+     }
+     g_ld_last_present_target = target;
++    /* PS3_SHOT_REQ=<file>: a tool writes an output path into <file>; the next
++     * present dumps the presented surface there (PPM, internal resolution) and
++     * deletes <file>. Exact pixels without restoring a minimized window. */
++    { static const char* req = (const char*)-1;
++      if (req == (const char*)-1) req = getenv("PS3_SHOT_REQ");
++      if (req && req[0] && GetFileAttributesA(req) != INVALID_FILE_ATTRIBUTES) {
++          char outp[MAX_PATH] = {0};
++          FILE* f = fopen(req, "rb");
++          if (f) {
++              size_t n = fread(outp, 1, sizeof outp - 1, f);
++              fclose(f);
++              while (n && (outp[n - 1] == '\n' || outp[n - 1] == '\r' || outp[n - 1] == ' '))
++                  n--;
++              outp[n] = '\0';
++              DeleteFileA(req);
++              if (outp[0]) ld_dump_surface_ppm(outp, &g.surfaces[target]);
++          }
++      } }
+     if (dump_now) {
+         char path[MAX_PATH * 2];
+         snprintf(path, sizeof(path), "%s\\frame_%06u.ppm", dump_dir, dump_n - 1u);
+@@ -9303,6 +9706,7 @@ void rsx_live_draw_present(u32 buffer_id)
+           last_present_target = target;
+       } }
+     ID3D12Resource* srcimg = presented_surface->tex;
++    ld_display_sync();
+     ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+@@ -9320,7 +9724,7 @@ void rsx_live_draw_present(u32 buffer_id)
+     bar[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+     g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
+ 
+-    g.list->lpVtbl->CopyResource(g.list, bb, srcimg);
++    ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);
+ 
+     bar[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     bar[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -9334,7 +9738,8 @@ void rsx_live_draw_present(u32 buffer_id)
+     g_pf.present_flush_ticks += pf_present_flushed - pf_present_begin;
+     {
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+-            g.swap, g_ld_present_interval, g_ld_present_flags);
++            g.swap, g_ld_present_interval,
++            g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+         g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames + 1u);
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 2c5a304..292d6d3 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -127,6 +127,13 @@ u32  rsx_live_draw_get_last_draws(void);
+  * recomputes its selected interval from the preserved raw QPC samples. */
+ double rsx_live_draw_get_present_fps(void);
+ 
++/* PC display options (PS3_RES_SCALE, PS3_FULLSCREEN=exclusive). The scale is
++ * the internal-resolution factor, 1.0 when unset. fullscreen_request returns 1
++ * when exclusive fullscreen is configured and the request was queued for the
++ * present thread, 0 when the window should go borderless itself. */
++float rsx_live_draw_get_res_scale(void);
++int  rsx_live_draw_fullscreen_request(int on);
++
+ /* End-only persistence hook used by the window-close path. Safe to call more
+  * than once; it writes the fixed QPC ring at most once per renderer run. */
+ void rsx_live_draw_dump_present_samples(void);
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 32e8a95..ea12ff8 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -8,6 +8,7 @@
+ 
+ #include "rsx_null_backend.h"
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include "../../runtime/ps3_log.h"
+ 
+@@ -52,9 +53,58 @@ static NullBackendState s_state;
+ 
+ static int s_present_suppressed = 0;
+ 
++/* Fullscreen toggle (Alt+Enter, F11, PS3_FULLSCREEN at startup). Borderless:
++ * the window becomes a popup covering its monitor (with a flip-model swap
++ * chain that gets the same independent-flip path as exclusive mode).
++ * PS3_FULLSCREEN=exclusive hands the switch to the live-draw present thread
++ * (DXGI SetFullscreenState) instead. The swap chain follows the client size
++ * and the present blit keeps the aspect, so either way is letterboxed. */
++extern int rsx_live_draw_fullscreen_request(int on);
++static int s_fullscreen = 0;
++static WINDOWPLACEMENT s_windowed_placement = { sizeof(WINDOWPLACEMENT) };
++
++static void null_set_fullscreen(HWND hwnd, int on)
++{
++    if (on == s_fullscreen) return;
++    s_fullscreen = on;
++    if (rsx_live_draw_fullscreen_request(on)) return;
++    const LONG style = GetWindowLongA(hwnd, GWL_STYLE);
++    if (on) {
++        MONITORINFO mi = { sizeof(mi) };
++        GetWindowPlacement(hwnd, &s_windowed_placement);
++        if (!GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) return;
++        SetWindowLongA(hwnd, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP | WS_VISIBLE);
++        SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
++                     mi.rcMonitor.right - mi.rcMonitor.left,
++                     mi.rcMonitor.bottom - mi.rcMonitor.top,
++                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
++    } else {
++        SetWindowLongA(hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
++        SetWindowPlacement(hwnd, &s_windowed_placement);
++        SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
++                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
++    }
++}
++
+ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg) {
++    case WM_SYSKEYDOWN:
++        /* Alt+Enter (bit 29 = Alt held); no repeat while held. */
++        if (wp == VK_RETURN && (lp & (1 << 29)) && !(lp & (1 << 30))) {
++            null_set_fullscreen(hwnd, !s_fullscreen);
++            return 0;
++        }
++        break;
++    case WM_SYSCHAR:
++        if (wp == VK_RETURN) return 0;    /* no beep for Alt+Enter */
++        break;
++    case WM_SETCURSOR:
++        if (s_fullscreen && LOWORD(lp) == HTCLIENT) { SetCursor(NULL); return TRUE; }
++        break;
++    case WM_ERASEBKGND:
++        if (s_present_suppressed) return 1;  /* the swap chain owns the client area */
++        break;
+     case WM_CLOSE:
+         s_state.window_closed = 1;
+         DestroyWindow(hwnd);
+@@ -67,6 +117,10 @@ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_PAINT: {
+         PAINTSTRUCT ps;
+         HDC hdc = BeginPaint(hwnd, &ps);
++        if (s_present_suppressed) {          /* live draw presents; no GDI */
++            EndPaint(hwnd, &ps);
++            return 0;
++        }
+ 
+         /* Fill with current clear color */
+         HBRUSH brush = CreateSolidBrush(s_state.clear_color);
+@@ -93,9 +147,15 @@ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     }
+ 
+     case WM_KEYDOWN:
+-        if (wp == VK_ESCAPE) {
+-            s_state.window_closed = 1;
+-            DestroyWindow(hwnd);
++        if (wp == VK_F11) {
++            null_set_fullscreen(hwnd, !s_fullscreen);
++        } else if (wp == VK_ESCAPE) {
++            if (s_fullscreen) {              /* Esc leaves fullscreen first */
++                null_set_fullscreen(hwnd, 0);
++            } else {
++                s_state.window_closed = 1;
++                DestroyWindow(hwnd);
++            }
+         }
+         return 0;
+     }
+@@ -247,6 +307,23 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     wc.lpszClassName = "ps3recomp_null";
+     RegisterClassExA(&wc);
+ 
++    /* With PS3_RES_SCALE the window opens at the scaled client size (aspect
++     * kept) as far as the work area allows; it stays resizable and the
++     * live-draw present letterboxes. s_state keeps the guest size. */
++    {
++        const char* e = getenv("PS3_RES_SCALE");
++        float sc = e ? (float)atof(e) : 1.0f;
++        if (sc >= 240.0f) sc /= (float)height;
++        RECT wa;
++        if (sc > 1.0f && SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0)) {
++            const float fit_w = (float)(wa.right - wa.left) * 0.95f / (float)width;
++            const float fit_h = (float)(wa.bottom - wa.top) * 0.90f / (float)height;
++            if (sc > fit_w) sc = fit_w;
++            if (sc > fit_h) sc = fit_h;
++            if (sc > 1.0f) { width = (u32)(width * sc); height = (u32)(height * sc); }
++        }
++    }
++
+     /* Compute window size from client area */
+     RECT wr = {0, 0, (LONG)width, (LONG)height};
+     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
+@@ -275,6 +352,15 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+      * in the intro movie while an attended one did not. */
+     SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+ 
++    /* PS3_FULLSCREEN=1|borderless: start fullscreen (exclusive mode is
++     * entered by the live-draw present thread itself). Not for a window that
++     * is meant to stay in the background. */
++    {
++        const char* fs = getenv("PS3_FULLSCREEN");
++        if (fs && fs[0] && fs[0] != '0' && !getenv("PS3_WINDOW_BACKGROUND"))
++            null_set_fullscreen(s_state.hwnd, 1);
++    }
++
+     /* Register as the active RSX backend */
+     rsx_set_backend(&s_null_backend);
+ 
+@@ -315,9 +401,12 @@ int rsx_null_backend_pump_messages(void)
+         if (fps <= 0.0)
+             fps = (s_state.frame_count - s_state.title_frames) * 1000.0 /
+                   (double)(now - s_state.title_time);
++        extern float rsx_live_draw_get_res_scale(void);
++        const float rs = rsx_live_draw_get_res_scale();
+         char tb[256];
+         snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %ux%u", s_state.title, fps,
+-                 rsx_live_draw_get_last_draws(), s_state.width, s_state.height);
++                 rsx_live_draw_get_last_draws(), (u32)(s_state.width * rs + 0.5f),
++                 (u32)(s_state.height * rs + 0.5f));
+         SetWindowTextA(s_state.hwnd, tb);
+         s_state.title_frames = s_state.frame_count;
+         s_state.title_time = now;
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index ed3441f..de764e1 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -222,7 +222,15 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+     /* ---- cache-hinted read-only inputs ---------------------------------- */
+     uint32_t dma_base   = job_ea + JH_SIZE;          /* input list ... */
+     uint32_t cache_base = dma_base + n_dma * 8u;     /* ... then cache list */
+-    uint32_t cache_ls[4] = { 0, 0, 0, 0 };
++    /* An unused cacheBuffer[] slot is a region base like the others, not NULL:
++     * it points at the ioBuffer. Tekken 5 DR's skinning job (skin1x mode 0x11,
++     * no cache list) reads its NORMAL matrices through cacheBuffer[0] and its
++     * position matrices through ioBuffer -- the same bone palette. With 0 here
++     * it transformed every normal by its own instruction words (LS 0 + bone *
++     * 64): positions were right, normals were 1e36-scale garbage, and every
++     * vertex-lit character surface came out dark and blotchy (faces most
++     * visibly). With the slot at ioBuffer the skinned normals are unit length. */
++    uint32_t cache_ls[4] = { io_ls, io_ls, io_ls, io_ls };
+     for (uint32_t i = 0; i < n_cache; i++) {
+         uint64_t e   = g64(cache_base + i * 8u);
+         uint32_t sz  = (uint32_t)(e >> 32);

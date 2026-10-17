@@ -1,0 +1,1595 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 96e8202..541eb8e 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -108,6 +108,41 @@ int cellGcm_take_flip_pending(void)
+     return v;
+ }
+ 
++/* PS3_GCM_VSYNC_FLIP (default on; "0" = old behaviour). cellGcmSetFlip and
++ * cellGcmSetWaitFlip are command-buffer commands on hardware: the flip runs
++ * when the RSX reaches it, at the next vblank, and the wait stalls the RSX --
++ * not the PPU -- until then. The HLE used to flip at call time and block the
++ * calling PPU thread in cellGcmSetWaitFlip until the next tick, which put a
++ * vblank wait and the whole FIFO drain in series with the guest's frame
++ * (Tekken 5 DR fights: 32 fps). With this on:
++ *   - cellGcmSetFlip queues the flip marker in the FIFO (gcm_flip_into_fifo);
++ *   - the walker parks on that marker (s_flip_hold) until the ticker's next
++ *     vblank tick presents it, then resumes -- the RSX-side wait;
++ *   - cellGcmSetWaitFlip returns at once while such a flip is queued;
++ *   - the flip completes (status DONE + handler) on the tick that shows it,
++ *     not on whatever tick happens to follow the request. */
++static int gcm_vsync_flip(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("PS3_GCM_VSYNC_FLIP"); v = (e && *e == '0') ? 0 : 1; }
++    return v;
++}
++static volatile LONG s_fifo_flips_queued = 0;  /* in-FIFO flips not shown yet */
++/* Guest flip-call QPCs of queued in-FIFO flips, consumed as the walker reaches
++ * each one (PS3_FRAMELOG's shown_call_to_present_us). */
++static long long s_flip_call_ring[16];
++static unsigned  s_flip_call_head, s_flip_call_tail;
++static volatile int  s_flip_hold = 0;          /* walker parked on a flip     */
++int cellGcm_flip_held(void) { return s_flip_hold; }
++/* The ticker presented the flip the walker is parked on: release it. */
++void cellGcm_flip_presented(void)
++{
++    if (!s_flip_hold) return;
++    s_flip_hold = 0;
++    if (InterlockedDecrement(&s_fifo_flips_queued) < 0)
++        InterlockedExchange(&s_fifo_flips_queued, 0);
++}
++
+ 
+ /* Configuration */
+ static CellGcmConfig s_config;
+@@ -585,6 +620,9 @@ void cellGcmSetWaitFlip(void)
+ #ifdef _WIN32
+     __declspec(dllimport) void __stdcall Sleep(unsigned long);
+ #endif  /* elsewhere: runtime/platform/win32_compat.h */
++    /* A flip queued in the FIFO: the walker holds at it until it is shown,
++     * which is the wait this call asks for (see gcm_vsync_flip). */
++    if (gcm_vsync_flip() && s_fifo_flips_queued > 0) return;
+     for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++)
+         Sleep(1);
+     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+@@ -598,6 +636,7 @@ void cellGcmSetWaitFlipUnsafe(void) { cellGcmSetWaitFlip(); }
+ /* NID: 0x51C9D62B */
+ void cellGcmResetFlipStatus(void)
+ {
++    rsx_pf_stamp(RSX_PF_RESETFLIP_QPC);
+     { static int n = 0;
+       if (getenv("FLIP_DBG") && __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED) < 12)
+           fprintf(stderr, "[FLIP] ResetFlipStatus%c", 10); }
+@@ -702,6 +741,7 @@ void ppu_gcm_pump(void)
+     }
+     if (p & 2) {
+         s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
++        rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
+         if (s_flip_handler_opd && g_ps3_guest_caller) {
+             ydkj_restore_handler_opd(s_flip_handler_opd, s_flip_handler_code);
+             g_ps3_guest_caller(s_flip_handler_opd, 1, 0, 0, 0, 0, 0, 0, 0);
+@@ -711,6 +751,7 @@ void ppu_gcm_pump(void)
+         u32 cmd = (u32)user;
+         if (s_user_handler_opd && g_ps3_guest_caller)
+             g_ps3_guest_caller(s_user_handler_opd, (uint64_t)cmd, 0, 0, 0, 0, 0, 0, 0);
++        rsx_pf_stamp(RSX_PF_USERCMD_QPC);
+     }
+     GCM_PUMP_LEAVE();
+ }
+@@ -730,9 +771,30 @@ void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
+  * and its handler runs code that puts the status back to WAITING, so the
+  * poll never saw DONE and the game never rendered another frame. On hardware
+  * the callback IS the flip interrupt -- no flip, no callback. */
++static u32 gcm_ea2io(u32 ea);
++static void gcm_fifo_dump_around(u32 getoff);
+ void cellGcmTickFlip(void)
+ {
+-    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING)
++    /* Safety valve for gcm_vsync_flip: a queued flip the walker has not
++     * reached within ~1 s (resynced past, never flushed...) would otherwise
++     * leave a title that polls the flip status waiting forever. */
++    static unsigned stale_ticks;
++    if (gcm_vsync_flip() && s_fifo_flips_queued > 0 && !s_flip_hold) {
++        if (++stale_ticks >= 60) {
++            static int n;
++            if (n++ < 8) {
++                const u32 cc = s_gcm_context_ea ? vm_read32(s_gcm_context_ea + 8) : 0;
++                fprintf(stderr, "[cellGcmSys] queued flip never reached by the FIFO "
++                        "walker (get=0x%08X put=0x%08X cur=0x%08X io 0x%08X) -- completing it%c",
++                        s_fifo_getoff, vm_read32(GCM_CONTROL_GUEST_ADDR), cc,
++                        cc ? gcm_ea2io(cc) : 0, 10);
++            }
++            InterlockedExchange(&s_fifo_flips_queued, 0);
++            stale_ticks = 0;
++        }
++    } else stale_ticks = 0;
++    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING &&
++        !(gcm_vsync_flip() && s_fifo_flips_queued > 0))
+         GCM_PENDING_SET(2);
+ }
+ 
+@@ -1473,9 +1535,13 @@ void cellGcm_ref_on_poll(void)
+ 
+ void cellGcm_rsx_process_fifo(void)
+ {
++    LARGE_INTEGER pf0, pf1;
+     AcquireSRWLockExclusive(&s_gcm_fifo_lock);
++    QueryPerformanceCounter(&pf0);
+     gcm_rsx_process_fifo_unlocked();
++    QueryPerformanceCounter(&pf1);
+     ReleaseSRWLockExclusive(&s_gcm_fifo_lock);
++    rsx_pf_add(RSX_PF_FIFO_TICKS, pf1.QuadPart - pf0.QuadPart);
+ }
+ 
+ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1483,7 +1549,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
+     { static unsigned _n = 0; static unsigned long long _t0 = 0;
+       extern unsigned long long ps3_ms_now(void);
+       _n++;
+-      if (getenv("GCM_RATE")) {
++      /* env probes here and below are read once: the walker runs ~1000x/s */
++      static int rate = -1; if (rate < 0) rate = getenv("GCM_RATE") ? 1 : 0;
++      if (rate) {
+           unsigned long long now = ps3_ms_now();
+           if (_t0 == 0) _t0 = now;
+           if (now - _t0 >= 2000) {
+@@ -1512,6 +1580,13 @@ static void gcm_rsx_process_fifo_unlocked(void)
+      * own command ring, so everything after the jump (including the reference
+      * writes its waits spin on) silently never executed. */
+     u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
++    { static u32 pf_last_put;
++      if (put != pf_last_put) {
++          pf_last_put = put;
++          rsx_pf_add(RSX_PF_PUT_ADV, 1);
++          rsx_pf_stamp(RSX_PF_PUT_LAST_QPC);
++          if (!g_rsx_pf[RSX_PF_PUT_FIRST_QPC]) rsx_pf_stamp(RSX_PF_PUT_FIRST_QPC);
++      } }
+     /* The words behind `put` were stored by another thread (the title, or the
+      * recycle below) before it stored `put`. On x86 the hardware keeps loads
+      * in order; on arm64 it does not, so without an acquire here the ring
+@@ -1524,7 +1599,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+      * once at init; if the title repoints gCellGcmCurrentContext at a buffer of
+      * its own, every field below moves with it and the FIFO the runtime walks
+      * stops being the one the title fills. Reported on change, not per tick. */
+-    if (getenv("GCM_CTXDBG") && s_gcm_ctx_out_ea) {
++    static int ctxdbg = -1; if (ctxdbg < 0) ctxdbg = getenv("GCM_CTXDBG") ? 1 : 0;
++    if (ctxdbg && s_gcm_ctx_out_ea) {
+         static u32 last_ptr = 0xFFFFFFFFu, last_cur = 0xFFFFFFFFu;
+         u32 ptr = vm_read32(s_gcm_ctx_out_ea);
+         u32 cur = ptr ? vm_read32(ptr + 0x8) : 0;
+@@ -1540,7 +1616,8 @@ static void gcm_rsx_process_fifo_unlocked(void)
+     }
+ 
+     u32 start_off = s_fifo_getoff;
+-    if (getenv("GCM_DRAINDBG")) {
++    static int draindbg = -1; if (draindbg < 0) draindbg = getenv("GCM_DRAINDBG") ? 1 : 0;
++    if (draindbg) {
+         static int n = 0;
+         if (n++ % 60 == 0)
+             printf("[DRAIN] getoff=%08X put=%08X ref=%08X ctx.current=%08X\n",
+@@ -1552,8 +1629,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
+      * present in 0..put. "The title waits for a fence we never published" has
+      * two very different causes -- we missed the command, or it was never
+      * submitted -- and only a direct scan of the ring separates them. */
+-    { static int scanned = 0;
+-      if (!scanned && getenv("GCM_SCANREF") && put >= 0x19F0) { scanned = 1;
++    { static int scanned = 0, scanref = -1;
++      if (scanref < 0) scanref = getenv("GCM_SCANREF") ? 1 : 0;
++      if (!scanned && scanref && put >= 0x19F0) { scanned = 1;
+         unsigned found = 0;
+         for (u32 io = 0; io + 8 <= put; io += 4) {
+             u32 ea = gcm_io2ea(io); if (!ea) continue;
+@@ -1589,6 +1667,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
+           fflush(stderr);
+       } }
+ 
++    /* Parked on a flip that has not been shown yet: walk nothing, and make
++     * the stall detectors below see a drained FIFO rather than a stuck one. */
++    if (s_flip_hold) put = s_fifo_getoff;
+     int budget = 0x100000;                    /* words per tick cap */
+     /* GCM_DRAINDBG also reports WHY each pass stopped. A drain that ends far
+      * short of `put` every tick is the signature of a FIFO that can never
+@@ -1636,6 +1717,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
+              * frame split across 4 presents, layout flashing/zooming). */
+             extern s32 cellGcmSetFlipCommand(u32 bufferId);
+             s_fifo_getoff += 4;
++            { LARGE_INTEGER q; QueryPerformanceCounter(&q);
++              g_rsx_pf[RSX_PF_FLIP_QPC] = q.QuadPart;
++              rsx_pf_add(RSX_PF_FLIPS, 1); }
+             /* Count the flip WORDS the title actually writes into the FIFO,
+              * separately from the presents that result. When a title stops
+              * appearing on screen the first question is which side stopped:
+@@ -1651,8 +1735,16 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                 /* Queued by _cellGcmSetFlipCommand, which already did the
+                  * guest-visible half of the request. */
+                 s_current_display_buffer_id = w & 7u;
++                if (s_flip_call_tail != __atomic_load_n(&s_flip_call_head, __ATOMIC_RELAXED))
++                    g_rsx_pf[RSX_PF_SHOWN_CALL_QPC] = s_flip_call_ring[s_flip_call_tail++ & 15u];
+                 s_flip_pending = 1;
+                 s_flip_request_count++;
++                if (gcm_vsync_flip() && s_fifo_flips_queued > 0) {
++                    /* Park until the ticker shows it at the next vblank. */
++                    s_flip_hold = 1;
++                    why = "flip";
++                    break;
++                }
+             } else {
+                 cellGcmSetFlipCommand(w & 0xFFu);
+             }
+@@ -1772,6 +1864,72 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                 s_fifo_getoff += 4 + count * 4;
+                 continue;
+             }
++            /* Fast method path for the live D3D12 engine (PS3_GCM_FAST_WALK,
++             * default on). The general loop below re-resolves the IO page and
++             * re-reads guest memory per data word, runs a dozen env-armed
++             * probes per word, and also feeds every method to the legacy
++             * rsx_state machine -- whose only consumer with RSX_LIVE_DRAW is
++             * the null backend. Tekken 5 DR fights stream ~750 KB of methods
++             * a frame, and that overhead was ~5 ms of the walker's ~12. Here:
++             * one page resolve per run of words, one load per word, the live
++             * engine, and of the legacy machine only the methods with effects
++             * outside it (labels, the reference fence). Any probe armed, or
++             * the dispatch draw engine in use, takes the general loop. */
++            { static int fast = -1;
++              if (fast < 0) {
++                  const char* e = getenv("PS3_GCM_FAST_WALK");
++                  fast = !(e && *e == '0') && rsx_live_draw_enabled() &&
++                         !rsx_draw_engine_enabled() &&
++                         !getenv("GCM_SUBCH7") && !getenv("GCM_OBJDBG") &&
++                         !getenv("GCM_SUBCH_GATE") && !getenv("GCM_VAL_WATCH") &&
++                         !getenv("RSX_LIVE_FEED_DBG") && !getenv("RSX_TRACE") &&
++                         !getenv("TCONST_FIFO");
++              }
++              if (fast) {
++                  extern u8* vm_base;
++                  static int s1_2d_fast = -1;
++                  if (s1_2d_fast < 0) { const char* e = getenv("GCM_SUBCH1_2D"); s1_2d_fast = e ? atoi(e) : 0; }
++                  u32 i = 0;
++                  while (i < count) {
++                      const u32 io = s_fifo_getoff + 4 + i * 4;
++                      const u32 ea = gcm_io2ea(io);
++                      if (!ea) break;
++                      u32 run = (0x100000u - (io & 0xFFFFFu)) >> 2;   /* words left in this IO page */
++                      if (run > count - i) run = count - i;
++                      const u32* p = (const u32*)(vm_base + ea);
++                      for (u32 k = 0; k < run; k++, i++) {
++                          const u32 v = __builtin_bswap32(__atomic_load_n(p + k, __ATOMIC_RELAXED));
++                          const u32 m = (type == 0) ? method + i * 4 : method;
++                          const u32 mfull = (subch << 13) | m;
++                          if (subch == 7 && m == 0x0B00u) {
++                              if (s_user_handler_opd) cellGcmQueueUserCommand(v);
++                              else { extern void rsx_raise_user_cmd(u32 arg); rsx_raise_user_cmd(v); }
++                              continue;
++                          }
++                          rsx_live_draw_method(mfull, v);
++                          if (mfull == 0xEB04u) {
++                              cellGcmQueueUserCommand(v);
++                          } else if (mfull == 0xE920u || mfull == 0xE924u) {
++                              cellGcmSetFlipCommand(v & 7u);
++                          } else if (subch == 0 || (subch == 1 && !s1_2d_fast)) {
++                              if (m == 0x1D6Cu || m == 0x1D70u || m == 0x1D74u || m == 0x0050u)
++                                  rsx_process_method(&s_state, m, v);
++                              if (m == 0x50) gcm_ref_push_at(g_rsx_last_reference, s_fifo_getoff);
++                              if (m == 0x1800) {
++                                  const u32 idx = (v & 0xFFFFFFu) / 16u;
++                                  if (idx < CELL_GCM_MAX_REPORT_COUNT) {
++                                      s_report_data[idx].timestamp = get_timestamp_ns();
++                                      s_report_data[idx].value = (v >> 24) == 1u ? 0xFFFFu : 0u;
++                                  }
++                              }
++                          } else {
++                              gcm_2d_method(subch, m, v);
++                          }
++                      }
++                  }
++                  s_fifo_getoff += 4 + count * 4;
++                  continue;
++              } }
+             for (u32 i = 0; i < count; i++) {
+                 u32 dea = gcm_io2ea(s_fifo_getoff + 4 + i * 4);
+                 if (!dea) break;
+@@ -1979,7 +2137,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+      * per tick (gcm_ref_push/gcm_ref_publish_one above) so every SET_REFERENCE
+      * value stays observable to equality-waiters. The wrap recycle path polls
+      * the drained EA. */
+-    if (getenv("GCM_DRAINDBG")) {
++    if (draindbg) {
+         static int n2 = 0;
+         if (n2++ % 60 == 0)
+             fprintf(stderr, "[DRAINEND] %s: %08X -> %08X (%u bytes), put=%08X\n",
+@@ -2211,6 +2369,12 @@ u32 cellGcm_display_buffer_count(void)
+ 
+ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+ {
++    rsx_pf_guest_flip();   /* PS3_FRAMELOG: the guest asked for a flip */
++    if (in_fifo) {   /* remember when, for the frame the walker will reach */
++        LARGE_INTEGER q; QueryPerformanceCounter(&q);
++        const unsigned h = __atomic_fetch_add(&s_flip_call_head, 1u, __ATOMIC_RELAXED);
++        s_flip_call_ring[h & 15u] = q.QuadPart;
++    }
+     /* GCM_FLIPCOUNT=1: every flip, with a timestamp. FLIP_DBG caps at 20 lines,
+      * which answers "did it ever flip?" and not "is it still flipping, and how
+      * fast?" -- the question that matters when a title stops appearing on
+@@ -2268,6 +2432,8 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+         s_current_display_buffer_id = bufferId;
+         s_flip_pending = 1;   /* ticker: present BEFORE the next drain */
+         s_flip_request_count++;
++        rsx_pf_stamp(RSX_PF_FLIP_QPC);
++        rsx_pf_add(RSX_PF_FLIPS, 1);
+     }
+     /* Flip requested but not yet shown: a subsequent cellGcmSetWaitFlip blocks
+      * until the present thread's cellGcmTickFlip marks it done (vsync). */
+@@ -2308,6 +2474,7 @@ static int gcm_flip_into_fifo(u32 ctx, u32 bufferId)
+     /* Never near the end: those bytes are the title's reserve before its
+      * ring wraps, and the recycle above keys on them. */
+     if (cur + 8 + GCM_RECYCLE_SLACK > end || gcm_ea2io(cur) == 0xFFFFFFFFu) return 0;
++    if (gcm_vsync_flip()) InterlockedIncrement(&s_fifo_flips_queued);
+     vm_write32(cur, GCM_FLIP_MARKER | bufferId);
+     /* Wrap here, on the guest thread, once the ring is nearly used -- what the
+      * SDK's buffer-full callback does. Otherwise the drain thread recycles it
+@@ -2332,7 +2499,27 @@ static int gcm_flip_into_fifo(u32 ctx, u32 bufferId)
+  * a no-op, GetFlipStatus never cleared, and init timed out into exit(-1). */
+ s32 cellGcmSetFlip(void* context, u32 bufferId)
+ {
+-    (void)context;   /* command context — flip is immediate in HLE */
++    /* PS3_GCM_VSYNC_FLIP: in the command stream, like the hardware. */
++    const u32 c = (u32)(uintptr_t)context;
++    /* Only into the ring the walker drains (and that this call can flush):
++     * a flip written into some other context could sit unread while the
++     * title polls for it to complete. */
++    if (gcm_vsync_flip() && c && c == s_gcm_context_ea && gcm_flip_into_fifo(c, bufferId)) {
++        /* cellGcmSetFlip flushes (cellGcmFlush): move `put` to the new
++         * `current` -- across the ring wrap gcm_flip_into_fifo may just have
++         * made, which only a flush (or the next one) would otherwise expose.
++         * Tekken 5 DR polls the flip status next, before any flush of its own,
++         * so without this the walker never reaches the flip. */
++        if (c == s_gcm_context_ea) {
++            const u32 io = gcm_ea2io(vm_read32(c + 8));
++            if (io != 0xFFFFFFFFu) {
++                atomic_thread_fence(memory_order_release);
++                vm_write32(GCM_CONTROL_GUEST_ADDR, io);
++                if (s_gcm_kick_ev) SetEvent(s_gcm_kick_ev);
++            }
++        }
++        return gcm_flip_request(bufferId, 1);
++    }
+     return cellGcmSetFlipCommand(bufferId);
+ }
+ 
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+index 78de69b..b461f61 100644
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -252,6 +252,7 @@ void rsx_dispatch_seed_transform_constants(rsx_dispatch* rsx, const u32* words,
+     if (count > max_words)
+         count = max_words;
+     memcpy(rsx->constants, words, count * sizeof(u32));
++    rsx->constants_gen++;
+ }
+ 
+ 
+@@ -438,6 +439,7 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
+         const u32 slot = rsx->regs[M_VP_UPLOAD_CONST_ID >> 2] + (word >> 2);
+         if (slot < RSX_DSP_NUM_CONSTANTS)
+             rsx->constants[slot][word & 3] = arg;
++        rsx->constants_gen++;
+         /* RSX_CONST_LOG=<lo>,<hi>: every transform-constant upload into that
+          * slot range (first 400) -- what a shader's constants really were. */
+         { static int lo = -2, hi = 0, n = 0;
+diff --git a/libs/video/rsx_dispatch.h b/libs/video/rsx_dispatch.h
+index 176efc4..2757797 100644
+--- a/libs/video/rsx_dispatch.h
++++ b/libs/video/rsx_dispatch.h
+@@ -114,6 +114,7 @@ struct rsx_dispatch {
+     u32 regs[RSX_DSP_NUM_REGS];       /* register file: regs[method >> 2]   */
+     u32 vp[RSX_DSP_VP_WORDS];         /* transform (vertex) program words   */
+     u32 constants[RSX_DSP_NUM_CONSTANTS][4]; /* vec4 f32 bit patterns       */
++    u32 constants_gen;                       /* bumped on any constant write */
+ 
+     rsx_dispatch_sink sink;
+ 
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 87278c0..4495ede 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -23,6 +23,69 @@
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+ 
++/* Frame-pacing telemetry counters (see rsx_live_draw.h). */
++volatile long long g_rsx_pf[RSX_PF_COUNT];
++void rsx_pf_add(int slot, long long value)
++{
++    __atomic_fetch_add(&g_rsx_pf[slot], value, __ATOMIC_RELAXED);
++}
++void rsx_pf_max(int slot, long long value)
++{
++    long long cur = __atomic_load_n(&g_rsx_pf[slot], __ATOMIC_RELAXED);
++    while (value > cur &&
++           !__atomic_compare_exchange_n(&g_rsx_pf[slot], &cur, value, 0,
++                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
++}
++
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <stdio.h>
++#include <stdlib.h>
++void rsx_pf_stamp(int slot)
++{
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    __atomic_store_n(&g_rsx_pf[slot], q.QuadPart, __ATOMIC_RELAXED);
++}
++void rsx_pf_guest_flip(void)
++{
++    static int state = -1;
++    static FILE* f;
++    if (state < 0) {
++        const char* p = getenv("PS3_FRAMELOG");
++        state = 0;
++        if (p && p[0]) {
++            char path[1024];
++            snprintf(path, sizeof(path), "%s.guest.csv", p);
++            f = fopen(path, "w");
++            if (f) {
++                fprintf(f, "flip_qpc,resetflip_qpc,usercmd_qpc,flipdone_qpc,"
++                           "put_adv,put_first_qpc,put_last_qpc\n");
++                state = 1;
++            }
++        }
++    }
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    if (state == 1) {
++        static unsigned n;
++        fprintf(f, "%lld,%lld,%lld,%lld,%lld,%lld,%lld\n", (long long)q.QuadPart,
++                g_rsx_pf[RSX_PF_RESETFLIP_QPC], g_rsx_pf[RSX_PF_USERCMD_QPC],
++                g_rsx_pf[RSX_PF_FLIPDONE_QPC], g_rsx_pf[RSX_PF_PUT_ADV],
++                g_rsx_pf[RSX_PF_PUT_FIRST_QPC], g_rsx_pf[RSX_PF_PUT_LAST_QPC]);
++        __atomic_store_n(&g_rsx_pf[RSX_PF_PUT_ADV], 0, __ATOMIC_RELAXED);
++        __atomic_store_n(&g_rsx_pf[RSX_PF_PUT_FIRST_QPC], 0, __ATOMIC_RELAXED);
++        if ((++n & 63u) == 0) fflush(f);
++    }
++}
++#else
++void rsx_pf_stamp(int slot) { (void)slot; }
++void rsx_pf_guest_flip(void) {}
++#endif
++
+ #if !defined(_WIN32)
+ 
+ /* Non-Windows: the whole path is a no-op (D3D12 is Windows-only). */
+@@ -101,6 +164,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
+ #include <d3d12.h>
+ #include <d3d12sdklayers.h>
+ #include <dxgi1_4.h>
++#include <dxgi1_5.h>   /* IDXGIFactory5: DXGI_FEATURE_PRESENT_ALLOW_TEARING */
+ #include <d3dcompiler.h>
+ #include "rsx_vertex_formats.h"
+ #include <sys/stat.h>
+@@ -572,6 +636,123 @@ static u64 g_ld_present_total = 0;
+ static LONGLONG g_ld_qpc_frequency = 0;
+ static int g_ld_present_dumped = 0;
+ static int g_ld_schedule_diag = 0;
++
++/* PS3_FRAMELOG=<file.csv>: per-presented-frame host timing (QPC ticks are
++ * converted to microseconds in the CSV). Engine-internal counters live here;
++ * the cross-module ones in g_rsx_pf. Everything is accumulated whether or
++ * not the log is open -- a QPC read per PSO/texture/flush event, nothing
++ * per draw. */
++typedef struct {
++    LONGLONG draw_ticks;       /* sink_end: per-draw CPU incl. everything */
++    LONGLONG pso_miss_ticks;   /* get_pso miss: decompile + compile + create */
++    LONGLONG compile_ticks;    /* D3DCompile */
++    LONGLONG create_ticks;     /* CreateGraphicsPipelineState / LoadGraphicsPipeline */
++    LONGLONG tex_ticks;        /* guest texture decode + upload record */
++    LONGLONG flush_wait_ticks; /* GPU fence waits outside present */
++    LONGLONG present_flush_ticks;
++    LONGLONG present_call_ticks;
++    LONGLONG latency_wait_ticks; /* frame-latency waitable object */
++    u32 draws, pso_miss, compiles, creates, tex, flushes;
++} ld_pf_counts;
++static ld_pf_counts g_pf;
++static ld_pf_counts g_pf_prev;
++static long long g_pf_ext_prev[RSX_PF_COUNT];
++static FILE* g_pf_log;
++static LONGLONG g_pf_prev_present_qpc;
++static int g_pf_log_state = -1;     /* -1 unknown, 0 off, 1 on */
++
++static LONGLONG ld_pf_qpc(void)
++{
++    LARGE_INTEGER v;
++    QueryPerformanceCounter(&v);
++    return v.QuadPart;
++}
++
++static void ld_pf_frame_log(LONGLONG present_begin)
++{
++    if (g_pf_log_state < 0) {
++        const char* path = getenv("PS3_FRAMELOG");
++        g_pf_log_state = 0;
++        if (path && path[0]) {
++            g_pf_log = fopen(path, "w");
++            if (g_pf_log) {
++                static char buf[1 << 16];
++                setvbuf(g_pf_log, buf, _IOFBF, sizeof(buf));
++                LARGE_INTEGER f;
++                QueryPerformanceFrequency(&f);
++                fprintf(g_pf_log,
++                        "# qpc_frequency=%lld\n"
++                        "frame,qpc,dt_us,flips,vblanks,vb_late_max_us,"
++                        "vb_burst_max,flip_to_present_us,fifo_us,pump_us,"
++                        "draws,draw_us,pso_miss,pso_miss_us,compiles,"
++                        "compile_us,creates,create_us,latency_wait_us,tex,tex_us,"
++                        "flushes,flush_wait_us,present_flush_us,"
++                        "present_call_us,dxgi_present_count,"
++                        "dxgi_present_refresh,dxgi_sync_refresh,"
++                        "dxgi_sync_qpc,last_present_count,"
++                        "shown_call_to_present_us\n",
++                        (long long)f.QuadPart);
++                g_pf_log_state = 1;
++            }
++        }
++    }
++    if (g_pf_log_state != 1) {
++        g_pf_prev = g_pf;
++        return;
++    }
++    LARGE_INTEGER f;
++    QueryPerformanceFrequency(&f);
++    const double us = 1e6 / (double)f.QuadPart;
++    long long ext[RSX_PF_COUNT];
++    for (int i = 0; i < RSX_PF_COUNT; i++)
++        ext[i] = __atomic_load_n(&g_rsx_pf[i], __ATOMIC_RELAXED);
++    /* max slots are reset per row */
++    __atomic_store_n(&g_rsx_pf[RSX_PF_VBLANK_LATE_MAX], 0, __ATOMIC_RELAXED);
++    __atomic_store_n(&g_rsx_pf[RSX_PF_VBLANK_BURST_MAX], 0, __ATOMIC_RELAXED);
++#define PFD(slot) (ext[slot] - g_pf_ext_prev[slot])
++#define PFC(field) (g_pf.field - g_pf_prev.field)
++    DXGI_FRAME_STATISTICS st;
++    memset(&st, 0, sizeof(st));
++    if (FAILED(g.swap->lpVtbl->GetFrameStatistics(g.swap, &st)))
++        memset(&st, 0, sizeof(st));
++    const LONGLONG flip_qpc = ext[RSX_PF_FLIP_QPC];
++    UINT last_present = 0;
++    g.swap->lpVtbl->GetLastPresentCount(g.swap, &last_present);
++    fprintf(g_pf_log,
++            "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
++            "%u,%.0f,%u,%.0f,%u,%.0f,%u,%.0f,%u,%u,%.0f,%u,%.0f,%.0f,%.0f,"
++            "%u,%u,%u,%lld,%u,%.0f\n",
++            g_ld_frames, (long long)present_begin,
++            g_pf_prev_present_qpc
++                ? (double)(present_begin - g_pf_prev_present_qpc) * us : 0.0,
++            PFD(RSX_PF_FLIPS), PFD(RSX_PF_VBLANKS),
++            (double)ext[RSX_PF_VBLANK_LATE_MAX] * us,
++            ext[RSX_PF_VBLANK_BURST_MAX],
++            flip_qpc ? (double)(present_begin - flip_qpc) * us : 0.0,
++            (double)PFD(RSX_PF_FIFO_TICKS) * us,
++            (double)PFD(RSX_PF_PUMP_TICKS) * us,
++            PFC(draws), (double)PFC(draw_ticks) * us,
++            PFC(pso_miss), (double)PFC(pso_miss_ticks) * us,
++            PFC(compiles), (double)PFC(compile_ticks) * us,
++            PFC(creates), (double)PFC(create_ticks) * us,
++            (unsigned)(PFC(latency_wait_ticks) * us),
++            PFC(tex), (double)PFC(tex_ticks) * us,
++            PFC(flushes), (double)PFC(flush_wait_ticks) * us,
++            (double)PFC(present_flush_ticks) * us,
++            (double)PFC(present_call_ticks) * us,
++            st.PresentCount, st.PresentRefreshCount, st.SyncRefreshCount,
++            (long long)st.SyncQPCTime.QuadPart, last_present,
++            ext[RSX_PF_SHOWN_CALL_QPC] && ext[RSX_PF_SHOWN_CALL_QPC] < present_begin
++                ? (double)(present_begin - ext[RSX_PF_SHOWN_CALL_QPC]) * us : 0.0);
++#undef PFD
++#undef PFC
++    if ((g_ld_frames & 63u) == 0)
++        fflush(g_pf_log);
++    for (int i = 0; i < RSX_PF_COUNT; i++)
++        g_pf_ext_prev[i] = ext[i];
++    g_pf_prev = g_pf;
++    g_pf_prev_present_qpc = present_begin;
++}
+ #if defined(YZ_PPU_SAMPLE)
+ static HANDLE g_ld_present_thread_handle = NULL;
+ #endif
+@@ -1698,8 +1879,68 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+ /* ---------------------------------------------------------------------------
+  * command list submit/wait (simple synchronous model, like the harness)
+  * -----------------------------------------------------------------------*/
++/* RSX_ASYNC_PRESENT (default on; "0" = wait at every present). The present
++ * flush used to wait for the GPU to finish the frame before Present() --
++ * ~1.3 ms on the ticker thread right after the vblank, which is exactly when
++ * the walker must reach the title's user command and release it for the next
++ * frame. Now the present submits and returns; the wait (and the reset of the
++ * allocator, the per-frame rings and the retired textures it guards) happens
++ * when the next recording starts, by which time the GPU is normally done. */
++static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
++
++/* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
++ * flip-model chain with a frame-latency waitable object, max frame latency 1
++ * by default: at most one presented frame waits for the display, so a flip
++ * reaches the screen at the next refresh instead of queueing behind up to
++ * three (the DXGI default). Modes: "vsync" (default: sync interval 1),
++ * "tearing" (sync interval 0 + ALLOW_TEARING when the system supports it --
++ * for VRR/G-Sync/FreeSync displays and the lowest latency), "novsync"
++ * (sync interval 0 without tearing). */
++static UINT   g_ld_present_interval = 1;
++static UINT   g_ld_present_flags = 0;
++static UINT   g_ld_swap_flags = 0;
++static HANDLE g_ld_frame_wait = NULL;
++static void ld_wait_frame_latency(void)
++{
++    /* Bounded: a minimized/occluded window may not retire frames. */
++    if (!g_ld_frame_wait) return;
++    const LONGLONG w0 = ld_pf_qpc();
++    WaitForSingleObjectEx(g_ld_frame_wait, 20, FALSE);
++    g_pf.latency_wait_ticks += ld_pf_qpc() - w0;
++}
++static int ld_async_present(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_ASYNC_PRESENT"); v = (e && *e == '0') ? 0 : 1; }
++    return v;
++}
++static void ld_begin_recording(void)
++{
++    if (!g_ld_lazy_reset) return;
++    g_ld_lazy_reset = 0;
++    const u64 v = g.fence_value;
++    if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
++        const LONGLONG w0 = ld_pf_qpc();
++        if (SUCCEEDED(g.fence->lpVtbl->SetEventOnCompletion(g.fence, v, g.fence_event)))
++            WaitForSingleObject(g.fence_event, INFINITE);
++        g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
++    }
++    for (u32 i = 0; i < g.n_retired_textures; i++)
++        g.retired_textures[i]->lpVtbl->Release(g.retired_textures[i]);
++    g.n_retired_textures = 0;
++    g.alloc->lpVtbl->Reset(g.alloc);
++    g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    g.upload_used = 0;
++    /* the per-frame ring cursors rsx_live_draw_present resets when it waits */
++    g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0;
++    g.srv_ring_used = 0; g.smp_ring_used = 0;
++}
++
+ static void ld_flush(ld_flush_reason reason)
+ {
++    ld_begin_recording();
++    if (reason != LD_FLUSH_PRESENT)
++        g_pf.flushes++;
+ #if defined(YZ_PERF_PROFILE)
+     const LONGLONG flush_begin = ld_profile_qpc();
+     g_ld_profile.total.flush_reason[reason]++;
+@@ -1729,6 +1970,11 @@ static void ld_flush(ld_flush_reason reason)
+         g.ready = 0;
+         return;
+     }
++    if (reason == LD_FLUSH_PRESENT && ld_async_present()) {
++        /* Reset deferred to ld_begin_recording (see above). */
++        g_ld_lazy_reset = 1;
++        return;
++    }
+     if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
+ #if defined(YZ_PERF_PROFILE)
+         const LONGLONG wait_begin = ld_profile_qpc();
+@@ -1745,7 +1991,10 @@ static void ld_flush(ld_flush_reason reason)
+             g.ready = 0;
+             return;
+         }
++        const LONGLONG pf_w0 = ld_pf_qpc();
+         WaitForSingleObject(g.fence_event, INFINITE);
++        if (reason != LD_FLUSH_PRESENT)
++            g_pf.flush_wait_ticks += ld_pf_qpc() - pf_w0;
+ #if defined(YZ_PERF_PROFILE)
+         const u64 wait_ticks = (u64)(ld_profile_qpc() - wait_begin);
+         g_ld_profile.total.fence_wait_qpc += wait_ticks;
+@@ -2376,7 +2625,10 @@ static ID3D12Resource* decode_guest_texture_profiled(
+     const LONGLONG begin = ld_profile_qpc();
+     g_ld_profile.total.texture_decode_calls++;
+ #endif
++    const LONGLONG pf_t0 = ld_pf_qpc();
+     ID3D12Resource* result = decode_guest_texture(texture, remap);
++    g_pf.tex_ticks += ld_pf_qpc() - pf_t0;
++    g_pf.tex++;
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.texture_decode_qpc +=
+         (u64)(ld_profile_qpc() - begin);
+@@ -2443,6 +2695,63 @@ static void write_texture_srv(u32 index, const texcache_t* entry)
+ /* Decode a guest texture descriptor into a cached SRV slot.  Unlike the old
+  * descriptor-only cache, re-hash the source once per frame and refresh the
+  * D3D resource when the game rewrites the same guest address. */
++/* Texture cache index: (source, format, size, remap) -> slot+1. The lookup
++ * below was a linear scan of up to 1,024 entries for every enabled unit of
++ * every draw. Entries are overwritten in place on LRU eviction, so a slot can
++ * go stale; lookups verify the fields and skip stale slots, and the table is
++ * rebuilt from g.textures once enough inserts have accumulated. */
++#define LD_TEX_INDEX_SIZE 4096u
++static u16 g_ld_tex_index[LD_TEX_INDEX_SIZE];
++static u32 g_ld_tex_index_inserts;
++static u32 ld_tex_key_hash(u32 location, u32 offset, u32 format, u32 width,
++                           u32 height, u32 pitch, u32 remap, u32 cubemap)
++{
++    u64 h = ((u64)offset << 1) ^ location;
++    h = (h ^ ((u64)format << 32 | width << 16 | height)) * 0x9E3779B97F4A7C15ull;
++    h = (h ^ ((u64)pitch << 20 | remap << 1 | cubemap)) * 0xBF58476D1CE4E5B9ull;
++    return (u32)(h >> 40);
++}
++static int ld_tex_entry_matches(const texcache_t* e, const rsx_dsp_texture* t, u32 remap)
++{
++    return e->location == t->location && e->offset == t->offset &&
++           e->format == t->format && e->width == t->width &&
++           e->height == t->height && e->pitch == t->pitch &&
++           e->remap == remap && e->cubemap == t->cubemap;
++}
++static void ld_tex_index_put(u32 index)
++{
++    const texcache_t* e = &g.textures[index];
++    u32 h = ld_tex_key_hash(e->location, e->offset, e->format, e->width,
++                            e->height, e->pitch, e->remap, e->cubemap) &
++            (LD_TEX_INDEX_SIZE - 1);
++    while (g_ld_tex_index[h]) h = (h + 1) & (LD_TEX_INDEX_SIZE - 1);
++    g_ld_tex_index[h] = (u16)(index + 1);
++}
++static void ld_tex_index_insert(u32 index)
++{
++    if (++g_ld_tex_index_inserts > LD_TEX_INDEX_SIZE / 2) {
++        memset(g_ld_tex_index, 0, sizeof(g_ld_tex_index));
++        for (u32 i = 0; i < g.n_textures; i++)
++            if (i != index) ld_tex_index_put(i);
++        g_ld_tex_index_inserts = g.n_textures;
++    }
++    ld_tex_index_put(index);
++}
++static int ld_tex_index_find(const rsx_dsp_texture* t, u32 remap)
++{
++    u32 h = ld_tex_key_hash(t->location, t->offset, t->format, t->width,
++                            t->height, t->pitch, remap, t->cubemap) &
++            (LD_TEX_INDEX_SIZE - 1);
++    for (u32 probe = 0; probe < LD_TEX_INDEX_SIZE; probe++) {
++        const u32 e = g_ld_tex_index[h];
++        if (!e) return -1;
++        if (e - 1 < g.n_textures && ld_tex_entry_matches(&g.textures[e - 1], t, remap))
++            return (int)(e - 1);
++        h = (h + 1) & (LD_TEX_INDEX_SIZE - 1);
++    }
++    return -1;
++}
++
+ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+ {
+     const u32 remap = t->remap & 0xFFFF;
+@@ -2450,7 +2759,10 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+     if (refresh_enabled < 0)
+         refresh_enabled = getenv("RSX_NO_TEX_REFRESH") ? 0 : 1;
+ 
+-    for (u32 i = 0; i < g.n_textures; i++) {
++    /* At most one iteration: the index names the matching entry, if any. */
++    const int found = ld_tex_index_find(t, remap);
++    for (u32 i = found < 0 ? g.n_textures : (u32)found; i < g.n_textures;
++         i = g.n_textures) {
+         texcache_t* entry = &g.textures[i];
+         if (entry->location != t->location || entry->offset != t->offset ||
+             entry->format != t->format || entry->width != t->width ||
+@@ -2584,9 +2896,12 @@ static u32 texture_srv_slot(const rsx_dsp_texture* t)
+             retire_texture(evicted);
+         *entry = replacement;
+         write_texture_srv(index, entry);
++        ld_tex_index_insert(index);
+     } else {
+-        if (!cache_was_full)
++        if (!cache_was_full) {
+             g.textures[index] = replacement;
++            ld_tex_index_insert(index);
++        }
+         g_ld_texture_decode_fail++;
+         if (g_ld_texture_decode_fail <= 16 ||
+             (g_ld_texture_decode_fail & (g_ld_texture_decode_fail - 1)) == 0)
+@@ -3009,6 +3324,7 @@ static int ld_blit_gpu(u32 src_loc, u32 src_abs, u32 src_pitch,
+ int rsx_live_draw_blit(u32 src_loc, u32 src_abs, u32 src_pitch,
+                        u32 dst_loc, u32 dst_abs, u32 dst_pitch, u32 w, u32 h)
+ {
++    if (g.ready) ld_begin_recording();
+     const int r = ld_blit_gpu(src_loc, src_abs, src_pitch, dst_loc, dst_abs, dst_pitch, w, h);
+     if (s_csv_file && s_csv_gate_open) {
+         fprintf(s_csv_file, "#blit,%u,%u:0x%X/%u,%u:0x%X/%u,%ux%u,gpu=%d\n", g_ld_frames,
+@@ -3058,6 +3374,7 @@ int rsx_live_draw_resolve_blit(u32 src_loc, u32 src_abs, u32 src_pitch, u32 ds,
+                                u32 out_x, u32 out_y, u32 out_w, u32 out_h)
+ {
+     if (!g.ready || !src_pitch || !dst_pitch || ds != dt || ds < 0x100000u) return 0;
++    ld_begin_recording();
+     /* Source surface and the rect's guest position inside it. */
+     /* The CLOSEST base at or below the address: surfaces' guest ranges
+      * overlap (a stale surface at 0x0 "contains" 0x12804 too), and taking the
+@@ -3127,6 +3444,7 @@ int rsx_live_draw_resolve_blit(u32 src_loc, u32 src_abs, u32 src_pitch, u32 ds,
+ 
+ void rsx_live_draw_note_resolve(u32 src_loc, u32 src_abs, u32 dst_loc, u32 dst_abs)
+ {
++    if (g.ready) ld_begin_recording();
+     if (!g.ready) return;
+     for (u32 b = 0; b < 8; b++) {
+         display_buffer_t* d = &g.display_buffers[b];
+@@ -3973,9 +4291,12 @@ static ID3D12PipelineState* build_pso(
+             g_ld_profile.total.vs_compile_calls++;
+             const LONGLONG compile_begin = ld_profile_qpc();
+ #endif
++            const LONGLONG pf_c0 = ld_pf_qpc();
+             vs_hr = D3DCompile(
+                 vs_hlsl, vs_length, "xvs", NULL, NULL, "main",
+                 "vs_5_0", 0, 0, &vs, &err);
++            g_pf.compile_ticks += ld_pf_qpc() - pf_c0;
++            g_pf.compiles++;
+ #if defined(YZ_PERF_PROFILE)
+             g_ld_profile.total.vs_compile_qpc +=
+                 (u64)(ld_profile_qpc() - compile_begin);
+@@ -4035,9 +4356,12 @@ static ID3D12PipelineState* build_pso(
+             g_ld_profile.total.ps_compile_calls++;
+             const LONGLONG compile_begin = ld_profile_qpc();
+ #endif
++            const LONGLONG pf_c0 = ld_pf_qpc();
+             ps_hr = D3DCompile(
+                 ps_hlsl, ps_length, "xps", NULL, NULL, "main",
+                 "ps_5_0", 0, 0, &ps, &err);
++            g_pf.compile_ticks += ld_pf_qpc() - pf_c0;
++            g_pf.compiles++;
+ #if defined(YZ_PERF_PROFILE)
+             g_ld_profile.total.ps_compile_qpc +=
+                 (u64)(ld_profile_qpc() - compile_begin);
+@@ -4098,8 +4422,11 @@ static ID3D12PipelineState* build_pso(
+     g_ld_profile.total.create_pso_calls++;
+     const LONGLONG create_begin = ld_profile_qpc();
+ #endif
++    const LONGLONG pf_create_begin = ld_pf_qpc();
+     HRESULT hr = g.dev->lpVtbl->CreateGraphicsPipelineState(
+         g.dev, &pd, &IID_ID3D12PipelineState, (void**)&pso);
++    g_pf.create_ticks += ld_pf_qpc() - pf_create_begin;
++    g_pf.creates++;
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.create_pso_qpc +=
+         (u64)(ld_profile_qpc() - create_begin);
+@@ -4121,6 +4448,63 @@ static ID3D12PipelineState* build_pso(
+     return SUCCEEDED(hr) ? pso : NULL;
+ }
+ 
++/* Per-draw PSO key hashing. fnv1a is byte-serial (one multiply per byte),
++ * and get_pso ran it twice per draw over the whole vertex program -- 2-3 KB
++ * of microcode -- which was most of the ~1.5 us get_pso cost per draw in a
++ * Tekken 5 DR fight (~1,900 draws a frame). Four independent 64-bit lanes,
++ * one multiply per 8 bytes each. Only for in-memory keys; the shader disk
++ * cache keeps fnv1a so its file names stay stable. */
++static u64 ld_fast_hash(const void* data, u32 n, u64 seed)
++{
++    const u8* p = (const u8*)data;
++    const u64 K = 0x9E3779B97F4A7C15ull;
++    u64 a = seed ^ 0x243F6A8885A308D3ull, b = seed ^ 0x13198A2E03707344ull,
++        c = seed ^ 0xA4093822299F31D0ull, d = seed ^ 0x082EFA98EC4E6C89ull;
++    while (n >= 32) {
++        u64 w[4];
++        memcpy(w, p, 32);
++        a = (a ^ w[0]) * K; b = (b ^ w[1]) * K;
++        c = (c ^ w[2]) * K; d = (d ^ w[3]) * K;
++        a ^= a >> 31; b ^= b >> 31; c ^= c >> 31; d ^= d >> 31;
++        p += 32; n -= 32;
++    }
++    u64 h = a ^ (b * 3) ^ (c * 5) ^ (d * 7) ^ ((u64)n << 56);
++    while (n >= 8) {
++        u64 w;
++        memcpy(&w, p, 8);
++        h = (h ^ w) * K; h ^= h >> 29;
++        p += 8; n -= 8;
++    }
++    if (n) {
++        u64 w = 0;
++        memcpy(&w, p, n);
++        h = (h ^ w) * K; h ^= h >> 29;
++    }
++    h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 32;
++    return h ? h : 1;
++}
++
++/* key -> index+1 into g.psos; open addressing, never deleted. */
++#define LD_PSO_INDEX_SIZE (MAX_PSOS * 2)
++static u32 g_ld_pso_index[LD_PSO_INDEX_SIZE];
++static int ld_pso_index_find(u64 key)
++{
++    u32 h = (u32)(key ^ (key >> 32)) & (LD_PSO_INDEX_SIZE - 1);
++    for (u32 probe = 0; probe < LD_PSO_INDEX_SIZE; probe++) {
++        const u32 e = g_ld_pso_index[h];
++        if (!e) return -1;
++        if (g.psos[e - 1].key == key) return (int)(e - 1);
++        h = (h + 1) & (LD_PSO_INDEX_SIZE - 1);
++    }
++    return -1;
++}
++static void ld_pso_index_add(u64 key, u32 index)
++{
++    u32 h = (u32)(key ^ (key >> 32)) & (LD_PSO_INDEX_SIZE - 1);
++    while (g_ld_pso_index[h]) h = (h + 1) & (LD_PSO_INDEX_SIZE - 1);
++    g_ld_pso_index[h] = index + 1;
++}
++
+ static int ld_current_vertex_layout(rsx_vertex_layout_plan* layout)
+ {
+     const u32 start = rsx_dsp_vp_start(&g.rsx);
+@@ -4269,8 +4653,8 @@ static ID3D12PipelineState* get_pso(
+     g.fp_alpha_ref = rsx_fp_alpha_ref(
+         rs.alpha_ref_raw, rs.alpha_ref_format);
+ 
+-    u64 key = fnv1a(
+-        vp_uc, vp_instrs * 16, 1469598103934665603ull);
++    const u64 vp_fast_hash = ld_fast_hash(vp_uc, vp_instrs * 16, 0x5650u);
++    u64 key = vp_fast_hash;
+     if (ld_fp_constants_buffered())
+         key = rsx_fp_structural_hash(fp_uc, fp_size, key);
+     else
+@@ -4322,8 +4706,7 @@ static ID3D12PipelineState* get_pso(
+ #endif
+     g_ld_current_pso.valid = 1;
+     g_ld_current_pso.key = key;
+-    g_ld_current_pso.vp_hash = fnv1a(
+-        vp_uc, vp_instrs * 16, 1469598103934665603ull);
++    g_ld_current_pso.vp_hash = vp_fast_hash;
+     g_ld_current_pso.vp_start = start;
+     g_ld_current_pso.vp_instrs = vp_instrs;
+     g_ld_current_pso.fp_location = fp_loc;
+@@ -4344,17 +4727,13 @@ static ID3D12PipelineState* get_pso(
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.pso_lookups++;
+ #endif
+-    for (u32 i = 0; i < g.n_psos; i++) {
+-#if defined(YZ_PERF_PROFILE)
+-        g_ld_profile.total.pso_probes++;
+-#endif
+-        if (g.psos[i].key == key) {
++    { const int hit = ld_pso_index_find(key);
++      if (hit >= 0) {
+ #if defined(YZ_PERF_PROFILE)
+-            g_ld_profile.total.pso_hits++;
++          g_ld_profile.total.pso_hits++;
+ #endif
+-            return g.psos[i].pso;
+-        }
+-    }
++          return g.psos[hit].pso;
++      } }
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.pso_misses++;
+ #endif
+@@ -4369,6 +4748,7 @@ static ID3D12PipelineState* get_pso(
+     static char vs_hlsl[256 * 1024];
+     static char ps_hlsl[256 * 1024];
+     ID3D12PipelineState* pso = NULL;
++    const LONGLONG pf_miss_begin = ld_pf_qpc();
+ #if defined(YZ_PERF_PROFILE)
+     const LONGLONG decompile_begin = ld_profile_qpc();
+ #endif
+@@ -4480,7 +4860,10 @@ static ID3D12PipelineState* get_pso(
+ 
+     g.psos[g.n_psos].key = key;
+     g.psos[g.n_psos].pso = pso;
++    ld_pso_index_add(key, g.n_psos);
+     g.n_psos++;
++    g_pf.pso_miss_ticks += ld_pf_qpc() - pf_miss_begin;
++    g_pf.pso_miss++;
+     return pso;
+ }
+ 
+@@ -5643,6 +6026,7 @@ static int ld_movie_overlay_ensure(void)
+  * swap chain entirely owned by the 30 Hz host presenter. */
+ static void ld_movie_overlay_begin(void)
+ {
++    ld_begin_recording();
+     g.movie_overlay_valid = 0;
+     g.movie_overlay_frames = 0;
+     if (!ld_movie_overlay_ensure()) return;
+@@ -5669,6 +6053,7 @@ static void ld_movie_overlay_begin(void)
+  * background even when the guest rendered an opaque full-screen image. */
+ static void ld_movie_capture_overlay(void)
+ {
++    ld_begin_recording();
+     if (!ld_movie_overlay_ensure()) return;
+     const u32 target = current_surface();
+     if (target == LD_INVALID_SURFACE) {
+@@ -7205,14 +7590,29 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         xf[5] = -((vp.translate[1] - H * 0.5f) / (H * 0.5f));
+         xf[6] = vp.translate[2];
+     }
+-    u8* cbdst = g.cb_mapped + g.cb_used;
+-    memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
+-    memcpy(cbdst + 512 * 16, xf, sizeof(xf));
++    /* The vertex constant block (8 KB + viewport) is re-uploaded per draw.
++     * When no constant was written since the previous draw and the viewport
++     * transform is the same, point this draw at the block already uploaded --
++     * valid while it is the newest block in the ring (nothing advanced
++     * cb_used past it and no ring reset happened). */
++    static u32 s_cb_gen = 0, s_cb_after = 0, s_cb_offset = 0;
++    static float s_cb_xf[8];
++    u32 cb_offset = g.cb_used;
++    const int cb_reuse = s_cb_after != 0 && g.cb_used == s_cb_after &&
++                         g.rsx.constants_gen == s_cb_gen &&
++                         memcmp(xf, s_cb_xf, sizeof(xf)) == 0;
++    if (cb_reuse) {
++        cb_offset = s_cb_offset;
++    } else {
++        u8* cbdst = g.cb_mapped + g.cb_used;
++        memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
++        memcpy(cbdst + 512 * 16, xf, sizeof(xf));
++    }
+ 
+     g.list->lpVtbl->SetPipelineState(g.list, pso);
+     g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x);
+     g.list->lpVtbl->SetGraphicsRootConstantBufferView(
+-        g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + g.cb_used);
++        g.list, 0, g.cb->lpVtbl->GetGPUVirtualAddress(g.cb) + cb_offset);
+     if (ld_fp_constants_buffered())
+         g.list->lpVtbl->SetGraphicsRootConstantBufferView(
+             g.list, 4,
+@@ -7223,7 +7623,13 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     if (vtex_mask)
+         g.list->lpVtbl->SetGraphicsRootDescriptorTable(
+             g.list, 3, vtex_table);
+-    g.cb_used += CB_BLOCK_ALIGNED;
++    if (!cb_reuse) {
++        s_cb_offset = g.cb_used;
++        g.cb_used += CB_BLOCK_ALIGNED;
++        s_cb_after = g.cb_used;
++        s_cb_gen = g.rsx.constants_gen;
++        memcpy(s_cb_xf, xf, sizeof(xf));
++    }
+ 
+     D3D12_VIEWPORT dvp = {0, 0, W, H, 0.0f, 1.0f};
+     D3D12_RECT sc = {
+@@ -7390,17 +7796,20 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ 
+ static void sink_end(void* user, const rsx_dispatch* r)
+ {
+-#if defined(YZ_PERF_PROFILE)
+-    const LONGLONG begin = ld_profile_qpc();
+-#endif
++    ld_begin_recording();
++    const LONGLONG begin = ld_pf_qpc();
+     sink_end_impl(user, r);
++    const LONGLONG spent = ld_pf_qpc() - begin;
++    g_pf.draw_ticks += spent;
++    g_pf.draws++;
+ #if defined(YZ_PERF_PROFILE)
+-    g_ld_profile.total.sink_end_qpc += (u64)(ld_profile_qpc() - begin);
++    g_ld_profile.total.sink_end_qpc += (u64)spent;
+ #endif
+ }
+ 
+ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+ {
++    ld_begin_recording();
+     (void)user; (void)r;
+     if (g_ld_movie_mode && !ld_movie_composite_ui_enabled()) return;
+     g_ld_stats.clears++;
+@@ -7494,6 +7903,7 @@ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
+ 
+ static void sink_flip(void* user, const rsx_dispatch* r, u32 arg)
+ {
++    ld_begin_recording();
+     (void)user; (void)r;
+     const u32 buffer_id = arg & 7u;
+     g_ld_flip_requested++;
+@@ -7808,6 +8218,29 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     scd.Width = width; scd.Height = height; scd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+     scd.SampleDesc.Count = 1; scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+     scd.BufferCount = LD_SWAP_BUFFERS; scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
++    {
++        BOOL tearing = FALSE;
++        IDXGIFactory5* f5 = NULL;
++        if (SUCCEEDED(factory->lpVtbl->QueryInterface(factory, &IID_IDXGIFactory5, (void**)&f5))) {
++            if (FAILED(f5->lpVtbl->CheckFeatureSupport(f5, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
++                                                       &tearing, sizeof(tearing))))
++                tearing = FALSE;
++            f5->lpVtbl->Release(f5);
++        }
++        const char* pm = getenv("RSX_PRESENT_MODE");
++        g_ld_swap_flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT |
++                          (tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
++        if (pm && !strcmp(pm, "tearing") && tearing) {
++            g_ld_present_interval = 0; g_ld_present_flags = DXGI_PRESENT_ALLOW_TEARING;
++        } else if (pm && (!strcmp(pm, "novsync") || !strcmp(pm, "tearing"))) {
++            g_ld_present_interval = 0; g_ld_present_flags = 0;
++        }
++        if (getenv("RSX_NO_WAITABLE_SWAPCHAIN"))
++            g_ld_swap_flags &= ~(UINT)DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
++        scd.Flags = g_ld_swap_flags;
++        fprintf(stderr, "[pacing] present mode=%s interval=%u tearing-supported=%d\n",
++                pm ? pm : "vsync", g_ld_present_interval, (int)tearing);
++    }
+     IDXGISwapChain1* sc1 = NULL;
+     if (FAILED(factory->lpVtbl->CreateSwapChainForHwnd(factory, (IUnknown*)g.queue,
+             (HWND)hwnd, &scd, NULL, NULL, &sc1))) {
+@@ -7816,6 +8249,29 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     sc1->lpVtbl->QueryInterface(sc1, &IID_IDXGISwapChain3, (void**)&g.swap);
+     sc1->lpVtbl->Release(sc1);
+     factory->lpVtbl->Release(factory);
++    if (g.swap && (g_ld_swap_flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)) {
++        UINT latency = 1;
++        { const char* e = getenv("RSX_FRAME_LATENCY");
++          if (e && atoi(e) >= 1 && atoi(e) <= 16) latency = (UINT)atoi(e); }
++        g.swap->lpVtbl->SetMaximumFrameLatency(g.swap, latency);
++        g_ld_frame_wait = g.swap->lpVtbl->GetFrameLatencyWaitableObject(g.swap);
++        fprintf(stderr, "[pacing] max frame latency %u (waitable swap chain)\n", latency);
++    }
++    {
++        HMONITOR mon = MonitorFromWindow((HWND)hwnd, MONITOR_DEFAULTTOPRIMARY);
++        MONITORINFOEXA mi;
++        DEVMODEA dm;
++        memset(&mi, 0, sizeof(mi));
++        memset(&dm, 0, sizeof(dm));
++        mi.cbSize = sizeof(mi);
++        dm.dmSize = sizeof(dm);
++        if (mon && GetMonitorInfoA(mon, (MONITORINFO*)&mi) &&
++            EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
++            fprintf(stderr, "[pacing] window on %s: %lux%lu @ %lu Hz\n",
++                    mi.szDevice, (unsigned long)dm.dmPelsWidth,
++                    (unsigned long)dm.dmPelsHeight,
++                    (unsigned long)dm.dmDisplayFrequency);
++    }
+ 
+     /* RTV heap: [0..1] backbuffers, [2..] surface cache */
+     D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
+@@ -8057,6 +8513,7 @@ void rsx_live_draw_method(u32 method, u32 arg)
+ 
+ void rsx_live_draw_set_movie_mode(int on)
+ {
++    if (g.ready) ld_begin_recording();
+     static unsigned long long suppressed_at_start = 0;
+     const int composite = ld_movie_composite_ui_enabled();
+     const int serialized = composite || g_ld_debug_layer_enabled;
+@@ -8137,6 +8594,7 @@ void rsx_live_draw_set_fifo_position(u32 get, u32 put)
+ 
+ void rsx_live_draw_note_inline_transfer(u32 dma, u32 offset, u32 value)
+ {
++    if (g.ready) ld_begin_recording();
+ #if defined(YZ_PERF_CLEAN)
+     (void)dma;
+     (void)offset;
+@@ -8231,6 +8689,7 @@ void rsx_live_draw_dump_present_samples(void)
+  * movie mode on (so guest draws don't touch g.list). */
+ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+ {
++    if (g.ready) ld_begin_recording();
+     const int composite = ld_movie_composite_ui_enabled();
+     const int serialized = composite || g_ld_debug_layer_enabled;
+     if (serialized) {
+@@ -8293,6 +8752,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+         }
+     }
+ 
++    ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+ 
+@@ -8322,7 +8782,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+ 
+     ld_flush(LD_FLUSH_MOVIE_PRESENT);
+     {
+-        const HRESULT present_hr = g.swap->lpVtbl->Present(g.swap, 1, 0);
++        const HRESULT present_hr = g.swap->lpVtbl->Present(
++            g.swap, g_ld_present_interval, g_ld_present_flags);
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames);
+         else {
+@@ -8371,6 +8832,7 @@ static FILE* g_ld_record_to;
+ 
+ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+ {
++    if (g.ready) ld_begin_recording();
+     ID3D12Resource* rt = surface ? surface->tex : NULL;
+     if (!rt) return UINT64_MAX;
+     const u32 width = surface->w;
+@@ -8642,6 +9104,7 @@ static void ld_vertex_diag_emit(const char* reason, int dump_surface)
+ void rsx_live_draw_present(u32 buffer_id)
+ {
+     if (!g.ready) return;
++    ld_begin_recording();
+ 
+     /* LD_SURF_DUMP=<dir>: dump EVERY live surface once, with its non-black
+      * count, at LD_SURF_DUMP_FRAME (default 1200).
+@@ -8840,6 +9303,7 @@ void rsx_live_draw_present(u32 buffer_id)
+           last_present_target = target;
+       } }
+     ID3D12Resource* srcimg = presented_surface->tex;
++    ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+ 
+@@ -8864,9 +9328,14 @@ void rsx_live_draw_present(u32 buffer_id)
+     bar[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+     g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
+ 
++    const LONGLONG pf_present_begin = ld_pf_qpc();
+     ld_flush(LD_FLUSH_PRESENT);
++    const LONGLONG pf_present_flushed = ld_pf_qpc();
++    g_pf.present_flush_ticks += pf_present_flushed - pf_present_begin;
+     {
+-        const HRESULT present_hr = g.swap->lpVtbl->Present(g.swap, 1, 0);
++        const HRESULT present_hr = g.swap->lpVtbl->Present(
++            g.swap, g_ld_present_interval, g_ld_present_flags);
++        g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames + 1u);
+         else {
+@@ -8915,6 +9384,7 @@ void rsx_live_draw_present(u32 buffer_id)
+       g_ld_last_frame_draws = (u32)(g_ld_stats.packets_seen - packets_at_last_frame);
+       packets_at_last_frame = g_ld_stats.packets_seen; }
+     g_ld_frames++;
++    ld_pf_frame_log(pf_present_begin);
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_present(g_ld_frames);
+ #endif
+@@ -9715,9 +10185,12 @@ void rsx_live_draw_present(u32 buffer_id)
+     }
+ #endif
+ 
+-    /* new frame: reset per-frame ring cursors */
+-    g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0;
+-    g.srv_ring_used = 0; g.smp_ring_used = 0;
++    /* new frame: reset per-frame ring cursors -- once the GPU is done with
++     * them, which with RSX_ASYNC_PRESENT is ld_begin_recording's job */
++    if (!g_ld_lazy_reset) {
++        g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0;
++        g.srv_ring_used = 0; g.smp_ring_used = 0;
++    }
+ #if !defined(YZ_PERF_CLEAN)
+     g_ld_frame_vertex_constant_ring_recycles = 0;
+ #endif
+@@ -9977,6 +10450,8 @@ void rsx_live_draw_shutdown(void)
+ #endif
+     if (g.dev) g.dev->lpVtbl->Release(g.dev);
+     memset(&g, 0, sizeof(g));
++    memset(g_ld_pso_index, 0, sizeof(g_ld_pso_index));
++    memset(g_ld_tex_index, 0, sizeof(g_ld_tex_index)); g_ld_tex_index_inserts = 0;
+     if (dc.verts) { free(dc.verts); dc.verts = NULL; dc.cap_verts = 0; }
+     if (dc.refs) { free(dc.refs); dc.refs = NULL; dc.cap_refs = 0; }
+     if (dc.compact_verts) {
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 1c3fd72..2c5a304 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -156,6 +156,35 @@ int  rsx_live_draw_debug_dump_surface(u32 location, u32 offset,
+ /* Release all D3D12 resources. */
+ void rsx_live_draw_shutdown(void);
+ 
++/* Frame-pacing telemetry (PS3_FRAMELOG=<file.csv>). Counters other modules
++ * add host QPC ticks / event counts to; the live engine writes one CSV row
++ * per presented frame with the deltas since the previous row. Adding to a
++ * slot is one interlocked add, so the hooks stay in when logging is off. */
++enum {
++    RSX_PF_FIFO_TICKS = 0,   /* time inside cellGcm_rsx_process_fifo       */
++    RSX_PF_PUMP_TICKS,       /* guest GCM handlers run on the ticker        */
++    RSX_PF_VBLANKS,          /* vblank ticks fired                          */
++    RSX_PF_VBLANK_LATE_MAX,  /* worst tick lateness (QPC ticks), max-reset  */
++    RSX_PF_VBLANK_BURST_MAX, /* most ticks fired in one burst, max-reset    */
++    RSX_PF_FLIP_QPC,         /* QPC when the FIFO reached the last flip     */
++    RSX_PF_FLIPS,            /* guest flips reached by the FIFO walker      */
++    RSX_PF_FLIPDONE_QPC,     /* QPC when the flip-done event was delivered  */
++    RSX_PF_USERCMD_QPC,      /* QPC when the user-command handler last ran  */
++    RSX_PF_RESETFLIP_QPC,    /* QPC of the guest's last cellGcmResetFlipStatus */
++    RSX_PF_PUT_ADV,          /* drains that found `put` moved (since last flip) */
++    RSX_PF_PUT_FIRST_QPC,    /* first such drain since the last guest flip    */
++    RSX_PF_PUT_LAST_QPC,     /* latest such drain                              */
++    RSX_PF_SHOWN_CALL_QPC,   /* guest flip call of the frame the walker just
++                                reached (in-FIFO flips): input-to-present lag */
++    RSX_PF_COUNT
++};
++extern volatile long long g_rsx_pf[RSX_PF_COUNT];
++void rsx_pf_add(int slot, long long value);
++void rsx_pf_max(int slot, long long value);
++void rsx_pf_stamp(int slot);          /* g_rsx_pf[slot] = QPC now */
++/* One row per guest flip into <PS3_FRAMELOG>.guest.csv (guest thread). */
++void rsx_pf_guest_flip(void);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/libs/video/rsx_vertex_compact.c b/libs/video/rsx_vertex_compact.c
+index 4334f16..0978464 100644
+--- a/libs/video/rsx_vertex_compact.c
++++ b/libs/video/rsx_vertex_compact.c
+@@ -40,6 +40,34 @@ int rsx_vertex_decode_element(
+         return 0;
+     out[0] = out[1] = out[2] = 0.0f;
+     out[3] = 1.0f;
++    /* Type-specialised loops for the formats a frame is made of: the switch
++     * used to sit inside the per-component loop, and this runs for every
++     * attribute of every unique vertex of every draw (~2 ms of Tekken 5 DR's
++     * ~7 ms per fight frame went to vertex fetch). Same arithmetic, so the
++     * results are bit-identical; anything else takes the general loop. */
++    const u32 n = size < 4 ? size : 4;
++    switch (type) {
++    case RSX_VTX_TYPE_FLOAT:
++        for (u32 c = 0; c < n; c++) {
++            u32 w;
++            memcpy(&w, source + c * 4, 4);
++            w = __builtin_bswap32(w);
++            memcpy(&out[c], &w, 4);
++        }
++        return 1;
++    case RSX_VTX_TYPE_UNORM8:
++        for (u32 c = 0; c < n; c++) out[c] = source[c] / 255.0f;
++        return 1;
++    case RSX_VTX_TYPE_SNORM16:
++        for (u32 c = 0; c < n; c++)
++            out[c] = (s16)((source[c * 2] << 8) | source[c * 2 + 1]) / 32767.0f;
++        return 1;
++    case RSX_VTX_TYPE_HALF:
++        for (u32 c = 0; c < n; c++) out[c] = rsx_compact_be_f16(source + c * 2);
++        return 1;
++    default:
++        break;
++    }
+     for (u32 component = 0; component < size && component < 4;
+          component++) {
+         switch (type) {
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index a599706..fe7d2bb 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -272,6 +272,8 @@ extern "C" uint64_t ppu_guest_call(uint32_t, uint64_t, uint64_t, uint64_t, uint6
+ extern "C" void cellGcmTickVBlank(void);
+ extern "C" void cellGcmTickFlip(void);
+ extern "C" int  cellGcm_take_flip_pending(void);  /* hoisted to file scope: clang-cl rejects block-scope extern "C" */
++extern "C" int  cellGcm_flip_held(void);          /* walker parked on an in-FIFO flip */
++extern "C" void cellGcm_flip_presented(void);     /* ...which the tick just showed     */
+ 
+ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
+                                  uint64_t a2, uint64_t a3, uint64_t a4,
+@@ -317,6 +319,10 @@ extern "C" int sys_event_queue_inject(unsigned int, unsigned long long, unsigned
+  * owns presentation, so rsx_d3d12_backend is left out entirely rather than run
+  * alongside it. Unset, every path below is exactly what it was. */
+ extern "C" int   rsx_live_draw_enabled(void);
++/* Frame-pacing telemetry (rsx_live_draw.h: RSX_PF_* slots). */
++extern "C" void  rsx_pf_add(int slot, long long value);
++extern "C" void  rsx_pf_max(int slot, long long value);
++enum { PF_PUMP_TICKS = 1, PF_VBLANKS = 2, PF_VBLANK_LATE_MAX = 3, PF_VBLANK_BURST_MAX = 4 };
+ extern "C" int   rsx_live_draw_init(void* hwnd, uint32_t w, uint32_t h,
+                                     const uint8_t* (*guest_ptr)(void*, uint32_t,
+                                                                 uint32_t, uint32_t),
+@@ -447,8 +453,10 @@ static DWORD WINAPI guest_prof_thread(LPVOID)
+ 
+ extern "C" const char* cellGame_get_title(void);   /* PARAM.SFO TITLE, for the caption */
+ 
++static volatile DWORD g_ticker_tid = 0;   /* PS3_HOST_PROF_WHO=ticker */
+ static DWORD WINAPI vblank_ticker(LPVOID)
+ {
++    g_ticker_tid = GetCurrentThreadId();
+     /* Window caption: $PS3_TITLE wins, else the TITLE field PARAM.SFO already
+      * gave cellGame, else a neutral name. It used to fall back to a specific
+      * other title, so every port announced itself as that game. */
+@@ -492,6 +500,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+      * on the performance counter at 60000/1001 Hz; PS3_VBLANK_HZ overrides. */
+     LARGE_INTEGER vb_freq, vb_now;
+     QueryPerformanceFrequency(&vb_freq);
++    fprintf(stderr, "[pacing] vblank ticker host tid=%lu\n", (unsigned long)GetCurrentThreadId());
+     double vb_hz = 60000.0 / 1001.0;
+     if (const char* e = getenv("PS3_VBLANK_HZ")) { double v = atof(e); if (v >= 10.0 && v <= 240.0) vb_hz = v; }
+     const double vb_period = (double)vb_freq.QuadPart / vb_hz;
+@@ -510,9 +519,10 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         QueryPerformanceCounter(&vb_now);
+         const double now = (double)vb_now.QuadPart;
+         int fired = 0;
++        if (now >= next_tick)
++            rsx_pf_max(PF_VBLANK_LATE_MAX, (long long)(now - next_tick));
+         while (now >= next_tick && fired < 240) {
+             cellGcmTickVBlank();
+-            cellGcmTickFlip();
+             /* Present a pending flip BEFORE draining further: the flip fires
+              * at a get==put frame boundary (guest thread), so the batch held
+              * right now is exactly the completed frame. Presenting on a raw
+@@ -523,7 +533,11 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                     present_guest_frame();
+                     last_flip = cellGcm_flip_request_count();
+                 }
++                /* An in-FIFO flip is shown on the vblank, and only then does
++                 * the walker go on and the flip complete (TickFlip below). */
++                cellGcm_flip_presented();
+             }
++            cellGcmTickFlip();
+             /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
+              * labels (e.g. @0x03000410) that the game's per-frame logic blocks on.
+              * Doing it here (not after present) keeps those fences advancing at 60Hz
+@@ -533,12 +547,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+             fired++;
+         }
+         if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
++        if (fired) { rsx_pf_add(PF_VBLANKS, fired); rsx_pf_max(PF_VBLANK_BURST_MAX, fired); }
+         /* Drain at the outer ~4ms cadence too (not just the 16ms tick):
+          * titles fence EVERY render pass on an RSX label the drain writes;
+          * at 16ms per fence wave's six passes paced the guest to ~7 fps.
+          * The real RSX writes those fences in microseconds. */
+         if (rsx_ok) {
+-            if (cellGcm_take_flip_pending()) {
++            /* A flip the walker is parked on waits for the vblank above. */
++            if (!cellGcm_flip_held() && cellGcm_take_flip_pending()) {
+                 present_guest_frame();
+                 last_flip = cellGcm_flip_request_count();
+             }
+@@ -550,7 +566,10 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * every thread is parked in a semaphore its user handler posts
+          * (Tekken 5 DR) never makes one. */
+         { static int tp = -1; if (tp < 0) { const char* e = getenv("PS3_GCM_TICKER_PUMP"); tp = (e && *e == '1') ? 1 : 0; }
+-          if (tp) ppu_gcm_pump(); }
++          if (tp) { LARGE_INTEGER p0, p1; QueryPerformanceCounter(&p0);
++                    ppu_gcm_pump();
++                    QueryPerformanceCounter(&p1);
++                    rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
+         /* YDKJ_INJECT_Q3: the main thread polls q3 (load/state-complete) each frame but
+          * it's never posted (producer signals a condvar, never enqueues). Inject a q3
+          * event periodically to test whether delivering the completion advances the
+@@ -580,7 +599,9 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                  * first flip present freely so the window isn't stuck white
+                  * during boot. */
+                 unsigned fc = cellGcm_flip_request_count();
+-                if (fc != last_flip || fc == 0) {
++                if (cellGcm_flip_held()) {
++                    /* shown by the next vblank tick */
++                } else if (fc != last_flip || fc == 0) {
+                     if (fc) present_guest_frame(); else rsx_present_frame();
+                     last_flip = fc;
+                 } else if (fc == 0) {
+@@ -1047,6 +1068,146 @@ static DWORD WINAPI hang_watchdog(LPVOID)
+     snprintf(lbl, sizeof lbl, "%ds sample", t2); dump_threads(lbl, self);
+     return 0;
+ }
++
++/* PS3_HOST_PROF=<file>: sample every thread's host RIP each ~1 ms between
++ * PS3_HOST_PROF_AT=<start>,<end> seconds (default 40,60) and write a
++ * histogram: one line per (thread, location) with the sample count. A RIP in
++ * this module is printed as an RVA (symbolize with t5dr.map); one elsewhere
++ * as the module name plus the first return address into this module found
++ * on the stack, which says which runtime call is waiting there. */
++static DWORD WINAPI host_prof_thread(LPVOID arg)
++{
++    const char* out_path = (const char*)arg;
++    HMODULE self = NULL;
++    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                       (LPCSTR)&host_prof_thread, &self);
++    const uintptr_t lo = (uintptr_t)self;
++    uintptr_t hi = lo;
++    { const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)self;
++      const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const char*)self + dos->e_lfanew);
++      hi = lo + nt->OptionalHeader.SizeOfImage; }
++    uintptr_t text_lo = lo, text_hi = hi;   /* return addresses live in .text */
++    { const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)self;
++      const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const char*)self + dos->e_lfanew);
++      const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
++      for (unsigned s = 0; s < nt->FileHeader.NumberOfSections; s++)
++          if (memcmp(sec[s].Name, ".text", 6) == 0) {
++              text_lo = lo + sec[s].VirtualAddress;
++              text_hi = text_lo + sec[s].Misc.VirtualSize;
++          } }
++    int t_start = 40, t_end = 60;
++    { const char* e = getenv("PS3_HOST_PROF_AT"); int a = 0, b = 0;
++      if (e && sscanf(e, "%d,%d", &a, &b) == 2 && b > a) { t_start = a; t_end = b; } }
++    Sleep((DWORD)t_start * 1000);
++    struct Bin { DWORD tid; uint64_t key; uint64_t caller; unsigned n; };
++    const unsigned NB = 1u << 16;
++    Bin* bins = (Bin*)calloc(NB, sizeof(Bin));
++    if (!bins) return 0;
++    struct Th { DWORD tid; HANDLE h; };
++    Th ths[256]; int nth = 0;
++    const DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
++    ULONGLONG t0 = GetTickCount64(), last_enum = 0;
++    unsigned long long total = 0, dropped = 0;
++    timeBeginPeriod(1);
++    while (GetTickCount64() - t0 < (ULONGLONG)(t_end - t_start) * 1000ull) {
++        if (GetTickCount64() - last_enum > 1000) {
++            last_enum = GetTickCount64();
++            for (int i = 0; i < nth; i++) CloseHandle(ths[i].h);
++            nth = 0;
++            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
++            THREADENTRY32 te; te.dwSize = sizeof te;
++            if (snap != INVALID_HANDLE_VALUE && Thread32First(snap, &te)) {
++                do {
++                    if (te.th32OwnerProcessID != pid || te.th32ThreadID == me || nth >= 256) continue;
++                    { static int who = -1; if (who < 0) { const char* w = getenv("PS3_HOST_PROF_WHO"); who = (w && !strcmp(w, "ticker")) ? 1 : 0; }
++                      if (who == 1 && te.th32ThreadID != g_ticker_tid) continue; }
++                    HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
++                                           THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
++                    if (th) { ths[nth].tid = te.th32ThreadID; ths[nth].h = th; nth++; }
++                } while (Thread32Next(snap, &te));
++            }
++            if (snap != INVALID_HANDLE_VALUE) CloseHandle(snap);
++        }
++        for (int i = 0; i < nth; i++) {
++            if (SuspendThread(ths[i].h) == (DWORD)-1) continue;
++            CONTEXT ctx; ctx.ContextFlags = CONTEXT_FULL;
++            uint64_t key = 0, caller = 0;
++            if (GetThreadContext(ths[i].h, &ctx)) {
++                const uintptr_t rip = (uintptr_t)ctx.Rip;
++                if (rip >= lo && rip < hi) {
++                    key = (uint64_t)(rip - lo);
++                } else {
++                    HMODULE m = NULL;
++                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                       (LPCSTR)rip, &m);
++                    key = 0x8000000000000000ull | (uint64_t)(uintptr_t)m;
++                }
++                {
++                    /* Unwind (x64 unwind tables) to the first two caller
++                     * frames in this module: which runtime call is waiting
++                     * there, or which function a hot leaf is working for. */
++                    CONTEXT uc = ctx;
++                    int got = 0;
++                    for (int depth = 0; depth < 48 && got < 2 && uc.Rip; depth++) {
++                        DWORD64 image = 0;
++                        PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(uc.Rip, &image, NULL);
++                        if (!fe) {   /* leaf: return address on top of stack */
++                            MEMORY_BASIC_INFORMATION mbi;
++                            if (!VirtualQuery((LPCVOID)uc.Rsp, &mbi, sizeof mbi) ||
++                                mbi.State != MEM_COMMIT) break;
++                            uc.Rip = *(DWORD64*)uc.Rsp;
++                            uc.Rsp += 8;
++                        } else {
++                            PVOID hd = NULL; DWORD64 est = 0;
++                            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, uc.Rip, fe, &uc, &hd, &est, NULL);
++                        }
++                        if (uc.Rip >= text_lo && uc.Rip < text_hi)
++                            caller |= (uint64_t)(uc.Rip - lo) << (32 * got++);
++                    }
++                }
++            }
++            ResumeThread(ths[i].h);
++            uint64_t hsh = (key * 0x9E3779B97F4A7C15ull) ^ (caller * 0xC2B2AE3D27D4EB4Full) ^ ths[i].tid;
++            unsigned slot = (unsigned)(hsh >> 40) & (NB - 1);
++            unsigned probes = 0;
++            while (bins[slot].n && !(bins[slot].tid == ths[i].tid && bins[slot].key == key &&
++                                     bins[slot].caller == caller) && probes < NB) {
++                slot = (slot + 1) & (NB - 1); probes++;
++            }
++            if (probes >= NB) { dropped++; continue; }
++            bins[slot].tid = ths[i].tid; bins[slot].key = key; bins[slot].caller = caller;
++            bins[slot].n++;
++            total++;
++        }
++        Sleep(1);
++    }
++    FILE* f = fopen(out_path, "w");
++    if (f) {
++        fprintf(f, "# samples=%llu dropped=%llu window=%d..%ds image_base=0x%llX\n",
++                total, dropped, t_start, t_end, (unsigned long long)lo);
++        for (unsigned i = 0; i < NB; i++) {
++            if (!bins[i].n) continue;
++            if (bins[i].key & 0x8000000000000000ull) {
++                char path[MAX_PATH] = "?";
++                HMODULE m = (HMODULE)(uintptr_t)(bins[i].key & 0x7FFFFFFFFFFFFFFFull);
++                if (m) GetModuleFileNameA(m, path, sizeof path);
++                const char* b = strrchr(path, '\\');
++                fprintf(f, "%lu %u mod %s 0x%llX\n", (unsigned long)bins[i].tid, bins[i].n,
++                        b ? b + 1 : path, (unsigned long long)bins[i].caller);
++            } else {
++                fprintf(f, "%lu %u rva 0x%llX 0x%llX\n", (unsigned long)bins[i].tid, bins[i].n,
++                        (unsigned long long)bins[i].key, (unsigned long long)bins[i].caller);
++            }
++        }
++        fclose(f);
++        fprintf(stderr, "[host-prof] %llu samples -> %s\n", total, out_path);
++    }
++    for (int i = 0; i < nth; i++) CloseHandle(ths[i].h);
++    free(bins);
++    return 0;
++}
+ #endif
+ 
+ /* The flat VM treats every address as valid RAM, so it must span every region
+@@ -1233,6 +1394,8 @@ int main(int argc, char** argv)
+         CreateThread(NULL, 0, guest_prof_thread, NULL, 0, NULL);
+ #ifdef _WIN32
+     CreateThread(NULL, 0, hang_watchdog, NULL, 0, NULL);
++    { const char* hp = getenv("PS3_HOST_PROF");
++      if (hp && *hp) CreateThread(NULL, 0, host_prof_thread, (LPVOID)hp, 0, NULL); }
+     /* PS3_DEBUG=<file>: ask a running title what it is doing. */
+     { static char dbgpath[1024];
+       const char* dp = getenv("PS3_DEBUG");

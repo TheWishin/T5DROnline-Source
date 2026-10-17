@@ -107,7 +107,10 @@ static bool offered_by_env()
      * rand() word, docs/ROLLBACK.md section 12); T5_RB_MODE=lockstep or off
      * keeps the delay-based lockstep, the test modes (test, measure) are not
      * netplay. */
-    if (!m || !*m) return true;
+    /* Opt-in until peer-to-peer hash agreement is shown: in rollback mode
+     * the netplay sync check has no per-frame hashes to compare (it reports
+     * every frame as mismatching), so a desync would go unnoticed. */
+    if (!m || !*m) return false;
     return !strcmp(m, "net");
 }
 

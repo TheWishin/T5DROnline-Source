@@ -483,6 +483,18 @@ int64_t w_sem_wait(ppu_context* ctx)
     return r;
 }
 
+} // namespace df
+/* The netplay hooks' early rollback (rb_net.cpp) does not wait on the frame
+ * semaphore when the vblank tick already came during its re-simulation; the
+ * driver's frame work runs here then, once per live frame as always. */
+extern "C" void t5_df_frame_tick(ppu_context* ctx)
+{
+    if (!df::g_installed.load() || ctx->thread_id != df::g_main_tid) return;
+    df::on_frame(ctx);
+    df::g_frame++;
+}
+namespace df {
+
 void install_syscall_hooks()
 {
     bool expected = false;

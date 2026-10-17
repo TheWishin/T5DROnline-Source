@@ -79,6 +79,7 @@
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
+extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
@@ -142,7 +143,7 @@ constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
 constexpr uint32_t NID_cellPadGetData = 0x8B72CDA1;
 
-constexpr int SC_SEM_WAIT = 92, SC_SEM_POST = 94, SC_MEM_ALLOC = 348;
+constexpr int SC_SEM_WAIT = 92, SC_SEM_TRYWAIT = 93, SC_SEM_POST = 94, SC_MEM_ALLOC = 348;
 
 /* ---- guest memory (big-endian) -------------------------------------------- */
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
@@ -1205,13 +1206,22 @@ int64_t w_sem_post(ppu_context* ctx)
 
 /* The early rollback's wait for the frame's tick: the frame semaphore wait the
  * title made when it went on (its context is the latest one seen). */
-void frame_tick_wait()
+void frame_tick_wait(bool came)
 {
     ppu_context* c = g_frame_wait_ctx;
     if (!c) return;
     const uint64_t r3 = c->gpr[3], r4 = c->gpr[4];
     c->gpr[3] = rd32(kFrameSemPtr); c->gpr[4] = 0;   /* sys_semaphore_wait(frame semaphore, no timeout) */
-    g_orig_wait(c);
+    if (!came) {
+        g_orig_wait(c);   /* (the direct-fight driver's frame hook runs inside, after the wait) */
+    } else {
+        /* the tick's post was swallowed during the re-simulation: nothing to
+         * wait for -- but a post that slipped through between the early check
+         * and the re-simulation's start is still pending: take it (trywait) */
+        if (np_lv2_fn tw = g_lv2_syscalls[SC_SEM_TRYWAIT]) tw(c);
+        c->gpr[3] = rd32(kFrameSemPtr); c->gpr[4] = 0;
+        t5_df_frame_tick(c);
+    }
     c->gpr[3] = r3; c->gpr[4] = r4;
 }
 

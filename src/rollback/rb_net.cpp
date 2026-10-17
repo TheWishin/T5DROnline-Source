@@ -113,7 +113,7 @@ uint32_t g_early_committed = 0;          /* the next boundary's snapshot was tak
 bool     g_tick_waited = false;
 std::atomic<bool> g_early_tick_seen{ false };
 LARGE_INTEGER g_early_last_check = {};
-void (*g_tick_waiter)() = nullptr;
+void (*g_tick_waiter)(bool came) = nullptr;
 /* T5_RB_NET_SAMPLE=N: stack samples of the main thread over the first N
  * rollbacks' re-simulations ("S" lines in T5_RB_LOG, rb_sample.cpp) */
 uint32_t g_sample_left = 0;
@@ -410,9 +410,9 @@ static void live_tick_part(uint32_t f)
 static void tick_wait()
 {
     LATLOG('W', "%d", g_early_tick_seen ? 1 : 0);   /* PS3_LATENCY_LOG: the early boundary waits for its tick (1: it came already) */
-    if (!g_early_tick_seen && g_tick_waiter) {
+    if (g_tick_waiter) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
-        g_tick_waiter();
+        g_tick_waiter(g_early_tick_seen);   /* came: no wait, only the frame hooks that follow one */
         g_st.early_wait_ms += ms_since(t0);
     }
     g_tick_waited = true;
@@ -665,6 +665,6 @@ void early_commit()
 /* the vblank's post of the frame semaphore while an early boundary re-simulates
  * (swallowed like every post during a re-simulation): it was this frame's tick */
 void early_tick_posted() { if (g_early_f != UINT32_MAX && !g_tick_waited) g_early_tick_seen = true; }
-void set_tick_waiter(void (*fn)()) { g_tick_waiter = fn; }
+void set_tick_waiter(void (*fn)(bool came)) { g_tick_waiter = fn; }
 
 } } // namespace rb::net

@@ -58,7 +58,7 @@ bool     early_check();
 void     early_commit();   /* the next boundary's snapshot, taken early (same hook, before early_check) */
 bool     early_pending();
 void     early_tick_posted();
-void     set_tick_waiter(void (*fn)());
+void     set_tick_waiter(void (*fn)(bool came));   /* came: the tick's post was swallowed during the re-simulation */
 
 /* The hooks call this once per frame boundary with the lockstep frame number
  * f; it returns the frame the game must simulate now (f, or an earlier frame

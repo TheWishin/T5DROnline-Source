@@ -22,9 +22,11 @@ Knobs for tests (all optional):
     T5_STUB_WINNER    0 | 1 | draw (default: from T5_NET_SEED)
     T5_STUB_DESYNC    1: this side's state hash differs from frame 30 on (both sides log it)
     T5_STUB_NORESULT  1: the match ends without a result file (status says 0-0, no winner)
-    T5_STUB_FAIL      crash | quit | vanish   (crash: exit 3 with a [CRASH] line mid-match;
+    T5_STUB_FAIL      crash | quit | vanish | lost   (crash: exit 3 with a [CRASH] line mid-match;
                       quit: exit 0 mid-match, like closing the window; vanish: stop sending
-                      mid-match without exiting, the opponent's game loses the peer)
+                      mid-match without exiting, the opponent's game loses the peer; lost: like
+                      the real game losing its opponent -- result file with "reason", exit 3)
+    T5_STUB_FPS       this PC's speed written into the result file ("fps", default 59.9)
     T5_STUB_LINGER    seconds to stay open after the last match (default 0)
     T5_FIGHT_FILE     like direct-fight: before the 2nd, 3rd ... match wait for this file
                       (the next fight), then rename it to .done
@@ -72,6 +74,7 @@ class Session:
         self.mismatches = 0
         self.desync = env.get("T5_STUB_DESYNC") == "1"
         self.vanished = False
+        self.match_id = env.get("T5_NET_MATCH") or None   # like the game: the fight line's match= replaces it
 
     def open(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -174,6 +177,15 @@ class Session:
         frames = max(30, int(seconds * 60))
         fail = env.get("T5_STUB_FAIL")
         r = self.exchange(frames, fail, frames // 2 if fail else None)
+        if r == "lost":
+            # the real game since netplay hardening: result with the reason, then it closes (exit 3)
+            log("peer lost (peer_timeout): stub")
+            path = env.get("T5_NET_RESULT_FILE")
+            if path:
+                with open(path + ".tmp", "w") as f:
+                    json.dump({"match": self.match_id, "winner": None, "score": [0, 0], "reason": "peer_timeout"}, f)
+                os.replace(path + ".tmp", path)
+            return "lost"
         if r != "ok":
             return r
         w = env.get("T5_STUB_WINNER")
@@ -194,7 +206,8 @@ class Session:
         if path:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump({"winner": winner, "score": score}, f)
+                json.dump({"match": self.match_id, "winner": winner, "score": score,
+                           "fps": float(env.get("T5_STUB_FPS", "59.9"))}, f)
             os.replace(tmp, path)
         # drain: let the opponent see our last frames
         self.exchange(20)
@@ -236,7 +249,11 @@ def run_env(env):
                         if time.time() > t_end or s.exchange(15) != "ok":
                             return 1
                     with open(fight_file) as f:
-                        log(f"next fight from T5_FIGHT_FILE: {f.read().strip()}")
+                        line = f.read().strip()
+                    log(f"next fight from T5_FIGHT_FILE: {line}")
+                    for tok in line.replace(",", " ").split():
+                        if tok.startswith("match="):
+                            s.match_id = tok[6:]
                     os.replace(fight_file, fight_file + ".done")
             status(env, "fight", n)
             r = s.play(n, env)
@@ -246,6 +263,8 @@ def run_env(env):
                 return 3
             if r in ("quit",):
                 return 0
+            if r == "lost":
+                return 3
             if r != "ok":
                 return 1
         linger = float(env.get("T5_STUB_LINGER", "0") or 0)

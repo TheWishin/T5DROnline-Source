@@ -59,6 +59,7 @@ class Player:
         self.queue_since = 0.0
         self.match = None
         self.server_rtt = None          # ms, reported by the client (UDP ping)
+        self.fps = None                 # this PC's sustained game speed in its last match (client report)
         self.token = os.urandom(24).hex()   # session resume token
         self.dropped_at = None
         self.last_challenge = 0.0
@@ -90,7 +91,7 @@ class Player:
 
     def brief(self):
         d = {"id": self.id, "name": self.name, "guest": self.guest,
-             "rating": round(self.rating.r), "rd": round(self.rating.rd), "main": self.main}
+             "rating": round(self.rating.r), "rd": round(self.rating.rd), "main": self.main, "fps": self.fps}
         d.update(self.rank_info())
         return d
 
@@ -147,6 +148,7 @@ class Match:
         self.ready = [False, False]
         self.tokens = [proto.new_token(), proto.new_token()]
         self.tag = os.urandom(proto.TAG_LEN)
+        self.key = os.urandom(16).hex()      # T5_NET_KEY: authenticates the two games' packets (TCP only)
         self.public_ep = [None, None]        # game socket as the server's main UDP port sees it
         self.probe_ep = [None, None]         # ... and as the second port sees it
         self.nat_info = [None, None]         # client's nat_local message
@@ -659,6 +661,39 @@ class LobbyServer:
             conn.player.server_rtt = ms
             self.dirty = True
 
+    async def h_perf(self, conn, msg):
+        """The client's measure of its PC: sustained frames per second of its last match."""
+        try:
+            fps = float(msg.get("fps"))
+        except (TypeError, ValueError):
+            raise LobbyError(proto.E_BAD_REQUEST, "fps is a number")
+        if not 0 < fps < 1000:
+            raise LobbyError(proto.E_BAD_REQUEST, "fps out of range")
+        conn.player.fps = round(fps, 1)
+        self.dirty = True
+
+    def _check_speed(self, p):
+        """Ranked needs a PC that keeps up: lockstep runs at the slower PC's speed, so one slow PC
+        makes the match crawl for both (QA: 15 fps on one side -> both at 15)."""
+        if self.cfg.min_fps > 0 and p.fps is not None and p.fps < self.cfg.min_fps:
+            raise LobbyError(proto.E_NOT_ALLOWED,
+                             f"this PC ran its last match at {p.fps:.0f} fps; ranked needs at least "
+                             f"{self.cfg.min_fps:.0f} (both games run at the slower PC's speed). Close other "
+                             f"programs or lower the resolution scale, then play a casual match to measure again")
+
+    def _speed_notice(self, m):
+        """Before the match: tell both players when a PC is slow (the match runs at its speed)."""
+        if self.cfg.warn_fps <= 0:
+            return
+        slow = [q for q in m.players if q.fps is not None and q.fps < self.cfg.warn_fps]
+        if not slow:
+            return
+        for p in m.players:
+            parts = [("your PC" if q is p else f"{q.name}'s PC") + f" ran its last match at {q.fps:.0f} fps"
+                     for q in slow]
+            p.send({"t": "notice", "code": "slow_pc", "match": m.id,
+                    "msg": "; ".join(parts) + " -- this match runs at the slower PC's speed"})
+
     async def h_lobby(self, conn, msg):
         return self._snapshot()
 
@@ -725,6 +760,8 @@ class LobbyServer:
             raise LobbyError(proto.E_BAD_REQUEST, "mode is quick or ranked")
         if mode == "ranked" and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        if mode == "ranked":
+            self._check_speed(p)
         if p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         if "char" in msg:
@@ -883,6 +920,8 @@ class LobbyServer:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked matches come from the ranked queue on this server")
         if ranked and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        if ranked:
+            self._check_speed(p)
         name = str(msg.get("name") or f"{p.name}'s room")[:32]
         name = "".join(ch for ch in name if ch.isprintable())
         r = Room(p, name, ranked)
@@ -904,6 +943,8 @@ class LobbyServer:
             raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
         if r.ranked and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
+        if r.ranked:
+            self._check_speed(p)
         r.members.append(p)
         p.room, p.status = r, "room"
         self.dirty = True
@@ -1062,6 +1103,7 @@ class LobbyServer:
                     "rematch_of": m.rematch_of, "keep": keep})
             if note:
                 p.send({"t": "notice", "code": "pair_cap", "match": m.id, "msg": note})
+        self._speed_notice(m)
         self.dirty = True
         self.note("match_found", match=m.id, origin=origin)
         log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
@@ -1325,6 +1367,7 @@ class LobbyServer:
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
                 "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
+                "key": m.key,                          # T5_NET_KEY (the tag above travels in UDP punches)
                 "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
                 "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],

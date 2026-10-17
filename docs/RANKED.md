@@ -21,6 +21,7 @@ and the glue between the lobby and the game.
 - [Game control channel (persistent game)](#game-control-channel-persistent-game)
 - [In-game identity: names and ranks in the HUD](#in-game-identity-names-and-ranks-in-the-hud)
 - [What the game side still needs](#what-the-game-side-still-needs)
+- [Slow PCs](#slow-pcs)
 - [Stick and competitive checklist](#stick-and-competitive-checklist)
 - [Server settings](#server-settings)
 - [Protocol additions](#protocol-additions)
@@ -182,11 +183,24 @@ Each launcher reports what its game saw. A report (`result` message) carries:
 | `desync` | frames on which the two games' state hashes differed (netplay's detector) |
 | `hash`, `frames` | the state hash at the end of the match and the frames played, when the game writes them |
 
-The launcher fills these in by itself: the result file gives winner and score;
-the game's log gives the desync count (`DESYNC at frame` / `sync check ... N
-mismatching`), a lost opponent (`no input from the peer ... peer lost`) and
-crashes (`[CRASH]`, or an exit code other than 0); a game window closed without
-a result is a quit (the tab asks "How did it end?" when it cannot tell).
+The launcher fills these in by itself: the game's result file gives the match
+id, winner, score, desync count (from the match's sync point), the state hash of
+the deciding frame and the frames played (docs/NETPLAY.md); the game's log adds
+the desync count as a cross-check (`DESYNC at frame` / `sync check ... N
+mismatching`), a lost opponent (`peer lost (<reason>)`) and crashes (`[CRASH]`,
+or an exit code other than 0, 3, 4, 5); a game window closed without a result
+is a quit (the tab asks "How did it end?" when it cannot tell).
+
+**Stale results.** A result file is only ever reported for the match it names
+(`"match"`): the id comes from `T5_NET_MATCH` for the first match and from the
+`match=<id>` the launcher appends to every `T5_FIGHT_FILE` line. A file naming
+another match is moved aside (`results/stale-*.json`). When the lobby settles a
+match without this side's report (e.g. voided on the opponent's desync report)
+the file is moved aside at once (`results/unreported-*.json`), and the start of
+a rematch inside the running game clears whatever is left. (QA run r01_ranked:
+match 1 was voided on one player's report while the other game was still
+fighting it; that game's result for match 1 was then reported as the result of
+the rematch.)
 
 How the server decides (`LobbyServer._reconcile` and friends):
 
@@ -219,8 +233,13 @@ missing reports in ranked matches count as **losses** (`forfeit`, reason
 session; the game is not touched, it talks to the opponent directly) and the
 match carries on. The opponent sees "X lost the lobby connection; waiting 60 s".
 Only a player who stays away loses. When the two *games* lose each other, the
-netplay layer notices after `T5_NET_TIMEOUT` (20 s from the lobby) and the
-launcher reports `disconnect` right away; the server decides as above.
+netplay layer notices after `T5_NET_TIMEOUT` (20 s from the lobby; shorter
+outages just pause the fight), ends the match -- result file with the reason
+(`peer_timeout`, `peer_quit`, `peer_stalled`, `peer_restarted`, ...), then the
+game closes with exit code 3 -- and the launcher reports `disconnect` with that
+reason; the server decides as above. Nobody plays on against an idle opponent.
+A game that cannot even connect (no answer, another build, exit codes 4/5) is
+reported the same way, with `no_peer` / `build_mismatch` / `rejected`.
 
 **Desyncs** are never repaired and never counted: the two players did not see
 the same match. Netplay's detector compares a hash of the match state every
@@ -248,7 +267,9 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    (process mode) or sent back to idle (persistent mode). A rematch inside the
    running games keeps it.
 2. **match_start** -- the game is started with the lobby's environment:
-   `T5_NET_MODE/PORT/PEER/DELAY/TIMEOUT/MATCH/ROUNDS/PATH/RTT_MS/SEED/BUILD`,
+   `T5_NET_MODE/PORT/PEER/DELAY/TIMEOUT/MATCH/ROUNDS/PATH/RTT_MS/SEED/BUILD/KEY`
+   (`KEY`: the match's secret from `match_start`, which authenticates the two
+   games' packets),
    `T5_NET_RESULT_FILE=<out>\logs\online\result-<first match id>.json`,
    `T5_FIGHT` with `T5_NET_START=external` and `PS3_FIXED_TIME=<the match's
    start time from the server>` (the same frozen clock on both PCs),
@@ -258,10 +279,12 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    vs Lili -- ping 23 ms (direct), input delay 3 frames (50 ms)".
 3. **During play** the game log is followed for desyncs, a lost opponent and
    crashes.
-4. **Result** -- when the result file appears it is read, moved to
-   `logs\online\results\<match id>.json` (so the next match in the same process
-   starts clean) and reported with the evidence. No result and the game closed:
-   crash / disconnect / quit as above.
+4. **Result** -- when the result file appears it is read (only if it names
+   this match), moved to `logs\online\results\<match id>.json` (so the next
+   match in the same process starts clean) and reported with the evidence; a
+   file with a `reason` is a `disconnect`. This PC's speed in the match (`fps`)
+   goes to the lobby (`perf`, see "Slow PCs") and into online.json. No result
+   and the game closed: crash / disconnect / quit as above.
 5. **After** -- the game stays open (win pose, then character select, state
    `neutral`). **Rematch** (both within 20 s, `T5L_REMATCH_WINDOW`): when both
    games still run and are connected, the server starts the next match without
@@ -351,14 +374,34 @@ Netplay and direct fight are merged; the launcher uses `T5_FIGHT`,
    select -- the control channel above, or `T5_FIGHT_FILE` growing the
    `T5_NET_*` values. Until then the launcher restarts the game for a new
    opponent (direct fight makes that ~20 s instead of ~80 s through the menus).
-2. **netplay**: put `"desync": <mismatching frames>`, `"hash": "<state hash of
-   the last frame both checked>"` and `"frames": <frames played>` into the
-   result file. The launcher already parses the log for the desync count; the
-   hash enables the "resolved" rule for disputes.
-3. HUD hook for `T5_HUD_NAMES` / `T5_HUD_RANKS` (findings above).
-4. **netplay** (menu-driven play only): both games took over lockstep at main
-   loop frame 1 vs 2 once (permanent desync from frame 0), and the menus still
-   diverge at ~frame 1590 under load. Direct fight avoids both.
+2. HUD hook for `T5_HUD_NAMES` / `T5_HUD_RANKS` (findings above).
+3. **netplay** (menu-driven play only): the menus still diverge at ~frame 1590
+   under load. Direct fight avoids it.
+
+Done (2026-10-17, branch netplay-hardening): `match`, `desync`, `hash`,
+`frames`, `fps` and `reason` in the result file; the boot take-over race (main
+loop frame 1 vs 2, then mostly a deadlock) fixed; a lost or restarted opponent,
+a missing one and another build end the match with a reason instead of hanging
+or playing on alone.
+
+## Slow PCs
+
+Lockstep runs at the slower PC's speed: in the QA run with one game held to one
+CPU core (15 fps) both games crawled at 15 fps. So the lobby checks speed before
+a match:
+
+- After every online match the launcher takes this PC's own speed from the
+  game (`fps` in the result file: frames per second with the time spent waiting
+  for the opponent left out; else netplay's `speed:` log line, else the median
+  of the runtime's `[fps]` lines), keeps it in online.json and reports it to the
+  server (`perf`; again after every login).
+- **Ranked**: a PC whose last match ran below `T5L_MIN_FPS` (40) cannot queue
+  for ranked or join a ranked room ("this PC ran its last match at 32 fps;
+  ranked needs at least 40 ..."). A casual match measures it again.
+- **Every match**: when either PC is below `T5L_WARN_FPS` (55), both players get
+  a `slow_pc` notice at match found ("Bob's PC ran its last match at 38 fps --
+  this match runs at the slower PC's speed"); `brief()` carries `fps`.
+- A PC that has never played online has no measure and is not held back.
 
 ## Stick and competitive checklist
 
@@ -415,6 +458,8 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
+| `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
+| `T5L_WARN_FPS` | 55 | below this both players are told at match found (0 = off) |
 
 The database upgrades itself (new columns and tables are added on start).
 
@@ -433,16 +478,18 @@ passwd, profile, history, chars, integrity, rematch).
 | `recovery_codes` `password` | `recovery_codes {codes}` |
 | `set_char` `char`; `queue` + `char` | |
 | `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online) |
-| `result` + `source`, `desync`, `hash`, `frames` | `result_ack` |
+| `result` + `source`, `desync`, `hash`, `frames`, `reason` | `result_ack` |
+| `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
 `keep`; `match_start` + `fight {p1, p2, stage, rounds}`, `players [brief, brief]`,
-`continue`, `rematch_of`, `min_seconds`, `start_time`; `match_result` + `reason`, `blame`
+`continue`, `rematch_of`, `min_seconds`, `start_time`, `key` (T5_NET_KEY); `brief()` + `fps`;
+`match_result` + `reason`, `blame`
 (you/opponent), `fight`, `rematch_window`, and `rating` + `rank_before`,
 `rank_after`, `event` (placed/promoted/demoted); `rematch {state: offered\|declined}`;
-notices `opponent_dropped`, `opponent_back`, `pair_cap`. The client adds
+notices `opponent_dropped`, `opponent_back`, `pair_cap`, `slow_pc`. The client adds
 `reconnecting` / `reconnected` events.
 
 ## Tests and tools

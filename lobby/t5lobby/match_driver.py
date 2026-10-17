@@ -12,7 +12,10 @@ From "match found" to "result reported" without the player doing anything:
                   "match over" lines, crashes
     result        the game's result file (T5_NET_RESULT_FILE) is read and reported with the
                   evidence (desync count, state hash when the game writes one); the file is
-                  archived so the next match in the same game process starts clean
+                  archived so the next match in the same game process starts clean. A file
+                  naming another match ("match": id) is never reported for this one; a
+                  file with a "reason" (the game lost its opponent, could not connect, ...)
+                  is reported as a disconnect
     after         the game stays open at character select; a rematch with the same opponent
                   continues inside the running games: the next fight goes to T5_FIGHT_FILE
                   (no restart, no new connection)
@@ -53,9 +56,28 @@ CTL_MARKER = b"T5_CTL_DIR"
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
 RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
 RE_OVER = re.compile(r"\[netplay\] frame (\d+): match (\d+) over, P1 (\d+) - P2 (\d+)")
-RE_LOST = re.compile(r"\[netplay\] no input from the peer .*peer lost")
+RE_LOST = re.compile(r"\[netplay\] (no input from the peer .*peer lost|peer lost \((\w+)\))")
+RE_FAIL = re.compile(r"\[netplay\] cannot connect \((\w+)\)")
 RE_CONNECTED = re.compile(r"\[netplay\] connected \(")
-RE_BUILD = re.compile(r"\[netplay\] the peer runs a different build")
+RE_BUILD = re.compile(r"\[netplay\] (the peer runs a different build|cannot connect \(build_mismatch\))")
+RE_SPEED = re.compile(r"\[netplay\] speed: [\d.]+ fps, this PC ([\d.]+) fps")
+RE_FPS = re.compile(r"^\[fps\] ([\d.]+) ")
+
+# Why a game could not finish its match (result file "reason", netplay log), for the player.
+REASON_TEXT = {
+    "peer_quit": "Your opponent closed the game.",
+    "peer_timeout": "The connection to your opponent's game was lost.",
+    "peer_stalled": "Your opponent's game stopped responding.",
+    "start_timeout": "Your opponent's game did not get to the fight.",
+    "peer_restarted": "Your opponent's game was restarted; the match cannot go on.",
+    "peer_lost": "The connection to your opponent's game was lost.",
+    "no_peer": "Your opponent's game could not be reached (firewall or router?).",
+    "build_mismatch": "Your opponent's game is a different build.",
+    "rejected": "Your opponent's game is in another match.",
+    "bind_failed": "The game could not open its network port (another program uses it?).",
+}
+# Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp).
+EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch"}
 
 
 class GameLog:
@@ -70,9 +92,13 @@ class GameLog:
         self.last_frame = 0
         self.overs = []              # (frame, n, p1 rounds, p2 rounds)
         self.peer_lost = 0
+        self.lost_reason = None      # "peer lost (<reason>)"
+        self.fail_reason = None      # "cannot connect (<reason>)"
         self.connected = False
         self.crashed = False
         self.build_mismatch = False
+        self.local_fps = None        # this PC's own speed in lockstep (netplay's speed line)
+        self.fps = []                # the runtime's [fps] lines (sustained speed offline / before lockstep)
 
     def poll(self):
         if not self.path:
@@ -95,6 +121,10 @@ class GameLog:
     def line(self, ln):
         if "[CRASH]" in ln:
             self.crashed = True
+        m = RE_FPS.search(ln)
+        if m:
+            self.fps = (self.fps + [float(m.group(1))])[-24:]
+            return
         if "[netplay]" not in ln:
             return
         m = RE_SYNC.search(ln)
@@ -112,12 +142,31 @@ class GameLog:
             self.overs.append(tuple(int(x) for x in m.groups()))
             self.last_frame = max(self.last_frame, int(m.group(1)))
             return
-        if RE_LOST.search(ln):
+        m = RE_LOST.search(ln)
+        if m:
             self.peer_lost += 1
-        elif RE_CONNECTED.search(ln):
+            self.lost_reason = m.group(2) or "peer_lost"
+            return
+        m = RE_SPEED.search(ln)
+        if m:
+            self.local_fps = float(m.group(1))
+            return
+        if RE_CONNECTED.search(ln):
             self.connected = True
-        elif RE_BUILD.search(ln):
+        if RE_BUILD.search(ln):
             self.build_mismatch = True
+        m = RE_FAIL.search(ln)
+        if m:
+            self.fail_reason = m.group(1)
+
+    def sustained_fps(self):
+        """This PC's speed from the log: netplay's own measure in lockstep (time waiting for the
+        peer left out), else the median of the runtime's [fps] lines."""
+        if self.local_fps:
+            return self.local_fps
+        if len(self.fps) >= 3:
+            return sorted(self.fps)[len(self.fps) // 2]
+        return None
 
     def mark(self):
         """Counters at the start of a match: (mismatches, overs, peer_lost)."""
@@ -238,6 +287,7 @@ class MatchDriver:
         self.last = None             # last finished match (match_result event)
         self.history = []            # (match id, what was reported) -- for tools and tests
         self.rematch_sent = set()    # finished matches this side already answered a rematch for
+        self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
 
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
@@ -302,11 +352,27 @@ class MatchDriver:
             return None
         return self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
 
-    def _write_fight_file(self, line):
+    def _write_fight_file(self, line, mid=None):
+        # match=<id>: the game puts it into this match's result file (older builds ignore it)
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
-            f.write(line + "\n")
+            f.write(line + (f" match={mid}" if mid else "") + "\n")
         os.replace(tmp, self.fight_path)
+
+    def _discard_result(self, why):
+        """A result file that must not be reported (left from a voided match, or naming another
+        match): moved aside to results/<why>-<time>.json."""
+        if not self.result_path or not os.path.exists(self.result_path):
+            return
+        d = os.path.join(self.workdir, "results")
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.replace(self.result_path, os.path.join(d, f"{why}-{time.time_ns()}.json"))
+        except OSError:
+            try:
+                os.remove(self.result_path)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------ lobby events
     def on_event(self, ev):
@@ -350,6 +416,7 @@ class MatchDriver:
                 return
             self.ticket = _Continued(mid, ev, self.session_ticket)
             self.match_ev = ev
+            self._discard_result("stale")    # nothing the game wrote before this match belongs to it
             self.mark = self.glog.mark()
             self.reported = False
             self.saw_fight = False
@@ -360,7 +427,7 @@ class MatchDriver:
             else:
                 line = self.fight_line(ev)
                 if line and self.fight_path:
-                    self._write_fight_file(line)     # the game picks it up at character select
+                    self._write_fight_file(line, mid)   # the game picks it up at character select
             self.status(f"Rematch against {ev['opponent']['name']}: same connection, the game stays open.")
             self._call(self.client.game_started, mid)
             return
@@ -412,6 +479,10 @@ class MatchDriver:
     def _finished(self, ev):
         self.last = ev
         if self.ticket is not None and getattr(self.ticket, "match_id", None) == ev["match"]:
+            if not self.reported:
+                # The lobby settled the match without our report (e.g. void on the opponent's
+                # desync report): whatever our game writes for it now must not count for the next.
+                self._discard_result("unreported")
             self.ticket = None
         if ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
@@ -500,9 +571,21 @@ class MatchDriver:
         res = read_result_file(self.result_path) if self.result_path else None
         if res is not None:
             extra = _result_extra(self.result_path)
+            if extra.get("match") and str(extra["match"]) != str(mid):
+                # Left over from another match (a voided one, or an old game): never this one's.
+                self._discard_result("stale")
+                self.status("Ignored a result the game wrote for an earlier match.")
+                return
             self._archive(mid)
+            self._perf(extra.get("fps"))
             desync = self._evidence() or 0
             desync = max(desync, int(extra.get("desync") or 0))
+            reason = extra.get("reason")
+            if reason:
+                # The game could not play the match to its end (lost its opponent, no connection).
+                self._report(mid, None, res[1], "disconnect", desync=desync, reason=str(reason)[:32])
+                self.status(REASON_TEXT.get(reason, f"The match could not be finished ({reason})."))
+                return
             self._report(mid, res[0], res[1], "game", desync=desync, hash=extra.get("hash"),
                          frames=extra.get("frames"))
             return
@@ -525,14 +608,24 @@ class MatchDriver:
                 winner = 0 if w1 > w2 else 1 if w2 > w1 else None
                 self._report(mid, winner, [w1, w2], "game", desync=self._evidence() or 0)
                 return
-            if g.peer_lost > self.mark[2]:
-                self._report(mid, None, None, "disconnect", desync=self._evidence() or 0,
-                             reason="peer_lost")
-                self.status("The connection to your opponent's game was lost.")
+            if g.peer_lost > self.mark[2] and (not running or self._grace("lost")):
+                # (a game that ends the match itself writes a result file with the reason first;
+                # give it a moment before reporting from the log)
+                reason = g.lost_reason or "peer_lost"
+                self._report(mid, None, None, "disconnect", desync=self._evidence() or 0, reason=reason)
+                self.status(REASON_TEXT.get(reason, REASON_TEXT["peer_lost"]))
                 return
         if running:
             return
         code = getattr(getattr(self.game, "proc", None), "returncode", None)
+        if code in EXIT_REASON:
+            # The netplay session could not go on and the game closed itself (no result file?).
+            reason = (g.fail_reason or g.lost_reason) if g is not None else None
+            reason = reason or EXIT_REASON[code]
+            self.note("game_closed", code=code, crashed=False)
+            self._report(mid, None, None, "disconnect", desync=self._evidence() or 0, reason=reason)
+            self.status(REASON_TEXT.get(reason, f"The match could not be played ({reason})."))
+            return
         crashed = (g is not None and g.crashed) or (code not in (0, None))
         self.note("game_closed", code=code, crashed=crashed)
         if crashed:
@@ -557,6 +650,30 @@ class MatchDriver:
             return
         winner = {"won": t.slot, "lost": 1 - t.slot, "draw": None}[what]
         self._report(mid, winner, None, "manual")
+
+    def _grace(self, key, seconds=3.0):
+        """True once `seconds` have passed since this was first asked for `key` in this match."""
+        t = getattr(self, "_grace_t", None)
+        if t is None or t[0] != (self.ticket and self.ticket.match_id, key):
+            self._grace_t = ((self.ticket and self.ticket.match_id, key), time.monotonic())
+            return False
+        return time.monotonic() - t[1] >= seconds
+
+    def _perf(self, fps=None):
+        """This PC's sustained speed after a match: from the result file, else from the log. The
+        lobby uses it to warn about (or keep out of ranked) a PC too slow for lockstep."""
+        try:
+            fps = float(fps) if fps is not None else None
+        except (TypeError, ValueError):
+            fps = None
+        if fps is None and self.glog is not None:
+            fps = self.glog.sustained_fps()
+        if not fps or fps <= 0:
+            return
+        self.last_fps = round(fps, 1)
+        fn = getattr(self.client, "report_perf", None)
+        if fn is not None:
+            self._call(fn, self.last_fps)
 
     def _report(self, mid, winner, score, source, **ev):
         self.reported = True
@@ -611,11 +728,34 @@ class _Continued:
         return f"{self.opponent.get('name', '?')} -- rematch, input delay {self.delay}"
 
 
+def fps_from_logs(log_dir):
+    """This PC's sustained speed from the newest game log in `log_dir` (the launcher's
+    logs/game-*.log): the median of the runtime's [fps] lines, the first two (boot) left out.
+    None when there is no usable log. Used before the first online match."""
+    import glob
+    for path in sorted(glob.glob(os.path.join(log_dir, "game-*.log")), reverse=True)[:3]:
+        vals = []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for ln in f:
+                    m = RE_FPS.search(ln)
+                    if m:
+                        vals.append(float(m.group(1)))
+        except OSError:
+            continue
+        vals = vals[2:]
+        if len(vals) >= 4:
+            return round(sorted(vals)[len(vals) // 2], 1)
+    return None
+
+
 def _result_extra(path):
-    """Optional fields of the result file beyond winner/score (desync, hash, frames)."""
+    """Optional fields of the result file beyond winner/score (match, desync, hash, frames, fps,
+    reason)."""
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
-        return {k: d[k] for k in ("desync", "hash", "frames") if k in d}
+        return {k: d[k] for k in ("match", "desync", "hash", "frames", "fps", "reason")
+                if k in d and d[k] is not None}
     except (OSError, ValueError, TypeError):
         return {}

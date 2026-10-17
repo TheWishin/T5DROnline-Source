@@ -27,7 +27,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import fighters, ranks
 from .buildid import BuildInfo
 from .client import LobbyClient
-from .match_driver import MatchDriver
+from .match_driver import MatchDriver, fps_from_logs
 from .proto import DEFAULT_PORT, LobbyError
 
 AVAILABLE = True
@@ -444,9 +444,19 @@ class OnlineTab:
         if spec.lower().startswith("tls://"):
             spec, tls = spec[6:], True
         fp = self.fp_var.get().strip() or None
-        return LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
-                           game_port=int(self.cfg.get("game_port", 0) or 0),
-                           plain_passwords=bool(self.cfg.get("plain_passwords")))
+        c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
+                        game_port=int(self.cfg.get("game_port", 0) or 0),
+                        plain_passwords=bool(self.cfg.get("plain_passwords")))
+        # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
+        # before the first one, from the newest game log (offline play)
+        try:
+            c.perf_fps = float(self.cfg["last_fps"]) if self.cfg.get("last_fps") else None
+        except (TypeError, ValueError):
+            c.perf_fps = None
+        if c.perf_fps is None:
+            out = getattr(self.app.settings, "out_dir", os.getcwd())
+            c.perf_fps = fps_from_logs(os.path.join(out, "logs"))
+        return c
 
     def do_login(self, mode, session=None):
         name, pw = self.name_var.get().strip(), self.pw_var.get()
@@ -839,6 +849,9 @@ class OnlineTab:
 
     def on_driver(self, n):
         k = n["kind"]
+        if self.driver is not None and self.driver.last_fps and self.driver.last_fps != self.cfg.get("last_fps"):
+            self.cfg["last_fps"] = self.driver.last_fps
+            self._save_cfg()
         if k == "status":
             self.status(n["text"])
         elif k == "ask_result":

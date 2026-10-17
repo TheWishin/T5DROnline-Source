@@ -615,10 +615,161 @@ class DriverTest(Base):
         self.assertEqual((results[0][0]["status"], results[0][0]["reason"]), ("void", "no_result"))
         self.assertEqual(drivers[0].history[0][1]["reason"], "no_result")
 
+    def test_lost_opponent_ends_the_match_as_a_disconnect(self):
+        stub = {"T5_STUB_SECONDS": "2"}
+        results, drivers = self.run_pair("process", dict(stub, T5_STUB_FAIL="lost"), stub)
+        # void either way: "connection" when the other game also reports in time, "no_report" when
+        # the test server's 2-s result window closes first (the other stub notices after 5 s)
+        self.assertEqual(results[0][0]["status"], "void")
+        self.assertEqual(drivers[0].history[0][1]["source"], "disconnect")
+        self.assertEqual(drivers[0].history[0][1]["reason"], "peer_timeout")
+
     def test_desync_is_reported(self):
         stub = {"T5_STUB_SECONDS": "1"}
         results, _ = self.run_pair("process", dict(stub, T5_STUB_DESYNC="1"), stub)
         self.assertEqual((results[0][0]["status"], results[0][0]["reason"]), ("void", "desync"))
+
+
+class SpeedAndKeyTest(Base):
+    """Slow PCs (lockstep plays at the slower PC's speed) and the per-match netplay key."""
+
+    def test_slow_pc_is_kept_out_of_ranked_and_warned(self):
+        a = self.acc("Alice")
+        b = self.acc("Bob")
+        a.report_perf(31.2)
+        self.assertTrue(self.s.wait_for(lambda: self.s.srv.by_name["alice"].fps == 31.2))
+        with self.assertRaises(LobbyError) as cm:
+            a.ranked_match()
+        self.assertEqual(cm.exception.code, proto.E_NOT_ALLOWED)
+        self.assertIn("31 fps", cm.exception.msg)
+        # casual still works, and both players hear about the slow PC before the match
+        a.quick_match()
+        b.quick_match()
+        na = expect(a, "notice")
+        nb = expect(b, "notice")
+        self.assertEqual(na["code"], "slow_pc")
+        self.assertIn("your PC", na["msg"])
+        self.assertIn("Alice's PC", nb["msg"])
+        ea, eb = expect(a, "match_start"), expect(b, "match_start")
+        self.assertEqual(eb["opponent"]["fps"], 31.2)
+
+    def test_fast_enough_pc_plays_ranked(self):
+        a = self.acc("Alice")
+        a.report_perf(58.0)
+        self.assertTrue(self.s.wait_for(lambda: self.s.srv.by_name["alice"].fps == 58.0))
+        self.assertEqual(a.ranked_match()["mode"], "ranked")
+
+    def test_match_key_reaches_the_game_environment(self):
+        a = self.acc("Alice")
+        b = self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        self.assertEqual(len(ea["key"]), 32)
+        self.assertEqual(ea["key"], eb["key"])
+        env = ea["ticket"].game_env()
+        self.assertEqual(env["T5_NET_KEY"], ea["key"])
+
+
+class DriverResultFileTest(unittest.TestCase):
+    """The match driver against result files the game left behind (no server needed)."""
+
+    class FakeClient:
+        def __init__(self):
+            self.reports, self.perf = [], []
+
+        def report_result(self, winner, score=None, match_id=None, **kw):
+            self.reports.append(dict(kw, match=match_id, winner=winner, score=score))
+
+        def report_perf(self, fps):
+            self.perf.append(fps)
+
+        def game_started(self, mid):
+            pass
+
+        def leave_match(self, mid):
+            pass
+
+    class FakeGame:
+        def __init__(self):
+            self.alive = True
+            self.log_path = None
+            self.proc = None
+
+        def running(self):
+            return self.alive
+
+        def stop(self):
+            self.alive = False
+
+    class Ticket:
+        def __init__(self, mid):
+            self.match_id, self.slot, self.role, self.delay = mid, 0, "host", 3
+            self.opponent, self.path, self.rtt_ms = {"name": "Bob"}, "lan", 1.0
+
+        def game_env(self, result_file=None):
+            return {"T5_NET_RESULT_FILE": result_file}
+
+        def summary(self):
+            return "Bob"
+
+    def setUp(self):
+        from t5lobby.match_driver import MatchDriver
+        self.dir = tempfile.mkdtemp(prefix="drvres")
+        self.client = self.FakeClient()
+        self.game = self.FakeGame()
+        self.drv = MatchDriver(self.client, lambda env: self.game, self.dir, mode="process", ask_manual=False)
+        fight = {"p1": "lili", "p2": "asuka", "stage": "s20", "rounds": 3}
+        self.drv.on_event({"t": "match_start", "match": "m1", "ticket": self.Ticket("m1"), "fight": fight,
+                           "opponent": {"name": "Bob"}, "slot": 0})
+
+    def write(self, d):
+        with open(self.drv.result_path, "w") as f:
+            json.dump(d, f)
+
+    def test_result_of_another_match_is_not_reported(self):
+        self.write({"match": "m0", "winner": 0, "score": [3, 1]})
+        self.drv.poll()
+        self.assertEqual(self.client.reports, [])
+        self.assertFalse(os.path.exists(self.drv.result_path))           # moved aside
+        self.write({"match": "m1", "winner": 1, "score": [2, 3], "desync": 0, "hash": "ab", "frames": 9000,
+                    "fps": 57.5})
+        self.drv.poll()
+        self.assertEqual(len(self.client.reports), 1)
+        r = self.client.reports[0]
+        self.assertEqual((r["match"], r["winner"], r["source"], r["hash"]), ("m1", 1, "game", "ab"))
+        self.assertEqual(self.client.perf, [57.5])
+
+    def test_voided_match_leaves_no_result_for_the_rematch(self):
+        # the lobby voids m1 on the opponent's report; our game writes m1's result afterwards
+        self.drv.on_event({"t": "match_result", "match": "m1", "status": "void", "reason": "desync"})
+        self.write({"match": "m1", "winner": 0, "score": [3, 0]})
+        fight = {"p1": "lili", "p2": "asuka", "stage": "s20", "rounds": 3}
+        self.drv.on_event({"t": "match_start", "match": "m2", "continue": True, "fight": fight,
+                           "opponent": {"name": "Bob"}, "slot": 0})
+        self.drv.poll()
+        self.assertEqual(self.client.reports, [])
+        with open(self.drv.fight_path) as f:
+            self.assertTrue(f.read().strip().endswith("match=m2"))
+        self.write({"match": "m1", "winner": 0, "score": [3, 0]})        # late again: still refused
+        self.drv.poll()
+        self.assertEqual(self.client.reports, [])
+        self.write({"match": "m2", "winner": 0, "score": [3, 2]})
+        self.drv.poll()
+        self.assertEqual([(r["match"], r["winner"]) for r in self.client.reports], [("m2", 0)])
+
+    def test_reason_means_disconnect(self):
+        self.write({"match": "m1", "winner": None, "score": [1, 0], "reason": "peer_timeout"})
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"], r["winner"]), ("disconnect", "peer_timeout", None))
+
+    def test_exit_code_of_a_lost_session_is_not_a_crash(self):
+        class Proc:
+            returncode = 3
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"]), ("disconnect", "peer_lost"))
 
 
 if __name__ == "__main__":

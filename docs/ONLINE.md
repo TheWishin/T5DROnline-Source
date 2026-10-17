@@ -111,20 +111,23 @@ lobby/
 | `T5_NET_PORT` | yes | local UDP port: exactly the port the lobby punched through. Bind it. |
 | `T5_NET_PEER` | yes | `ip:port` of the opponent (direct/LAN) or of the lobby server's relay |
 | `T5_NET_DELAY` | yes | input delay in frames (host's value wins, as netplay already does) |
-| `T5_NET_TIMEOUT` | yes | seconds without the peer before giving up (20) |
-| `T5_NET_MATCH` | proposed | match id; log it so game logs tie to the lobby's record |
-| `T5_NET_ROUNDS` | proposed | rounds to win (3) |
-| `T5_NET_PATH` | proposed | `direct`, `lan` or `relay` |
-| `T5_NET_RTT_MS` | proposed | measured round trip |
-| `T5_NET_SEED` | proposed | 32-bit value both sides share |
-| `T5_NET_BUILD` | proposed | build id; could go into the netplay HELLO to refuse mismatched peers on direct-IP games |
-| `T5_NET_RESULT_FILE` | proposed | where the game writes the result (below) |
+| `T5_NET_TIMEOUT` | yes | seconds the peer may be silent / stall before the match ends (20) |
+| `T5_NET_MATCH` | yes | match id; logged and written into the result file |
+| `T5_NET_ROUNDS` | yes | rounds to win (3); direct fight takes them from `T5_FIGHT` |
+| `T5_NET_PATH` | yes (logged) | `direct`, `lan` or `relay` |
+| `T5_NET_RTT_MS` | yes (logged) | measured round trip |
+| `T5_NET_SEED` | yes | 32-bit value both sides share (random generators; a `random` stage) |
+| `T5_NET_BUILD` | yes | build id in the netplay HELLO; a peer with another one is refused |
+| `T5_NET_KEY` | yes | the match's secret (server -> both clients over TCP only): every netplay packet carries a SipHash-2-4 tag under it |
+| `T5_NET_RESULT_FILE` | yes | where the game writes the result (below) |
 | `T5_NET_SOCKET_FILE` | proposed | only with socket handover (below) |
 
-The host's netplay ignores `T5_NET_PEER` and learns its peer from the first
-HELLO; that is exactly right for both paths (on the relay path the HELLO comes
-from the relay). Verified with the real netplay build on this PC, see
-[measurements](#tests-demo-measurements).
+The host calls `T5_NET_PEER` while it waits and takes as its peer the first
+game whose HELLO carries a valid tag (on the relay path that comes from the
+relay); without a key only a HELLO from `T5_NET_PEER`'s IP counts. After the
+handshake both games accept only the other one's process (session id + nonce
++ tag) and follow it to a new address when its NAT re-maps the port
+(docs/NETPLAY.md, "Connection problems").
 
 **Input delay.** `suggest_delay(rtt, jitter) = clamp(ceil((rtt/2 + jitter + 2 ms) / 16.68 ms) + 1, 2, 10)`:
 the input sampled at frame f is used at f + d on both PCs, so it must cross the
@@ -135,12 +138,17 @@ players' measurements. Same PC / LAN: 2. 40 ms ping: 3. 100 ms: 5.
 **Result file** (`T5_NET_RESULT_FILE`), written by the game when the match ends:
 
 ```json
-{"winner": 0, "score": [3, 1]}
+{"match": "m752f00f03e2f", "winner": 0, "score": [3, 1], "desync": 0, "frames": 9120,
+ "hash": "ceace43900b83115", "fps": 58.7}
 ```
 
 `winner` 0 = P1 (host), 1 = P2 (join), `null` = draw; `score` = rounds won by
-P1 and P2 (optional). The launcher reads it when the game exits; without it the
-player is asked.
+P1 and P2 (optional); `match` = the match it belongs to (the launcher refuses a
+file naming another match); `desync`/`hash`/`frames` = the netplay evidence;
+`fps` = this PC's own speed. A match that could not be finished has `"winner":
+null` and a `reason` (`peer_timeout`, `peer_quit`, `no_peer`, `build_mismatch`,
+...; docs/NETPLAY.md), and the game then closes (exit code 3/4/5). The launcher
+reads the file as soon as it appears; without it the player is asked.
 
 **Port handover (default).** The launcher closes its socket right before
 starting the game, which binds the same port. UDP has no TIME_WAIT, so the
@@ -482,23 +490,14 @@ password) per Windows user in `%APPDATA%\T5DROnline\online.json`. Matches run
 through `match_driver.MatchDriver` (RANKED.md, "The match flow"). The release
 zip carries `lobby/t5lobby/` (tools/package_release.py).
 
-**Netplay** (branch `netplay`), works unchanged today. Suggested additions, in
-order of value:
-
-1. Write `T5_NET_RESULT_FILE` at the end of a match (winner slot, rounds), so
-   nobody has to answer "who won".
-2. Honour `T5_NET_ROUNDS` (first to 3) and log `T5_NET_MATCH`.
-3. Host: also send HELLO to `T5_NET_PEER` while waiting. It keeps the host's
-   NAT hole open even if the game takes long to start, and helps with NATs that
-   only accept packets from addresses the host has sent to recently.
-4. Put `T5_NET_BUILD` into HELLO and refuse a peer with a different one (covers
-   direct-IP play without the lobby).
-5. Optionally adopt the socket from `T5_NET_SOCKET_FILE` (snippet above).
+**Netplay**: result file (with match id and evidence), `T5_NET_ROUNDS`,
+`T5_NET_MATCH`, the host calling `T5_NET_PEER`, `T5_NET_BUILD` in the HELLO and
+`T5_NET_KEY` are done. Left: optionally adopt the socket from
+`T5_NET_SOCKET_FILE` (snippet above).
 
 ## What is left
 
-- Netplay side of the handover extras above: rounds, socket adoption (result file, build in HELLO,
-  host calling the peer are done); desync count and state hash in the result file (RANKED.md).
+- Netplay side of the handover extras above: socket adoption (everything else is done).
 - A new opponent without restarting the game: the control channel in RANKED.md, for direct-fight.
 - TURN-style relay on a separate host, or several relay regions; today the relay is the lobby server.
 - Port prediction for symmetric NATs; UPnP/NAT-PMP port mapping on the player's router; IPv6.

@@ -63,6 +63,9 @@ class Config:
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
+    # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed
+    min_fps: float = 40.0           # T5L_MIN_FPS: a PC whose last match ran slower stays out of ranked (0 = off)
+    warn_fps: float = 55.0          # T5L_WARN_FPS: below this both players are warned at match found (0 = off)
 
     @classmethod
     def from_env(cls, env=None, **overrides):

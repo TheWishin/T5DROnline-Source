@@ -23,9 +23,13 @@
 #include <atomic>
 #include <vector>
 #include <algorithm>
+#include <array>
+#include <string>
+#include <utility>
 
 #include "ppu_recomp.h"
 #include "rb.h"
+#include "rb_detour.h"
 
 extern "C" uint8_t* vm_base;
 
@@ -220,6 +224,66 @@ void icall_install()
     }
     ps3_icall_hook = hook;
 }
+
+/* ---- the direct-call cut (latency branch) ---------------------------------------
+ * The vtable cut above cannot reach work the scene update calls directly. The
+ * stack profile of re-simulated frames in the netplay loop (T5_RB_NET_SAMPLE,
+ * docs/ROLLBACK.md section 26) still had ~30 % of their time in render-side
+ * functions reached that way; those go through entry detours (rb_detour.cpp)
+ * to a stub that returns at once while the cut is on (re-simulated frames,
+ * main thread only), and run normally otherwise. Each entry was checked with
+ * the gameplay hash of re-simulated frames (test mode, 0 mismatches) and in
+ * netplay pairs. T5_RB_DCUT=addr,... replaces the list, T5_RB_DCUT=none
+ * disables it. */
+namespace {
+const uint32_t kDetourCut[] = {
+    0x0031F778, 0x0031F7A8,     /* begin / end of a render pass on the graphics object (lwmutex + 0x383FC8 / 0x383F80): ~14 % of a re-simulated frame */
+};
+constexpr int kDcutN = 32;
+GuestFn g_dcut_orig[kDcutN];
+uint32_t g_dcut_addr[kDcutN];
+std::atomic<uint64_t> g_dcut_hits{ 0 };
+int g_dcut_n = 0;
+/* Only while the fight runs (phase word 17): in the KO / match-end phases the
+ * render pass also leads the match-end banner records (0x1008E690..0x1008E6C0,
+ * in the gameplay hash; test run d1: 2 mismatches at the match end, 0 in 1285
+ * fighting frames), so those frames re-simulate with it. */
+constexpr uint32_t kPhaseWord = 0x1008F070u;
+inline bool fighting() { uint32_t v; memcpy(&v, vm_base + kPhaseWord, 4); return _byteswap_ulong(v) == 17; }
+template <int I> void dcut_hook(ppu_context* ctx)
+{
+    if (g_cut_on.load(std::memory_order_relaxed) && ctx->thread_id == main_tid() && fighting()) {
+        ctx->gpr[3] = 0;
+        g_dcut_hits.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_dcut_orig[I](ctx);
+}
+template <int... I> constexpr std::array<GuestFn, sizeof...(I)> dcut_table(std::integer_sequence<int, I...>) { return { { &dcut_hook<I>... } }; }
+const std::array<GuestFn, kDcutN> kDcutHooks = dcut_table(std::make_integer_sequence<int, kDcutN>{});
+} // namespace
+
+void dcut_install()
+{
+    static bool done = false;
+    if (done || !detour_ready()) return;
+    done = true;
+    std::vector<uint32_t> list(std::begin(kDetourCut), std::end(kDetourCut));
+    const char* spec = getenv("T5_RB_DCUT");
+    if (spec && !strcmp(spec, "none")) list.clear();
+    else if (spec && *spec) {
+        list.clear();
+        for (const char* p = spec; *p;) { char* z; uint32_t a = (uint32_t)strtoul(p, &z, 16); if (z == p) break; list.push_back(a); p = z; while (*p == ',' || *p == ' ') p++; }
+    }
+    std::string ok, bad;
+    for (uint32_t a : list) {
+        if (g_dcut_n >= kDcutN) break;
+        if (detour(a, kDcutHooks[g_dcut_n], &g_dcut_orig[g_dcut_n])) { g_dcut_addr[g_dcut_n++] = a; char t[16]; snprintf(t, sizeof t, " %06X", a); ok += t; }
+        else { char t[16]; snprintf(t, sizeof t, " %06X", a); bad += t; }
+    }
+    note("direct-call cut in re-simulated frames: %d function(s)%s%s%s", g_dcut_n, ok.c_str(), bad.empty() ? "" : "; not detourable:", bad.c_str());
+}
+uint64_t dcut_hits() { return g_dcut_hits.load(); }
 
 void cut_set(bool on) { g_cut_on = on; }
 uint64_t cut_hits() { return g_cut_hits.load() + g_cut2_hits.load(); }

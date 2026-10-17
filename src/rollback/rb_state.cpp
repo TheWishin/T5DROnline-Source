@@ -295,7 +295,7 @@ static bool g_page_hashing = true;
 void state_set_page_hashing(bool on) { g_page_hashing = on; }
 /* where the commit time goes (state_commit_stats, the loop's report) */
 static double g_cs_ww_ms = 0, g_cs_copy_ms = 0, g_cs_total_ms = 0;
-static uint64_t g_cs_commits = 0, g_cs_pages = 0, g_cs_range_pages[8] = {};
+static uint64_t g_cs_commits = 0, g_cs_pages = 0, g_cs_range_pages[8] = {}, g_cs_heap[3] = {};
 void state_commit_stats(char* out, size_t cap, bool reset)
 {
     const double n = g_cs_commits ? (double)g_cs_commits : 1.0;
@@ -303,8 +303,10 @@ void state_commit_stats(char* out, size_t cap, bool reset)
                      (unsigned long long)g_cs_commits, g_cs_total_ms / n, g_cs_ww_ms / n, g_cs_copy_ms / n, (double)g_cs_pages / n);
     for (size_t i = 0; i < kSaveN && k > 0 && (size_t)k < cap; i++)
         k += snprintf(out + k, cap - (size_t)k, "%s%08X %.0f", i ? ", " : "", kSave[i].base, (double)g_cs_range_pages[i] / n);
-    if (k > 0 && (size_t)k < cap) snprintf(out + k, cap - (size_t)k, ")");
-    if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); }
+    if (k > 0 && (size_t)k < cap)
+        snprintf(out + k, cap - (size_t)k, "; of the heap: GCM FIFO %.0f, draw lists %.0f, render scratch %.0f)",
+                 (double)g_cs_heap[0] / n, (double)g_cs_heap[1] / n, (double)g_cs_heap[2] / n);
+    if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); memset(g_cs_heap, 0, sizeof g_cs_heap); }
 }
 
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
@@ -337,6 +339,9 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
             g_cs_range_pages[ri] += count;
             for (ULONG_PTR i = 0; i < count; i++) {
                 const uint32_t ea = (uint32_t)((uint8_t*)g_ww[i] - vm_base);
+                if (ea - 0x40100000u < 0x400000u) g_cs_heap[0]++;          /* stats: render-only parts of the heap */
+                else if (ea - 0x43D00000u < 0x340000u) g_cs_heap[1]++;
+                else if (ea - 0x444F9000u < 0x6E000u) g_cs_heap[2]++;
                 if (excluded_page(ea)) continue;
                 const uint32_t pg = ea >> 12;
                 const bool hashed = !hash_excluded_page(ea);

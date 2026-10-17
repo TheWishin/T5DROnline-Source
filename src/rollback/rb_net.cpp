@@ -101,6 +101,10 @@ uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this *
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
 np::PadInput g_last_remote = np::kNeutral;
 
+/* T5_RB_NET_SAMPLE=N: stack samples of the main thread over the first N
+ * rollbacks' re-simulations ("S" lines in T5_RB_LOG, rb_sample.cpp) */
+uint32_t g_sample_left = 0;
+bool     g_sampling = false;
 /* resim in progress */
 bool     g_resim = false;
 uint32_t g_resim_target = 0;     /* the live frame the resim returns to */
@@ -246,6 +250,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
+            if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
@@ -268,6 +273,7 @@ void start(uint32_t f)
 {
     if (g_active) return;
     sound_install();   /* no-op when static init could install it; the game-DLL build gets it here */
+    dcut_install();
     g_delay = np::rb_apply_delay();
     np::rb_begin(f);
     if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
@@ -389,6 +395,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         cut_set(false);
         const double ms = ms_since(g_resim_t0);
         g_st.rollback_ms += ms; if (ms > g_st.rollback_ms_max) g_st.rollback_ms_max = ms;
+        if (g_sampling) { sample_stop("netresim"); g_sampling = false; }
         if (g_verbose) note("rbnet: rollback %u -> %u done in %.2f ms (%u frames re-simulated)", g_resim_target, g_resim_from, ms, g_resim_target - g_resim_from);
     } else {
         g_st.commit_ms += cms;
@@ -496,6 +503,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
             if (depth > g_st.max_depth) g_st.max_depth = depth;
             QueryPerformanceCounter(&g_resim_t0);
+            if (g_sample_left) { g_sample_left--; sample_start(); g_sampling = true; }   /* T5_RB_NET_SAMPLE */
             g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
             set_bypass(true);
             if (g_skipsound && sound_word() && rd32(sound_word()) == 0) {   /* a frame committed while re-simulated: sound_skip(false) puts the live value back */

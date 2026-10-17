@@ -443,6 +443,7 @@ struct Register {
             ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
             icall_install();
             sound_install();
+            dcut_install();
             return;
         }
         g_script[0] = parse_script(getenv("T5_RB_SCRIPT"));
@@ -463,7 +464,7 @@ struct Register {
         ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
         ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
         g_on_frame = (g_mode == Mode::Measure) ? measure_on_frame : test_on_frame;
-        if (g_mode == Mode::Test) { icall_install(); sound_install(); }   /* before any guest thread runs */
+        if (g_mode == Mode::Test) { icall_install(); sound_install(); dcut_install(); }   /* before any guest thread runs */
     }
 } g_register;
 

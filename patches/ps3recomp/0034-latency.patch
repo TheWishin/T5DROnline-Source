@@ -1,8 +1,8 @@
 diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
-index c2f0b99..694e08f 100644
+index 53e85fc..5d543a0 100644
 --- a/libs/input/cellPad.c
 +++ b/libs/input/cellPad.c
-@@ -20,6 +20,7 @@
+@@ -21,6 +21,7 @@
  #include <math.h>
  #include "../../runtime/platform/win32_compat.h"   /* GetTickCount64 on POSIX */
  #include "../../runtime/ppu/ppu_memory.h"   /* GUEST_PTR, vm_write*: guest EA -> host */
@@ -10,7 +10,7 @@ index c2f0b99..694e08f 100644
  
  /* ---------------------------------------------------------------------------
   * Backend selection
-@@ -170,6 +171,11 @@ static BOOL CALLBACK pad_read_log_init(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -179,6 +180,11 @@ static BOOL CALLBACK pad_read_log_init(PINIT_ONCE once, PVOID param, PVOID* ctx)
  }
  static void pad_read_log(char who, u32 port, u16 buttons, u16 tapped)
  {
@@ -46,7 +46,7 @@ index 46bcead..9527105 100644
          /* Down now or in a device event since the last sample, up in the
           * previous sample: a press. Every reader gets it at its next read. */
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index ef23a9d..d59ac65 100644
+index 136d84c..dcd0d17 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -13,6 +13,7 @@
@@ -94,7 +94,7 @@ index ef23a9d..d59ac65 100644
          LARGE_INTEGER q; QueryPerformanceCounter(&q);
          const unsigned h = __atomic_fetch_add(&s_flip_call_head, 1u, __ATOMIC_RELAXED);
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 76dd83d..de17994 100644
+index d9ef446..3884e1d 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -21,6 +21,7 @@
@@ -209,7 +209,7 @@ index 76dd83d..de17994 100644
  static void ld_wait_frame_latency(void)
  {
      /* Bounded: a minimized/occluded window may not retire frames. */
-@@ -9688,6 +9772,7 @@ static struct {
+@@ -9726,6 +9810,7 @@ static struct {
      ID3D12DescriptorHeap* heap;   /* shader-visible, one SRV per backbuffer */
      u32 heap_step;
  } g_ldp = { 0, 0, 0, 0, 1, 0, 0, 0, 0, -1 };
@@ -217,7 +217,7 @@ index 76dd83d..de17994 100644
  
  #define LD_SYNC_INTERVAL (g_ldp.vsync ? 1u : 0u)
  #define LD_PRESENT_FLAGS \
-@@ -10733,7 +10818,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -10771,7 +10856,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          }
      }
  
@@ -226,7 +226,7 @@ index 76dd83d..de17994 100644
      const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
      ID3D12Resource* bb = g.backbuf[bbi];
  
-@@ -10766,8 +10851,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -10804,8 +10889,8 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          ld_pacing_check();
          ld_test_display_wait();
          const HRESULT present_hr = g.swap->lpVtbl->Present(
@@ -237,7 +237,7 @@ index 76dd83d..de17994 100644
          ld_test_device_removed();
          if (SUCCEEDED(present_hr))
              ld_present_measure_record(g_ld_frames);
-@@ -11151,7 +11236,13 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -11203,7 +11288,13 @@ void rsx_live_draw_present(u32 buffer_id)
       * late scene, e.g. frames for a GIF, without thousands of early files). */
      static long dump_from = -1;
      if (dump_from < 0) { const char* e = getenv("LD_FRAME_DUMP_FROM"); dump_from = e ? atol(e) : 0; }
@@ -252,7 +252,7 @@ index 76dd83d..de17994 100644
                           (dump_n++ % (unsigned)dump_every) == 0;
      /* A flip names a registered display buffer. The current color target may
       * be an offscreen shadow/postprocess surface at that instant; copying it
-@@ -11205,7 +11296,11 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -11257,7 +11348,11 @@ void rsx_live_draw_present(u32 buffer_id)
        } }
      if (dump_now) {
          char path[MAX_PATH * 2];
@@ -265,7 +265,7 @@ index 76dd83d..de17994 100644
          const u64 nb = ld_dump_surface_ppm(path, &g.surfaces[target]);
          fprintf(stderr, "[frame-dump] %s %ux%u nonblack=%llu\n", path,
                  g.surfaces[target].w, g.surfaces[target].h,
-@@ -11308,7 +11403,7 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -11360,7 +11455,7 @@ void rsx_live_draw_present(u32 buffer_id)
        } }
      ID3D12Resource* srcimg = presented_surface->tex;
      ld_display_sync();
@@ -274,7 +274,7 @@ index 76dd83d..de17994 100644
      const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
      ID3D12Resource* bb = g.backbuf[bbi];
  
-@@ -11342,13 +11437,14 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -11394,13 +11489,14 @@ void rsx_live_draw_present(u32 buffer_id)
          ld_pacing_check();
          ld_test_display_wait();
          const HRESULT present_hr = g.swap->lpVtbl->Present(

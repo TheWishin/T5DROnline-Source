@@ -81,6 +81,8 @@ void     sample_reset();
 void     icall_install();
 void     cut_set(bool on);                         /* route the cut set to stubs (re-simulating) */
 uint64_t cut_hits();
+void     dcut_install();                           /* the direct-call cut (entry detours, rb_icall.cpp kDetourCut / T5_RB_DCUT) */
+uint64_t dcut_hits();
 void     icall_timing_start();
 void     icall_timing_stop(const char* tag);
 

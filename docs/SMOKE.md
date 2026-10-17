@@ -189,6 +189,63 @@ stay listed because they are harmless.
 5. If it fails on main for a known reason, add a `known_issues.json` entry
    with the issue id in the same commit.
 
+## Audio device
+
+The WASAPI backend (ps3recomp patch 0026) owns the sound device on a thread of
+its own, so the game's audio loop never waits for it. With no device at start
+the game runs silent and the thread looks again every 2 s. A device that goes
+away (`AUDCLNT_E_DEVICE_INVALIDATED` on any call: unplugged, Bluetooth, HDMI off)
+or a changed default (`IMMNotificationClient`, plus a 1 s check) is replaced
+within about a second. Audio queued in between is dropped; the mixer keeps its
+5.33 ms clock and sends the same events to the game either way, so nothing the
+simulation sees changes. Each state change is one log line, `t` = seconds since
+the audio started:
+
+```
+[cellAudio] audio device waiting: no audio device (E_NOTFOUND) (0x80070490); the game runs silent, retrying every 2 s [t=0.00s]
+[cellAudio] audio device opened "Speakers (Realtek)" at 48000 Hz (device mix 48000 Hz, 2400 frames, event driven) [t=20.02s]
+[cellAudio] audio device lost: AUDCLNT_E_DEVICE_INVALIDATED (0x88890004) in GetCurrentPadding after 12.0 s of sound [t=32.00s]
+[cellAudio] default audio device changed, switching [t=41.00s]
+```
+
+Test hooks, so no Windows sound setting has to be touched:
+
+| variable | what it does |
+|---|---|
+| `PS3_AUDIO_FAKE_NODEVICE=20` | no device for the first 20 s (the lookup fails with 0x80070490) |
+| `PS3_AUDIO_FAKE_LOSS=40,50,60` | at these times the next stream call fails with `AUDCLNT_E_DEVICE_INVALIDATED` |
+| `PS3_AUDIO_FAKE_CHANGE=40,50` | at these times the default-device notification fires and the default counts as a new device (make before break) |
+| `PS3_AUDIO_FAKE_STALL=40` | at this time the open device stops consuming (its queue reads full); the mixer gives the stream up after 200 ms and the device is reopened. The game's audio events pause for those 200 ms (before the patch they would have stopped for good) |
+| `AUDIO_WAV=audio_mix.f32` | every mixed block (f32le, stereo, 48 kHz) |
+| `PS3_AUDIO_DEVICE_WAV=audio_dev.f32` | the same blocks where a device took them, silence where there was none |
+
+Times are seconds since the audio started (about 1 s after the process). The
+`[audio-rate]` line ends with `no device N`: blocks of that 5-s window mixed
+with no device open. The smoke runner passes its environment on, and relative
+capture names land in each test's own `cwd/` (cmd syntax; PowerShell:
+`$env:NAME = 'value'`):
+
+```
+set PS3_AUDIO_FAKE_NODEVICE=20
+set AUDIO_WAV=audio_mix.f32
+set PS3_AUDIO_DEVICE_WAV=audio_dev.f32
+python tools/smoke/run.py --only arcade_fight,practice --out build/audio
+python tools/audio_device_check.py build/audio/arcade_fight --first-sound-after 20
+```
+
+`tools/audio_device_check.py` reads the log lines and both captures and checks
+that nothing reaches the device while none is open, that every block it got is
+the mix block of the same index (the music stays in step with the game), that
+nearly every loud block reaches an open device, and that a lost device is open
+again within `--max-gap` seconds (1 by default). For a netplay pair
+(`tools/netplay_test.py --pair --env1 PS3_AUDIO_FAKE_LOSS=...`) run it on `run1/`.
+
+`libs/audio/tests/test_audio_device.c` (in the patched ps3recomp, 16 s, build
+line in its header) runs the real mixer and device threads against the hooks
+without a game: the audio events keep 187.5 per second, longest gap under
+100 ms, with no device, with one, and across two losses and a default change;
+a stalled device is given up after 200 ms and replaced.
+
 ## Unit tests
 
 `python -m unittest discover -s tests` runs `tests/test_smoke.py` with the

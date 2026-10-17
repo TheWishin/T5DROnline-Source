@@ -1,0 +1,996 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index 9ff24e3..9ae2a26 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -75,12 +75,16 @@ extern uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size);
+   DEFINE_AUDIO_GUID(ps3r_IID_IMMDeviceEnumerator,  0xA95664D2,0x9614,0x4F35,0xA7,0x46,0xDE,0x8D,0xB6,0x36,0x17,0xE6);
+   DEFINE_AUDIO_GUID(ps3r_IID_IAudioClient,         0x1CB9AD4C,0xDBFA,0x4c32,0xB1,0x78,0xC2,0xF5,0x68,0xA7,0x03,0xB2);
+   DEFINE_AUDIO_GUID(ps3r_IID_IAudioRenderClient,   0xF294ACFC,0x3146,0x4483,0xA7,0xBF,0xAD,0xDC,0xA7,0xC2,0x60,0xE2);
++  DEFINE_AUDIO_GUID(ps3r_IID_IMMNotificationClient,0x7991EEC9,0x7E89,0x4D85,0x83,0x90,0x6C,0x70,0x3C,0xEC,0x60,0xC0);
++  DEFINE_AUDIO_GUID(ps3r_IID_IUnknown,             0x00000000,0x0000,0x0000,0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46);
+ 
+   /* Map to the names used in the code */
+   #define IID_IMMDeviceEnumerator  ps3r_IID_IMMDeviceEnumerator
+   #define CLSID_MMDeviceEnumerator ps3r_CLSID_MMDeviceEnumerator
+   #define IID_IAudioClient         ps3r_IID_IAudioClient
+   #define IID_IAudioRenderClient   ps3r_IID_IAudioRenderClient
++  #define IID_IMMNotificationClient ps3r_IID_IMMNotificationClient
++  #define IID_IUnknown_ps3r        ps3r_IID_IUnknown
+ #endif
+ 
+ #if AUDIO_BACKEND_SDL2
+@@ -145,6 +149,8 @@ static u64            s_audio_start_us = 0;
+ 
+ /* Mixing thread */
+ static unsigned long long g_audio_dropped;   /* frames the device had no room for */
++static unsigned g_audio_nodev;               /* blocks mixed while no output device was open (AUDIO_RATE) */
++#define AUDIO_STALL_MS  200                  /* a device queue full this long is not being consumed */
+ /* AUDIO_RATE: the device queue level seen at each submit (lowest, and how often it was empty
+  * -- an empty queue is an audible underrun the AUDIO_WAV capture cannot show). */
+ static unsigned g_audio_pad_min = ~0u, g_audio_starved;
+@@ -207,17 +213,19 @@ static void audio_backend_shutdown(void)
+     }
+ }
+ 
+-static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
++/* Frames handed to the device; -1 with no device open. */
++static int audio_backend_submit(const float* stereo_samples, u32 num_samples)
+ {
+-    if (s_sdl_audio_dev) {
+-        SDL_QueueAudio(s_sdl_audio_dev, stereo_samples,
+-                       num_samples * 2 * sizeof(float));
+-    }
++    if (!s_sdl_audio_dev) return -1;
++    SDL_QueueAudio(s_sdl_audio_dev, stereo_samples,
++                   num_samples * 2 * sizeof(float));
++    return (int)num_samples;
+ }
+ 
+ /* SDL queues without bound: keep about four blocks ahead of the device. */
+-static int audio_backend_room(void)
++static int audio_backend_room(unsigned* gen)
+ {
++    *gen = 0;
+     if (!s_sdl_audio_dev) return -1;
+     return SDL_GetQueuedAudioSize(s_sdl_audio_dev) / (2 * sizeof(float)) <
+            CELL_AUDIO_BLOCK_SAMPLES * 4 ? CELL_AUDIO_BLOCK_SAMPLES : 0;
+@@ -225,6 +233,9 @@ static int audio_backend_room(void)
+ 
+ static void audio_backend_wait(void) { SDL_Delay(1); }
+ 
++/* The SDL backend has no device recovery. */
++static void audio_backend_lose(const char* why) { (void)why; }
++
+ static u32 audio_backend_queued_samples(void)
+ {
+     if (s_sdl_audio_dev) {
+@@ -237,45 +248,248 @@ static u32 audio_backend_queued_samples(void)
+ 
+ #if AUDIO_BACKEND_WASAPI
+ 
+-static IAudioClient*        s_wasapi_client = NULL;
++/* The output device belongs to a device thread ("audio-device"), not to the
++ * title's audio path. That thread opens the default render endpoint, looks
++ * again every AUDIO_RETRY_MS while there is none, follows default-device
++ * changes (IMMNotificationClient, plus a 1 s poll as a safety net) and opens
++ * the endpoint again after the stream was invalidated. All COM setup, device
++ * activation and Initialize calls happen there, never on the mixer thread.
++ *
++ * The mixer thread only touches the stream that is open at this moment, under
++ * s_dev_lock, for a few microseconds per block. When a call fails (device
++ * invalidated, unplugged, service restarted) it parks the stream for the
++ * device thread to release and carries on: with no stream it mixes, drops the
++ * block and sends the notify event on its own clock, exactly as it does for
++ * a machine without a sound card. So a missing device changes neither the
++ * pace of the title's audio loop nor anything the simulation can see.
++ *
++ * Test hooks (no system settings touched):
++ *   PS3_AUDIO_FAKE_NODEVICE=<s>     the endpoint lookup fails with 0x80070490
++ *                                   (E_NOTFOUND) for the first <s> seconds
++ *   PS3_AUDIO_FAKE_LOSS=t1,t2,...   at these times (seconds since the audio
++ *                                   backend started) the next stream call
++ *                                   reports AUDCLNT_E_DEVICE_INVALIDATED
++ *   PS3_AUDIO_FAKE_STALL=t1,t2,...  at these times the open device stops
++ *                                   consuming: its queue reads full until the
++ *                                   mixer gives the stream up (AUDIO_STALL_MS)
++ *   PS3_AUDIO_FAKE_CHANGE=t1,t2,... at these times the default-device
++ *                                   notification fires and the default counts as
++ *                                   a different device: the stream is replaced
++ *                                   by a new one (make before break)
++ *   PS3_AUDIO_DEVICE_WAV=<file>     f32le stereo 48 kHz, time-aligned with
++ *                                   AUDIO_WAV: the blocks a device accepted,
++ *                                   silence where there was no device */
++
++#define AUDIO_RETRY_MS        2000   /* no device: look again this often */
++#define AUDIO_FAST_RETRY_MS    500   /* the first two looks after a loss */
++#define AUDIO_POLL_MS         1000   /* device open: is it still the default? */
++#define AUDIO_FLAP_MS          500   /* lost sooner than this after opening: wait a fast retry first */
++
++static IAudioClient*        s_wasapi_client = NULL;     /* the open stream (s_dev_lock) */
+ static IAudioRenderClient*  s_wasapi_render = NULL;
+-static HANDLE               s_wasapi_event  = NULL;
++static HANDLE               s_wasapi_event  = NULL;     /* one event for every stream */
+ static UINT32               s_wasapi_buf_frames = 0;
++static volatile int         s_wasapi_evt_mode = 0;      /* stream signals s_wasapi_event */
++static unsigned long long   s_stream_frames = 0;        /* frames given to the open stream */
++
++static CRITICAL_SECTION     s_dev_lock;
++static HANDLE               s_dev_wake = NULL;          /* wakes the device thread */
++static HANDLE               s_dev_thread = NULL;
++static int                  s_dev_inited = 0;
++static volatile LONG        s_dev_run = 0;              /* thread generation; a change stops it */
++static volatile LONG        s_dev_gen = 0;              /* +1 for every stream installed */
++static volatile LONG        s_dev_kick = 0;             /* a notification wants a fresh look */
++static volatile int         s_dev_notify = 0;           /* IMMNotificationClient is registered */
++static LARGE_INTEGER        s_dev_qpf, s_dev_t0;
++
++/* A stream the mixer thread gave up on, waiting for the device thread. */
++static IAudioClient*        s_dead_client = NULL;
++static IAudioRenderClient*  s_dead_render = NULL;
++static HRESULT              s_dead_hr = S_OK;
++static const char*          s_dead_where = "";
++static int                  s_dead_sim = 0;
++static unsigned long long   s_dead_frames = 0;
++
++/* Test hooks. */
++static double               s_fake_nodev_s = 0.0;
++static double               s_fake_loss_t[16];
++static int                  s_fake_loss_n = 0, s_fake_loss_i = 0;
++static double               s_fake_chg_t[16];
++static int                  s_fake_chg_n = 0, s_fake_chg_i = 0;
++static int                  s_fake_switch = 0;          /* next open: the default is another device */
++static double               s_fake_stall_t[16];
++static int                  s_fake_stall_n = 0, s_fake_stall_i = 0;
++static int                  s_fake_stall_on = 0;        /* the open stream reads full ... */
++static LONG                 s_fake_stall_gen = 0;       /* ... until another one is installed */
++
++static const PROPERTYKEY ps3r_PKEY_Device_FriendlyName =
++    { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
++
++/* Seconds since the backend started: the time base of the log lines and of
++ * the PS3_AUDIO_FAKE_* hooks. */
++static double audio_now_s(void)
++{
++    LARGE_INTEGER n; QueryPerformanceCounter(&n);
++    return (double)(n.QuadPart - s_dev_t0.QuadPart) / (double)s_dev_qpf.QuadPart;
++}
+ 
+-static int audio_backend_init(void)
++static const char* audio_hr_name(HRESULT hr)
+ {
+-    HRESULT hr;
++    switch ((unsigned long)hr) {
++    case 0x80070490ul: return "no audio device (E_NOTFOUND)";
++    case 0x88890004ul: return "AUDCLNT_E_DEVICE_INVALIDATED";
++    case 0x88890008ul: return "AUDCLNT_E_UNSUPPORTED_FORMAT";
++    case 0x8889000Aul: return "AUDCLNT_E_DEVICE_IN_USE";
++    case 0x88890010ul: return "AUDCLNT_E_SERVICE_NOT_RUNNING";
++    case 0x88890011ul: return "AUDCLNT_E_ENDPOINT_CREATE_FAILED";
++    case 0x88890026ul: return "AUDCLNT_E_RESOURCES_INVALIDATED";
++    case 0x800705B4ul: return "device stopped consuming audio";
++    case 0x80010108ul: return "RPC_E_DISCONNECTED";
++    case 0x800401F0ul: return "CO_E_NOTINITIALIZED";
++    case 0x80004005ul: return "E_FAIL";
++    default:           return "audio error";
++    }
++}
+ 
+-    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+-    if (FAILED(hr) && hr != S_FALSE && hr != RPC_E_CHANGED_MODE) {
+-        printf("[cellAudio] CoInitializeEx failed: 0x%08lX\n", hr);
+-        return -1;
++/* "t1,t2,..." -> up to 16 times, ascending. */
++static int audio_fake_times(const char* name, const char* what, double* t)
++{
++    const char* e = getenv(name);
++    int n = 0;
++    if (!e) return 0;
++    while (*e && n < 16) {
++        char* end = NULL;
++        const double v = strtod(e, &end);
++        if (end == e) { e++; continue; }           /* separator */
++        int i = n++;
++        while (i > 0 && t[i - 1] > v) { t[i] = t[i - 1]; i--; }
++        t[i] = v;
++        e = end;
++    }
++    if (n) {
++        fprintf(stderr, "[cellAudio] test hook %s: %s at", name, what);
++        for (int i = 0; i < n; i++) fprintf(stderr, " %.1f", t[i]);
++        fprintf(stderr, " s\n");
+     }
++    return n;
++}
+ 
+-    IMMDeviceEnumerator* enumerator = NULL;
+-    hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+-                          &IID_IMMDeviceEnumerator, (void**)&enumerator);
+-    if (FAILED(hr)) {
+-        printf("[cellAudio] Failed to create device enumerator: 0x%08lX\n", hr);
+-        return -1;
++static void audio_fake_parse(void)
++{
++    const char* e;
++    s_fake_nodev_s = 0.0;
++    s_fake_switch = 0;
++    s_fake_loss_n = s_fake_loss_i = s_fake_chg_n = s_fake_chg_i = 0;
++    s_fake_stall_n = s_fake_stall_i = s_fake_stall_on = 0;
++    if ((e = getenv("PS3_AUDIO_FAKE_NODEVICE")) != NULL) {
++        s_fake_nodev_s = atof(e);
++        if (s_fake_nodev_s > 0.0)
++            fprintf(stderr, "[cellAudio] test hook PS3_AUDIO_FAKE_NODEVICE: no device for the first %.1f s\n", s_fake_nodev_s);
+     }
++    s_fake_loss_n = audio_fake_times("PS3_AUDIO_FAKE_LOSS", "simulated device loss", s_fake_loss_t);
++    s_fake_chg_n  = audio_fake_times("PS3_AUDIO_FAKE_CHANGE", "simulated default-device change", s_fake_chg_t);
++    s_fake_stall_n = audio_fake_times("PS3_AUDIO_FAKE_STALL", "simulated stalled device", s_fake_stall_t);
++}
+ 
+-    IMMDevice* device = NULL;
+-    hr = enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender,
+-                                                      eConsole, &device);
+-    enumerator->lpVtbl->Release(enumerator);
+-    if (FAILED(hr)) {
+-        printf("[cellAudio] Failed to get default audio endpoint: 0x%08lX\n", hr);
+-        return -1;
++/* Stop and release a stream. On an invalidated stream these return errors. */
++static void audio_stream_release(IAudioClient* c, IAudioRenderClient* r)
++{
++    if (c) c->lpVtbl->Stop(c);
++    if (r) r->lpVtbl->Release(r);
++    if (c) c->lpVtbl->Release(c);
++}
++
++/* Mixer thread, s_dev_lock held: the open stream failed. Park it for the
++ * device thread and carry on without a device. */
++static void audio_dev_lose_locked(HRESULT hr, const char* where, int simulated)
++{
++    if (!s_wasapi_client) return;
++    s_dead_client = s_wasapi_client;
++    s_dead_render = s_wasapi_render;
++    s_dead_hr     = hr;
++    s_dead_where  = where;
++    s_dead_sim    = simulated;
++    s_dead_frames = s_stream_frames;
++    s_wasapi_client = NULL;
++    s_wasapi_render = NULL;
++    if (s_dev_wake) SetEvent(s_dev_wake);
++}
++
++/* Any failed call on the open stream means the device is gone (AUDCLNT_E_DEVICE_INVALIDATED
++ * after a default-device change, unplug, format change or service restart). may_fake: the
++ * PS3_AUDIO_FAKE_LOSS hook replaces this call's result once its time has come. */
++static HRESULT audio_dev_check_locked(HRESULT hr, const char* where, int may_fake)
++{
++    int sim = 0;
++    if (may_fake && SUCCEEDED(hr) && s_fake_loss_i < s_fake_loss_n &&
++        audio_now_s() >= s_fake_loss_t[s_fake_loss_i]) {
++        s_fake_loss_i++;
++        hr = AUDCLNT_E_DEVICE_INVALIDATED;
++        sim = 1;
+     }
++    if (FAILED(hr)) audio_dev_lose_locked(hr, where, sim);
++    return hr;
++}
+ 
+-    hr = device->lpVtbl->Activate(device, &IID_IAudioClient, CLSCTX_ALL,
+-                                   NULL, (void**)&s_wasapi_client);
+-    device->lpVtbl->Release(device);
+-    if (FAILED(hr)) {
+-        printf("[cellAudio] Failed to activate audio client: 0x%08lX\n", hr);
+-        return -1;
++/* --- default-device notifications. Only flags and an event: the callbacks run
++ * on COM's threads and must neither block nor call back into the audio client. */
++
++static void audio_dev_kick(void)
++{
++    InterlockedExchange(&s_dev_kick, 1);
++    if (s_dev_wake) SetEvent(s_dev_wake);
++}
++
++static HRESULT STDMETHODCALLTYPE nc_QueryInterface(IMMNotificationClient* This, REFIID riid, void** ppv)
++{
++    if (IsEqualGUID(riid, &IID_IUnknown_ps3r) || IsEqualGUID(riid, &IID_IMMNotificationClient)) {
++        *ppv = This;
++        return S_OK;
+     }
++    *ppv = NULL;
++    return E_NOINTERFACE;
++}
++static ULONG STDMETHODCALLTYPE nc_AddRef(IMMNotificationClient* This)  { (void)This; return 2; }
++static ULONG STDMETHODCALLTYPE nc_Release(IMMNotificationClient* This) { (void)This; return 1; }
++static HRESULT STDMETHODCALLTYPE nc_OnDeviceStateChanged(IMMNotificationClient* This, LPCWSTR id, DWORD state)
++{ (void)This; (void)id; (void)state; audio_dev_kick(); return S_OK; }
++static HRESULT STDMETHODCALLTYPE nc_OnDeviceAdded(IMMNotificationClient* This, LPCWSTR id)
++{ (void)This; (void)id; audio_dev_kick(); return S_OK; }
++static HRESULT STDMETHODCALLTYPE nc_OnDeviceRemoved(IMMNotificationClient* This, LPCWSTR id)
++{ (void)This; (void)id; audio_dev_kick(); return S_OK; }
++static HRESULT STDMETHODCALLTYPE nc_OnDefaultDeviceChanged(IMMNotificationClient* This, EDataFlow flow, ERole role, LPCWSTR id)
++{ (void)This; (void)id; if (flow == eRender && role == eConsole) audio_dev_kick(); return S_OK; }
++static HRESULT STDMETHODCALLTYPE nc_OnPropertyValueChanged(IMMNotificationClient* This, LPCWSTR id, const PROPERTYKEY key)
++{ (void)This; (void)id; (void)key; return S_OK; }
++
++static IMMNotificationClientVtbl s_nc_vtbl = {
++    nc_QueryInterface, nc_AddRef, nc_Release,
++    nc_OnDeviceStateChanged, nc_OnDeviceAdded, nc_OnDeviceRemoved,
++    nc_OnDefaultDeviceChanged, nc_OnPropertyValueChanged
++};
++static IMMNotificationClient s_nc = { &s_nc_vtbl };    /* static: lives as long as the process */
++
++/* --- opening a device (device thread only) */
++
++typedef struct {
++    IAudioClient*       client;
++    IAudioRenderClient* render;
++    UINT32              frames;     /* device buffer size */
++    int                 evt;        /* event driven */
++    UINT32              mix_hz;     /* the endpoint's own mix rate */
++    char                name[128];
++    WCHAR               id[192];
++} AudioDevOpen;
++
++/* Activate and initialize one stream on dev. Event driven first, polled as the fallback. */
++static HRESULT audio_dev_init_stream(IMMDevice* dev, int evt, AudioDevOpen* o)
++{
++    IAudioClient* c = NULL;
++    HRESULT hr = dev->lpVtbl->Activate(dev, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&c);
++    if (FAILED(hr)) return hr;
++
++    {   WAVEFORMATEX* mf = NULL;
++        if (SUCCEEDED(c->lpVtbl->GetMixFormat(c, &mf)) && mf) { o->mix_hz = mf->nSamplesPerSec; CoTaskMemFree(mf); } }
+ 
+     WAVEFORMATEX wfx;
+     wfx.wFormatTag      = WAVE_FORMAT_IEEE_FLOAT;
+@@ -302,116 +516,339 @@ static int audio_backend_init(void)
+ #define AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000
+ #endif
+     const DWORD conv = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+-    s_wasapi_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+-
+-    hr = s_wasapi_client->lpVtbl->Initialize(
+-        s_wasapi_client,
+-        AUDCLNT_SHAREMODE_SHARED,
+-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK | conv,
+-        buf_duration, 0, &wfx, NULL);
++    hr = c->lpVtbl->Initialize(c, AUDCLNT_SHAREMODE_SHARED,
++                               (evt ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0) | conv,
++                               buf_duration, 0, &wfx, NULL);
++    if (SUCCEEDED(hr) && evt) hr = c->lpVtbl->SetEventHandle(c, s_wasapi_event);
++    if (FAILED(hr)) { c->lpVtbl->Release(c); return hr; }
++    o->client = c;
++    o->evt = evt;
++    return S_OK;
++}
+ 
++/* S_OK: o holds a started stream on the current default device.
++ * S_FALSE: the default is still the device named by same_id (nothing opened).
++ * Anything else: why there is no stream. */
++static HRESULT audio_dev_open(IMMDeviceEnumerator* en, const WCHAR* same_id, AudioDevOpen* o)
++{
++    memset(o, 0, sizeof(*o));
++    if (s_fake_nodev_s > 0.0 && audio_now_s() < s_fake_nodev_s)
++        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);       /* what GetDefaultAudioEndpoint says with no device */
++
++    IMMDevice* dev = NULL;
++    HRESULT hr = en->lpVtbl->GetDefaultAudioEndpoint(en, eRender, eConsole, &dev);
++    if (FAILED(hr)) return hr;
++
++    {   LPWSTR id = NULL;
++        if (SUCCEEDED(dev->lpVtbl->GetId(dev, &id)) && id) { lstrcpynW(o->id, id, 192); CoTaskMemFree(id); } }
++    if (same_id && o->id[0] && lstrcmpW(same_id, o->id) == 0) {
++        if (s_fake_switch) s_fake_switch = 0;               /* test hook: pretend it is another device */
++        else { dev->lpVtbl->Release(dev); return S_FALSE; }
++    }
++    {   IPropertyStore* ps = NULL;
++        if (SUCCEEDED(dev->lpVtbl->OpenPropertyStore(dev, STGM_READ, &ps)) && ps) {
++            PROPVARIANT v; PropVariantInit(&v);
++            if (SUCCEEDED(ps->lpVtbl->GetValue(ps, &ps3r_PKEY_Device_FriendlyName, &v)) &&
++                v.vt == VT_LPWSTR && v.pwszVal)
++                WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, o->name, (int)sizeof(o->name), NULL, NULL);
++            PropVariantClear(&v);
++            ps->lpVtbl->Release(ps);
++        } }
++    if (!o->name[0]) lstrcpynA(o->name, "?", (int)sizeof(o->name));
++
++    hr = audio_dev_init_stream(dev, 1, o);
++    if (FAILED(hr)) hr = audio_dev_init_stream(dev, 0, o);   /* polled fallback */
++    dev->lpVtbl->Release(dev);
++    if (FAILED(hr)) return hr;
++
++    hr = o->client->lpVtbl->GetBufferSize(o->client, &o->frames);
++    if (SUCCEEDED(hr))
++        hr = o->client->lpVtbl->GetService(o->client, &IID_IAudioRenderClient, (void**)&o->render);
++    if (SUCCEEDED(hr))
++        hr = o->client->lpVtbl->Start(o->client);
+     if (FAILED(hr)) {
+-        /* Fallback: try without event callback */
+-        hr = s_wasapi_client->lpVtbl->Initialize(
+-            s_wasapi_client,
+-            AUDCLNT_SHAREMODE_SHARED,
+-            conv, buf_duration, 0, &wfx, NULL);
+-        if (FAILED(hr)) {
+-            printf("[cellAudio] WASAPI Initialize failed: 0x%08lX\n", hr);
+-            s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+-            s_wasapi_client = NULL;
+-            CloseHandle(s_wasapi_event);
+-            s_wasapi_event = NULL;
+-            return -1;
+-        }
+-        CloseHandle(s_wasapi_event);
+-        s_wasapi_event = NULL;
+-    } else {
+-        s_wasapi_client->lpVtbl->SetEventHandle(s_wasapi_client, s_wasapi_event);
++        audio_stream_release(o->client, o->render);
++        o->client = NULL; o->render = NULL;
++        return hr;
++    }
++    return S_OK;
++}
++
++/* Make o the open stream; whatever was open (and any parked stream) is released
++ * here, outside the lock. 0 when the backend was shut down meanwhile. */
++static int audio_dev_install(AudioDevOpen* o, LONG run)
++{
++    EnterCriticalSection(&s_dev_lock);
++    if (s_dev_run != run) {
++        LeaveCriticalSection(&s_dev_lock);
++        audio_stream_release(o->client, o->render);
++        return 0;
+     }
++    IAudioClient* oc = s_wasapi_client;       IAudioRenderClient* orr = s_wasapi_render;
++    IAudioClient* dc = s_dead_client;         IAudioRenderClient* dr  = s_dead_render;
++    s_dead_client = NULL; s_dead_render = NULL;
++    s_wasapi_client = o->client; s_wasapi_render = o->render;
++    s_wasapi_buf_frames = o->frames; s_wasapi_evt_mode = o->evt;
++    s_stream_frames = 0;
++    /* A simulated loss whose time passed while there was no stream has nothing to hit. */
++    while (s_fake_loss_i < s_fake_loss_n && s_fake_loss_t[s_fake_loss_i] <= audio_now_s()) s_fake_loss_i++;
++    InterlockedIncrement(&s_dev_gen);
++    LeaveCriticalSection(&s_dev_lock);
++    audio_stream_release(oc, orr);
++    audio_stream_release(dc, dr);
++    return 1;
++}
+ 
+-    s_wasapi_client->lpVtbl->GetBufferSize(s_wasapi_client, &s_wasapi_buf_frames);
++static unsigned __stdcall audio_dev_thread_func(void* arg)
++{
++    const LONG run = (LONG)(intptr_t)arg;
++    IMMDeviceEnumerator* en = NULL;
++    int registered = 0, have = 0, fast = 0, waiting_logged = 0;
++    unsigned long hr_logged = 0;
++    double opened_at = -1e9, next_try = 0.0, next_poll = 0.0;
++    WCHAR cur_id[192]; cur_id[0] = 0;
++    AudioDevOpen o;
++
++    host_sched_thread_start(HS_ROLE_BACKGROUND, 0, "audio-device");
++    const int co = SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED));
++
++    while (s_dev_run == run) {
++        double now = audio_now_s();
++
++        /* 1. The mixer thread gave the stream up. */
++        {   IAudioClient* dc; IAudioRenderClient* dr; HRESULT dhr; const char* dwhere; int dsim; unsigned long long dfr;
++            EnterCriticalSection(&s_dev_lock);
++            dc = s_dead_client; dr = s_dead_render; dhr = s_dead_hr; dwhere = s_dead_where;
++            dsim = s_dead_sim; dfr = s_dead_frames;
++            s_dead_client = NULL; s_dead_render = NULL;
++            LeaveCriticalSection(&s_dev_lock);
++            if (dc || dr) {
++                fprintf(stderr, "[cellAudio] audio device lost: %s (0x%08lX) in %s after %.1f s of sound%s [t=%.2fs]\n",
++                        audio_hr_name(dhr), (unsigned long)dhr, dwhere, (double)dfr / CELL_AUDIO_SAMPLE_RATE,
++                        dsim ? " (simulated)" : "", now);
++                audio_stream_release(dc, dr);
++                have = 0; cur_id[0] = 0; waiting_logged = 0; hr_logged = 0; fast = 2;
++                /* Lost again right after opening: do not spin on a broken device. */
++                next_try = (now - opened_at < AUDIO_FLAP_MS / 1000.0) ? now + AUDIO_FAST_RETRY_MS / 1000.0 : now;
++            }
++        }
+ 
+-    hr = s_wasapi_client->lpVtbl->GetService(
+-        s_wasapi_client, &IID_IAudioRenderClient, (void**)&s_wasapi_render);
+-    if (FAILED(hr)) {
+-        printf("[cellAudio] Failed to get render client: 0x%08lX\n", hr);
+-        s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+-        s_wasapi_client = NULL;
+-        return -1;
++        /* 2. The enumerator, and its notifications. */
++        HRESULT enum_hr = S_OK;
++        if (!en) {
++            enum_hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
++                                       &IID_IMMDeviceEnumerator, (void**)&en);
++            if (FAILED(enum_hr)) en = NULL;
++            else {
++                const HRESULT rh = en->lpVtbl->RegisterEndpointNotificationCallback(en, &s_nc);
++                registered = SUCCEEDED(rh);
++                s_dev_notify = registered;
++                if (!registered)
++                    fprintf(stderr, "[cellAudio] default-device notifications unavailable (0x%08lX); checking the default every %d s instead\n",
++                            (unsigned long)rh, AUDIO_POLL_MS / 1000);
++            }
++        }
++
++        /* Test hook PS3_AUDIO_FAKE_CHANGE: deliver a default-device notification now,
++         * through the same entry point COM calls, and make the default look new. */
++        while (s_fake_chg_i < s_fake_chg_n && now >= s_fake_chg_t[s_fake_chg_i]) {
++            s_fake_chg_i++;
++            if (have) {
++                s_fake_switch = 1;
++                s_nc.lpVtbl->OnDefaultDeviceChanged(&s_nc, eRender, eConsole, L"fake");
++                break;
++            }
++        }
++
++        /* 3. Why look at the default device now? */
++        int check = 0;
++        if (InterlockedExchange(&s_dev_kick, 0)) {     /* a real change: look now, and look again quickly if it fails */
++            check = 1; fast = 2; next_try = now;
++        }
++        if (have && now >= next_poll) { next_poll = now + AUDIO_POLL_MS / 1000.0; check = 1; }
++
++        /* 4. Open a device, or move to the new default. */
++        if (now >= next_try && (!have || check)) {
++            const HRESULT h = en ? audio_dev_open(en, have ? cur_id : NULL, &o) : enum_hr;
++            if (h == S_FALSE) {
++                fast = 0;                       /* still the default device: nothing to do */
++            } else if (SUCCEEDED(h)) {
++                if (have)
++                    fprintf(stderr, "[cellAudio] default audio device changed, switching [t=%.2fs]\n", now);
++                if (!audio_dev_install(&o, run)) break;
++                lstrcpynW(cur_id, o.id, 192);
++                fprintf(stderr, "[cellAudio] audio device opened \"%s\" at %d Hz (device mix %u Hz, %u frames, %s) [t=%.2fs]\n",
++                        o.name, CELL_AUDIO_SAMPLE_RATE, (unsigned)o.mix_hz, (unsigned)o.frames,
++                        o.evt ? "event driven" : "polled", audio_now_s());
++                have = 1; opened_at = now; fast = 0; waiting_logged = 0; hr_logged = 0;
++                next_try = 0.0; next_poll = now + AUDIO_POLL_MS / 1000.0;
++            } else {
++                if (!have) {
++                    if (!waiting_logged || (unsigned long)h != hr_logged)
++                        fprintf(stderr, "[cellAudio] audio device waiting: %s (0x%08lX); the game runs silent, retrying every %d s [t=%.2fs]\n",
++                                audio_hr_name(h), (unsigned long)h, AUDIO_RETRY_MS / 1000, now);
++                    waiting_logged = 1;
++                } else if ((unsigned long)h != hr_logged) {
++                    fprintf(stderr, "[cellAudio] new default audio device could not be opened: %s (0x%08lX); keeping the current one [t=%.2fs]\n",
++                            audio_hr_name(h), (unsigned long)h, now);
++                }
++                hr_logged = (unsigned long)h;
++                next_try = now + (fast > 0 ? AUDIO_FAST_RETRY_MS : AUDIO_RETRY_MS) / 1000.0;
++                if (fast > 0) fast--;
++            }
++        }
++
++        /* 5. Sleep until something is due or a notification arrives. */
++        {   double target = have ? next_poll : next_try;
++            const double now2 = audio_now_s();
++            if (s_fake_chg_i < s_fake_chg_n && s_fake_chg_t[s_fake_chg_i] < target) target = s_fake_chg_t[s_fake_chg_i];
++            DWORD ms = target > now2 ? (DWORD)((target - now2) * 1000.0 + 1.0) : 1;
++            if (ms > 1000) ms = 1000;
++            WaitForSingleObject(s_dev_wake, ms);
++        }
+     }
+ 
+-    s_wasapi_client->lpVtbl->Start(s_wasapi_client);
++    if (en) {
++        if (registered) en->lpVtbl->UnregisterEndpointNotificationCallback(en, &s_nc);
++        en->lpVtbl->Release(en);
++    }
++    if (co) CoUninitialize();
+     return 0;
+ }
+ 
+-static void audio_backend_shutdown(void)
++static int audio_backend_init(void)
+ {
+-    if (s_wasapi_client) {
+-        s_wasapi_client->lpVtbl->Stop(s_wasapi_client);
+-    }
+-    if (s_wasapi_render) {
+-        s_wasapi_render->lpVtbl->Release(s_wasapi_render);
+-        s_wasapi_render = NULL;
++    HRESULT hr;
++
++    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    if (FAILED(hr) && hr != S_FALSE && hr != RPC_E_CHANGED_MODE) {
++        printf("[cellAudio] CoInitializeEx failed: 0x%08lX\n", hr);
++        return -1;
+     }
+-    if (s_wasapi_client) {
+-        s_wasapi_client->lpVtbl->Release(s_wasapi_client);
+-        s_wasapi_client = NULL;
++
++    if (!s_dev_inited) {
++        InitializeCriticalSection(&s_dev_lock);
++        s_dev_wake = CreateEventW(NULL, FALSE, FALSE, NULL);      /* these two outlive Quit: a late */
++        s_wasapi_event = CreateEventW(NULL, FALSE, FALSE, NULL);  /* COM callback may still touch them */
++        QueryPerformanceFrequency(&s_dev_qpf);
++        s_dev_inited = 1;
+     }
+-    if (s_wasapi_event) {
+-        CloseHandle(s_wasapi_event);
+-        s_wasapi_event = NULL;
++    QueryPerformanceCounter(&s_dev_t0);
++    audio_fake_parse();
++    s_dev_kick = 0;
++    s_dev_notify = 0;
++
++    /* The first open happens on the device thread too: a slow or missing
++     * device never holds up cellAudioInit. */
++    const LONG run = InterlockedIncrement(&s_dev_run);
++    s_dev_thread = (HANDLE)_beginthreadex(NULL, 0, audio_dev_thread_func, (void*)(intptr_t)run, 0, NULL);
++    if (!s_dev_thread) {
++        fprintf(stderr, "[cellAudio] could not start the audio device thread\n");
++        return -1;
+     }
++    return 0;
+ }
+ 
+-static void audio_backend_submit(const float* stereo_samples, u32 num_samples)
++static void audio_backend_shutdown(void)
+ {
+-    if (!s_wasapi_render) return;
+-
+-    UINT32 padding = 0;
+-    s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
+-
+-    if (padding < g_audio_pad_min) g_audio_pad_min = padding;
+-    if (padding == 0) g_audio_starved++;
+-    g_audio_last_pad = padding;
+-    UINT32 available = s_wasapi_buf_frames - padding;
+-    if (num_samples > available) {
+-        g_audio_dropped += num_samples - available;
+-        num_samples = available;
++    InterlockedIncrement(&s_dev_run);          /* stops the device thread, wherever it is */
++    if (s_dev_wake) SetEvent(s_dev_wake);
++    if (s_dev_thread) {
++        WaitForSingleObject(s_dev_thread, 3000);
++        CloseHandle(s_dev_thread);
++        s_dev_thread = NULL;
+     }
+-    if (num_samples == 0) return;
++    if (!s_dev_inited) return;
++    EnterCriticalSection(&s_dev_lock);
++    IAudioClient* oc = s_wasapi_client;   IAudioRenderClient* orr = s_wasapi_render;
++    IAudioClient* dc = s_dead_client;     IAudioRenderClient* dr  = s_dead_render;
++    s_wasapi_client = NULL; s_wasapi_render = NULL; s_dead_client = NULL; s_dead_render = NULL;
++    LeaveCriticalSection(&s_dev_lock);
++    audio_stream_release(oc, orr);
++    audio_stream_release(dc, dr);
++}
+ 
+-    BYTE* buf = NULL;
+-    HRESULT hr = s_wasapi_render->lpVtbl->GetBuffer(s_wasapi_render, num_samples, &buf);
+-    if (SUCCEEDED(hr) && buf) {
+-        memcpy(buf, stereo_samples, num_samples * 2 * sizeof(float));
+-        s_wasapi_render->lpVtbl->ReleaseBuffer(s_wasapi_render, num_samples, 0);
++/* Give one block to the open stream. Frames taken; 0 when the device queue is
++ * full (the block is dropped); -1 with no device open. */
++static int audio_backend_submit(const float* stereo_samples, u32 num_samples)
++{
++    int taken = -1;
++    EnterCriticalSection(&s_dev_lock);
++    if (s_wasapi_render) {
++        UINT32 padding = 0;
++        HRESULT hr = s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
++        if (SUCCEEDED(audio_dev_check_locked(hr, "GetCurrentPadding", 0))) {
++            if (padding < g_audio_pad_min) g_audio_pad_min = padding;
++            if (padding == 0) g_audio_starved++;
++            g_audio_last_pad = padding;
++            UINT32 available = s_wasapi_buf_frames - padding;
++            if (num_samples > available) {
++                g_audio_dropped += num_samples - available;
++                num_samples = available;
++            }
++            taken = 0;
++            if (num_samples) {
++                BYTE* buf = NULL;
++                hr = s_wasapi_render->lpVtbl->GetBuffer(s_wasapi_render, num_samples, &buf);
++                if (SUCCEEDED(audio_dev_check_locked(hr, "GetBuffer", 0)) && buf) {
++                    memcpy(buf, stereo_samples, num_samples * 2 * sizeof(float));
++                    hr = s_wasapi_render->lpVtbl->ReleaseBuffer(s_wasapi_render, num_samples, 0);
++                    if (SUCCEEDED(audio_dev_check_locked(hr, "ReleaseBuffer", 0))) {
++                        s_stream_frames += num_samples;
++                        taken = (int)num_samples;
++                    }
++                }
++            }
++        }
+     }
++    LeaveCriticalSection(&s_dev_lock);
++    return taken;
+ }
+ 
+-/* Frames the device can take right now; -1 with no device open. */
+-static int audio_backend_room(void)
++/* Frames the device can take right now; -1 with no device open. *gen changes
++ * whenever a different stream was installed. */
++static int audio_backend_room(unsigned* gen)
+ {
+-    if (!s_wasapi_client) return -1;
+-    UINT32 padding = 0;
+-    const HRESULT hr = s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
+-    if (FAILED(hr)) {
+-        /* Device gone (AUDCLNT_E_DEVICE_INVALIDATED on a default-device
+-         * change, sleep, ...): pace on the clock rather than spin. */
+-        static int _n = 0; if (__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED) < 4)
+-            fprintf(stderr, "[cellAudio] GetCurrentPadding failed 0x%08lX -- clock pacing%c", (unsigned long)hr, 10);
+-        return -1;
++    int room = -1;
++    EnterCriticalSection(&s_dev_lock);
++    *gen = (unsigned)s_dev_gen;
++    if (s_wasapi_client) {
++        UINT32 padding = 0;
++        const HRESULT hr = audio_dev_check_locked(
++            s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding), "GetCurrentPadding", 1);
++        /* Failed (AUDCLNT_E_DEVICE_INVALIDATED on a default-device change, sleep,
++         * ...): the stream is parked and the caller paces on the clock. */
++        if (SUCCEEDED(hr)) {
++            if (s_fake_stall_n) {                      /* test hook: the device stops consuming */
++                if (!s_fake_stall_on && s_fake_stall_i < s_fake_stall_n && audio_now_s() >= s_fake_stall_t[s_fake_stall_i]) {
++                    s_fake_stall_i++; s_fake_stall_on = 1; s_fake_stall_gen = s_dev_gen;
++                }
++                if (s_fake_stall_on) {
++                    if (s_fake_stall_gen == s_dev_gen) padding = s_wasapi_buf_frames;
++                    else s_fake_stall_on = 0;
++                }
++            }
++            room = (int)(s_wasapi_buf_frames - padding);
++        }
+     }
+-    return (int)(s_wasapi_buf_frames - padding);
++    LeaveCriticalSection(&s_dev_lock);
++    return room;
+ }
+ 
+ /* Block until the device has consumed some of its buffer. */
+ static void audio_backend_wait(void)
+ {
+-    if (s_wasapi_event) WaitForSingleObject(s_wasapi_event, 10);
++    if (s_wasapi_evt_mode) WaitForSingleObject(s_wasapi_event, 10);
+     else Sleep(1);
+ }
+ 
++/* The device has not consumed anything for AUDIO_STALL_MS: treat it as gone. */
++static void audio_backend_lose(const char* why)
++{
++    EnterCriticalSection(&s_dev_lock);
++    audio_dev_lose_locked(HRESULT_FROM_WIN32(ERROR_TIMEOUT), why, 0);
++    LeaveCriticalSection(&s_dev_lock);
++}
+ 
+ #endif /* AUDIO_BACKEND_WASAPI */
+ 
+@@ -485,7 +922,14 @@ static void audio_submit_mix(void)
+       if (_wf) { fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, _wf); fflush(_wf); } }
+     { static int mute = -1; if (mute < 0) mute = getenv("PS3_AUDIO_MUTE") ? 1 : 0;
+       if (mute) memset(s_mix_buffer, 0, sizeof(s_mix_buffer)); }
+-    audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
++    const int taken = audio_backend_submit(s_mix_buffer, CELL_AUDIO_BLOCK_SAMPLES);
++    if (taken < 0) g_audio_nodev++;
++    /* PS3_AUDIO_DEVICE_WAV=<file>: what a device was given, block for block in step
++     * with AUDIO_WAV -- the mix where a device took it, zeros where there was none. */
++    { static FILE* _df = (FILE*)-1;
++      if (_df == (FILE*)-1) { const char* e = getenv("PS3_AUDIO_DEVICE_WAV"); _df = e ? fopen(e, "wb") : NULL; }
++      if (_df) { static float zeros[CELL_AUDIO_BLOCK_SAMPLES * 2];
++          fwrite(taken > 0 ? s_mix_buffer : zeros, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, _df); fflush(_df); } }
+ }
+ 
+ static void audio_mix_one_block(void)
+@@ -655,14 +1099,30 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+     const long long block_ticks = (long long)CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE;
+     double pad_avg = -1.0;
+     int primed = 0;
++    unsigned seen_gen = 0;                 /* which device stream the lead/steering state belongs to */
++    long long stall_from = 0;              /* QPC of the first poll the device was full on, 0 = not stalled */
++    const long long stall_ticks = (long long)AUDIO_STALL_MS * qf.QuadPart / 1000;
+     /* High-resolution timer (Windows 10 1803+): sub-millisecond sleeps for the
+      * wait above; Sleep(1) would overshoot it by a whole tick. */
+     HANDLE hr_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                              TIMER_ALL_ACCESS);
+     timeBeginPeriod(1);   /* Sleep(1) must mean ~1 ms, not the 15.6 ms default tick */
+     while (s_mix_thread_running) {
+-        const int room = audio_backend_room();
+-        if (room >= 0 && room < CELL_AUDIO_BLOCK_SAMPLES) { audio_backend_wait(); continue; }
++        unsigned gen = 0;
++        const int room = audio_backend_room(&gen);
++        /* A different stream than last time (the device thread opened a device,
++         * or the default changed): lead and steering start over on it. */
++        if (gen != seen_gen) { seen_gen = gen; primed = 0; pad_avg = -1.0; }
++        if (room >= 0 && room < CELL_AUDIO_BLOCK_SAMPLES) {
++            /* A device that stays full is not consuming (Bluetooth link down, driver
++             * hung) and would hold up the title's audio loop for as long as that lasts. */
++            LARGE_INTEGER sn; QueryPerformanceCounter(&sn);
++            if (!stall_from) stall_from = sn.QuadPart;
++            else if (sn.QuadPart - stall_from > stall_ticks) { audio_backend_lose("the device queue (full for 200 ms)"); stall_from = 0; continue; }
++            audio_backend_wait();
++            continue;
++        }
++        stall_from = 0;
+         if (room < 0 || !dev_pace) {
+             LARGE_INTEGER now; QueryPerformanceCounter(&now);
+             const long long due = q0.QuadPart +
+@@ -718,7 +1178,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+               if (!nz) z++; }
+             if (now - t0 >= 5000) {
+                 fprintf(stderr, "[audio-rate] %.1f blocks/s (real time 187.5), silent %.1f%%, dropped %.0f frames/s, device buf %u, queue min %u, starved %u, "
+-                                "waited for %u (max %.1f ms), not written %u%c",
++                                "waited for %u (max %.1f ms), not written %u, no device %u%c",
+                         n * 1000.0 / (now - t0), n ? 100.0 * z / n : 0.0, (g_audio_dropped - d0) * 1000.0 / (now - t0),
+                 #if AUDIO_BACKEND_WASAPI
+                         (unsigned)s_wasapi_buf_frames,
+@@ -726,9 +1186,9 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+                         0u,
+ #endif
+                         g_audio_pad_min == ~0u ? 0u : g_audio_pad_min, g_audio_starved,
+-                        g_audio_waited, g_audio_wait_max, g_audio_unwritten, 10);
++                        g_audio_waited, g_audio_wait_max, g_audio_unwritten, g_audio_nodev, 10);
+                 g_audio_pad_min = ~0u; g_audio_starved = 0;
+-                g_audio_waited = g_audio_unwritten = 0; g_audio_wait_max = 0;
++                g_audio_waited = g_audio_unwritten = g_audio_nodev = 0; g_audio_wait_max = 0;
+                 n = z = 0; d0 = g_audio_dropped; t0 = now; } } }
+ 
+         /* Notify event queues */
+diff --git a/libs/audio/tests/test_audio_device.c b/libs/audio/tests/test_audio_device.c
+new file mode 100644
+index 0000000..34c8cba
+--- /dev/null
++++ b/libs/audio/tests/test_audio_device.c
+@@ -0,0 +1,160 @@
++/* Windows: the WASAPI device thread against the test hooks, without a title.
++ *
++ *   PS3_AUDIO_FAKE_NODEVICE=3   no device for the first 3 s
++ *   PS3_AUDIO_FAKE_LOSS=7,11    two simulated AUDCLNT_E_DEVICE_INVALIDATED
++ *   PS3_AUDIO_FAKE_CHANGE=9     one default-device notification (make before break)
++ *   PS3_AUDIO_FAKE_STALL=13     the device stops consuming (its queue reads full)
++ *
++ * It starts the real mixer thread and device thread (cellAudioInit), counts the
++ * audio-period events the mixer pushes to the title's queue and checks that
++ *   - they keep their pace (187.5 per second) with no device, with one, and
++ *     across a loss and the reopen: no gap over 100 ms, rate within 2 %;
++ *   - the first device opens when the fake window ends (within ~2.5 s);
++ *   - each loss is followed by a new stream within 1 s;
++ *   - a default-device change installs a new stream within 1 s; the old one
++ *     stays open until then (there is no moment without a stream);
++ *   - a stalled device is given up after ~200 ms (the only place the audio
++ *     events may pause) and replaced;
++ *   - cellAudioQuit returns promptly.
++ * A machine without any audio endpoint passes the pace checks and skips the
++ * device ones. About 16 s.
++ *
++ *   clang-cl /nologo /O1 /D_CRT_SECURE_NO_WARNINGS /Iinclude libs/audio/tests/test_audio_device.c ^
++ *       /link ole32.lib winmm.lib && test_audio_device.exe
++ */
++#include "../cellAudio.c"
++#include <assert.h>
++
++uint8_t* vm_base;
++uint32_t ppu_vm_size;
++int g_resv_store_active;
++uint32_t g_ww_lo, g_ww_hi;
++void ppu_resv_break_store(uint64_t ea) { (void)ea; }
++void ps3_ww_report_inline(uint32_t a, uint64_t v, int w) { (void)a; (void)v; (void)w; }
++int spu_coh_is_reserved(uint32_t a) { (void)a; return 0; }
++void spu_coh_notify_write(uint32_t a) { (void)a; }
++void spu_lockline_lock(void) {}
++void spu_lockline_unlock(void) {}
++void host_sched_thread_start(int role, int prio, const char* name) { (void)role; (void)prio; (void)name; }
++
++/* The title's event queue: the mixer pushes one event per block. */
++#define MAX_EVENTS 8000
++static LONGLONG s_ev_qpc[MAX_EVENTS];
++static volatile LONG s_ev_n;
++uint32_t sys_event_find_queue_by_key(uint64_t key) { (void)key; return 1; }
++uint32_t sys_event_queue_create_direct(uint64_t key, int32_t size) { (void)key; (void)size; return 1; }
++int sys_event_queue_push_by_id(uint32_t q, uint64_t s, uint64_t d1, uint64_t d2, uint64_t d3)
++{
++    (void)q; (void)s; (void)d1; (void)d2; (void)d3;
++    LARGE_INTEGER n; QueryPerformanceCounter(&n);
++    LONG i = s_ev_n;
++    if (i < MAX_EVENTS) { s_ev_qpc[i] = n.QuadPart; s_ev_n = i + 1; }
++    return 0;
++}
++
++static LARGE_INTEGER t0, qf;
++static double now_s(void) { LARGE_INTEGER n; QueryPerformanceCounter(&n); return (double)(n.QuadPart - t0.QuadPart) / (double)qf.QuadPart; }
++
++/* Pace over [a, b) seconds on the test clock: events per second and the longest gap in ms. */
++static void pace(double a, double b, double* rate, double* gap_ms)
++{
++    int n = 0; double maxgap = 0.0, prev = -1.0;
++    for (LONG i = 0; i < s_ev_n; i++) {
++        const double t = (double)(s_ev_qpc[i] - t0.QuadPart) / (double)qf.QuadPart;
++        if (t < a || t >= b) continue;
++        n++;
++        if (prev >= 0.0 && (t - prev) * 1000.0 > maxgap) maxgap = (t - prev) * 1000.0;
++        prev = t;
++    }
++    *rate = n / (b - a);
++    *gap_ms = maxgap;
++}
++
++int main(void)
++{
++    const double RUN_S = 16.0;
++    _putenv_s("PS3_AUDIO_FAKE_NODEVICE", "3");
++    _putenv_s("PS3_AUDIO_FAKE_LOSS", "7,11");
++    _putenv_s("PS3_AUDIO_FAKE_CHANGE", "9");
++    _putenv_s("PS3_AUDIO_FAKE_STALL", "13");
++    QueryPerformanceFrequency(&qf);
++
++    QueryPerformanceCounter(&t0);
++    assert(cellAudioInit() == CELL_OK);
++    s_notify_queues[0].in_use = 1;      /* after Init: it clears the table */
++    s_notify_queues[0].key = 1;
++
++    /* Follow the stream: when it is there, and every time a different one was installed. */
++    double open_at[8]; int nopen = 0; double gone_at[8]; int ngone = 0; double inst_at[8]; int ninst = 0;
++    int was_open = 0; LONG last_gen = 0;
++    while (now_s() < RUN_S) {
++        const int is_open = s_wasapi_client != NULL;
++        const double t = now_s();
++        if (is_open && !was_open && nopen < 8) open_at[nopen++] = t;
++        if (!is_open && was_open && ngone < 8) gone_at[ngone++] = t;
++        if (s_dev_gen != last_gen && ninst < 8) inst_at[ninst++] = t;
++        was_open = is_open;
++        last_gen = s_dev_gen;
++        Sleep(2);
++    }
++    const int notify_registered = s_dev_notify;
++    const double t_quit = now_s();
++    assert(cellAudioQuit() == CELL_OK);
++    const double quit_ms = (now_s() - t_quit) * 1000.0;
++
++    int fails = 0;
++#define CHECK(cond, ...) do { if (!(cond)) { fails++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
++
++    printf("streams installed: %ld, opened at:", (long)last_gen);
++    for (int i = 0; i < nopen; i++) printf(" %.2f", open_at[i]);
++    printf(" s; lost at:");
++    for (int i = 0; i < ngone; i++) printf(" %.2f", gone_at[i]);
++    printf(" s; installed at:");
++    for (int i = 0; i < ninst; i++) printf(" %.2f", inst_at[i]);
++    printf(" s; quit %.0f ms\n", quit_ms);
++
++    /* Pace: no device (0.5-3.0), first device (5.5-6.9), around the losses (6.9-8.5, 10.9-12.5) and the
++     * change, the run up to the stall, and after it. The stall itself (13.0-13.6) may pause the events. */
++    static const struct { const char* name; double a, b; } win[] = {
++        { "no device     0.5-3.0 s", 0.5, 3.0 }, { "device        5.5-6.9 s", 5.5, 6.9 },
++        { "1st loss      6.9-8.5 s", 6.9, 8.5 }, { "change       8.9-10.0 s", 8.9, 10.0 },
++        { "2nd loss     10.9-12.5 s", 10.9, 12.5 }, { "up to stall   0.5-12.9 s", 0.5, 12.9 },
++        { "after stall  13.8-15.5 s", 13.8, 15.5 } };
++    for (unsigned w = 0; w < sizeof(win) / sizeof(win[0]); w++) {
++        double rate, gap;
++        pace(win[w].a, win[w].b, &rate, &gap);
++        printf("  %-24s %6.1f events/s, longest gap %5.1f ms\n", win[w].name, rate, gap);
++        CHECK(rate > 187.5 * 0.98 && rate < 187.5 * 1.02, "%s: %.1f events/s is off the 187.5 pace", win[w].name, rate);
++        CHECK(gap < 100.0, "%s: a %.1f ms gap between audio events", win[w].name, gap);
++    }
++
++    if (nopen == 0) {
++        printf("no audio endpoint on this machine: device checks skipped\n");
++    } else {
++        CHECK(notify_registered,"the default-device notification client was not registered with the enumerator");
++        CHECK(open_at[0] >= 3.0,"device opened at %.2f s, inside the 3 s fake no-device window", open_at[0]);
++        CHECK(open_at[0] < 3.0 + 2.5, "device opened only at %.2f s (window ended at 3.0, retry every 2 s)", open_at[0]);
++        CHECK(ngone == 3, "expected 3 streams given up (2 simulated losses, 1 stall), saw %d", ngone);
++        CHECK(nopen == 4, "expected 4 stream openings from nothing (start + 3 reopens), saw %d", nopen);
++        CHECK(ninst == 5, "expected 5 streams installed (start, 3 reopens, 1 default change), saw %d", ninst);
++        if (ninst == 5)
++            CHECK(inst_at[2] >= 9.0 && inst_at[2] < 10.0, "default change at 9.0 s installed a new stream at %.2f s", inst_at[2]);
++        for (int i = 0; i < 2 && i < ngone && i + 1 < nopen; i++) {
++            CHECK(gone_at[i] > 6.9 + 4.0 * i && gone_at[i] < 7.5 + 4.0 * i, "loss %d seen at %.2f s", i + 1, gone_at[i]);
++            CHECK(open_at[i + 1] - gone_at[i] < 1.0, "reopen %d took %.2f s", i + 1, open_at[i + 1] - gone_at[i]);
++        }
++        if (ngone == 3 && nopen == 4) {
++            CHECK(gone_at[2] > 13.1 && gone_at[2] < 13.6, "stall from 13.0 s given up at %.2f s (200 ms rule)", gone_at[2]);
++            CHECK(open_at[3] - gone_at[2] < 1.0, "reopen after the stall took %.2f s", open_at[3] - gone_at[2]);
++            double rate, gap;
++            pace(12.9, 13.8, &rate, &gap);
++            printf("  stall        12.9-13.8 s  %6.1f events/s, longest gap %5.1f ms (200 ms rule)\n", rate, gap);
++            CHECK(gap < 400.0, "the stall paused the audio events for %.1f ms", gap);
++        }
++    }
++    CHECK(quit_ms < 1000.0, "cellAudioQuit took %.0f ms", quit_ms);
++
++    if (fails) { printf("audio device: %d check(s) FAILED\n", fails); return 1; }
++    puts("audio device: pace, retry, reopen and quit passed");
++    return 0;
++}

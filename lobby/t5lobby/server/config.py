@@ -62,6 +62,7 @@ class Config:
     pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
+    rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
 
     @classmethod
     def from_env(cls, env=None, **overrides):

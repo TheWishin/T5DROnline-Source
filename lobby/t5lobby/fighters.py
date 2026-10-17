@@ -1,12 +1,10 @@
 """Characters and stages: lobby keys <-> the game's ids for direct-fight mode.
 
-The lobby, the launcher and the server talk in stable keys ("jin", "stage07",
-"random"); only T5_FIGHT carries the game's numeric ids. The table is
-data/fighters.json (or the file named by T5_FIGHTERS_FILE); its ids are
-placeholders until the direct-fight work (branch direct-fight) publishes the
-game's real table -- then only that file changes.
+The lobby, the launcher and the server talk in stable keys ("jin", "s20",
+"random"); only T5_FIGHT carries the game's numeric ids (docs/DIRECTFIGHT.md).
+The table is data/fighters.json (or the file named by T5_FIGHTERS_FILE).
 
-    T5_FIGHT=<p1 id>,<p2 id>,<stage id>,<rounds>
+    T5_FIGHT=<p1 id>,<p2 id>,<stage id>,<rounds to win>
 """
 import json
 import os
@@ -46,8 +44,12 @@ class Table:
         x = self._s.get(key)
         return x["name"] if x else ("Random" if key == RANDOM else (key or "?"))
 
+    def selectable(self):
+        """Fighters a player can pick (bosses and unverified ones are left out)."""
+        return [x for x in self.fighters if not x.get("boss") and not x.get("unverified")]
+
     def valid_fighter(self, key):
-        return key == RANDOM or key in self._f
+        return key == RANDOM or key in {x["key"] for x in self.selectable()}
 
     def valid_stage(self, key):
         return key == RANDOM or key in self._s
@@ -56,7 +58,7 @@ class Table:
         """Turn 'random' into concrete keys, the same way on every machine (seeded).
         -> (p1 key, p2 key, stage key)."""
         rng = random.Random(int(seed) & 0xFFFFFFFF)
-        pool = [x["key"] for x in self.fighters if not x.get("boss")]
+        pool = [x["key"] for x in self.selectable()]
         p1 = p1 if p1 in self._f else rng.choice(pool)
         p2 = p2 if p2 in self._f else rng.choice(pool)
         stage = stage if stage in self._s else rng.choice([x["key"] for x in self.stages])

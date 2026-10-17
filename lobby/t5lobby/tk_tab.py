@@ -44,7 +44,8 @@ REASON_TEXT = {"desync": "the two games went out of sync", "too_short": "too sho
                "connection": "the connection between the games failed", "no_report": "a player did not report",
                "both_left": "both players left", "timeout": "no result in time",
                "crash_repeat": "repeated crashes count as losses", "early_quit_repeat": "repeated early quits",
-               "no_report_repeat": "repeated missing reports", "score_mismatch": "scores differed"}
+               "no_report_repeat": "repeated missing reports", "score_mismatch": "scores differed",
+               "no_result": "the fight ended without a winner"}
 
 
 def _work(results, key, fn, args):
@@ -197,7 +198,7 @@ class OnlineTab:
         play = ttk.Frame(box)
         play.grid(row=1, column=0, sticky="we", pady=(8, 2))
         ttk.Label(play, text="Character").pack(side="left")
-        names = ["Random"] + [f["name"] for f in self.table.fighters if not f.get("boss")]
+        names = ["Random"] + [f["name"] for f in self.table.selectable()]
         self.char_var = tk.StringVar(value=self.table.fighter_name(self.cfg.get("char") or fighters.RANDOM))
         cb = ttk.Combobox(play, textvariable=self.char_var, values=names, state="readonly", width=14)
         cb.pack(side="left", padx=(4, 12))

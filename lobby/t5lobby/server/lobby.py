@@ -1323,9 +1323,10 @@ class LobbyServer:
                 "path": m.path, "peer": r.get("peer") if m.path != "relay" else None,
                 "relay_port": self.udp.port if m.path == "relay" else None,
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
-                "rounds": 3, "ranked": m.ranked, "build": m.build_id,
+                "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
-                "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": 3},
+                "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
+                "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],
                 "continue": m.continued, "rematch_of": m.rematch_of,
                 "min_seconds": self.cfg.min_match_seconds})
@@ -1418,6 +1419,11 @@ class LobbyServer:
             return
         ka, kb = self._kind(a), self._kind(b)
         if ka == kb == "result":
+            if a["winner"] is None and b["winner"] is None and a["source"] == b["source"] == "game" and \
+                    not any(sum(r["score"] or [0]) for r in (a, b)):
+                # Both games say the fight ended without a single round won (left without a winner).
+                self._finish(m, "void", None, None, reason="no_result")
+                return
             if a["winner"] == b["winner"]:
                 score = a["score"] if a["score"] == b["score"] or b["score"] is None else (
                     b["score"] if a["score"] is None else None)

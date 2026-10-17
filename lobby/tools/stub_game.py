@@ -21,10 +21,14 @@ Knobs for tests (all optional):
     T5_STUB_GAP       seconds between matches (default 2)
     T5_STUB_WINNER    0 | 1 | draw (default: from T5_NET_SEED)
     T5_STUB_DESYNC    1: this side's state hash differs from frame 30 on (both sides log it)
+    T5_STUB_NORESULT  1: the match ends without a result file (status says 0-0, no winner)
     T5_STUB_FAIL      crash | quit | vanish   (crash: exit 3 with a [CRASH] line mid-match;
                       quit: exit 0 mid-match, like closing the window; vanish: stop sending
                       mid-match without exiting, the opponent's game loses the peer)
     T5_STUB_LINGER    seconds to stay open after the last match (default 0)
+    T5_FIGHT_FILE     like direct-fight: before the 2nd, 3rd ... match wait for this file
+                      (the next fight), then rename it to .done
+    T5_DF_STATUS_FILE like direct-fight: {"state": fight|over|neutral, "match": n}
     T5_CTL_DIR        persistent mode (docs/RANKED.md, "Game control channel"): boot to
                       idle, then run every "fight" command from <dir>/cmd.json with its env;
                       "idle" ends the session, "quit" exits
@@ -183,6 +187,10 @@ class Session:
         log(f"frame {self.frame}: match {n} over, P1 {score[0]} - P2 {score[1]}, winner "
             f"{'none (draw)' if winner is None else 'P%d' % (winner + 1)}")
         path = env.get("T5_NET_RESULT_FILE")
+        if env.get("T5_STUB_NORESULT") == "1":
+            path = None                   # like a fight left without a winner: no result file
+            winner, score = None, [0, 0]
+        self.last = (winner, score)
         if path:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
@@ -191,6 +199,18 @@ class Session:
         # drain: let the opponent see our last frames
         self.exchange(20)
         return "ok"
+
+
+def status(env, state, match, last=None):
+    """T5_DF_STATUS_FILE, as the direct-fight code writes it."""
+    path = env.get("T5_DF_STATUS_FILE")
+    if path:
+        with open(path + ".tmp", "w") as f:
+            d = {"state": state, "match": match}
+            if last is not None:
+                d["last_winner"], d["last_score"] = last
+            json.dump(d, f)
+        os.replace(path + ".tmp", path)
 
 
 def run_env(env):
@@ -202,12 +222,25 @@ def run_env(env):
     try:
         if not s.connect():
             return 1
+        fight_file = env.get("T5_FIGHT_FILE")
         for n in range(1, int(env.get("T5_STUB_MATCHES", "1") or 1) + 1):
             if n > 1:
                 r = s.exchange(int(float(env.get("T5_STUB_GAP", "2")) * 60))
                 if r != "ok":
                     return 1
+                if fight_file:
+                    # Like direct-fight: wait at character select for the next fight from the file.
+                    status(env, "neutral", n - 1)
+                    t_end = time.time() + 120
+                    while not os.path.exists(fight_file):
+                        if time.time() > t_end or s.exchange(15) != "ok":
+                            return 1
+                    with open(fight_file) as f:
+                        log(f"next fight from T5_FIGHT_FILE: {f.read().strip()}")
+                    os.replace(fight_file, fight_file + ".done")
+            status(env, "fight", n)
             r = s.play(n, env)
+            status(env, "over", n, getattr(s, "last", None))
             if r == "crash":
                 print("[CRASH] stub: simulated crash", flush=True)
                 return 3

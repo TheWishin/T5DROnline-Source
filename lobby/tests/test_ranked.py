@@ -97,8 +97,11 @@ class FightersTest(unittest.TestCase):
         a = t.resolve("random", "jin", "random", 1234)
         self.assertEqual(a, t.resolve("random", "jin", "random", 1234))    # same on every PC
         self.assertEqual(a[1], "jin")
-        self.assertNotEqual(a[0], "jinpachi")                               # bosses are not drawn
-        self.assertEqual(t.fight_env("paul", "law", "stage01", 3), "0,1,0,3")
+        self.assertNotIn(a[0], ("jinpachi", "panda"))                      # no bosses, nothing unverified
+        self.assertEqual(t.fight_env("paul", "law", "s20", 3), "0,1,20,3")
+        self.assertEqual((t.fighter("lili")["id"], t.fighter("dragunov")["id"]), (33, 34))   # DIRECTFIGHT.md
+        self.assertEqual([s["id"] for s in t.stages], list(range(17, 35)))
+        self.assertFalse(t.valid_fighter("jinpachi"))
 
 
 class StoreTest(unittest.TestCase):
@@ -363,6 +366,17 @@ class IntegrityTest(Base):
         ev = expect(a, "match_result")
         self.assertEqual((ev["status"], ev["reason"]), ("void", "desync"))
 
+    def test_fight_without_a_winner_is_void_but_a_draw_counts(self):
+        a, b, ea, eb = self.setup_match()
+        a.report_result(None, [0, 0], source="game")
+        b.report_result(None, [0, 0], source="game")
+        self.assertEqual(expect(a, "match_result")["reason"], "no_result")
+        ea, eb = self.ranked(a, b)
+        a.report_result(None, [2, 2], source="game")        # a real draw
+        b.report_result(None, [2, 2], source="game")
+        ev = expect(a, "match_result")
+        self.assertEqual((ev["status"], ev["winner"]), ("confirmed", None))
+
     def test_dispute_without_evidence(self):
         a, b, ea, eb = self.setup_match()
         a.report_result(ea["slot"], None, source="game")
@@ -583,12 +597,23 @@ class DriverTest(Base):
         self.assertEqual(len(drivers[0].history), 2)
         self.assertEqual(drivers[0].history[0][1]["source"], "game")
         self.assertTrue(results[0][0]["fight"]["p1"] in ("lili", "asuka"))
+        # the second fight went to the running game through T5_FIGHT_FILE (direct-fight's channel)
+        with open(drivers[0].fight_path + ".done") as f:
+            line = f.read().split(",")
+        self.assertEqual(len(line), 4)
+        self.assertEqual(set(line[:2]), {"33", "26"})              # Lili, Asuka
 
     def test_persistent_mode(self):
         stub = {"T5_STUB_SECONDS": "1"}
         results, drivers = self.run_pair("persistent", stub, stub, matches=2)
         self.assertEqual([r["status"] for r in results[0]], ["confirmed", "confirmed"])
         self.assertEqual(drivers[0].mode, "persistent")
+
+    def test_no_result_file_falls_back_to_the_status(self):
+        stub = {"T5_STUB_SECONDS": "1", "T5_STUB_NORESULT": "1", "T5_STUB_LINGER": "15"}
+        results, drivers = self.run_pair("process", stub, stub)
+        self.assertEqual((results[0][0]["status"], results[0][0]["reason"]), ("void", "no_result"))
+        self.assertEqual(drivers[0].history[0][1]["reason"], "no_result")
 
     def test_desync_is_reported(self):
         stub = {"T5_STUB_SECONDS": "1"}

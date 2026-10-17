@@ -5,20 +5,24 @@ From "match found" to "result reported" without the player doing anything:
     match_found   a game left over from the last opponent is closed (process mode) or sent
                   back to idle (persistent mode); a rematch inside the running games keeps it
     match_start   the game gets the match: T5_NET_* (netplay), T5_FIGHT (direct-fight mode:
-                  characters, stage, rounds), T5_HUD_* (names and ranks for the fight HUD)
+                  characters, stage, rounds; with T5_NET_START=external and the same
+                  PS3_FIXED_TIME on both PCs, docs/DIRECTFIGHT.md), T5_HUD_* (names and
+                  ranks for the fight HUD, not used by the game yet)
     during play   the game's log is followed: the netplay desync detector, a lost opponent,
                   "match over" lines, crashes
     result        the game's result file (T5_NET_RESULT_FILE) is read and reported with the
                   evidence (desync count, state hash when the game writes one); the file is
                   archived so the next match in the same game process starts clean
-    after         the game stays open; a rematch with the same opponent continues inside
-                  the running games (no restart, no new connection)
+    after         the game stays open at character select; a rematch with the same opponent
+                  continues inside the running games: the next fight goes to T5_FIGHT_FILE
+                  (no restart, no new connection)
 
 Two ways to run the game:
 
 * process mode (works today): one t5dr.exe per opponent. The netplay session is set up
-  from the environment at boot (T5_NET_*); rematches against the same opponent continue in
-  that process (the game returns to character select after a match and stays in lockstep).
+  from the environment at boot (T5_NET_*), direct-fight boots straight into the fight
+  (T5_FIGHT); rematches against the same opponent continue in that process through
+  T5_FIGHT_FILE. The game's state (T5_DF_STATUS_FILE) is shown to the player.
 * persistent mode (T5_CTL_DIR, for direct-fight builds): the game is started once and
   stays open between opponents; each match is a command written to <dir>/cmd.json, the
   game answers in <dir>/state.json. Protocol: docs/RANKED.md, "Game control channel".
@@ -218,6 +222,13 @@ class MatchDriver:
         self.ctl = None              # Control (persistent mode)
         self.session = None          # id of the first match this game process played
         self.result_path = None
+        self.fight_path = None       # T5_FIGHT_FILE of the running game (next fight in the same process)
+        self.status_path = None      # T5_DF_STATUS_FILE of the running game
+        self.game_state = None       # last "state" from it
+        self.df_status = None        # the whole last status
+        self.saw_fight = False       # this match's fight was seen in the status file
+        self.t_over = None           # when the status said the fight is over (no result file yet)
+        self.df_base = 0             # the status' match number before this match (its fight has a higher one)
         self.ticket = None           # MatchTicket of the match being played
         self.session_ticket = None   # MatchTicket that set up the current game connection
         self.match_ev = None         # its match_start event
@@ -264,17 +275,38 @@ class MatchDriver:
     # ------------------------------------------------------------------ environment
     def match_env(self, ev, ticket):
         env = ticket.game_env(result_file=self.result_path)
-        fight = ev.get("fight") or {}
         players = ev.get("players") or []
-        if self.fight_env and fight.get("p1") and self.table.fighter(fight["p1"]) and \
-                self.table.fighter(fight.get("p2")) and self.table.stage(fight.get("stage")):
-            env["T5_FIGHT"] = self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
+        line = self.fight_line(ev)
+        if line:
+            # Direct fight: both PCs boot into the same fight; lockstep starts there (netplay is told
+            # by the direct-fight code), with the same frozen clock on both (docs/DIRECTFIGHT.md).
+            env["T5_FIGHT"] = line
+            env["T5_NET_START"] = "external"
+            if ev.get("start_time"):
+                env["PS3_FIXED_TIME"] = str(int(ev["start_time"]))
+        if self.fight_path:
+            env["T5_FIGHT_FILE"] = self.fight_path
+            env["T5_DF_STATUS_FILE"] = self.status_path
         if len(players) == 2:
             # In-game identity (docs/RANKED.md): names and rank tiers for the fight HUD.
             env["T5_HUD_NAMES"] = "|".join(p.get("name", "")[:16] for p in players)
             env["T5_HUD_RANKS"] = ",".join(str(p.get("tier") or ranks.BEGINNER) for p in players)
         env.update(self.extra_env)
         return env
+
+    def fight_line(self, ev):
+        """T5_FIGHT value for a match_start event, or None (no direct fight)."""
+        fight = ev.get("fight") or {}
+        if not (self.fight_env and self.table.fighter(fight.get("p1")) and self.table.fighter(fight.get("p2"))
+                and self.table.stage(fight.get("stage"))):
+            return None
+        return self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
+
+    def _write_fight_file(self, line):
+        tmp = self.fight_path + ".tmp"
+        with open(tmp, "w", encoding="ascii") as f:
+            f.write(line + "\n")
+        os.replace(tmp, self.fight_path)
 
     # ------------------------------------------------------------------ lobby events
     def on_event(self, ev):
@@ -320,8 +352,15 @@ class MatchDriver:
             self.match_ev = ev
             self.mark = self.glog.mark()
             self.reported = False
+            self.saw_fight = False
+            self.t_over = None
+            self.df_base = int((self.df_status or {}).get("match") or 0)
             if self.mode == "persistent":
                 self.ctl.send("fight", match=mid, env=self.match_env(ev, self.ticket))
+            else:
+                line = self.fight_line(ev)
+                if line and self.fight_path:
+                    self._write_fight_file(line)     # the game picks it up at character select
             self.status(f"Rematch against {ev['opponent']['name']}: same connection, the game stays open.")
             self._call(self.client.game_started, mid)
             return
@@ -329,14 +368,22 @@ class MatchDriver:
         self.session_ticket = t
         self.match_ev = ev
         self.reported = False
+        self.saw_fight = False
+        self.t_over = None
+        self.df_base = int((self.df_status or {}).get("match") or 0) if self.game_running() else 0
         if self.mode == "persistent" and self.game_running():
             env = self.match_env(ev, t)
             self.ctl.send("fight", match=mid, env=env)
         else:
             self.stop_game()
             self.session = mid
+            self.df_status, self.df_base = None, 0           # a new game counts its fights from 1
             self.result_path = os.path.join(self.workdir, f"result-{mid}.json")
-            for p in (self.result_path, self.result_path + ".tmp"):
+            self.fight_path = os.path.join(self.workdir, f"fight-{mid}.txt")
+            self.status_path = os.path.join(self.workdir, f"status-{mid}.json")
+            self.game_state = None
+            for p in (self.result_path, self.result_path + ".tmp", self.fight_path, self.fight_path + ".done",
+                      self.status_path):
                 try:
                     os.remove(p)
                 except OSError:
@@ -393,6 +440,7 @@ class MatchDriver:
     # ------------------------------------------------------------------ polling
     def poll(self):
         """Call a few times a second. Returns the notes for the UI (list of dicts)."""
+        self._watch_state()
         t = self.ticket
         if t is not None and not self.reported:
             self._check(t)
@@ -403,6 +451,40 @@ class MatchDriver:
         except queue.Empty:
             pass
         return out
+
+    STATE_TEXT = {"title": "The game is starting...", "select": "Character select...",
+                  "stage": "Stage select...", "loading": "Loading the fight...", "fight": "Fight!",
+                  "over": "Match over.", "neutral": "At character select, waiting for the next match."}
+
+    def _watch_state(self):
+        """The direct-fight status file: where the game is (shown to the player)."""
+        if not self.status_path or not self.game_running():
+            return
+        try:
+            with open(self.status_path, encoding="utf-8") as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            return
+        state = st.get("state") if isinstance(st, dict) else None
+        self.df_status = st
+        try:
+            k = int(st.get("match") or 0)
+        except (TypeError, ValueError):
+            k = 0
+        # Only this match's fight counts (the status may still show the previous one for a moment).
+        if state == "fight" and self.ticket is not None and k > self.df_base and not self.saw_fight:
+            self.saw_fight = True
+            # FIGHT START is a netplay sync point (frame counters, input ring, random seeds): only
+            # mismatches from here on belong to this match, not menu ones from before it.
+            if self.glog is not None:
+                self.mark = self.glog.mark()
+        if state in ("over", "neutral") and self.saw_fight and k > self.df_base and self.t_over is None:
+            self.t_over = time.monotonic()
+        if state and state != self.game_state:
+            self.game_state = state
+            self.note("game_state", state=state, match=st.get("match"))
+            if state in self.STATE_TEXT and self.ticket is not None:
+                self.status(self.STATE_TEXT[state])
 
     def _evidence(self):
         """Desync count since the match started, from the game log."""
@@ -423,6 +505,15 @@ class MatchDriver:
             desync = max(desync, int(extra.get("desync") or 0))
             self._report(mid, res[0], res[1], "game", desync=desync, hash=extra.get("hash"),
                          frames=extra.get("frames"))
+            return
+        if self.t_over is not None and time.monotonic() - self.t_over > 5.0 and self.df_status:
+            # The direct-fight code saw the fight end but no result file came (netplay writes none
+            # for a 0-0 end, e.g. a fight left without a winner): report what the status says.
+            st = self.df_status
+            score = st.get("last_score") if isinstance(st.get("last_score"), list) else None
+            winner = st.get("last_winner") if st.get("last_winner") in (0, 1) else None
+            self._report(mid, winner, score, "game", desync=self._evidence() or 0,
+                         reason=None if winner is not None else "no_result")
             return
         running = self.game_running()
         g = self.glog

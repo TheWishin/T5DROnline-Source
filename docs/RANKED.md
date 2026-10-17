@@ -158,18 +158,18 @@ The player picks a character in the launcher before queueing (or "Random"); it
 is shown in the lobby and sent with the queue request. At match start the
 server resolves "random" picks and the stage with the match's shared seed, so
 both PCs get the same, and sends `fight: {p1, p2, stage, rounds}` in
-`match_start`. The launcher turns it into the direct-fight mode's environment:
+`match_start`. The launcher turns it into the direct-fight mode's environment
+([DIRECTFIGHT.md](DIRECTFIGHT.md)):
 
-    T5_FIGHT=<p1 id>,<p2 id>,<stage id>,<rounds>
+    T5_FIGHT=<p1 id>,<p2 id>,<stage id>,<rounds to win>      e.g. 15,14,20,3 = Kazuya vs Heihachi, stage 20, first to 3
 
-Keys ("jin", "stage07") are stable; ids come from
-`lobby/t5lobby/data/fighters.json`. **The ids there are placeholders** until the
-direct-fight work publishes the game's table: characters are numbered in the
-order of the game's per-character "wins" sprite table (Paul, Law, Lei, King,
-... Lili, Dragunov, Jinpachi -- 36 entries, probably the game's own order),
-stages 0-18 after its `stage_1` ... `stage_19` select sprites. When the real
-table lands only that file changes (and the stage names). Today's game ignores
-T5_FIGHT: players pick in the game's own Versus menus (P1 drives the menus).
+Keys ("jin", "s20") are stable; the ids in `lobby/t5lobby/data/fighters.json`
+are the game's own (character ids 0-35 in the game's order, stage ids 17-34 of
+its stage select; names are known for two stages so far). Not offered: Jinpachi
+(no cursor cell in Versus) and Panda (reached through Kuma's cell with another
+button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
+The stage is always resolved by the server: the game's own random pick happens
+before lockstep starts and would differ between the two PCs.
 
 ## Results and match integrity
 
@@ -195,6 +195,7 @@ How the server decides (`LobbyServer._reconcile` and friends):
 | any report has `desync` > 0 | void (`desync`) at once | no | no |
 | both report the same winner | **confirmed** (scores compared; differing scores are dropped) | yes | |
 | ... but less than 30 s after the match started (`T5L_MIN_MATCH_SECONDS`, server clock) | void (`too_short`) | no | |
+| both games report no winner and no round won (a fight left without a result) | void (`no_result`) | no | |
 | winners differ, both sent a state hash, hashes equal, exactly one report is from the game | **resolved**: the game's report wins (the other was changed by hand) | yes | |
 | winners differ, hashes differ | void (`desync`) | no | |
 | winners differ, no evidence | **disputed** (logged, counted per player) | no | |
@@ -223,8 +224,12 @@ launcher reports `disconnect` right away; the server decides as above.
 
 **Desyncs** are never repaired and never counted: the two players did not see
 the same match. Netplay's detector compares a hash of the match state every
-frame. Note: menu-driven matches (today, until direct-fight lands) sometimes
-desync in the menus under CPU load (NETPLAY.md "Limits") -- those matches void.
+frame; the launcher counts the mismatches from the match's FIGHT START (a
+netplay sync point: frame counters, input ring and random seeds are set equal
+there), so a select screen that was out of step for a moment before a rematch
+does not void a fight that ran in sync. Menu-driven matches (without direct
+fight) often desync in the menus under CPU load (NETPLAY.md "Limits") -- those
+void.
 
 **Limits, honestly**: results are self-reported by the two launchers. A
 modified launcher can lie; the rules above make lying unprofitable where the
@@ -245,8 +250,11 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
 2. **match_start** -- the game is started with the lobby's environment:
    `T5_NET_MODE/PORT/PEER/DELAY/TIMEOUT/MATCH/ROUNDS/PATH/RTT_MS/SEED/BUILD`,
    `T5_NET_RESULT_FILE=<out>\logs\online\result-<first match id>.json`,
-   `T5_FIGHT`, `T5_HUD_NAMES`, `T5_HUD_RANKS` (see below). An offline game
-   that is still open is closed first. The tab shows "Ranked match vs X -- Jin
+   `T5_FIGHT` with `T5_NET_START=external` and `PS3_FIXED_TIME=<the match's
+   start time from the server>` (the same frozen clock on both PCs),
+   `T5_FIGHT_FILE` and `T5_DF_STATUS_FILE` (next to the result file),
+   `T5_HUD_NAMES`, `T5_HUD_RANKS` (see below). The game boots straight into
+   the fight. An offline game that is still open is closed first. The tab shows "Ranked match vs X -- Jin
    vs Lili -- ping 23 ms (direct), input delay 3 frames (50 ms)".
 3. **During play** the game log is followed for desyncs, a lost opponent and
    crashes.
@@ -254,27 +262,30 @@ the launcher, `lobby/tools/ranked_session.py` and the tests.
    `logs\online\results\<match id>.json` (so the next match in the same process
    starts clean) and reported with the evidence. No result and the game closed:
    crash / disconnect / quit as above.
-5. **After** -- the game stays open (the result screen, then the game's own
-   character select). **Rematch** (both within 20 s, `T5L_REMATCH_WINDOW`):
-   when both games still run and are connected, the server starts the next
-   match without a new connection (`match_start` with `continue: true`) and the
-   same game process plays it -- netplay goes back to character select after a
-   match and stays in lockstep. Otherwise a new connection and a new game.
+5. **After** -- the game stays open (win pose, then character select, state
+   `neutral`). **Rematch** (both within 20 s, `T5L_REMATCH_WINDOW`): when both
+   games still run and are connected, the server starts the next match without
+   a new connection (`match_start` with `continue: true`); each launcher writes
+   the next `T5_FIGHT` line to its game's `T5_FIGHT_FILE` and the same game
+   process plays it (characters can be changed in the launcher between
+   matches). Otherwise a new connection and a new game.
 
 Two ways to run the game, picked automatically (`game_mode` in online.json
 forces one):
 
 - **process** (today's builds): one `t5dr.exe` per opponent, set up from the
-  environment at boot; rematches continue in it. Starting a new opponent
-  restarts the game (boot + menus).
+  environment at boot; rematches continue in it through `T5_FIGHT_FILE`. A new
+  opponent restarts the game (boot straight into the fight, ~20 s).
 - **persistent** (builds that understand `T5_CTL_DIR`, detected by looking
   for that string in `t5dr.exe` / `t5dr_game.dll`): the game starts once and
   stays open between opponents; every match is a command (next section).
 
 ## Game control channel (persistent game)
 
-Proposal for the direct-fight mode (branch `direct-fight`), implemented on the
-launcher side and in `lobby/tools/stub_game.py`. File based, like the result
+Proposal for the remaining step -- a new opponent without restarting the game
+(direct fight already keeps the game open for rematches through
+`T5_FIGHT_FILE`). Implemented on the launcher side and in
+`lobby/tools/stub_game.py`. File based, like the result
 file and netplay's pad files, so the game side is a few lines of C:
 
 - The launcher starts the game once with `T5_CTL_DIR=<dir>` (plus
@@ -331,17 +342,23 @@ the start of round 1):
 
 ## What the game side still needs
 
-From the netplay layer (merged) and direct-fight (in progress), in order of value:
+Netplay and direct fight are merged; the launcher uses `T5_FIGHT`,
+`T5_NET_START=external`, `PS3_FIXED_TIME`, `T5_FIGHT_FILE` and
+`T5_DF_STATUS_FILE` as DIRECTFIGHT.md describes. Still open, in order of value:
 
-1. **direct-fight**: honour `T5_FIGHT` (no menus = no menu desyncs, and
-   the characters picked in the launcher), then the control channel above
-   (the game stays open between opponents).
+1. **A new opponent without restarting the game**: netplay set up again for a
+   new peer (port, peer, delay, seed, build) while the game waits at character
+   select -- the control channel above, or `T5_FIGHT_FILE` growing the
+   `T5_NET_*` values. Until then the launcher restarts the game for a new
+   opponent (direct fight makes that ~20 s instead of ~80 s through the menus).
 2. **netplay**: put `"desync": <mismatching frames>`, `"hash": "<state hash of
    the last frame both checked>"` and `"frames": <frames played>` into the
    result file. The launcher already parses the log for the desync count; the
    hash enables the "resolved" rule for disputes.
-3. **netplay**: `T5_NET_ROUNDS` (first to 3; the game's default is first to 2).
-4. HUD hook for `T5_HUD_NAMES` / `T5_HUD_RANKS`.
+3. HUD hook for `T5_HUD_NAMES` / `T5_HUD_RANKS` (findings above).
+4. **netplay** (menu-driven play only): both games took over lockstep at main
+   loop frame 1 vs 2 once (permanent desync from frame 0), and the menus still
+   diverge at ~frame 1590 under load. Direct fight avoids both.
 
 ## Stick and competitive checklist
 
@@ -397,6 +414,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_PAIR_CAP` | 10 | ranked matches per pair of accounts per 24 h |
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
+| `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 
 The database upgrades itself (new columns and tables are added on start).
 
@@ -421,7 +439,7 @@ passwd, profile, history, chars, integrity, rematch).
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
 `keep`; `match_start` + `fight {p1, p2, stage, rounds}`, `players [brief, brief]`,
-`continue`, `rematch_of`, `min_seconds`; `match_result` + `reason`, `blame`
+`continue`, `rematch_of`, `min_seconds`, `start_time`; `match_result` + `reason`, `blame`
 (you/opponent), `fight`, `rematch_window`, and `rating` + `rank_before`,
 `rank_after`, `event` (placed/promoted/demoted); `rematch {state: offered\|declined}`;
 notices `opponent_dropped`, `opponent_back`, `pair_cap`. The client adds
@@ -451,19 +469,32 @@ persistent (control channel) mode; `--fail-p2 crash` -> void (crash, blamed),
 `quit` -> forfeit, `vanish` -> the survivor reports `disconnect`, void
 (no_report, blamed), `T5_STUB_DESYNC=1` -> void (desync).
 
-Real game (`t5dr.exe` from main with netplay, two instances, localhost lobby,
-scripted input, 7-12 other `t5dr.exe` of other work running, 14-35 fps):
-lobby -> ranked match -> LAN punch -> both games started by the driver with
-the handed-over ports -> `[netplay] connected`, lockstep from boot. One pair
-stayed in sync for 13,199 frames (0 mismatching frames) but the scripted menu
-input did not reach a fight; three pairs reached fights (HUD "Unknown" /
-"Beginner", Lili vs Dragunov) but went out of sync in the menus (twice at frame
-~1590 after VS BATTLE -- the known menu issue in NETPLAY.md -- and once from
-frame 0 because the two games took over lockstep at main loop frame 1 and 2
-respectively). The driver saw the desyncs in the log; games killed by hand
-were reported as `crash` and the opponent's netplay timeout as `disconnect`,
-which the server voided with the crasher blamed; the automatic rematch then
-started a fresh pair of games over a new connection. No ranked result of the
-real game counted yet: that needs fights started in step (direct-fight mode)
-or deterministic menus.
+Real game (`t5dr.exe` from main with netplay + direct fight, two instances on
+this PC, localhost lobby, `ranked_session.py --exe ... --attacks --rounds 2
+--matches 3`, other work's games running alongside, 25-47 fps):
 
+- lobby -> ranked queue -> LAN punch -> both games started by the driver with
+  `T5_FIGHT=26,33,23,2`, `T5_NET_START=external`, `PS3_FIXED_TIME` -> both boot
+  straight into Asuka vs Lili (`[df] FIGHT START` at frame ~1177) -> lockstep
+  from the fight -> `match 1 over` -> both result files -> both launchers
+  report -> **confirmed**, ratings 1500 -> 1662 / 1338, placement 1/2.
+- **Rematch in the same game processes**: both launchers wrote the next fight
+  to `T5_FIGHT_FILE`; the games went back to character select and fought
+  again (FIGHT START match 2 at frame 5434, match 3 at 9770). All three matches
+  confirmed, `0 mismatching frame(s)` through frame 11,399. After match 2 both
+  accounts were placed (Asuka 3rd Dan?, Lili 6th Kyu?); match 3 promoted Asuka
+  to 6th Dan. Profile, history (characters, stages, scores, rating changes) and
+  leaderboard as expected. Run: `build/rk/e2e7` (local only).
+- An earlier pair (`e2e6`) confirmed match 1 the same way; between the matches
+  the select screens went out of step for 50 frames (frames 4644-4693, while the
+  direct-fight code drives the cursors under lockstep) and the second match,
+  whose fight itself stayed in sync, was voided as a desync. Since then the
+  driver counts mismatches from FIGHT START (a netplay sync point) only.
+- Odd, for direct fight: with rounds 2, match 1 of `e2e7` ended "P1 1 - P2 0".
+- Menu-driven play without direct fight (earlier runs): lockstep in sync
+  for 13,199 frames once, but three pairs desynced in the menus (frame ~1590,
+  and once from frame 0 because the two games took over lockstep at main loop
+  frame 1 and 2) -- those matches would be voided; direct fight avoids it.
+- Games killed by hand were reported as `crash`, the opponent's netplay timeout
+  as `disconnect`; the server voided the match with the crasher blamed, and the
+  automatic rematch started a fresh pair of games over a new connection.

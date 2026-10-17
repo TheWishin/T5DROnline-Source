@@ -51,7 +51,7 @@ def start_server(a, db):
     env = dict(os.environ, T5L_DB=db, T5L_LOG_LEVEL="INFO", PYTHONPATH=LOBBY,
                T5L_FORCE_RELAY="1" if a.relay else "0", T5L_SCRYPT_N=str(1 << 12),
                T5L_PLACEMENT=str(a.placement), T5L_MIN_MATCH_SECONDS=str(a.min_seconds),
-               T5L_RESULT_TIMEOUT=str(a.result_timeout), T5L_RECONNECT_GRACE="10")
+               T5L_RESULT_TIMEOUT=str(a.result_timeout), T5L_RECONNECT_GRACE="10", T5L_ROUNDS=str(a.rounds))
     log = open(os.path.join(a.out, "server.log"), "w")
     p = subprocess.Popen([sys.executable, "-m", "t5lobby.server", "--host", "127.0.0.1", "--port", str(tcp),
                           "--udp-port", str(udp), "--udp-port2", str(udp2)], env=env, cwd=LOBBY,
@@ -125,6 +125,18 @@ class Player:
         if role in ("host", "join"):
             full.update(dict(kv.split("=", 1) for kv in (a.env_host if role == "host" else a.env_join)))
         log = os.path.join(self.dir, f"game{n}.log")
+        if a.exe and a.attacks and "T5_NET_SCRIPT" not in full and role in ("host", "join"):
+            ev, f = [], 120
+            while f < 60000:      # P1: square + right, P2: triangle + left (like the direct-fight tests)
+                if role == "host":
+                    ev += [f"{f} 4 0x8000", f"{f + 20} 10 0x20"]
+                else:
+                    ev += [f"{f + 7} 4 0x1000", f"{f + 25} 10 0x80"]
+                f += 40
+            sp = os.path.join(self.dir, f"attacks{n}.txt")
+            with open(sp, "w") as fp:
+                fp.write("\n".join(ev) + "\n")
+            full["T5_NET_SCRIPT"] = sp
         if a.exe:
             vfs = os.path.abspath(a.vfs)
             full.update(GAME_ENV)
@@ -202,6 +214,9 @@ def main():
     ap.add_argument("--stub-seconds", type=float, default=35.0, help="stub: length of one match")
     ap.add_argument("--min-seconds", type=float, default=30.0, help="server: minimum match length")
     ap.add_argument("--placement", type=int, default=2, help="server: placement matches")
+    ap.add_argument("--rounds", type=int, default=3, help="server: rounds to win (T5_FIGHT)")
+    ap.add_argument("--attacks", action="store_true",
+                    help="real game: both players attack (T5_NET_SCRIPT from lockstep frame 0 = fight start)")
     ap.add_argument("--result-timeout", type=float, default=30.0)
     ap.add_argument("--relay", action="store_true", help="force the relay path (local server only)")
     ap.add_argument("--persistent", action="store_true", help="persistent game (control channel) mode")

@@ -47,6 +47,21 @@ class Config:
     resume_window: float = 600.0    # T5L_RESUME_WINDOW: seconds a dropped player's session can be resumed
     scrypt_n: int = 1 << 14         # T5L_SCRYPT_N: password hash cost
     log_level: str = "INFO"         # T5L_LOG_LEVEL
+    # accounts (docs/RANKED.md "Accounts")
+    session_days: float = 30.0      # T5L_SESSION_DAYS: a remembered login lasts this long unused
+    recovery_codes: int = 8         # T5L_RECOVERY_CODES: one-time codes handed out at registration
+    # ranked play and match integrity (docs/RANKED.md)
+    placement: int = 5              # T5L_PLACEMENT: placement matches before the first rank
+    placement_cap: int = 12         # T5L_PLACEMENT_CAP: highest tier placement gives (12 = 3rd Dan)
+    hysteresis: float = 30.0        # T5L_HYSTERESIS: rating points below a tier before demotion
+    shield: int = 3                 # T5L_SHIELD: matches after a promotion without demotion
+    provisional_rd: float = 110.0   # T5L_PROVISIONAL_RD: above this RD a rank shows as provisional
+    reconnect_grace: float = 60.0   # T5L_RECONNECT_GRACE: seconds a player who lost the lobby mid-match may return
+    min_match_seconds: float = 30.0  # T5L_MIN_MATCH_SECONDS: shorter matches never count
+    strike_limit: int = 3           # T5L_STRIKE_LIMIT: voids caused within 24 h before they count as losses
+    pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
+    rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
+    ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
 
     @classmethod
     def from_env(cls, env=None, **overrides):

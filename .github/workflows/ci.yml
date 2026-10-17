@@ -77,17 +77,16 @@ jobs:
           if ($LASTEXITCODE) { exit 1 }
           python -m unittest discover -s tests -v
 
-      # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, the
-      # launcher's Online tab). One process per module, so a module that kills
-      # the interpreter cannot hide the others. KNOWN_CRASH: test_tk_tab aborts
-      # Python on this repo's main ("Tcl_AsyncDelete: async handler deleted by
-      # the wrong thread" in test_quick_match_flow) -- a warning until fixed,
-      # then delete the variable to make it required like the rest.
+      # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, ranked
+      # play and match integrity, the launcher's Online tab, the match driver with
+      # the stub game). One process per module, so a module that kills the
+      # interpreter cannot hide the others. KNOWN_CRASH names a module whose
+      # failure is only a warning (none at the moment).
       - name: Lobby tests (lobby/tests)
         shell: bash
         working-directory: lobby/tests
         env:
-          KNOWN_CRASH: test_tk_tab
+          KNOWN_CRASH: ""
         run: |
           fail=0
           for f in test_*.py; do

@@ -8,7 +8,13 @@ notice, ...) plus the client's own:
 
     {"t": "match_start", "ticket": MatchTicket, ...}   both players are connected: start the game
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
-    {"t": "disconnected", "reason": str}
+    {"t": "reconnecting", "reason": str}   the connection broke; resuming the session in the background
+    {"t": "reconnected"}                   ... and it worked (a running match carries on)
+    {"t": "disconnected", "reason": str}   gone for good (log in again)
+
+Passwords and remembered logins are credentials: the client refuses to send them over
+a plain (non-TLS) connection unless the server is on this PC or the local network
+(password_ok()). Guests need no credentials and work everywhere.
 
 Usage:
 
@@ -22,6 +28,7 @@ Usage:
 """
 import asyncio
 import hashlib
+import ipaddress
 import queue
 import socket
 import ssl
@@ -38,13 +45,16 @@ CLIENT_NAME = "t5lobby-client/0.1"
 
 class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
-                 auto_ready=False, handover="port", block_direct=False, request_timeout=10.0):
+                 auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
+                 reconnect=60.0, plain_passwords=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
         handover: "port" (close the socket, the game binds the same port) or "share" (keep a duplicate
         socket for MatchTicket.share_socket). block_direct: testing only -- ignore the peer's direct
-        packets so that punching fails and the relay is used."""
+        packets so that punching fails and the relay is used. reconnect: seconds to keep trying to
+        resume the session after the connection breaks (0 = off). plain_passwords: allow passwords
+        over a plain connection to a server that is not on the local network (not recommended)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -55,8 +65,14 @@ class LobbyClient:
         self.handover = handover
         self.block_direct = block_direct
         self.request_timeout = request_timeout
+        self.reconnect_window = reconnect
+        self.plain_passwords = plain_passwords
 
         self.events = queue.Queue()
+        self.session = None          # "remember me" token from a password login (store it, not the password)
+        self.recovery_codes = None   # shown once after registering
+        self._kicked = False
+        self._reconnecting = False
         self.welcome = None
         self.me = None
         self.token = None
@@ -155,11 +171,12 @@ class LobbyClient:
                                                 "client": CLIENT_NAME, "build": self.build.as_wire()})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
-            self._closing = True
+            closing, self._closing = self._closing, True
             reader_task.cancel()
             self._writer.close()
             await asyncio.gather(reader_task, return_exceptions=True)
             self.connected = False
+            self._closing = closing
             raise
         return self.welcome
 
@@ -204,8 +221,45 @@ class LobbyClient:
                 if not fut.done():
                     fut.set_exception(LobbyError("disconnected", reason))
             await self._drop_game_socket()
-            if not self._closing:
-                self._emit({"t": "disconnected", "reason": reason})
+            if not self._closing and not self._reconnecting:
+                if self.token and self.me and not self._kicked and self.reconnect_window > 0:
+                    self._tasks.append(asyncio.ensure_future(self._reconnect(reason)))
+                else:
+                    self._emit({"t": "disconnected", "reason": reason})
+
+    async def _reconnect(self, reason):
+        """The control connection broke: resume the session (the server keeps it, and a running
+        match, for a while). The game is not touched; it talks to the opponent directly."""
+        self._reconnecting = True
+        self._emit({"t": "reconnecting", "reason": reason})
+        t_end = time.monotonic() + self.reconnect_window
+        delay = 0.5
+        try:
+            while not self._closing and time.monotonic() < t_end:
+                await asyncio.sleep(delay)
+                delay = min(5.0, delay * 2)
+                try:
+                    await self._connect(min(10.0, max(1.0, t_end - time.monotonic())))
+                except (LobbyError, OSError):
+                    continue
+                try:
+                    r = await self._request({"t": "login", "mode": "resume", "token": self.token},
+                                            self.request_timeout)
+                except LobbyError as e:
+                    if e.code == proto.E_AUTH:
+                        break       # the server forgot the session (restart, or too late)
+                    continue
+                self.me = r["you"]
+                self._start_keepalive()
+                self._emit({"t": "reconnected"})
+                return
+        finally:
+            self._reconnecting = False
+        if not self._closing:
+            self.connected = False
+            if self._writer is not None:
+                self._writer.close()
+            self._emit({"t": "disconnected", "reason": reason})
 
     async def _dispatch(self, msg):
         t = msg["t"]
@@ -218,7 +272,8 @@ class LobbyClient:
                 else:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
-                     "leaderboard", "bye"):
+                     "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
+                     "rematch"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -235,6 +290,9 @@ class LobbyClient:
             for p in self.players:
                 if p["id"] == self.me["id"]:
                     self.me = p
+
+    async def _on_kicked(self, msg):
+        self._kicked = True
 
     async def _on_match_found(self, msg):
         self.match = dict(msg, state="ready")
@@ -273,6 +331,12 @@ class LobbyClient:
 
     async def _on_match_start(self, msg):
         gs = self._gs
+        if msg.get("continue") and self.match and self.match["match"] == msg["match"] and \
+                self.match.get("state") != "playing":
+            # Rematch inside the running games: no new socket, no new ticket.
+            self.match["state"] = "playing"
+            self._emit(dict(msg, ticket=None))
+            return False
         if gs is None and (not self.match or self.match["match"] != msg["match"]):
             # Resumed session: the game is already running; remember the match for the result report.
             self.match = dict(msg, state="playing")
@@ -398,6 +462,13 @@ class LobbyClient:
                 pass
 
     # ================================================================ background upkeep
+    def _start_keepalive(self):
+        old = getattr(self, "_keepalive_task", None)
+        if old is not None and not old.done():
+            old.cancel()
+        self._keepalive_task = asyncio.ensure_future(self._keepalive())
+        self._tasks.append(self._keepalive_task)
+
     async def _keepalive(self):
         """Control-channel keepalive (the server drops silent clients) and a fresh UDP RTT to the
         server every 30 s (the lobby shows it and the ranked queue matches on it)."""
@@ -436,27 +507,100 @@ class LobbyClient:
         r = await self._request(msg, self.request_timeout + 5)
         self.me = r["you"]
         self.token = r["token"]
+        if r.get("session"):
+            self.session = r["session"]
+        elif msg.get("mode") == "session":
+            self.session = msg.get("session")
+        self.recovery_codes = r.get("recovery_codes")
+        self._kicked = False
         await self._measure_server()
-        self._tasks.append(asyncio.ensure_future(self._keepalive()))
+        self._start_keepalive()
         return self.me
+
+    # ---------------------------------------------------------------- credentials
+    def password_ok(self):
+        """May credentials (password, remembered login) go to this server? Yes over TLS, and over a
+        plain connection only to this PC or the local network (or when plain_passwords is set)."""
+        if self.tls or self.plain_passwords:
+            return True
+        return is_local_address(self.server_ip or self.host)
+
+    def _need_secure(self):
+        if not self.password_ok():
+            raise LobbyError(proto.E_INSECURE,
+                             "this server has no encryption (TLS): a password would cross the internet readable. "
+                             "Play as a guest, or ask the server's host to set up TLS and give you its fingerprint.")
 
     def login_guest(self, name):
         return self._login({"t": "login", "mode": "guest", "name": name})
 
-    def login(self, name, password):
-        return self._login({"t": "login", "mode": "account", "name": name, "password": password})
+    def login(self, name, password, remember=False):
+        self._need_secure()
+        return self._login({"t": "login", "mode": "account", "name": name, "password": password,
+                            "remember": bool(remember)})
 
-    def register(self, name, password):
-        return self._login({"t": "login", "mode": "register", "name": name, "password": password})
+    def register(self, name, password, remember=False):
+        """Create the account and log in. The one-time recovery codes are in .recovery_codes afterwards:
+        show them to the player once (they are the only way back in without the password)."""
+        self._need_secure()
+        return self._login({"t": "login", "mode": "register", "name": name, "password": password,
+                            "remember": bool(remember)})
+
+    def login_session(self, session):
+        """Log in with a remembered login (the token a password login with remember=True returned)."""
+        self._need_secure()
+        return self._login({"t": "login", "mode": "session", "session": session})
 
     def resume(self, token=None):
         return self._login({"t": "login", "mode": "resume", "token": token or self.token})
 
-    def quick_match(self):
-        return self._call({"t": "queue", "mode": "quick"})
+    def change_password(self, old, new, remember=False):
+        """Every remembered login of the account ends; with remember, this one gets a new token."""
+        self._need_secure()
+        r = self._call({"t": "passwd", "old": old, "new": new, "remember": bool(remember)})
+        self.session = r.get("session")
+        return r
 
-    def ranked_match(self):
-        return self._call({"t": "queue", "mode": "ranked"})
+    def recover(self, name, code, new_password):
+        """Forgotten password: a recovery code + a new password (connect() first, no login needed)."""
+        self._need_secure()
+        return self._call({"t": "recover", "name": name, "code": code, "password": new_password})
+
+    def new_recovery_codes(self, password):
+        self._need_secure()
+        return self._call({"t": "recovery_codes", "password": password})["codes"]
+
+    def logout(self, forget=False):
+        """Leave the lobby; forget=True also ends the remembered login on the server."""
+        if forget and self.connected:
+            try:
+                self._run(self._send({"t": "logout", "forget": True, "session": self.session}))
+            except LobbyError:
+                pass
+            self.session = None
+        self.close()
+
+    # ---------------------------------------------------------------- profiles and characters
+    def profile(self, name=None, history=10):
+        return self._call({"t": "profile", "name": name, "history": history})["profile"]
+
+    def history(self, name=None, limit=20, offset=0):
+        return self._call({"t": "history", "name": name, "limit": limit, "offset": offset})["rows"]
+
+    def set_char(self, char):
+        return self._call({"t": "set_char", "char": char})
+
+    def quick_match(self, char=None):
+        msg = {"t": "queue", "mode": "quick"}
+        if char:
+            msg["char"] = char
+        return self._call(msg)
+
+    def ranked_match(self, char=None):
+        msg = {"t": "queue", "mode": "ranked"}
+        if char:
+            msg["char"] = char
+        return self._call(msg)
 
     def cancel_queue(self):
         return self._call({"t": "unqueue"})
@@ -470,8 +614,12 @@ class LobbyClient:
     def leave_room(self):
         return self._call({"t": "room_leave"})
 
-    def rematch(self):
-        return self._call({"t": "rematch"})
+    def rematch(self, match_id=None, accept=True, keep=False):
+        """Rooms: rematch() starts the next match in the room. After any other match: the finished
+        match's id; keep=True when this player's game still runs connected to the opponent's."""
+        if match_id is None:
+            return self._call({"t": "rematch"})
+        return self._call({"t": "rematch", "match": match_id, "accept": bool(accept), "keep": bool(keep)})
 
     def challenge(self, player_id):
         return self._call({"t": "challenge", "player": player_id})["challenge"]
@@ -493,17 +641,25 @@ class LobbyClient:
         mid = match_id or (self.ticket.match_id if self.ticket else None)
         return self._call({"t": "game_started", "match": mid})
 
-    def report_result(self, winner, score=None, match_id=None):
-        """winner: 0 (P1 = host) or 1 (P2 = join) or None (draw); score: [P1 rounds, P2 rounds]."""
+    def report_result(self, winner, score=None, match_id=None, source=None, desync=None, hash=None,
+                      frames=None, reason=None):
+        """winner: 0 (P1 = host) or 1 (P2 = join) or None (draw / no result); score: [P1 rounds, P2 rounds].
+        source: game (read from the game) | manual (the player said) | quit | crash | disconnect.
+        desync / hash / frames: the netplay layer's evidence when there is any (docs/RANKED.md)."""
         mid = match_id or (self.ticket.match_id if self.ticket else None) or (self.match or {}).get("match")
-        return self._call({"t": "result", "match": mid, "winner": winner, "score": score})
+        msg = {"t": "result", "match": mid, "winner": winner, "score": score}
+        for k, v in (("source", source), ("desync", desync), ("hash", hash), ("frames", frames),
+                     ("reason", reason)):
+            if v is not None:
+                msg[k] = v
+        return self._call(msg)
 
     def leave_match(self, match_id=None):
         mid = match_id or (self.match or {}).get("match") or (self.ticket.match_id if self.ticket else None)
         return self._call({"t": "leave_match", "match": mid})
 
-    def leaderboard(self, limit=20):
-        return self._call({"t": "leaderboard", "limit": limit})["rows"]
+    def leaderboard(self, limit=20, offset=0):
+        return self._call({"t": "leaderboard", "limit": limit, "offset": offset})["rows"]
 
     def refresh(self):
         return self._call({"t": "lobby"})
@@ -550,3 +706,16 @@ class LobbyClient:
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(5)
         self._loop = None
+
+
+def is_local_address(host):
+    """True for this PC and private (LAN) addresses: where a plain connection does not cross the
+    internet. Host names are resolved."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            addr = ipaddress.ip_address(socket.gethostbyname(host))
+        except (OSError, ValueError):
+            return False
+    return addr.is_loopback or addr.is_private or addr.is_link_local

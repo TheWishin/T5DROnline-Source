@@ -1,0 +1,530 @@
+"""MatchDriver: the glue between the lobby and the game.
+
+From "match found" to "result reported" without the player doing anything:
+
+    match_found   a game left over from the last opponent is closed (process mode) or sent
+                  back to idle (persistent mode); a rematch inside the running games keeps it
+    match_start   the game gets the match: T5_NET_* (netplay), T5_FIGHT (direct-fight mode:
+                  characters, stage, rounds), T5_HUD_* (names and ranks for the fight HUD)
+    during play   the game's log is followed: the netplay desync detector, a lost opponent,
+                  "match over" lines, crashes
+    result        the game's result file (T5_NET_RESULT_FILE) is read and reported with the
+                  evidence (desync count, state hash when the game writes one); the file is
+                  archived so the next match in the same game process starts clean
+    after         the game stays open; a rematch with the same opponent continues inside
+                  the running games (no restart, no new connection)
+
+Two ways to run the game:
+
+* process mode (works today): one t5dr.exe per opponent. The netplay session is set up
+  from the environment at boot (T5_NET_*); rematches against the same opponent continue in
+  that process (the game returns to character select after a match and stays in lockstep).
+* persistent mode (T5_CTL_DIR, for direct-fight builds): the game is started once and
+  stays open between opponents; each match is a command written to <dir>/cmd.json, the
+  game answers in <dir>/state.json. Protocol: docs/RANKED.md, "Game control channel".
+  Used when the game build understands it (mode="auto" looks for the T5_CTL_DIR string in
+  the game binaries) or when forced (mode="persistent").
+
+The driver has no UI. A front end feeds it every LobbyClient event (on_event), calls
+poll() a few times a second and shows the notes it gets back:
+
+    {"t": "driver", "kind": "status", "text": ...}
+    {"t": "driver", "kind": "ask_result", "match": id, "opponent": name}   no result: ask the player
+    {"t": "driver", "kind": "rematch_offer", "match": id, "opponent": name, "timeout": s}
+    {"t": "driver", "kind": "game_closed"}
+"""
+import functools
+import json
+import os
+import queue
+import re
+import threading
+import time
+
+from . import fighters, ranks
+from .handover import read_result_file
+
+CTL_MARKER = b"T5_CTL_DIR"
+
+RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
+RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
+RE_OVER = re.compile(r"\[netplay\] frame (\d+): match (\d+) over, P1 (\d+) - P2 (\d+)")
+RE_LOST = re.compile(r"\[netplay\] no input from the peer .*peer lost")
+RE_CONNECTED = re.compile(r"\[netplay\] connected \(")
+RE_BUILD = re.compile(r"\[netplay\] the peer runs a different build")
+
+
+class GameLog:
+    """Follows the game's log file and keeps what the lobby needs from the netplay lines."""
+
+    def __init__(self, path):
+        self.path = path
+        self.pos = 0
+        self.partial = ""
+        self.mismatches = 0          # netplay's cumulative mismatch count (sync check lines)
+        self.desync_lines = 0        # DESYNC lines (the first 10 mismatches are logged one by one)
+        self.last_frame = 0
+        self.overs = []              # (frame, n, p1 rounds, p2 rounds)
+        self.peer_lost = 0
+        self.connected = False
+        self.crashed = False
+        self.build_mismatch = False
+
+    def poll(self):
+        if not self.path:
+            return
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(self.pos)
+                data = f.read()
+                self.pos = f.tell()
+        except OSError:
+            return
+        if not data:
+            return
+        text = self.partial + data.decode("utf-8", "replace")
+        lines = text.split("\n")
+        self.partial = lines.pop()
+        for ln in lines:
+            self.line(ln.rstrip("\r"))
+
+    def line(self, ln):
+        if "[CRASH]" in ln:
+            self.crashed = True
+        if "[netplay]" not in ln:
+            return
+        m = RE_SYNC.search(ln)
+        if m:
+            self.last_frame = max(self.last_frame, int(m.group(1)))
+            self.mismatches = max(self.mismatches, int(m.group(2)))
+            return
+        m = RE_DESYNC.search(ln)
+        if m:
+            self.desync_lines += 1
+            self.mismatches = max(self.mismatches, self.desync_lines)
+            return
+        m = RE_OVER.search(ln)
+        if m:
+            self.overs.append(tuple(int(x) for x in m.groups()))
+            self.last_frame = max(self.last_frame, int(m.group(1)))
+            return
+        if RE_LOST.search(ln):
+            self.peer_lost += 1
+        elif RE_CONNECTED.search(ln):
+            self.connected = True
+        elif RE_BUILD.search(ln):
+            self.build_mismatch = True
+
+    def mark(self):
+        """Counters at the start of a match: (mismatches, overs, peer_lost)."""
+        self.poll()
+        return (self.mismatches, len(self.overs), self.peer_lost)
+
+
+class Control:
+    """The game control channel (persistent mode): cmd.json written here, state.json read."""
+
+    def __init__(self, directory):
+        self.dir = directory
+        os.makedirs(directory, exist_ok=True)
+        self.seq = 0
+        for name in ("cmd.json", "state.json"):
+            try:
+                os.remove(os.path.join(directory, name))
+            except OSError:
+                pass
+
+    def send(self, cmd, **fields):
+        self.seq += 1
+        d = dict(fields, seq=self.seq, cmd=cmd, time=time.time())
+        path = os.path.join(self.dir, "cmd.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+        os.replace(tmp, path)
+        return self.seq
+
+    def state(self):
+        try:
+            with open(os.path.join(self.dir, "state.json"), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else None
+        except (OSError, ValueError):
+            return None
+
+
+_ctl_cache = {}
+
+
+def game_supports_control(paths):
+    """Does this game build understand T5_CTL_DIR? (looks for the variable's name in the binaries)"""
+    key = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            key.append((p, st.st_mtime, st.st_size))
+        except OSError:
+            pass
+    key = tuple(key)
+    if key not in _ctl_cache:
+        _ctl_cache[key] = _scan_for_control(paths)
+    return _ctl_cache[key]
+
+
+def _scan_for_control(paths):
+    for p in paths:
+        try:
+            with open(p, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 22)
+                    if not chunk:
+                        break
+                    if CTL_MARKER in chunk:
+                        return True
+                    f.seek(-len(CTL_MARKER), os.SEEK_CUR)
+                    if len(chunk) < (1 << 22):
+                        break
+        except OSError:
+            continue
+    return False
+
+
+class MatchDriver:
+    def __init__(self, client, launch, workdir, table=None, mode="auto", game_files=(), extra_env=None,
+                 ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False):
+        """client: LobbyClient. launch(env) -> game handle (.running(), .stop(), .proc, .log_path) or
+        None. workdir: where result files and the control channel live. mode: auto | process |
+        persistent. game_files: binaries to check for the control channel (mode auto).
+        ask_manual: when the game closes without a result, ask the player (else report a quit).
+        auto_rematch: accept this many rematches by itself (scripted runs). async_calls: lobby
+        requests on a worker thread (a UI must not wait for the network)."""
+        self.client = client
+        self.launch = launch
+        self.workdir = os.path.abspath(workdir)
+        os.makedirs(self.workdir, exist_ok=True)
+        self.table = table or fighters.table()
+        if mode == "auto":
+            mode = "persistent" if game_supports_control(game_files) else "process"
+        self.mode = mode
+        self.extra_env = dict(extra_env or {})
+        self.ask_manual = ask_manual
+        self.auto_rematch = auto_rematch
+        self.fight_env = fight_env
+        self.async_calls = async_calls
+        self.notes = queue.Queue()
+
+        self.game = None             # game handle
+        self.glog = None             # GameLog of that game
+        self.ctl = None              # Control (persistent mode)
+        self.session = None          # id of the first match this game process played
+        self.result_path = None
+        self.ticket = None           # MatchTicket of the match being played
+        self.session_ticket = None   # MatchTicket that set up the current game connection
+        self.match_ev = None         # its match_start event
+        self.mark = None             # GameLog.mark() at its start
+        self.reported = False
+        self.t_reported = 0.0
+        self.last = None             # last finished match (match_result event)
+        self.history = []            # (match id, what was reported) -- for tools and tests
+        self.rematch_sent = set()    # finished matches this side already answered a rematch for
+
+    # ------------------------------------------------------------------ helpers
+    def note(self, kind, **kw):
+        self.notes.put(dict(kw, t="driver", kind=kind))
+
+    def status(self, text):
+        self.note("status", text=text)
+
+    def game_running(self):
+        return self.game is not None and self.game.running()
+
+    def connected_game(self):
+        """The game runs and its netplay session is alive (a rematch can continue in it)."""
+        if not self.game_running() or self.glog is None:
+            return False
+        self.glog.poll()
+        return self.glog.connected and self.glog.peer_lost == 0 and not self.glog.build_mismatch
+
+    def stop_game(self):
+        if self.game is not None:
+            try:
+                if self.ctl is not None and self.game.running():
+                    self.ctl.send("quit")
+                    t_end = time.monotonic() + 3.0
+                    while self.game.running() and time.monotonic() < t_end:
+                        time.sleep(0.1)
+                if self.game.running():
+                    self.game.stop()
+            finally:
+                self.game = None
+                self.glog = None
+                self.ctl = None
+                self.session = None
+
+    # ------------------------------------------------------------------ environment
+    def match_env(self, ev, ticket):
+        env = ticket.game_env(result_file=self.result_path)
+        fight = ev.get("fight") or {}
+        players = ev.get("players") or []
+        if self.fight_env and fight.get("p1") and self.table.fighter(fight["p1"]) and \
+                self.table.fighter(fight.get("p2")) and self.table.stage(fight.get("stage")):
+            env["T5_FIGHT"] = self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
+        if len(players) == 2:
+            # In-game identity (docs/RANKED.md): names and rank tiers for the fight HUD.
+            env["T5_HUD_NAMES"] = "|".join(p.get("name", "")[:16] for p in players)
+            env["T5_HUD_RANKS"] = ",".join(str(p.get("tier") or ranks.BEGINNER) for p in players)
+        env.update(self.extra_env)
+        return env
+
+    # ------------------------------------------------------------------ lobby events
+    def on_event(self, ev):
+        t = ev.get("t")
+        if t == "match_found":
+            if not ev.get("keep"):
+                self._release_game()
+        elif t == "match_start":
+            if ev.get("ticket") is not None or ev.get("continue"):
+                self._start(ev)
+        elif t == "match_result":
+            self._finished(ev)
+        elif t == "rematch":
+            if ev.get("state") == "offered":
+                self.note("rematch_offer", match=ev["match"], opponent=ev.get("from", {}).get("name", "?"),
+                          timeout=ev.get("timeout", 20))
+                if self.auto_rematch > 0:
+                    self.rematch(ev["match"], True)
+            elif ev.get("state") == "declined":
+                self.status("Your opponent does not want a rematch.")
+        elif t == "disconnected":
+            self.ticket = None
+
+    def _release_game(self):
+        """A new opponent: the old game session cannot be reused in process mode."""
+        if self.game is None:
+            return
+        if self.mode == "persistent" and self.game_running():
+            self.ctl.send("idle")
+            return
+        self.stop_game()
+
+    def _start(self, ev):
+        t = ev.get("ticket")
+        mid = ev["match"]
+        if ev.get("continue"):
+            # Rematch inside the running games: same process, same connection.
+            if not self.game_running():
+                self.status("The game is not running any more; leaving the rematch.")
+                self._call(self.client.leave_match, mid)
+                return
+            self.ticket = _Continued(mid, ev, self.session_ticket)
+            self.match_ev = ev
+            self.mark = self.glog.mark()
+            self.reported = False
+            if self.mode == "persistent":
+                self.ctl.send("fight", match=mid, env=self.match_env(ev, self.ticket))
+            self.status(f"Rematch against {ev['opponent']['name']}: same connection, the game stays open.")
+            self._call(self.client.game_started, mid)
+            return
+        self.ticket = t
+        self.session_ticket = t
+        self.match_ev = ev
+        self.reported = False
+        if self.mode == "persistent" and self.game_running():
+            env = self.match_env(ev, t)
+            self.ctl.send("fight", match=mid, env=env)
+        else:
+            self.stop_game()
+            self.session = mid
+            self.result_path = os.path.join(self.workdir, f"result-{mid}.json")
+            for p in (self.result_path, self.result_path + ".tmp"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            env = self.match_env(ev, t)
+            if self.mode == "persistent":
+                self.ctl = Control(os.path.join(self.workdir, "ctl"))
+                launch_env = {"T5_CTL_DIR": self.ctl.dir}
+                launch_env.update({k: v for k, v in env.items() if k.startswith("T5_HUD")})
+                self.ctl.send("fight", match=mid, env=env)
+                env = launch_env
+            game = self.launch(env)
+            if game is None:
+                self.status("The game could not start; leaving the match.")
+                self._call(self.client.leave_match, mid)
+                self.ticket = None
+                return
+            if getattr(t, "_dup_socket", None) is not None and getattr(game, "proc", None) is not None:
+                t.share_socket(game.proc.pid)
+            self.game = game
+            self.glog = GameLog(getattr(game, "log_path", None))
+        self.mark = self.glog.mark() if self.glog else (0, 0, 0)
+        self.status(f"Playing against {t.summary()}")
+        self._call(self.client.game_started, mid)
+
+    def _finished(self, ev):
+        self.last = ev
+        if self.ticket is not None and getattr(self.ticket, "match_id", None) == ev["match"]:
+            self.ticket = None
+        if ev.get("rematch_window") and self.auto_rematch > 0:
+            self.rematch(ev["match"], True)
+
+    def rematch(self, match_id=None, accept=True):
+        """Offer / accept (or decline) a rematch against the last opponent."""
+        mid = match_id or (self.last or {}).get("match")
+        if not mid or mid in self.rematch_sent:
+            return
+        self.rematch_sent.add(mid)
+        keep = accept and self.connected_game()
+        if accept and self.auto_rematch > 0:
+            self.auto_rematch -= 1
+        self._call(self.client.rematch, mid, accept, keep)
+        if not accept and self.mode == "process":
+            self.stop_game()
+
+    def _call(self, fn, *args):
+        if self.async_calls:
+            # The thread gets the queue and the call, not the driver: a UI's objects must never be
+            # released from a worker thread (Tk aborts the process when that happens).
+            threading.Thread(target=_call_now, args=(self.notes, fn) + args, daemon=True).start()
+            return None
+        return _call_now(self.notes, fn, *args)
+
+    # ------------------------------------------------------------------ polling
+    def poll(self):
+        """Call a few times a second. Returns the notes for the UI (list of dicts)."""
+        t = self.ticket
+        if t is not None and not self.reported:
+            self._check(t)
+        out = []
+        try:
+            while True:
+                out.append(self.notes.get_nowait())
+        except queue.Empty:
+            pass
+        return out
+
+    def _evidence(self):
+        """Desync count since the match started, from the game log."""
+        if self.glog is None or self.mark is None:
+            return None
+        self.glog.poll()
+        return max(0, self.glog.mismatches - self.mark[0])
+
+    def _check(self, t):
+        mid = t.match_id
+        if self.glog is not None:
+            self.glog.poll()
+        res = read_result_file(self.result_path) if self.result_path else None
+        if res is not None:
+            extra = _result_extra(self.result_path)
+            self._archive(mid)
+            desync = self._evidence() or 0
+            desync = max(desync, int(extra.get("desync") or 0))
+            self._report(mid, res[0], res[1], "game", desync=desync, hash=extra.get("hash"),
+                         frames=extra.get("frames"))
+            return
+        running = self.game_running()
+        g = self.glog
+        if g is not None and self.mark is not None:
+            overs = g.overs[self.mark[1]:]
+            if overs and not running:
+                # No result file, but the log saw the match end (older netplay builds).
+                _f, _n, w1, w2 = overs[-1]
+                winner = 0 if w1 > w2 else 1 if w2 > w1 else None
+                self._report(mid, winner, [w1, w2], "game", desync=self._evidence() or 0)
+                return
+            if g.peer_lost > self.mark[2]:
+                self._report(mid, None, None, "disconnect", desync=self._evidence() or 0,
+                             reason="peer_lost")
+                self.status("The connection to your opponent's game was lost.")
+                return
+        if running:
+            return
+        code = getattr(getattr(self.game, "proc", None), "returncode", None)
+        crashed = (g is not None and g.crashed) or (code not in (0, None))
+        self.note("game_closed", code=code, crashed=crashed)
+        if crashed:
+            self._report(mid, None, None, "crash", reason=f"exit {code}")
+            self.status("The game stopped unexpectedly; the match does not count (repeated crashes do).")
+        elif self.ask_manual:
+            self.reported = True     # wait for the player's answer (answer())
+            self.note("ask_result", match=mid, opponent=t.opponent.get("name", "?"), slot=t.slot)
+        else:
+            self.answer("quit")
+
+    def answer(self, what):
+        """The player's answer when the game closed without a result: won | lost | draw | quit."""
+        t = self.ticket
+        if t is None:
+            return
+        mid = t.match_id
+        if what == "quit":
+            self.reported = True
+            self.history.append((mid, {"source": "quit"}))
+            self._call(self.client.leave_match, mid)
+            return
+        winner = {"won": t.slot, "lost": 1 - t.slot, "draw": None}[what]
+        self._report(mid, winner, None, "manual")
+
+    def _report(self, mid, winner, score, source, **ev):
+        self.reported = True
+        self.t_reported = time.monotonic()
+        ev = {k: v for k, v in ev.items() if v is not None}
+        self.history.append((mid, dict(ev, winner=winner, score=score, source=source)))
+        self._call(functools.partial(self.client.report_result, winner, score, mid, source=source, **ev))
+        if source == "game":
+            self.status("Result sent" + (f" (the games went out of sync on {ev['desync']} frames)"
+                                         if ev.get("desync") else "") + "; waiting for the lobby...")
+
+    def _archive(self, mid):
+        d = os.path.join(self.workdir, "results")
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.replace(self.result_path, os.path.join(d, f"{mid}.json"))
+        except OSError:
+            pass
+
+    def close(self):
+        self.stop_game()
+
+
+def _call_now(notes, fn, *args):
+    try:
+        return fn(*args)
+    except Exception as e:   # noqa: BLE001 -- reported, never raised into the UI loop
+        notes.put({"t": "driver", "kind": "status", "text": f"Lobby: {getattr(e, 'msg', '') or e}"})
+        return None
+
+
+class _Continued:
+    """Ticket stand-in for a rematch inside the running games (the connection is the old one)."""
+
+    def __init__(self, mid, ev, prev):
+        self.match_id = mid
+        self.slot = ev.get("slot", getattr(prev, "slot", 0))
+        self.role = ev.get("role", getattr(prev, "role", "host"))
+        self.opponent = ev.get("opponent", {})
+        self.ranked = ev.get("ranked", False)
+        self.delay = ev.get("delay", getattr(prev, "delay", 3))
+        self.rtt_ms = ev.get("rtt_ms", 0.0)
+        self.path = ev.get("path", getattr(prev, "path", ""))
+        self._prev = prev
+
+    def game_env(self, result_file=None):
+        env = self._prev.game_env(result_file) if self._prev is not None else {}
+        env["T5_NET_MATCH"] = self.match_id
+        return env
+
+    def summary(self):
+        return f"{self.opponent.get('name', '?')} -- rematch, input delay {self.delay}"
+
+
+def _result_extra(path):
+    """Optional fields of the result file beyond winner/score (desync, hash, frames)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return {k: d[k] for k in ("desync", "hash", "frames") if k in d}
+    except (OSError, ValueError, TypeError):
+        return {}

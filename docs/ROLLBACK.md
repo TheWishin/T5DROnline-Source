@@ -974,3 +974,47 @@ the decoder reads garbage until the ring cycles. The way to settle it is an
 `ATRAC_TRACE=1` run with rollbacks (every add with its ring and file
 offsets) compared with the title's own counters in the restored memory --
 not done. Rollback stays opt-in.
+
+---
+
+# Phase 9 -- the decisive trace (branch `rollback9`)
+
+## 18. The stream corruption is rollback-made, and where it comes from
+
+`ATRAC_TRACE=1` pair at RTT 50 (run t50, 634/421 rollbacks, no abort in
+240 s) analysed with `tools/atrac_trace_analyze.py`:
+
+- **Without rollbacks there are no decode errors at all**: 0 in the lockstep
+  fight n5, in the no-rollback test run aref, in the neutral-input pair p0
+  and in the coordinator's npcheck4. With rollbacks: 1 023 errors for 190
+  rollbacks (a1, single instance, test mode), 281 for 23 (m1), 2 244 for
+  634 (t50 host) -- 3 to 12 per rollback, in-process as much as online.
+- The title's stream adds stay **perfectly sequential across every
+  rollback**: 5 005 adds, file offsets continuing chunk after chunk, the
+  single jump being the track's loop restart; the add right after a rollback
+  continues at the expected file offset and ring position. So the HLE is not
+  handed wrong *offsets*.
+- The first decode error of each side comes a dozen adds after an ordinary
+  1-2 frame rollback, with no offset anomaly before it.
+
+So what is handed over is wrong *content*: the title (sound update on the
+main thread, skipped in re-simulated frames, its counters restored) re-issues
+the add of a chunk it had already added before the rollback, and the HLE --
+whose ring write pointer was not rewound -- copies that many bytes from the
+position *after* the chunk, i.e. whatever the ring holds there, into the host
+copy of the file at the next file offset; the frames decoded from those bytes
+fail, and when enough of the ring is accounted wrongly (`ring_fill` grows
+with every duplicate add and shrinks only per decoded frame) the title's
+feeder sees no writable space and aborts at the next stream switch (a round
+end). Patch 0024's drop of adds "decided before a rollback" covers the case
+only when the title asks `GetStreamDataInfo` again before its next add, which
+it evidently does not always do.
+
+The fix that follows from this: make the HLE **content-addressed** for
+adds after a rollback -- when a slot is stale, compare the bytes at the
+title's *previous* write position (the HLE's `ring_wr` minus the last add)
+with the chunk it already holds at the previous file offset; equal means the
+title rewrote the same chunk, and the add is the duplicate to drop *while
+keeping the title's own write position as the new `ring_wr`* (so its next
+chunk lands where it writes it), or rewind `ring_wr`/`read_pos`/`have` by the
+last add's size and re-copy. That is the next step; rollback stays opt-in.

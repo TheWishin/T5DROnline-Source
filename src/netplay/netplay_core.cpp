@@ -887,8 +887,7 @@ void rb_log_frame(uint32_t f, const PadInput in[2], uint64_t hash, bool predicte
     State& s = S();
     if (!s.log) return;
     std::lock_guard<std::mutex> lk(s.log_mu);
-    fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx %c %c
-", f,
+    fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx %c %c\n", f,
             in[0].buttons, in[0].lx, in[0].ly, in[0].rx, in[0].ry,
             in[1].buttons, in[1].lx, in[1].ly, in[1].rx, in[1].ry,
             (unsigned long long)hash, predicted ? 'P' : 'R', confirmed ? 'C' : 'U');

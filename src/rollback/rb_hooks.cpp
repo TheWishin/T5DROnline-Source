@@ -365,8 +365,13 @@ void sound_skip(bool on)
 {
     const uint32_t w = sound_word();
     if (!w || on == g_sound_skipped) return;
-    if (on) { g_sound_saved = rd32(w); wr32(w, 0); }
-    else wr32(w, g_sound_saved);
+    /* The word is in the rollback state: a frame committed while it was
+     * zeroed (a re-simulated frame) restores it as zero, so the value put
+     * back is the last live one, not whatever the restore left (k0c: the
+     * joiner's sound update stayed off after such a rollback, its round-end
+     * music stop was never issued and the fight phase never advanced). */
+    if (on) { const uint32_t v = rd32(w); if (v) g_sound_saved = v; wr32(w, 0); }
+    else if (g_sound_saved) wr32(w, g_sound_saved);
     g_sound_skipped = on;
 }
 

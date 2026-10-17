@@ -32,6 +32,7 @@
 #include "../directfight/df.h"
 
 extern "C" uint8_t* vm_base;
+extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025 */
 
 namespace rb {
 
@@ -329,6 +330,7 @@ void test_on_frame(ppu_context* ctx)
                 for (uint32_t ea = kSave[ri].base; ea < kSave[ri].base + kSave[ri].len; ea += 0x1000) g_snap_page_hash[ea >> 12] = state_page_hash(ea);
             uint32_t rpages = 0; double rms = 0;
             const bool restored = state_rollback(g_snap_frame, &rpages, &rms);
+            if (restored) cellAtrac_rb_rolled_back();
             g_have_snap = false;            /* one rollback per point */
             if (!restored) { g_rollback_fail++; note("ROLLBACK at %u -> %u: undo logs gone (oldest reachable %u)", f, g_snap_frame, state_oldest_frame()); g_logical = f + 1; set_sim_frame(f); keyread_tick(); return; }
             const bool ok = state_hash() == g_snap_hash;

@@ -251,6 +251,9 @@ const char* kDefaultHash =
  * in step (cosmetic or timing-derived: sound variations, timestamps). */
 const char* kDefaultHashSkip =
     "1074F218:4,"                     /* the C library rand() word: a side thread (0x1230AC -> 0x12C558) consumes it at its own pace */
+    "1008F088:4,"                     /* the stage id: re-rolled from that rand() at the second round's intro (l0d: 0x13 vs 0x1A), the fight unchanged */
+    "10090030:4,10090900:4,"          /* +0x830 of each fighter block: a pointer into 0x10670000 set at a match intro (m50c: 0x10670AF0 vs 0x106707F0), the fight unchanged */
+    "100A0A00:80,"                    /* an effect record set at a match intro: a unit vector at +0x10 (m0c), a scale at +0x30 (n0c: 1,1,1 vs 0,0,0), the fight unchanged */
     "1008F0C4:4,1008F0D0:4,"          /* timestamps */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
     /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart

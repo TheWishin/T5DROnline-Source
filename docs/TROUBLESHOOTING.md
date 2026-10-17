@@ -586,6 +586,10 @@ From our QA report of 2026-10-16. None of these is a problem with your PC.
   title. It needs Sony's servers, which are gone. Use the launcher's Online tab
   instead (see "Online" in the README).
 
+Not a problem: when the camera swings behind scaffolding, pillars or boards,
+those objects turn see-through for a moment, so you can still see the
+fighters. The game does this itself.
+
 Fixed since the QA report of 2026-10-16: dark faces, see-through rectangles on
 floors, flat white background figures (spectators, wolves), the 1970 clock and
 the failing first save.

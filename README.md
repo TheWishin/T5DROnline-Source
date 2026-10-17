@@ -4,8 +4,8 @@ Tekken 5: Dark Resurrection (PS3, PlayStation Network release) running natively
 on Windows. It is recompiled, not emulated. Online play between friends is
 being built.
 
-**No release zip is published yet (2026-10-16).** Until one is, see "Building
-from source" at the end of this page.
+**First test release: 0.1.0-preview (2026-10-17).** Download
+`T5DR-Online-0.1.0-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 <!-- players:start -->
 **Test release. Expect bugs.** Please report them (see "Bug reports" below).
@@ -22,30 +22,28 @@ Deutsch: https://github.com/TheWishin/T5DROnline/blob/main/docs/README.de.md
 - You build the game on your own PC from **your own copy**: the PSN package
   (`.pkg`) and the license (`.rap`) from your own account. The launcher does
   this for you.
-- Online play between friends (a lobby, the two PCs talk directly) is the goal.
-  It is **not playable yet**. See "Online".
+- Online play between friends works like Tekken 6 Native Online: log in (or
+  play as a guest) in the launcher's Online tab, find an opponent, and the game
+  starts directly in the fight. See "Online".
 
-## Status (2026-10-16)
+## Status (2026-10-17)
 
-Tested on one development PC (Windows 11, 16-core Ryzen 9). Not yet tried on a
-clean PC.
+Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). A run on a
+clean PC and a match between two real PCs over the internet are still to come.
 
 | Area | State |
 |---|---|
 | Start-up | Works. Boots, opens the window, reaches the title, menus, character select and fights. |
-| Menus | 60 fps. |
-| Fights | Run, but at about 30-45 fps, not 60. Being worked on. |
-| Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work in test runs. Options work too, but "Delete Save Data" does nothing. Gallery needs PSN and fails cleanly offline. |
-| Fighters, stages | Render correctly. 14 fighters and 12 stages were tried. |
-| Graphics glitches | Every fighter's face is dark (brown/black). Light see-through rectangles on floors/walls in some stages. Some background figures are flat white. |
-| Music, sound effects | Work. Short drops can happen when the frame rate dips. |
-| Movies | Intro and title movies play with sound. They slow down when the game runs under 60 fps. |
-| Keyboard, Xbox pad | Work. |
-| PlayStation pads, arcade sticks | Built in (`controls.ini`). Not yet tried on real hardware by a person. |
-| Saving | Unreliable. The first save on a fresh profile can fail without a message. Saves worked in other tests. The in-game clock reads 1970. |
-| Long sessions | Memory bug. After about two trips through the title screen, or about 3 minutes idle at the title, the screen can turn white or the game can crash. Restart the game. A fix is in progress. |
-| Online play | In progress. Not playable yet. |
-| Build from your copy | Works on the development PC (about 90 seconds). Not yet tried on a clean PC. |
+| Menus, fights | 60 fps, also with other programs busy on the PC. Weaker PCs are not measured yet. |
+| Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery needs PSN and fails cleanly offline. |
+| Fighters, stages | Render correctly. Faces and floor shadows are fixed. Some background figures may still look flat white. |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
+| Music, sound effects, movies | Work. |
+| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Real arcade sticks are not yet tried by a person. |
+| Saving | Works. The in-game clock shows the real date. |
+| Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
+| Online play | Works on one PC and through the public lobby server. Delay-based netcode (2-3 frames of input delay); rollback is being finished. Not yet played between two real PCs over the internet. |
+| Build from your copy | Works on the development PC. |
 
 ## Requirements
 
@@ -146,32 +144,34 @@ Keyboard (default) and Xbox controller:
 
 ## Online
 
-**In progress. You cannot play online yet.**
+1. Start the launcher and open the **Online** tab. The public server
+   "T5DR Online" is preselected.
+2. Click **Play as guest**, or **Log in**. Ranked needs an account: create one in
+   the tab and keep the recovery codes it shows.
+3. Search a **quick** or **ranked** match, or open a lobby room for a friend.
+   When an opponent is found you see the ping and accept within 15 seconds.
+4. The game starts directly in the fight: first to 3 rounds. Afterwards pick
+   **Rematch** or **Next game**. The game stays open between matches.
 
-What is planned (the same model as Tekken 6 Native Online):
+Good to know:
 
-- You open the launcher, log in (or play as a guest), find an opponent in the
-  lobby and play.
-- The two PCs send each other the controller inputs directly. Delay-based first,
-  rollback later. A cable is better than Wi-Fi.
-- A small lobby server only introduces the players, helps them through their
-  routers and relays the traffic when that fails. Both players need the same
-  build.
-- With a direct connection each PC learns the other's IP address.
-
-What exists today:
-
-- The lobby server and client (matchmaking, NAT traversal, relay, ratings) are
-  in the repository, with 55 tests on one PC.
-- Not done: the netplay code is not merged into the game, the launcher's Online
-  tab is still a placeholder, and nothing was tried across two real networks.
+- The two PCs send each other the controller inputs directly. If their routers
+  don't allow that, the lobby server relays them. With a direct connection each
+  PC learns the other's IP address.
+- A cable is better than Wi-Fi.
+- The first time, Windows Firewall asks whether the game and Python may use the
+  network. Allow it for **private networks**.
+- Netcode: delay-based for now (2-3 frames of input delay). Rollback is being
+  finished.
+- Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
+  disconnecting counts as a loss. A desync voids the match.
+- More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 Do not use the game's own **Online** menu entry. Sony's servers are gone. After
 the terms screen it crashes (known).
 
-Friends who want to try the lobby later can run their own server. See
-https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
-("Running your own server").
+You can run your own server: on a small Linux VPS, with Docker, on a Mac, or
+with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md).
 
 ## Updating
 

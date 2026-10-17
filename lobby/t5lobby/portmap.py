@@ -59,7 +59,10 @@ def default_gateway():
                     if len(p) > 2 and p[1] == "00000000" and int(p[3], 16) & 2:
                         return socket.inet_ntoa(struct.pack("<I", int(p[2], 16)))
         elif os.name == "nt":
+            # route.exe writes the console (OEM) code page: umlauts on a German Windows are not
+            # UTF-8 (PYTHONUTF8=1) and not always cp1252 either; only digits and dots are parsed.
             out = subprocess.run(["route", "print", "-4", "0.0.0.0"], capture_output=True, text=True, timeout=5,
+                                 encoding="oem", errors="replace",
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
             best = None
             for line in out.splitlines():

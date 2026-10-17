@@ -12,7 +12,7 @@
 #include "rb_net.h"
 
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
-extern "C" void cellAtrac_rb_rolled_back(void);
+extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 
 namespace rb { namespace net {
 
@@ -322,7 +322,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
                  f, first_wrong, depth, state_oldest_frame(), g_floor);
         } else {
-            cellAtrac_rb_rolled_back();   /* the title's pending stream adds were decided before this */
+            cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
             g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++;
             if (depth > g_st.max_depth) g_st.max_depth = depth;
             QueryPerformanceCounter(&g_resim_t0);

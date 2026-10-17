@@ -72,7 +72,8 @@ LONG CALLBACK veh(EXCEPTION_POINTERS* ep)
     uint32_t top = guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
     std::string chain;
     char t[32];
-    if (top) { snprintf(t, sizeof t, "%06X+%X", top, off); chain = t; }
+    snprintf(t, sizeof t, "tid%lu ", (unsigned long)GetCurrentThreadId()); chain = t;
+    if (top) { snprintf(t, sizeof t, "%06X+%X", top, off); chain += t; }
     chain += "|";
     chain += guest_backtrace(10);
     EnterCriticalSection(&g_cs);
@@ -172,9 +173,8 @@ void wft_disarm(const char* tag)
     for (auto& kv : by_chain) v.push_back({ kv.second.second, kv.first + " pages " + std::to_string(kv.second.second) });
     std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first > b.first; });
     for (auto& e : v) logline("W %s %s", tag, e.second.c_str());
-    if (g_all) {   /* per page: writes by chain */
-        for (auto& kv : g_who) logline("WP %s %s writes %d", tag, kv.first.c_str(), kv.second);
-    }
+    /* per page: writes by chain (one fault per page per window unless T5_RB_WFT_ALL) */
+    for (auto& kv : g_who) logline("WP %s %s writes %d", tag, kv.first.c_str(), kv.second);
 }
 
 } // namespace rb

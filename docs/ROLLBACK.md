@@ -997,24 +997,80 @@ not done. Rollback stays opt-in.
 - The first decode error of each side comes a dozen adds after an ordinary
   1-2 frame rollback, with no offset anomaly before it.
 
-So what is handed over is wrong *content*: the title (sound update on the
-main thread, skipped in re-simulated frames, its counters restored) re-issues
-the add of a chunk it had already added before the rollback, and the HLE --
-whose ring write pointer was not rewound -- copies that many bytes from the
-position *after* the chunk, i.e. whatever the ring holds there, into the host
-copy of the file at the next file offset; the frames decoded from those bytes
-fail, and when enough of the ring is accounted wrongly (`ring_fill` grows
-with every duplicate add and shrinks only per decoded frame) the title's
-feeder sees no writable space and aborts at the next stream switch (a round
-end). Patch 0024's drop of adds "decided before a rollback" covers the case
-only when the title asks `GetStreamDataInfo` again before its next add, which
-it evidently does not always do.
+So what is handed over is wrong *content*. The title streams the music from
+its archive (T55DATA1.BIN) in 16 KB blocks into a staging buffer in the
+sound heap (0x400DEFC0, outside the rollback state like the ring and the
+stream object at 0x4000CF50), and its stream thread copies chunks of 688
+bytes (one ATRAC3+ frame) from there to the ring at the write pointer the
+HLE last gave it. The bookkeeping that decides *which* chunk comes next --
+how much of the block has been fed, which block to request next -- is in the
+rolled-back part of memory (it is not written by the stream thread: a
+write-fault trace of two frames shows that thread touching nothing of the
+state but the decoder's PCM output pages at 0x45C00000), so after a rollback
+the reader is half rewound: traced single-instance runs (`runs/fs2`, `fs5`,
+`arc1`, ATRAC_TRACE=1 + FS_READ_ALL=1) show it
 
-The fix that follows from this: make the HLE **content-addressed** for
-adds after a rollback -- when a slot is stale, compare the bytes at the
-title's *previous* write position (the HLE's `ring_wr` minus the last add)
-with the chunk it already holds at the previous file offset; equal means the
-title rewrote the same chunk, and the add is the duplicate to drop *while
-keeping the title's own write position as the new `ring_wr`* (so its next
-chunk lands where it writes it), or rewind `ring_wr`/`read_pos`/`have` by the
-last add's size and re-copy. That is the next step; rollback stays opt-in.
+- feeding the chunks of the rolled-back frames a second time (1-3 chunks
+  back, exactly the rollback depth in feeds),
+- feeding a block's tail from the staging buffer *after* the next block has
+  replaced it there (135 of 136 bytes wrong), re-reading that next block
+  (same archive offset, same bytes) and feeding its head a second time,
+- or carrying on as if nothing happened, and only later, when its block
+  counter catches up with the rewound one, feeding a whole block head again
+  (3 168 bytes at the continuation position that are the image's bytes of
+  2 752 earlier).
+
+The HLE, not rewound, took all of that at face value: the byte count is the
+only thing `cellAtracAddStreamData` carries, and the position those bytes
+were taken from was its own -- a chunk of bytes fed again landed where the
+*next* bytes belonged and the decoder read frames from the wrong bytes a
+ring later. Patch 0024's drop of the first add after a rollback made it
+worse when that add was a genuinely new chunk (the dropped bytes were gone
+for good: the first decode error of t50 sits exactly in the chunk after the
+drop).
+
+Things tried and dropped on the way: rewinding the HLE's stream position
+with the rollback (snapshot per commit, put back on restore -- consistent
+with a title whose reader rewinds, wrong by the rollback depth for one that
+carries on, which this title does half the time); following the title's own
+copy of the last answer (the write pointer it holds names the ring place
+*and* the file offset the answer stood for -- right for the ring position,
+but the title's half-rewound reader does not feed what it says it feeds);
+assembling the image by content (a chunk already in the image is a second
+feed and goes where it is -- right for genuine second feeds, but a chunk of
+digital silence matches a frame earlier and the position drifts, and the
+block-tail garbage is in the image nowhere). Each cut the 600 decode errors
+of a 75 s test-mode run (rollbacks every 30 frames) to 5-7, never to 0, and
+two of them to several hundred in the wrong cases.
+
+**The fix (patch 0025, `libs/codec/cellAtrac.c` + a hook in
+`runtime/ppu/ppu_fs.cpp`): the library reads the stream from the archive
+itself.** `cellFsRead` tells the library every read into guest memory
+(buffer, archive offset, host path); the bytes the title feeds first (the
+16 KB it sets the stream up with, then its first chunk) are found in those
+blocks, which gives the stream's offset in the archive (two sightings must
+agree and the archive must hold those bytes there, verified by reading it);
+from then on the image is filled from the archive -- when the title's add
+reaches past what the image holds, and on demand when the decoder needs a
+frame the title has not fed yet. The title's adds only pace the stream: its
+ring accounting is kept as before (write pointer followed, as the title's
+copy of the last answer may be an earlier or a later one; a place no answer
+named is a switch straddled by a rollback and is dropped), and what it
+copies into the ring is not used (with ATRAC_TRACE=1 it is checked: after
+the first rollback of a run it stays wrong for the rest of the stream, the
+reader's bookkeeping and the library's position never meet again -- which no
+longer matters). The ring fill is derived (what the title reads next less
+what the decoder decodes next, a lap apart for a looping stream) instead of
+counted, so a second feed does not fill the ring on paper. A stream fed
+from memory, or one whose bytes no read is found for, is handled as before.
+
+Result in test mode (`runs/arc1`, 75 s, rollbacks every 30 frames, 91
+rollbacks): **0 decode errors** (593 with the series through 0024, same
+test), gameplay hash unchanged; without rollbacks 0 title bytes differ from
+the archive's over 654 adds (`runs/arc2`), so the mapping is exact. This is
+the "music/stream position is output state, not match state" rule of
+Tekken 6 Native Online's 2.2.4 release notes, taken to its end: the stream
+is not rolled back, not restored, not re-fed -- it is read.
+
+Full matches with the fix (direct fight Asuka vs Lili, stage 20, 2 rounds,
+KOs, delay 1, 3 % loss, 300 s): see the j-runs below.

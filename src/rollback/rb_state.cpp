@@ -220,6 +220,16 @@ static void ring_reclaim(uint32_t slot)
 void state_init()
 {
     if (g_ready) return;
+    /* T5_RB_EXCLUDE=addr:len,... (hex): more regions left out of the rollback state */
+    if (const char* e = getenv("T5_RB_EXCLUDE")) {
+        const char* q = e;
+        while (*q) {
+            char* z; uint32_t a = (uint32_t)strtoul(q, &z, 16); if (z == q || *z != ':') break; q = z + 1;
+            uint32_t l = (uint32_t)strtoul(q, &z, 16); if (z == q) break; q = z;
+            if (state_add_exclude(a, l)) fprintf(stderr, "[rb] state: T5_RB_EXCLUDE %08X+%X left out of the rollback state\n", a, l);
+            while (*q == ',') q++;
+        }
+    }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;

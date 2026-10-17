@@ -358,14 +358,15 @@ neither changed the fight (the same hash again afterwards, the same result).
   in src/netplay/t5_hooks.cpp, `kGameSkip` in src/rollback/rb_state.cpp).
   Since branch cross-cpu the whole camera blocks are left out (0x1F0 bytes
   each from 0x10099730 and 0x10099920, which hold the copies above, and
-  8 bytes at each counter): at a KO under rollback (Bryan vs Steve, stage 28,
-  7 of 8 runs at RTT 50, identical builds too) more of them differed for
-  21 frames, then all was equal again and both results matched. Rollback's
-  draw cut causes it: re-simulated frames skip the draw, which keeps this
-  camera state; with `T5_RB_CUT=none` the same matches stayed equal.
+  8 bytes at each counter): from the final KO camera of Bryan vs Steve
+  (stage 28) more of them differed for 21 frames, then all was equal again
+  and both results matched -- with identical builds on both sides too, in
+  lockstep (1 of 4 runs) and more often under rollback (7 of 8 at RTT 50,
+  0 of 2 with `T5_RB_CUT=none`: re-simulated frames skip the draw, which
+  adds to it). Camera state that follows timing, not input.
 - **Secondary motion.** 0x1008FF00, 0x1008FFB0 and (since cross-cpu)
   0x1008FFF0, 12 bytes each: xyz points a fraction of a unit apart for
-  20-some frames under rollback (Christie vs Feng, stage 17, same build on
+  13-20 frames under rollback (Christie vs Feng, stage 17, same build on
   both sides), the fight unchanged.
 - **Pool addresses.** 0x100911D0, 0x10091AA0, 0x10091AB8-0x10091B07: addresses
   the animation update takes from a pool at a match intro; they differ when the

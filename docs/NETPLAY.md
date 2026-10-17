@@ -343,9 +343,24 @@ what each side ran: `fp: game code -march=x86-64-v3, main thread MXCSR 0x1F80`.
 + 0031 + 0032, one lift; v3 = `-march=x86-64-v3`, base = no `-march` with the
 software fma and the C runtime's non-FMA3 paths, native = `-march=native`,
 which on this Zen 4 means AVX-512). Every match was two rounds to a KO;
-rollback rows had 160-440 rollbacks per side:
+the rollback runs had 49-481 rollbacks per side (up to 664 re-simulated
+frames). Run directories: `build/xc/runs5/<pair>/{rollback,lockstep}`:
 
-CROSS_BUILD_TABLE
+| host vs joiner | matches (stage) | rollback: frames compared, different | lockstep: frames, different |
+|---|---|---|---|
+| v3 vs base | Asuka vs Lili (20), Lili vs Dragunov (24) | 8,997, **0** | 9,002, **0** |
+| base vs v3 | Kazuya vs Jin (31), Nina vs Hwoarang (33) | 10,617, **0** | 10,602, **0** |
+| native vs base | Law vs Paul (25), King vs Marduk (22) | 11,937, **0** | 12,501, **0** |
+| v3 vs base, persistent game, 3 sessions, both sides mashing | Lili vs Dragunov (33), Kazuya vs Heihachi (25), Lili vs Dragunov (31) | 16,454, **0** | 16,499, **0** |
+| v3 vs base (`--build`) | Bryan vs Steve (28), Christie vs Feng (17) | 9,417, **0** | 11,601, **0** |
+| v3 vs native | Bryan vs Steve, Christie vs Feng | 9,417, **0** | 11,641, **0** |
+| base vs native | Bryan vs Steve, Christie vs Feng | 9,417, **0** | 11,622, **0** |
+
+Every result file pair agreed (winner, score, hash), the built-in check
+reported 0 mismatches, and `fp_audit.py --strict` passed on both DLLs. The
+first four rows ran before the hash change described next (they compared more
+words); the Bryan-vs-Steve rows after it. Earlier runs of the same kind in
+`build/xc/runs` (b2-b4 builds, the same result) are not counted here.
 
 Before patch 0032 a v3 build and a baseline build also played in sync on this
 PC (runs `before_v3_vs_none`: 11,453 rollback and 9,602 lockstep frames, 0
@@ -363,29 +378,40 @@ which the MXCSR check rules out anyway. Offline (`T5_NET_MODE=local`, the same
 scripted Bryan-vs-Steve match one instance at a time): v3, v3, native, native
 gave the same hash on all 7,141-7,321 frames.
 
-**Rollback's KO camera.** At first the Bryan-vs-Steve rollback pairs failed:
-21 frames from the final KO (frame 4239) had different hashes, then they were
-equal again and both results matched. It is not the builds: v3 vs v3, native
-vs native and base vs base did the same (7 of 8 runs at RTT 50, none at RTT
-0, none in lockstep), and with `T5_RB_CUT=none` (re-simulated frames run the
-draw too) the same matches stayed equal. The words (`T5_NET_DESYNC_DUMP=1`):
-camera state the draw keeps -- the rest of the two 0x1F0-byte camera blocks
-at 0x10099730 / 0x10099920 whose tails fight-polish had already left out, and
-the second word of the counters at +0x638 of the second and third fighter
-block. Christie vs Feng showed a 12-byte secondary-motion point at 0x1008FFF0
-the same way. They are now left out of the state hash as well
+**The KO camera.** At first the Bryan-vs-Steve pairs failed: 21 frames from
+the final KO camera (frame 4239) had different hashes, then they were equal
+again and both results matched. It is not the builds: v3 vs v3, native vs
+native and base vs base did the same -- under rollback in 7 of 8 runs at RTT
+50 (none at RTT 0), in lockstep in 1 of 4 (`control_lockstep` of
+`xB2_v3_vs_native_bryan`) -- and with `T5_RB_CUT=none` (re-simulated frames
+run the draw too) 0 of 2. The words (`T5_NET_DESYNC_DUMP=1`): camera state
+that follows timing rather than input -- the rest of the two 0x1F0-byte camera
+blocks at 0x10099730 / 0x10099920 whose tails fight-polish had already left
+out after its 100-frame lockstep transient, and the second word of the
+counters at +0x638 of the second and third fighter block. Christie vs Feng
+showed a 12-byte secondary-motion point at 0x1008FFF0 the same way (13-33
+frames, same build too). Both are now left out of the state hash
 (`kDefaultHashSkip`, `kGameSkip`; docs/DIRECTFIGHT.md "Known transient
-mismatches"). Before that, a ranked match with such a KO would have been
-voided (any desync voids it, docs/RANKED.md).
+mismatches"). Before that, a ranked match with such a KO was voided (any
+desync voids it, docs/RANKED.md).
 
 **Cost** (main-thread busy ms per fight frame, offline Asuka vs Lili, median
-of 3000 frames, two instances at a time, quiet machine; the order the two
-instances start in moves it by ~0.4 ms, so each was run in both orders):
+of 3000 frames from the `T5_PERF_LOG` busy column, two instances at a time on a quiet
+machine; two runs of one build differ by up to ~0.5 ms, so each was run at
+least twice, once in each start order):
 
-CROSS_BUILD_COST
+| game DLL | before 0032 | with 0032 |
+|---|---|---|
+| v3 | 4.90, 5.34 | 5.51, 5.15 |
+| base on a CPU with FMA3 (uses the instruction) | 5.34, 5.54 | 5.84, 5.94, 5.39 |
+| base as on a CPU without FMA3 (software fma) | -- | 6.07, 5.53 |
+| native (AVX-512 here) | -- | 4.93 |
 
-All ran at 59.9 fps. The software fma (a PC without FMA3) costs about 0.1-0.2
-ms per frame on top of the baseline build.
+All ran at 59.9 fps. On average 0032 added ~0.2 ms (v3) and ~0.3 ms (base)
+per frame, inside the +-0.4 ms spread between runs; the software fma (a PC
+without FMA3) about 0.1-0.2 ms more. The frame budget is 16.7 ms. No reason to
+build the game code the same way everywhere: the targets agree, and v3 stays
+cheaper than the baseline (~0.4 ms a frame here).
 
 **What one PC cannot show.** Intel against AMD: the game code is made of
 IEEE-754 basic operations, conversions and square roots only (no estimate

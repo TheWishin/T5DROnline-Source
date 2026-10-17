@@ -160,9 +160,9 @@ static const Range kGameSkip[] = {
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
     /* camera state, different between two PCs for 100 frames about 20 s into a
-     * match (fight-polish), and for 21 frames from a KO camera under rollback
-     * (the draw cut skips the draw that keeps it; cross-cpu); the fight
-     * unchanged (t5_hooks.cpp kDefaultHashSkip) */
+     * match (fight-polish) and for 21 frames from a KO camera (cross-cpu; in
+     * lockstep too, more often under rollback); the fight unchanged
+     * (t5_hooks.cpp kDefaultHashSkip) */
     { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
 };
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap)

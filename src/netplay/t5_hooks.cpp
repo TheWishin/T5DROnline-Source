@@ -290,13 +290,13 @@ const char* kDefaultHashSkip =
      * fight-polish (build/dp runs rm2, ps3, abl_main4; docs/DIRECTFIGHT.md).
      * The whole two blocks are camera state (0x1F0 each from 0x10099730: a 3x4
      * matrix, positions; the copies above are their tails), and the counter has
-     * a second word: at a KO under rollback (Bryan vs Steve, stage 28: 7 of 8
-     * runs, identical builds too) 0x10099730-0x1009976F, 0x100998C0-0x10099903,
-     * the same in the second block and +0x63C differ for 21 frames from the
-     * KO camera on, then all is equal again and both results match. The draw
-     * cut does it (resim skips the draw, which keeps this camera state): with
-     * T5_RB_CUT=none the same runs stay equal (docs/NETPLAY.md, "Same game
-     * state on every CPU"). */
+     * a second word: from the final KO camera of Bryan vs Steve, stage 28,
+     * 0x10099730-0x1009976F, 0x100998C0-0x10099903, the same in the second
+     * block and +0x63C differ for 21 frames, then all is equal again and both
+     * results match -- identical builds on both sides too, in lockstep (1 of 4
+     * runs) and more often under rollback (7 of 8 at RTT 50; 0 of 2 with
+     * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
+     * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
     "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
 
 /* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,

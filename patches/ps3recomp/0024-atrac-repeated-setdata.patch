@@ -1,0 +1,28 @@
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 636a578..25a85ce 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -257,6 +257,23 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
+         ATRAC_UNLOCK();
+         return (s32)CELL_ATRAC_ERROR_READSIZE_OVER_BUFFER;
+     }
++    /* A repeat of the request a live stream was set up with (same handle,
++     * same ring, same file header) keeps the slot. The title re-issues its
++     * round-end music switch after a rollback re-simulates that frame (its
++     * own side of the switch was rewound, the feeder thread's was not, see
++     * docs/ROLLBACK.md section 16); starting the slot over mid-stream made
++     * the decoder read frames from the wrong bytes and the title's stream
++     * reader abort the process. */
++    if (s->handle_ea == pHandle && s->img && s->ring_ea == pucBufferAddr && s->ring_size == uiBufferByte &&
++        s->t.data_off == t.data_off && s->t.data_bytes == t.data_bytes && s->t.block_align == t.block_align &&
++        s->have >= t.data_off && !memcmp(s->img, file, t.data_off < readable ? t.data_off : readable)) {
++        if (puiWorkMemByte) vm_write32(puiWorkMemByte, 0x1000);
++        fprintf(stderr, "[cellAtrac] SetData handle=0x%08X repeated for the live stream (%u of %u bytes on hand): kept
++",
++                pHandle, s->have, s->file_bytes);
++        ATRAC_UNLOCK();
++        return CELL_OK;
++    }
+     slot_free(s);
+     s->handle_ea = pHandle;
+     s->file = file;

@@ -766,3 +766,101 @@ not delayed at all. Taking the sleep inside the present's flip wait instead
 a 75 s window and the pair fell apart (not understood yet), so it is off.
 What is needed is a real frame skip (not advancing the game for one frame),
 or a sleep placed after the draw thread's wait on the live path; left open.
+
+---
+
+# Phase 5 -- peer-to-peer agreement across rollbacks (branch `rollback5`)
+
+## 14. The desync check in rollback mode
+
+In rollback mode the loop now hands netplay's desync detector the
+**gameplay hash of confirmed frames** (`np::rb_push_hash` with
+`state_game_hash()`: a frame's hash is handed over once every input before it
+is known on this side and any rollback that could change it has been
+re-simulated), and writes `frames.log` (`f I <p1> <p2> <hash> R|P C|U`: the
+inputs the frame ran with, R = remote confirmed / P = predicted). Before,
+the full-state hash was pushed (render bookkeeping, legitimately different
+between peers) and no frame line was written, which made every frame look
+mismatching (the coordinator's npcheck4). `T5_NET_DESYNC_DUMP=1` now also
+works here: the gameplay bytes of the last 64 boundaries, written as
+`rb_desync_f<frame>.bin` on a mismatch (diff: build/rb2/tools/rb_desync_diff.py).
+
+Test harness: `tools/rollback_net_test.py --fight p1,p2,stage,rounds` boots
+both instances straight into the match (`T5_FIGHT`, `T5_NET_START=external`:
+the fight is lockstep frame 0, the rollback loop takes over at frame 1 after
+the warm-up), attack scripts (the ranked driver's: P1 square + forward, P2
+triangle + back, varied) through files -- inline they exceeded the environment
+and parsed as nothing, which is why the first batch (p0/p50/p150, q0/q50/q150)
+ran with neutral input: in sync, but 0 rollbacks.
+
+**Result, current build (patch series through 0022, input delay 0 so that
+every frame is predicted; Asuka vs Lili, stage 20, 2 rounds, 3 % loss,
++-5 ms jitter):**
+
+| run | RTT | rollbacks per 300 frames (frames re-simulated, max depth) | fps | sync check |
+|---|---|---|---|---|
+| d150, sound update skipped in resim (default) | 150 ms | host 33 (145, 9), joiner 37 (176, 9) | 34-38 | **0 mismatching frames through 9000** |
+| d150b, sound update NOT skipped | 150 ms | joiner 37 (96, 5) | 29-47 | desync from frame 920: the whole Mersenne Twister state (0x10095168, 624 words) differs |
+
+So the sound skip is needed for determinism, not only against duplicate
+effects: the sound update consumes the game's Mersenne Twister, and a
+re-simulated frame that runs it again consumes it once more than the live
+frame on the other side. With the skip, the two peers agree on every
+confirmed frame while rolling back 33-37 times per 300 frames. RTT 0 and
+50 ms: see below.
+
+**Open: the sound streamer's exit.** In one RTT-0 run of the old build (r0)
+the host's sound streaming thread (`0x320228 -> 0x3201F8 -> 0x32089C ->
+... -> 0x3A8704`) called `exit(1)` early in the match, i.e. the game quit.
+That thread starves when the sound update is skipped for many consecutive
+frames (section 10); the SFX-only skip is now the first thing to do.
+
+**The RTT-0/50 desyncs and their cause.** With the attack scripts in place,
+runs d0 and d50 (same build, sound skip on) desynced at frames 210 and 920,
+d150b at 920 too, while d150 stayed in sync. The dumps and the logs agree on
+the cause: the game resets its input ring at frames 225, 486, 751, 919 of the
+fight (the lockstep treats every such reset as a scene change: sync point +
+RNG reseed), and at 919 one peer saw the reset at a live boundary -- reseeded
+the Mersenne Twister -- while the other, after a 1-frame rollback, saw it
+again inside the re-simulated boundary, where only the keyread tick's ring
+reset ran, no reseed. The whole MT state then differed (d150b's dump: 624
+words at 0x10095168), and in d150 no reset ever reached a live boundary on
+either side, which is why it stayed in sync. In rollback mode the ring
+resets are now ordinary state (restored and replayed by rollbacks like
+everything else; the peers are frame aligned, so the lockstep's re-alignment
+and reseed are not needed); only `t5_netplay_start()` (the next match) is a
+sync point. Verified by runs e0/e50/e150 below.
+
+**Results with the ring-reset fix** (Asuka vs Lili, stage 20, 2 rounds, the
+ranked driver's attack scripts -- hits land, rounds end by KO at ~frame 5370
+--, input delay 0, 3 % loss, +-5 ms jitter; 330 s each):
+
+| run | RTT | sound update in resim | rollbacks (host / joiner, whole run) | sync check |
+|---|---|---|---|---|
+| e0 | 0 | skipped | 761 / 878 | **0 mismatching frames through 10 800** (the full match, both rounds) |
+| e50 | 50 | skipped | 1090 / 1094 | in sync until the round-end transition at frame 5369, then diverged |
+| e150 | 150 | skipped | 699 / 1327 | diverged at frame 210 (the fight's first phase change) |
+| g0 | 0 | not skipped | 456 / 371 | 29 mismatches by 5400, then the joiner's sound streamer called exit(1) |
+| g50 | 50 | not skipped | 1074 / 1030 | diverged at frame 5369 (round end) |
+| g150 | 150 | not skipped | 727 / 709 | 25 mismatches by 5400, then the joiner's sound streamer called exit(1) |
+
+What differs when it diverges (dumps): the fight's **phase counter**
+`0x1008F070` / `0x1008F078` (one peer one phase ahead: e150 12/11 at frame 210,
+e50/g50 2/1 at the round end), the UI/setup block `0x100996B4..D4` it
+triggers, and at the round end the block `0x1008E690..C0`. These are the
+game's phase transitions (fight start, KO / round end): when a rollback
+straddles one, the two peers come out of it one phase apart -- the transition
+is not reproduced by re-simulation alone (it depends on something a rollback
+does not restore: the excluded sound/loader areas), and e0 only stayed in
+sync because none of its rollbacks straddled a transition. Rollbacks *within*
+a round are reproduced exactly (e0: 1 639 rollbacks over a whole match).
+
+So peer-to-peer agreement across rollbacks is shown within rounds, not yet
+across round transitions; **rollback stays opt-in**. The missing piece is the
+barrier at phase changes: the lockstep handled its scene changes with
+`np::scene_barrier` (both continue at the later frame) -- the same, keyed on
+`0x1008F070` changes at live boundaries and without the RNG reseed, is the
+next step; alternatively the transition's wait has to be made a function of
+the frame. The sound streamer's `exit(1)` (r0 with the skip, g0/g150
+without it) is the other blocker: the streaming feed has to survive both
+skipped and repeated sound updates.

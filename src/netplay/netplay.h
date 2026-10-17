@@ -84,6 +84,9 @@ bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f
 uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */
 uint32_t rb_wait_remote(uint32_t f, uint32_t ms);/* wait up to ms for the peer's input for frame f; returns rb_remote_contig() */
 void     rb_push_hash(uint32_t f, uint64_t h);   /* the FINAL state hash of frame f (all inputs before it confirmed) */
+/* frames.log line for a live frame of the rollback loop: "f I <p1> <p2> <hash> R|P C|U"
+ * (R = remote input confirmed, P = predicted; C = the hash is final/confirmed) */
+void     rb_log_frame(uint32_t f, const PadInput in[2], uint64_t hash, bool predicted, bool confirmed);
 void     rb_poll();                              /* resend when stalled (15 ms), compare hashes */
 bool     rb_peer_lost();
 /* Rollback is negotiated in the HELLO: each side that offers it sets a flag,

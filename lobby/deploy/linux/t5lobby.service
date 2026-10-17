@@ -29,6 +29,7 @@ StandardError=journal
 StateDirectory=t5lobby
 StateDirectoryMode=0750
 ConfigurationDirectory=t5lobby
+ConfigurationDirectoryMode=0750
 
 # Hardening
 NoNewPrivileges=yes

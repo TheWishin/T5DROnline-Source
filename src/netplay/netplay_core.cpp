@@ -146,7 +146,7 @@ struct State {
     uint32_t first_mismatch = UINT32_MAX;
     std::vector<uint32_t> mismatch_queue;   /* frames reported to the hooks by take_mismatch() */
     uint64_t packets_in = 0, packets_out = 0;
-    ULONGLONG last_send_ms = 0;
+    ULONGLONG last_send_ms = 0, last_rx_ms = 0;
 
     std::vector<ScriptEvent> script, script2;
     PadFile padfile, padfile2;
@@ -341,6 +341,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     if (h->magic != kMagic || h->ver != kVersion) return;
     std::lock_guard<std::mutex> lk(s.mu);
     s.packets_in++;
+    s.last_rx_ms = GetTickCount64();
     if (h->type == PKT_HELLO) {
         HelloExt x = { 0, 0 };
         if (n >= (int)(sizeof(Hdr) + sizeof(HelloExt))) memcpy(&x, h + 1, sizeof x);
@@ -758,5 +759,115 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         if ((f % 60) == 0) fflush(s.log);
     }
 }
+
+/* ---- rollback mode ------------------------------------------------------ */
+
+void rb_begin(uint32_t f)
+{
+    init();
+    State& s = S();
+    if (s.mode == Mode::Off || f != 0) return;
+    if (s.mode != Mode::Local) wait_connected();
+    std::lock_guard<std::mutex> lk(s.mu);
+    for (uint32_t k = 0; k < (uint32_t)s.delay; k++) {
+        s.local.in[k] = kNeutral;  s.local.in_tag[k] = k + 1;
+        s.remote.in[k] = kNeutral; s.remote.in_tag[k] = k + 1;
+    }
+    if (s.local_max < (uint32_t)s.delay) s.local_max = (uint32_t)s.delay;
+    while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
+    note("rollback mode starts: frame 0, delay %d", s.delay);
+}
+
+void rb_sample_local(uint32_t f)
+{
+    State& s = S();
+    if (s.mode == Mode::Off) return;
+    PadInput local = sample_local(f + (uint32_t)s.delay);
+    std::lock_guard<std::mutex> lk(s.mu);
+    const uint32_t t = f + (uint32_t)s.delay;
+    for (uint32_t g = s.local_max; g <= t; g++) {   /* hold the sample over any gap; a decided input never changes */
+        s.local.in[g % kRing] = local; s.local.in_tag[g % kRing] = g + 1;
+    }
+    if (t + 1 > s.local_max) s.local_max = t + 1;
+    if (s.mode == Mode::Local) {
+        /* no peer: the second player is this PC's port 2 / script, confirmed at once */
+        PadInput theirs = kNeutral;
+        if (s.localpad) device_input(1, &theirs);
+        theirs.buttons |= script_mask(s.script2, t) | s.padfile2.poll(t);
+        for (uint32_t g = s.remote_contig; g <= t; g++) { s.remote.in[g % kRing] = theirs; s.remote.in_tag[g % kRing] = g + 1; }
+        while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
+        return;
+    }
+    send_inputs_locked();
+}
+
+PadInput rb_local(uint32_t f)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.local.in_tag[f % kRing] == f + 1 ? s.local.in[f % kRing] : kNeutral;
+}
+
+bool rb_remote(uint32_t f, PadInput* out)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.remote.in_tag[f % kRing] != f + 1) return false;
+    *out = s.remote.in[f % kRing];
+    return true;
+}
+
+uint32_t rb_remote_contig()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.remote_contig;
+}
+
+uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
+{
+    State& s = S();
+    const ULONGLONG t0 = GetTickCount64();
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            if (s.remote_contig > f || s.peer_lost || s.mode == Mode::Local) return s.remote_contig;
+            const ULONGLONG now = GetTickCount64();
+            if (now - s.last_send_ms >= 15) send_inputs_locked();
+            if (now - t0 >= ms) return s.remote_contig;
+            if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000 && s.last_rx_ms) {
+                note("no packet from the peer for %ds -- peer lost, continuing with P%d idle", s.timeout_s, 2 - s.slot);
+                s.peer_lost = true;
+                return s.remote_contig;
+            }
+        }
+        WaitForSingleObject(s.rx_event, 2);
+    }
+}
+
+void rb_push_hash(uint32_t f, uint64_t h)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    const uint32_t i = f % kRing;
+    s.local.hash[i] = h; s.local.hash_tag[i] = f + 1;
+    if (f + 1 > s.local_hash_max) s.local_hash_max = f + 1;
+    if (s.mode == Mode::Local) { s.remote.hash[i] = h; s.remote.hash_tag[i] = f + 1; }
+    compare_hashes_locked();
+}
+
+void rb_poll()
+{
+    State& s = S();
+    if (s.mode == Mode::Off || s.mode == Mode::Local) return;
+    std::lock_guard<std::mutex> lk(s.mu);
+    const ULONGLONG now = GetTickCount64();
+    if (s.connected && !s.peer_lost && now - s.last_send_ms >= 15) send_inputs_locked();
+    compare_hashes_locked();
+}
+
+bool rb_peer_lost() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lost; }
+uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }
+uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
 
 } // namespace np

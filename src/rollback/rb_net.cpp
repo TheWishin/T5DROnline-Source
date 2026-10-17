@@ -1,0 +1,217 @@
+/* Rollback netplay loop -- see rb_net.h. */
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <algorithm>
+
+#include "rb.h"
+#include "rb_state.h"
+#include "rb_net.h"
+
+namespace rb { namespace net {
+
+namespace {
+constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per frame (u64) */
+bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
+uint32_t g_start = 0, g_maxpred = 8;
+int g_delay = 0;
+
+/* per-frame history, by frame number */
+constexpr uint32_t kHist = 4096;
+uint64_t     g_hash[kHist];      uint32_t g_hash_tag[kHist];      /* H[f] at the boundary of f */
+np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote input frame f was simulated with */
+bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
+
+uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this */
+uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
+np::PadInput g_last_remote = np::kNeutral;
+
+/* resim in progress */
+bool     g_resim = false;
+uint32_t g_resim_target = 0;     /* the live frame the resim returns to */
+uint32_t g_resim_from = 0;
+LARGE_INTEGER g_qpf, g_resim_t0;
+
+/* statistics (reported every 300 frames) */
+struct Stats {
+    uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0;
+    double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0;
+    uint32_t depth_hist[17] = {};
+} g_st, g_tot;
+LARGE_INTEGER g_t_window;
+
+double ms_since(LARGE_INTEGER t0) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return 1000.0 * (double)(t.QuadPart - t0.QuadPart) / (double)g_qpf.QuadPart; }
+
+np::PadInput remote_for(uint32_t g, bool* predicted)
+{
+    np::PadInput in;
+    if (np::rb_remote(g, &in)) { *predicted = false; g_last_remote = in; return in; }
+    *predicted = true;
+    return g_last_remote;   /* prediction: the last confirmed input repeats */
+}
+
+void inputs_for(uint32_t g, np::PadInput out[2])
+{
+    const int slot = np::local_slot();
+    bool pred = false;
+    np::PadInput rem = remote_for(g, &pred);
+    g_used[g % kHist] = rem; g_used_tag[g % kHist] = g + 1; g_pred[g % kHist] = pred;
+    if (pred) g_st.predicted++;
+    out[slot] = np::rb_local(g);
+    out[1 - slot] = rem;
+}
+
+void report()
+{
+    const double win_ms = ms_since(g_t_window);
+    QueryPerformanceCounter(&g_t_window);
+    char hist[160]; int n = 0;
+    for (int d = 1; d <= 16; d++) if (g_st.depth_hist[d]) n += snprintf(hist + n, sizeof hist - n, " %d:%u", d, g_st.depth_hist[d]);
+    note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f), "
+         "%u stalls (%.1f ms), %u frames ran on predicted input, commit avg %.2f ms, peer ack %u, desync mismatches %u",
+         g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
+         g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.predicted,
+         g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches());
+    g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
+    g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
+    g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
+    g_tot.stall_ms += g_st.stall_ms; g_tot.commit_ms += g_st.commit_ms;
+    for (int d = 0; d < 17; d++) g_tot.depth_hist[d] += g_st.depth_hist[d];
+    g_st = Stats();
+}
+} // namespace
+
+bool enabled()
+{
+    static int e = -1;
+    if (e < 0) {
+        const char* m = getenv("T5_RB_MODE");
+        e = (m && !strcmp(m, "net")) ? 1 : 0;
+        if (e) {
+            if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
+            if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
+            if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
+            if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
+            QueryPerformanceFrequency(&g_qpf);
+        }
+        g_enabled = e == 1;
+    }
+    return g_enabled;
+}
+bool active() { return g_active; }
+bool bypass() { return bypass_on(); }
+uint32_t start_frame() { return g_start; }
+
+void start(uint32_t f)
+{
+    if (g_active) return;
+    g_delay = np::delay();
+    np::rb_begin(f);
+    if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
+    state_init();
+    wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
+    g_active = true;
+    g_checked = g_hash_sent = g_floor = f;
+    g_last_remote = np::kNeutral;
+    np::PadInput r;
+    for (uint32_t g = f; g > 0 && g + 64 > f; g--) if (np::rb_remote(g - 1, &r)) { g_last_remote = r; break; }
+    QueryPerformanceCounter(&g_t_window);
+    note("rbnet: rollback loop takes over at frame %u (delay %d, max prediction %u frames, peer inputs known for < %u)",
+         f, g_delay, g_maxpred, np::rb_remote_contig());
+}
+
+void scene_change(uint32_t nf)
+{
+    g_floor = nf;
+    g_checked = std::max(g_checked, nf);
+    g_hash_sent = std::max(g_hash_sent, nf);
+    state_drop_logs();
+    if (g_verbose) note("rbnet: scene barrier at %u: rollback floor raised", nf);
+}
+
+uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
+{
+    double cms = 0;
+    const uint32_t dirty = state_commit(f, nullptr, &cms);
+    (void)dirty;
+    g_hash[f % kHist] = state_hash(); g_hash_tag[f % kHist] = f + 1;
+
+    if (g_resim) {
+        /* boundary inside a re-simulation: frame f-1 was re-run */
+        g_st.resim_frames++;
+        if (f < g_resim_target) { inputs_for(f, out); return f; }
+        /* back at the live frame: the waits and the draw are back on */
+        g_resim = false;
+        set_bypass(false);
+        sound_skip(false);
+        cut_set(false);
+        const double ms = ms_since(g_resim_t0);
+        g_st.rollback_ms += ms; if (ms > g_st.rollback_ms_max) g_st.rollback_ms_max = ms;
+        if (g_verbose) note("rbnet: rollback %u -> %u done in %.2f ms (%u frames re-simulated)", g_resim_target, g_resim_from, ms, g_resim_target - g_resim_from);
+    } else {
+        g_st.commit_ms += cms;
+        g_st.frames++;
+        /* the local input for frame f + delay, sent at once */
+        np::rb_sample_local(f);
+    }
+    np::rb_poll();
+
+    uint32_t rc = np::rb_remote_contig();
+    /* a scene change (or a prediction window exhausted) waits for the peer */
+    const uint32_t need = scene_flag ? f : (f > g_maxpred ? f - g_maxpred : 0);
+    if (rc < need && !np::rb_peer_lost()) {
+        LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+        rc = np::rb_wait_remote(need - 1, 2000);
+        const double ms = ms_since(t0);
+        g_st.stalls++; g_st.stall_ms += ms;
+        if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
+                                        scene_flag ? "scene change" : "prediction window");
+    }
+
+    /* mispredictions among the frames now confirmed */
+    const uint32_t upto = std::min(rc, f);
+    uint32_t first_wrong = UINT32_MAX;
+    for (uint32_t g = g_checked; g < upto; g++) {
+        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
+        np::PadInput real;
+        if (!np::rb_remote(g, &real)) break;
+        if (!(real == g_used[g % kHist])) { first_wrong = g; break; }
+    }
+    g_checked = std::max(g_checked, upto);
+    if (first_wrong != UINT32_MAX) {
+        const uint32_t depth = f - first_wrong;
+        uint32_t pages = 0; double rms = 0;
+        bool ok = first_wrong >= g_floor && state_rollback(first_wrong, &pages, &rms);
+        if (!ok) {
+            note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
+                 f, first_wrong, depth, state_oldest_frame(), g_floor);
+        } else {
+            g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++;
+            if (depth > g_st.max_depth) g_st.max_depth = depth;
+            QueryPerformanceCounter(&g_resim_t0);
+            g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
+            set_bypass(true);
+            if (g_skipsound) sound_skip(true);
+            cut_set(true);
+            if (g_verbose) note("rbnet: frame %u: rollback to %u (%u frames), %u pages restored in %.2f ms", f, first_wrong, depth, pages, rms);
+            inputs_for(first_wrong, out);
+            return first_wrong;
+        }
+    }
+
+    /* final hashes: every input before g is confirmed and no rollback is pending */
+    for (uint32_t g = std::max(g_hash_sent, g_floor); g <= upto && g <= f; g++) {
+        if (g_hash_tag[g % kHist] == g + 1) np::rb_push_hash(g, g_hash[g % kHist]);
+        g_hash_sent = g + 1;
+    }
+
+    if (g_st.frames && (g_st.frames % 300) == 0) report();
+    inputs_for(f, out);
+    return f;
+}
+
+} } // namespace rb::net

@@ -9,7 +9,7 @@ struct ppu_context;
 
 namespace rb {
 
-enum class Mode { Off, Measure, Test };
+enum class Mode { Off, Measure, Test, Net };   /* Net: T5_RB_MODE=net, the rollback netplay loop (rb_net.cpp) */
 
 /* guest addresses (NPUB30009 v01.00; see np's t5_hooks.cpp) */
 constexpr uint32_t kFrameSemPtr = 0x106D4A30;   /* graphics object + 0x30: per-frame semaphore id */
@@ -41,10 +41,38 @@ void     list_threads();
 bool     keyread_parked();                         /* keyread thread parked, main thread ticks it */
 void     set_sim_frame(uint32_t f);                /* logical frame the pad override answers for */
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
+bool     bypass_on();
+/* The sound update (main loop 0xAA200 -> 0x32819C: the main thread's sound
+ * requests to the bnusCore handoff area) is skipped while the word its TOC
+ * slot (r2 - 0x61E8) points to is 0. Re-simulated frames must not re-issue
+ * the sounds the original frames already started: the loop zeroes it for
+ * them (rb_hooks.cpp). */
+void     sound_skip(bool on);
+uint32_t sound_word();                             /* the guest address of that word (masked out of the hash) */
 
 uint32_t pad_calls();                              /* cellPadGetData override invocations so far */
-void     sample_start();                           /* rb_sample.cpp */
+uint64_t main_tid();                               /* guest thread id of the main thread (1) */
+uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);   /* lifted function containing a host address, 0 if none */
+uint32_t guest_at_host(uintptr_t host_fn);                  /* lifted function whose entry IS this host address, 0 if none */
+
+/* stack-sampling profiler (rb_sample.cpp) */
+void     sample_start();
 void     sample_stop(const char* tag);
+void     sample_reset();
+
+/* indirect-call interposer (rb_icall.cpp): draw cut + per-target timing */
+void     icall_install();
+void     cut_set(bool on);                         /* route the cut set to stubs (re-simulating) */
+uint64_t cut_hits();
+void     icall_timing_start();
+void     icall_timing_stop(const char* tag);
+
+/* write-fault tracer (rb_wft.cpp): T5_RB_WFT=addr:len,... */
+void     wft_install();
+bool     wft_enabled();
+void     wft_arm();
+void     wft_arm_pages(const uint32_t* pages, size_t n);   /* T5_RB_WFT=diff: trace these pages */
+void     wft_disarm(const char* tag);
 
 /* syscall timeline (rb_trace.cpp) */
 void     trace_install();

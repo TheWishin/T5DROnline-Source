@@ -74,6 +74,21 @@ PadInput poll_now(int player);
 
 void  note(const char* fmt, ...);
 
+/* ---- rollback mode (src/rollback/rb_net.cpp) ------------------------------
+ * The same transport, rings, redundancy and desync check as the lockstep,
+ * without the per-frame block: the rollback loop decides when to wait. */
+void     rb_begin(uint32_t f);                   /* f == 0: handshake, neutral frames < delay (as begin_frame(0) does) */
+void     rb_sample_local(uint32_t f);            /* sample this PC's input for frame f + delay() and send it */
+PadInput rb_local(uint32_t f);                   /* the local input decided for frame f (neutral if none yet) */
+bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f, if it has arrived */
+uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */
+uint32_t rb_wait_remote(uint32_t f, uint32_t ms);/* wait up to ms for the peer's input for frame f; returns rb_remote_contig() */
+void     rb_push_hash(uint32_t f, uint64_t h);   /* the FINAL state hash of frame f (all inputs before it confirmed) */
+void     rb_poll();                              /* resend when stalled (15 ms), compare hashes */
+bool     rb_peer_lost();
+uint32_t rb_mismatches();
+uint32_t rb_peer_ack();                          /* the peer has our inputs for frames < this */
+
 } // namespace np
 
 /* Game-side entry point (t5_hooks.cpp), C linkage so any part of the port can

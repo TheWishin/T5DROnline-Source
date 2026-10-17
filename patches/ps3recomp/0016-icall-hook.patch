@@ -1,0 +1,47 @@
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index ffbfbcd..ef9df1a 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2592,6 +2592,26 @@ extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t target)
+     ps3_indirect_call(ctx);
+ }
+ 
++/* ps3_icall_hook: an interposer on every indirect call (bctrl/bctr through a
++ * vtable or function pointer), consulted with the RESOLVED guest target just
++ * before the dispatch. It returns nonzero when it handled the call -- stubbed
++ * it (set r3, nothing else) or dispatched it itself through
++ * ps3_indirect_call_direct (to time it, say) -- and 0 to let the normal
++ * dispatch run. NULL by default: the cost is one load and a predictable
++ * branch per indirect call. A rollback netcode uses it to route the engine's
++ * draw-packet submission to stubs while it re-simulates frames whose picture
++ * is never shown; direct (bl) calls are compiled in and cannot be redirected
++ * this way, so the hook is only a complete cut for targets reached through
++ * vtables. Set it from one thread before the others start calling. */
++typedef int (*ps3_icall_hook_fn)(ppu_context* ctx, uint32_t target);
++extern "C" ps3_icall_hook_fn ps3_icall_hook = NULL;
++static PPU_THREAD_LOCAL int g_icall_nohook;   /* the next dispatch skips the hook */
++extern "C" void ps3_indirect_call_direct(ppu_context* ctx, uint32_t target)
++{
++    g_icall_nohook = 1;
++    ps3_indirect_call_to(ctx, target);
++}
++
+ extern "C" void ps3_indirect_call(ppu_context* ctx)
+ {
+     static std::atomic<int> on = -1;
+@@ -2872,6 +2892,15 @@ static void ps3_indirect_call_impl(ppu_context* ctx)
+         }
+     }
+ 
++    /* The interposer sees the final target (after the explicit-target and the
++     * null/OPD paths above); a handled call returns here with r3 as the hook
++     * left it. ps3_indirect_call_direct arms a one-shot bypass so the hook can
++     * forward a call without re-entering itself. */
++    if (ps3_icall_hook) {
++        if (g_icall_nohook) g_icall_nohook = 0;
++        else if (ps3_icall_hook(ctx, addr)) return;
++    }
++
+     ppu_fn fn = ppu_lookup(addr);
+     if (!fn) {
+         /* OPD-swap clobber fixup: a malformed memcpy (game func_0036FA74) writes

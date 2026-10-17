@@ -302,3 +302,219 @@ Runs are under build/rb/runs/<name>/ (game.log, rb_frames.log, shots).
   of samples were in system DLLs (the usleep loop); after the u64 fix the
   in-exe samples were in the prototype's own hash/diff code, `vm_write32`,
   `vmx_vmaddfp` and NU draw functions 0x355C70/0x355B34/0x35375C.
+
+---
+
+# Phase 2 -- making rollback affordable (branch `rollback2`, build/rb2)
+
+Runtime change: `patches/ps3recomp/0016-icall-hook.patch` (one hook in
+`ps3_indirect_call`, see 6). New code in `src/rollback/`: `rb_state.*` (state
+set, hash, undo-log snapshots), `rb_icall.cpp` (draw cut, per-target timing),
+`rb_sample.cpp` (stack-sampling profiler), `rb_wft.cpp` (write-fault tracer),
+`rb_net.*` (the GGPO-style loop), `rb_test.cpp` (the test mode, rewritten on
+the state module). Netplay additions: `np::rb_*` in `src/netplay/netplay_core.cpp`
+(the transport without the per-frame block) and the `T5_RB_MODE=net` branch
+in `src/netplay/t5_hooks.cpp`. Test harness: `tools/rollback_net_test.py`.
+Runs are under build/rb2/runs/<name>/ (game.log, rb_frames.log).
+
+## 6. The draw cut
+
+**Where the time went.** Two new tools answered it: a stack-sampling
+profiler of the main thread (`T5_RB_SAMPLE=1`: SuspendThread + RtlVirtualUnwind
+every 150 us, host frames mapped to lifted functions, inclusive/self tables
+and folded stacks in `rb_prof_<tag>.txt`) and an inclusive/exclusive timer of
+every vtable call (`T5_RB_ICALL_TIMING=1`, through the new hook). A fight
+frame of the main thread splits into the present (`0x31F7E4 -> 0x34DDB4 ->
+0x383C9C`: flip, the wait for the draw thread, the per-frame semaphore) and the
+scene update (`0x25C518 -> 0x25B580` recursion over the scene nodes). Inside
+the update the fighter node (`0x2683F4`) calls each model's draw through a
+vtable (`0x352F80` -> slot +0x34 -> `0x387324` / `0x3872A8`: matrices,
+materials, skinning kick; 3-4 calls per frame, ~2.5 ms exclusive each on this
+CPU), and the stage, effects and shadows push their packets through
+`0x158D6C`, `0x1357A0`, `0x1EC6FC`, `0x9DC04`, `0x264220`. All of them end in
+the NU::Draw packet writers (`0x355C70` 16-byte move, `0x355B34`, `0x389788`,
+`0x389820`, `0x3898D0`, `0x389A88`, `0x389A0C`, `0x389AA0`, `0x38988C`,
+`0x397AF8`, `0x354160`, `0x353E68`, `0x3559E4`, `0x357F88`) -- confirmed by the
+write-fault tracer (`T5_RB_WFT=43D00000:340000,...`: the draw-list pages are
+made read-only for one frame and every first write faults into a handler
+that records the lifted call chain).
+
+Two waits also had to go: the present's `cellGcmSetFlip` + `cellGcmSetWaitFlip`
+(the HLE sleeps up to 64 ms for a flip nobody requested; 35 % of a
+re-simulated frame's wall time in phase 1) are no-ops while re-simulating,
+like `cellGcmSetUserCommand` and the flip status before.
+
+**The hook** (patch 0016): `ps3_icall_hook(ctx, target)` is consulted in
+`ps3_indirect_call` with the resolved target; a non-zero return means the hook
+handled the call (stubbed it, or forwarded it through
+`ps3_indirect_call_direct`). NULL by default, one load and a predictable
+branch per indirect call otherwise. Direct (`bl`) calls are compiled in and
+cannot be redirected, so a cut is only complete for targets reached through
+vtables -- which the whole draw submission is.
+
+**The cut** (`kDrawCut` in `rb_icall.cpp`, `T5_RB_CUT=addr,...` overrides,
+`T5_RB_CUT=none` disables): while re-simulating, the 21 targets above return 0
+without running (they all return 0 when live: `ret0` column of the timing).
+
+**What the cut may not touch -- and the verdict.** The full-state hash of a
+re-simulated frame differs from the original's after a cut frame: the draw
+keeps bookkeeping (NU::Draw allocation cursors in `0x10742000..0x1074B000`, a
+48 KB matrix block in the heap whose address changes per run, per-model
+packet pointers in the model instances). None of it is gameplay, and the two
+peers of a match roll back at different moments anyway, so render bookkeeping
+can never be part of the desync hash. The verdict of the cut is therefore the
+**gameplay hash** (`state_game_hash()`: the netplay desync check's regions --
+pad blocks, input ring, frame clock, all random generators, round state, both
+fighters, ~25 KB) at every re-simulated boundary, including the boundary
+after the last re-simulated frame ran *with* the draw again (`T5_RB_CUT_TAIL`,
+the situation after a real rollback):
+
+| cut set | gameplay hash | full-state hash at the final boundary |
+|---|---|---|
+| none (r0) | 0 mismatches / 112 boundaries, 14 rollbacks | matches (undo-log restore + resim reproduce phase 1) |
+| model draw only (c2) | 2 / 32 (two transient words, see 8) | differs (bookkeeping) |
+| model draw + packet writers (c3) | **0 / 104**, 13 rollbacks | differs (bookkeeping) |
+| + stage/effect/shadow passes (c6) | **0 / 32** | differs (bookkeeping) |
+| + `0x50B68`, `0x264B04` (c5) | 88 / 88 -- gameplay | -- |
+| + `0x259A64` (c4) | 4 / 8 | -- |
+
+`0x264B04` (called once per fighter) and `0x50B68` are the character
+animation / skeleton update (`0x2884AC -> 0x27F3DC -> 0x2844E4 -> 0x28C17C`,
+trig-heavy) and the match manager: the fight reads their results, they stay.
+`0x259A64` is the main loop's wait for the draw thread's previous list
+(`0x267FE4 -> 0x34CA64 -> callback 0x380A10 -> sys_event_queue_receive`); it is
+not cut either, its cost is a wait, not CPU.
+
+The draw path writes the libc TLS page and the `rand()` state page thousands
+of times per frame (`T5_RB_WFT_ALL=1` single-step trace), but those are libm
+scratch words next to the generators, not `rand()` calls: the generator
+states are in the gameplay hash and match.
+
+**Cost** (`rb_frames.log` `R` lines: QueryThreadCycleTime of the main thread
+and wall time per re-simulated frame; the machine ran 4-6 other game
+instances of other agents during every measurement, so absolute numbers are
+an upper bound):
+
+| per frame (medians over a run; cycles at ~4.5 GHz) | main-thread cycles | wall |
+|---|---|---|
+| normal fight frame (draw + present waits), same runs | 69-77 M | 40-50 ms (17-24 fps under that load) |
+| re-simulated frame, no cut (phase 1 / r0) | 115 M = the normal frame of that run (118 M) | 33 ms |
+| re-simulated frame, cut B (c3, 16 targets) | 43 M (62 % of normal) | 19.7 ms, min 8.4 |
+| re-simulated frame, cut C (m1, 21 targets) | **34.6 M (46 %)**, p10 31.6, min 24.3 | 14.7 ms, p10 9.0, min 5.4 |
+| cut C + sound update skipped (c7, section 8) | **27.7 M (36 %)**, p10 25.7, min 22.2 | 10.5 ms, p10 6.8, min 5.7 |
+| the invalid cut c5 (animation/skeleton update removed, for scale) | 25.9 M | -- |
+
+m1: 23 rollbacks of 8 frames, 0 gameplay-hash mismatches in 184 re-simulated
+boundaries; c7: 20 rollbacks, 0 in 160. 27.7 M cycles are ~6 ms on this
+CPU with 20 other game instances competing for it; the same count on a
+quiet machine was not measured (no quiet moment during this session).
+
+The syscall timeline of a cut frame (`T5_RB_TRACE=1`, run t1) shows where the
+rest is: ~9 ms of lifted sim code (the two fighters' animation and logic,
+`0x2683F4` subtree), then the present's 1.5 ms `sys_cond_wait` for the draw
+thread (`0x357714`) and 0.7 ms `sys_event_queue_receive` (`0x380A10`),
+both waits on the draw thread that still runs the (now nearly empty) lists.
+So a re-simulated frame costs a third of a normal frame, not the 2-3 ms
+target: the fighters' animation/skeleton update alone (`0x264B04` x2 +
+`0x50B68`, c5) is ~9 M cycles, the sim logic the rest. What remains is
+runtime overhead (the `cpu`/`pf` work: inlined guest memory access, `vmx_*`
+helpers), which scales both, and the two draw-thread waits in the present
+(a direct-call path; they could be bypassed at the syscall level once the
+draw thread is known to be idle).
+
+## 7. Undo-log snapshots (`rb_state.cpp`)
+
+`state_init()` takes one shadow copy of the state set (103 MB, ~50 ms, once)
+and resets the write watch. `state_commit(f)` at every boundary:
+`GetWriteWatch(RESET)` over the six ranges (0.3-0.9 ms), then per dirty page
+(700-760 in a fight, 330 of them hashed): append `{ea, old hash}` + the page's
+pre-image (from the shadow) to the undo ring, refresh the shadow, rehash the
+page. **1.0-1.9 ms per frame** (`commit` field of the `F` lines; max 4 ms on a
+loaded machine). The ring holds 24 576 pages (96 MB, ~32 fight frames; 64
+log slots). `state_rollback(to)` applies the logs newest-first: **5-9 ms for
+8 frames** (5 400-7 500 page restores, 2 memcpy each + hash fix-up), i.e. 0.7-1
+ms per frame rolled back; `hash == point` on every rollback of every run (no
+full rehash needed). A scene barrier drops the logs (`state_drop_logs`).
+
+## 8. Sound during re-simulation
+
+The main thread's only writes into the bnusCore handoff area
+(`0x40000000+0x100000`, write-fault trace w2) come from the main loop's sound
+update `0xAA200 -> 0x32819C` (`0x32C820`, `0x32C4F0`, `0x32C368`, ...); the
+rest are the sound threads'. `0xAA200` returns at once when the word its TOC
+slot (`r2 - 0x61E8`, -> `0x10065B70`) points to is 0. `sound_skip(true)`
+zeroes it for re-simulated frames (`T5_RB_SKIPSOUND=1` in the test,
+`T5_RB_NET_SKIPSOUND` in the loop, on by default) and restores it for the
+live frame; the word is masked out of the hash. Verified: c7, 20 rollbacks,
+0 gameplay-hash mismatches in 160 boundaries, and the sound update turned
+out to be ~7 M cycles per frame (the c7 row above). What is NOT verified: the
+audible result (no AUDIO_WAV analysis), and the `0xAAA18`/`0xAC424`/`0x9BFE8`
+calls that the same word gates (the gameplay hash does not see them).
+
+## 9. The rollback loop (`rb_net.*`, `T5_RB_MODE=net`)
+
+Runs inside netplay's hooks (`t5_hooks.cpp` hands every boundary to
+`rb::net::on_boundary()` once lockstep frame `T5_RB_NET_START` is reached;
+until then the delay-based lockstep runs unchanged, which is how the two
+test instances get through the menus in sync). Per boundary of frame f:
+commit (undo log + hash); `np::rb_sample_local(f)` (this PC's input for
+f + delay, sent at once with the usual redundancy); `np::rb_poll()`; the
+first frame g < min(f, peer inputs known) whose confirmed remote input
+differs from the one it was simulated with -> `state_rollback(g)`, waits,
+draw and sound off, re-simulate g..f-1 (the same hook path: the frame
+semaphore wait returns at once), then the live frame f draws; if the peer is
+more than `T5_RB_NET_MAXPRED` (8) frames behind, wait for it; hand the final
+hashes (frames with every input confirmed) to the transport's desync check;
+return the inputs of the frame to run (remote = confirmed, or the last
+confirmed input repeated). A scene change (ring reset / `t5_netplay_start`)
+is acted on only after every input before it is confirmed, then it is the
+lockstep's sync point and a floor for rollbacks. Statistics every 300 frames
+(`[rbnet]` lines): fps, rollbacks, frames re-simulated, depth histogram,
+ms per rollback, stalls, frames run on predicted input, desync mismatches.
+
+`tools/rollback_net_test.py --rtt 100 --loss 5 --delay 2` runs a host and a
+joiner on one PC through a UDP proxy that adds the latency (+-jitter) and
+loss, with varied scripted attacks on both sides from the fight on.
+
+**Results** (one PC, 15-20 game instances of other agents running at the
+same time, so 15-18 fps; delay 2, prediction window 8; menus in np's lockstep,
+rollback from lockstep frame 3400 -- runs under build/rb2/netruns/):
+
+| | n1: RTT 0 | n3: RTT 150 ms, +-5 ms jitter, 2 % loss |
+|---|---|---|
+| joiner, per 300 frames | 22-39 rollbacks, 54-90 frames re-simulated, depth 1-7 (mostly 2-3) | 38-40 rollbacks, 107-178 frames re-simulated, depth 1-8 (mostly 3-5) |
+| ms per rollback (restore + resim, loaded machine) | 27-44 ms (max 121) | 26-63 ms (max 129) |
+| stalls | 1 (104 ms) | 0, plus one 396 ms wait at a scene change |
+| host | 0-1 rollbacks, 0-4 frames on predicted input | 0 rollbacks |
+
+Both sides stayed at the same fps as in lockstep; no crash, no failed
+restore. The asymmetry is expected without GGPO's time synchronisation: the
+joiner runs ahead by the input delay, so it predicts every host input and
+takes every rollback while the host always has the joiner's input in time.
+The frame-advantage balancing (the side that is ahead sleeps a frame now
+and then) is the next step. Open: the n2 run (RTT 100 ms) never got past the
+handshake (the joiner sent 3 packets; a port or proxy issue of the test
+harness, not seen at 0 or 150 ms); the desync counters of these runs are
+meaningless because np's lockstep diverged in the menus before the fight
+(its known menu non-determinism under load, frame 2211-2217 in every run),
+so the gameplay-hash agreement between two peers across rollbacks is
+verified in-process only (m1/c7), not yet peer-to-peer.
+
+## What is left
+
+- Time sync between the peers (frame advantage), and a quiet-machine
+  measurement of the re-simulated frame (27.7 M cycles under load).
+- Rollbacks across round start/end and KO slow-motion were only exercised
+  incidentally (the scripted fights ran through rounds in m1/c7 with
+  rollbacks every 40 frames and 0 gameplay mismatches, and n3 stalled
+  correctly at a scene change); a targeted test of the barrier rule is
+  still to do. Rule as implemented: a scene change (input-ring reset) is a
+  barrier -- all inputs before it must be confirmed, it is a lockstep sync
+  point, no rollback reaches back before it.
+- The sound skip's audible effect (AUDIO_WAV) and the other calls gated by
+  the same word.
+- The two draw-thread waits in the present (1.5 + 0.7 ms per re-simulated
+  frame) and the sim's own cost, which only the runtime's speed work
+  (`cpu`/`pf`) lowers.
+- Direct-fight integration: `t5_netplay_start()` works unchanged (rollback
+  from frame 0 with `T5_RB_NET_START=0`), untested.

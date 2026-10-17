@@ -44,6 +44,7 @@ void    cellGcmSetUserCommand(void* ctx, uint32_t cause);
 int32_t cellGcmSetFlip(void* context, uint32_t bufferId);
 uint32_t cellGcmGetFlipStatus(void);
 void    cellGcmResetFlipStatus(void);
+void    cellGcmSetWaitFlip(void);
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 }
@@ -61,6 +62,7 @@ constexpr uint32_t NID_cellGcmSetUserCommand = 0x8BDE5EBF;
 constexpr uint32_t NID_cellGcmSetFlip        = 0xDC09357E;
 constexpr uint32_t NID_cellGcmGetFlipStatus  = 0x72A577CE;
 constexpr uint32_t NID_cellGcmResetFlipStatus = 0xB2E761D4;
+constexpr uint32_t NID_cellGcmSetWaitFlip     = 0x983FB9AA;
 constexpr uint32_t kKeyreadSemPtr = 0x104CB5C0;   /* u32 semaphore id of the keyread thread */
 constexpr uint32_t kKeyreadQuitFlag = 0x104CCDF4;
 constexpr int SC_SEM_POST = 94;
@@ -200,26 +202,40 @@ void build_map()
         g_map.push_back({ (uintptr_t)function_table[k].func, (uint32_t)function_table[k].addr });
     std::sort(g_map.begin(), g_map.end(), [](const HG& a, const HG& b) { return a.h < b.h; });
 }
-std::string guest_backtrace(int max)
+uint32_t guest_of_host(uintptr_t tgt, uint32_t* off)
 {
     build_map();
+    auto it = std::upper_bound(g_map.begin(), g_map.end(), tgt,
+                               [](uintptr_t v, const HG& e) { return v < e.h; });
+    if (it == g_map.begin()) return 0;
+    --it;
+    uintptr_t end = (it + 1 != g_map.end()) ? (it + 1)->h : it->h + 0x4000;
+    if (tgt >= end) return 0;
+    if (off) *off = (uint32_t)(tgt - it->h);
+    return it->g;
+}
+uint32_t guest_at_host(uintptr_t fn)
+{
+    build_map();
+    auto it = std::lower_bound(g_map.begin(), g_map.end(), fn,
+                               [](const HG& e, uintptr_t v) { return e.h < v; });
+    return (it != g_map.end() && it->h == fn) ? it->g : 0;
+}
+std::string guest_backtrace(int max)
+{
     void* fr[64]; unsigned short n = RtlCaptureStackBackTrace(0, 64, fr, 0);
     std::string s;
     int got = 0;
     for (unsigned short i = 0; i < n && got < max; i++) {
-        uintptr_t tgt = (uintptr_t)fr[i];
-        auto it = std::upper_bound(g_map.begin(), g_map.end(), tgt,
-                                   [](uintptr_t v, const HG& e) { return v < e.h; });
-        if (it == g_map.begin()) continue;
-        --it;
-        uintptr_t end = (it + 1 != g_map.end()) ? (it + 1)->h : it->h + 0x4000;
-        if (tgt >= end) continue;
+        uint32_t off = 0, g = guest_of_host((uintptr_t)fr[i], &off);
+        if (!g) continue;
         char t[48];
-        snprintf(t, sizeof t, "%sfunc_%08X+0x%X", got ? " <- " : "", it->g, (unsigned)(tgt - it->h));
+        snprintf(t, sizeof t, "%sfunc_%08X+0x%X", got ? " <- " : "", g, off);
         s += t; got++;
     }
     return s;
 }
+uint64_t main_tid() { return g_main_tid; }
 
 /* ---- thread table ------------------------------------------------------------ */
 void list_threads()
@@ -256,7 +272,17 @@ void h_cellGcmResetFlipStatus(ppu_context* ctx)
 void h_cellGcmSetFlip(ppu_context* ctx)
 {
     if (ctx->thread_id == g_main_tid) QueryPerformanceCounter(&g_t_flip);
+    if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }   /* re-simulating: nothing to show */
     ctx->gpr[3] = (uint64_t)(int64_t)cellGcmSetFlip((void*)(uintptr_t)(uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4]);
+}
+/* The present (0x383C04) queues the flip and then waits for it; while
+ * re-simulating there is no flip to wait for -- this wait was 35 % of a
+ * re-simulated frame's wall time in the phase-1 numbers. */
+void h_cellGcmSetWaitFlip(ppu_context* ctx)
+{
+    if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }
+    cellGcmSetWaitFlip();
+    ctx->gpr[3] = 0;
 }
 double t_usercmd_ms(LARGE_INTEGER since) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return 1000.0 * (double)(g_t_usercmd.QuadPart - since.QuadPart) / (double)f.QuadPart; }
 double t_flip_ms(LARGE_INTEGER since) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return 1000.0 * (double)(g_t_flip.QuadPart - since.QuadPart) / (double)f.QuadPart; }
@@ -308,6 +334,19 @@ bool keyread_parked()
 }
 void set_sim_frame(uint32_t f) { g_sim_frame = f; }
 void set_bypass(bool on) { g_bypass = on; }
+bool bypass_on() { return g_bypass.load(std::memory_order_relaxed); }
+constexpr uint32_t kSoundEnablePtrSlot = 0x470540u - 0x61E8u;   /* TOC slot -> pointer to the word */
+uint32_t g_sound_word = 0, g_sound_saved = 0;
+bool g_sound_skipped = false;
+uint32_t sound_word() { if (!g_sound_word) g_sound_word = rd32(kSoundEnablePtrSlot); return g_sound_word; }
+void sound_skip(bool on)
+{
+    const uint32_t w = sound_word();
+    if (!w || on == g_sound_skipped) return;
+    if (on) { g_sound_saved = rd32(w); wr32(w, 0); }
+    else wr32(w, g_sound_saved);
+    g_sound_skipped = on;
+}
 
 void install_syscall_hooks()
 {
@@ -334,9 +373,24 @@ struct Register {
         if (!m || !*m) return;
         if (!strcmp(m, "measure")) g_mode = Mode::Measure;
         else if (!strcmp(m, "test")) g_mode = Mode::Test;
+        else if (!strcmp(m, "net")) g_mode = Mode::Net;
         else { fprintf(stderr, "[rb] unknown T5_RB_MODE %s\n", m); return; }
         const char* lf = getenv("T5_RB_LOG");
         g_log = fopen(lf && *lf ? lf : "rb_frames.log", "w");
+        if (g_mode == Mode::Net) {
+            /* Rollback netplay: the pad and frame hooks are netplay's
+             * (src/netplay/t5_hooks.cpp calls rb::net at every boundary); here
+             * only the GPU-handshake bypass for re-simulated frames and the
+             * draw cut are installed. */
+            note("mode net: rollback netplay loop (needs T5_NET_MODE=host|join|local)");
+            ps3_hle_register_ctx(NID_cellGcmSetUserCommand, "cellGcmSetUserCommand(rb)", h_cellGcmSetUserCommand);
+            ps3_hle_register_ctx(NID_cellGcmSetFlip, "cellGcmSetFlip(rb)", h_cellGcmSetFlip);
+            ps3_hle_register_ctx(NID_cellGcmGetFlipStatus, "cellGcmGetFlipStatus(rb)", h_cellGcmGetFlipStatus);
+            ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
+            ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
+            icall_install();
+            return;
+        }
         g_script[0] = parse_script(getenv("T5_RB_SCRIPT"));
         g_script[1] = parse_script(getenv("T5_RB_SCRIPT2"));
         note("mode %s, %zu + %zu scripted presses", m, g_script[0].size(), g_script[1].size());
@@ -347,7 +401,9 @@ struct Register {
         ps3_hle_register_ctx(NID_cellGcmSetFlip, "cellGcmSetFlip(rb)", h_cellGcmSetFlip);
         ps3_hle_register_ctx(NID_cellGcmGetFlipStatus, "cellGcmGetFlipStatus(rb)", h_cellGcmGetFlipStatus);
         ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
+        ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
         g_on_frame = (g_mode == Mode::Measure) ? measure_on_frame : test_on_frame;
+        if (g_mode == Mode::Test) icall_install();   /* before any guest thread runs */
     }
 } g_register;
 

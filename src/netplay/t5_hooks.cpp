@@ -69,6 +69,7 @@
 
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
+#include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
@@ -540,6 +541,44 @@ void on_frame_start(ppu_context* ctx)
         wr32(kRingResetFlag, 1);
     }
     const bool resync = g_start_requested.exchange(false);   /* next match in the same process */
+    if (rb::net::enabled() && f >= rb::net::start_frame() && f > 0) {
+        /* Rollback netplay (T5_RB_MODE=net, src/rollback/rb_net.cpp): the
+         * loop commits the state, exchanges inputs, rolls back and re-simulates
+         * on a misprediction, and says which frame runs now with which inputs.
+         * A scene change is acted on only once every input before it is
+         * confirmed (the loop stalls for that), then it is the lockstep's sync
+         * point as below and a floor for rollbacks. */
+        if (!rb::net::active()) rb::net::start(f);
+        const bool scene = rd32(kRingResetFlag) || resync;
+        np::PadInput in[2];
+        uint32_t run = rb::net::on_boundary(f, scene, in);
+        if (run == f && scene) {
+            const uint32_t nf = np::scene_barrier(f);
+            if (nf > f) {
+                const uint32_t d = nf - f;
+                wr64(kFrameClock, rd64(kFrameClock) + d);
+                for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
+            }
+            g_scenes++;
+            reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+            rb::net::scene_change(nf);
+            char t[64];
+            snprintf(t, sizeof t, "scene %u", g_scenes);
+            np::log_extra(nf, t);
+            if (nf > f) run = rb::net::on_boundary(nf, false, in);
+        }
+        g_frame = run + 1;
+        if (run == f) drain_workers(run);
+        g_cur[0] = in[0];
+        g_cur[1] = in[1];
+        keyread_tick();
+        if (run == f) {
+            watch_match(run);
+            shot(run);
+            dump_memory(run);
+        }
+        return;
+    }
     if ((rd32(kRingResetFlag) || resync) && f > 0) {
         /* The game changed scene during the last frame (every scene start
          * asks keyread to clear the input ring). Scene changes that wait on
@@ -671,8 +710,13 @@ int64_t w_sem_wait(ppu_context* ctx)
         return r;
     }
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
-    int64_t r = g_orig_wait(ctx);
     const uint32_t fs = rd32(kFrameSemPtr);
+    if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
+        /* a re-simulated frame: no wait, straight to the next boundary */
+        on_frame_start(ctx);
+        return 0;
+    }
+    int64_t r = g_orig_wait(ctx);
     if (fs && id == fs && r == 0) on_frame_start(ctx);
     return r;
 }
@@ -688,6 +732,7 @@ int64_t w_sem_post(ppu_context* ctx)
         g_swallowed++;
         return 0;   /* the vblank's keyread wake: the main loop drives keyread now */
     }
+    if (rb::net::bypass() && id == rd32(kFrameSemPtr)) return 0;   /* re-simulating: vblank posts must not pile up */
     return g_orig_post(ctx);
 }
 

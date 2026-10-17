@@ -1,5 +1,5 @@
 diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
-index 636a578..53dc0f5 100644
+index 636a578..4d9407e 100644
 --- a/libs/codec/cellAtrac.c
 +++ b/libs/codec/cellAtrac.c
 @@ -86,10 +86,35 @@ typedef struct {
@@ -69,14 +69,13 @@ index 636a578..53dc0f5 100644
      u32 wr = 0, n = 0, rpos = 0;
      if (s->img) stream_info(s, &wr, &n, &rpos);
      else rpos = s->t.data_off + s->t.data_bytes;   /* all on memory: nothing to add */
-@@ -415,6 +457,13 @@ s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
+@@ -415,6 +457,12 @@ s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
      AtracSlot* s = slot_of(pHandle);
      if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
      if (!s->img) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY; }
 +    if (s->stale) {   /* decided before a rollback: the title asks again and re-reads from read_pos */
 +        static int said = 0;
-+        if (said++ < 4) fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes decided before a rollback, dropped
-+", pHandle, uiAddByte);
++        if (said++ < 4) fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes decided before a rollback, dropped\n", pHandle, uiAddByte);
 +        ATRAC_UNLOCK();
 +        return CELL_OK;
 +    }

@@ -3,6 +3,21 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.8-preview (2026-10-17)
+
+Less input lag, steadier online. Both players need 0.1.8. After the update press
+**BUILD GAME** once.
+
+- **One frame less input lag** offline and online: the game reads the pad later
+  and shows the frame as soon as it is ready.
+- **Online input delay follows the ping**, like Tekken 6 Native Online: as low as
+  possible for your connection. New launcher setting (Settings): Auto, 0, 1 or
+  2 frames; both players' choice must allow it. Ranked uses a fixed delay.
+- **Rollback holds 60 fps** at 150 ms ping (median; was about 50).
+- **No more hang at the end of a match** with a bad connection: tested with a
+  stuttering opponent, 13 matches without a hang (it hung at 3 of 4 before).
+- The lobby server is updated for the fixed ranked input delay.
+
 ## v0.1.7-preview (2026-10-17)
 
 More robust online play. Both players need 0.1.7. After the update press

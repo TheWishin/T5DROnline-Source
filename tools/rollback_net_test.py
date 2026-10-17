@@ -157,6 +157,7 @@ def summarize(d, who, rc, hung):
     p = os.path.join(d, who, "game.log")
     lines = open(p, errors="replace").read().splitlines() if os.path.exists(p) else []
     tot = dict(frames=0, secs=0.0, rollbacks=0, resim=0, stalls=0, stall_ms=0.0, lock_ms=0.0, sleeps=0, sleep_ms=0.0)
+    wfps = []
     snd = [0] * 9
     adv = []
     sync = None
@@ -171,6 +172,8 @@ def summarize(d, who, rc, hung):
         if m:
             g = m.groupdict()
             tot["frames"] += int(g["frames"]); tot["secs"] += float(g["secs"]); tot["rollbacks"] += int(g["rb"])
+            if float(g["secs"]) > 0:
+                wfps.append(int(g["frames"]) / float(g["secs"]))
             tot["resim"] += int(g["resim"]); tot["stalls"] += int(g["stalls"]); tot["stall_ms"] += float(g["stall_ms"])
             tot["lock_ms"] += float(g["lock_ms"] or 0)
             tot["sleeps"] += int(g["sleeps"]); tot["sleep_ms"] += float(g["sleep_ms"]); adv.append(float(g["adv"]))
@@ -189,7 +192,8 @@ def summarize(d, who, rc, hung):
     fps = tot["frames"] / tot["secs"] if tot["secs"] else 0
     out = [f"{who}: exit {rc}{' HUNG' if hung else ''}, sync {('through frame %d: %d mismatching' % sync) if sync else 'none'}, "
            f"decode errors {dec}, aborts {len(aborted)}, matches started {len(starts)}, over {len(overs)}, phase changes {phases}",
-           f"  rollback loop: {tot['frames']} frames in {tot['secs']:.0f} s ({fps:.1f} fps), {tot['rollbacks']} rollbacks, "
+           f"  rollback loop: {tot['frames']} frames in {tot['secs']:.0f} s ({fps:.1f} fps, 300-frame windows median "
+           f"{sorted(wfps)[len(wfps) // 2] if wfps else 0:.1f}), {tot['rollbacks']} rollbacks, "
            f"{tot['resim']} frames re-simulated, {tot['stalls']} stalls ({tot['stall_ms']:.0f} ms, {tot['lock_ms']:.0f} ms in lockstep windows), {tot['sleeps']} time-sync sleeps "
            f"({tot['sleep_ms']:.0f} ms), advantage per window min {min(adv) if adv else 0:.2f} max {max(adv) if adv else 0:.2f}"
            + (f", displayed frame time p50 {ft[0]:.1f} ms p99 {ft[1]:.1f} ms max {ftmax:.1f} ms" if ft else ""),
@@ -200,6 +204,18 @@ def summarize(d, who, rc, hung):
     for l in aborted[:3]:
         out.append("  ABORT: " + l.strip())
     return out
+
+
+def set_affinity(spec):
+    """Set this process's CPU mask (N = processors 0..N-1, or 0xMASK); returns the old one."""
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32")
+    me = ctypes.c_void_p(k32.GetCurrentProcess())
+    pm, sm = ctypes.c_size_t(), ctypes.c_size_t()
+    k32.GetProcessAffinityMask(me, ctypes.byref(pm), ctypes.byref(sm))
+    mask = spec if isinstance(spec, int) else (int(spec, 16) if spec.lower().startswith("0x") else (1 << int(spec)) - 1)
+    k32.SetProcessAffinityMask(me, ctypes.c_size_t(mask))
+    return pm.value
 
 
 def main():
@@ -231,6 +247,8 @@ def main():
     ap.add_argument("--seed2", type=int, default=22)
     ap.add_argument("--vfs", default=VFS)
     ap.add_argument("--runs", default=RUNS)
+    ap.add_argument("--cpus1", default="", help="host's CPU affinity: N logical processors (0..N-1) or 0xMASK")
+    ap.add_argument("--cpus2", default="", help="joiner's CPU affinity (e.g. 0xFF0000 / 0xFF000000: 8 processors each on the second CCD)")
     a = ap.parse_args()
     vfs = a.vfs
 
@@ -314,8 +332,14 @@ def main():
             k, v = kv.split("=", 1)
             env[k] = v
         glog = open(os.path.join(wd, "game.log"), "w")
-        p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
-                             stdout=glog, stderr=subprocess.STDOUT)
+        cpus = a.cpus1 if who == "host" else a.cpus2
+        old_mask = set_affinity(cpus) if cpus else None   # inherited by the game before it sizes its pools
+        try:
+            p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
+                                 stdout=glog, stderr=subprocess.STDOUT)
+        finally:
+            if old_mask:
+                set_affinity(old_mask)
         procs.append((who, p, glog))
         print(f"{who}: pid {p.pid} in {wd}", flush=True)
         time.sleep(1.5)

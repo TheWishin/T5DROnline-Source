@@ -53,6 +53,7 @@ int32_t cellPadGetInfo(void* info_guest);
 void    cellGcmSetUserCommand(void* ctx, uint32_t cause);
 int32_t cellGcmSetFlip(void* context, uint32_t bufferId);
 uint32_t cellGcmGetFlipStatus(void);
+int     cellGcm_xlat_presented(void);   /* ps3recomp patch 0034: the held flip is translated and presented */
 void    cellGcmResetFlipStatus(void);
 void    cellGcmSetWaitFlip(void);
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -275,7 +276,15 @@ void h_cellGcmSetUserCommand(ppu_context* ctx)
 void h_cellGcmGetFlipStatus(ppu_context* ctx)
 {
     if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }   /* DONE */
-    ctx->gpr[3] = cellGcmGetFlipStatus();
+    uint32_t st = cellGcmGetFlipStatus();
+    /* early rollback (rb_net.cpp early_check): the frame is translated and
+     * presented, a rollback is already known -- report the flip done so the
+     * boundary can start now; it waits for the tick itself */
+    if (st != 0 && g_mode == Mode::Net && ctx->thread_id == g_main_tid && cellGcm_xlat_presented()) {
+        net::early_commit();
+        if (net::early_check()) st = 0;
+    }
+    ctx->gpr[3] = st;
 }
 void h_cellGcmResetFlipStatus(ppu_context* ctx)
 {
@@ -443,6 +452,7 @@ struct Register {
             ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
             icall_install();
             sound_install();
+            dcut_install();
             return;
         }
         g_script[0] = parse_script(getenv("T5_RB_SCRIPT"));
@@ -463,7 +473,7 @@ struct Register {
         ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
         ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
         g_on_frame = (g_mode == Mode::Measure) ? measure_on_frame : test_on_frame;
-        if (g_mode == Mode::Test) { icall_install(); sound_install(); }   /* before any guest thread runs */
+        if (g_mode == Mode::Test) { icall_install(); sound_install(); dcut_install(); }   /* before any guest thread runs */
     }
 } g_register;
 

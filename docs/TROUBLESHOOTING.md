@@ -264,9 +264,16 @@ game window. The game draws at 1280 x 720 and scales up.
 
 ### High refresh rate (120/144/165 Hz), G-Sync/FreeSync, 50 Hz TVs
 
-The game always runs at the PS3's speed: 59.94 frames per second, timed by
-the PC's clock, never by the monitor.
+The game runs at the PS3's speed: 59.94 frames per second, timed by the
+PC's clock -- except on a 60 Hz monitor, where it follows the monitor.
 
+- **60 Hz monitors** (59.94 or 60 Hz, vsync on): the game times its frames by
+  the monitor's own refresh, like a PS3 on that TV (59.94 or 60.00 frames per
+  second), and starts each frame just early enough to show it at the next
+  refresh: a press reaches the screen about a frame sooner than before. The
+  log says `[pacing] display lock on`. If the picture stutters on your PC,
+  Settings -> "Advanced: extra settings" -> `PS3_DISPLAY_LOCK=0` brings back
+  the PC clock (docs/RENDER_PERF.md "Input latency").
 - **Faster monitors** (75, 120, 144, 165, 240 Hz): the game speed stays the
   same. Each picture is shown at the next refresh. On 120 Hz every picture
   stays on screen for two refreshes: smooth. On 144 or 165 Hz pictures stay

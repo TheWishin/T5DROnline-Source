@@ -138,7 +138,8 @@ lobby/
 | `T5_NET_MODE` | yes | `host` (P1, slot 0) or `join` (P2, slot 1) |
 | `T5_NET_PORT` | yes | local UDP port: exactly the port the lobby punched through. Bind it. |
 | `T5_NET_PEER` | yes | `ip:port` of the opponent (direct/LAN) or of the lobby server's relay |
-| `T5_NET_DELAY` | yes | input delay in frames (host's value wins, as netplay already does) |
+| `T5_NET_DELAY` | yes | input delay in frames for the lockstep (host's value wins, as netplay already does); the rollback delay is never above it |
+| `T5_RB_NET_DELAY` | yes | ranked only: the server's fixed rollback input delay (`T5L_RANKED_INPUT_DELAY`, default 2, in `match_start` as `input_delay`); other matches get the player's own setting from the launcher (`auto`, 0, 1, 2; docs/NETPLAY.md "Input delay") |
 | `T5_NET_TIMEOUT` | yes | seconds the peer may be silent / stall before the match ends (20) |
 | `T5_NET_MATCH` | yes | match id; logged and written into the result file |
 | `T5_NET_ROUNDS` | yes | rounds to win (3); direct fight takes them from `T5_FIGHT` |

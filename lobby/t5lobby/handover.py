@@ -8,6 +8,8 @@ branch `netplay`) reads it. Read by netplay today:
     T5_NET_PORT     local UDP port      the port the lobby punched through; bind exactly this one
     T5_NET_PEER     ip:port             the opponent (direct) or the lobby server's relay port
     T5_NET_DELAY    frames              suggested input delay from the measured RTT (host's value wins)
+    T5_RB_NET_DELAY auto | 0 | 1 | 2    rollback input delay: a ranked match's fixed value (the server's
+                                        T5L_RANKED_INPUT_DELAY); otherwise the player's setting (launcher)
     T5_NET_TIMEOUT  seconds             give up when the peer is silent this long
 
 Passed for the game side to pick up (not read yet; see docs/ONLINE.md):
@@ -56,6 +58,7 @@ class MatchTicket:
     result_file: str = ""
     timeout: int = 20
     key: str = field(default="", repr=False)
+    input_delay: object = None   # ranked: the server's fixed rollback input delay (frames); None = the player's setting
     _dup_socket: object = field(default=None, repr=False)
 
     def game_env(self, result_file=None):
@@ -74,6 +77,8 @@ class MatchTicket:
         }
         if self.key:
             env["T5_NET_KEY"] = self.key
+        if self.input_delay is not None:
+            env["T5_RB_NET_DELAY"] = str(int(self.input_delay))
         rf = result_file or self.result_file
         if rf:
             env["T5_NET_RESULT_FILE"] = rf

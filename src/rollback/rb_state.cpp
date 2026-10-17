@@ -42,6 +42,15 @@ const Range kSave[] = {
 };
 const size_t kSaveN = sizeof kSave / sizeof kSave[0];
 const Range kExclude[] = {
+    /* The GCM command ring (cellGcmInit: begin 0x40100000, end 0x40500000) is
+     * the GPU's, not the fight's: a restore used to put earlier frames'
+     * commands back between the FIFO walker's get and the title's next flush,
+     * and the walker then translated them again -- old flips included: in a
+     * pair at RTT 150 it walked 7 128 flips for 5 601 the title asked for and
+     * presented ~1 400 stale frames during re-simulations (latency branch,
+     * docs/ROLLBACK.md section 26). Neither saved nor restored now; the write
+     * pointer in CellGcmContextData is kept across restores (kKeepWords). */
+    { 0x40100000u, 0x00400000u },
     { 0x10114000u, 0x00058000u },   /* sound core mix/output area (bnusCore) */
     { 0x40000000u, 0x00100000u },   /* first heap chunk: sound system voice slots, requests, shared areas (sound threads) */
     { 0x45F00000u, 0x00100000u },   /* decoder / streaming */
@@ -287,31 +296,68 @@ void state_init()
 }
 bool state_ready() { return g_ready; }
 
+/* Patch-0034 era (latency branch): the per-page hash of the whole state set is
+ * only read by the test mode ("restore faithful", per-page diffs); the netplay
+ * loop compares the gameplay hash. state_set_page_hashing(false) skips it
+ * (a third of a commit). */
+static bool g_page_hashing = true;
+void state_set_page_hashing(bool on) { g_page_hashing = on; }
+/* where the commit time goes (state_commit_stats, the loop's report) */
+static double g_cs_ww_ms = 0, g_cs_copy_ms = 0, g_cs_total_ms = 0;
+static uint64_t g_cs_commits = 0, g_cs_pages = 0, g_cs_range_pages[8] = {}, g_cs_heap[3] = {};
+void state_commit_stats(char* out, size_t cap, bool reset)
+{
+    const double n = g_cs_commits ? (double)g_cs_commits : 1.0;
+    int k = snprintf(out, cap, "%llu commits: %.2f ms each (write watch %.2f, page copies %.2f), %.0f pages each (",
+                     (unsigned long long)g_cs_commits, g_cs_total_ms / n, g_cs_ww_ms / n, g_cs_copy_ms / n, (double)g_cs_pages / n);
+    for (size_t i = 0; i < kSaveN && k > 0 && (size_t)k < cap; i++)
+        k += snprintf(out + k, cap - (size_t)k, "%s%08X %.0f", i ? ", " : "", kSave[i].base, (double)g_cs_range_pages[i] / n);
+    if (k > 0 && (size_t)k < cap)
+        snprintf(out + k, cap - (size_t)k, "; of the heap: GCM FIFO %.0f, draw lists %.0f, render scratch %.0f)",
+                 (double)g_cs_heap[0] / n, (double)g_cs_heap[1] / n, (double)g_cs_heap[2] / n);
+    if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); memset(g_cs_heap, 0, sizeof g_cs_heap); }
+}
+
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
 {
     PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
+    LONGLONG ww_ticks = 0;
     Log* lg = nullptr;
     if (f > 0) {
         lg = &g_log[(f - 1) % kLogFrames];
-        if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
-        lg->tag = f; lg->start = g_ring_pos; lg->count = 0;
+        /* a second commit at the same boundary (the netplay loop commits early,
+         * in the time the frame waits for its vblank, and again at the
+         * boundary for what was written since) adds to the same log; a restore
+         * takes each page's first entry, so the earlier pre-image wins */
+        const bool append = lg->tag == f && (lg->start + lg->count) % kRingPages == g_ring_pos;
+        if (!append) {
+            if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
+            lg->tag = f; lg->start = g_ring_pos; lg->count = 0;
+        }
         g_newest = f;
         if (!g_oldest) g_oldest = f;
         if (g_oldest + kLogFrames <= g_newest) g_oldest = g_newest - kLogFrames + 1;
     }
-    for (const Range& r : kSave) {
+    for (size_t ri = 0; ri < kSaveN; ri++) {
+        const Range& r = kSave[ri];
         for (uint64_t off = 0; off < r.len; off += (64ull << 20)) {
             uint64_t len = std::min<uint64_t>(64ull << 20, r.len - off);
             ULONG_PTR count = g_ww.size();
             DWORD gran = 0;
+            LARGE_INTEGER w0, w1; QueryPerformanceCounter(&w0);
             if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, vm_base + r.base + off, (SIZE_T)len, g_ww.data(), &count, &gran) != 0) {
                 note("GetWriteWatch failed (%lu) -- PS3_VM_WRITE_WATCH=1 missing?", GetLastError());
                 return 0;
             }
+            QueryPerformanceCounter(&w1); ww_ticks += w1.QuadPart - w0.QuadPart;
+            g_cs_range_pages[ri] += count;
             for (ULONG_PTR i = 0; i < count; i++) {
                 const uint32_t ea = (uint32_t)((uint8_t*)g_ww[i] - vm_base);
+                if (ea - 0x40100000u < 0x400000u) g_cs_heap[0]++;          /* stats: render-only parts of the heap */
+                else if (ea - 0x43D00000u < 0x340000u) g_cs_heap[1]++;
+                else if (ea - 0x444F9000u < 0x6E000u) g_cs_heap[2]++;
                 if (excluded_page(ea)) continue;
                 const uint32_t pg = ea >> 12;
                 const bool hashed = !hash_excluded_page(ea);
@@ -327,7 +373,7 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
                     if (lg->count >= kRingPages - 1) { note("undo ring full in one frame"); break; }
                 }
                 memcpy(sh, vm_base + ea, 0x1000);
-                if (hashed) {
+                if (hashed && g_page_hashing) {
                     const uint64_t h = hash_page(ea);
                     g_hash += (h - g_page_hash[pg]) * weight(pg);
                     g_page_hash[pg] = h;
@@ -339,6 +385,10 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     }
     QueryPerformanceCounter(&b);
     if (ms) *ms = 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;
+    g_cs_commits++; g_cs_pages += n;
+    g_cs_total_ms += 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;
+    g_cs_ww_ms += 1000.0 * (double)ww_ticks / (double)q.QuadPart;
+    g_cs_copy_ms += 1000.0 * (double)(b.QuadPart - a.QuadPart - ww_ticks) / (double)q.QuadPart;
     return n;
 }
 
@@ -371,9 +421,18 @@ uint32_t state_log_pages(uint32_t f)
     return l.tag == f + 1 ? l.count : 0;
 }
 
+/* Words whose live value survives a restore: the title's CellGcmContextData
+ * (begin, end, current, callback). With the command ring out of the state the
+ * write position must keep going forward, or a re-simulated frame would write
+ * its commands into ring space the walker has consumed and the live frame
+ * after it would flush a put behind the walker's get. */
+static const Range kKeepWords[] = { { 0x0F800000u, 0x10u } };
+
 bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
 {
     PumpHold hold;
+    uint8_t keep[sizeof kKeepWords / sizeof kKeepWords[0]][0x10];
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) memcpy(keep[i], vm_base + kKeepWords[i].base, kKeepWords[i].len);
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     if (!g_newest || to >= g_newest) return false;
     /* every log from the newest (frame g_newest-1) down to frame `to` must be present */
@@ -381,21 +440,35 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
         if (g_log[f % kLogFrames].tag != f + 1) return false;
         if (f == to) break;
     }
+    /* Oldest log first, each page once: a page's content at boundary `to` is
+     * the pre-image in the oldest log (from `to` on) that has it -- the same
+     * result as applying every log newest-first, without copying the pages
+     * written in several of the frames again for each (the hot set of a fight
+     * frame is most of a frame's ~600 pages: a 3-frame rollback restored
+     * ~1 800 copies, now ~700). */
+    static uint64_t* seen = (uint64_t*)calloc(kPages / 64, sizeof(uint64_t));
+    static std::vector<uint32_t> touched;
+    touched.clear();
     uint32_t n = 0;
-    for (uint32_t f = g_newest - 1; ; f--) {
+    for (uint32_t f = to; f < g_newest; f++) {
         const Log& l = g_log[f % kLogFrames];
         for (uint32_t i = 0; i < l.count; i++) {
             const uint32_t slot = (l.start + i) % kRingPages;
             const Entry& e = g_ent[slot];
             const uint32_t pg = e.ea >> 12;
+            uint64_t& w = seen[pg >> 6];
+            const uint64_t bit = 1ull << (pg & 63);
+            if (w & bit) continue;
+            w |= bit;
+            touched.push_back(pg);
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             memcpy(vm_base + e.ea, src, 0x1000);
             memcpy(shadow_rw(e.ea), src, 0x1000);
-            if (!hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
+            if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
-        if (f == to) break;
     }
+    for (uint32_t pg : touched) seen[pg >> 6] = 0;
     /* the logs above `to` describe frames that will be re-simulated: drop them
      * and hand their ring slots back (the ring position returns to the start
      * of frame `to`'s log) */
@@ -403,6 +476,10 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
     for (uint32_t f = to; f < g_newest; f++) g_log[f % kLogFrames].tag = 0;
     g_newest = to;   /* the next commit (at the boundary of to+1) records frame `to` */
     if (g_oldest > to) g_oldest = to;
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) {
+        memcpy(vm_base + kKeepWords[i].base, keep[i], kKeepWords[i].len);
+        if (uint8_t* sh = shadow_rw(kKeepWords[i].base)) memcpy(sh, keep[i], kKeepWords[i].len);
+    }
     /* our own writes must not count as the next frame's dirt */
     for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);

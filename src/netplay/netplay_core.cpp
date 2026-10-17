@@ -60,8 +60,11 @@ namespace {
 
 constexpr uint32_t kMagic    = 0x504E3554u;   /* "T5NP" little-endian */
 /* v2: the header carries the sender's per-process nonce, packets may carry an
- * authentication tag, PING and REJECT exist. A v1 peer is a different build. */
-constexpr uint8_t  kVersion  = 2;
+ * authentication tag, PING and REJECT exist. A v1 peer is a different build.
+ * v3 (latency branch): PING carries a time stamp and the echo of the peer's
+ * (round-trip time), PING and INPUT carry the rollback input delay the host
+ * picked for the match, HELLO the sender's input delay setting (auto/0/1/2). */
+constexpr uint8_t  kVersion  = 3;
 constexpr uint32_t kRing     = 1024;          /* frames of history kept */
 constexpr uint32_t kMaxBatch = 64;            /* inputs per packet */
 constexpr uint32_t kHashes   = 8;             /* recent hashes per packet */
@@ -78,16 +81,21 @@ enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
 struct Hdr      { uint32_t magic; uint8_t type, ver, delay, slot; uint32_t session; uint32_t nonce; };   /* nonce: the sender's own per-process id */
-struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; int8_t lead; };   /* lead: the sender's frame advantage estimate (rollback time sync) */
+struct InputHdr { uint32_t ack; uint32_t first; uint8_t count; uint8_t nhash; uint8_t nbar; int8_t lead; uint8_t rbd; };   /* lead: the sender's frame advantage estimate (rollback time sync); rbd: the host's rollback input delay for the match (0xFF: none) */
 struct WireIn   { uint16_t buttons; uint8_t lx, ly, rx, ry; };
 struct WireHash { uint32_t frame; uint64_t hash; };
 struct WireBar  { uint32_t index; uint32_t frame; };
-struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows Hdr in a HELLO; flags: bit 0 = this side offers rollback */
-struct PingExt  { uint8_t flags; uint32_t frame; };                   /* flags: PING_STARTED, PING_ROLLBACK */
+struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows Hdr in a HELLO; flags: bit 0 = this side offers rollback, bits 8-15 its input delay setting (0xFF = auto) */
+/* flags: PING_STARTED, PING_ROLLBACK; t_us: the sender's clock (microseconds,
+ * wraps); echo_us/hold_us: the t_us of the last PING it received and how long
+ * it held it -- the receiver's round trip is now - echo_us - hold_us; rbd: the
+ * host's rollback input delay for the match once decided (0xFF: not yet) */
+struct PingExt  { uint8_t flags; uint32_t frame; uint32_t t_us; uint32_t echo_us; uint32_t hold_us; uint8_t rbd; };
 constexpr uint8_t PING_STARTED = 1;    /* the sender's lockstep has begun (frame 0 ran) */
 constexpr uint8_t PING_ROLLBACK = 2;   /* the sender offers rollback (as in its HELLO; the first HELLOs may predate the offer) */
 struct RejectExt { uint8_t why; };
 constexpr uint32_t kHelloRollback = 1u;
+constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
 
 /* ---- SipHash-2-4 (Aumasson/Bernstein reference algorithm) ---------------- */
@@ -179,8 +187,21 @@ struct Session {
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
-    int  rb_delay = 2;                 /* T5_RB_NET_DELAY: input delay once rollback is agreed (HELLO flags bits 8-15; the host's wins) */
-    int  peer_rb_delay = 0;            /* the peer's value (0: an older build that sent none) */
+    /* Rollback input delay (docs/NETPLAY.md "Input delay"): each player's setting
+     * (T5_RB_NET_DELAY = auto | 0 | 1 | 2 ..., HELLO flags bits 8-15); the host
+     * picks the match's value when its match starts -- the setting both chose,
+     * else from the round trip it measured (1 frame up to T5_RB_NET_DELAY_AUTO
+     * ms, default 60, 2 above) -- and sends it in every PING and INPUT; the
+     * joiner waits for it before its rollback loop starts. */
+    int  rb_delay = kRbAuto;           /* this player's setting */
+    int  peer_rb_delay = -1;           /* the peer's setting (-1: no HELLO yet) */
+    int  rb_decided = -1;              /* host / local: the match's value once picked */
+    int  peer_rbd = -1;                /* joiner: the host's pick, once received */
+    int  rb_auto_ms = 60;              /* T5_RB_NET_DELAY_AUTO: round trip up to which auto picks 1 frame */
+    uint32_t peer_ping_us = 0;         /* t_us of the peer's last PING, and when it arrived (our clock) */
+    uint64_t peer_ping_rx_us = 0;
+    float rtt_ms[32] = {};             /* round-trip samples from PING echoes */
+    uint32_t nrtt = 0;
     int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
@@ -439,18 +460,68 @@ Hdr make_hdr(uint8_t type)
 void send_hello_locked(const sockaddr_in* to = nullptr)
 {
     State& s = S();
-    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? (kHelloRollback | ((uint32_t)s.rb_delay << 8)) : 0u } };
+    struct { Hdr h; HelloExt x; } p = { make_hdr(PKT_HELLO), { s.build, s.seed, s.rb_offer ? (kHelloRollback | ((uint32_t)(s.rb_delay & 0xFF) << 8)) : 0u } };
     send_to(&p, sizeof p, to);
     s.last_hello_ms = GetTickCount64();
 }
 
+uint64_t qpc_us();
+
 void send_ping_locked()
 {
     State& s = S();
+    const uint64_t now = qpc_us();
     struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)((s.started ? PING_STARTED : 0) |
-                                                                      (s.rb_offer ? PING_ROLLBACK : 0)), s.local_hash_max } };
+                                                                      (s.rb_offer ? PING_ROLLBACK : 0)), s.local_hash_max,
+                                                            (uint32_t)now, s.peer_ping_us,
+                                                            s.peer_ping_us ? (uint32_t)(now - s.peer_ping_rx_us) : 0u,
+                                                            (uint8_t)(s.mode == Mode::Host && s.rb_decided >= 0 ? s.rb_decided : 0xFF) } };
     send_raw(&p, sizeof p);
     s.last_send_ms = GetTickCount64();
+}
+
+/* The round trip so far: the median of the PING echo samples, else the
+ * lobby's measurement (T5_NET_RTT_MS), else -1. */
+float rtt_estimate_locked(int* samples)
+{
+    State& s = S();
+    const uint32_t n = std::min<uint32_t>(s.nrtt, 32);
+    *samples = (int)n;
+    if (n) {
+        float v[32];
+        memcpy(v, s.rtt_ms, sizeof(float) * n);
+        std::sort(v, v + n);
+        return v[n / 2];
+    }
+    if (const char* e = env("T5_NET_RTT_MS")) { const float r = (float)atof(e); if (r > 0) return r; }
+    return -1.0f;
+}
+
+/* Host (and local mode), when its match starts: the match's rollback input
+ * delay. The value both players set, when they set the same; otherwise from
+ * the round trip (auto). Never above the session's lockstep delay. */
+void decide_rb_delay_locked()
+{
+    State& s = S();
+    if (s.rb_decided >= 0 || (s.mode != Mode::Host && s.mode != Mode::Local)) return;
+    int samples = 0;
+    const float rtt = s.mode == Mode::Local ? 0.0f : rtt_estimate_locked(&samples);   /* local: no network */
+    const int peer = s.mode == Mode::Local ? s.rb_delay : s.peer_rb_delay;
+    int pick;
+    char why[160];
+    if (s.rb_delay != kRbAuto && s.rb_delay == peer) {
+        pick = s.rb_delay;
+        snprintf(why, sizeof why, "both players set %d", pick);
+    } else {
+        pick = (rtt >= 0.0f && rtt <= (float)s.rb_auto_ms) ? 1 : 2;
+        snprintf(why, sizeof why, "auto: round trip %.0f ms (%d samples%s) -> %d (1 up to %d ms, 2 above); settings %s / %s",
+                 rtt, samples, samples ? "" : ", lobby's measurement", pick, s.rb_auto_ms,
+                 s.rb_delay == kRbAuto ? "auto" : std::to_string(s.rb_delay).c_str(),
+                 peer < 0 ? "?" : peer == kRbAuto ? "auto" : std::to_string(peer).c_str());
+    }
+    if (pick > s.delay) pick = s.delay;
+    s.rb_decided = pick;
+    note("rollback input delay for this match: %d frame(s) (%s)", pick, why);
 }
 
 void send_reject(const sockaddr_in& to, uint8_t why)
@@ -479,6 +550,7 @@ void send_inputs_locked()
     ih->first = first;
     ih->count = (uint8_t)count;
     ih->lead = s.local_lead;
+    ih->rbd = (uint8_t)(s.mode == Mode::Host && s.rb_decided >= 0 ? s.rb_decided : 0xFF);
     ih->nbar = 0;
     WireIn* wi = (WireIn*)(ih + 1);
     for (uint32_t i = 0; i < count; i++) {
@@ -674,7 +746,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             return;
         }
         s.rb_peer = (x.flags & kHelloRollback) != 0;
-        s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
+        if (s.rb_peer) s.peer_rb_delay = (int)((x.flags >> 8) & 0xFF);
         if (s.mode == Mode::Host) {
             /* Before the handshake the latest valid hello is the candidate; the
              * echo of our session id (the joiner adopted it) completes it. */
@@ -731,6 +803,13 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             if (x.flags & PING_STARTED) s.peer_started = true;
             if (!s.started) s.rb_peer = (x.flags & PING_ROLLBACK) != 0;   /* settled before lockstep begins */
             s.peer_frame = x.frame;
+            const uint64_t now = qpc_us();
+            if (x.echo_us) {   /* our earlier PING came back: a round-trip sample */
+                const uint32_t rtt_us = (uint32_t)now - x.echo_us - x.hold_us;
+                if (rtt_us < 2000000u) s.rtt_ms[s.nrtt++ % 32] = (float)rtt_us / 1000.0f;
+            }
+            s.peer_ping_us = x.t_us; s.peer_ping_rx_us = now;
+            if (x.rbd != 0xFF && s.mode == Mode::Join) s.peer_rbd = x.rbd;
         }
         SetEvent(s.rx_event);
         return;
@@ -744,6 +823,7 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     if (ih->count) { s.peer_sent_inputs = true; s.peer_started = true; }
     if (ih->ack > s.peer_ack) s.peer_ack = ih->ack;
     s.peer_lead = ih->lead;
+    if (ih->rbd != 0xFF && s.mode == Mode::Join) s.peer_rbd = ih->rbd;
     const WireIn* wi = (const WireIn*)(ih + 1);
     for (uint32_t k = 0; k < ih->count; k++) {
         uint32_t f = ih->first + k;
@@ -889,7 +969,9 @@ void configure()
     else { fprintf(stderr, "[netplay] T5_NET_MODE=%s: expected host, join or local -- netplay off\n", m); return; }
     s.slot = s.mode == Mode::Join ? 1 : 0;
     if (const char* v = env("T5_NET_DELAY")) s.delay = atoi(v);
-    if (const char* v = env("T5_RB_NET_DELAY")) s.rb_delay = std::max(0, std::min(30, atoi(v)));
+    if (const char* v = env("T5_RB_NET_DELAY"))
+        s.rb_delay = (!_stricmp(v, "auto") || !_stricmp(v, "a")) ? kRbAuto : std::max(0, std::min(30, atoi(v)));
+    if (const char* v = env("T5_RB_NET_DELAY_AUTO")) s.rb_auto_ms = std::max(0, std::min(1000, atoi(v)));
     if (s.delay < 0) s.delay = 0;
     if (s.delay > 30) s.delay = 30;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
@@ -1220,6 +1302,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
         if (s.local_max < (uint32_t)s.delay) s.local_max = (uint32_t)s.delay;
         while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
         s.started = true;
+        if (s.rb_offer && (s.rb_peer || s.mode == Mode::Local)) decide_rb_delay_locked();   /* the rollback loop takes over at frame 1 */
         if (s.connected && !s.peer_lost) send_ping_locked();   /* tell the peer at once */
         note("lockstep starts: frame 0, delay %d", s.delay);
         note_fp_env();
@@ -1319,6 +1402,7 @@ void rb_begin(uint32_t f)
     if (s.local_max < (uint32_t)s.delay) s.local_max = (uint32_t)s.delay;
     while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
     s.started = true;
+    if (s.rb_offer && (s.rb_peer || s.mode == Mode::Local)) decide_rb_delay_locked();
     if (s.connected && !s.peer_lost) send_ping_locked();
     note("rollback mode starts: frame 0, delay %d", s.delay);
     note_fp_env();
@@ -1437,25 +1521,41 @@ bool rb_negotiated()
     if (s.mode == Mode::Local) return s.rb_offer;
     return s.rb_offer && s.rb_peer && s.connected;
 }
-/* Rollback agreed: the input delay drops to the rollback delay -- the host's
- * T5_RB_NET_DELAY (sent in its HELLO), never above the lockstep delay the
+/* Rollback agreed: the input delay drops to the match's rollback delay -- the
+ * host's pick (decide_rb_delay_locked), never above the lockstep delay the
  * session was set up with (the lobby picks that from the measured latency for
  * the lockstep; rollback predicts the latency away instead). Both PCs apply
  * the same value at the same point (the loop's start), so the time sync's
- * frame estimate stays right. Inputs already decided under the old delay keep
- * their frames: the next samples just wait until they are past them. */
+ * frame estimate stays right: the joiner waits here for the host's pick (any
+ * PING or INPUT of the host's after its match started carries it). Inputs
+ * already decided under the old delay keep their frames: the next samples
+ * just wait until they are past them. */
 int rb_apply_delay()
 {
     State& s = S();
+    const ULONGLONG t0 = GetTickCount64();
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            if (s.mode != Mode::Join || s.peer_rbd >= 0 || s.peer_lost || s.mode == Mode::Off) break;
+            if (s.start_timeout_s > 0 && GetTickCount64() - t0 > (ULONGLONG)s.start_timeout_s * 1000) {
+                note("the host's rollback input delay did not arrive -- keeping %d", s.delay);
+                break;
+            }
+        }
+        WaitForSingleObject(s.rx_event, 10);
+    }
     std::lock_guard<std::mutex> lk(s.mu);
-    const int rbd = s.mode == Mode::Join ? (s.peer_rb_delay > 0 ? s.peer_rb_delay : s.delay) : s.rb_delay;
+    if (s.mode == Mode::Host || s.mode == Mode::Local) decide_rb_delay_locked();   /* (already done at frame 0) */
+    const int rbd = s.mode == Mode::Join ? (s.peer_rbd >= 0 ? s.peer_rbd : s.delay) : (s.rb_decided >= 0 ? s.rb_decided : s.delay);
     const int nd = std::min(s.delay, rbd);
     if (nd != s.delay) {
-        note("rollback agreed: input delay %d -> %d (T5_RB_NET_DELAY, the host's)", s.delay, nd);
+        note("rollback agreed: input delay %d -> %d (%s)", s.delay, nd, s.mode == Mode::Join ? "the host's pick" : "this match's");
         s.delay = nd;
     }
     return s.delay;
 }
+int rb_rtt_ms() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); int n = 0; return (int)(rtt_estimate_locked(&n) + 0.5f); }
 void rb_set_lead(int lead) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.local_lead = (int8_t)std::max(-100, std::min(100, lead)); }
 int  rb_peer_lead() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lead; }
 uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.mismatches; }

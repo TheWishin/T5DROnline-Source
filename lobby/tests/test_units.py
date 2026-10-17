@@ -114,6 +114,25 @@ class MiscTest(unittest.TestCase):
         self.assertEqual(env["T5_NET_PEER"], "198.51.100.4:50002")
         self.assertEqual(env["T5_NET_DELAY"], "3")
         self.assertEqual(env["T5_NET_RESULT_FILE"], "r.json")
+        self.assertNotIn("T5_RB_NET_DELAY", env)             # casual: the player's own setting
+
+    def test_input_delay(self):
+        """Ranked matches carry the server's fixed rollback input delay; it wins over the
+        player's setting, which every other match gets (docs/NETPLAY.md "Input delay")."""
+        import tempfile
+        import types
+        from t5lobby.match_driver import MatchDriver
+        ranked = MatchTicket("m2", "host", 0, 50001, ("198.51.100.4", 50002), "direct", 31.0, 2.0, 3,
+                             ranked=True, input_delay=2)
+        self.assertEqual(ranked.game_env()["T5_RB_NET_DELAY"], "2")
+        casual = MatchTicket("m3", "host", 0, 50001, ("198.51.100.4", 50002), "direct", 31.0, 2.0, 3)
+        drv = MatchDriver(types.SimpleNamespace(), lambda env: None, tempfile.mkdtemp(), mode="process",
+                          input_delay="1")
+        self.assertEqual(drv.match_env({}, casual)["T5_RB_NET_DELAY"], "1")
+        self.assertEqual(drv.match_env({}, ranked)["T5_RB_NET_DELAY"], "2")
+        auto = MatchDriver(types.SimpleNamespace(), lambda env: None, tempfile.mkdtemp(), mode="process",
+                           input_delay="auto")
+        self.assertEqual(auto.match_env({}, casual)["T5_RB_NET_DELAY"], "auto")
 
     def test_result_file(self):
         import json

@@ -6,7 +6,9 @@ NPUB30009 v01.00 and this runtime's memory map (`PS3_VM_WRITE_WATCH=1`).
 
 **Status (phase 10, branch `rollback10`): rollback is the online default**
 -- offered with direct fight unless `T5_RB_MODE=off`, lockstep when the peer
-does not offer it. Sections 20-25 are the current state; the earlier
+does not offer it. Sections 20-25 are the current state, with sections
+26-30 (latency branch: 60 fps at RTT 150, input delay by ping, the
+end-of-match hang under heavy rollback); the earlier
 sections are the history that led there.
 
 ## Verdict
@@ -1500,7 +1502,9 @@ per frame in every window) is gone, the typical frame stays at 17 ms.
   lockstep too.
 - Cost: a rollback-heavy RTT 150 match averages ~47 fps on this machine with
   others running (p99 51 ms); a faster sim or fewer re-simulated frames (a
-  smarter prediction than "last input repeats") would bring it to 60.
+  smarter prediction than "last input repeats") would bring it to 60. (Done
+  differently in the latency branch, sections 26-29: 60.0 fps median window,
+  p99 24 ms, on 8 logical processors.)
 - `T5_RB_SOUND=skip` (the phase-9 behaviour) is kept for comparison only:
   without the old phase windows it hangs at a round end.
 - The draw cut leaves ~210 pages of render bookkeeping different after a
@@ -1576,3 +1580,250 @@ for a vblank -- and calls `sound_reset()`: a session that ended inside a
 re-simulation left the sound hooks "re-simulating" (play calls matched against
 stale entries, the library tick skipped, stops dropped) for as long as the game
 ran without a session.
+
+---
+
+# Latency branch -- rollback at RTT 150, input delay by ping (branch `latency`, patch 0034)
+
+Code: `src/rollback/rb_net.cpp` (early rollback, time sync, statistics),
+`rb_state.cpp` (ring out of the state, restore once per page, early
+snapshot), `rb_icall.cpp` (direct-call cut), `rb_hooks.cpp` (flip-status
+hook); `src/netplay/netplay_core.cpp` (input delay by round trip, protocol
+v3), `t5_hooks.cpp` (early boundary, tick wait); runtime:
+`patches/ps3recomp/0034-latency.patch` (present at translation, display lock,
+latency probe, `cellGcm_xlat_presented`). Runs: `build/lat/netruns/<name>/`.
+
+## 26. Where a re-simulated frame's time went, and what was cut
+
+**The GCM command ring was in the rollback state.** A restore put earlier
+frames' commands back into the ring between the FIFO walker's `get` and the
+title's next flush, and the walker translated them again -- old flips
+included. Latency probe of a pair at RTT 150 (L150, `PS3_LATENCY_LOG`): the
+title asked for 5 601 flips, the walker reached 7 128 and presented ~1 400
+stale frames, 730 of them while a re-simulation ran: CPU on the walker
+thread, and pictures from frames already shown. The ring
+(0x40100000+0x400000) is now neither saved nor restored, and the title's
+CellGcmContextData (begin/end/current/callback at 0x0F800000) keeps its live
+value across a restore (`kKeepWords`), so the write position only moves
+forward and a re-simulated frame's commands are appended. After it (L150b):
+5 594 flips asked for, 5 594 walked, 5 596 presents; ~150 fewer pages per
+snapshot.
+
+**Direct-call cut.** The stack profile of re-simulated frames in the netplay
+loop (`T5_RB_NET_SAMPLE=N`: the first N rollbacks, "S" lines in
+`rb_frames.log`) still had ~14 % in a render pass the scene nodes open and
+close with direct calls (`0x31F778` begins it on the graphics object --
+lwmutex, `0x383FC8` -- and sets the byte at `[r2-0x1044]`; `0x31F7A8` ends it
+only when that byte is set). `0x31F778` is now an entry detour that returns at
+once in re-simulated frames while the match is fought (phase 17, match not
+decided); the end then does nothing by itself. Main-thread cycles per
+re-simulated frame in test mode (same match, 3-frame rollbacks every 12
+frames, quiet machine): 27.5 M without, 13.9 M with the cut; 0 gameplay-hash
+mismatches in 1 419 re-simulated boundaries. Cutting the end as well broke the
+pairing when the cut switched on or off between the two calls, and only the
+begin is needed. Tried and left out: four more render calls (`0x15AD9C`,
+`0x15B01C`, `0x1549FC`, `0x1548C0`, ~15 %) -- they are function *tails* the
+function finder split off (no `stdu`, they pop a frame a predecessor pushed):
+skipping one leaves the guest stack pointer off by its frame, and two pairs
+crashed through a garbage pointer within a minute. A detour target must be a
+whole function. Phase gate: run d1 showed 2 mismatching frames ~860 frames
+after the deciding KO (result-screen records at 0x1008E690..C0, written
+under the pass); none since the gate.
+
+**Snapshots.** The netplay loop no longer keeps the full-state page hash (only
+the test mode reads it; `T5_RB_NET_PAGEHASH=1` brings it back): a snapshot of
+a fight frame went from ~0.9 to ~0.6 ms, and with the ring out to ~0.37 ms
+(`rbnet: snapshots:` lines: write watch 0.20 ms, page copies 0.17 ms, pages
+per range). A restore applies the logs oldest first and copies each page once
+(its first entry is its content at the target boundary): a 3-frame rollback
+restored ~1 800 page copies, now ~700 (1.26 ms per rollback in L150c).
+
+## 27. Early rollback: the re-simulation in the time the frame waits
+
+A frame's main thread is idle from the moment its commands are translated
+until the vblank tick that completes its flip (with the display lock the tick
+comes `lead` before the display's vblank). That window is ~6.7 ms (median, 8
+logical processors). The netplay loop now uses it:
+
+1. When the walker has reached the flip and the ticker has presented it
+   (`cellGcm_xlat_presented`, patch 0034: vertex jobs drained, nothing on the
+   GPU side reads guest memory any more), the main thread's flip-status poll
+   (`rb_hooks.cpp h_cellGcmGetFlipStatus`) takes the next boundary's snapshot
+   (`early_commit`; the boundary later adds the vblank handler's few pages to
+   the same log) and checks the inputs that have arrived.
+2. If a misprediction is known, the poll reports the flip done; the title goes
+   on to its frame semaphore, where the hooks run the boundary at once
+   (`early_pending`) instead of after the wait: restore and re-simulation run
+   in the idle time.
+3. At the end of the re-simulation (or right away if nothing was wrong after
+   all) the boundary waits for the tick through the title's own semaphore wait
+   (`frame_tick_wait`), then does the live part as before: the local input is
+   read at the tick, the remote inputs polled again (a misprediction found now
+   is rolled back after the tick, as before). A tick that came while the
+   re-simulation ran was swallowed like every post during one; it is counted
+   (`early_tick_posted`) and the live frame starts at once.
+
+In L150c 98 % of the rollbacks ran early (`rbnet: early rollbacks ... 33 of
+34`). Early start to tick wait (restore + re-simulation, mostly 3 frames):
+median 9.4 ms, p90 12.1 ms; the window from the present to the tick: median
+6.75 ms. So a typical early rollback still ends ~4.8 ms after the tick (p90
+8.4 ms) and the live frame (9.6 ms from its start to translated) mostly makes
+its vblank; the deepest ones do not. `T5_RB_NET_EARLY=0` turns it off.
+
+## 28. Time sync without false alarms
+
+The advantage estimate was the mean of `mine - theirs` over 20 frames; a lost
+packet makes one side's estimate jump by a frame or two for a few frames, and
+the mean then called for sleeps the next window had to undo. A median of these
+whole frames was worse (it rounds half-frame advantages up: 128-143 sleeps per
+side per match). It is now the mean of the middle 60 % (trimmed): 14-17 sleeps
+per side per match at RTT 150 with 3 % loss, against 20-60 before and 130-140
+with the median. Each sleep is a repeated picture on the screen.
+
+Tried and dropped: sending each frame's inputs a second time ~4 ms after the
+first (in the frame's wait for its vblank), against the deepest rollbacks that
+a lost packet makes at 3 % loss -- two interleaved pairs each way (RN1/RN2 vs
+RD1/RD2): the same depth histogram, the same p99 (24-25.5 ms).
+
+## 29. Results
+
+`tools/rollback_net_test.py --fight 26,33,20,2 --rtt 150 --jitter 5 --loss 3
+--delay 6 --mode1 default --mode2 default --matches 1 --cpus1 0xFF0000 --cpus2
+0xFF000000`: two games on this PC through the proxy, each on 8 logical
+processors of its own (4 cores / 8 threads of the second CCD), one match of two
+rounds with the attack scripts (582 / 560 rollbacks, the same in every run:
+the scripts are deterministic). "main" is main 5337f7f (series 0001-0033), the
+online default; "latency" is this branch, the online default (input delay 2 at
+this ping either way). Runs interleaved main / latency; "busy" = processors in
+use on the whole PC during the run, both games included (~7.5 = nothing else).
+
+| run | build | busy | fps per game (whole match) | 300-frame windows, median | displayed frame p50 / p99 (ms) | time-sync sleeps (host / joiner) | sync |
+|---|---|---|---|---|---|---|---|
+| RB1 | main | 15.1 | 49.7 / 50.4 | 53.6 | 17.0 / 50.5 | 50 / 63 | 0 mismatching, same result hash |
+| RA1 | latency (without 0x2AAD50) | 13.6 | 56.7 / 57.8 | 58.8 | 17.0 / 31.0, 27.5 | 18 / 12 | same |
+| RB2 | main | 13.8 | 51.8 / 52.8 | 53.6 | 17.0 / 50.0 | 49 / 59 | same |
+| RA2 | latency (without 0x2AAD50) | 12.0 | 57.0 / 58.1 | 58.8 | 17.0 / 28.5, 27.5 | 21 / 23 | same |
+| RB3 | main | 16.9 | 51.5 / 52.4 | 53.6 | 17.0 / 50.0, 50.5 | 46 / 60 | same |
+| RF1 | latency | 14.3 | 57.0 / 58.1 | 58.8 | 17.0 / 27.0, 26.5 | 16 / 14 | same |
+| RB4 | main | 7.5 | 52.6 / 53.4 | 54.5 | 17.0 / 50.0 | 39 / 48 | same |
+| RF2 | latency | 7.5 | 57.6 / 58.7 | **60.0** | 17.0 / **24.0** | 10 / 9 | same |
+| RC1, RC2 | latency | 7.0, 8.7 | 57.7 / 58.8, 57.6 / 58.7 | **60.0** | 17.0 / 24.0, 23.5 | 13 / 8, 15 / 7 | same |
+
+The whole-match fps includes the match start (the joiner loading, ~1.4 s of
+stall) and the intros. On the quiet PC the median 300-frame window is 60.0
+fps (target >= 59.5: met); the 99th percentile of the displayed frame time is
+24 ms (target <= 20 ms: not met -- about 1 % of frames still take two
+refreshes, the deepest rollbacks, section 27). Before, every 300-frame window
+of the fight was at 53.6-54.5 fps with a p99 of 50 ms. Sound: 0 decode errors,
+no abort, no hang in any run.
+
+Correctness: every pair above in sync with the same result hash on both PCs;
+the input-delay pairs (docs/NETPLAY.md "Input delay": RTT 0/50/150, settings
+equal / different) and lockstep pairs at RTT 0/50/150 (K0/K50/K150) too;
+test mode (in-process, 3-frame rollbacks every 12 frames through a whole match
+with KOs): 0 gameplay-hash mismatches in 1 404-1 419 re-simulated boundaries
+with the cut (d2, d5). The two crashes of section 26 were the tail cut, not
+seen again in 20+ pairs since.
+
+## 30. The hang at the end of a match under heavy rollback: a semaphore token the restore did not give back
+
+What was seen (reset-fix, `tools/reset_cycle_test.py --stutter 80`: the
+opponent suspended for 80 ms every 0.2-0.6 s): a match played to its end, the
+driver's START skip taken, the game asks for the select mode (mode 4, next 6)
+and never gets there; the screen fades to black, the fight music stops, the
+select data is never read, and after 60 s `stuck_check` ends the game (exit
+6). On this branch before the fix: 3 of the first 4 match ends of a cycle run
+hung (`build/lat/runs/rc1`), always on S, the side whose opponent stutters --
+the side that rolls back.
+
+How it was found (`build/lat/runs/tr1`, `bz1`, `fd1`; the tracing builds are
+not in the tree):
+
+1. A call trace (`T5_RB_CALLTRACE`; every function of the game mode and the
+   mode manager, 0x4F000-0x56000 and 0x25B000-0x25E000) of S and of its
+   opponent through the same match: after the game's own mode request
+   (0x25DA54(6)) both stop running the game mode's task and run one more task
+   (0x10624980) every frame. On the opponent the mode switch (0x25DBD0, cur :=
+   next) comes one frame later; on S never.
+2. The mode manager (0x25E6AC) switches only when the query 0x272E84 on that
+   task says "done": it sets the task's +0x58 = 2 and +0x5C = 1 and runs its
+   subtree; every task of the class 0x10084768 (exec 0x274310) whose state
+   (+0x48) is not 7 or 10 clears +0x5C.
+3. An entry detour on 0x274310 that logged the busy tasks during the query:
+   on the opponent one task busy for a few frames (states 4, 5, 6); on S task
+   0x10628E80 in state 3 for good. State 3 (0x27279C) waits while its read
+   request (task +0x7C, 0x1009FF68) has status 1 -- a request of the game's
+   async reader (ZsAread).
+4. A trace of the reader's functions: the main thread's reader service
+   (0x9A784, once per frame) starts a request by posting the reader's request
+   semaphore (service object 0x1009FE28 +0) and marks itself busy (+8 = 1);
+   the reader thread reads and posts the completion semaphore (+4); a later
+   frame's service takes that token with a trywait (0x9A884, the game's only
+   trywait) and completes the request (0x9A4F4). On S: frame 226 took the
+   token and completed a read; a rollback at frame 234 re-simulated from 226;
+   the restored service was busy again, its trywait found the semaphore empty
+   (CELL_EBUSY), and so on every frame until the game was ended.
+
+Why: a kernel semaphore's count is not guest memory. A restore put the
+service and the request back as they were before the token was taken, but
+not the token. The loader task then waits forever; in the fight that shows
+nothing (it loads in the background), at the match's end the game mode cannot
+finish while a task of its scene is busy. It needs a rollback to a boundary
+between the reader's post and the service's trywait -- frequent when the
+opponent stutters (every frame predicted, rollbacks of 2-6 frames all match
+long), rare otherwise (the reset-fix runs: 1 in 10 matches).
+
+Fix:
+
+- `src/rollback/rb_net.cpp`: the completion semaphore's count is part of the
+  rollback state: saved at every boundary (`reader_sem_save`, the id read from
+  0x1009FE2C) and put back with a restore (`reader_sem_restore`, via
+  `t5_sem_count` / `t5_sem_set_count` in `t5_hooks.cpp`; only while nobody
+  waits on it -- the main thread only ever trywaits). The session's last line
+  counts the tokens given back ("reader tokens given back N").
+- `src/netplay/t5_hooks.cpp`: the loaders (ZsAread, the decoder) are drained
+  before the boundary's snapshot, not after it, so the reader has posted
+  whatever it will post when the count (and the memory) is saved; the loop is
+  told about the load after the boundary as before (`load_seen`). Drained
+  first alone was not enough (`build/lat/runs/fx1`: still 3 hangs in 3).
+
+Proof: `reset_cycle_test.py --stutter 80 --cycles 12` (`build/lat/runs/fx2`):
+12 cycles, 11 passed, 0 hangs: S played 13 matches to their end under the
+stutter and left every one for the next (no "STUCK"); in 3 of its sessions a
+restore gave a token back (the match c002 that hung in every run before the
+fix is one of them). The one failed cycle (5) is not the hang: S aborted at
+the reset after its 7th match in NU::File::RequestManager (a request whose
+virtual call went to `abort`, 0x374150 -> 0x3C3AAC, just after an archive
+open got fd 6 -- fds 4 and 5 were still open); the same abort, at the same
+place, is in the reset-fix agent's run on main (`build/rs/runs/stut_rb1`,
+run2). Before the fix the same test hung at 3 of the first 4 match ends
+(`rc1`), and with the drain-order change alone at 3 of 3 (`fx1`).
+
+Rollback pairs with the fix (`rollback_net_test.py`, the section 29 command):
+RTT 150 (RH1) 57.4 / 58.7 fps per match, 300-frame window median 60.0, p99
+25 / 24 ms; RTT 0 (RH2) 57.7 / 59.0, median 60.0; both 0 mismatching frames
+and the same result hash on both PCs; lockstep at RTT 50 (KH50L) in sync
+too. These builds are on main with the reset-fix merge (section 29's were
+before it), and the same numbers came out. The scripted match now ends 2-0
+for P1 after 4456 frames instead of 0-2 for P2 after 4402: that comes with
+the merge (the end of the fight's loading is the sync point, at phase 11,
+where the RNGs are reseeded) -- the first build after the rebase, before this
+fix, plays the same (RI3).
+
+## What is left
+
+- Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
+  vblank. Further cuts need whole functions (see the tails above), or an early
+  start at the flush instead of after the present, which needs the render
+  inputs of the frame being translated (skinned vertices) kept out of the
+  restore.
+- The metric in the `rbnet:` lines ("displayed frame times") is boundary to
+  boundary; with early rollbacks a late live start makes one long and one short
+  interval without a missed vblank. `tools/latency_test.py`'s display cadence
+  (presents against the display's vblank grid) is the closer measure.
+- Under the same heavy stutter, about one match end in 15 aborts in
+  NU::File::RequestManager (section 30, fx2 cycle 5; also on main, reset-fix
+  stut_rb1): a queued file request whose object is gone, after archive opens
+  got fds 5 and 6 (normally 3/4). Likely more kernel-side state that a
+  restore does not follow (open files, requests of the file thread that the
+  draw issues and the drain does not cover); not looked at further.

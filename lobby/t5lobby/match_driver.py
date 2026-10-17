@@ -293,13 +293,15 @@ def _scan_for_control(paths):
 
 class MatchDriver:
     def __init__(self, client, launch, workdir, table=None, mode="auto", game_files=(), extra_env=None,
-                 ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False):
+                 ask_manual=True, auto_rematch=0, fight_env=True, async_calls=False, input_delay=None):
         """client: LobbyClient. launch(env) -> game handle (.running(), .stop(), .proc, .log_path) or
         None. workdir: where result files and the control channel live. mode: auto | process |
         persistent. game_files: binaries to check for the control channel (mode auto).
         ask_manual: when the game closes without a result, ask the player (else report a quit).
         auto_rematch: accept this many rematches by itself (scripted runs). async_calls: lobby
-        requests on a worker thread (a UI must not wait for the network)."""
+        requests on a worker thread (a UI must not wait for the network). input_delay: this
+        player's rollback input delay setting ("auto", "0", "1", "2"; a ranked match's fixed value
+        wins), passed to every match as T5_RB_NET_DELAY."""
         self.client = client
         self.launch = launch
         self.workdir = os.path.abspath(workdir)
@@ -309,6 +311,7 @@ class MatchDriver:
             mode = "persistent" if game_supports_control(game_files) else "process"
         self.mode = mode
         self.extra_env = dict(extra_env or {})
+        self.input_delay = str(input_delay) if input_delay not in (None, "") else None
         self.ask_manual = ask_manual
         self.auto_rematch = auto_rematch
         self.fight_env = fight_env
@@ -393,6 +396,13 @@ class MatchDriver:
             env["T5_HUD_NAMES"] = "|".join(hud[0])
             env["T5_HUD_RANKS"] = ",".join(str(t) for t in hud[1])
         env.update(self.extra_env)
+        # Rollback input delay (docs/NETPLAY.md "Input delay"): a ranked match's fixed value wins
+        # over everything; otherwise this player's setting, in every session's environment (a
+        # persistent game reads a key a session once set as unset when a later one leaves it out).
+        if getattr(ticket, "input_delay", None) is not None:
+            env["T5_RB_NET_DELAY"] = str(int(ticket.input_delay))
+        elif self.input_delay:
+            env["T5_RB_NET_DELAY"] = str(self.input_delay)
         return env
 
     def fight_line(self, ev):

@@ -48,6 +48,7 @@ DEFAULTS = {
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "render_scale": "1",       # 3D resolution: 1 (original) | 0.75 (lower) | 0.5 (lowest), PS3_RENDER_SCALE
+    "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
@@ -86,6 +87,8 @@ class Settings(dict):
             env["PS3_WINDOW_BACKGROUND"] = "1"
         if self["render_scale"] in RENDER_SCALES and self["render_scale"] != "1":
             env["PS3_RENDER_SCALE"] = self["render_scale"]
+        if self["input_delay"] in INPUT_DELAYS:
+            env["T5_RB_NET_DELAY"] = self["input_delay"]
         for line in self["extra_env"].splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -531,6 +534,17 @@ RENDER_SCALES = {
     "1": "Original",
     "0.75": "Lower",
     "0.5": "Lowest",
+}
+
+# Online input delay (like Tekken 6 Native Online's): frames between a press and the frame it
+# takes effect in, on both PCs. Auto follows the ping the game measures (1 frame up to ~60 ms,
+# 2 above). A fixed value counts only when both players chose the same; ranked matches use the
+# server's value. docs/NETPLAY.md "Input delay".
+INPUT_DELAYS = {
+    "auto": "Auto (by ping)",
+    "0": "0",
+    "1": "1",
+    "2": "2",
 }
 
 DISPLAY_MODES = [

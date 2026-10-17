@@ -588,8 +588,11 @@ What a stick (or hitbox) player needs, and where it stands:
   Online, this PC's port 1 is what is sent; the opponent arrives over the network.
 - **Input delay** -- shown for every match in the Online tab ("input delay 3
   frames (50 ms)"): the lobby picks it from the measured ping
-  (`suggest_delay`: same PC / LAN 2, 40 ms ping 3, 100 ms 5). Delay-based for
-  now; rollback (ROLLBACK.md) will hide most of it.
+  (`suggest_delay`: same PC / LAN 2, 40 ms ping 3, 100 ms 5) for the lockstep
+  fallback. With rollback (the default) the game picks its own: 1 frame up to
+  ~60 ms round trip, 2 above, or the setting both players chose; ranked
+  matches always use the server's `T5L_RANKED_INPUT_DELAY` (default 2) --
+  docs/NETPLAY.md "Input delay".
 - **Display latency** -- play in the game window at native size or "Borderless
   fullscreen" (Settings tab) on the monitor's native refresh; turn on the TV's
   game mode; cable instead of Wi-Fi for the match; close other heavy programs
@@ -627,6 +630,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
+| `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |

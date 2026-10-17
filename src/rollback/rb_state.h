@@ -56,6 +56,10 @@ uint64_t state_game_hash();
  * returns the byte count, at most cap. */
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap);
 uint64_t hash_page(uint32_t ea);
+/* The full-state per-page hash (test mode); off: commits and restores skip it. */
+void     state_set_page_hashing(bool on);
+/* "N commits: x ms each (write watch, page copies), pages each (per range)"; reset clears the sums. */
+void     state_commit_stats(char* out, size_t cap, bool reset);
 
 /* Roll the state back from the current boundary f to the boundary of frame
  * `to` (to < f) by applying the undo logs of frames f-1 .. to. Returns false

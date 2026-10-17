@@ -17,7 +17,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 EXE = ROOT + "/build/cmake/t5dr.exe"
-VFS = ROOT + "/game/vfs"
+VFS = os.environ.get("PS3_VFS_ROOT", ROOT + "/game/vfs")
 RUNS = ROOT + "/build/rollback-runs"
 
 # The menu path np found: title -> (DOWN, DOWN, CROSS) -> ... -> fight by ~3100.
@@ -68,9 +68,10 @@ def main():
     ap.add_argument("--ko", action="store_true", help="P1 attacks with launchers, P2 idle (rounds end by KO)")
     ap.add_argument("--fight", default="", help="direct fight p1,p2,stage[,rounds]: boots into the match (T5_FIGHT); the test starts 120 frames into it")
     ap.add_argument("--icall-at", type=float, default=0, help="seconds: trace the main thread's indirect calls for 0.5 s")
+    ap.add_argument("--runs", default=RUNS)
     a = ap.parse_args()
 
-    d = os.path.join(RUNS, a.out)
+    d = os.path.join(a.runs, a.out)
     os.makedirs(d, exist_ok=True)
     env = dict(os.environ)
     env.update({

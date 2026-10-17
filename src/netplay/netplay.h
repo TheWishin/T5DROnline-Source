@@ -124,7 +124,8 @@ bool     rb_peer_lost();
  * T5_RB_MODE is unset or "net"; T5_RB_MODE=off or lockstep keeps the lockstep). */
 void     rb_offer(bool on);
 bool     rb_negotiated();
-int      rb_apply_delay();                       /* rollback agreed: switch to the rollback input delay (the host's T5_RB_NET_DELAY); returns the delay */
+int      rb_apply_delay();                       /* rollback agreed: switch to the match's rollback input delay (the host's pick: both players' T5_RB_NET_DELAY when equal, else auto from the round trip); the joiner waits for it; returns the delay */
+int      rb_rtt_ms();                            /* the round trip measured by PING echoes (median), or the lobby's, or -1 */
 void     rb_account_frame(uint64_t wait_us);     /* a live frame of the rollback loop ran: the speed line and local_fps() (wait_us: time spent waiting for the peer) */
 /* Time sync: each packet carries the sender's frame-advantage estimate. */
 void     rb_set_lead(int lead);

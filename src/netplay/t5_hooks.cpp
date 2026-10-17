@@ -79,6 +79,7 @@
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
+extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
@@ -142,7 +143,7 @@ constexpr uint32_t NID_cellPadInit    = 0x1CF98800;
 constexpr uint32_t NID_cellPadGetInfo = 0x3AAAD464;
 constexpr uint32_t NID_cellPadGetData = 0x8B72CDA1;
 
-constexpr int SC_SEM_WAIT = 92, SC_SEM_POST = 94, SC_MEM_ALLOC = 348;
+constexpr int SC_SEM_WAIT = 92, SC_SEM_TRYWAIT = 93, SC_SEM_POST = 94, SC_MEM_ALLOC = 348;
 
 /* ---- guest memory (big-endian) -------------------------------------------- */
 inline uint32_t rd32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
@@ -226,6 +227,16 @@ bool g_await_load = false;  /* direct fight: the end of the fight's loading is s
  * the end of the loading the intros run a fixed 28 frames on both PCs. */
 bool fight_loaded_now() { const uint32_t p = rd32(0x1008F070u); return p >= 11 && p <= 17; }
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
+/* Offline (no netplay): the keyread tick on the main thread too (T5_LATE_INPUT,
+ * default on, docs/RENDER_PERF.md "Input latency"). The game's own keyread
+ * thread reads the pads at the vblank, then waits for the frame lock the main
+ * thread holds there, and writes the ring after the main thread has already
+ * taken this frame's entry: 5-12 % of presses (more on a busy PC) reached the
+ * game a frame late. Run at the top of the frame like netplay's, the pads are
+ * read at the frame's start and that frame always sees them. */
+bool g_offline = false;
+bool g_offline_gave_up = false;
+ppu_context* g_frame_wait_ctx = nullptr;   /* the main thread's latest frame-semaphore wait */
 std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
 void persistent_lost(const char* reason);
 
@@ -592,21 +603,14 @@ void drain_stats(uint32_t f)
     g_drain_us = g_drain_max_us = g_drain_waits = 0;
 }
 
-void drain_workers(uint32_t f)
+/* Wait until the loader threads are parked. Returns the time it waited (ms),
+ * or -1 when they were idle already. */
+double drain_wait(uint32_t f)
 {
     drain_stats(f);
-    if (workers_idle()) return;
-    struct Tell { uint32_t f; LARGE_INTEGER t0; ~Tell() {   /* the rollback loop keeps re-simulations clear of loads */
-        LARGE_INTEGER t1, qf; QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&qf);
-        rb::net::load_seen(f, 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)qf.QuadPart); } } tell{ f, {} };
-    QueryPerformanceCounter(&tell.t0);
+    if (workers_idle()) return -1.0;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
-    struct Acc { LARGE_INTEGER* a; ~Acc() {
-        LARGE_INTEGER q1, qf; QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
-        uint64_t us = (uint64_t)((q1.QuadPart - a->QuadPart) * 1000000 / qf.QuadPart);
-        g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us; } } acc{ &q0 };
-    (void)q1; (void)qf;
     const ULONGLONG t0 = GetTickCount64();
     while (!workers_idle()) {
         WaitForSingleObject(g_drain_event, 1);
@@ -618,9 +622,21 @@ void drain_workers(uint32_t f)
                                        g_sys_semaphores[i - 1].value, g_sys_semaphores[i - 1].waiters); st += b; }
                 np::note("frame %u: loader threads still busy after 2 s, going on (%s)", f, st.c_str());
             }
-            return;
+            break;
         }
     }
+    QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+    const uint64_t us = (uint64_t)((q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart);
+    g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us;
+    return us / 1000.0;
+}
+
+/* lockstep: drain at the top of the frame; the rollback loop is told about the
+ * load (it keeps re-simulations clear of loads) */
+void drain_workers(uint32_t f)
+{
+    const double ms = drain_wait(f);
+    if (ms >= 0) rb::net::load_seen(f, ms);
 }
 
 /* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). From the
@@ -834,8 +850,44 @@ void reseed(uint32_t seed)
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
 }
 
+extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
+extern "C" volatile int g_lat_log_on;
+
+/* Offline: the take-over of the boot mode (keyread's vblank wakes stopped, the
+ * thread parked, see on_frame_start), then the keyread tick at every frame. */
+void offline_frame(ppu_context* ctx)
+{
+    if (g_offline_gave_up) return;
+    if (!g_active) {
+        g_boot_frames++;
+        if (!rd32(kKeyreadSemPtr)) return;
+        if (!g_swallow.load()) {
+            g_swallow = true;
+            while (g_kr_posting.load() != 0) YieldProcessor();
+            g_takeover_frame = g_boot_frames + 1;
+            return;
+        }
+        if (g_boot_frames < g_takeover_frame) return;
+        if (!ensure_keyread_parked(ctx)) {
+            /* never seen; give the pads back to the game's own thread */
+            g_offline_gave_up = true;
+            g_swallow = false;
+            np::note("late input: the keyread thread does not park -- the game reads the pads itself");
+            return;
+        }
+        g_main_tid = ctx->thread_id;
+        g_active = true;
+        np::note("late input: the pads are read at the top of each frame by the main thread (main loop frame %u; "
+                 "T5_LATE_INPUT=0 leaves it to the game's keyread thread)", g_boot_frames);
+    }
+    if (ctx->thread_id != g_main_tid) return;
+    if (g_lat_log_on) lat_log_('B', "%u", rd32(0x1008EB9Cu));   /* PS3_LATENCY_LOG: the pads are read now */
+    keyread_tick();
+}
+
 void on_frame_start(ppu_context* ctx)
 {
+    if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {
@@ -945,7 +997,16 @@ void on_frame_start(ppu_context* ctx)
         const bool load_end = g_await_load && !rb::net::bypass() && (fight_loaded_now() || rd32(kRingResetFlag) != 0);
         const bool scene = resync || load_end;
         np::PadInput in[2];
+        /* The loaders (ZsAread, decoder) are drained before the boundary's
+         * snapshot, not after it: the state saved at a boundary is then one
+         * with no read in flight, and the reader has posted its completion
+         * token before the loop saves that semaphore's count with the
+         * boundary (rb_net.cpp reader_sem_save; a restore that could not give
+         * a taken token back hung the game mode at the match's end,
+         * docs/ROLLBACK.md section 30). */
+        const double load_ms = drain_wait(f);
         uint32_t run = rb::net::on_boundary(f, scene, in);
+        if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
             const uint32_t nf = np::scene_barrier(f);
             if (nf > f) skip_frames(nf - f);
@@ -961,7 +1022,6 @@ void on_frame_start(ppu_context* ctx)
             if (nf > f) run = rb::net::on_boundary(nf, false, in);
         }
         g_frame = run + 1;
-        if (run == f) drain_workers(run);
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();
@@ -1112,8 +1172,15 @@ int64_t w_sem_wait(ppu_context* ctx)
     }
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
     const uint32_t fs = rd32(kFrameSemPtr);
+    if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
         /* a re-simulated frame: no wait, straight to the next boundary */
+        on_frame_start(ctx);
+        return 0;
+    }
+    if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::early_pending()) {
+        /* early rollback (rb_net.cpp early_check): the boundary runs now and
+         * waits for this frame's tick itself (frame_tick_wait) */
         on_frame_start(ctx);
         return 0;
     }
@@ -1143,8 +1210,32 @@ int64_t w_sem_post(ppu_context* ctx)
         g_kr_posting.fetch_sub(1);
         return r;
     }
-    if (rb::net::bypass() && id == rd32(kFrameSemPtr)) return 0;   /* re-simulating: vblank posts must not pile up */
+    if (rb::net::bypass() && id == rd32(kFrameSemPtr)) {   /* re-simulating: vblank posts must not pile up */
+        rb::net::early_tick_posted();   /* ... but an early boundary's tick has come */
+        return 0;
+    }
     return g_orig_post(ctx);
+}
+
+/* The early rollback's wait for the frame's tick: the frame semaphore wait the
+ * title made when it went on (its context is the latest one seen). */
+void frame_tick_wait(bool came)
+{
+    ppu_context* c = g_frame_wait_ctx;
+    if (!c) return;
+    const uint64_t r3 = c->gpr[3], r4 = c->gpr[4];
+    c->gpr[3] = rd32(kFrameSemPtr); c->gpr[4] = 0;   /* sys_semaphore_wait(frame semaphore, no timeout) */
+    if (!came) {
+        g_orig_wait(c);   /* (the direct-fight driver's frame hook runs inside, after the wait) */
+    } else {
+        /* the tick's post was swallowed during the re-simulation: nothing to
+         * wait for -- but a post that slipped through between the early check
+         * and the re-simulation's start is still pending: take it (trywait) */
+        if (np_lv2_fn tw = g_lv2_syscalls[SC_SEM_TRYWAIT]) tw(c);
+        c->gpr[3] = rd32(kFrameSemPtr); c->gpr[4] = 0;
+        t5_df_frame_tick(c);
+    }
+    c->gpr[3] = r3; c->gpr[4] = r4;
 }
 
 int64_t w_mem_alloc(ppu_context* ctx)
@@ -1164,6 +1255,7 @@ void install_syscall_hooks()
     g_orig_post = g_lv2_syscalls[SC_SEM_POST];
     g_lv2_syscalls[SC_SEM_WAIT] = w_sem_wait;
     g_lv2_syscalls[SC_SEM_POST] = w_sem_post;
+    rb::net::set_tick_waiter(frame_tick_wait);
     if (g_trace) {
         TraceSc<107>::install();   /* sys_cond_wait */
         TraceSc<130>::install();   /* sys_event_queue_receive */
@@ -1206,6 +1298,7 @@ void h_cellPadInit(ppu_context* ctx)
 {
     int32_t r = cellPadInit((uint32_t)ctx->gpr[3]);
     ctx->gpr[3] = (uint64_t)(int64_t)r;
+    if (g_offline) { install_syscall_hooks(); return; }
     np::init();
     if (!np::enabled() && !g_persistent) return;
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
@@ -1270,7 +1363,16 @@ struct Register {
         const char* m = getenv("T5_NET_MODE");
         const char* ctl = getenv("T5_CTL_DIR");
         g_persistent = ctl && *ctl;
-        if ((!m || !*m) && !g_persistent) return;   /* netplay off: register nothing, change nothing */
+        if ((!m || !*m) && !g_persistent) {
+            /* netplay off: only the offline keyread tick (T5_LATE_INPUT=0: nothing
+             * at all); the rollback test modes have their own frame hooks */
+            const char* li = getenv("T5_LATE_INPUT");
+            const char* rm = getenv("T5_RB_MODE");
+            if ((li && *li == '0') || (rm && (!strcmp(rm, "test") || !strcmp(rm, "measure")))) return;
+            g_offline = true;
+            ps3_hle_register_ctx(NID_cellPadInit, "cellPadInit(late input)", h_cellPadInit);
+            return;
+        }
         const char* t = getenv("T5_NET_TRACE");
         g_trace = t && *t == '1';
         const char* pv = getenv("T5_NET_PASSIVE");
@@ -1353,6 +1455,33 @@ extern "C" const char* t5_netplay_take_session_lost(void)
 }
 
 extern "C" int t5_netplay_persistent(void) { return g_persistent ? 1 : 0; }
+
+/* A kernel semaphore's count, for the rollback loop (rb_net.cpp: the reader's
+ * completion semaphore is part of the state it saves at every boundary and
+ * puts back with a restore). -1: no such semaphore. */
+extern "C" int32_t t5_sem_count(uint32_t id)
+{
+    if (id == 0 || id > 256) return -1;
+    np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return -1;
+    EnterCriticalSection(&s.value_lock);
+    const int32_t v = s.value;
+    LeaveCriticalSection(&s.value_lock);
+    return v;
+}
+/* Set it -- only while nobody waits on it (the reader's completion semaphore
+ * is only ever taken with a trywait by the main thread). */
+extern "C" int t5_sem_set_count(uint32_t id, int32_t v)
+{
+    if (id == 0 || id > 256 || v < 0) return 0;
+    np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return 0;
+    EnterCriticalSection(&s.value_lock);
+    const bool ok = s.waiters == 0 && v <= s.max_value;
+    if (ok) s.value = v;
+    LeaveCriticalSection(&s.value_lock);
+    return ok ? 1 : 0;
+}
 
 /* The direct-fight mode calls this on the main thread when its fight starts
  * (both PCs do, for the same match). With T5_NET_START=external it begins

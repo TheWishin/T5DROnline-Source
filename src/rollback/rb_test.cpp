@@ -241,6 +241,7 @@ void test_on_frame(ppu_context* ctx)
         if (g_skipsound && sound_word()) { state_add_mask(sound_word(), 4); note("sound update skipped in re-simulated frames (word %08X)", sound_word()); }
         wft_install();
         sound_install();   /* the game-DLL build: the lifted table exists only now */
+        dcut_install();
         if (const char* e = getenv("T5_RB_WFT_FRAMES")) g_wft_frames = (uint32_t)std::max(1, atoi(e));
         if (const char* e = getenv("T5_RB_TRACE")) { g_trace_on = *e == '1'; if (g_trace_on) trace_install(); }
         g_cap_buf = (uint8_t*)VirtualAlloc(nullptr, (size_t)kCapPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);

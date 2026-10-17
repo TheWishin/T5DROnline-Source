@@ -483,8 +483,11 @@ restore put the service back to "busy" but could not give the token back, so
 the request stayed "in progress" for good and the loader task waiting on it
 never finished -- and the game mode cannot end while a task of its scene is
 busy. The rollback loop now saves and restores that semaphore's count with
-every boundary (after the loaders are drained). docs/ROLLBACK.md section 30
-has the trail (call traces of the mode manager, the busy task, the reader).
+every boundary (after the loaders are drained). `reset_cycle_test.py
+--stutter 80 --cycles 12`: 0 hangs in 13 match ends on S (before: 3 of the
+first 4). docs/ROLLBACK.md section 30 has the trail (call traces of the mode
+manager, the busy task, the reader) and the one other failure under that
+stutter (an abort in NU::File, also seen on main).
 
 **Test:** `tools/reset_cycle_test.py` -- one persistent game S (never
 restarted) against a persistent opponent O (started again when a cycle killed

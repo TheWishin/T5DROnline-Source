@@ -1725,6 +1725,92 @@ with KOs): 0 gameplay-hash mismatches in 1 404-1 419 re-simulated boundaries
 with the cut (d2, d5). The two crashes of section 26 were the tail cut, not
 seen again in 20+ pairs since.
 
+## 30. The hang at the end of a match under heavy rollback: a semaphore token the restore did not give back
+
+What was seen (reset-fix, `tools/reset_cycle_test.py --stutter 80`: the
+opponent suspended for 80 ms every 0.2-0.6 s): a match played to its end, the
+driver's START skip taken, the game asks for the select mode (mode 4, next 6)
+and never gets there; the screen fades to black, the fight music stops, the
+select data is never read, and after 60 s `stuck_check` ends the game (exit
+6). On this branch before the fix: 3 of the first 4 match ends of a cycle run
+hung (`build/lat/runs/rc1`), always on S, the side whose opponent stutters --
+the side that rolls back.
+
+How it was found (`build/lat/runs/tr1`, `bz1`, `fd1`; the tracing builds are
+not in the tree):
+
+1. A call trace (`T5_RB_CALLTRACE`; every function of the game mode and the
+   mode manager, 0x4F000-0x56000 and 0x25B000-0x25E000) of S and of its
+   opponent through the same match: after the game's own mode request
+   (0x25DA54(6)) both stop running the game mode's task and run one more task
+   (0x10624980) every frame. On the opponent the mode switch (0x25DBD0, cur :=
+   next) comes one frame later; on S never.
+2. The mode manager (0x25E6AC) switches only when the query 0x272E84 on that
+   task says "done": it sets the task's +0x58 = 2 and +0x5C = 1 and runs its
+   subtree; every task of the class 0x10084768 (exec 0x274310) whose state
+   (+0x48) is not 7 or 10 clears +0x5C.
+3. An entry detour on 0x274310 that logged the busy tasks during the query:
+   on the opponent one task busy for a few frames (states 4, 5, 6); on S task
+   0x10628E80 in state 3 for good. State 3 (0x27279C) waits while its read
+   request (task +0x7C, 0x1009FF68) has status 1 -- a request of the game's
+   async reader (ZsAread).
+4. A trace of the reader's functions: the main thread's reader service
+   (0x9A784, once per frame) starts a request by posting the reader's request
+   semaphore (service object 0x1009FE28 +0) and marks itself busy (+8 = 1);
+   the reader thread reads and posts the completion semaphore (+4); a later
+   frame's service takes that token with a trywait (0x9A884, the game's only
+   trywait) and completes the request (0x9A4F4). On S: frame 226 took the
+   token and completed a read; a rollback at frame 234 re-simulated from 226;
+   the restored service was busy again, its trywait found the semaphore empty
+   (CELL_EBUSY), and so on every frame until the game was ended.
+
+Why: a kernel semaphore's count is not guest memory. A restore put the
+service and the request back as they were before the token was taken, but
+not the token. The loader task then waits forever; in the fight that shows
+nothing (it loads in the background), at the match's end the game mode cannot
+finish while a task of its scene is busy. It needs a rollback to a boundary
+between the reader's post and the service's trywait -- frequent when the
+opponent stutters (every frame predicted, rollbacks of 2-6 frames all match
+long), rare otherwise (the reset-fix runs: 1 in 10 matches).
+
+Fix:
+
+- `src/rollback/rb_net.cpp`: the completion semaphore's count is part of the
+  rollback state: saved at every boundary (`reader_sem_save`, the id read from
+  0x1009FE2C) and put back with a restore (`reader_sem_restore`, via
+  `t5_sem_count` / `t5_sem_set_count` in `t5_hooks.cpp`; only while nobody
+  waits on it -- the main thread only ever trywaits). The session's last line
+  counts the tokens given back ("reader tokens given back N").
+- `src/netplay/t5_hooks.cpp`: the loaders (ZsAread, the decoder) are drained
+  before the boundary's snapshot, not after it, so the reader has posted
+  whatever it will post when the count (and the memory) is saved; the loop is
+  told about the load after the boundary as before (`load_seen`). Drained
+  first alone was not enough (`build/lat/runs/fx1`: still 3 hangs in 3).
+
+Proof: `reset_cycle_test.py --stutter 80 --cycles 12` (`build/lat/runs/fx2`):
+12 cycles, 11 passed, 0 hangs: S played 13 matches to their end under the
+stutter and left every one for the next (no "STUCK"); in 3 of its sessions a
+restore gave a token back (the match c002 that hung in every run before the
+fix is one of them). The one failed cycle (5) is not the hang: S aborted at
+the reset after its 7th match in NU::File::RequestManager (a request whose
+virtual call went to `abort`, 0x374150 -> 0x3C3AAC, just after an archive
+open got fd 6 -- fds 4 and 5 were still open); the same abort, at the same
+place, is in the reset-fix agent's run on main (`build/rs/runs/stut_rb1`,
+run2). Before the fix the same test hung at 3 of the first 4 match ends
+(`rc1`), and with the drain-order change alone at 3 of 3 (`fx1`).
+
+Rollback pairs with the fix (`rollback_net_test.py`, the section 29 command):
+RTT 150 (RH1) 57.4 / 58.7 fps per match, 300-frame window median 60.0, p99
+25 / 24 ms; RTT 0 (RH2) 57.7 / 59.0, median 60.0; both 0 mismatching frames
+and the same result hash on both PCs. The scripted match now ends 2-0 for P1
+after 4456 frames instead of 0-2 for P2 after 4402 (every earlier build,
+lockstep too): with the loaders drained before the snapshot the fight's
+loading ends a frame earlier (phase 11 at frame 195 instead of 196) and the
+load-end barrier (t5_hooks.cpp `fight_loaded_now`, phase 11-17) comes at
+phase 11 instead of the first fight frame (17), where the RNGs are reseeded.
+Both PCs do the same, so they stay in sync; the drain-order change alone
+(fx1 build, RI1) gives the same new timeline.
+
 ## What is left
 
 - Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
@@ -1736,3 +1822,9 @@ seen again in 20+ pairs since.
   boundary; with early rollbacks a late live start makes one long and one short
   interval without a missed vblank. `tools/latency_test.py`'s display cadence
   (presents against the display's vblank grid) is the closer measure.
+- Under the same heavy stutter, about one match end in 15 aborts in
+  NU::File::RequestManager (section 30, fx2 cycle 5; also on main, reset-fix
+  stut_rb1): a queued file request whose object is gone, after archive opens
+  got fds 5 and 6 (normally 3/4). Likely more kernel-side state that a
+  restore does not follow (open files, requests of the file thread that the
+  draw issues and the drain does not cover); not looked at further.

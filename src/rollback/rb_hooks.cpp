@@ -334,6 +334,19 @@ bool keyread_parked()
 }
 void set_sim_frame(uint32_t f) { g_sim_frame = f; }
 void set_bypass(bool on) { g_bypass = on; }
+bool bypass_on() { return g_bypass.load(std::memory_order_relaxed); }
+constexpr uint32_t kSoundEnablePtrSlot = 0x470540u - 0x61E8u;   /* TOC slot -> pointer to the word */
+uint32_t g_sound_word = 0, g_sound_saved = 0;
+bool g_sound_skipped = false;
+uint32_t sound_word() { if (!g_sound_word) g_sound_word = rd32(kSoundEnablePtrSlot); return g_sound_word; }
+void sound_skip(bool on)
+{
+    const uint32_t w = sound_word();
+    if (!w || on == g_sound_skipped) return;
+    if (on) { g_sound_saved = rd32(w); wr32(w, 0); }
+    else wr32(w, g_sound_saved);
+    g_sound_skipped = on;
+}
 
 void install_syscall_hooks()
 {
@@ -360,9 +373,24 @@ struct Register {
         if (!m || !*m) return;
         if (!strcmp(m, "measure")) g_mode = Mode::Measure;
         else if (!strcmp(m, "test")) g_mode = Mode::Test;
+        else if (!strcmp(m, "net")) g_mode = Mode::Net;
         else { fprintf(stderr, "[rb] unknown T5_RB_MODE %s\n", m); return; }
         const char* lf = getenv("T5_RB_LOG");
         g_log = fopen(lf && *lf ? lf : "rb_frames.log", "w");
+        if (g_mode == Mode::Net) {
+            /* Rollback netplay: the pad and frame hooks are netplay's
+             * (src/netplay/t5_hooks.cpp calls rb::net at every boundary); here
+             * only the GPU-handshake bypass for re-simulated frames and the
+             * draw cut are installed. */
+            note("mode net: rollback netplay loop (needs T5_NET_MODE=host|join|local)");
+            ps3_hle_register_ctx(NID_cellGcmSetUserCommand, "cellGcmSetUserCommand(rb)", h_cellGcmSetUserCommand);
+            ps3_hle_register_ctx(NID_cellGcmSetFlip, "cellGcmSetFlip(rb)", h_cellGcmSetFlip);
+            ps3_hle_register_ctx(NID_cellGcmGetFlipStatus, "cellGcmGetFlipStatus(rb)", h_cellGcmGetFlipStatus);
+            ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
+            ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
+            icall_install();
+            return;
+        }
         g_script[0] = parse_script(getenv("T5_RB_SCRIPT"));
         g_script[1] = parse_script(getenv("T5_RB_SCRIPT2"));
         note("mode %s, %zu + %zu scripted presses", m, g_script[0].size(), g_script[1].size());

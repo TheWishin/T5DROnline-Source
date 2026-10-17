@@ -38,10 +38,19 @@ namespace rb {
 namespace {
 
 /* ---- the cut set ------------------------------------------------------------- */
-/* The built-in cut: vtable targets of the draw-packet submission (NPUB30009
- * v01.00), found with T5_RB_ICALL_TIMING / T5_RB_SAMPLE -- see
- * docs/ROLLBACK.md section 6. 0 entries are ignored. */
-const uint32_t kDrawCut[] = { 0 };
+/* The built-in cut (NPUB30009 v01.00), found with the profiler and the
+ * write-fault tracer and verified by the gameplay-hash test (docs/ROLLBACK.md
+ * section 6): the two model-draw entry points (each fighter's draw traversal:
+ * matrices, materials, the skinning job kick) and the NU::Draw packet
+ * writers they and the stage/effect draws call. All return 0 to their
+ * callers when live, so the stub returns 0 too. */
+const uint32_t kDrawCut[] = {
+    0x00387324, 0x003872A8,                                         /* model draw (vtable +0x34 of the model object) */
+    0x00355C70, 0x00355B34, 0x003559E4, 0x00357F88,                 /* 16-byte packet moves / packet header */
+    0x00389788, 0x00389820, 0x003898D0, 0x00389A88, 0x00389A0C,     /* packet builders */
+    0x00389AA0, 0x0038988C, 0x00397AF8, 0x00354160, 0x00353E68,     /* packet builders, draw-list append */
+    0x00158D6C, 0x001357A0, 0x001EC6FC, 0x0009DC04, 0x00264220,     /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
+};
 /* Open-addressed set of guest targets; read on the hot path, written at setup. */
 constexpr uint32_t kSetN = 1024;
 uint32_t g_cut_key[kSetN];

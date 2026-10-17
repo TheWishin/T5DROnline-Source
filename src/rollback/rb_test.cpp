@@ -80,9 +80,11 @@ uint64_t* g_snap_page_hash = nullptr;   /* per-page hashes at the rollback point
 /* After re-simulating frame f: which pages differ from what the original
  * frame produced (captured content for pages it wrote, the rollback point's
  * hash for the rest), and where inside them. */
+std::vector<uint32_t> g_diff_pages;   /* the pages the last diff found (for the dynamic write-fault trace) */
 void diff_against_original(uint32_t f, int max_pages)
 {
     int shown = 0, total = 0;
+    g_diff_pages.clear();
     for (size_t ri = 0; ri < kSaveN; ri++) {
         const Range& r = kSave[ri];
         for (uint32_t ea = r.base; ea < r.base + r.len; ea += 0x1000) {
@@ -91,6 +93,7 @@ void diff_against_original(uint32_t f, int max_pages)
             const uint8_t* ref = original_content(ea, f, &oh);
             if (state_page_hash(ea) == oh) continue;
             total++;
+            if (g_diff_pages.size() < 64) g_diff_pages.push_back(ea);
             if (shown++ >= max_pages) continue;
             if (!ref) { note("resim %u vs original: page %08X differs (not written by the original frames; no reference content)", f, ea); continue; }
             const uint32_t* a = (const uint32_t*)(vm_base + ea);
@@ -106,8 +109,9 @@ void diff_against_original(uint32_t f, int max_pages)
 
 /* ---- recorded history ------------------------------------------------------------ */
 constexpr uint32_t kHist = 4096;
-uint64_t g_hist_hash[kHist];
+uint64_t g_hist_hash[kHist], g_hist_game[kHist];
 uint32_t g_hist_tag[kHist];
+uint32_t g_game_mismatches = 0;
 
 /* ---- control ----------------------------------------------------------------------- */
 uint32_t g_start = 2700, g_save_every = 60, g_resim = 8, g_rollbacks_max = 1000000;
@@ -117,11 +121,15 @@ int  g_sample = 0;               /* T5_RB_SAMPLE=1: stack samples + icall timing
                                   * 2: also over 30 normal frames before the test starts */
 uint32_t g_sample_n = 3;
 uint64_t g_cut_hits0 = 0;
+bool g_skipsound = false;        /* T5_RB_SKIPSOUND=1: re-simulated frames skip the sound update */
+uint32_t g_cut_tail = 1;         /* T5_RB_CUT_TAIL: the last k re-simulated frames run WITHOUT the cut (like the live frame
+                                  * after a real rollback), so the final boundary's hash must equal the original's */
+int g_wft_state = 0;
 int g_normal_window = 0;
 int  g_trace_state = 0;
 uint32_t g_resim_left = 0;       /* > 0: re-simulating */
 uint32_t g_resim_target = 0;     /* logical frame at which the resim ends */
-uint32_t g_rollbacks = 0, g_mismatches = 0, g_resim_frames = 0, g_rollback_fail = 0;
+uint32_t g_rollbacks = 0, g_mismatches = 0, g_resim_frames = 0, g_rollback_fail = 0, g_cut_diffs = 0;
 uint64_t g_saved_minvb = 1;
 bool g_diag_done = false;
 uint32_t g_snap_frame = 0;
@@ -182,6 +190,10 @@ void test_on_frame(ppu_context* ctx)
         if (const char* e = getenv("T5_RB_PADDBG")) g_paddbg = *e == '1';
         if (const char* e = getenv("T5_RB_SAMPLE")) g_sample = atoi(e);
         if (const char* e = getenv("T5_RB_SAMPLE_N")) g_sample_n = (uint32_t)atoi(e);
+        if (const char* e = getenv("T5_RB_CUT_TAIL")) g_cut_tail = (uint32_t)atoi(e);
+        if (const char* e = getenv("T5_RB_SKIPSOUND")) g_skipsound = *e == '1';
+        if (g_skipsound && sound_word()) { state_add_mask(sound_word(), 4); note("sound update skipped in re-simulated frames (word %08X)", sound_word()); }
+        wft_install();
         if (const char* e = getenv("T5_RB_TRACE")) { g_trace_on = *e == '1'; if (g_trace_on) trace_install(); }
         g_cap_buf = (uint8_t*)VirtualAlloc(nullptr, (size_t)kCapPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         g_snap_page_hash = (uint64_t*)calloc(1u << 20, sizeof(uint64_t));
@@ -242,12 +254,20 @@ void test_on_frame(ppu_context* ctx)
     }
 
     const uint32_t f = g_logical;
+    if (wft_enabled()) {
+        if (g_wft_state == 1) { wft_disarm("normal"); g_wft_state = 2; }
+        else if (g_wft_state == 3) { wft_disarm("resim-cut"); g_wft_state = 4; }
+        else if (g_wft_state == 5) { wft_disarm("diffpages-normal"); g_wft_state = 6; }
+        if (g_wft_state == 0 && g_resim_left == 0 && f == g_start + 25) { wft_arm(); g_wft_state = 1; }
+        /* T5_RB_WFT=diff: trace the writers of the pages the first final-boundary diff found, over the next normal frame */
+        if (g_wft_state == 4 && g_resim_left == 0 && !g_diff_pages.empty()) { wft_arm_pages(g_diff_pages.data(), g_diff_pages.size()); g_wft_state = 5; }
+    }
     if (g_trace_on && g_trace_state == 1) { trace_stop("normal frame"); g_trace_state = 2; }
     if (g_trace_on && g_trace_state == 3) { trace_stop("resim frame"); g_trace_state = 4; }
     if (g_trace_on && g_trace_state == 0 && f == g_start + 30) { g_trace_state = 1; }
     if (g_resim_left == 0) {
         /* uninterrupted run: record */
-        g_hist_hash[f % kHist] = state_hash(); g_hist_tag[f % kHist] = f + 1;
+        g_hist_hash[f % kHist] = state_hash(); g_hist_game[f % kHist] = state_game_hash(); g_hist_tag[f % kHist] = f + 1;
         if (f > g_start + 1) { g_cyc_normal += dcyc; g_cyc_normal_n++; }
         logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
                 (unsigned long long)state_hash(), (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
@@ -272,8 +292,10 @@ void test_on_frame(ppu_context* ctx)
             g_saved_minvb = rd64(kMinVblanks);
             wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing while re-simulating (u64) */
             set_bypass(true);
-            cut_set(true);
+            if (g_skipsound) sound_skip(true);
+            cut_set(g_resim > g_cut_tail);
             g_cut_hits0 = cut_hits();
+            if (wft_enabled() && g_wft_state == 2 && g_resim > g_cut_tail) { wft_arm(); g_wft_state = 3; }
             QueryPerformanceCounter(&g_resim_t0);
             g_cyc_resim0 = cycles_now();
             /* re-run frame P now; the next boundary is logical P+1 */
@@ -301,14 +323,20 @@ void test_on_frame(ppu_context* ctx)
     /* re-simulating: boundary of logical frame f (frame f-1 was just re-run) */
     g_resim_left--;
     g_resim_frames++;
+    if (g_resim_left <= g_cut_tail) cut_set(false);   /* the tail frames draw, as the live frame after a real rollback does */
     const bool known = g_hist_tag[f % kHist] == f + 1;
     const bool match = known && g_hist_hash[f % kHist] == state_hash();
-    if (!match) { g_mismatches++; if (!g_diag_done) { g_diag_done = true; diff_against_original(f, 12); } }
+    const uint64_t gh = state_game_hash();
+    const bool gmatch = known && g_hist_game[f % kHist] == gh;
+    const bool counted = g_resim_left < g_cut_tail || g_cut_tail == 0;   /* boundaries after a cut frame are expected to differ in render bookkeeping */
+    if (!gmatch) { g_game_mismatches++; note("resim frame %u: GAMEPLAY hash %016llX, original %016llX -> MISMATCH", f, (unsigned long long)gh, (unsigned long long)(known ? g_hist_game[f % kHist] : 0)); }
+    if (!match && counted) { g_mismatches++; if (!g_diag_done) { g_diag_done = true; diff_against_original(f, 12); } }
+    if (!match && !counted) g_cut_diffs++;
     logline("R %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX %s vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
             (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH",
             (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
             (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C));
-    if (!match) note("resim frame %u: hash %016llX, original %016llX -> %s", f, (unsigned long long)state_hash(),
+    if (!match && counted) note("resim frame %u: hash %016llX, original %016llX -> %s", f, (unsigned long long)state_hash(),
                      (unsigned long long)(known ? g_hist_hash[f % kHist] : 0), known ? "MISMATCH" : "unknown");
     if (g_resim_left == 0) {
         LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
@@ -316,12 +344,13 @@ void test_on_frame(ppu_context* ctx)
         g_resim_ms_total += ms;
         if (g_sample && g_rollbacks <= g_sample_n) { sample_stop("resim"); icall_timing_stop("resim"); }
         cut_set(false);
+        sound_skip(false);
         set_bypass(false);
         wr32(kMinVblanks, (uint32_t)(g_saved_minvb >> 32)); wr32(kMinVblanks + 4, (uint32_t)g_saved_minvb);
         const double rc = (double)(cycles_now() - g_cyc_resim0) / 1e6 / g_resim;
         const double nc = g_cyc_normal_n ? (double)g_cyc_normal / 1e6 / g_cyc_normal_n : 0;
-        note("RESIM done: %u frames in %.2f ms (%.2f ms/frame, %.1f Mcycles/frame CPU; a normal frame with draw: %.1f Mcycles); rollbacks %u (%u failed), mismatching boundaries %u, resim frames %u, cut hits %llu; restore avg %.2f ms, %.0f pages",
-             g_resim, ms, ms / g_resim, rc, nc, g_rollbacks, g_rollback_fail, g_mismatches, g_resim_frames, (unsigned long long)(cut_hits() - g_cut_hits0),
+        note("RESIM done: %u frames in %.2f ms (%.2f ms/frame, %.1f Mcycles/frame CPU; a normal frame with draw: %.1f Mcycles); rollbacks %u (%u failed), GAMEPLAY-hash mismatches %u of %u resim boundaries; full-state mismatches at final boundaries %u (at cut-frame boundaries: %u); cut hits %llu; restore avg %.2f ms, %.0f pages",
+             g_resim, ms, ms / g_resim, rc, nc, g_rollbacks, g_rollback_fail, g_game_mismatches, g_resim_frames, g_mismatches, g_cut_diffs, (unsigned long long)(cut_hits() - g_cut_hits0),
              g_rollbacks ? g_restore_ms_total / g_rollbacks : 0, g_rollbacks ? (double)g_restore_pages_total / g_rollbacks : 0);
         /* continue the uninterrupted run from here: f == g_resim_target */
         g_logical = f + 1;

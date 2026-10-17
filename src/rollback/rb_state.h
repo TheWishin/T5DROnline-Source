@@ -42,6 +42,13 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t ea, uint64_t h), doub
 void     state_hash_full();
 uint64_t state_hash();
 uint64_t state_page_hash(uint32_t ea);
+/* The gameplay hash: the match state the netplay desync check compares
+ * (src/netplay/t5_hooks.cpp kDefaultHash: pad blocks, input ring, frame
+ * clock, random generators, round state, both fighters -- ~25 KB), computed
+ * on demand. Unlike the full-state hash it is independent of whether a
+ * frame was drawn, so it is the verdict of the draw-cut test and what the
+ * peers compare. */
+uint64_t state_game_hash();
 uint64_t hash_page(uint32_t ea);
 
 /* Roll the state back from the current boundary f to the boundary of frame
@@ -51,6 +58,7 @@ uint64_t hash_page(uint32_t ea);
  * write watch is reset. pages/ms report the work done. */
 bool     state_rollback(uint32_t to, uint32_t* pages, double* ms);
 uint32_t state_oldest_frame();       /* the oldest boundary a rollback can reach */
+void     state_drop_logs();          /* forget every undo log (a barrier: no rollback past now) */
 uint32_t state_log_pages(uint32_t f); /* pages in frame f's undo log (0 when gone) */
 
 /* Pointer into the shadow copy (the state as of the last commit), or null. */

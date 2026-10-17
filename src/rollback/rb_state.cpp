@@ -1,5 +1,6 @@
 /* The state set, its hash and the undo-log snapshots -- see rb_state.h. */
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -104,6 +105,32 @@ uint64_t hash_page(uint32_t ea)
     return h;
 }
 uint64_t state_hash() { return g_hash; }
+
+/* the netplay desync check's regions and skips (t5_hooks.cpp), kept in sync by hand */
+static const Range kGame[] = {
+    { 0x10099F24u, 0x70 }, { 0x104CCDFCu, 0x40 }, { 0x106D4D88u, 0x8 }, { 0x10095168u, 0x9C0 }, { 0x10053578u, 0x4 },
+    { 0x10076920u, 0x4 }, { 0x1074F218u, 0x10C }, { 0x1008E000u, 0x4000 }, { 0x10099600u, 0x600 }, { 0x100A0900u, 0x200 },
+    { 0x100A3B00u, 0x300 },
+};
+static const Range kGameSkip[] = {
+    { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC },
+    { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
+    { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
+};
+uint64_t state_game_hash()
+{
+    uint64_t h = 1469598103934665603ull;
+    static uint8_t buf[0x4000];
+    for (const Range& r : kGame) {
+        memcpy(buf, vm_base + r.base, r.len);
+        for (const Range& k : kGameSkip) {
+            const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
+            for (uint32_t x = a; x < e; x++) buf[x - r.base] = 0;
+        }
+        for (uint32_t i = 0; i < r.len; i++) { h ^= buf[i]; h *= 1099511628211ull; }
+    }
+    return h;
+}
 uint64_t state_page_hash(uint32_t ea) { return g_page_hash ? g_page_hash[ea >> 12] : 0; }
 
 void state_hash_full()
@@ -146,17 +173,18 @@ static Log g_log[kLogFrames];
 static uint32_t g_newest = 0;                         /* frame + 1 of the newest log */
 static bool g_ready = false;
 
-static void log_invalidate_overlapping(uint32_t start, uint32_t count)
+/* The ring is written sequentially, so the slot about to be reused can only
+ * belong to the oldest log still alive: drop logs from the oldest end until
+ * the slot is free. O(1) amortised. */
+static uint32_t g_oldest = 0;                         /* frame + 1 of the oldest log that may still be alive, 0 = none */
+static void ring_reclaim(uint32_t slot)
 {
-    /* the ring slots [start, start+count) are being reused: any older log
-     * that still owns one of them is gone */
-    for (Log& l : g_log) {
-        if (!l.tag) continue;
-        for (uint32_t i = 0; i < l.count; i++) {
-            uint32_t s = (l.start + i) % kRingPages;
-            uint32_t d = (s + kRingPages - start) % kRingPages;
-            if (d < count) { l.tag = 0; break; }
-        }
+    while (g_oldest && g_oldest < g_newest) {
+        Log& l = g_log[(g_oldest - 1) % kLogFrames];
+        if (l.tag != g_oldest) { g_oldest++; continue; }   /* already dropped */
+        const uint32_t d = (slot + kRingPages - l.start) % kRingPages;
+        if (d >= l.count) break;                             /* the slot is outside the oldest log: free */
+        l.tag = 0; g_oldest++;
     }
 }
 
@@ -178,7 +206,7 @@ void state_init()
     state_hash_full();
     QueryPerformanceCounter(&b);
     memset(g_log, 0, sizeof g_log);
-    g_ring_pos = 0; g_newest = 0;
+    g_ring_pos = 0; g_newest = 0; g_oldest = 0;
     g_ready = true;
     note("state: %zu MB shadow + %u-page undo ring (%u MB) ready in %.1f ms, hash %016llX", g_shadow_size >> 20,
          kRingPages, kRingPages >> 8, 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)f.QuadPart,
@@ -193,8 +221,11 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     Log* lg = nullptr;
     if (f > 0) {
         lg = &g_log[(f - 1) % kLogFrames];
+        if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
         lg->tag = f; lg->start = g_ring_pos; lg->count = 0;
         g_newest = f;
+        if (!g_oldest) g_oldest = f;
+        if (g_oldest + kLogFrames <= g_newest) g_oldest = g_newest - kLogFrames + 1;
     }
     for (const Range& r : kSave) {
         for (uint64_t off = 0; off < r.len; off += (64ull << 20)) {
@@ -214,7 +245,7 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
                 if (lg) {
                     /* pre-image + old hash into the ring; the slot's previous owner is gone */
                     const uint32_t slot = g_ring_pos;
-                    if (lg->count == 0 || true) log_invalidate_overlapping(slot, 1);
+                    ring_reclaim(slot);
                     g_ent[slot] = { ea, g_page_hash[pg] };
                     memcpy(g_pages + (size_t)slot * 0x1000, sh, 0x1000);
                     g_ring_pos = (g_ring_pos + 1) % kRingPages;
@@ -243,6 +274,11 @@ uint32_t state_oldest_frame()
     for (const Log& l : g_log) if (l.tag && l.tag < oldest) oldest = l.tag;
     /* the boundary of frame (tag - 1) is reachable through that log */
     return oldest ? oldest - 1 : 0;
+}
+void state_drop_logs()
+{
+    for (Log& l : g_log) l.tag = 0;
+    g_oldest = g_newest;
 }
 uint32_t state_log_pages(uint32_t f)
 {
@@ -274,9 +310,13 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
         }
         if (f == to) break;
     }
-    /* the logs above `to` describe frames that will be re-simulated: drop them */
+    /* the logs above `to` describe frames that will be re-simulated: drop them
+     * and hand their ring slots back (the ring position returns to the start
+     * of frame `to`'s log) */
+    g_ring_pos = g_log[to % kLogFrames].start;
     for (uint32_t f = to; f < g_newest; f++) g_log[f % kLogFrames].tag = 0;
     g_newest = to;   /* the next commit (at the boundary of to+1) records frame `to` */
+    if (g_oldest > to) g_oldest = to;
     /* our own writes must not count as the next frame's dirt */
     for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);

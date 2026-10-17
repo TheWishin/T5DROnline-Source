@@ -830,3 +830,37 @@ resets are now ordinary state (restored and replayed by rollbacks like
 everything else; the peers are frame aligned, so the lockstep's re-alignment
 and reseed are not needed); only `t5_netplay_start()` (the next match) is a
 sync point. Verified by runs e0/e50/e150 below.
+
+**Results with the ring-reset fix** (Asuka vs Lili, stage 20, 2 rounds, the
+ranked driver's attack scripts -- hits land, rounds end by KO at ~frame 5370
+--, input delay 0, 3 % loss, +-5 ms jitter; 330 s each):
+
+| run | RTT | sound update in resim | rollbacks (host / joiner, whole run) | sync check |
+|---|---|---|---|---|
+| e0 | 0 | skipped | 761 / 878 | **0 mismatching frames through 10 800** (the full match, both rounds) |
+| e50 | 50 | skipped | 1090 / 1094 | in sync until the round-end transition at frame 5369, then diverged |
+| e150 | 150 | skipped | 699 / 1327 | diverged at frame 210 (the fight's first phase change) |
+| g0 | 0 | not skipped | 456 / 371 | 29 mismatches by 5400, then the joiner's sound streamer called exit(1) |
+| g50 | 50 | not skipped | 1074 / 1030 | diverged at frame 5369 (round end) |
+| g150 | 150 | not skipped | 727 / 709 | 25 mismatches by 5400, then the joiner's sound streamer called exit(1) |
+
+What differs when it diverges (dumps): the fight's **phase counter**
+`0x1008F070` / `0x1008F078` (one peer one phase ahead: e150 12/11 at frame 210,
+e50/g50 2/1 at the round end), the UI/setup block `0x100996B4..D4` it
+triggers, and at the round end the block `0x1008E690..C0`. These are the
+game's phase transitions (fight start, KO / round end): when a rollback
+straddles one, the two peers come out of it one phase apart -- the transition
+is not reproduced by re-simulation alone (it depends on something a rollback
+does not restore: the excluded sound/loader areas), and e0 only stayed in
+sync because none of its rollbacks straddled a transition. Rollbacks *within*
+a round are reproduced exactly (e0: 1 639 rollbacks over a whole match).
+
+So peer-to-peer agreement across rollbacks is shown within rounds, not yet
+across round transitions; **rollback stays opt-in**. The missing piece is the
+barrier at phase changes: the lockstep handled its scene changes with
+`np::scene_barrier` (both continue at the later frame) -- the same, keyed on
+`0x1008F070` changes at live boundaries and without the RNG reseed, is the
+next step; alternatively the transition's wait has to be made a function of
+the frame. The sound streamer's `exit(1)` (r0 with the skip, g0/g150
+without it) is the other blocker: the streaming feed has to survive both
+skipped and repeated sound updates.

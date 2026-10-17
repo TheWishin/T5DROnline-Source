@@ -99,7 +99,7 @@ def run(cmd, capture=False, env=None, **kw):
         return subprocess.run(cmd, check=True, env=env, **kw)
     # Echo the output and keep it, so a failure can be explained.
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         errors="replace", env=env, **kw)
+                         encoding="utf-8", errors="replace", env=env, **kw)
     lines = []
     for line in p.stdout:
         print(line, end="", flush=True)
@@ -326,7 +326,7 @@ def step_unpack(a):
         return
     need_pkg(a)
     run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir], env=keys_env())
-    with open(P.unpacked_stamp, "w") as f:
+    with open(P.unpacked_stamp, "w", encoding="utf-8") as f:   # any file name (cp1252 stopped at "Ł")
         f.write(os.path.basename(a.pkg) + "\n")
 
 
@@ -487,6 +487,9 @@ def main():
     except AttributeError:
         pass
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    # The Python tools this starts print paths; into a pipe they would use the ANSI code page and
+    # stop with UnicodeEncodeError on a folder or user name outside it ("Tekken Ł東京").
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     P = Paths(a.out, a.deps)
     os.makedirs(P.out, exist_ok=True)
     os.chdir(P.out)
@@ -510,6 +513,19 @@ def main():
     except KeyboardInterrupt:
         print("ERROR: cancelled", file=sys.stderr, flush=True)
         sys.exit(3)
+    except OSError as e:
+        # disk full, a file locked by antivirus/OneDrive, a path too long for Windows: one sentence for
+        # the launcher, the details (traceback) in build.log
+        import traceback
+        traceback.print_exc(file=sys.stdout)
+        too_long = (getattr(e, "winerror", None) in (3, 206) or "[WinError 206]" in str(e)
+                    or len(str(e.filename or "")) > 240)
+        hint = (" The folder path is too long for Windows: move the folder to a short path such as "
+                r"C:\Games\T5DR." if too_long
+                else " Is the disk full, or does another program (antivirus, OneDrive) hold the file?")
+        print(f"ERROR: step '{step}' could not read or write a file: {e.strerror or e}"
+              f" ({e.filename}).{hint}", file=sys.stderr, flush=True)
+        sys.exit(2)
     print("[done] " + ", ".join(f"{n} {t:.0f}s" for n, t in times) + f" -- total {sum(t for _, t in times):.0f} s",
           flush=True)
 

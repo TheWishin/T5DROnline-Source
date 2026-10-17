@@ -134,18 +134,133 @@ def describe_rap(path, pkg=None):
     return True, "warn", f"{name} -- the name does not match the package's content ID; it may be the wrong license."
 
 
-def find_candidates():
-    """Look in the usual places for a .pkg/.rap pair the player probably wants."""
+# Known folders (SHGetKnownFolderPath): Downloads, Desktop and Documents are often not under
+# %USERPROFILE% -- OneDrive moves Desktop/Documents to %OneDrive%\Desktop (\Dokumente on a German
+# Windows), and anyone can relocate them (Properties > Location, e.g. to D:\).
+KNOWN_FOLDERS = {
+    "Downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
+}
+# A file that only exists in the cloud (OneDrive "Files On-Demand"): reading it starts a download.
+CLOUD_ONLY = 0x00001000 | 0x00040000 | 0x00400000   # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
+
+
+def known_folder(guid):
+    """Path of a Windows known folder, or None."""
+    if not IS_WIN:
+        return None
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16), ("d3", ctypes.c_uint16),
+                    ("d4", ctypes.c_ubyte * 8)]
+    g = GUID()
+    try:
+        if ctypes.oledll.ole32.CLSIDFromString(ctypes.c_wchar_p(guid), ctypes.byref(g)):
+            return None
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.windll.shell32
+        if shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out)) != 0:
+            return None
+        try:
+            return out.value
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+    except (OSError, AttributeError):
+        return None
+
+
+def candidate_roots():
+    """Where find_candidates() looks: the real Downloads/Desktop/Documents (known folders), the
+    plain %USERPROFILE% ones, OneDrive's, and the release folder -- each once."""
     home = os.path.expanduser("~")
-    roots = [os.path.join(home, d) for d in ("Downloads", "Desktop", "Documents")] + [ROOT]
-    pkgs, raps = [], []
+    roots = []
+    for name, guid in KNOWN_FOLDERS.items():
+        roots += [known_folder(guid), os.path.join(home, name)]
+    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        od = os.environ.get(var)
+        if od:
+            roots += [os.path.join(od, d) for d in ("Desktop", "Documents", "Dokumente", "Downloads")]
+    roots.append(ROOT)
+    seen, out = set(), []
     for r in roots:
+        if r and os.path.isdir(r) and os.path.normcase(os.path.abspath(r)) not in seen:
+            seen.add(os.path.normcase(os.path.abspath(r)))
+            out.append(r)
+    return out
+
+
+def cloud_only(path):
+    """True for a OneDrive (or other cloud) placeholder whose data is not on this PC."""
+    try:
+        return bool(getattr(os.stat(path), "st_file_attributes", 0) & CLOUD_ONLY)
+    except OSError:
+        return False
+
+
+def find_candidates(roots=None):
+    """Look in the usual places for a .pkg/.rap pair the player probably wants. Files that are only
+    in the cloud are skipped: reading one would download it (a .pkg is 600 MB)."""
+    pkgs, raps = [], []
+    for r in (roots if roots is not None else candidate_roots()):
         for pat, lst in (("*.pkg", pkgs), ("*.rap", raps)):
             for depth in ("", "*", os.path.join("*", "*")):
                 lst.extend(glob.glob(os.path.join(r, depth, pat)))
-    good = [p for p in pkgs if _safe_cid(p) == build_game.CONTENT_ID]
-    rap = [r for r in raps if build_game.CONTENT_ID in os.path.basename(r) and os.path.getsize(r) == 16]
+    good = [p for p in pkgs if not cloud_only(p) and _safe_cid(p) == build_game.CONTENT_ID]
+    rap = [r for r in raps if build_game.CONTENT_ID in os.path.basename(r) and not cloud_only(r)
+           and os.path.getsize(r) == 16]
     return (good[0] if good else None), (rap[0] if rap else None)
+
+
+# --------------------------------------------------------------------------- the install folder
+
+# Deepest file the build and the game write below the release folder (native\gamedata\dev_hdd0\
+# home\00000001\savedata\<folder>\<file>, the clang headers in toolchain\): about 100 characters.
+# Windows' classic limit is 260 (MAX_PATH); parts of the runtime keep MAX_PATH buffers (UTF-8 bytes).
+PATH_ROOM = 100
+MAX_PATH = 260
+
+
+def install_warnings(root=ROOT, out=None):
+    """Plain sentences about folder choices that break or slow the build/game (Build tab)."""
+    warn = []
+    out = out or os.path.join(root, "native")
+    for label, path in (("This folder", root), ("The output folder", out)):
+        n = len(os.path.abspath(path).encode("utf-8"))
+        if n + PATH_ROOM > MAX_PATH:
+            warn.append(f"{label} has a long path ({n} bytes). Windows allows only {MAX_PATH} characters for "
+                        f"a file path, and the build writes files about {PATH_ROOM} characters deeper. Move the "
+                        r"folder to a short path, for example C:\Games\T5DR.")
+            break
+    norm = os.path.normcase(os.path.abspath(root))
+    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        od = os.environ.get(var)
+        if od and (norm + os.sep).startswith(os.path.normcase(os.path.abspath(od)) + os.sep):
+            warn.append("This folder is inside OneDrive. OneDrive would upload about 1 GB of game data and can "
+                        "lock files while the game is built. Move the folder out of OneDrive, for example to "
+                        r"C:\Games\T5DR.")
+            break
+    pf = [os.environ.get(v) for v in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")]
+    if any(p and (norm + os.sep).startswith(os.path.normcase(p) + os.sep) for p in pf):
+        warn.append("This folder is in Program Files, where Windows does not let programs write. "
+                    r"Move it to a folder of your own, for example C:\Games\T5DR.")
+    elif os.path.isdir(root) and not _writable(root):
+        warn.append("Windows does not let the launcher write into this folder. Move it to a folder of your "
+                    r"own, for example C:\Games\T5DR.")
+    if norm.startswith("\\"):
+        warn.append("This folder is on a network share. Building and playing from there is slow and was "
+                    "not tested; copy it to a local drive.")
+    return warn
+
+
+def _writable(d):
+    try:
+        import tempfile
+        with tempfile.TemporaryFile(dir=d):
+            pass
+        return True
+    except OSError:
+        return False
 
 
 def _safe_cid(p):
@@ -289,6 +404,31 @@ def kill_tree(pid):
 
 # --------------------------------------------------------------------------- game process
 
+def explain_exit(code, lines):
+    """One plain sentence for the Play tab when the game ended on its own; None when it closed normally."""
+    text = "\n".join(lines[-80:])
+    if code == 12 or "[gpu] device lost" in text:
+        return ("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
+                "Start the game again. If it happens again, update the graphics driver.")
+    if code == 13 or "Direct3D 12 not available" in text or "needs a graphics card with Direct3D 12" in text:
+        return ("This PC's graphics card or driver cannot run Direct3D 12. Install the newest graphics driver "
+                "from AMD, Intel or NVIDIA.")
+    if "[cpu] FATAL" in text:
+        return ("This processor is too old for the game: it lacks the SSE4.1 instructions (processors from "
+                "about 2008 on have them).")
+    if code == 14 or "was built for -march=" in text:
+        return ("The game was built on a PC with a newer processor (AVX2). Press BUILD GAME to build it again "
+                "for this PC; your saves are kept.")
+    if "[game-dll] cannot load" in text:
+        return ("t5dr_game.dll could not be loaded (missing or blocked). Press BUILD GAME again, and look in "
+                "the antivirus quarantine.")
+    crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
+    if code == 0 and not crashed:
+        return None
+    return (f"The game stopped (exit code {code}){' after a crash' if crashed else ''}. "
+            "The game log has the details.")
+
+
 class GameRun:
     """The running game: its process, log file and the last fps line."""
 
@@ -301,8 +441,10 @@ class GameRun:
         self.last_lines = []
         self.started = None
 
-    def start(self, extra_env=None):
+    def start(self, extra_env=None, monitor_point=None):
         env_over = self.settings.env_overrides()
+        if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
+            env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
         cmd, env, cwd = run_game.game_command(self.out, env_over)
         if not os.path.exists(cmd[0]):
@@ -375,7 +517,7 @@ class GameRun:
 # --------------------------------------------------------------------------- windows (Win32)
 
 DISPLAY_MODES = [
-    ("window", "Window, 1280 x 720 (native)"),
+    ("window", "Window, 1280 x 720 (native; larger with Windows display scaling)"),
     ("window1080", "Window, 1920 x 1080"),
     ("window1440", "Window, 2560 x 1440"),
     ("maximized", "Maximized window"),
@@ -404,9 +546,49 @@ def find_game_window(pid):
     return found[0] if found else None
 
 
+class _PerMonitorDpi:
+    """Physical pixels on every monitor while placing windows: t5dr.exe is per-monitor DPI aware,
+    the launcher only system aware (a monitor with another scale would get scaled coordinates)."""
+
+    def __enter__(self):
+        self.old = None
+        try:
+            f = ctypes.windll.user32.SetThreadDpiAwarenessContext     # Windows 10 1607+
+            f.restype = ctypes.c_void_p
+            f.argtypes = [ctypes.c_void_p]
+            self.old = f(ctypes.c_void_p(-4))                          # PER_MONITOR_AWARE_V2
+        except (AttributeError, OSError):
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.old:
+            ctypes.windll.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(self.old))
+
+
+def window_center(hwnd):
+    """(x, y) in physical pixels of a window's centre (the game opens on that monitor), or None."""
+    if not IS_WIN or not hwnd:
+        return None
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+    r = RECT()
+    with _PerMonitorDpi():
+        if not ctypes.windll.user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(r)):
+            return None
+    return (r.l + r.r) // 2, (r.t + r.b) // 2
+
+
 def place_window(hwnd, mode):
-    """Size the game window. The swap chain stretches its 1280x720 image to the
-    window (DXGI_SCALING_STRETCH, no ResizeBuffers), so any size works."""
+    """Size the game window (in physical pixels: "1920 x 1080" is 1920 x 1080 pixels at any
+    display scaling). The swap chain follows the client size and the present scales, so any
+    size works."""
+    with _PerMonitorDpi():
+        _place_window(hwnd, mode)
+
+
+def _place_window(hwnd, mode):
     user32 = ctypes.windll.user32
     h = ctypes.c_void_p(hwnd)
 

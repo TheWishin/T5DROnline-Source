@@ -16,6 +16,7 @@ Contents:
 - [No sound](#no-sound)
 - [Controllers and keyboard](#controllers-and-keyboard)
 - [Online play](#online-play)
+- [Windows versions and other PCs](#windows-versions-and-other-pcs)
 - [Low frame rate](#low-frame-rate)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
@@ -119,11 +120,27 @@ The build takes about 90 seconds on a fast 16-core PC. On slower PCs we expect
 minutes (an estimate). It runs once. **Cancel** is safe: BUILD GAME continues
 where it stopped.
 
-### Precaution: extract to a short path
+### Which folder? (a warning in the Build tab)
 
-Extract to something like `C:\T5DR`, not into a deep folder. A very long path
-could hit Windows' path length limit during the build. We have not seen this
-happen. **(untested)**
+Any folder you can write to works, on any drive (tested: `D:\`), also with
+spaces and letters like `ü`, `Ł` or `東京` in its name or in your Windows user
+name (tested: `D:\...\Tekken Früh Ł東京`, with `TEMP` and `LOCALAPPDATA` under
+`Jürgen Ä Ł`). The Build tab shows a yellow warning for these cases:
+
+- **"...has a long path"**: Windows allows 260 characters for a file path, and
+  the build writes files about 100 characters below the folder. Move the folder
+  to a short path such as `C:\Games\T5DR`. Tested: a folder path of 155
+  characters works; with 213 the build stops with "The folder path is too long
+  for Windows". Windows' own zip extraction may fail even earlier: the zip
+  holds paths of up to about 110 characters.
+- **"...is inside OneDrive"**: OneDrive would upload about 1 GB of game data
+  and can lock files while the build writes them. Move the folder out of
+  OneDrive. (A `.pkg` on a OneDrive Desktop or Documents is fine: the launcher
+  finds it there too. Files that are only in the cloud are skipped by the
+  automatic search; choose them with Browse.)
+- **"...is in Program Files"** or **"Windows does not let the launcher write
+  into this folder"**: use a folder of your own.
+- **"...is on a network share"**: slow, not tested. Copy it to a local drive.
 
 ### Developer build: "C++ build tools ... are not installed"
 
@@ -192,14 +209,76 @@ The first seconds can be black while the game loads. If it stays black:
   `RSX_LIVE_DRAW` set to something else.
 - Update your graphics driver. The game needs a DirectX 12 card. Run `dxdiag`.
   On the Display tab, "DDI Version" should say 12. **(untested)**
-- Laptops with two graphics chips: in Windows Settings > System > Display >
-  Graphics, set `t5dr.exe` to "High performance". **(untested)**
+- Laptops with two graphics chips: the game picks the fast (high-performance)
+  chip by itself. If you set `t5dr.exe` in Windows Settings > System > Display >
+  Graphics, that choice wins. The game log names the chip it uses: the line
+  `[gpu] adapter: ...`.
+- `RSX_ADAPTER=warp` (Settings, extra settings) draws with Windows' software
+  renderer instead of the graphics card. It is slow, but shows whether the
+  card or its driver is the problem. `RSX_ADAPTER=1` (or part of a name, like
+  `RSX_ADAPTER=Intel`) picks another graphics chip.
+
+### "The graphics card stopped working for the game"
+
+The graphics driver crashed, was reset (Windows does that after about 2
+seconds without an answer from the card), or was updated while the game ran.
+Windows does not give the card back to a running game, so the game closes
+with this message. Start it again. If it happens again: update the graphics
+driver, close other programs that use the graphics card (browsers with videos,
+recorders, overlays), and check that the PC does not overheat. Tested with a
+simulated driver reset (`RSX_TEST_DEVICE_REMOVED`), not with a real one.
+
+### "Direct3D 12 not available"
+
+Windows found no graphics card that can run Direct3D 12 at feature level 11_0.
+Install the newest driver from AMD, Intel or NVIDIA (Windows Update often
+installs an old or a basic one). Remote desktop sessions and many virtual
+machines cannot run the game.
+
+### "This processor is too old" or "build the game again"
+
+- **No SSE4.1**: processors before about 2008 (Intel) or 2011 (AMD) cannot run
+  the game.
+- **"This game build was made on a PC whose processor has AVX2"**: the
+  `native` folder was built on a newer PC and copied here. Press BUILD GAME on
+  this PC. The build checks the processor and makes code that runs on it. Your
+  saves are kept.
 
 ### The window is not where I want it, or too big
 
 Settings > Display. The window size options never exceed your screen's work
 area. "Borderless fullscreen" is experimental and was not tested with the real
 game window. The game draws at 1280 x 720 and scales up.
+
+- **Display scaling (125 %, 150 %, 200 %)**: the window opens at 1280 x 720
+  times the scaling (1920 x 1080 pixels at 150 %), as far as the screen
+  allows. The picture stays sharp: Windows does not stretch it. Dragged to a
+  monitor with other scaling, the window keeps its size on screen. Only checked
+  at 100 % (the test PC has one monitor at 100 %).
+- **Several monitors**: the game opens on the monitor the launcher window is
+  on. Move the launcher first. Alt+Enter or F11 fills the monitor the game
+  window is on. Not tested: the test PC has one monitor.
+- **Alt+Tab**: borderless fullscreen (the default) switches like any window.
+  With `PS3_FULLSCREEN=exclusive`, Alt+Tab leaves exclusive mode; Alt+Enter
+  goes back. Not tested.
+
+### High refresh rate (120/144/165 Hz), G-Sync/FreeSync, 50 Hz TVs
+
+The game always runs at the PS3's speed: 59.94 frames per second, timed by
+the PC's clock, never by the monitor.
+
+- **Faster monitors** (75, 120, 144, 165, 240 Hz): the game speed stays the
+  same. Each picture is shown at the next refresh. On 120 Hz every picture
+  stays on screen for two refreshes: smooth. On 144 or 165 Hz pictures stay
+  for 2 or 3 refreshes, which looks slightly uneven. For the smoothest picture
+  set the monitor to 120 Hz or 60 Hz, or use G-Sync/FreeSync (VRR) in
+  borderless fullscreen (Alt+Enter); then the monitor follows the game.
+- **Slower monitors and TVs** (50 Hz, 30 Hz): the game used to slow down to
+  the monitor's rate (50 Hz = 83 % speed). Now it keeps its speed and presents
+  without waiting for the monitor; some pictures are skipped. The log says
+  `[pacing] display 50 Hz: slower than the game's 59.94 Hz`.
+- Tested with simulated 30, 50 and 144 Hz monitors (`RSX_TEST_DISPLAY_HZ`),
+  not with real ones: the test PC has a 59.94 Hz monitor.
 
 ### The game closes by itself
 
@@ -219,8 +298,14 @@ Known causes:
 
 Intro and title movies are decoded with Windows Media Foundation. The Play tab
 still says "Intro movies are skipped in this version". That text is out of date.
-Movies play. On Windows "N" editions the Media Feature Pack may be needed
-**(untested)**. Movies slow down when the game runs under 60 fps.
+Movies play. Movies slow down when the game runs under 60 fps.
+
+On Windows "N" editions (Europe/Korea) Media Foundation is missing until the
+**Media Feature Pack** is installed (Settings > Apps > Optional features). The
+game starts anyway; the movies stay black (with sound, START skips them) and
+the log says `Windows Media Foundation (mfplat.dll) is not installed`. Before
+this version `t5dr.exe` did not start at all there. Tested by simulating the
+missing DLL (`PS3_TEST_NO_MEDIA_FOUNDATION=1`), not on a real N edition.
 
 ## No sound
 
@@ -410,6 +495,24 @@ lockstep, so a late packet makes both wait. The lobby suggests an input delay fr
 the measured ping (2 frames on one PC or LAN, 3 at about 40 ms, 5 at about 100
 ms). Use a cable instead of Wi-Fi, stop downloads, and close other games. The
 result bar can show how many frames behind a match was.
+
+## Windows versions and other PCs
+
+- **Windows 10 version 1909 or newer, Windows 11**: supported. Nothing has to
+  be installed: the game and its compiler bring their own C runtime, the
+  launcher its own Python. Only the test PC (Windows 11) was tried.
+- **Windows 10 before 1909, Windows 8.1, 7**: not supported. Folders with
+  characters outside your Windows language (for example `Ł` on a German
+  Windows) need 1903 or newer.
+- **Windows on ARM** (Snapdragon laptops): not tested, we have no such PC.
+  What we expect: Windows 11 (24H2 or newer) runs the launcher, the compiler
+  and the game through its x64 emulation; the build takes longer, and the game
+  may not reach 60 fps in fights. The graphics chip there supports Direct3D 12.
+  If the emulation hides AVX2, the build makes code without it by itself.
+  Windows 10 on ARM cannot run 64-bit x64 programs at all, so the game does not
+  run there.
+- **Virtual machines and remote desktop**: usually no Direct3D 12 graphics
+  card; the game says "Direct3D 12 not available".
 
 ## Low frame rate
 

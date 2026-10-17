@@ -181,6 +181,11 @@ class App(tk.Tk):
             "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 -- the package "
             "file and the license (.rap) from your own account. Nothing leaves this PC.")).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        warn = core.install_warnings(core.ROOT, self.settings.out_dir)
+        if warn:
+            ttk.Label(files, style="warn.TLabel", wraplength=820, justify="left",
+                      text="\n".join("⚠ " + w for w in warn)).grid(row=5, column=0, columnspan=3, sticky="w",
+                                                                    pady=(4, 0))
 
         # build tools
         tools = ttk.LabelFrame(tab, text="  Build tools on this PC  ", padding=(12, 6))
@@ -616,7 +621,7 @@ class App(tk.Tk):
             return self.game
         g = core.GameRun(self.settings.out_dir, self.settings)
         try:
-            pid = g.start(env)
+            pid = g.start(env, monitor_point=core.window_center(self._hwnd()))
         except OSError as e:
             messagebox.showerror(APP_TITLE, f"Could not start the game:\n{e}")
             return None
@@ -627,6 +632,12 @@ class App(tk.Tk):
 
     def play(self):
         self.start_game()
+
+    def _hwnd(self):
+        try:
+            return ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+        except (AttributeError, OSError):
+            return None
 
     def stop_game(self):
         if self.game:
@@ -651,11 +662,8 @@ class App(tk.Tk):
                 fps = f"{self.game.fps:.0f} fps" if self.game.fps else "starting…"
                 self.run_var.set(f"Running — {el // 60}:{el % 60:02d} — {fps}")
             elif self.run_var.get().startswith("Running"):
-                code = self.game.proc.returncode
-                crashed = any("[CRASH]" in l for l in self.game.last_lines[-50:])
-                self.run_var.set("The game closed." if code == 0 and not crashed else
-                                 f"The game stopped (exit code {code}){' after a crash' if crashed else ''}. "
-                                 "The game log has the details.")
+                why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                self.run_var.set(why or "The game closed.")
                 self._update_play_buttons()
         self.after(150, self._tick)
 

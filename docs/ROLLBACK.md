@@ -7,7 +7,8 @@ NPUB30009 v01.00 and this runtime's memory map (`PS3_VM_WRITE_WATCH=1`).
 **Status (phase 10, branch `rollback10`): rollback is the online default**
 -- offered with direct fight unless `T5_RB_MODE=off`, lockstep when the peer
 does not offer it. Sections 20-25 are the current state, with sections
-26-29 (latency branch: 60 fps at RTT 150, input delay by ping); the earlier
+26-30 (latency branch: 60 fps at RTT 150, input delay by ping, the
+end-of-match hang under heavy rollback); the earlier
 sections are the history that led there.
 
 ## Verdict

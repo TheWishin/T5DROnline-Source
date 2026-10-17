@@ -469,22 +469,22 @@ areas that differ from the boot state; nothing is copied), `T5_DF_LEAVE_PHASE`
 semaphore's count and waiters, and each guest thread's last kernel call with
 its callers.
 
-**Not fixed: a hang at the end of a match under heavy rollback.** A match
-played to its end, the session ended 13-25 frames after the KO (the
+**Fixed (latency branch): a hang at the end of a match under heavy rollback.**
+A match played to its end, the session ended 13-25 frames after the KO (the
 launcher's "idle"), the driver's START skip taken (mode request 6), and the
-game mode never finishes: mode 4, next 6, phase word 17, the fight music
-stopped, the select data never read (the 4 archive reads a normal exit makes
-never come). `stuck_check` ends the game after 60 s (exit 6) and the launcher
-starts a new one. Seen once in 10 rollback cycles (cycle test, the opponent
-just started: 2 s stalls and 7 rollbacks around the KO) and often with a
-choppy opponent (`reset_cycle_test.py --stutter 80`: 4 of 8 cycles; the same
-match without stutter: fine). It needs rollbacks near the KO, and it is not the
-session-end changes (with the min-vblanks and sound-hook reset left out it
-hung at the same match). Main under the same stutter (other matches: this
-branch starts and syncs the fight at other frames) had no hang in 10 matches
-but NULL reads and
-garbage texture decodes in the fights, as this branch has: re-simulation
-under heavy stutter is fragile on its own, before any session ends.
+game mode never finished: mode 4, next 6, phase word 17, the fight music
+stopped, the select data never read. `stuck_check` ended the game after 60 s
+(exit 6). Seen once in 10 rollback cycles and often with a choppy opponent
+(`reset_cycle_test.py --stutter 80`: 4 of 8 cycles). The cause was not the
+KO: a read of the game's async reader (ZsAread) completed in a frame that a
+rollback then re-simulated. The reader signals completion with a kernel
+semaphore that the main thread's reader service takes with a trywait; the
+restore put the service back to "busy" but could not give the token back, so
+the request stayed "in progress" for good and the loader task waiting on it
+never finished -- and the game mode cannot end while a task of its scene is
+busy. The rollback loop now saves and restores that semaphore's count with
+every boundary (after the loaders are drained). docs/ROLLBACK.md section 30
+has the trail (call traces of the mode manager, the busy task, the reader).
 
 **Test:** `tools/reset_cycle_test.py` -- one persistent game S (never
 restarted) against a persistent opponent O (started again when a cycle killed

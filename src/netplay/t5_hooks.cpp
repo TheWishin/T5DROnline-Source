@@ -998,15 +998,12 @@ void on_frame_start(ppu_context* ctx)
         const bool scene = resync || load_end;
         np::PadInput in[2];
         /* The loaders (ZsAread, decoder) are drained before the boundary's
-         * snapshot, not after it. A snapshot taken with a read still in flight
-         * held its request at "in progress" (status 1); the read then
-         * finished, and a rollback to that boundary put the request back to 1
-         * with ZsAread parked for good. The game's loader task (state 3,
-         * 0x27279C) waited on it forever: harmless in the fight, but at the
-         * match's end the game mode cannot finish while a task of its scene
-         * is busy (0x274310 in the query 0x272E84), so the game stayed in the
-         * fight after the KO -- the end-of-match hang under heavy rollback
-         * (reset_cycle_test --stutter 80, docs/ROLLBACK.md section 30). */
+         * snapshot, not after it: the state saved at a boundary is then one
+         * with no read in flight, and the reader has posted its completion
+         * token before the loop saves that semaphore's count with the
+         * boundary (rb_net.cpp reader_sem_save; a restore that could not give
+         * a taken token back hung the game mode at the match's end,
+         * docs/ROLLBACK.md section 30). */
         const double load_ms = drain_wait(f);
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);

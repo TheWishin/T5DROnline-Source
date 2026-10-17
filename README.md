@@ -7,6 +7,10 @@ being built.
 **Test release 0.1.2-preview (2026-10-17).** Download
 `T5DR-Online-0.1.2-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
 
+**Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
+**Online is in a test phase:** it works on one PC and through the lobby server;
+the first matches between two players' PCs are being played now.
+
 <!-- players:start -->
 **Test release. Expect bugs.** Please report them (see "Bug reports" below).
 

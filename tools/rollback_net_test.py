@@ -177,13 +177,19 @@ def main():
         env = dict(base)
         env["T5_NET_LOG"] = os.path.join(wd, "frames.log")
         env["T5_RB_LOG"] = os.path.join(wd, "rb_frames.log")
+        # the script goes through a file: inline it would exceed the environment's size limit
+        # (np's inline form parses nothing then: "0 scripted press(es)")
         if who == "host":
-            env.update({"T5_NET_MODE": "host", "T5_NET_PORT": str(host_port),
-                        "T5_NET_SCRIPT": "@" + (fight_script(120, 60000, True, 11) if a.fight else MENU1 + "," + fight_script(3300, 12000, True, 11))})
+            script = fight_script(120, 60000, True, 11) if a.fight else MENU1 + "," + fight_script(3300, 12000, True, 11)
+            env.update({"T5_NET_MODE": "host", "T5_NET_PORT": str(host_port)})
         else:
+            script = fight_script(120, 60000, False, 22) if a.fight else MENU2 + "," + fight_script(3300, 12000, False, 22)
             env.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0",
-                        "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}",
-                        "T5_NET_SCRIPT": "@" + (fight_script(120, 60000, False, 22) if a.fight else MENU2 + "," + fight_script(3300, 12000, False, 22))})
+                        "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}"})
+        sp = os.path.join(wd, "script.txt")
+        with open(sp, "w") as fp:
+            fp.write("\n".join(e.replace(":", " ") for e in script.split(",")) + "\n")
+        env["T5_NET_SCRIPT"] = sp
         for kv in (a.env1 if who == "host" else a.env2):
             k, v = kv.split("=", 1)
             env[k] = v

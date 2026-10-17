@@ -215,6 +215,19 @@ target_include_directories(t5dr PRIVATE
 
 target_link_libraries(t5dr PRIVATE ps3recomp_runtime)
 if(WIN32)
+    # Any Windows 10/11 PC (src/platform): the manifest gives t5dr.exe the UTF-8
+    # code page (folders and user names with any characters), long paths and
+    # per-monitor DPI awareness; gpu_preference.c exports the hybrid-laptop
+    # hints for the discrete GPU; cpu_check.cpp stops with a message on a CPU
+    # without SSE4.1. Both in the developer and the release build.
+    target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/t5dr.manifest"
+                                "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/gpu_preference.c"
+                                "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cpu_check.cpp")
+    # Windows "N" editions have no Media Foundation (mfplat.dll) until the Media
+    # Feature Pack is installed: loaded on first use, so the exe still starts
+    # there and only the movies are skipped (ps3recomp patch 0031, mf_h264.cpp).
+    target_link_options(t5dr PRIVATE /DELAYLOAD:mfplat.dll)
+    target_link_libraries(t5dr PRIVATE delayimp)
     target_link_libraries(t5dr PRIVATE ws2_32 bcrypt xinput ole32 winmm d3d12 dxgi dxguid d3dcompiler)
     # Every guest call is a host call, so recompiled call chains nest deeply.
     target_link_options(t5dr PRIVATE /STACK:268435456 /MAP:t5dr.map)

@@ -255,6 +255,25 @@ and Python versions).
   pkg_extract.py, a renamed `spu_workloads.c` and 300 KB/100 KB pieces of
   lifted PPU/SPU code were all caught.
 
+**Checked for other PCs** (`tools/check_binaries.py`, run by
+`package_release.py`; the release fails on a finding):
+
+- Imports: every `.exe`/`.dll`/`.pyd` needs only DLLs of Windows 10/11 or
+  DLLs shipped beside it (the bundled Python's `vcruntime140.dll`, Tcl/Tk,
+  OpenSSL). `runtime\t5dr.exe` has the static C runtime and loads
+  `mfplat.dll` delayed (Windows "N" editions lack Media Foundation; the
+  0.1.x zips did not start there). `t5dr_game.dll` (built by the player)
+  imports only `t5dr.exe` and `ucrtbase.dll`.
+- `runtime\t5dr.exe`'s manifest: UTF-8 code page (folder and user names with
+  any characters; with the ANSI code page a folder named `Tekken Ł東京`
+  failed with "cannot load t5dr_game.dll"), long paths, per-monitor DPI.
+- Instruction sets, with the host build's linker map: nothing beyond SSE4.1
+  outside the Microsoft C library (whose AVX/FMA/SSE4.2 paths sit behind its
+  own CPUID check). The 0.1.0 runtime already met this; now it is enforced.
+  `t5dr.exe` stops with a message on a CPU without SSE4.1, and on a game DLL
+  built for AVX2 when the CPU has none (a `native` folder copied to an older
+  PC).
+
 The repository has no LICENSE file for our own code yet; a public release
 should say under which license the launcher and tools are.
 

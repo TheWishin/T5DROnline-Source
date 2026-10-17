@@ -21,21 +21,26 @@ static void cat(wchar_t* dst, const wchar_t* src, int cap)
     dst[n] = 0;
 }
 
+/* Paths of any length (a folder deeper than MAX_PATH was cut off silently),
+ * any characters: wide-char APIs only, up to Windows' 32767-character limit. */
+#define PATH_CAP 32768
+static wchar_t dir[PATH_CAP], py[PATH_CAP], script[PATH_CAP], cmd[3 * PATH_CAP];
+
 void start(void)
 {
-    wchar_t dir[MAX_PATH], py[MAX_PATH], script[MAX_PATH], cmd[3 * MAX_PATH + 16];
-    DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
+    DWORD n = GetModuleFileNameW(NULL, dir, PATH_CAP);
+    if (n == 0 || n >= PATH_CAP) ExitProcess(2);
     while (n && dir[n - 1] != L'\\') n--;
     dir[n] = 0;                                   /* folder of this exe, with trailing '\' */
 
-    lstrcpyW(script, dir); cat(script, L"launcher\\t5dr_launcher.pyw", MAX_PATH);
-    lstrcpyW(py, dir);     cat(py, L"python\\pythonw.exe", MAX_PATH);
+    lstrcpyW(script, dir); cat(script, L"launcher\\t5dr_launcher.pyw", PATH_CAP);
+    lstrcpyW(py, dir);     cat(py, L"python\\pythonw.exe", PATH_CAP);
     if (!exists(py)) lstrcpyW(py, L"pythonw.exe");   /* installed Python on PATH */
 
     cmd[0] = 0;
-    cat(cmd, L"\"", 3 * MAX_PATH + 16); cat(cmd, py, 3 * MAX_PATH + 16);
-    cat(cmd, L"\" \"", 3 * MAX_PATH + 16); cat(cmd, script, 3 * MAX_PATH + 16);
-    cat(cmd, L"\"", 3 * MAX_PATH + 16);
+    cat(cmd, L"\"", 3 * PATH_CAP); cat(cmd, py, 3 * PATH_CAP);
+    cat(cmd, L"\" \"", 3 * PATH_CAP); cat(cmd, script, 3 * PATH_CAP);
+    cat(cmd, L"\"", 3 * PATH_CAP);
 
     STARTUPINFOW si; PROCESS_INFORMATION pi;
     for (unsigned i = 0; i < sizeof si; i++) ((char*)&si)[i] = 0;

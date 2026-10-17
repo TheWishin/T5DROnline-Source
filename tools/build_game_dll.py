@@ -28,6 +28,36 @@ GDIR = os.path.join(ROOT, "tools", "gamedll")
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
+# x86-64-v3 (what -march=x86-64-v3 may use): clang's macros for each feature.
+V3_FEATURES = ("__AVX__", "__AVX2__", "__BMI__", "__BMI2__", "__F16C__", "__FMA__", "__LZCNT__", "__MOVBE__")
+
+
+def host_cpu_level(cl, scratch):
+    """'x86-64-v3' when this PC's CPU *and* Windows support AVX2/FMA/BMI2/MOVBE/F16C/LZCNT, else 'none'
+    (plain x86-64 for the lifted PPU code), plus the missing features. clang's -march=native reads
+    CPUID and XGETBV itself -- unlike IsProcessorFeaturePresent(PF_AVX2_INSTRUCTIONS_AVAILABLE), which
+    Windows 10 versions before 2004 do not know (they answer "no" on an AVX2 CPU)."""
+    src = os.path.join(scratch, "cpu_probe.c")
+    with open(src, "w") as f:
+        f.write("int x;\n")
+    try:
+        cpu = os.environ.get("T5DR_TEST_CPU_MODEL", "native")    # tests: e.g. "sandybridge" (AVX, no AVX2)
+        r = subprocess.run([cl, "/nologo", "/X", f"/clang:-march={cpu}", "/clang:-dM", "/E", "-TC", src],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=NO_WINDOW, timeout=60)
+        macros = set(l.split()[1] for l in r.stdout.splitlines() if l.startswith("#define "))
+        if r.returncode == 0 and "__x86_64__" in macros:
+            missing = [m.strip("_").lower() for m in V3_FEATURES if m not in macros]
+            return ("none" if missing else "x86-64-v3"), missing
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if os.name == "nt":                     # fallback: Windows' own answer
+        import ctypes
+        if ctypes.windll.kernel32.IsProcessorFeaturePresent(40):   # PF_AVX2_INSTRUCTIONS_AVAILABLE
+            return "x86-64-v3", []
+    return "none", ["avx2 (not detected)"]
+
+
 def find_llvm(arg):
     for d in ([arg] if arg else []) + [os.path.join(ROOT, "toolchain", "llvm", "bin"),
                                        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "LLVM", "bin")]:
@@ -48,8 +78,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--force", action="store_true", help="recompile objects that look current")
     ap.add_argument("--march", default="auto",
-                    help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC has AVX2), "
-                         "x86-64-v3, native, none")
+                    help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC's CPU and Windows "
+                         "support it, else none), x86-64-v3, native, none")
     a = ap.parse_args()
 
     llvm = find_llvm(a.llvm)
@@ -75,14 +105,13 @@ def main():
     # x86-64 baseline. -ffp-contract=off either way: no fusing of a*b+c that the
     # PPU code wrote as two operations (the lifter spells real fused ops fma()).
     march = a.march
+    why = ""
     if march == "auto":
-        march = "none"
-        if os.name == "nt":
-            import ctypes
-            if ctypes.windll.kernel32.IsProcessorFeaturePresent(40):   # PF_AVX2_INSTRUCTIONS_AVAILABLE
-                march = "x86-64-v3"
+        march, missing = host_cpu_level(cl, obj)
+        why = (" (this processor has AVX2, FMA, BMI2 and MOVBE)" if march != "none" else
+               " (baseline x86-64: this processor or Windows lacks " + ", ".join(missing) + ")")
     ppu_opts = ["/clang:-ffp-contract=off"] + ([] if march == "none" else [f"/clang:-march={march}"])
-    print(f"lifted PPU code: -march={march}", flush=True)
+    print(f"lifted PPU code: -march={march}{why}", flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -94,6 +123,13 @@ def main():
         sys.exit(f"no lifted sources in {a.recomp}")
 
     # an object is current when it is newer than its source and than everything it was compiled with
+    # objects remember the target CPU they were compiled for (a native folder moved to another PC,
+    # or a forced --march): any change recompiles everything
+    stamp_path = os.path.join(obj, "march.txt")
+    try:
+        stamp_ok = open(stamp_path).read().strip() == march
+    except OSError:
+        stamp_ok = False
     newest_dep = max(os.path.getmtime(p) for p in
                      glob.glob(os.path.join(GDIR, "include", "*.h")) + [os.path.abspath(__file__)] +
                      glob.glob(os.path.join(a.recomp, "*.h")) + glob.glob(os.path.join(ps3, "runtime", "spu", "*.h")) +
@@ -103,16 +139,20 @@ def main():
         is_c = src.endswith(".c")
         name = os.path.basename(os.path.dirname(src)) + "_" + os.path.basename(src) if "lifted" in src else os.path.basename(src)
         o = os.path.join(obj, name + ".obj")
-        if not a.force and os.path.exists(o) and os.path.getmtime(o) > max(os.path.getmtime(src), newest_dep):
+        if (not a.force and os.path.exists(o) and os.path.getmtime(o) > max(os.path.getmtime(src), newest_dep)
+                and stamp_ok):
             return 0, o
         cmd = [cl] + common
         if is_c:
             cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT", "-msse4.1"]   # as ps3recomp_runtime's INTERFACE option
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
+        if os.path.basename(src) == "t5dr_game_dll.c":
+            cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
         cmd += ["-c", src, "/Fo" + o]
         t = time.time()
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, creationflags=NO_WINDOW)
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=NO_WINDOW)
         with lock:
             done[0] += 1
             # "[k/n]" like ninja, so the launcher shows the compile progress
@@ -124,6 +164,8 @@ def main():
 
     t0 = time.time()
     print(f"compiling {len(srcs) + len(c_srcs)} files with {cl} ({a.jobs} jobs)", flush=True)
+    if not stamp_ok and os.path.exists(stamp_path):
+        os.remove(stamp_path)                  # written again only when every object is built
     # biggest first: the longest chunk bounds the wall time
     todo = sorted(srcs + c_srcs, key=lambda p: -os.path.getsize(p))
     done, lock = [0], threading.Lock()
@@ -131,6 +173,8 @@ def main():
         res = list(ex.map(job, todo))
     if any(rc for rc, _ in res):
         sys.exit("compile failed")
+    with open(stamp_path, "w") as f:
+        f.write(march + "\n")
     t1 = time.time()
 
     ucrt = os.path.join(obj, "ucrt_min.lib")
@@ -140,7 +184,8 @@ def main():
             "/OUT:" + a.out, "/IMPLIB:" + os.path.join(obj, "t5dr_game.lib"),
             "/EXPORT:function_table,DATA", "/EXPORT:function_table_count,DATA"]
     link += [o for _, o in res] + [os.path.abspath(a.host_lib), ucrt]
-    r = subprocess.run(link, env=env, capture_output=True, text=True, creationflags=NO_WINDOW)
+    r = subprocess.run(link, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       creationflags=NO_WINDOW)
     if r.returncode:
         print(r.stdout + r.stderr)
         sys.exit("link failed")

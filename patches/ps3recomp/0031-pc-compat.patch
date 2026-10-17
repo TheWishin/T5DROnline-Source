@@ -1,0 +1,812 @@
+diff --git a/libs/codec/mf_h264.cpp b/libs/codec/mf_h264.cpp
+index c62d5b2..7a1c824 100644
+--- a/libs/codec/mf_h264.cpp
++++ b/libs/codec/mf_h264.cpp
+@@ -51,8 +51,28 @@ struct MfH264 {
+ 
+ static LONG s_mf_started = 0;
+ 
++/* Windows "N" editions ship without Media Foundation until the Media Feature
++ * Pack is installed. The port links mfplat.dll delay-loaded (/DELAYLOAD, the
++ * port's CMakeLists.txt), so t5dr.exe still starts there; this check keeps
++ * the first MF call from faulting -- the decoder reports itself unavailable
++ * and the movies stay black, with sound and timing as usual (patch 0031).
++ * PS3_TEST_NO_MEDIA_FOUNDATION=1 tests that path on a PC that has it. */
++static bool mf_present(void)
++{
++    static int present = -1;
++    if (present < 0) {
++        present = !getenv("PS3_TEST_NO_MEDIA_FOUNDATION") &&
++                  LoadLibraryExW(L"mfplat.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32) != NULL;
++        if (!present)
++            fprintf(stderr, "[mf_h264] Windows Media Foundation (mfplat.dll) is not installed -- "
++                            "movies stay black (Windows N edition: install the Media Feature Pack)\n");
++    }
++    return present != 0;
++}
++
+ static bool mf_startup(void)
+ {
++    if (!mf_present()) return false;
+     /* Each thread that uses COM needs its own CoInitializeEx; MFStartup once. */
+     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+     (void)hr;   /* S_FALSE / RPC_E_CHANGED_MODE: COM already up on this thread */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 2e6d49a..ae7f371 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -171,6 +171,7 @@ static volatile long g_ld_ps1_vram_ready = 0;
+ #include <d3d12sdklayers.h>
+ #include <dxgi1_4.h>
+ #include <dxgi1_5.h>   /* IDXGIFactory5: DXGI_FEATURE_PRESENT_ALLOW_TEARING */
++#include <dxgi1_6.h>   /* IDXGIFactory6: EnumAdapterByGpuPreference (patch 0031) */
+ #include <d3dcompiler.h>
+ #include "rsx_vertex_formats.h"
+ #include <sys/stat.h>
+@@ -1953,6 +1954,317 @@ static UINT   g_ld_present_interval = 1;
+ static UINT   g_ld_present_flags = 0;
+ static UINT   g_ld_swap_flags = 0;
+ static HANDLE g_ld_frame_wait = NULL;
++
++/* ---------------------------------------------------------------------------
++ * PC compatibility (patch 0031): which GPU, a clear end when the GPU is lost,
++ * and present pacing that never changes the game's speed.
++ * -----------------------------------------------------------------------*/
++static HWND g_ld_main_hwnd = NULL;
++
++/* A dialog the player can read, then the end of the process (a frozen window
++ * with the game still running behind it helps nobody). Scripted runs
++ * (PS3_WINDOW_BACKGROUND, PS3_NO_DIALOGS) get only the log line and the exit
++ * code; the launcher explains the code. */
++static void ld_fatal(UINT code, const char* title, const char* text)
++{
++    static volatile LONG once = 0;
++    if (InterlockedExchange(&once, 1))       /* another thread is already ending it */
++        Sleep(INFINITE);
++    fprintf(stderr, "[gpu] FATAL (exit code %u): %s\n", code, text);
++    fflush(stderr);
++    fflush(stdout);
++    if (!getenv("PS3_WINDOW_BACKGROUND") && !getenv("PS3_NO_DIALOGS")) {
++        static wchar_t wt[256], wx[4096];
++        if (g_ld_main_hwnd) ShowWindowAsync(g_ld_main_hwnd, SW_MINIMIZE);   /* never behind a fullscreen game */
++        MultiByteToWideChar(CP_UTF8, 0, title, -1, wt, 256);
++        MultiByteToWideChar(CP_UTF8, 0, text, -1, wx, 4096);
++        MessageBoxW(NULL, wx, wt, MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
++    }
++    ExitProcess(code);
++}
++
++static const char* ld_hr_text(HRESULT hr)
++{
++    switch ((unsigned long)hr) {
++    case 0x887A0006UL: return "DXGI_ERROR_DEVICE_HUNG: the graphics card stopped responding";
++    case 0x887A0005UL: return "DXGI_ERROR_DEVICE_REMOVED: the graphics card was removed, or its driver was updated or restarted";
++    case 0x887A0007UL: return "DXGI_ERROR_DEVICE_RESET: the graphics card was reset";
++    case 0x887A0020UL: return "DXGI_ERROR_DRIVER_INTERNAL_ERROR: the graphics driver failed";
++    case 0x8007000EUL: return "E_OUTOFMEMORY: out of video memory";
++    default:           return "graphics device error";
++    }
++}
++
++static int ld_hr_device_lost(HRESULT hr)
++{
++    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
++           hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
++}
++
++/* The GPU is gone (TDR, driver update or crash, eGPU unplugged). Windows does
++ * not give the device back; the game would only freeze. */
++static void ld_device_lost(const char* where, HRESULT hr)
++{
++    HRESULT reason = g.dev ? g.dev->lpVtbl->GetDeviceRemovedReason(g.dev) : S_OK;
++    if (reason == S_OK) reason = hr;
++    fprintf(stderr, "[gpu] device lost at %s: hr=0x%08lX reason=0x%08lX (%s)\n",
++            where, (unsigned long)hr, (unsigned long)reason, ld_hr_text(reason));
++    ld_dump_dred(where, hr);
++    char text[1024];
++    snprintf(text, sizeof text,
++             "The graphics card stopped working for the game (%s, code 0x%08lX).\n\n"
++             "The game has to close. Start it again.\n\n"
++             "If this happens again: update the graphics driver, close other programs "
++             "that use the graphics card, and make sure the PC does not overheat.",
++             ld_hr_text(reason), (unsigned long)reason);
++    ld_fatal(12, "T5DR Online - graphics error", text);
++}
++
++/* Waits for the fence with a bounded wait: a removed device signals its
++ * fences with UINT64_MAX, a hung one only after the TDR -- either way the
++ * renderer ends with the message above instead of sleeping forever. */
++static void ld_wait_fence(u64 v, const char* where)
++{
++    for (;;) {
++        const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++        if (done == UINT64_MAX) {
++            const HRESULT r = g.dev->lpVtbl->GetDeviceRemovedReason(g.dev);
++            if (r != S_OK) ld_device_lost(where, r);
++            return;
++        }
++        if (done >= v) return;
++        const HRESULT hr = g.fence->lpVtbl->SetEventOnCompletion(g.fence, v, g.fence_event);
++        if (FAILED(hr)) {
++            const HRESULT r = g.dev->lpVtbl->GetDeviceRemovedReason(g.dev);
++            ld_device_lost(where, r != S_OK ? r : hr);
++        }
++        if (WaitForSingleObject(g.fence_event, 2000) == WAIT_TIMEOUT) {
++            const HRESULT r = g.dev->lpVtbl->GetDeviceRemovedReason(g.dev);
++            if (r != S_OK) ld_device_lost(where, r);
++            /* still alive: a very slow frame (software adapter); keep waiting */
++        }
++    }
++}
++
++/* RSX_TEST_DEVICE_REMOVED=<n>: remove the device after n presents
++ * (ID3D12Device5::RemoveDevice, Windows 10 1809+) -- tests the path above. */
++static void ld_test_device_removed(void)
++{
++    static int at = -2;
++    static int n = 0;
++    if (at == -2) { const char* e = getenv("RSX_TEST_DEVICE_REMOVED"); at = e && *e ? atoi(e) : -1; }
++    if (at < 0 || ++n != at) return;
++    ID3D12Device5* d5 = NULL;
++    if (SUCCEEDED(g.dev->lpVtbl->QueryInterface(g.dev, &IID_ID3D12Device5, (void**)&d5)) && d5) {
++        fprintf(stderr, "[gpu] RSX_TEST_DEVICE_REMOVED: removing the device after %d presents\n", n);
++        d5->lpVtbl->RemoveDevice(d5);
++        d5->lpVtbl->Release(d5);
++    }
++}
++
++/* Which GPU. RSX_ADAPTER = "warp" (Direct3D's software renderer: slow, for
++ * tests), a number (n-th adapter in high-performance order) or part of the
++ * adapter's name. Default: the per-app choice in Windows' Graphics settings
++ * when there is one, else the high-performance GPU (IDXGIFactory6,
++ * Windows 10 1803+) -- on a laptop with two GPUs that is the discrete one.
++ * Never a software adapter by itself: a PC whose GPU cannot run Direct3D 12
++ * (feature level 11_0) gets the message below, not 5-10 fps from WARP
++ * (RSX_TEST_SOFTWARE_FALLBACK=1 brings the old fallback back). */
++static int ld_user_gpu_preference(void)
++{
++    wchar_t exe[1024];
++    const DWORD n = GetModuleFileNameW(NULL, exe, 1024);
++    if (!n || n >= 1024) return 0;
++    wchar_t val[128];
++    DWORD sz = sizeof val;
++    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", exe,
++                     RRF_RT_REG_SZ, NULL, val, &sz) != ERROR_SUCCESS)
++        return 0;
++    const wchar_t* p = wcsstr(val, L"GpuPreference=");
++    return p ? 1 + _wtoi(p + 14) : 0;   /* 1 = let Windows decide, 2 = power saving, 3 = high performance */
++}
++
++static void ld_utf8(const wchar_t* w, char* out, int n)
++{
++    if (!WideCharToMultiByte(CP_UTF8, 0, w, -1, out, n, NULL, NULL)) out[0] = 0;
++}
++
++static void ld_lower(const char* s, char* out, size_t n)
++{
++    size_t k = 0;
++    for (; s[k] && k + 1 < n; k++) out[k] = (char)tolower((unsigned char)s[k]);
++    out[k] = 0;
++}
++
++static int ld_create_device(IDXGIFactory4* factory)
++{
++    if (getenv("RSX_TEST_NO_D3D12")) return -1;   /* tests: behave like a PC without a D3D12 GPU */
++    const char* want = getenv("RSX_ADAPTER");
++    if (want && !*want) want = NULL;
++    IDXGIFactory6* f6 = NULL;
++    factory->lpVtbl->QueryInterface(factory, &IID_IDXGIFactory6, (void**)&f6);
++    const int user_pref = ld_user_gpu_preference();
++    const DXGI_GPU_PREFERENCE pref =
++        user_pref == 2 ? DXGI_GPU_PREFERENCE_MINIMUM_POWER :
++        user_pref == 1 ? DXGI_GPU_PREFERENCE_UNSPECIFIED : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
++    const char* why = user_pref ? "the choice in Windows' Graphics settings"
++                    : f6 ? "the high-performance GPU" : "the first adapter";
++    IDXGIAdapter1* chosen = NULL;
++    char name[256] = "";
++    int tried_want = 0;
++    if (want && _stricmp(want, "warp") == 0) {
++        tried_want = 1;
++        if (SUCCEEDED(factory->lpVtbl->EnumWarpAdapter(factory, &IID_IDXGIAdapter1, (void**)&chosen)) && chosen &&
++            SUCCEEDED(D3D12CreateDevice((IUnknown*)chosen, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void**)&g.dev)))
++            why = "RSX_ADAPTER=warp (software renderer, slow)";
++        else if (chosen) { chosen->lpVtbl->Release(chosen); chosen = NULL; }
++    } else if (want) {
++        tried_want = 1;
++        const int want_index = want[0] >= '0' && want[0] <= '9' ? atoi(want) : -1;
++        char lw[64];
++        ld_lower(want, lw, sizeof lw);
++        for (UINT i = 0; i < 16 && !g.dev; i++) {
++            IDXGIAdapter1* ad = NULL;
++            const HRESULT hr = f6
++                ? f6->lpVtbl->EnumAdapterByGpuPreference(f6, i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
++                                                         &IID_IDXGIAdapter1, (void**)&ad)
++                : factory->lpVtbl->EnumAdapters1(factory, i, &ad);
++            if (hr == DXGI_ERROR_NOT_FOUND) break;
++            if (FAILED(hr) || !ad) continue;
++            DXGI_ADAPTER_DESC1 d;
++            char nm[256] = "", ln[256];
++            if (SUCCEEDED(ad->lpVtbl->GetDesc1(ad, &d))) ld_utf8(d.Description, nm, sizeof nm);
++            ld_lower(nm, ln, sizeof ln);
++            const int take = want_index >= 0 ? (int)i == want_index : strstr(ln, lw) != NULL;
++            if (take && SUCCEEDED(D3D12CreateDevice((IUnknown*)ad, D3D_FEATURE_LEVEL_11_0,
++                                                    &IID_ID3D12Device, (void**)&g.dev))) {
++                chosen = ad;
++                why = "RSX_ADAPTER";
++                break;
++            }
++            ad->lpVtbl->Release(ad);
++        }
++    }
++    if (!g.dev && tried_want)
++        fprintf(stderr, "[gpu] RSX_ADAPTER=%s: that adapter cannot run Direct3D 12 here -- using the default\n", want);
++    /* default: hardware adapters in preference order */
++    const int passes = getenv("RSX_TEST_SOFTWARE_FALLBACK") ? 2 : 1;
++    for (int pass = 0; pass < passes && !g.dev; pass++) {
++        for (UINT i = 0; i < 16 && !g.dev; i++) {
++            IDXGIAdapter1* ad = NULL;
++            const HRESULT hr = f6
++                ? f6->lpVtbl->EnumAdapterByGpuPreference(f6, i, pref, &IID_IDXGIAdapter1, (void**)&ad)
++                : factory->lpVtbl->EnumAdapters1(factory, i, &ad);
++            if (hr == DXGI_ERROR_NOT_FOUND) break;
++            if (FAILED(hr) || !ad) continue;
++            DXGI_ADAPTER_DESC1 d;
++            memset(&d, 0, sizeof d);
++            ad->lpVtbl->GetDesc1(ad, &d);
++            const int soft = (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
++            if (soft == pass && SUCCEEDED(D3D12CreateDevice((IUnknown*)ad, D3D_FEATURE_LEVEL_11_0,
++                                                            &IID_ID3D12Device, (void**)&g.dev))) {
++                chosen = ad;
++                if (soft) why = "no graphics card with Direct3D 12 found -- software renderer, very slow";
++                break;
++            }
++            ad->lpVtbl->Release(ad);
++        }
++    }
++    if (f6) f6->lpVtbl->Release(f6);
++    if (!g.dev) return -1;
++    DXGI_ADAPTER_DESC1 d;
++    memset(&d, 0, sizeof d);
++    if (chosen) {
++        if (SUCCEEDED(chosen->lpVtbl->GetDesc1(chosen, &d))) ld_utf8(d.Description, name, sizeof name);
++        chosen->lpVtbl->Release(chosen);
++    }
++    static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
++                                                D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
++    D3D12_FEATURE_DATA_FEATURE_LEVELS fl;
++    fl.NumFeatureLevels = (UINT)(sizeof levels / sizeof levels[0]);
++    fl.pFeatureLevelsRequested = levels;
++    fl.MaxSupportedFeatureLevel = D3D_FEATURE_LEVEL_11_0;
++    if (FAILED(g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_FEATURE_LEVELS, &fl, sizeof fl))) {
++        fl.NumFeatureLevels = 4;              /* runtimes before 12_2 reject the whole list */
++        fl.pFeatureLevelsRequested = levels + 1;
++        if (FAILED(g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_FEATURE_LEVELS, &fl, sizeof fl)))
++            fl.MaxSupportedFeatureLevel = D3D_FEATURE_LEVEL_11_0;
++    }
++    D3D12_FEATURE_DATA_D3D12_OPTIONS o;
++    memset(&o, 0, sizeof o);
++    g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof o);
++    const unsigned flv = (unsigned)fl.MaxSupportedFeatureLevel;
++    fprintf(stderr, "[gpu] adapter: %s (vendor %04X, %llu MB, feature level %u_%u, resource binding tier %u, "
++                    "heap tier %u) -- %s\n",
++            name, (unsigned)d.VendorId, (unsigned long long)(d.DedicatedVideoMemory >> 20),
++            flv >> 12, (flv >> 8) & 0xF, (unsigned)o.ResourceBindingTier, (unsigned)o.ResourceHeapTier, why);
++    return 0;
++}
++
++/* Present pacing. The game's clock is the vblank ticker (QPC, 59.94 Hz); a
++ * flip completes on a tick, and the next frame starts only then. A vsync'd
++ * Present on a display slower than that (50 Hz TVs, 30 Hz 4K-over-HDMI-1.4)
++ * blocks the ticker and slows the whole game to the display's rate. On such
++ * a display the present runs without vsync (flip model: the newest frame is
++ * shown at the next refresh, nothing tears, nothing blocks). A faster display
++ * (75/120/144/165/240 Hz, VRR) changes nothing: a frame is shown at the next
++ * refresh after its tick and the game keeps 59.94.
++ *   RSX_PRESENT_INTERVAL=0..4   fixed sync interval (no automatic choice)
++ *   RSX_TEST_DISPLAY_HZ=<hz>    tests: treat the display as running at <hz>,
++ *                               and let a vsync'd Present wait for its refresh */
++static UINT   g_ld_interval_cfg = 1;     /* from PS3_VSYNC / RSX_PRESENT_MODE */
++static int    g_ld_interval_forced = 0;  /* RSX_PRESENT_INTERVAL */
++static u32    g_ld_refresh_hz = 0;
++static double g_ld_test_hz = 0.0;
++
++static u32 ld_display_refresh(HMONITOR mon)
++{
++    if (g_ld_test_hz > 0.0) return (u32)g_ld_test_hz;
++    MONITORINFOEXW mi;
++    DEVMODEW dm;
++    memset(&mi, 0, sizeof mi);
++    memset(&dm, 0, sizeof dm);
++    mi.cbSize = sizeof mi;
++    dm.dmSize = sizeof dm;
++    if (mon && GetMonitorInfoW(mon, (MONITORINFO*)&mi) &&
++        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
++        return (u32)dm.dmDisplayFrequency;
++    return 0;
++}
++
++static void ld_pacing_check(void)
++{
++    static HMONITOR last_mon = NULL;
++    static ULONGLONG last_t = 0;
++    if (!g_ld_main_hwnd || g_ld_interval_forced || g_ld_interval_cfg == 0) return;
++    const HMONITOR mon = MonitorFromWindow(g_ld_main_hwnd, MONITOR_DEFAULTTONEAREST);
++    const ULONGLONG now = GetTickCount64();
++    if (mon == last_mon && now - last_t < 5000) return;
++    last_mon = mon;
++    last_t = now;
++    const u32 hz = ld_display_refresh(mon);
++    if (hz == g_ld_refresh_hz) return;
++    g_ld_refresh_hz = hz;
++    const int slow = hz > 1 && hz < 59 && !getenv("RSX_SLOW_DISPLAY_VSYNC");   /* 59 = 59.94 Hz; 0/1 = unknown */
++    g_ld_present_interval = slow ? 0 : g_ld_interval_cfg;
++    fprintf(stderr, "[pacing] display %u Hz: %s\n", hz,
++            slow ? "slower than the game's 59.94 Hz -- presenting without vsync so the game keeps its speed"
++                 : "vsync on");
++}
++
++static void ld_test_display_wait(void)
++{
++    if (g_ld_test_hz <= 0.0 || g_ld_present_interval == 0) return;
++    static LARGE_INTEGER f, t0;
++    if (!f.QuadPart) { QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0); }
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
++    const double period = (double)f.QuadPart / g_ld_test_hz * (double)g_ld_present_interval;
++    const double el = (double)(now.QuadPart - t0.QuadPart);
++    const double next = ((double)(long long)(el / period) + 1.0) * period;
++    const DWORD ms = (DWORD)((next - el) * 1000.0 / (double)f.QuadPart + 0.5);
++    if (ms) Sleep(ms);
++}
+ static void ld_wait_frame_latency(void)
+ {
+     /* Bounded: a minimized/occluded window may not retire frames. */
+@@ -1974,8 +2286,7 @@ static void ld_begin_recording(void)
+     const u64 v = g.fence_value;
+     if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
+         const LONGLONG w0 = ld_pf_qpc();
+-        if (SUCCEEDED(g.fence->lpVtbl->SetEventOnCompletion(g.fence, v, g.fence_event)))
+-            WaitForSingleObject(g.fence_event, INFINITE);
++        ld_wait_fence(v, "begin-recording");
+         g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
+     }
+     for (u32 i = 0; i < g.n_retired_textures; i++)
+@@ -2008,6 +2319,8 @@ static void ld_flush(ld_flush_reason reason)
+         fprintf(stderr,
+                 "[d3d-fail] command-list Close hr=0x%08lX frame=%u\n",
+                 (unsigned long)close_hr, g_ld_frames);
++        if (g.dev->lpVtbl->GetDeviceRemovedReason(g.dev) != S_OK)
++            ld_device_lost("Close", close_hr);
+         ld_dump_dred("Close", close_hr);
+         g.ready = 0;
+         return;
+@@ -2021,6 +2334,8 @@ static void ld_flush(ld_flush_reason reason)
+         fprintf(stderr,
+                 "[d3d-fail] queue Signal hr=0x%08lX frame=%u\n",
+                 (unsigned long)signal_hr, g_ld_frames);
++        if (ld_hr_device_lost(signal_hr) || g.dev->lpVtbl->GetDeviceRemovedReason(g.dev) != S_OK)
++            ld_device_lost("Signal", signal_hr);
+         ld_dump_dred("Signal", signal_hr);
+         g.ready = 0;
+         return;
+@@ -2034,20 +2349,8 @@ static void ld_flush(ld_flush_reason reason)
+ #if defined(YZ_PERF_PROFILE)
+         const LONGLONG wait_begin = ld_profile_qpc();
+ #endif
+-        const HRESULT event_hr =
+-            g.fence->lpVtbl->SetEventOnCompletion(
+-                g.fence, v, g.fence_event);
+-        if (FAILED(event_hr)) {
+-            fprintf(stderr,
+-                    "[d3d-fail] fence SetEventOnCompletion "
+-                    "hr=0x%08lX frame=%u\n",
+-                    (unsigned long)event_hr, g_ld_frames);
+-            ld_dump_dred("SetEventOnCompletion", event_hr);
+-            g.ready = 0;
+-            return;
+-        }
+         const LONGLONG pf_w0 = ld_pf_qpc();
+-        WaitForSingleObject(g.fence_event, INFINITE);
++        ld_wait_fence(v, "flush");   /* bounded; a lost device ends with a message */
+         if (reason != LD_FLUSH_PRESENT)
+             g_pf.flush_wait_ticks += ld_pf_qpc() - pf_w0;
+ #if defined(YZ_PERF_PROFILE)
+@@ -9440,6 +9743,19 @@ static void ld_display_sync(void)
+                 req ? "on" : "off", (unsigned long)hr);
+         if (SUCCEEDED(hr)) { g_ldp.fs_exclusive = (int)req; force = 1; }
+     }
++    if (g_ldp.fs_exclusive) {
++        /* Alt+Tab (or another program) takes exclusive mode away without
++         * asking; follow it so Alt+Enter/F11 keep toggling (patch 0031). */
++        static u32 n = 0;
++        BOOL fs = TRUE;
++        if ((++n & 31) == 0 && SUCCEEDED(g.swap->lpVtbl->GetFullscreenState(g.swap, &fs, NULL)) && !fs) {
++            extern void rsx_null_backend_fullscreen_lost(void);
++            g_ldp.fs_exclusive = 0;
++            force = 1;
++            rsx_null_backend_fullscreen_lost();
++            fprintf(stderr, "[display] exclusive fullscreen ended by the system (Alt+Tab); windowed now\n");
++        }
++    }
+     u32 cw, ch;
+     ld_display_client_size(g_ldp.hwnd, g_ldp.bb_w, g_ldp.bb_h, &cw, &ch);
+     if (!force && cw == g_ldp.bb_w && ch == g_ldp.bb_h) return;
+@@ -9655,8 +9971,17 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     ld_enable_dred();
+     IDXGIFactory4* factory = NULL;
+     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory4, (void**)&factory))) return -1;
+-    if (FAILED(D3D12CreateDevice(NULL, D3D_FEATURE_LEVEL_11_0, &IID_ID3D12Device, (void**)&g.dev))) {
+-        factory->lpVtbl->Release(factory); return -1;
++    g_ld_main_hwnd = (HWND)hwnd;
++    if (ld_create_device(factory) != 0) {
++        factory->lpVtbl->Release(factory);
++        if (!getenv("RSX_NO_D3D12_FATAL"))
++            ld_fatal(13, "T5DR Online - Direct3D 12 not available",
++                     "The game needs a graphics card with Direct3D 12 (feature level 11_0 or newer) "
++                     "and a current graphics driver. Windows found none that works.\n\n"
++                     "Install the newest driver for your graphics card from AMD, Intel or NVIDIA "
++                     "(not only Windows Update) and start the game again. Remote desktop sessions "
++                     "and some virtual machines cannot run it.");
++        return -1;
+     }
+ #if defined(YZ_PERF_PROFILE)
+     {
+@@ -9710,6 +10035,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+             g_ld_present_interval = 0;
+             g_ld_present_flags = tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
+         }
++        g_ld_interval_cfg = g_ld_present_interval;
++        {   /* RSX_PRESENT_INTERVAL / RSX_TEST_DISPLAY_HZ (patch 0031, ld_pacing_check) */
++            const char* pi = getenv("RSX_PRESENT_INTERVAL");
++            if (pi && pi[0] >= '0' && pi[0] <= '4') {
++                g_ld_present_interval = g_ld_interval_cfg = (UINT)(pi[0] - '0');
++                g_ld_interval_forced = 1;
++            }
++            const char* th = getenv("RSX_TEST_DISPLAY_HZ");
++            if (th && atof(th) >= 1.0) g_ld_test_hz = atof(th);
++        }
+         if (getenv("RSX_NO_WAITABLE_SWAPCHAIN"))
+             g_ld_swap_flags &= ~(UINT)DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+         g_ldp.swap_flags = g_ld_swap_flags;   /* ResizeBuffers reuses these */
+@@ -10284,15 +10619,19 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+ 
+     ld_flush(LD_FLUSH_MOVIE_PRESENT);
+     {
++        ld_pacing_check();
++        ld_test_display_wait();
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+             g.swap, g_ld_present_interval,
+             g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
++        ld_test_device_removed();
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames);
+         else {
+             fprintf(stderr,
+                     "[d3d-fail] movie Present hr=0x%08lX frame=%u\n",
+                     (unsigned long)present_hr, g_ld_frames);
++            if (ld_hr_device_lost(present_hr)) ld_device_lost("MoviePresent", present_hr);
+             ld_dump_dred("MoviePresent", present_hr);
+             g.ready = 0;
+         }
+@@ -10856,10 +11195,13 @@ void rsx_live_draw_present(u32 buffer_id)
+     g_pf.present_flush_ticks += pf_present_flushed - pf_present_begin;
+     {
+         host_sched_trace(HS_EV_PRESENT0, g_ld_frames + 1u);
++        ld_pacing_check();
++        ld_test_display_wait();
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+             g.swap, g_ld_present_interval,
+             g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+         g_pf.present_call_ticks += ld_pf_qpc() - pf_present_flushed;
++        ld_test_device_removed();
+         if (SUCCEEDED(present_hr))
+             ld_present_measure_record(g_ld_frames + 1u);
+         else {
+@@ -10869,6 +11211,7 @@ void rsx_live_draw_present(u32 buffer_id)
+                     (unsigned long)present_hr, g_ld_frames,
+                     target, g.surfaces[target].w, g.surfaces[target].h,
+                     g.width, g.height);
++            if (ld_hr_device_lost(present_hr)) ld_device_lost("Present", present_hr);
+             ld_dump_dred("Present", present_hr);
+             g.ready = 0;
+         }
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index d9d0fe8..960e5a4 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -61,6 +61,60 @@ static int s_present_suppressed = 0;
+  * and the present blit keeps the aspect, so either way is letterboxed. */
+ extern int rsx_live_draw_fullscreen_request(int on);
+ static int s_fullscreen = 0;
++
++/* Displays (patch 0031). The exe is per-monitor DPI aware (manifest, and
++ * SetProcessDpiAwarenessContext below for builds without it): the window
++ * opens at 1280x720 *at 100 %* -- 1920x1080 pixels on a 150 % monitor, as far
++ * as the work area allows -- follows WM_DPICHANGED when it is dragged to a
++ * monitor with another scale, and its picture is never stretched by DWM
++ * (which blurred it). PS3_WINDOW_MONITOR=x,y (the launcher passes a point on
++ * its own monitor) opens it centred on that monitor instead of the primary
++ * one; fullscreen always fills the monitor the window is on. */
++typedef BOOL (WINAPI *pfn_SetProcessDpiAwarenessContext)(HANDLE);
++typedef BOOL (WINAPI *pfn_AdjustWindowRectExForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
++typedef HRESULT (WINAPI *pfn_GetDpiForMonitor)(HMONITOR, int, UINT*, UINT*);
++
++static void null_dpi_aware(void)
++{
++    HMODULE u = GetModuleHandleW(L"user32.dll");
++    pfn_SetProcessDpiAwarenessContext set = u ? (pfn_SetProcessDpiAwarenessContext)(void*)
++        GetProcAddress(u, "SetProcessDpiAwarenessContext") : NULL;   /* Windows 10 1703+ */
++    if (set) set((HANDLE)(LONG_PTR)-4);   /* PER_MONITOR_AWARE_V2; fails harmlessly when the manifest set it */
++}
++
++static UINT null_monitor_dpi(HMONITOR mon)
++{
++    static pfn_GetDpiForMonitor get = NULL;
++    static int tried = 0;
++    if (!tried) {
++        tried = 1;
++        HMODULE sh = LoadLibraryW(L"shcore.dll");                     /* Windows 8.1+ */
++        if (sh) get = (pfn_GetDpiForMonitor)(void*)GetProcAddress(sh, "GetDpiForMonitor");
++    }
++    UINT x = 96, y = 96;
++    const char* t = getenv("PS3_TEST_DPI");          /* tests: pretend the monitor has this DPI */
++    if (t && atoi(t) >= 48) return (UINT)atoi(t);
++    if (get && mon && SUCCEEDED(get(mon, 0 /* MDT_EFFECTIVE_DPI */, &x, &y)) && x >= 48) return x;
++    return 96;
++}
++
++static void null_adjust_rect(RECT* r, DWORD style, UINT dpi)
++{
++    HMODULE u = GetModuleHandleW(L"user32.dll");
++    pfn_AdjustWindowRectExForDpi adj = u ? (pfn_AdjustWindowRectExForDpi)(void*)
++        GetProcAddress(u, "AdjustWindowRectExForDpi") : NULL;          /* Windows 10 1607+ */
++    if (!adj || !adj(r, style, FALSE, 0, dpi)) AdjustWindowRect(r, style, FALSE);
++}
++
++/* The monitor the window should open on: PS3_WINDOW_MONITOR=x,y, else the primary. */
++static HMONITOR null_target_monitor(void)
++{
++    const char* e = getenv("PS3_WINDOW_MONITOR");
++    POINT pt = { 0, 0 };
++    if (e && sscanf(e, "%ld,%ld", &pt.x, &pt.y) == 2)
++        return MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
++    return MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
++}
+ static WINDOWPLACEMENT s_windowed_placement = { sizeof(WINDOWPLACEMENT) };
+ 
+ static void null_set_fullscreen(HWND hwnd, int on)
+@@ -86,9 +140,30 @@ static void null_set_fullscreen(HWND hwnd, int on)
+     }
+ }
+ 
++static void null_fit_monitor(HWND hwnd)
++{
++    MONITORINFO mi = { sizeof(mi) };
++    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
++    SetWindowPos(hwnd, NULL, mi.rcMonitor.left, mi.rcMonitor.top,
++                 mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
++                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
++}
++
+ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+ {
+     switch (msg) {
++    case 0x02E0: /* WM_DPICHANGED: dragged to a monitor with another scale */
++        if (s_fullscreen) {
++            null_fit_monitor(hwnd);
++        } else {
++            const RECT* r = (const RECT*)lp;
++            SetWindowPos(hwnd, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
++                         SWP_NOZORDER | SWP_NOACTIVATE);
++        }
++        return 0;
++    case WM_DISPLAYCHANGE:   /* resolution or monitor layout changed */
++        if (s_fullscreen && (GetWindowLongA(hwnd, GWL_STYLE) & WS_POPUP)) null_fit_monitor(hwnd);
++        break;
+     case WM_SYSKEYDOWN:
+         /* Alt+Enter (bit 29 = Alt held); no repeat while held. */
+         if (wp == VK_RETURN && (lp & (1 << 29)) && !(lp & (1 << 30))) {
+@@ -306,6 +381,11 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+     wc.lpszClassName = "ps3recomp_null";
+     RegisterClassExA(&wc);
++    null_dpi_aware();
++    const HMONITOR target_mon = null_target_monitor();
++    const UINT dpi = null_monitor_dpi(target_mon);
++    MONITORINFO target_mi = { sizeof(target_mi) };
++    const int have_mi = GetMonitorInfoW(target_mon, &target_mi) != 0;
+ 
+     /* With PS3_RES_SCALE the window opens at the scaled client size (aspect
+      * kept) as far as the work area allows; it stays resizable and the
+@@ -314,8 +394,8 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+         const char* e = getenv("PS3_RES_SCALE");
+         float sc = e ? (float)atof(e) : 1.0f;
+         if (sc >= 240.0f) sc /= (float)height;
+-        RECT wa;
+-        if (sc > 1.0f && SystemParametersInfoA(SPI_GETWORKAREA, 0, &wa, 0)) {
++        RECT wa = target_mi.rcWork;
++        if (sc > 1.0f && have_mi) {
+             const float fit_w = (float)(wa.right - wa.left) * 0.95f / (float)width;
+             const float fit_h = (float)(wa.bottom - wa.top) * 0.90f / (float)height;
+             if (sc > fit_w) sc = fit_w;
+@@ -324,9 +404,32 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+         }
+     }
+ 
+-    /* Compute window size from client area */
+-    RECT wr = {0, 0, (LONG)width, (LONG)height};
+-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
++    /* Client size at the monitor's scale (1280x720 at 100 %), kept inside its
++     * work area with the aspect; then the frame for that DPI. */
++    u32 cw = width, chh = height;            /* PS3_RES_SCALE may have enlarged these */
++    if (dpi > 96) {
++        const u32 dw = (u32)((u64)s_state.width * dpi / 96), dh = (u32)((u64)s_state.height * dpi / 96);
++        if (dw > cw) { cw = dw; chh = dh; }
++        if (have_mi) {                       /* shrink only what the scale added */
++            const LONG ww = target_mi.rcWork.right - target_mi.rcWork.left;
++            const LONG wh = target_mi.rcWork.bottom - target_mi.rcWork.top;
++            const double k1 = (double)ww * 0.95 / (double)cw, k2 = (double)wh * 0.90 / (double)chh;
++            const double k = k1 < k2 ? k1 : k2;
++            if (k < 1.0) {
++                cw = (u32)(cw * k); chh = (u32)(chh * k);
++                if (cw < width) { cw = width; chh = height; }
++            }
++        }
++    }
++    RECT wr = {0, 0, (LONG)cw, (LONG)chh};
++    null_adjust_rect(&wr, WS_OVERLAPPEDWINDOW, dpi);
++    int wx = CW_USEDEFAULT, wy = CW_USEDEFAULT;
++    if (have_mi) {                                    /* centred on the target monitor */
++        const LONG ww = target_mi.rcWork.right - target_mi.rcWork.left;
++        const LONG wh = target_mi.rcWork.bottom - target_mi.rcWork.top;
++        wx = target_mi.rcWork.left + (ww > (wr.right - wr.left) ? (ww - (wr.right - wr.left)) / 2 : 0);
++        wy = target_mi.rcWork.top + (wh > (wr.bottom - wr.top) ? (wh - (wr.bottom - wr.top)) / 2 : 0);
++    }
+ 
+     /* PS3_WINDOW_BACKGROUND=1: open minimized and without taking focus, as the
+      * D3D12 backend does -- with RSX_LIVE_DRAW=1 this is the window the game
+@@ -336,7 +439,7 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+         0, "ps3recomp_null",
+         title ? title : "ps3recomp",
+         WS_OVERLAPPEDWINDOW | (background ? 0 : WS_VISIBLE),
+-        CW_USEDEFAULT, CW_USEDEFAULT,
++        wx, wy,
+         wr.right - wr.left, wr.bottom - wr.top,
+         NULL, NULL, GetModuleHandle(NULL), NULL);
+ 
+@@ -370,7 +473,7 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     /* Register as the active RSX backend */
+     rsx_set_backend(&s_null_backend);
+ 
+-    printf("[RSX null] Window created: %ux%u\n", width, height);
++    printf("[RSX null] Window created: %ux%u (client %ux%u at %u dpi)\n", width, height, cw, chh, dpi);
+     return 0;
+ }
+ 
+@@ -433,6 +536,13 @@ void rsx_null_backend_suppress_present(int on)
+     s_present_suppressed = on;
+ }
+ 
++/* DXGI left exclusive fullscreen by itself (Alt+Tab): the next Alt+Enter/F11
++ * enters it again instead of "leaving" it. */
++void rsx_null_backend_fullscreen_lost(void)
++{
++    s_fullscreen = 0;
++}
++
+ #else /* !_WIN32 */
+ 
+ /* ---------------------------------------------------------------------------
+@@ -815,6 +925,7 @@ int rsx_null_backend_pump_messages(void) { return 0; }
+ void rsx_null_backend_present(void) { nullsw_present(NULL, 0); }
+ void* rsx_null_backend_get_hwnd(void) { return 0; }
+ void  rsx_null_backend_suppress_present(int on) { (void)on; }
++void  rsx_null_backend_fullscreen_lost(void) {}
+ 
+ u32 rsx_null_backend_debug_color(void) { return s_soft.clear_argb; }
+ 
+diff --git a/libs/video/rsx_null_backend.h b/libs/video/rsx_null_backend.h
+index 21e8cc4..85e1369 100644
+--- a/libs/video/rsx_null_backend.h
++++ b/libs/video/rsx_null_backend.h
+@@ -62,6 +62,7 @@ u32 rsx_null_backend_guest_draws(void);
+ /* The live draw engine binds to this window and takes over presentation. */
+ void* rsx_null_backend_get_hwnd(void);
+ void  rsx_null_backend_suppress_present(int on);
++void  rsx_null_backend_fullscreen_lost(void);   /* DXGI left exclusive mode (Alt+Tab) */
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 7941031..6e11b2c 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2209,17 +2209,87 @@ extern "C" const func_entry* ppu_game_table = nullptr;
+ extern "C" uint64_t ppu_game_table_count = 0;
+ extern "C" void (**(*ppu_game_tramp_slot)(void))(void*) = nullptr;
+ 
++#ifdef _WIN32
++#include <intrin.h>
++/* x86-64-v3 as -march=x86-64-v3 uses it: AVX2, FMA, BMI1/2, F16C, LZCNT, MOVBE,
++ * and Windows saving the YMM registers (XGETBV). */
++__attribute__((target("xsave"))) static int ppu_host_has_x86_64_v3(void)
++{
++    int r[4];
++    __cpuid(r, 0);
++    if (r[0] < 7) return 0;
++    __cpuid(r, 1);
++    const unsigned ecx1 = (unsigned)r[2];
++    __cpuidex(r, 7, 0);
++    const unsigned ebx7 = (unsigned)r[1];
++    __cpuid(r, (int)0x80000000);
++    unsigned lzcnt = 0;
++    if ((unsigned)r[0] >= 0x80000001u) { __cpuid(r, (int)0x80000001); lzcnt = ((unsigned)r[2] >> 5) & 1; }
++    const unsigned osxsave = (ecx1 >> 27) & 1;
++    const int ymm = osxsave && (_xgetbv(0) & 6) == 6;
++    return ((ecx1 >> 12) & 1) && ((ecx1 >> 22) & 1) && ((ecx1 >> 28) & 1) && ((ecx1 >> 29) & 1) &&
++           ((ebx7 >> 3) & 1) && ((ebx7 >> 5) & 1) && ((ebx7 >> 8) & 1) && lzcnt && ymm;
++}
++#endif
++
+ extern "C" int ppu_game_dll_load(void)
+ {
++#ifdef _WIN32
++    /* Wide-char path, any length: GetModuleFileNameA + LoadLibraryA turned
++     * every character outside the ANSI code page into '?' (a folder named
++     * "Tekken Ł東京" failed with error 126) and stopped at MAX_PATH. The exe's
++     * manifest also sets the UTF-8 code page; the log line is UTF-8. */
++    static wchar_t wpath[32768];
++    DWORD n = GetModuleFileNameW(NULL, wpath, 32768 - 64);
++    if (n == 0 || n >= 32768 - 64) {
++        fprintf(stderr, "[game-dll] cannot find this program's folder (error %lu)\n",
++                (unsigned long)GetLastError());
++        return -1;
++    }
++    while (n && wpath[n - 1] != L'\\' && wpath[n - 1] != L'/') n--;
++    MultiByteToWideChar(CP_UTF8, 0, PS3_GAME_DLL_NAME, -1, wpath + n, 64);
++    static char path[32768 * 3];
++    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, (int)sizeof path, NULL, NULL);
++    /* Its own folder first for anything it imports (t5dr.exe, ucrtbase). */
++    HMODULE m = LoadLibraryExW(wpath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
++#else
+     char path[MAX_PATH];
+     DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+     while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
+     snprintf(path + n, MAX_PATH - n, "%s", PS3_GAME_DLL_NAME);
+     HMODULE m = LoadLibraryA(path);
++#endif
+     if (!m) {
+-        fprintf(stderr, "[game-dll] cannot load %s (error %lu)\n", path, (unsigned long)GetLastError());
++        const unsigned long err = (unsigned long)GetLastError();
++        fprintf(stderr, "[game-dll] cannot load %s (error %lu%s)\n", path, err,
++                err == 126 ? ": file missing -- build the game again, or check the antivirus quarantine"
++              : err == 193 ? ": not a 64-bit Windows DLL" : "");
+         return -1;
+     }
++#ifdef _WIN32
++    /* The lifted code is compiled for the PC that built it (x86-64-v3 when that
++     * one has AVX2). A game folder moved to an older PC would die on its first
++     * AVX2 instruction; say what to do instead (exit code 14). */
++    if (const char* march = (const char*)GetProcAddress(m, "t5dr_game_march")) {
++        const char* t = getenv("T5DR_TEST_CPU");
++        const int v3 = strstr(march, "v3") || strstr(march, "v4");
++        if (v3 && (!ppu_host_has_x86_64_v3() || (t && strstr(t, "noavx2")))) {
++            fprintf(stderr, "[game-dll] FATAL (exit code 14): %s was built for -march=%s (AVX2, FMA, BMI2, "
++                            "MOVBE); this processor does not have them -- build the game again on this PC\n",
++                    path, march);
++            fflush(stderr);
++            if (!getenv("PS3_WINDOW_BACKGROUND") && !getenv("PS3_NO_DIALOGS"))
++                MessageBoxW(NULL,
++                            L"This game build was made on a PC whose processor has AVX2. This PC's processor "
++                            L"does not have it, so the build cannot run here.\n\n"
++                            L"Open the launcher and press BUILD GAME: it builds the game again for this PC "
++                            L"(your saves are kept).",
++                            L"T5DR Online - build the game again", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
++            ExitProcess(14);
++        }
++        fprintf(stderr, "[game-dll] built for -march=%s\n", march);
++    }
++#endif
+     const func_entry* table = (const func_entry*)GetProcAddress(m, "function_table");
+     const uint64_t* count = (const uint64_t*)GetProcAddress(m, "function_table_count");
+     void* slot = (void*)GetProcAddress(m, "ppu_game_tramp_slot");

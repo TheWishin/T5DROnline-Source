@@ -65,6 +65,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import build_game  # noqa: E402
+import check_binaries  # noqa: E402
 import prereqs     # noqa: E402
 
 OUR_FILES = [
@@ -87,7 +88,7 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py", "lobby/deploy/windows/*",
-             "src/*/*.cpp", "src/*/*.h", "src/*/*/*.c"]
+             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]
@@ -462,6 +463,19 @@ def add_prebuilt_host(stage, clang, jobs):
         for n in ("t5dr.exe", "t5dr.lib"):
             copy(os.path.join(tmp, n), os.path.join(dst, n))
         log(f"  runtime/t5dr.exe: {os.path.getsize(os.path.join(dst, 't5dr.exe')):,} bytes")
+        # It must run on any x64 CPU with SSE4.1: AVX & co. only inside the C library's CPUID dispatch.
+        objdump = os.path.join(os.path.dirname(clang[0]), "llvm-objdump.exe")
+        mapf = os.path.join(tmp, "t5dr.map")
+        if os.path.exists(objdump) and os.path.exists(mapf):
+            dis = subprocess.run([objdump, "-d", "--no-show-raw-insn", os.path.join(dst, "t5dr.exe")],
+                                 capture_output=True, text=True, errors="replace").stdout
+            bad = check_binaries.isa_findings(dis, check_binaries.read_map(mapf))
+            if bad:
+                fail("runtime/t5dr.exe uses instructions beyond SSE4.1 outside the C library (it would crash on "
+                     "older CPUs):\n" + "\n".join(f"  {dict(c)} in {w}" for w, c in sorted(bad.items())[:20]))
+            log("  runtime/t5dr.exe: nothing beyond SSE4.1 outside the C library's CPUID dispatch")
+        else:
+            log("  (no llvm-objdump next to clang-cl or no linker map: instruction-set check skipped)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -725,6 +739,15 @@ def main():
     with open(os.path.join(stage, "release.json"), "w") as f:
         json.dump(info, f, indent=1)
     sweep_pycache(stage)
+
+    llvm_bin = os.path.dirname(clang[0]) if clang[0] else None
+    if llvm_bin and os.path.exists(os.path.join(llvm_bin, "llvm-readobj.exe")):
+        log("checking the binaries for a clean Windows 10/11 (tools/check_binaries.py)")
+        problems, _ = check_binaries.check_release(stage, llvm_bin, log=log)
+        if problems:
+            fail("binaries that would not run on every Windows 10/11 PC:\n  " + "\n  ".join(problems))
+    else:
+        log("  (no llvm-readobj next to clang-cl: import check skipped)")
 
     ok = report("folder", *scan_files(iter_dir(stage), key_pats, game_index))
     if not ok:

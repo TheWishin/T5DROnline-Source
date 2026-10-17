@@ -6,6 +6,15 @@
 
 int _fltused = 0x9875;
 
+/* The target CPU the lifted code was compiled for (build_game_dll.py --march). The
+ * runtime reads it before it runs anything from this DLL and stops with a message
+ * on a processor that lacks those instructions (a game folder copied to an older
+ * PC) instead of crashing on the first AVX2 instruction. */
+#ifndef T5DR_GAME_MARCH
+#define T5DR_GAME_MARCH "none"
+#endif
+__declspec(dllexport) const char t5dr_game_march[] = T5DR_GAME_MARCH;
+
 /* ---- const views of the runtime's guest-memory gates (ppu_recomp.h
  * PPU_CONST_GATES): DLL-local, so the lifted code reads them directly rather
  * than through an import slot, and treats them as constants. The runtime fills

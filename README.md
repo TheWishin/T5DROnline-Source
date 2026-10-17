@@ -51,9 +51,25 @@ clean PC and a match between two real PCs over the internet are still to come.
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit.
-- A graphics card with DirectX 12, and a 64-bit CPU with SSE4.1 (practically
-  every PC of the last 10+ years).
+- Windows 10 (version 1909 or newer) or Windows 11, 64-bit. Nothing else to
+  install: no Visual C++ redistributable, no Visual Studio, no DirectX
+  download. Windows "N" editions: the movies stay black without the Media
+  Feature Pack; the rest works.
+- A graphics card with Direct3D 12 (feature level 11_0 or higher) and a
+  current driver. That is about: NVIDIA GeForce GTX 600 or newer, AMD Radeon
+  HD 7000 or newer, Intel graphics of 6th-gen Core (2015) or newer. Tested on
+  an NVIDIA RTX 3090 and on Windows' software renderer (WARP) only. Laptops
+  with two graphics chips use the fast one by default.
+- A 64-bit Intel or AMD processor with SSE4.1: Intel Core 2 (2008) or newer,
+  AMD FX, A-series or Ryzen (2011) or newer. AVX2 is not needed. With AVX2
+  (Intel 4th-gen Core / AMD Ryzen and newer) the build makes faster code; the
+  launcher decides this by itself. Only tested on a CPU with AVX2.
+- Any monitor: 60, 120, 144 Hz and more, also slower TVs (50 Hz). The game
+  always runs at the PS3's 59.94 frames per second. Any Windows display
+  scaling (100-200 %), several monitors.
+- Any folder you can write to, on any drive, also with spaces or letters like
+  ü or Ł in the name, or in your user name. Not in Program Files, not in a
+  OneDrive folder, and keep the path short (under about 150 characters).
 - RAM: the game used about 1.2 GB on the development PC. We have not tested
   small PCs. 8 GB or more is a safe guess.
 - About 1.5 GB of free disk space. After the build it uses about 1.1 GB, plus
@@ -219,6 +235,10 @@ not provide the package or the license and cannot help to get them.
 
 **Does it run on Linux or macOS?** No. Only Windows runs a recompiled title
 today.
+
+**Does it run on Windows on ARM (Snapdragon laptops)?** Not tested. Windows 11
+should run it through its x64 emulation, more slowly; Windows 10 on ARM cannot.
+See `docs\TROUBLESHOOTING.md`, "Windows versions and other PCs".
 
 **Why does the build need the internet?** Once, to fetch about 50 KB of public
 key data from github.com (see Credits).

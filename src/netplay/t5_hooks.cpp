@@ -275,7 +275,7 @@ const char* kDefaultHashSkip =
     "100A0A00:80,"                    /* an effect record set at a match intro: a unit vector at +0x10 (m0c), a scale at +0x30 (n0c: 1,1,1 vs 0,0,0), the fight unchanged */
     "1008F0C4:4,1008F0D0:4,"          /* timestamps */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
-    "1008FFF0:C,"                     /* a third one, 0.1 units off for 20+ frames under rollback (Christie vs Feng, stage 17; the same build on both sides, cross-cpu runs inv_v3_vs_v3/inv_native_vs_native) */
+    "1008FFF0:C,"                     /* a third one, 0.1 units off for 13-33 frames under rollback (Christie vs Feng, stage 17; identical builds too: cross-cpu runs inv_v3_vs_v3, inv_native_vs_native) */
     /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart
      * while position, pose, health and timer stay identical (handles, effect
      * and sound counters): +0x1B4, +0x1E0, +0x314, +0x870/+0x874 from P1. */
@@ -293,8 +293,8 @@ const char* kDefaultHashSkip =
      * a second word: from the final KO camera of Bryan vs Steve, stage 28,
      * 0x10099730-0x1009976F, 0x100998C0-0x10099903, the same in the second
      * block and +0x63C differ for 21 frames, then all is equal again and both
-     * results match -- identical builds on both sides too, in lockstep (1 of 4
-     * runs) and more often under rollback (7 of 8 at RTT 50; 0 of 2 with
+     * results match -- identical builds too; in lockstep (1 of 4 runs) and
+     * more often under rollback (7 of 9 at RTT 50; 0 of 2 with
      * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
      * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
     "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";

@@ -361,7 +361,7 @@ neither changed the fight (the same hash again afterwards, the same result).
   8 bytes at each counter): from the final KO camera of Bryan vs Steve
   (stage 28) more of them differed for 21 frames, then all was equal again
   and both results matched -- with identical builds on both sides too, in
-  lockstep (1 of 4 runs) and more often under rollback (7 of 8 at RTT 50,
+  lockstep (1 of 4 runs) and more often under rollback (7 of 9 at RTT 50,
   0 of 2 with `T5_RB_CUT=none`: re-simulated frames skip the draw, which
   adds to it). Camera state that follows timing, not input.
 - **Secondary motion.** 0x1008FF00, 0x1008FFB0 and (since cross-cpu)

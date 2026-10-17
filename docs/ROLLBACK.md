@@ -1536,7 +1536,7 @@ rollback loop that means:
   Branch cross-cpu widened it to the whole two camera blocks (0x10099730 and
   0x10099920, 0x1F0 bytes each, and 8 bytes at each counter) and added the
   point 0x1008FFF0: from a KO camera they differed for 21 frames, identical
-  builds too -- 1 of 4 Bryan-vs-Steve lockstep runs, 7 of 8 rollback runs at
+  builds too -- 1 of 4 Bryan-vs-Steve lockstep runs, 7 of 9 rollback runs at
   RTT 50, 0 of 2 with `T5_RB_CUT=none` (the draw the cut skips keeps that
   camera state, so the cut makes it more likely).
 

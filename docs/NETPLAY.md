@@ -308,8 +308,9 @@ that disagree (winner, score, hash), on a crash or hang, on a side that did not
 run the expected loop, or when fewer than 3000 frames were compared.
 `report.txt` in the run directory has the verdict per mode and match.
 
-One command, from a runtime built with `-DT5DR_GAME_DLL=ON` (t5dr.exe +
-t5dr.lib, as a release ships it):
+One command, given the build folder of a runtime made with
+`-DT5DR_GAME_DLL=ON` (it holds t5dr.exe + t5dr.lib, as a release ships them;
+`build/cmake-dll` here):
 
 ```
 python tools/cross_build_test.py --build build/cmake-dll --out v3_vs_base
@@ -380,17 +381,17 @@ gave the same hash on all 7,141-7,321 frames.
 
 **The KO camera.** At first the Bryan-vs-Steve pairs failed: 21 frames from
 the final KO camera (frame 4239) had different hashes, then they were equal
-again and both results matched. It is not the builds: v3 vs v3, native vs
-native and base vs base did the same -- under rollback in 7 of 8 runs at RTT
-50 (none at RTT 0), in lockstep in 1 of 4 (`control_lockstep` of
-`xB2_v3_vs_native_bryan`) -- and with `T5_RB_CUT=none` (re-simulated frames
-run the draw too) 0 of 2. The words (`T5_NET_DESYNC_DUMP=1`): camera state
+again and both results matched. It is not the builds: identical builds did
+the same (base vs base under rollback, v3 vs v3 in lockstep). Under rollback
+it came in 7 of 9 runs at RTT 50 (none at RTT 0), in lockstep in 1 of 4
+(`control_lockstep` of `xB2_v3_vs_native_bryan`), with `T5_RB_CUT=none`
+(re-simulated frames run the draw too) in 0 of 2. The words (`T5_NET_DESYNC_DUMP=1`): camera state
 that follows timing rather than input -- the rest of the two 0x1F0-byte camera
 blocks at 0x10099730 / 0x10099920 whose tails fight-polish had already left
 out after its 100-frame lockstep transient, and the second word of the
 counters at +0x638 of the second and third fighter block. Christie vs Feng
 showed a 12-byte secondary-motion point at 0x1008FFF0 the same way (13-33
-frames, same build too). Both are now left out of the state hash
+frames under rollback; v3 vs v3 and native vs native too). Both are now left out of the state hash
 (`kDefaultHashSkip`, `kGameSkip`; docs/DIRECTFIGHT.md "Known transient
 mismatches"). Before that, a ranked match with such a KO was voided (any
 desync voids it, docs/RANKED.md).
@@ -408,7 +409,7 @@ least twice, once in each start order):
 | native (AVX-512 here) | -- | 4.93 |
 
 All ran at 59.9 fps. On average 0032 added ~0.2 ms (v3) and ~0.3 ms (base)
-per frame, inside the +-0.4 ms spread between runs; the software fma (a PC
+per frame, inside the ~0.5 ms spread between runs; the software fma (a PC
 without FMA3) about 0.1-0.2 ms more. The frame budget is 16.7 ms. No reason to
 build the game code the same way everywhere: the targets agree, and v3 stays
 cheaper than the baseline (~0.4 ms a frame here).

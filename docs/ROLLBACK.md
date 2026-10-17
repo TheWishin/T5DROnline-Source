@@ -615,6 +615,58 @@ skips it for 8 frames at a time 190 times. Real rollbacks are 1-4 frames
 only the SFX requests and keep the stream feed (`0x32819C`'s callees, to be
 separated). Default stays skip on.
 
-## 11. Cost with everything on
+## 11. Cost with everything on, and what the long runs showed
 
-(see the table after run m2 below)
+Run a2 (both fighters attacking, 420 s, rollbacks every 30 frames): **76
+rollbacks, 0 gameplay-hash mismatches in 608 re-simulated boundaries**; no
+round was won in 420 s by either script (the scripted jabs do not land), so
+KO slow-motion and the match end are still untested -- the round time-out
+transition (a1) is the one covered.
+
+**Time sync at RTT 100 ms** (n6, 11 windows of 300 frames): the joiner led
+for five windows (advantage +1.4..+3.2 frames, 23-39 rollbacks per window,
+3-5 sleeps), then the balance flipped (host 20/12/20 rollbacks, joiner 1/6/3)
+and back again. It balances in aggregate but oscillates slowly: the estimate
+lags (30-frame window) and a sleep is allowed only once per 60 frames. To
+tune: shorter window, smaller and more frequent corrections (GGPO sleeps
+whenever the averaged advantage rounds to >= 1 frame, every frame if needed).
+
+Per re-simulated frame with everything on (a2, same loaded machine, medians):
+**29.1 M main-thread cycles (27 % of that run's normal frame, p10 26.2 M,
+min 19.5 M), 8.7 ms wall (p10 6.1, min 4.4), 182 dirty pages** (704-725 for
+a normal frame; the cut frames touch a quarter of the memory), commit 1.26
+ms, restore of 8 frames 6.0 ms. 26-29 M cycles are 5.8-6.5 ms at 4.5 GHz with
+15-20 other instances fighting for the cores; the <= 5 ms target on a quiet
+machine is plausible but unmeasured (the machine was never quiet).
+
+**An open correctness issue.** Run m2 (same build and scripts as a2, started
+at the same time) had gameplay-hash mismatches at every rollback from the
+second re-simulated frame on (161 of 248 boundaries) while a2, d2 (0/344),
+and g1-g4 (stages 19, 32, 31, 32; 0 mismatches in 368/336/272/264) were
+clean. m2's fight wrote ~830 pages per frame instead of ~710, i.e. a
+different, busier stage (the stage is the game's random pick; m2 ran before
+the stage id was logged). So on at least one stage something the cuts remove
+feeds the gameplay state. The test mode now logs the stage id at the first
+rollback point and prints the first differing gameplay words on a mismatch
+(`gameplay diff at`); the next step is to catch that stage again (run with
+`--shots`), read the words, and bisect `T5_RB_CUT` / `T5_RB_CUT2` on it.
+Until then rollback on that stage would desync (the per-frame hash exchange
+catches it).
+
+## What is left (phase 3)
+
+- The stage-dependent mismatch above (find the stage, bisect the cut).
+- Time-sync tuning (oscillation at RTT 100 ms).
+- KO slow-motion / match end under rollback: a script that lands hits.
+- Sound: skip only the SFX requests, keep the music stream feed
+  (`0x32819C`'s callees), or shorten the skip to the rolled-back frames'
+  new requests only.
+- A quiet-machine cost measurement; the sim itself (animation/skeleton
+  update, fight logic) is the floor until the runtime gets faster.
+- Direct-fight: run the two instances through `src/directfight` with
+  `T5_NET_START=external` once that branch lands; the handshake/negotiation
+  path is the same as in the tests here.
+- Peer-to-peer hash agreement across rollbacks is still only shown
+  in-process: every two-instance run here diverged in np's lockstep menu
+  phase before the fight (its known menu non-determinism under load, frame
+  1590/2211), which the direct-fight start avoids.

@@ -12,10 +12,6 @@
 #include "rb_state.h"
 
 extern "C" uint8_t* vm_base;
-/* libs/codec/cellAtrac.c (patch 0023): the HLE decoder's positional state, rewound with the rollback */
-extern "C" size_t cellAtrac_rb_state_size(void);
-extern "C" void   cellAtrac_rb_save(void* out);
-extern "C" int    cellAtrac_rb_restore(const void* in);
 
 namespace rb {
 
@@ -195,8 +191,6 @@ static uint8_t* g_pages = nullptr;                   /* kRingPages * 4 KB */
 static uint32_t g_ring_pos = 0;                      /* next free ring slot */
 struct Log { uint32_t tag; uint32_t start, count; }; /* tag = frame + 1 */
 static Log g_log[kLogFrames];
-/* per boundary: the cellAtrac HLE state as of that boundary (restored with a rollback to it) */
-static uint8_t* g_atrac = nullptr; static size_t g_atrac_sz = 0; static uint32_t g_atrac_tag[kLogFrames];
 static uint32_t g_newest = 0;                         /* frame + 1 of the newest log */
 static bool g_ready = false;
 
@@ -224,9 +218,6 @@ void state_init()
     for (const Range& r : kSave) g_shadow_size += r.len;
     g_shadow = (uint8_t*)VirtualAlloc(nullptr, g_shadow_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     g_ent = (Entry*)calloc(kRingPages, sizeof(Entry));
-    g_atrac_sz = cellAtrac_rb_state_size();
-    g_atrac = (uint8_t*)calloc(kLogFrames, g_atrac_sz);
-    memset(g_atrac_tag, 0, sizeof g_atrac_tag);
     g_pages = (uint8_t*)VirtualAlloc(nullptr, (size_t)kRingPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
     size_t off = 0;
@@ -249,9 +240,6 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
     Log* lg = nullptr;
-    /* the decoder's state at this boundary (what a rollback to f puts back) */
-    cellAtrac_rb_save(g_atrac + (size_t)(f % kLogFrames) * g_atrac_sz);
-    g_atrac_tag[f % kLogFrames] = f + 1;
     if (f > 0) {
         lg = &g_log[(f - 1) % kLogFrames];
         if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
@@ -343,7 +331,6 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
         }
         if (f == to) break;
     }
-    if (g_atrac_tag[to % kLogFrames] == to + 1) cellAtrac_rb_restore(g_atrac + (size_t)(to % kLogFrames) * g_atrac_sz);
     /* the logs above `to` describe frames that will be re-simulated: drop them
      * and hand their ring slots back (the ring position returns to the start
      * of frame `to`'s log) */

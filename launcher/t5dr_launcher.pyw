@@ -326,6 +326,21 @@ class App(tk.Tk):
                             command=self.save_settings).pack(side="left", padx=(0, 14))
         ttk.Label(row, style="Muted.TLabel", text="for weak graphics cards").pack(side="left")
 
+        # Like Tekken 6 Native Online's input delay option (T5_RB_NET_DELAY, docs/NETPLAY.md
+        # "Input delay"): Auto follows the ping; a fixed value counts when both players chose it.
+        net = ttk.LabelFrame(right, text="  Online input delay  ", padding=(12, 6))
+        net.pack(fill="x", pady=(6, 0))
+        self.input_delay_var = tk.StringVar(value=self.settings["input_delay"]
+                                            if self.settings["input_delay"] in core.INPUT_DELAYS else "auto")
+        row = ttk.Frame(net)
+        row.pack(anchor="w")
+        for key, label in core.INPUT_DELAYS.items():
+            ttk.Radiobutton(row, text=label, value=key, variable=self.input_delay_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=(
+            "Frames. Auto: 1 up to about 60 ms ping, 2 above. 0/1/2 count only when your opponent "
+            "picked the same, otherwise Auto. Ranked matches always use 2.")).pack(anchor="w", pady=(4, 0))
+
         ctl = ttk.LabelFrame(box, text="  Controls  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
         tv = ttk.Treeview(ctl, columns=("ps3", "kb", "pad"), show="tree headings", height=len(CONTROLS),
@@ -620,6 +635,7 @@ class App(tk.Tk):
             return
         self.settings["display"] = self.display_var.get()
         self.settings["render_scale"] = self.render_scale_var.get()
+        self.settings["input_delay"] = self.input_delay_var.get()
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()

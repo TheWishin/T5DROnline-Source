@@ -64,6 +64,8 @@ class Config:
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
+    ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
+                                    # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again

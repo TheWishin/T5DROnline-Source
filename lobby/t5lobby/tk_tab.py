@@ -671,7 +671,8 @@ class OnlineTab:
         dll = os.path.join(out, "build", "cmake", "t5dr_game.dll")
         self.driver = MatchDriver(self.client, self._launch, os.path.join(out, "logs", "online"),
                                   table=self.table, mode=self.cfg.get("game_mode", "auto"), game_files=[exe, dll],
-                                  async_calls=True)
+                                  async_calls=True,
+                                  input_delay=(getattr(self.app, "settings", None) or {}).get("input_delay"))
 
     def _launch(self, env):
         g = getattr(self.app, "game", None)

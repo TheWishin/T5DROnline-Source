@@ -1681,6 +1681,8 @@ class LobbyServer:
                 "path": m.path, "peer": r.get("peer") if m.path != "relay" else None,
                 "relay_port": self.udp.port if m.path == "relay" else None,
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
+                # rollback input delay: fixed for ranked (T5_RB_NET_DELAY on both PCs), else each player's setting
+                "input_delay": self.cfg.ranked_input_delay if m.ranked and self.cfg.ranked_input_delay >= 0 else None,
                 "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
                 "key": m.key,                          # T5_NET_KEY (the tag above travels in UDP punches)

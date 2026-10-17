@@ -427,7 +427,7 @@ class LobbyClient:
                              jitter_ms=msg.get("jitter_ms", 0.0), delay=msg.get("delay", 3),
                              rounds=msg.get("rounds", 3), ranked=msg.get("ranked", False),
                              opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0),
-                             key=str(msg.get("key") or ""))
+                             key=str(msg.get("key") or ""), input_delay=msg.get("input_delay"))
         if self.handover == "share" and gs.dup is not None:
             ticket._dup_socket = gs.dup
             gs.dup = None

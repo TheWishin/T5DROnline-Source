@@ -1533,6 +1533,11 @@ rollback loop that means:
   0x10099960, 0x128 bytes each) and 0x10090708 / 0x10090FD8: they differ
   between two PCs for exactly 100 frames about 20 s into a match, the fight
   unchanged (on main as well; docs/DIRECTFIGHT.md "Known transient mismatches").
+  Branch cross-cpu widened it to the whole two camera blocks (0x10099730 and
+  0x10099920, 0x1F0 bytes each, and 8 bytes at each counter) and added the
+  point 0x1008FFF0: the draw cut leaves that camera state behind in
+  re-simulated frames, and at a KO camera it differed for 21 frames (7 of 8
+  Bryan-vs-Steve runs at RTT 50, identical builds too, 0 with `T5_RB_CUT=none`).
 
 Result: a persistent game against a freshly started one, then two more new
 sessions, under rollback: 5 of 5 matches confirmed, 0 mismatching frames, up to

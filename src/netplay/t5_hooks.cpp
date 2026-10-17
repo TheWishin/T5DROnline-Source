@@ -275,6 +275,7 @@ const char* kDefaultHashSkip =
     "100A0A00:80,"                    /* an effect record set at a match intro: a unit vector at +0x10 (m0c), a scale at +0x30 (n0c: 1,1,1 vs 0,0,0), the fight unchanged */
     "1008F0C4:4,1008F0D0:4,"          /* timestamps */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
+    "1008FFF0:C,"                     /* a third one, 0.1 units off for 20+ frames under rollback (Christie vs Feng, stage 17; the same build on both sides, cross-cpu runs inv_v3_vs_v3/inv_native_vs_native) */
     /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart
      * while position, pose, health and timer stay identical (handles, effect
      * and sound counters): +0x1B4, +0x1E0, +0x314, +0x870/+0x874 from P1. */
@@ -286,8 +287,17 @@ const char* kDefaultHashSkip =
      * into a match (lockstep frame 1229 in different fights) 0x10053590 and
      * these blocks get values from them for exactly 100 frames, then all is
      * equal again, the fight and the final hash unchanged. Seen on main and on
-     * fight-polish (build/dp runs rm2, ps3, abl_main4; docs/DIRECTFIGHT.md). */
-    "10099770:128,10099960:128,10090708:4,10090FD8:4";
+     * fight-polish (build/dp runs rm2, ps3, abl_main4; docs/DIRECTFIGHT.md).
+     * The whole two blocks are camera state (0x1F0 each from 0x10099730: a 3x4
+     * matrix, positions; the copies above are their tails), and the counter has
+     * a second word: at a KO under rollback (Bryan vs Steve, stage 28: 7 of 8
+     * runs, identical builds too) 0x10099730-0x1009976F, 0x100998C0-0x10099903,
+     * the same in the second block and +0x63C differ for 21 frames from the
+     * KO camera on, then all is equal again and both results match. The draw
+     * cut does it (resim skips the draw, which keeps this camera state): with
+     * T5_RB_CUT=none the same runs stay equal (docs/NETPLAY.md, "Same game
+     * state on every CPU"). */
+    "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
 
 /* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,
  * when the peer reports a different hash for one of them, write them to

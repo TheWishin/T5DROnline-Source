@@ -295,40 +295,104 @@ the lifted code does about each:
 | Code generation, undefined behaviour, uninitialised memory | -- | the cross-build pairs below: v3, baseline and `-march=native` (AVX-512 on this Ryzen) code agree on every frame |
 | `vexptefp`/`vlogefp` (not used by this title) | `exp2f`/`log2f` from the C runtime | fixed double-precision formulas, within 1 ulp of the library |
 
-**Test it:** `tools/cross_build_test.py` runs a pair whose host and joiner
-are different builds (same lift, same runtime) through
-`tools/rollback_net_test.py` -- direct fight, scripted attacks, RTT 50 +-5 ms,
-3 % loss -- once with rollback (the default) and once with `T5_RB_MODE=off`
+**The regression check: `tools/cross_build_test.py`.** It runs a netplay
+pair whose host and joiner are different builds of the same lift (same
+runtime, different game DLLs) through `tools/rollback_net_test.py` -- direct
+fight, scripted attacks, two full matches with KOs, RTT 50 +-5 ms, 3 % loss --
+once with rollback (what players get) and once with `T5_RB_MODE=off`
 (lockstep), and compares the two games' state hash of every frame (rollback:
-the final hash, `f F <hash>` in frames.log; lockstep: `f I ... <hash>`). It
-fails on any differing frame, on a mismatch the built-in check reported, on
-result files that disagree, on a crash or hang, or when fewer than 3000 frames
-were compared:
+the final hash, `f F <hash>` in frames.log, written when every input before
+the frame is confirmed; lockstep: `f I ... <hash>`). Exit code 1 on any
+differing frame, on a mismatch the built-in check reported, on result files
+that disagree (winner, score, hash), on a crash or hang, on a side that did not
+run the expected loop, or when fewer than 3000 frames were compared.
+`report.txt` in the run directory has the verdict per mode and match.
+
+One command, from a runtime built with `-DT5DR_GAME_DLL=ON` (t5dr.exe +
+t5dr.lib, as a release ships it):
 
 ```
-python tools/build_game_dll.py --recomp build/recomp --spu build/spu --deps deps/ps3recomp \
-    --host-lib build/cmake/t5dr.lib --out X/v3/t5dr_game.dll --obj X/v3/obj --march x86-64-v3
-python tools/build_game_dll.py ... --out X/base/t5dr_game.dll --obj X/base/obj --march none
-(copy t5dr.exe next to both)
+python tools/cross_build_test.py --build build/cmake-dll --out v3_vs_base
+```
+
+`--build` compiles the lift (`--recomp build/recomp --spu build/spu --deps
+deps/ps3recomp` by default) twice with `tools/build_game_dll.py`, `--march
+x86-64-v3` for the host and `--march none` for the joiner (`--march1`,
+`--march2`; objects stay in `build/cross-build-runs/bin/<march>/`, so a rerun
+only recompiles what changed), adds `--audit` (`tools/fp_audit.py --strict` on
+both DLLs), and runs the baseline joiner as a PC without FMA3 runs it:
+`PS3_FP_SOFT_FMA=1` (the software fma although this CPU has FMA3) and
+`PS3_CRT_FMA3=0` (the C runtime's own non-FMA3 paths); `--hw-fma` keeps the
+instructions. With two finished builds instead:
+
+```
 python tools/cross_build_test.py --exe1 X/v3/t5dr.exe --exe2 X/base/t5dr.exe --out v3_vs_base \
-    --audit --env2 PS3_FP_SOFT_FMA=1 --env2 PS3_CRT_FMA3=0
+    --audit --env2 PS3_FP_SOFT_FMA=1 --env2 PS3_CRT_FMA3=0 [--fight 13,17,28,2 --next 8,31,17,2]
 ```
 
-`PS3_FP_SOFT_FMA=1` makes a baseline build use the software fma although the
-CPU has FMA3, `PS3_CRT_FMA3=0` sends the C runtime's own math down its
-non-FMA3 paths -- together that is what a PC without FMA3 runs.
-`PS3_FP_TEST_MXCSR=<value>` runs the guest threads with another MXCSR (a
-negative test: the check must flag it). `--audit` adds `tools/fp_audit.py
---strict` on both DLLs; ps3recomp's `runtime/ppu/tests/test_fp_det.c` checks
-the software paths against the instructions (PASS/FAIL). The netplay log says
+`--flow persistent` plays the matches in games that stay open (a netplay
+session per match, `tools/fight_flow_test.py --mash`); `--control` runs the
+host's build on both sides afterwards with the same matches, which tells a
+difference between the builds from a rollback or timing problem the port has
+anyway. `PS3_FP_TEST_MXCSR=<value>` runs the guest threads with another MXCSR
+(a negative test); ps3recomp's `runtime/ppu/tests/test_fp_det.c` checks the
+software paths against the instructions (PASS/FAIL). The netplay log says
 what each side ran: `fp: game code -march=x86-64-v3, main thread MXCSR 0x1F80`.
 
-Results (2026-10-17, this Ryzen 9 7950X; one PC cannot be Intel and AMD at
-once, so the vendor question is answered by what the code is made of: only
-IEEE-754 basic operations, conversions and `sqrt`, which every x64 CPU
-computes alike under the same MXCSR -- no estimates, no library):
+**Results** (2026-10-17, one Ryzen 9 7950X, Windows 11; patch series 0001-0029
++ 0031 + 0032, one lift; v3 = `-march=x86-64-v3`, base = no `-march` with the
+software fma and the C runtime's non-FMA3 paths, native = `-march=native`,
+which on this Zen 4 means AVX-512). Every match was two rounds to a KO;
+rollback rows had 160-440 rollbacks per side:
 
-CROSS_BUILD_RESULTS
+CROSS_BUILD_TABLE
+
+Before patch 0032 a v3 build and a baseline build also played in sync on this
+PC (runs `before_v3_vs_none`: 11,453 rollback and 9,602 lockstep frames, 0
+different): the C runtime's `fma` gave the same bits as `vfmadd` here. A PC
+without FMA3 would have run ucrtbase's software `fma`, and its `sin`/`exp`
+family has separate FMA3 and SSE2 code; 0032 takes all of that out of the
+game code instead of trusting it.
+
+Negative tests (same build both sides, one side with `PS3_FP_TEST_MXCSR`):
+round toward zero (0x7F80) -- every frame different from frame 225 on, in
+rollback and lockstep, and `[fp]` names the MXCSR; flush-to-zero +
+denormals-are-zero (0x9FC0) -- 4,439 frames, 0 different (this match makes no
+denormal), so FTZ/DAZ would only show where the game produces denormals,
+which the MXCSR check rules out anyway. Offline (`T5_NET_MODE=local`, the same
+scripted Bryan-vs-Steve match one instance at a time): v3, v3, native, native
+gave the same hash on all 7,141-7,321 frames.
+
+**Rollback's KO camera.** At first the Bryan-vs-Steve rollback pairs failed:
+21 frames from the final KO (frame 4239) had different hashes, then they were
+equal again and both results matched. It is not the builds: v3 vs v3, native
+vs native and base vs base did the same (7 of 8 runs at RTT 50, none at RTT
+0, none in lockstep), and with `T5_RB_CUT=none` (re-simulated frames run the
+draw too) the same matches stayed equal. The words (`T5_NET_DESYNC_DUMP=1`):
+camera state the draw keeps -- the rest of the two 0x1F0-byte camera blocks
+at 0x10099730 / 0x10099920 whose tails fight-polish had already left out, and
+the second word of the counters at +0x638 of the second and third fighter
+block. Christie vs Feng showed a 12-byte secondary-motion point at 0x1008FFF0
+the same way. They are now left out of the state hash as well
+(`kDefaultHashSkip`, `kGameSkip`; docs/DIRECTFIGHT.md "Known transient
+mismatches"). Before that, a ranked match with such a KO would have been
+voided (any desync voids it, docs/RANKED.md).
+
+**Cost** (main-thread busy ms per fight frame, offline Asuka vs Lili, median
+of 3000 frames, two instances at a time, quiet machine; the order the two
+instances start in moves it by ~0.4 ms, so each was run in both orders):
+
+CROSS_BUILD_COST
+
+All ran at 59.9 fps. The software fma (a PC without FMA3) costs about 0.1-0.2
+ms per frame on top of the baseline build.
+
+**What one PC cannot show.** Intel against AMD: the game code is made of
+IEEE-754 basic operations, conversions and square roots only (no estimate
+instruction, no x87, no library math, `fp_audit.py`), which every x64 CPU
+computes alike under the same MXCSR; that is the argument, not a run. A real
+CPU without FMA3 or AVX2: stood in for by the baseline build with
+`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`.
 
 ## Tested
 

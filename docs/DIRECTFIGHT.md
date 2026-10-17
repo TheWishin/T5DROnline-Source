@@ -356,6 +356,17 @@ neither changed the fight (the same hash again afterwards, the same result).
   0 of 6; earlier 2 of ~11 on fight-polish). Since any mismatch voids a ranked
   match, these words are now left out of the state hash (`kDefaultHashSkip`
   in src/netplay/t5_hooks.cpp, `kGameSkip` in src/rollback/rb_state.cpp).
+  Since branch cross-cpu the whole camera blocks are left out (0x1F0 bytes
+  each from 0x10099730 and 0x10099920, which hold the copies above, and
+  8 bytes at each counter): at a KO under rollback (Bryan vs Steve, stage 28,
+  7 of 8 runs at RTT 50, identical builds too) more of them differed for
+  21 frames, then all was equal again and both results matched. Rollback's
+  draw cut causes it: re-simulated frames skip the draw, which keeps this
+  camera state; with `T5_RB_CUT=none` the same matches stayed equal.
+- **Secondary motion.** 0x1008FF00, 0x1008FFB0 and (since cross-cpu)
+  0x1008FFF0, 12 bytes each: xyz points a fraction of a unit apart for
+  20-some frames under rollback (Christie vs Feng, stage 17, same build on
+  both sides), the fight unchanged.
 - **Pool addresses.** 0x100911D0, 0x10091AA0, 0x10091AB8-0x10091B07: addresses
   the animation update takes from a pool at a match intro; they differ when the
   pool's history differs (run ds1, a rematch). Left out of the hash since

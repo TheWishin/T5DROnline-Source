@@ -1200,10 +1200,115 @@ index 9003360..add34dc 100644
              DestroyWindow(hwnd);
          }
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index ae7f371..5019a64 100644
+index 76dd83d..d9ef446 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -11623,6 +11623,22 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -7851,6 +7851,7 @@ static u64 live_decoded_vertex_hash(u64 attr_hash[16])
+  * (rsx_live_draw_blit notes each 2D copy where it falls in the draw stream). */
+ static FILE* s_csv_file;
+ static int   s_csv_gate_open = 1;
++static u32   s_ld_dd_trigger_frame = ~0u;   /* LD_DRAW_DUMP_TEX: the frame being dumped */
+ 
+ static void live_draw_csv_emit(u32 prim, u32 n_tri, const char* outcome)
+ {
+@@ -7862,6 +7863,25 @@ static void live_draw_csv_emit(u32 prim, u32 n_tri, const char* outcome)
+     static int inited = 0;
+     static FILE* file = NULL;
+     static u64 draw = 0;
++    /* LD_DRAW_DUMP_TEX=<hex offset>: rows (and LD_DRAW_DUMP) only for the
++     * frame after one in which a draw samples the texture at that offset --
++     * catches a short-lived effect (the sun glare passes) without guessing
++     * its frame number. LD_DRAW_DUMP_TEX_MAX=n such frames (default 1), at
++     * least LD_DRAW_DUMP_TEX_GAP frames apart (default 30). */
++    { static long trig = -2; static u32 trig_frame = ~0u, trig_n, trig_max, trig_gap;
++      if (trig == -2) { const char* e = getenv("LD_DRAW_DUMP_TEX"); trig = e ? (long)strtoul(e, NULL, 16) : -1;
++          e = getenv("LD_DRAW_DUMP_TEX_MAX"); trig_max = e ? (u32)atoi(e) : 1;
++          e = getenv("LD_DRAW_DUMP_TEX_GAP"); trig_gap = e ? (u32)atoi(e) : 30; }
++      if (trig >= 0) {
++          if (trig_n < trig_max && (trig_frame == ~0u || g_ld_frames >= trig_frame + trig_gap)) {
++              for (u32 u = 0; u < 16; u++) {
++                  rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
++                  if (t.enabled && t.offset == (u32)trig) { trig_frame = g_ld_frames + 1; trig_n++; break; }
++              }
++          }
++          if (g_ld_frames != trig_frame) return;
++          s_ld_dd_trigger_frame = trig_frame;
++      } }
+     /* RSX_DRAW_CSV_FROM=<frame>: skip rows before that frame. Logging every
+      * draw from boot slows a 10-minute run to an hour. */
+     { static long from = -1;
+@@ -7923,6 +7943,7 @@ static void live_draw_csv_emit(u32 prim, u32 n_tri, const char* outcome)
+       if (dir == (const char*)-1) { dir = getenv("LD_DRAW_DUMP");
+           const char* e = getenv("LD_DRAW_DUMP_EVERY"); every = e ? (u32)atoi(e) : 10; if (!every) every = 10; }
+       if (frame != g_ld_frames) { frame = g_ld_frames; idx = 0; }
++      if (s_ld_dd_trigger_frame != ~0u) dumped_frame = s_ld_dd_trigger_frame;
+       if (dir && target < g.n_surfaces && (dumped_frame == ~0u || dumped_frame == frame) &&
+           (idx % every) == 0) {
+           dumped_frame = frame;
+@@ -7930,6 +7951,22 @@ static void live_draw_csv_emit(u32 prim, u32 n_tri, const char* outcome)
+           snprintf(path, sizeof(path), "%s\\draw_f%06u_i%04u_%08X.ppm", dir, frame, idx, surf);
+           ld_dump_surface_ppm(path, &g.surfaces[target]);
+       }
++      /* LD_DRAW_DUMP_SRC=1: also each render-target surface a draw of that
++       * frame samples (unit:offset in the name), as it is before the draw. */
++      { static int src = -1; if (src < 0) src = getenv("LD_DRAW_DUMP_SRC") != NULL;
++        if (dir && src && dumped_frame == frame) {
++            for (u32 u = 0; u < 16; u++) {
++                rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
++                if (!t.enabled) continue;
++                for (u32 i = 0; i < g.n_surfaces; i++) {
++                    if (g.surfaces[i].offset != t.offset || !g.surfaces[i].tex) continue;
++                    char path[MAX_PATH * 2];
++                    snprintf(path, sizeof(path), "%s\\draw_f%06u_i%04u_src%u_%08X.ppm", dir, frame, idx, u, t.offset);
++                    ld_dump_surface_ppm(path, &g.surfaces[i]);
++                    break;
++                }
++            }
++        } }
+       idx++; }
+     const u64 regs_hash = fnv1a(
+         g.rsx.regs, RSX_DSP_NUM_REGS * sizeof(g.rsx.regs[0]),
+@@ -7987,14 +8024,15 @@ static void live_draw_csv_emit(u32 prim, u32 n_tri, const char* outcome)
+     for (u32 u = 0; u < 16; u++) {
+         rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
+         if (t.enabled)
+-            fprintf(file, "%u:%u:%X:%02X:%ux%u ", u, t.location, t.offset,
+-                    t.format & 0xFF, t.width, t.height);
++            fprintf(file, "%u:%u:%X:%02X:%ux%u:w%X:r%X:f%X:b%X ", u, t.location, t.offset,
++                    t.format & 0xFF, t.width, t.height, t.wrap, t.remap, t.filter,
++                    t.border_color);
+     }
+     if (rs.blend_enable)
+         fprintf(file, "bf=%X/%X/%X/%X eq=%X/%X ", rs.sf_rgb, rs.df_rgb, rs.sf_a, rs.df_a,
+                 rs.eq_rgb, rs.eq_a);
+     fprintf(file, "at=%u/0x%X/0x%X ", rs.alpha_test_enable, rs.alpha_func, rs.alpha_ref_raw);
+-    fprintf(file, "sc=%08X/%08X ", rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL), rsx_dsp_reg(&g.rsx, M_SCISSOR_VERTICAL));
++    fprintf(file, "sc=%08X/%08X sf=%08X shc=%08X ", rsx_dsp_reg(&g.rsx, M_SCISSOR_HORIZONTAL), rsx_dsp_reg(&g.rsx, M_SCISSOR_VERTICAL), rsx_dsp_reg(&g.rsx, 0x0208u), rsx_dsp_reg(&g.rsx, 0x1D60u));
+     if (rs.stencil_enable)
+         fprintf(file, "st=%X/%X/%X/%X/%X/%X ref=%X ", rs.s_func, rs.s_func_mask, rs.s_write_mask, rs.s_fail, rs.s_zfail, rs.s_zpass, rsx_dsp_reg(&g.rsx, M_STENCIL_FUNC + 4));
+     /* Inline draws (HUD sprites): the largest vertex-colour alpha byte, attr 3
+@@ -10893,6 +10931,20 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+                 fclose(f);
+                 fprintf(stderr, "[live-draw] wrote %s\n", path);
+             }
++            /* LD_DUMP_ALPHA=1: the alpha channel of 8-bit targets as <path>.a.pgm. */
++            { static int da = -1; if (da < 0) da = getenv("LD_DUMP_ALPHA") != NULL;
++              if (da && !fp16 && f != g_ld_record_to) {
++                  char ap[MAX_PATH * 2]; snprintf(ap, sizeof ap, "%s.a.pgm", path);
++                  FILE* fa = fopen(ap, "wb");
++                  if (fa) {
++                      fprintf(fa, "P5\n%u %u\n255\n", width, height);
++                      for (u32 y = 0; y < height; y++) {
++                          const u8* row = px + (SIZE_T)y * pitch;
++                          for (u32 x = 0; x < width; x++) fputc(row[x * texel + 3], fa);
++                      }
++                      fclose(fa);
++                  }
++              } }
+         } else {
+             for (u32 y = 0; y < height; y++) {
+                 const u8* row = px + (SIZE_T)y * pitch;
+@@ -11779,6 +11831,22 @@ void rsx_live_draw_present(u32 buffer_id)
                      g_ld_stats.packets_movie + g_ld_stats.packets_queue_full ? "ok" : "BAD",
                  g_ld_stats.groups_seen == ld_groups_accounted() ? "ok" : "BAD",
                  g_ld_bind_white, g_ld_bind_real, g_ld_bind_surf);

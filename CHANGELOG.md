@@ -3,6 +3,16 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased
+
+- **Tried on real hardware** (2026-10-17): an Xbox pad and an arcade stick, every
+  input came through, the game ran smoothly.
+- Launcher: use it with a pad or stick (A / Cross accepts and searches, B / Circle
+  declines and cancels), only while the launcher is in front.
+- Sound comes back when a headset or speaker is plugged in later, unplugged or
+  switched; the game's timing never changes.
+- Host for friends no longer crashes on a German Windows (router lookup).
+
 ## v0.1.1-preview (2026-10-17)
 
 The first release on this page. Same as 0.1.0-preview (built and tested the

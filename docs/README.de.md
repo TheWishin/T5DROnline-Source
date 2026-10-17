@@ -40,7 +40,7 @@ Internet stehen noch aus.
 | Kämpfer, Stages | Werden richtig dargestellt. Gesichter und Bodenschatten sind behoben. Manche Figuren im Hintergrund können noch flach weiß aussehen. |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
-| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Echte Arcade-Sticks hat noch kein Mensch ausprobiert. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Netcode mit Verzögerung (2-3 Frames Input-Delay); Rollback wird gerade fertig. Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
@@ -131,8 +131,8 @@ Tastatur (Standard) und Xbox-Controller:
   ohne Fokus.
 - Tastatur und das erste Pad steuern beide Spieler 1.
 - PlayStation-Pads (DualShock 4, DualSense), Arcade-Sticks und Hitboxen werden
-  über DirectInput gelesen. Du musst nichts installieren. Noch nie von einem
-  Menschen mit echter Hardware getestet.
+  über DirectInput gelesen. Du musst nichts installieren. Ein Arcade-Stick wurde
+  mit echter Hardware getestet: alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
 - Um Tasten oder Knöpfe zu ändern, lege eine `controls.ini` an. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).

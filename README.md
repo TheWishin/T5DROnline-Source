@@ -39,7 +39,7 @@ clean PC and a match between two real PCs over the internet are still to come.
 | Fighters, stages | Render correctly. Faces and floor shadows are fixed. Some background figures may still look flat white. |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
 | Music, sound effects, movies | Work. |
-| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Real arcade sticks are not yet tried by a person. |
+| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
 | Online play | Works on one PC and through the public lobby server. Delay-based netcode (2-3 frames of input delay); rollback is being finished. Not yet played between two real PCs over the internet. |
@@ -126,8 +126,8 @@ Keyboard (default) and Xbox controller:
   when it does not.
 - Keyboard and the first pad both drive player 1.
 - PlayStation pads (DualShock 4, DualSense), arcade sticks and hitboxes are read
-  through DirectInput. Nothing to install. Not yet tried on real hardware by a
-  person.
+  through DirectInput. Nothing to install. An arcade stick was tried on real
+  hardware: every input came through.
 - Pads can be plugged in or out while the game runs.
 - In the launcher's Online tab a pad or stick runs the lobby without mouse or
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and

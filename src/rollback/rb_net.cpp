@@ -313,7 +313,9 @@ void scene_change(uint32_t nf)
     if (nf + g_warmup > g_lock_until) g_lock_until = nf + g_warmup;
     g_floor = nf;
     g_checked = std::max(g_checked, nf);
-    g_hash_sent = std::max(g_hash_sent, nf);
+    /* nf itself is not compared either: a side that did not jump hashed its
+     * boundary before the barrier's RNG reseed, one that jumped after it */
+    g_hash_sent = std::max(g_hash_sent, nf + 1);
     state_drop_logs();
     if (g_verbose) note("rbnet: scene barrier at %u: rollback floor raised", nf);
 }
@@ -481,6 +483,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
     /* final hashes: every input before g is confirmed and no rollback is pending */
     for (uint32_t g = std::max(g_hash_sent, g_floor); g <= upto && g <= f; g++) {
+        /* the boundary of a scene barrier is not compared: the side that got
+         * there first skips frames, the other runs them (a fight's loading
+         * ends frames apart on a game that has played and a fresh one) */
+        if (scene_flag && g == f) break;
         if (g_hash_tag[g % kHist] == g + 1) np::rb_push_hash(g, g_hash[g % kHist]);
         g_hash_sent = g + 1;
     }

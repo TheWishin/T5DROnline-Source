@@ -733,8 +733,8 @@ void fight_on_frame(uint32_t f)
         if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         write_hud(g_cfg, f);
-        g_intro_hold = session_netplay();                 /* held through the loading and intro, released at "Fight!" */
-        for (int p = 0; p < 2; p++) inject(p, g_intro_hold, 0);
+        for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
+        g_intro_hold = false;
         g_match++;
         g_over_clear = false;
         g_held = false;
@@ -755,8 +755,10 @@ void fight_on_frame(uint32_t f)
         {   /* the game mode's start, loading and intros (phase 0..12) take no input under netplay: held, released
              * for the fight (17). The rollback loop does the same for its intro frames; in lockstep a faster PC
              * otherwise runs the last loading frames before the scene barrier with input the other never sees */
+            /* only once lockstep runs: then inject() is this PC's exchanged input (before, it would be the
+             * hooks' own override of the game's pad read, which the release below could not clear) */
             const bool intro = rd32(kSelectState) <= 12;
-            if (!g_held && session_netplay() && intro != g_intro_hold) {
+            if (!g_held && session_netplay() && t5_netplay_lockstep_active() && intro != g_intro_hold) {
                 g_intro_hold = intro;
                 for (int p = 0; p < 2; p++) inject(p, intro, 0);
             }

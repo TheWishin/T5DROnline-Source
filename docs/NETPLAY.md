@@ -93,7 +93,22 @@ file with the reason as usual, then ends without closing the game
 (`t5_netplay_take_session_lost()` tells the direct-fight driver);
 `T5_NET_ON_LOST` and the exit codes are process mode only. A new session also
 waits for the last match's "decided" flag to clear before it watches for a
-result. The result file is replaced with retries (the launcher may have the
+result. Rollback (the default) runs in every session: it is offered in a
+persistent game too, and `rb::net::session_reset()` stops the loop and drops
+its undo logs between sessions (`state_reset`).
+
+**Direct fight: the fight's loading is not compared, and its end is a sync
+point.** From FIGHT START until the fight phase word (0x1008F070) passes 12
+(game mode start, loading, intros; also between rounds) the state hash is a
+fixed value on both sides (`kIntroHash`; `rb_net.cpp` the same): nothing there
+takes input, and the loading's progress depends on the game's caches -- a
+persistent game that has played loads faster than one that has just started
+(docs/DIRECTFIGHT.md). The first ring reset after a fight start (the end of its
+loading, in the intro) is a scene barrier under rollback as well (`g_await_load`;
+before, only the lockstep re-aligned it, and a played and a fresh game fought 2
+frames apart under rollback), and the first frame after a scene barrier is not
+compared under rollback (one side hashed it before the barrier's reseed, the
+other after). The result file is replaced with retries (the launcher may have the
 old one open at that moment; a single failed replace used to lose it).
 
 Testing on one PC: `tools/netplay_test.py` starts a host and a joiner (or one

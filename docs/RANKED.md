@@ -374,12 +374,10 @@ dumped at the start of round 1):
   profile or a text resource from T55DATA) is neither in the program's static
   data (0x10000000-0x1075FFFF) nor in 0x00480000-0x0FFFFFFF (almost all of that
   is unused; dumped at the same moment of another match).
-- Next step: dump 0x10760000-0x1FFFFFFF (where the game's own heap must be) at
-  character select, find the UTF-16 "Unknown" that
-  the text list is built from and the rank number next to it, then write both
-  from `T5_HUD_NAMES` / `T5_HUD_RANKS` at fight start. That hook belongs next to
-  the direct-fight code (it knows when the fight is set up); until then the
-  variables are ignored.
+- Solved (fight-polish): "Unknown" is message 0x104FF of the loaded text table
+  (ASCII, in the heap at 0x415xxxxx), shown when the side's VS custom-data name
+  is blank; the name and the rank byte live in those blocks, and the
+  direct-fight code writes both at fight start (docs/DIRECTFIGHT.md).
 
 ## What the game side still needs
 

@@ -159,6 +159,9 @@ static const Range kGameSkip[] = {
     { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC },
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
+    /* camera-relative copies, different between two PCs for 100 frames about 20 s
+     * into a match, the fight unchanged (t5_hooks.cpp kDefaultHashSkip, fight-polish) */
+    { 0x10099770u, 0x128 }, { 0x10099960u, 0x128 }, { 0x10090708u, 4 }, { 0x10090FD8u, 4 },
 };
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap)
 {

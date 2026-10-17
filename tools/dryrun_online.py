@@ -198,7 +198,7 @@ class Player:
                 log(f"{self.name}: match_result status={ev['status']} reason={ev.get('reason')} "
                     f"winner={ev['winner']} score={ev['score']} rematch_window={ev.get('rematch_window')} "
                     f"rating={ev.get('rating')}")
-                if self.a.new_opponent and len(self.results()) + 1 < self.a.matches:
+                if self.a.new_opponent and len(self.results()) < self.a.matches:   # (this result is in the list already)
                     # a new pairing for the next match: out of the set, back into the queue
                     try:
                         self.client.leave_set("next")
@@ -217,7 +217,13 @@ class Player:
                 log(f"{self.name}: [driver:{n['kind']}] {json.dumps({k: v for k, v in n.items() if k not in ('t', 'kind')}, default=str)[:200]}")
 
     def check_timing(self):
-        """Accept -> FIGHT START of this match (the status file's match counter moves past the base)."""
+        """Accept -> FIGHT START of this match (the status file's match counter moves past the base);
+        with --new-opponent, the queue again after a result."""
+        t = getattr(self, "requeue_at", None)
+        if t and time.time() >= t:
+            self.requeue_at = None
+            self.client.quick_match()
+            log(f"{self.name}: queued again (new opponent)")
         if self.t_accept is None:
             return
         s = self.status() or {}
@@ -226,11 +232,6 @@ class Player:
             self.timings.append(round(dt, 1))
             log(f"{self.name}: Accept -> FIGHT {dt:.1f} s (match #{s.get('match')}, driver mode {self.driver.mode})")
             self.t_accept = None
-        t = getattr(self, "requeue_at", None)
-        if t and time.time() >= t:
-            self.requeue_at = None
-            self.client.quick_match()
-            log(f"{self.name}: queued again (new opponent)")
 
     def bot(self):
         """Press random buttons like a person would, but only while the game is in a fight."""

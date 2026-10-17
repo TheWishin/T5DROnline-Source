@@ -164,6 +164,16 @@ A game that does not take a command within 10 s (90 s while it boots), or dies
 twice, is replaced by one process per opponent for the rest of the session
 (`match_driver.MatchDriver`, `game_mode` in online.json forces either).
 
+Measured through a lobby (fight-polish, `tools/dryrun_online.py --mode persistent
+--new-opponent`, a local lobby server, two guests and two games on this PC, every
+match a new pairing, quick match, rollback): **Accept to FIGHT 5.1-7.5 s** for
+the 2nd to 4th opponent (runs dry_persist, dry_persist2: 4.0, 4.5; 5.6, 5.1;
+7.0, 6.5; 7.5, 6.8 s), 19.6-20.6 s for the first match, which starts the game
+(a new process every time before, ~20 s). All 6 matches confirmed. The longer
+ones came right after the previous match: the game first skips that match's win
+pose and goes back to a fresh select screen (~5.5 s at 60 fps from "idle" to
+FIGHT, here at ~44 fps with both games on one PC).
+
 The host calls `T5_NET_PEER` while it waits and takes as its peer the first
 game whose HELLO carries a valid tag (on the relay path that comes from the
 relay); without a key only a HELLO from `T5_NET_PEER`'s IP counts. After the

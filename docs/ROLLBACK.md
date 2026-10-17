@@ -1505,3 +1505,35 @@ per frame in every window) is gone, the typical frame stays at 17 ms.
   without the old phase windows it hangs at a round end.
 - The draw cut leaves ~210 pages of render bookkeeping different after a
   re-simulation; none of it is hashed and no run showed a consequence.
+
+## Sessions in a persistent game (fight-polish, 2026-10-17)
+
+The launcher's persistent game (T5_CTL_DIR, docs/DIRECTFIGHT.md "Persistent
+game") plays every opponent in one process, a netplay session each. For the
+rollback loop that means:
+
+- `offered_by_env()` offers rollback in a persistent game (every session is a
+  direct fight; T5_RB_MODE=off keeps the lockstep), `rb_hooks.cpp` registers
+  its hooks and the write watch for it at boot, and the intro rule is on.
+- `rb::net::session_reset()` (called by the netplay hooks when a session ends
+  or the next begins): an unfinished re-simulation is abandoned (bypass, cut
+  and sound skip off), the loop's history and statistics go, `state_reset()`
+  drops the undo logs and brings the shadow up to date (frames count from 0
+  again in the next session); `start()` then takes over as in a first match.
+- The end of a fight's loading (the first ring reset after a fight start) is
+  a scene barrier in rollback mode too: a game that has played ends its loading
+  frames apart from a fresh one (its caches), and without the barrier the two
+  fought 2 frames apart (4,228 mismatching frames, build/dp run rb_ps1). It
+  lies in the intro, where both sides send neutral input, so no rollback
+  crosses it.
+- In direct fight the frames of the game mode's start, loading and intros
+  (phase 0..12) push a fixed hash, and `scene_change(nf)` also skips frame nf
+  (the side that did not jump hashed it before the barrier's RNG reseed).
+- `kGameSkip` leaves out two camera-relative float blocks (0x10099770,
+  0x10099960, 0x128 bytes each) and 0x10090708 / 0x10090FD8: they differ
+  between two PCs for exactly 100 frames about 20 s into a match, the fight
+  unchanged (on main as well; docs/DIRECTFIGHT.md "Known transient mismatches").
+
+Result: a persistent game against a freshly started one, then two more new
+sessions, under rollback: 5 of 5 matches confirmed, 0 mismatching frames, up to
+19 rollbacks per match (build/dp run rb_ps5).

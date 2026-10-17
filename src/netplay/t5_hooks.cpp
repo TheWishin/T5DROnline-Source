@@ -211,6 +211,7 @@ int  g_pads = 2;          /* T5_NET_PADS: pads reported connected (2 for netplay
  * hooks are in from boot without a session; sessions come and go with the
  * control channel (t5_netplay_session_begin/end at the end of this file). */
 bool g_persistent = false;
+bool g_await_load = false;  /* rollback: the next ring reset ends a fight's loading and is a sync point (on_frame_start) */
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
 std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
 void persistent_lost(const char* reason);
@@ -898,7 +899,15 @@ void on_frame_start(ppu_context* ctx)
          * runs d50/d150b, desync from frame 920 after the reset at 919, the
          * whole Mersenne Twister state differing. Only the explicit
          * t5_netplay_start() (the next match) stays a sync point. */
-        const bool scene = resync;
+        /* One exception (fight-polish): the end of a fight's loading -- the first
+         * ring reset after a fight start, in the intro, where both sides send
+         * neutral input and nothing is predicted wrong -- is a sync point here
+         * too. How long the loading takes depends on the game's caches: a game
+         * that has played already ends it frames earlier than one that has just
+         * started (persistent game, a new opponent: 2 frames, run rb_ps1), and
+         * without the barrier the two then fight frames apart. */
+        const bool load_end = g_await_load && !rb::net::bypass() && rd32(kRingResetFlag) != 0;
+        const bool scene = resync || load_end;
         np::PadInput in[2];
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (run == f && scene) {
@@ -911,7 +920,8 @@ void on_frame_start(ppu_context* ctx)
             g_scenes++;
             reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
             apply_rounds();
-            if (resync) match_begins(nf);
+            if (resync) { match_begins(nf); g_await_load = g_directfight; }
+            else if (load_end) { g_await_load = false; np::note("frame %u: the fight is loaded (scene barrier, continuing at %u)", f, nf); }
             rb::net::scene_change(nf);
             char t[64];
             snprintf(t, sizeof t, "scene %u", g_scenes);
@@ -962,6 +972,7 @@ void on_frame_start(ppu_context* ctx)
          * (0xAE6C8: sys_time_get_current_time -> init_by_array). Reseed it
          * with the seed both peers agreed on, before frame 0 runs. */
         np::connect();
+        g_await_load = g_directfight;   /* the fight's loading ends with a ring reset: a sync point under rollback too */
         const uint32_t seed = np::match_seed();
         reseed(seed);
         np::note("game RNGs reseeded with 0x%08X", seed);

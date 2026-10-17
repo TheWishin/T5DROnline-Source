@@ -48,7 +48,9 @@ T5_CTL_DIR=<dir>                                     persistent game: every matc
   once consumed. Write it atomically (write to a temp file, rename).
 - Status file: `{"state": ..., "frame": N, "match": k, "p1", "p2", "stage",
   "rounds", "last_winner", "last_score"}` with state one of `title`, `select`,
-  `stage`, `loading`, `fight`, `over`, `neutral`. `neutral` = at character
+  `stage`, `loading`, `fight`, `over`, `neutral` (and in a persistent game
+  `reset`: back to the title for a fresh select screen, `leave`: out of a
+  fight whose session ended). `neutral` = at character
   select, waiting for `T5_FIGHT_FILE`. `fight` with `match` = k means match k is
   running.
 - Result file: written by netplay when netplay is on (with `match`, `desync`,
@@ -139,6 +141,21 @@ param)`; the factory is `func_0025E6AC`.
    record states 3) the next fight is read from the file or the state is
    `neutral`.
 
+Select grid (cell -> character), measured by walking the cursor and checked
+against the screen: cells 0-11 middle row, 12-23 bottom row, 24-34 top row
+(column = cell - 24; cell 24, Jinpachi's slot, is skipped by the cursor, so
+Jinpachi is not selectable here yet). UP/DOWN cycle top -> middle -> bottom and
+skip a row with no cell in that column.
+
+```
+top    : --  Eddy Baek Mokujin Feng Raven Asuka DevilJin Ganryu Wang ArmorKing
+middle : Anna Marduk Law Hwoarang King Lili Dragunov Heihachi Christie Paul Jack-5 Bruce
+bottom : RogerJr Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma
+```
+
+Panda has no cell (Kuma's cell with the alternate confirm button, `T5_DF_ALT_BUTTON`,
+default CIRCLE -- unverified).
+
 ## After the match: no input reaches the select screen
 
 Release dry run finding: mashing buttons through the deciding KO started the
@@ -179,25 +196,20 @@ buttons and directions the whole time with `--mash`, one round per match,
 the rematch line written 25 s after the results like players clicking Rematch
 late, `--rematch-wait 25`):
 
-| Build | Matches | Next fight started | Mismatching frames |
+| Build, mode | Matches | Next fight started | Mismatching frames |
 |---|---|---|---|
-| `T5_DF_HOLD=0` (the old behaviour) | 2 | match 2 never started ("fight requested but the game is in mode 4"; the game's own battle) | 1,848 by frame 9599 |
-| fix (runs/rm1, ds1, rm2) | 3 + 3 + 3 | every time, 3.0-4.5 s from the line to FIGHT START | 0 in the matches (rm2: the transient 100-frame one of "Known transient mismatches") |
+| `T5_DF_HOLD=0` (the old behaviour), lockstep (run rm0b_nohold) | 2 | match 2 never started ("fight requested but the game is in mode 4": the game's own battle) | 1,848 by frame 9599 (the battle's own random stage) |
+| fix, rollback (the default; run rb_mash) | 4 | every time, 2.0-3.1 s from the line to FIGHT START | 0, results confirmed on both sides |
+| fix, lockstep `T5_RB_MODE=off` (runs final_mash, ls_mash) | 4 + 3 | every time, 2.0-3.4 s | 0 (14,399 lockstep frames in final_mash) |
 
-Select grid (cell -> character), measured by walking the cursor and checked
-against the screen: cells 0-11 middle row, 12-23 bottom row, 24-34 top row
-(column = cell - 24; cell 24, Jinpachi's slot, is skipped by the cursor, so
-Jinpachi is not selectable here yet). UP/DOWN cycle top -> middle -> bottom and
-skip a row with no cell in that column.
-
-```
-top    : --  Eddy Baek Mokujin Feng Raven Asuka DevilJin Ganryu Wang ArmorKing
-middle : Anna Marduk Law Hwoarang King Lili Dragunov Heihachi Christie Paul Jack-5 Bruce
-bottom : RogerJr Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma
-```
-
-Panda has no cell (Kuma's cell with the alternate confirm button, `T5_DF_ALT_BUTTON`,
-default CIRCLE -- unverified).
+**The fight's loading and intros take no input either** under netplay: from
+FIGHT START until the fight phase word 0x1008F070 passes 12 (7 = game mode
+start, 8-12 loading and intros, 17 = fighting; again between rounds) the
+driver holds this PC's player, once lockstep runs (before that the hooks'
+override of the game's pad read is in use, and FIGHT START clears it). The
+rollback loop sends neutral input there by itself (its intro rule); in lockstep
+a faster PC otherwise runs the last loading frames before the scene barrier
+with input the other PC never sees.
 
 ## Names and ranks in the HUD
 
@@ -257,13 +269,15 @@ otherwise.
 How a new opponent is played:
 
 1. **"idle"** (the launcher sends it when a match with someone else is found):
-   the netplay session ends (`t5_netplay_session_end`: BYE, socket closed), the
-   pads are held, and the driver goes back to the **title** (mode request 1
-   through the game's own 0x25DA54, from a live select screen; from the win
-   pose it first skips it as above) and calls the start-VS routine again, as at
-   boot: a fresh select screen whatever the last opponent left behind (battle
-   config, VS counters, cursor positions). This happens while the players
-   accept and the lobby punches, so it costs nothing later.
+   the netplay session ends (`t5_netplay_session_end`: BYE, socket closed; the
+   rollback loop stops and drops its undo logs), the pads are held, and the
+   driver goes back to the **title** (mode request 1 through the game's own
+   0x25DA54, from a live select screen; from the win pose it first skips it as
+   above). There it puts the match-state areas back as they were when this game
+   first reached the title at boot (next paragraph) and calls the start-VS
+   routine again: a fresh select screen whatever the last opponent left behind
+   (battle config, VS counters, cursor positions). This happens while the
+   players accept and the lobby punches.
 2. **"fight"** for a new session: its `env` goes to the session environment
    overlay (`t5_env_overlay_*`, src/netplay/netplay_core.cpp) -- not to the
    process environment: the runtime caches every `getenv()` value for good
@@ -275,26 +289,56 @@ How a new opponent is played:
    frame 0: frame counters, input ring and random seeds set as at a first
    start; the keyread thread stays parked from the first session on, and
    between sessions the main thread keeps running its tick with neutral pads.
-4. The result file is written as before. A **rematch** is a "fight" with
+4. Under rollback (the default) the loop takes over in every session as in
+   a first match (it is offered in a persistent game too: `rb_net.cpp`
+   `offered_by_env`, `session_reset`).
+5. The result file is written as before. A **rematch** is a "fight" with
    `"rematch": true` (or the same `T5_NET_MODE/PORT/PEER/KEY/SEED`) while the
    session runs: the next match in it, as a `T5_FIGHT_FILE` line in process mode.
-5. A session that ends by itself (peer lost, no connection, other build:
+6. A session that ends by itself (peer lost, no connection, other build:
    `T5_NET_ON_LOST` does not apply) writes its result file with the reason as
    before, but the game stays open: a fight is left with mode request 6, the
    driver goes back to a fresh select screen, `state.json` says `error` with
    the reason until the next command. Exit codes 3/4/5 are process mode only.
 
-Measured (`tools/fight_flow_test.py --flow persistent`, two games on this PC,
-"idle" then "fight" 0.3-1 s apart, both mashing): command to FIGHT START
-4.3-6.7 s for a new session (runs ps2/ps3), against ~20 s for a new process;
-every match confirmed with equal hashes, 0 mismatching frames. A game that has
-played several sessions also meets a freshly started one in sync (run ps4,
-`--fresh-at`). Accept-to-FIGHT through the lobby: docs/ONLINE.md.
+**A game that has played meets a fresh one.** The new opponent's game may have
+just started. Two things differ then, and both had to go:
+
+- *Leftovers.* A match leaves values in the hashed match state (the fight
+  block, the unused third/fourth fighter blocks, effect records) that a game
+  that has never fought has as zeros, and the next fight does not overwrite
+  all of them: 1,662 of 1,662 frames mismatching (run dm2, lockstep; the fight
+  itself the same). The four game areas of the netplay hash
+  (0x1008E000+0x4000, 0x10099600+0x600, 0x100A0900+0x200, 0x100A3B00+0x300;
+  `T5_DF_FRESH_RANGES`, `T5_DF_FRESH=0` off) are copied when the game first
+  reaches the title at boot and put back at every reset to the title (3.3 KB
+  differed after one match). From there both games run the same title ->
+  start VS -> select -> fight path from the same bytes.
+- *Loading time.* The played game loads the next fight from its caches and
+  ends the loading a few frames earlier or later than a fresh one. In lockstep
+  the loading's scene change is a sync point anyway; under rollback it was not
+  (ring resets are ordinary state there), and the two games then fought
+  2 frames apart: 4,228 mismatching frames (run rb_ps1). Now the first ring
+  reset after a fight start -- the end of its loading, in the intro, where
+  nothing is predicted wrong -- is a sync point under rollback too, and the
+  frames of the game mode's start, loading and intros (phase 0..12) are not
+  hash-compared in direct fight (both sides send a fixed value; a difference
+  that lasts reaches the fight, where every frame is compared), nor is the
+  first frame after a scene barrier (the side that did not jump hashed it
+  before the barrier's reseed). `t5_hooks.cpp` `g_await_load`, `kIntroHash`;
+  `rb_net.cpp` `scene_change`.
+
+Measured (`tools/fight_flow_test.py --flow persistent --fresh-at 2 --mash`,
+two games on this PC, "idle" then "fight" 0.3-1 s apart): rollback, 5 matches
+(run rb_ps5): every one confirmed, equal hashes, 0 mismatching frames, up to 19
+rollbacks per match, command to FIGHT START 4.5-8.0 s; lockstep
+`T5_RB_MODE=off`, 4 matches (run ls_ps2): the same, 4.0-6.3 s. Against ~19 s for
+a new process. Through the lobby (Accept to FIGHT): docs/ONLINE.md.
 
 Limits: `PS3_FIXED_TIME` cannot change after boot (the runtime reads it once);
-a persistent game runs on its real clock (no effect on the fight state seen so
-far). The rollback loop (`T5_RB_MODE=net`, developer builds) is process mode
-only: it is negotiated at boot.
+a persistent game runs on its real clock (no effect on the fight state seen).
+A peer must run the same build (the build id check makes sure): the end of the
+loading is a sync point only from this build on.
 
 ## Known transient mismatches
 
@@ -307,16 +351,20 @@ neither changed the fight (the same hash again afterwards, the same result).
   the match), in different fights, then everything is equal again. The source:
   the camera floats around 0x10053780 (not hashed) already differ between the
   two PCs before; at that moment 0x10053590 and these blocks get values from
-  them. Main shows it as often as this branch (A/B with two pairs running at
-  once, the same scripted match: main 2 of 5 runs with 100 mismatching frames,
-  fight-polish 0 of 5; earlier 2 of ~11 on fight-polish). Since any mismatch
-  voids a ranked match, these words are now left out of the state hash
-  (`kDefaultHashSkip` in src/netplay/t5_hooks.cpp).
+  them. Main has it too (A/B with two pairs running at once, the same scripted
+  match, lockstep: main 3 of 6 runs with 100 mismatching frames, fight-polish
+  0 of 6; earlier 2 of ~11 on fight-polish). Since any mismatch voids a ranked
+  match, these words are now left out of the state hash (`kDefaultHashSkip`
+  in src/netplay/t5_hooks.cpp, `kGameSkip` in src/rollback/rb_state.cpp).
 - **Pool addresses.** 0x100911D0, 0x10091AA0, 0x10091AB8-0x10091B07: addresses
   the animation update takes from a pool at a match intro; they differ when the
-  pool's history differs (run ds1, a rematch). The rollback10 branch leaves
-  them out of the hash (docs/ROLLBACK.md section 20); until that is merged the
-  tests here pass the same list in `T5_NET_HASH_SKIP`.
+  pool's history differs (run ds1, a rematch). Left out of the hash since
+  rollback phase 10 (docs/ROLLBACK.md section 20).
+- **Boot-mode lockstep menus** (`tools/netplay_test.py --pair`, no direct
+  fight): the attract mode's Versus setup block (0x1008EBA8, 0x100996B4..D4)
+  one frame apart at frame ~4465-4475, then every frame mismatching -- the known
+  menu-transition limit of NETPLAY.md, on main (1 of 3 runs) as on this branch
+  (2 of 4). Online play does not go through the menus (direct fight).
 
 ## Character ids
 
@@ -371,6 +419,18 @@ host/join pair started with `T5_NET_START=external`.
   `cellSysutilRegisterCallback` HLE override so it never shares a NID with
   netplay's `cellPadInit` override), mode manager finder, pad injection,
   diagnostics.
-- `src/directfight/df_fight.cpp`: the match driver described above.
+- `src/directfight/df_fight.cpp`: the match driver described above, the pad
+  hold after the KO and through the intros, the HUD identity, the persistent
+  game's sessions and boot-state areas.
+- `src/directfight/df_ctl.cpp`: the control channel of a persistent game
+  (cmd.json / state.json, a small JSON reader, the session environment).
 - `src/netplay/t5_hooks.cpp`: `t5_netplay_inject(port, on, buttons)` and
-  `t5_netplay_enabled()` (new), `t5_netplay_start()` (netplay's).
+  `t5_netplay_enabled()`, `t5_netplay_start()` (netplay's); for a persistent
+  game `t5_netplay_session_begin/end`, `t5_netplay_take_session_lost`.
+- `src/netplay/netplay_core.cpp`: `np::session_begin/end` (the per-session
+  state in one struct), the session environment overlay `t5_env*`.
+- `src/rollback/rb_net.cpp`, `rb_state.cpp`: `session_reset`, `state_reset`.
+- Tests: `tools/fight_flow_test.py` (pairs, many matches, rematch or
+  persistent flow, `--mash`, `--fresh-at`), `tools/dryrun_online.py --mode
+  persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),
+  `lobby/tests/test_driver_persistent.py`.

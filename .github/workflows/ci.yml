@@ -75,7 +75,9 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check --quiet pycryptodome pillow
           if ($LASTEXITCODE) { exit 1 }
-          python -m unittest discover -s tests -v
+          # Same as `python -m unittest discover -s tests -v`; also writes every failed test
+          # as an ::error annotation (the REST API serves those without a login).
+          python tests/ci_unittest.py -v
 
       # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, ranked
       # play and match integrity, the launcher's Online tab, the match driver with
@@ -92,7 +94,7 @@ jobs:
           for f in test_*.py; do
             m="${f%.py}"
             echo "::group::$m"
-            rc=0; python -m unittest -v "$m" || rc=$?
+            rc=0; python ../../tests/ci_unittest.py -v "$m" || rc=$?
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then
               if [ "$m" = "$KNOWN_CRASH" ]; then

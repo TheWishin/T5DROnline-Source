@@ -475,3 +475,46 @@ ms per rollback, stalls, frames run on predicted input, desync mismatches.
 `tools/rollback_net_test.py --rtt 100 --loss 5 --delay 2` runs a host and a
 joiner on one PC through a UDP proxy that adds the latency (+-jitter) and
 loss, with varied scripted attacks on both sides from the fight on.
+
+**Results** (one PC, 15-20 game instances of other agents running at the
+same time, so 15-18 fps; delay 2, prediction window 8; menus in np's lockstep,
+rollback from lockstep frame 3400 -- runs under build/rb2/netruns/):
+
+| | n1: RTT 0 | n3: RTT 150 ms, +-5 ms jitter, 2 % loss |
+|---|---|---|
+| joiner, per 300 frames | 22-39 rollbacks, 54-90 frames re-simulated, depth 1-7 (mostly 2-3) | 38-40 rollbacks, 107-178 frames re-simulated, depth 1-8 (mostly 3-5) |
+| ms per rollback (restore + resim, loaded machine) | 27-44 ms (max 121) | 26-63 ms (max 129) |
+| stalls | 1 (104 ms) | 0, plus one 396 ms wait at a scene change |
+| host | 0-1 rollbacks, 0-4 frames on predicted input | 0 rollbacks |
+
+Both sides stayed at the same fps as in lockstep; no crash, no failed
+restore. The asymmetry is expected without GGPO's time synchronisation: the
+joiner runs ahead by the input delay, so it predicts every host input and
+takes every rollback while the host always has the joiner's input in time.
+The frame-advantage balancing (the side that is ahead sleeps a frame now
+and then) is the next step. Open: the n2 run (RTT 100 ms) never got past the
+handshake (the joiner sent 3 packets; a port or proxy issue of the test
+harness, not seen at 0 or 150 ms); the desync counters of these runs are
+meaningless because np's lockstep diverged in the menus before the fight
+(its known menu non-determinism under load, frame 2211-2217 in every run),
+so the gameplay-hash agreement between two peers across rollbacks is
+verified in-process only (m1/c7), not yet peer-to-peer.
+
+## What is left
+
+- Time sync between the peers (frame advantage), and a quiet-machine
+  measurement of the re-simulated frame (27.7 M cycles under load).
+- Rollbacks across round start/end and KO slow-motion were only exercised
+  incidentally (the scripted fights ran through rounds in m1/c7 with
+  rollbacks every 40 frames and 0 gameplay mismatches, and n3 stalled
+  correctly at a scene change); a targeted test of the barrier rule is
+  still to do. Rule as implemented: a scene change (input-ring reset) is a
+  barrier -- all inputs before it must be confirmed, it is a lockstep sync
+  point, no rollback reaches back before it.
+- The sound skip's audible effect (AUDIO_WAV) and the other calls gated by
+  the same word.
+- The two draw-thread waits in the present (1.5 + 0.7 ms per re-simulated
+  frame) and the sim's own cost, which only the runtime's speed work
+  (`cpu`/`pf`) lowers.
+- Direct-fight integration: `t5_netplay_start()` works unchanged (rollback
+  from frame 0 with `T5_RB_NET_START=0`), untested.

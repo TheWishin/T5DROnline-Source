@@ -43,19 +43,31 @@ lobby/
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
     tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
     cli.py        python -m t5lobby.cli: the same from a console
+    servers.py    servers.json: the launcher's server list, typed addresses (host:port#fingerprint)
+    portmap.py    opt-in UPnP IGD / NAT-PMP port forwarding for "Host for friends"
     server/       python -m t5lobby.server
-      lobby.py    players, rooms, queues, challenges, matches, results
+      lobby.py    players, rooms, queues, challenges, matches, results, bans, status numbers
       udp.py      UDP ping, endpoint registration, NAT probe, relay
-      store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history
-      accounts_admin.py  password reset / recovery codes for the server's host
+      store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans
+      admin.py    python -m t5lobby.server.admin: status, users, bans, passwords, recovery codes,
+                  backups, certificates (accounts_admin.py: the account commands alone)
+      status.py   local HTTP /health, /status, /metrics
+      backup.py   online SQLite backups, restore
+      selfsigned.py  self-signed TLS certificate with the standard library (no openssl)
+      host.py     python -m t5lobby.server.host: "Host for friends" on a player's PC
       config.py   T5L_* environment variables
       ratelimit.py token buckets, temporary bans
-  tests/          ~100 tests: server + simulated clients on localhost, the Online tab, the stub game
+  run.py          python lobby/run.py server|host|admin -- works with the release's isolated Python
+  servers.json    the servers the release lists (a placeholder until the public server exists)
+  Dockerfile, compose.yaml, deploy/   packaging: Docker, systemd + install.sh, Windows (docs/HOSTING.md)
+  tests/          ~140 tests: server + simulated clients on localhost, the Online tab, the stub game,
+                  hosting and operations
   tools/
     two_players.py   two players on one PC: lobby -> punch -> two game instances
     ranked_session.py  two ranked accounts on one PC through the launcher's glue (stub or real game)
     stub_game.py     stand-in for t5dr.exe: netplay handshake, result file, netplay log lines
     relay_latency.py what the relay adds to the round trip
+    load_test.py     what N lobby players and K relayed matches cost the server
 ```
 
 ```
@@ -247,7 +259,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}` | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `["delta"]`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -273,6 +285,7 @@ Server to client (pushed):
 | t | fields |
 |---|---|
 | `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]`, `rooms [{id, name, owner, members, ranked, build, status}]`, `queue {quick, ranked}` |
+| `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
 | `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout` |
@@ -289,6 +302,13 @@ Server to client (pushed):
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
 `auth_failed`, `name_taken`, `bad_name`, `not_allowed`, `not_found`, `busy`,
 `rate_limited`, `server_full`, `bad_state`.
+
+**Lobby list updates.** At most every 0.3 s (`T5L_LOBBY_INTERVAL`), when something changed. A
+client that announced `caps: ["delta"]` (this library does) gets the whole list after login or
+after asking (`lobby`), then deltas; others get the whole list every time (the first 300 players
+and 100 rooms). Whole lists for everyone cost O(players^2) -- 46 Mbit/s at 100 players before
+the ranked entries grew; deltas cut that 26x (docs/HOSTING.md, "Resource estimate"). The `rtt` shown in the list only changes when
+a player's ping moves by more than 5 ms or 20%; matchmaking uses the exact value.
 
 The client library adds its own events: `match_start` carries a `ticket`
 (MatchTicket); `nat_status {phase, text}` for the UI; `disconnected {reason}`.
@@ -349,12 +369,24 @@ Answers are never larger than requests (no amplification). The game's packets
   tampering: a modified client can claim any build.
 - **Results are self-reported**: two colluding accounts can trade wins. The
   reports, the match path and RTT are kept in the database for review.
+- **Moderation**: `python -m t5lobby.server.admin` bans accounts (the reason is shown only after
+  the correct password or saved login) and addresses/networks, resets passwords, recovery codes
+  and ratings, ends remembered logins, purges old guest records and inactive accounts. Bans take
+  effect within 5 s (the player is kicked). `T5L_NAME_BLOCKLIST` adds words to the reserved names.
+- **More limits**: a client that stops reading is dropped once 1 MB is queued for it; UDP control
+  packets are also capped for all senders together (5000/s), so spoofed pings cannot be reflected
+  at many victims. The public-server profile and the reasons: docs/HOSTING.md.
 
 ## Running your own server
 
+**[docs/HOSTING.md](HOSTING.md)** covers it: hosting options and costs, a 15-minute VPS setup
+(`lobby/deploy/linux/install.sh`), Docker (`lobby/compose.yaml`), TLS with Let's Encrypt or a
+pinned self-signed certificate, `servers.json`, "Host for friends" on Windows, the admin tool,
+backups, monitoring, firewall rules and measured resource use. The short version:
+
 A friend group needs one machine everybody can reach: a cheap VPS (any Linux
 with Python 3.10+, 1 CPU and 512 MB are plenty) or one player's PC with ports
-forwarded on the router.
+forwarded on the router (the launcher's **Host for friends** sets that up, TLS included).
 
 ```sh
 # copy the lobby/ folder over (tests/ and tools/ are optional), then:
@@ -392,43 +424,30 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 20, 3, 6, 90 s | |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |
+| `T5L_LOG_FILE`, `T5L_LOG_MAX_MB`, `T5L_LOG_BACKUPS` | , `10`, `5` | also log to a file, rotated (Windows hosts) |
+| `T5L_CONN_RATE` / `T5L_CONN_BURST` | `0.5` / `10` | new connections per address per second, after a burst |
+| `T5L_MAX_PENDING_KB` | `1024` | unread output per connection before it is dropped |
+| `T5L_LOBBY_INTERVAL` | `0.3` | seconds between lobby list updates (at most) |
+| `T5L_UDP_CTL_PPS` | `5000` | server-addressed UDP packets per second, all senders together |
+| `T5L_NAME_BLOCKLIST` | | file with extra words refused in new names |
+| `T5L_STATUS_HOST` / `T5L_STATUS_PORT` | `127.0.0.1` / `7780` | HTTP /health, /status, /metrics; `0` = off |
+| `T5L_STATUS_LOG_MINUTES` | `15` | a one-line status in the log |
+| `T5L_BACKUP_DIR`, `T5L_BACKUP_HOURS`, `T5L_BACKUP_KEEP` | , `24`, `14` | automatic online database backups |
+| `T5L_ADMIN_POLL` | `5` | seconds until bans made with the admin tool take effect |
 
-TLS with a self-signed certificate (no domain or CA needed):
-
-```sh
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=t5lobby \
-        -keyout key.pem -out cert.pem
-openssl x509 -in cert.pem -noout -fingerprint -sha256   # give this to your friends
-T5L_TLS_CERT=cert.pem T5L_TLS_KEY=key.pem python3 -m t5lobby.server
-```
-
-systemd unit for a VPS:
-
-```ini
-[Unit]
-Description=T5DR lobby
-After=network-online.target
-
-[Service]
-User=t5lobby
-WorkingDirectory=/opt/t5lobby/lobby
-Environment=T5L_DB=/var/lib/t5lobby/t5lobby.db
-ExecStart=/usr/bin/python3 -m t5lobby.server
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
+TLS: a self-signed certificate needs no domain, CA or openssl
+(`python -m t5lobby.server.admin gen-cert --dir tls` prints the fingerprint players pin); with a
+domain, Let's Encrypt via `lobby/deploy/linux/install.sh --domain`. The server reloads renewed
+certificate files by itself. systemd unit, Docker image, Windows scheduled task: docs/HOSTING.md.
 
 Load: each relayed match costs about 2 x 85 kbit/s of bandwidth; direct
-matches cost the server nothing after the handshake. The lobby list is sent
-whole on every change, which is fine for a friend group (tens of players) but
-not for thousands.
+matches cost the server nothing after the handshake. The lobby list costs
+~25 kbit/s per player at 100 players (deltas). Measured numbers: docs/HOSTING.md.
 
 ## Tests, demo, measurements
 
 ```sh
-python -m unittest discover -s lobby/tests          # ~100 tests, ~2 min, all on localhost
+python -m unittest discover -s lobby/tests          # ~140 tests, ~3 min, all on localhost
 ```
 
 Unit: Glicko-2 against the paper's example, wire format, delay formula, token
@@ -448,7 +467,12 @@ challenge, room); build allow-list; protocol mismatch; flooding -> rate limit
 ping rate limit and no amplification; ranked matching by rating window and
 ping; socket handover into a child process; TLS with a pinned self-signed
 certificate (wrong pin refused); the launcher's Online tab driven through a
-whole match.
+whole match. Hosting (`test_hosting.py`): admin tool (bans and kicks, saved logins ended by a
+ban, address bans, password, recovery-code and rating resets, purges), status/health/metrics,
+online and scheduled backups and restore, upgrade of an old database, lobby deltas against the
+server's view and for old clients, the pure-Python certificate checked with openssl, certificate
+reload, servers.json, Host for friends end to end, UPnP/NAT-PMP against fake routers; the Online
+tab's Host for friends button.
 
 **Two players on one PC** (`lobby/tools/two_players.py`): starts a local
 server, logs in two guests, quick match, then starts two games with the
@@ -500,10 +524,13 @@ zip carries `lobby/t5lobby/` (tools/package_release.py).
 - Netplay side of the handover extras above: socket adoption (everything else is done).
 - A new opponent without restarting the game: the control channel in RANKED.md, for direct-fight.
 - TURN-style relay on a separate host, or several relay regions; today the relay is the lobby server.
-- Port prediction for symmetric NATs; UPnP/NAT-PMP port mapping on the player's router; IPv6.
-- Lobby list deltas instead of whole snapshots (only matters past ~100 players).
-- Moderation: admin commands (kick, ban, reset rating), reporting cheaters (password change and
-  recovery without e-mail, reserved names: RANKED.md).
+- Port prediction for symmetric NATs; IPv6. (UPnP/NAT-PMP exists for "Host for friends" only,
+  opt-in, and is so far tested against fake routers only.)
+- The lobby list still goes to everybody (deltas made it ~26x cheaper); past several hundred
+  players it needs paging or interest filtering.
+- Moderation beyond the admin tool (docs/HOSTING.md): in-game reporting of cheaters, a kick
+  without a ban.
+- Relay sessions do not survive a server restart (relayed games in progress break).
 - Spectating, replays, region tags, friends list.
 - The server has not been run on a real VPS or across two real NATs yet; everything above was
   measured on localhost.

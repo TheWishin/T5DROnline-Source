@@ -79,6 +79,8 @@ class LobbyClient:
         self.players = []
         self.rooms = []
         self.queue_sizes = {}
+        self._pmap = {}              # id -> player / room: what lobby_delta updates are merged into
+        self._rmap = {}
         self.match = None            # dict: the current match (from match_found, updated as it goes)
         self.ticket = None           # the last MatchTicket
         self.server_ip = None
@@ -169,7 +171,8 @@ class LobbyClient:
         self._tasks.append(reader_task)
         try:
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
-                                                "client": CLIENT_NAME, "build": self.build.as_wire()})
+                                                "client": CLIENT_NAME, "build": self.build.as_wire(),
+                                                "caps": ["delta"]})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -287,6 +290,8 @@ class LobbyClient:
         self.players = msg.get("players", [])
         self.rooms = msg.get("rooms", [])
         self.queue_sizes = msg.get("queue", {})
+        self._pmap = {p["id"]: p for p in self.players}
+        self._rmap = {r["id"]: r for r in self.rooms}
         if self.me:
             for p in self.players:
                 if p["id"] == self.me["id"]:
@@ -294,6 +299,24 @@ class LobbyClient:
 
     async def _on_kicked(self, msg):
         self._kicked = True
+
+    async def _on_lobby_delta(self, msg):
+        """What changed since the last update (the server sends whole lists only now and then):
+        merge it and hand the UI a complete lobby_state, exactly as before."""
+        pmap, rmap = self._pmap, self._rmap
+        for pid in msg.get("gone", ()):
+            pmap.pop(pid, None)
+        for p in msg.get("players", ()):
+            pmap[p["id"]] = p
+        for rid in msg.get("rooms_gone", ()):
+            rmap.pop(rid, None)
+        for r in msg.get("rooms", ()):
+            rmap[r["id"]] = r
+        full = {"t": "lobby_state", "players": list(pmap.values()), "rooms": list(rmap.values()),
+                "queue": msg.get("queue", self.queue_sizes)}
+        await self._on_lobby_state(full)
+        self._emit(full)
+        return False
 
     async def _on_match_found(self, msg):
         self.match = dict(msg, state="ready")

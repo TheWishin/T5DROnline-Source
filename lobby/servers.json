@@ -1,0 +1,16 @@
+{
+  "format": "t5dr-servers/1",
+  "servers": [
+    {
+      "name": "T5DR Online",
+      "host": "",
+      "port": 7781,
+      "tls": "ca",
+      "fingerprint": "",
+      "udp_ports": [7781, 7782],
+      "region": "",
+      "note": "Placeholder for the public server: fill in host (and tls/fingerprint) once it runs. Entries with an empty host are ignored. See docs/HOSTING.md.",
+      "default": true
+    }
+  ]
+}

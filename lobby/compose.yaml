@@ -1,0 +1,46 @@
+# T5DR lobby server with Docker Compose.
+#
+#   cd lobby
+#   cp deploy/t5lobby.env.example t5lobby.env     # edit: MOTD, accounts/guests, TLS paths
+#   docker compose up -d --build
+#   docker compose exec lobby t5lobby-admin status
+#
+# Data (database, backups) lives in the named volume "t5lobby-data" (/data in the container).
+# TLS: put cert.pem/key.pem in ./tls (see docs/HOSTING.md) and set T5L_TLS_CERT=/tls/cert.pem,
+# T5L_TLS_KEY=/tls/key.pem in t5lobby.env; the server reloads them when they change.
+services:
+  lobby:
+    build: .
+    image: t5lobby:latest
+    container_name: t5lobby
+    restart: unless-stopped
+    env_file:
+      - path: t5lobby.env
+        required: false
+    ports:
+      - "7781:7781/tcp"
+      - "7781:7781/udp"
+      - "7782:7782/udp"
+    # Alternative for UDP-heavy hosts: `network_mode: host` (then remove `ports:`). Docker's
+    # published UDP ports work for the lobby and relay (the client's real address is kept), but
+    # stale conntrack entries after a restart can break relay sessions for ~30 s; host
+    # networking avoids that at the cost of isolation.
+    volumes:
+      - t5lobby-data:/data
+      - ./tls:/tls:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    ulimits:
+      nofile: { soft: 8192, hard: 8192 }
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+volumes:
+  t5lobby-data:

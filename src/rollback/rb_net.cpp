@@ -19,6 +19,8 @@ extern "C" volatile int g_lat_log_on;
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode (4) */
+extern "C" int32_t t5_sem_count(uint32_t id);          /* src/netplay/t5_hooks.cpp: a kernel semaphore's count */
+extern "C" int t5_sem_set_count(uint32_t id, int32_t v);
 
 namespace rb { namespace net {
 
@@ -134,6 +136,7 @@ struct Stats {
     double early_commit_ms = 0;     /* snapshot time taken before the tick (early_commit) */
     double early_wait_ms = 0;       /* time an early boundary waited for its tick */
     uint32_t depth_hist[17] = {};
+    uint32_t reader_tokens = 0;     /* restores that gave the reader's completion token back (reader_sem_restore) */
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
 
@@ -208,6 +211,7 @@ void report()
     g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
     g_tot.stall_ms += g_st.stall_ms; g_tot.commit_ms += g_st.commit_ms; g_tot.sleeps += g_st.sleeps; g_tot.sleep_ms += g_st.sleep_ms;
     for (int d = 0; d < 17; d++) g_tot.depth_hist[d] += g_st.depth_hist[d];
+    g_tot.reader_tokens += g_st.reader_tokens;
     g_st = Stats();
 }
 } // namespace
@@ -331,8 +335,8 @@ void session_reset()
     wr32(kMinVblanks, g_saved_minvb[0]); wr32(kMinVblanks + 4, g_saved_minvb[1]);
     sound_reset();
     report();
-    note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls)",
-         g_tot.frames, g_tot.rollbacks, g_tot.stalls);
+    note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
+         g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens);
     g_active = false;
     memset(g_hash_tag, 0, sizeof g_hash_tag);
     memset(g_used_tag, 0, sizeof g_used_tag);
@@ -436,6 +440,44 @@ static uint32_t scan_mispredictions(uint32_t f, uint32_t rc)
 
 /* Restore the boundary of first_wrong and set up its re-simulation up to f;
  * false if the logs do not reach back that far. */
+/* The game's async reader (ZsAread) and its kernel semaphores. The main
+ * thread's reader service (0x9A784, once per frame) starts a request by
+ * posting the reader's request semaphore (service object 0x1009FE28 +0) and
+ * marks itself busy (+8 = 1); the reader thread reads and posts the
+ * completion semaphore (+4); a later frame's service takes that token with a
+ * trywait (0x9A884, the game's only one) and completes the request (0x9A4F4:
+ * its status word from 1 to the result). A semaphore's count is not guest
+ * memory, so a restore did not give back a token the first run of a
+ * re-simulated frame had taken: the service, put back to "busy", found the
+ * semaphore empty from then on, the request stayed at status 1, the loader
+ * task waiting on it (state 3, 0x27279C) never finished -- and the game mode
+ * cannot end while a task of its scene is busy: the game stayed in the fight
+ * after the KO (docs/ROLLBACK.md section 30). The count is saved with every
+ * boundary -- after the loaders were drained (t5_hooks.cpp), so the reader
+ * has posted whatever it will post -- and put back with the memory. */
+constexpr uint32_t kReaderDoneSemId = 0x1009FE2Cu;   /* u32: the completion semaphore's id */
+int32_t  g_rsem_val[kHist];
+uint32_t g_rsem_id[kHist], g_rsem_tag[kHist];
+void reader_sem_save(uint32_t f)
+{
+    const uint32_t id = rd32(kReaderDoneSemId);
+    const int32_t v = t5_sem_count(id);
+    if (v < 0) { g_rsem_tag[f % kHist] = 0; return; }
+    g_rsem_val[f % kHist] = v; g_rsem_id[f % kHist] = id; g_rsem_tag[f % kHist] = f + 1;
+}
+void reader_sem_restore(uint32_t g)
+{
+    if (g_rsem_tag[g % kHist] != g + 1) return;
+    const uint32_t id = g_rsem_id[g % kHist];
+    if (id != rd32(kReaderDoneSemId)) return;   /* not the same reader (never seen) */
+    const int32_t was = t5_sem_count(id), v = g_rsem_val[g % kHist];
+    if (was == v) return;
+    if (t5_sem_set_count(id, v)) {
+        if (v > was) g_st.reader_tokens++;
+        if (g_verbose) note("rbnet: reader completion semaphore %u: %d -> %d (as at boundary %u)", id, was, v, g);
+    } else note("rbnet: reader completion semaphore %u: could not be set back to %d (now %d)", id, v, was);
+}
+
 static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2])
 {
     const uint32_t depth = f - first_wrong;
@@ -447,6 +489,7 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
         return false;
     }
     cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
+    reader_sem_restore(first_wrong);   /* the reader's completion token, as at that boundary */
     LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
     g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
     if (depth > g_st.max_depth) g_st.max_depth = depth;
@@ -480,6 +523,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     double cms = 0;
     const uint32_t dirty = state_commit(f, nullptr, &cms);
     (void)dirty;
+    reader_sem_save(f);
     /* the gameplay hash (the netplay desync check's regions): what the peers
      * compare once every input before f is confirmed; a rollback re-simulates
      * the boundary and overwrites it before it is handed over */

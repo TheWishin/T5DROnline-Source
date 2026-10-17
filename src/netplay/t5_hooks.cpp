@@ -1459,6 +1459,33 @@ extern "C" const char* t5_netplay_take_session_lost(void)
 
 extern "C" int t5_netplay_persistent(void) { return g_persistent ? 1 : 0; }
 
+/* A kernel semaphore's count, for the rollback loop (rb_net.cpp: the reader's
+ * completion semaphore is part of the state it saves at every boundary and
+ * puts back with a restore). -1: no such semaphore. */
+extern "C" int32_t t5_sem_count(uint32_t id)
+{
+    if (id == 0 || id > 256) return -1;
+    np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return -1;
+    EnterCriticalSection(&s.value_lock);
+    const int32_t v = s.value;
+    LeaveCriticalSection(&s.value_lock);
+    return v;
+}
+/* Set it -- only while nobody waits on it (the reader's completion semaphore
+ * is only ever taken with a trywait by the main thread). */
+extern "C" int t5_sem_set_count(uint32_t id, int32_t v)
+{
+    if (id == 0 || id > 256 || v < 0) return 0;
+    np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return 0;
+    EnterCriticalSection(&s.value_lock);
+    const bool ok = s.waiters == 0 && v <= s.max_value;
+    if (ok) s.value = v;
+    LeaveCriticalSection(&s.value_lock);
+    return ok ? 1 : 0;
+}
+
 /* The direct-fight mode calls this on the main thread when its fight starts
  * (both PCs do, for the same match). With T5_NET_START=external it begins
  * lockstep at the next frame; while lockstep runs it makes the next frame a

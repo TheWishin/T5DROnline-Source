@@ -87,7 +87,8 @@ T5_CTL_DIR=<dir>                                     persistent game: every matc
   `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`), `T5_DF_SCRIPT[2]` (frame scripts, tests),
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
-  that frame).
+  that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
+  `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends").
 
 Timeline on this PC (60 fps, frames counted from the first frame after boot):
 title mode at ~890, start-VS call at +30, select mode at ~925, both characters
@@ -273,13 +274,17 @@ How a new opponent is played:
 1. **"idle"** (the launcher sends it when a match with someone else is found):
    the netplay session ends (`t5_netplay_session_end`: BYE, socket closed; the
    rollback loop stops and drops its undo logs), the pads are held, and the
-   driver goes back to the **title** (mode request 1 through the game's own
-   0x25DA54, from a live select screen; from the win pose it first skips it as
-   above). There it puts the match-state areas back as they were when this game
-   first reached the title at boot (next paragraph) and calls the start-VS
-   routine again: a fresh select screen whatever the last opponent left behind
-   (battle config, VS counters, cursor positions). This happens while the
-   players accept and the lobby punches.
+   driver makes a fresh select screen, whatever the last opponent left behind
+   (battle config, VS counters, cursor positions). **After a fight** (the game
+   mode ran since the last title) it goes back to the **title** (mode request 1
+   through the game's own 0x25DA54, from a live select screen with no mode
+   change pending; from the win pose it first skips it as above), puts the
+   match-state areas back as they were at boot (next paragraph) once the title
+   has settled, and calls the start-VS routine again. **Without a fight since
+   the title** it never visits the title a second time (that corrupts the game,
+   see "After a session ends"): an untouched select screen stays as it is, a
+   used one is restarted in place by the same start-VS routine. This happens
+   while the players accept and the lobby punches.
 2. **"fight"** for a new session: its `env` goes to the session environment
    overlay (`t5_env_overlay_*`, src/netplay/netplay_core.cpp) -- not to the
    process environment: the runtime caches every `getenv()` value for good
@@ -300,8 +305,10 @@ How a new opponent is played:
 6. A session that ends by itself (peer lost, no connection, other build:
    `T5_NET_ON_LOST` does not apply) writes its result file with the reason as
    before, but the game stays open: a fight is left with mode request 6, the
-   driver goes back to a fresh select screen, `state.json` says `error` with
-   the reason until the next command. Exit codes 3/4/5 are process mode only.
+   driver goes back to a fresh select screen as in 1., `state.json` says `error`
+   with the reason until the next command. Exit codes 3/4/5 are process mode
+   only; a persistent game that cannot get back to a select screen within 60 s
+   ends itself with exit code 6 (below).
 
 **A game that has played meets a fresh one.** The new opponent's game may have
 just started. Two things differ then, and both had to go:
@@ -312,22 +319,27 @@ just started. Two things differ then, and both had to go:
   all of them: 1,662 of 1,662 frames mismatching (run dm2, lockstep; the fight
   itself the same). The four game areas of the netplay hash
   (0x1008E000+0x4000, 0x10099600+0x600, 0x100A0900+0x200, 0x100A3B00+0x300;
-  `T5_DF_FRESH_RANGES`, `T5_DF_FRESH=0` off) are copied when the game first
-  reaches the title at boot and put back at every reset to the title (3.3 KB
-  differed after one match). From there both games run the same title ->
-  start VS -> select -> fight path from the same bytes.
+  `T5_DF_FRESH_RANGES`, `T5_DF_FRESH=0` off) are copied at boot when the
+  title has settled, right before the first start VS, and put back at the same
+  point of every later title visit (3.3 KB differed after one match). From
+  there both games run the same title -> start VS -> select -> fight path
+  from the same bytes. A select screen restarted in place (no fight since the
+  title) needs no copy: only select-screen words changed since, and the
+  restart writes them again.
 - *Loading time.* The played game loads the next fight from its caches and
   ends the loading a few frames earlier or later than a fresh one. In lockstep
   the loading's scene change is a sync point anyway; under rollback it was not
   (ring resets are ordinary state there), and the two games then fought
-  2 frames apart: 4,228 mismatching frames (run rb_ps1). Now the first ring
-  reset after a fight start -- the end of its loading, in the intro, where
-  nothing is predicted wrong -- is a sync point under rollback too, and the
-  frames of the game mode's start, loading and intros (phase 0..12) are not
-  hash-compared in direct fight (both sides send a fixed value; a difference
-  that lasts reaches the fight, where every frame is compared), nor is the
-  first frame after a scene barrier (the side that did not jump hashed it
-  before the barrier's reseed). `t5_hooks.cpp` `g_await_load`, `kIntroHash`;
+  2 frames apart: 4,228 mismatching frames (run rb_ps1). Now the end of the
+  loading -- the first frame the phase word shows the intros (11, 12) or the
+  fight (17) after a fight start, where nothing is predicted wrong -- is a sync
+  point in both modes (reset-fix; fight-polish used the first ring reset,
+  which is "Fight!" itself: see "After a session ends"), and the frames of the
+  game mode's start, loading and intros (phase 0..12) are not hash-compared in
+  direct fight (both sides send a fixed value; a difference that lasts reaches
+  the fight, where every frame is compared), nor is the first frame after a
+  scene barrier (the side that did not jump hashed it before the barrier's
+  reseed). `t5_hooks.cpp` `g_await_load`, `fight_loaded_now`, `kIntroHash`;
   `rb_net.cpp` `scene_change`.
 
 Measured (`tools/fight_flow_test.py --flow persistent --fresh-at 2 --mash`,
@@ -341,6 +353,113 @@ Limits: `PS3_FIXED_TIME` cannot change after boot (the runtime reads it once);
 a persistent game runs on its real clock (no effect on the fight state seen).
 A peer must run the same build (the build id check makes sure): the end of the
 loading is a sync point only from this build on.
+
+## After a session ends (reset-fix, 2026-10-17)
+
+Release dry run of 0.1.6 (persistent game, rollback, a PC loaded by other
+benchmarks): player A's fight never finished loading, B waited at the end of
+the loading until it gave the match up (`peer_stalled`), A gave up too
+(`peer_timeout`). B went leave -> reset -> title -> neutral; when the
+launcher's "idle" came, B's game broke for good (`guest_call: OPD 0x004635A8
+-> code 0 not registered` -- the vblank handler -- NULL calls in the sound
+threads, FIFO jumps to unmapped IO, fence queue overflow), and the launcher
+fell back to a new process. A sat at "leave: waiting in mode 4" for minutes.
+Three faults, none of them the boot-state copy (a fourth, older one came up
+in the cycle test):
+
+- **The second title visit after a fight corrupts the game.** Title mode,
+  select (start VS), title again with no game mode in between: the title's
+  set-up initialises a model whose data pointer is stale (0x2AE3D4 on an object
+  pointing into the game heap, `count` 0x02120420), 0x2DBBEC asks the small
+  block allocator 0x2BB634 for 138 MB, gets NULL, and its memset 0x3AF974
+  clears guest memory from there on: the OPD page 0x463000 and the code image
+  below 0x08481084 with it (`T5_DF_GUARD=4635A8:10` caught the store). The
+  title once after a fight is fine, and so is title -> select -> title
+  without any fight (boot). Reproduced offline in one process (fight, leave or
+  play it out, two "idle"): 7 of 7 runs, also after a match played to its end,
+  with the copy off (`T5_DF_FRESH=0`), with each of the four copy areas alone,
+  with the title's autosave answered without saving. B had exactly that: the
+  session-end reset was the title visit, the launcher's "idle" the second one.
+  **Fix:** the driver goes to the title only when the game mode ran since its
+  last title visit. Otherwise it keeps an untouched select screen, and restarts
+  a used one in place: the start-VS routine called at a live select screen
+  makes the select mode set itself up again (phase 3 -> 0 -> 3, VS config
+  refilled, its music restarted; checked 3 times in a row and before a fight).
+- **A reset during a mode change.** An "idle" a few frames after start VS
+  found the title with the select mode requested, and the boot state went
+  back under the select mode's set-up: NULL reads from then on (offline repro;
+  in the dry run's timing it did not happen, in the cycle test it did). Now
+  the reset acts only when no mode change is pending (`next` = 14), and the
+  copy is put back on the settled title right before start VS -- the point at
+  boot where it is taken.
+- **A game that has played and a fresh one fought apart (Asuka vs Law).**
+  Not from this dry run, found by the cycle test: every next match with Asuka
+  vs Law on stage 25 desynced (1,641-4,128 of ~2,000-4,400 frames, often
+  different winners), rollback and lockstep, on main too (run ff_asu_main:
+  `fight_flow_test --flow persistent --fresh-at 2 --chars asu,law,kaz,hei`);
+  fresh against fresh and other pairs were fine. Per-frame dumps (runs
+  asu_dump, asu_fine): both games equal through the loading, then the played
+  one reached the intros 2 frames later, and the sync point -- "the first ring
+  reset after a fight start" -- turned out to be "Fight!" itself (phase 17),
+  after the intros: each game ran its Fight! frame on a random state with a
+  different number of draws and a different clock, and the barrier's reseed
+  came only after it. **Fix:** the sync point is the end of the loading proper,
+  the first boundary at which the phase word shows 11..17 (`fight_loaded_now()`,
+  rollback and lockstep); the intros then run 28 frames in step on both PCs and
+  "Fight!" falls on the same frame (runs ff_asu7 / ff_asu7ls: Asuka vs Law
+  after a match against a fresh game, 0 mismatching frames in both modes, 3 of
+  3 matches each). Also: FIGHT START waits for the first frame the game mode's
+  own phase word reaches 7 (it was the first frame the mode manager says
+  "game"; a played game was then one set-up frame behind at netplay frame 1),
+  and the boot-state copy covers the whole fight-state block
+  0x1008E000..0x100A5000 (a played game carries 7.5 KB of leftovers there,
+  beyond the four hashed areas: effect and physics tables 0x10099C28..,
+  0x1009A018.., 0x100A3E00..; a fresh game has zeros).
+- **A rollback into the fight's loading (A's hang).** The intro rule (no input
+  from the match start to "Fight!", docs/ROLLBACK.md section 22) looked at
+  phases 7..12 only. The first boundary of a session is lockstep frame 0, where
+  the game mode has just set the phase word to 2: the dry-run harness's press
+  at frame 2 went out (B's frame log: `2 I ... 004080808080`), A had predicted
+  neutral, rolled back 9 frames into the first frames of the loading, and the
+  loading never finished; the request to leave the fight was never taken. Now
+  every phase up to 12 is intro while the mode manager is in the game mode
+  (`t5_df_game_mode()`), in the rollback loop and for lockstep frame 0's
+  sample (`t5_hooks.cpp` `intro_input_now`); select screens (mode 6, phases
+  0-5) still take the driver's presses. A fight whose session ended is left
+  (mode request 6) only once its loading and intros are over: the game itself
+  never leaves its game mode earlier, and a hung loading never takes the
+  request.
+
+Also at a session's end: the rollback loop puts back the present's
+min-vblanks word it zeroed at its start (0x106D4D98), and the sound hooks
+forget the session (a session that ended inside a re-simulation left them
+"re-simulating": every later play call matched against stale entries, the
+library tick skipped). A reset or leave that gets nowhere for 60 s
+(`T5_DF_STUCK_SECONDS`, 0 = never) writes `state.json` `error`/`stuck` and ends
+the process with exit code 6; the launcher starts a fresh game for the next
+match and says so on the Play tab.
+
+Diagnostics added: `T5_DF_FRESH_LOG=1` (every word the copy changes),
+`T5_DF_FRESH_AT=<n>` (put the copy back n frames into the settled title; tests),
+`T5_DF_GUARD=addr:len,...` (`T5_DF_GUARD_AT=<frame>`, default the first title:
+those pages read-only, the first writer of each logged with its lifted chain).
+
+**Test:** `tools/reset_cycle_test.py` -- one persistent game S (never
+restarted) against a persistent opponent O (started again when a cycle killed
+it); every cycle is a match that ends abnormally, S back at neutral by
+itself, then the next match against a new session played to its end:
+
+    python tools/reset_cycle_test.py --exe <t5dr.exe> --vfs <game/vfs> --out <dir> [--cycles 10] [--env T5_RB_MODE=off]
+
+Ends, in turn: `stall` (O suspended, then killed), `kill`, `quit` (O's BYE),
+`peer_idle` (O's launcher leaves), `idle` (S's launcher leaves), `no_peer` (no
+opponent at all), `desync` (O on another stage, both leave), `normal`; each at
+the fight's loading, in the fight or at the select screen before FIGHT START,
+in turn. A cycle passes when S comes back to neutral, the next match is
+confirmed on both sides (same winner and gameplay hash, 0 mismatching frames)
+and S's log has no bad guest call, NULL call/write, FIFO error or crash.
+
+RESULTS_TBD
 
 ## Known transient mismatches
 
@@ -445,6 +564,7 @@ host/join pair started with `T5_NET_START=external`.
   state in one struct), the session environment overlay `t5_env*`.
 - `src/rollback/rb_net.cpp`, `rb_state.cpp`: `session_reset`, `state_reset`.
 - Tests: `tools/fight_flow_test.py` (pairs, many matches, rematch or
-  persistent flow, `--mash`, `--fresh-at`), `tools/dryrun_online.py --mode
-  persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),
+  persistent flow, `--mash`, `--fresh-at`), `tools/reset_cycle_test.py` (one
+  persistent game through every way a session ends), `tools/dryrun_online.py
+  --mode persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),
   `lobby/tests/test_driver_persistent.py`.

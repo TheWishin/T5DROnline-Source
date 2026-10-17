@@ -103,10 +103,14 @@ point.** From FIGHT START until the fight phase word (0x1008F070) passes 12
 fixed value on both sides (`kIntroHash`; `rb_net.cpp` the same): nothing there
 takes input, and the loading's progress depends on the game's caches -- a
 persistent game that has played loads faster than one that has just started
-(docs/DIRECTFIGHT.md). The first ring reset after a fight start (the end of its
-loading, in the intro) is a scene barrier under rollback as well (`g_await_load`;
-before, only the lockstep re-aligned it, and a played and a fresh game fought 2
-frames apart under rollback), and the first frame after a scene barrier is not
+(docs/DIRECTFIGHT.md). The end of the fight's loading -- the first frame the
+phase word shows the intros (11, 12) or the fight (17) after a fight start --
+is a scene barrier in both modes (`g_await_load`, `fight_loaded_now()`; before,
+only the lockstep re-aligned a fight's loading, and then the first ring reset
+after a fight start was used, which is "Fight!" itself: a played and a fresh
+game ran their Fight! frame on different random states and Asuka vs Law
+desynced; docs/DIRECTFIGHT.md "After a session ends"), and the first frame
+after a scene barrier is not
 compared under rollback (one side hashed it before the barrier's reseed, the
 other after). The result file is replaced with retries (the launcher may have the
 old one open at that moment; a single failed replace used to lose it).

@@ -1520,12 +1520,13 @@ rollback loop that means:
   and sound skip off), the loop's history and statistics go, `state_reset()`
   drops the undo logs and brings the shadow up to date (frames count from 0
   again in the next session); `start()` then takes over as in a first match.
-- The end of a fight's loading (the first ring reset after a fight start) is
-  a scene barrier in rollback mode too: a game that has played ends its loading
-  frames apart from a fresh one (its caches), and without the barrier the two
-  fought 2 frames apart (4,228 mismatching frames, build/dp run rb_ps1). It
-  lies in the intro, where both sides send neutral input, so no rollback
-  crosses it.
+- The end of a fight's loading is a scene barrier in rollback mode too: a
+  game that has played ends its loading frames apart from a fresh one (its
+  caches), and without the barrier the two fought 2 frames apart (4,228
+  mismatching frames, build/dp run rb_ps1). It lies in the intro, where both
+  sides send neutral input, so no rollback crosses it. (Since reset-fix the
+  barrier is the first frame showing phase 11..17; the first ring reset used
+  before is "Fight!", after the intros -- see the next section.)
 - In direct fight the frames of the game mode's start, loading and intros
   (phase 0..12) push a fixed hash, and `scene_change(nf)` also skips frame nf
   (the side that did not jump hashed it before the barrier's RNG reseed).
@@ -1543,3 +1544,35 @@ rollback loop that means:
 Result: a persistent game against a freshly started one, then two more new
 sessions, under rollback: 5 of 5 matches confirmed, 0 mismatching frames, up to
 19 rollbacks per match (build/dp run rb_ps5).
+
+## Session ends and the intro rule's first frames (reset-fix, 2026-10-17)
+
+Release dry run 0.1.6 (persistent game, docs/DIRECTFIGHT.md "After a session
+ends"): one player's fight never finished loading. The rollback loop had rolled
+it back 9 frames, to frame 2 -- into the first frames of the fight's loading.
+The peer's input for frame 2 was a press (the harness's pad file; a player
+holding a button at the fight start does the same): it was sampled at lockstep
+frame 0, the session's first boundary, where the game mode has only just set
+the phase word to 2 -- outside the intro rule's 7..12, so it went out, and the
+host had predicted neutral. The rule now counts every phase up to 12 as intro
+while the mode manager is in the game mode (the game mode sets 0, then 2, then
+7; `intro_phase(p, game_mode)`, `t5_df_game_mode()`); the flag is recorded per
+boundary like the phase (`g_intro_flag`), and lockstep frame 0 samples neutral
+under the same rule (`np::begin_frame(..., neutral_local)`). Select screens
+(mode 6, phases 0-5) are untouched: a rematch's select is driven through the
+exchanged input.
+
+The end-of-loading barrier was "the first ring reset after a fight start",
+which is the "Fight!" frame (phase 17), not the end of the loading: a played
+game that reached the intros 2 frames after a fresh one ran its Fight! frame on
+a different random state and clock, before the barrier's reseed. Asuka vs Law
+on stage 25 desynced that way every time (rollback and lockstep, on main too);
+the barrier is now the first boundary showing phase 11..17
+(`t5_hooks.cpp` `fight_loaded_now()`), and the intros run in step.
+
+`session_reset()` also puts back what `start()` changed in the game -- the
+present's min-vblanks word 0x106D4D98, zeroed so re-simulated frames do not wait
+for a vblank -- and calls `sound_reset()`: a session that ended inside a
+re-simulation left the sound hooks "re-simulating" (play calls matched against
+stale entries, the library tick skipped, stops dropped) for as long as the game
+ran without a session.

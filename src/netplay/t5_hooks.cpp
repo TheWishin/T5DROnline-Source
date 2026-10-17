@@ -820,24 +820,11 @@ void apply_rounds()
 /* A scene barrier made this side skip d frame numbers (it got there first): the
  * game's own per-frame counters move along with it -- the frame clock and three
  * u32 frame counters (0x1008EB9C, 0x1008F07C, 0x1009442C all equal the frame
- * count) -- and so do the copies of the frame clock the game latched when the
- * fight's loading ended (0x10425BCC, 0x106C85CC, 0x106C85D0: the clock at that
- * frame). The latches were left behind before: the fight's intro then ran d
- * frames apart on the two PCs (clock minus latch), which most pairs of fighters
- * never show; Asuka vs Law did, every time a game that had played met a fresh
- * one (its loading ends ~2 frames apart): 1,753 of 1,978 frames mismatching,
- * different winners, on main too (reset-fix runs ff_asu_main, ff_asu, asu_ctr).
- * Only a latch holding a recent clock value (the last 8 frames) is moved. */
-constexpr uint32_t kLoadEndLatches[] = { 0x10425BCCu, 0x106C85CCu, 0x106C85D0u };
+ * count). */
 void skip_frames(uint32_t d)
 {
-    const uint32_t clock = (uint32_t)rd64(kFrameClock);
     wr64(kFrameClock, rd64(kFrameClock) + d);
     for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
-    for (uint32_t a : kLoadEndLatches) {
-        const uint32_t v = rd32(a);
-        if (v <= clock && clock - v <= 8) wr32(a, v + d);
-    }
 }
 
 /* Both random generators the game draws from, seeded the same on both PCs. */

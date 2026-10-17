@@ -362,6 +362,7 @@ bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
 bool g_restart_low = false;     /* Reset by a select restart: the select screen has gone through its set-up again */
+uint32_t g_restart_frame = 0;   /* ... and the frame start VS was called at the select screen */
 ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
 uint32_t g_stuck_s = 60;        /* T5_DF_STUCK_SECONDS: a reset / leave that gets nowhere in this long ends the process */
 CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
@@ -689,8 +690,7 @@ void reset_done(uint32_t f)
  * match (match_driver: a persistent game that is not running is started again). */
 void stuck_check(uint32_t f)
 {
-    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset ||
-                         (g_ph == Ph::Title && g_title_seen != UINT32_MAX && f > g_title_seen + 600);
+    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken);
     if (!g_ctl || !g_stuck_s || !waiting) return;
     if (GetTickCount64() - g_ph_ms < (ULONGLONG)g_stuck_s * 1000) return;
     note("frame %u: STUCK: %s for %u s (mode %u, next %u, phase word %u) -- the game ends, the launcher starts a fresh one",
@@ -774,7 +774,7 @@ void fight_on_frame(uint32_t f)
         if (all_done) set_phase(Ph::Stage, "stage", f);
         break; }
     case Ph::Stage:
-        if (mode == kModeGame) { set_phase(Ph::WaitGame, "loading", f); break; }
+        if (mode == kModeGame) { g_wait_setup = false; set_phase(Ph::WaitGame, "loading", f); break; }
         /* The stage confirm writes the panel's own pick (random, different on
          * the two PCs: fd_rematch showed 0x1d vs 0x11 for 50 frames in
          * lockstep) to 0x1008F088, two frames before the select state turns 4.
@@ -927,6 +927,10 @@ void fight_on_frame(uint32_t f)
                     note("frame %u: select screen restarted", f);
                     g_fresh = true;
                     reset_done(f);
+                } else if (!g_restart_low && f > g_restart_frame + 120) {
+                    /* never seen in the tests; the title is no way out here (no fight since it) */
+                    note("frame %u: the select screen did not restart -- taken as it is", f);
+                    reset_done(f);
                 }
             } else if (!g_mode_asked && sel == 3) {
                 if (g_game_seen) {
@@ -939,7 +943,7 @@ void fight_on_frame(uint32_t f)
                         reset_done(f);
                     }
                 } else {
-                    g_mode_asked = true; g_restart_low = false;
+                    g_mode_asked = true; g_restart_low = false; g_restart_frame = f;
                     gcall(kFnStartGame, 4, 3);
                     note("frame %u: select screen restart (func_0004E9DC(4, 3) at the select screen; no fight since the title)", f);
                 }

@@ -882,6 +882,18 @@ void rb_poll()
     compare_hashes_locked();
 }
 
+void rb_log_frame(uint32_t f, const PadInput in[2], uint64_t hash, bool predicted, bool confirmed)
+{
+    State& s = S();
+    if (!s.log) return;
+    std::lock_guard<std::mutex> lk(s.log_mu);
+    fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx %c %c
+", f,
+            in[0].buttons, in[0].lx, in[0].ly, in[0].rx, in[0].ry,
+            in[1].buttons, in[1].lx, in[1].ly, in[1].rx, in[1].ry,
+            (unsigned long long)hash, predicted ? 'P' : 'R', confirmed ? 'C' : 'U');
+    if ((f % 60) == 0) fflush(s.log);
+}
 bool rb_peer_lost() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_lost; }
 void rb_offer(bool on) { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); s.rb_offer = on; }
 bool rb_negotiated()

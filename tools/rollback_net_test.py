@@ -142,6 +142,7 @@ def main():
     ap.add_argument("--env2", action="append", default=[], help="extra NAME=VALUE for the joiner only")
     ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--no-proxy", action="store_true")
+    ap.add_argument("--fight", default="", help="direct fight p1,p2,stage[,rounds] on both sides (T5_FIGHT, T5_NET_START=external): the fight is lockstep frame 0")
     ap.add_argument("--vfs", default=VFS)
     ap.add_argument("--runs", default=RUNS)
     a = ap.parse_args()
@@ -164,6 +165,8 @@ def main():
         "T5_NET_LOCALPAD": "0", "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": "60",
         "T5_RB_MODE": "net", "T5_RB_NET_START": f"frame:{a.start}", "T5_RB_NET_MAXPRED": str(a.maxpred), "T5_RB_NET_LOG": "1",
     })
+    if a.fight:
+        base.update({"T5_FIGHT": a.fight, "T5_NET_START": "external", "T5_RB_NET_START": "0"})
     for kv in a.env:
         k, v = kv.split("=", 1)
         base[k] = v
@@ -176,11 +179,11 @@ def main():
         env["T5_RB_LOG"] = os.path.join(wd, "rb_frames.log")
         if who == "host":
             env.update({"T5_NET_MODE": "host", "T5_NET_PORT": str(host_port),
-                        "T5_NET_SCRIPT": "@" + MENU1 + "," + fight_script(3300, 12000, True, 11)})
+                        "T5_NET_SCRIPT": "@" + (fight_script(120, 60000, True, 11) if a.fight else MENU1 + "," + fight_script(3300, 12000, True, 11))})
         else:
             env.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0",
                         "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}",
-                        "T5_NET_SCRIPT": "@" + MENU2 + "," + fight_script(3300, 12000, False, 22)})
+                        "T5_NET_SCRIPT": "@" + (fight_script(120, 60000, False, 22) if a.fight else MENU2 + "," + fight_script(3300, 12000, False, 22))})
         for kv in (a.env1 if who == "host" else a.env2):
             k, v = kv.split("=", 1)
             env[k] = v

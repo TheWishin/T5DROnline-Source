@@ -184,7 +184,10 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     double cms = 0;
     const uint32_t dirty = state_commit(f, nullptr, &cms);
     (void)dirty;
-    g_hash[f % kHist] = state_hash(); g_hash_tag[f % kHist] = f + 1;
+    /* the gameplay hash (the netplay desync check's regions): what the peers
+     * compare once every input before f is confirmed; a rollback re-simulates
+     * the boundary and overwrites it before it is handed over */
+    g_hash[f % kHist] = state_game_hash(); g_hash_tag[f % kHist] = f + 1;
 
     if (g_resim) {
         /* boundary inside a re-simulation: frame f-1 was re-run */
@@ -288,6 +291,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
     if (g_st.frames && (g_st.frames % 300) == 0) report();
     inputs_for(f, out);
+    np::rb_log_frame(f, out, g_hash[f % kHist], g_pred[f % kHist], f < upto);
     return f;
 }
 

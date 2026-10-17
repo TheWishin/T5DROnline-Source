@@ -18,9 +18,22 @@ constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per
 bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
 bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
-uint32_t g_warmup = 180;         /* T5_RB_NET_WARMUP: frames after the start during which no prediction is allowed (the stage
-                                  * still streams in; a rollback into a load in flight broke the game in test f1) */
+uint32_t g_warmup = 420;         /* T5_RB_NET_WARMUP: frames after the start during which no prediction is allowed: the stage
+                                  * still streams in (a rollback into a load in flight broke the game in test f1) and the
+                                  * fight-start phases ("Round 1", "Fight!") pass -- a rollback across one of those left
+                                  * the peers a phase apart (run e150, frame 210) */
 uint32_t g_started_at = 0;
+/* Fight phase transitions (0x1008F070: fight start, KO, round end / start) are
+ * not reproduced by a re-simulation (they wait on sound / loader state the
+ * rollback does not restore): a rollback that straddles one leaves the peers
+ * a phase apart (runs e50/g50 at the round end). So a phase change seen at a
+ * live boundary raises the rollback floor to that boundary and puts the loop
+ * into lockstep (every input confirmed before a frame runs) for
+ * T5_RB_NET_PHASE_LOCK frames, so no rollback reaches across the transition
+ * and the frames right after it (round end sequence, next round's start) are
+ * never predicted. */
+constexpr uint32_t kPhaseWord = 0x1008F070u;
+uint32_t g_phase_lock = 600, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
 /* time sync */
 constexpr int kLeadWinMax = 60;
 int g_lead_win = 20, g_ts_interval = 10, g_ts_max = 2;
@@ -89,11 +102,11 @@ void report()
     char hist[160]; int n = 0;
     for (int d = 1; d <= 16; d++) if (g_st.depth_hist[d]) n += snprintf(hist + n, sizeof hist - n, " %d:%u", d, g_st.depth_hist[d]);
     note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f), "
-         "%u stalls (%.1f ms), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u",
+         "%u stalls (%.1f ms), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u",
          g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
          g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.predicted,
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
-         g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches());
+         g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes);
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
     g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
@@ -138,6 +151,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
+            if (const char* s = getenv("T5_RB_NET_PHASE_LOCK")) g_phase_lock = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
@@ -168,6 +182,7 @@ void start(uint32_t f)
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
     g_active = true;
     g_started_at = f;
+    g_last_phase = rd32(kPhaseWord);
     g_checked = g_hash_sent = g_floor = f;
     g_last_remote = np::kNeutral;
     np::PadInput r;
@@ -217,6 +232,16 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        /* a phase transition since the last live boundary: barrier + lockstep window */
+        const uint32_t phase = rd32(kPhaseWord);
+        if (g_last_phase != 0xFFFFFFFFu && phase != g_last_phase) {
+            g_phase_changes++;
+            g_floor = std::max(g_floor, f);
+            g_lock_until = f + g_phase_lock;
+            state_drop_logs();
+            if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: rollback floor raised, lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
+        }
+        g_last_phase = phase;
         /* the frame time this machine actually runs at (sleeps are in frames) */
         if (g_frames_timed == 0) QueryPerformanceCounter(&g_t_frame0);
         if (++g_frames_timed == 60) { g_frame_ms = std::max(5.0, std::min(100.0, ms_since(g_t_frame0) / 60.0)); g_frames_timed = 0; }
@@ -254,7 +279,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */
-    const bool warm = f < g_started_at + g_warmup;   /* lockstep until the fight has settled */
+    const bool warm = f < g_started_at + g_warmup || f < g_lock_until;   /* lockstep until the fight has settled / past a phase change */
     const uint32_t need = (scene_flag || warm) ? f : (f > g_maxpred ? f - g_maxpred : 0);
     if (rc < need && !np::rb_peer_lost()) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);

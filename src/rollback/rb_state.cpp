@@ -128,6 +128,14 @@ static const Range kGameSkip[] = {
      * while it diverged, and it was the only word behind every stage-specific
      * mismatch of the draw-cut test (docs/ROLLBACK.md section 12) */
     { 0x1074F218u, 4 },
+    /* the stage id word, re-rolled from that rand() at the second round's
+     * intro (frame 5726 of every l0/k150 run: 0x13 on one peer, 0x1A on the
+     * other, nothing else differing for the rest of the match) */
+    { 0x1008F088u, 4 },
+    /* set at a match intro, different per peer, the fight unchanged (runs
+     * m50c, m0c): +0x830 of each fighter block (a pointer into 0x10670000)
+     * and a unit vector at 0x100A0A10 */
+    { 0x10090030u, 4 }, { 0x10090900u, 4 }, { 0x100A0A00u, 0x80 },
     { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC },
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
@@ -220,6 +228,16 @@ static void ring_reclaim(uint32_t slot)
 void state_init()
 {
     if (g_ready) return;
+    /* T5_RB_EXCLUDE=addr:len,... (hex): more regions left out of the rollback state */
+    if (const char* e = getenv("T5_RB_EXCLUDE")) {
+        const char* q = e;
+        while (*q) {
+            char* z; uint32_t a = (uint32_t)strtoul(q, &z, 16); if (z == q || *z != ':') break; q = z + 1;
+            uint32_t l = (uint32_t)strtoul(q, &z, 16); if (z == q) break; q = z;
+            if (state_add_exclude(a, l)) fprintf(stderr, "[rb] state: T5_RB_EXCLUDE %08X+%X left out of the rollback state\n", a, l);
+            while (*q == ',') q++;
+        }
+    }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;

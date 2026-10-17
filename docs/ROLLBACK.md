@@ -974,3 +974,240 @@ the decoder reads garbage until the ring cycles. The way to settle it is an
 `ATRAC_TRACE=1` run with rollbacks (every add with its ring and file
 offsets) compared with the title's own counters in the restored memory --
 not done. Rollback stays opt-in.
+
+---
+
+# Phase 9 -- the decisive trace (branch `rollback9`)
+
+## 18. The stream corruption is rollback-made, and where it comes from
+
+`ATRAC_TRACE=1` pair at RTT 50 (run t50, 634/421 rollbacks, no abort in
+240 s) analysed with `tools/atrac_trace_analyze.py`:
+
+- **Without rollbacks there are no decode errors at all**: 0 in the lockstep
+  fight n5, in the no-rollback test run aref, in the neutral-input pair p0
+  and in the coordinator's npcheck4. With rollbacks: 1 023 errors for 190
+  rollbacks (a1, single instance, test mode), 281 for 23 (m1), 2 244 for
+  634 (t50 host) -- 3 to 12 per rollback, in-process as much as online.
+- The title's stream adds stay **perfectly sequential across every
+  rollback**: 5 005 adds, file offsets continuing chunk after chunk, the
+  single jump being the track's loop restart; the add right after a rollback
+  continues at the expected file offset and ring position. So the HLE is not
+  handed wrong *offsets*.
+- The first decode error of each side comes a dozen adds after an ordinary
+  1-2 frame rollback, with no offset anomaly before it.
+
+So what is handed over is wrong *content*. The title streams the music from
+its archive (T55DATA1.BIN) in 16 KB blocks into a staging buffer in the
+sound heap (0x400DEFC0, outside the rollback state like the ring and the
+stream object at 0x4000CF50), and its stream thread copies chunks of 688
+bytes (one ATRAC3+ frame) from there to the ring at the write pointer the
+HLE last gave it. The bookkeeping that decides *which* chunk comes next --
+how much of the block has been fed, which block to request next -- is in the
+rolled-back part of memory (it is not written by the stream thread: a
+write-fault trace of two frames shows that thread touching nothing of the
+state but the decoder's PCM output pages at 0x45C00000), so after a rollback
+the reader is half rewound: traced single-instance runs (`runs/fs2`, `fs5`,
+`arc1`, ATRAC_TRACE=1 + FS_READ_ALL=1) show it
+
+- feeding the chunks of the rolled-back frames a second time (1-3 chunks
+  back, exactly the rollback depth in feeds),
+- feeding a block's tail from the staging buffer *after* the next block has
+  replaced it there (135 of 136 bytes wrong), re-reading that next block
+  (same archive offset, same bytes) and feeding its head a second time,
+- or carrying on as if nothing happened, and only later, when its block
+  counter catches up with the rewound one, feeding a whole block head again
+  (3 168 bytes at the continuation position that are the image's bytes of
+  2 752 earlier).
+
+The HLE, not rewound, took all of that at face value: the byte count is the
+only thing `cellAtracAddStreamData` carries, and the position those bytes
+were taken from was its own -- a chunk of bytes fed again landed where the
+*next* bytes belonged and the decoder read frames from the wrong bytes a
+ring later. Patch 0024's drop of the first add after a rollback made it
+worse when that add was a genuinely new chunk (the dropped bytes were gone
+for good: the first decode error of t50 sits exactly in the chunk after the
+drop).
+
+Things tried and dropped on the way: rewinding the HLE's stream position
+with the rollback (snapshot per commit, put back on restore -- consistent
+with a title whose reader rewinds, wrong by the rollback depth for one that
+carries on, which this title does half the time); following the title's own
+copy of the last answer (the write pointer it holds names the ring place
+*and* the file offset the answer stood for -- right for the ring position,
+but the title's half-rewound reader does not feed what it says it feeds);
+assembling the image by content (a chunk already in the image is a second
+feed and goes where it is -- right for genuine second feeds, but a chunk of
+digital silence matches a frame earlier and the position drifts, and the
+block-tail garbage is in the image nowhere). Each cut the 600 decode errors
+of a 75 s test-mode run (rollbacks every 30 frames) to 5-7, never to 0, and
+two of them to several hundred in the wrong cases.
+
+**The fix (patch 0028, `libs/codec/cellAtrac.c` + a hook in
+`runtime/ppu/ppu_fs.cpp`): the library reads the stream from the archive
+itself.** `cellFsRead` tells the library every read into guest memory
+(buffer, archive offset, host path); the bytes the title feeds first (the
+16 KB it sets the stream up with, then its first chunk) are found in those
+blocks, which gives the stream's offset in the archive (two sightings must
+agree and the archive must hold those bytes there, verified by reading it);
+from then on the image is filled from the archive -- when the title's add
+reaches past what the image holds, and on demand when the decoder needs a
+frame the title has not fed yet. The title's adds only pace the stream: its
+ring accounting is kept as before (write pointer followed, as the title's
+copy of the last answer may be an earlier or a later one; a place no answer
+named is a switch straddled by a rollback and is dropped), and what it
+copies into the ring is not used (with ATRAC_TRACE=1 it is checked: after
+the first rollback of a run it stays wrong for the rest of the stream, the
+reader's bookkeeping and the library's position never meet again -- which no
+longer matters). The ring fill is derived (what the title reads next less
+what the decoder decodes next, a lap apart for a looping stream) instead of
+counted, so a second feed does not fill the ring on paper. A stream fed
+from memory, or one whose bytes no read is found for, is handled as before.
+
+Result in test mode (`runs/arc1`, 75 s, rollbacks every 30 frames, 91
+rollbacks): **0 decode errors** (593 with the series through 0024, same
+test), gameplay hash unchanged; without rollbacks 0 title bytes differ from
+the archive's over 654 adds (`runs/arc2`), so the mapping is exact. This is
+the "music/stream position is output state, not match state" rule of
+Tekken 6 Native Online's 2.2.4 release notes, taken to its end: the stream
+is not rolled back, not restored, not re-fed -- it is read.
+
+Full matches with the archive-backed stream alone (direct fight Asuka vs
+Lili, stage 20, 2 rounds, KOs, delay 1, 3 % loss, 300 s; runs j0c/j50c/
+j150c): 0 decode errors on all six instances, 174/68, 556/511 and 648/665
+rollbacks -- and two leftovers, both at the first round's end:
+
+- **RTT 0: the host stuck in fight phase 2** (the joiner went on to phase 3
+  at 5371 and the rest of the match; 10 000 mismatching frames from there).
+  The title's adds were still advancing the library's position, chunks fed
+  again included, so after 174 rollbacks the position was a ring or more
+  ahead of the decoder, the derived fill reported the ring full, the reader
+  had no room to write and the title's round-end music switch waited for it
+  for good. Fixed in 0028: the position follows the title's *reader* --
+  bytes that are not the file's at the position they were asked for are
+  looked for in the file nearby (one ring back, four ahead; the reader is
+  behind after a rollback, re-feeding, or ahead, having gone on while a
+  re-issued answer put the position back) and the position moves there;
+  bytes found nowhere near (the wrong block) make no progress. The fill
+  treats a position behind the decoder as an empty ring (the reader catches
+  up) rather than as a lap ahead. Test mode: fill median 15 696, a transient
+  two rings at most, 0 decode errors (`runs/arc5`).
+- **RTT 50 and 150: the joiner's stream reader aborted** (the phase-7
+  chain `0x3aabc0 <- 0x37f804 <- 0x37c4a0 <- 0x67354 <- 0x1eb6f8 <-
+  0x1ebb08`) at ~5366, with 0 decode errors -- so the abort was never the
+  decoder's doing. The log shows 1-frame rollbacks *inside* the lockstep
+  window the phase change opened at 5348 (5350 -> 5349, 5365 -> 5364) and
+  the archive opened four times for one music switch: the window waited for
+  the peer's inputs up to f - 1 and still ran frame f on a prediction, the
+  rollback re-ran the frame that had issued the switch, and the reader
+  found a second switch in flight. Fixed in rb_net.cpp: in the warm-up and
+  phase-change windows the boundary waits for the input of the frame about
+  to run (`need = f + 1`), which with delay 1 the peer has sent a frame
+  earlier -- the windows are lockstep now, not lockstep-but-one.
+
+With those two (runs k0c/k50c/k150c, same setup): **RTT 50 a whole clean
+match** -- 13 200 frames, 1 216 + 1 127 rollbacks, 0 mismatching frames, 0
+decode errors, no abort, both peers through the same 10 phases; 0 decode
+errors and no abort on the other four instances either. But RTT 0 had one
+peer stuck in phase 2 again (this time the joiner, after 688 rollbacks; its
+music stop was never issued -- no DeleteDecoder -- while its stream thread
+went on feeding), and RTT 150 diverged at 5726, two frames before the
+second round's phase 3 -> 4, in lockstep, with identical inputs. Both are
+one thing: **the sound update's enable word is in the rollback state.**
+The loop zeroes that word while it re-simulates (the title's sound update
+is skipped in re-simulated frames, section 9) and puts the saved value back
+afterwards -- but a frame committed *during* a re-simulation is committed
+with the word at zero, and a later rollback to such a frame (a second
+misprediction inside an earlier rollback's span, common with hundreds of
+rollbacks) restores the zero; `sound_skip(true)` then saved that zero and
+`sound_skip(false)` put the zero back, and the sound update was off for the
+rest of the match: no round-end music stop (the phase machine waits for it:
+k0c), and whatever the sound update does to the fight state at a round
+start differed between the peers (k150c). Fixed in rb_hooks.cpp: the value
+put back is the last *live* one; a restore that brings the word back as
+zero is noted in the log.
+
+With that (runs l0c/l50c/l150c): every instance through the whole match,
+0 decode errors, no abort, the same phases on both peers (26/26, 26/26,
+22/22), 54 + 25/51 + 67/63 such zero restores caught on the way -- and one
+mismatching word from frame 5726 (RTT 0 and 50; 5826 at 150) to the end:
+**0x1008F088, the stage id**, 0x13 on one peer and 0x1A on the other
+(dumps of l0d, T5_NET_DESYNC_DUMP=1, nothing else differing in the 20
+frames dumped). It is re-rolled from the C rand() -- the word a side thread
+consumes at its own pace, out of both hashes since section 12 -- at the
+second round's intro, and the fight does not use it (same phases, same
+rounds, the same stage on screen). Left out of both gameplay hashes
+(`kDefaultHashSkip`, `kGameSkip`) like the rand() word itself.
+
+The next three (m0c/m50c/m150c, dumps on): 0 decode errors, no abort, the
+same phases on both peers, and two more words of the same kind, set at
+the *second match's* intro (frames 5826-5845, phase 10) and unchanged for
+the rest of it: +0x830 of P2's fighter block, a pointer into 0x10670000
+(0x10670AF0 on one peer, 0x106707F0 on the other; 0x1066F470 vs
+0x1066F170 at RTT 150), and a unit vector at 0x100A0A10 ((0.17, -0.91,
+0.37) vs (-0.41, -0.90, 0.13); in n0c a scale of (1, 1, 1) vs (0, 0, 0)
+twenty words further, at 0x100A0A30: one record, 0x100A0A00+0x80 left out
+whole) -- nothing else in the 20 frames dumped,
+the fight on, the same rounds, the same phases. These never showed in the
+phase 5-8 matches, which ran as far: those had the sound update silently
+off on one or both peers after the first rollbacks (the zero restore
+above), so whatever the sound side hands the fight at a match intro --
+these look like a voice/effect handle and an emitter direction -- was
+never handed over then. Both peers now run their sound update, each with
+its own history (the effects of re-simulated frames are skipped on one
+side and not the other), so sound handles stored in the fight state differ
+from the first match intro after a rollback on. Left out of both hashes
+with the five handle fields NETPLAY.md already lists. The right way, when
+someone takes the sound side on, is Tekken 6 Native Online's: run the
+sound update in re-simulated frames and start no sound twice.
+
+One transient at RTT 150 (m150c, frame 5845, one dump of 20): a table of
+pointers at 0x10091AB8 (fighter objects in the heap, 0x8D0 apart) filled
+on one peer a frame before the other during the intro's loading --
+asynchronous loading, lockstep window, no consequence seen.
+
+## 19. Where phase 9 ends: the stream is solved, the sound side is not match state yet
+
+Final pairs with everything above (o0c, o50c; same setup, dumps on):
+0 decode errors, no abort, 0 "writable 0" stalls of the reader, the same
+phases on both peers through both matches -- and still a sync-check
+mismatch from the second match's intro (frame 5845) on: a table of twenty
+heap pointers at 0x10091AB8 (objects 0x8D0 apart, in the fight block's
+last page) filled on one peer and zero on the other for the rest of the
+match (o0c; a one-frame transient of the same table in m150c), and in
+o50c one more pointer into 0x10670000 at +0x1100 of P2's block (frame
+5879, 0x1066FD70 vs 0x106713F0). Like the
+stage re-roll, the handle and the effect record before it, it is set at
+the intro by the side whose history now differs between the peers: with
+the enable word fixed, both peers run the title's sound update, but each
+skips it in its *own* re-simulated frames (section 9), so the sound side's
+allocations (voices, handles, effect records) diverge from the first
+rollback on, and whatever it hands the fight block at a match intro
+differs. The fight does not read these back (identical phases, rounds and
+positions through two matches in every run), but the detector cannot tell
+that apart from a divergence, and three words were skipped on evidence
+rather than on a layout.
+
+So the online default **stays opt-in** (`T5_RB_MODE=net` offers rollback;
+`offered_by_env` in rb_net.cpp), with the rule's "clean" unmet by the
+detector though met by the fight. Two ways to finish, in order of
+preference:
+
+1. Tekken 6 Native Online's (release note 2.2.4): run the sound update in
+   re-simulated frames too and have the sound side start no sound twice
+   (a sound started in a frame that is re-simulated keeps playing, the
+   re-simulation's start of the same sound is a no-op, nothing is cut).
+   Then both peers' sound histories are the confirmed timeline and the
+   words above agree. Needs the sound request path (0xAA200 -> 0x32819C
+   and the bnusCore request areas at 0x10114000 / 0x40000000) understood
+   well enough to key "the same sound".
+2. Hash only the fight: the netplay/df owners of the fight-block layout
+   take the sound side's fields (handles, the pointer table at +0x1AB8 of
+   P2, the effect record at 0x100A0A00) out of `kDefaultHash`, as the five
+   handle fields already are.
+
+Everything else of the phase-9 brief is done: the ATRAC stream is read
+from its archive (patch 0028), the j/k/l/m/n/o pairs at RTT 0/50/150 with
+3 % loss and delay 1 ran 10 000-15 000 frames each with 0 decode errors
+and no abort (18 instances), the round-end hang and the reader's abort are
+gone, and the lockstep windows are lockstep.

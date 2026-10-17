@@ -1,0 +1,502 @@
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 4d9407e..2e74482 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -58,6 +58,12 @@ static pthread_mutex_t s_atrac_lock = PTHREAD_MUTEX_INITIALIZER;
+ #define AT3P_SAMPLES   2048
+ #define AT3P_DELAY     0x170
+ #define ATRAC_MAX_SLOTS 16
++#ifdef _WIN32
++#  define ATRAC_FSEEK64(f, off) _fseeki64((f), (long long)(off), SEEK_SET)
++#else
++#  define ATRAC_FSEEK64(f, off) fseeko((f), (off_t)(off), SEEK_SET)
++#endif
++#define ATRAC_HIST      64   /* answers remembered per stream (a rollback rewinds the title by a few frames, one or two questions each) */
+ 
+ typedef struct {
+     u32 channels, block_align;
+@@ -83,22 +89,130 @@ typedef struct {
+     u32 ring_ea, ring_size;    /* the title's buffer */
+     int linear;                /* half-way buffer: file offset == buffer offset */
+     u32 ring_wr;               /* where the title writes next */
+-    u32 ring_fill;             /* bytes in the ring not decoded yet */
+     u32 read_pos;              /* file offset the title reads next */
+-    u32 added, readded_bad, decode_errors;   /* diagnostics */
+-    int stale;                 /* rollback: the title's pending add was decided before the rollback */
++    /* The title's own copy of the last answer GetStreamDataInfo gave it
++     * (the guest variables it passed), and the answers given so far: an
++     * add is taken from where the title says it wrote (see AddStreamData). */
++    u32 wp_ea, rp_ea;
++    u32 hist_wr[ATRAC_HIST], hist_rp[ATRAC_HIST];
++    u32 hist_n;
++    /* The stream's own file: the archive it sits in and where (arc_learn). */
++    FILE* arc;
++    unsigned long long arc_base, arc_cand;
++    int arc_seen, arc_fail;
++    char arc_host[512];
++    int whole_said;
++    u32 added, readded_bad, decode_errors, rewinds, dropped, moved;   /* diagnostics */
++    int stale;                 /* a rollback rewound the title since its last question */
+ } AtracSlot;
+ 
+ static AtracSlot s_slots[ATRAC_MAX_SLOTS];
+ 
+-/* Rollback support (src/rollback): the title's streaming buffers are written
+- * by its feeder thread, which a rollback must not rewind, so the rollback
+- * excludes those pages from its snapshots. Lists the live streaming rings
+- * (guest address + size); returns how many. */
+-/* The rollback just rewound the title: whatever it is about to add was
+- * decided with a buffer position it got before the rollback (the question
+- * and the answer are on the title's side, rewound; the write pointer here is
+- * not), so the next adds are dropped until it asks again. */
++static int atrac_trace(void)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("ATRAC_TRACE") ? 1 : 0;
++    return on;
++}
++
++/* ---- the stream's own file ------------------------------------------------
++ *
++ * A rollback (src/rollback) rewinds the title's memory a few frames and
++ * re-simulates. The title's music stream reader is only half rewound with
++ * it: its chunk bookkeeping goes back, its staging buffer and this library
++ * do not -- so after a rollback it feeds this library a block's tail from
++ * the wrong buffer, a block's head a second time, or simply the chunks it
++ * had already fed, and the byte count it passes cannot tell these apart
++ * (docs/ROLLBACK.md section 18). What the library can rely on is the file
++ * itself: the title reads the stream in blocks from its archive (ppu_fs.cpp
++ * tells us each read: buffer, archive offset, host path), the first chunks
++ * it feeds are found in those blocks, which gives the stream's offset in
++ * the archive, and from then on the library reads the stream from the
++ * archive on its own. The title's feeds then only pace the stream (its
++ * ring accounting is kept as before); what it copies is not used. Without
++ * such a read (a stream fed from memory) the title's bytes are used as
++ * before. */
++typedef struct { u32 ea, len; u64 pos; char host[512]; } FsRead;
++static FsRead s_reads[8];
++static u32 s_reads_n;
++
++void cellAtrac_fs_read(u32 ea, u64 pos, u32 len, const char* host)
++{
++    if (!host || !*host || len < 64) return;
++    ATRAC_LOCK();
++    FsRead* r = &s_reads[s_reads_n++ % 8];
++    r->ea = ea; r->len = len; r->pos = pos;
++    strncpy(r->host, host, sizeof r->host - 1); r->host[sizeof r->host - 1] = 0;
++    ATRAC_UNLOCK();
++}
++
++/* Where bytes the title has for file offset rpos are in a recent read:
++ * the archive offset of the stream's byte 0, or 0 if nowhere. */
++static int arc_locate(const u8* src, u32 n, u32 rpos, u64* base, const FsRead** from)
++{
++    const u32 k = n < 256 ? n : 256;
++    if (k < 64) return 0;
++    const u32 m = s_reads_n < 8 ? s_reads_n : 8;
++    for (u32 i = 0; i < m; i++) {
++        const FsRead* r = &s_reads[(s_reads_n - 1 - i) % 8];
++        if (r->len < k) continue;
++        const u8* buf = vm_base + r->ea;
++        for (u32 off = 0; off + k <= r->len; off++) {
++            if (buf[off] != src[0] || memcmp(buf + off, src, k)) continue;
++            if (r->pos + off < rpos) continue;
++            *base = r->pos + off - rpos;
++            *from = r;
++            return 1;
++        }
++    }
++    return 0;
++}
++
++/* Bytes the title holds for file offset rpos: learn the stream's place in
++ * the archive from them, if not known yet. Two sightings must agree and the
++ * archive must hold those very bytes there. */
++static void arc_learn(AtracSlot* s, const u8* src, u32 n, u32 rpos)
++{
++    if (s->arc || s->arc_fail >= 4) return;
++    u64 base = 0; const FsRead* r = NULL;
++    if (!arc_locate(src, n, rpos, &base, &r)) return;
++    if (!s->arc_seen || s->arc_cand != base || strcmp(s->arc_host, r->host)) {
++        s->arc_cand = base; s->arc_seen = 1;
++        strncpy(s->arc_host, r->host, sizeof s->arc_host - 1); s->arc_host[sizeof s->arc_host - 1] = 0;
++        return;
++    }
++    FILE* f = fopen(r->host, "rb");
++    if (!f) { s->arc_fail++; return; }
++    u8 probe[256];
++    const u32 k = n < sizeof probe ? n : (u32)sizeof probe;
++    int ok = ATRAC_FSEEK64(f, base + rpos) == 0 && fread(probe, 1, k, f) == k && !memcmp(probe, src, k);
++    if (!ok) { fclose(f); s->arc_fail++; s->arc_seen = 0; return; }
++    s->arc = f;
++    s->arc_base = base;
++    fprintf(stderr, "[cellAtrac] handle=0x%08X: the stream is %s at offset 0x%llX: read from there from now on\n",
++            s->handle_ea, r->host, (unsigned long long)base);
++}
++
++/* The image up to file offset need, from the archive. */
++static void arc_fill(AtracSlot* s, u32 need)
++{
++    if (!s->arc || !s->img) return;
++    if (need > s->file_bytes) need = s->file_bytes;
++    if (need <= s->have) return;
++    if (ATRAC_FSEEK64(s->arc, s->arc_base + s->have) != 0) return;
++    const u32 want = need - s->have;
++    const size_t got = fread(s->img + s->have, 1, want, s->arc);
++    s->have += (u32)got;
++    if (got != want) {
++        static int said = 0;
++        if (said++ < 2) fprintf(stderr, "[cellAtrac] handle=0x%08X: short read of the stream's archive at 0x%llX\n",
++                                s->handle_ea, (unsigned long long)(s->arc_base + s->have));
++    }
++}
++
++/* Rollback support (src/rollback): the title's streaming buffers are the
++ * reader thread's, left out of the rollback state (cellAtrac_rb_live_rings);
++ * the title was just rewound (cellAtrac_rb_rolled_back): noted for the logs. */
+ void cellAtrac_rb_rolled_back(void)
+ {
+     ATRAC_LOCK();
+@@ -115,12 +229,6 @@ int cellAtrac_rb_live_rings(u32* ea, u32* size, int cap)
+     return n;
+ }
+ 
+-static int atrac_trace(void)
+-{
+-    static int on = -1;
+-    if (on < 0) on = getenv("ATRAC_TRACE") ? 1 : 0;
+-    return on;
+-}
+ 
+ static u32 le32(const u8* p) { return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24; }
+ static u16 le16(const u8* p) { return (u16)(p[0] | p[1] << 8); }
+@@ -187,14 +295,19 @@ static AtracSlot* slot_of(u32 handle_ea)
+ static void slot_free(AtracSlot* s)
+ {
+     if (s->dec) at3p_close(s->dec);
++    if (s->arc) fclose(s->arc);
+     free(s->img);
+     memset(s, 0, sizeof(*s));
+ }
+ 
+-/* Is decoder-stream frame k's data on hand? */
+-static int frame_ready(const AtracSlot* s, s32 k)
++/* Is decoder-stream frame k's data on hand? (From the archive if the stream
++ * is read from there and the title has not fed that far yet.) */
++static int frame_ready(AtracSlot* s, s32 k)
+ {
+-    return !s->img || s->have >= s->t.data_off + (u32)(k + 1) * s->t.block_align;
++    if (!s->img) return 1;
++    const u32 need = s->t.data_off + (u32)(k + 1) * s->t.block_align;
++    if (s->have < need && s->arc) arc_fill(s, need);
++    return s->have >= need;
+ }
+ 
+ /* Puts decoder-stream frame k in s->pcm, decoding forward from wherever the
+@@ -215,11 +328,10 @@ static int decode_frame(AtracSlot* s, s32 k)
+             /* A bad frame decodes as silence rather than ending the track. */
+             memset(s->pcm, 0, sizeof(s->pcm));
+             s->decode_errors++;
++            if (atrac_trace())
++                fprintf(stderr, "[cellAtrac] handle=0x%08X: frame %d (file @0x%X) did not decode\n", s->handle_ea, s->next_frame, at);
+         }
+         s->next_frame++;
+-        /* The frame's bytes leave the title's ring. */
+-        if (s->img && !s->linear)
+-            s->ring_fill = s->ring_fill > s->t.block_align ? s->ring_fill - s->t.block_align : 0;
+     }
+     s->pcm_frame = k;
+     return 0;
+@@ -235,6 +347,29 @@ static u32 loop_reread_pos(const AtracSlot* s)
+     return s->t.data_off + (u32)(k > 0 ? k : 0) * s->t.block_align;
+ }
+ 
++/* Bytes of the stream the title has put in its ring that the decoder has
++ * not consumed yet: what the title reads next, less what the decoder decodes
++ * next, a lap apart when a looping stream's reader is ahead of the decoder.
++ * Derived rather than counted, so that it follows the title's position when
++ * a rollback rewinds the title (its adds come again; counting them twice
++ * filled the ring on paper until the title had no room left and its stream
++ * reader gave up). */
++static u32 ring_fill_of(const AtracSlot* s)
++{
++    const u32 dec = s->t.data_off + (u32)s->next_frame * s->t.block_align;
++    if (s->read_pos >= dec) return s->read_pos - dec;
++    /* The title reads behind the decoder (its position followed its reader
++     * back after a rollback, docs/ROLLBACK.md 18): nothing in the ring, let
++     * it catch up -- unless it is a whole lap ahead of a looping stream's
++     * decoder, which is a long way off, not a few rings. */
++    if (dec - s->read_pos <= 16 * s->ring_size) return 0;
++    if (s->t.loop_start >= 0) {
++        const u32 lap = loop_reread_pos(s);
++        if (s->read_pos >= lap && dec <= s->file_bytes) return (s->file_bytes - dec) + (s->read_pos - lap);
++    }
++    return 0;
++}
++
+ /* The region the title may fill next: buffer offset, byte count, file offset. */
+ static void stream_info(const AtracSlot* s, u32* wr, u32* writable, u32* rpos)
+ {
+@@ -246,7 +381,8 @@ static void stream_info(const AtracSlot* s, u32* wr, u32* writable, u32* rpos)
+     }
+     *wr = s->ring_wr;
+     if (s->read_pos >= s->file_bytes) { *writable = 0; return; }   /* non-looping, all read */
+-    const u32 free_bytes = s->ring_size - s->ring_fill;
++    const u32 fill = ring_fill_of(s);
++    const u32 free_bytes = fill < s->ring_size ? s->ring_size - fill : 0;
+     const u32 tail = s->ring_size - s->ring_wr;
+     u32 n = free_bytes < tail ? free_bytes : tail;
+     /* Never ask past the end of the file. */
+@@ -318,9 +454,8 @@ s32 cellAtracSetDataAndGetMemSize(u32 pHandle, u32 pucBufferAddr, u32 uiReadByte
+         s->ring_size = uiBufferByte;
+         s->linear = uiBufferByte >= file_bytes;
+         s->ring_wr = s->linear ? readable : readable % uiBufferByte;
+-        /* The header is consumed on the spot; its bytes are free ring space. */
+-        s->ring_fill = readable - t.data_off;
+         mode = s->linear ? "half-way buffer" : "streaming";
++        arc_learn(s, file, readable, 0);   /* the title read these from its archive: where? */
+     }
+     if (puiWorkMemByte) vm_write32(puiWorkMemByte, 0x1000);
+     fprintf(stderr, "[cellAtrac] SetData handle=0x%08X ch=%u frames=%u first=%d end=%d loop=[%d,%d) "
+@@ -363,8 +498,10 @@ s32 cellAtracDeleteDecoder(u32 pHandle)
+     if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
+     if (s->img || s->decode_errors)
+         fprintf(stderr, "[cellAtrac] DeleteDecoder handle=0x%08X: %u bytes streamed in, %u/%u of "
+-                        "the file on hand, %u re-read bytes differing, %u bad frames\n",
+-                pHandle, s->added, s->have, s->file_bytes, s->readded_bad, s->decode_errors);
++                        "the file on hand, %u re-read bytes differing, %u bad frames, %u adds followed the title, "
++                        "%u dropped, %u found elsewhere in the file%s\n",
++                pHandle, s->added, s->have, s->file_bytes, s->readded_bad, s->decode_errors, s->rewinds, s->dropped, s->moved,
++                s->arc ? ", read from its archive" : "");
+     slot_free(s);
+     ATRAC_UNLOCK();
+     return CELL_OK;
+@@ -382,7 +519,7 @@ static s32 remain_frames(const AtracSlot* s)
+         const u32 dec_off = s->t.data_off + (u32)s->next_frame * s->t.block_align;
+         return s->have > dec_off ? (s32)((s->have - dec_off) / s->t.block_align) : 0;
+     }
+-    return (s32)(s->ring_fill / s->t.block_align);
++    return (s32)(ring_fill_of(s) / s->t.block_align);
+ }
+ 
+ /* One call returns at most one frame's worth of samples per channel,
+@@ -444,9 +581,16 @@ s32 cellAtracGetStreamDataInfo(u32 pHandle, u32 ppucWritePointer, u32 puiWritabl
+     if (ppucWritePointer) vm_write32(ppucWritePointer, (s->img ? s->ring_ea : (u32)(s->file - vm_base)) + wr);
+     if (puiWritableByte) vm_write32(puiWritableByte, n);
+     if (puiReadPosition) vm_write32(puiReadPosition, rpos);
++    if (s->img) {
++        s->wp_ea = ppucWritePointer;
++        s->rp_ea = puiReadPosition;
++        s->hist_wr[s->hist_n % ATRAC_HIST] = wr;
++        s->hist_rp[s->hist_n % ATRAC_HIST] = rpos;
++        s->hist_n++;
++    }
+     if (atrac_trace())
+-        fprintf(stderr, "[cellAtrac] GetStreamDataInfo handle=0x%08X -> write +0x%X, %u bytes, file @0x%X (fill %u)\n",
+-                pHandle, wr, n, rpos, s->ring_fill);
++        fprintf(stderr, "[cellAtrac] GetStreamDataInfo handle=0x%08X -> write +0x%X, %u bytes, file @0x%X (fill %u; answer kept at 0x%08X)\n",
++                pHandle, wr, n, rpos, s->img ? ring_fill_of(s) : 0, ppucWritePointer);
+     ATRAC_UNLOCK();
+     return CELL_OK;
+ }
+@@ -457,14 +601,46 @@ s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
+     if (!s->img) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_ALLDATA_IS_ONMEMORY; }
+-    if (s->stale) {   /* decided before a rollback: the title asks again and re-reads from read_pos */
+-        static int said = 0;
+-        if (said++ < 4) fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes decided before a rollback, dropped\n", pHandle, uiAddByte);
+-        ATRAC_UNLOCK();
+-        return CELL_OK;
+-    }
+     u32 wr, n, rpos;
+     stream_info(s, &wr, &n, &rpos);
++    /* The title copied its bytes to the write pointer it holds -- its copy
++     * of the last answer, in guest memory -- and asks us to take that many.
++     * The answer that named that place also named the file offset the title
++     * was to fill it from. Normally both are this slot's position; after a
++     * rollback (src/rollback) the title's copy can be an earlier answer (the
++     * title rewound, this library not) or a later one: the bytes are where
++     * the title says, and its ring accounting follows the title. A place no
++     * answer named belongs to another stream (a switch straddled by a
++     * rollback): dropped, the title asks again. */
++    if (s->wp_ea) {
++        const u32 two = vm_read32(s->wp_ea) - s->ring_ea;
++        if (two != wr) {
++            u32 meant = 0xFFFFFFFFu;
++            const u32 m = s->hist_n < ATRAC_HIST ? s->hist_n : ATRAC_HIST;
++            for (u32 i = 0; i < m; i++) {   /* the latest answer naming that place */
++                const u32 j = (s->hist_n - 1 - i) % ATRAC_HIST;
++                if (s->hist_wr[j] == two) { meant = s->hist_rp[j]; break; }
++            }
++            if (meant == 0xFFFFFFFFu) {
++                s->dropped++;
++                if (s->dropped <= 8)
++                    fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes at +0x%X, not a place this stream was given "
++                                    "(expected +0x%X)%s: dropped, the title asks again\n",
++                            pHandle, uiAddByte, two, wr, s->stale ? " after a rollback" : "");
++                ATRAC_UNLOCK();
++                return CELL_OK;
++            }
++            s->rewinds++;
++            if (s->rewinds <= 4 || atrac_trace())
++                fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: the title wrote at +0x%X (an answer for file @0x%X), "
++                                "expected +0x%X (@0x%X)%s: following the title\n",
++                        pHandle, two, meant, wr, rpos, s->stale ? " after a rollback" : "");
++            wr = two;
++            rpos = meant;
++            n = s->linear ? s->file_bytes - rpos : s->ring_size - wr;
++            if (!s->linear && n > s->file_bytes - rpos) n = s->file_bytes - rpos;
++        }
++    }
+     if (uiAddByte > n) {
+         fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes, only %u writable\n",
+                 pHandle, uiAddByte, n);
+@@ -473,25 +649,78 @@ s32 cellAtracAddStreamData(u32 pHandle, u32 uiAddByte)
+     }
+     if (uiAddByte) {
+         const u8* src = vm_base + s->ring_ea + wr;
+-        if (rpos + uiAddByte <= s->have) {
+-            /* A looping stream's second lap: the image already holds it. */
+-            for (u32 i = 0; i < uiAddByte; i++) s->readded_bad += src[i] != s->img[rpos + i];
++        u32 end = rpos + uiAddByte <= s->file_bytes ? rpos + uiAddByte : s->file_bytes;
++        int progress = 1;
++        if (!s->arc) arc_learn(s, src, uiAddByte, rpos);
++        if (s->arc) {
++            /* The stream is read from its archive; the title's bytes only
++             * pace it. Bytes that are not the file's at the position they
++             * were asked for are the title's reader feeding chunks it had
++             * already fed, or the wrong block, after a rollback rewound its
++             * bookkeeping: no progress -- the position stays and the next
++             * answers name it again until the reader is back there. (Taking
++             * them as progress put the position a ring ahead of the decoder
++             * after a long match, the reader then had no room to write and
++             * the title's round-end music switch waited for it for good.) */
++            arc_fill(s, end);
++            if (end > rpos && s->have >= end && memcmp(src, s->img + rpos, end - rpos)) {
++                /* Not the file's bytes there: where in the file are they? The
++                 * reader is behind (feeding chunks again) or ahead (it went
++                 * on while the position was put back by a re-issued answer);
++                 * the position follows it there. Nowhere near: the wrong
++                 * block, no progress. */
++                const u32 cn = end - rpos, k = cn < 256 ? cn : 256;
++                const u32 lo = rpos > s->ring_size ? rpos - s->ring_size : 0;
++                u32 hi = rpos + 4 * s->ring_size;
++                if (hi > s->file_bytes - cn) hi = s->file_bytes - cn;
++                arc_fill(s, hi + cn);
++                u32 q = 0xFFFFFFFFu;
++                for (u32 d = 1; cn >= 64; d++) {
++                    const int below = rpos >= lo + d, above = rpos + d <= hi && rpos + d + cn <= s->have;
++                    if (!below && !above) break;
++                    if (below && s->img[rpos - d] == src[0] && !memcmp(s->img + rpos - d, src, k) && !memcmp(s->img + rpos - d, src, cn)) { q = rpos - d; break; }
++                    if (above && s->img[rpos + d] == src[0] && !memcmp(s->img + rpos + d, src, k) && !memcmp(s->img + rpos + d, src, cn)) { q = rpos + d; break; }
++                }
++                if (q != 0xFFFFFFFFu) {
++                    s->moved++;
++                    if (s->moved <= 4 || atrac_trace())
++                        fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: the %u bytes the title fed for file @0x%X are the file's @0x%X%s: "
++                                        "the position follows its reader there\n",
++                                pHandle, cn, rpos, q, s->stale ? " (after a rollback)" : "");
++                    rpos = q;
++                    end = q + cn;
++                } else {
++                    progress = 0;
++                    s->readded_bad += cn;
++                    if (s->readded_bad == cn || atrac_trace())
++                        fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: the %u bytes the title fed for file @0x%X are not the file's near there%s: "
++                                        "no progress (the stream is read from its archive)\n",
++                                pHandle, cn, rpos, s->stale ? " (after a rollback)" : "");
++                }
++            }
++        } else if (end <= s->have) {
++            /* A looping stream's second lap, a rewound title: the image already holds it. */
++            for (u32 i = 0; i < end - rpos; i++) s->readded_bad += src[i] != s->img[rpos + i];
+         } else if (rpos <= s->have) {
+-            memcpy(s->img + rpos, src, uiAddByte);
+-            s->have = rpos + uiAddByte;
++            const u32 old = s->have - rpos;
++            for (u32 i = 0; i < old; i++) s->readded_bad += src[i] != s->img[rpos + i];
++            memcpy(s->img + s->have, src + old, end - s->have);
++            s->have = end;
++        } else {
++            fprintf(stderr, "[cellAtrac] AddStreamData handle=0x%08X: %u bytes at file @0x%X beyond the %u on hand: ignored\n",
++                    pHandle, uiAddByte, rpos, s->have);
+         }
+         s->added += uiAddByte;
+-        s->read_pos += uiAddByte;
++        if (progress) s->read_pos = rpos + uiAddByte;
+         if (!s->linear) {
+-            s->ring_fill += uiAddByte;
+-            s->ring_wr += uiAddByte;
++            s->ring_wr = wr + uiAddByte;
+             /* Wrap early rather than hand out a tail shorter than a frame. */
+             if (s->ring_size - s->ring_wr < s->t.block_align) s->ring_wr = 0;
+             /* The file went through: a looping track starts over at its loop. */
+             if (s->read_pos >= s->file_bytes && s->t.loop_start >= 0)
+                 s->read_pos = loop_reread_pos(s);
+         }
+-        if (s->have >= s->file_bytes && rpos + uiAddByte >= s->file_bytes)
++        if (s->have >= s->file_bytes && rpos + uiAddByte >= s->file_bytes && !s->whole_said++)
+             fprintf(stderr, "[cellAtrac] handle=0x%08X: whole file streamed in (%u bytes)%s\n",
+                     pHandle, s->file_bytes, s->t.loop_start >= 0 ? ", looping from here on" : "");
+     }
+@@ -508,7 +737,7 @@ s32 cellAtracGetVacantSize(u32 pHandle, u32 puiVacantSize)
+     AtracSlot* s = slot_of(pHandle);
+     if (!s) { ATRAC_UNLOCK(); return (s32)CELL_ATRAC_ERROR_UNSET_DATA; }
+     u32 v = 0;
+-    if (s->img) v = s->linear ? s->file_bytes - s->read_pos : s->ring_size - s->ring_fill;
++    if (s->img) { const u32 fill = ring_fill_of(s); v = s->linear ? s->file_bytes - s->read_pos : fill < s->ring_size ? s->ring_size - fill : 0; }
+     vm_write32(puiVacantSize, v);
+     ATRAC_UNLOCK();
+     return CELL_OK;
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+index 4c03372..bbe280d 100644
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -155,7 +155,8 @@ static void host_path(char* out, size_t cap, const char* guest)
+ #define FS_MAX 256
+ static FILE* g_files[FS_MAX];
+ static uint8_t g_fd_usm[FS_MAX];
+-static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */   /* 1 if this fd is an open .usm movie (read tracker) */
++static char    g_fd_path[FS_MAX][192];   /* guest path per fd (diagnostics) */
++static char    g_fd_host[FS_MAX][512];   /* host path per fd (cellAtrac reads a streamed file from its archive itself) */   /* 1 if this fd is an open .usm movie (read tracker) */
+ static DIR*  g_dirs[FS_MAX];
+ static char  g_dir_path[FS_MAX][1024];   /* host path per open dir (for readdir stat) */
+ 
+@@ -234,6 +235,7 @@ static void cellFsOpen(ppu_context* ctx)
+      * movies) is diagnosed from the opener: its sibling read path is the one
+      * that is not running. */
+     if (fd >= 0 && fd < FS_MAX) { strncpy(g_fd_path[fd], gpath, sizeof g_fd_path[fd]-1); g_fd_path[fd][sizeof g_fd_path[fd]-1]=0; }
++    if (fd >= 0 && fd < FS_MAX) { strncpy(g_fd_host[fd], hpath, sizeof g_fd_host[fd]-1); g_fd_host[fd][sizeof g_fd_host[fd]-1]=0; }
+     { char who[64] = "?";
+       if (getenv("FS_CALLER")) { ppu_guest_caller(who, sizeof who);
+           fprintf(stderr, "[fs] open '%s' -> fd %d  (opened by %s)\n", gpath, fd, who);
+@@ -375,6 +377,8 @@ static inline void fs_prefault(uint32_t buf, uint64_t len)
+     p[len - 1] = p[len - 1];
+ }
+ 
++extern "C" void cellAtrac_fs_read(uint32_t ea, uint64_t pos, uint32_t len, const char* host);   /* libs/codec/cellAtrac.c */
++
+ static void cellFsRead(ppu_context* ctx)
+ {
+     int fd          = (int)(uint32_t)ctx->gpr[3];
+@@ -387,6 +391,7 @@ static void cellFsRead(ppu_context* ctx)
+     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
+     fs_prefault(buf, nbytes);
+     size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
++    if (n > 0 && fd >= 0 && fd < FS_MAX) cellAtrac_fs_read(buf, (uint64_t)fpos_before, (uint32_t)n, g_fd_host[fd]);
+     /* PS3_FSLOG_EOF=<fd>,<bytes>: report end-of-file past <bytes> on one descriptor.
+      * The intro cinematic is 28 seconds and this port renders it at a few frames
+      * a second, so it cannot be watched to its end -- truncating the stream makes
+@@ -425,9 +430,9 @@ static void cellFsRead(ppu_context* ctx)
+       if (fd>=0 && fd<64) { per_fd[fd]+=n; cnt_fd[fd]++; }
+       int first_for_fd = (fd>=0 && fd<64 && cnt_fd[fd]==1);
+       if(__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED)<50 || first_for_fd || getenv("FS_READ_ALL"))
+-        fprintf(stderr,"[fs] read fd=%d nbytes=%llu -> %zu (magic=%02X%02X%02X%02X, total=%llu)%s\n",
++        fprintf(stderr,"[fs] read fd=%d nbytes=%llu -> %zu (magic=%02X%02X%02X%02X, total=%llu) pos=%ld buf=0x%08X%s\n",
+                 fd,(unsigned long long)nbytes,n,vm_base[buf],vm_base[buf+1],vm_base[buf+2],vm_base[buf+3],
+-                (unsigned long long)tot, first_for_fd?"  <= FIRST READ ON THIS FD":"");
++                (unsigned long long)tot, fpos_before, buf, first_for_fd?"  <= FIRST READ ON THIS FD":"");
+       if (getenv("FS_READ_PATH") && fd>=0 && fd<64 && g_fd_path[fd][0])
+           fprintf(stderr, "        from %s\n", g_fd_path[fd]);
+ #ifndef _WIN32

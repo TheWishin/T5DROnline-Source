@@ -2,28 +2,52 @@
 
 Releases are built and published by GitHub Actions
 (`.github/workflows/release.yml`) when a version tag is pushed. Nobody needs a
-GitHub token on their PC: the workflow publishes with its own `GITHUB_TOKEN`,
-and only after the repository owner approved it on GitHub.
+GitHub token on their PC: the workflow publishes with its own `GITHUB_TOKEN`.
+Only the owner's account can start it: the owner, or the main Claude session,
+which pushes with the owner's own git login.
 
 How the zip is put together, and why, is in [RELEASE.md](RELEASE.md). This page
 is the procedure.
 
+## Two repositories (since 2026-10-17)
+
+Like Tekken 6 Native Online:
+
+- **TheWishin/T5DROnline-Dev** (private): all code, history, CI and the release
+  workflow. `origin` of every checkout.
+- **TheWishin/T5DROnline** (public): only README.md, README.de.md,
+  TROUBLESHOOTING.md and LICENSE, in one commit by a neutral author (no
+  contributors shown), plus the Releases with the zips.
+
+Never push source to the public repository. Its content is made with
+`python tools/make_public_repo.py --out C:/T5DR-public` and committed there as
+`T5DR Online <noreply@t5dr-online.invalid>` (a separate clone, remote `public`).
+Update it when the player README changes (amend + force-push keeps it at one
+commit).
+
 ## One-time setup (the owner, in the GitHub web UI)
 
-Only the owner (TheWishin) may publish releases. Two settings enforce that.
+Only the owner's account (TheWishin) may publish releases: the owner, or the
+main Claude session, which pushes with the owner's own git login (the owner's
+choice, 2026-10-17).
 
-**1. The `release` environment -- every publish waits for the owner's approval.**
+**0. The token that lets the private workflow publish into the public repo.**
 
-Settings -> Environments -> **New environment** -> name `release` ->
-**Configure environment**:
+1. github.com -> your picture -> **Settings** -> **Developer settings** ->
+   **Personal access tokens** -> **Fine-grained tokens** -> **Generate new token**.
+2. Name `T5DR release`, Expiration e.g. 1 year, Resource owner `TheWishin`.
+3. **Repository access** -> **Only select repositories** -> `TheWishin/T5DROnline`
+   (the public one only).
+4. **Permissions** -> Repository permissions -> **Contents: Read and write**
+   (Metadata: Read-only is added by itself). Nothing else.
+5. **Generate token** and copy it (it is shown once).
+6. In **T5DROnline-Dev** -> Settings -> Secrets and variables -> Actions ->
+   **New repository secret**: name `PUBLIC_RELEASE_TOKEN`, paste, **Add secret**.
 
-- **Required reviewers**: tick it, add `TheWishin`.
-- **Prevent self-review**: leave it **off** (unticked), so the owner can approve
-  a run they started themselves.
-- **Deployment branches and tags**: choose **Selected branches and tags** ->
-  **Add deployment branch or tag rule** -> Ref type **Tag** -> pattern `v*` ->
-  **Add rule**.
-- No secrets, no variables, no wait timer. **Save protection rules**.
+Nobody else ever sees the token; the workflow uses it only in the publish job.
+
+**1. Nobody else has write access** to either repository (Settings ->
+Collaborators and teams: no one, or only Read).
 
 **2. A tag ruleset -- only the admin creates, moves or deletes release tags.**
 
@@ -36,13 +60,22 @@ Settings -> Rules -> Rulesets -> **New ruleset** -> **New tag ruleset**:
   deletions** (keep **Block force pushes** ticked).
 - **Create**.
 
-Why both: the main session pushes with the owner's own git credentials, so to
-GitHub its pushes *are* the owner's. The ruleset and the workflow's owner check
-(`github.actor` and `github.triggering_actor` must be the repository owner, for
-tag pushes and manual runs) keep everyone else out, but cannot tell the owner
-from a tool using their login. The environment's required reviewer can: the
-publish job waits until the owner clicks **Approve** on GitHub (web or the
-GitHub mobile app).
+**3. The `release` environment -- publishing only from `v*` tags.** It exists
+since the first release (GitHub created it then).
+
+Settings -> Environments -> `release`:
+
+- **Deployment branches and tags**: choose **Selected branches and tags** ->
+  **Add deployment branch or tag rule** -> Ref type **Tag** -> pattern `v*` ->
+  **Add rule**.
+- **Required reviewers**: off, so the Claude session can finish a release
+  without a click. Tick it and add `TheWishin` if every publish should wait for
+  the owner's approval (then leave **Prevent self-review** off).
+- No secrets, no variables, no wait timer. **Save protection rules**.
+
+The workflow's owner check (`github.actor` and `github.triggering_actor` must be
+the repository owner, for tag pushes and manual runs) is the last guard: a run
+started by anyone else stops before it builds anything.
 
 Nothing else is needed: Actions are already enabled (CI runs), and the publish
 job asks for `contents: write` itself; the build job only reads.

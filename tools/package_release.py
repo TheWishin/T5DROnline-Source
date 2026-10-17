@@ -494,6 +494,7 @@ def add_docs(stage, version):
         f.write(f"Tekken 5: Dark Resurrection Online -- native Windows build, release {version}\n\n{body}\n")
     lic = os.path.join(stage, "LICENSES")
     os.makedirs(lic, exist_ok=True)
+    copy(os.path.join(ROOT, "LICENSE"), os.path.join(lic, "T5DR-Online-MIT.txt"))
     copy(os.path.join(stage, "deps", "ps3recomp", "LICENSE"), os.path.join(lic, "ps3recomp-MIT.txt"))
     at3 = os.path.join(stage, "deps", "ps3recomp", "third_party", "at3_standalone", "COPYING.LGPLv2.1")
     if os.path.exists(at3):

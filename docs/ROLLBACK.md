@@ -1802,14 +1802,13 @@ run2). Before the fix the same test hung at 3 of the first 4 match ends
 Rollback pairs with the fix (`rollback_net_test.py`, the section 29 command):
 RTT 150 (RH1) 57.4 / 58.7 fps per match, 300-frame window median 60.0, p99
 25 / 24 ms; RTT 0 (RH2) 57.7 / 59.0, median 60.0; both 0 mismatching frames
-and the same result hash on both PCs. The scripted match now ends 2-0 for P1
-after 4456 frames instead of 0-2 for P2 after 4402 (every earlier build,
-lockstep too): with the loaders drained before the snapshot the fight's
-loading ends a frame earlier (phase 11 at frame 195 instead of 196) and the
-load-end barrier (t5_hooks.cpp `fight_loaded_now`, phase 11-17) comes at
-phase 11 instead of the first fight frame (17), where the RNGs are reseeded.
-Both PCs do the same, so they stay in sync; the drain-order change alone
-(fx1 build, RI1) gives the same new timeline.
+and the same result hash on both PCs; lockstep at RTT 50 (KH50L) in sync
+too. These builds are on main with the reset-fix merge (section 29's were
+before it), and the same numbers came out. The scripted match now ends 2-0
+for P1 after 4456 frames instead of 0-2 for P2 after 4402: that comes with
+the merge (the end of the fight's loading is the sync point, at phase 11,
+where the RNGs are reseeded) -- the first build after the rebase, before this
+fix, plays the same (RI3).
 
 ## What is left
 

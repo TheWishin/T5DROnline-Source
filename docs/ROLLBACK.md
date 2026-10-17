@@ -518,3 +518,103 @@ verified in-process only (m1/c7), not yet peer-to-peer.
   (`cpu`/`pf`) lowers.
 - Direct-fight integration: `t5_netplay_start()` works unchanged (rollback
   from frame 0 with `T5_RB_NET_START=0`), untested.
+
+---
+
+# Phase 3 -- time sync, negotiation, barrier tests, sound, the draw thread (branch `rollback3`)
+
+Online now means: lobby -> direct fight -> this netplay. Rollback is the
+default when both peers have it; the delay-based lockstep is the fallback.
+
+## 10. What changed
+
+**Negotiation (HELLO).** `HelloExt` carries a `flags` word (bit 0 = this side
+offers rollback; an older peer's 8-byte HELLO reads as no offer). The offer is
+made in `h_cellPadInit` before the handshake (`rb::net::offer()`) whenever
+`T5_NET_MODE` is set and `T5_RB_MODE` is unset or `net`; `T5_RB_MODE=lockstep`
+(or `off`) withholds it. `np::rb_negotiated()` = both offered and connected;
+`rb::net::enabled()` requires it, so a peer without rollback (or one that
+asked for lockstep) gets the lockstep on both sides. Run n5 (joiner with
+`T5_RB_MODE=lockstep`): host offered, joiner did not, both ran the lockstep
+through frame 3600 with no rollback loop on either side.
+
+**Direct fight.** With `T5_NET_START=external` the fight start
+(`t5_netplay_start()` from `src/directfight`, branch `direct-fight`) is
+lockstep frame 0: np's frame-0 handshake and RNG reseed run as before and the
+rollback loop takes over at frame 1 (`T5_RB_NET_START` default 0 means "the
+first frame after the handshake"). A later `t5_netplay_start()` (next match)
+is a scene barrier. Not yet exercised with the direct-fight branch itself
+(still in progress); the tests here switch at a lockstep frame in the fight.
+
+**Time sync** (GGPO's frame-advantage balancing). Every input packet carries
+the sender's lead estimate (`InputHdr.lead`: own frame minus the peer's
+frame as implied by its latest input, i.e. `f - (remote_contig - 1 - delay)`);
+the true advantage is `(mine - theirs) / 2` averaged over 30 frames; a side
+ahead by >= 1 frame sleeps that many frames (<= 3) at the boundary, at most
+once per 60 frames (`np::rb_wait_remote` with a timeout, so the socket stays
+pumped). `T5_RB_NET_TIMESYNC=0` disables it. Run n4 (RTT 150 ms +-5, 2 %
+loss, delay 2, both scripts attacking, 300-frame windows, loaded machine at
+16-19 fps):
+
+| window | joiner: advantage, rollbacks, sleeps | host: advantage, rollbacks, sleeps |
+|---|---|---|
+| 1 | +3.60 frames, 34 (117 frames re-simulated, depth <= 7), 5 sleeps (283 ms) | -3.27, 2, 0 |
+| 2 | +1.06, 20 (41), 2 (94 ms) | -0.99, 2, 0 |
+| 3 | +0.50, 19 (22, depth <= 2), 2 (50 ms) | -0.50, 3, 0 |
+| 4 | -0.31, 8 (11), 1 (9 ms) | +0.33, 15 (24), 2 (44 ms) |
+
+Without it (phase 2, n3) the joiner took every rollback (38-40 per window,
+depth up to 8) and the host none.
+
+**The draw thread's side** (`kDrawCut2`, `T5_RB_CUT2`). Profiling the draw
+thread (`T5_RB_ICALL_TID=4`) during re-simulation showed it still processing
+~900 packets per re-simulated frame (packets pushed by direct calls that the
+main-thread cut cannot reach) and spending up to 20 ms per frame in one HLE
+call, which is what the main thread's `sys_event_queue_receive` (0.7-8 ms)
+and `sys_cond_wait` (1.5 ms) in the present were waiting for. The 18 per-packet
+handlers of the NU::Draw request manager (`0x3552E0 0x392498 0x392334 0x397B54
+0x385DBC 0x32659C 0x359A08 0x35E998 0x35933C 0x389914 0x389B28 0x355B78
+0x385814 0x39229C 0x364CDC 0x36432C 0x362FDC 0x35ACEC`) are now stubbed on the
+other threads while re-simulating. Run d2 (43 rollbacks, 0 gameplay
+mismatches in 344 boundaries, no hang): the traced re-simulated frame ended at
+7.0 ms with the receive at 0.34 ms and the cond wait at 0.005 ms, against
+19.5 ms (receive 8.2 ms) in the same frame of d1 without it.
+
+**Barrier rule under test** (`T5_RB_MODE=test`, rollbacks of 8 frames every
+30, P2 idle so the rounds time out, 420 s, runs a1/a0/aref): the round timer
+ran 3406 -> 0, the round ended (draw) and the next one started at ~frame
+6700-7000 with the game's input-ring reset (the scene-change marker) at
+frames 6707, 6708 and 6827; the rollbacks continued straight through --
+a1: **190 rollbacks, 0 gameplay-hash mismatches in 1520 re-simulated
+boundaries**, including two re-simulated boundaries that re-ran the ring
+reset (R 6877/6878, both MATCH). So in-process, re-simulating across a round
+end/start reproduces the game exactly. KO slow-motion and the match end are
+covered by run a2 (both fighters attacking) -- see the table below. In the
+netplay loop the rule stays conservative: a ring reset is acted on only once
+every input before it is confirmed (a stall of one RTT), then it is a sync
+point and the rollback floor.
+
+**Sound** (`AUDIO_WAV`, `tools/rollback_audio_check.py`: silent stretches
+>= 20 ms after the first sound, and transient onsets per minute as the
+SFX-start rate):
+
+| 420 s, same scripts, loaded machine | rollbacks | silent gaps | onsets/min |
+|---|---|---|---|
+| aref: no rollbacks | 0 | 93 (2.9 s) | 35 |
+| a0: 8-frame rollbacks every 30 frames, sound update NOT skipped | 154 | 76 (2.8 s) | **50** |
+| a1: same, sound update skipped in re-simulated frames | 190 | 125 (6.4 s) | 39 |
+
+Without the skip, re-simulated frames re-issue their sound effects: +43 %
+onsets (the duplicate-SFX artefact), plus 14 gameplay-hash mismatches of
+1232 (the sound handles stored in the fighter blocks depend on the sound
+thread's state). With the skip the onset rate is back at the reference
+(+11 %, within run-to-run variation) and the hash is clean, but the silent
+time doubles: the skipped update also feeds the music stream, and this test
+skips it for 8 frames at a time 190 times. Real rollbacks are 1-4 frames
+(n4), so the exposure is a few frames per rollback; the clean fix is to skip
+only the SFX requests and keep the stream feed (`0x32819C`'s callees, to be
+separated). Default stays skip on.
+
+## 11. Cost with everything on
+
+(see the table after run m2 below)

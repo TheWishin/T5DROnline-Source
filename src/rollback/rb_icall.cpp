@@ -51,6 +51,18 @@ const uint32_t kDrawCut[] = {
     0x00389AA0, 0x0038988C, 0x00397AF8, 0x00354160, 0x00353E68,     /* packet builders, draw-list append */
     0x00158D6C, 0x001357A0, 0x001EC6FC, 0x0009DC04, 0x00264220,     /* stage / effect / shadow draw passes (vtable targets; gameplay hash unchanged without them) */
 };
+/* The draw thread's side of it (NU::Draw request manager, the thread that
+ * turns the lists into GCM commands): its per-packet handlers, cut on every
+ * thread but the main one while re-simulating. The lists a re-simulated
+ * frame still produces (packets pushed by direct calls) are then skipped
+ * instead of processed, and the main thread's two waits on the draw thread
+ * (sys_cond_wait in 0x357714, sys_event_queue_receive in 0x380A10) collapse
+ * from 1.5 + 0.7-8 ms to ~0.3 ms (run d2, docs/ROLLBACK.md section 10).
+ * T5_RB_CUT2=addr,... overrides, T5_RB_CUT2=none disables. */
+const uint32_t kDrawCut2[] = {
+    0x00392498, 0x00392334, 0x003552E0, 0x00397B54, 0x00385DBC, 0x0032659C, 0x00359A08, 0x0035E998, 0x0035933C,
+    0x00389914, 0x00389B28, 0x00355B78, 0x00385814, 0x0039229C, 0x00364CDC, 0x0036432C, 0x00362FDC, 0x0035ACEC,
+};
 /* Open-addressed set of guest targets; read on the hot path, written at setup. */
 constexpr uint32_t kSetN = 1024;
 uint32_t g_cut_key[kSetN];
@@ -146,10 +158,15 @@ void icall_install()
     done = true;
     if (const char* e = getenv("T5_RB_ICALL_TIMING")) g_tm_enabled = *e == '1';
     if (const char* e = getenv("T5_RB_ICALL_TID")) g_tm_tid = (uint64_t)atoi(e);
-    if (const char* e = getenv("T5_RB_CUT2")) {   /* the draw thread's packet handlers, cut while re-simulating */
-        const char* p = e;
+    const char* spec2 = getenv("T5_RB_CUT2");
+    if (spec2 && !strcmp(spec2, "none")) { note("draw-thread cut: disabled (T5_RB_CUT2=none)"); }
+    else if (spec2 && *spec2) {
+        const char* p = spec2;
         while (*p) { char* z; uint32_t a = (uint32_t)strtoul(p, &z, 16); if (z == p) break; set_add(g_cut2_key, &g_cut2_count, a); p = z; while (*p == ',' || *p == ' ') p++; }
         note("draw-thread cut: %u targets from T5_RB_CUT2", g_cut2_count);
+    } else {
+        for (uint32_t t : kDrawCut2) set_add(g_cut2_key, &g_cut2_count, t);
+        note("draw-thread cut: %u built-in targets", g_cut2_count);
     }
     /* T5_RB_CUT: "addr,addr,..." (hex) replaces the built-in cut set; "none"
      * disables the cut (the resim then costs a full frame, as in phase 1). */

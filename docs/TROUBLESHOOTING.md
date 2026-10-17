@@ -590,6 +590,11 @@ Not a problem: when the camera swings behind scaffolding, pillars or boards,
 those objects turn see-through for a moment, so you can still see the
 fighters. The game does this itself.
 
+Also not a problem: after you beat the final boss in Arcade, the game shows
+"GAME OVER" and goes back to the title. There is no ending movie in this
+version of the game. The first time, the title then says that Jinpachi is now
+a playable character.
+
 Fixed since the QA report of 2026-10-16: dark faces, see-through rectangles on
 floors, flat white background figures (spectators, wolves), the 1970 clock and
 the failing first save.

@@ -73,7 +73,7 @@ jobs:
           CI: "1"
           PS3RECOMP_DIR: ${{ github.workspace }}/deps/ps3recomp
         run: |
-          python -m pip install --disable-pip-version-check --quiet pycryptodome
+          python -m pip install --disable-pip-version-check --quiet pycryptodome pillow
           if ($LASTEXITCODE) { exit 1 }
           python -m unittest discover -s tests -v
 

@@ -56,13 +56,20 @@ def pick_mode(g, index, wait=2.5):
     g.wait(wait)
 
 
-def start_fight(g, taps=(("CROSS", 1),), timeout=60.0):
+def start_fight(g, taps=(("CROSS", 1),), timeout=60.0, skip=True):
     """Confirm everything until the fight HUD is up: CROSS picks the fighter,
-    GAME START and the stage, START skips the VS splash and the intros
-    (CROSS does not skip arcade intros). Tapping stops at the first frame with
-    the HUD, before START could pause the fight."""
+    GAME START and the stage; with skip, START skips the VS splash and the
+    intros (CROSS does not skip arcade intros). Tapping stops at the first
+    frame with the HUD; if a last START still opened the pause/practice menu
+    (no HUD on the next frames), one more START closes it. Practice uses
+    skip=False: START there opens the practice menu and CROSS is enough."""
     g.phase("to-fight", "load")
-    t = g.until_fight(timeout=timeout, taps=tuple(taps) + (("START", 1),), need=1)
+    t = g.until_fight(timeout=timeout, taps=tuple(taps) + ((("START", 1),) if skip else ()), need=1)
+    if t is not None and skip:
+        f = g.wait_frame(lambda f: True, timeout=4, need=2)
+        if f is not None and not f.get("fight", {}).get("is_fight"):
+            g.event("unpause", "no HUD right after the fight started: START once to close the menu")
+            g.press("START", gap=800)
     g.expect("fight", t is not None, f"fight HUD after {t - g.phases[-1][2]:.0f}s" if t else
              f"no fight HUD within {timeout:.0f}s", evidence=(g.latest_frame() or {}).get("file"))
     return t is not None
@@ -148,7 +155,7 @@ def practice(ctx):
     g.phase("practice-select", "menu")
     pick_mode(g, PRACTICE, wait=3.0)
     g.shot("charsel")
-    if start_fight(g):
+    if start_fight(g, skip=False):
         fight(g, 12)
 
 

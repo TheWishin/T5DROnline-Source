@@ -117,10 +117,14 @@ anyway. Everything else fails regardless.
 - **Spikes** (broken SPU skinning, before patch 0002, drew the fighters as
   huge smooth triangles across the screen): the largest connected area of
   smooth, not-dark 16x16 blocks in the playfield (rows 200-680), as a share of
-  it. The two real broken-skinning screenshots score 0.11 and 0.30; 169 good
+  it. The two real broken-skinning screenshots score 0.11 and 0.30; 200+ good
   fight frames over 12 stages score 0.06 at most (a dusk stage with a calm
-  sea), median 0.004. A test fails when the median over its HUD frames
-  reaches 0.08 (`spike_limit`), so one odd camera angle does not.
+  sea), median 0.004 -- except the marble practice stage with its smooth
+  bright floor (0.047-0.082, median 0.055). A test fails when the median
+  over its HUD frames reaches 0.09 (`spike_limit`), so one odd camera angle
+  does not. The margin to 0.11 is thin: if it ever misfires, per-stage
+  reference statistics (kept under build/, not in this public repo) are the
+  next step.
 - Not covered: fighters that are simply not drawn. There is no sample of it
   (with job chains disabled the game never reaches the title -- the boot
   checks catch that).

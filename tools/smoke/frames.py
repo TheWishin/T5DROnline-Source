@@ -17,9 +17,12 @@ How the fight heuristics were validated (2026-10-17, see docs/SMOKE.md):
     largest 4-connected area of smooth 16x16 blocks (luma std < 2.5, not
     dark) in the playfield below the HUD, as a share of the playfield. The
     two real broken-skinning screenshots from before patch 0002 score 0.106
-    and 0.300; 169 good fight frames across 12 stages score <= 0.060 (the
-    worst: a dusk stage with a smooth sea), median 0.004. The check uses
-    the median over a test's fight frames against SPIKE_LIMIT = 0.08.
+    and 0.300; 200+ good fight frames across 12 stages score <= 0.060 (the
+    worst: a dusk stage with a smooth sea), median 0.004 -- except the
+    marble practice stage (smooth bright floor): 0.047-0.082, median 0.055.
+    The check uses the median over a test's fight frames against
+    SPIKE_LIMIT = 0.09. The margin to 0.106 is thin; per-stage reference
+    statistics would be the next step if it ever misfires.
   * Not covered: fighters that are simply missing (no negative sample
     exists -- with job chains off, PS3_NO_JOBCHAIN=1, the game never
     reaches the title, which the boot checks catch).
@@ -33,7 +36,7 @@ STAT = (160, 90)          # for the per-frame numbers
 SIZE = (1280, 720)        # the title renders 720p; other sizes are scaled first
 
 HUD_MIN = 0.85            # share of health-bar columns that must look like a bar
-SPIKE_LIMIT = 0.08        # median spike_score over the fight frames
+SPIKE_LIMIT = 0.09        # median spike_score over the fight frames
 PLAYFIELD = (200, 680)    # rows below the HUD and above the bottom edge
 
 

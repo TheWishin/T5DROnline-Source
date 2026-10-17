@@ -86,6 +86,15 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms);/* wait up to ms for the peer's
 void     rb_push_hash(uint32_t f, uint64_t h);   /* the FINAL state hash of frame f (all inputs before it confirmed) */
 void     rb_poll();                              /* resend when stalled (15 ms), compare hashes */
 bool     rb_peer_lost();
+/* Rollback is negotiated in the HELLO: each side that offers it sets a flag,
+ * both flags set = the rollback loop runs, otherwise the lockstep does. The
+ * offer must be made before the handshake (the rollback loop does it when
+ * T5_RB_MODE is unset or "net"; T5_RB_MODE=lockstep keeps the lockstep). */
+void     rb_offer(bool on);
+bool     rb_negotiated();
+/* Time sync: each packet carries the sender's frame-advantage estimate. */
+void     rb_set_lead(int lead);
+int      rb_peer_lead();
 uint32_t rb_mismatches();
 uint32_t rb_peer_ack();                          /* the peer has our inputs for frames < this */
 

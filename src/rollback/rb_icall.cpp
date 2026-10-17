@@ -54,25 +54,29 @@ const uint32_t kDrawCut[] = {
 /* Open-addressed set of guest targets; read on the hot path, written at setup. */
 constexpr uint32_t kSetN = 1024;
 uint32_t g_cut_key[kSetN];
+uint32_t g_cut2_key[kSetN];                  /* T5_RB_CUT2: targets cut on the OTHER threads (the draw thread's packet handlers) */
 std::atomic<bool> g_cut_on{ false };
-std::atomic<uint64_t> g_cut_hits{ 0 };
-uint32_t g_cut_count = 0;
+std::atomic<uint64_t> g_cut_hits{ 0 }, g_cut2_hits{ 0 };
+uint32_t g_cut_count = 0, g_cut2_count = 0;
+uint64_t g_tm_tid = 0;                       /* T5_RB_ICALL_TID: time this guest thread instead of the main thread */
 
 inline uint32_t slot_of(uint32_t t) { return (t * 2654435761u) & (kSetN - 1); }
-bool cut_has(uint32_t t)
+bool set_has(const uint32_t* keys, uint32_t t)
 {
     for (uint32_t i = slot_of(t), n = 0; n < kSetN; n++, i = (i + 1) & (kSetN - 1)) {
-        if (g_cut_key[i] == t) return true;
-        if (!g_cut_key[i]) return false;
+        if (keys[i] == t) return true;
+        if (!keys[i]) return false;
     }
     return false;
 }
-void cut_add(uint32_t t)
+void set_add(uint32_t* keys, uint32_t* count, uint32_t t)
 {
-    if (!t || cut_has(t)) return;
+    if (!t || set_has(keys, t)) return;
     for (uint32_t i = slot_of(t), n = 0; n < kSetN; n++, i = (i + 1) & (kSetN - 1))
-        if (!g_cut_key[i]) { g_cut_key[i] = t; g_cut_count++; return; }
+        if (!keys[i]) { keys[i] = t; (*count)++; return; }
 }
+inline bool cut_has(uint32_t t) { return set_has(g_cut_key, t); }
+inline void cut_add(uint32_t t) { set_add(g_cut_key, &g_cut_count, t); }
 
 /* ---- timing ------------------------------------------------------------------- */
 struct Tm { uint32_t key; uint32_t calls; uint64_t incl, excl; uint32_t ret0; };
@@ -95,11 +99,20 @@ Tm& tm_slot(uint32_t t)
 /* ---- the hook ----------------------------------------------------------------- */
 int hook(ppu_context* ctx, uint32_t target)
 {
-    if (ctx->thread_id != main_tid()) return 0;
-    if (g_cut_on.load(std::memory_order_relaxed) && cut_has(target)) {
-        ctx->gpr[3] = 0;
-        g_cut_hits.fetch_add(1, std::memory_order_relaxed);
-        return 1;
+    if (ctx->thread_id != main_tid()) {
+        if (g_cut2_count && g_cut_on.load(std::memory_order_relaxed) && set_has(g_cut2_key, target)) {
+            ctx->gpr[3] = 0;
+            g_cut2_hits.fetch_add(1, std::memory_order_relaxed);
+            return 1;
+        }
+        if (!g_tm_tid || ctx->thread_id != g_tm_tid) return 0;
+    } else {
+        if (g_cut_on.load(std::memory_order_relaxed) && cut_has(target)) {
+            ctx->gpr[3] = 0;
+            g_cut_hits.fetch_add(1, std::memory_order_relaxed);
+            return 1;
+        }
+        if (g_tm_tid) return 0;
     }
     if (!g_tm_on.load(std::memory_order_relaxed) || g_sp >= 1024) return 0;
     Frame& f = g_stk[g_sp++];
@@ -132,6 +145,12 @@ void icall_install()
     if (done) return;
     done = true;
     if (const char* e = getenv("T5_RB_ICALL_TIMING")) g_tm_enabled = *e == '1';
+    if (const char* e = getenv("T5_RB_ICALL_TID")) g_tm_tid = (uint64_t)atoi(e);
+    if (const char* e = getenv("T5_RB_CUT2")) {   /* the draw thread's packet handlers, cut while re-simulating */
+        const char* p = e;
+        while (*p) { char* z; uint32_t a = (uint32_t)strtoul(p, &z, 16); if (z == p) break; set_add(g_cut2_key, &g_cut2_count, a); p = z; while (*p == ',' || *p == ' ') p++; }
+        note("draw-thread cut: %u targets from T5_RB_CUT2", g_cut2_count);
+    }
     /* T5_RB_CUT: "addr,addr,..." (hex) replaces the built-in cut set; "none"
      * disables the cut (the resim then costs a full frame, as in phase 1). */
     const char* spec = getenv("T5_RB_CUT");
@@ -148,7 +167,7 @@ void icall_install()
 }
 
 void cut_set(bool on) { g_cut_on = on; }
-uint64_t cut_hits() { return g_cut_hits.load(); }
+uint64_t cut_hits() { return g_cut_hits.load() + g_cut2_hits.load(); }
 
 void icall_timing_start()
 {

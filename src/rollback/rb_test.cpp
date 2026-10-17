@@ -269,9 +269,10 @@ void test_on_frame(ppu_context* ctx)
         /* uninterrupted run: record */
         g_hist_hash[f % kHist] = state_hash(); g_hist_game[f % kHist] = state_game_hash(); g_hist_tag[f % kHist] = f + 1;
         if (f > g_start + 1) { g_cyc_normal += dcyc; g_cyc_normal_n++; }
-        logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
+        logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u round %u-%u over %u timer %u reset %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
                 (unsigned long long)state_hash(), (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
-                (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C));
+                (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
+                vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
         if (g_have_snap && f == g_snap_frame + g_resim && g_rollbacks < g_rollbacks_max) {
             /* ROLLBACK: restore the boundary of P = g_snap_frame, re-simulate P..f-1 */
             for (size_t ri = 0; ri < kSaveN; ri++)
@@ -332,10 +333,11 @@ void test_on_frame(ppu_context* ctx)
     if (!gmatch) { g_game_mismatches++; note("resim frame %u: GAMEPLAY hash %016llX, original %016llX -> MISMATCH", f, (unsigned long long)gh, (unsigned long long)(known ? g_hist_game[f % kHist] : 0)); }
     if (!match && counted) { g_mismatches++; if (!g_diag_done) { g_diag_done = true; diff_against_original(f, 12); } }
     if (!match && !counted) g_cut_diffs++;
-    logline("R %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX %s vb %llu last %llu clk %llu tick %u anim %u cnt %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
-            (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH",
+    logline("R %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX %s game %s vb %llu last %llu clk %llu tick %u anim %u cnt %u round %u-%u over %u timer %u reset %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
+            (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH", gmatch ? "MATCH" : "MISMATCH",
             (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
-            (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C));
+            (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
+            vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
     if (!match && counted) note("resim frame %u: hash %016llX, original %016llX -> %s", f, (unsigned long long)state_hash(),
                      (unsigned long long)(known ? g_hist_hash[f % kHist] : 0), known ? "MISMATCH" : "unknown");
     if (g_resim_left == 0) {

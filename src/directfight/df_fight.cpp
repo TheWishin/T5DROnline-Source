@@ -77,6 +77,7 @@ constexpr uint32_t kRecCell      = 0x00;         /* cursor cell */
 constexpr uint32_t kRecFace      = 0x08;         /* portrait id under the cursor */
 constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 costume, then done (0x15 on P1, 0x0D on P2) */
 constexpr uint32_t kModeTitle = 1, kModeGame = 4, kModeSelect = 6;
+constexpr uint32_t kModeNone = 14;               /* the request's "next" when no mode change is pending */
 
 /* Character ids (the game's own order: 3-letter codes at 0x1001CE58, names at 0x10003F18). */
 const char* const kCode[36] = {
@@ -343,8 +344,9 @@ bool read_fight_file(Fight& out)
 }
 
 /* ---- the driver ----------------------------------------------------------- */
-/* Reset: back to the title for a fresh select screen (persistent game, before
- * a new opponent). Leave: out of a fight whose session ended (persistent game). */
+/* Reset: towards a fresh select screen (persistent game, before a new
+ * opponent) -- through the title once after a fight, else by restarting the
+ * select screen. Leave: out of a fight whose session ended (persistent game). */
 enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave };
 Ph g_ph = Ph::Boot;
 uint32_t g_ph_frame = 0;        /* frame the phase began */
@@ -357,6 +359,10 @@ bool g_intro_hold = false;      /* the pads are held through the fight's loading
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
+bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
+bool g_restart_low = false;     /* Reset by a select restart: the select screen has gone through its set-up again */
+ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
+uint32_t g_stuck_s = 60;        /* T5_DF_STUCK_SECONDS: a reset / leave that gets nowhere in this long ends the process */
 CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
 bool g_cmd_rematch = false;
 bool g_reset_titles = true;     /* T5_DF_RESET=0: a new opponent starts from the select screen as it is */
@@ -422,7 +428,7 @@ void post_match_skip(uint32_t f)
     for (int p = 0; p < 2; p++) if (drives(p)) press(p, g_skip_button, f);
 }
 
-void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; g_mode_asked = false; status(name, f); }
+void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; g_ph_ms = GetTickCount64(); g_mode_asked = false; status(name, f); }
 bool select_live() { return mode_cur() == kModeSelect && rd32(kSelectState) >= 3 && rd8(rec(0) + kRecState) == 3; }
 
 /* one navigation step for player p towards cell `target`; returns true when there */
@@ -569,6 +575,9 @@ struct Area { uint32_t addr, len; std::vector<uint8_t> boot; };
 std::vector<Area> g_fresh_areas;
 bool g_fresh_on = true;
 bool g_fresh_taken = false;
+bool g_restore_due = false;      /* a reset reached the title: the boot state goes back once it has settled */
+uint32_t g_fresh_at = 30;        /* T5_DF_FRESH_AT (tests): frames into the settled title the boot state goes back
+                                  * (30 = right before start VS, where the boot state was taken; 0 = at once) */
 void fresh_take(uint32_t f)
 {
     if (!g_ctl || !g_fresh_on || g_fresh_taken) return;
@@ -577,12 +586,21 @@ void fresh_take(uint32_t f)
     for (Area& a : g_fresh_areas) { a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len); n += a.len; }
     note("frame %u: boot state of %zu area(s), %zu bytes, kept for later opponents", f, g_fresh_areas.size(), n);
 }
+bool g_fresh_log = false;        /* T5_DF_FRESH_LOG=1: list the words the restore changes */
 void fresh_restore(uint32_t f)
 {
     if (!g_fresh_taken) return;
-    size_t changed = 0;
+    size_t changed = 0, listed = 0;
     for (const Area& a : g_fresh_areas) {
         for (uint32_t i = 0; i < a.len; i++) if (vm_base[a.addr + i] != a.boot[i]) changed++;
+        if (g_fresh_log)
+            for (uint32_t i = 0; i + 4 <= a.len && listed < 400; i += 4)
+                if (memcmp(vm_base + a.addr + i, a.boot.data() + i, 4)) {
+                    listed++;
+                    note("frame %u: restore 0x%08X: %02X%02X%02X%02X -> %02X%02X%02X%02X", f, a.addr + i,
+                         vm_base[a.addr + i], vm_base[a.addr + i + 1], vm_base[a.addr + i + 2], vm_base[a.addr + i + 3],
+                         a.boot[i], a.boot[i + 1], a.boot[i + 2], a.boot[i + 3]);
+                }
         memcpy(vm_base + a.addr, a.boot.data(), a.len);
     }
     note("frame %u: the match state areas are back as at boot (%zu bytes differed)", f, changed);
@@ -655,6 +673,32 @@ void persistent_frame(uint32_t f)
     ctl_report(f);
 }
 
+/* A reset has a fresh select screen: the pending "fight" (a new session)
+ * starts on it, else the game waits there. */
+void reset_done(uint32_t f)
+{
+    if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
+    else set_phase(Ph::Neutral, "neutral", f);
+}
+
+/* A reset / leave that gets nowhere (the game mode ignoring the request to
+ * leave a fight whose loading hung: release dry run 0.1.6, "leave: waiting in
+ * mode 4" for 3.5 minutes) cannot become a clean neutral state any more: the
+ * process ends (exit code 6) and the launcher starts a new game for the next
+ * match (match_driver: a persistent game that is not running is started again). */
+void stuck_check(uint32_t f)
+{
+    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset ||
+                         (g_ph == Ph::Title && g_title_seen != UINT32_MAX && f > g_title_seen + 600);
+    if (!g_ctl || !g_stuck_s || !waiting) return;
+    if (GetTickCount64() - g_ph_ms < (ULONGLONG)g_stuck_s * 1000) return;
+    note("frame %u: STUCK: %s for %u s (mode %u, next %u, phase word %u) -- the game ends, the launcher starts a fresh one",
+         f, g_state_name, g_stuck_s, mode_cur(), mode_next(), rd32(kSelectState));
+    ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
+    fflush(stdout); fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 6);
+}
+
 void fight_on_frame(uint32_t f)
 {
     if (!g_configured) return;
@@ -662,19 +706,28 @@ void fight_on_frame(uint32_t f)
     const uint32_t mgr = mode_manager();
     if (!mgr) return;
     const uint32_t mode = mode_cur();
+    if (mode == kModeGame) g_game_seen = true;
     if (g_ctl) persistent_frame(f);
+    stuck_check(f);
 
     switch (g_ph) {
     case Ph::Boot:
-        if (mode == kModeTitle) { g_title_seen = f; fresh_take(f); set_phase(Ph::Title, "title", f); }
+        if (mode == kModeTitle) { g_title_seen = f; set_phase(Ph::Title, "title", f); }
         break;
     case Ph::Title:
-        /* the title mode needs a few frames of its own init; 30 was verified */
-        if (mode != kModeTitle) { g_title_seen = f; break; }
+        /* the title mode needs a few frames of its own init; 30 was verified.
+         * Counted from the first frame the title runs with no mode change
+         * pending (a request made a frame ago may still be on its way). */
+        if (mode != kModeTitle || mode_next() != kModeNone) { g_title_seen = f; break; }
+        if (g_restore_due && f >= g_title_seen + g_fresh_at) { g_restore_due = false; fresh_restore(f); }
         if (f >= g_title_seen + 30) {
+            /* the boot state is taken (at boot) and put back (after a reset) at
+             * the same point: the title settled, right before start VS */
+            fresh_take(f);
             note("frame %u: start VS battle (func_0004E9DC(4, 3)) from the title mode", f);
             gcall(kFnStartGame, 4, 3);
             g_fresh = true;
+            g_game_seen = false;
             if (g_ctl) {
                 if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
                 else set_phase(Ph::Neutral, "neutral", f);
@@ -822,14 +875,57 @@ void fight_on_frame(uint32_t f)
         }
         break;
     case Ph::Reset:
-        /* back to the title: the game's own start-VS routine then sets up a
-         * select screen exactly as at boot, whatever the last opponent left */
-        if (mode == kModeTitle) { g_title_seen = f; fresh_restore(f); set_phase(Ph::Title, "title", f); break; }
+        /* Towards a fresh select screen, whatever the last opponent left
+         * (battle config, VS counters, cursors). Nothing is done while a mode
+         * change is still under way (an "idle" a few frames after start VS
+         * found the title with the select mode requested: the boot state went
+         * back under the select mode's set-up, NULL accesses from then on).
+         *
+         * The title is visited at most once per fight: the second visit to
+         * the title mode after a game mode, with no game mode in between,
+         * corrupts the game -- its set-up initialises a model from a stale
+         * pointer into the game heap (a count of 0x02120420), asks for 138 MB,
+         * gets NULL and clears guest memory from there on, the vblank
+         * handler's descriptor (0x4635A8) and the code below 0x08481084 with
+         * it (release dry run 0.1.6: a session lost in the fight's loading,
+         * the reset to the title, then the launcher's "idle" -> a second
+         * visit; reproduced offline every time, also after a match played to
+         * its end, also without the boot-state restore and with the title's
+         * autosave suppressed). So after a fight: the title (and the boot
+         * state) as before; without one the select screen is restarted in
+         * place by the same start-VS routine (the select mode sets itself up
+         * again: phase 0 -> 3, the VS config filled again), or left as it is
+         * when it is fresh already. */
+        if (mode == kModeTitle && mode_next() == kModeNone) {
+            g_title_seen = f; g_restore_due = g_fresh_taken; set_phase(Ph::Title, "title", f); break;
+        }
+        /* a fight the driver did not see decided (the stage confirm raced the
+         * reset): out of it like out of a fight whose session ended */
+        if (mode == kModeGame && mode_next() == kModeNone && !g_result_done) { set_phase(Ph::Leave, "leave", f); break; }
         post_match_skip(f);                                 /* still in the win pose: skip it as in Over */
-        if (!g_mode_asked && mode == kModeSelect && rd32(kSelectState) >= 3) {
-            g_mode_asked = true;
-            gcall(kFnModeRequest, kModeTitle, 0);
-            note("frame %u: to the title for a fresh select screen (mode request 1)", f);
+        if (mode == kModeSelect && mode_next() == kModeNone) {
+            const uint32_t sel = rd32(kSelectState);
+            if (g_mode_asked && !g_game_seen) {             /* the select restart is under way */
+                if (sel < 3) g_restart_low = true;
+                if (g_restart_low && select_live()) {
+                    note("frame %u: select screen restarted", f);
+                    g_fresh = true;
+                    reset_done(f);
+                }
+            } else if (!g_mode_asked && sel == 3) {
+                if (g_game_seen) {
+                    g_mode_asked = true;
+                    gcall(kFnModeRequest, kModeTitle, 0);
+                    note("frame %u: to the title for a fresh select screen (mode request 1)", f);
+                } else if (g_fresh && select_live()) {
+                    note("frame %u: the select screen is fresh already (no fight since the title)", f);
+                    reset_done(f);
+                } else {
+                    g_mode_asked = true; g_restart_low = false;
+                    gcall(kFnStartGame, 4, 3);
+                    note("frame %u: select screen restart (func_0004E9DC(4, 3) at the select screen; no fight since the title)", f);
+                }
+            }
         }
         if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: reset: waiting in mode %u", f, mode);
         break;
@@ -853,6 +949,13 @@ bool fight_configured() { return g_configured; }
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
 
+/* netplay / rollback: the game's mode manager is in the game mode (the fight,
+ * its loading and intros, its win pose) -- with the phase word up to 12 that
+ * is the intro, which takes no input (rb_net.cpp intro rule, t5_hooks.cpp).
+ * Read from guest memory (the tcb pool), so it is game state: the same on
+ * both PCs at the same frame, and right inside a re-simulation too. */
+extern "C" int t5_df_game_mode(void) { return df::mode_manager() && df::mode_cur() == df::kModeGame ? 1 : 0; }
+
 namespace df {
 
 void fight_init()
@@ -866,6 +969,9 @@ void fight_init()
     { const char* k = getenv("T5_DF_SKIP"); g_skip = !(k && *k == '0'); }
     if (const char* w = getenv("T5_DF_STAGE_WAIT")) g_stage_wait = (uint32_t)atoi(w);
     { const char* r = getenv("T5_DF_FRESH"); g_fresh_on = !(r && *r == '0'); }
+    { const char* r = getenv("T5_DF_FRESH_LOG"); g_fresh_log = r && *r == '1'; }
+    if (const char* r = getenv("T5_DF_FRESH_AT")) g_fresh_at = (uint32_t)atoi(r);
+    if (const char* r = getenv("T5_DF_STUCK_SECONDS")) g_stuck_s = (uint32_t)atoi(r);
     {
         const char* spec = getenv("T5_DF_FRESH_RANGES");
         if (!spec || !*spec) spec = "1008E000:4000,10099600:600,100A0900:200,100A3B00:300";

@@ -323,6 +323,13 @@ void sound_begin_frame(uint32_t f, bool resim)
     }
 }
 
+void sound_reset()
+{
+    g_resim = false;
+    g_frame = g_last_live = g_pass_from = g_pass_to = 0;
+    for (uint32_t k = 0; k < kFrames; k++) { g_log[k].tag = 0; g_log[k].n = 0; g_calls[k].tag = 0; g_calls[k].n = 0; }
+}
+
 SoundStats sound_stats(bool reset)
 {
     SoundStats s = g_st;

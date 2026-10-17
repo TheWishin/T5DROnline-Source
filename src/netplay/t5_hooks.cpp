@@ -79,6 +79,7 @@
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
+extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -467,6 +468,10 @@ void dump_memory(uint32_t f)
  * difference that lasts reaches the fight, where every frame is compared. */
 constexpr uint64_t kIntroHash = 0x4F52544E49ull;   /* "INTRO" */
 bool intro_phase_now() { return rd32(0x1008F070u) <= 12; }
+/* the boundaries that take no input: phase 7..12, or anything up to 12 while
+ * the game mode runs (its first frames: 0, 2) -- not the select screens (the
+ * driver's presses), see rb_net.cpp intro_phase */
+bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 && (p >= 7 || t5_df_game_mode()); }
 
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
@@ -1009,7 +1014,13 @@ void on_frame_start(ppu_context* ctx)
     dump_memory(f);
     shot(f);
     np::PadInput in[2];
-    np::begin_frame(f, h, in);
+    /* Direct fight: the game mode's start, loading and intros take no input --
+     * not even at the first boundary of a session, which samples the input of
+     * frame `delay` while the phase word still says 2 (rb_net.cpp intro rule:
+     * a press there made the peer roll back into the fight's loading, which
+     * then never finished). The rollback loop applies the same rule from its
+     * first frame on; in lockstep it only matters for that first boundary. */
+    np::begin_frame(f, h, in, g_directfight && intro_input_now());
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();

@@ -30,6 +30,10 @@
 
 #include "sys_ppu_thread.h"     /* ppu_context */
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
+namespace rb {   /* src/rollback/rb_hooks.cpp (diagnostics: T5_DF_GUARD) */
+uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);
+std::string guest_backtrace(int max);
+}
 #include "df.h"
 
 extern "C" {
@@ -322,6 +326,60 @@ void shot(uint32_t f)
     }
 }
 
+/* T5_DF_GUARD=addr:len,... (hex), T5_DF_GUARD_AT=<frame> (default: the first
+ * title): from then on those pages are read-only; the first write to each
+ * page is logged with the writer (the lifted function at the faulting store,
+ * its lifted callers, the host thread), then the page is writable again.
+ * Found who zeroed the vblank handler's descriptor (0x4635A8) on the second
+ * visit to the title after a fight: the title's own memset 0x3AF974 from
+ * 0x2DBBEC (docs/DIRECTFIGHT.md "After a session ends"). */
+struct Guard { uint32_t addr, len; };
+std::vector<Guard> g_guards;
+uint32_t g_guard_at = UINT32_MAX;
+std::atomic<bool> g_guard_armed{ false };
+std::atomic<int> g_guard_hits{ 0 };
+LONG CALLBACK guard_veh(EXCEPTION_POINTERS* ep)
+{
+    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    if (!g_guard_armed || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 ||
+        er->ExceptionInformation[0] != 1)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
+    if (at < (uintptr_t)vm_base || at >= (uintptr_t)vm_base + 0x100000000ull) return EXCEPTION_CONTINUE_SEARCH;
+    const uint32_t ea = (uint32_t)(at - (uintptr_t)vm_base);
+    bool ours = false;
+    for (const Guard& g : g_guards) if (ea >= (g.addr & ~0xFFFu) && ea < ((g.addr + g.len + 0xFFFu) & ~0xFFFu)) ours = true;
+    if (!ours) return EXCEPTION_CONTINUE_SEARCH;
+    DWORD old;
+    VirtualProtect(vm_base + (ea & ~0xFFFu), 0x1000, PAGE_READWRITE, &old);
+    uint32_t off = 0;
+    const uint32_t top = rb::guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
+    HMODULE mod = nullptr; char mname[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)ep->ContextRecord->Rip, &mod) && mod)
+        GetModuleFileNameA(mod, mname, sizeof mname);
+    const char* base = strrchr(mname, 0x5C);   /* the last backslash */
+    if (g_guard_hits++ < 32)
+        note("frame %u: GUARD write to 0x%08X by host thread %lu at %s+0x%llX (lifted %s%06X+0x%X) <- %s", g_frame.load(), ea,
+             (unsigned long)GetCurrentThreadId(), base ? base + 1 : mname,
+             (unsigned long long)(ep->ContextRecord->Rip - (uintptr_t)mod), top ? "func_" : "none ", top, off,
+             rb::guest_backtrace(12).c_str());
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+void guard_arm(uint32_t f)
+{
+    if (g_guards.empty() || g_guard_armed) return;
+    (void)rb::guest_of_host(0, nullptr);   /* build the lifted-function map now, not in the handler */
+    AddVectoredExceptionHandler(1, guard_veh);
+    g_guard_armed = true;
+    for (const Guard& g : g_guards) {
+        DWORD old;
+        const uint32_t a = g.addr & ~0xFFFu, e = (g.addr + g.len + 0xFFFu) & ~0xFFFu;
+        VirtualProtect(vm_base + a, e - a, PAGE_READONLY, &old);
+        note("frame %u: guard on 0x%08X..0x%08X (read-only until written)", f, a, e);
+    }
+}
+
 void on_frame(ppu_context* ctx)
 {
     (void)ctx;
@@ -336,6 +394,8 @@ void on_frame(ppu_context* ctx)
         note("frame %u: poke [0x%08X] w%u = 0x%X", f, p.addr, p.width, p.value);
     }
     find_manager(f);
+    if (!g_guards.empty() && !g_guard_armed &&
+        (f == g_guard_at || (g_guard_at == UINT32_MAX && g_mgr && rd32(g_mgr + kModeReq) == 1))) guard_arm(f);
     if (g_probe) probe(f);
     fight_on_frame(f);
     for (auto& w : g_watch) {
@@ -480,6 +540,14 @@ struct Register {
             p = e; while (*p == ',' || *p == ' ') p++;
         }
         if (const char* sv = getenv("T5_DF_STARTVS")) g_startvs = atoi(sv);
+        if (const char* gd = getenv("T5_DF_GUARD")) for (const char* p = gd; *p;) {
+            char* e; Guard g;
+            g.addr = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
+            g.len = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            g_guards.push_back(g);
+            while (*p == ',' || *p == ' ') p++;
+        }
+        if (const char* ga = getenv("T5_DF_GUARD_AT")) g_guard_at = (uint32_t)atoi(ga);
         if (const char* fd = getenv("T5_DF_FIND")) {
             std::string s = fd, item;
             for (size_t i = 0; i <= s.size(); i++) {

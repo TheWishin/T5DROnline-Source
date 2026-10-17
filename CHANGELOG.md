@@ -3,6 +3,22 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.6-preview (2026-10-17)
+
+**Important online fix:** choosing Devil Jin online gave you Feng and the other
+way round, and Kuma came out as Panda. Every character is now the one you pick
+(checked for all 35 on the select screen). Both players need 0.1.6. After the
+update press **BUILD GAME** once (about 2 minutes).
+
+- **Delete Save Data** no longer deletes every save at once: a list shows your
+  saves, you pick one and confirm.
+- 18 system functions the game asks for now answer properly (e.g. Options ->
+  Online Manual says "not available" instead of failing).
+- The sound core's 13 effect functions (reverb, pitch, mix, ...) run as compiled
+  code instead of an interpreter: less CPU work in fights.
+- Checked: all 35 characters and 34 stages render; the background figures and
+  the game's own Online menu (clean "network error", no crash) are fine.
+
 ## v0.1.5-preview (2026-10-17)
 
 Faster on weaker PCs, and online stays in sync between any two PCs. Both players

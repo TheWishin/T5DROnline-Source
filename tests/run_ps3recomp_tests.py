@@ -33,6 +33,7 @@ SPU_CORE = [
     "runtime/spu/spu_workload.c", "runtime/spu/spurs_policy.c", "runtime/spu/spurs_job.c",
     "runtime/spu/spu_tsp_weak.c", "runtime/spu/spu_vm_pagemap.c", "runtime/spu/spurs_policy_blob_weak.c",
     "runtime/spu/spu_interp.c",
+    "runtime/platform/fp_env.c",   # patch 0032: ppu_fp_env_fix (MXCSR pinning) used by spu_interp.c
 ]
 
 HERE = os.path.dirname(os.path.abspath(__file__))

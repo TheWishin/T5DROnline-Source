@@ -3,6 +3,26 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.5-preview (2026-10-17)
+
+Faster on weaker PCs, and online stays in sync between any two PCs. Both players
+need 0.1.5. After the update press **BUILD GAME** once (about 2 minutes).
+
+### Performance
+- **60 fps in fights on 4-thread PCs** (was about 32). Thread counts follow the
+  CPUs the game may use; the main thread no longer spins while waiting.
+- Rollback at 150 ms ping: about 50 fps on 4-8 threads (was about 30).
+- **New: 3D resolution** (launcher -> Settings): Original, Lower or Lowest, for
+  weak graphics cards. Players with different settings stay in sync.
+
+### Online
+- **Any two x64 PCs compute the same game**: Intel or AMD, with or without
+  AVX2/FMA. The game code no longer uses math that differs between CPUs.
+  Tested: 160,000 frames compared between different builds, 0 differences.
+- **Fewer void ranked matches:** camera and cloth-motion values that could
+  differ for a few frames at a KO (e.g. Bryan vs Steve) no longer count as a
+  desync.
+
 ## v0.1.4-preview (2026-10-17)
 
 Online feels like Tekken 6 Native Online now, and the game runs on more PCs.

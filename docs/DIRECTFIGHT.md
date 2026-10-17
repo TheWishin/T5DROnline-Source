@@ -421,7 +421,12 @@ in the cycle test):
   the game mode has just set the phase word to 2: the dry-run harness's press
   at frame 2 went out (B's frame log: `2 I ... 004080808080`), A had predicted
   neutral, rolled back 9 frames into the first frames of the loading, and the
-  loading never finished; the request to leave the fight was never taken. Now
+  loading never finished; the request to leave the fight was never taken.
+  Reproduced on main: `tools/rollback_net_test.py --fight 15,14,27,1 --rtt 150
+  --env2 T5_NET_SCRIPT=@2:3:0x40` (the joiner presses at frame 2) -- the host
+  rolled back 9 frames, its intro never ended, the joiner waited at the end of
+  the loading; with the fix the press goes out neutral, 0 rollbacks, the fight
+  loads (runs press150_main / press150_f9). Now
   every phase up to 12 is intro while the mode manager is in the game mode
   (`t5_df_game_mode()`), in the rollback loop and for lockstep frame 0's
   sample (`t5_hooks.cpp` `intro_input_now`); select screens (mode 6, phases

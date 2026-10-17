@@ -101,8 +101,10 @@ param)`; the factory is `func_0025E6AC`.
    per 8 frames), CROSS confirms the character, the costume button confirms
    again. When both are done, CROSS confirms the stage panel (every 30 frames
    until the select state reaches 4); the stage shown does not matter. The
-   confirm writes the panel's own (random) pick to 0x1008F088; from the next
-   frame on (before netplay hashes the frame) the configured stage replaces it.
+   confirm writes the panel's own (random) pick to 0x1008F088 (two frames
+   before the select state turns 4); the configured stage is written there at
+   the top of every frame of the stage phase (before netplay hashes the frame),
+   so the pick never shows in the hashed state.
    In a rematch under lockstep the two panels' picks differed (QA run
    fd_rematch: 0x1d vs 0x11 for the 50 frames between confirm and fight start,
    a transient desync); now the hashed state never sees them.

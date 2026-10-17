@@ -371,14 +371,14 @@ void fight_on_frame(uint32_t f)
         break; }
     case Ph::Stage:
         if (mode == kModeGame) { set_phase(Ph::WaitGame, "loading", f); break; }
-        if (rd32(kSelectState) >= 4) {
-            /* stage confirmed, the mode switch follows. The confirm wrote the
-             * panel's own pick (random, different on the two PCs: fd_rematch
-             * showed 0x1d vs 0x11 for 50 frames in lockstep); ours replaces it
-             * at once, before the frame's state hash. */
-            if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
-            break;
-        }
+        /* The stage confirm writes the panel's own pick (random, different on
+         * the two PCs: fd_rematch showed 0x1d vs 0x11 for 50 frames in
+         * lockstep) to 0x1008F088, two frames before the select state turns 4.
+         * Ours replaces it at the top of every frame of this phase, before the
+         * frame's state hash; the phase begins at the same frame on both PCs
+         * (both players' records done), and the panel only writes the word. */
+        if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
+        if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
         if (f >= g_ph_frame + 90 && press_idle(0) && press_idle(1) && ((f - g_ph_frame) % 30) == 0) {
             for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }

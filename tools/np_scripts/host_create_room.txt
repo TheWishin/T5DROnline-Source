@@ -1,0 +1,48 @@
+wait \[cellVdec\] Open
+f120 START
+f126
+wait \[cellVdec\] Open
+f180 DOWN
+f186
+f216 DOWN
+f222
+f252 DOWN
+f258
+f330 CROSS
+f336
+f540 RIGHT
+f546
+f600 RIGHT
+f606
+f660 RIGHT
+f666
+f720 RIGHT
+f726
+f840 CROSS
+f846
+wait GetRankingByNpId\(board 6, 10 ids\)
+f180 DOWN
+f186
+f228 DOWN
+f234
+f276 DOWN
+f282
+f360 CROSS
+f366
+f540 CROSS
+f546
+wait joined the room
+shot 5 room_host_a
+8 START
+8.3
+shot 12 room_host_b
+16 CROSS
+16.1
+22 CROSS
+22.1
+shot 26 room_host_c
+30 CROSS
+30.1
+38 CROSS
+38.1
+shot 44 room_host_d

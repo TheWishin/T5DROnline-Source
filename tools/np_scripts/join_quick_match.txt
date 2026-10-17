@@ -1,0 +1,43 @@
+wait \[cellVdec\] Open
+f120 START
+f126
+wait \[cellVdec\] Open
+f180 DOWN
+f186
+f216 DOWN
+f222
+f252 DOWN
+f258
+f330 CROSS
+f336
+f540 RIGHT
+f546
+f600 RIGHT
+f606
+f660 RIGHT
+f666
+f720 RIGHT
+f726
+f840 CROSS
+f846
+wait GetRankingByNpId\(board 6, 10 ids\)
+f180 DOWN
+f186
+f300 CROSS
+f306
+wait GetResultGUI -> event 11
+f300 CROSS
+f306
+wait \[sceNpMatching\] in room
+shot 4 room_guest_a
+shot 16 room_guest_b
+20 CROSS
+20.1
+26 CROSS
+26.1
+shot 30 room_guest_c
+34 CROSS
+34.1
+42 CROSS
+42.1
+shot 48 room_guest_d

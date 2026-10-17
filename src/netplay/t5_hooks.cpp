@@ -235,6 +235,7 @@ bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep run
  * read at the frame's start and that frame always sees them. */
 bool g_offline = false;
 bool g_offline_gave_up = false;
+ppu_context* g_frame_wait_ctx = nullptr;   /* the main thread's latest frame-semaphore wait */
 std::atomic<const char*> g_session_lost{ nullptr };   /* why the last session ended by itself (df picks it up) */
 void persistent_lost(const char* reason);
 
@@ -1157,8 +1158,15 @@ int64_t w_sem_wait(ppu_context* ctx)
     }
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
     const uint32_t fs = rd32(kFrameSemPtr);
+    if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
         /* a re-simulated frame: no wait, straight to the next boundary */
+        on_frame_start(ctx);
+        return 0;
+    }
+    if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::early_pending()) {
+        /* early rollback (rb_net.cpp early_check): the boundary runs now and
+         * waits for this frame's tick itself (frame_tick_wait) */
         on_frame_start(ctx);
         return 0;
     }
@@ -1188,8 +1196,23 @@ int64_t w_sem_post(ppu_context* ctx)
         g_kr_posting.fetch_sub(1);
         return r;
     }
-    if (rb::net::bypass() && id == rd32(kFrameSemPtr)) return 0;   /* re-simulating: vblank posts must not pile up */
+    if (rb::net::bypass() && id == rd32(kFrameSemPtr)) {   /* re-simulating: vblank posts must not pile up */
+        rb::net::early_tick_posted();   /* ... but an early boundary's tick has come */
+        return 0;
+    }
     return g_orig_post(ctx);
+}
+
+/* The early rollback's wait for the frame's tick: the frame semaphore wait the
+ * title made when it went on (its context is the latest one seen). */
+void frame_tick_wait()
+{
+    ppu_context* c = g_frame_wait_ctx;
+    if (!c) return;
+    const uint64_t r3 = c->gpr[3], r4 = c->gpr[4];
+    c->gpr[3] = rd32(kFrameSemPtr); c->gpr[4] = 0;   /* sys_semaphore_wait(frame semaphore, no timeout) */
+    g_orig_wait(c);
+    c->gpr[3] = r3; c->gpr[4] = r4;
 }
 
 int64_t w_mem_alloc(ppu_context* ctx)
@@ -1209,6 +1232,7 @@ void install_syscall_hooks()
     g_orig_post = g_lv2_syscalls[SC_SEM_POST];
     g_lv2_syscalls[SC_SEM_WAIT] = w_sem_wait;
     g_lv2_syscalls[SC_SEM_POST] = w_sem_post;
+    rb::net::set_tick_waiter(frame_tick_wait);
     if (g_trace) {
         TraceSc<107>::install();   /* sys_cond_wait */
         TraceSc<130>::install();   /* sys_event_queue_receive */

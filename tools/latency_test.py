@@ -37,6 +37,11 @@ move, KMOVE below) changed after the press. The breakdown:
                composed by DWM rather than flipped independently -- a
                minimised test window cannot show which, see docs/RENDER_PERF.md)
 
+--pair [--rtt MS --loss PCT]: online. A host (this PC's pad, measured) and a
+joiner (idle) in a direct-fight netplay match through tools/rollback_net_test.py's
+UDP proxy (RTT / loss); the default online mode (rollback) unless T5_RB_MODE is
+given. The "read" part then includes the online input delay.
+
 --frames also dumps the presented frames around 6 presses (LD_FRAME_DUMP with a
 gate file) as PNG next to the log, to check by eye that the reacting frame is
 the first one where the jab shows.
@@ -232,7 +237,7 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
         print("no usable presses (phase 17 with a reaction) in", out)
         return None
     parts = [("sample", lambda r: r["E"] - r["press"]),
-             ("read+wait", lambda r: r["cons_start"] - r["E"] if r["cons_start"] else 0),
+             ("to the reading frame", lambda r: r["cons_start"] - r["E"] if r["cons_start"] else 0),
              ("game frames", lambda r: r["react_start"] - r["cons_start"]),
              ("sim", lambda r: r["F"] - r["react_start"]),
              ("translation", lambda r: r["X"] - r["F"]),
@@ -249,6 +254,11 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
     lines.append("game frames from the consuming frame to the reaction: %s" %
                  ", ".join("%d x%d" % (k, gf.count(k)) for k in sorted(set(gf))))
     res["game_frames"] = {str(k): gf.count(k) for k in sorted(set(gf))}
+    cad = cadence(ev, freq, presses[0] if presses else 0, presses[-1] if presses else 0)
+    if cad:
+        res["cadence"] = cad
+        lines.append("display cadence over the presses: %(refreshes)d refreshes, %(repeats)d showed no new frame, "
+                     "%(dropped)d frames replaced before shown (presents %(presents)d)" % cad)
     if C:
         per = statistics.median([c[2] for c in C]) * ms
         res["display_period_ms"] = per
@@ -262,6 +272,36 @@ def analyze(out, move_ea=None, move_off=None, quiet=False):
     with open(os.path.join(out, "latency.json"), "w") as f:
         json.dump(dict(res, rows=rows), f, indent=1)
     return res
+
+
+def cadence(ev, freq, t0, t1):
+    """Which display refresh each present lands on (the DWM vblank grid of the C
+    lines, the present + 0.5 ms of GPU copy): refreshes with no new frame
+    (repeats: a missed vblank) and frames replaced by a newer one before their
+    refresh (drops)."""
+    C = [(e[0], int(e[1]), int(e[2])) for e in ev["C"]]
+    P = [e[0] for e in ev["P"] if t0 <= e[0] <= t1]
+    if not C or len(P) < 10:
+        return None
+    import bisect
+    Cq = [c[0] for c in C]
+    gpu = freq // 2000
+    slots = []
+    for p in P:
+        k = bisect.bisect_right(Cq, p) - 1
+        if k < 0:
+            continue
+        vb, per = C[k][1], C[k][2]
+        n = -(-(p + gpu - vb) // per)
+        slots.append(((vb + n * per), per))
+    if not slots:
+        return None
+    first, last = slots[0][0], slots[-1][0]
+    per = slots[0][1]
+    refreshes = int(round((last - first) / per)) + 1
+    distinct = len({round(s[0] / per) for s in slots})
+    return {"refreshes": refreshes, "repeats": max(0, refreshes - distinct), "dropped": len(slots) - distinct,
+            "presents": len(slots)}
 
 
 def discover(out):
@@ -326,6 +366,12 @@ def main():
     ap.add_argument("--frames", action="store_true", help="dump presented frames around 6 presses")
     ap.add_argument("--out", default="")
     ap.add_argument("--analyze-only", default="")
+    ap.add_argument("--pair", action="store_true", help="online: host (measured) + joiner through a proxy")
+    ap.add_argument("--rtt", type=float, default=0.0)
+    ap.add_argument("--loss", type=float, default=0.0)
+    ap.add_argument("--jitter", type=float, default=0.0)
+    ap.add_argument("--port", type=int, default=7400)
+    ap.add_argument("--cpus2", default="", help="--pair: the joiner's CPU mask")
     ap.add_argument("env", nargs="*")
     a = ap.parse_args()
     move_ea = int(a.move_ea, 16) if a.move_ea else KMOVE_DEFAULT
@@ -378,10 +424,33 @@ def main():
         k32.GetProcessAffinityMask(ctypes.c_void_p(me), ctypes.byref(pm), ctypes.byref(sm))
         old = pm.value
         k32.SetProcessAffinityMask(ctypes.c_void_p(me), ctypes.c_size_t(mask))
+    peer = proxy = None
+    if a.pair:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import rollback_net_test as rnt
+        plog = open(os.path.join(out, "proxy.log"), "w")
+        proxy = rnt.Proxy(a.port + 1, a.port, a.rtt, a.jitter, a.loss, plog)
+        proxy.start()
+        common = {"T5_NET_START": "external", "T5_NET_DELAY": "6", "T5_NET_TIMEOUT": "60", "T5_NET_SEED": "1234"}
+        env.update(common)
+        env.update({"T5_NET_MODE": "host", "T5_NET_PORT": str(a.port), "T5_NET_LOCALPAD": "1"})
+        penv = dict(env)
+        jd = os.path.join(out, "join")
+        os.makedirs(jd, exist_ok=True)
+        for k in ("PS3_LATENCY_LOG", "PS3_LATENCY_WATCH", "PS3_LATENCY_DUMP", "LD_FRAME_DUMP", "PS3_PAD_FILE"):
+            penv.pop(k, None)
+        penv.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0", "T5_NET_PEER": "127.0.0.1:%d" % (a.port + 1),
+                     "T5_NET_LOCALPAD": "0", "T5_DF_STATUS_FILE": os.path.join(jd, "status.json")})
     log = open(os.path.join(out, "game.log"), "w")
     try:
         p = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
                              env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT)
+        if a.pair:
+            if a.cpus2 and IS_WIN:
+                k32.SetProcessAffinityMask(ctypes.c_void_p(me or k32.GetCurrentProcess()), ctypes.c_size_t(int(a.cpus2, 16)))
+            jlog = open(os.path.join(jd, "game.log"), "w")
+            peer = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
+                                    env=penv, cwd=jd, stdout=jlog, stderr=subprocess.STDOUT)
     finally:
         if old:
             k32.SetProcessAffinityMask(ctypes.c_void_p(me), ctypes.c_size_t(old))
@@ -434,9 +503,12 @@ def main():
                         "other_cpus": round(busy - (pc1 - pc0) / max(1e-6, w1 - w0), 2)}
         print("load during the presses: %(busy_cpus_all).1f processors busy, the game %(game_cpus).1f, others %(other_cpus).1f" % meta["load"])
     finally:
-        if p.poll() is None:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
-            p.wait()
+        for q in (p, peer):
+            if q is not None and q.poll() is None:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(q.pid)], capture_output=True)
+                q.wait()
+        if proxy is not None:
+            proxy.stop = True
         log.close()
         with open(os.path.join(out, "presses.json"), "w") as f:
             json.dump(meta, f)

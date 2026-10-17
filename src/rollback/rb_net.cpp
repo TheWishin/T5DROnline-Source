@@ -6,12 +6,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <atomic>
 
 #include "rb.h"
 #include "rb_state.h"
 #include "rb_net.h"
 
 extern "C" uint8_t* vm_base;
+extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034: PS3_LATENCY_LOG */
+extern "C" volatile int g_lat_log_on;
+#define LATLOG(...) do { if (g_lat_log_on) lat_log_(__VA_ARGS__); } while (0)
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode (4) */
@@ -101,6 +105,15 @@ uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this *
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
 np::PadInput g_last_remote = np::kNeutral;
 
+/* early rollback (T5_RB_NET_EARLY, default on): see early_check() */
+bool     g_early_on = true;
+uint32_t g_next_f = 0;                   /* the frame of the next live boundary */
+uint32_t g_early_f = UINT32_MAX;         /* that boundary began before its tick */
+uint32_t g_early_committed = 0;          /* the next boundary's snapshot was taken early (early_commit) */
+bool     g_tick_waited = false;
+std::atomic<bool> g_early_tick_seen{ false };
+LARGE_INTEGER g_early_last_check = {};
+void (*g_tick_waiter)() = nullptr;
 /* T5_RB_NET_SAMPLE=N: stack samples of the main thread over the first N
  * rollbacks' re-simulations ("S" lines in T5_RB_LOG, rb_sample.cpp) */
 uint32_t g_sample_left = 0;
@@ -117,6 +130,9 @@ struct Stats {
     uint32_t sound_zero = 0;
     double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0, restore_ms = 0;
     double stall_ms_lock = 0;   /* of stall_ms: waits in the lockstep windows (match start, loads, phase changes) */
+    uint32_t early_rollbacks = 0;   /* rollbacks done before the frame's tick (early) */
+    double early_commit_ms = 0;     /* snapshot time taken before the tick (early_commit) */
+    double early_wait_ms = 0;       /* time an early boundary waited for its tick */
     uint32_t depth_hist[17] = {};
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
@@ -182,6 +198,10 @@ void report()
     note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, loads %u",
          ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_loads);
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
+    note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
+         "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
+         g_st.early_rollbacks, g_st.rollbacks, g_st.early_wait_ms, g_st.frames ? g_st.early_commit_ms / g_st.frames : 0.0,
+         (unsigned long long)dcut_hits());
     memset(g_ft_win, 0, sizeof g_ft_win);
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
@@ -251,6 +271,7 @@ bool enabled()
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
+            if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
@@ -286,6 +307,7 @@ void start(uint32_t f)
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
     g_active = true;
     g_started_at = f;
+    g_next_f = f; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false;
     g_last_phase = rd32(kPhaseWord);
     g_checked = g_hash_sent = g_floor = f;
     g_last_remote = np::kNeutral;
@@ -319,6 +341,7 @@ void session_reset()
     g_last_phase = 0xFFFFFFFFu;
     g_lead_n = 0; g_last_sleep_frame = 0; g_frames_timed = 0; g_t_live_ok = false;
     g_wait_acc_ms = 0; g_delay = 0;
+    g_next_f = 0; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false; g_early_committed = 0;
     g_last_remote = np::kNeutral;
     g_st = Stats(); g_tot = Stats();
     state_reset();
@@ -355,6 +378,93 @@ void scene_change(uint32_t nf)
 }
 
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
+
+/* At the frame's tick: frame timing, the time-sync lead, and this PC's input
+ * for frame f + delay (sent at once; neutral in the intro). */
+static void live_tick_part(uint32_t f)
+{
+    { LARGE_INTEGER t; QueryPerformanceCounter(&t);
+      if (g_t_live_ok) ft_add(1000.0 * (double)(t.QuadPart - g_t_live.QuadPart) / (double)g_qpf.QuadPart);
+      g_t_live = t; g_t_live_ok = true; }
+    /* the frame time this machine actually runs at (sleeps are in frames) */
+    if (g_frames_timed == 0) QueryPerformanceCounter(&g_t_frame0);
+    if (++g_frames_timed == 60) { g_frame_ms = std::max(5.0, std::min(100.0, ms_since(g_t_frame0) / 60.0)); g_frames_timed = 0; }
+    /* time sync: my lead = my frame minus the peer's frame as implied by its
+     * latest input (sampled delay frames ahead of its boundary) */
+    {
+        const uint32_t rc0 = np::rb_remote_contig();
+        const int peer_frame = (int)rc0 - 1 - g_delay;
+        const int mine = (int)f - peer_frame;
+        np::rb_set_lead(mine);
+        g_lead_mine[g_lead_n % g_lead_win] = mine;
+        g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
+        g_lead_n++;
+    }
+    const bool intro = intro_at(f);
+    if (intro) g_intro_frames++;
+    np::rb_sample_local(f, intro);
+}
+
+/* The early boundary waits here for the frame's vblank tick (the frame
+ * semaphore's post), unless the tick came while it re-simulated. */
+static void tick_wait()
+{
+    LATLOG('W', "%d", g_early_tick_seen ? 1 : 0);   /* PS3_LATENCY_LOG: the early boundary waits for its tick (1: it came already) */
+    if (!g_early_tick_seen && g_tick_waiter) {
+        LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
+        g_tick_waiter();
+        g_st.early_wait_ms += ms_since(t0);
+    }
+    g_tick_waited = true;
+}
+
+/* The first frame g < min(rc, f) whose confirmed remote input differs from
+ * the prediction it was simulated with (UINT32_MAX: none). */
+static uint32_t scan_mispredictions(uint32_t f, uint32_t rc)
+{
+    const uint32_t upto = std::min(rc, f);
+    uint32_t first_wrong = UINT32_MAX;
+    for (uint32_t g = g_checked; g < upto; g++) {
+        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
+        np::PadInput real;
+        if (!np::rb_remote(g, &real)) break;
+        if (!(real == g_used[g % kHist])) { first_wrong = g; break; }
+    }
+    g_checked = std::max(g_checked, upto);
+    return first_wrong;
+}
+
+/* Restore the boundary of first_wrong and set up its re-simulation up to f;
+ * false if the logs do not reach back that far. */
+static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2])
+{
+    const uint32_t depth = f - first_wrong;
+    uint32_t pages = 0; double rms = 0;
+    bool ok = first_wrong >= g_floor && state_rollback(first_wrong, &pages, &rms);
+    if (!ok) {
+        note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
+             f, first_wrong, depth, state_oldest_frame(), g_floor);
+        return false;
+    }
+    cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
+    LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
+    g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
+    if (depth > g_st.max_depth) g_st.max_depth = depth;
+    QueryPerformanceCounter(&g_resim_t0);
+    if (g_sample_left) { g_sample_left--; sample_start(); g_sampling = true; }   /* T5_RB_NET_SAMPLE */
+    g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
+    set_bypass(true);
+    if (g_skipsound && sound_word() && rd32(sound_word()) == 0) {   /* a frame committed while re-simulated: sound_skip(false) puts the live value back */
+        g_st.sound_zero++;
+        if (g_st.sound_zero <= 3) note("rbnet: frame %u: the restore of %u brought the sound update's enable word back as zero (committed during a re-simulation); the live value is put back after this one", f, first_wrong);
+    }
+    if (g_skipsound) sound_skip(true);
+    cut_set(true);
+    if (g_verbose) note("rbnet: frame %u: rollback to %u (%u frames), %u pages restored in %.2f ms", f, first_wrong, depth, pages, rms);
+    inputs_for(first_wrong, out);
+    return true;
+}
+
 uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     const uint32_t run = boundary(f, scene_flag, out);
@@ -364,6 +474,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
+    LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     double cms = 0;
@@ -400,9 +511,6 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
-        { LARGE_INTEGER t; QueryPerformanceCounter(&t);
-          if (g_t_live_ok) ft_add(1000.0 * (double)(t.QuadPart - g_t_live.QuadPart) / (double)g_qpf.QuadPart);
-          g_t_live = t; g_t_live_ok = true; }
         /* the title's ATRAC streaming rings are the feeder thread's: never rewound */
         if ((f % 30) == 0) {
             uint32_t ea[16], sz[16];
@@ -424,31 +532,37 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
         }
         g_last_phase = phase;
-        /* the frame time this machine actually runs at (sleeps are in frames) */
-        if (g_frames_timed == 0) QueryPerformanceCounter(&g_t_frame0);
-        if (++g_frames_timed == 60) { g_frame_ms = std::max(5.0, std::min(100.0, ms_since(g_t_frame0) / 60.0)); g_frames_timed = 0; }
-        /* time sync: my lead = my frame minus the peer's frame as implied by its
-         * latest input (sampled delay frames ahead of its boundary) */
-        {
-            const uint32_t rc0 = np::rb_remote_contig();
-            const int peer_frame = (int)rc0 - 1 - g_delay;
-            const int mine = (int)f - peer_frame;
-            np::rb_set_lead(mine);
-            g_lead_mine[g_lead_n % g_lead_win] = mine;
-            g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
-            g_lead_n++;
-        }
-        /* the local input for frame f + delay, sent at once (neutral in the intro) */
-        const bool intro = intro_at(f);
-        if (intro) g_intro_frames++;
-        np::rb_sample_local(f, intro);
+        if (!(g_early_f == f && !g_tick_waited)) live_tick_part(f);
+    }
+    /* Early rollback (T5_RB_NET_EARLY, docs/ROLLBACK.md section 26): this
+     * boundary began when the previous frame was translated, before its
+     * vblank tick, because a misprediction was already known (early_check).
+     * Every rollback known now runs in that idle time; then the boundary
+     * waits for the tick and does the live part (the local input is read at
+     * the tick, as without it). */
+    if (g_early_f == f && !g_tick_waited) {
+        np::rb_poll();
+        const uint32_t g = scan_mispredictions(f, np::rb_remote_contig());
+        if (g != UINT32_MAX && start_rollback(f, g, out)) { g_st.early_rollbacks++; return g; }
+        tick_wait();
+        live_tick_part(f);
     }
     np::rb_poll();
 
     if (g_timesync && !g_resim && g_lead_n >= g_lead_win && np::mode() != np::Mode::Local && !np::rb_peer_lost()) {
-        double m = 0, t = 0;
-        for (int i = 0; i < g_lead_win; i++) { m += g_lead_mine[i]; t += g_lead_theirs[i]; }
-        const double adv = (m - t) / (2.0 * g_lead_win);   /* frames this side is ahead of the peer */
+        /* a trimmed mean (the middle 60 %): a lost or late packet makes one
+         * side's estimate jump by a frame or two for a few frames, and the
+         * plain mean then called for sleeps (each a repeated frame on the
+         * screen) that the next window had to undo; a median of these whole
+         * frames rounded half-frame advantages up and slept more, not less
+         * (latency branch, docs/ROLLBACK.md section 26) */
+        int d[kLeadWinMax];
+        for (int i = 0; i < g_lead_win; i++) d[i] = g_lead_mine[i] - g_lead_theirs[i];
+        std::sort(d, d + g_lead_win);
+        const int cut = g_lead_win / 5;
+        double sum = 0;
+        for (int i = cut; i < g_lead_win - cut; i++) sum += d[i];
+        const double adv = sum / (2.0 * (g_lead_win - 2 * cut));   /* frames this side is ahead of the peer */
         g_st.lead_sum += adv;
         if (adv >= 1.0 && f - g_last_sleep_frame >= (uint32_t)g_ts_interval) {
             const int frames = std::min(g_ts_max, (int)adv);
@@ -483,40 +597,8 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 
     /* mispredictions among the frames now confirmed */
     const uint32_t upto = std::min(rc, f);
-    uint32_t first_wrong = UINT32_MAX;
-    for (uint32_t g = g_checked; g < upto; g++) {
-        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
-        np::PadInput real;
-        if (!np::rb_remote(g, &real)) break;
-        if (!(real == g_used[g % kHist])) { first_wrong = g; break; }
-    }
-    g_checked = std::max(g_checked, upto);
-    if (first_wrong != UINT32_MAX) {
-        const uint32_t depth = f - first_wrong;
-        uint32_t pages = 0; double rms = 0;
-        bool ok = first_wrong >= g_floor && state_rollback(first_wrong, &pages, &rms);
-        if (!ok) {
-            note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
-                 f, first_wrong, depth, state_oldest_frame(), g_floor);
-        } else {
-            cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
-            g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
-            if (depth > g_st.max_depth) g_st.max_depth = depth;
-            QueryPerformanceCounter(&g_resim_t0);
-            if (g_sample_left) { g_sample_left--; sample_start(); g_sampling = true; }   /* T5_RB_NET_SAMPLE */
-            g_resim = true; g_resim_from = first_wrong; g_resim_target = f;
-            set_bypass(true);
-            if (g_skipsound && sound_word() && rd32(sound_word()) == 0) {   /* a frame committed while re-simulated: sound_skip(false) puts the live value back */
-                g_st.sound_zero++;
-                if (g_st.sound_zero <= 3) note("rbnet: frame %u: the restore of %u brought the sound update's enable word back as zero (committed during a re-simulation); the live value is put back after this one", f, first_wrong);
-            }
-            if (g_skipsound) sound_skip(true);
-            cut_set(true);
-            if (g_verbose) note("rbnet: frame %u: rollback to %u (%u frames), %u pages restored in %.2f ms", f, first_wrong, depth, pages, rms);
-            inputs_for(first_wrong, out);
-            return first_wrong;
-        }
-    }
+    const uint32_t first_wrong = scan_mispredictions(f, rc);
+    if (first_wrong != UINT32_MAX && start_rollback(f, first_wrong, out)) return first_wrong;
 
     /* final hashes: every input before g is confirmed and no rollback is pending */
     for (uint32_t g = std::max(g_hash_sent, g_floor); g <= upto && g <= f; g++) {
@@ -533,7 +615,56 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     g_wait_acc_ms = 0;
     inputs_for(f, out);
     np::rb_log_frame(f, out, g_hash[f % kHist], g_pred[f % kHist], f < upto);
+    g_next_f = f + 1;
+    g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false;
     return f;
 }
+
+/* The flip-status poll of the main thread (rb_hooks.cpp), while its frame waits
+ * for the vblank tick: once the frame is translated and presented (the GPU
+ * side reads no guest memory any more), a rollback already known can start
+ * now instead of after the tick. True = report the flip done, so the title
+ * goes on to its frame semaphore, where the boundary runs at once
+ * (t5_hooks.cpp early_pending) and waits for the tick itself. */
+bool early_check()
+{
+    if (!g_active || !g_early_on || g_resim || bypass_on()) return false;
+    const uint32_t f = g_next_f;
+    if (g_early_f == f) return true;
+    if (!f || f < g_lock_until || f < g_started_at + g_warmup) return false;
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 2000) return false;   /* every 0.5 ms */
+    g_early_last_check = t;
+    np::rb_poll();
+    const uint32_t upto = std::min(np::rb_remote_contig(), f);
+    bool wrong = false;
+    for (uint32_t g = g_checked; g < upto && !wrong; g++) {
+        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
+        np::PadInput real;
+        if (!np::rb_remote(g, &real)) break;
+        wrong = !(real == g_used[g % kHist]);
+    }
+    if (!wrong) return false;
+    g_early_f = f; g_tick_waited = false; g_early_tick_seen = false;
+    return true;
+}
+bool early_pending() { return g_early_f != UINT32_MAX && !g_tick_waited; }
+/* The snapshot of the next boundary taken as soon as the frame is translated,
+ * in the time it waits for its tick (the boundary then only adds what was
+ * written since: the vblank handler's few pages). */
+void early_commit()
+{
+    if (!g_active || !g_early_on || g_resim || bypass_on()) return;
+    const uint32_t f = g_next_f;
+    if (!f || g_early_committed == f) return;
+    g_early_committed = f;
+    double cms = 0;
+    state_commit(f, nullptr, &cms);
+    g_st.early_commit_ms += cms;
+}
+/* the vblank's post of the frame semaphore while an early boundary re-simulates
+ * (swallowed like every post during a re-simulation): it was this frame's tick */
+void early_tick_posted() { if (g_early_f != UINT32_MAX && !g_tick_waited) g_early_tick_seen = true; }
+void set_tick_waiter(void (*fn)()) { g_tick_waiter = fn; }
 
 } } // namespace rb::net

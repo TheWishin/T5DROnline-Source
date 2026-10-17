@@ -237,19 +237,31 @@ void icall_install()
  * disables it. */
 namespace {
 const uint32_t kDetourCut[] = {
-    0x0031F778, 0x0031F7A8,     /* begin / end of a render pass on the graphics object (lwmutex + 0x383FC8 / 0x383F80): ~14 % of a re-simulated frame */
+    /* 0x31F778 begins a render pass on the graphics object ([r2-0x5A8]: lwmutex,
+     * 0x383FC8(obj+0x80, obj+0x24)) and sets the byte at [r2-0x1044]; its
+     * partner 0x31F7A8 ends the pass only when that byte is set, then clears
+     * it. Only the begin is cut: a pass begun by a frame that ran normally is
+     * still ended normally, whatever frame the end falls in (cutting both broke
+     * that pairing when the cut switched on or off between the two calls). The
+     * pair was ~14 % of a re-simulated frame. */
+    0x0031F778,
 };
+/* Tried and left out: 0x15AD9C / 0x15B01C (the effect pass's NU render calls)
+ * and 0x1549FC / 0x1548C0 (model render calls), ~6 % more: the gameplay hash
+ * stayed equal in test mode (d4), but a pair at RTT 150 (abA1) had the joiner
+ * call through a garbage pointer from 0x34E34 a few seconds into the match. */
 constexpr int kDcutN = 32;
 GuestFn g_dcut_orig[kDcutN];
 uint32_t g_dcut_addr[kDcutN];
 std::atomic<uint64_t> g_dcut_hits{ 0 };
 int g_dcut_n = 0;
-/* Only while the fight runs (phase word 17): in the KO / match-end phases the
- * render pass also leads the match-end banner records (0x1008E690..0x1008E6C0,
- * in the gameplay hash; test run d1: 2 mismatches at the match end, 0 in 1285
- * fighting frames), so those frames re-simulate with it. */
-constexpr uint32_t kPhaseWord = 0x1008F070u;
-inline bool fighting() { uint32_t v; memcpy(&v, vm_base + kPhaseWord, 4); return _byteswap_ulong(v) == 17; }
+/* Only while a match is being fought (phase word 17, the match not decided:
+ * 0x1008EBD5 == 0). After the deciding KO the render pass also leads the
+ * result-screen records at 0x1008E690..0x1008E6C0 (in the gameplay hash;
+ * test runs d1/d2: 2 mismatching re-simulated frames ~860 frames after the
+ * KO, 0 in ~1400 fighting frames), so those frames re-simulate with it. */
+constexpr uint32_t kPhaseWord = 0x1008F070u, kMatchOver = 0x1008EBD5u;
+inline bool fighting() { uint32_t v; memcpy(&v, vm_base + kPhaseWord, 4); return _byteswap_ulong(v) == 17 && vm_base[kMatchOver] == 0; }
 template <int I> void dcut_hook(ppu_context* ctx)
 {
     if (g_cut_on.load(std::memory_order_relaxed) && ctx->thread_id == main_tid() && fighting()) {

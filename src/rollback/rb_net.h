@@ -45,6 +45,21 @@ bool     active();                  /* the rollback loop has taken over (after t
 bool     bypass();                  /* a re-simulated frame is running: no GPU/vblank waits */
 uint32_t start_frame();             /* T5_RB_NET_START */
 
+/* Early rollback (T5_RB_NET_EARLY, default on; docs/ROLLBACK.md section 26).
+ * early_check(): from the main thread's flip-status poll once its frame is
+ * translated and presented (cellGcm_xlat_presented); true when a rollback is
+ * already known -- the hook then reports the flip done, the title goes on to
+ * its frame semaphore, and the hooks run the boundary at once (early_pending)
+ * instead of after the wait; the boundary re-simulates in the time the frame
+ * would have waited, then waits for the tick through the waiter set here.
+ * early_tick_posted(): the semaphore post the hooks swallowed while that
+ * re-simulation ran (it was the tick). */
+bool     early_check();
+void     early_commit();   /* the next boundary's snapshot, taken early (same hook, before early_check) */
+bool     early_pending();
+void     early_tick_posted();
+void     set_tick_waiter(void (*fn)());
+
 /* The hooks call this once per frame boundary with the lockstep frame number
  * f; it returns the frame the game must simulate now (f, or an earlier frame
  * while a rollback is being re-simulated) and fills that frame's inputs.

@@ -42,6 +42,15 @@ const Range kSave[] = {
 };
 const size_t kSaveN = sizeof kSave / sizeof kSave[0];
 const Range kExclude[] = {
+    /* The GCM command ring (cellGcmInit: begin 0x40100000, end 0x40500000) is
+     * the GPU's, not the fight's: a restore used to put earlier frames'
+     * commands back between the FIFO walker's get and the title's next flush,
+     * and the walker then translated them again -- old flips included: in a
+     * pair at RTT 150 it walked 7 128 flips for 5 601 the title asked for and
+     * presented ~1 400 stale frames during re-simulations (latency branch,
+     * docs/ROLLBACK.md section 26). Neither saved nor restored now; the write
+     * pointer in CellGcmContextData is kept across restores (kKeepWords). */
+    { 0x40100000u, 0x00400000u },
     { 0x10114000u, 0x00058000u },   /* sound core mix/output area (bnusCore) */
     { 0x40000000u, 0x00100000u },   /* first heap chunk: sound system voice slots, requests, shared areas (sound threads) */
     { 0x45F00000u, 0x00100000u },   /* decoder / streaming */
@@ -318,8 +327,15 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     Log* lg = nullptr;
     if (f > 0) {
         lg = &g_log[(f - 1) % kLogFrames];
-        if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
-        lg->tag = f; lg->start = g_ring_pos; lg->count = 0;
+        /* a second commit at the same boundary (the netplay loop commits early,
+         * in the time the frame waits for its vblank, and again at the
+         * boundary for what was written since) adds to the same log; a restore
+         * takes each page's first entry, so the earlier pre-image wins */
+        const bool append = lg->tag == f && (lg->start + lg->count) % kRingPages == g_ring_pos;
+        if (!append) {
+            if (lg->tag) { /* the slot in the frame table is reused: that log is gone */ lg->tag = 0; }
+            lg->tag = f; lg->start = g_ring_pos; lg->count = 0;
+        }
         g_newest = f;
         if (!g_oldest) g_oldest = f;
         if (g_oldest + kLogFrames <= g_newest) g_oldest = g_newest - kLogFrames + 1;
@@ -405,9 +421,18 @@ uint32_t state_log_pages(uint32_t f)
     return l.tag == f + 1 ? l.count : 0;
 }
 
+/* Words whose live value survives a restore: the title's CellGcmContextData
+ * (begin, end, current, callback). With the command ring out of the state the
+ * write position must keep going forward, or a re-simulated frame would write
+ * its commands into ring space the walker has consumed and the live frame
+ * after it would flush a put behind the walker's get. */
+static const Range kKeepWords[] = { { 0x0F800000u, 0x10u } };
+
 bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
 {
     PumpHold hold;
+    uint8_t keep[sizeof kKeepWords / sizeof kKeepWords[0]][0x10];
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) memcpy(keep[i], vm_base + kKeepWords[i].base, kKeepWords[i].len);
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     if (!g_newest || to >= g_newest) return false;
     /* every log from the newest (frame g_newest-1) down to frame `to` must be present */
@@ -415,21 +440,35 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
         if (g_log[f % kLogFrames].tag != f + 1) return false;
         if (f == to) break;
     }
+    /* Oldest log first, each page once: a page's content at boundary `to` is
+     * the pre-image in the oldest log (from `to` on) that has it -- the same
+     * result as applying every log newest-first, without copying the pages
+     * written in several of the frames again for each (the hot set of a fight
+     * frame is most of a frame's ~600 pages: a 3-frame rollback restored
+     * ~1 800 copies, now ~700). */
+    static uint64_t* seen = (uint64_t*)calloc(kPages / 64, sizeof(uint64_t));
+    static std::vector<uint32_t> touched;
+    touched.clear();
     uint32_t n = 0;
-    for (uint32_t f = g_newest - 1; ; f--) {
+    for (uint32_t f = to; f < g_newest; f++) {
         const Log& l = g_log[f % kLogFrames];
         for (uint32_t i = 0; i < l.count; i++) {
             const uint32_t slot = (l.start + i) % kRingPages;
             const Entry& e = g_ent[slot];
             const uint32_t pg = e.ea >> 12;
+            uint64_t& w = seen[pg >> 6];
+            const uint64_t bit = 1ull << (pg & 63);
+            if (w & bit) continue;
+            w |= bit;
+            touched.push_back(pg);
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             memcpy(vm_base + e.ea, src, 0x1000);
             memcpy(shadow_rw(e.ea), src, 0x1000);
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
-        if (f == to) break;
     }
+    for (uint32_t pg : touched) seen[pg >> 6] = 0;
     /* the logs above `to` describe frames that will be re-simulated: drop them
      * and hand their ring slots back (the ring position returns to the start
      * of frame `to`'s log) */
@@ -437,6 +476,10 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
     for (uint32_t f = to; f < g_newest; f++) g_log[f % kLogFrames].tag = 0;
     g_newest = to;   /* the next commit (at the boundary of to+1) records frame `to` */
     if (g_oldest > to) g_oldest = to;
+    for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) {
+        memcpy(vm_base + kKeepWords[i].base, keep[i], kKeepWords[i].len);
+        if (uint8_t* sh = shadow_rw(kKeepWords[i].base)) memcpy(sh, keep[i], kKeepWords[i].len);
+    }
     /* our own writes must not count as the next frame's dirt */
     for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);

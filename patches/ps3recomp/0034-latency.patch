@@ -46,7 +46,7 @@ index 46bcead..9527105 100644
          /* Down now or in a device event since the last sample, up in the
           * previous sample: a press. Every reader gets it at its next read. */
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 136d84c..dcd0d17 100644
+index 136d84c..0d08f3f 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -13,6 +13,7 @@
@@ -57,19 +57,32 @@ index 136d84c..dcd0d17 100644
  #include "../../runtime/ppu/ppu_memory.h"   /* vm_write32 (translate + byte-swap, OOB-safe) */
  #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
  #include "rsx_commands.h"                    /* rsx_state, rsx_process_command_buffer */
-@@ -85,6 +86,11 @@ u32 cellGcm_flip_request_count(void)
+@@ -85,6 +86,16 @@ u32 cellGcm_flip_request_count(void)
  {
      return s_flip_request_count;
  }
 +/* PS3_LATENCY_LOG (patch 0034): every in-FIFO flip gets a sequence number when
 + * the guest asks for it (F), and the same number when the walker reaches it
 + * (X, translated) and when it is presented (P, rsx_live_draw.c). */
-+static volatile LONG s_lat_req_seq = 0, s_lat_walk_seq = 0;
++static volatile LONG s_lat_req_seq = 0, s_lat_walk_seq = 0, s_presented_seq = 0;
 +u32 cellGcm_lat_walk_seq(void) { return (u32)s_lat_walk_seq; }
++/* The ticker presented the flip the walker is parked on (PS3_PRESENT_AT_XLAT):
++ * the frame's GPU side is done with guest memory (vertex jobs drained by the
++ * present's flush), only the vblank that completes it is still to come. A
++ * rollback layer may use that time (src/rollback early rollback). */
++void cellGcm_note_presented(void) { s_presented_seq = s_lat_walk_seq; }
  static u32  s_debug_level = CELL_GCM_DEBUG_LEVEL0;
  
  /* Display buffers */
-@@ -773,6 +779,7 @@ void ppu_gcm_pump(void)
+@@ -137,6 +148,7 @@ static volatile int  s_flip_hold = 0;          /* walker parked on a flip     */
+ /* QPC of the guest's last flush through an HLE call (PS3_FRAMELOG xlat_us). */
+ static volatile long long s_put_write_qpc = 0;
+ int cellGcm_flip_held(void) { return s_flip_hold; }
++int cellGcm_xlat_presented(void) { return s_flip_hold && s_presented_seq == s_lat_walk_seq; }
+ /* The ticker presented the flip the walker is parked on: release it. */
+ void cellGcm_flip_presented(void)
+ {
+@@ -773,6 +785,7 @@ void ppu_gcm_pump(void)
      if (p & 2) {
          s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
          rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
@@ -77,7 +90,7 @@ index 136d84c..dcd0d17 100644
          SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
          host_sched_trace(HS_EV_FLIP_DONE, 0);
          if (s_flip_handler_opd && g_ps3_guest_caller) {
-@@ -1815,6 +1822,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1815,6 +1828,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  /* Queued by _cellGcmSetFlipCommand, which already did the
                   * guest-visible half of the request. */
                  s_current_display_buffer_id = w & 7u;
@@ -85,7 +98,7 @@ index 136d84c..dcd0d17 100644
                  if (s_flip_call_tail != __atomic_load_n(&s_flip_call_head, __ATOMIC_RELAXED))
                      g_rsx_pf[RSX_PF_SHOWN_CALL_QPC] = s_flip_call_ring[s_flip_call_tail++ & 15u];
                  s_flip_pending = 1;
-@@ -2468,6 +2476,7 @@ u32 cellGcm_display_buffer_count(void)
+@@ -2468,6 +2482,7 @@ u32 cellGcm_display_buffer_count(void)
  static s32 gcm_flip_request(u32 bufferId, int in_fifo)
  {
      rsx_pf_guest_flip();   /* PS3_FRAMELOG: the guest asked for a flip */
@@ -507,7 +520,7 @@ index 0000000..cf82439
 +
 +#endif
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index b30b9ee..a38ead5 100644
+index b30b9ee..ec250a3 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -33,6 +33,9 @@
@@ -520,13 +533,14 @@ index b30b9ee..a38ead5 100644
  /* The lifted ppu_recomp.h already defines `struct ppu_context` (identical to
   * runtime/ppu/ppu_context.h by design -- "keep the two in sync"). A syscall
   * header included later (sys_ppu_thread.h -> lv2_syscall_table.h -> ppu_context.h)
-@@ -453,6 +456,135 @@ static DWORD WINAPI guest_prof_thread(LPVOID)
+@@ -453,6 +456,136 @@ static DWORD WINAPI guest_prof_thread(LPVOID)
  }
  
  extern "C" const char* cellGame_get_title(void);   /* PARAM.SFO TITLE, for the caption */
 +extern "C" int  rsx_live_draw_dwm_vblank(long long* vblank, long long* period);
 +extern "C" int  rsx_live_draw_display_lockable(void);
 +extern "C" void rsx_live_draw_set_display_lock(int on);
++extern "C" void cellGcm_note_presented(void);
 +
 +/* ---- Patch 0034: frames presented when translated, vblanks locked to the display.
 + *
@@ -656,7 +670,7 @@ index b30b9ee..a38ead5 100644
  
  static volatile DWORD g_ticker_tid = 0;   /* PS3_HOST_PROF_WHO=ticker */
  static DWORD WINAPI vblank_ticker(LPVOID)
-@@ -506,7 +638,22 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -506,7 +639,23 @@ static DWORD WINAPI vblank_ticker(LPVOID)
      fprintf(stderr, "[pacing] vblank ticker host tid=%lu\n", (unsigned long)GetCurrentThreadId());
      double vb_hz = 60000.0 / 1001.0;
      if (const char* e = getenv("PS3_VBLANK_HZ")) { double v = atof(e); if (v >= 10.0 && v <= 240.0) vb_hz = v; }
@@ -672,6 +686,7 @@ index b30b9ee..a38ead5 100644
 +        if (!rsx_ok || !s_rsx_live || !present_at_xlat) return;
 +        if (cellGcm_flip_held() && cellGcm_take_flip_pending()) {
 +            present_guest_frame();
++            cellGcm_note_presented();
 +            last_flip = cellGcm_flip_request_count();
 +            LARGE_INTEGER t; QueryPerformanceCounter(&t);
 +            lock.on_present((double)t.QuadPart);
@@ -680,7 +695,7 @@ index b30b9ee..a38ead5 100644
      timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
      QueryPerformanceCounter(&vb_now);
      double next_tick = (double)vb_now.QuadPart;
-@@ -534,12 +681,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -534,12 +683,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
          if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
          while (now >= next_tick && fired < 240) {
              cellGcmTickVBlank();
@@ -695,7 +710,7 @@ index b30b9ee..a38ead5 100644
              {
                  if (rsx_ok && cellGcm_take_flip_pending()) {
                      if (late_present) present_due = 1;
-@@ -551,22 +700,25 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -551,22 +702,25 @@ static DWORD WINAPI vblank_ticker(LPVOID)
                  cellGcm_flip_presented();
              }
              cellGcmTickFlip();
@@ -725,7 +740,7 @@ index b30b9ee..a38ead5 100644
          if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
          if (fired) { rsx_pf_add(PF_VBLANKS, fired); rsx_pf_max(PF_VBLANK_BURST_MAX, fired); }
          /* Drain at the outer ~4ms cadence too (not just the 16ms tick):
-@@ -580,6 +732,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -580,6 +734,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
                  last_flip = cellGcm_flip_request_count();
              }
              cellGcm_rsx_process_fifo();

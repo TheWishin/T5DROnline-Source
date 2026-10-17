@@ -766,3 +766,51 @@ not delayed at all. Taking the sleep inside the present's flip wait instead
 a 75 s window and the pair fell apart (not understood yet), so it is off.
 What is needed is a real frame skip (not advancing the game for one frame),
 or a sleep placed after the draw thread's wait on the live path; left open.
+
+---
+
+# Phase 5 -- peer-to-peer agreement across rollbacks (branch `rollback5`)
+
+## 14. The desync check in rollback mode
+
+In rollback mode the loop now hands netplay's desync detector the
+**gameplay hash of confirmed frames** (`np::rb_push_hash` with
+`state_game_hash()`: a frame's hash is handed over once every input before it
+is known on this side and any rollback that could change it has been
+re-simulated), and writes `frames.log` (`f I <p1> <p2> <hash> R|P C|U`: the
+inputs the frame ran with, R = remote confirmed / P = predicted). Before,
+the full-state hash was pushed (render bookkeeping, legitimately different
+between peers) and no frame line was written, which made every frame look
+mismatching (the coordinator's npcheck4). `T5_NET_DESYNC_DUMP=1` now also
+works here: the gameplay bytes of the last 64 boundaries, written as
+`rb_desync_f<frame>.bin` on a mismatch (diff: build/rb2/tools/rb_desync_diff.py).
+
+Test harness: `tools/rollback_net_test.py --fight p1,p2,stage,rounds` boots
+both instances straight into the match (`T5_FIGHT`, `T5_NET_START=external`:
+the fight is lockstep frame 0, the rollback loop takes over at frame 1 after
+the warm-up), attack scripts (the ranked driver's: P1 square + forward, P2
+triangle + back, varied) through files -- inline they exceeded the environment
+and parsed as nothing, which is why the first batch (p0/p50/p150, q0/q50/q150)
+ran with neutral input: in sync, but 0 rollbacks.
+
+**Result, current build (patch series through 0022, input delay 0 so that
+every frame is predicted; Asuka vs Lili, stage 20, 2 rounds, 3 % loss,
++-5 ms jitter):**
+
+| run | RTT | rollbacks per 300 frames (frames re-simulated, max depth) | fps | sync check |
+|---|---|---|---|---|
+| d150, sound update skipped in resim (default) | 150 ms | host 33 (145, 9), joiner 37 (176, 9) | 34-38 | **0 mismatching frames through 9000** |
+| d150b, sound update NOT skipped | 150 ms | joiner 37 (96, 5) | 29-47 | desync from frame 920: the whole Mersenne Twister state (0x10095168, 624 words) differs |
+
+So the sound skip is needed for determinism, not only against duplicate
+effects: the sound update consumes the game's Mersenne Twister, and a
+re-simulated frame that runs it again consumes it once more than the live
+frame on the other side. With the skip, the two peers agree on every
+confirmed frame while rolling back 33-37 times per 300 frames. RTT 0 and
+50 ms: see below.
+
+**Open: the sound streamer's exit.** In one RTT-0 run of the old build (r0)
+the host's sound streaming thread (`0x320228 -> 0x3201F8 -> 0x32089C ->
+... -> 0x3A8704`) called `exit(1)` early in the match, i.e. the game quit.
+That thread starves when the sound update is skipped for many consecutive
+frames (section 10); the SFX-only skip is now the first thing to do.

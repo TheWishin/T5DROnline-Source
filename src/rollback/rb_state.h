@@ -49,6 +49,9 @@ uint64_t state_page_hash(uint32_t ea);
  * frame was drawn, so it is the verdict of the draw-cut test and what the
  * peers compare. */
 uint64_t state_game_hash();
+/* The bytes the gameplay hash covers, in region order (for desync dumps);
+ * returns the byte count, at most cap. */
+uint32_t state_game_bytes(uint8_t* out, uint32_t cap);
 uint64_t hash_page(uint32_t ea);
 
 /* Roll the state back from the current boundary f to the boundary of frame

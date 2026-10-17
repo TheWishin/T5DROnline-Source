@@ -124,6 +124,20 @@ static const Range kGameSkip[] = {
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
 };
+uint32_t state_game_bytes(uint8_t* out, uint32_t cap)
+{
+    uint32_t n = 0;
+    for (const Range& r : kGame) {
+        if (n + r.len > cap) break;
+        memcpy(out + n, vm_base + r.base, r.len);
+        for (const Range& k : kGameSkip) {
+            const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
+            for (uint32_t x = a; x < e; x++) out[n + (x - r.base)] = 0;
+        }
+        n += r.len;
+    }
+    return n;
+}
 uint64_t state_game_hash()
 {
     uint64_t h = 1469598103934665603ull;

@@ -37,6 +37,12 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+/* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
+ * to rb_desync_f<frame>.bin when the peer's hash for that frame differs (both
+ * sides do; tools/netplay_memdiff.py diffs the two files) */
+constexpr uint32_t kDumpFrames = 64, kDumpBytes = 0x6000;
+bool g_dump = false; uint32_t g_dumps = 0;
+uint8_t* g_dump_ring = nullptr; uint32_t g_dump_tag[kDumpFrames], g_dump_len[kDumpFrames];
 uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this */
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
 np::PadInput g_last_remote = np::kNeutral;
@@ -132,6 +138,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
+            if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
@@ -188,6 +195,12 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
      * compare once every input before f is confirmed; a rollback re-simulates
      * the boundary and overwrites it before it is handed over */
     g_hash[f % kHist] = state_game_hash(); g_hash_tag[f % kHist] = f + 1;
+    if (g_dump) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
+    for (uint32_t mf; g_dump && np::take_mismatch(&mf);) {
+        if (g_dump_tag[mf % kDumpFrames] != mf + 1 || g_dumps >= 20) continue;
+        char path[64]; snprintf(path, sizeof path, "rb_desync_f%06u.bin", mf);
+        if (FILE* fp = fopen(path, "wb")) { fwrite(g_dump_ring + (size_t)(mf % kDumpFrames) * kDumpBytes, 1, g_dump_len[mf % kDumpFrames], fp); fclose(fp); g_dumps++; }
+    }
 
     if (g_resim) {
         /* boundary inside a re-simulation: frame f-1 was re-run */

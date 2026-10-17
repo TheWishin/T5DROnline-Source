@@ -603,21 +603,14 @@ void drain_stats(uint32_t f)
     g_drain_us = g_drain_max_us = g_drain_waits = 0;
 }
 
-void drain_workers(uint32_t f)
+/* Wait until the loader threads are parked. Returns the time it waited (ms),
+ * or -1 when they were idle already. */
+double drain_wait(uint32_t f)
 {
     drain_stats(f);
-    if (workers_idle()) return;
-    struct Tell { uint32_t f; LARGE_INTEGER t0; ~Tell() {   /* the rollback loop keeps re-simulations clear of loads */
-        LARGE_INTEGER t1, qf; QueryPerformanceCounter(&t1); QueryPerformanceFrequency(&qf);
-        rb::net::load_seen(f, 1000.0 * (double)(t1.QuadPart - t0.QuadPart) / (double)qf.QuadPart); } } tell{ f, {} };
-    QueryPerformanceCounter(&tell.t0);
+    if (workers_idle()) return -1.0;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
-    struct Acc { LARGE_INTEGER* a; ~Acc() {
-        LARGE_INTEGER q1, qf; QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
-        uint64_t us = (uint64_t)((q1.QuadPart - a->QuadPart) * 1000000 / qf.QuadPart);
-        g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us; } } acc{ &q0 };
-    (void)q1; (void)qf;
     const ULONGLONG t0 = GetTickCount64();
     while (!workers_idle()) {
         WaitForSingleObject(g_drain_event, 1);
@@ -629,9 +622,21 @@ void drain_workers(uint32_t f)
                                        g_sys_semaphores[i - 1].value, g_sys_semaphores[i - 1].waiters); st += b; }
                 np::note("frame %u: loader threads still busy after 2 s, going on (%s)", f, st.c_str());
             }
-            return;
+            break;
         }
     }
+    QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+    const uint64_t us = (uint64_t)((q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart);
+    g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us;
+    return us / 1000.0;
+}
+
+/* lockstep: drain at the top of the frame; the rollback loop is told about the
+ * load (it keeps re-simulations clear of loads) */
+void drain_workers(uint32_t f)
+{
+    const double ms = drain_wait(f);
+    if (ms >= 0) rb::net::load_seen(f, ms);
 }
 
 /* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). From the
@@ -992,7 +997,19 @@ void on_frame_start(ppu_context* ctx)
         const bool load_end = g_await_load && !rb::net::bypass() && (fight_loaded_now() || rd32(kRingResetFlag) != 0);
         const bool scene = resync || load_end;
         np::PadInput in[2];
+        /* The loaders (ZsAread, decoder) are drained before the boundary's
+         * snapshot, not after it. A snapshot taken with a read still in flight
+         * held its request at "in progress" (status 1); the read then
+         * finished, and a rollback to that boundary put the request back to 1
+         * with ZsAread parked for good. The game's loader task (state 3,
+         * 0x27279C) waited on it forever: harmless in the fight, but at the
+         * match's end the game mode cannot finish while a task of its scene
+         * is busy (0x274310 in the query 0x272E84), so the game stayed in the
+         * fight after the KO -- the end-of-match hang under heavy rollback
+         * (reset_cycle_test --stutter 80, docs/ROLLBACK.md section 30). */
+        const double load_ms = drain_wait(f);
         uint32_t run = rb::net::on_boundary(f, scene, in);
+        if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
             const uint32_t nf = np::scene_barrier(f);
             if (nf > f) skip_frames(nf - f);
@@ -1008,7 +1025,6 @@ void on_frame_start(ppu_context* ctx)
             if (nf > f) run = rb::net::on_boundary(nf, false, in);
         }
         g_frame = run + 1;
-        if (run == f) drain_workers(run);
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();

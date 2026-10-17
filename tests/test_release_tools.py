@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import PY, TOOLS, load_tool, put
 
@@ -67,6 +68,19 @@ class ChangelogSection(unittest.TestCase):
     def test_empty_and_missing(self):
         self.assertEqual(notes.find_section(CHANGELOG, "0.0.9"), "")
         self.assertIsNone(notes.find_section(CHANGELOG, "9.9.9"))
+
+
+class DisplayPath(unittest.TestCase):
+    def test_inside_the_repo(self):
+        self.assertEqual(notes.display_path(os.path.join(notes.ROOT, "CHANGELOG.md")), "CHANGELOG.md")
+
+    def test_other_drive_is_shown_whole(self):
+        # os.path.relpath raises ValueError between two Windows drives. A CI runner has the
+        # checkout on D: and the temp folder on C:, so --changelog <temp file> crashed there
+        # (and only there) before display_path.
+        other = os.path.join("X:" + os.sep, "tmp", "CHANGELOG.md")
+        with mock.patch.object(notes.os.path, "relpath", side_effect=ValueError("path is on mount 'X:', start on mount 'D:'")):
+            self.assertEqual(notes.display_path(other), "X:/tmp/CHANGELOG.md")
 
 
 class ReleaseNotesCli(unittest.TestCase):

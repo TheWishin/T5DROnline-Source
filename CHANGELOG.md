@@ -3,6 +3,33 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.4-preview (2026-10-17)
+
+Online feels like Tekken 6 Native Online now, and the game runs on more PCs.
+Both players need 0.1.4. After the update press **BUILD GAME** once (the game
+code changed; it takes about 2 minutes).
+
+### Online
+- **The game stays open for a new opponent**, not only for a rematch: 5-7
+  seconds from Accept to the fight (was about 20).
+- **Your lobby names and ranks show in the fight** instead of "Unknown".
+- **Mashing buttons at the final KO** no longer starts a stray VS battle that
+  blocked the next match.
+- **Fewer void ranked matches:** camera values that differed for a moment
+  between the two PCs no longer count as a desync.
+
+### Runs on more PCs
+- Folder and Windows user names with any characters (e.g. `Ł`, `東京`) work; the
+  game did not start there before.
+- Windows N editions work (movies need the Media Feature Pack; without it they
+  stay black and the game runs on).
+- TVs and monitors below 60 Hz (50 Hz, 30 Hz) no longer slow the game down;
+  120/144/165 Hz monitors keep the exact game speed.
+- Laptops with two graphics chips use the fast one.
+- A graphics driver crash shows a message instead of a frozen window.
+- The window has the right size with Windows scaling (125-200 %).
+- The launcher finds OneDrive folders and warns if the game folder is inside one.
+
 ## v0.1.3-preview (2026-10-17)
 
 **Rollback netcode is the online default, like Tekken 6 Native Online.** Both

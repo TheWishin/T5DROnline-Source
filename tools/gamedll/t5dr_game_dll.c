@@ -6,6 +6,18 @@
 
 int _fltused = 0x9875;
 
+/* ---- const views of the runtime's guest-memory gates (ppu_recomp.h
+ * PPU_CONST_GATES): DLL-local, so the lifted code reads them directly rather
+ * than through an import slot, and treats them as constants. The runtime fills
+ * them before the guest entry runs (vm_gates_publish -> ppu_game_set_gates);
+ * until then the windows are 0 and every access takes the out-of-line path. */
+uint8_t* vm_base_k = 0;
+uint32_t vm_ld_lim_k = 0, vm_st_lim_k = 0, vm_refpoll_k = 0xFFFFFFFFu;
+__declspec(dllexport) void ppu_game_set_gates(uint8_t* base, uint32_t ld, uint32_t st, uint32_t refpoll)
+{
+    vm_base_k = base; vm_ld_lim_k = ld; vm_st_lim_k = st; vm_refpoll_k = refpoll;
+}
+
 /* ---- stack probe. A function with more than a page of locals (the lifted SPU
  * skinning jobs have them) calls __chkstk with the frame size in RAX before it
  * moves RSP; touching every page in order lets the guard page grow the stack.

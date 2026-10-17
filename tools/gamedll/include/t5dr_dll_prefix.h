@@ -24,3 +24,5 @@
 #define ppu_hle_inject_base (*__imp_ppu_hle_inject_base)
 #define g_spu_ls_dbg        (*__imp_g_spu_ls_dbg)
 #define g_spu_ls_watch_n    (*__imp_g_spu_ls_watch_n)
+#define vm_store_inline_ok  (*__imp_vm_store_inline_ok)
+#define vm_coh_bitmap       (*__imp_vm_coh_bitmap)

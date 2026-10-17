@@ -1,0 +1,474 @@
+diff --git a/libs/system/sysPrxForUser.c b/libs/system/sysPrxForUser.c
+index d2db25f..c784238 100644
+--- a/libs/system/sysPrxForUser.c
++++ b/libs/system/sysPrxForUser.c
+@@ -448,6 +448,12 @@ s32 sys_lwmutex_create(sys_lwmutex_t_hle* lwmutex, const sys_lwmutex_attribute_t
+  * Serialize the first use so competing threads share one host mutex. */
+ static s32 lwmutex_ensure_registered(sys_lwmutex_t_hle* lwmutex)
+ {
++    /* Registered already (the common case): no global lock. This ran under
++     * slot_lock on EVERY lwmutex lock/trylock, so every guest thread's
++     * lwmutex traffic contended on one process-wide lock -- ~6% of Tekken 5
++     * DR's main and render threads in a fight. sleep_queue is written last
++     * by the registration (under the lock), after the host slot is ready. */
++    if (__atomic_load_n(&lwmutex->sleep_queue, __ATOMIC_ACQUIRE)) return CELL_OK;
+     slot_lock();
+     s32 rc = CELL_OK;
+     if (!lwmutex->sleep_queue) {
+diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
+index b0a2608..17cf4a5 100644
+--- a/runtime/ppu/ppu_hle.cpp
++++ b/runtime/ppu/ppu_hle.cpp
+@@ -213,6 +213,7 @@ static void ps3_hle_unresolved(uint32_t nid, ppu_context* ctx)
+ 
+ extern "C" void ppu_prof_stamp(void* ctx, unsigned lr);
+ extern "C" uint32_t ppu_prof_resolve_host(void* ra);
++extern "C" uint32_t ppu_prof_resolve_host_cached(void* ra);
+ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+ {
+     /* HLE_BT_EVERY=<n>: dump the calling thread's guest stack every nth HLE
+@@ -274,7 +275,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+         return;
+     }
+     /* Guest-PC breadcrumb for the sampling profiler (see lv2_syscall). */
+-    ppu_prof_stamp(ctx, ppu_prof_resolve_host(__builtin_return_address(0)));
++    ppu_prof_stamp(ctx, ppu_prof_resolve_host_cached(__builtin_return_address(0)));
+     g_last_hle_nid = nid;
+     /* Stamp the NAME here too, not only where a handler is found below.
+      *
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 7200ca8..0840c93 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -1406,6 +1406,7 @@ static inline int vm_oob(uint32_t a, uint32_t n)
+ extern "C" PPU_THREAD_LOCAL ppu_context* g_active_ctx;
+ extern "C" void ppu_dump_guest_stack(ppu_context*, const char*);
+ extern "C" uint32_t g_null_sweep_hi = 0;   /* 0 = not sweeping */
++extern "C" int vm_inline_ok, vm_store_inline_ok;   /* defined with vm_diag below */
+ static uint32_t g_null_sweep_last = 0;
+ static unsigned g_null_sweep_tid = 0;
+ static int vm_null_store_report(uint32_t a, uint32_t v, int width, void* ra)
+@@ -1417,6 +1418,7 @@ static int vm_null_store_report(uint32_t a, uint32_t v, int width, void* ra)
+     { static std::atomic<int> sweep = -1;
+       if (sweep < 0) { const char* e = getenv("PS3_NULL_SWEEP"); sweep = e ? 1 : 0; }
+       if (sweep) { g_null_sweep_hi = 1; g_null_sweep_last = a;
++                   vm_store_inline_ok = 0;   /* every store through vm_null_sweep */
+                    g_null_sweep_tid = g_active_ctx
+                                     ? (unsigned)g_active_ctx->thread_id : 0u; } }
+     { static long n = 0;
+@@ -1478,6 +1480,7 @@ static int vm_null_sweep(uint32_t a)
+         return 1;                       /* still the same sweep: drop */
+     }
+     g_null_sweep_hi = 0;                /* pattern broken: it is over */
++    vm_store_inline_ok = vm_inline_ok && !getenv("SPU_ATOM_EA");
+     { static int said = 0;
+       if (!said) { said = 1;
+           fprintf(stderr, "[null-write] sweep contained, ended at 0x%08X\n",
+@@ -1509,6 +1512,10 @@ static inline int vm_null_store(uint32_t a, uint32_t v, int width, void* ra)
+  * once and give the accessors a fast path that skips the lot. PPU_HOTREAD=1
+  * re-enables the spin detectors on their own. */
+ extern "C" int vm_inline_ok = 0;
++/* Gate for the generated code's INLINE stores (ppu_recomp.h): vm_inline_ok,
++ * minus the store-only probes -- the null-page sweep guard and the
++ * SPU_ATOM_EA barrier watch -- that only the out-of-line vm_write* run. */
++extern "C" int vm_store_inline_ok = 0;
+ static std::atomic<int> g_vm_diag = -1;
+ static int vm_diag_init(void)
+ {
+@@ -1519,6 +1526,7 @@ static int vm_diag_init(void)
+     for (int i = 0; vars[i]; i++) if (getenv(vars[i])) d = 1;
+     g_vm_diag = d;
+     vm_inline_ok = !d;   /* ppu_recomp.h inline loads: only with no diagnostic armed */
++    vm_store_inline_ok = !d && !getenv("SPU_ATOM_EA") && !g_null_sweep_hi;
+     return d;
+ }
+ static inline int vm_diag(void)
+@@ -1527,6 +1535,35 @@ static inline int vm_diag(void)
+     return __builtin_expect(d >= 0, 1) ? d : vm_diag_init();
+ }
+ 
++/* Read-only views of the gates for the generated code (ppu_recomp.h,
++ * PPU_CONST_GATES): published once by ppu_run before the guest entry runs and
++ * never changed after, so the lifted code treats them as constants. 0 windows
++ * send every access out of line, which is always correct. The store window is
++ * also closed for the store-only probes vm_store_inline_ok tracks dynamically
++ * (PS3_NULL_SWEEP, SPU_ATOM_EA): with those armed, generated stores stay out
++ * of line for the whole run. */
++extern "C" uint8_t* vm_base_k = nullptr;
++extern "C" uint32_t vm_ld_lim_k = 0, vm_st_lim_k = 0, vm_refpoll_k = 0xFFFFFFFFu;
++extern "C" void vm_gates_publish(void)
++{
++    const int d = vm_diag();
++    const uint64_t top = ppu_vm_size ? (ppu_vm_size < 0xE0000000u ? ppu_vm_size : 0xE0000000u) : 0xE0000000u;
++    const uint32_t lim = top > 0x10008u ? (uint32_t)(top - 0x10000u - 8u) : 0u;   /* any access <= 8 bytes */
++    vm_base_k = vm_base;
++    vm_refpoll_k = ppu_hle_inject_base + 0x2008u;
++    vm_ld_lim_k = d ? 0u : lim;
++    vm_st_lim_k = (d || getenv("PS3_NULL_SWEEP") || getenv("SPU_ATOM_EA")) ? 0u : lim;
++#if defined(PS3_GAME_DLL) && defined(PS3_GAME_DLL_NAME)
++    /* The game DLL keeps its own copies -- its lifted code must not reach them
++     * through an import slot. Optional export: a DLL without it keeps its
++     * windows at 0, every access out of line. */
++    if (HMODULE m = GetModuleHandleA(PS3_GAME_DLL_NAME)) {
++        auto set = (void (*)(uint8_t*, uint32_t, uint32_t, uint32_t))GetProcAddress(m, "ppu_game_set_gates");
++        if (set) set(vm_base_k, vm_ld_lim_k, vm_st_lim_k, vm_refpoll_k);
++    }
++#endif
++}
++
+ /* Shared read-frequency histogram (PPU_HOTMAP): finds busy-loop polled
+  * addresses across all read widths even when the loop touches several addresses
+  * per iteration (so the consecutive HOTREAD detectors reset). */
+@@ -2040,7 +2077,59 @@ extern "C" void ppu_ww_note_atomic(uint32_t ea, uint32_t val, int width, void* r
+ {
+     barrier_watch_hit(ea, val, width, ra);
+ }
+-void vm_write8 (uint64_t a, uint8_t  v) { barrier_watch_hit((uint32_t)a, v, 1, __builtin_return_address(0)); if (vm_oob((uint32_t)a,1) || vm_null_store((uint32_t)a, v, 1, __builtin_return_address(0))) return;
++/* Guest store fast path. Every lifted store is an out-of-line call into one
++ * of the vm_write* below, and the full body costs a non-inlined
++ * barrier_watch_hit, two cross-module spu_coh_is_reserved calls and a handful
++ * of diagnostic probes per store -- about a third of Tekken 5 DR's busy main
++ * thread in a fight. When no memory diagnostic is armed (vm_inline_ok, the
++ * same gate the inline loads use), no barrier watch, no null-page sweep, and
++ * the address is ordinary memory (not the null page, not raw-SPU problem
++ * state), the store reduces to: byte-swap, store, and the coherence check
++ * done inline. Everything else takes the original path unchanged. */
++extern "C" unsigned char* vm_coh_bitmap;   /* spu_coherency.c */
++static inline int vm_coh_reserved_inl(uint32_t a)
++{
++    const unsigned char* bm = __atomic_load_n(&vm_coh_bitmap, __ATOMIC_ACQUIRE);
++    if (!bm) return 0;
++    const uint32_t line = a >> 7;   /* SPU_COH_LINE_SHIFT */
++    return (__atomic_load_n(&bm[line >> 3], __ATOMIC_RELAXED) >> (line & 7)) & 1u;
++}
++/* The inline stores in ppu_recomp.h (vm_write*_inl): they store, then -- if
++ * the line turned out to be reserved by an SPU -- call this, the second half
++ * of VM_WRITE_COH. */
++extern "C" void vm_store_coh_notify(uint32_t ea)
++{
++    spu_lockline_lock();
++    spu_coh_notify_write_from_ppu(ea);
++    spu_lockline_unlock();
++}
++static inline int vm_store_fast_ok(uint32_t a, uint32_t n)
++{
++    return __builtin_expect(vm_inline_ok && !g_barrier_sync_watch && !g_null_sweep_hi, 1) &&
++           a >= 0x1000u && !spu_raw_is_reg(a) &&
++           (ppu_vm_size == 0 || (uint64_t)a + n <= ppu_vm_size);
++}
++#define VM_WRITE_COH_FAST(a, src, n)                                          \
++    do {                                                                      \
++        if (vm_coh_reserved_inl((uint32_t)(a))) {                             \
++            spu_lockline_lock();                                              \
++            gm_store_bytes(vm_base + (uint32_t)(a), (src), (n));              \
++            spu_coh_notify_write_from_ppu((uint32_t)(a));                     \
++            spu_lockline_unlock();                                            \
++        } else {                                                              \
++            gm_store_bytes(vm_base + (uint32_t)(a), (src), (n));              \
++            __atomic_signal_fence(__ATOMIC_SEQ_CST);                          \
++            if (vm_coh_reserved_inl((uint32_t)(a))) {                         \
++                spu_lockline_lock();                                          \
++                spu_coh_notify_write_from_ppu((uint32_t)(a));                 \
++                spu_lockline_unlock();                                        \
++            }                                                                 \
++        }                                                                     \
++    } while (0)
++
++void vm_write8 (uint64_t a, uint8_t  v) {
++    if (vm_store_fast_ok((uint32_t)a, 1)) { VM_WRITE_COH_FAST(a, &v, 1); return; }
++    barrier_watch_hit((uint32_t)a, v, 1, __builtin_return_address(0)); if (vm_oob((uint32_t)a,1) || vm_null_store((uint32_t)a, v, 1, __builtin_return_address(0))) return;
+ #ifdef _WIN32
+     /* PT detector: does this byte-write turn its word into the hunted truncated value? */
+     { if(g_pt_val==-2){const char*e=getenv("PT"); g_pt_val=e?(int64_t)strtoul(e,0,16):-1;}
+@@ -2050,9 +2139,13 @@ void vm_write8 (uint64_t a, uint8_t  v) { barrier_watch_hit((uint32_t)a, v, 1, _
+         else if(((uint32_t)a&3)==0 && v!=0) pt_restore(wa); /* MSB byte set non-zero = restored */ } }
+ #endif
+     VM_WRITE_COH(a, &v, 1); }
+-void vm_write16(uint64_t a, uint16_t v) { barrier_watch_hit((uint32_t)a, v, 2, __builtin_return_address(0)); if (vm_oob((uint32_t)a,2) || vm_null_store((uint32_t)a, v, 2, __builtin_return_address(0))) return;
++void vm_write16(uint64_t a, uint16_t v) {
++    if (vm_store_fast_ok((uint32_t)a, 2)) { v = __builtin_bswap16(v); VM_WRITE_COH_FAST(a, &v, 2); return; }
++    barrier_watch_hit((uint32_t)a, v, 2, __builtin_return_address(0)); if (vm_oob((uint32_t)a,2) || vm_null_store((uint32_t)a, v, 2, __builtin_return_address(0))) return;
+     v = __builtin_bswap16(v); VM_WRITE_COH(a, &v, 2); }
+-void vm_write32(uint64_t a, uint32_t v) { barrier_watch_hit((uint32_t)a, v, 4, __builtin_return_address(0)); if (vm_oob((uint32_t)a,4) || vm_null_store((uint32_t)a, v, 4, __builtin_return_address(0))) return;
++void vm_write32(uint64_t a, uint32_t v) {
++    if (vm_store_fast_ok((uint32_t)a, 4)) { v = __builtin_bswap32(v); VM_WRITE_COH_FAST(a, &v, 4); return; }
++    barrier_watch_hit((uint32_t)a, v, 4, __builtin_return_address(0)); if (vm_oob((uint32_t)a,4) || vm_null_store((uint32_t)a, v, 4, __builtin_return_address(0))) return;
+ #ifdef _WIN32
+     /* PT restore: a full-word store of a valid pointer (high byte set) to a
+      * previously-truncated slot clears the record (that truncation was transient). */
+@@ -2065,6 +2158,7 @@ void vm_write32(uint64_t a, uint32_t v) { barrier_watch_hit((uint32_t)a, v, 4, _
+        * are guest memory and the PPU reads most of them straight back. */
+       if (spu_raw_is_reg((uint32_t)a)) spu_raw_reg_store((uint32_t)a, _v, 4); } }
+ void vm_write64(uint64_t a, uint64_t v) {
++    if (vm_store_fast_ok((uint32_t)a, 8)) { v = __builtin_bswap64(v); VM_WRITE_COH_FAST(a, &v, 8); return; }
+     /* PPU_WWATCH covers the 64-bit store too. It did not, which made the watch
+      * blind to exactly the code that matters most for it: every bignum and
+      * every 64-bit struct field is written with std, so a watch on one would
+@@ -2183,6 +2277,18 @@ extern "C" uint32_t ppu_prof_resolve_host(void* ra)
+         if (g_inv[mid].host <= ra) lo = mid + 1; else hi = mid; }
+     return lo ? g_inv[lo - 1].guest : 0;
+ }
++/* The HLE and lv2 dispatchers stamp every call with its resolved call site (the
++ * watchdog's breadcrumb), a binary search over every lifted function per call.
++ * The call sites are few, so memoise them per thread. */
++static PPU_THREAD_LOCAL struct { void* ra; uint32_t guest; } s_resolve_memo[64];
++extern "C" uint32_t ppu_prof_resolve_host_cached(void* ra)
++{
++    auto& m = s_resolve_memo[((uintptr_t)ra >> 2) & 63];
++    if (m.ra == ra) return m.guest;
++    const uint32_t g = ppu_prof_resolve_host(ra);
++    if (g_inv_n) { m.ra = ra; m.guest = g; }
++    return g;
++}
+ 
+ static ppu_fn ppu_lookup(uint32_t a)
+ {
+@@ -3222,7 +3328,7 @@ extern "C" void lv2_syscall(ppu_context* ctx)
+     /* Guest-PC breadcrumb for the sampling profiler: record the syscall
+      * callsite (lr) in the runtime-side thread info. cia itself is the thread
+      * entry OPD (load-bearing for the entry trampoline) -- do not touch it. */
+-    ppu_prof_stamp(ctx, ppu_prof_resolve_host(__builtin_return_address(0)));
++    ppu_prof_stamp(ctx, ppu_prof_resolve_host_cached(__builtin_return_address(0)));
+     /* PS3_SCTRACE_TID: trace every lv2 syscall made by the loader/worker thread
+      * (tid=1) so we can see what it does AFTER receiving its q=1 event and why
+      * it never registers handlers / loads assets. */
+@@ -3931,6 +4037,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
+      * made "the log line is absent" unusable as evidence. */
+     setvbuf(stdout, NULL, _IONBF, 0);
+ 
++    vm_gates_publish();   /* before any lifted code runs (ppu_recomp.h PPU_CONST_GATES) */
+     g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
+ 
+     /* With liblv2 lifted into the build, the process starts the way lv2 starts
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+index 35052c6..cf7a730 100644
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -27,15 +27,15 @@ extern "C" {
+ #define VMX_NJ  0x00010000u
+ #define VMX_INL static inline
+ 
+-/* ---- element access (big-endian) ---- */
+-VMX_INL uint16_t vmx_h(const uint8_t* v, int i) { return (uint16_t)(v[2 * i] << 8 | v[2 * i + 1]); }
+-VMX_INL uint32_t vmx_w(const uint8_t* v, int i) {
+-    return (uint32_t)v[4 * i] << 24 | (uint32_t)v[4 * i + 1] << 16 | (uint32_t)v[4 * i + 2] << 8 | v[4 * i + 3];
+-}
+-VMX_INL void vmx_sh(uint8_t* v, int i, uint16_t x) { v[2 * i] = (uint8_t)(x >> 8); v[2 * i + 1] = (uint8_t)x; }
+-VMX_INL void vmx_sw(uint8_t* v, int i, uint32_t x) {
+-    v[4 * i] = (uint8_t)(x >> 24); v[4 * i + 1] = (uint8_t)(x >> 16); v[4 * i + 2] = (uint8_t)(x >> 8); v[4 * i + 3] = (uint8_t)x;
+-}
++/* ---- element access (big-endian) ----
++ * One unaligned load/store plus a byte swap per element rather than four byte
++ * accesses and shifts: the same value, but a 4-lane op then compiles to one
++ * vector load, a pshufb and the arithmetic, instead of 16 scalar byte loads
++ * gathered with pinsrd (which also kept the float helpers from inlining). */
++VMX_INL uint16_t vmx_h(const uint8_t* v, int i) { uint16_t x; memcpy(&x, v + 2 * i, 2); return __builtin_bswap16(x); }
++VMX_INL uint32_t vmx_w(const uint8_t* v, int i) { uint32_t x; memcpy(&x, v + 4 * i, 4); return __builtin_bswap32(x); }
++VMX_INL void vmx_sh(uint8_t* v, int i, uint16_t x) { x = __builtin_bswap16(x); memcpy(v + 2 * i, &x, 2); }
++VMX_INL void vmx_sw(uint8_t* v, int i, uint32_t x) { x = __builtin_bswap32(x); memcpy(v + 4 * i, &x, 4); }
+ VMX_INL float    vmx_f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+ VMX_INL uint32_t vmx_u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+ 
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+index eb45fd5..708b24d 100644
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -85,6 +85,12 @@ static unsigned char s_coh_bitmap[SPU_COH_BITMAP_SZ];
+  * one missed event on the very first reservation of the run. */
+ static int s_coh_armed;
+ 
++/* For the inline PPU store fast paths (ppu_recomp.h vm_write*_inl and
++ * ppu_loader.cpp vm_write*): NULL until the first reservation arms the
++ * bitmap, then s_coh_bitmap -- the test spu_coh_is_reserved makes, without
++ * a call per guest store. */
++unsigned char* vm_coh_bitmap = NULL;
++
+ /* The SPU contexts that have reserved a line. Sized to match the MFC engine
+  * registry in spu_channels.c, which is the ceiling on live SPU contexts. */
+ #define SPU_COH_MAX_CTX 8
+@@ -151,6 +157,7 @@ static void coh_mark_line(uint32_t ea)
+     const unsigned char bit = (unsigned char)(1u << (line & 7));
+     const unsigned char was = __atomic_fetch_or(&s_coh_bitmap[line >> 3], bit, __ATOMIC_SEQ_CST);
+     __atomic_store_n(&s_coh_armed, 1, __ATOMIC_SEQ_CST);
++    __atomic_store_n(&vm_coh_bitmap, s_coh_bitmap, __ATOMIC_SEQ_CST);
+     if (!(was & bit)) spu_process_barrier();
+ }
+ 
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 82c522a..1c3d933 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -148,13 +148,44 @@ void     ppu_resv_line_note(uint64_t addr);
+ extern "C" {
+ #endif
+ extern uint8_t* vm_base;
++#ifdef __cplusplus
++}
++#endif
++/* PPU_CONST_GATES (generated sources of an executable build only): the guest
++ * memory base and the inline-access windows are read through const views the
++ * runtime publishes once, before the guest entry runs (vm_gates_publish), and
++ * never changes after. Without type-based alias analysis every guest store
++ * could alias any host global, so the plain variables were reloaded after each
++ * store; as constants they are loaded once per function. A view still 0 means
++ * the out-of-line path, which is always correct. In the game DLL these are
++ * DLL-local copies (tools/gamedll/t5dr_game_dll.c) the runtime fills through
++ * ppu_game_set_gates, so they are not reached through an import slot. */
++#if defined(PPU_INLINE_STORES) && !defined(PPU_NO_CONST_GATES)
++#define PPU_CONST_GATES 1
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern uint8_t* const vm_base_k;     /* == vm_base */
++extern const uint32_t vm_ld_lim_k;   /* inline load when ea - 0x10000 < this */
++extern const uint32_t vm_st_lim_k;   /* inline store when ea - 0x10000 < this */
++extern const uint32_t vm_refpoll_k;  /* the gcm ref-poll word: always out of line */
++#ifdef __cplusplus
++}
++#endif
++#define VM_BASE vm_base_k
++#else
++#define VM_BASE vm_base
++#endif
++#ifdef __cplusplus
++extern "C" {
++#endif
+ /* Raw (guest byte order) accesses for the byte-reversed and vector forms:
+  * aligned ones single-copy atomic, as on Cell -- the same rule as
+  * runtime/memory/guest_mem_atomic.h, which the generated code cannot include. */
+-#define VM_RAW_LD(T, ea) ({ const uint8_t* _p = vm_base + (uint32_t)(ea); T _v; \
++#define VM_RAW_LD(T, ea) ({ const uint8_t* _p = VM_BASE + (uint32_t)(ea); T _v; \
+     if (!((uintptr_t)_p & (sizeof(T) - 1))) _v = __atomic_load_n((const T*)_p, __ATOMIC_RELAXED); \
+     else memcpy(&_v, _p, sizeof(T)); _v; })
+-#define VM_RAW_ST(T, ea, val) do { uint8_t* _p = vm_base + (uint32_t)(ea); T _v = (val); \
++#define VM_RAW_ST(T, ea, val) do { uint8_t* _p = VM_BASE + (uint32_t)(ea); T _v = (val); \
+     if (!((uintptr_t)_p & (sizeof(T) - 1))) __atomic_store_n((T*)_p, _v, __ATOMIC_RELAXED); \
+     else memcpy(_p, &_v, sizeof(T)); } while (0)
+ static inline void vm_raw_ld16(void* dst, uint64_t ea) {   /* quadword-aligned */
+@@ -175,39 +206,44 @@ static inline int vm_inl_ok(uint32_t ea, uint32_t n)
+            ea != ppu_hle_inject_base + 0x2008u &&
+            (ppu_vm_size == 0 || (uint64_t)ea + n <= ppu_vm_size);
+ }
++#ifdef PPU_CONST_GATES
++#define VM_LD_OK(ea, n) (__builtin_expect((uint32_t)((ea) - 0x10000u) < vm_ld_lim_k, 1) && (ea) != vm_refpoll_k)
++#else
++#define VM_LD_OK(ea, n) vm_inl_ok(ea, n)
++#endif
+ static inline uint8_t vm_read8_inl(uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (vm_inl_ok(ea, 1)) return __atomic_load_n(vm_base + ea, __ATOMIC_RELAXED);
++    if (VM_LD_OK(ea, 1)) return __atomic_load_n(VM_BASE + ea, __ATOMIC_RELAXED);
+     return vm_read8(a);
+ }
+ static inline uint16_t vm_read16_inl(uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (vm_inl_ok(ea, 2)) {   /* aligned: single-copy atomic, as on Cell */
++    if (VM_LD_OK(ea, 2)) {   /* aligned: single-copy atomic, as on Cell */
+         uint16_t v;
+-        if (!(ea & 1u)) v = __atomic_load_n((const uint16_t*)(vm_base + ea), __ATOMIC_RELAXED);
+-        else memcpy(&v, vm_base + ea, 2);
++        if (!(ea & 1u)) v = __atomic_load_n((const uint16_t*)(VM_BASE + ea), __ATOMIC_RELAXED);
++        else memcpy(&v, VM_BASE + ea, 2);
+         return __builtin_bswap16(v); }
+     return vm_read16(a);
+ }
+ static inline uint32_t vm_read32_inl(uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (vm_inl_ok(ea, 4)) {   /* aligned: single-copy atomic, as on Cell */
++    if (VM_LD_OK(ea, 4)) {   /* aligned: single-copy atomic, as on Cell */
+         uint32_t v;
+-        if (!(ea & 3u)) v = __atomic_load_n((const uint32_t*)(vm_base + ea), __ATOMIC_RELAXED);
+-        else memcpy(&v, vm_base + ea, 4);
++        if (!(ea & 3u)) v = __atomic_load_n((const uint32_t*)(VM_BASE + ea), __ATOMIC_RELAXED);
++        else memcpy(&v, VM_BASE + ea, 4);
+         return __builtin_bswap32(v); }
+     return vm_read32(a);
+ }
+ static inline uint64_t vm_read64_inl(uint64_t a)
+ {
+     const uint32_t ea = (uint32_t)a;
+-    if (vm_inl_ok(ea, 8)) {   /* aligned: single-copy atomic, as on Cell */
++    if (VM_LD_OK(ea, 8)) {   /* aligned: single-copy atomic, as on Cell */
+         uint64_t v;
+-        if (!(ea & 7u)) v = __atomic_load_n((const uint64_t*)(vm_base + ea), __ATOMIC_RELAXED);
+-        else memcpy(&v, vm_base + ea, 8);
++        if (!(ea & 7u)) v = __atomic_load_n((const uint64_t*)(VM_BASE + ea), __ATOMIC_RELAXED);
++        else memcpy(&v, VM_BASE + ea, 8);
+         return __builtin_bswap64(v); }
+     return vm_read64(a);
+ }
+@@ -218,6 +254,63 @@ static inline uint64_t vm_read64_inl(uint64_t a)
+ #define vm_read64(a) vm_read64_inl(a)
+ #endif
+ 
++/* Inline guest-store fast paths, the store side of the above. Every lifted
++ * store was an out-of-line vm_write* call; in Tekken 5 DR's fights those
++ * calls were ~20% of the main thread's and ~40% of the render thread's busy
++ * time. The runtime keeps vm_store_inline_ok set while no memory diagnostic
++ * and no store-only probe is armed; vm_coh_bitmap is NULL until an SPU first
++ * reserves a line. A store to a reserved line, or any address the
++ * out-of-line path treats specially, goes there -- same result, no call.
++ * Only for the generated sources (they define PPU_INLINE_STORES): runtime
++ * files that include this header keep declaring the out-of-line vm_write*. */
++#if defined(PPU_INLINE_STORES) && !defined(PPU_NO_INLINE_LOADS)
++#ifdef __cplusplus
++extern "C" {
++#endif
++extern int vm_store_inline_ok;
++extern unsigned char* vm_coh_bitmap;
++void vm_store_coh_notify(uint32_t ea);
++#ifdef __cplusplus
++}
++#endif
++static inline int vm_st_ok(uint32_t ea, uint32_t n)
++{
++#ifdef PPU_CONST_GATES
++    (void)n;
++    return __builtin_expect((uint32_t)(ea - 0x10000u) < vm_st_lim_k, 1);
++#else
++    return __builtin_expect(vm_store_inline_ok, 1) && ea >= 0x10000u && ea < 0xE0000000u &&
++           (ppu_vm_size == 0 || (uint64_t)ea + n <= ppu_vm_size);
++#endif
++}
++static inline int vm_st_reserved(uint32_t ea)
++{
++    const unsigned char* bm = __atomic_load_n(&vm_coh_bitmap, __ATOMIC_ACQUIRE);
++    if (!bm) return 0;
++    const uint32_t line = ea >> 7;
++    return (__atomic_load_n(&bm[line >> 3], __ATOMIC_RELAXED) >> (line & 7)) & 1u;
++}
++/* Store, then re-check the reservation: the order VM_WRITE_COH uses. */
++#define VM_ST_INL(T, BSWAP, a, v, slow) do { \\
++    const uint32_t _ea = (uint32_t)(a); \\
++    if (vm_st_ok(_ea, sizeof(T)) && !vm_st_reserved(_ea)) { \\
++        const T _bv = BSWAP((T)(v)); \\
++        if (!(_ea & (sizeof(T) - 1))) __atomic_store_n((T*)(VM_BASE + _ea), _bv, __ATOMIC_RELAXED); \\
++        else memcpy(VM_BASE + _ea, &_bv, sizeof(T)); \\
++        __atomic_signal_fence(__ATOMIC_SEQ_CST); \\
++        if (__builtin_expect(vm_st_reserved(_ea), 0)) vm_store_coh_notify(_ea); \\
++    } else slow((a), (v)); } while (0)
++#define VM_BSWAP8(x) (x)
++static inline void vm_write8_inl (uint64_t a, uint8_t  v) { VM_ST_INL(uint8_t,  VM_BSWAP8,          a, v, vm_write8);  }
++static inline void vm_write16_inl(uint64_t a, uint16_t v) { VM_ST_INL(uint16_t, __builtin_bswap16, a, v, vm_write16); }
++static inline void vm_write32_inl(uint64_t a, uint32_t v) { VM_ST_INL(uint32_t, __builtin_bswap32, a, v, vm_write32); }
++static inline void vm_write64_inl(uint64_t a, uint64_t v) { VM_ST_INL(uint64_t, __builtin_bswap64, a, v, vm_write64); }
++#define vm_write8(a, v)  vm_write8_inl((a), (v))
++#define vm_write16(a, v) vm_write16_inl((a), (v))
++#define vm_write32(a, v) vm_write32_inl((a), (v))
++#define vm_write64(a, v) vm_write64_inl((a), (v))
++#endif
++
+ /* Syscall handler */
+ #ifdef __cplusplus
+ extern "C"
+@@ -252,6 +345,7 @@ extern const uint64_t  function_table_count;  /* entries, excluding sentinel */
+ 
+ SOURCE_PREAMBLE = """\
+ /* Auto-generated by ppu_lifter.py -- do not edit by hand. */
++#define PPU_INLINE_STORES 1   /* generated code only: see ppu_recomp.h */
+ #include "ppu_recomp.h"
+ #include <stdio.h>
+ #include <string.h>

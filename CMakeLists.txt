@@ -101,6 +101,58 @@ else()
     set(GAME_SOURCES ${RECOMP_SOURCES} ${SPU_SOURCES})
 endif()
 
+# Target CPU of the lifted PPU code (tools/build_game_dll.py --march does the same
+# for the player's build). auto = x86-64-v3 (AVX2, FMA, BMI2, MOVBE) when this
+# PC has AVX2, else the x86-64 baseline. v3 cut the main thread's work per fight
+# frame by ~25-30% (byte-swapped loads/stores become movbe; the VMX helpers'
+# fmaf calls become vfmadd -- the same fused result). -ffp-contract=off always:
+# with FMA available clang would otherwise fuse a*b+c written as two operations,
+# which changes results; the PPU's fused ops are spelt fma() by the lifter.
+set(T5DR_LIFTED_ARCH "auto" CACHE STRING "-march for the lifted PPU code: auto, x86-64-v3, native, none")
+set(_lifted_arch "${T5DR_LIFTED_ARCH}")
+if(_lifted_arch STREQUAL "auto")
+    set(_lifted_arch "none")
+    if(WIN32 AND Python3_EXECUTABLE)
+        execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+                "import ctypes; print(1 if ctypes.windll.kernel32.IsProcessorFeaturePresent(40) else 0)"
+            OUTPUT_VARIABLE _avx2 OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_avx2 STREQUAL "1")
+            set(_lifted_arch "x86-64-v3")
+        endif()
+    endif()
+endif()
+set(_lifted_opts /clang:-ffp-contract=off)
+if(NOT _lifted_arch STREQUAL "none")
+    list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
+endif()
+message(STATUS "Lifted PPU code: -march=${_lifted_arch}")
+# Extra compile options for the lifted code: T5DR_LIFTED_COPTS for the lifted PPU
+# C++, T5DR_SPU_COPTS for the lifted SPU C. Both are lists, e.g.
+#   -DT5DR_LIFTED_COPTS="/clang:-O3"
+set(T5DR_LIFTED_COPTS "" CACHE STRING "extra compile options for the lifted PPU sources")
+set(T5DR_SPU_COPTS "" CACHE STRING "extra compile options for the lifted SPU sources")
+if(RECOMP_SOURCES)
+    set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_LIFTED_COPTS})
+endif()
+if(T5DR_SPU_COPTS AND SPU_SOURCES)
+    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${T5DR_SPU_COPTS})
+endif()
+# Profile-guided optimisation of the lifted PPU code (clang): T5DR_PGO=gen builds
+# an instrumented t5dr.exe (T5_PERF_LOG=... T5_PGO_WRITE_AT=<frames> writes
+# default.profraw at that flip; merge with llvm-profdata), T5DR_PGO=<file.profdata>
+# builds with the profile.
+set(T5DR_PGO "" CACHE STRING "gen, or a .profdata for the lifted PPU code")
+if(T5DR_PGO STREQUAL "gen")
+    set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS /clang:-fprofile-instr-generate)
+    get_filename_component(_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB _prof_rt "${_llvm_bin}/../lib/clang/*/lib/windows/clang_rt.profile-x86_64.lib")
+    list(GET _prof_rt 0 _prof_rt)
+    set(T5DR_PGO_RT "${_prof_rt}")
+elseif(T5DR_PGO)
+    set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
+        "/clang:-fprofile-instr-use=${T5DR_PGO}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+endif()
+
 add_executable(t5dr
     "${PS3RECOMP_DIR}/runtime/ppu/tests/boot_main.cpp"   # generic boot harness
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp"        # vm + ELF loader + run
@@ -135,6 +187,20 @@ file(GLOB DIRECTFIGHT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src
 target_sources(t5dr PRIVATE ${DIRECTFIGHT_SOURCES})
 set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
     INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+
+# Frame timing for performance work (src/perf/): off unless T5_PERF_LOG is set.
+file(GLOB PERF_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/*.cpp")
+target_sources(t5dr PRIVATE ${PERF_SOURCES})
+set_source_files_properties(${PERF_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
+if(T5DR_PGO STREQUAL "gen")
+    set_property(SOURCE ${PERF_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS T5_PGO_GEN)
+    target_link_libraries(t5dr PRIVATE "${T5DR_PGO_RT}")
+    # boot_main.cpp defines __imp_getenv (its env cache); the profile runtime
+    # brings the UCRT import of it too. Instrumented builds only.
+    target_link_options(t5dr PRIVATE /FORCE:MULTIPLE)
+    target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/pgo/pgo_crt_shim.c")
+endif()
 
 # The generated NID table includes every module's header.
 file(GLOB LIB_INC_DIRS LIST_DIRECTORIES true "${PS3RECOMP_DIR}/libs/*")

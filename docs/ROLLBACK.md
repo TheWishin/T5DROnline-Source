@@ -814,3 +814,19 @@ the host's sound streaming thread (`0x320228 -> 0x3201F8 -> 0x32089C ->
 ... -> 0x3A8704`) called `exit(1)` early in the match, i.e. the game quit.
 That thread starves when the sound update is skipped for many consecutive
 frames (section 10); the SFX-only skip is now the first thing to do.
+
+**The RTT-0/50 desyncs and their cause.** With the attack scripts in place,
+runs d0 and d50 (same build, sound skip on) desynced at frames 210 and 920,
+d150b at 920 too, while d150 stayed in sync. The dumps and the logs agree on
+the cause: the game resets its input ring at frames 225, 486, 751, 919 of the
+fight (the lockstep treats every such reset as a scene change: sync point +
+RNG reseed), and at 919 one peer saw the reset at a live boundary -- reseeded
+the Mersenne Twister -- while the other, after a 1-frame rollback, saw it
+again inside the re-simulated boundary, where only the keyread tick's ring
+reset ran, no reseed. The whole MT state then differed (d150b's dump: 624
+words at 0x10095168), and in d150 no reset ever reached a live boundary on
+either side, which is why it stayed in sync. In rollback mode the ring
+resets are now ordinary state (restored and replayed by rollbacks like
+everything else; the peers are frame aligned, so the lockstep's re-alignment
+and reseed are not needed); only `t5_netplay_start()` (the next match) is a
+sync point. Verified by runs e0/e50/e150 below.

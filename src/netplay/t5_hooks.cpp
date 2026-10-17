@@ -562,7 +562,15 @@ void on_frame_start(ppu_context* ctx)
          * confirmed (the loop stalls for that), then it is the lockstep's sync
          * point as below and a floor for rollbacks. */
         if (!rb::net::active()) rb::net::start(f);
-        const bool scene = rd32(kRingResetFlag) || resync;
+        /* The game's input-ring resets during a fight are ordinary state here:
+         * the rollback restores and replays them, and both peers are frame
+         * aligned. Treating them as sync points with an RNG reseed (the
+         * lockstep's way) desynced the peers whenever one side saw the reset
+         * live (reseed) and the other inside a re-simulation (no reseed):
+         * runs d50/d150b, desync from frame 920 after the reset at 919, the
+         * whole Mersenne Twister state differing. Only the explicit
+         * t5_netplay_start() (the next match) stays a sync point. */
+        const bool scene = resync;
         np::PadInput in[2];
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (run == f && scene) {

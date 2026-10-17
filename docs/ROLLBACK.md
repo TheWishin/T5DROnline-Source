@@ -750,3 +750,8 @@ the skip (the no-rollback reference on a quieter machine had 2.9 s); the
 SFX-only skip is still to do. Note that the sound update also runs on the
 main thread, so its `rand()` use (none seen) is not the side-thread consumer
 above.
+
+**After the fix** (runs u18/u24/u17, 8-frame rollbacks every 30 frames):
+stage 18: 38 rollbacks, **0 mismatches in 304 boundaries**; stage 24: 34,
+**0 in 272**; stage 17 (control): 51, 0 in 408. Every selectable stage
+(17-34) now re-simulates with the gameplay hash intact.

@@ -1,10 +1,22 @@
-# Netplay (prototype): delay-based lockstep
+# Netplay: delay-based lockstep, and rollback on top of it
 
 Two copies of the game, one per PC, play local Versus. Each PC's pad is one
 player; the other player's input comes over UDP. Both games run the same
 frames with the same inputs, so they stay identical without ever sending game
 state. The code is ours (`src/netplay/`); no ps3recomp changes beyond the
 patch series in `patches/ps3recomp/`.
+
+**Rollback is the online default** (since branch `rollback10`,
+docs/ROLLBACK.md sections 20-25). When both games offer it in the HELLO --
+every build from rollback10 on does, for a match started through direct
+fight (`T5_NET_START=external`, the lobby's way) -- the rollback loop
+(`src/rollback/rb_net.cpp`) runs on this transport: inputs are predicted,
+a late input that differs rolls the game back and re-simulates, and the
+input delay drops to `T5_RB_NET_DELAY` (default 2 frames, the host's value).
+`T5_RB_MODE=off` (or `lockstep`) keeps the delay-based lockstep described
+below; a peer that does not offer rollback (an older build, or one with
+`T5_RB_MODE=off`) gets the lockstep on both sides. Menu-driven sessions from
+boot (`T5_NET_START=boot`) stay lockstep unless `T5_RB_MODE=net`.
 
 ## Running it
 
@@ -75,6 +87,13 @@ python tools/netplay_test.py --exe build/cmake/t5dr.exe --out build/nptest --pai
 `frames.log` in each instance directory has one line per frame (both inputs,
 state hash); `game.log` has the `[netplay]` lines, including
 `sync check through frame N: 0 mismatching frame(s) -- in sync` every 600 frames.
+
+Match series under rollback or lockstep, with a latency/loss proxy:
+`tools/rollback_net_test.py --fight A --next B --next B --matches 3 --rtt 150
+--loss 3 --mode1 default --mode2 default` (match 1, match 2 and a rematch in
+one process, `summary.txt` per run; `--mode2 off` is the lockstep fallback).
+`T5_NET_SCRIPT_FIGHT=1` (set by that tool) applies the scripted presses only
+while direct fight is in a fight, so they never touch the menus it drives.
 
 ## Design
 
@@ -189,7 +208,14 @@ per-frame hashes, per-region hashes and memory dumps (`T5_NET_DUMP`,
 Things that still differ between the two PCs and do not matter: the penguin
 crowd and similar stage props, two secondary-motion points (0x1008FF00 and
 0x1008FFB0), five counters/handles in each fighter block, timestamps, sound,
-render and decode buffers. The desync detector leaves them out.
+render and decode buffers. The desync detector leaves them out. So it does
+with what a side thread's pace decides: the C `rand()` word 0x1074F218 and
+the stage id it re-rolls at a round intro (0x1008F088), and the addresses of
+objects the animation update takes from a pool at a match intro -- +0x830 of
+each of the four 0x8D0 blocks (0x10090030, 0x10090900, 0x100911D0,
+0x10091AA0), twenty heap pointers at 0x10091AB8 and an effect record at
+0x100A0A00 (plain lockstep without rollback showed 0x100911D0 differing from
+the second match's intro, nothing else: docs/ROLLBACK.md section 21).
 
 **Match state** (what the detector hashes, `kDefaultHash`): the two pad state
 blocks (0x10099F24), the input ring, the game frame clock, all random

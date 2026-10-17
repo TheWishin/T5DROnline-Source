@@ -88,6 +88,9 @@ void diff_against_original(uint32_t f, int max_pages)
 {
     int shown = 0, total = 0;
     g_diff_pages.clear();
+    std::string all;   /* every differing page, compact (runs of pages as first-last) */
+    uint32_t run0 = 0, runl = 0;
+    auto flush_run = [&]() { if (!run0) return; char t[32]; snprintf(t, sizeof t, run0 == runl ? " %X" : " %X-%X", run0 >> 12, runl >> 12); all += t; run0 = 0; };
     for (size_t ri = 0; ri < kSaveN; ri++) {
         const Range& r = kSave[ri];
         for (uint32_t ea = r.base; ea < r.base + r.len; ea += 0x1000) {
@@ -96,6 +99,7 @@ void diff_against_original(uint32_t f, int max_pages)
             const uint8_t* ref = original_content(ea, f, &oh);
             if (state_page_hash(ea) == oh) continue;
             total++;
+            if (run0 && ea == runl + 0x1000) runl = ea; else { flush_run(); run0 = runl = ea; }
             if (g_diff_pages.size() < 64) g_diff_pages.push_back(ea);
             if (shown++ >= max_pages) continue;
             if (!ref) { note("resim %u vs original: page %08X differs (not written by the original frames; no reference content)", f, ea); continue; }
@@ -107,7 +111,8 @@ void diff_against_original(uint32_t f, int max_pages)
             note("resim %u vs original: page %08X differs in %d words:%s", f, ea, nd, line);
         }
     }
-    note("resim %u vs original: %d page(s) differ", f, total);
+    flush_run();
+    note("resim %u vs original: %d page(s) differ:%s", f, total, all.size() > 900 ? (all.substr(0, 900) + " ...").c_str() : all.c_str());
 }
 
 /* On a gameplay-hash mismatch: which words of the gameplay regions differ from
@@ -235,6 +240,7 @@ void test_on_frame(ppu_context* ctx)
         if (const char* e = getenv("T5_RB_STAGE")) g_stage = atoi(e);
         if (g_skipsound && sound_word()) { state_add_mask(sound_word(), 4); note("sound update skipped in re-simulated frames (word %08X)", sound_word()); }
         wft_install();
+        sound_install();   /* the game-DLL build: the lifted table exists only now */
         if (const char* e = getenv("T5_RB_WFT_FRAMES")) g_wft_frames = (uint32_t)std::max(1, atoi(e));
         if (const char* e = getenv("T5_RB_TRACE")) { g_trace_on = *e == '1'; if (g_trace_on) trace_install(); }
         g_cap_buf = (uint8_t*)VirtualAlloc(nullptr, (size_t)kCapPages * 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -252,6 +258,14 @@ void test_on_frame(ppu_context* ctx)
     }
     const double dt_ms = 1000.0 * (double)(now.QuadPart - g_last.QuadPart) / (double)g_qpf.QuadPart;
     g_last = now;
+    {   /* T5_RB_WFT_AT=frame: arm the write-fault tracer at that boundary for T5_RB_WFT_FRAMES frames, whatever the test does */
+        static uint32_t at = 0, left = 0; static bool rd = false;
+        if (!rd) { rd = true; if (const char* e = getenv("T5_RB_WFT_AT")) at = (uint32_t)atoi(e); }
+        if (at && wft_enabled()) {
+            if (left && --left == 0) { wft_disarm("at"); at = 0; }
+            else if (!left && frame() == at) { wft_arm(); left = g_wft_frames; g_wft_state = 99; note("write-fault trace armed at frame %u for %u frames", at, g_wft_frames); }
+        }
+    }
     const ULONG64 cyc = cycles_now();
     const ULONG64 dcyc = cyc - g_cyc_last;
     g_cyc_last = cyc;
@@ -407,9 +421,13 @@ void test_on_frame(ppu_context* ctx)
         wr32(kMinVblanks, (uint32_t)(g_saved_minvb >> 32)); wr32(kMinVblanks + 4, (uint32_t)g_saved_minvb);
         const double rc = (double)(cycles_now() - g_cyc_resim0) / 1e6 / g_resim;
         const double nc = g_cyc_normal_n ? (double)g_cyc_normal / 1e6 / g_cyc_normal_n : 0;
-        note("RESIM done: %u frames in %.2f ms (%.2f ms/frame, %.1f Mcycles/frame CPU; a normal frame with draw: %.1f Mcycles); rollbacks %u (%u failed), GAMEPLAY-hash mismatches %u of %u resim boundaries; full-state mismatches at final boundaries %u (at cut-frame boundaries: %u); cut hits %llu; restore avg %.2f ms, %.0f pages",
+        const SoundStats ss = sound_stats(false);
+        note("RESIM done: %u frames in %.2f ms (%.2f ms/frame, %.1f Mcycles/frame CPU; a normal frame with draw: %.1f Mcycles); rollbacks %u (%u failed), GAMEPLAY-hash mismatches %u of %u resim boundaries; full-state mismatches at final boundaries %u (at cut-frame boundaries: %u); cut hits %llu; restore avg %.2f ms, %.0f pages; "
+             "sounds so far: %u started live, %u kept from a first run, %u new in re-simulated frames, %u played on, %u ticks skipped; "
+             "stops %u skipped / %u not applied, %u answers replayed, events %u skipped / %u new",
              g_resim, ms, ms / g_resim, rc, nc, g_rollbacks, g_rollback_fail, g_game_mismatches, g_resim_frames, g_mismatches, g_cut_diffs, (unsigned long long)(cut_hits() - g_cut_hits0),
-             g_rollbacks ? g_restore_ms_total / g_rollbacks : 0, g_rollbacks ? (double)g_restore_pages_total / g_rollbacks : 0);
+             g_rollbacks ? g_restore_ms_total / g_rollbacks : 0, g_rollbacks ? (double)g_restore_pages_total / g_rollbacks : 0,
+             ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.ticks_skipped, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
         /* continue the uninterrupted run from here: f == g_resim_target */
         g_logical = f + 1;
         set_sim_frame(f);

@@ -28,6 +28,7 @@
 #include "sys_ppu_thread.h"     /* ppu_context, g_ppu_threads: names + host handles */
 #include "lv2_syscall_table.h"  /* g_lv2_syscalls */
 #include "rb.h"
+#include "rb_net.h"
 
 /* From the lifted output (ppu_recomp.h cannot be included next to the runtime's
  * ppu_context.h: both define the struct, identically). */
@@ -354,7 +355,8 @@ bool keyread_parked()
     if (!g_swallow) { g_swallow = true; return false; }
     return g_kr_parked.load();
 }
-void set_sim_frame(uint32_t f) { g_sim_frame = f; }
+void set_sim_frame(uint32_t f) { g_sim_frame = f; sound_begin_frame(f, g_bypass.load()); }
+uint32_t sim_frame() { return g_sim_frame.load(std::memory_order_relaxed); }
 void set_bypass(bool on) { g_bypass = on; }
 bool bypass_on() { return g_bypass.load(std::memory_order_relaxed); }
 constexpr uint32_t kSoundEnablePtrSlot = 0x470540u - 0x61E8u;   /* TOC slot -> pointer to the word */
@@ -365,6 +367,7 @@ void sound_skip(bool on)
 {
     const uint32_t w = sound_word();
     if (!w || on == g_sound_skipped) return;
+    if (on && sound_mode() != SoundMode::Skip) return;   /* resim / raw: the update runs in re-simulated frames */
     /* The word is in the rollback state: a frame committed while it was
      * zeroed (a re-simulated frame) restores it as zero, so the value put
      * back is the last live one, not whatever the restore left (k0c: the
@@ -403,6 +406,23 @@ struct Register {
         if ((!m || !*m) && getenv("T5_NET_MODE") && *getenv("T5_NET_MODE")) m = "net";
         if (!m || !*m) return;
         if (!strcmp(m, "lockstep") || !strcmp(m, "off")) return;
+        /* The rollback state needs the guest memory reserved with write
+         * watch, which the runtime decides in main() from PS3_VM_WRITE_WATCH:
+         * whenever this side will offer rollback (or a test mode runs), it is
+         * switched on here, before main. */
+        {
+            /* Through the OS environment, not getenv(): the runtime's getenv
+             * caches every answer, a miss too (boot_main.cpp cached_getenv),
+             * and main() reads this one from that cache. */
+            const bool needs = strcmp(m, "net") ? true : net::offered_by_env();
+            char ww[8] = "";
+            GetEnvironmentVariableA("PS3_VM_WRITE_WATCH", ww, sizeof ww);
+            if (needs && ww[0] != '1') {
+                SetEnvironmentVariableA("PS3_VM_WRITE_WATCH", "1");
+                _putenv_s("PS3_VM_WRITE_WATCH", "1");
+                fputs("[rb] PS3_VM_WRITE_WATCH=1 (the rollback state needs the write watch)\n", stderr);
+            }
+        }
         if (!strcmp(m, "measure")) g_mode = Mode::Measure;
         else if (!strcmp(m, "test")) g_mode = Mode::Test;
         else if (!strcmp(m, "net")) g_mode = Mode::Net;
@@ -421,6 +441,7 @@ struct Register {
             ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
             ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
             icall_install();
+            sound_install();
             return;
         }
         g_script[0] = parse_script(getenv("T5_RB_SCRIPT"));
@@ -441,7 +462,7 @@ struct Register {
         ps3_hle_register_ctx(NID_cellGcmResetFlipStatus, "cellGcmResetFlipStatus(rb)", h_cellGcmResetFlipStatus);
         ps3_hle_register_ctx(NID_cellGcmSetWaitFlip, "cellGcmSetWaitFlip(rb)", h_cellGcmSetWaitFlip);
         g_on_frame = (g_mode == Mode::Measure) ? measure_on_frame : test_on_frame;
-        if (g_mode == Mode::Test) icall_install();   /* before any guest thread runs */
+        if (g_mode == Mode::Test) { icall_install(); sound_install(); }   /* before any guest thread runs */
     }
 } g_register;
 

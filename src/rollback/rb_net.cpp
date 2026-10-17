@@ -97,7 +97,9 @@ static bool offered_by_env()
     const char* m = getenv("T5_RB_MODE");
     const char* nm = getenv("T5_NET_MODE");
     if (!nm || !*nm) return false;
-    return !m || !*m || !strcmp(m, "net");
+    /* Opt-in (T5_RB_MODE=net) until the stage-specific resim mismatch of run
+     * m2 (docs/ROLLBACK.md section 11) is fixed; lockstep is the default. */
+    return m && !strcmp(m, "net");
 }
 
 void offer()
@@ -106,7 +108,7 @@ void offer()
     g_offered = true;
     if (!offered_by_env()) return;
     np::rb_offer(true);
-    note("rbnet: rollback offered to the peer (T5_RB_MODE=lockstep keeps the delay-based lockstep)");
+    note("rbnet: rollback offered to the peer (T5_RB_MODE=net; lockstep is the default)");
 }
 
 bool enabled()

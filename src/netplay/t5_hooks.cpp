@@ -770,7 +770,7 @@ void h_cellPadInit(ppu_context* ctx)
     ctx->gpr[3] = (uint64_t)(int64_t)r;
     np::init();
     if (!np::enabled()) return;
-    rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=lockstep */
+    rb::net::offer();   /* rollback in the HELLO when T5_RB_MODE=net */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
     { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }

@@ -118,6 +118,7 @@ constexpr uint32_t kTOC           = 0x470540;    /* main TOC (r2) */
 constexpr uint32_t kMatchOver     = 0x1008EBD5;  /* u8: 0 during a match, set when it is decided */
 constexpr uint32_t kWinsP1        = 0x1008EBDA;  /* u8: rounds won by P1 in this match */
 constexpr uint32_t kWinsP2        = 0x1008EBDB;  /* u8: rounds won by P2 */
+constexpr uint32_t kWinnerIdx     = 0x1008EBD6;  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 constexpr uint32_t kFnTickCounter = 0x09A204;
 constexpr uint32_t kFnPadUpdate   = 0x08F3A4;
 constexpr uint32_t kFnRingReset   = 0x120764;
@@ -635,7 +636,12 @@ void flush_result(bool now)
 
 void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
 {
-    const uint8_t over = rd8(kMatchOver), w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+    const uint8_t over = rd8(kMatchOver);
+    uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+    if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 in direct fights: use the winner byte */
+        const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
+        if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
+    }
     if (!over) {
         if (g_result_done) g_match_running = true;   /* menu-driven play: the next match is on */
         g_result_done = false;

@@ -64,6 +64,7 @@ constexpr uint32_t kRoundsToWin  = 0x1008EBD4;   /* u8 */
 constexpr uint32_t kMatchOver    = 0x1008EBD5;   /* u8: non-zero once the match is decided */
 constexpr uint32_t kWinsP1       = 0x1008EBDA;   /* u8 */
 constexpr uint32_t kWinsP2       = 0x1008EBDB;   /* u8 */
+constexpr uint32_t kWinnerIdx    = 0x1008EBD6;   /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 constexpr uint32_t kSelectState  = 0x1008F070;   /* select mode: 1,2,3 (choosing), 4 (stage confirmed), 5 (leaving); fight phases after */
 constexpr uint32_t kStageId      = 0x1008F088;   /* chosen stage, written at the stage confirm, read by the game-mode loader */
 constexpr uint32_t kRecord       = 0x10093F58;   /* per-player select records, 0x78 apart */
@@ -228,6 +229,7 @@ uint32_t g_ph_frame = 0;        /* frame the phase began */
 uint32_t g_title_seen = UINT32_MAX;
 uint32_t g_fight_frame = 0;     /* frame the fight (game mode) started */
 bool g_result_done = false;
+bool g_over_clear = false;      /* kMatchOver was 0 in this fight: the previous match's flag has been reset */
 
 /* per-player press scheduling: a press is `buttons` held for kHold frames then
  * released for kGap frames before the next one */
@@ -391,6 +393,7 @@ void fight_on_frame(uint32_t f)
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         for (int p = 0; p < 2; p++) inject(p, false, 0);
         g_match++;
+        g_over_clear = false;
         g_fight_frame = f;
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
@@ -400,7 +403,14 @@ void fight_on_frame(uint32_t f)
         break;
     case Ph::Fight: {
         if (mode != kModeGame) { note("frame %u: left the game mode (mode %u) without a result", f, mode); set_phase(Ph::Over, "over", f); break; }
-        const uint8_t over = rd8(kMatchOver), w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+        const uint8_t over0 = rd8(kMatchOver);
+        if (!over0) g_over_clear = true;
+        const uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
+        if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 here: use the winner byte */
+            const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
+            if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
+        }
         if (over && (w1 || w2) && !g_result_done) {
             g_result_done = true;
             const int winner = w1 > w2 ? 0 : w2 > w1 ? 1 : -1;

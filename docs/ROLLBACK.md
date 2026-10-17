@@ -395,22 +395,32 @@ and wall time per re-simulated frame; the machine ran 4-6 other game
 instances of other agents during every measurement, so absolute numbers are
 an upper bound):
 
-| | main-thread cycles | wall |
+| per frame (medians over a run; cycles at ~4.5 GHz) | main-thread cycles | wall |
 |---|---|---|
-| normal fight frame (draw + present waits), same runs | 66-77 M | 33-45 ms (24-30 fps under that load) |
-| re-simulated frame, no cut (phase 1 / r0) | 58-73 M | 30-40 ms |
-| re-simulated frame, cut B (c3, 16 targets) | 41-44 M | 14-20 ms median, 8.4 ms min |
-| re-simulated frame, cut C (c6, 21 targets) | ~44 % of a normal frame | 13-16 ms p10 |
+| normal fight frame (draw + present waits), same runs | 69-77 M | 40-50 ms (17-24 fps under that load) |
+| re-simulated frame, no cut (phase 1 / r0) | 115 M = the normal frame of that run (118 M) | 33 ms |
+| re-simulated frame, cut B (c3, 16 targets) | 43 M (62 % of normal) | 19.7 ms, min 8.4 |
+| re-simulated frame, cut C (m1, 21 targets) | **34.6 M (46 %)**, p10 31.6, min 24.3 | 14.7 ms, p10 9.0, min 5.4 |
+| cut C + sound update skipped (c7, section 8) | **27.7 M (36 %)**, p10 25.7, min 22.2 | 10.5 ms, p10 6.8, min 5.7 |
+| the invalid cut c5 (animation/skeleton update removed, for scale) | 25.9 M | -- |
+
+m1: 23 rollbacks of 8 frames, 0 gameplay-hash mismatches in 184 re-simulated
+boundaries; c7: 20 rollbacks, 0 in 160. 27.7 M cycles are ~6 ms on this
+CPU with 20 other game instances competing for it; the same count on a
+quiet machine was not measured (no quiet moment during this session).
 
 The syscall timeline of a cut frame (`T5_RB_TRACE=1`, run t1) shows where the
 rest is: ~9 ms of lifted sim code (the two fighters' animation and logic,
 `0x2683F4` subtree), then the present's 1.5 ms `sys_cond_wait` for the draw
 thread (`0x357714`) and 0.7 ms `sys_event_queue_receive` (`0x380A10`),
 both waits on the draw thread that still runs the (now nearly empty) lists.
-So a re-simulated frame costs about half a normal frame, not the 2-3 ms
-target: the sim itself is that expensive in this lifted build. What remains
-is runtime overhead (the `cpu`/`pf` work: inlined guest memory access,
-`vmx_*` helpers), which scales both.
+So a re-simulated frame costs a third of a normal frame, not the 2-3 ms
+target: the fighters' animation/skeleton update alone (`0x264B04` x2 +
+`0x50B68`, c5) is ~9 M cycles, the sim logic the rest. What remains is
+runtime overhead (the `cpu`/`pf` work: inlined guest memory access, `vmx_*`
+helpers), which scales both, and the two draw-thread waits in the present
+(a direct-call path; they could be bypassed at the syscall level once the
+draw thread is known to be idle).
 
 ## 7. Undo-log snapshots (`rb_state.cpp`)
 
@@ -435,8 +445,11 @@ rest are the sound threads'. `0xAA200` returns at once when the word its TOC
 slot (`r2 - 0x61E8`, -> `0x10065B70`) points to is 0. `sound_skip(true)`
 zeroes it for re-simulated frames (`T5_RB_SKIPSOUND=1` in the test,
 `T5_RB_NET_SKIPSOUND` in the loop, on by default) and restores it for the
-live frame; the word is masked out of the hash. The AUDIO_WAV check for
-audible artefacts was not done.
+live frame; the word is masked out of the hash. Verified: c7, 20 rollbacks,
+0 gameplay-hash mismatches in 160 boundaries, and the sound update turned
+out to be ~7 M cycles per frame (the c7 row above). What is NOT verified: the
+audible result (no AUDIO_WAV analysis), and the `0xAAA18`/`0xAC424`/`0x9BFE8`
+calls that the same word gates (the gameplay hash does not see them).
 
 ## 9. The rollback loop (`rb_net.*`, `T5_RB_MODE=net`)
 

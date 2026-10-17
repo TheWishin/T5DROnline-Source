@@ -38,18 +38,23 @@ lobby/
     handover.py   MatchTicket -> environment for t5dr.exe; optional socket handover
     buildid.py    build identity both players must share
     rating.py     Glicko-2
-    tk_tab.py     the launcher's Online tab (tkinter), drop-in for launcher/online.py
+    ranks.py      the game's rank tiers on top of Glicko-2 (placement, promotion, demotion)
+    fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
+    match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
+    tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
     cli.py        python -m t5lobby.cli: the same from a console
     server/       python -m t5lobby.server
       lobby.py    players, rooms, queues, challenges, matches, results
       udp.py      UDP ping, endpoint registration, NAT probe, relay
-      store.py    SQLite: accounts (scrypt hashes), ratings, match history
+      store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history
+      accounts_admin.py  password reset / recovery codes for the server's host
       config.py   T5L_* environment variables
       ratelimit.py token buckets, temporary bans
-  tests/          55 tests: server + simulated clients on localhost
+  tests/          ~100 tests: server + simulated clients on localhost, the Online tab, the stub game
   tools/
     two_players.py   two players on one PC: lobby -> punch -> two game instances
-    stub_game.py     stand-in for t5dr.exe that does the netplay handshake
+    ranked_session.py  two ranked accounts on one PC through the launcher's glue (stub or real game)
+    stub_game.py     stand-in for t5dr.exe: netplay handshake, result file, netplay log lines
     relay_latency.py what the relay adds to the round trip
 ```
 
@@ -214,18 +219,12 @@ rating period per ranked match; RD grows again by one empty period per week of
 inactivity. The implementation reproduces the paper's worked example
 (1464.06 / 151.52 / 0.05999). Leaderboard order: r - 2·RD.
 
-**Result reconciliation.** Each player reports `winner` (0, 1 or null) and
-optionally the score. Then:
-
-| Reports | Outcome |
-|---|---|
-| both agree (score compared when both give one) | `confirmed`: record and rating updated |
-| they disagree | `disputed`: nothing counted, logged |
-| one report, and the silent player has left the lobby, or the lone report is a concession (`leave_match`) | `onesided`: counted (`T5L_ACCEPT_ONESIDED`) |
-| one report, the other is still online but silent for 90 s | `void` |
-| none within 3 h | `void` |
-
-Quitting a running match (`leave_match`) counts as reporting a loss.
+**Rank tiers, accounts and result reconciliation** (disconnects, quits,
+crashes, desyncs, disputes, minimum match length, strikes, rematches) are in
+[RANKED.md](RANKED.md). In short: both reports agree -> `confirmed`; a desync
+-> `void`; quitting -> `forfeit` (a loss); losing the lobby for longer than the
+grace period -> `forfeit`; winners differ -> decided by the netplay state hash
+when there is one (`resolved`), else `disputed`.
 
 ## Protocol reference
 
@@ -421,7 +420,7 @@ not for thousands.
 ## Tests, demo, measurements
 
 ```sh
-python -m unittest discover -s lobby/tests          # 55 tests, ~35 s, all on localhost
+python -m unittest discover -s lobby/tests          # ~100 tests, ~2 min, all on localhost
 ```
 
 Unit: Glicko-2 against the paper's example, wire format, delay formula, token
@@ -447,7 +446,8 @@ whole match.
 server, logs in two guests, quick match, then starts two games with the
 handed-over environment. With `--exe` it runs `t5dr.exe` built with the netplay
 layer; without, `stub_game.py` (does netplay's HELLO handshake and 60 frames
-of input exchange, then reports P1 winning 3-1 to show result reconciliation).
+of input exchange, then writes a result file like the game -- the winner follows
+the shared seed -- which both sides report).
 
 ```sh
 python lobby/tools/two_players.py                                   # stub, direct
@@ -473,21 +473,14 @@ that evening:
 
 ## Plugging in: launcher and netplay
 
-**Launcher** (branch `launcher`): `launcher/online.py` becomes
-
-```python
-import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lobby"))
-from t5lobby.tk_tab import AVAILABLE, OnlineTab  # noqa: E402,F401
-```
-
-The tab uses `app.settings` (nickname, `path`, `out_dir`), `app.game_state()`,
-`app.start_game(env)` and `app.set_status()`; it reads the build identity from
-`<out>/game/EBOOT.elf` and `<out>/build/t5dr_build.json` (`code_id`), and stores
-its own settings (server address, name) in `online.json` next to
-`launcher.json`. Verified by running a copy of the launcher's working tree with
-that shim (`--screenshots`): the Online tab renders in place. The release zip
-needs `lobby/t5lobby/` (the `server/` subfolder can stay out of it).
+**Launcher**: `launcher/online.py` imports `t5lobby.tk_tab` (wired, branch
+`ranked`). The tab uses `app.settings` (nickname, `path`, `out_dir`),
+`app.game_state()`, `app.start_game(env)` and `app.set_status()`; it reads the
+build identity from `<out>/game/EBOOT.elf` and `<out>/build/t5dr_build.json`
+(`code_id`), and keeps its own settings and the saved login (a token, never a
+password) per Windows user in `%APPDATA%\T5DROnline\online.json`. Matches run
+through `match_driver.MatchDriver` (RANKED.md, "The match flow"). The release
+zip carries `lobby/t5lobby/` (tools/package_release.py).
 
 **Netplay** (branch `netplay`), works unchanged today. Suggested additions, in
 order of value:
@@ -504,14 +497,14 @@ order of value:
 
 ## What is left
 
-- Netplay side of the handover extras above (result file, rounds, build in HELLO, socket adoption).
-- Rematch without restarting the game (the room supports `rematch`; the game would need to return to
-  character select and signal the launcher instead of exiting).
+- Netplay side of the handover extras above: rounds, socket adoption (result file, build in HELLO,
+  host calling the peer are done); desync count and state hash in the result file (RANKED.md).
+- A new opponent without restarting the game: the control channel in RANKED.md, for direct-fight.
 - TURN-style relay on a separate host, or several relay regions; today the relay is the lobby server.
 - Port prediction for symmetric NATs; UPnP/NAT-PMP port mapping on the player's router; IPv6.
 - Lobby list deltas instead of whole snapshots (only matters past ~100 players).
-- Moderation: admin commands (kick, ban, reset rating), name filter, reporting cheaters; account
-  password change / reset (there is no e-mail, by design).
+- Moderation: admin commands (kick, ban, reset rating), reporting cheaters (password change and
+  recovery without e-mail, reserved names: RANKED.md).
 - Spectating, replays, region tags, friends list.
 - The server has not been run on a real VPS or across two real NATs yet; everything above was
   measured on localhost.

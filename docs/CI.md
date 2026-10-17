@@ -53,11 +53,11 @@ and Pillow for the smoke suite's frame checks):
 All fake keys are derived from hashes at run time. No key-shaped value is in
 the repository (the guard would flag it).
 
-**Known failure, reported as a warning:** `lobby/tests/test_tk_tab.py`
-aborts the interpreter in `test_quick_match_flow` ("Tcl_AsyncDelete: async
-handler deleted by the wrong thread" -- a worker thread drops the last
-reference to the Tk app). The other lobby modules are required. Once it is
-fixed, remove `KNOWN_CRASH` from the step.
+`lobby/tests/test_tk_tab.py` used to abort the interpreter ("Tcl_AsyncDelete:
+async handler deleted by the wrong thread": a worker thread dropped the last
+reference to the Online tab). Fixed on branch `ranked`: the tab's worker
+threads hold only a queue and the client call, never the tab or a Tk object,
+so every lobby module is required again.
 
 ### `runtime` -- patched ps3recomp (estimate: 7-11 min cold, 4-5 min with a warm compile cache)
 

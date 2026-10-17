@@ -11,7 +11,7 @@
 5. starts two game instances with it -- t5dr.exe (needs the netplay branch's
    src/netplay) or, without --exe, tools/stub_game.py, which performs the same
    handshake as the netplay layer -- and
-6. reports a result for the match from both sides (stub: P1 wins 3-1) and prints
+6. reports the result file of each game from both sides and prints
    the lobby's verdict.
 
 Game windows open minimized (PS3_WINDOW_BACKGROUND=1). Input: P1 = XInput pad 0,
@@ -49,7 +49,8 @@ def free_port(kind=socket.SOCK_STREAM):
 def start_server(relay):
     tcp, udp, udp2 = free_port(), free_port(socket.SOCK_DGRAM), free_port(socket.SOCK_DGRAM)
     env = dict(os.environ, T5L_DB=":memory:", T5L_LOG_LEVEL="INFO", PYTHONPATH=LOBBY,
-               T5L_FORCE_RELAY="1" if relay else "0")
+               T5L_FORCE_RELAY="1" if relay else "0",
+               T5L_MIN_MATCH_SECONDS="0")      # the stub's "match" lasts a second
     p = subprocess.Popen([sys.executable, "-m", "t5lobby.server", "--host", "127.0.0.1", "--port", str(tcp),
                           "--udp-port", str(udp), "--udp-port2", str(udp2)], env=env, cwd=LOBBY,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -196,8 +197,8 @@ def play(a, addr, clients):
         for ln in lines[:12] + (["    ..."] + lines[-4:] if len(lines) > 16 else lines[12:]):
             print("   " + ln)
 
-    # Result reporting: each side reports what its game wrote to T5_NET_RESULT_FILE. The stub
-    # "wins" for P1 3-1; t5dr.exe does not write the file yet, so then nothing is reported.
+    # Result reporting: each side reports what its game wrote to T5_NET_RESULT_FILE (the stub and
+    # t5dr.exe with netplay both write it at the end of a match).
     reported = 0
     for c in clients:
         res = read_result_file(os.path.join(a.out, f"p{tickets[c].slot + 1}", "result.json"))
@@ -208,7 +209,8 @@ def play(a, addr, clients):
             reported += 1
     if reported:
         ev = clients[0].next_event(10, ("match_result",))
-        print(f"\nlobby verdict: {ev['status'] if ev else 'none'}, winner P{(ev or {}).get('winner', -1) + 1}")
+        w = (ev or {}).get("winner")
+        print(f"\nlobby verdict: {ev['status'] if ev else 'none'}, winner {'P%d' % (w + 1) if w is not None else '-'}")
     else:
         print("\nno result reported (the game wrote no T5_NET_RESULT_FILE)")
     return procs

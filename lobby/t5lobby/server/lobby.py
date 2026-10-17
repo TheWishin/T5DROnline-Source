@@ -3,12 +3,16 @@
 Single-threaded asyncio; all state lives on the event loop thread.
 
 Match life cycle (states):
-    ready      both players must accept (skipped for an accepted challenge)
+    ready      both players must accept (skipped for an accepted challenge or a rematch)
     nat        each client binds its game socket and registers it with the server over UDP
     punch      clients punch holes toward each other's candidate endpoints and measure RTT
     relay      punching failed (or both NATs are symmetric): both bind to the relay
     playing    match_start sent: the game runs; waiting for result reports
     done       results reconciled (or cancelled / void)
+
+A rematch whose two games are still connected skips ready/nat/punch/relay and starts in
+`playing` with the previous match's path. Ranked rules, result reconciliation and the
+integrity rules (disconnects, disputes, desyncs, minimum length): docs/RANKED.md.
 """
 import asyncio
 import ipaddress
@@ -17,18 +21,22 @@ import os
 import ssl
 import time
 
-from .. import proto, rating as glicko
+from .. import fighters, proto, ranks, rating as glicko
 from ..buildid import BuildInfo
 from ..proto import LobbyError
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
-from .store import Store, check_password, hash_password
+from .store import COUNTED, Store, check_password, hash_password
 from .udp import UdpService
 
 log = logging.getLogger("t5lobby")
 
-SERVER_NAME = "t5lobby/0.1"
+SERVER_NAME = "t5lobby/0.2"
 QUEUE_MODES = ("quick", "ranked")
+# What this server supports beyond protocol 1's base (the client checks before using them).
+FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch"]
+REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
+DAY = 86400.0
 
 
 def _rid():
@@ -54,6 +62,11 @@ class Player:
         self.token = os.urandom(24).hex()   # session resume token
         self.dropped_at = None
         self.last_challenge = 0.0
+        self.char = fighters.RANDOM     # character picked in the launcher (a fighters key)
+        self.main = None                # most played character (accounts, from the history)
+        self.rank = ranks.RankState()   # tier state (accounts: from the database)
+        self.rules = ranks.RankRules()
+        self.session = None             # "remember me" token this connection logged in with
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -61,16 +74,25 @@ class Player:
             self.rating = glicko.Rating()
             self.record = [0, 0, 0]
 
+    def rank_info(self):
+        if self.guest:
+            return {"tier": None, "rank": "Guest", "provisional": True, "placement": None}
+        return ranks.describe(self.rank, self.rating.rd, self.rules)
+
     def public(self):
-        return {"id": self.id, "name": self.name, "guest": self.guest, "status": self.status,
-                "rating": round(self.rating.r), "rd": round(self.rating.rd),
-                "record": self.record, "room": self.room.id if self.room else None,
-                "rtt": None if self.server_rtt is None else round(self.server_rtt, 1),
-                "build": self.build_id, "release": self.release}
+        d = {"id": self.id, "name": self.name, "guest": self.guest, "status": self.status,
+             "rating": round(self.rating.r), "rd": round(self.rating.rd),
+             "record": self.record, "room": self.room.id if self.room else None,
+             "rtt": None if self.server_rtt is None else round(self.server_rtt, 1),
+             "build": self.build_id, "release": self.release, "char": self.char, "main": self.main}
+        d.update(self.rank_info())
+        return d
 
     def brief(self):
-        return {"id": self.id, "name": self.name, "guest": self.guest,
-                "rating": round(self.rating.r), "rd": round(self.rating.rd)}
+        d = {"id": self.id, "name": self.name, "guest": self.guest,
+             "rating": round(self.rating.r), "rd": round(self.rating.rd), "main": self.main}
+        d.update(self.rank_info())
+        return d
 
     @property
     def online(self):
@@ -96,6 +118,13 @@ class Room:
                 "members": [p.id for p in self.members], "ranked": self.ranked,
                 "build": self.build_id,
                 "status": "playing" if self.match else ("full" if len(self.members) >= 2 else "open")}
+
+
+class _ConnOf:
+    """Stand-in connection for calling a handler on behalf of a player."""
+
+    def __init__(self, player):
+        self.player = player
 
 
 class Challenge:
@@ -133,6 +162,13 @@ class Match:
         self.timers = {}
         self.final = None
         self.relay_stats = None
+        self.relay_id = None                 # key of the relay session (a continued rematch keeps the old one)
+        self.picks = [host.char, join.char]  # characters as picked (may be "random")
+        self.chars = None                    # resolved at match start
+        self.stage = None
+        self.started = None                  # time.time() of match_start
+        self.rematch_of = None
+        self.continued = False               # rematch inside the running games (no new connection)
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -251,6 +287,11 @@ class LobbyServer:
         self.tasks = []
         self.started = time.time()
         self.events = []           # (time, kind, data) -- recent events for tests / diagnostics
+        self.recent = {}           # match id -> finished Match, kept rematch_window seconds for a rematch
+        self.table = fighters.table()
+        self.rules = ranks.RankRules(placement=self.cfg.placement, placement_cap=self.cfg.placement_cap,
+                                     hysteresis=self.cfg.hysteresis, shield=self.cfg.shield,
+                                     provisional_rd=self.cfg.provisional_rd)
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self):
@@ -318,7 +359,7 @@ class LobbyServer:
             self.player_dropped(p)
 
     # ------------------------------------------------------------------ dispatch
-    PRE_LOGIN = ("hello", "login", "ping", "logout")
+    PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
 
     async def dispatch(self, conn, line):
         """Handle one line; False closes the connection."""
@@ -381,7 +422,9 @@ class LobbyServer:
         return {"t": "welcome", "server": SERVER_NAME, "proto": proto.PROTO_VERSION,
                 "udp_port": self.udp.port, "udp_port2": self.udp.port2, "build": bid,
                 "accounts": self.cfg.accounts, "guests": self.cfg.guests, "motd": self.cfg.motd,
-                "ip": conn.ip, "time": time.time()}
+                "ip": conn.ip, "time": time.time(), "features": FEATURES,
+                "tls": conn.writer.get_extra_info("ssl_object") is not None,
+                "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -391,68 +434,181 @@ class LobbyServer:
         mode = msg.get("mode", "guest")
         if mode == "resume":
             return self._resume(conn, str(msg.get("token", "")))
-        name = msg.get("name", "")
-        if not proto.valid_name(name):
-            raise LobbyError(proto.E_BAD_NAME, "names are 2-16 letters, digits, spaces or _-.[]()!?")
+        remember = bool(msg.get("remember"))
         account = None
-        if mode == "guest":
-            if not self.cfg.guests:
-                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no guest logins")
-            if self.store.account(name) is not None:
-                raise LobbyError(proto.E_NAME_TAKEN, "that name belongs to an account")
-        elif mode in ("account", "register"):
+        codes = None
+        session = None
+        if mode == "session":
+            # A remembered login: the launcher kept the token from an earlier password login.
             if not self.cfg.accounts:
                 raise LobbyError(proto.E_NOT_ALLOWED, "this server has no accounts")
-            pw = msg.get("password", "")
-            if not isinstance(pw, str) or not 6 <= len(pw) <= 128:
-                raise LobbyError(proto.E_AUTH, "passwords are 6-128 characters")
-            key_ip, key_name = "ip:" + conn.ip, "name:" + name.lower()
-            if not (self.login_fail.peek_ok(key_ip) and self.login_fail.peek_ok(key_name)):
+            key_ip = "ip:" + conn.ip
+            if not self.login_fail.peek_ok(key_ip):
                 raise LobbyError(proto.E_RATE, "too many failed logins; wait a few minutes")
-            if mode == "register":
-                if not self.registrations.take(conn.ip):
-                    raise LobbyError(proto.E_RATE, "too many new accounts from this address")
-                pw_hash = await asyncio.to_thread(hash_password, pw, self.cfg.scrypt_n)
-                account = self.store.create_account(name, pw_hash)
-                if account is None:
-                    raise LobbyError(proto.E_NAME_TAKEN, "that name is taken")
-                log.info("account %r created from %s", name, conn.ip)
-            else:
-                account = self.store.account(name)
-                ok = account is not None and await asyncio.to_thread(check_password, pw, account["pw"])
-                if not ok:
-                    self.login_fail.take(key_ip)
-                    self.login_fail.take(key_name)
-                    raise LobbyError(proto.E_AUTH, "wrong name or password")
+            session = str(msg.get("session", ""))
+            account = self.store.session_account(session, self.cfg.session_days)
+            if account is None:
+                self.login_fail.take(key_ip)
+                raise LobbyError(proto.E_AUTH, "the saved login has expired; log in with your password")
             name = account["name"]
         else:
-            raise LobbyError(proto.E_BAD_REQUEST, "mode is guest, account, register or resume")
+            name = msg.get("name", "")
+            if not proto.valid_name(name):
+                raise LobbyError(proto.E_BAD_NAME, "names are 2-16 letters, digits, spaces or _-.[]()!?")
+            if mode in ("guest", "register") and proto.reserved_name(name):
+                raise LobbyError(proto.E_BAD_NAME, "that name is reserved")
+            if mode == "guest":
+                if not self.cfg.guests:
+                    raise LobbyError(proto.E_NOT_ALLOWED, "this server has no guest logins")
+                if self.store.account(name) is not None:
+                    raise LobbyError(proto.E_NAME_TAKEN, "that name belongs to an account")
+            elif mode in ("account", "register"):
+                if not self.cfg.accounts:
+                    raise LobbyError(proto.E_NOT_ALLOWED, "this server has no accounts")
+                pw = msg.get("password", "")
+                self._check_pw_rules(pw)
+                key_ip, key_name = "ip:" + conn.ip, "name:" + name.lower()
+                if not (self.login_fail.peek_ok(key_ip) and self.login_fail.peek_ok(key_name)):
+                    raise LobbyError(proto.E_RATE, "too many failed logins; wait a few minutes")
+                if mode == "register":
+                    if self.by_name.get(name.lower()) is not None:
+                        raise LobbyError(proto.E_NAME_TAKEN, "someone with that name is online")
+                    if not self.registrations.take(conn.ip):
+                        raise LobbyError(proto.E_RATE, "too many new accounts from this address")
+                    pw_hash = await asyncio.to_thread(hash_password, pw, self.cfg.scrypt_n)
+                    account = self.store.create_account(name, pw_hash)
+                    if account is None:
+                        raise LobbyError(proto.E_NAME_TAKEN, "that name is taken")
+                    codes = self.store.issue_recovery_codes(account["id"], self.cfg.recovery_codes)
+                    log.info("account %r created from %s", name, conn.ip)
+                else:
+                    account = self.store.account(name)
+                    ok = account is not None and await asyncio.to_thread(check_password, pw, account["pw"])
+                    if not ok:
+                        self.login_fail.take(key_ip)
+                        self.login_fail.take(key_name)
+                        raise LobbyError(proto.E_AUTH, "wrong name or password")
+                name = account["name"]
+                if remember:
+                    session = self.store.create_session(account["id"], self.cfg.session_days)
+            else:
+                raise LobbyError(proto.E_BAD_REQUEST, "mode is guest, account, register, session or resume")
         if conn.closed:
             return False
         old = self.by_name.get(name.lower())
         if old is not None:
             if account is not None and old.account_id == account["id"]:
-                # The same account logging in again: the new connection wins.
+                # The same account logging in again: the new connection wins. A match in progress
+                # stays with the player (the new connection takes it over, like a resume).
+                m = old.match
                 if old.conn is not None:
                     old.send({"t": "kicked", "reason": "logged in from another place"})
                     old.conn.player = None
                     old.conn.close()
+                if m is not None and m.state == "playing":
+                    return self._take_over(conn, old, session)
                 self.player_dropped(old, final=True)
             else:
                 raise LobbyError(proto.E_NAME_TAKEN, "someone with that name is online")
         p = Player(conn, name, account is None, account)
+        p.rules = self.rules
+        p.session = session
         if account is not None:
             p.rating = self.store.rating(account["id"])
+            p.rank = self.store.rank_state(account["id"])
+            p.main = self.store.main_char(account["id"])
             self.store.touch(account["id"])
         conn.player = p
         self.players[p.id] = p
         self.by_name[name.lower()] = p
         self.sessions[p.token] = p
         self.dirty = True
-        log.info("login %s %r (%s) from %s build %s", p.id, name, "guest" if p.guest else "account",
+        log.info("login %s %r (%s) from %s build %s", p.id, name, "guest" if p.guest else mode,
                  conn.ip, p.build_id)
         self.note("login", player=p.id, name=name)
-        return {"t": "login_ok", "you": p.public(), "token": p.token}
+        reply = {"t": "login_ok", "you": p.public(), "token": p.token}
+        if session and mode != "session":
+            reply["session"] = session
+        if codes:
+            reply["recovery_codes"] = codes
+        return reply
+
+    def _take_over(self, conn, p, session):
+        """An account logged in again while its match runs: the new connection becomes the player."""
+        if p.build_id != conn.build_id:
+            raise LobbyError(proto.E_VERSION, "finish your running match with the same game build first")
+        if session:
+            p.session = session
+        p.conn = None
+        reply = self._resume(conn, p.token)
+        if session:
+            reply["session"] = session
+        return reply
+
+    @staticmethod
+    def _check_pw_rules(pw):
+        if not isinstance(pw, str) or not 6 <= len(pw) <= 128:
+            raise LobbyError(proto.E_AUTH, "passwords are 6-128 characters")
+
+    async def h_passwd(self, conn, msg):
+        """Change the password: old + new. Every remembered login of the account ends; with
+        `remember` this connection gets a fresh one."""
+        p = conn.player
+        if p.account_id is None:
+            raise LobbyError(proto.E_NOT_ALLOWED, "guests have no password")
+        new = msg.get("new", "")
+        self._check_pw_rules(new)
+        key = "name:" + p.name.lower()
+        if not self.login_fail.peek_ok(key):
+            raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        row = self.store.account_by_id(p.account_id)
+        if not await asyncio.to_thread(check_password, str(msg.get("old", "")), row["pw"]):
+            self.login_fail.take(key)
+            raise LobbyError(proto.E_AUTH, "the current password is wrong")
+        self.store.set_password(p.account_id, await asyncio.to_thread(hash_password, new, self.cfg.scrypt_n))
+        self.store.revoke_sessions(p.account_id)
+        p.session = None
+        reply = {"t": "passwd_ok"}
+        if msg.get("remember"):
+            p.session = reply["session"] = self.store.create_session(p.account_id, self.cfg.session_days)
+        log.info("password changed for %r", p.name)
+        return reply
+
+    async def h_recover(self, conn, msg):
+        """Forgotten password: name + one of the recovery codes shown at registration + a new
+        password. Works without logging in; every remembered login of the account ends."""
+        if not conn.helloed:
+            raise LobbyError(proto.E_STATE, "hello first")
+        name = str(msg.get("name", ""))
+        new = msg.get("password", "")
+        self._check_pw_rules(new)
+        key_ip, key_name = "ip:" + conn.ip, "name:" + name.lower()
+        if not (self.login_fail.peek_ok(key_ip) and self.login_fail.peek_ok(key_name)):
+            raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        account = self.store.account(name) if proto.valid_name(name) else None
+        if account is None or not self.store.use_recovery_code(account["id"], str(msg.get("code", ""))):
+            self.login_fail.take(key_ip)
+            self.login_fail.take(key_name)
+            raise LobbyError(proto.E_AUTH, "wrong name or recovery code (each code works once)")
+        self.store.set_password(account["id"], await asyncio.to_thread(hash_password, new, self.cfg.scrypt_n))
+        self.store.revoke_sessions(account["id"])
+        log.info("password of %r reset with a recovery code from %s", account["name"], conn.ip)
+        return {"t": "recovered", "name": account["name"], "codes_left": self.store.recovery_left(account["id"])}
+
+    async def h_recovery_codes(self, conn, msg):
+        """A new set of recovery codes (the old ones stop working); needs the password."""
+        p = conn.player
+        if p.account_id is None:
+            raise LobbyError(proto.E_NOT_ALLOWED, "guests have no account")
+        key = "name:" + p.name.lower()
+        if not self.login_fail.peek_ok(key):
+            raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        row = self.store.account_by_id(p.account_id)
+        if not await asyncio.to_thread(check_password, str(msg.get("password", "")), row["pw"]):
+            self.login_fail.take(key)
+            raise LobbyError(proto.E_AUTH, "wrong password")
+        return {"t": "recovery_codes",
+                "codes": self.store.issue_recovery_codes(p.account_id, self.cfg.recovery_codes)}
 
     def _resume(self, conn, token):
         p = self.sessions.get(token)
@@ -467,13 +623,29 @@ class LobbyServer:
         reply = {"t": "login_ok", "you": p.public(), "token": p.token, "resumed": True}
         m = p.match
         if m is not None and m.state == "playing":
-            asyncio.get_running_loop().call_soon(self._send_match_start, m, m.side(p))
+            side = m.side(p)
+            h = m.timers.pop(f"grace{side}", None)
+            if h:
+                h.cancel()
+                m.players[1 - side].send({"t": "notice", "code": "opponent_back", "match": m.id,
+                                          "msg": f"{p.name} is back in the lobby"})
+            asyncio.get_running_loop().call_soon(self._send_match_start, m, side)
         return reply
 
     async def h_logout(self, conn, msg):
         if conn.player is not None:
             p = conn.player
+            if msg.get("forget") and p.account_id is not None:
+                tok = msg.get("session") or p.session
+                row = self.store.session_account(tok, self.cfg.session_days) if tok else None
+                if row is not None and row["id"] == p.account_id:
+                    self.store.revoke_session(tok)
+                p.session = None
             conn.player = None
+            m = p.match
+            if m is not None and m.state == "playing":
+                # Logging out (or closing the launcher) mid-match is leaving it.
+                await self.h_leave_match(_ConnOf(p), {"match": m.id})
             self.player_dropped(p, final=True)
         conn.send({"t": "bye", "re": msg.get("rid")})
         return False
@@ -491,7 +663,13 @@ class LobbyServer:
         return self._snapshot()
 
     async def h_leaderboard(self, conn, msg):
-        return {"t": "leaderboard", "rows": self.store.leaderboard(max(1, min(100, int(msg.get("limit", 20)))))}
+        rows = self.store.leaderboard(max(1, min(100, int(msg.get("limit", 20)))), max(0, int(msg.get("offset", 0))))
+        for r in rows:
+            r["rank"] = ranks.name(r["tier"])
+            r["provisional"] = r["tier"] == ranks.BEGINNER or r["rd"] > self.rules.provisional_rd
+            r["rating"], r["rd"] = round(r["rating"]), round(r["rd"])
+            r["online"] = r["name"].lower() in self.by_name
+        return {"t": "leaderboard", "rows": rows}
 
     async def h_chat(self, conn, msg):
         text = str(msg["text"]).strip()
@@ -517,6 +695,15 @@ class LobbyServer:
         m = p.match
         if m is not None and m.state not in ("playing", "done"):
             self.cancel_match(m, "opponent_left", by=p)
+        elif m is not None and m.state == "playing":
+            # Lost the lobby mid-match: the launcher reconnects on its own. Not back within the
+            # grace period -> the match is lost (docs/RANKED.md, disconnects).
+            side = m.side(p)
+            self._timer(m, f"grace{side}", self.cfg.reconnect_grace, self._grace_expired, m, side)
+            m.players[1 - side].send({"t": "notice", "code": "opponent_dropped", "match": m.id,
+                                      "grace": self.cfg.reconnect_grace,
+                                      "msg": f"{p.name} lost the lobby connection; waiting "
+                                             f"{self.cfg.reconnect_grace:.0f} s for them to return"})
         if final or p.match is None:
             self._forget(p)
         self.dirty = True
@@ -540,9 +727,65 @@ class LobbyServer:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
         if p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        if "char" in msg:
+            self._set_char(p, msg["char"])
         self._leave_queue(p)
         self._enqueue(p, mode, time.monotonic())
         return {"t": "queued", "mode": mode}
+
+    def _set_char(self, p, char):
+        char = str(char or fighters.RANDOM)
+        if not self.table.valid_fighter(char):
+            raise LobbyError(proto.E_BAD_REQUEST, f"unknown character {char!r}")
+        if p.char != char:
+            p.char = char
+            self.dirty = True
+
+    async def h_set_char(self, conn, msg):
+        """The character the player will fight with (a fighters key or "random")."""
+        self._set_char(conn.player, msg.get("char"))
+
+    # ------------------------------------------------------------------ profiles, history, leaderboard
+    async def h_profile(self, conn, msg):
+        name = str(msg.get("name") or conn.player.name)
+        return {"t": "profile", "profile": self._profile(name, int(msg.get("history", 10)), conn.player)}
+
+    def _profile(self, name, n_history=10, me=None):
+        online = self.by_name.get(name.lower())
+        row = self.store.account(name) if proto.valid_name(name) else None
+        if row is None:
+            if online is None:
+                raise LobbyError(proto.E_NOT_FOUND, "no such player")
+            d = online.public()
+            d.update({"account": False, "history": [], "chars": [], "online": online.online})
+            return d
+        aid = row["id"]
+        rt = self.store.rating(aid)
+        rank = self.store.rank_state(aid)
+        d = {"name": row["name"], "guest": False, "account": True, "online": bool(online and online.online),
+             "rating": round(rt.r), "rd": round(rt.rd), "record": [row["wins"], row["losses"], row["draws"]],
+             "ranked_games": row["ranked_games"], "games": row["games"],
+             "peak": rank.peak, "peak_rank": ranks.name(rank.peak), "place": self.store.place(aid),
+             "member_since": row["created"], "last_seen": row["last_seen"],
+             "chars": self.store.char_usage(aid), "main": self.store.main_char(aid),
+             "voids_24h": self.store.strikes(aid, time.time() - DAY),
+             "history": self.store.history(aid, max(0, min(50, n_history)))}
+        d.update(ranks.describe(rank, rt.rd, self.rules))
+        if online is not None:
+            d["status"] = online.status
+        d["self"] = me is not None and me.account_id == aid
+        if d["self"]:
+            d["recovery_codes_left"] = self.store.recovery_left(aid)
+        return d
+
+    async def h_history(self, conn, msg):
+        name = str(msg.get("name") or conn.player.name)
+        row = self.store.account(name) if proto.valid_name(name) else None
+        if row is None:
+            raise LobbyError(proto.E_NOT_FOUND, "history is kept for accounts only")
+        limit = max(1, min(100, int(msg.get("limit", 20))))
+        return {"t": "history", "name": row["name"],
+                "rows": self.store.history(row["id"], limit, max(0, int(msg.get("offset", 0))))}
 
     async def h_unqueue(self, conn, msg):
         self._leave_queue(conn.player)
@@ -636,6 +879,8 @@ class LobbyServer:
         if p.status != "idle":
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         ranked = bool(msg.get("ranked", False))
+        if ranked and not self.cfg.ranked_rooms:
+            raise LobbyError(proto.E_NOT_ALLOWED, "ranked matches come from the ranked queue on this server")
         if ranked and p.guest and not self.cfg.guest_ranked:
             raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
         name = str(msg.get("name") or f"{p.name}'s room")[:32]
@@ -675,11 +920,42 @@ class LobbyServer:
         self._leave_room(p)
 
     async def h_rematch(self, conn, msg):
+        """Rooms: start the next match in the room (with a ready check). After any other match:
+        `match` = the finished match's id, `accept` (default true), `keep` = true when this
+        player's game is still running and connected to the opponent's (then the rematch skips
+        the connection setup and continues inside the running games)."""
         p = conn.player
-        r = p.room
-        if r is None or len(r.members) != 2 or r.match is not None:
-            raise LobbyError(proto.E_STATE, "no opponent in the room")
-        self._room_start(r)
+        if msg.get("match") is None:
+            r = p.room
+            if r is None or len(r.members) != 2 or r.match is not None:
+                raise LobbyError(proto.E_STATE, "no opponent in the room")
+            self._room_start(r)
+            return None
+        prev = self.recent.get(msg.get("match"))
+        if prev is None or prev.side(p) is None:
+            raise LobbyError(proto.E_NOT_FOUND, "that match is over; find a new opponent")
+        side = prev.side(p)
+        other = prev.players[1 - side]
+        if not msg.get("accept", True):
+            self.recent.pop(prev.id, None)
+            other.send({"t": "rematch", "match": prev.id, "state": "declined", "from": p.brief()})
+            return None
+        if p.status not in ("idle", "room") or p.match is not None:
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        prev.rematch = getattr(prev, "rematch", [None, None])
+        prev.rematch[side] = {"keep": bool(msg.get("keep"))}
+        if prev.rematch[1 - side] is None:
+            other.send({"t": "rematch", "match": prev.id, "state": "offered", "from": p.brief(),
+                        "timeout": self.cfg.rematch_window})
+            return {"t": "rematch", "match": prev.id, "state": "waiting"}
+        if not other.online or other.match is not None or other.status not in ("idle", "room"):
+            self.recent.pop(prev.id, None)
+            raise LobbyError(proto.E_BUSY, "your opponent is no longer available")
+        self.recent.pop(prev.id, None)
+        keep = all(r["keep"] for r in prev.rematch) and prev.path is not None
+        m = self.create_match(prev.players[0], prev.players[1], ranked=prev.ranked, origin="rematch",
+                              room=prev.room, rematch_of=prev, keep=keep)
+        return {"t": "rematch", "match": prev.id, "state": "accepted", "next": m.id}
 
     def _room_start(self, r):
         if r.id not in self.rooms or len(r.members) != 2 or r.match is not None:
@@ -763,20 +1039,42 @@ class LobbyServer:
             q.send({"t": "challenge_update", "challenge": c.id, "state": state})
 
     # ------------------------------------------------------------------ matches: setup
-    def create_match(self, host, join, ranked, origin, room=None):
+    def create_match(self, host, join, ranked, origin, room=None, rematch_of=None, keep=False):
+        note = None
+        if ranked and host.account_id is not None and join.account_id is not None and self.cfg.pair_cap > 0:
+            n = self.store.pair_ranked(host.account_id, join.account_id, time.time() - DAY)
+            if n >= self.cfg.pair_cap:
+                # Anti win-trading: the same two accounts only move each other's rating so often a day.
+                ranked = False
+                note = (f"you two played {n} ranked matches in the last 24 hours; this one is unranked "
+                        f"(limit {self.cfg.pair_cap})")
         m = Match(host, join, ranked, origin, room)
+        m.rematch_of = rematch_of.id if rematch_of is not None else None
         self.matches[m.id] = m
+        skip_ready = origin in ("challenge", "rematch")
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
             p.send({"t": "match_found", "match": m.id, "ranked": ranked, "origin": origin,
                     "role": "host" if side == 0 else "join", "slot": side,
-                    "opponent": m.players[1 - side].brief(),
-                    "ready_check": origin != "challenge", "ready_timeout": self.cfg.ready_timeout})
+                    "opponent": m.players[1 - side].brief(), "you": p.brief(),
+                    "ready_check": not skip_ready, "ready_timeout": self.cfg.ready_timeout,
+                    "rematch_of": m.rematch_of, "keep": keep})
+            if note:
+                p.send({"t": "notice", "code": "pair_cap", "match": m.id, "msg": note})
         self.dirty = True
         self.note("match_found", match=m.id, origin=origin)
         log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
-        if origin == "challenge":
+        if keep:
+            # Both games still run and are connected: same path, same ports, no NAT work.
+            m.ready = [True, True]
+            m.results = rematch_of.results
+            m.continued = True
+            if rematch_of.relay is not None:
+                m.relay, m.relay_id = rematch_of.relay, rematch_of.relay_id
+                rematch_of.relay = None
+            self._start_match(m, rematch_of.path)
+        elif skip_ready:
             m.ready = [True, True]
             self._start_nat(m)
         else:
@@ -843,11 +1141,21 @@ class LobbyServer:
         log.info("match %s cancelled: %s", m.id, reason)
         self.dirty = True
 
-    def _release(self, m):
+    def _release(self, m, keep_relay=False):
         for tok in m.tokens:
             self.tokens.pop(tok, None)
         if m.relay is not None:
-            m.relay_stats = self.udp.close_relay(m.id)
+            if keep_relay:
+                # The two games still talk through it (menus, result screen); a rematch inside the
+                # running games takes it over, otherwise it closes after the rematch window.
+                asyncio.get_running_loop().call_later(self.cfg.rematch_window + 5.0, self._close_kept_relay, m)
+                return
+            m.relay_stats = self.udp.close_relay(m.relay_id or m.id)
+            m.relay = None
+
+    def _close_kept_relay(self, m):
+        if m.relay is not None:
+            m.relay_stats = self.udp.close_relay(m.relay_id or m.id)
             m.relay = None
 
     # ------------------------------------------------------------------ matches: NAT traversal
@@ -942,6 +1250,7 @@ class LobbyServer:
             return
         m.results = [None, None]
         m.relay = self.udp.open_relay(m.id, m.tokens)
+        m.relay_id = m.id
         if m.relay is None:
             self.cancel_match(m, "relay_full")
             return
@@ -993,6 +1302,10 @@ class LobbyServer:
         m.rtt = max(r["rtt"] for r in m.results)
         m.jitter = max(r["jitter"] for r in m.results)
         m.delay = proto.suggest_delay(m.rtt, m.jitter)
+        m.started = time.time()
+        seed = int.from_bytes(m.tag[:4], "big")
+        m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
+        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[2]
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -1000,7 +1313,8 @@ class LobbyServer:
         self._save(m, "playing")
         self.dirty = True
         self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay)
-        log.info("match %s starts: %s, rtt %.1f ms, delay %d", m.id, path, m.rtt, m.delay)
+        log.info("match %s starts: %s, rtt %.1f ms, delay %d, %s vs %s on %s", m.id, path, m.rtt, m.delay,
+                 m.chars[0], m.chars[1], m.stage)
 
     def _send_match_start(self, m, side):
         p = m.players[side]
@@ -1009,12 +1323,27 @@ class LobbyServer:
                 "path": m.path, "peer": r.get("peer") if m.path != "relay" else None,
                 "relay_port": self.udp.port if m.path == "relay" else None,
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
-                "rounds": 3, "ranked": m.ranked, "build": m.build_id,
-                "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big")})
+                "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
+                "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
+                "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
+                "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
+                "players": [q.brief() for q in m.players],
+                "continue": m.continued, "rematch_of": m.rematch_of,
+                "min_seconds": self.cfg.min_match_seconds})
 
     async def h_game_started(self, conn, msg):
         self._get_match(conn.player, msg, ("playing",))
 
+    # A result report (`result`):
+    #   winner  0 | 1 | null        P1 / P2 / draw (null also when there is no result: quit, crash, disconnect)
+    #   score   [p1, p2] rounds     optional
+    #   source  game | manual | quit | crash | disconnect
+    #           game: read from the game's result file; manual: the player answered; quit: this player
+    #           left the match; crash: this player's game died; disconnect: this player's game lost the
+    #           opponent (netplay timeout)
+    #   desync  frames on which the two games' state hashes differed (netplay's detector), optional
+    #   hash    hex state hash at the end of the match (netplay), optional
+    #   frames  frames played, optional
     async def h_result(self, conn, msg):
         p = conn.player
         m = self._get_match(p, msg, ("playing",))
@@ -1027,8 +1356,26 @@ class LobbyServer:
             if (not isinstance(score, list) or len(score) != 2
                     or not all(isinstance(x, int) and 0 <= x <= 9 for x in score)):
                 raise LobbyError(proto.E_BAD_REQUEST, "score is [P1 rounds, P2 rounds]")
-        m.reports[side] = {"winner": winner, "score": score, "reason": str(msg.get("reason", ""))[:32]}
-        if all(m.reports):
+        source = msg.get("source") or ("manual" if score is None else "game")
+        if source not in REPORT_SOURCES:
+            raise LobbyError(proto.E_BAD_REQUEST, "source is " + ", ".join(REPORT_SOURCES))
+        if source == "quit":
+            winner = 1 - side
+        desync = msg.get("desync")
+        desync = max(0, min(10 ** 9, int(desync))) if desync is not None else None
+        h = msg.get("hash")
+        h = str(h)[:32].lower() if h else None
+        frames = msg.get("frames")
+        frames = max(0, min(10 ** 9, int(frames))) if frames is not None else None
+        rep = {"winner": winner, "score": score, "source": source, "desync": desync, "hash": h, "frames": frames,
+               "reason": str(msg.get("reason", ""))[:32], "at": time.time()}
+        if m.reports[side] is not None and m.reports[side]["source"] != "quit":
+            return {"t": "result_ack", "match": m.id}        # first report stands
+        m.reports[side] = rep
+        if desync:
+            # The games went apart: whatever either screen showed, it was not the same match.
+            self._finish(m, "void", None, None, reason="desync")
+        elif all(m.reports):
             self._reconcile(m)
         elif "result" not in m.timers:
             self._timer(m, "result", self.cfg.result_timeout, self._result_timeout, m)
@@ -1037,55 +1384,167 @@ class LobbyServer:
         return {"t": "result_ack", "match": m.id}
 
     async def h_leave_match(self, conn, msg):
-        """Quit a match. Before it started: cancel. While playing: counts as a loss report."""
+        """Quit a match. Before it started: cancel. While playing: this player's report becomes
+        `quit` (a loss, or no result at all before the minimum match length)."""
         p = conn.player
         m = self._get_match(p, msg)
         if m.state != "playing":
             self.cancel_match(m, "opponent_left", by=p)
             return None
         side = m.side(p)
-        if m.reports[side] is None:
-            m.reports[side] = {"winner": 1 - side, "score": None, "reason": "quit"}
+        if m.reports[side] is None or m.reports[side]["source"] not in ("game", "manual"):
+            m.reports[side] = {"winner": 1 - side, "score": None, "source": "quit", "desync": None, "hash": None,
+                               "frames": None, "reason": "quit", "at": time.time()}
         if all(m.reports):
             self._reconcile(m)
-        elif "result" not in m.timers:
-            self._timer(m, "result", self.cfg.result_timeout, self._result_timeout, m)
+        else:
+            # The opponent's game will notice too (their netplay times out); settle without waiting.
+            self._settle_quit(m, side)
+
+    def _duration(self, m, rep=None):
+        """Seconds from match start to the report (server clock; reports cannot fake it)."""
+        end = rep["at"] if rep else time.time()
+        return max(0.0, end - (m.started or end))
 
     @staticmethod
-    def _agree(a, b):
-        if a["winner"] != b["winner"]:
-            return False
-        return a["score"] is None or b["score"] is None or a["score"] == b["score"]
+    def _kind(rep):
+        s = rep["source"]
+        return "result" if s in ("game", "manual") else s
 
     def _reconcile(self, m):
+        """Both players reported: decide (docs/RANKED.md, "Results")."""
         a, b = m.reports
-        if self._agree(a, b):
-            score = a["score"] or b["score"]
-            self._finish(m, "confirmed", a["winner"], score)
-        else:
-            log.warning("match %s: results disagree: %s vs %s", m.id, a, b)
-            self._finish(m, "disputed", None, None)
+        if a.get("desync") or b.get("desync"):
+            self._finish(m, "void", None, None, reason="desync")
+            return
+        ka, kb = self._kind(a), self._kind(b)
+        if ka == kb == "result":
+            if a["winner"] is None and b["winner"] is None and a["source"] == b["source"] == "game" and \
+                    not any(sum(r["score"] or [0]) for r in (a, b)):
+                # Both games say the fight ended without a single round won (left without a winner).
+                self._finish(m, "void", None, None, reason="no_result")
+                return
+            if a["winner"] == b["winner"]:
+                score = a["score"] if a["score"] == b["score"] or b["score"] is None else (
+                    b["score"] if a["score"] is None else None)
+                if self._duration(m, max((a, b), key=lambda r: r["at"])) < self.cfg.min_match_seconds:
+                    self._finish(m, "void", None, None, reason="too_short")
+                else:
+                    self._finish(m, "confirmed", a["winner"], score,
+                                 reason=None if score is not None or a["score"] is None else "score_mismatch")
+                return
+            self._dispute(m)
+            return
+        for side, k in enumerate((ka, kb)):
+            if k == "quit":
+                self._settle_quit(m, side)
+                return
+        for side, k in enumerate((ka, kb)):
+            o = m.reports[1 - side]
+            if k == "crash":
+                if self._kind(o) == "result":
+                    # The other game saw the match to its end: that result stands.
+                    self._finish(m, "onesided", o["winner"], o["score"], reason="crash")
+                else:
+                    self._void_blame(m, side, "crash")
+                return
+        # disconnect + disconnect, or disconnect + result: the connection between the two PCs failed.
+        self._finish(m, "void", None, None, reason="connection")
+
+    def _dispute(self, m):
+        """Both reported a result and the winners differ. The netplay layer's state hash decides when
+        both sent one: equal hashes = the two games ended in the same state, so one report was changed
+        by hand -- the one read from the game wins; different hashes = desync."""
+        a, b = m.reports
+        log.warning("match %s: results disagree: %s vs %s", m.id, a, b)
+        if a.get("hash") and b.get("hash"):
+            if a["hash"] != b["hash"]:
+                self._finish(m, "void", None, None, reason="desync")
+                return
+            src = [r["source"] for r in (a, b)]
+            if src.count("game") == 1:
+                good = m.reports[src.index("game")]
+                self._finish(m, "resolved", good["winner"], good["score"], reason="disputed")
+                return
+        self._finish(m, "disputed", None, None, reason="disputed")
+
+    def _settle_quit(self, m, side):
+        """`side` quit the match: a loss -- unless it was too early to be a match at all."""
+        rep = m.reports[side]
+        o = m.reports[1 - side]
+        if o is not None and self._kind(o) == "result" and o["winner"] == side:
+            self._finish(m, "onesided", side, o["score"], reason="quit")     # the opponent says the quitter won
+            return
+        if self._duration(m, rep) < self.cfg.min_match_seconds:
+            self._void_blame(m, side, "early_quit")
+            return
+        score = o["score"] if o is not None and self._kind(o) == "result" else None
+        self._finish(m, "forfeit", 1 - side, score, reason="quit", blame=side)
+
+    def _void_blame(self, m, side, reason):
+        """No result, caused by `side` (crash, early quit, silence). Counts as a loss once that account
+        has caused T5L_STRIKE_LIMIT such voids within 24 hours."""
+        p = m.players[side]
+        if m.ranked and p.account_id is not None and self.cfg.strike_limit > 0:
+            if self.store.strikes(p.account_id, time.time() - DAY) >= self.cfg.strike_limit:
+                self._finish(m, "forfeit", 1 - side, None, reason=reason + "_repeat", blame=side)
+                return
+        self._finish(m, "void", None, None, reason=reason, blame=side)
 
     def _result_timeout(self, m):
+        """Only one player reported within T5L_RESULT_TIMEOUT."""
         if m.state != "playing":
             return
         have = [i for i in (0, 1) if m.reports[i] is not None]
-        if len(have) == 1:
-            silent = m.players[1 - have[0]]
-            rep = m.reports[have[0]]
-            if self.cfg.accept_onesided and (not silent.online or rep["reason"] == "quit"):
-                self._finish(m, "onesided", rep["winner"], rep["score"])
-                return
-        self._finish(m, "void", None, None)
+        if len(have) != 1:
+            self._finish(m, "void", None, None, reason="no_report")
+            return
+        r = have[0]
+        silent = 1 - r
+        rep = m.reports[r]
+        k = self._kind(rep)
+        if not m.players[silent].online and f"grace{silent}" in m.timers:
+            return      # the silent player is reconnecting; the grace timer settles it
+        if k == "quit":
+            self._settle_quit(m, r)
+        elif k == "result":
+            if rep["winner"] == silent or (self.cfg.accept_onesided and not m.players[silent].online):
+                # a report against the reporter's own interest, or the opponent left the lobby
+                self._finish(m, "onesided", rep["winner"], rep["score"], reason="no_report")
+            else:
+                self._void_blame(m, silent, "no_report")
+        elif k == "crash":
+            self._void_blame(m, r, "crash")
+        else:                    # disconnect, and the opponent is silent although online
+            self._void_blame(m, silent, "no_report")
+
+    def _grace_expired(self, m, side):
+        """`side` lost the lobby mid-match and did not come back in time: the match is lost
+        (unless the opponent already said that player won)."""
+        m.timers.pop(f"grace{side}", None)
+        if m.state != "playing" or m.players[side].online:
+            return
+        o = m.reports[1 - side]
+        if o is not None and self._kind(o) == "result" and o["winner"] == side:
+            self._finish(m, "onesided", side, o["score"], reason="disconnect")
+            return
+        if not m.players[1 - side].online:
+            self._finish(m, "void", None, None, reason="both_left")
+            return
+        if self._duration(m) < self.cfg.min_match_seconds:
+            self._void_blame(m, side, "disconnect")
+            return
+        score = o["score"] if o is not None and self._kind(o) == "result" else None
+        self._finish(m, "forfeit", 1 - side, score, reason="disconnect", blame=side)
 
     def _match_timeout(self, m):
         if m.state == "playing":
-            self._finish(m, "void", None, None)
+            self._finish(m, "void", None, None, reason="timeout")
 
-    def _finish(self, m, status, winner, score):
+    def _finish(self, m, status, winner, score, reason=None, blame=None):
         self._cancel_timers(m)
         m.state = "done"
-        counts = status in ("confirmed", "onesided")
+        counts = status in COUNTED
         changes = None
         if counts:
             outcome = ["draw", "draw"] if winner is None else \
@@ -1096,44 +1555,65 @@ class LobbyServer:
                 n0, n1 = glicko.match(p0.rating, p1.rating, s0)
                 changes = []
                 for p, new in ((p0, n0), (p1, n1)):
-                    changes.append({"before": p.rating.as_dict(), "after": new.as_dict(),
-                                    "delta": round(new.r - p.rating.r, 1)})
+                    before_rank = p.rank_info()
+                    rank_state, event = ranks.after_match(p.rank, new.r, self.rules)
+                    ch = {"before": p.rating.as_dict(), "after": new.as_dict(),
+                          "delta": round(new.r - p.rating.r, 1), "rank_before": before_rank, "event": event}
                     p.rating = new
+                    if not p.guest:
+                        p.rank = rank_state
+                    ch["rank_after"] = p.rank_info()
+                    changes.append(ch)
                 for i, p in enumerate(m.players):
                     if p.account_id is not None:
-                        self.store.set_rating(p.account_id, p.rating, outcome[i])
+                        self.store.set_rating(p.account_id, p.rating, outcome[i], p.rank)
             else:
                 for i, p in enumerate(m.players):
                     if p.account_id is not None:
                         self.store.add_unranked_game(p.account_id, outcome[i])
             for i, p in enumerate(m.players):
                 p.record[{"win": 0, "loss": 1, "draw": 2}[outcome[i]]] += 1
-        m.final = {"status": status, "winner": winner, "score": score}
-        self._release(m)
+        m.final = {"status": status, "winner": winner, "score": score, "reason": reason, "blame": blame}
+        self._release(m, keep_relay=m.path == "relay")
         self.matches.pop(m.id, None)
-        self._save(m, status, winner, score, changes)
+        self._save(m, status, winner, score, changes, reason, blame)
+        if counts:
+            for p in m.players:
+                if p.account_id is not None:
+                    p.main = self.store.main_char(p.account_id)
+        # Keep it for a rematch offer for a little while.
+        m.rematch = [None, None]
+        self.recent[m.id] = m
+        asyncio.get_running_loop().call_later(self.cfg.rematch_window, self.recent.pop, m.id, None)
         for side, p in enumerate(m.players):
             if p.match is m:
                 p.match = None
                 p.status = "room" if p.room is not None else "idle"
             p.send({"t": "match_result", "match": m.id, "status": status, "winner": winner, "score": score,
-                    "ranked": m.ranked, "rating": changes[side] if changes else None, "you": p.public()})
+                    "reason": reason, "blame": None if blame is None else ("you" if blame == side else "opponent"),
+                    "ranked": m.ranked, "rating": changes[side] if changes else None, "you": p.public(),
+                    "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
+                    "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online else 0})
             if not p.online and p.match is None:
                 self._forget(p)
         if m.room is not None:
             m.room.match = None
-        self.note("match_result", match=m.id, status=status, winner=winner)
-        log.info("match %s %s: winner %s score %s", m.id, status, winner, score)
+        self.note("match_result", match=m.id, status=status, winner=winner, reason=reason)
+        log.info("match %s %s%s: winner %s score %s", m.id, status, f" ({reason})" if reason else "", winner, score)
         self.dirty = True
 
-    def _save(self, m, status, winner=None, score=None, changes=None):
+    def _save(self, m, status, winner=None, score=None, changes=None, reason=None, blame=None):
         try:
             self.store.save_match({
                 "id": m.id, "created": m.created, "ended": time.time() if status != "playing" else None,
                 "ranked": m.ranked, "p1_name": m.players[0].name, "p2_name": m.players[1].name,
                 "p1_account": m.players[0].account_id, "p2_account": m.players[1].account_id,
                 "build": m.build_id, "path": m.path, "rtt_ms": m.rtt, "delay": m.delay, "status": status,
-                "winner": winner, "score": score, "reports": m.reports, "rating": changes})
+                "winner": winner, "score": score, "reports": m.reports, "rating": changes,
+                "origin": m.origin, "started": m.started,
+                "duration": round(time.time() - m.started, 1) if m.started and status != "playing" else None,
+                "p1_char": m.chars[0] if m.chars else None, "p2_char": m.chars[1] if m.chars else None,
+                "stage": m.stage, "reason": reason, "blame": blame})
         except Exception:
             log.exception("saving match %s", m.id)
 

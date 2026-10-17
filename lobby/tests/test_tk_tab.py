@@ -62,6 +62,7 @@ class TkTabTest(unittest.TestCase):
             self.skipTest(f"no display: {e}")
         self.root.withdraw()
         self.dir = tempfile.mkdtemp()
+        os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")   # per-user settings: a fresh folder
         self.app = FakeApp(self.dir)
         self.tab = OnlineTab(self.root, self.app)
         self.tab._build_info = lambda: (BUILD, None)
@@ -148,6 +149,82 @@ class TkTabTest(unittest.TestCase):
         self.app.games[0].done = True
         self.other.report_result(1, [2, 3])
         self.pump(lambda: "Result confirmed" in tab.status_var.get())
+
+    def test_account_remembered_login_and_ranked(self):
+        """Create an account: recovery codes are shown once, the saved login (a token, never the
+        password) logs a new launcher session in by itself, ranked is open to accounts."""
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set("Ranker")
+        tab.pw_var.set("secret-pw1")
+        tab.ask_string = lambda *a, **k: "secret-pw1"            # "type the password again"
+        tab.char_var.set("Lili")
+        tab.do_login("register")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        self.pump(lambda: tab.codes_window is not None)
+        self.assertEqual(tab.pw_var.get(), "")
+        self.pump(lambda: str(tab.actions["ranked"].cget("state")) == "normal")
+        self.pump(lambda: self.s.call(lambda: self.s.srv.by_name["ranker"].char) == "lili")
+        cfg_path = os.path.join(os.environ["T5_ONLINE_DIR"], "online.json")
+        with open(cfg_path) as f:
+            saved = f.read()
+        self.assertNotIn("secret-pw1", saved)
+        self.assertIn('"token"', saved)
+        self.assertIn('"char": "lili"', saved)
+        tab.codes_window.destroy()
+        tab.on_close()
+        # a new launcher start: the Online tab logs in with the saved login
+        tab2 = OnlineTab(self.root, self.app)
+        tab2._build_info = lambda: (BUILD, None)
+        tab2.on_show()
+        self.pump(lambda: tab2.client is not None and tab2.client.me is not None)
+        self.assertEqual(tab2.client.me["name"], "Ranker")
+        self.assertIn("saved login", tab2.status_var.get())
+        tab2.ask_yes_no = lambda *a, **k: True                  # log out and forget the saved login
+        tab2.do_logout()
+        with open(cfg_path) as f:
+            self.assertNotIn('"token"', f.read())
+        self.tab = tab2
+
+    def test_no_password_to_a_public_server_without_tls(self):
+        from unittest import mock
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set("Careful")
+        tab.pw_var.set("secret-pw1")
+        with mock.patch("t5lobby.client.is_local_address", return_value=False):
+            tab.do_login("account")
+            self.pump(lambda: "no encryption" in tab.status_var.get())
+            self.assertIsNone(tab.client)
+            tab.do_login("guest")                                # guests still work
+            self.pump(lambda: tab.client is not None and tab.client.me is not None)
+
+    def test_leaderboard_and_profile_tabs(self):
+        tab = self.tab
+        a = client(self.s, "Champ", password="champ-pw1", register=True, auto_ready=True)
+        b = client(self.s, "Chump", password="chump-pw1", register=True, auto_ready=True)
+        self.other = a
+        try:
+            a.ranked_match()
+            b.ranked_match()
+            ea = expect(a, "match_start")
+            a.report_result(ea["slot"], None)
+            b.report_result(ea["slot"], None)
+            expect(a, "match_result")
+        finally:
+            b.close()
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set("Viewer")
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        tab.nb.select(1)
+        tab.load_leaderboard()
+        self.pump(lambda: len(tab.tv_board.get_children()) == 2)
+        self.assertEqual(tab.tv_board.item(tab.tv_board.get_children()[0], "values")[1].replace("  *", ""), "Champ")
+        tab.show_profile("Champ")
+        self.pump(lambda: "Champ" in tab.prof_title.get())
+        self.pump(lambda: len(tab.tv_hist.get_children()) == 1)
+        self.assertIn("Beginner", tab.prof_title.get())
 
 
 if __name__ == "__main__":

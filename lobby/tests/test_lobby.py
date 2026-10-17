@@ -411,7 +411,8 @@ class ResultTest(Base):
         a.report_result(ta.slot, [3, 0] if ta.slot == 0 else [0, 3])
         b.close()                                      # Bob rage-quits the lobby without reporting
         ev = expect(a, "match_result", timeout=10)
-        self.assertEqual(ev["status"], "onesided")
+        self.assertEqual(ev["status"], "forfeit")      # logging out mid-match = leaving it
+        self.assertEqual(ev["blame"], "opponent")
         self.assertGreater(ev["rating"]["delta"], 0)
         self.assertLess(self.account("Bob")["rating"], 1500)
 
@@ -429,6 +430,7 @@ class ResultTest(Base):
 
     def test_resume_after_disconnect(self):
         a, b, ta, tb = self.ranked_pair()
+        a.reconnect_window = 0                         # this test resumes by hand
         token = a.token
         a._loop.call_soon_threadsafe(a._writer.transport.abort)   # the launcher's connection breaks
         expect(a, "disconnected")

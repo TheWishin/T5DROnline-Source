@@ -55,3 +55,5 @@ scratch/
 native/
 launcher.json
 dist/
+# Online tab: per-user settings and saved logins (normally in %APPDATA%\T5DROnline, never commit)
+online.json

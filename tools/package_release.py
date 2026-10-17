@@ -77,9 +77,10 @@ OUR_FILES = [
 ]
 # Shipped when present (player docs; the players' README section links them).
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
-                      "docs/controls.ini"]
-# lobby/t5lobby/*.py is the client side; lobby/t5lobby/server/ is not shipped.
-OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py"]
+                      "docs/RANKED.md", "docs/controls.ini"]
+# lobby/t5lobby/*.py is the client side (Online tab, match driver); lobby/t5lobby/server/ is not shipped.
+OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
+             "lobby/t5lobby/data/*.json"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]

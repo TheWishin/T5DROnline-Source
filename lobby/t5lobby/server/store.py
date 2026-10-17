@@ -1,14 +1,19 @@
-"""Persistent state: accounts (salted scrypt password hashes, ratings) and match history.
-SQLite from the standard library; one connection used from the event loop thread."""
+"""Persistent state: accounts (salted scrypt password hashes, ratings, rank tiers), login
+sessions ("remember me" tokens, stored hashed), recovery codes (stored hashed) and match
+history. SQLite from the standard library; one connection used from the event loop thread.
+
+Older databases are upgraded in place (missing columns and tables are added)."""
 import base64
 import hashlib
 import hmac
 import json
 import os
+import secrets
 import sqlite3
 import time
 
 from .. import rating as glicko
+from ..ranks import RankState
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -30,7 +35,48 @@ CREATE TABLE IF NOT EXISTS matches (
     build TEXT, path TEXT, rtt_ms REAL, delay INTEGER,
     status TEXT NOT NULL, winner INTEGER, score TEXT, reports TEXT, rating TEXT
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    created REAL NOT NULL,
+    last_used REAL NOT NULL,
+    expires REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS recovery (
+    account_id INTEGER NOT NULL,
+    code_hash TEXT NOT NULL,
+    created REAL NOT NULL,
+    used REAL
+);
+CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
+CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
+
+# Columns added after the first release of the schema: (table, column, declaration).
+RANKED_COLUMNS = [
+    ("accounts", "ranked_games", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "tier", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "tier_since", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "tier_peak", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "tier_floor", "INTEGER NOT NULL DEFAULT 0"),
+    ("accounts", "pw_changed", "REAL"),
+    ("matches", "origin", "TEXT"),
+    ("matches", "started", "REAL"),
+    ("matches", "duration", "REAL"),
+    ("matches", "p1_char", "TEXT"),
+    ("matches", "p2_char", "TEXT"),
+    ("matches", "stage", "TEXT"),
+    ("matches", "reason", "TEXT"),
+    ("matches", "blame", "INTEGER"),
+]
+RANKED_INDEXES = """
+CREATE INDEX IF NOT EXISTS matches_p1 ON matches (p1_account, ended);
+CREATE INDEX IF NOT EXISTS matches_p2 ON matches (p2_account, ended);
+"""
+
+SESSION_DAYS = 30.0
+RECOVERY_CODES = 8
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I/L: read off a screen, typed back
 
 
 def hash_password(password, n=1 << 14, r=8, p=1):
@@ -53,12 +99,34 @@ def check_password(password, stored):
         return False
 
 
+def _sha(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def normalize_code(code):
+    """'abcd-efgh-jkmn' / 'ABCD EFGH JKMN' -> 'ABCDEFGHJKMN'."""
+    return "".join(ch for ch in str(code).upper() if ch.isalnum())
+
+
+def new_recovery_code():
+    raw = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(12))      # ~59 bits
+    return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
+
+
 class Store:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL" if path != ":memory:" else "PRAGMA journal_mode=MEMORY")
         self.db.executescript(SCHEMA)
+        self._add_columns()
+        self.db.executescript(RANKED_INDEXES)
+
+    def _add_columns(self):
+        for table, col, decl in RANKED_COLUMNS:
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     def close(self):
         self.db.close()
@@ -83,6 +151,9 @@ class Store:
     def touch(self, aid):
         self.db.execute("UPDATE accounts SET last_seen = ? WHERE id = ?", (time.time(), aid))
 
+    def set_password(self, aid, pw_hash):
+        self.db.execute("UPDATE accounts SET pw = ?, pw_changed = ? WHERE id = ?", (pw_hash, time.time(), aid))
+
     def rating(self, aid):
         """Current Rating with inactivity RD growth applied."""
         row = self.account_by_id(aid)
@@ -91,32 +162,190 @@ class Store:
             rt = glicko.inflate(rt, (time.time() - row["last_ranked"]) / 86400.0)
         return rt
 
-    def set_rating(self, aid, rt, outcome):
+    def rank_state(self, aid):
+        row = self.account_by_id(aid)
+        return RankState(row["tier"], row["ranked_games"], row["tier_since"], row["tier_peak"], row["tier_floor"])
+
+    def set_rating(self, aid, rt, outcome, rank=None):
         col = {"win": "wins", "loss": "losses", "draw": "draws"}[outcome]
         self.db.execute(
             f"UPDATE accounts SET rating = ?, rd = ?, vol = ?, last_ranked = ?, games = games + 1, "
-            f"{col} = {col} + 1 WHERE id = ?", (rt.r, rt.rd, rt.vol, time.time(), aid))
+            f"ranked_games = ranked_games + 1, {col} = {col} + 1 WHERE id = ?",
+            (rt.r, rt.rd, rt.vol, time.time(), aid))
+        if rank is not None:
+            self.db.execute("UPDATE accounts SET tier = ?, tier_since = ?, tier_peak = ?, tier_floor = ? WHERE id = ?",
+                            (rank.tier, rank.since_change, rank.peak, rank.floor, aid))
 
     def add_unranked_game(self, aid, outcome):
         col = {"win": "wins", "loss": "losses", "draw": "draws"}[outcome]
         self.db.execute(f"UPDATE accounts SET games = games + 1, {col} = {col} + 1 WHERE id = ?", (aid,))
 
-    def leaderboard(self, limit=20):
-        return [dict(r) for r in self.db.execute(
-            "SELECT name, rating, rd, games, wins, losses, draws FROM accounts WHERE games > 0 "
-            "ORDER BY rating - 2 * rd DESC LIMIT ?", (limit,))]
+    def leaderboard(self, limit=20, offset=0):
+        rows = [dict(r) for r in self.db.execute(
+            "SELECT id, name, rating, rd, games, ranked_games, wins, losses, draws, tier, tier_peak FROM accounts "
+            "WHERE ranked_games > 0 ORDER BY rating - 2 * rd DESC, rating DESC LIMIT ? OFFSET ?", (limit, offset))]
+        for i, r in enumerate(rows):
+            r["place"] = offset + i + 1
+            r["main"] = self.main_char(r.pop("id"))
+        return rows
+
+    # ----------------------------------------------------------------- sessions ("remember me")
+    def create_session(self, aid, days=SESSION_DAYS):
+        """New login token for `aid`; only its hash is stored. -> the token (hex)."""
+        token = secrets.token_hex(32)
+        now = time.time()
+        self.db.execute("INSERT INTO sessions (token_hash, account_id, created, last_used, expires) "
+                        "VALUES (?, ?, ?, ?, ?)", (_sha(token), aid, now, now, now + days * 86400.0))
+        return token
+
+    def session_account(self, token, days=SESSION_DAYS):
+        """Account row for a valid token (sliding expiry), else None."""
+        if not isinstance(token, str) or len(token) != 64:
+            return None
+        h = _sha(token)
+        row = self.db.execute("SELECT * FROM sessions WHERE token_hash = ?", (h,)).fetchone()
+        now = time.time()
+        if row is None:
+            return None
+        if row["expires"] < now:
+            self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (h,))
+            return None
+        self.db.execute("UPDATE sessions SET last_used = ?, expires = ? WHERE token_hash = ?",
+                        (now, now + days * 86400.0, h))
+        return self.account_by_id(row["account_id"])
+
+    def revoke_session(self, token):
+        if isinstance(token, str):
+            self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (_sha(token),))
+
+    def revoke_sessions(self, aid, keep=None):
+        """Log out every remembered login of `aid` (except the token `keep`)."""
+        if keep:
+            self.db.execute("DELETE FROM sessions WHERE account_id = ? AND token_hash != ?", (aid, _sha(keep)))
+        else:
+            self.db.execute("DELETE FROM sessions WHERE account_id = ?", (aid,))
+
+    def session_count(self, aid):
+        return self.db.execute("SELECT COUNT(*) FROM sessions WHERE account_id = ?", (aid,)).fetchone()[0]
+
+    def prune_sessions(self):
+        self.db.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
+
+    # ----------------------------------------------------------------- recovery codes
+    def issue_recovery_codes(self, aid, n=RECOVERY_CODES):
+        """A fresh set of one-time codes (the old set stops working). -> the codes, shown once."""
+        codes = [new_recovery_code() for _ in range(n)]
+        now = time.time()
+        self.db.execute("DELETE FROM recovery WHERE account_id = ?", (aid,))
+        self.db.executemany("INSERT INTO recovery (account_id, code_hash, created) VALUES (?, ?, ?)",
+                            [(aid, _sha(normalize_code(c)), now) for c in codes])
+        return codes
+
+    def use_recovery_code(self, aid, code):
+        """Consume one code of `aid`. -> True when it was valid and unused."""
+        h = _sha(normalize_code(code))
+        cur = self.db.execute("UPDATE recovery SET used = ? WHERE account_id = ? AND code_hash = ? AND used IS NULL",
+                              (time.time(), aid, h))
+        return cur.rowcount == 1
+
+    def recovery_left(self, aid):
+        return self.db.execute("SELECT COUNT(*) FROM recovery WHERE account_id = ? AND used IS NULL",
+                               (aid,)).fetchone()[0]
 
     # ----------------------------------------------------------------- matches
     def save_match(self, m):
         self.db.execute(
             "INSERT OR REPLACE INTO matches (id, created, ended, ranked, p1_name, p2_name, p1_account, "
-            "p2_account, build, path, rtt_ms, delay, status, winner, score, reports, rating) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "p2_account, build, path, rtt_ms, delay, status, winner, score, reports, rating, origin, started, "
+            "duration, p1_char, p2_char, stage, reason, blame) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (m["id"], m["created"], m.get("ended"), int(m["ranked"]), m["p1_name"], m["p2_name"],
              m.get("p1_account"), m.get("p2_account"), m.get("build"), m.get("path"), m.get("rtt_ms"),
              m.get("delay"), m["status"], m.get("winner"), json.dumps(m.get("score")),
-             json.dumps(m.get("reports")), json.dumps(m.get("rating"))))
+             json.dumps(m.get("reports")), json.dumps(m.get("rating")), m.get("origin"), m.get("started"),
+             m.get("duration"), m.get("p1_char"), m.get("p2_char"), m.get("stage"), m.get("reason"),
+             m.get("blame")))
 
     def match_row(self, mid):
         r = self.db.execute("SELECT * FROM matches WHERE id = ?", (mid,)).fetchone()
         return dict(r) if r else None
+
+    def history(self, aid, limit=20, offset=0):
+        """Finished matches of an account, newest first, from that player's side:
+        {match, time, ranked, status, opponent, you_char, opp_char, stage, result: win|loss|draw|-,
+         score [you, opp], delta, reason}."""
+        out = []
+        for r in self.db.execute(
+                "SELECT * FROM matches WHERE (p1_account = ? OR p2_account = ?) AND status != 'playing' "
+                "ORDER BY COALESCE(ended, created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
+            r = dict(r)
+            side = 0 if r["p1_account"] == aid else 1
+            score = json.loads(r["score"]) if r["score"] else None
+            rating = json.loads(r["rating"]) if r["rating"] else None
+            counted = r["status"] in COUNTED
+            if not counted:
+                res = "-"
+            elif r["winner"] is None:
+                res = "draw"
+            else:
+                res = "win" if r["winner"] == side else "loss"
+            out.append({
+                "match": r["id"], "time": r["ended"] or r["created"], "ranked": bool(r["ranked"]),
+                "status": r["status"], "reason": r["reason"],
+                "opponent": r["p2_name"] if side == 0 else r["p1_name"],
+                "you_char": r["p1_char"] if side == 0 else r["p2_char"],
+                "opp_char": r["p2_char"] if side == 0 else r["p1_char"],
+                "stage": r["stage"], "result": res,
+                "score": (score if side == 0 else score[::-1]) if score else None,
+                "delta": rating[side]["delta"] if rating else None,
+                "path": r["path"], "rtt_ms": r["rtt_ms"], "delay": r["delay"]})
+        return out
+
+    def char_usage(self, aid, limit=5):
+        """[{char, games, wins}] over counted matches, most played first."""
+        rows = self.db.execute(
+            "SELECT ch, COUNT(*) AS games, SUM(won) AS wins FROM ("
+            "  SELECT p1_char AS ch, CASE WHEN winner = 0 THEN 1 ELSE 0 END AS won FROM matches "
+            "   WHERE p1_account = ? AND p1_char IS NOT NULL AND status IN ('confirmed','onesided','forfeit','resolved')"
+            "  UNION ALL "
+            "  SELECT p2_char AS ch, CASE WHEN winner = 1 THEN 1 ELSE 0 END AS won FROM matches "
+            "   WHERE p2_account = ? AND p2_char IS NOT NULL AND status IN ('confirmed','onesided','forfeit','resolved')"
+            ") GROUP BY ch ORDER BY games DESC, wins DESC LIMIT ?", (aid, aid, limit))
+        return [{"char": r["ch"], "games": r["games"], "wins": r["wins"] or 0} for r in rows]
+
+    def main_char(self, aid):
+        u = self.char_usage(aid, 1)
+        return u[0]["char"] if u else None
+
+    def strikes(self, aid, since):
+        """Matches since `since` that ended without a result because of this account
+        (crash, quit before the minimum length, no report)."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM matches WHERE ended >= ? AND status = 'void' AND "
+            "((p1_account = ? AND blame = 0) OR (p2_account = ? AND blame = 1))", (since, aid, aid)).fetchone()[0]
+
+    def disputes(self, aid, since):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM matches WHERE ended >= ? AND status = 'disputed' AND (p1_account = ? OR p2_account = ?)",
+            (since, aid, aid)).fetchone()[0]
+
+    def pair_ranked(self, a, b, since):
+        """Counted ranked matches between accounts a and b since `since` (anti win-trading cap)."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM matches WHERE ranked = 1 AND ended >= ? AND status IN "
+            "('confirmed','onesided','forfeit','resolved') AND "
+            "((p1_account = ? AND p2_account = ?) OR (p1_account = ? AND p2_account = ?))",
+            (since, a, b, b, a)).fetchone()[0]
+
+    def place(self, aid):
+        """Leaderboard place of an account (1 = top), None when it has no ranked match."""
+        row = self.account_by_id(aid)
+        if row is None or not row["ranked_games"]:
+            return None
+        key = row["rating"] - 2 * row["rd"]
+        return 1 + self.db.execute("SELECT COUNT(*) FROM accounts WHERE ranked_games > 0 AND rating - 2 * rd > ?",
+                                   (key,)).fetchone()[0]
+
+
+# Statuses whose result counts (record, rating when ranked).
+COUNTED = ("confirmed", "onesided", "forfeit", "resolved")

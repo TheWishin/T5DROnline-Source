@@ -47,6 +47,7 @@ E_BUSY = "busy"
 E_RATE = "rate_limited"
 E_FULL = "server_full"
 E_STATE = "bad_state"
+E_INSECURE = "insecure"     # client side: no password over a plain connection to a public server
 
 # ---------------------------------------------------------------------------- control channel
 
@@ -71,6 +72,27 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_\-\.\[\]\(\)!\? ]{2,16}$")
 def valid_name(name):
     """Display/account names: 2-16 printable ASCII characters from a safe set, no leading/trailing space."""
     return isinstance(name, str) and bool(NAME_RE.match(name)) and name == name.strip() and "  " not in name
+
+
+# Names nobody may use (compared without case, spaces and punctuation): they would pass for the
+# server, its staff, the game's own placeholders or the game's publisher.
+RESERVED_NAMES = frozenset((
+    "admin", "administrator", "moderator", "mod", "staff", "support", "server", "system", "lobby", "t5lobby",
+    "root", "owner", "official", "guest", "unknown", "anonymous", "player", "player1", "player2", "p1", "p2",
+    "host", "join", "nobody", "null", "none", "undefined", "you", "me", "cpu", "com", "namco", "bandai",
+    "bandainamco", "namcobandai", "sony", "playstation", "psn", "tekken", "t5dr", "t5dronline",
+))
+RESERVED_PREFIXES = ("admin", "moderator", "official", "t5lobby")
+
+
+def name_key(name):
+    """Lower case, letters and digits only: 'Ad.Min' and 'admin' are the same name here."""
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def reserved_name(name):
+    k = name_key(name)
+    return k in RESERVED_NAMES or any(k.startswith(p) for p in RESERVED_PREFIXES) or not k
 
 
 def parse_hostport(spec, default_port=DEFAULT_PORT):

@@ -3,13 +3,16 @@
   "servers": [
     {
       "name": "T5DR Online",
-      "host": "",
+      "host": "46.224.146.6",
       "port": 7781,
-      "tls": "ca",
-      "fingerprint": "",
-      "udp_ports": [7781, 7782],
-      "region": "",
-      "note": "Placeholder for the public server: fill in host (and tls/fingerprint) once it runs. Entries with an empty host are ignored. See docs/HOSTING.md.",
+      "tls": "pin",
+      "fingerprint": "cbccc456c5c38f4ccfdb1b24c23c36e10923f47c2b3c8cb62d4e3cd3d97b2d4d",
+      "udp_ports": [
+        7781,
+        7782
+      ],
+      "region": "EU (Nuremberg)",
+      "note": "The public lobby server (Hetzner Cloud, Ubuntu 26.04, self-signed certificate pinned here).",
       "default": true
     }
   ]

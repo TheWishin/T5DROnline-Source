@@ -145,6 +145,9 @@ def main():
         cmd = [cl] + common
         if is_c:
             cmd += ["/std:c17", "-TC", "/DSPU_USE_DISPATCH_MT", "-msse4.1"]   # as ps3recomp_runtime's INTERFACE option
+            cmd += ppu_opts     # same target CPU as the PPU code: the sound core ~7% cheaper with x86-64-v3 (CMakeLists.txt)
+            if os.path.basename(os.path.dirname(src)).startswith("skin"):
+                cmd += ["/DSPU_FAST_FLOAT"]     # render-only skinning jobs: IEEE float ops (CMakeLists.txt)
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
         if os.path.basename(src) == "t5dr_game_dll.c":

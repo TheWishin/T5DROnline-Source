@@ -91,6 +91,16 @@ if(SPU_LIFTED AND EXISTS "${SPU_DIR}/spu_workloads.c")
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
+    # The vertex skinning jobs (skin1x/skin4x) only produce vertices to draw,
+    # never game state: they use the host's IEEE float ops instead of the exact
+    # SPU float emulation (SPU_FAST_FLOAT in spu_helpers.h, ps3recomp patch
+    # 0027) -- a fight frame's skinning costs about a third of the CPU. The sound
+    # core and every other image stay exact. OFF restores the exact path.
+    option(T5DR_SPU_FAST_SKIN "IEEE float ops for the render-only SPU skinning jobs" ON)
+    file(GLOB SPU_RENDER_JOBS CONFIGURE_DEPENDS "${SPU_DIR}/lifted/skin*/spu_recomp.c")
+    if(T5DR_SPU_FAST_SKIN AND SPU_RENDER_JOBS)
+        set_property(SOURCE ${SPU_RENDER_JOBS} APPEND PROPERTY COMPILE_DEFINITIONS SPU_FAST_FLOAT)
+    endif()
 elseif(NOT T5DR_GAME_DLL)
     message(WARNING "No lifted SPU images in ${SPU_DIR} -- the sound core will not run")
 endif()
@@ -134,8 +144,13 @@ set(T5DR_SPU_COPTS "" CACHE STRING "extra compile options for the lifted SPU sou
 if(RECOMP_SOURCES)
     set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_LIFTED_COPTS})
 endif()
-if(T5DR_SPU_COPTS AND SPU_SOURCES)
-    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${T5DR_SPU_COPTS})
+# The lifted SPU C gets the same target CPU (and -ffp-contract=off, which keeps
+# the exact SPU float emulation's separate roundings): the sound core, ~0.85 of
+# a core in a fight, took ~7% less CPU with x86-64-v3 than with SSE4.1 alone
+# (paired runs on two 8-CPU halves of the development PC, docs/RENDER_PERF.md
+# "Weaker PCs").
+if(SPU_SOURCES)
+    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_SPU_COPTS})
 endif()
 # Profile-guided optimisation of the lifted PPU code (clang): T5DR_PGO=gen builds
 # an instrumented t5dr.exe (T5_PERF_LOG=... T5_PGO_WRITE_AT=<frames> writes

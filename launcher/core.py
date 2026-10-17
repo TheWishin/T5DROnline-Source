@@ -47,6 +47,7 @@ DEFAULTS = {
     "out": "",                 # empty: <package folder>/native
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
+    "render_scale": "1",       # 3D resolution: 1 (original) | 0.75 (lower) | 0.5 (lowest), PS3_RENDER_SCALE
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
@@ -83,6 +84,8 @@ class Settings(dict):
             env["PS3_NO_AUDIO"] = "1"
         if self["background"]:
             env["PS3_WINDOW_BACKGROUND"] = "1"
+        if self["render_scale"] in RENDER_SCALES and self["render_scale"] != "1":
+            env["PS3_RENDER_SCALE"] = self["render_scale"]
         for line in self["extra_env"].splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -515,6 +518,15 @@ class GameRun:
 
 
 # --------------------------------------------------------------------------- windows (Win32)
+
+# "3D resolution" (like Tekken 6 Native Online's option): the game draws below 1280 x 720 and the
+# picture is scaled up to the window. Only the picture changes, never the game, so the two
+# players of an online match may choose differently. docs/RENDER_PERF.md "Weaker PCs".
+RENDER_SCALES = {
+    "1": "Original",
+    "0.75": "Lower",
+    "0.5": "Lowest",
+}
 
 DISPLAY_MODES = [
     ("window", "Window, 1280 x 720 (native; larger with Windows display scaling)"),

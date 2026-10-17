@@ -298,18 +298,33 @@ class App(tk.Tk):
             "The game renders at 1280 x 720 and is scaled to the window. You can also drag the window's "
             "edges. The runtime has no exclusive fullscreen yet.")).pack(anchor="w", pady=(6, 0))
 
-        other = ttk.LabelFrame(box, text="  Sound and start  ", padding=(12, 6))
-        other.grid(row=0, column=1, sticky="nwe")
+        right = ttk.Frame(box)
+        right.grid(row=0, column=1, sticky="nwe")
+        other = ttk.LabelFrame(right, text="  Sound and start  ", padding=(12, 6))
+        other.pack(fill="x")
         self.mute_var = tk.BooleanVar(value=self.settings["mute"])
         self.bg_var = tk.BooleanVar(value=self.settings["background"])
         ttk.Checkbutton(other, text="Mute sound", variable=self.mute_var, command=self.save_settings).pack(anchor="w")
         ttk.Checkbutton(other, text="Start minimized, without taking focus (for testing)", variable=self.bg_var,
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Label(other, text="Advanced: extra settings, one NAME=VALUE per line").pack(anchor="w", pady=(10, 2))
-        self.env_text = tk.Text(other, height=4, width=44, font=("Consolas", 9))
+        self.env_text = tk.Text(other, height=3, width=44, font=("Consolas", 9))
         self.env_text.insert("1.0", self.settings["extra_env"])
         self.env_text.pack(anchor="w", fill="x")
         self.env_text.bind("<FocusOut>", lambda _e: self.save_settings())
+
+        # Like Tekken 6 Native Online's "3D resolution": for weaker graphics cards
+        # (PS3_RENDER_SCALE, docs/RENDER_PERF.md "Weaker PCs").
+        gfx = ttk.LabelFrame(right, text="  3D resolution  ", padding=(12, 6))
+        gfx.pack(fill="x", pady=(6, 0))
+        self.render_scale_var = tk.StringVar(value=self.settings["render_scale"]
+                                             if self.settings["render_scale"] in core.RENDER_SCALES else "1")
+        row = ttk.Frame(gfx)
+        row.pack(anchor="w")
+        for key, label in core.RENDER_SCALES.items():
+            ttk.Radiobutton(row, text=label, value=key, variable=self.render_scale_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(row, style="Muted.TLabel", text="for weak graphics cards").pack(side="left")
 
         ctl = ttk.LabelFrame(box, text="  Controls  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -604,6 +619,7 @@ class App(tk.Tk):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
+        self.settings["render_scale"] = self.render_scale_var.get()
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()

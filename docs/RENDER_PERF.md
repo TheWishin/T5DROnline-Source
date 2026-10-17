@@ -105,3 +105,179 @@ taken off it is the D3D present (`PS3_PRESENT_LATE`) and the vertex fetch
 (now drained only at the flush). Overlapping translation with the game's
 *own* frame was tried by the pacing work and fails: the game rewrites and
 rewinds commands before its single flush.
+
+## Weaker PCs (patch 0027)
+
+Fights hold 60 fps on the development PC (Ryzen 9 7950X, 32 logical
+processors, RTX 3090). Friends will play on 4-8 core PCs with mid-range or
+integrated graphics, and online both games run at the slower PC's speed.
+Patch 0027 makes the runtime size itself to the processors it may use and
+cuts the per-frame CPU work; the launcher's **3D resolution** setting
+(`PS3_RENDER_SCALE`) is for weak graphics.
+
+### What limited a fight at 4-6 logical processors
+
+The game held to N logical processors (affinity mask, below), traced with
+`PS3_SCHED_TRACE`:
+
+- **The skinning job list is on the frame's critical path.** Once per fight
+  frame the main thread kicks one SPURS job list of ~380 vertex skinning
+  jobs and waits for it before it flushes its commands. The jobs are lifted
+  SPU code whose float math went through the exact SPU emulation (widen to
+  double, truncate, range checks, TwoSum for every multiply-add): ~20 ms of
+  CPU per frame. 12 threads finish that in 2.4 ms; the 2 threads a 4-thread
+  PC gets needed 10.9 ms (trace median), the flush came after the vblank and
+  every frame took 33 ms.
+- **The kick itself**: the chain walker ran `VirtualQuery` over the
+  384-descriptor list twice per kick -- 1.6 ms from the kick to the first
+  job at 4 processors.
+- **The SPU sound core** costs ~0.85 of a core whatever the frame rate (a
+  5.33 ms audio tick at HIGHEST priority) -- a fifth of a 2-core/4-thread PC.
+- **Pools sized from the machine, not the process.** `GetSystemInfo`
+  reports every processor, so under an affinity mask (or a job object) the
+  SPURS pool started 11 workers on 4 processors; the 3 vertex-fetch workers
+  of 0023 were fixed.
+- **Busy waiting.** The main thread polls the flip with `usleep(100)` for
+  the rest of every frame, and sub-millisecond sleeps were a `SwitchToThread`
+  spin: one processor busy all frame (~0.45 of a core). Idle vertex workers
+  spin 2,000 `PAUSE`s before they sleep.
+- **Per-job overhead**: every job cleared a whole 256 KB local store (~1 ms
+  of CPU a frame for 384 jobs) and read three debug variables with `getenv`
+  (the CRT's environment lock, taken by every worker for every job).
+
+Not a limit: the translation (3.5-4 ms on the walker), the game's main
+thread (7-8 ms busy), the GPU (below).
+
+### What changed
+
+| Change | Switch | Effect |
+|---|---|---|
+| The render-only skinning images (skin1x/skin4x) are compiled with `SPU_FAST_FLOAT`: host IEEE single-precision ops instead of the exact SPU emulation (fa/fs/fm within 1 ulp, the multiply-adds within 2: `runtime/spu/tests/test_spu_fast_float.c`, 4.6 M lanes). Their output is only drawn: no netplay hash, no rollback state, no game decision reads it; the sound core and every other image stay exact. Screenshots identical to the eye | CMake `-DT5DR_SPU_FAST_SKIN=OFF` | job list at 4 processors 10.9 -> 4.7 ms (trace medians); job workers at 32 processors 0.9 -> 0.5 cores |
+| Lifted SPU C gets the lifted PPU code's `-march` (x86-64-v3 when the PC has AVX2) and `-ffp-contract=off`; the exact float path is unchanged (the SPU float/helper/numeric tests pass compiled that way) | `T5DR_LIFTED_ARCH` | sound core ~7 % less CPU (paired runs on two 8-processor halves) |
+| Committed-range answers for job lists cached (guest memory is never decommitted) | -- | kick -> first job 1.6 ms -> 0.03 ms |
+| CPU budget = the process's affinity mask (`host_sched_cpus()`, printed as `[sched] CPU budget`) | `PS3_CPUS=n` | pools below |
+| SPURS job threads: half the budget, max 12 (was half the machine) | `SPURS_JOB_THREADS` | 32: 12 as before; 8: 4; 4: 2 |
+| Vertex-fetch workers: 3 from 12 processors, 2 from 8, else 1; idle spin 300 `PAUSE`s below 12 | `RSX_VERTEX_THREADS` | 0 (synchronous) was clearly worse at 4 (37 vs 52 fps) |
+| Sub-ms `usleep` on the high-resolution timer below 12 processors | `PS3_SCHED_SUBMS=spin\|pause\|timer` | ~0.45 core less; fps the same within the noise |
+| Job local store: only the job's own regions and the context block are cleared (the real job manager clears nothing) | `SPURS_JOB_ZERO_LS=1` | ~1 ms CPU a frame |
+| Per-job debug `getenv`s read once | -- | |
+| `PS3_RENDER_SCALE=0.25..1` (or 540/360): every live render target below the guest size; multiplies `PS3_RES_SCALE` | launcher **3D resolution** | GPU, below |
+| GPU time per frame from D3D12 timestamp queries: frame log column `gpu_us`; `RSX_GPU_TIME=1` prints `[gpu-time]` every 600 frames | `RSX_GPU_TIME` | |
+
+From 12 logical processors up every pool default is what it was; the
+development PC only gets the cheaper skinning and job overhead.
+
+### How it was measured
+
+The setup, packaged as `tools/fight_bench.py --cpus N`: direct fight
+`T5_FIGHT=lil,ask,20,3`, P1 pressing buttons, window minimised, window fight
+start +24..42 s (~1,000 frames), fps from the presents, p99 frame time,
+per-thread CPU time. The CPU limit is an affinity
+mask set on the wrapper right before `CreateProcess`, so the game inherits
+it before its pools size themselves: logical processors 0..N-1. On the
+7950X processors 2k and 2k+1 are the two threads of one core, so **4 =
+2 cores / 4 threads**, 6 = 3c/6t, 8 = 4c/8t; **4c** = processors 0,2,4,6
+(4 cores, no SMT). These cores run at ~5 GHz: a PC with the same thread
+count and older cores has less headroom than these numbers show.
+
+"Before" is main 0b85c10 (series 0001-0026, 0028, 0029); "after" adds 0027.
+(0031 came later: 0027 applies before it unchanged and the series builds;
+not re-measured with it.)
+Before ran with `SPURS_JOB_THREADS` = N/2, what its `GetSystemInfo` sizing
+gives on a real N-thread PC (under the mask it would start 11 workers).
+The PC was shared with other agents' builds and games: each run waited for
+fewer than 12 busy processors, two rounds interleaved; "other load" is what
+other programs used during the window. Under heavy load (25-30 of 32
+processors busy) the limited runs of both builds lose 20-25 fps; earlier
+runs on the 0024 series under that load are in the commit message, not here.
+
+### Results: single fight
+
+| logical processors | before fps / p99 ms | after fps / p99 ms | frames > 17.5 ms per 1000, before -> after | game CPU (cores), before -> after | other load |
+|---|---|---|---|---|---|
+| 4 (2c/4t) | 31.8 / 33.6 (33.6, 30.0) | **59.8 / 16.9** (59.8, 59.9) | 891 -> 2 | 2.71 -> 2.45 | 10-13 |
+| 4c (4c/4t) | 56.9 / 33.4 (58.8, 54.9) | **59.2 / 25.1** (58.4, 59.9) | 57 -> 13 | 2.82 -> 2.10 | 8-10 |
+| 6 (3c/6t) | 59.3 / 25.1 | **59.9 / 16.9** | 10 -> 2 | 3.73 -> 2.27 | 7-8 |
+| 8 (4c/8t) | 59.9 / 16.8 | 59.7 / 17.0 | 1 -> 5 | 3.66 -> 2.46 | 6-8 |
+| 32 | 59.2 / 25.3 | **59.9 / 16.9** | 12 -> 1 | 3.62 -> 3.15 | 6-7 |
+
+The main thread's wait for the skinning jobs per frame: 4 processors 6.4-9.4
+-> 0.7 ms, 6: 4.6 -> 0.4 ms, 32: 0.2 -> 0 ms. At 32 processors the 11 job
+workers use 0.9 -> 0.5 of a core and the sound core 0.72 -> 0.66.
+
+### Results: rollback pair at RTT 150 (online default)
+
+`tools/rollback_net_test.py --fight 26,33,20,2 --rtt 150 --jitter 5
+--loss 3 --delay 6 --mode1 default --mode2 default --matches 1`: two
+instances on this PC through the harness's proxy, the default
+configuration (no `T5_RB_MODE`: rollback, input delay 2), one match of two
+rounds with the attack scripts, each instance on N logical processors of
+its own (the second CCD: 16.. for the host, 24.. for the joiner). fps =
+the rollback loop's frames per second over the match, host / joiner.
+
+| logical processors per instance | before fps | after fps | after: rollbacks (re-simulated frames), host / joiner | sync |
+|---|---|---|---|---|
+| 4 (2c/4t) | 32.7 / 33.1 | **50.1 / 51.0** | 528 / 497 (1,412 / 1,397 of 4,400) | 0 mismatching frames, same result hash both sides |
+| 6 (3c/6t) | 31.0 / 31.5 | **48.7 / 49.4** | 516 / 488 (1,401 / 1,350) | same |
+| 8 (4c/8t) | 28.7 / 29.0 | **48.4 / 49.2** | 531 / 499 (1,442 / 1,337) | same, host at 3D resolution 0.5 |
+
+The 4- and 8-processor pairs ran with ~20 of the 32 processors busy with
+other programs; the 6-processor pairs waited for fewer than 10 (a first
+try under load: 31.4 / 31.7 before, 34.4 / 34.8 after), so all of them
+are slower than a PC of that size on its own; the rollback agent measured
+47-48 fps for this case with all 32 processors on a loaded machine. At the
+higher frame rate the same 150 ms span more frames, so each misprediction
+re-simulates more of them: ~1,400 instead of 400-800 of the match's 4,400
+frames. Rollback at RTT 150 stays the heaviest case: 60 fps there needs a
+cheaper re-simulation, not more threads.
+
+### GPU: 3D resolution
+
+A fight frame draws its 3D pass into a 2048 x 1440 target (2.9 M pixels,
+3.2 times the 1280 x 720 output) with a 2048 x 1440 depth buffer, a
+512 x 512 shadow map (zeta 0xAF0000, sampled with a depth compare -- the
+runtime logs it as `[shadow]`), two 128 x 128 targets and the
+1280 x 720 output with the HUD. `PS3_RENDER_SCALE` (launcher: Original 1 /
+Lower 0.75 / Lowest 0.5) scales all of them; the present scales the result
+to the window. Only host pixels change: the game's memory, commands and
+state are the same at any scale, so the two PCs of a match may differ
+(checked below).
+
+GPU time per fight frame, RTX 3090, D3D12 timestamps around each frame's
+command list (`gpu_us`), ~1,000 steady fight frames per run. An idle 3090
+clocks down (the same frame then reads 2-4 ms), so the GPU was kept busy by
+two other instances at `PS3_RES_SCALE=4`; their work also lengthens some of
+our frames' spans, hence the p10 next to the median:
+
+| 3D resolution | GPU ms per frame, p10 (two runs) | median (two runs) | fps |
+|---|---|---|---|
+| Original (1) | 1.15 / 0.52 | 1.17 / 0.55 | 59.9 |
+| Lower (0.75) | 0.41 / 0.41 | 0.46 / 1.03 | 59.9 |
+| Lowest (0.5) | 0.29 / 0.30 | 0.35 / 0.37 | 59.8 |
+| for scale: `PS3_RES_SCALE=2` / `3` (earlier runs, others' load) | 0.63-0.87 / 1.17 | | |
+
+So on this GPU a frame is ~0.25 ms of fixed work (840 draws, vertex work,
+the shadow pass) plus ~0.3 ms that scales with the pixel count; Lowest cuts
+the second part to a quarter. By raw throughput a GTX 1050 is ~20 times
+slower than a 3090 and integrated graphics 30-90 times, i.e. roughly 10-50 ms
+per frame at Original -- that is where Lower and Lowest decide between 60
+and 30 fps (an estimate: not measured on such a GPU). Lowest makes the HUD visibly softer (640 x 360 upscaled).
+
+**No "smaller shadows" option.** The shadow map is a 512 x 512 depth-only
+pass (0.26 M pixels, 9 % of the 3D pass's pixels), its cost is mostly the
+fighters' vertices, which a smaller map does not reduce, and it already
+shrinks with the 3D resolution. A separate scale would need per-surface
+scales through the surface copies and depth snapshots of the live renderer
+for a gain too small to measure here.
+
+### Netplay with different settings on the two PCs
+
+- Lockstep (`--mode1 off --mode2 off`), host at 3D resolution 0.5, joiner
+  at 1, RTT 30 ms, 1 % loss, one match: `sync check through frame 4199: 0
+  mismatching` on both sides, the same result hash `d0d12f20ce51b8d2`,
+  58 fps.
+- Rollback (default), host at 0.5, 8 processors each, RTT 150: 0
+  mismatching, the same result hash on both sides (the 8-processor row
+  above).
+- Every rollback pair in the table, before and after: 0 mismatching frames,
+  the same result hash on both PCs, no decode errors, no aborts.

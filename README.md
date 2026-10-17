@@ -64,6 +64,10 @@ clean PC and a match between two real PCs over the internet are still to come.
   AMD FX, A-series or Ryzen (2011) or newer. AVX2 is not needed. With AVX2
   (Intel 4th-gen Core / AMD Ryzen and newer) the build makes faster code; the
   launcher decides this by itself. Only tested on a CPU with AVX2.
+- Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop
+  cores); online against a far-away player (rollback, 150 ms) about 50 fps.
+  See [Low frame rate](docs/TROUBLESHOOTING.md#low-frame-rate). Weak graphics:
+  **3D resolution** under [Playing](#playing).
 - Any monitor: 60, 120, 144 Hz and more, also slower TVs (50 Hz). The game
   always runs at the PS3's 59.94 frames per second. Any Windows display
   scaling (100-200 %), several monitors.
@@ -118,6 +122,10 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 - The game opens in its own window. It draws at 1280 x 720 and scales to the
   window. **Settings** has window sizes, maximized, borderless (experimental:
   not yet tested with the real game window) and mute.
+- Weak graphics card (laptop, integrated graphics)? **Settings** -> **3D
+  resolution** -> **Lower** or **Lowest**: a softer picture, less work for the
+  graphics card. It only changes the picture, so the other player online does
+  not need the same setting. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Esc** closes the game. The **Stop game** button does too.
 - Two players on one PC: connect a second pad, then choose Versus.
 - Tips for now:

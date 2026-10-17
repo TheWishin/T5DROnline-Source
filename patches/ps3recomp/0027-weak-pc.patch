@@ -1,0 +1,773 @@
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 607ef80..3cef8a6 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2201,6 +2201,15 @@ enum {                              /* CellSpursJobHeader (48 B) */
+     JH_SIZE          = 0x30,
+ };
+ 
++/* Ranges already found committed. Guest memory is never decommitted or
++ * protected again once committed (vm.h), so a yes stays true. Tekken 5 DR
++ * checks the same skinning job list (384 descriptors) twice a frame on the
++ * walker's path from the kick to the first job, and the VirtualQuery walk
++ * over its pages was ~0.3 ms each time. Entry = start << 32 | last byte. */
++#define JC_COMMITTED_CACHE 16
++static u64 s_jc_committed[JC_COMMITTED_CACHE];
++static u32 s_jc_committed_w;
++
+ /* Is [ea, ea+size) committed guest memory? A pure query: unlike the DMA
+  * path's mfc_ea_range_committed() it never demand-commits, so a garbage job
+  * descriptor cannot conjure zero-filled pages into the guest address space. */
+@@ -2208,6 +2217,10 @@ static int jc_guest_range_committed(u32 ea, u32 size)
+ {
+     if (!size || (u64)ea + size > 0x100000000ull) return 0;
+     const u64 end = (u64)ea + size;
++    for (int i = 0; i < JC_COMMITTED_CACHE; i++) {
++        const u64 c = __atomic_load_n(&s_jc_committed[i], __ATOMIC_ACQUIRE);
++        if (c && ea >= (u32)(c >> 32) && end - 1 <= (u32)c) return 1;
++    }
+     u64 cur = ea;
+     while (cur < end) {
+         MEMORY_BASIC_INFORMATION mbi;
+@@ -2218,6 +2231,8 @@ static int jc_guest_range_committed(u32 ea, u32 size)
+         if (next <= cur) return 0;
+         cur = next;
+     }
++    const u32 w = __atomic_fetch_add(&s_jc_committed_w, 1u, __ATOMIC_RELAXED) % JC_COMMITTED_CACHE;
++    __atomic_store_n(&s_jc_committed[w], (u64)ea << 32 | (u32)(end - 1), __ATOMIC_RELEASE);
+     return 1;
+ }
+ 
+@@ -2783,8 +2798,10 @@ static int jl_workers(void)
+     AcquireSRWLockExclusive(&s_jl.lock);
+     if (s_jl.nworkers < 0) {
+         const char* e = getenv("SPURS_JOB_THREADS");
+-        SYSTEM_INFO si; GetSystemInfo(&si);
+-        const int cores = (int)si.dwNumberOfProcessors;
++        /* The processors this process may use (host_sched_cpus: the affinity
++         * mask, PS3_CPUS), not the machine's: under a 4-CPU mask the machine
++         * count started 11 workers on 4 processors. */
++        const int cores = host_sched_cpus();
+         int total = e && *e ? atoi(e) : cores / 2;
+         if (total > cores - 1) total = cores - 1;      /* leave the PPU a core */
+         if (total > JC_POOL_MAX + 1) total = JC_POOL_MAX + 1;
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 2e6d49a..ddce42d 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -309,6 +309,7 @@ typedef struct {
+     u64 depth_write_draws;
+     u64 depth_both_draws;
+     int reject_logged;
++    int shadow_seen;   /* sampled with a depth compare: a shadow map */
+ } zdepth_t;
+ typedef struct {
+     u32 location, offset, format, width, height, pitch, remap;
+@@ -467,7 +468,9 @@ static ld_state g;
+ static float g_ld_res_scale = 1.0f;
+ static u32 ld_px(u32 v)
+ {
+-    return g_ld_res_scale == 1.0f ? v : (u32)((float)v * g_ld_res_scale + 0.5f);
++    if (g_ld_res_scale == 1.0f) return v;
++    const u32 p = (u32)((float)v * g_ld_res_scale + 0.5f);
++    return p || !v ? p : 1u;              /* PS3_RENDER_SCALE < 1: never 0 wide */
+ }
+ 
+ #define LD_VERTEX_HOIST_FETCH       (1u << 0)
+@@ -702,6 +705,30 @@ static LONGLONG ld_pf_qpc(void)
+     return v.QuadPart;
+ }
+ 
++/* GPU time per frame (RSX_GPU_TIME=1, on with PS3_FRAMELOG): a timestamp
++ * query at the start and at the end of every command list submitted; the
++ * frame log's gpu_us column is the GPU time of the lists that finished since
++ * the previous row, and RSX_GPU_TIME=1 prints a "[gpu-time]" mean every 600
++ * frames. One list per frame normally, so it is the frame's GPU work from the
++ * first draw to the present blit. No CPU wait: results are read once their
++ * fence passed. */
++#define LD_GT_SLOTS 64u
++static struct {
++    int on;                        /* -1 unknown, 0 off, 1 on */
++    ID3D12QueryHeap* heap;
++    ID3D12Resource* rb;            /* readback: 2 x u64 per slot */
++    const u64* rbp;
++    double us_per_tick;
++    u64 fence[LD_GT_SLOTS];        /* fence value that retires the slot */
++    u32 head, tail;                /* slots in flight: [tail, head) */
++    int open;                      /* the list being recorded has a begin stamp */
++    u64 done_ticks, done_lists;    /* retired lists */
++    u64 log_ticks;                 /* done_ticks at the previous frame-log row */
++    u64 stat_ticks, stat_lists;    /* ... at the previous [render-stats] line */
++} g_gt = { -1 };
++
++static void ld_gt_harvest(void);
++
+ static void ld_pf_frame_log(LONGLONG present_begin)
+ {
+     if (g_pf_log_state < 0) {
+@@ -727,7 +754,7 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+                         "shown_call_to_present_us,xlat_us,"
+                         "ph_layout_us,ph_fetch_us,ph_upload_us,ph_pso_us,"
+                         "ph_const_us,ph_texbind_us,clear_us,texhash_us,"
+-                        "fifo_cpu_us\n",
++                        "fifo_cpu_us,gpu_us\n",
+                         (long long)f.QuadPart);
+                 g_pf_log_state = 1;
+                 g_pf_phases = 1;
+@@ -763,11 +790,17 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+     const LONGLONG flip_qpc = ext[RSX_PF_FLIP_QPC];
+     UINT last_present = 0;
+     g.swap->lpVtbl->GetLastPresentCount(g.swap, &last_present);
++    double gpu_us = 0.0;
++    if (g_gt.on > 0) {
++        ld_gt_harvest();
++        gpu_us = (double)(g_gt.done_ticks - g_gt.log_ticks) * g_gt.us_per_tick;
++        g_gt.log_ticks = g_gt.done_ticks;
++    }
+     fprintf(g_pf_log,
+             "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
+             "%u,%.0f,%u,%.0f,%u,%.0f,%u,%.0f,%u,%u,%.0f,%u,%.0f,%.0f,%.0f,"
+             "%u,%u,%u,%lld,%u,%.0f,%.0f,"
+-            "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
++            "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+             g_ld_frames, (long long)present_begin,
+             g_pf_prev_present_qpc
+                 ? (double)(present_begin - g_pf_prev_present_qpc) * us : 0.0,
+@@ -795,7 +828,7 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+             (double)PFC(ph_upload_ticks) * us, (double)PFC(ph_pso_ticks) * us,
+             (double)PFC(ph_const_ticks) * us, (double)PFC(ph_texbind_ticks) * us,
+             (double)PFC(clear_ticks) * us, (double)PFC(texhash_ticks) * us,
+-            (double)PFD(RSX_PF_FIFO_CYC) / tsc_per_us);
++            (double)PFD(RSX_PF_FIFO_CYC) / tsc_per_us, gpu_us);
+ #undef PFD
+ #undef PFC
+     if ((g_ld_frames & 63u) == 0)
+@@ -1961,6 +1994,79 @@ static void ld_wait_frame_latency(void)
+     WaitForSingleObjectEx(g_ld_frame_wait, 20, FALSE);
+     g_pf.latency_wait_ticks += ld_pf_qpc() - w0;
+ }
++/* GPU timestamps (g_gt above). */
++static void ld_gt_init(void)
++{
++    if (g_gt.on >= 0) return;
++    g_gt.on = 0;
++    const char* e = getenv("RSX_GPU_TIME");
++    const char* fl = getenv("PS3_FRAMELOG");
++    if (!((e && *e && *e != '0') || (!e && fl && *fl))) return;
++    UINT64 freq = 0;
++    if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
++    D3D12_QUERY_HEAP_DESC qd = {0};
++    qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
++    qd.Count = 2 * LD_GT_SLOTS;
++    if (FAILED(g.dev->lpVtbl->CreateQueryHeap(g.dev, &qd, &IID_ID3D12QueryHeap, (void**)&g_gt.heap)))
++        return;
++    D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
++    D3D12_RESOURCE_DESC rd = {0};
++    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    rd.Width = 16 * LD_GT_SLOTS; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++    rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    void* p = NULL;
++    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++                   D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void**)&g_gt.rb)) ||
++        FAILED(g_gt.rb->lpVtbl->Map(g_gt.rb, 0, NULL, &p)) || !p) {
++        g_gt.heap->lpVtbl->Release(g_gt.heap); g_gt.heap = NULL;
++        return;
++    }
++    g_gt.rbp = (const u64*)p;
++    g_gt.us_per_tick = 1e6 / (double)freq;
++    g_gt.on = 1;
++    fprintf(stderr, "[gpu-time] timestamp queries on (%llu Hz)\n", (unsigned long long)freq);
++}
++/* The list was just reset (or created): stamp its start. */
++static void ld_gt_begin(void)
++{
++    g_gt.open = 0;
++    if (g_gt.on <= 0) return;
++    if (g_gt.head - g_gt.tail >= LD_GT_SLOTS) ld_gt_harvest();
++    if (g_gt.head - g_gt.tail >= LD_GT_SLOTS) return;
++    g.list->lpVtbl->EndQuery(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * (g_gt.head % LD_GT_SLOTS));
++    g_gt.open = 1;
++}
++/* Before Close: stamp the end and resolve both into the readback slot.
++ * Returns the slot + 1 (0 = none); ld_gt_submitted() gives it its fence. */
++static u32 ld_gt_end(void)
++{
++    if (!g_gt.open) return 0;
++    g_gt.open = 0;
++    const u32 k = g_gt.head % LD_GT_SLOTS;
++    g.list->lpVtbl->EndQuery(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k + 1);
++    g.list->lpVtbl->ResolveQueryData(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k, 2,
++                                     g_gt.rb, 16ull * k);
++    g_gt.fence[k] = 0;
++    g_gt.head++;
++    return k + 1;
++}
++static void ld_gt_submitted(u32 slot1, u64 fence_value)
++{
++    if (slot1) g_gt.fence[slot1 - 1] = fence_value;
++}
++static void ld_gt_harvest(void)
++{
++    if (g_gt.on <= 0) return;
++    const u64 done = g.fence->lpVtbl->GetCompletedValue(g.fence);
++    while (g_gt.tail != g_gt.head) {
++        const u32 k = g_gt.tail % LD_GT_SLOTS;
++        if (!g_gt.fence[k] || g_gt.fence[k] > done) break;
++        const u64 b = g_gt.rbp[2 * k], e2 = g_gt.rbp[2 * k + 1];
++        if (e2 > b) { g_gt.done_ticks += e2 - b; g_gt.done_lists++; }
++        g_gt.tail++;
++    }
++}
++
+ static int ld_async_present(void)
+ {
+     static int v = -1;
+@@ -1983,6 +2089,7 @@ static void ld_begin_recording(void)
+     g.n_retired_textures = 0;
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    ld_gt_begin();
+     g.upload_used = 0;
+     /* the per-frame ring cursors rsx_live_draw_present resets when it waits */
+     g.vb_used = 0; g.ib_used = 0; g.cb_used = 0; g.ps_cb_used = 0;
+@@ -2003,6 +2110,7 @@ static void ld_flush(ld_flush_reason reason)
+ #else
+     (void)reason;
+ #endif
++    const u32 gt_slot = ld_gt_end();
+     const HRESULT close_hr = g.list->lpVtbl->Close(g.list);
+     if (FAILED(close_hr)) {
+         fprintf(stderr,
+@@ -2015,6 +2123,7 @@ static void ld_flush(ld_flush_reason reason)
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
++    ld_gt_submitted(gt_slot, v);
+     const HRESULT signal_hr =
+         g.queue->lpVtbl->Signal(g.queue, g.fence, v);
+     if (FAILED(signal_hr)) {
+@@ -2066,6 +2175,7 @@ static void ld_flush(ld_flush_reason reason)
+     g.n_retired_textures = 0;
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    ld_gt_begin();
+     g.upload_used = 0;
+ #if defined(YZ_PERF_PROFILE)
+     const u64 flush_ticks = (u64)(ld_profile_qpc() - flush_begin);
+@@ -6192,6 +6302,7 @@ static ld_vjob g_vjobs[LD_VJOB_CAP];
+ static volatile LONG64 g_vj_published, g_vj_claimed, g_vj_completed;
+ static LONG64 g_vj_drain_base;
+ static volatile LONG g_vj_sleepers;
++static int g_vj_spin = 2000;          /* idle PAUSE spins before a worker sleeps */
+ static int g_vj_threads = -1;            /* -1 not started, 0 off */
+ static u8* g_vj_arena; static u32 g_vj_arena_used;
+ static ld_vscratch g_vj_walker_scratch;
+@@ -6344,7 +6455,7 @@ static DWORD WINAPI ld_vworker_main(LPVOID arg)
+         /* idle: spin briefly (draws arrive every few microseconds while a
+          * frame is walked), then sleep until the next publish */
+         int got = 0;
+-        for (int k = 0; k < 2000 && !got; k++) {
++        for (int k = 0; k < g_vj_spin && !got; k++) {
+             _mm_pause();
+             got = g_vj_claimed < g_vj_published;
+         }
+@@ -6368,8 +6479,14 @@ static int ld_vjob_enabled(void)
+         getenv("RSX_DRAW_CSV") || getenv("RSX_A010_GEOM") ||
+         getenv("LD_TRACE_PSO") || getenv("LD_FORCE_VA"))
+         return 0;
+-    int n = 3;
++    /* Workers by the processors this process may use (host_sched_cpus):
++     * 3 from 12 up (as measured for 0023), fewer below -- on 4 logical
++     * processors three spinning workers took CPU from the skinning jobs and
++     * the walker they serve. */
++    const int cpus = host_sched_cpus();
++    int n = cpus >= 12 ? 3 : cpus >= 8 ? 2 : 1;
+     { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
++    g_vj_spin = cpus >= 12 ? 2000 : 300;
+     if (n < 1) return 0;
+     if (n > 16) n = 16;
+     g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
+@@ -6381,7 +6498,8 @@ static int ld_vjob_enabled(void)
+         if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
+     }
+     g_vj_threads = started;
+-    fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s)\n", started);
++    fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors; "
++                    "RSX_VERTEX_THREADS)\n", started, cpus);
+     return started > 0;
+ }
+ 
+@@ -8627,6 +8745,13 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             if (sampled_depth >= 0) {
+                 slots[u] = SRV_ZDEPTH_BASE + sampled_depth;
+                 g_ld_zdepth_srv_binds++;
++                if (((t.wrap >> 28) & 0xFu) != 0u && !g.zdepths[sampled_depth].shadow_seen) {
++                    g.zdepths[sampled_depth].shadow_seen = 1;   /* a shadow map */
++                    fprintf(stderr, "[shadow] zeta #%d %u:0x%X sampled with depth compare "
++                            "(texture %ux%u, zeta %ux%u, render target %d)\n",
++                            sampled_depth, t.location, t.offset, t.width, t.height,
++                            g.zdepths[sampled_depth].w, g.zdepths[sampled_depth].h, target);
++                }
+                 int seen = 0;
+                 for (u32 k = 0; k < n_zdepth_used; k++)
+                     if (zdepth_used[k] == (u32)sampled_depth) seen = 1;
+@@ -9233,6 +9358,9 @@ static int make_depth_snapshot_pipeline(void)
+  * PC display: a swap chain that follows the window's client size, a scaled and
+  * letterboxed present blit, vsync on/off and exclusive fullscreen.
+  *   PS3_RES_SCALE=<f>         internal resolution (see ld_px)
++ *   PS3_RENDER_SCALE=<f>      0.25..1: below the guest size, for weak GPUs
++ *                             (multiplies PS3_RES_SCALE; RSX_GPU_TIME=1 or
++ *                             PS3_FRAMELOG measures the GPU time per frame)
+  *   PS3_VSYNC=0               present without waiting for vblank (tearing
+  *                             allowed when the OS supports it)
+  *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
+@@ -9272,6 +9400,20 @@ static void ld_display_config(void)
+         if (!(s >= 1.0f)) s = 1.0f;
+         if (s > 4.0f) s = 4.0f;
+     }
++    /* PS3_RENDER_SCALE=<f> (0.25..1, or 540/360 = target height over 720):
++     * the same mechanism below the guest size, for graphics cards that cannot
++     * fill 1280x720 at 60 fps. Multiplies PS3_RES_SCALE. Only host pixels
++     * change -- the guest's memory, its commands and therefore the game state
++     * are the same at every scale (netplay peers may differ). */
++    e = getenv("PS3_RENDER_SCALE");
++    if (e && e[0]) {
++        float r = (float)atof(e);
++        if (r >= 100.0f) r /= 720.0f;
++        if (!(r > 0.0f)) r = 1.0f;
++        if (r < 0.25f) r = 0.25f;
++        if (r > 1.0f) r = 1.0f;
++        s *= r;
++    }
+     g_ld_res_scale = s;
+     e = getenv("PS3_VSYNC");
+     g_ldp.vsync = !(e && e[0] == '0');
+@@ -9678,6 +9820,8 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     if (g.list) g.list->lpVtbl->SetName(g.list, L"rsx-live-list");
+     g.dev->lpVtbl->CreateFence(g.dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void**)&g.fence);
+     g.fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
++    ld_gt_init();
++    if (g.list) ld_gt_begin();
+ 
+     /* swap chain bound to the runtime's HWND, sized to its client area (the
+      * present blit scales; see ld_display_*) */
+@@ -10923,6 +11067,18 @@ void rsx_live_draw_present(u32 buffer_id)
+                   (unsigned long long)g_tpool_fallback, g_tpool_n_heaps,
+                   (unsigned long long)g_pso_lib_hits, (unsigned long long)g_pso_lib_stores,
+                   (long long)g_prewarm_created, (long long)g_prewarm_taken); }
++    if (g_gt.on > 0 && (g_ld_frames % 600u) == 0) {
++        static int gl = -1;
++        if (gl < 0) { const char* e = getenv("RSX_GPU_TIME"); gl = e && *e && *e != '0'; }
++        ld_gt_harvest();
++        const u64 n = g_gt.done_lists - g_gt.stat_lists;
++        if (gl)
++            fprintf(stderr, "[gpu-time] %.2f ms of GPU per frame over the last 600 frames "
++                            "(%llu command lists), render scale %.3g\n",
++                    (double)(g_gt.done_ticks - g_gt.stat_ticks) * g_gt.us_per_tick / 1000.0 / 600.0,
++                    (unsigned long long)n, (double)g_ld_res_scale);
++        g_gt.stat_ticks = g_gt.done_ticks; g_gt.stat_lists = g_gt.done_lists;
++    }
+     host_sched_trace(HS_EV_PRESENT, g_ld_frames);
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_present(g_ld_frames);
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index 904a292..55dc158 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -38,7 +38,13 @@
+  *                             high-resolution one [high-resolution]
+  *   PS3_SCHED_SPIN_US=n       lv2 semaphore waits poll n us before parking [0]
+  *   PS3_SCHED_SUBMS=m         usleep < 1 ms: spin (SwitchToThread, as before) |
+- *                             pause (PAUSE, yield every 50 us) | timer [spin]
++ *                             pause (PAUSE, yield every 50 us) | timer [spin
++ *                             with 12+ logical processors, else timer]
++ *   PS3_CPUS=n                pretend the process may use n logical
++ *                             processors (the pools below size from the
++ *                             affinity mask: SPURS_JOB_THREADS [n/2, max 12],
++ *                             RSX_VERTEX_THREADS [3 from 12, 2 from 8, else
++ *                             1], PS3_SCHED_SUBMS) -- see host_sched_cpus()
+  *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
+  *                             when cellGcmSetUserCommand advances put [wake]
+  *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
+@@ -89,6 +95,8 @@
+ int g_host_sched_trace_on = 0;
+ 
+ #ifndef _WIN32
++#include <stdlib.h>
++#include <unistd.h>
+ 
+ void    host_sched_process_init(void) {}
+ void    host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -97,6 +105,14 @@ int     host_sched_enabled(void) { return 0; }
+ int     host_sched_sleep_us(uint64_t usec) { (void)usec; return 0; }
+ int     host_sched_sleep_subms(uint64_t usec) { (void)usec; return 0; }
+ int64_t host_sched_spin_ticks(void) { return 0; }
++int host_sched_cpus(void)
++{
++    const char* e = getenv("PS3_CPUS");
++    if (e && atoi(e) > 0) return atoi(e);
++    long n = sysconf(_SC_NPROCESSORS_ONLN);
++    return n > 0 ? (int)n : 1;
++}
++int host_sched_cores(void) { return host_sched_cpus(); }
+ void    host_sched_trace_(int kind, uint32_t arg) { (void)kind; (void)arg; }
+ void    host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid) { (void)kind; (void)arg; (void)tid; }
+ void host_sched_trace_tag(uint32_t tid) { (void)tid; }
+@@ -246,6 +262,56 @@ static ULONG hs_cpus(const char* spec, ULONG* ids)
+     return n;
+ }
+ 
++/* ---- CPU budget ------------------------------------------------------------ */
++/* What this process may use, not what the machine has: GetSystemInfo reports
++ * every processor even under an affinity mask, so a pool sized from it
++ * oversubscribes a limited process (32 threads' worth of workers on 4). */
++static INIT_ONCE s_budget_once = INIT_ONCE_STATIC_INIT;
++static int s_bud_cpus = 1, s_bud_cores = 1;
++
++static BOOL CALLBACK hs_budget_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    DWORD_PTR pm = 0, sm = 0;
++    if (!GetProcessAffinityMask(GetCurrentProcess(), &pm, &sm) || !pm) {
++        SYSTEM_INFO si; GetSystemInfo(&si);
++        pm = si.dwActiveProcessorMask;
++    }
++    int n = 0;
++    for (DWORD_PTR m = pm; m; m &= m - 1) n++;
++    int cores = 0, smt = 0;
++    DWORD len = 0;
++    GetLogicalProcessorInformation(NULL, &len);
++    SYSTEM_LOGICAL_PROCESSOR_INFORMATION* li = len ? (SYSTEM_LOGICAL_PROCESSOR_INFORMATION*)malloc(len) : NULL;
++    if (li && GetLogicalProcessorInformation(li, &len)) {
++        for (DWORD i = 0; i < len / sizeof *li; i++)
++            if (li[i].Relationship == RelationProcessorCore) {
++                if (li[i].ProcessorMask & pm) cores++;
++                if (li[i].ProcessorCore.Flags) smt = 1;      /* SMT siblings */
++            }
++    }
++    free(li);
++    if (cores <= 0 || cores > n) cores = n;
++    const char* e = getenv("PS3_CPUS");
++    if (e && atoi(e) > 0) {
++        n = atoi(e);
++        cores = smt && n > 1 ? (n + 1) / 2 : n;
++    }
++    s_bud_cpus = n > 0 ? n : 1;
++    s_bud_cores = cores > 0 ? cores : 1;
++    return TRUE;
++}
++int host_sched_cpus(void)
++{
++    InitOnceExecuteOnce(&s_budget_once, hs_budget_once, NULL, NULL);
++    return s_bud_cpus;
++}
++int host_sched_cores(void)
++{
++    InitOnceExecuteOnce(&s_budget_once, hs_budget_once, NULL, NULL);
++    return s_bud_cores;
++}
++
+ /* ---- trace ----------------------------------------------------------------- */
+ typedef struct { volatile LONG64 qpc; uint16_t kind, tid; uint32_t arg; } hs_rec;
+ #define HS_TRACE_CAP (1u << 22)              /* 4M records, 64 MB */
+@@ -360,7 +426,13 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+     s_timer  = env_int("PS3_SCHED_TIMER", 1) != 0;
+     s_ppu_lo = env_int("PS3_SCHED_PPU_LO", 1002);
+     s_ideal  = env_int("PS3_SCHED_IDEAL", 0);
+-    { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm, "spin");
++    /* Sub-millisecond usleep: the main thread polls the flip with usleep(100)
++     * for the rest of every frame, and the SwitchToThread spin keeps it
++     * runnable all that time -- free with 32 processors, a whole one taken
++     * from the skinning jobs and the FIFO walker with 4. Below 12 processors
++     * it sleeps on the high-resolution timer instead. */
++    { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm,
++                           host_sched_cpus() >= 12 ? "spin" : "timer");
+       s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
+     s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
+     if (s_spin_ticks < 0) s_spin_ticks = 0;
+@@ -438,6 +510,9 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+           fprintf(stderr, "[sched] process CPU set %s (%lu logical processors): %s\n", spec,
+                   (unsigned long)n, p_SetProcessDefaultCpuSets(GetCurrentProcess(), ids, n) ? "ok" : "FAILED"); }
+ 
++    fprintf(stderr, "[sched] CPU budget: %d logical processors, %d cores (affinity mask; PS3_CPUS); "
++            "sub-ms sleeps: %s\n", host_sched_cpus(), host_sched_cores(),
++            s_subms == 2 ? "timer" : s_subms == 1 ? "pause" : "spin");
+     fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
+             s_ncpu, (unsigned)s_fast_llc);
+     for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
+diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
+index eca8287..aa37717 100644
+--- a/runtime/platform/host_sched.h
++++ b/runtime/platform/host_sched.h
+@@ -59,6 +59,15 @@ int host_sched_sleep_subms(uint64_t usec);
+  * park at once. */
+ int64_t host_sched_spin_ticks(void);
+ 
++/* The CPU budget: logical processors this process may run on (its affinity
++ * mask -- what a weaker PC, `start /affinity` or a job object leaves it) and
++ * the physical cores among them. PS3_CPUS=n pretends n logical processors
++ * (cores = n / 2 when the machine has SMT). The thread pools size themselves
++ * from these, each with its own override (SPURS_JOB_THREADS,
++ * RSX_VERTEX_THREADS, PS3_SCHED_SUBMS). Valid before host_sched_process_init. */
++int host_sched_cpus(void);
++int host_sched_cores(void);
++
+ /* ---- event trace (PS3_SCHED_TRACE=<file>) ---------------------------------- */
+ enum host_sched_ev {
+     HS_EV_SEM_WAIT0 = 1,  /* arg = sem id: about to block / poll               */
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+index 1317792..a5b7d75 100644
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -617,7 +617,29 @@ SPU__SF_V2(spu__fm_s, spu__fm_any(x, y))
+ SPU__SF_V3(spu__fma_s,  spu__fma_any(x, y, z, 0, 0))
+ SPU__SF_V3(spu__fms_s,  spu__fma_any(x, y, z, 0, 0x80000000u))
+ SPU__SF_V3(spu__fnms_s, spu__fma_any(x, y, z, 0x80000000u, 0))
+-#if defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS)
++#if defined(SPU_FAST_FLOAT) && (defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64))
++/* SPU_FAST_FLOAT (a compile definition, set per lifted image): the host's IEEE
++ * single-precision ops -- round to nearest instead of the SPU's truncation,
++ * denormals and infinities kept instead of flushed or saturated. For ordinary
++ * values fa/fs/fm differ from the exact path by at most one unit in the last
++ * place, the multiply-adds by two (tests/test_spu_fast_float.c). Only for
++ * images whose output is never game state: Tekken 5 DR's vertex skinning jobs
++ * (their output is only drawn), where the exact path below made the ~380-job
++ * list of a fight frame cost ~20 ms of CPU. Two roundings for fma (a*b, then
++ * +c), so the result does not depend on whether the host has FMA. */
++#include <emmintrin.h>
++static inline __m128 spu__ff_ld(u128 a) { __m128 v; memcpy(&v, &a, 16); return v; }
++static inline u128 spu__ff_st(__m128 v) { u128 r; memcpy(&r, &v, 16); return r; }
++static inline u128 spu_fa(u128 a, u128 b) { return spu__ff_st(_mm_add_ps(spu__ff_ld(a), spu__ff_ld(b))); }
++static inline u128 spu_fs(u128 a, u128 b) { return spu__ff_st(_mm_sub_ps(spu__ff_ld(a), spu__ff_ld(b))); }
++static inline u128 spu_fm(u128 a, u128 b) { return spu__ff_st(_mm_mul_ps(spu__ff_ld(a), spu__ff_ld(b))); }
++static inline u128 spu_fma(u128 a, u128 b, u128 c)  {            /* a*b + c */
++    return spu__ff_st(_mm_add_ps(_mm_mul_ps(spu__ff_ld(a), spu__ff_ld(b)), spu__ff_ld(c))); }
++static inline u128 spu_fms(u128 a, u128 b, u128 c)  {            /* a*b - c */
++    return spu__ff_st(_mm_sub_ps(_mm_mul_ps(spu__ff_ld(a), spu__ff_ld(b)), spu__ff_ld(c))); }
++static inline u128 spu_fnms(u128 a, u128 b, u128 c) {            /* c - a*b */
++    return spu__ff_st(_mm_sub_ps(spu__ff_ld(c), _mm_mul_ps(spu__ff_ld(a), spu__ff_ld(b)))); }
++#elif defined(__ARM_NEON) && !defined(SPU_SCALAR_HELPERS)
+ /* The same fast path four lanes at a time, as two f64x2 halves: widen (exact), operate, clear
+  * the 29 low significand bits, narrow (exact: the value now fits a single). Each lane is judged
+  * on its own: the lanes that qualify keep the vector result, and only the others are redone one
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index de764e1..09b5d2b 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -39,6 +39,7 @@
+ #include "spu_workload.h"
+ #include "spu_context.h"
+ 
++#include <stddef.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -160,6 +161,38 @@ SPURS_JOB_TLS uint32_t g_spurs_job_mbox, g_spurs_job_mbox_intr;
+ SPURS_JOB_TLS uint32_t g_spurs_job_cmd;
+ SPURS_JOB_TLS int g_spurs_job_mbox_valid;
+ 
++/* Debug switches read once: getenv takes the CRT's environment lock, and
++ * three calls per job had every job-list worker queueing on it. */
++static int s_env_dump = -1, s_env_descdump = -1;
++static int spurs_job_env(int* cache, const char* name)
++{
++    int v = __atomic_load_n(cache, __ATOMIC_RELAXED);
++    if (v < 0) { v = getenv(name) != NULL; __atomic_store_n(cache, v, __ATOMIC_RELAXED); }
++    return v;
++}
++/* Local store of a job: the real job manager does not clear it between jobs
++ * -- a job sees its binary, its DMA'd buffers and whatever the previous job
++ * left elsewhere. Zeroing all 256 KB per job (spu_context_init) cost Tekken 5
++ * DR ~1 ms of CPU a frame for its 384 skinning jobs, more than a tenth of the
++ * skinning itself once that is fast. By default only the span of the job's
++ * own regions and the context block at the top are zeroed; the unused middle
++ * keeps whatever the stack held. SPURS_JOB_ZERO_LS=1 zeroes everything. */
++static int spurs_job_lean_ls(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("SPURS_JOB_ZERO_LS"); v = !(e && *e == '1'); }
++    return v;
++}
++static void spurs_job_context_init_lean(spu_context* c)
++{
++    const size_t o = offsetof(spu_context, ls_store);
++    memset(c, 0, o);
++    memset((uint8_t*)c + o + SPU_LS_SIZE, 0, sizeof *c - o - SPU_LS_SIZE);
++    c->ls     = c->ls_store;
++    c->spu_id = 0;
++    c->status = SPU_STATUS_STOPPED;
++}
++
+ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+                       uint32_t job_ea, uint32_t job_desc_size)
+ {
+@@ -190,7 +223,9 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * runs a few hundred jobs a frame and waits for them (Tekken 5 DR's vertex
+      * skinning). spu_context_init already zeroes the store. */
+     spu_context ctx;
+-    spu_context_init(&ctx, 0);
++    const int lean = spurs_job_lean_ls();
++    if (lean) spurs_job_context_init_lean(&ctx);
++    else      spu_context_init(&ctx, 0);
+     uint8_t* ls = ctx.ls;
+ 
+     /* ---- binary at LS 0 (PIC, so delta 0 keeps the lifted addresses) ---- */
+@@ -231,6 +266,22 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * vertex-lit character surface came out dark and blotchy (faces most
+      * visibly). With the slot at ioBuffer the skinned normals are unit length. */
+     uint32_t cache_ls[4] = { io_ls, io_ls, io_ls, io_ls };
++    if (lean) {
++        /* Zero what the regions below will span (binary excluded: it is
++         * copied over) and the context/descriptor block at the top. */
++        uint32_t end = p;
++        for (uint32_t i = 0; i < n_cache; i++) {
++            const uint64_t e = g64(cache_base + i * 8u);
++            const uint32_t sz = (uint32_t)(e >> 32);
++            if (!sz || !(uint32_t)e) continue;
++            if (end + sz > SPU_LS_SIZE) break;
++            end += ALIGN1024(sz);
++        }
++        const uint32_t top = SPU_LS_SIZE - 0x440;   /* ctx_ls below */
++        if (end > top) end = SPU_LS_SIZE;
++        memset(ls + size_bin, 0, end - size_bin);
++        if (end < top) memset(ls + top, 0, SPU_LS_SIZE - top);
++    }
+     for (uint32_t i = 0; i < n_cache; i++) {
+         uint64_t e   = g64(cache_base + i * 8u);
+         uint32_t sz  = (uint32_t)(e >> 32);
+@@ -296,7 +347,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * its DMA and atomic EAs from these words, so when a job spins on a
+      * lock-line address that is not backed, this is what to read first. */
+     { static int _d = 0;
+-      if (getenv("SPURS_JOB_DESCDUMP") && __atomic_fetch_add(&_d, 1, __ATOMIC_RELAXED) < 4) {
++      if (spurs_job_env(&s_env_descdump, "SPURS_JOB_DESCDUMP") && __atomic_fetch_add(&_d, 1, __ATOMIC_RELAXED) < 4) {
+           fprintf(stderr, "[spurs-job] desc @0x%08X (%u bytes):", job_ea, dsz);
+           for (uint32_t o = 0; o < dsz && o < 128; o += 4) {
+               if ((o & 31) == 0) fprintf(stderr, "\n    +%02X:", o);
+@@ -326,7 +377,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * The header's input-DMA-list/io fields are legitimately zero for it. Dump
+      * the user data + that command block so the bail path is attributable. */
+     uint32_t dump_cmd = 0;
+-    if (getenv("SPURS_JOB_DUMP")) {
++    if (spurs_job_env(&s_env_dump, "SPURS_JOB_DUMP")) {
+         uint64_t ud  = g64(job_ea + JH_SIZE);        /* desc+0x30 */
+         uint32_t cmd = (uint32_t)ud;                 /* low word = EA */
+         fprintf(stderr, "[spurs-job] job 0x%08X userdata: %016llX %016llX %016llX %016llX\n",
+@@ -407,7 +458,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+           fprintf(stderr, "[spurs-job] job 0x%08X posted mbox=0x%08X intr=0x%08X\n",
+                   job_ea, g_spurs_job_mbox, g_spurs_job_mbox_intr); }
+ 
+-    if (getenv("SPURS_JOB_DUMP")) {
++    if (spurs_job_env(&s_env_dump, "SPURS_JOB_DUMP")) {
+         fprintf(stderr, "[spurs-job] job 0x%08X exit: status=0x%X stop=0x%X pc=0x%05X\n",
+                 job_ea, ctx.status, ctx.stop_code, ctx.pc);
+         /* Post-run view of the same command block: the game polls result/status
+diff --git a/runtime/spu/tests/test_spu_fast_float.c b/runtime/spu/tests/test_spu_fast_float.c
+new file mode 100644
+index 0000000..894794c
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_fast_float.c
+@@ -0,0 +1,103 @@
++/*
++ * SPU_FAST_FLOAT (spu_helpers.h): the host IEEE single-precision path used for
++ * render-only images (Tekken 5 DR's vertex skinning jobs). For ordinary
++ * operands it must stay within two units in the last place of the exact SPU
++ * emulation (spu_*_ref), whose rounding is truncation; fma rounds twice.
++ *
++ * Build: clang-cl /O2 /DSPU_FAST_FLOAT -msse4.1 /I.. test_spu_fast_float.c
++ * Exit code 0 if all passed.
++ */
++#include "../spu_helpers.h"
++#include <stdio.h>
++#include <string.h>
++
++static int g_pass, g_fail;
++
++static uint32_t rnd(uint64_t* s)
++{
++    *s = *s * 6364136223846793005ull + 1442695040888963407ull;
++    return (uint32_t)(*s >> 32);
++}
++/* A random ordinary single: exponent within +-2^20, either sign. */
++static uint32_t rnd_float(uint64_t* s)
++{
++    const uint32_t r = rnd(s);
++    const uint32_t e = 127u - 20u + (r >> 8) % 41u;
++    return (r & 0x80000000u) | (e << 23) | (rnd(s) & 0x7FFFFFu);
++}
++static float f_of(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++
++/* |a - b| in units of b's last place (both ordinary or zero). */
++static double ulps(uint32_t a, uint32_t b)
++{
++    const float fa = f_of(a), fb = f_of(b);
++    if (fa == fb) return 0.0;
++    int e = (int)((b >> 23) & 0xFFu) - 127 - 23;
++    double ulp = 1.0;
++    while (e > 0) { ulp *= 2.0; e--; }
++    while (e < 0) { ulp /= 2.0; e++; }
++    const double d = (double)fa - (double)fb;
++    return (d < 0 ? -d : d) / ulp;
++}
++
++static void check(const char* what, u128 fast, u128 ref, double limit, double* worst)
++{
++    for (int i = 0; i < 4; i++) {
++        const uint32_t r = ref._u32[i];
++        if (((r >> 23) & 0xFFu) == 0 || ((r >> 23) & 0xFFu) == 0xFFu) continue;  /* only ordinary results */
++        const double u = ulps(fast._u32[i], r);
++        if (u > *worst) *worst = u;
++        if (u > limit) {
++            if (g_fail < 10)
++                printf("  FAIL %s: fast %08X ref %08X (%.1f ulp)\n", what, fast._u32[i], r, u);
++            g_fail++;
++        } else {
++            g_pass++;
++        }
++    }
++}
++
++int main(void)
++{
++    printf("SPU fast float (SPU_FAST_FLOAT)\n");
++#ifndef SPU_FAST_FLOAT
++    printf("  built without SPU_FAST_FLOAT: nothing to compare\n");
++    return 1;
++#else
++    uint64_t s = 12345;
++    double w_fa = 0, w_fs = 0, w_fm = 0, w_fma = 0, w_fms = 0, w_fnms = 0;
++    for (int n = 0; n < 200000; n++) {
++        u128 a, b, c;
++        for (int i = 0; i < 4; i++) { a._u32[i] = rnd_float(&s); b._u32[i] = rnd_float(&s); c._u32[i] = rnd_float(&s); }
++        check("fa", spu_fa(a, b), spu_fa_ref(a, b), 2.0, &w_fa);
++        check("fs", spu_fs(a, b), spu_fs_ref(a, b), 2.0, &w_fs);
++        check("fm", spu_fm(a, b), spu_fm_ref(a, b), 2.0, &w_fm);
++        /* fma: compare where the sum does not cancel (|c| below |a*b| / 4 or
++         * above 4 |a*b|) -- under cancellation two roundings and one differ
++         * by more than a few ulp of the small result, as any two-rounding
++         * multiply-add would. */
++        const double p = (double)f_of(a._u32[0]) * (double)f_of(b._u32[0]);
++        const double z = (double)f_of(c._u32[0]);
++        const double ap = p < 0 ? -p : p, az = z < 0 ? -z : z;
++        if (az < ap / 4 || az > ap * 4) {
++            u128 a1 = a, b1 = b, c1 = c;
++            for (int i = 1; i < 4; i++) { a1._u32[i] = a._u32[0]; b1._u32[i] = b._u32[0]; c1._u32[i] = c._u32[0]; }
++            check("fma",  spu_fma(a1, b1, c1),  spu_fma_ref(a1, b1, c1),  3.0, &w_fma);
++            check("fms",  spu_fms(a1, b1, c1),  spu_fms_ref(a1, b1, c1),  3.0, &w_fms);
++            check("fnms", spu_fnms(a1, b1, c1), spu_fnms_ref(a1, b1, c1), 3.0, &w_fnms);
++        }
++    }
++    /* Zero stays zero, signs stay. */
++    {
++        u128 z = { 0 }, one; for (int i = 0; i < 4; i++) one._u32[i] = 0x3F800000u;
++        u128 r = spu_fm(z, one);
++        for (int i = 0; i < 4; i++) { if ((r._u32[i] & 0x7FFFFFFFu) == 0) g_pass++; else { g_fail++; printf("  FAIL 0*1\n"); } }
++        r = spu_fa(one, z);
++        for (int i = 0; i < 4; i++) { if (r._u32[i] == 0x3F800000u) g_pass++; else { g_fail++; printf("  FAIL 1+0\n"); } }
++    }
++    printf("  worst ulp: fa %.1f fs %.1f fm %.1f fma %.1f fms %.1f fnms %.1f\n",
++           w_fa, w_fs, w_fm, w_fma, w_fms, w_fnms);
++    printf("SPU fast float: %d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++#endif
++}

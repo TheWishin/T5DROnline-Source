@@ -48,6 +48,8 @@ TESTS = [
      "SPU instruction helpers (spu_helpers.h, patch 0003)"),
     ("spu_numeric", ["runtime/spu/tests/test_spu_numeric_semantics.c"], ["runtime/spu"], ["-msse4.1"], 120,
      "SPU numeric semantics"),
+    ("spu_fast_float", ["runtime/spu/tests/test_spu_fast_float.c"], ["runtime/spu"], ["-msse4.1", "/DSPU_FAST_FLOAT"],
+     120, "SPU_FAST_FLOAT within 2-3 ulp of the exact path (patch 0027, render-only skinning jobs)"),
     ("spu_coherency", ["runtime/spu/tests/test_spu_coherency.c"], ["runtime/spu", SHIM], [], 120,
      "PPU/SPU lock-line coherence"),
     # Not here: test_spu_lifted_start.c (POSIX-only; with shims it links on

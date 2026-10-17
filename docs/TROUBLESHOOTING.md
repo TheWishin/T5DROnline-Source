@@ -518,10 +518,20 @@ result bar can show how many frames behind a match was.
 
 Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 2026-10-17 (two games on one PC with other test programs running). Earlier notes
-said 30-45 fps; that was fixed by later work. If yours is lower, the sections
-below may help.
+said 30-45 fps; that was fixed by later work. On a weaker PC:
 
-What may help a little:
+- **Weak graphics card** (laptop, integrated graphics): in the launcher,
+  **Settings** -> **3D resolution** -> **Lower**, or **Lowest** if that is not
+  enough. The picture gets softer; the game itself does not change, so you can
+  play online against someone who uses Original.
+- **Few CPU cores**: the game sets its number of helper threads to the cores
+  it may use; there is nothing to set. In our tests (fast desktop cores held to
+  4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
+  player (150 ms) rollback costs more: about 50 fps with 4-8 threads while
+  other programs were running. Online, both games run at the speed of the
+  slower PC, so close other programs on both.
+
+What may help as well:
 
 - Close other programs, especially browsers, game overlays and recorders.
 - Do not build the game while playing. Do not run a second copy.

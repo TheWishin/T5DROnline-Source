@@ -430,10 +430,24 @@ in the cycle test):
   every phase up to 12 is intro while the mode manager is in the game mode
   (`t5_df_game_mode()`), in the rollback loop and for lockstep frame 0's
   sample (`t5_hooks.cpp` `intro_input_now`); select screens (mode 6, phases
-  0-5) still take the driver's presses. A fight whose session ended is left
-  (mode request 6) only once its loading and intros are over: the game itself
-  never leaves its game mode earlier, and a hung loading never takes the
-  request.
+  0-5) still take the driver's presses.
+- **A fight left after "Fight!" leaves something behind.** A fight whose
+  session ended in the loading was first left (mode request 6) only once its
+  intros were over: the game ran the intros and the Fight! frame alone. The
+  next match against a fresh game then fought apart for its first 200-260
+  frames (cycle test cycle 9: Kazuya vs Heihachi, 200; cycle 10: Asuka vs Law,
+  261 -- both modes, every time; the final state and winner equal). At Fight!
+  the fresh game set the fighters' start fields (+0x414 = 1150.0 from
+  0x10084E94, +0x64C) and the played one did not, so P1 stood 12 units off
+  until the fighters met. Not in the data section: copying the whole of
+  0x10050000..0x100A5000 back to its boot state did not change it (scan:
+  `T5_DF_FRESH_SCAN`); leaving at once (main's way) or at the end of the
+  loading did (0 mismatching frames). **Fix:** a fight whose session ended is
+  left at the first frame of its intros (phase word 11), or at once when the
+  session ended later; never in the middle of the loading (loads in flight).
+  A hung loading never takes the request (`stuck_check` ends such a game).
+  `T5_DF_LEAVE_PHASE=<p>` (leave once the phase word is past p, default 10)
+  for comparisons.
 
 Also at a session's end: the rollback loop puts back the present's
 min-vblanks word it zeroed at its start (0x106D4D98), and the sound hooks
@@ -447,7 +461,30 @@ match and says so on the Play tab.
 Diagnostics added: `T5_DF_FRESH_LOG=1` (every word the copy changes),
 `T5_DF_FRESH_AT=<n>` (put the copy back n frames into the settled title; tests),
 `T5_DF_GUARD=addr:len,...` (`T5_DF_GUARD_AT=<frame>`, default the first title:
-those pages read-only, the first writer of each logged with its lifted chain).
+those pages read-only, the first writer of each logged with its lifted chain),
+`T5_DF_FRESH_SCAN=addr:len,...` (at every copy, list the runs of words in those
+areas that differ from the boot state; nothing is copied), `T5_DF_LEAVE_PHASE`
+(above). A reset or leave that has waited 30 s (half of
+`T5_DF_STUCK_SECONDS`) logs the mode manager's words, the mode object, every
+semaphore's count and waiters, and each guest thread's last kernel call with
+its callers.
+
+**Not fixed: a hang at the end of a match under heavy rollback.** A match
+played to its end, the session ended 13-25 frames after the KO (the
+launcher's "idle"), the driver's START skip taken (mode request 6), and the
+game mode never finishes: mode 4, next 6, phase word 17, the fight music
+stopped, the select data never read (the 4 archive reads a normal exit makes
+never come). `stuck_check` ends the game after 60 s (exit 6) and the launcher
+starts a new one. Seen once in 10 rollback cycles (cycle test, the opponent
+just started: 2 s stalls and 7 rollbacks around the KO) and often with a
+choppy opponent (`reset_cycle_test.py --stutter 80`: 4 of 8 cycles; the same
+match without stutter: fine). It needs rollbacks near the KO, and it is not the
+session-end changes (with the min-vblanks and sound-hook reset left out it
+hung at the same match). Main under the same stutter (other matches: this
+branch starts and syncs the fight at other frames) had no hang in 10 matches
+but NULL reads and
+garbage texture decodes in the fights, as this branch has: re-simulation
+under heavy stutter is fragile on its own, before any session ends.
 
 **Test:** `tools/reset_cycle_test.py` -- one persistent game S (never
 restarted) against a persistent opponent O (started again when a cycle killed
@@ -455,16 +492,32 @@ it); every cycle is a match that ends abnormally, S back at neutral by
 itself, then the next match against a new session played to its end:
 
     python tools/reset_cycle_test.py --exe <t5dr.exe> --vfs <game/vfs> --out <dir> [--cycles 10] [--env T5_RB_MODE=off]
+        [--start-cycle N]   # begin the schedule (end, point, fighters, stage) at cycle N
+        [--stutter MS]      # O suspended for MS every 0.2-0.6 s during the matches
 
 Ends, in turn: `stall` (O suspended, then killed), `kill`, `quit` (O's BYE),
 `peer_idle` (O's launcher leaves), `idle` (S's launcher leaves), `no_peer` (no
-opponent at all), `desync` (O on another stage, both leave), `normal`; each at
+opponent at all), `desync` (O on another stage, both leave), `normal` (played
+out, then "idle" for both, as the launcher ends a match without rematch); each at
 the fight's loading, in the fight or at the select screen before FIGHT START,
 in turn. A cycle passes when S comes back to neutral, the next match is
 confirmed on both sides (same winner and gameplay hash, 0 mismatching frames)
-and S's log has no bad guest call, NULL call/write, FIFO error or crash.
+and S's log has no bad guest call, NULL call/read/write, fence queue overflow,
+crash or stuck line; the FIFO walker's resyncs are counted apart.
 
-RESULTS_TBD
+**Results** (this PC, 2026-10-17, runs proof2_rb and proof2_ls): rollback and
+lockstep (`T5_RB_MODE=off`) 10 of 10 cycles each in one S process (started
+once), every next match confirmed on both sides with the same winner and
+gameplay hash and 0 mismatching frames; no bad guest call, NULL access, fence
+overflow, crash or stuck line in S's log. S back at neutral after: stall 4.0-4.6
+s, kill in the fight 11.4 s (the 10 s session timeout), kill in the loading 14 s,
+quit 0.6 s, the peer's idle 4.8 s, its own idle 1.4-1.6 s, no peer 28 s (the
+connect timeout), desync 1.8 s, normal end 3.6 s. FIFO walker resyncs (the
+walker's own recovery, also in ordinary fights on main): rollback 2 in S over the
+10 cycles, lockstep 0. Before the leave fix cycles 9 and 10 failed in both modes
+(200 and 261 mismatching frames); before the title fix a second reset with no
+fight in between broke the game, as in the dry run. Also: `tests/` 143 OK,
+`lobby/tests` 296 OK, the smoke quick suite 81 checks PASS.
 
 ## Known transient mismatches
 

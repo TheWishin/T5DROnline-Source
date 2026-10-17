@@ -12,7 +12,9 @@ every build from rollback10 on does, for a match started through direct
 fight (`T5_NET_START=external`, the lobby's way) -- the rollback loop
 (`src/rollback/rb_net.cpp`) runs on this transport: inputs are predicted,
 a late input that differs rolls the game back and re-simulates, and the
-input delay drops to `T5_RB_NET_DELAY` (default 2 frames, the host's value).
+input delay drops to the rollback input delay -- by default 1 frame up to
+~60 ms round trip and 2 above, measured by the game itself (below,
+"Input delay").
 `T5_RB_MODE=off` (or `lockstep`) keeps the delay-based lockstep described
 below; a peer that does not offer rollback (an older build, or one with
 `T5_RB_MODE=off`) gets the lockstep on both sides. Menu-driven sessions from
@@ -145,6 +147,55 @@ one process, `summary.txt` per run; `--mode2 off` is the lockstep fallback).
 `T5_NET_SCRIPT_FIGHT=1` (set by that tool) applies the scripted presses only
 while direct fight is in a fight, so they never touch the menus it drives.
 
+## Input delay
+
+Like Tekken 6 Native Online, the rollback input delay follows the ping
+(latency branch, 2026-10-17). Each player has a setting -- the launcher's
+**Settings -> Online input delay** (`T5_RB_NET_DELAY` = `auto`, `0`, `1` or
+`2`; default `auto`) -- and the match's value is picked by the host when the
+match starts:
+
+- both players set the same number: that number;
+- otherwise (different numbers, or `auto` on either side): auto -- **1 frame up
+  to 60 ms round trip, 2 above** (`T5_RB_NET_DELAY_AUTO=<ms>` moves the
+  threshold);
+- never above the session's lockstep delay (`T5_NET_DELAY`, the lobby's
+  suggestion; tests that start with 0 stay at 0);
+- **ranked matches** use a fixed value for everybody: the lobby server sends
+  `T5L_RANKED_INPUT_DELAY` (default 2) in `match_start`, the launcher passes it
+  as `T5_RB_NET_DELAY` on both PCs, and it wins over the player's setting.
+
+The round trip is measured by the game, not taken from the lobby: from the
+handshake to the match start both games send a PING every 200 ms when nothing
+else goes out, each carrying the sender's clock (microseconds) and the echo of
+the last PING it received with how long it held it; the receiver's round trip
+is now - echo - hold (the median of the last 32; the lobby's `T5_NET_RTT_MS`
+only if no sample came in). Both PCs must use the same delay from the same
+frame, so the joiner does not decide: the host's pick travels in every PING
+and INPUT packet after its match started, and the joiner's rollback loop
+waits at its first frame until it has it (`rollback agreed: input delay 6 -> 2
+(the host's pick)` in its log; the host logs `rollback input delay for this
+match: 2 frame(s) (auto: round trip 152 ms (32 samples) -> 2 ...)`).
+
+**Protocol v3** (latency branch): PING carries the time stamps, the echo and
+the host's pick; INPUT carries the pick; HELLO's flags bits 8-15 carry the
+sender's setting (0xFF = auto). A v2 peer is refused like any other build
+(`build_mismatch`); the lobby's build id includes the version
+(`lobby/t5lobby/buildid.py` NETPLAY_VERSION 3).
+
+Tested (two games on this PC through `tools/rollback_net_test.py`'s proxy,
+direct fight, 3 % loss, +-5 ms jitter; `build/lat/netruns/`), one match each (Asuka vs Lili,
+stage 20, 2 rounds), 8 logical processors per game:
+
+| run | settings (host / joiner) | round trip measured | input delay picked | sync check | result hash |
+|---|---|---|---|---|---|
+| S0 | auto / auto, RTT 0 | 4 ms | 1 | 0 mismatching frames through 4199 | same on both |
+| S50 | auto / auto, RTT 50 | 51 ms | 1 | 0 | same |
+| RA1, RA2 | auto / auto, RTT 150 | 151 ms | 2 | 0 | same |
+| D11 | 1 / 1, RTT 150 | -- | 1 (both set 1) | 0 | same |
+| D0a | 0 / auto, RTT 0 | 3 ms | 1 (auto: the settings differ) | 0 | same |
+| K0, K50, K150 | lockstep (`T5_RB_MODE=off`), RTT 0/50/150 | -- | lockstep delay 6 | 0 | same |
+
 ## Design
 
 **Lockstep core** (`netplay_core.cpp`, game-independent). Frame f uses the
@@ -202,6 +253,13 @@ woken by the same (wall-clock) vblank. With netplay on:
    no hang (see Tested).
 4. Frame numbers are the main loop's own frames, starting at the take-over;
    both games count the same frames.
+
+Offline the same take-over and main-thread tick run too (latency branch,
+`T5_LATE_INPUT`, default on; nothing else of netplay): the keyread thread read
+the pads at the vblank, then waited for the frame lock the main thread holds,
+and wrote the ring after the main thread had taken this frame's entry -- 5-12 %
+of presses reached the game a frame late (docs/RENDER_PERF.md "Input
+latency"). `T5_LATE_INPUT=0` leaves the pads to the game's own thread.
 
 ## Connection problems
 

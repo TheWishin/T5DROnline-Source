@@ -44,9 +44,10 @@ clean PC and a match between two real PCs over the internet are still to come.
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode (2 frames of input delay, tested at 0/50/150 ms ping with packet loss). Not yet played between two real PCs over the internet. |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Not yet played between two real PCs over the internet. |
 | Build from your copy | Works on the development PC. |
 
 ## Requirements
@@ -192,9 +193,12 @@ Good to know:
 - A cable is better than Wi-Fi.
 - The first time, Windows Firewall asks whether the game and Python may use the
   network. Allow it for **private networks**.
-- Netcode: rollback, like Tekken 6 Native Online (2 frames of input delay at any
-  ping). If a match stutters on a slow PC, one player can switch to delay
-  netcode: Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
+- Netcode: rollback, like Tekken 6 Native Online. Input delay follows the ping:
+  1 frame up to about 60 ms, 2 above. **Settings -> Online input delay** can
+  fix it at 0, 1 or 2 frames; it counts only when your opponent picked the
+  same, otherwise Auto. Ranked matches always use 2. If a match stutters on a
+  slow PC, one player can switch to delay netcode: Settings -> "Advanced:
+  extra settings" -> `T5_RB_MODE=off`.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).

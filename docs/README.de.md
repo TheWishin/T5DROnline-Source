@@ -47,7 +47,7 @@ Internet stehen noch aus.
 | Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode (2 Frames Input-Delay, getestet bei 0/50/150 ms Ping mit Paketverlust). Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
 | Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. |
 
 ## Voraussetzungen
@@ -170,9 +170,12 @@ Gut zu wissen:
 - Kabel ist besser als WLAN.
 - Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
   dürfen. Erlaube es für **private Netzwerke**.
-- Netcode: Rollback wie bei Tekken 6 Native Online (2 Frames Input-Delay bei
-  jedem Ping). Ruckelt ein Match auf einem langsamen PC, kann ein Spieler auf
-  Delay-Netcode umschalten: Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
+- Netcode: Rollback wie bei Tekken 6 Native Online. Das Input-Delay folgt dem
+  Ping: 1 Frame bis etwa 60 ms, darüber 2. **Settings -> Online input delay**
+  kann es auf 0, 1 oder 2 Frames festlegen; das gilt nur, wenn der Gegner
+  dasselbe gewählt hat, sonst Auto. Ranked-Matches nutzen immer 2. Ruckelt ein
+  Match auf einem langsamen PC, kann ein Spieler auf Delay-Netcode umschalten:
+  Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.

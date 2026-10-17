@@ -229,7 +229,8 @@ are slower than a PC of that size on its own; the rollback agent measured
 higher frame rate the same 150 ms span more frames, so each misprediction
 re-simulates more of them: ~1,400 instead of 400-800 of the match's 4,400
 frames. Rollback at RTT 150 stays the heaviest case: 60 fps there needs a
-cheaper re-simulation, not more threads.
+cheaper re-simulation, not more threads. (The latency branch got there: 60.0 fps window
+median on 8 processors per game -- docs/ROLLBACK.md section 29.)
 
 ### GPU: 3D resolution
 
@@ -281,3 +282,117 @@ for a gain too small to measure here.
   above).
 - Every rollback pair in the table, before and after: 0 mismatching frames,
   the same result hash on both PCs, no decode errors, no aborts.
+
+## Input latency (patch 0034, branch `latency`)
+
+How long a press takes to reach the screen, measured end to end, and the
+part of it that was ours rather than the game's.
+
+### How it is measured
+
+`tools/latency_test.py` boots a direct fight (Lili vs Asuka, stage 20; P2
+idle), taps P1's jab (SQUARE) at a random moment every ~1.2 s and reads the
+runtime's latency probe (`PS3_LATENCY_LOG=<file>`, patch 0034,
+`runtime/platform/lat_log.h`): every step stamped on the
+QueryPerformanceCounter clock, the same clock the script's
+`perf_counter_ns()` reads when it writes the pad file.
+
+| event | where |
+|---|---|
+| press | the script writes `PS3_PAD_FILE` |
+| E | the pad layer's 1 ms sampler sees the button go down (tap latch, patch 0025) |
+| R | a read hands the title the new buttons (cellPadGetData, or netplay's local sample) |
+| B | offline: the main thread reads the pads at the top of its frame (`T5_LATE_INPUT`) |
+| F | the title asks for a flip: its frame is simulated and drawn; carries watched guest words (`PS3_LATENCY_WATCH`) |
+| X | the FIFO walker reached that flip: translated |
+| K | a vblank tick completes the flip: the title's next frame starts |
+| P | Present() returned for that flip |
+| C | the display's vblank clock as DWM keeps it (last vblank, period) |
+
+The reaction: P1's button-hold counter in the fight block (0x1008F01C: 1, 2,
+3 ... while held) names the first frame whose fight logic saw the press; the
+move flag 0x10090064 (0x80000000 for one frame) names the frame the jab
+starts in. Frame dumps around presses (`--frames`, `LD_FRAME_DUMP_GATE`)
+show the jab's first pose in exactly that frame (P1's pixels change 7-9 k ->
+30 k against the previous frame: runs/vis1). The game's own delay is one
+frame between the two (60 of 60 presses).
+
+`to display vblank` is the next vblank of the display after Present() + 0.5 ms
+of GPU copy, from the DWM clock -- a minimised test window cannot show the
+picture itself. That is when scanout of the new picture begins in borderless
+fullscreen or exclusive fullscreen (independent flip). In a normal window DWM
+composes the picture and shows it one refresh later: add 16.7 ms to every
+"display" number in a window, before and after alike.
+
+### What was ours
+
+- **The present waited for a vblank tick, then for the display.** A
+  translated flip waited for the next tick of the game's 59.94 Hz QPC clock
+  (~8 ms on average), and the present then waited for the display's own next
+  refresh (another ~half a refresh, wandering with the beat between 59.94 Hz
+  and the display's rate) -- the "~1.2 frames" of the frame-pacing notes.
+- **The pads were read on another thread.** The game's keyread thread reads
+  the pads at the vblank, then waits for the frame lock the main thread holds
+  and writes its ring after the main thread took this frame's entry: 5-12 %
+  of presses (more on a busy PC) came a frame late.
+
+### What changed
+
+| change | switch (default on) | effect |
+|---|---|---|
+| A flip is presented as soon as the walker has translated it, not at the next vblank tick; the title still sees it complete on the tick, so the game's pace is unchanged | `PS3_PRESENT_AT_XLAT=0` | present queue 7.7-8.5 -> 0.3 ms |
+| **Display lock**: on a 59/60 Hz display with vsync, the vblank ticks follow the display's own vblank clock (DWM). The period is the display's (the game runs at 59.94 or 60.00 Hz, like a PS3 on that TV), the phase is set so a tick comes `lead` before a display vblank; `lead` = the 99th percentile of the last 4 s of tick-to-present times + 1.5 ms (`PS3_DISPLAY_MARGIN_MS`), up at once after two late frames, down 1 ms a second. Presents use sync interval 0 on the flip model without tearing: the newest frame is shown at the next refresh, a late one is replaced instead of queueing a frame of delay | `PS3_DISPLAY_LOCK=0`, `PS3_DISPLAY_LEAD_MS=<ms>` | display wait 9.3-10.6 -> 3.7-4.2 ms |
+| The pads are read by the main thread at the top of its frame (the netplay take-over, offline) | `T5_LATE_INPUT=0` | no press a frame late |
+
+Other displays keep patch 0031's 59.94 Hz clock (`[pacing] display lock on`
+or nothing in the log): slower displays present without vsync, faster ones
+(120/144 Hz) show a frame at the next refresh after it is translated (now
+right after translation instead of after the next tick), VRR with
+`RSX_PRESENT_MODE=tearing` at once. `RSX_TEST_DISPLAY_HZ` (simulated
+displays) turns the lock off. The waitable swap chain (max frame latency 1,
+flip model) of patch 0005 stays as it was; under the display lock nothing
+queues, so the present does not wait on it.
+
+### Results
+
+Medians in ms, 60 presses per run (58-60 used: the press must land in the
+fight with P1 idle), two runs each where two numbers are given. "Before" is the
+same build with `PS3_PRESENT_AT_XLAT=0 PS3_DISPLAY_LOCK=0 T5_LATE_INPUT=0` (the
+old present path and pad thread), online also with the old rollback settings
+(`T5_RB_NET_DELAY=2`, no direct-call cut, no early rollback). Window minimised,
+display 59.952 Hz, runs under `build/lat/runs/`; "load" = processors other
+programs kept busy.
+
+| part | offline before | offline after | 8 processors, before | 8 processors, after | online RTT 0, before | online RTT 0, after | online RTT 150, before | online RTT 150, after |
+|---|---|---|---|---|---|---|---|---|
+| runs (load) | LB1, LB2 (14, 10) | LA1, LA2 (14, 14) | L8Bb (5) | L8Ab (2) | PB0b (7) | PA0b (5) | PB150 (18) | PA150 (9) |
+| sample (press -> 1 ms sampler) | 1.2 / 1.0 | 1.1 / 1.4 | 1.2 | 1.0 | 1.3 | 1.0 | 1.4 | 1.1 |
+| to the frame that reads it (online: + input delay) | 8.8 / 10.2 | 6.3 / 8.8 | 8.4 | 5.7 | 40.5 (2 frames) | 23.2 (1 frame) | 38.0 (2) | 38.8 (2) |
+| the game's own frame (input read -> move starts) | 16.7 | 16.7 | 16.7 | 16.7 | 16.7 | 16.7 | 16.7 | 16.7 |
+| sim + draw of the reacting frame | 6.4 / 6.0 | 6.5 / 6.3 | 5.7 | 5.3 | 7.1 | 6.4 | 9.1 | 6.9 |
+| translation | 2.8 / 2.4 | 2.6 / 2.7 | 2.2 | 2.2 | 2.3 | 2.3 | 2.9 | 2.4 |
+| present queue (translated -> Present returned) | 7.7 / 8.5 | **0.3 / 0.3** | 9.1 | **0.2** | 7.5 | **0.3** | 4.9 | **0.3** |
+| to the display's vblank | 10.6 / 9.3 | **4.2 / 3.7** | 9.6 | **3.3** | 6.1 | **2.9** | 6.3 | **3.8** |
+| **total, press -> display (median)** | **54.4 / 54.9** | **38.3 / 39.7** | **53.5** | **34.3** | **81.2** | **53.6** | **82.0** | **71.1** |
+| total, mean / p90 | 54.8, 54.0 / 61.7, 60.9 | 38.7, 40.0 / 46.0, 46.0 | 53.3 / 61.3 | 35.1 / 42.9 | 81.3 / 88.0 | 53.1 / 60.7 | 82.7 / 93.0 | 70.9 / 78.0 |
+| presses read a frame late (keyread race) | 6 of 58, 4 of 59 | 0 of 59, 0 of 60 | 5 of 60 | 0 of 59 | -- | -- | -- | -- |
+
+So offline a press now reaches the screen ~16 ms (one frame) sooner: ~2.1-2.4
+frames from the press to the start of scanout in fullscreen (34-40 ms), of
+which the game's own frame and its simulation/draw are ~1.4 frames and our
+translation + present + display wait ~0.4 frame (6.2-6.9 ms; was ~1.2 frames,
+19-22 ms). For comparison, a PS3 on a CRT/TV: the press waits for the next
+vblank (8.3 ms on average), the game's own frame (16.7), and the frame is shown
+at the vblank after it was rendered (16.7) -- ~42 ms plus the TV's own
+processing. Online at RTT 0 the input delay is now 1 frame instead of 2 (-27.6
+ms in total); at RTT 150 it stays 2 frames (-10.9 ms from the present path).
+
+Display cadence over the presses (offline after): 10 and 12 of 3 396
+refreshes showed no new frame under 14 processors of other load, 8 of 3 396
+on the quiet 8-processor run; before: 4 and 0 (LB1, LB2) -- the lock trades a
+few repeated pictures under load (a frame that misses its lead) for the
+lower latency; `lead` keeps that near 0.3 %.
+
+Offline fight speed is unchanged: `tools/fight_bench.py` 59.94 fps with the
+simulated 50 Hz and 144 Hz displays of patch 0031 (`RSX_TEST_DISPLAY_HZ`, no
+lock), the smoke suite's fps checks at 59.8-59.9 with the lock on.

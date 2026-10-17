@@ -245,11 +245,20 @@ const uint32_t kDetourCut[] = {
      * that pairing when the cut switched on or off between the two calls). The
      * pair was ~14 % of a re-simulated frame. */
     0x0031F778,
+    /* 0x2AAD50: the effects' draw (called by 0x2ABC04 / 0x2AB498, which ignore
+     * its r3): NU packet calls, the render pass above, 0x15AD9C / 0x15B01C.
+     * A whole function (stdu -0x190 ... addi r1,400; blr), unlike the tails
+     * below. ~13 % of a re-simulated frame; test run d5: 0 gameplay-hash
+     * mismatches in 1 404 re-simulated boundaries; pairs RC1/RC2 at RTT 150
+     * in sync, displayed-frame p99 24 vs 26 ms without it. */
+    0x002AAD50,
 };
-/* Tried and left out: 0x15AD9C / 0x15B01C (the effect pass's NU render calls)
- * and 0x1549FC / 0x1548C0 (model render calls), ~6 % more: the gameplay hash
- * stayed equal in test mode (d4), but a pair at RTT 150 (abA1) had the joiner
- * call through a garbage pointer from 0x34E34 a few seconds into the match. */
+/* Tried and left out: 0x1549FC / 0x1548C0 (model render calls) and, on their
+ * own, 0x15AD9C / 0x15B01C: they are function TAILS the function finder split
+ * off (no stdu: they restore v28-v31 and pop a 0xC0-byte frame a predecessor
+ * pushed). Returning from one at once leaves the guest stack pointer off by
+ * that frame: two pairs at RTT 150 (abA1, abA2) called through a garbage
+ * pointer within a minute. A cut target must be a whole function. */
 constexpr int kDcutN = 32;
 GuestFn g_dcut_orig[kDcutN];
 uint32_t g_dcut_addr[kDcutN];

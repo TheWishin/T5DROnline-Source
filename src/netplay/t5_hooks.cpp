@@ -230,7 +230,7 @@ bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep run
  * default on, docs/RENDER_PERF.md "Input latency"). The game's own keyread
  * thread reads the pads at the vblank, then waits for the frame lock the main
  * thread holds there, and writes the ring after the main thread has already
- * taken this frame's entry: 3-14 % of presses (more on a busy PC) reached the
+ * taken this frame's entry: 5-12 % of presses (more on a busy PC) reached the
  * game a frame late. Run at the top of the frame like netplay's, the pads are
  * read at the frame's start and that frame always sees them. */
 bool g_offline = false;

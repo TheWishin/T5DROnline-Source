@@ -466,6 +466,20 @@ def add_prebuilt_host(stage, clang, jobs):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def staged_code_id(stage):
+    """The code ID that builds made from this folder will carry (t5dr_build.json, and what the
+    launcher compares to ask for a rebuild). build_game.code_id() also hashes runtime/t5dr.exe and
+    tools/gamedll next to the script that runs it, so it has to run from the staged copy -- from this
+    checkout it hashes something else (and the zip's release.json named an ID no build ever had)."""
+    code = ("import sys; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]); "
+            "import build_game; print(build_game.code_id())")
+    r = subprocess.run([sys.executable, "-B", "-c", code, os.path.join(stage, "tools")],
+                       capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+    if r.returncode or not r.stdout.strip():
+        fail("could not compute the code ID of the staged folder:\n" + (r.stdout + r.stderr)[-1500:])
+    return r.stdout.strip().splitlines()[-1]
+
+
 def build_stub(stage, clang):
     """T5DR Online.exe from launcher/stub/t5dr_stub.c (kernel32/user32 only). Without
     clang-cl or MSVC, a .cmd starter stands in (developer zips only; --release fails)."""
@@ -704,7 +718,7 @@ def main():
     if not build_stub(stage, clang) and a.release:
         fail("--release needs the native starter T5DR Online.exe (clang-cl + MSVC)")
     add_docs(stage, version)
-    info = {"name": "T5DR Online", "version": version, "code_id": build_game.code_id(),
+    info = {"name": "T5DR Online", "version": version, "code_id": staged_code_id(stage),
             "ps3recomp": build_game.PS3RECOMP_COMMIT, "patches": patches, "game": build_game.GAME_NAME,
             "commit": source_commit(), "built": build_time(),
             "llvm": clang[1] if a.llvm else None, "python": py_ver, "prebuilt_host": bool(a.prebuilt_host)}

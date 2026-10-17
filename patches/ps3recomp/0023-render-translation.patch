@@ -1,0 +1,2053 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index a65c26f..41771b1 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -134,6 +134,8 @@ static volatile LONG s_fifo_flips_queued = 0;  /* in-FIFO flips not shown yet */
+ static long long s_flip_call_ring[16];
+ static unsigned  s_flip_call_head, s_flip_call_tail;
+ static volatile int  s_flip_hold = 0;          /* walker parked on a flip     */
++/* QPC of the guest's last flush through an HLE call (PS3_FRAMELOG xlat_us). */
++static volatile long long s_put_write_qpc = 0;
+ int cellGcm_flip_held(void) { return s_flip_hold; }
+ /* The ticker presented the flip the walker is parked on: release it. */
+ void cellGcm_flip_presented(void)
+@@ -1108,6 +1110,7 @@ static void nv3089_blit(void)
+ 
+ static void gcm_2d_method(u32 subch, u32 method, u32 data)
+ {
++    rsx_live_draw_guest_write_barrier();   /* queued vertex reads come first */
+     /* GCM2D_TRACE=1: histogram of (subchannel, method) actually seen. The
+      * subchannel a title binds each 2D object to is libgcm-version-specific and
+      * SET_OBJECT binds are not tracked, so state landing on an unexpected
+@@ -1561,16 +1564,29 @@ void cellGcm_ref_on_poll(void)
+         dry = (s_ref_qhead == s_ref_qtail);
+     }
+     ReleaseSRWLockExclusive(&s_ref_pub_lock);
+-    if (dry && s_gcm_kick_ev)
+-        SetEvent(s_gcm_kick_ev);       /* dry: ask the present thread to walk */
++    /* dry: ask the present thread to walk -- if there is anything to walk.
++     * With nothing past `get`, or the walker parked on a flip until the next
++     * vblank, a kick only spins the present thread: Tekken 5 DR's fence
++     * polls kicked it ~22,000 times a second. PS3_GCM_KICK_ALWAYS=1 kicks
++     * on every dry poll as before. */
++    static int always = -1;
++    if (always < 0) { const char* e = getenv("PS3_GCM_KICK_ALWAYS"); always = e && *e == '1'; }
++    if (dry && s_gcm_kick_ev &&
++        (always || (!s_flip_hold && vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != s_fifo_getoff)))
++        SetEvent(s_gcm_kick_ev);
+ }
+ 
+ void cellGcm_rsx_process_fifo(void)
+ {
+     LARGE_INTEGER pf0, pf1;
++    ULONG64 c0 = 0, c1 = 0;
+     AcquireSRWLockExclusive(&s_gcm_fifo_lock);
+     QueryPerformanceCounter(&pf0);
++    /* thread cycles only for a pass with words to walk (a syscall each) */
++    const int work = !s_flip_hold && vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != s_fifo_getoff;
++    if (work) QueryThreadCycleTime(GetCurrentThread(), &c0);
+     gcm_rsx_process_fifo_unlocked();
++    if (work) QueryThreadCycleTime(GetCurrentThread(), &c1);
+     QueryPerformanceCounter(&pf1);
+     ReleaseSRWLockExclusive(&s_gcm_fifo_lock);
+     rsx_pf_add(RSX_PF_FIFO_TICKS, pf1.QuadPart - pf0.QuadPart);
+@@ -1579,6 +1595,7 @@ void cellGcm_rsx_process_fifo(void)
+         host_sched_trace_at(HS_EV_FIFO0, 0, pf0.QuadPart);
+         host_sched_trace_at(HS_EV_FIFO1, 0, pf1.QuadPart);
+     }
++    if (work) rsx_pf_add(RSX_PF_FIFO_CYC, (long long)(c1 - c0));
+ }
+ 
+ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -1756,7 +1773,10 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             s_fifo_getoff += 4;
+             { LARGE_INTEGER q; QueryPerformanceCounter(&q);
+               g_rsx_pf[RSX_PF_FLIP_QPC] = q.QuadPart;
+-              rsx_pf_add(RSX_PF_FLIPS, 1); }
++              rsx_pf_add(RSX_PF_FLIPS, 1);
++              const long long hq = __atomic_exchange_n(&s_put_write_qpc, 0, __ATOMIC_RELAXED);
++              if (hq && q.QuadPart > hq)
++                  rsx_pf_add(RSX_PF_XLAT_TICKS, q.QuadPart - hq); }
+             /* Count the flip WORDS the title actually writes into the FIFO,
+              * separately from the presents that result. When a title stops
+              * appearing on screen the first question is which side stopped:
+@@ -1926,6 +1946,11 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                   extern u8* vm_base;
+                   static int s1_2d_fast = -1;
+                   if (s1_2d_fast < 0) { const char* e = getenv("GCM_SUBCH1_2D"); s1_2d_fast = e ? atoi(e) : 0; }
++                  /* PS3_GCM_BLOCK_WALK (default on): a run of 3D-engine words
++                   * with no method this walker acts on itself (fences,
++                   * labels, reports) goes to the live engine in one call. */
++                  static int block = -1;
++                  if (block < 0) { const char* e = getenv("PS3_GCM_BLOCK_WALK"); block = !(e && *e == '0'); }
+                   u32 i = 0;
+                   while (i < count) {
+                       const u32 io = s_fifo_getoff + 4 + i * 4;
+@@ -1934,6 +1959,19 @@ static void gcm_rsx_process_fifo_unlocked(void)
+                       u32 run = (0x100000u - (io & 0xFFFFFu)) >> 2;   /* words left in this IO page */
+                       if (run > count - i) run = count - i;
+                       const u32* p = (const u32*)(vm_base + ea);
++                      if (block && (subch == 0 || (subch == 1 && !s1_2d_fast))) {
++                          /* first and last method of the run */
++                          const u32 m0 = (type == 0) ? method + i * 4 : method;
++                          const u32 m1 = (type == 0) ? method + (i + run - 1) * 4 : method;
++                          #define GCM_IN(x) ((x) >= m0 && (x) <= m1)
++                          if (!GCM_IN(0x1D6Cu) && !GCM_IN(0x1D70u) && !GCM_IN(0x1D74u) &&
++                              !GCM_IN(0x0050u) && !GCM_IN(0x1800u)) {
++                              rsx_live_draw_method_block((subch << 13) | m0, type == 0, p, run);
++                              i += run;
++                              continue;
++                          }
++                          #undef GCM_IN
++                      }
+                       for (u32 k = 0; k < run; k++, i++) {
+                           const u32 v = __builtin_bswap32(__atomic_load_n(p + k, __ATOMIC_RELAXED));
+                           const u32 m = (type == 0) ? method + i * 4 : method;
+@@ -2552,6 +2590,7 @@ s32 cellGcmSetFlip(void* context, u32 bufferId)
+             if (io != 0xFFFFFFFFu) {
+                 atomic_thread_fence(memory_order_release);
+                 vm_write32(GCM_CONTROL_GUEST_ADDR, io);
++                { LARGE_INTEGER q; QueryPerformanceCounter(&q); s_put_write_qpc = q.QuadPart; }
+                 if (s_gcm_kick_ev) SetEvent(s_gcm_kick_ev);
+             }
+         }
+@@ -3564,6 +3603,7 @@ void cellGcmSetUserCommand(void* ctx, u32 cause)
+                 if (io != 0xFFFFFFFFu && io > vm_read32(GCM_CONTROL_GUEST_ADDR)) {
+                     atomic_thread_fence(memory_order_release);
+                     vm_write32(GCM_CONTROL_GUEST_ADDR, io);
++                    { LARGE_INTEGER q; QueryPerformanceCounter(&q); s_put_write_qpc = q.QuadPart; }
+                     /* Wake the present thread now: it is parked in
+                      * cellGcm_fifo_kick_wait for up to 4 ms, and the whole
+                      * frame's commands -- this is the title's only flush --
+diff --git a/libs/video/rsx_dispatch.c b/libs/video/rsx_dispatch.c
+index b461f61..98c28a3 100644
+--- a/libs/video/rsx_dispatch.c
++++ b/libs/video/rsx_dispatch.c
+@@ -244,6 +244,7 @@ void rsx_dispatch_seed_transform_program(rsx_dispatch* rsx, const u32* words, u3
+     if (count > RSX_DSP_VP_WORDS)
+         count = RSX_DSP_VP_WORDS;
+     memcpy(rsx->vp, words, count * sizeof(u32));
++    rsx->vp_gen++;
+ }
+ 
+ void rsx_dispatch_seed_transform_constants(rsx_dispatch* rsx, const u32* words, u32 count)
+@@ -424,8 +425,10 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
+         const u32 lane = ((method - M_VP_UPLOAD_INST) >> 2) & 3;
+         u32* load = &rsx->regs[M_VP_UPLOAD_FROM_ID >> 2];
+         const u32 pos = *load * 4 + lane;
+-        if (pos < RSX_DSP_VP_WORDS)
++        if (pos < RSX_DSP_VP_WORDS && rsx->vp[pos] != arg) {
+             rsx->vp[pos] = arg;
++            rsx->vp_gen++;
++        }
+         if (lane == 3)
+             (*load)++;
+         return;
+@@ -554,6 +557,91 @@ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg)
+     }
+ }
+ 
++/* ---- block dispatch ---------------------------------------------------- */
++
++/* Per register index: what rsx_dispatch_method does beyond storing the word.
++ * 0 = nothing (plain state), 1 = transform program window, 2 = transform
++ * constant window, 3 = anything else (immediate data, exec methods). */
++static u8 s_blk_kind[RSX_DSP_NUM_REGS];
++static int s_blk_ready = -1;   /* -1 unknown, 0 = per-word only, 1 = on */
++
++static void blk_mark(u32 method, u32 n, u8 kind)
++{
++    for (u32 i = 0; i < n; i++) s_blk_kind[(method >> 2) + i] = kind;
++}
++
++static void blk_init(void)
++{
++    const char* e = getenv("RSX_DISPATCH_BLOCK");
++    if (s_ed_on < 0) { const char* d = getenv("RSX_EMPTY_DRAW_LOG"); s_ed_on = d ? 1 : 0; s_ed_from = d ? (u32)atoi(d) : 0; }
++    /* Probes that watch every word keep the per-word path. */
++    if ((e && *e == '0') || s_ed_on || getenv("RSX_CONST_LOG")) { s_blk_ready = 0; return; }
++    memset(s_blk_kind, 0, sizeof(s_blk_kind));
++    blk_mark(M_VP_UPLOAD_INST, 32, 1);
++    blk_mark(M_VP_UPLOAD_CONST, 32, 2);
++    /* immediate vertex data (imm_method ranges) */
++    blk_mark(0x1C00, 0x40, 3);   /* DATA4F_M        */
++    blk_mark(0x1880, 0x20, 3);   /* DATA2F_M        */
++    blk_mark(0x1500, 0x30, 3);   /* DATA3F_M        */
++    blk_mark(0x1E40, 0x10, 3);   /* DATA1F_M        */
++    blk_mark(0x1940, 0x10, 3);   /* DATA4UB_M       */
++    blk_mark(0x1900, 0x10, 3);   /* DATA2S_M        */
++    blk_mark(0x1980, 0x20, 3);   /* DATA4S_M        */
++    blk_mark(0x0A80, 0x20, 3);   /* DATA_SCALED4S_M */
++    /* the switch */
++    blk_mark(M_CLEAR_BUFFERS, 1, 3);
++    blk_mark(M_VERTEX_BEGIN_END, 1, 3);
++    blk_mark(M_INLINE_ARRAY, 1, 3);
++    blk_mark(M_VB_VERTEX_BATCH, 1, 3);
++    blk_mark(M_VB_INDEX_BATCH, 1, 3);
++    blk_mark(M_GCM_FLIP_HEAD_0, 1, 3);
++    blk_mark(M_GCM_FLIP_HEAD_1, 1, 3);
++    blk_mark(M_GCM_DRIVER_FLIP, 1, 3);
++    s_blk_ready = 1;
++}
++
++void rsx_dispatch_method_block(rsx_dispatch* rsx, u32 method, int incrementing,
++                               const u32* be_words, u32 count)
++{
++    if (s_blk_ready < 0) blk_init();
++    if (!s_blk_ready) {
++        for (u32 i = 0; i < count; i++)
++            rsx_dispatch_method(rsx, incrementing ? method + i * 4 : method,
++                                __builtin_bswap32(be_words[i]));
++        return;
++    }
++    for (u32 i = 0; i < count; i++) {
++        const u32 m = (incrementing ? method + i * 4 : method) & 0xFFFFC;
++        const u32 v = __builtin_bswap32(be_words[i]);
++        const u32 idx = m >> 2;
++        if (idx >= RSX_DSP_NUM_REGS) { rsx_dispatch_method(rsx, m, v); continue; }
++        const u8 kind = s_blk_kind[idx];
++        rsx->seen[idx]++;
++        rsx->regs[idx] = v;
++        if (!kind) continue;
++        if (kind == 1) {                  /* transform program window */
++            const u32 lane = (idx - (M_VP_UPLOAD_INST >> 2)) & 3;
++            u32* load = &rsx->regs[M_VP_UPLOAD_FROM_ID >> 2];
++            const u32 pos = *load * 4 + lane;
++            if (pos < RSX_DSP_VP_WORDS && rsx->vp[pos] != v) {
++                rsx->vp[pos] = v;
++                rsx->vp_gen++;
++            }
++            if (lane == 3) (*load)++;
++        } else if (kind == 2) {           /* transform constant window */
++            const u32 word = idx - (M_VP_UPLOAD_CONST >> 2);
++            const u32 slot = rsx->regs[M_VP_UPLOAD_CONST_ID >> 2] + (word >> 2);
++            if (slot < RSX_DSP_NUM_CONSTANTS)
++                rsx->constants[slot][word & 3] = v;
++            rsx->constants_gen++;
++        } else {
++            /* undo the store/count the full dispatch is about to repeat */
++            rsx->seen[idx]--;
++            rsx_dispatch_method(rsx, m, v);
++        }
++    }
++}
++
+ /* ---- getters ----------------------------------------------------------- */
+ 
+ u32 rsx_dsp_clear_color(const rsx_dispatch* rsx)
+diff --git a/libs/video/rsx_dispatch.h b/libs/video/rsx_dispatch.h
+index 2757797..3c42804 100644
+--- a/libs/video/rsx_dispatch.h
++++ b/libs/video/rsx_dispatch.h
+@@ -115,6 +115,10 @@ struct rsx_dispatch {
+     u32 vp[RSX_DSP_VP_WORDS];         /* transform (vertex) program words   */
+     u32 constants[RSX_DSP_NUM_CONSTANTS][4]; /* vec4 f32 bit patterns       */
+     u32 constants_gen;                       /* bumped on any constant write */
++    u32 vp_gen;                              /* bumped when a vp[] word CHANGES
++                                                (re-uploading the same program,
++                                                which Tekken 5 DR does for every
++                                                draw, leaves it alone) */
+ 
+     rsx_dispatch_sink sink;
+ 
+@@ -166,6 +170,15 @@ void rsx_dispatch_seed_transform_constants(rsx_dispatch* rsx, const u32* words,
+ /* Dispatch one register write. */
+ void rsx_dispatch_method(rsx_dispatch* rsx, u32 method, u32 arg);
+ 
++/* Dispatch `count` words of one FIFO method run straight from the command
++ * buffer (`be_words` in guest byte order). `incrementing`: word i goes to
++ * method + 4*i, else every word goes to `method`. Exactly the effect of
++ * calling rsx_dispatch_method per word, but plain register writes and the
++ * transform program/constant windows -- ~80% of a Tekken 5 DR frame's words
++ * -- skip the per-word call and its checks. */
++void rsx_dispatch_method_block(rsx_dispatch* rsx, u32 method, int incrementing,
++                               const u32* be_words, u32 count);
++
+ /* ---- decoded state getters -------------------------------------------- */
+ 
+ static inline u32 rsx_dsp_reg(const rsx_dispatch* rsx, u32 method)
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 4012dce..5e47a49 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -183,7 +183,9 @@ int rsx_fp_collect_constants(
+ {
+     if (!ucode || !out)
+         return -1;
+-    memset(out, 0, sizeof(*out));
++    /* Only count..: readers never look past it. (This used to memset the
++     * whole 32 KB block -- per draw.) */
++    out->count = 0;
+ 
+     u32 off = 0;
+     while (off + 16 <= max_bytes) {
+@@ -233,7 +235,12 @@ u64 rsx_fp_structural_hash(const u8* ucode, u32 max_bytes, u64 seed)
+         const u32 w1 = rsx_fp_read_word(ucode + off + 4);
+         const u32 w2 = rsx_fp_read_word(ucode + off + 8);
+         const u32 w3 = rsx_fp_read_word(ucode + off + 12);
+-        hash = fp_hash_bytes(ucode + off, 16, hash);
++        {   /* one instruction = two 64-bit words (byte-wise FNV was ~1 B/4 cycles) */
++            u64 q[2];
++            memcpy(q, ucode + off, 16);
++            hash = (hash ^ q[0]) * 1099511628211ull;
++            hash = (hash ^ q[1]) * 1099511628211ull;
++        }
+         instruction_count++;
+         off += 16;
+         if (fp_instruction_has_constant(w1, w2, w3)) {
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 88a7678..2e6d49a 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -100,6 +100,9 @@ void rsx_live_draw_set_display_buffer(
+     u32 b, u32 l, u32 o, u32 p, u32 w, u32 h)
+ { (void)b; (void)l; (void)o; (void)p; (void)w; (void)h; }
+ void rsx_live_draw_method(u32 m, u32 a) { (void)m; (void)a; }
++void rsx_live_draw_method_block(u32 m, int i, const u32* w, u32 n)
++{ (void)m; (void)i; (void)w; (void)n; }
++void rsx_live_draw_guest_write_barrier(void) {}
+ void rsx_live_draw_set_fifo_position(u32 g, u32 p) { (void)g; (void)p; }
+ void rsx_live_draw_note_inline_transfer(u32 d, u32 o, u32 v)
+ { (void)d; (void)o; (void)v; }
+@@ -175,6 +178,8 @@ static volatile long g_ld_ps1_vram_ready = 0;
+ #pragma comment(lib, "d3d12.lib")
+ #pragma comment(lib, "dxgi.lib")
+ #pragma comment(lib, "d3dcompiler.lib")
++#pragma comment(lib, "synchronization.lib")   /* WaitOnAddress (vertex jobs) */
++#include <intrin.h>
+ 
+ /* Armed by the a010 AUTH repair only after its animation palette is resident. */
+ extern volatile LONG g_yz_a010_reference_camera_active;
+@@ -668,8 +673,21 @@ typedef struct {
+     LONGLONG present_flush_ticks;
+     LONGLONG present_call_ticks;
+     LONGLONG latency_wait_ticks; /* frame-latency waitable object */
++    /* sink_end phases (PS3_FRAMELOG only; one QPC read per boundary) */
++    LONGLONG ph_layout_ticks;  /* VP input analysis -> vertex layout          */
++    LONGLONG ph_fetch_ticks;   /* index read + vertex fetch/decode            */
++    LONGLONG ph_upload_ticks;  /* vertex memcpy + topology indices            */
++    LONGLONG ph_pso_ticks;     /* get_pso (key build + lookup, misses too)    */
++    LONGLONG ph_const_ticks;   /* constant ring planning + pixel constants    */
++    LONGLONG ph_texbind_ticks; /* texture/sampler resolution incl. refresh    */
++    LONGLONG clear_ticks;      /* sink_clear                                  */
++    LONGLONG texhash_ticks;    /* texture_content_hash                        */
+     u32 draws, pso_miss, compiles, creates, tex, flushes;
+ } ld_pf_counts;
++static int g_pf_phases = -1;       /* per-draw phase timers on (PS3_FRAMELOG) */
++static LONGLONG g_pf_phase_t;
++#define LD_PF_PHASE(field) do { if (g_pf_phases > 0) { \
++    const LONGLONG _n = ld_pf_qpc(); g_pf.field += _n - g_pf_phase_t; g_pf_phase_t = _n; } } while (0)
+ static ld_pf_counts g_pf;
+ static ld_pf_counts g_pf_prev;
+ static long long g_pf_ext_prev[RSX_PF_COUNT];
+@@ -706,9 +724,13 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+                         "present_call_us,dxgi_present_count,"
+                         "dxgi_present_refresh,dxgi_sync_refresh,"
+                         "dxgi_sync_qpc,last_present_count,"
+-                        "shown_call_to_present_us\n",
++                        "shown_call_to_present_us,xlat_us,"
++                        "ph_layout_us,ph_fetch_us,ph_upload_us,ph_pso_us,"
++                        "ph_const_us,ph_texbind_us,clear_us,texhash_us,"
++                        "fifo_cpu_us\n",
+                         (long long)f.QuadPart);
+                 g_pf_log_state = 1;
++                g_pf_phases = 1;
+             }
+         }
+     }
+@@ -727,6 +749,13 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+     __atomic_store_n(&g_rsx_pf[RSX_PF_VBLANK_BURST_MAX], 0, __ATOMIC_RELAXED);
+ #define PFD(slot) (ext[slot] - g_pf_ext_prev[slot])
+ #define PFC(field) (g_pf.field - g_pf_prev.field)
++    /* TSC rate for the thread-cycle columns, from the time since the log
++     * opened (QueryThreadCycleTime counts at the TSC rate). */
++    static LONGLONG s_cal_qpc; static unsigned long long s_cal_tsc;
++    if (!s_cal_qpc) { s_cal_qpc = present_begin; s_cal_tsc = __rdtsc(); }
++    double tsc_per_us = 4000.0;
++    if (present_begin - s_cal_qpc > f.QuadPart / 4)
++        tsc_per_us = (double)(__rdtsc() - s_cal_tsc) / ((double)(present_begin - s_cal_qpc) * us);
+     DXGI_FRAME_STATISTICS st;
+     memset(&st, 0, sizeof(st));
+     if (FAILED(g.swap->lpVtbl->GetFrameStatistics(g.swap, &st)))
+@@ -737,7 +766,8 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+     fprintf(g_pf_log,
+             "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
+             "%u,%.0f,%u,%.0f,%u,%.0f,%u,%.0f,%u,%u,%.0f,%u,%.0f,%.0f,%.0f,"
+-            "%u,%u,%u,%lld,%u,%.0f\n",
++            "%u,%u,%u,%lld,%u,%.0f,%.0f,"
++            "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+             g_ld_frames, (long long)present_begin,
+             g_pf_prev_present_qpc
+                 ? (double)(present_begin - g_pf_prev_present_qpc) * us : 0.0,
+@@ -759,7 +789,13 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+             st.PresentCount, st.PresentRefreshCount, st.SyncRefreshCount,
+             (long long)st.SyncQPCTime.QuadPart, last_present,
+             ext[RSX_PF_SHOWN_CALL_QPC] && ext[RSX_PF_SHOWN_CALL_QPC] < present_begin
+-                ? (double)(present_begin - ext[RSX_PF_SHOWN_CALL_QPC]) * us : 0.0);
++                ? (double)(present_begin - ext[RSX_PF_SHOWN_CALL_QPC]) * us : 0.0,
++            (double)PFD(RSX_PF_XLAT_TICKS) * us,
++            (double)PFC(ph_layout_ticks) * us, (double)PFC(ph_fetch_ticks) * us,
++            (double)PFC(ph_upload_ticks) * us, (double)PFC(ph_pso_ticks) * us,
++            (double)PFC(ph_const_ticks) * us, (double)PFC(ph_texbind_ticks) * us,
++            (double)PFC(clear_ticks) * us, (double)PFC(texhash_ticks) * us,
++            (double)PFD(RSX_PF_FIFO_CYC) / tsc_per_us);
+ #undef PFD
+ #undef PFC
+     if ((g_ld_frames & 63u) == 0)
+@@ -1903,6 +1939,7 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+  * allocator, the per-frame rings and the retired textures it guards) happens
+  * when the next recording starts, by which time the GPU is normally done. */
+ static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
++static void ld_tex_release(ID3D12Resource* r);   /* texture pool, below */
+ 
+ /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
+  * flip-model chain with a frame-latency waitable object, max frame latency 1
+@@ -1942,7 +1979,7 @@ static void ld_begin_recording(void)
+         g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
+     }
+     for (u32 i = 0; i < g.n_retired_textures; i++)
+-        g.retired_textures[i]->lpVtbl->Release(g.retired_textures[i]);
++        ld_tex_release(g.retired_textures[i]);
+     g.n_retired_textures = 0;
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
+@@ -1952,8 +1989,10 @@ static void ld_begin_recording(void)
+     g.srv_ring_used = 0; g.smp_ring_used = 0;
+ }
+ 
++static void ld_vjob_drain(void);
+ static void ld_flush(ld_flush_reason reason)
+ {
++    ld_vjob_drain();      /* the list about to run reads what the jobs write */
+     ld_begin_recording();
+     if (reason != LD_FLUSH_PRESENT)
+         g_pf.flushes++;
+@@ -2023,7 +2062,7 @@ static void ld_flush(ld_flush_reason reason)
+      * fence above is the first safe point at which those old resources may be
+      * released. */
+     for (u32 i = 0; i < g.n_retired_textures; i++)
+-        g.retired_textures[i]->lpVtbl->Release(g.retired_textures[i]);
++        ld_tex_release(g.retired_textures[i]);
+     g.n_retired_textures = 0;
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
+@@ -2158,6 +2197,152 @@ static void decode_texel(u32 base_fmt, const u8* p, u32 remap, u8 d[4])
+ 
+ typedef struct { u32 w, h; const u8* data; u32 row_bytes, rows; } tex_level_t;
+ 
++/* ---------------------------------------------------------------------------
++ * Texture pool (RSX_TEX_POOL, default on; "0" = one committed resource each)
++ *
++ * CreateCommittedResource is a kernel allocation per texture: 0.5-0.7 ms
++ * each on this driver even for a 144x144 DXT5, and 15-20 ms when the machine
++ * is busy. A fight load creates ~110 textures inside two frames -- most of
++ * the first-fight hitch. Textures are now placed resources in 64 MB heaps;
++ * a released texture's block goes on a free list and the next texture of
++ * the same allocation size takes it (dynamic textures re-create at the same
++ * size every refresh), so the pool does not grow with refreshes.
++ * ------------------------------------------------------------------------- */
++#define LD_TPOOL_HEAP_BYTES  (64ull * 1024 * 1024)
++#define LD_TPOOL_MAX_HEAPS   96u
++#define LD_TPOOL_MAP         16384u
++#define LD_TPOOL_FREE        8192u
++typedef struct { ID3D12Heap* heap; u64 size, used; } ld_tpool_heap;
++typedef struct { ID3D12Resource* res; u64 off, size; u32 heap; } ld_tpool_block;
++static ld_tpool_heap g_tpool_heaps[LD_TPOOL_MAX_HEAPS];
++static u32 g_tpool_n_heaps;
++static ld_tpool_block g_tpool_map[LD_TPOOL_MAP];      /* open addressing by res */
++static ld_tpool_block g_tpool_free[LD_TPOOL_FREE];
++static u32 g_tpool_n_free;
++static int g_tpool_on = -1;
++static u64 g_tpool_placed, g_tpool_reused, g_tpool_fallback;
++
++static u32 ld_tpool_slot(ID3D12Resource* r)
++{
++    return (u32)((((u64)(uintptr_t)r) >> 4) * 0x9E3779B97F4A7C15ull >> 50) & (LD_TPOOL_MAP - 1);
++}
++
++static HRESULT ld_tex_create(const D3D12_RESOURCE_DESC* rd_in, D3D12_RESOURCE_STATES state,
++                             ID3D12Resource** out)
++{
++    if (g_tpool_on < 0) {
++        const char* e = getenv("RSX_TEX_POOL");
++        g_tpool_on = !(e && *e == '0');
++    }
++    *out = NULL;
++    if (g_tpool_on) {
++        D3D12_RESOURCE_DESC rd = *rd_in;
++        rd.Alignment = D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT;   /* 4 KB if allowed */
++        D3D12_RESOURCE_ALLOCATION_INFO ai;
++        g.dev->lpVtbl->GetResourceAllocationInfo(g.dev, &ai, 0, 1, &rd);
++        if (ai.SizeInBytes == UINT64_MAX || ai.Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT) {
++            rd.Alignment = 0;
++            g.dev->lpVtbl->GetResourceAllocationInfo(g.dev, &ai, 0, 1, &rd);
++        }
++        if (ai.SizeInBytes != UINT64_MAX && ai.SizeInBytes <= LD_TPOOL_HEAP_BYTES) {
++            const u64 align = ai.Alignment ? ai.Alignment : 65536;
++            const u64 size = (ai.SizeInBytes + align - 1) & ~(align - 1);
++            u32 heap = UINT32_MAX; u64 off = 0;
++            for (u32 i = 0; i < g_tpool_n_free; i++)
++                if (g_tpool_free[i].size == size && (g_tpool_free[i].off & (align - 1)) == 0) {
++                    heap = g_tpool_free[i].heap; off = g_tpool_free[i].off;
++                    g_tpool_free[i] = g_tpool_free[--g_tpool_n_free];
++                    g_tpool_reused++;
++                    break;
++                }
++            if (heap == UINT32_MAX) {
++                for (u32 h = g_tpool_n_heaps; h-- > 0;) {
++                    const u64 at = (g_tpool_heaps[h].used + align - 1) & ~(align - 1);
++                    if (at + size <= g_tpool_heaps[h].size) {
++                        heap = h; off = at; g_tpool_heaps[h].used = at + size;
++                        break;
++                    }
++                }
++            }
++            if (heap == UINT32_MAX && g_tpool_n_heaps < LD_TPOOL_MAX_HEAPS) {
++                D3D12_HEAP_DESC hd;
++                memset(&hd, 0, sizeof(hd));
++                hd.SizeInBytes = LD_TPOOL_HEAP_BYTES;
++                hd.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
++                hd.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
++                hd.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
++                ID3D12Heap* nh = NULL;
++                if (SUCCEEDED(g.dev->lpVtbl->CreateHeap(g.dev, &hd, &IID_ID3D12Heap, (void**)&nh))) {
++                    heap = g_tpool_n_heaps++;
++                    g_tpool_heaps[heap].heap = nh;
++                    g_tpool_heaps[heap].size = LD_TPOOL_HEAP_BYTES;
++                    g_tpool_heaps[heap].used = size;
++                    off = 0;
++                }
++            }
++            if (heap != UINT32_MAX) {
++                ID3D12Resource* r = NULL;
++                const HRESULT hr = g.dev->lpVtbl->CreatePlacedResource(
++                    g.dev, g_tpool_heaps[heap].heap, off, &rd, state, NULL,
++                    &IID_ID3D12Resource, (void**)&r);
++                u32 s = SUCCEEDED(hr) ? ld_tpool_slot(r) : 0;
++                u32 probes = 0;
++                if (SUCCEEDED(hr))
++                    while (g_tpool_map[s].res && probes++ < LD_TPOOL_MAP)
++                        s = (s + 1) & (LD_TPOOL_MAP - 1);
++                if (SUCCEEDED(hr) && probes < LD_TPOOL_MAP) {
++                    g_tpool_map[s].res = r; g_tpool_map[s].off = off;
++                    g_tpool_map[s].size = size; g_tpool_map[s].heap = heap;
++                    g_tpool_placed++;
++                    *out = r;
++                    return S_OK;
++                }
++                if (SUCCEEDED(hr)) r->lpVtbl->Release(r);
++                /* block lost to the pool; fall back below */
++            }
++        }
++        g_tpool_fallback++;
++    }
++    D3D12_HEAP_PROPERTIES hp;
++    memset(&hp, 0, sizeof(hp));
++    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++    return g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, rd_in,
++                                                  state, NULL, &IID_ID3D12Resource, (void**)out);
++}
++
++/* Release a texture; a pooled one returns its block once the GPU is done
++ * with it -- callers only release retired textures behind a fence. */
++static void ld_tex_release(ID3D12Resource* r)
++{
++    if (!r) return;
++    if (g_tpool_on > 0) {
++        u32 s = ld_tpool_slot(r);
++        for (u32 probes = 0; probes < LD_TPOOL_MAP && g_tpool_map[s].res; probes++) {
++            if (g_tpool_map[s].res == r) {
++                ld_tpool_block b = g_tpool_map[s];
++                /* delete with backward shift so probe chains stay intact */
++                u32 hole = s, j = s;
++                for (;;) {
++                    j = (j + 1) & (LD_TPOOL_MAP - 1);
++                    if (!g_tpool_map[j].res) break;
++                    const u32 home = ld_tpool_slot(g_tpool_map[j].res);
++                    const int movable = (hole <= j) ? (home <= hole || home > j)
++                                                    : (home <= hole && home > j);
++                    if (movable) { g_tpool_map[hole] = g_tpool_map[j]; hole = j; }
++                }
++                g_tpool_map[hole].res = NULL;
++                if (g_tpool_n_free < LD_TPOOL_FREE) {
++                    b.res = NULL;
++                    g_tpool_free[g_tpool_n_free++] = b;
++                }
++                break;
++            }
++            s = (s + 1) & (LD_TPOOL_MAP - 1);
++        }
++    }
++    r->lpVtbl->Release(r);
++}
++
+ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t* lv, u32 n)
+ {
+     if (n == 0) return NULL;
+@@ -2167,10 +2352,15 @@ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t*
+     rd.Width = lv[0].w; rd.Height = lv[0].h; rd.DepthOrArraySize = 1;
+     rd.MipLevels = (u16)n; rd.Format = fmt; rd.SampleDesc.Count = 1;
+     ID3D12Resource* tex = NULL;
+-    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+-                                                      D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+-                                                      &IID_ID3D12Resource, (void**)&tex)))
++    (void)hp;
++    const LONGLONG hc0 = ld_pf_qpc();
++    if (FAILED(ld_tex_create(&rd, D3D12_RESOURCE_STATE_COPY_DEST, &tex)))
+         return NULL;
++    { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
++      const LONGLONG hc1 = ld_pf_qpc();
++      if (hl && hc1 - hc0 > 5000)
++          fprintf(stderr, "[hitch] create %ux%u fmt=%d mips=%u %.2f ms\n", lv[0].w, lv[0].h,
++                  (int)fmt, n, (double)(hc1 - hc0) / 1e4); }
+     for (u32 m = 0; m < n; m++) {
+         const u32 pitch = (lv[m].row_bytes + 255) & ~255u;
+         const u32 start = (g.upload_used + 511) & ~511u;
+@@ -2217,10 +2407,8 @@ static ID3D12Resource* create_texture_cube(
+     rd.Width = lv[0].w; rd.Height = lv[0].h; rd.DepthOrArraySize = 6;
+     rd.MipLevels = (u16)n_mips; rd.Format = fmt; rd.SampleDesc.Count = 1;
+     ID3D12Resource* tex = NULL;
+-    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(
+-            g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+-            D3D12_RESOURCE_STATE_COPY_DEST, NULL,
+-            &IID_ID3D12Resource, (void**)&tex)))
++    (void)hp;
++    if (FAILED(ld_tex_create(&rd, D3D12_RESOURCE_STATE_COPY_DEST, &tex)))
+         return NULL;
+     for (u32 face = 0; face < 6; face++) {
+         for (u32 mip = 0; mip < n_mips; mip++) {
+@@ -2228,7 +2416,7 @@ static ID3D12Resource* create_texture_cube(
+             const u32 pitch = (level->row_bytes + 255) & ~255u;
+             const u32 start = (g.upload_used + 511) & ~511u;
+             if ((u64)start + (u64)pitch * level->rows > UPLOAD_SIZE) {
+-                tex->lpVtbl->Release(tex);
++                ld_tex_release(tex);   /* nothing recorded against it yet */
+                 return NULL;
+             }
+             for (u32 y = 0; y < level->rows; y++)
+@@ -2334,7 +2522,15 @@ static u32 texture_source_span(const rsx_dsp_texture* t)
+     return t->cubemap ? span * 6 : span;
+ }
+ 
++static u64 texture_content_hash_impl(const rsx_dsp_texture* t, int* readable);
+ static u64 texture_content_hash(const rsx_dsp_texture* t, int* readable)
++{
++    const LONGLONG begin = g_pf_phases > 0 ? ld_pf_qpc() : 0;
++    const u64 h = texture_content_hash_impl(t, readable);
++    if (g_pf_phases > 0) g_pf.texhash_ticks += ld_pf_qpc() - begin;
++    return h;
++}
++static u64 texture_content_hash_impl(const rsx_dsp_texture* t, int* readable)
+ {
+     const u32 span = texture_source_span(t);
+     const u8* src = span ? guest_ptr(t->location, t->offset, span) : NULL;
+@@ -2372,6 +2568,20 @@ static u64 texture_content_hash(const rsx_dsp_texture* t, int* readable)
+      * deliberately cheap; this is a mutation detector, not a content ID. */
+     u64 hash = 1469598103934665603ull;
+     u32 i = 0;
++    {   /* four independent chains: the single FNV chain was bound by the
++         * multiply latency (~2 B/cycle); this runs at memory speed */
++        u64 h1 = hash ^ 0x9E3779B97F4A7C15ull, h2 = hash ^ 0xC2B2AE3D27D4EB4Full,
++            h3 = hash ^ 0x165667B19E3779F9ull;
++        for (; i + 32 <= span; i += 32) {
++            u64 w[4];
++            memcpy(w, src + i, sizeof(w));
++            hash = (hash ^ w[0]) * 1099511628211ull;
++            h1 = (h1 ^ w[1]) * 1099511628211ull;
++            h2 = (h2 ^ w[2]) * 1099511628211ull;
++            h3 = (h3 ^ w[3]) * 1099511628211ull;
++        }
++        hash ^= ((h1 << 21) | (h1 >> 43)) ^ ((h2 << 42) | (h2 >> 22)) ^ (h3 * 3u);
++    }
+     for (; i + 8 <= span; i += 8) {
+         u64 word;
+         memcpy(&word, src + i, sizeof(word));
+@@ -2643,8 +2853,16 @@ static ID3D12Resource* decode_guest_texture_profiled(
+ #endif
+     const LONGLONG pf_t0 = ld_pf_qpc();
+     ID3D12Resource* result = decode_guest_texture(texture, remap);
+-    g_pf.tex_ticks += ld_pf_qpc() - pf_t0;
++    const LONGLONG pf_spent = ld_pf_qpc() - pf_t0;
++    g_pf.tex_ticks += pf_spent;
+     g_pf.tex++;
++    { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
++      if (hl && pf_spent > 5000)   /* > 0.5 ms (QPC at 10 MHz) */
++          fprintf(stderr, "[hitch] tex frame=%u %u:0x%08X fmt=0x%02X %ux%u mips=%u cube=%u "
++                          "remap=0x%04X %.2f ms\n", g_ld_frames, texture->location,
++                  texture->offset, texture->format, texture->width, texture->height,
++                  texture->mipmaps, texture->cubemap, remap & 0xFFFF,
++                  (double)pf_spent / 1e4); }
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.texture_decode_qpc +=
+         (u64)(ld_profile_qpc() - begin);
+@@ -4265,6 +4483,333 @@ static u32 vp_txl_unit_mask(const u8* ucode, u32 instrs)
+     return mask;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * PSO disk cache (RSX_PSO_LIBRARY, default on; "0" = always create)
++ *
++ * The shader disk cache saves the HLSL compile, but every new pipeline was
++ * still a CreateGraphicsPipelineState -- the driver's own compile, 0.1-1.4 ms
++ * each, ~50 of them when a fight loads. An ID3D12PipelineLibrary keeps the
++ * driver-compiled pipelines in <shader cache dir>\pso_library.bin: a known
++ * pipeline is loaded by name (its shaders + state hashed), a new one is
++ * created and stored. The library is written back once no pipeline has been
++ * added for ~5 s (serialized on this thread, written by a short-lived one),
++ * so a killed process keeps all but its last few seconds. A library from
++ * another driver or GPU fails to open and is replaced.
++ * ------------------------------------------------------------------------- */
++static ID3D12PipelineLibrary* g_pso_lib;
++static SRWLOCK g_pso_lib_lock = SRWLOCK_INIT;   /* walker + prewarm thread */
++static int ld_pso_lib_open_locked(void);
++static int g_pso_lib_state = -1;          /* -1 unopened, 0 off, 1 on */
++static void* g_pso_lib_file_data;         /* must outlive the library */
++static u32 g_pso_lib_dirty;               /* pipelines stored since the last save */
++static u32 g_pso_lib_dirty_frame;
++static u64 g_pso_lib_hits, g_pso_lib_stores;
++static char g_pso_lib_path[MAX_PATH];
++
++static int ld_pso_lib_open(void)
++{
++    if (g_pso_lib_state >= 0) return g_pso_lib_state;
++    static SRWLOCK open_lock = SRWLOCK_INIT;   /* walker and prewarm thread */
++    AcquireSRWLockExclusive(&open_lock);
++    if (g_pso_lib_state >= 0) { ReleaseSRWLockExclusive(&open_lock); return g_pso_lib_state; }
++    const int r = ld_pso_lib_open_locked();
++    ReleaseSRWLockExclusive(&open_lock);
++    return r;
++}
++static int ld_pso_lib_open_locked(void)
++{
++    g_pso_lib_state = 0;
++    const char* e = getenv("RSX_PSO_LIBRARY");
++    if ((e && *e == '0') || !shader_disk_cache_prepare()) return 0;
++    ID3D12Device1* d1 = NULL;
++    if (FAILED(g.dev->lpVtbl->QueryInterface(g.dev, &IID_ID3D12Device1, (void**)&d1)) || !d1)
++        return 0;
++    snprintf(g_pso_lib_path, sizeof(g_pso_lib_path), "%s\\pso_library.bin", g_ld_shader_disk_dir);
++    size_t n = 0;
++    FILE* f = fopen(g_pso_lib_path, "rb");
++    if (f) {
++        fseek(f, 0, SEEK_END);
++        const long sz = ftell(f);
++        fseek(f, 0, SEEK_SET);
++        if (sz > 0 && (g_pso_lib_file_data = malloc((size_t)sz)) != NULL)
++            n = fread(g_pso_lib_file_data, 1, (size_t)sz, f);
++        fclose(f);
++    }
++    HRESULT hr = E_FAIL;
++    if (n)
++        hr = d1->lpVtbl->CreatePipelineLibrary(d1, g_pso_lib_file_data, n,
++                                               &IID_ID3D12PipelineLibrary, (void**)&g_pso_lib);
++    if (FAILED(hr)) {   /* none, or written by another driver/GPU: start over */
++        if (n) fprintf(stderr, "[pso-library] %s unusable (hr=0x%08lX), starting a new one\n",
++                       g_pso_lib_path, (unsigned long)hr);
++        free(g_pso_lib_file_data); g_pso_lib_file_data = NULL; n = 0;
++        hr = d1->lpVtbl->CreatePipelineLibrary(d1, NULL, 0, &IID_ID3D12PipelineLibrary,
++                                               (void**)&g_pso_lib);
++    }
++    d1->lpVtbl->Release(d1);
++    if (FAILED(hr) || !g_pso_lib) { g_pso_lib = NULL; return 0; }
++    fprintf(stderr, "[pso-library] %s: %zu bytes loaded\n", g_pso_lib_path, n);
++    g_pso_lib_state = 1;
++    return 1;
++}
++
++typedef struct { void* data; size_t n; char path[MAX_PATH]; } ld_pso_lib_write;
++static DWORD WINAPI ld_pso_lib_writer(LPVOID p)
++{
++    ld_pso_lib_write* w = (ld_pso_lib_write*)p;
++    char tmp[MAX_PATH + 8];
++    snprintf(tmp, sizeof(tmp), "%s.tmp", w->path);
++    FILE* f = fopen(tmp, "wb");
++    int ok = f && fwrite(w->data, 1, w->n, f) == w->n;
++    if (f) ok = (fclose(f) == 0) && ok;
++    if (ok) MoveFileExA(tmp, w->path, MOVEFILE_REPLACE_EXISTING);
++    else DeleteFileA(tmp);
++    free(w->data); free(w);
++    return 0;
++}
++
++/* Called once per presented frame. */
++static void ld_pso_lib_maybe_save(int force)
++{
++    if (g_pso_lib_state != 1 || !g_pso_lib_dirty) return;
++    if (!force && g_ld_frames - g_pso_lib_dirty_frame < 300) return;
++    if (!TryAcquireSRWLockExclusive(&g_pso_lib_lock)) return;   /* prewarm busy */
++    const SIZE_T n = g_pso_lib->lpVtbl->GetSerializedSize(g_pso_lib);
++    ld_pso_lib_write* w = (ld_pso_lib_write*)calloc(1, sizeof(*w));
++    void* data = n ? malloc(n) : NULL;
++    const int ok = w && data && SUCCEEDED(g_pso_lib->lpVtbl->Serialize(g_pso_lib, data, n));
++    ReleaseSRWLockExclusive(&g_pso_lib_lock);
++    if (!ok) { free(w); free(data); g_pso_lib_dirty = 0; return; }
++    w->data = data; w->n = n;
++    snprintf(w->path, sizeof(w->path), "%s", g_pso_lib_path);
++    fprintf(stderr, "[pso-library] saving %u new pipeline(s), %zu bytes\n",
++            g_pso_lib_dirty, (size_t)n);
++    g_pso_lib_dirty = 0;
++    if (force) { ld_pso_lib_writer(w); return; }
++    HANDLE h = CreateThread(NULL, 64 * 1024, ld_pso_lib_writer, w, 0, NULL);
++    if (h) CloseHandle(h); else ld_pso_lib_writer(w);
++}
++
++/* Create through the library: load by name, else create and store. */
++static HRESULT ld_pso_create(const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd, u64 name_hi,
++                             u64 name_lo, ID3D12PipelineState** out)
++{
++    *out = NULL;
++    if (ld_pso_lib_open()) {
++        WCHAR name[40];
++        swprintf(name, 40, L"%016llx%016llx", (unsigned long long)name_hi,
++                 (unsigned long long)name_lo);
++        AcquireSRWLockExclusive(&g_pso_lib_lock);
++        const HRESULT lr = g_pso_lib->lpVtbl->LoadGraphicsPipeline(
++            g_pso_lib, name, pd, &IID_ID3D12PipelineState, (void**)out);
++        ReleaseSRWLockExclusive(&g_pso_lib_lock);
++        if (SUCCEEDED(lr)) {
++            InterlockedIncrement64((volatile LONG64*)&g_pso_lib_hits);
++            return S_OK;
++        }
++        const HRESULT hr = g.dev->lpVtbl->CreateGraphicsPipelineState(
++            g.dev, pd, &IID_ID3D12PipelineState, (void**)out);
++        if (SUCCEEDED(hr)) {
++            AcquireSRWLockExclusive(&g_pso_lib_lock);
++            if (SUCCEEDED(g_pso_lib->lpVtbl->StorePipeline(g_pso_lib, name, *out))) {
++                g_pso_lib_stores++;
++                g_pso_lib_dirty++;
++                g_pso_lib_dirty_frame = g_ld_frames;
++            }
++            ReleaseSRWLockExclusive(&g_pso_lib_lock);
++        }
++        return hr;
++    }
++    return g.dev->lpVtbl->CreateGraphicsPipelineState(
++        g.dev, pd, &IID_ID3D12PipelineState, (void**)out);
++}
++
++/* ---------------------------------------------------------------------------
++ * PSO prewarm (RSX_PSO_PREWARM, default on; "0" = off)
++ *
++ * Even from the pipeline library a pipeline costs the driver 0.1-1 ms to
++ * create, and the first frames of a fight need ~50 new ones (~25 ms in two
++ * frames). Every pipeline this renderer creates is therefore also recorded
++ * -- its PSO key, both shader blobs and the fixed-function state -- in
++ * <shader cache dir>\pso_prewarm.bin, and at start-up a background thread
++ * re-creates all recorded pipelines (through the library) while the game
++ * boots. get_pso takes a prewarmed pipeline on a key miss instead of
++ * decompiling and building. The file is tied to this executable's build
++ * (PE time stamp + image size): a rebuilt renderer may translate the same
++ * key differently, so a file from another build is discarded.
++ * ------------------------------------------------------------------------- */
++#define LD_PREWARM_MAGIC   0x31525750u   /* "PWR1" */
++#define LD_PREWARM_SLOTS   8192u
++typedef struct {
++    u32 magic, total_bytes;
++    u64 key, name_hi, name_lo;
++    u32 vs_len, ps_len;
++    u32 n_il;
++    u32 il_index[16], il_offset[16];
++    D3D12_BLEND_DESC blend;
++    D3D12_RASTERIZER_DESC rast;
++    D3D12_DEPTH_STENCIL_DESC ds;
++    u32 sample_mask, num_rt, topo;
++    DXGI_FORMAT rtv[8], dsv;
++} ld_prewarm_rec;
++typedef struct { volatile u64 key; ID3D12PipelineState* volatile pso; } ld_prewarm_slot;
++static ld_prewarm_slot g_prewarm[LD_PREWARM_SLOTS];
++static int g_prewarm_on = -1;
++static char g_prewarm_path[MAX_PATH];
++static u64 g_prewarm_stamp;
++static volatile LONG g_prewarm_done;
++static volatile LONG64 g_prewarm_created, g_prewarm_taken;
++
++static u32 ld_prewarm_home(u64 key) { return (u32)(key * 0x9E3779B97F4A7C15ull >> 51) & (LD_PREWARM_SLOTS - 1); }
++
++/* Claim key's slot (inserting it if absent). Returns the slot, NULL when full.
++ * Only the prewarm thread inserts until g_prewarm_done; after that only the
++ * walker does, so there is one writer at a time. */
++static ld_prewarm_slot* ld_prewarm_slot_for(u64 key, int insert)
++{
++    u32 s = ld_prewarm_home(key);
++    for (u32 i = 0; i < LD_PREWARM_SLOTS; i++, s = (s + 1) & (LD_PREWARM_SLOTS - 1)) {
++        const u64 k = g_prewarm[s].key;
++        if (k == key) return &g_prewarm[s];
++        if (!k) {
++            if (!insert) return NULL;
++            g_prewarm[s].pso = NULL;
++            InterlockedExchange64((volatile LONG64*)&g_prewarm[s].key, (LONG64)key);
++            return &g_prewarm[s];
++        }
++    }
++    return NULL;
++}
++
++static HRESULT ld_pso_create(const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd, u64 name_hi,
++                             u64 name_lo, ID3D12PipelineState** out);
++
++static void ld_prewarm_build_desc(const ld_prewarm_rec* r, const u8* vs, const u8* ps,
++                                  D3D12_INPUT_ELEMENT_DESC il[16],
++                                  D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd)
++{
++    memset(pd, 0, sizeof(*pd));
++    for (u32 i = 0; i < r->n_il && i < 16; i++) {
++        D3D12_INPUT_ELEMENT_DESC e = {
++            "ATTR", r->il_index[i], DXGI_FORMAT_R32G32B32A32_FLOAT, 0, r->il_offset[i],
++            D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 };
++        il[i] = e;
++    }
++    pd->pRootSignature = g.rootsig_x;
++    pd->VS.pShaderBytecode = vs; pd->VS.BytecodeLength = r->vs_len;
++    pd->PS.pShaderBytecode = ps; pd->PS.BytecodeLength = r->ps_len;
++    pd->InputLayout.pInputElementDescs = r->n_il ? il : NULL;
++    pd->InputLayout.NumElements = r->n_il;
++    pd->BlendState = r->blend;
++    pd->RasterizerState = r->rast;
++    pd->DepthStencilState = r->ds;
++    pd->SampleMask = r->sample_mask;
++    pd->PrimitiveTopologyType = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)r->topo;
++    pd->NumRenderTargets = r->num_rt;
++    for (u32 i = 0; i < 8; i++) pd->RTVFormats[i] = r->rtv[i];
++    pd->DSVFormat = r->dsv;
++    pd->SampleDesc.Count = 1;
++}
++
++static DWORD WINAPI ld_prewarm_thread(LPVOID unused)
++{
++    (void)unused;
++    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
++    FILE* f = fopen(g_prewarm_path, "rb");
++    u64 stamp = 0;
++    u32 n = 0, failed = 0;
++    if (f && fread(&stamp, sizeof(stamp), 1, f) == 1 && stamp == g_prewarm_stamp) {
++        ld_prewarm_rec r;
++        u8* buf = NULL; u32 cap = 0;
++        while (fread(&r, sizeof(r), 1, f) == 1) {
++            if (r.magic != LD_PREWARM_MAGIC || r.total_bytes != sizeof(r) + r.vs_len + r.ps_len ||
++                r.vs_len > (4u << 20) || r.ps_len > (4u << 20) || r.n_il > 16 || r.num_rt > 8)
++                break;
++            const u32 need = r.vs_len + r.ps_len;
++            if (need > cap) { u8* nb = (u8*)realloc(buf, need); if (!nb) break; buf = nb; cap = need; }
++            if (fread(buf, 1, need, f) != need) break;
++            ld_prewarm_slot* s = ld_prewarm_slot_for(r.key, 1);
++            if (!s || s->pso) continue;            /* full, or a duplicate record */
++            D3D12_INPUT_ELEMENT_DESC il[16];
++            D3D12_GRAPHICS_PIPELINE_STATE_DESC pd;
++            ld_prewarm_build_desc(&r, buf, buf + r.vs_len, il, &pd);
++            ID3D12PipelineState* pso = NULL;
++            if (SUCCEEDED(ld_pso_create(&pd, r.name_hi, r.name_lo, &pso)) && pso) {
++                InterlockedExchangePointer((PVOID volatile*)&s->pso, pso);
++                InterlockedIncrement64(&g_prewarm_created);
++                n++;
++            } else failed++;
++        }
++        free(buf);
++    } else if (f) {
++        fclose(f); f = NULL;
++        DeleteFileA(g_prewarm_path);   /* another build's pipelines */
++    }
++    if (f) fclose(f);
++    InterlockedExchange(&g_prewarm_done, 1);
++    fprintf(stderr, "[pso-prewarm] %u pipeline(s) created ahead, %u failed\n", n, failed);
++    return 0;
++}
++
++static void ld_prewarm_start(void)
++{
++    if (g_prewarm_on >= 0) return;
++    g_prewarm_on = 0;
++    const char* e = getenv("RSX_PSO_PREWARM");
++    if ((e && *e == '0') || !shader_disk_cache_prepare()) return;
++    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)GetModuleHandleA(NULL);
++    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)((const u8*)dos + dos->e_lfanew);
++    g_prewarm_stamp = ((u64)nt->FileHeader.TimeDateStamp << 32) ^
++                      nt->OptionalHeader.SizeOfImage ^ ((u64)sizeof(ld_prewarm_rec) << 48);
++    snprintf(g_prewarm_path, sizeof(g_prewarm_path), "%s\\pso_prewarm.bin", g_ld_shader_disk_dir);
++    g_prewarm_on = 1;
++    HANDLE h = CreateThread(NULL, 256 * 1024, ld_prewarm_thread, NULL, 0, NULL);
++    if (h) CloseHandle(h); else g_prewarm_done = 1;
++}
++
++/* The walker: a pipeline the prewarm thread already made for this key. */
++static ID3D12PipelineState* ld_prewarm_take(u64 key)
++{
++    if (g_prewarm_on != 1) return NULL;
++    ld_prewarm_slot* s = ld_prewarm_slot_for(key, 0);
++    ID3D12PipelineState* pso = s ? s->pso : NULL;
++    if (pso) InterlockedIncrement64(&g_prewarm_taken);
++    return pso;
++}
++
++/* The walker, after creating a pipeline for `key`: append its record. */
++static void ld_prewarm_record(u64 key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pd,
++                              const D3D12_INPUT_ELEMENT_DESC* il, u32 n_il,
++                              u64 name_hi, u64 name_lo)
++{
++    if (g_prewarm_on != 1 || !g_prewarm_done) return;   /* file still being read */
++    ld_prewarm_slot* s = ld_prewarm_slot_for(key, 1);
++    if (!s || s->pso) return;
++    ld_prewarm_rec r;
++    memset(&r, 0, sizeof(r));
++    r.magic = LD_PREWARM_MAGIC;
++    r.key = key; r.name_hi = name_hi; r.name_lo = name_lo;
++    r.vs_len = (u32)pd->VS.BytecodeLength; r.ps_len = (u32)pd->PS.BytecodeLength;
++    r.total_bytes = (u32)sizeof(r) + r.vs_len + r.ps_len;
++    r.n_il = n_il > 16 ? 16 : n_il;
++    for (u32 i = 0; i < r.n_il; i++) { r.il_index[i] = il[i].SemanticIndex; r.il_offset[i] = il[i].AlignedByteOffset; }
++    r.blend = pd->BlendState; r.rast = pd->RasterizerState; r.ds = pd->DepthStencilState;
++    r.sample_mask = pd->SampleMask; r.num_rt = pd->NumRenderTargets;
++    r.topo = (u32)pd->PrimitiveTopologyType;
++    for (u32 i = 0; i < 8; i++) r.rtv[i] = pd->RTVFormats[i];
++    r.dsv = pd->DSVFormat;
++    FILE* f = fopen(g_prewarm_path, "ab");
++    if (!f) return;
++    fseek(f, 0, SEEK_END);   /* "ab" reports position 0 until the first write */
++    if (ftell(f) == 0) fwrite(&g_prewarm_stamp, sizeof(g_prewarm_stamp), 1, f);
++    fwrite(&r, sizeof(r), 1, f);
++    fwrite(pd->VS.pShaderBytecode, 1, r.vs_len, f);
++    fwrite(pd->PS.pShaderBytecode, 1, r.ps_len, f);
++    fclose(f);
++    s->pso = (ID3D12PipelineState*)(uintptr_t)1;   /* recorded; never taken (see below) */
++}
++
++static u64 g_ld_build_key;   /* get_pso's key for the pipeline being built */
+ static ID3D12PipelineState* build_pso(
+     const char* vs_hlsl, const char* ps_hlsl, const render_state_t* rs,
+     const rsx_vertex_layout_plan* masked_layout, int packed_offsets)
+@@ -4450,8 +4995,24 @@ static ID3D12PipelineState* build_pso(
+     const LONGLONG create_begin = ld_profile_qpc();
+ #endif
+     const LONGLONG pf_create_begin = ld_pf_qpc();
+-    HRESULT hr = g.dev->lpVtbl->CreateGraphicsPipelineState(
+-        g.dev, &pd, &IID_ID3D12PipelineState, (void**)&pso);
++    /* library name: both shaders' sources + every other field of the desc
++     * that varies here (render state, input layout, targets) */
++    u64 name_lo = fnv1a(rs, sizeof(*rs), ps_hash);
++    for (u32 slot = 0; slot < input_count; slot++) {   /* not SemanticName: a pointer */
++        const u32 f[3] = { il[slot].SemanticIndex, (u32)il[slot].Format,
++                           il[slot].AlignedByteOffset };
++        name_lo = fnv1a(f, sizeof(f), name_lo);
++    }
++    name_lo = fnv1a(&pd.NumRenderTargets, sizeof(pd.NumRenderTargets), name_lo);
++    name_lo = fnv1a(pd.RTVFormats, sizeof(pd.RTVFormats), name_lo);
++    name_lo = fnv1a(&pd.BlendState, sizeof(pd.BlendState), name_lo);
++    name_lo = fnv1a(&pd.RasterizerState, sizeof(pd.RasterizerState), name_lo);
++    name_lo = fnv1a(&pd.DepthStencilState, sizeof(pd.DepthStencilState), name_lo);
++    name_lo = fnv1a(&pd.DSVFormat, sizeof(pd.DSVFormat), name_lo);
++    const u64 name_hi = vs_hash ^ ((u64)vs_length << 40) ^ ((u64)ps_length << 20);
++    HRESULT hr = ld_pso_create(&pd, name_hi, name_lo, &pso);
++    if (SUCCEEDED(hr) && pso)
++        ld_prewarm_record(g_ld_build_key, &pd, il, input_count, name_hi, name_lo);
+     g_pf.create_ticks += ld_pf_qpc() - pf_create_begin;
+     g_pf.creates++;
+ #if defined(YZ_PERF_PROFILE)
+@@ -4532,24 +5093,69 @@ static void ld_pso_index_add(u64 key, u32 index)
+     g_ld_pso_index[h] = index + 1;
+ }
+ 
+-static int ld_current_vertex_layout(rsx_vertex_layout_plan* layout)
+-{
++/* What a draw needs to know about the current transform program: its size,
++ * its hash (PSO identity), the attributes it reads and its TXL units. It
++ * depends only on vp[] from the start slot on, so it is recomputed only when
++ * the start slot moves or a vp[] word actually changes (rsx.vp_gen) --
++ * Tekken 5 DR re-uploads the same program for nearly every draw, which
++ * leaves vp_gen alone. RSX_VP_MEMO=0 recomputes per draw. */
++typedef struct {
++    int valid;
++    u32 gen, start;
++    u32 instrs;          /* 0 = no program */
++    u64 hash;            /* ld_fast_hash(ucode, instrs * 16, 0x5650) */
++    u32 input_mask;      /* 0xFFFF when the analysis is not exact */
++    u32 txl_mask;
++} ld_vp_memo;
++static ld_vp_memo g_ld_vpm;
++static u64 g_ld_vpm_hits, g_ld_vpm_misses;
++
++static const ld_vp_memo* ld_vp_info(void)
++{
++    static int memo = -1;
++    if (memo < 0) { const char* e = getenv("RSX_VP_MEMO"); memo = !(e && *e == '0'); }
+     const u32 start = rsx_dsp_vp_start(&g.rsx);
+-    if (start >= RSX_DSP_VP_INSTR) {
+-        ld_layout_plan_get(0xFFFFu, layout);
+-        return 0;
+-    }
++    if (memo && g_ld_vpm.valid && g_ld_vpm.gen == g.rsx.vp_gen &&
++        g_ld_vpm.start == start) {
++        g_ld_vpm_hits++;
++        return &g_ld_vpm;
++    }
++    g_ld_vpm_misses++;
++    g_ld_vpm.valid = 1;
++    g_ld_vpm.gen = g.rsx.vp_gen;
++    g_ld_vpm.start = start;
++    g_ld_vpm.instrs = 0;
++    g_ld_vpm.hash = 0;
++    g_ld_vpm.input_mask = 0xFFFFu;
++    g_ld_vpm.txl_mask = 0;
++    if (start >= RSX_DSP_VP_INSTR)
++        return &g_ld_vpm;
+     const u8* vp_uc = (const u8*)(g.rsx.vp + start * 4);
+     const u32 vp_instrs = rsx_vp_program_size_instrs(
+         vp_uc, (RSX_DSP_VP_INSTR - start) * 16);
++    g_ld_vpm.instrs = vp_instrs;
++    if (!vp_instrs)
++        return &g_ld_vpm;
++    g_ld_vpm.hash = ld_fast_hash(vp_uc, vp_instrs * 16, 0x5650u);
++    g_ld_vpm.txl_mask = vp_txl_unit_mask(vp_uc, vp_instrs);
+     rsx_vp_input_analysis analysis = {0xFFFFu, 0};
+-    if (!vp_instrs ||
+-        rsx_vp_analyze_inputs(
++    if (rsx_vp_analyze_inputs(
+             vp_uc, vp_instrs * 16, &analysis) != (int)vp_instrs ||
+         !analysis.exact)
+         analysis.input_mask = 0xFFFFu;
+-    ld_layout_plan_get(analysis.input_mask, layout);
+-    return vp_instrs != 0;
++    g_ld_vpm.input_mask = analysis.input_mask;
++    return &g_ld_vpm;
++}
++
++static int ld_current_vertex_layout(rsx_vertex_layout_plan* layout)
++{
++    const ld_vp_memo* vpm = ld_vp_info();
++    if (vpm->start >= RSX_DSP_VP_INSTR) {
++        ld_layout_plan_get(0xFFFFu, layout);
++        return 0;
++    }
++    ld_layout_plan_get(vpm->instrs ? vpm->input_mask : 0xFFFFu, layout);
++    return vpm->instrs != 0;
+ }
+ 
+ /* LD_PSO_DBG=1: name the first bail-out of each kind in get_pso(). Every exit
+@@ -4569,21 +5175,67 @@ static void ld_pso_bail(int* said, const char* reason)
+ #define LD_PSO_BAIL(reason) \
+     do { static int _said_ = 0; ld_pso_bail(&_said_, (reason)); } while (0)
+ 
++/* Fragment-program memo (buffered constants mode): size, structural hash
++ * and inline constants of the program at (location, offset), valid while
++ * its bytes are unchanged -- checked with a memcmp against a copy, so a
++ * program whose constants the guest patches in place is simply recollected.
++ * RSX_FP_MEMO=0 recomputes per draw. */
++#define LD_FP_MEMO_N        64u
++#define LD_FP_MEMO_BYTES    4096u
++#define LD_FP_MEMO_CONSTS   64u
++typedef struct {
++    u32 valid, loc, off, size, n_const;
++    u64 shash;
++    u32 consts[LD_FP_MEMO_CONSTS][4];
++    u8 bytes[LD_FP_MEMO_BYTES];
++} ld_fp_memo;
++static ld_fp_memo* g_ld_fpm;
++static u64 g_ld_fpm_hits, g_ld_fpm_misses;
++static int ld_fp_memo_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char* e = getenv("RSX_FP_MEMO");
++        on = !(e && *e == '0');
++        if (on) {
++            g_ld_fpm = (ld_fp_memo*)calloc(LD_FP_MEMO_N, sizeof(ld_fp_memo));
++            if (!g_ld_fpm) on = 0;
++        }
++    }
++    return on;
++}
++static ld_fp_memo* ld_fp_memo_slot(u32 loc, u32 off)
++{
++    const u32 h = (u32)((((u64)off << 1 | loc) * 0x9E3779B97F4A7C15ull) >> 40);
++    return &g_ld_fpm[h % LD_FP_MEMO_N];
++}
++
+ static ID3D12PipelineState* get_pso(
+     const rsx_vertex_layout_plan* masked_layout, int packed_payload)
+ {
+     memset(&g_ld_current_pso, 0, sizeof(g_ld_current_pso));
+-    const u32 start = rsx_dsp_vp_start(&g.rsx);
++    const ld_vp_memo* vpm = ld_vp_info();
++    const u32 start = vpm->start;
+     if (start >= RSX_DSP_VP_INSTR) { LD_PSO_BAIL("no vertex program uploaded (vp start out of range)"); return NULL; }
+     const u8* vp_uc = (const u8*)(g.rsx.vp + start * 4);
+-    const u32 vp_instrs = rsx_vp_program_size_instrs(vp_uc, (RSX_DSP_VP_INSTR - start) * 16);
++    const u32 vp_instrs = vpm->instrs;
+     if (!vp_instrs) { LD_PSO_BAIL("vertex program has zero instructions"); return NULL; }
+ 
+     u32 fp_loc = 0;
+     const u32 fp_off = rsx_dsp_fragment_program(&g.rsx, &fp_loc);
+     const u8* fp_uc = guest_ptr(fp_loc, fp_off, 16);
+     if (!fp_uc) { LD_PSO_BAIL("fragment program address does not resolve to guest memory"); return NULL; }
+-    const u32 fp_size = rsx_fp_program_size(fp_uc, 0x10000);
++    ld_fp_memo* fpm = NULL;      /* hit: bytes identical to the memo's copy */
++    if (ld_fp_constants_buffered() && ld_fp_memo_on()) {
++        ld_fp_memo* m = ld_fp_memo_slot(fp_loc, fp_off);
++        if (m->valid && m->loc == fp_loc && m->off == fp_off) {
++            const u8* whole = guest_ptr(fp_loc, fp_off, m->size);
++            if (whole && memcmp(whole, m->bytes, m->size) == 0)
++                fpm = m;
++        }
++        if (fpm) g_ld_fpm_hits++; else g_ld_fpm_misses++;
++    }
++    const u32 fp_size = fpm ? fpm->size : rsx_fp_program_size(fp_uc, 0x10000);
+     if (!fp_size) {
+         /* No END-bit instruction in 64 KB: the bytes at (location, offset) are
+          * not a fragment program. Almost always the LOCATION is wrong, not the
+@@ -4636,15 +5288,51 @@ static ID3D12PipelineState* get_pso(
+     static int ctrl_auto = -1;
+     if (ctrl_auto < 0) ctrl_auto = getenv("RSX_FP_CTRL_AUTO") ? 1 : 0;
+     const u32 fp_ctrl = ctrl_auto ? RSX_FP_CTRL_AUTO : rsx_dsp_shader_control(&g.rsx);
++    /* Per-unit PSO inputs, one pass over the ENABLED units only (each used
++     * to be its own 16-unit loop of full descriptor decodes). */
+     u32 cube_mask = 0;
++    u32 unnorm_mask = 0;
++    u32 unnorm_dim[16][2] = {{0}};
++    u32 shadow_mask = 0, shadow_linear = 0;
++    u32 shadow_func[16] = {0};
+     for (u32 unit = 0; unit < RSX_DSP_NUM_TEXTURES; unit++) {
+-        rsx_dsp_texture texture;
+-        rsx_dsp_get_texture(&g.rsx, unit, &texture);
+-        if (texture.enabled && texture.cubemap)
++        if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + unit * 0x20) >> 31))
++            continue;
++        rsx_dsp_texture ut;
++        rsx_dsp_get_texture(&g.rsx, unit, &ut);
++        if (ut.cubemap)
+             cube_mask |= 1u << unit;
++        /* Texel-addressed (RSX_TEX_FMT_UNNORM) units need their coordinates
++         * divided by the texture size in the shader -- D3D12 has no
++         * unnormalised addressing mode. The divisor is baked into the HLSL,
++         * so the sizes are part of the PSO identity and must be in the key. */
++        if ((ut.format & TEX_FMT_UNNORM) && ut.width && ut.height) {
++            unnorm_mask |= 1u << unit;
++            unnorm_dim[unit][0] = ut.width;
++            unnorm_dim[unit][1] = ut.height;
++        }
++        /* Depth-format units with a compare zfunc are shadow samplers (see
++         * rsx_fp_apply_shadow_compare). The compare op and filter are baked
++         * into the HLSL, so they are PSO identity too. */
++        if (!ut.cubemap) {
++            const u32 bf = ut.format & TEX_FMT_BASE_MASK;
++            const u32 zf = (ut.wrap >> 28) & 0xFu;
++            if (bf >= 0x90u && bf <= 0x93u &&            /* DEPTH24_D8 .. DEPTH16_FLOAT */
++                zf != 0u && zf < 7u && !(ut.control0 & 0x4u)) {   /* NEVER/ALWAYS, alpha kill */
++                shadow_mask |= 1u << unit;
++                /* 0x90/0x92 are fixed-point (D24/D16): RSX clamps the
++                 * reference to [0,1] like GL, so points past the light's far
++                 * plane read as lit. Our snapshot is R32F, which would not
++                 * clamp on its own. */
++                shadow_func[unit] = zf | ((bf & 1u) ? 0u : 8u);
++                const u32 minf = (ut.filter >> 16) & 7u, magf = (ut.filter >> 24) & 7u;
++                if (magf == 2u || minf == 2u || minf == 4u || minf == 6u)
++                    shadow_linear |= 1u << unit;
++            }
++        }
+     }
+     const u32 vtex_mask = vertex_texture_mask();
+-    const u32 txl_mask = vp_txl_unit_mask(vp_uc, vp_instrs);
++    const u32 txl_mask = vpm->txl_mask;
+     if (txl_mask && !(txl_mask & vtex_mask)) {
+         g_ld_vtex_missing_for_txl++;
+         static u32 warned = 0;
+@@ -4672,18 +5360,37 @@ static ID3D12PipelineState* get_pso(
+ 
+     render_state_t rs;
+     decode_render_state(&rs);
+-    if (rsx_fp_collect_constants(
+-            fp_uc, fp_size, &g.fp_constants) < 0) {
+-        LD_PSO_BAIL("fragment program constant collection failed");
+-        return NULL;
++    u64 fp_shash = 0;
++    if (fpm) {
++        g.fp_constants.count = fpm->n_const;
++        memcpy(g.fp_constants.values, fpm->consts, (size_t)fpm->n_const * 16u);
++        fp_shash = fpm->shash;
++    } else {
++        if (rsx_fp_collect_constants(
++                fp_uc, fp_size, &g.fp_constants) < 0) {
++            LD_PSO_BAIL("fragment program constant collection failed");
++            return NULL;
++        }
++        if (ld_fp_constants_buffered()) {
++            fp_shash = rsx_fp_structural_hash(fp_uc, fp_size, 0x31535046u);
++            if (g_ld_fpm && fp_size <= LD_FP_MEMO_BYTES &&
++                g.fp_constants.count <= LD_FP_MEMO_CONSTS && fp_shash) {
++                ld_fp_memo* m = ld_fp_memo_slot(fp_loc, fp_off);
++                m->valid = 1; m->loc = fp_loc; m->off = fp_off; m->size = fp_size;
++                m->n_const = g.fp_constants.count;
++                memcpy(m->consts, g.fp_constants.values, (size_t)m->n_const * 16u);
++                m->shash = fp_shash;
++                memcpy(m->bytes, fp_uc, fp_size);
++            }
++        }
+     }
+     g.fp_alpha_ref = rsx_fp_alpha_ref(
+         rs.alpha_ref_raw, rs.alpha_ref_format);
+ 
+-    const u64 vp_fast_hash = ld_fast_hash(vp_uc, vp_instrs * 16, 0x5650u);
++    const u64 vp_fast_hash = vpm->hash;
+     u64 key = vp_fast_hash;
+     if (ld_fp_constants_buffered())
+-        key = rsx_fp_structural_hash(fp_uc, fp_size, key);
++        key = fp_shash ? fnv1a(&fp_shash, sizeof(fp_shash), key) : 0;
+     else
+         key = fnv1a(fp_uc, fp_size, key);
+     if (!key) {
+@@ -4694,43 +5401,8 @@ static ID3D12PipelineState* get_pso(
+     key = fnv1a(&fp_ctrl_key, sizeof(fp_ctrl_key), key);
+     key = fnv1a(&cube_mask, sizeof(cube_mask), key);
+     key = fnv1a(&vtex_mask, sizeof(vtex_mask), key);
+-    /* Texel-addressed (RSX_TEX_FMT_UNNORM) units need their coordinates divided
+-     * by the texture size in the shader -- D3D12 has no unnormalised addressing
+-     * mode. The divisor is baked into the HLSL, so the sizes are part of the
+-     * PSO identity and must be in the key. */
+-    u32 unnorm_mask = 0;
+-    u32 unnorm_dim[16][2] = {{0}};
+-    for (u32 uu = 0; uu < 16; uu++) {
+-        rsx_dsp_texture ut; rsx_dsp_get_texture(&g.rsx, uu, &ut);
+-        if (!ut.enabled || !(ut.format & TEX_FMT_UNNORM)) continue;
+-        if (!ut.width || !ut.height) continue;
+-        unnorm_mask |= 1u << uu;
+-        unnorm_dim[uu][0] = ut.width;
+-        unnorm_dim[uu][1] = ut.height;
+-    }
+     key = fnv1a(&unnorm_mask, sizeof(unnorm_mask), key);
+     if (unnorm_mask) key = fnv1a(unnorm_dim, sizeof(unnorm_dim), key);
+-    /* Depth-format units with a compare zfunc are shadow samplers (see
+-     * rsx_fp_apply_shadow_compare). The compare op and filter are baked into
+-     * the HLSL, so they are PSO identity too. */
+-    u32 shadow_mask = 0, shadow_linear = 0;
+-    u32 shadow_func[16] = {0};
+-    for (u32 uu = 0; uu < 16; uu++) {
+-        rsx_dsp_texture ut; rsx_dsp_get_texture(&g.rsx, uu, &ut);
+-        if (!ut.enabled || ut.cubemap) continue;
+-        const u32 bf = ut.format & TEX_FMT_BASE_MASK;
+-        if (bf < 0x90u || bf > 0x93u) continue;          /* DEPTH24_D8 .. DEPTH16_FLOAT */
+-        const u32 zf = (ut.wrap >> 28) & 0xFu;
+-        if (zf == 0u || zf >= 7u || (ut.control0 & 0x4u)) continue;   /* NEVER/ALWAYS, alpha kill */
+-        shadow_mask |= 1u << uu;
+-        /* 0x90/0x92 are fixed-point (D24/D16): RSX clamps the reference to
+-         * [0,1] like GL, so points past the light's far plane read as lit.
+-         * Our snapshot is R32F, which would not clamp on its own. */
+-        shadow_func[uu] = zf | ((bf & 1u) ? 0u : 8u);
+-        const u32 minf = (ut.filter >> 16) & 7u, magf = (ut.filter >> 24) & 7u;
+-        if (magf == 2u || minf == 2u || minf == 4u || minf == 6u)
+-            shadow_linear |= 1u << uu;
+-    }
+     if (shadow_mask) {
+         key = fnv1a(&shadow_mask, sizeof(shadow_mask), key);
+         key = fnv1a(&shadow_linear, sizeof(shadow_linear), key);
+@@ -4797,6 +5469,15 @@ static ID3D12PipelineState* get_pso(
+         LD_PSO_BAIL("PSO cache full (MAX_PSOS)");
+         return NULL;
+     }
++    { ID3D12PipelineState* warm = ld_prewarm_take(key);
++      if (warm && warm != (ID3D12PipelineState*)(uintptr_t)1) {
++          g.psos[g.n_psos].key = key;
++          g.psos[g.n_psos].pso = warm;
++          ld_pso_index_add(key, g.n_psos);
++          g.n_psos++;
++          return warm;
++      } }
++    g_ld_build_key = key;
+ 
+     static char vs_hlsl[256 * 1024];
+     static char ps_hlsl[256 * 1024];
+@@ -4915,9 +5596,19 @@ static ID3D12PipelineState* get_pso(
+         snprintf(fn, sizeof fn, "%s/hlsl_%016llx.ps.txt", hd, (unsigned long long)live_legacy_pso_key());
+         f = fopen(fn, "wb"); if (f) { fputs(fi > 0 ? ps_hlsl : "<fp fail>", f); fclose(f); }
+       } }
++    const LONGLONG pf_built0 = ld_pf_qpc();
++    const LONGLONG create_before = g_pf.create_ticks;
++    const u64 lib_hits_before = g_pso_lib_hits;
+     if (vi > 0 && fi > 0)
+         pso = build_pso(
+             vs_hlsl, ps_hlsl, &rs, masked_layout, packed_payload);
++    { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
++      if (hl) { const LONGLONG now = ld_pf_qpc();
++          fprintf(stderr, "[hitch] pso frame=%u key=%016llx decompile=%.2f build=%.2f create=%.2f lib=%d ms\n",
++                  g_ld_frames, (unsigned long long)key,
++                  (double)(pf_built0 - pf_miss_begin) / 1e4, (double)(now - pf_built0) / 1e4,
++                  (double)(g_pf.create_ticks - create_before) / 1e4,
++                  (int)(g_pso_lib_hits - lib_hits_before)); } }
+ 
+     g.psos[g.n_psos].key = key;
+     g.psos[g.n_psos].pso = pso;
+@@ -5451,6 +6142,377 @@ static const float* dc_vertex_attr_canonical(
+ #define PRIM_TRIANGLE_STRIP  6
+ #define PRIM_TRIANGLE_FAN    7
+ #define PRIM_QUADS           8
++/* ---------------------------------------------------------------------------
++ * Asynchronous vertex fetch (RSX_VERTEX_ASYNC, default on; "0" = inline)
++ *
++ * Reading a draw's indices, de-duplicating them, decoding the big-endian
++ * vertex attributes and writing the topology index list was ~2 ms of the
++ * ~7 ms it takes to translate a Tekken 5 DR fight frame, all of it on the one
++ * thread the guest waits for. None of it depends on D3D12 state, and its
++ * output only has to exist when the GPU reads it, i.e. when the command list
++ * is executed. So the walker now only RESERVES the draw's space in the upload
++ * rings -- an upper bound computed from the packet counts alone -- records the
++ * draw against it, and hands the fetch to worker threads. Every ld_flush
++ * drains the jobs before it executes the list.
++ *
++ * The upper bounds: one uploaded vertex per index (de-duplication only
++ * shrinks that), and the index count of the topology without restart cuts
++ * (a cut only removes triangles). The draw is always indexed; indices the
++ * job does not need are written as degenerate triangles (index 0 three
++ * times), which rasterise nothing. A job whose fetch fails writes only
++ * degenerate triangles -- the same "draw nothing" the inline path's drop is.
++ *
++ * Guest memory is stable while this runs: the guest is waiting for this very
++ * frame's flip, exactly as when the walker read it inline.
++ * ------------------------------------------------------------------------- */
++#define LD_VJOB_CAP        4096u
++#define LD_VJOB_ARENA      (16u * 1024u * 1024u)
++
++typedef struct {
++    u32 prim;
++    rsx_vertex_fetch_plan plan;
++    const batch_t* arr; u32 n_arr;
++    const batch_t* idx; u32 n_idx;
++    rsx_dsp_index_array ia;
++    u32 base_index;
++    int restart_en;
++    u32 restart_val;
++    u8* vb_dst;          /* reserved: n_refs vertices */
++    u32* ib_dst;         /* reserved: ib_count indices, all written */
++    u32 ib_count;
++} ld_vjob;
++
++typedef struct {
++    rsx_vertex_ref* refs; u32 cap_refs;
++    u32* cuts; u32 n_cuts, cap_cuts;
++    rsx_vertex_remap remap;
++} ld_vscratch;
++
++static ld_vjob g_vjobs[LD_VJOB_CAP];
++static volatile LONG64 g_vj_published, g_vj_claimed, g_vj_completed;
++static LONG64 g_vj_drain_base;
++static volatile LONG g_vj_sleepers;
++static int g_vj_threads = -1;            /* -1 not started, 0 off */
++static u8* g_vj_arena; static u32 g_vj_arena_used;
++static ld_vscratch g_vj_walker_scratch;
++static u64 g_vj_jobs_total;
++static volatile LONG64 g_vj_failed;
++
++static int ld_vjob_push_ref(ld_vscratch* s, u32 n, u32 vertex_id, u32 base_index)
++{
++    if (n >= s->cap_refs) {
++        const u32 cap = s->cap_refs ? s->cap_refs * 2u : 4096u;
++        rsx_vertex_ref* r = (rsx_vertex_ref*)realloc(s->refs, (size_t)cap * sizeof(*r));
++        if (!r) return 0;
++        s->refs = r; s->cap_refs = cap;
++    }
++    s->refs[n].vertex_id = vertex_id;
++    s->refs[n].base_index = base_index;
++    return 1;
++}
++
++static u32 ld_vjob_topology(const ld_vjob* j, const ld_vscratch* s, u32 n_source,
++                            int remapped, u32* out, u32 cap)
++{
++#define VJ_IDX(o) (remapped ? rsx_vertex_remap_index(&s->remap, (o)) : (o))
++#define VJ_PUT(v) do { if (w < cap) out[w] = (v); w++; } while (0)
++    u32 w = 0;
++    const u32 segments = s->n_cuts + 1;
++    switch (j->prim) {
++    case PRIM_TRIANGLES: {
++        const u32 count = n_source - n_source % 3u;
++        for (u32 o = 0; o < count; o++) VJ_PUT(VJ_IDX(o));
++        break;
++    }
++    case PRIM_TRIANGLE_STRIP:
++        for (u32 seg = 0; seg < segments; seg++) {
++            u32 begin, count;
++            rsx_restart_segment_bounds(s->cuts, s->n_cuts, n_source, seg, &begin, &count);
++            if (count < 3) continue;
++            for (u32 i = 0; i + 2 < count; i++) {
++                VJ_PUT(VJ_IDX(begin + i + (i & 1u)));
++                VJ_PUT(VJ_IDX(begin + i + 1u - (i & 1u)));
++                VJ_PUT(VJ_IDX(begin + i + 2u));
++            }
++        }
++        break;
++    case PRIM_TRIANGLE_FAN:
++        for (u32 seg = 0; seg < segments; seg++) {
++            u32 begin, count;
++            rsx_restart_segment_bounds(s->cuts, s->n_cuts, n_source, seg, &begin, &count);
++            if (count < 3) continue;
++            for (u32 i = 1; i + 1 < count; i++) {
++                VJ_PUT(VJ_IDX(begin));
++                VJ_PUT(VJ_IDX(begin + i));
++                VJ_PUT(VJ_IDX(begin + i + 1u));
++            }
++        }
++        break;
++    case PRIM_QUADS:
++        for (u32 q = 0; q < n_source / 4; q++) {
++            const u32 b = q * 4;
++            VJ_PUT(VJ_IDX(b)); VJ_PUT(VJ_IDX(b + 1u)); VJ_PUT(VJ_IDX(b + 2u));
++            VJ_PUT(VJ_IDX(b + 2u)); VJ_PUT(VJ_IDX(b + 3u)); VJ_PUT(VJ_IDX(b));
++        }
++        break;
++    }
++#undef VJ_IDX
++#undef VJ_PUT
++    return w;
++}
++
++static void ld_vjob_run(ld_vjob* j, ld_vscratch* s)
++{
++    u32 n = 0;
++    int ok = 1;
++    s->n_cuts = 0;
++    for (u32 b = 0; b < j->n_arr && ok; b++)
++        for (u32 i = 0; i < j->arr[b].count && ok; i++)
++            ok = ld_vjob_push_ref(s, n++, j->arr[b].first + i, 0);
++    if (ok && j->n_idx) {
++        const u32 esz = j->ia.is_u32 ? 4u : 2u;
++        for (u32 b = 0; b < j->n_idx && ok; b++) {
++            const u32 first = j->idx[b].first, count = j->idx[b].count;
++            const u64 start64 = (u64)j->ia.offset + (u64)first * esz;
++            const u64 bytes64 = (u64)count * esz;
++            const u8* contiguous = NULL;
++            if (count && start64 <= UINT32_MAX && bytes64 <= UINT32_MAX &&
++                start64 + bytes64 <= 0x100000000ull)
++                contiguous = g.guest_ptr(g.guest_user, j->ia.location,
++                                         (u32)start64, (u32)bytes64);
++            for (u32 i = 0; i < count && ok; i++) {
++                const u8* src = contiguous ? contiguous + (size_t)i * esz
++                    : g.guest_ptr(g.guest_user, j->ia.location,
++                                  j->ia.offset + (first + i) * esz, esz);
++                if (!src) { ok = 0; break; }
++                const u32 index = j->ia.is_u32
++                    ? (((u32)src[0] << 24) | ((u32)src[1] << 16) |
++                       ((u32)src[2] << 8) | src[3])
++                    : (u32)((src[0] << 8) | src[1]);
++                if (j->restart_en && index == j->restart_val) {
++                    if (!rsx_restart_cut_push(&s->cuts, &s->n_cuts, &s->cap_cuts, n))
++                        ok = 0;
++                    continue;
++                }
++                ok = ld_vjob_push_ref(s, n++, index, j->base_index);
++            }
++        }
++    }
++    const u32 n_source = n;
++    u32 unique = n;
++    int remapped = 0;
++    if (ok && n > 1) {
++        u32 u = n;
++        if (rsx_vertex_remap_build(&s->remap, s->refs, n, &u)) {
++            remapped = u < n;
++            unique = u;
++        }
++    }
++    if (ok && unique) {
++        rsx_vertex_fetch_plan_prepare(&j->plan, s->refs, unique);
++        const u32 stride = j->plan.layout.stride;
++        for (u32 i = 0; i < unique && ok; i++)
++            ok = rsx_vertex_fetch_one(&j->plan, &s->refs[i],
++                                      stride ? j->vb_dst + (u64)i * stride : NULL);
++    }
++    u32 written = 0;
++    if (ok && unique)
++        written = ld_vjob_topology(j, s, n_source, remapped, j->ib_dst, j->ib_count);
++    if (!ok || !unique) { written = 0; InterlockedIncrement64(&g_vj_failed); }
++    if (written > j->ib_count) written = j->ib_count;   /* cannot happen: bound */
++    for (u32 i = written; i < j->ib_count; i++) j->ib_dst[i] = 0;
++}
++
++static int ld_vjob_try_run(ld_vscratch* s)
++{
++    for (;;) {
++        const LONG64 c = g_vj_claimed;
++        if (c >= g_vj_published) return 0;
++        if (InterlockedCompareExchange64(&g_vj_claimed, c + 1, c) == c) {
++            ld_vjob_run(&g_vjobs[(u64)c % LD_VJOB_CAP], s);
++            InterlockedIncrement64(&g_vj_completed);
++            return 1;
++        }
++    }
++}
++
++static DWORD WINAPI ld_vworker_main(LPVOID arg)
++{
++    ld_vscratch* s = (ld_vscratch*)arg;
++    for (;;) {
++        if (ld_vjob_try_run(s)) continue;
++        /* idle: spin briefly (draws arrive every few microseconds while a
++         * frame is walked), then sleep until the next publish */
++        int got = 0;
++        for (int k = 0; k < 2000 && !got; k++) {
++            _mm_pause();
++            got = g_vj_claimed < g_vj_published;
++        }
++        if (got) continue;
++        LONG64 seen = g_vj_published;
++        InterlockedIncrement(&g_vj_sleepers);
++        if (g_vj_published == seen)
++            WaitOnAddress(&g_vj_published, &seen, sizeof(seen), 5);
++        InterlockedDecrement(&g_vj_sleepers);
++    }
++    return 0;
++}
++
++static int ld_vjob_enabled(void)
++{
++    if (g_vj_threads >= 0) return g_vj_threads > 0;
++    g_vj_threads = 0;
++    const char* e = getenv("RSX_VERTEX_ASYNC");
++    if ((e && *e == '0') || !ld_vertex_compact_payload() ||
++        /* diagnostics that read the fetched vertices back on this thread */
++        getenv("RSX_DRAW_CSV") || getenv("RSX_A010_GEOM") ||
++        getenv("LD_TRACE_PSO") || getenv("LD_FORCE_VA"))
++        return 0;
++    int n = 3;
++    { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
++    if (n < 1) return 0;
++    if (n > 16) n = 16;
++    g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
++    if (!g_vj_arena) return 0;
++    static ld_vscratch scratch[16];
++    int started = 0;
++    for (int i = 0; i < n; i++) {
++        HANDLE h = CreateThread(NULL, 256 * 1024, ld_vworker_main, &scratch[i], 0, NULL);
++        if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
++    }
++    g_vj_threads = started;
++    fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s)\n", started);
++    return started > 0;
++}
++
++/* Run what is left on this thread and wait for the rest. */
++static void ld_vjob_drain(void)
++{
++    if (g_vj_threads <= 0) return;
++    if (g_vj_completed == g_vj_published) { g_vj_drain_base = g_vj_published; g_vj_arena_used = 0; return; }
++    while (ld_vjob_try_run(&g_vj_walker_scratch)) {}
++    for (u32 spins = 0; g_vj_completed < g_vj_published; spins++) {
++        if (spins < 20000) _mm_pause(); else SwitchToThread();
++    }
++    g_vj_drain_base = g_vj_published;
++    g_vj_arena_used = 0;
++}
++
++static void* ld_vjob_arena_alloc(u32 bytes)
++{
++    bytes = (bytes + 15u) & ~15u;
++    if (bytes > LD_VJOB_ARENA) return NULL;
++    if (g_vj_arena_used + bytes > LD_VJOB_ARENA) ld_vjob_drain();
++    void* p = g_vj_arena + g_vj_arena_used;
++    g_vj_arena_used += bytes;
++    return p;
++}
++
++static u64 g_vj_barrier_drains;
++void rsx_live_draw_guest_write_barrier(void)
++{
++    if (g_vj_threads > 0 && g_vj_completed != g_vj_published) {
++        g_vj_barrier_drains++;
++        ld_vjob_drain();
++    }
++}
++
++/* Reserve and queue the current draw's vertex/index upload. Returns 1 and
++ * the index count to draw, 0 = nothing to fetch (drop_fetch), -1 =
++ * unsupported primitive, -2 = degenerate, -3 = does not fit a ring. */
++static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
++                          u32* out_indices, u64* out_vb_bytes)
++{
++    u64 n = 0;
++    for (u32 b = 0; b < dc.n_arr; b++) n += dc.arr[b].count;
++    for (u32 b = 0; b < dc.n_idx; b++) n += dc.idx[b].count;
++    if (!n) return 0;
++    u64 n_idx;
++    switch (prim) {
++    case PRIM_TRIANGLES:      n_idx = n - n % 3u; break;
++    case PRIM_TRIANGLE_STRIP:
++    case PRIM_TRIANGLE_FAN:   n_idx = n >= 3 ? (n - 2) * 3u : 0; break;
++    case PRIM_QUADS:          n_idx = (n / 4) * 6u; break;
++    default: return -1;
++    }
++    if (!n_idx) return -2;
++    const u64 vb_bytes = n * layout->stride;
++    const u64 ib_bytes = n_idx * sizeof(u32);
++    if (vb_bytes > VERT_BUFFER_SIZE || ib_bytes > INDEX_BUFFER_SIZE) return -3;
++    if ((u64)g.vb_used + vb_bytes > VERT_BUFFER_SIZE ||
++        (u64)g.ib_used + ib_bytes > INDEX_BUFFER_SIZE) {
++        ld_flush(LD_FLUSH_VERTEX_RING);       /* drains the jobs first */
++        g.vb_used = 0;
++        g.ib_used = 0;
++        g.cb_used = 0;
++        g.ps_cb_used = 0;
++        g.srv_ring_used = 0;
++        g.smp_ring_used = 0;
++    }
++    if (g_vj_published - g_vj_drain_base >= LD_VJOB_CAP) ld_vjob_drain();
++    /* one allocation: a drain inside a second one would reset the first */
++    const u32 inl_bytes = dc.inl ? dc.inl_bytes : 0;
++    const u32 arr_bytes = dc.n_arr * (u32)sizeof(batch_t);
++    const u32 idx_bytes = dc.n_idx * (u32)sizeof(batch_t);
++    u8* block = (u8*)ld_vjob_arena_alloc(arr_bytes + idx_bytes + inl_bytes + 16u);
++    if (!block) return 0;
++    batch_t* arr = dc.n_arr ? (batch_t*)block : NULL;
++    batch_t* idx = dc.n_idx ? (batch_t*)(block + arr_bytes) : NULL;
++    u8* inl = inl_bytes ? block + arr_bytes + idx_bytes : NULL;
++    if (arr) memcpy(arr, dc.arr, dc.n_arr * sizeof(batch_t));
++    if (idx) memcpy(idx, dc.idx, dc.n_idx * sizeof(batch_t));
++    if (inl) memcpy(inl, dc.inl, dc.inl_bytes);
++
++    ld_vjob* j = &g_vjobs[(u64)g_vj_published % LD_VJOB_CAP];
++    j->prim = prim;
++    {   /* rsx_vertex_fetch_plan_init, for the layout's attributes only (the
++         * fetch reads no other) -- it decoded and defaulted all 16 */
++        rsx_vertex_fetch_plan* p = &j->plan;
++        p->layout = *layout;
++        p->base_offset = rsx_dsp_vertex_data_base_offset(&g.rsx);
++        p->divider_mask = rsx_dsp_reg(&g.rsx, 0x1FC0);
++        p->guest_ptr = (rsx_vertex_guest_ptr_fn)g.guest_ptr;
++        p->guest_user = g.guest_user;
++        p->inline_data = NULL; p->inline_bytes = 0; p->inline_stride = 0;
++        for (u32 slot = 0; slot < layout->count; slot++) {
++            const u32 attr = layout->attrs[slot];
++            rsx_vertex_fetch_attr* fetch = &p->attr[attr];
++            rsx_dsp_get_vertex_attr(&g.rsx, attr, &fetch->desc);
++            fetch->elem_size = rsx_vertex_attrib_size(fetch->desc.type, fetch->desc.size);
++            fetch->stride = fetch->desc.stride ? fetch->desc.stride : fetch->elem_size;
++            rsx_dsp_vertex_default(&g.rsx, attr, fetch->default_value);
++            if (attr == 3 &&
++                fetch->default_value[0] == 0.0f && fetch->default_value[1] == 0.0f &&
++                fetch->default_value[2] == 0.0f && fetch->default_value[3] == 1.0f)
++                fetch->default_value[0] = fetch->default_value[1] =
++                    fetch->default_value[2] = 1.0f;
++            fetch->stable_base = NULL; fetch->stable_first = fetch->stable_last = 0;
++        }
++    }
++    rsx_vertex_fetch_plan_set_inline(&j->plan, &g.rsx, inl, inl ? dc.inl_bytes : 0);
++    j->arr = arr; j->n_arr = dc.n_arr;
++    j->idx = idx; j->n_idx = dc.n_idx;
++    if (dc.n_idx) {
++        rsx_dsp_get_index_array(&g.rsx, &j->ia);
++        j->base_index = rsx_dsp_vertex_data_base_index(&g.rsx);
++        static int no_restart = -1;
++        if (no_restart < 0) no_restart = getenv("RSX_NO_RESTART") ? 1 : 0;
++        j->restart_en = !no_restart && rsx_dsp_restart_index_enabled(&g.rsx, j->ia.is_u32);
++        j->restart_val = rsx_dsp_restart_index(&g.rsx);
++    } else {
++        memset(&j->ia, 0, sizeof(j->ia));
++        j->base_index = 0; j->restart_en = 0; j->restart_val = 0;
++    }
++    j->vb_dst = g.vb_mapped + g.vb_used;
++    j->ib_dst = (u32*)((u8*)g.ib_mapped + g.ib_used);
++    j->ib_count = (u32)n_idx;
++    g_vj_jobs_total++;
++    InterlockedExchange64(&g_vj_published, g_vj_published + 1);
++    if (g_vj_sleepers) WakeByAddressAll((PVOID)&g_vj_published);
++    *out_indices = (u32)n_idx;
++    *out_vb_bytes = vb_bytes;
++    return 1;
++}
+ 
+ /* Live-draw activity counters (verification: is real geometry flowing, or only
+  * clears?). Reported per presented frame in rsx_live_draw_present. */
+@@ -5998,6 +7060,7 @@ static int ld_movie_composite_ui_enabled(void)
+ 
+ static void ld_movie_reset_rings(void)
+ {
++    ld_vjob_drain();
+     g.vb_used = 0;
+     g.ib_used = 0;
+     g.cb_used = 0;
+@@ -7040,6 +8103,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     const u32 prim = g.rsx.current_primitive;
+     rsx_vertex_layout_plan used_layout;
+     ld_current_vertex_layout(&used_layout);
++    LD_PF_PHASE(ph_layout_ticks);
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.used_attribute_draws++;
+     g_ld_profile.total.used_attribute_sum += used_layout.count;
+@@ -7049,6 +8113,23 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g_ld_profile.total_used_attribute_max = used_layout.count;
+     const LONGLONG fetch_pack_begin = ld_profile_qpc();
+ #endif
++    int indexed = 0;
++    u32 n_tri = 0;
++    u32 vertex_stride = ld_vertex_compact_payload() ? used_layout.stride : VERT_STRIDE;
++    u64 draw_vb_bytes = 0, draw_ib_bytes = 0;
++    if (ld_vjob_enabled()) {
++        const int r = ld_vjob_submit(prim, &used_layout, &n_tri, &draw_vb_bytes);
++        if (r <= 0) {
++            if (r == 0) g_ld_stats.group_drop_fetch++;
++            else if (r == -1) g_ld_stats.group_drop_primitive++;
++            else if (r == -2) g_ld_stats.group_drop_degenerate++;
++            else { live_draw_csv_emit(prim, n_tri, "drop_vbring_oversize"); g_ld_stats.group_drop_ring++; }
++            return;
++        }
++        indexed = 1;
++        draw_ib_bytes = (u64)n_tri * sizeof(u32);
++        LD_PF_PHASE(ph_fetch_ticks);
++    } else {
+     if (ld_vertex_compact_payload()) {
+         fetch_batches_hoisted(&used_layout, 1);
+     } else if (ld_vertex_hoist_fetch()) {
+@@ -7060,6 +8141,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     }
+     if (!dc.n_source_refs)
+         dc.n_source_refs = dc.n_verts;
++    LD_PF_PHASE(ph_fetch_ticks);
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.vertex_fetch_pack_qpc +=
+         (u64)(ld_profile_qpc() - fetch_pack_begin);
+@@ -7068,12 +8150,11 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ 
+     /* Preserve validated occurrence order while allowing repeated compact
+      * vertex references to share one fetched and uploaded payload. */
+-    int indexed = 0;
+     if (!rsx_vertex_topology_plan(prim, dc.refs_remapped, &indexed)) {
+         g_ld_stats.group_drop_primitive++;
+         return;
+     }
+-    u32 n_tri = indexed
++    n_tri = indexed
+         ? topology_index_count(prim)
+         : dc.n_source_refs - dc.n_source_refs % 3;
+ 
+@@ -7084,13 +8165,11 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ 
+     live_a010_geom_trace(prim, n_tri);
+ 
+-    const u32 vertex_stride =
+-        ld_vertex_compact_payload() ? used_layout.stride : VERT_STRIDE;
+     const u32 uploaded_vertices = indexed ? dc.n_verts : n_tri;
+     const void* vertex_data = ld_vertex_compact_payload()
+         ? (const void*)dc.compact_verts : (const void*)dc.verts;
+-    const u64 draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
+-    const u64 draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
++    draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
++    draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
+     const u64 vb_capacity = VERT_BUFFER_SIZE;
+     if (draw_vb_bytes > vb_capacity || draw_ib_bytes > INDEX_BUFFER_SIZE) {
+         live_draw_csv_emit(prim, n_tri, "drop_vbring_oversize");
+@@ -7121,10 +8200,13 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     if (indexed)
+         write_topology_indices(
+             prim, (u32*)((u8*)g.ib_mapped + g.ib_used));
++    LD_PF_PHASE(ph_upload_ticks);
++    }   /* inline fetch */
+ 
+     ID3D12PipelineState* pso = get_pso(
+         ld_vertex_mask_signature() ? &used_layout : NULL,
+         ld_vertex_compact_payload());
++    LD_PF_PHASE(ph_pso_ticks);
+     if (!pso) {
+ #if defined(YZ_PERF_PROFILE)
+         ld_profile_note_rejected_pso();
+@@ -7166,6 +8248,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         g_ld_stats.group_drop_ring++;
+         return;
+     }
++    LD_PF_PHASE(ph_const_ticks);
+ 
+     const u32 target = current_surface();
+     if (target == LD_INVALID_SURFACE) {
+@@ -7340,6 +8423,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+           }
+       } }
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
++        if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
++            continue;   /* disabled: nothing below applies */
+         rsx_dsp_texture t; rsx_dsp_get_texture(&g.rsx, u, &t);
+         /* LD_PS1_BUF0=1 -- DIAGNOSTIC, not a fix. Force a 24-bit PS1 VRAM
+          * bind at buffer 1 (offset 0x4003C0) to sample buffer 0 (0x400000).
+@@ -7572,6 +8657,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         else
+             g_ld_vtex_unsupported++;
+     }
++    LD_PF_PHASE(ph_texbind_ticks);
+     const u32 required_srv_tables = 1u + (vtex_mask != 0);
+     if (g.srv_ring_used + required_srv_tables > SRV_RING_TABLES ||
+         sampler_table_needs_flush(smp_slots)) {
+@@ -7863,6 +8949,7 @@ static void sink_end(void* user, const rsx_dispatch* r)
+ {
+     ld_begin_recording();
+     const LONGLONG begin = ld_pf_qpc();
++    g_pf_phase_t = begin;
+     sink_end_impl(user, r);
+     const LONGLONG spent = ld_pf_qpc() - begin;
+     g_pf.draw_ticks += spent;
+@@ -7872,7 +8959,14 @@ static void sink_end(void* user, const rsx_dispatch* r)
+ #endif
+ }
+ 
++static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask);
+ static void sink_clear(void* user, const rsx_dispatch* r, u32 mask)
++{
++    const LONGLONG begin = ld_pf_qpc();
++    sink_clear_impl(user, r, mask);
++    g_pf.clear_ticks += ld_pf_qpc() - begin;
++}
++static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+ {
+     ld_begin_recording();
+     (void)user; (void)r;
+@@ -8766,6 +9860,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     if (make_root_signature() != 0 ||
+         make_depth_snapshot_pipeline() != 0)
+         return -1;
++    ld_prewarm_start();
+ 
+     static const u8 white[4] = {255, 255, 255, 255};
+     g.white_tex = create_texture_rgba(white, 1, 1);
+@@ -8819,6 +9914,28 @@ void rsx_live_draw_set_display_buffer(
+             buffer_id, location, offset, pitch, width, height);
+ }
+ 
++static int g_ld_state_trace = -1;
++void rsx_live_draw_method_block(u32 method, int incrementing,
++                                const u32* be_words, u32 count)
++{
++    if (g_ld_state_trace < 0)
++        g_ld_state_trace = getenv("RSX_VERTEX_STATE_TRACE") ? 1 : 0;
++    if (g_ld_state_trace || ld_movie_composite_ui_enabled() ||
++        g_ld_debug_layer_enabled) {
++        for (u32 i = 0; i < count; i++)
++            rsx_live_draw_method(incrementing ? method + i * 4 : method,
++                                 __builtin_bswap32(be_words[i]));
++        return;
++    }
++    if (!g.ready) return;
++    if (g_ld_movie_mode) {
++        if (g_ld_movie_track_rsx < 0)
++            g_ld_movie_track_rsx = getenv("RSX_MOVIE_TRACK") ? 1 : 0;
++        if (!g_ld_movie_track_rsx) return;
++    }
++    rsx_dispatch_method_block(&g.rsx, method, incrementing, be_words, count);
++}
++
+ void rsx_live_draw_method(u32 method, u32 arg)
+ {
+     /* Bounded ingress trace for the a010 live-vs-capture comparison.  Keep the
+@@ -8826,10 +9943,10 @@ void rsx_live_draw_method(u32 method, u32 arg)
+      * command list binds NV4097 on a different subchannel, feeding the raw
+      * 0x2xxx-shifted method into the canonical dispatcher silently stores the
+      * state in the wrong register bank. */
+-    static int state_trace = -1;
+     static u32 state_trace_lines = 0;
+-    if (state_trace < 0)
+-        state_trace = getenv("RSX_VERTEX_STATE_TRACE") ? 1 : 0;
++    if (g_ld_state_trace < 0)
++        g_ld_state_trace = getenv("RSX_VERTEX_STATE_TRACE") ? 1 : 0;
++    const int state_trace = g_ld_state_trace;
+     if (state_trace && state_trace_lines < 512) {
+         const u32 canonical = method & 0x1FFCu;
+         const int vertex_texture =
+@@ -9792,6 +10909,20 @@ void rsx_live_draw_present(u32 buffer_id)
+       packets_at_last_frame = g_ld_stats.packets_seen; }
+     g_ld_frames++;
+     ld_pf_frame_log(pf_present_begin);
++    ld_pso_lib_maybe_save(0);
++    { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
++      if (hl && (g_ld_frames % 600u) == 0)
++          fprintf(stderr, "[render-stats] frame=%u vjobs=%llu failed=%lld barrier_drains=%llu "
++                          "vp_memo=%llu/%llu fp_memo=%llu/%llu tex_pool placed=%llu reused=%llu "
++                          "fallback=%llu heaps=%u pso_lib hits=%llu stores=%llu prewarm created=%lld taken=%lld\n",
++                  g_ld_frames, (unsigned long long)g_vj_jobs_total, (long long)g_vj_failed,
++                  (unsigned long long)g_vj_barrier_drains,
++                  (unsigned long long)g_ld_vpm_hits, (unsigned long long)(g_ld_vpm_hits + g_ld_vpm_misses),
++                  (unsigned long long)g_ld_fpm_hits, (unsigned long long)(g_ld_fpm_hits + g_ld_fpm_misses),
++                  (unsigned long long)g_tpool_placed, (unsigned long long)g_tpool_reused,
++                  (unsigned long long)g_tpool_fallback, g_tpool_n_heaps,
++                  (unsigned long long)g_pso_lib_hits, (unsigned long long)g_pso_lib_stores,
++                  (long long)g_prewarm_created, (long long)g_prewarm_taken); }
+     host_sched_trace(HS_EV_PRESENT, g_ld_frames);
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_present(g_ld_frames);
+@@ -10615,6 +11746,7 @@ void rsx_live_draw_shutdown(void)
+     if (!g.ready) return;
+     ld_vertex_diag_emit("shutdown", 1);
+     ld_present_measure_dump();
++    ld_pso_lib_maybe_save(1);
+     /* let the GPU drain, then release. (Best-effort; process teardown also
+      * reclaims.) */
+     ld_flush(LD_FLUSH_SHUTDOWN);
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 292d6d3..71cd32b 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -69,6 +69,17 @@ void rsx_live_draw_set_display_buffer(u32 buffer_id, u32 location, u32 offset,
+ 
+ /* Feed one NV method write. No-op when disabled or uninitialized. */
+ void rsx_live_draw_method(u32 method, u32 arg);
++/* Feed a run of one method header's words straight from the command buffer
++ * (guest byte order): word i is method + 4*i when `incrementing`, else
++ * `method`. Same effect as rsx_live_draw_method per word. */
++void rsx_live_draw_method_block(u32 method, int incrementing,
++                                const u32* be_words, u32 count);
++
++/* The FIFO walker is about to write guest memory itself (2D engine: blit,
++ * memory-to-memory copy, inline transfer). Vertex fetches of the draws
++ * before it may still be queued on worker threads (RSX_VERTEX_ASYNC); they
++ * must read what the guest wrote, not what the walker is about to write. */
++void rsx_live_draw_guest_write_barrier(void);
+ 
+ /* Publish the FIFO bounds associated with the next flip method.  The live
+  * consumer calls this only for driver-queue methods; ordinary method traffic
+@@ -183,6 +194,11 @@ enum {
+     RSX_PF_PUT_LAST_QPC,     /* latest such drain                              */
+     RSX_PF_SHOWN_CALL_QPC,   /* guest flip call of the frame the walker just
+                                 reached (in-FIFO flips): input-to-present lag */
++    RSX_PF_XLAT_TICKS,       /* guest's last flush (put write in SetFlip /
++                                SetUserCommand) -> walker reached the flip:
++                                the translation the guest waits for        */
++    RSX_PF_FIFO_CYC,         /* thread cycles (TSC units) inside the walker:
++                                the walk's CPU cost, immune to preemption     */
+     RSX_PF_COUNT
+ };
+ extern volatile long long g_rsx_pf[RSX_PF_COUNT];
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index ebee978..b30b9ee 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -524,6 +524,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         int fired = 0;
+         if (now >= next_tick)
+             rsx_pf_max(PF_VBLANK_LATE_MAX, (long long)(now - next_tick));
++        /* PS3_PRESENT_LATE (default on; "0" = present first): when a flip is
++         * due on this vblank, complete it and deliver the guest's handlers
++         * BEFORE the present call (command list submit + DXGI Present,
++         * ~0.3-0.5 ms). The guest waits for exactly those handlers to start
++         * its next frame, and nothing the walker has not reached yet can be
++         * recorded in between: the present still runs before the next drain. */
++        static int late_present = -1;
++        if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
+         while (now >= next_tick && fired < 240) {
+             cellGcmTickVBlank();
+             /* Present a pending flip BEFORE draining further: the flip fires
+@@ -531,9 +539,11 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+              * right now is exactly the completed frame. Presenting on a raw
+              * flip-count change after the drain raced the guest's next-frame
+              * writes and showed empty or mixed batches. */
++            int present_due = 0;
+             {
+                 if (rsx_ok && cellGcm_take_flip_pending()) {
+-                    present_guest_frame();
++                    if (late_present) present_due = 1;
++                    else present_guest_frame();
+                     last_flip = cellGcm_flip_request_count();
+                 }
+                 /* An in-FIFO flip is shown on the vblank, and only then does
+@@ -541,6 +551,14 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                 cellGcm_flip_presented();
+             }
+             cellGcmTickFlip();
++            if (present_due) {
++                { static int tp2 = -1; if (tp2 < 0) { const char* e = getenv("PS3_GCM_TICKER_PUMP"); tp2 = (e && *e == '1') ? 1 : 0; }
++                  if (tp2) { LARGE_INTEGER p0, p1; QueryPerformanceCounter(&p0);
++                             ppu_gcm_pump();
++                             QueryPerformanceCounter(&p1);
++                             rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
++                present_guest_frame();
++            }
+             /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
+              * labels (e.g. @0x03000410) that the game's per-frame logic blocks on.
+              * Doing it here (not after present) keeps those fences advancing at 60Hz

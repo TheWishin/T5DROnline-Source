@@ -173,6 +173,7 @@ void wft_disarm(const char* tag)
     for (auto& kv : by_chain) v.push_back({ kv.second.second, kv.first + " pages " + std::to_string(kv.second.second) });
     std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first > b.first; });
     for (auto& e : v) logline("W %s %s", tag, e.second.c_str());
+    if (v.size() <= 16) for (auto& e : v) note("writer (%s): %s", tag, e.second.c_str());   /* small traces also to the game log (flushed) */
     /* per page: writes by chain (one fault per page per window unless T5_RB_WFT_ALL) */
     for (auto& kv : g_who) logline("WP %s %s writes %d", tag, kv.first.c_str(), kv.second);
 }

@@ -442,6 +442,13 @@ void fight_on_frame(uint32_t f)
 
 bool fight_configured() { return g_configured; }
 
+} // namespace df
+
+/* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
+extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+
+namespace df {
+
 void fight_init()
 {
     const char* fight = getenv("T5_FIGHT");

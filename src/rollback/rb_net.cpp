@@ -11,6 +11,7 @@
 #include "rb_state.h"
 #include "rb_net.h"
 
+extern "C" uint8_t* vm_base;
 extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 
@@ -21,22 +22,46 @@ constexpr uint32_t kMinVblanks = 0x106D4D98;  /* present pacing: min vblanks per
 bool g_enabled = false, g_active = false, g_verbose = false, g_skipsound = true;   /* T5_RB_NET_SKIPSOUND=0 keeps the sound update in re-simulated frames */
 bool g_offered = false, g_timesync = true;
 uint32_t g_start = 0, g_maxpred = 8;
-uint32_t g_warmup = 420;         /* T5_RB_NET_WARMUP: frames after the start during which no prediction is allowed: the stage
-                                  * still streams in (a rollback into a load in flight broke the game in test f1) and the
-                                  * fight-start phases ("Round 1", "Fight!") pass -- a rollback across one of those left
-                                  * the peers a phase apart (run e150, frame 210) */
+/* Lockstep windows (every input confirmed before a frame runs, so nothing is
+ * predicted and no rollback can later reach into them):
+ *   T5_RB_NET_WARMUP      frames after the loop starts and after every next
+ *                         match's sync point. 420 in phases 4-9, when a rollback
+ *                         into the stage still streaming in broke the game (test
+ *                         f1) and one across the intro phases left the peers a
+ *                         phase apart (e150). With direct fight the intro rule
+ *                         below covers both, so the default is 0 then.
+ *   T5_RB_NET_LOAD_LOCK   frames after a load completed outside the intro (60).
+ *   T5_RB_NET_PHASE_LOCK  frames after a fight phase change seen at a live
+ *                         boundary. 600 in phases 6-9, because transitions
+ *                         re-simulated with the sound update skipped came out a
+ *                         phase apart (e50/g50, the round end). With the sound
+ *                         side run in re-simulated frames (rb_sound.cpp) the KO,
+ *                         round end and match end re-simulate like any frame;
+ *                         the windows made the game crawl at high latency (input
+ *                         delay 1, RTT 150: one-way latency per frame), so the
+ *                         default is 0 (docs/ROLLBACK.md section 20). */
+uint32_t g_warmup = 420;
 uint32_t g_started_at = 0;
-/* Fight phase transitions (0x1008F070: fight start, KO, round end / start) are
- * not reproduced by a re-simulation (they wait on sound / loader state the
- * rollback does not restore): a rollback that straddles one leaves the peers
- * a phase apart (runs e50/g50 at the round end). So a phase change seen at a
- * live boundary raises the rollback floor to that boundary and puts the loop
- * into lockstep (every input confirmed before a frame runs) for
- * T5_RB_NET_PHASE_LOCK frames, so no rollback reaches across the transition
- * and the frames right after it (round end sequence, next round's start) are
- * never predicted. */
 constexpr uint32_t kPhaseWord = 0x1008F070u;
-uint32_t g_phase_lock = 600, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
+uint32_t g_phase_lock = 0, g_lock_until = 0, g_last_phase = 0xFFFFFFFFu, g_phase_changes = 0;
+uint32_t g_load_lock = 60;       /* T5_RB_NET_LOAD_LOCK: lockstep frames after a load completed (loader drain waited) */
+uint32_t g_loads = 0;
+/* The fight intro takes no input. From the match-start barrier to "Fight!"
+ * the phase word is 7..12 (7: the game mode starts, 8-12: stage and character
+ * intros, 17: fighting; select screens use 1-5). With direct fight, a frame
+ * whose input is decided at a boundary in those phases gets neutral input on
+ * both PCs -- this side sends neutral, and predicts neutral for the peer's
+ * frames decided in the same phases (the intro runs on timers and loads, not
+ * on input, so both PCs see the same phases at the same boundaries). The
+ * intro then has no mispredictions, no rollback ever reaches into it, and the
+ * loads that happen there (stage, characters, voice banks) need no lockstep:
+ * the intro runs at full speed at any latency. T5_RB_NET_INTRO=0 turns it off. */
+bool g_intro_rule = false;
+uint8_t  g_phase_at[4096]; uint32_t g_phase_tag[4096];   /* phase word at the boundary of frame f (before f ran) */
+bool intro_phase(uint32_t p) { return p >= 7 && p <= 12; }
+bool intro_at(uint32_t b) { return g_intro_rule && g_phase_tag[b % 4096] == b + 1 && intro_phase(g_phase_at[b % 4096]); }
+uint32_t g_intro_frames = 0;
+double g_wait_acc_ms = 0;   /* time the next live frame waited for the peer (speed accounting) */
 /* time sync */
 constexpr int kLeadWinMax = 60;
 int g_lead_win = 20, g_ts_interval = 10, g_ts_max = 2;
@@ -74,6 +99,7 @@ struct Stats {
     uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0, sleeps = 0;
     uint32_t sound_zero = 0;
     double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0;
+    double stall_ms_lock = 0;   /* of stall_ms: waits in the lockstep windows (match start, loads, phase changes) */
     uint32_t depth_hist[17] = {};
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
@@ -85,6 +111,7 @@ np::PadInput remote_for(uint32_t g, bool* predicted)
     np::PadInput in;
     if (np::rb_remote(g, &in)) { *predicted = false; g_last_remote = in; return in; }
     *predicted = true;
+    if (g >= (uint32_t)g_delay && intro_at(g - (uint32_t)g_delay)) return np::kNeutral;   /* the peer sends neutral for it */
     return g_last_remote;   /* prediction: the last confirmed input repeats */
 }
 
@@ -99,18 +126,44 @@ void inputs_for(uint32_t g, np::PadInput out[2])
     out[1 - slot] = rem;
 }
 
+/* displayed-frame times: wall time between two live boundaries (what the
+ * player sees; a rollback's re-simulation lands in the frame it happens in) */
+constexpr int kFtBins = 400;     /* 0.5 ms bins up to 200 ms */
+uint32_t g_ft_win[kFtBins], g_ft_all[kFtBins];
+LARGE_INTEGER g_t_live; bool g_t_live_ok = false;
+void ft_add(double ms)
+{
+    int b = (int)(ms * 2.0); if (b < 0) b = 0; if (b >= kFtBins) b = kFtBins - 1;
+    g_ft_win[b]++; g_ft_all[b]++;
+}
+double ft_pct(const uint32_t* h, double q)
+{
+    uint64_t n = 0; for (int i = 0; i < kFtBins; i++) n += h[i];
+    if (!n) return 0;
+    uint64_t want = (uint64_t)(q * (double)n), acc = 0;
+    for (int i = 0; i < kFtBins; i++) { acc += h[i]; if (acc > want) return (i + 1) * 0.5; }
+    return kFtBins * 0.5;
+}
+
 void report()
 {
     const double win_ms = ms_since(g_t_window);
     QueryPerformanceCounter(&g_t_window);
     char hist[160]; int n = 0;
     for (int d = 1; d <= 16; d++) if (g_st.depth_hist[d]) n += snprintf(hist + n, sizeof hist - n, " %d:%u", d, g_st.depth_hist[d]);
+    const SoundStats ss = sound_stats(true);
     note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f), "
-         "%u stalls (%.1f ms), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u",
+         "%u stalls (%.1f ms, %.1f ms of them in lockstep windows), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u, "
+         "sounds: %u started live, %u kept from a first run, %u new in re-simulated frames, %u from mispredicted frames played on, "
+         "stops in re-simulated frames: %u repeats skipped, %u new not applied; %u status answers replayed; music/bank events: %u repeats skipped, %u new",
          g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
-         g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.predicted,
+         g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.stall_ms_lock, g_st.predicted,
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
-         g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes);
+         g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
+         ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
+    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, loads %u",
+         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_loads);
+    memset(g_ft_win, 0, sizeof g_ft_win);
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
     g_tot.rollback_ms += g_st.rollback_ms; g_tot.rollback_ms_max = std::max(g_tot.rollback_ms_max, g_st.rollback_ms_max);
@@ -121,19 +174,25 @@ void report()
 } // namespace
 
 /* rollback is on offer when T5_RB_MODE is unset or "net" (and netplay is on) */
-static bool offered_by_env()
+bool offered_by_env()
 {
     const char* m = getenv("T5_RB_MODE");
     const char* nm = getenv("T5_NET_MODE");
     if (!nm || !*nm) return false;
-    /* The default online mode (the stage-specific mismatch of run m2 was the
-     * rand() word, docs/ROLLBACK.md section 12); T5_RB_MODE=lockstep or off
-     * keeps the delay-based lockstep, the test modes (test, measure) are not
-     * netplay. */
-    /* Opt-in until peer-to-peer hash agreement is shown: in rollback mode
-     * the netplay sync check has no per-frame hashes to compare (it reports
-     * every frame as mismatching), so a desync would go unnoticed. */
-    if (!m || !*m) return false;
+    /* The default online mode (rollback10, docs/ROLLBACK.md section 20: two
+     * matches plus a rematch in one process at RTT 0/50/150 with 3 % loss, in
+     * sync, sound started once). T5_RB_MODE=off (or lockstep) keeps the
+     * delay-based lockstep; a peer that does not offer rollback (an older
+     * build, or one with T5_RB_MODE=off) gets the lockstep on both sides. The
+     * test modes (test, measure) are not netplay. The default covers the
+     * online flow (the lobby starts the match with direct fight:
+     * T5_NET_START=external); menu-driven sessions from boot keep the
+     * lockstep, which re-aligns the menus' scene changes -- T5_RB_MODE=net
+     * offers rollback there too. */
+    if (!m || !*m) {
+        const char* st = getenv("T5_NET_START");
+        return st && !strcmp(st, "external");
+    }
     return !strcmp(m, "net");
 }
 
@@ -142,8 +201,15 @@ void offer()
     if (g_offered) return;
     g_offered = true;
     if (!offered_by_env()) return;
+    {   /* the rollback state needs the write watch on the guest memory: without it, no offer (lockstep) */
+        void* addrs[4]; ULONG_PTR count = 4; DWORD gran = 0;
+        if (GetWriteWatch(0, vm_base + 0x10000000u, 0x1000, addrs, &count, &gran) != 0) {
+            note("rbnet: guest memory has no write watch (PS3_VM_WRITE_WATCH) -- rollback not offered, the match runs in lockstep");
+            return;
+        }
+    }
     np::rb_offer(true);
-    note("rbnet: rollback offered to the peer (T5_RB_MODE=lockstep keeps the delay-based lockstep)");
+    note("rbnet: rollback offered to the peer (T5_RB_MODE=off keeps the delay-based lockstep)");
 }
 
 bool enabled()
@@ -154,8 +220,12 @@ bool enabled()
         if (e) {
             if (const char* s = getenv("T5_RB_NET_START")) { if (!strncmp(s, "frame:", 6)) g_start = (uint32_t)atoi(s + 6); else g_start = (uint32_t)atoi(s); }
             if (const char* s = getenv("T5_RB_NET_MAXPRED")) g_maxpred = (uint32_t)std::max(1, std::min(16, atoi(s)));
-            if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_PHASE_LOCK")) g_phase_lock = (uint32_t)atoi(s);
+            if (const char* s = getenv("T5_RB_NET_LOAD_LOCK")) g_load_lock = (uint32_t)atoi(s);
+            g_intro_rule = (getenv("T5_FIGHT") && *getenv("T5_FIGHT")) || (getenv("T5_FIGHT_FILE") && *getenv("T5_FIGHT_FILE"));
+            if (const char* s = getenv("T5_RB_NET_INTRO")) g_intro_rule = g_intro_rule && *s != '0';
+            if (g_intro_rule) g_warmup = 0;   /* the intro takes no input: nothing there to wait for */
+            if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
@@ -179,7 +249,8 @@ uint32_t start_frame() { return g_start; }
 void start(uint32_t f)
 {
     if (g_active) return;
-    g_delay = np::delay();
+    sound_install();   /* no-op when static init could install it; the game-DLL build gets it here */
+    g_delay = np::rb_apply_delay();
     np::rb_begin(f);
     if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
     state_init();
@@ -196,8 +267,27 @@ void start(uint32_t f)
          f, g_delay, g_maxpred, np::rb_remote_contig());
 }
 
+bool final_hash(uint32_t f, uint64_t* h)
+{
+    if (!g_active || g_hash_tag[f % kHist] != f + 1 || f >= g_hash_sent) return false;
+    *h = g_hash[f % kHist];
+    return true;
+}
+
+void load_seen(uint32_t f, double ms)
+{
+    if (!g_active) return;
+    g_loads++;
+    if (intro_at(f)) { if (g_verbose) note("rbnet: frame %u: a load in the intro (%.1f ms waited): no lockstep needed", f, ms); return; }
+    if (f + g_load_lock > g_lock_until) g_lock_until = f + g_load_lock;
+    if (g_verbose) note("rbnet: frame %u: the loaders were busy (%.1f ms waited): lockstep until %u", f, ms, g_lock_until);
+}
+
 void scene_change(uint32_t nf)
 {
+    /* the next match: its fight loads (stage, characters) in the first few
+     * hundred frames, so the warm-up applies again */
+    if (nf + g_warmup > g_lock_until) g_lock_until = nf + g_warmup;
     g_floor = nf;
     g_checked = std::max(g_checked, nf);
     g_hash_sent = std::max(g_hash_sent, nf);
@@ -205,8 +295,17 @@ void scene_change(uint32_t nf)
     if (g_verbose) note("rbnet: scene barrier at %u: rollback floor raised", nf);
 }
 
+static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
 uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
+    const uint32_t run = boundary(f, scene_flag, out);
+    set_sim_frame(run);   /* the sound side keys its per-frame start log on it (rb_sound.cpp) */
+    return run;
+}
+
+static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
+{
+    g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     double cms = 0;
     const uint32_t dirty = state_commit(f, nullptr, &cms);
     (void)dirty;
@@ -236,6 +335,9 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        { LARGE_INTEGER t; QueryPerformanceCounter(&t);
+          if (g_t_live_ok) ft_add(1000.0 * (double)(t.QuadPart - g_t_live.QuadPart) / (double)g_qpf.QuadPart);
+          g_t_live = t; g_t_live_ok = true; }
         /* the title's ATRAC streaming rings are the feeder thread's: never rewound */
         if ((f % 30) == 0) {
             uint32_t ea[16], sz[16];
@@ -253,7 +355,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
              * lockstep window keeps every frame after the transition
              * confirmed, so only the few frames right before it can ever be
              * re-simulated across it */
-            g_lock_until = f + g_phase_lock;
+            if (f + g_phase_lock > g_lock_until) g_lock_until = f + g_phase_lock;   /* never shortens a warm-up or load window */
             if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
         }
         g_last_phase = phase;
@@ -271,8 +373,10 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             g_lead_theirs[g_lead_n % g_lead_win] = np::rb_peer_lead();
             g_lead_n++;
         }
-        /* the local input for frame f + delay, sent at once */
-        np::rb_sample_local(f);
+        /* the local input for frame f + delay, sent at once (neutral in the intro) */
+        const bool intro = intro_at(f);
+        if (intro) g_intro_frames++;
+        np::rb_sample_local(f, intro);
     }
     np::rb_poll();
 
@@ -288,6 +392,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             else { LARGE_INTEGER t0; QueryPerformanceCounter(&t0); np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms); (void)t0; }   /* at the boundary, socket pumped */
             g_last_sleep_frame = f;
             g_st.sleeps++; g_st.sleep_ms += ms;
+            g_wait_acc_ms += ms;
             if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
         }
     }
@@ -305,7 +410,8 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
         rc = np::rb_wait_remote(need - 1, 2000);
         const double ms = ms_since(t0);
-        g_st.stalls++; g_st.stall_ms += ms;
+        g_st.stalls++; g_st.stall_ms += ms; if (warm) g_st.stall_ms_lock += ms;
+        g_wait_acc_ms += ms;
         if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
                                         scene_flag ? "scene change" : warm ? "warm-up" : "prediction window");
     }
@@ -353,6 +459,8 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     }
 
     if (g_st.frames && (g_st.frames % 300) == 0) report();
+    np::rb_account_frame((uint64_t)(g_wait_acc_ms * 1000.0));
+    g_wait_acc_ms = 0;
     inputs_for(f, out);
     np::rb_log_frame(f, out, g_hash[f % kHist], g_pred[f % kHist], f < upto);
     return f;

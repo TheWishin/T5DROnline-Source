@@ -1,0 +1,82 @@
+diff --git a/libs/codec/cellAtrac.c b/libs/codec/cellAtrac.c
+index 2e74482..f58e74a 100644
+--- a/libs/codec/cellAtrac.c
++++ b/libs/codec/cellAtrac.c
+@@ -115,6 +115,17 @@ static int atrac_trace(void)
+     return on;
+ }
+ 
++/* ATRAC_MUTE=1 (tests): every stream is decoded and paced as usual, but the
++ * PCM handed to the title is silence -- the music drops out of the mix and
++ * the sound effects can be measured on their own (tools/rollback_audio_check.py
++ * counts their onsets with and without rollbacks). */
++static int atrac_mute(void)
++{
++    static int on = -1;
++    if (on < 0) on = getenv("ATRAC_MUTE") ? 1 : 0;
++    return on;
++}
++
+ /* ---- the stream's own file ------------------------------------------------
+  *
+  * A rollback (src/rollback) rewinds the title's memory a few frames and
+@@ -556,8 +567,8 @@ s32 cellAtracDecode(u32 pHandle, u32 pfOutAddr, u32 puiSamples, u32 puiFinishfla
+     const u32 ch = s->t.channels;
+     for (s32 i = 0; i < n; i++)
+         for (u32 c = 0; c < ch; c++) {
+-            u32 bits;
+-            memcpy(&bits, &s->pcm[c][at + i], 4);
++            u32 bits = 0;
++            if (!atrac_mute()) memcpy(&bits, &s->pcm[c][at + i], 4);
+             vm_write32(pfOutAddr + ((u32)i * ch + c) * 4, bits);
+         }
+     s->pos += n;
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 41771b1..ef23a9d 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -790,6 +790,29 @@ void ppu_gcm_pump(void)
+     GCM_PUMP_LEAVE();
+ }
+ 
++/* Hold the pump (and with it the guest vblank / flip / user handlers) while a
++ * host-side snapshot layer saves or restores guest memory (the rollback
++ * netcode: a handler walking a list the restore is rewriting page by page read
++ * garbage function pointers). on=1 waits for a handler in flight to return --
++ * up to timeout_ms, then gives up and returns 0 -- and keeps the pump out until
++ * on=0; notifications that arrive meanwhile stay pending and are delivered by
++ * the next pump. Returns 1 when held. */
++int cellGcm_pump_hold(int on, unsigned timeout_ms)
++{
++    if (!on) { GCM_PUMP_LEAVE(); return 0; }
++#ifdef _WIN32
++    const ULONGLONG t0 = GetTickCount64();
++    while (!GCM_PUMP_TRY_ENTER()) {
++        if (GetTickCount64() - t0 > timeout_ms) return 0;
++        SwitchToThread();
++    }
++    return 1;
++#else
++    (void)timeout_ms;
++    return GCM_PUMP_TRY_ENTER() ? 1 : 0;
++#endif
++}
++
+ /* Back-compat: the old direct entry points now just mark a tick pending (so any
+  * caller other than the ticker still works) -- delivery stays on the main thread. */
+ void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); host_sched_trace(HS_EV_VBLANK, s_vblank_count); }
+diff --git a/libs/video/cellGcmSys.h b/libs/video/cellGcmSys.h
+index 5737e17..83bf51c 100644
+--- a/libs/video/cellGcmSys.h
++++ b/libs/video/cellGcmSys.h
+@@ -429,6 +429,10 @@ void cellGcmSetVBlankFrequency(u32 freq);
+ 
+ /* User command */
+ void cellGcmSetUserCommand(void* ctx, u32 cause);
++/* Keep the guest GCM handlers (vblank, flip, user) out while a host snapshot
++ * layer saves or restores guest memory; see cellGcmSys.c. Returns 1 when held. */
++int cellGcm_pump_hold(int on, unsigned timeout_ms);
++
+ /* Host FIFO consumer: defer the retired command to ppu_gcm_pump. */
+ void cellGcmQueueUserCommand(u32 cmd);
+ 

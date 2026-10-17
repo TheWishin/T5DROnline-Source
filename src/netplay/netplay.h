@@ -105,7 +105,7 @@ void     set_stuck_handler(void (*fn)(const char* reason));
  * The same transport, rings, redundancy and desync check as the lockstep,
  * without the per-frame block: the rollback loop decides when to wait. */
 void     rb_begin(uint32_t f);                   /* f == 0: handshake, neutral frames < delay (as begin_frame(0) does) */
-void     rb_sample_local(uint32_t f);            /* sample this PC's input for frame f + delay() and send it */
+void     rb_sample_local(uint32_t f, bool neutral = false);   /* sample this PC's input for frame f + delay() and send it (neutral: send neutral input, devices not read) */
 PadInput rb_local(uint32_t f);                   /* the local input decided for frame f (neutral if none yet) */
 bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f, if it has arrived */
 uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */
@@ -119,9 +119,11 @@ bool     rb_peer_lost();
 /* Rollback is negotiated in the HELLO: each side that offers it sets a flag,
  * both flags set = the rollback loop runs, otherwise the lockstep does. The
  * offer must be made before the handshake (the rollback loop does it when
- * T5_RB_MODE is unset or "net"; T5_RB_MODE=lockstep keeps the lockstep). */
+ * T5_RB_MODE is unset or "net"; T5_RB_MODE=off or lockstep keeps the lockstep). */
 void     rb_offer(bool on);
 bool     rb_negotiated();
+int      rb_apply_delay();                       /* rollback agreed: switch to the rollback input delay (the host's T5_RB_NET_DELAY); returns the delay */
+void     rb_account_frame(uint64_t wait_us);     /* a live frame of the rollback loop ran: the speed line and local_fps() (wait_us: time spent waiting for the peer) */
 /* Time sync: each packet carries the sender's frame-advantage estimate. */
 void     rb_set_lead(int lead);
 int      rb_peer_lead();
@@ -131,6 +133,10 @@ uint32_t rb_peer_ack();                          /* the peer has our inputs for 
 /* While on, the local player's sample is exactly `buttons` (direct-fight menu
  * driving during lockstep; see t5_netplay_inject). */
 void  set_local_inject(bool on, uint16_t buttons);
+/* T5_NET_SCRIPT_FIGHT=1 (tests): the scripted local input (T5_NET_SCRIPT) applies
+ * only while the direct-fight driver is in a fight, so it never presses
+ * anything in the menus direct fight drives between matches. */
+void  set_script_gate(bool on);
 
 } // namespace np
 

@@ -575,6 +575,7 @@ void start_rematch(uint32_t f)
  * "addr:len,..." (hex), default the netplay hash's game areas. */
 struct Area { uint32_t addr, len; std::vector<uint8_t> boot; };
 std::vector<Area> g_fresh_areas;
+std::vector<Area> g_scan_areas;  /* T5_DF_FRESH_SCAN=addr:len,...: compared with boot at every restore, not restored (diagnostics) */
 bool g_fresh_on = true;
 bool g_fresh_taken = false;
 bool g_restore_due = false;      /* a reset reached the title: the boot state goes back once it has settled */
@@ -586,6 +587,7 @@ void fresh_take(uint32_t f)
     g_fresh_taken = true;
     size_t n = 0;
     for (Area& a : g_fresh_areas) { a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len); n += a.len; }
+    for (Area& a : g_scan_areas) a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len);
     note("frame %u: boot state of %zu area(s), %zu bytes, kept for later opponents", f, g_fresh_areas.size(), n);
 }
 bool g_fresh_log = false;        /* T5_DF_FRESH_LOG=1: list the words the restore changes */
@@ -604,6 +606,19 @@ void fresh_restore(uint32_t f)
                          a.boot[i], a.boot[i + 1], a.boot[i + 2], a.boot[i + 3]);
                 }
         memcpy(vm_base + a.addr, a.boot.data(), a.len);
+    }
+    for (const Area& a : g_scan_areas) {   /* runs of differing words (gap <= 2 words) */
+        int runs = 0;
+        for (uint32_t i = 0; i + 4 <= a.len && runs < 400;) {
+            if (!memcmp(vm_base + a.addr + i, a.boot.data() + i, 4)) { i += 4; continue; }
+            uint32_t e = i + 4, k = 1;
+            for (uint32_t j = e; j + 4 <= a.len && j <= e + 8; j += 4)
+                if (memcmp(vm_base + a.addr + j, a.boot.data() + j, 4)) { e = j + 4; k++; }
+            note("frame %u: scan 0x%08X..0x%08X (%u words) now %08X boot %08X", f, a.addr + i, a.addr + e, k,
+                 rd32(a.addr + i), _byteswap_ulong(*(const uint32_t*)(a.boot.data() + i)));
+            runs++;
+            i = e;
+        }
     }
     note("frame %u: the match state areas are back as at boot (%zu bytes differed)", f, changed);
 }
@@ -688,11 +703,20 @@ void reset_done(uint32_t f)
  * mode 4" for 3.5 minutes) cannot become a clean neutral state any more: the
  * process ends (exit code 6) and the launcher starts a new game for the next
  * match (match_driver: a persistent game that is not running is started again). */
+uint32_t g_leave_phase = 10;    /* T5_DF_LEAVE_PHASE (diagnostics): a fight is left once its phase word is past this */
+ULONGLONG g_stuck_dumped = 0;   /* g_ph_ms of the phase whose wait was dumped */
 void stuck_check(uint32_t f)
 {
     const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken);
     if (!g_ctl || !g_stuck_s || !waiting) return;
-    if (GetTickCount64() - g_ph_ms < (ULONGLONG)g_stuck_s * 1000) return;
+    const ULONGLONG ms = GetTickCount64() - g_ph_ms;
+    if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != g_ph_ms) {   /* half way: what it waits on */
+        g_stuck_dumped = g_ph_ms;
+        note("frame %u: %s for %u s (mode %u, next %u, phase word %u):", f, g_state_name, (unsigned)(ms / 1000),
+             mode_cur(), mode_next(), rd32(kSelectState));
+        stuck_dump(f);
+    }
+    if (ms < (ULONGLONG)g_stuck_s * 1000) return;
     note("frame %u: STUCK: %s for %u s (mode %u, next %u, phase word %u) -- the game ends, the launcher starts a fresh one",
          f, g_state_name, g_stuck_s, mode_cur(), mode_next(), rd32(kSelectState));
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
@@ -953,14 +977,20 @@ void fight_on_frame(uint32_t f)
         break;
     case Ph::Leave:
         /* out of a fight whose session ended: the game's own way back to select --
-         * once the fight's loading and intros are over (phase word past 12). The
-         * game itself never leaves its game mode before the fight has begun; a
-         * request made in the loading is taken only when the loading is done
-         * anyway (63 frames later in run rs1), and a loading that hangs never
-         * takes it (the dry run's host: stuck_check() ends such a game) */
+         * once the fight's loading is over (phase word 11, the intros' first
+         * frame; at once when the session ended later). Not in the middle of the
+         * loading (loads in flight), and not after the intros either: a fight
+         * left at "Fight!" -- intros and the Fight! frame run by this game alone
+         * -- left something outside the boot-state copy that made the next match
+         * against a fresh game fight apart for its first 200-260 frames (reset-
+         * fix cycle test, cycles 9 and 10: Kazuya vs Heihachi and Asuka vs Law
+         * after a session lost in the loading; also with the whole data section
+         * copied back; 0 mismatching frames when left here or at once). A
+         * loading that hangs never takes the request (the dry run's host:
+         * stuck_check() ends such a game). */
         if (mode == kModeSelect) { set_phase(Ph::Reset, "reset", f); break; }
-        if (!g_mode_asked && mode == kModeGame && rd32(kSelectState) <= 12) {
-            if (f == g_ph_frame) note("frame %u: leave: the fight's loading / intros first (phase %u)", f, rd32(kSelectState));
+        if (!g_mode_asked && mode == kModeGame && rd32(kSelectState) <= g_leave_phase) {
+            if (f == g_ph_frame) note("frame %u: leave: the fight's loading first (phase %u)", f, rd32(kSelectState));
             break;
         }
         if (!g_mode_asked && mode == kModeGame) {
@@ -1003,6 +1033,7 @@ void fight_init()
     { const char* r = getenv("T5_DF_FRESH_LOG"); g_fresh_log = r && *r == '1'; }
     if (const char* r = getenv("T5_DF_FRESH_AT")) g_fresh_at = (uint32_t)atoi(r);
     if (const char* r = getenv("T5_DF_STUCK_SECONDS")) g_stuck_s = (uint32_t)atoi(r);
+    if (const char* r = getenv("T5_DF_LEAVE_PHASE")) g_leave_phase = (uint32_t)atoi(r);
     {
         const char* spec = getenv("T5_DF_FRESH_RANGES");
         if (!spec || !*spec) spec = "1008E000:17000";   /* the fight-state block 0x1008E000..0x100A5000 (reset-fix: leftovers beyond the four hashed areas) */
@@ -1011,6 +1042,15 @@ void fight_init()
             const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
             const uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
             g_fresh_areas.push_back({ a, l, {} });
+            while (*p == ',' || *p == ' ') p++;
+        }
+    }
+    if (const char* spec = getenv("T5_DF_FRESH_SCAN")) {
+        for (const char* p = spec; *p;) {
+            char* e;
+            const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
+            const uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
+            g_scan_areas.push_back({ a, l, {} });
             while (*p == ',' || *p == ' ') p++;
         }
     }

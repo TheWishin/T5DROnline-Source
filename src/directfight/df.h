@@ -26,6 +26,7 @@ void note(const char* fmt, ...);
 uint32_t mode_manager();
 uint32_t mode_cur();
 uint32_t mode_next();
+void     stuck_dump(uint32_t f);         /* diagnostics of a stuck reset: the mode manager and every guest thread */
 
 /* pad injection: while on, pad `port` reads exactly `buttons` (CELL_PAD_CTRL_*
  * packed DIGITAL1 low byte / DIGITAL2 high byte); routed to the netplay hooks

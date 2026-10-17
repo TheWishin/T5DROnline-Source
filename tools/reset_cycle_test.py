@@ -24,7 +24,8 @@ Every cycle is "match -> abnormal end -> next match", the way the launcher drive
        no_peer    only S gets the "fight"; nobody answers (connect timeout)
        desync     O fights on another stage (the two states differ); after
                   --fight-seconds both get "idle" (the lobby voids the match)
-       normal     the match is played to its end (KO or time) and confirmed
+       normal     the match is played to its end (KO or time) and confirmed;
+                  then both get "idle" (no rematch: the launcher ends the session)
   2. S must come back to a fresh select screen ("neutral") by itself;
   3. the next match (a new session, O restarted if it died) is played to its end:
      both results name it, the same winner and gameplay hash, 0 mismatching frames.
@@ -126,6 +127,21 @@ class Player(Game):
         self.log_pos = 0
 
 
+def stutter(game, ms, on, lock, stop):
+    """--stutter: a choppy opponent -- O's process is suspended for `ms` ms every 0.2-0.6 s while
+    `on` is set (S predicts its input meanwhile and rolls back when it comes: rollbacks all through
+    the match, the KO included)."""
+    while not stop.is_set():
+        time.sleep(random.uniform(0.2, 0.6))
+        with lock:
+            if not on.is_set() or not game.running():
+                continue
+            pid = game.proc.pid
+            _suspend(pid, True)
+            time.sleep(ms / 1000.0)
+            _suspend(pid, False)
+
+
 def log_guard(games, limit_mb, stop):
     """A game whose log runs away (a broken game spams NULL accesses: 12 GB in 7 minutes) is killed."""
     while not stop.is_set():
@@ -154,6 +170,10 @@ def main():
     ap.add_argument("--vfs", default=os.path.join(ROOT, "game", "vfs"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--cycles", type=int, default=10)
+    ap.add_argument("--stutter", type=int, default=0,
+                    help="suspend O for this many ms every 0.2-0.6 s during the matches (rollbacks near the KO)")
+    ap.add_argument("--start-cycle", type=int, default=1,
+                    help="begin the schedule (end, point, fighters, stage) at this cycle, e.g. to replay a failed one")
     ap.add_argument("--ends", default="stall,kill,quit,peer_idle,idle,no_peer,desync,normal")
     ap.add_argument("--points", default="loading,fight,select", help="where the first match ends, in turn")
     ap.add_argument("--rounds", type=int, default=1)
@@ -186,7 +206,7 @@ def main():
             except OSError:
                 pass
     report = {"exe": os.path.abspath(a.exe), "env": a.env, "cycles": []}
-    state = {"k": 0}
+    state = {"k": 2 * (a.start_cycle - 1)}   # two sessions per cycle
 
     def new_session(o_stage=None, o_too=True):
         """'idle' + 'fight' with a new session for S (and O), as the launcher does for a new opponent."""
@@ -258,6 +278,7 @@ def main():
         res = {}
         t_fight = {}
         t_end = time.time() + a.match_seconds
+        stutter_set(True)
         while time.time() < t_end:
             for g in (S, O):
                 st = g.status()
@@ -269,6 +290,7 @@ def main():
             if len(res) == 2 or not (S.running() and O.running()):
                 break
             time.sleep(0.25)
+        stutter_set(False)
         r1, r2 = res.get(1), res.get(2)
         ok = (r1 is not None and r2 is not None and r1.get("winner") is not None and r1.get("winner") == r2.get("winner")
               and r1.get("hash") == r2.get("hash") and r1.get("desync") == 0 and r2.get("desync") == 0)
@@ -277,8 +299,15 @@ def main():
     ok_all = True
     stop = threading.Event()
     threading.Thread(target=log_guard, args=((S, O), 300, stop), daemon=True).start()
+    st_on, st_lock = threading.Event(), threading.Lock()
+    if a.stutter:
+        threading.Thread(target=stutter, args=(O, a.stutter, st_on, st_lock, stop), daemon=True).start()
+
+    def stutter_set(on):
+        with st_lock:
+            (st_on.set if on else st_on.clear)()
     try:
-        for c in range(1, a.cycles + 1):
+        for c in range(a.start_cycle, a.start_cycle + a.cycles):
             end = ends[(c - 1) % len(ends)]
             point = "fight" if end == "desync" else points[(c - 1) % len(points)]
             cyc = {"cycle": c, "end": end, "point": point}
@@ -337,6 +366,9 @@ def main():
                 cyc["first"].update(det, ok=ok)
                 log(f"cycle {c}: normal match {'confirmed' if ok else 'NOT confirmed'}: "
                     f"{[(i, r.get('winner'), r.get('desync'), r.get('reason')) for i, r in det['results'].items()]}")
+                # no rematch: the launcher ends the session with "idle" (the game keeps it for a rematch until then)
+                S.send("idle")
+                O.send("idle")
             took, why = wait_neutral(S)
             cyc["back_to_neutral_s"] = round(took, 1) if took is not None else None
             cyc["s_error"] = why
@@ -344,7 +376,7 @@ def main():
             cyc["first"]["s_result"] = r if r and r.get("match") == mid else None
             log(f"cycle {c}: S back at neutral after {took if took is None else round(took, 1)} s "
                 f"(session end: {why}; S result {cyc['first']['s_result'] and cyc['first']['s_result'].get('reason')})")
-            if O.running() and end in ("idle", "desync", "peer_idle"):
+            if O.running() and end in ("idle", "desync", "peer_idle", "normal"):
                 wait_neutral(O, 60)
             # ---- 2. the next match: a new session, played to its end
             mid2, line2, base2, t_cmd2 = new_session()

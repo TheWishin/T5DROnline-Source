@@ -261,8 +261,8 @@ Entertainment or Sony Interactive Entertainment. Tekken is a trademark of Bandai
 Namco. Rules about decrypting and converting games you own differ by country.
 You are responsible for following yours. This is not legal advice.
 
-This repository does not have a license file for its own code yet; a license is
-still to be chosen. ps3recomp is MIT-licensed (see above).
+This project's own code and docs are under the MIT License (`LICENSE`).
+ps3recomp is MIT-licensed too. The license covers none of the game.
 <!-- players:end -->
 
 ## Building from source

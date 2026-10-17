@@ -288,8 +288,9 @@ unterstützt. Tekken ist eine Marke von Bandai Namco. Die Regeln zum Entschlüss
 und Umwandeln von Spielen, die du besitzt, sind von Land zu Land verschieden. Du
 bist selbst dafür verantwortlich, deine einzuhalten. Das ist keine Rechtsberatung.
 
-Dieses Repository hat noch keine Lizenzdatei für den eigenen Code; eine Lizenz ist
-noch zu wählen. ps3recomp steht unter der MIT-Lizenz (siehe oben).
+Der eigene Code und die Doku dieses Projekts stehen unter der MIT-Lizenz
+(`LICENSE`). ps3recomp steht ebenfalls unter der MIT-Lizenz. Die Lizenz gilt für
+nichts vom Spiel.
 
 ## Aus dem Quellcode bauen
 

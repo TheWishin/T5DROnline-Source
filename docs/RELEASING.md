@@ -2,28 +2,22 @@
 
 Releases are built and published by GitHub Actions
 (`.github/workflows/release.yml`) when a version tag is pushed. Nobody needs a
-GitHub token on their PC: the workflow publishes with its own `GITHUB_TOKEN`,
-and only after the repository owner approved it on GitHub.
+GitHub token on their PC: the workflow publishes with its own `GITHUB_TOKEN`.
+Only the owner's account can start it: the owner, or the main Claude session,
+which pushes with the owner's own git login.
 
 How the zip is put together, and why, is in [RELEASE.md](RELEASE.md). This page
 is the procedure.
 
 ## One-time setup (the owner, in the GitHub web UI)
 
-Only the owner (TheWishin) may publish releases. Two settings enforce that.
+Only the owner's account (TheWishin) may publish releases: the owner, or the
+main Claude session, which pushes with the owner's own git login (the owner's
+choice, 2026-10-17). Three things enforce that.
 
-**1. The `release` environment -- every publish waits for the owner's approval.**
-
-Settings -> Environments -> **New environment** -> name `release` ->
-**Configure environment**:
-
-- **Required reviewers**: tick it, add `TheWishin`.
-- **Prevent self-review**: leave it **off** (unticked), so the owner can approve
-  a run they started themselves.
-- **Deployment branches and tags**: choose **Selected branches and tags** ->
-  **Add deployment branch or tag rule** -> Ref type **Tag** -> pattern `v*` ->
-  **Add rule**.
-- No secrets, no variables, no wait timer. **Save protection rules**.
+**1. Nobody else has write access.** Settings -> Collaborators and teams: no one
+listed (or only with Read). Without write access nobody else can push a tag or
+start a workflow.
 
 **2. A tag ruleset -- only the admin creates, moves or deletes release tags.**
 
@@ -36,13 +30,22 @@ Settings -> Rules -> Rulesets -> **New ruleset** -> **New tag ruleset**:
   deletions** (keep **Block force pushes** ticked).
 - **Create**.
 
-Why both: the main session pushes with the owner's own git credentials, so to
-GitHub its pushes *are* the owner's. The ruleset and the workflow's owner check
-(`github.actor` and `github.triggering_actor` must be the repository owner, for
-tag pushes and manual runs) keep everyone else out, but cannot tell the owner
-from a tool using their login. The environment's required reviewer can: the
-publish job waits until the owner clicks **Approve** on GitHub (web or the
-GitHub mobile app).
+**3. The `release` environment -- publishing only from `v*` tags.** It exists
+since the first release (GitHub created it then).
+
+Settings -> Environments -> `release`:
+
+- **Deployment branches and tags**: choose **Selected branches and tags** ->
+  **Add deployment branch or tag rule** -> Ref type **Tag** -> pattern `v*` ->
+  **Add rule**.
+- **Required reviewers**: off, so the Claude session can finish a release
+  without a click. Tick it and add `TheWishin` if every publish should wait for
+  the owner's approval (then leave **Prevent self-review** off).
+- No secrets, no variables, no wait timer. **Save protection rules**.
+
+The workflow's owner check (`github.actor` and `github.triggering_actor` must be
+the repository owner, for tag pushes and manual runs) is the last guard: a run
+started by anyone else stops before it builds anything.
 
 Nothing else is needed: Actions are already enabled (CI runs), and the publish
 job asks for `contents: write` itself; the build job only reads.

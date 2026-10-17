@@ -15,6 +15,8 @@ for a new opponent. --rematch-every K makes every K-th match a rematch in the
 running session instead. --fresh-at N restarts the joiner's game before match N (a
 new opponent whose game has just started meets a game that has played already).
 
+--exe2 runs the joiner's game from another build (tools/cross_build_test.py).
+
 --mash: both players press face buttons and directions at random the whole time
 (T5_NET_SCRIPT: fights, KOs, win poses, select screens). --rematch-wait 20 gives
 the next command only 20 s after the results (people clicking Rematch late): the
@@ -97,7 +99,7 @@ class Game:
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx)
-        for kv in self.a.env:
+        for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
         return env
@@ -108,7 +110,8 @@ class Game:
         self.log_path = os.path.join(self.dir, f"game{self.starts}.log")
         lf = open(self.log_path, "w")
         vfs = os.path.abspath(self.a.vfs)
-        self.proc = subprocess.Popen([os.path.abspath(self.a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
+        exe = self.a.exe2 if self.role == "join" and self.a.exe2 else self.a.exe
+        self.proc = subprocess.Popen([os.path.abspath(exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
                                      cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT)
         log(f"game {self.idx} ({self.role}) started, pid {self.proc.pid}, log {self.log_path}")
 
@@ -182,6 +185,10 @@ def main():
     ap.add_argument("--seconds", type=float, default=1800)
     ap.add_argument("--match-seconds", type=float, default=420, help="give up on a match after this long")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
+    ap.add_argument("--env1", action="append", default=[], help="NAME=VALUE for the host's game only")
+    ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for the joiner's game only")
+    ap.add_argument("--exe2", help="the joiner's t5dr.exe (another build, t5dr_game.dll beside it; "
+                                   "tools/cross_build_test.py --flow persistent)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 

@@ -125,10 +125,10 @@ index 0000000..6de7c79
 +
 +uint32_t ppu_fp_env_violations(void) { return (uint32_t)s_fp_violations; }
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index 904a292..7e2ca32 100644
+index 55dc158..eeaf244 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
-@@ -85,6 +85,7 @@
+@@ -91,6 +91,7 @@
   *   and post -> wake is 8-9 us at the median.
   */
  #include "host_sched.h"
@@ -136,7 +136,7 @@ index 904a292..7e2ca32 100644
  
  int g_host_sched_trace_on = 0;
  
-@@ -92,7 +93,7 @@ int g_host_sched_trace_on = 0;
+@@ -100,7 +101,7 @@ int g_host_sched_trace_on = 0;
  
  void    host_sched_process_init(void) {}
  void    host_sched_thread_start(int role, int guest_prio, const char* name)
@@ -145,7 +145,7 @@ index 904a292..7e2ca32 100644
  int     host_sched_enabled(void) { return 0; }
  int     host_sched_sleep_us(uint64_t usec) { (void)usec; return 0; }
  int     host_sched_sleep_subms(uint64_t usec) { (void)usec; return 0; }
-@@ -467,6 +468,9 @@ static volatile LONG s_ideal_next = 0;
+@@ -542,6 +543,9 @@ static volatile LONG s_ideal_next = 0;
  
  void host_sched_thread_start(int role, int guest_prio, const char* name)
  {
@@ -511,7 +511,7 @@ index e2096d0..3453b9d 100644
       * call it makes. WAITBT_EVERY only samples threads that are blocking on an
       * event queue, which misses a thread that stops looping while it is BUSY --
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 7941031..f2ea55a 100644
+index 6e11b2c..007ad85 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
 @@ -40,6 +40,7 @@
@@ -522,7 +522,7 @@ index 7941031..f2ea55a 100644
  #include "../memory/vm.h"   /* vm_commit -- sys_mmapper_search_and_map maps for real */
  #include "../platform/win32_compat.h"      /* Win32 types, interlocked ops, Sleep/QPC on POSIX */
  #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
-@@ -3453,7 +3454,9 @@ extern "C" void lv2_syscall(ppu_context* ctx)
+@@ -3523,7 +3524,9 @@ extern "C" void lv2_syscall(ppu_context* ctx)
      struct _ScGuard {
          ppu_context* c;
          ~_ScGuard() { unsigned t = (unsigned)c->thread_id;
@@ -533,7 +533,7 @@ index 7941031..f2ea55a 100644
      } _sg{ ctx };
      { unsigned t = (unsigned)ctx->thread_id;
        if (t < PS3_SC_INFLIGHT_MAX) g_sc_inflight[t] = (uint32_t)num; }
-@@ -4102,6 +4105,9 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
+@@ -4172,6 +4175,9 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
       * frame is reused -- corrupting the crash handler / any diagnostic that reads the
       * current-thread ctx. Restore the caller's. */
      ppu_context* saved_active = g_active_ctx;
@@ -543,7 +543,7 @@ index 7941031..f2ea55a 100644
      /* Thread identity: a zeroed scratch ctx used to run callbacks as thread_id 0
       * -- aliasing the main thread in every owner-tracking primitive. Inherit the
       * calling guest thread's id; host-only threads (ticker) get a per-host-thread
-@@ -4130,6 +4136,7 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
+@@ -4200,6 +4206,7 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
      if (!code) return 0;
      ppu_fn fn = ppu_lookup(code);
      if (!fn) { fprintf(stderr, "[ppu] guest_call_ct: code 0x%08X not registered\n", code); return 0; }
@@ -864,7 +864,7 @@ index 3aa0a67..d5ad4e5 100644
       * with r3/r4 zeroed in SOME runs while the jm2 runner sets them -- count
       * and stamp every image-1 run here to find the argless caller. */
 diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
-index 1317792..2c0ab8a 100644
+index a5b7d75..f5ccca0 100644
 --- a/runtime/spu/spu_helpers.h
 +++ b/runtime/spu/spu_helpers.h
 @@ -16,6 +16,7 @@
@@ -884,7 +884,7 @@ index 1317792..2c0ab8a 100644
  }
  static inline uint32_t spu__fa_any(uint32_t x, uint32_t y) { const uint32_t f = spu__fa_fast(x, y); return f ? f : spu__fa_lane(x, y); }
  static inline uint32_t spu__fm_any(uint32_t x, uint32_t y) { const uint32_t f = spu__fm_fast(x, y); return f ? f : spu__fm_lane(x, y); }
-@@ -1061,7 +1062,7 @@ static inline u128 spu__dfmx(u128 a, u128 b, u128 c, int negate, int subtract) {
+@@ -1083,7 +1084,7 @@ static inline u128 spu__dfmx(u128 a, u128 b, u128 c, int negate, int subtract) {
          const uint64_t x = spu__dw_get(a, i), y = spu__dw_get(b, i), z = spu__dw_get(c, i);
          if (spu__d_isnan(x) || spu__d_isnan(y) || spu__d_isnan(z)) { spu__dw_put(&r, i, 0x7FF8000000000000ull); continue; }
          const double zz = subtract ? -spu__d_in(z) : spu__d_in(z);

@@ -65,6 +65,75 @@ def read_hashes(frames_log, kind):
     return out
 
 
+def read_sessions(frames_logs, kind):
+    """A persistent game logs every netplay session into one file, each from frame 0:
+    one {frame: hash} per session, split at the "lockstep starts: frame 0" lines."""
+    sessions = []
+    for path in frames_logs:
+        if not os.path.exists(path):
+            continue
+        with open(path, errors="replace") as f:
+            for line in f:
+                if "lockstep starts: frame 0" in line:
+                    sessions.append({})
+                    continue
+                p = line.split()
+                if len(p) < 3 or not p[0].isdigit() or p[1] != kind or not sessions:
+                    continue
+                h = p[2] if kind == "F" else (p[4] if len(p) > 4 else None)
+                if h:
+                    sessions[-1][int(p[0])] = h
+    return sessions
+
+
+def check_flow(d, mode, min_frames):
+    """Compare the two games of a tools/fight_flow_test.py run (persistent game), session by session."""
+    lines, ok = [], True
+    kind = "F" if mode == "rollback" else "I"
+    logs = {}
+    for who, run in (("host", "run1"), ("join", "run2")):
+        rd = os.path.join(d, run)
+        fl = sorted((f for f in os.listdir(rd) if re.match(r"frames\d+\.log$", f)) if os.path.isdir(rd) else [],
+                    key=lambda f: int(re.findall(r"\d+", f)[0]))
+        logs[who] = read_sessions([os.path.join(rd, f) for f in fl], kind)
+        gl = [os.path.join(rd, f) for f in (os.listdir(rd) if os.path.isdir(rd) else []) if re.match(r"game\d+\.log$", f)]
+        m = [x for g in gl for x in grep(g, r"fp: game code -march=(\S+), main thread MXCSR (0x[0-9A-Fa-f]+)")]
+        lines.append(f"  {who}: -march={m[0].group(1) if m else '?'} (MXCSR {m[0].group(2) if m else '?'}), "
+                     f"{len(logs[who])} netplay session(s)")
+    total = 0
+    for i in range(max(len(logs["host"]), len(logs["join"]))):
+        a = logs["host"][i] if i < len(logs["host"]) else {}
+        b = logs["join"][i] if i < len(logs["join"]) else {}
+        common = sorted(set(a) & set(b))
+        diff = [f for f in common if a[f] != b[f]]
+        total += len(common)
+        lines.append(f"  session {i + 1}: {len(common)} frames on both sides, {len(diff)} differ"
+                     + (f"; first at frame {diff[0]}" if diff else ""))
+        ok &= not diff
+    if total < min_frames:
+        lines.append(f"  FAIL: fewer than {min_frames} frames compared")
+        ok = False
+    rep = None
+    try:
+        rep = json.load(open(os.path.join(d, "report.json")))
+    except (OSError, ValueError):
+        pass
+    if not rep:
+        lines.append("  FAIL: no report.json from tools/fight_flow_test.py")
+        ok = False
+    else:
+        for m in rep.get("matches", []):
+            r = m.get("results", {})
+            r1, r2 = r.get("1") or r.get(1) or {}, r.get("2") or r.get(2) or {}
+            lines.append(f"  match {m['k']} {m['line']}{' (rematch)' if m.get('rematch') else ''}: "
+                         f"{'confirmed' if m.get('ok') else 'NOT confirmed'} -- winner {r1.get('winner')}/{r2.get('winner')}, "
+                         f"hash {r1.get('hash')}/{r2.get('hash')}, desync {r1.get('desync')}/{r2.get('desync')}")
+        ok &= bool(rep.get("ok"))
+    lines.insert(0, f"{mode} (persistent game, tools/fight_flow_test.py):")
+    lines.append(f"  -> {'IN SYNC' if ok else 'NOT IN SYNC'}")
+    return ok, lines
+
+
 def grep(path, pattern):
     if not os.path.exists(path):
         return []
@@ -166,6 +235,11 @@ def main():
     ap.add_argument("--env2", action="append", default=[])
     ap.add_argument("--runs", default=RUNS)
     ap.add_argument("--recheck", action="store_true", help="only compare the runs already in --out (no new run)")
+    ap.add_argument("--flow", choices=["process", "persistent"], default="process",
+                    help="process: a game process per pair, matches through T5_FIGHT/T5_FIGHT_FILE "
+                         "(tools/rollback_net_test.py, with the latency proxy); persistent: games that stay open, every "
+                         "match a control command with a new session (T5_CTL_DIR, tools/fight_flow_test.py --mash)")
+    ap.add_argument("--matches", type=int, default=3, help="--flow persistent: matches (new sessions) per mode")
     ap.add_argument("--control", action="store_true",
                     help="also run the host's build on both sides (same matches): tells a cross-build difference "
                          "from a rollback/timing desync the same build has too")
@@ -193,6 +267,27 @@ def main():
     def run_pair(exe1, exe2, env1, env2, prefix, port):
         ok_pair, out = True, []
         for i, mode in enumerate(modes):
+            if a.flow == "persistent":
+                d = os.path.join(base, prefix + mode)
+                cmd = [PY, os.path.join(ROOT, "tools", "fight_flow_test.py"), "--flow", "persistent", "--exe", exe1,
+                       "--exe2", exe2, "--out", d, "--matches", str(a.matches), "--rounds", "2", "--mash",
+                       "--port", str(port + 20 * i), "--vfs", a.vfs, "--seconds", str(a.seconds or 400 * a.matches + 120)]
+                if mode == "lockstep":
+                    cmd += ["--env", "T5_RB_MODE=off"]
+                for flag, vals in (("--env", a.env), ("--env1", env1), ("--env2", env2)):
+                    for kv in vals:
+                        cmd += [flag, kv]
+                t0 = time.time()
+                if not a.recheck:
+                    print(f"[{prefix}{mode}] {' '.join(cmd)}", flush=True)
+                    subprocess.run(cmd, stdout=open(os.path.join(base, f"{prefix}{mode}.out"), "w"), stderr=subprocess.STDOUT)
+                ok, lines = check_flow(d, mode, a.min_frames)
+                lines[0] = prefix + lines[0]
+                lines.insert(1, f"  ({time.time() - t0:.0f} s, run directory {d})")
+                out += lines
+                ok_pair &= ok
+                print("\n".join(lines), flush=True)
+                continue
             rb_mode = {"rollback": "default", "lockstep": "off"}[mode]
             cmd = [PY, os.path.join(ROOT, "tools", "rollback_net_test.py"), "--out", prefix + mode, "--runs", base,
                    "--exe", exe1, "--exe2", exe2, "--fight", a.fight, "--matches", str(matches),

@@ -227,16 +227,33 @@ The game plays through the **default Windows playback device** (WASAPI, shared
 mode, 48 kHz; Windows converts other rates).
 
 1. Right-click the speaker icon > Sound settings. Choose the device you want as
-   the default output. **Then restart the game.** It picks the device at start.
-   Changing the default while the game runs (plugging in headphones) does not move
-   the game's sound.
+   the default output. The game follows the default device: if you plug in
+   headphones, switch to Bluetooth or turn off an HDMI monitor while it runs, the
+   sound moves to the new default within about a second. If Windows has no
+   playback device at all, the game still runs normally, only silent. It looks
+   for a device every 2 seconds and the sound starts when one appears. You do not
+   need to restart the game for any of this.
 2. Open the Volume Mixer while the game runs. `t5dr.exe` should appear. Check that
    it is not muted.
 3. Settings > "Mute sound" must be off. (It sets `PS3_NO_AUDIO=1`, which tells the
    game that audio is not available.)
-4. Open the newest game log and search for `[cellAudio]`. Lines such as "Failed to
-   get default audio endpoint" or "WASAPI Initialize failed" mean Windows refused
-   the device. Send the log.
+4. Open the newest game log and search for `[cellAudio] audio device`. Every change
+   of the sound device gets one line (`t=` is the seconds since the game's audio
+   started):
+   - `audio device opened "Speakers (Realtek)" at 48000 Hz (...)`: sound plays on
+     that device. The first number is the rate the game sends; "device mix" is the
+     rate Windows runs the device at (Windows converts).
+   - `audio device lost: AUDCLNT_E_DEVICE_INVALIDATED ...`: the device went away
+     (unplugged, switched off, driver restart). The game keeps running and opens
+     the default device again at once.
+   - `audio device waiting: no audio device (E_NOTFOUND) (0x80070490)`: Windows
+     has no playback device, or none is enabled (Sound settings > Output). The
+     game runs silent and tries again every 2 seconds.
+   - `default audio device changed, switching`: you changed the default; the next
+     line names the new device.
+
+   Other errors on the "waiting" line (`AUDCLNT_E_UNSUPPORTED_FORMAT`,
+   `AUDCLNT_E_DEVICE_IN_USE`) mean Windows refused the device. Send the log.
 5. Bluetooth headphones add delay. A wired output or speakers are safer.
 6. Crackling: the sound drops a little when the frame rate dips (0.1-3.6 % of the
    audio blocks in our QA run, 14.6 % at worst in 5 seconds). See [Low frame

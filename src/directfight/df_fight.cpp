@@ -93,11 +93,14 @@ const char* const kName[36] = {
  * rows top -> middle -> bottom with DOWN (UP the other way) and skips a row
  * that has no cell in that column; in the top row it cycles cells 25..34 only
  * (cell 24, Jinpachi's slot, is skipped). Measured by walking the cursor
- * (build/df runs p9/p10) and checked against the screen. -1 = not reachable. */
+ * (build/df runs p9/p10) and checked against the screen. -1 = not reachable.
+ * Cells 28 and 31 are Devil Jin and Feng: the first table had them the other
+ * way round, so T5_FIGHT Devil Jin (29) gave Feng and Feng (31) Devil Jin
+ * (completeness audit: the select screen's portraits of all 35 ids). */
 const int kGrid[36] = {
     23, 18, 1, 6, 3, 33, 34, 14, 8, 0, 21, 27,       /* middle: Anna Marduk Law Hwoarang King Lili Dragunov Heihachi Christie Paul Jack-5 Bruce */
     22, 2, 5, 17, 15, 7, 9, 16, 10, 4, 13, 11,       /* bottom: Roger Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma */
-    -1, 20, 28, 19, 31, 30, 26, 29, 25, 24, 32,      /* top: (Jinpachi) Eddy Baek Mokujin Feng Raven Asuka DevilJin Ganryu Wang ArmorKing */
+    -1, 20, 28, 19, 29, 30, 26, 31, 25, 24, 32,      /* top: (Jinpachi) Eddy Baek Mokujin DevilJin Raven Asuka Feng Ganryu Wang ArmorKing */
     -1 };
 int cell_of(int chr)
 {

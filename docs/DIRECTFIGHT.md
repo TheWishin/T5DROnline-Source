@@ -148,7 +148,7 @@ Jinpachi is not selectable here yet). UP/DOWN cycle top -> middle -> bottom and
 skip a row with no cell in that column.
 
 ```
-top    : --  Eddy Baek Mokujin Feng Raven Asuka DevilJin Ganryu Wang ArmorKing
+top    : --  Eddy Baek Mokujin DevilJin Raven Asuka Feng Ganryu Wang ArmorKing
 middle : Anna Marduk Law Hwoarang King Lili Dragunov Heihachi Christie Paul Jack-5 Bruce
 bottom : RogerJr Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma
 ```

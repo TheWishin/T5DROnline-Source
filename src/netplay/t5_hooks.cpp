@@ -232,6 +232,7 @@ const char* kDefaultHash =
 /* Words inside those regions that differ between two PCs that are otherwise
  * in step (cosmetic or timing-derived: sound variations, timestamps). */
 const char* kDefaultHashSkip =
+    "1074F218:4,"                     /* the C library rand() word: a side thread (0x1230AC -> 0x12C558) consumes it at its own pace */
     "1008F0C4:4,1008F0D0:4,"          /* timestamps */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
     /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart

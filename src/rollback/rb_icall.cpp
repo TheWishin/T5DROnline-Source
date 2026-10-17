@@ -27,6 +27,8 @@
 #include "ppu_recomp.h"
 #include "rb.h"
 
+extern "C" uint8_t* vm_base;
+
 extern "C" {
 typedef int (*ps3_icall_hook_fn)(ppu_context* ctx, uint32_t target);
 extern ps3_icall_hook_fn ps3_icall_hook;
@@ -71,6 +73,22 @@ std::atomic<bool> g_cut_on{ false };
 std::atomic<uint64_t> g_cut_hits{ 0 }, g_cut2_hits{ 0 };
 uint32_t g_cut_count = 0, g_cut2_count = 0;
 uint64_t g_tm_tid = 0;                       /* T5_RB_ICALL_TID: time this guest thread instead of the main thread */
+
+/* The rand() shield. The draw passes call the C library's rand()/random()
+ * (0x369228, state 0x1074F218 + the lagged generators behind it, 0x10C bytes
+ * -- the range the gameplay hash covers) on some stages (18, 24: every
+ * frame), so a re-simulated frame without the draw left the generator in a
+ * different state from the original frame and the fight's own rand() users
+ * diverged. On live frames every cut target now runs with the generator
+ * swapped to a private copy (the draw keeps its own random stream) and the
+ * fight's state is put back afterwards: the draw can no longer touch it, on
+ * either peer, so re-simulating without the draw reproduces it. Nested cut
+ * targets share the outermost swap. T5_RB_RANDSHIELD=0 disables it. */
+constexpr uint32_t kRandState = 0x1074F218u, kRandLen = 0x10Cu;
+bool g_shield = false, g_shield_init = false;   /* T5_RB_RANDSHIELD=1: swap the rand() state around the cut targets on live frames (not needed: the draw does not call rand(), see rb_state.cpp kGameSkip) */
+uint8_t g_shield_priv[kRandLen];
+int g_shield_depth = 0;
+std::atomic<uint64_t> g_shield_calls{ 0 };
 
 inline uint32_t slot_of(uint32_t t) { return (t * 2654435761u) & (kSetN - 1); }
 bool set_has(const uint32_t* keys, uint32_t t)
@@ -119,10 +137,28 @@ int hook(ppu_context* ctx, uint32_t target)
         }
         if (!g_tm_tid || ctx->thread_id != g_tm_tid) return 0;
     } else {
-        if (g_cut_on.load(std::memory_order_relaxed) && cut_has(target)) {
-            ctx->gpr[3] = 0;
-            g_cut_hits.fetch_add(1, std::memory_order_relaxed);
-            return 1;
+        if (cut_has(target)) {
+            if (g_cut_on.load(std::memory_order_relaxed)) {
+                ctx->gpr[3] = 0;
+                g_cut_hits.fetch_add(1, std::memory_order_relaxed);
+                return 1;
+            }
+            if (g_shield && !g_tm_on.load(std::memory_order_relaxed)) {
+                if (g_shield_depth++ == 0) {
+                    uint8_t live[kRandLen];
+                    if (!g_shield_init) { g_shield_init = true; memcpy(g_shield_priv, vm_base + kRandState, kRandLen); }
+                    memcpy(live, vm_base + kRandState, kRandLen);
+                    memcpy(vm_base + kRandState, g_shield_priv, kRandLen);
+                    ps3_indirect_call_direct(ctx, target);
+                    memcpy(g_shield_priv, vm_base + kRandState, kRandLen);
+                    memcpy(vm_base + kRandState, live, kRandLen);
+                    g_shield_calls.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    ps3_indirect_call_direct(ctx, target);
+                }
+                g_shield_depth--;
+                return 1;
+            }
         }
         if (g_tm_tid) return 0;
     }
@@ -157,6 +193,8 @@ void icall_install()
     if (done) return;
     done = true;
     if (const char* e = getenv("T5_RB_ICALL_TIMING")) g_tm_enabled = *e == '1';
+    if (const char* e = getenv("T5_RB_RANDSHIELD")) g_shield = *e != '0';
+    if (g_shield) note("rand() shield around the draw passes: on");
     if (const char* e = getenv("T5_RB_ICALL_TID")) g_tm_tid = (uint64_t)atoi(e);
     const char* spec2 = getenv("T5_RB_CUT2");
     if (spec2 && !strcmp(spec2, "none")) { note("draw-thread cut: disabled (T5_RB_CUT2=none)"); }

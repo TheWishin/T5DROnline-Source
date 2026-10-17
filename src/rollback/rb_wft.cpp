@@ -32,6 +32,7 @@ struct R { uint32_t base, len; };
 std::vector<R> g_ranges, g_active;        /* configured ranges; the ranges armed right now */
 std::atomic<bool> g_armed{ false };
 bool g_all = false;                          /* T5_RB_WFT_ALL=1: every write (single-step re-protect), not just the first per page */
+uint32_t g_only_addr = 0;                    /* T5_RB_WFT_ADDR=hex: record only writes to this exact word (the page still traps) */
 __declspec(thread) uintptr_t t_reprotect = 0;
 std::map<std::string, int> g_who;          /* "func chain|page" -> faults */
 std::map<uint32_t, int> g_pages;
@@ -65,6 +66,7 @@ LONG CALLBACK veh(EXCEPTION_POINTERS* ep)
     DWORD old;
     VirtualProtect(vm_base + (ea & ~0xFFFu), 0x1000, PAGE_READWRITE, &old);
     if (g_all) { t_reprotect = (uintptr_t)(vm_base + (ea & ~0xFFFu)); ep->ContextRecord->EFlags |= 0x100u; }
+    if (g_only_addr && (ea & ~3u) != g_only_addr) return EXCEPTION_CONTINUE_EXECUTION;
     /* the writer: innermost lifted function at the fault pc, then its callers */
     uint32_t off = 0;
     uint32_t top = guest_of_host((uintptr_t)ep->ContextRecord->Rip, &off);
@@ -88,6 +90,7 @@ void wft_install()
     const char* e = getenv("T5_RB_WFT");
     if (!e || !*e) return;
     if (const char* a = getenv("T5_RB_WFT_ALL")) g_all = *a == '1';
+    if (const char* a = getenv("T5_RB_WFT_ADDR")) g_only_addr = (uint32_t)strtoul(a, nullptr, 16) & ~3u;
     if (!strcmp(e, "diff")) {   /* ranges come later, from the test's page diff */
         InitializeCriticalSection(&g_cs);
         AddVectoredExceptionHandler(1, veh);

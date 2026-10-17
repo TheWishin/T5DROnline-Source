@@ -148,6 +148,8 @@ std::atomic<bool> g_installed{ false };
 Mode g_mode = Mode::Off;
 PadInput g_override[2];
 bool g_override_on = false;
+bool g_df = false;                        /* direct fight drives the pads */
+uint32_t g_script_base = 0;               /* script frame = logical frame - base */
 
 void write_pad_data(uint32_t ea, const PadInput& in)
 {
@@ -166,9 +168,11 @@ void write_pad_data(uint32_t ea, const PadInput& in)
 PadInput scripted(int port, uint32_t f)
 {
     PadInput in = kNeutral;
-    in.buttons = script_mask(g_script[port], f);
+    in.buttons = f >= g_script_base ? script_mask(g_script[port], f - g_script_base) : 0;
     return in;
 }
+bool df_drives() { return g_df; }
+void set_script_base(uint32_t f) { g_script_base = f; }
 
 std::atomic<uint32_t> g_pad_calls{ 0 };
 uint32_t pad_calls() { return g_pad_calls.load(); }
@@ -287,10 +291,19 @@ void h_cellGcmSetFlip(ppu_context* ctx)
 /* The present (0x383C04) queues the flip and then waits for it; while
  * re-simulating there is no flip to wait for -- this wait was 35 % of a
  * re-simulated frame's wall time in the phase-1 numbers. */
+std::atomic<int> g_ts_sleep_us{ 0 };
+void ts_sleep_request(double ms) { g_ts_sleep_us = (int)(ms * 1000.0); }
 void h_cellGcmSetWaitFlip(ppu_context* ctx)
 {
     if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }
     cellGcmSetWaitFlip();
+    if (ctx->thread_id == g_main_tid) {
+        const int us = g_ts_sleep_us.exchange(0);
+        if (us > 0) {
+            LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
+            do { Sleep(1); QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 1000000 / f.QuadPart < us);
+        }
+    }
     ctx->gpr[3] = 0;
 }
 double t_usercmd_ms(LARGE_INTEGER since) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return 1000.0 * (double)(g_t_usercmd.QuadPart - since.QuadPart) / (double)f.QuadPart; }
@@ -409,8 +422,14 @@ struct Register {
         g_script[1] = parse_script(getenv("T5_RB_SCRIPT2"));
         note("mode %s, %zu + %zu scripted presses", m, g_script[0].size(), g_script[1].size());
         ps3_hle_register_ctx(NID_cellPadInit,    "cellPadInit(rb)",    h_cellPadInit);
-        ps3_hle_register_ctx(NID_cellPadGetInfo, "cellPadGetInfo(rb)", h_cellPadGetInfo);
-        ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(rb)", h_cellPadGetData);
+        /* With a direct fight configured (T5_FIGHT), src/directfight owns the pad
+         * overrides (it drives the menus); the test mode then feeds its fight
+         * script through df::inject() per logical frame instead. */
+        g_df = (getenv("T5_FIGHT") && *getenv("T5_FIGHT")) || (getenv("T5_FIGHT_FILE") && *getenv("T5_FIGHT_FILE"));
+        if (!g_df) {
+            ps3_hle_register_ctx(NID_cellPadGetInfo, "cellPadGetInfo(rb)", h_cellPadGetInfo);
+            ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(rb)", h_cellPadGetData);
+        }
         ps3_hle_register_ctx(NID_cellGcmSetUserCommand, "cellGcmSetUserCommand(rb)", h_cellGcmSetUserCommand);
         ps3_hle_register_ctx(NID_cellGcmSetFlip, "cellGcmSetFlip(rb)", h_cellGcmSetFlip);
         ps3_hle_register_ctx(NID_cellGcmGetFlipStatus, "cellGcmGetFlipStatus(rb)", h_cellGcmGetFlipStatus);

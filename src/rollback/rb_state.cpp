@@ -113,6 +113,13 @@ static const Range kGame[] = {
     { 0x100A3B00u, 0x300 },
 };
 static const Range kGameSkip[] = {
+    /* the C library rand() word (0x369228's state, from the TOC): consumed by a
+     * side thread (0x1230AC -> 0x12CF34 -> 0x12C558, 8 call sites, ~7 calls per
+     * frame on stage 24, a few on stage 18) at its own pace, so it can never
+     * be part of the deterministic fight -- the netplay runs stayed in sync
+     * while it diverged, and it was the only word behind every stage-specific
+     * mismatch of the draw-cut test (docs/ROLLBACK.md section 12) */
+    { 0x1074F218u, 4 },
     { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC },
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },

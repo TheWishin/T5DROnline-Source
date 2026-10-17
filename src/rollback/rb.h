@@ -24,6 +24,8 @@ static const PadInput kNeutral = { 0, 128, 128, 128, 128 };
 Mode     mode();
 uint32_t frame();                                  /* frames seen at the boundary so far */
 PadInput script_input(int port, uint32_t f);
+bool     df_drives();                              /* T5_FIGHT set: direct fight owns the pads, scripts go through df::inject */
+void     set_script_base(uint32_t f);              /* script frames count from this logical frame (T5_RB_START=auto) */
 void     set_override(const PadInput* in);         /* both pads fixed (nullptr: back to script) */
 uint64_t gcall(uint32_t code, uint64_t a0 = 0, uint64_t a1 = 0);
 
@@ -42,6 +44,11 @@ bool     keyread_parked();                         /* keyread thread parked, mai
 void     set_sim_frame(uint32_t f);                /* logical frame the pad override answers for */
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 bool     bypass_on();
+/* Time sync: a sleep requested by the rollback loop is taken inside the
+ * present's flip wait (cellGcmSetWaitFlip, after the draw thread is done
+ * with the frame), where it delays the whole frame pipeline. A sleep at the
+ * frame boundary was absorbed by the draw thread's wait (run n8). */
+void     ts_sleep_request(double ms);
 /* The sound update (main loop 0xAA200 -> 0x32819C: the main thread's sound
  * requests to the bnusCore handoff area) is skipped while the word its TOC
  * slot (r2 - 0x61E8) points to is 0. Re-simulated frames must not re-issue

@@ -670,3 +670,99 @@ catches it).
   in-process: every two-instance run here diverged in np's lockstep menu
   phase before the fight (its known menu non-determinism under load, frame
   1590/2211), which the direct-fight start avoids.
+
+---
+
+# Phase 4 -- the stage mismatch, all stages, direct fight, time sync (branch `rollback4`)
+
+## 12. The stage-specific mismatch was the C library `rand()` word
+
+The test mode now forces the stage (`T5_RB_STAGE=17..34`, written to
+`0x1008F088` from the stage confirm on, as direct fight does) and prints the
+first differing gameplay words on a mismatch. Sweeping the 18 selectable
+stages with 8-frame rollbacks every 30 frames (runs s17-s24, t25-t34):
+
+| stage | rollbacks | gameplay-hash mismatches | differing word |
+|---|---|---|---|
+| 17, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34 | 23-68 each | **0** (184-544 boundaries each) | -- |
+| 18 | 34 | 12 of 272 | `0x1074F218` only |
+| 24 (run m2's stage) | 45 | 279 of 360 | `0x1074F218` only |
+
+`0x1074F218` is exactly the state word of the C library `rand()`
+(`0x369228`: `state = state * 0x6C078965 + 12345`, pointer in the TOC slot
+`0x4705CC`). Who calls it was found with the write-fault tracer narrowed to
+that word over 40 live frames (`T5_RB_WFT=1074F000:1000 T5_RB_WFT_ALL=1
+T5_RB_WFT_ADDR=1074F218 T5_RB_WFT_FRAMES=40`, run w6, stage 24): every call
+comes from **`0x12C558` (8 call sites) <- `0x12CF34` <- `0x1230AC`, on a
+side thread** (its chain roots in the runtime's thread trampoline, not in the
+main loop), about 7 calls per frame on stage 24 and a few on stage 18 -- a
+stage effect that runs at its own pace. The main thread's draw does not call
+`rand()` at all (a first trace was polluted by the shield's own stores; the
+`random()` lagged generator that the packet builders use lives outside the
+hashed range). A consumer on another thread makes that word timing-dependent
+with or without rollback, which is also what the direct-fight agent saw
+between two PCs (the word diverged after match 2, everything else stayed
+identical). It is therefore excluded from both gameplay hashes
+(`rb_state.cpp` `kGameSkip`, `t5_hooks.cpp` `kDefaultHashSkip`); the fight
+never read it in any of the 18 stages (no other word ever differed). A
+`rand()` shield (private generator around the cut targets on live frames,
+`T5_RB_RANDSHIELD=1`) was tried first and is kept off: it is not needed.
+
+With the exclusion, stages 18 and 24 again (runs u18/u24) and 17 as control:
+see the table at the end of this section.
+
+**Rollback is the default online mode again** (`rb_net.cpp offered_by_env`):
+offered in the HELLO whenever `T5_NET_MODE` is set unless
+`T5_RB_MODE=lockstep` (or `off`); both peers offering = the rollback loop.
+
+## 13. Direct fight, KO, time sync, sound
+
+**Direct fight.** The test mode runs on top of `T5_FIGHT` (`tools/rollback_test.py
+--fight p1,p2,stage[,rounds] [--ko]`): direct fight owns the pads and drives
+the menus, the test injects its fight script per logical frame through
+`df::inject()` from `T5_RB_START=auto` = `T5_RB_START_DELAY` (300) frames after
+the game mode is first seen. A first try with 120 frames (run f1) rolled back
+into the stage still streaming in and the game looped on null reads; with
+300 frames (f2: Lili vs Dragunov, stage 24, 1 round) 203 rollbacks ran
+cleanly. The netplay loop got the same protection: `T5_RB_NET_WARMUP` (180)
+frames after its start it runs in lockstep (no prediction, no rollback), so
+no rollback can reach into the fight's loading.
+
+**KO slow-motion / match end: still not exercised.** Neither the original
+scripts (both attacking), a launcher script against an idle P2 (k1, 7
+minutes), nor the same on the direct fight (f2) dealt any damage: both health
+bars stay full (screenshot build/rb2/runs/f2/shot_200s.png shows Lili's kick
+on a guarding Dragunov), rounds end 0-0 by time-out. Rollbacks ran across
+those time-out round ends with 0 mismatches (a1, f2 minus the rand word), but
+the KO path needs real input (or a script that lands) and remains open.
+
+**Time sync.** The first version (phase 3) slept 1000/60 ms per frame of
+advantage; at the 15-18 fps of the loaded test machine that is a third of a
+frame, so the side ahead never caught down (n7: host +1..+3.5 frames ahead
+all run, 16-43 rollbacks per window, joiner 0). It now measures the frame
+time (last 60 live frames) and sleeps in those units, every 10 frames, up to
+2 frames (`T5_RB_NET_TS=win,interval,max`). Run n8 (RTT 100 ms, 2 % loss):
+see below.
+
+**Sound.** The 2-frame-rollback audio run (a3) was taken with 8 game
+instances on the machine and its 20 s of silent gaps are CPU starvation, not
+the skip (the no-rollback reference on a quieter machine had 2.9 s); the
+SFX-only skip is still to do. Note that the sound update also runs on the
+main thread, so its `rand()` use (none seen) is not the side-thread consumer
+above.
+
+**After the fix** (runs u18/u24/u17, 8-frame rollbacks every 30 frames):
+stage 18: 38 rollbacks, **0 mismatches in 304 boundaries**; stage 24: 34,
+**0 in 272**; stage 17 (control): 51, 0 in 408. Every selectable stage
+(17-34) now re-simulates with the gameplay hash intact.
+
+**Time sync at RTT 100 ms, retuned** (n8, sleeps at the boundary in measured
+frame time, every 10 frames): the joiner stayed 1.1-2.0 frames ahead and took
+every rollback (22-40 per 300 frames) through 19-30 sleeps per window, at the
+same fps as the host -- the sleep is absorbed: the main thread sleeps while
+the draw thread still works on the previous frame, so the frame pipeline is
+not delayed at all. Taking the sleep inside the present's flip wait instead
+(`T5_RB_NET_TS_FLIP=1`, n9) did delay the pipeline, but the host stalled for
+a 75 s window and the pair fell apart (not understood yet), so it is off.
+What is needed is a real frame skip (not advancing the game for one frame),
+or a sleep placed after the draw thread's wait on the live path; left open.

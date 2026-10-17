@@ -472,11 +472,19 @@ class CertTest(unittest.TestCase):
 
 # ============================================================================ servers.json
 class ServersTest(unittest.TestCase):
-    def test_shipped_file_is_a_placeholder(self):
+    def test_shipped_file_is_valid(self):
+        # lobby/servers.json was a placeholder (empty host, skipped by load_file) until the
+        # public lobby server went in; what matters now is that every entry parses, there is a
+        # default, and a pinned one carries its fingerprint.
         entries, problems = servers.load()
         self.assertEqual(problems, [])
-        self.assertEqual(entries, [])            # empty host: ignored until the owner fills it in
-        with open(servers.shipped_path()) as f:
+        self.assertTrue(entries)
+        self.assertTrue(servers.default_entry(entries).default)
+        for e in entries:
+            self.assertIn(e.tls, servers.TLS_MODES)
+            if e.tls == "pin":
+                self.assertRegex(e.fingerprint, r"^[0-9a-f]{64}$")
+        with open(servers.shipped_path(), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["format"], servers.FORMAT)
 
     def test_merge_and_resolve(self):

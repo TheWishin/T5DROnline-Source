@@ -35,7 +35,8 @@ SPU_CORE = [
     "runtime/spu/spu_interp.c",
 ]
 
-SHIM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shim")   # pthread.h for Win32
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHIM = os.path.join(HERE, "shim")   # pthread.h for Win32
 
 TESTS = [
     # name, sources, include dirs (ps3recomp-relative, or SHIM), extra flags, timeout (s), why
@@ -53,13 +54,17 @@ TESTS = [
     # Windows but crashes the same way on the unpatched pin), and
     # libs/video/tests/test_gcm_user_command.c / libs/audio/tests/
     # test_audio_ring.c (POSIX-only, and not run by upstream CI either).
-    # The two SPU tests run 12k+ multi-threaded cases: ~20 s on a 32-thread
-    # desktop, ~41 s pinned to 4 cores, over 120 s on a GitHub runner.
-    ("spu_mfc_slots", ["runtime/spu/tests/test_spu_mfc_slots.c"] + SPU_CORE,
-     ["runtime/spu", "runtime/platform", SHIM], [], 600,
+    # spu_mfc_slots is ps3recomp's test_spu_mfc_slots.c with the thread count
+    # scaled to the machine (tests/c/test_spu_mfc_slots_ci.c, header says
+    # what changed). The original starts one spinning worker per slot -- 128 at
+    # the pin -- behind a barrier with a 10 s deadline, which a 4-vCPU GitHub
+    # runner never meets: the job spent 367 s in it and failed on every run.
+    # A leading "@" below means a file of this repository, relative to tests/.
+    ("spu_mfc_slots", ["@c/test_spu_mfc_slots_ci.c"] + SPU_CORE,
+     ["runtime/spu", "runtime/platform", SHIM], [], 300,
      "MFC engine slots; links spu_workload.c + spurs_job.c (patch 0002)"),
     ("spu_lockline_peer", ["runtime/spu/tests/test_spu_lockline_peer.c"] + SPU_CORE,
-     ["runtime/spu", "runtime/platform", SHIM], [], 600,
+     ["runtime/spu", "runtime/platform", SHIM], [], 300,
      "SPU-to-SPU lock-line coherence; links spu_workload.c + spurs_job.c (patch 0002)"),
     ("texture_layout", ["libs/video/tests/test_texture_layout.c", "libs/video/rsx_texture_layout.c"],
      ["libs/video"], [], 120, "RSX texture layout"),
@@ -152,7 +157,8 @@ def main():
         # No NDEBUG: several tests check with assert().
         cmd = [a.cc, "/nologo", "/O2", "/W0", "/std:c17", "/D_CRT_SECURE_NO_WARNINGS",
                "/I" + os.path.join(src, "include")] + ["/I" + os.path.join(src, i) for i in incs] + flags \
-            + [f"/Fo{objdir}", f"/Fe{exe}"] + [os.path.join(src, s) for s in sources]
+            + [f"/Fo{objdir}", f"/Fe{exe}"] + [os.path.join(HERE, s[1:]) if s.startswith("@") else os.path.join(src, s)
+                                          for s in sources]
         if gha:
             print(f"::group::{name}: {why}", flush=True)
         else:

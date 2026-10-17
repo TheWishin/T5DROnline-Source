@@ -5,12 +5,23 @@
 # still applies on the pinned commit, and that the patched runtime and our
 # CMakeLists.txt still compile, link and pass ps3recomp's own tests. See
 # docs/CI.md for what each step covers and how to run the same things locally.
+#
+# This repository is private, and a private repository has a monthly budget of
+# runner minutes in which a Windows minute counts double. So the jobs come in
+# two tiers:
+#   every push (and by hand):  checks   -- guard + patch series + tool tests, about 2 min
+#   pull requests, by hand and Mondays:  lobby, runtime  -- the long ones
+# A pull request's head commit therefore gets all three (`checks` from the push,
+# which a pull request does not repeat; `lobby` and `runtime` from the pull
+# request); a push to a branch with no pull request gets the cheap one.
 name: CI
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"      # Mondays 04:23 UTC: everything, on the default branch
 
 permissions:
   contents: read
@@ -26,8 +37,9 @@ env:
 jobs:
   checks:
     name: Game-data guard + Python tests
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,11 +91,24 @@ jobs:
           # as an ::error annotation (the REST API serves those without a login).
           python tests/ci_unittest.py -v
 
-      # The lobby's own suite (server, NAT/relay, Glicko-2, TLS pinning, ranked
-      # play and match integrity, the launcher's Online tab, the match driver with
-      # the stub game). One process per module, so a module that kills the
-      # interpreter cannot hide the others. KNOWN_CRASH names a module whose
-      # failure is only a warning (none at the moment).
+  # The lobby's own suite takes minutes (it runs real servers and clients with
+  # real time windows), so it is in the second tier. One process per module, so
+  # a module that kills the interpreter cannot hide the others.
+  lobby:
+    name: Lobby tests (lobby/tests)
+    if: github.event_name != 'push'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Server, NAT/relay, Glicko-2, TLS pinning, ranked play and match integrity,
+      # hosting, the launcher's Online tab, the match driver with the stub game.
+      # KNOWN_CRASH names a module whose failure is only a warning (none at the moment).
       - name: Lobby tests (lobby/tests)
         shell: bash
         working-directory: lobby/tests
@@ -108,6 +133,7 @@ jobs:
 
   runtime:
     name: Patched ps3recomp runtime + native tests
+    if: github.event_name != 'push'
     runs-on: windows-latest
     timeout-minutes: 60
     env:

@@ -1,15 +1,32 @@
 # Continuous integration
 
-`.github/workflows/ci.yml` runs on every push and pull request, on
-`windows-latest`. It uses **no game data**: no package, no license, no keys, no
-lifted code. So it cannot boot the game. It catches the breakage that can be
-caught without it.
+`.github/workflows/ci.yml` runs on `windows-latest`. It uses **no game data**:
+no package, no license, no keys, no lifted code. So it cannot boot the game. It
+catches the breakage that can be caught without it.
+
+## When it runs (the repository is private)
+
+A private repository has a monthly budget of runner minutes (about 2,000 on the
+free plan) and a Windows minute counts double, so the work is in two tiers:
+
+| Job | push | pull request | by hand | Mondays 04:23 UTC (default branch) | cost |
+|---|---|---|---|---|---|
+| `checks` -- guard + patch series + Python tool tests | yes | no (the push already ran it) | yes | yes | ~2 min |
+| `lobby` -- `lobby/tests` | no | yes | yes | yes | ~5 min (real-time windows, not CPU: 4.5 min pinned to 4 CPUs) |
+| `runtime` -- patched ps3recomp build + native tests | no | yes | yes | yes | ~3 min warm, ~8 cold |
+
+So a push to a branch gets the cheap job, and a pull request's head commit gets
+all three. Concurrency: one run per ref, a newer push cancels the older one
+(`concurrency: ci-<ref>`, `cancel-in-progress`). Run the long jobs on any branch
+with "Run workflow" (`workflow_dispatch`); `runtime` needs no game data and can
+be started from there at any time. The release workflow is separate
+([RELEASING.md](RELEASING.md)).
 
 ## What runs
 
-Two jobs run in parallel.
+Three jobs run in parallel.
 
-### `checks` -- game-data guard + Python tests (about 3 min)
+### `checks` -- game-data guard + Python tests (about 2 min)
 
 | Step | Catches |
 |---|---|
@@ -17,8 +34,7 @@ Two jobs run in parallel.
 | `... --history <range>` | the same in every commit of the push or PR (a file added and deleted again is still public) |
 | `py_compile` on every tracked `.py`/`.pyw` | syntax errors in tools/, tests/, launcher/, lobby/ |
 | `tools/prepare_ps3recomp.py` | a patch that no longer applies (named) |
-| `python -m unittest discover -s tests` | broken tools (below) |
-| `lobby/tests`, one process per module | the lobby: server, NAT/relay, Glicko-2, TLS pinning, the launcher's Online tab |
+| `python tests/ci_unittest.py -v` (= `unittest discover -s tests -v`) | broken tools (below); every failed test becomes an annotation |
 
 Python tests in `tests/` (stdlib `unittest`, plus `pycryptodome` for unself
 and Pillow for the smoke suite's frame checks):
@@ -59,6 +75,14 @@ reference to the Online tab). Fixed on branch `ranked`: the tab's worker
 threads hold only a queue and the client call, never the tab or a Tk object,
 so every lobby module is required again.
 
+### `lobby` -- the lobby's own suite
+
+`lobby/tests`, one process per module through the same wrapper, so a module that
+kills the interpreter cannot hide the others: server, NAT/relay, Glicko-2, TLS
+pinning, ranked play and match integrity, hosting, the launcher's Online tab, the
+match driver with the stub game. It starts real servers and clients and waits on
+real time windows, which is why it is not in the per-push tier.
+
 ### `runtime` -- patched ps3recomp (estimate: 7-11 min cold, 4-5 min with a warm compile cache)
 
 (The same steps take under 2 min on the owner's PC at `-j 8`.)
@@ -87,7 +111,16 @@ so every lobby module is required again.
    helpers, numeric semantics, lock-line coherence, RSX texture layout and
    primitives. A test that prints "nothing to compare" fails.
    `tests/shim/pthread.h` gives the POSIX-only ones the four pthread calls
-   they use.
+   they use. **`spu_mfc_slots` is our adapted copy of the upstream test**
+   (`tests/c/test_spu_mfc_slots_ci.c`, header lists every change): upstream
+   starts one spinning worker per MFC slot (128 at the pin) behind a barrier with
+   a 10 s deadline, which a 4-vCPU runner cannot meet, so the step used to fail
+   after 367 s. The copy runs 2 workers per CPU (8 on the runner; at least 8, at
+   most one per slot, `T5_MFC_WORKERS=n` to override, 128 = upstream), yields in
+   the barrier, claims the same 4096 contexts, and checks the same things; it
+   takes about a second. It was checked against `mfc_for()` with the claim lock
+   removed: that fails with 8, 16, 64 and 128 workers pinned to 4 CPUs. Time
+   limits: 300 s for each of the two SPU tests (a normal run is under 10 s).
 6. **In-exe build** (`T5DR_GAME_DLL=OFF`, what `build_game.py`'s full compile
    does). There is no game lift, so ps3recomp's `tools/make_smoke_elf.py`
    writes a `ppu_recomp.h` for its hand-written "smoke title" and
@@ -100,6 +133,29 @@ so every lobby module is required again.
    checks (`sys_ppu_thread_create` returns 0) fail on Windows without our
    patches too -- the pin plus only 0001's two Windows build fixes fails them
    the same way -- so they are not required.
+
+## Reading a red run without logs
+
+The job logs need a login, the annotations do not. `tests/ci_unittest.py` and
+`tests/run_ps3recomp_tests.py` write what you need to read as `::error`
+annotations: each failed unit test (id and the end of its traceback) and a
+summary line naming all of them; for a failed native test its FAIL/assert lines,
+exit code, time and last output lines; plus one `::notice` with the runner's
+CPUs/memory and the timings. GitHub keeps 10 error annotations per step, so
+the tools mute the `::error::` lines they print on purpose while tests drive
+them into error paths (`[muted] ::error::...` in the log); without that the
+real failure was pushed out of the list. From a shell, no token needed:
+
+    curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs?branch=<branch>
+    curl -s https://api.github.com/repos/TheWishin/T5DROnline/actions/runs/<run>/jobs
+    curl -s https://api.github.com/repos/TheWishin/T5DROnline/check-runs/<job id>/annotations
+
+Things that only go wrong on the runner, found this way: the workspace is on
+`D:` and the temp folder on `C:` (`os.path.relpath` raises `ValueError` between
+drives: `tools/release_notes.py`); 4 CPUs (a test that needs a CPU per
+thread); an English Windows (no localized output to decode). To try a unit test
+the way the runner sees it, set `TEMP`/`TMP` to a folder on another drive and
+`GITHUB_ACTIONS=true CI=1`.
 
 ## The game-data guard
 
@@ -136,8 +192,9 @@ in the script, with the reason next to it.
 From a shell with the MSVC environment (`vcvars64.bat`) and LLVM on `PATH`:
 
     python tools/check_no_game_data.py --keys keys/ps3.keys
-    python -m unittest discover -s tests -v
-    cd lobby/tests && python -m unittest -v test_units test_lobby test_tls test_tk_tab && cd ../..
+    python tests/ci_unittest.py -v
+    cd lobby/tests && for %m in (test_*.py) do python ../../tests/ci_unittest.py -v %~nm
+    cd ../..
     python tools/prepare_ps3recomp.py --dest build/<you>/patchcheck --source deps/ps3recomp --replace
 
     rem release host (no lift needed)

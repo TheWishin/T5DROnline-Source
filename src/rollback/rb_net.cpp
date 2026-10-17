@@ -111,7 +111,7 @@ LARGE_INTEGER g_qpf, g_resim_t0;
 struct Stats {
     uint32_t frames = 0, rollbacks = 0, resim_frames = 0, max_depth = 0, stalls = 0, predicted = 0, sleeps = 0;
     uint32_t sound_zero = 0;
-    double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0;
+    double rollback_ms = 0, rollback_ms_max = 0, stall_ms = 0, commit_ms = 0, sleep_ms = 0, lead_sum = 0, restore_ms = 0;
     double stall_ms_lock = 0;   /* of stall_ms: waits in the lockstep windows (match start, loads, phase changes) */
     uint32_t depth_hist[17] = {};
 } g_st, g_tot;
@@ -165,17 +165,19 @@ void report()
     char hist[160]; int n = 0;
     for (int d = 1; d <= 16; d++) if (g_st.depth_hist[d]) n += snprintf(hist + n, sizeof hist - n, " %d:%u", d, g_st.depth_hist[d]);
     const SoundStats ss = sound_stats(true);
-    note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f), "
-         "%u stalls (%.1f ms, %.1f ms of them in lockstep windows), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u, "
+    note("rbnet: %u frames in %.1f s (%.1f fps), %u rollbacks (%u frames re-simulated, max depth %u, depth histogram%s), %.2f ms per rollback (max %.2f; "
+         "restore %.2f ms of it), %u stalls (%.1f ms, %.1f ms of them in lockstep windows), %u frames ran on predicted input, %u time-sync sleeps (%.0f ms), avg advantage %.2f frames, commit avg %.2f ms, peer ack %u, desync mismatches %u, phase changes %u, "
          "sounds: %u started live, %u kept from a first run, %u new in re-simulated frames, %u from mispredicted frames played on, "
          "stops in re-simulated frames: %u repeats skipped, %u new not applied; %u status answers replayed; music/bank events: %u repeats skipped, %u new",
          g_st.frames, win_ms / 1000.0, g_st.frames * 1000.0 / (win_ms > 0 ? win_ms : 1), g_st.rollbacks, g_st.resim_frames, g_st.max_depth, n ? hist : " -",
-         g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max, g_st.stalls, g_st.stall_ms, g_st.stall_ms_lock, g_st.predicted,
+         g_st.rollbacks ? g_st.rollback_ms / g_st.rollbacks : 0.0, g_st.rollback_ms_max,
+         g_st.rollbacks ? g_st.restore_ms / g_st.rollbacks : 0.0, g_st.stalls, g_st.stall_ms, g_st.stall_ms_lock, g_st.predicted,
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
     note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, loads %u",
          ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_loads);
+    { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     memset(g_ft_win, 0, sizeof g_ft_win);
     g_tot.frames += g_st.frames; g_tot.rollbacks += g_st.rollbacks; g_tot.resim_frames += g_st.resim_frames;
     g_tot.max_depth = std::max(g_tot.max_depth, g_st.max_depth); g_tot.stalls += g_st.stalls; g_tot.predicted += g_st.predicted;
@@ -269,6 +271,10 @@ void start(uint32_t f)
     g_delay = np::rb_apply_delay();
     np::rb_begin(f);
     if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
+    {   /* the full-state page hash is the test mode's; the peers compare the gameplay hash */
+        const char* ph = getenv("T5_RB_NET_PAGEHASH");
+        state_set_page_hashing(ph && *ph == '1');
+    }
     state_init();
     g_saved_minvb[0] = rd32(kMinVblanks); g_saved_minvb[1] = rd32(kMinVblanks + 4);
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
@@ -487,7 +493,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
                  f, first_wrong, depth, state_oldest_frame(), g_floor);
         } else {
             cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
-            g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++;
+            g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
             if (depth > g_st.max_depth) g_st.max_depth = depth;
             QueryPerformanceCounter(&g_resim_t0);
             g_resim = true; g_resim_from = first_wrong; g_resim_target = f;

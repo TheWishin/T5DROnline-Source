@@ -287,11 +287,32 @@ void state_init()
 }
 bool state_ready() { return g_ready; }
 
+/* Patch-0034 era (latency branch): the per-page hash of the whole state set is
+ * only read by the test mode ("restore faithful", per-page diffs); the netplay
+ * loop compares the gameplay hash. state_set_page_hashing(false) skips it
+ * (a third of a commit). */
+static bool g_page_hashing = true;
+void state_set_page_hashing(bool on) { g_page_hashing = on; }
+/* where the commit time goes (state_commit_stats, the loop's report) */
+static double g_cs_ww_ms = 0, g_cs_copy_ms = 0, g_cs_total_ms = 0;
+static uint64_t g_cs_commits = 0, g_cs_pages = 0, g_cs_range_pages[8] = {};
+void state_commit_stats(char* out, size_t cap, bool reset)
+{
+    const double n = g_cs_commits ? (double)g_cs_commits : 1.0;
+    int k = snprintf(out, cap, "%llu commits: %.2f ms each (write watch %.2f, page copies %.2f), %.0f pages each (",
+                     (unsigned long long)g_cs_commits, g_cs_total_ms / n, g_cs_ww_ms / n, g_cs_copy_ms / n, (double)g_cs_pages / n);
+    for (size_t i = 0; i < kSaveN && k > 0 && (size_t)k < cap; i++)
+        k += snprintf(out + k, cap - (size_t)k, "%s%08X %.0f", i ? ", " : "", kSave[i].base, (double)g_cs_range_pages[i] / n);
+    if (k > 0 && (size_t)k < cap) snprintf(out + k, cap - (size_t)k, ")");
+    if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); }
+}
+
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
 {
     PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
+    LONGLONG ww_ticks = 0;
     Log* lg = nullptr;
     if (f > 0) {
         lg = &g_log[(f - 1) % kLogFrames];
@@ -301,15 +322,19 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
         if (!g_oldest) g_oldest = f;
         if (g_oldest + kLogFrames <= g_newest) g_oldest = g_newest - kLogFrames + 1;
     }
-    for (const Range& r : kSave) {
+    for (size_t ri = 0; ri < kSaveN; ri++) {
+        const Range& r = kSave[ri];
         for (uint64_t off = 0; off < r.len; off += (64ull << 20)) {
             uint64_t len = std::min<uint64_t>(64ull << 20, r.len - off);
             ULONG_PTR count = g_ww.size();
             DWORD gran = 0;
+            LARGE_INTEGER w0, w1; QueryPerformanceCounter(&w0);
             if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, vm_base + r.base + off, (SIZE_T)len, g_ww.data(), &count, &gran) != 0) {
                 note("GetWriteWatch failed (%lu) -- PS3_VM_WRITE_WATCH=1 missing?", GetLastError());
                 return 0;
             }
+            QueryPerformanceCounter(&w1); ww_ticks += w1.QuadPart - w0.QuadPart;
+            g_cs_range_pages[ri] += count;
             for (ULONG_PTR i = 0; i < count; i++) {
                 const uint32_t ea = (uint32_t)((uint8_t*)g_ww[i] - vm_base);
                 if (excluded_page(ea)) continue;
@@ -327,7 +352,7 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
                     if (lg->count >= kRingPages - 1) { note("undo ring full in one frame"); break; }
                 }
                 memcpy(sh, vm_base + ea, 0x1000);
-                if (hashed) {
+                if (hashed && g_page_hashing) {
                     const uint64_t h = hash_page(ea);
                     g_hash += (h - g_page_hash[pg]) * weight(pg);
                     g_page_hash[pg] = h;
@@ -339,6 +364,10 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     }
     QueryPerformanceCounter(&b);
     if (ms) *ms = 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;
+    g_cs_commits++; g_cs_pages += n;
+    g_cs_total_ms += 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;
+    g_cs_ww_ms += 1000.0 * (double)ww_ticks / (double)q.QuadPart;
+    g_cs_copy_ms += 1000.0 * (double)(b.QuadPart - a.QuadPart - ww_ticks) / (double)q.QuadPart;
     return n;
 }
 
@@ -391,7 +420,7 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             memcpy(vm_base + e.ea, src, 0x1000);
             memcpy(shadow_rw(e.ea), src, 0x1000);
-            if (!hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
+            if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
         if (f == to) break;

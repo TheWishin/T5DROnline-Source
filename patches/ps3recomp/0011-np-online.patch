@@ -1,0 +1,3299 @@
+diff --git a/libs/network/cellNetCtl.c b/libs/network/cellNetCtl.c
+index 121b29c..0c6f3d2 100644
+--- a/libs/network/cellNetCtl.c
++++ b/libs/network/cellNetCtl.c
+@@ -261,14 +261,18 @@ s32 cellNetCtlGetNatInfo(CellNetCtlNatInfo* natInfo)
+     if (!natInfo)
+         return CELL_NET_CTL_ERROR_INVALID_ADDR;
+ 
++    /* A finished NAT check: STUN done, no UPnP, moderate NAT (what RPCS3
++     * reports). Tekken 5 DR refuses to host a room while stun_status is
++     * still "unchecked" (0): it read the field, dropped back to its menu and
++     * never called sceNpMatchingCreateRoomGUI. The title's own size (16 or
++     * 20) is kept. */
+     natInfo = GUEST_PTR(natInfo, CellNetCtlNatInfo*);
+-    natInfo->size        = ps3_bswap32((u32)sizeof(CellNetCtlNatInfo));
+-    natInfo->upnp_status = 0;
+-    natInfo->stun_status = 0;
++    natInfo->upnp_status = ps3_bswap32(1);   /* CELL_NET_CTL_NATINFO_UPNP_NO */
++    natInfo->stun_status = ps3_bswap32(2);   /* CELL_NET_CTL_NATINFO_STUN_OK */
+     natInfo->nat_type    = ps3_bswap32((u32)CELL_NET_CTL_NATINFO_NAT_TYPE_2); /* moderate */
+-    natInfo->mapped_addr = 0;
++    if (ps3_bswap32(natInfo->size) >= 20) natInfo->mapped_addr = 0;
+ 
+-    printf("[cellNetCtl] GetNatInfo() -> NAT Type 2\n");
++    printf("[cellNetCtl] GetNatInfo() -> STUN ok, NAT Type 2\n");
+     return CELL_OK;
+ }
+ 
+diff --git a/libs/network/np_psnr.c b/libs/network/np_psnr.c
+new file mode 100644
+index 0000000..95e0789
+--- /dev/null
++++ b/libs/network/np_psnr.c
+@@ -0,0 +1,545 @@
++/*
++ * ps3recomp - psnr client: connection, request/reply pump, NAT probes and
++ * punches, RTT pings. See np_psnr.h.
++ */
++#include "np_psnr.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++
++#ifdef _WIN32
++#  define WIN32_LEAN_AND_MEAN
++#  include <winsock2.h>
++#  include <ws2tcpip.h>
++#  include <windows.h>
++   typedef SOCKET sock_t;
++#  define BAD_SOCK INVALID_SOCKET
++#  define sock_close closesocket
++#  define WOULD_BLOCK() (WSAGetLastError() == WSAEWOULDBLOCK)
++static SRWLOCK s_lock = SRWLOCK_INIT;
++#  define LOCK()   AcquireSRWLockExclusive(&s_lock)
++#  define UNLOCK() ReleaseSRWLockExclusive(&s_lock)
++static uint64_t now_ms(void) { return GetTickCount64(); }
++#else
++#  include <sys/socket.h>
++#  include <netdb.h>
++#  include <netinet/in.h>
++#  include <netinet/tcp.h>
++#  include <fcntl.h>
++#  include <unistd.h>
++#  include <errno.h>
++#  include <poll.h>
++#  include <pthread.h>
++#  include <time.h>
++   typedef int sock_t;
++#  define BAD_SOCK (-1)
++#  define sock_close close
++#  define WOULD_BLOCK() (errno == EAGAIN || errno == EWOULDBLOCK)
++static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
++#  define LOCK()   pthread_mutex_lock(&s_lock)
++#  define UNLOCK() pthread_mutex_unlock(&s_lock)
++static uint64_t now_ms(void)
++{
++    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
++}
++#endif
++
++#define HEARTBEAT_MS   20000
++#define PENDING_MAX    64
++#define RXBUF          (1 << 16)
++#define PUNCHES        5
++#define PUNCH_MS       200
++#define PROBE_MS       500
++#define REPROBE_MS     20000
++#define PING_MS        1000
++#define MAX_PEERS      16
++
++/* ---- configuration ---- */
++
++static char s_id[17];
++
++static int clean_online_id(const char* in, char out[17])
++{
++    int n = 0;
++    for (; in && *in && n < 16; in++)
++        if (isalnum((unsigned char)*in) || *in == '-' || *in == '_') out[n++] = *in;
++    out[n] = 0;
++    return n >= 3 && isalpha((unsigned char)out[0]);
++}
++
++int np_psnr_enabled(void)
++{
++    return getenv("PS3_NET_ONLINE") && getenv("PSNR_SERVER");
++}
++
++int np_psnr_trace(void)
++{
++    static int v = -1;
++    if (v < 0) v = getenv("PS3_NP_TRACE") ? 1 : 0;
++    return v;
++}
++
++const char* np_psnr_online_id(void)
++{
++    if (!s_id[0]) {
++        const char* e = getenv("PS3_NP_ONLINE_ID");
++        if (!clean_online_id(e, s_id)) {
++#ifdef _WIN32
++            const char* os = getenv("USERNAME");
++#else
++            const char* os = getenv("USER");
++#endif
++            if (e && *e) printf("[psnr] \"%s\" is not a valid online ID (3-16 letters, digits, - or _)\n", e);
++            if (!clean_online_id(os, s_id)) strcpy(s_id, "PS3Player");
++        }
++    }
++    return s_id;
++}
++
++uint16_t np_psnr_p2p_port(void)
++{
++    const char* p = getenv("PS3_NET_P2P_PORT");
++    return (uint16_t)(p ? atoi(p) : 3658);
++}
++
++/* ---- connection ---- */
++
++static sock_t   s_sock = BAD_SOCK;
++static int      s_connected, s_tried;
++static uint32_t s_user_id, s_token, s_next_req = 1;
++static uint8_t  s_server_flags;
++static uint8_t  s_public_ip[4];
++
++uint8_t np_psnr_server_flags(void) { return s_server_flags; }
++static uint8_t  s_server_ip[4];
++static uint16_t s_server_port;
++static uint64_t s_last_send;
++static uint8_t  s_rx[RXBUF];
++static uint32_t s_rxn;
++static struct { uint32_t req; np_psnr_reply_fn fn; void* user; } s_pending[PENDING_MAX];
++static void (*s_push_fn)(const np_psnr_msg*);
++static void (*s_tick_fn)(void);
++
++uint32_t np_psnr_user_id(void) { return s_user_id; }
++void np_psnr_public_ip(uint8_t ip[4]) { memcpy(ip, s_public_ip, 4); }
++int np_psnr_connected(void) { return s_connected; }
++void np_psnr_on_push(void (*fn)(const np_psnr_msg*)) { s_push_fn = fn; }
++void np_psnr_on_tick(void (*fn)(void)) { s_tick_fn = fn; }
++
++static int send_all(const uint8_t* p, uint32_t n)
++{
++    while (n) {
++        int r = send(s_sock, (const char*)p, (int)n, 0);
++        if (r <= 0) {
++            if (r < 0 && WOULD_BLOCK()) {
++#ifdef _WIN32
++                Sleep(1);
++#else
++                usleep(1000);
++#endif
++                continue;
++            }
++            return -1;
++        }
++        p += r; n -= (uint32_t)r;
++    }
++    s_last_send = now_ms();
++    return 0;
++}
++
++static int send_frame(uint8_t type, uint32_t req, const void* body, uint32_t len)
++{
++    uint8_t hdr[7];
++    uint32_t plen = len + (req ? 4 : 0);
++    hdr[0] = type; hdr[1] = (uint8_t)(plen >> 8); hdr[2] = (uint8_t)plen;
++    hdr[3] = (uint8_t)(req >> 24); hdr[4] = (uint8_t)(req >> 16); hdr[5] = (uint8_t)(req >> 8); hdr[6] = (uint8_t)req;
++    if (plen > 0xFFFF) return -1;
++    if (send_all(hdr, req ? 7 : 3)) return -1;
++    return len ? send_all((const uint8_t*)body, len) : 0;
++}
++
++static void set_nonblocking(sock_t s)
++{
++#ifdef _WIN32
++    u_long on = 1; ioctlsocket(s, FIONBIO, &on);
++#else
++    fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
++#endif
++}
++
++/* Read one whole frame, blocking up to timeout_ms. Returns payload length or -1. */
++static int recv_frame_blocking(uint8_t* type, uint8_t* buf, uint32_t cap, int timeout_ms)
++{
++    uint8_t hdr[3];
++    uint32_t got = 0, need;
++    uint64_t end = now_ms() + (uint64_t)timeout_ms;
++    while (got < 3) {
++        int r = recv(s_sock, (char*)hdr + got, (int)(3 - got), 0);
++        if (r > 0) { got += (uint32_t)r; continue; }
++        if (r < 0 && WOULD_BLOCK() && now_ms() < end) {
++#ifdef _WIN32
++            Sleep(5);
++#else
++            usleep(5000);
++#endif
++            continue;
++        }
++        return -1;
++    }
++    *type = hdr[0];
++    need = ((uint32_t)hdr[1] << 8) | hdr[2];
++    if (need > cap) return -1;
++    got = 0;
++    while (got < need) {
++        int r = recv(s_sock, (char*)buf + got, (int)(need - got), 0);
++        if (r > 0) { got += (uint32_t)r; continue; }
++        if (r < 0 && WOULD_BLOCK() && now_ms() < end) {
++#ifdef _WIN32
++            Sleep(5);
++#else
++            usleep(5000);
++#endif
++            continue;
++        }
++        return -1;
++    }
++    return (int)need;
++}
++
++int np_psnr_connect(const char* comm_id)
++{
++    char host[256];
++    uint16_t port = 36100;
++    if (!np_psnr_enabled()) return -1;
++    if (s_connected) return 0;
++    if (s_tried) return -1;
++    s_tried = 1;
++
++    snprintf(host, sizeof(host), "%s", getenv("PSNR_SERVER"));
++    char* colon = strrchr(host, ':');
++    if (colon) { *colon = 0; port = (uint16_t)atoi(colon + 1); }
++
++#ifdef _WIN32
++    { WSADATA w; WSAStartup(MAKEWORD(2, 2), &w); }
++#endif
++    struct addrinfo hints, *res = NULL;
++    memset(&hints, 0, sizeof(hints));
++    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
++    char portstr[8]; snprintf(portstr, sizeof(portstr), "%u", port);
++    if (getaddrinfo(host, portstr, &hints, &res) || !res) {
++        printf("[psnr] cannot resolve %s -- NP stays offline\n", host);
++        return -1;
++    }
++    sock_t s = socket(AF_INET, SOCK_STREAM, 0);
++    if (s == BAD_SOCK) { freeaddrinfo(res); return -1; }
++    {
++        struct sockaddr_in* a = (struct sockaddr_in*)res->ai_addr;
++        memcpy(s_server_ip, &a->sin_addr, 4);
++        s_server_port = port;
++    }
++    if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
++        printf("[psnr] could not reach %s:%u -- NP stays offline\n", host, port);
++        sock_close(s); freeaddrinfo(res);
++        return -1;
++    }
++    freeaddrinfo(res);
++    { int one = 1; setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&one, sizeof(one)); }
++    set_nonblocking(s);
++    s_sock = s;
++
++    /* HELLO: comm_id [12] online_id [16] p2p_port u16 */
++    uint8_t body[30];
++    memset(body, 0, sizeof(body));
++    strncpy((char*)body, comm_id ? comm_id : "", 12);
++    strncpy((char*)body + 12, np_psnr_online_id(), 16);
++    body[28] = (uint8_t)(np_psnr_p2p_port() >> 8); body[29] = (uint8_t)np_psnr_p2p_port();
++    uint32_t req = s_next_req++;
++    if (send_frame(PSNR_HELLO, req, body, sizeof(body))) { sock_close(s); s_sock = BAD_SOCK; return -1; }
++
++    uint8_t type, rb[64];
++    int n = recv_frame_blocking(&type, rb, sizeof(rb), 5000);
++    if (n < 17 || type != PSNR_HELLO_ACK) {
++        if (n >= 8 && type == PSNR_ERROR && np_get32(rb + 4) == PSNR_E_NAME_TAKEN)
++            printf("[psnr] %s:%u: another player there is already \"%s\" -- set PS3_NP_ONLINE_ID. NP stays offline\n",
++                   host, port, np_psnr_online_id());
++        else
++            printf("[psnr] no HELLO_ACK from %s:%u -- NP stays offline\n", host, port);
++        sock_close(s); s_sock = BAD_SOCK;
++        return -1;
++    }
++    s_user_id = np_get32(rb + 4);
++    memcpy(s_public_ip, rb + 8, 4);
++    s_token = np_get32(rb + 12);
++    s_server_flags = rb[16];
++    s_connected = 1;
++    printf("[psnr] connected to %s:%u as \"%s\" (%s), user %u, seen from %u.%u.%u.%u, p2p port %u\n",
++           host, port, np_psnr_online_id(), comm_id ? comm_id : "", s_user_id,
++           s_public_ip[0], s_public_ip[1], s_public_ip[2], s_public_ip[3], np_psnr_p2p_port());
++    return 0;
++}
++
++uint32_t np_psnr_request(uint8_t type, const void* body, uint32_t len, np_psnr_reply_fn fn, void* user)
++{
++    uint32_t req = 0;
++    LOCK();
++    if (s_connected) {
++        int slot = -1;
++        for (int i = 0; i < PENDING_MAX; i++) if (!s_pending[i].req) { slot = i; break; }
++        if (slot >= 0) {
++            req = s_next_req++;
++            if (send_frame(type, req, body, len) == 0) {
++                s_pending[slot].req = req; s_pending[slot].fn = fn; s_pending[slot].user = user;
++            } else req = 0;
++        }
++    }
++    UNLOCK();
++    if (np_psnr_trace()) printf("[psnr] -> %02X req %u (%u B)%s\n", type, req, len, req ? "" : " NOT SENT");
++    return req;
++}
++
++/* ---- the P2P socket: probes, punches, pings ---- */
++
++static np_psnr_p2p_send_fn s_p2p_send;
++static int      s_probed;
++static uint64_t s_next_probe;
++static struct peer {
++    uint32_t user;
++    uint8_t  ip[4];
++    uint16_t port;
++    int      punches_left;
++    uint64_t next_punch, next_ping, heard_at;
++    int      rtt_ms;
++} s_peers[MAX_PEERS];
++
++void np_psnr_set_p2p_sender(np_psnr_p2p_send_fn fn)
++{
++    s_p2p_send = fn;
++    s_probed = 0;
++    s_next_probe = 0;
++}
++
++static struct peer* peer_by_user(uint32_t user)
++{
++    for (int i = 0; i < MAX_PEERS; i++) if (s_peers[i].user == user) return &s_peers[i];
++    return NULL;
++}
++
++static struct peer* peer_at(const uint8_t ip[4], uint16_t port)
++{
++    for (int i = 0; i < MAX_PEERS; i++)
++        if (s_peers[i].user && s_peers[i].port == port && !memcmp(s_peers[i].ip, ip, 4)) return &s_peers[i];
++    return NULL;
++}
++
++void np_psnr_peer_add(uint32_t user, const uint8_t ip[4], uint16_t port)
++{
++    if (!user || user == s_user_id || !port) return;
++    LOCK();
++    struct peer* p = peer_by_user(user);
++    if (!p) p = peer_by_user(0);
++    if (p) {
++        int known = p->user == user && p->port == port && !memcmp(p->ip, ip, 4);
++        if (!known) {
++            memset(p, 0, sizeof(*p));
++            p->user = user; memcpy(p->ip, ip, 4); p->port = port; p->rtt_ms = -1;
++        }
++        if (!p->punches_left) { p->punches_left = PUNCHES; p->next_punch = 0; }
++        p->next_ping = 0;
++    }
++    UNLOCK();
++}
++
++void np_psnr_peer_remove(uint32_t user)
++{
++    LOCK();
++    struct peer* p = peer_by_user(user);
++    if (p) memset(p, 0, sizeof(*p));
++    UNLOCK();
++}
++
++int np_psnr_peer_rtt_ms(uint32_t user)
++{
++    int r = -1;
++    LOCK();
++    struct peer* p = peer_by_user(user);
++    if (p) r = p->rtt_ms;
++    UNLOCK();
++    return r;
++}
++
++/* Control packets on the P2P socket all start with "PSNR" and a type byte:
++ *   0x01 PROBE (to psnr), 0x81 PROBE_REPLY, 0x02 PUNCH (peer), and ours:
++ *   0x7E PING user u32 | t u64, 0x7F PONG user u32 | t u64 (echoed). */
++int np_psnr_p2p_filter(const void* buf, uint32_t len, const uint8_t from_ip[4], uint16_t from_port)
++{
++    const uint8_t* b = (const uint8_t*)buf;
++    if (len < 5 || memcmp(b, "PSNR", 4) != 0) {
++        LOCK();
++        struct peer* p = peer_at(from_ip, from_port);
++        if (p) p->heard_at = now_ms();
++        UNLOCK();
++        return 0;
++    }
++    switch (b[4]) {
++    case 0x81:
++        if (len >= 11 && !s_probed) {
++            s_probed = 1;
++            s_next_probe = now_ms() + REPROBE_MS;
++            printf("[psnr] P2P socket seen at %u.%u.%u.%u:%u\n", b[5], b[6], b[7], b[8], np_get16(b + 9));
++        }
++        break;
++    case 0x7E:
++        if (len >= 17 && s_p2p_send) {
++            uint8_t pong[17];
++            memcpy(pong, b, 17);
++            pong[4] = 0x7F;
++            s_p2p_send(pong, 17, from_ip, from_port);
++        }
++        break;
++    case 0x7F:
++        if (len >= 17) {
++            uint64_t t = np_get64(b + 9);
++            uint64_t now = now_ms();
++            LOCK();
++            struct peer* p = peer_at(from_ip, from_port);
++            if (p && now >= t) {
++                int rtt = (int)(now - t);
++                p->rtt_ms = p->rtt_ms < 0 ? rtt : (p->rtt_ms * 3 + rtt) / 4;
++                p->heard_at = now;
++            }
++            UNLOCK();
++        }
++        break;
++    default: {   /* a punch */
++        LOCK();
++        struct peer* p = peer_at(from_ip, from_port);
++        if (p) p->heard_at = now_ms();
++        UNLOCK();
++        break;
++    }
++    }
++    return 1;
++}
++
++static void nat_tick(void)
++{
++    uint8_t pkt[17];
++    uint64_t now = now_ms();
++    if (!s_connected || !s_p2p_send) return;
++    if (now >= s_next_probe) {
++        memcpy(pkt, "PSNR\x01", 5);
++        pkt[5] = (uint8_t)(s_user_id >> 24); pkt[6] = (uint8_t)(s_user_id >> 16);
++        pkt[7] = (uint8_t)(s_user_id >> 8);  pkt[8] = (uint8_t)s_user_id;
++        pkt[9] = (uint8_t)(s_token >> 24); pkt[10] = (uint8_t)(s_token >> 16);
++        pkt[11] = (uint8_t)(s_token >> 8); pkt[12] = (uint8_t)s_token;
++        memset(pkt + 13, 0, 4);   /* local ip: unknown here; psnr falls back to the TCP source */
++        s_p2p_send(pkt, 17, s_server_ip, s_server_port);
++        s_next_probe = now + (s_probed ? REPROBE_MS : PROBE_MS);
++    }
++    LOCK();
++    for (int i = 0; i < MAX_PEERS; i++) {
++        struct peer* p = &s_peers[i];
++        if (!p->user) continue;
++        if (p->punches_left && now >= p->next_punch) {
++            memcpy(pkt, "PSNR\x02", 5);
++            pkt[5] = (uint8_t)(s_user_id >> 24); pkt[6] = (uint8_t)(s_user_id >> 16);
++            pkt[7] = (uint8_t)(s_user_id >> 8);  pkt[8] = (uint8_t)s_user_id;
++            s_p2p_send(pkt, 9, p->ip, p->port);
++            p->punches_left--;
++            p->next_punch = now + PUNCH_MS;
++        }
++        if (now >= p->next_ping) {
++            memcpy(pkt, "PSNR\x7E", 5);
++            pkt[5] = (uint8_t)(s_user_id >> 24); pkt[6] = (uint8_t)(s_user_id >> 16);
++            pkt[7] = (uint8_t)(s_user_id >> 8);  pkt[8] = (uint8_t)s_user_id;
++            for (int k = 0; k < 8; k++) pkt[9 + k] = (uint8_t)(now >> (56 - 8 * k));
++            s_p2p_send(pkt, 17, p->ip, p->port);
++            p->next_ping = now + PING_MS;
++        }
++    }
++    UNLOCK();
++}
++
++/* ---- the pump ---- */
++
++static void drop_connection(void)
++{
++    printf("[psnr] connection lost\n");
++    sock_close(s_sock);
++    s_sock = BAD_SOCK;
++    s_connected = 0;
++    np_psnr_msg dead;
++    memset(&dead, 0, sizeof(dead));
++    for (int i = 0; i < PENDING_MAX; i++)
++        if (s_pending[i].req) {
++            np_psnr_reply_fn f = s_pending[i].fn;
++            void* u = s_pending[i].user;
++            s_pending[i].req = 0;
++            UNLOCK();
++            if (f) f(u, &dead);
++            LOCK();
++        }
++}
++
++void np_psnr_pump(void)
++{
++    static int in_pump;
++    static uint64_t last_flush;
++    if (in_pump) return;
++    in_pump = 1;
++    if (s_tick_fn) s_tick_fn();
++    nat_tick();
++    /* Logs go to a file and are block-buffered; a killed instance would lose
++     * the last few seconds of NP activity, which is what a test reads. */
++    if (np_psnr_enabled() && now_ms() - last_flush > 1000) { last_flush = now_ms(); fflush(stdout); }
++    if (!s_connected) { in_pump = 0; return; }
++
++    LOCK();
++    if (now_ms() - s_last_send > HEARTBEAT_MS) send_frame(PSNR_HEARTBEAT, 0, NULL, 0);
++    for (;;) {
++        int r = recv(s_sock, (char*)s_rx + s_rxn, (int)(RXBUF - s_rxn), 0);
++        if (r > 0) { s_rxn += (uint32_t)r; if (s_rxn < RXBUF) continue; }
++        else if (r == 0 || !WOULD_BLOCK()) { drop_connection(); break; }
++        /* cut complete frames */
++        uint32_t off = 0;
++        while (s_rxn - off >= 3) {
++            uint8_t type = s_rx[off];
++            uint32_t plen = ((uint32_t)s_rx[off + 1] << 8) | s_rx[off + 2];
++            if (s_rxn - off - 3 < plen) break;
++            const uint8_t* payload = s_rx + off + 3;
++            off += 3 + plen;
++            np_psnr_msg m;
++            m.type = type;
++            if (type >= 0xA0 && type <= 0xAF) { m.req = 0; m.data = payload; m.len = plen; }
++            else {
++                if (plen < 4) continue;
++                m.req = np_get32(payload); m.data = payload + 4; m.len = plen - 4;
++            }
++            np_psnr_reply_fn fn = NULL; void* user = NULL;
++            if (m.req)
++                for (int i = 0; i < PENDING_MAX; i++)
++                    if (s_pending[i].req == m.req) { fn = s_pending[i].fn; user = s_pending[i].user; s_pending[i].req = 0; break; }
++            if (np_psnr_trace()) printf("[psnr] <- %02X req %u (%u B)\n", m.type, m.req, m.len);
++            /* Handlers run unlocked: they send follow-up requests. Copy the
++             * payload out first, since they may also pump recursively. */
++            uint8_t* copy = (uint8_t*)malloc(m.len ? m.len : 1);
++            if (copy) {
++                memcpy(copy, m.data, m.len);
++                m.data = copy;
++                UNLOCK();
++                if (m.req) { if (fn) fn(user, &m); }
++                else if (s_push_fn) s_push_fn(&m);
++                LOCK();
++                free(copy);
++            }
++            if (!s_connected) break;
++        }
++        if (off) { memmove(s_rx, s_rx + off, s_rxn - off); s_rxn -= off; }
++        break;
++    }
++    UNLOCK();
++    in_pump = 0;
++}
+diff --git a/libs/network/np_psnr.h b/libs/network/np_psnr.h
+new file mode 100644
+index 0000000..af0247a
+--- /dev/null
++++ b/libs/network/np_psnr.h
+@@ -0,0 +1,116 @@
++/*
++ * ps3recomp - the connection to a psnr matchmaking server (np_psnr.c)
++ *
++ * psnr (github.com/sp00nznet/psnr) stands in for PSN's rooms: it hands out
++ * rooms and each member's P2P address; game traffic never goes through it.
++ * This client speaks its wire protocol (docs/api.md there) with no threads:
++ * requests are queued, replies and pushes are read by np_psnr_pump(), which
++ * cellSysutilCheckCallback calls on the title's own polling thread -- so the
++ * guest callbacks the NP modules queue from reply handlers are delivered by
++ * the very same CheckCallback.
++ *
++ * Environment:
++ *   PS3_NET_ONLINE=1         real sockets and a connected cellNetCtl
++ *   PSNR_SERVER=host[:port]  the psnr server (port 36100 by default)
++ *   PS3_NP_ONLINE_ID=name    this player's online ID (3-16 chars; default
++ *                            the OS user name)
++ *   PS3_NET_P2P_PORT=n       the UDP port this instance's P2P socket binds
++ *                            (default 3658); psnr hands it to peers, so two
++ *                            instances on one machine need two values
++ *   PS3_NET_BIND=ip          the interface the P2P socket binds (default
++ *                            127.0.0.1, which also keeps Windows Firewall
++ *                            quiet; 0.0.0.0 for play across machines)
++ *   PS3_NP_PEER_OVERRIDE=ip:port  every peer's P2P address is reported as
++ *                            this instead (for a latency/loss proxy on
++ *                            localhost; see tools/udp_proxy.py)
++ *   PS3_NP_TRACE=1           log every NP request, reply and push
++ */
++#ifndef PS3RECOMP_NP_PSNR_H
++#define PS3RECOMP_NP_PSNR_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Message types (psnr docs/api.md) */
++enum {
++    PSNR_HELLO = 0x01, PSNR_HEARTBEAT = 0x02,
++    PSNR_CREATE_ROOM = 0x10, PSNR_SEARCH_ROOMS = 0x11, PSNR_JOIN_ROOM = 0x12,
++    PSNR_LEAVE_ROOM = 0x13, PSNR_SET_ROOM_DATA = 0x14, PSNR_ROOM_MESSAGE = 0x15,
++    PSNR_KICK_MEMBER = 0x16,
++    PSNR_RECORD_SCORE = 0x20, PSNR_GET_RANKING = 0x21, PSNR_GET_RANKING_BY_ID = 0x22,
++    PSNR_HELLO_ACK = 0x81, PSNR_ERROR = 0x8F, PSNR_ROOM_JOINED = 0x90, PSNR_ROOM_LIST = 0x91,
++    PSNR_OK = 0x93, PSNR_SCORE_RECORDED = 0xB0, PSNR_RANKING = 0xB1,
++    PSNR_MEMBER_JOINED = 0xA1, PSNR_MEMBER_LEFT = 0xA2, PSNR_ROOM_DATA = 0xA3,
++    PSNR_ROOM_MSG = 0xA4, PSNR_KICKED = 0xA5
++};
++enum {
++    PSNR_E_BAD_REQUEST = 1, PSNR_E_NOT_FOUND = 2, PSNR_E_ROOM_FULL = 3, PSNR_E_NOT_OWNER = 4,
++    PSNR_E_NOT_IN_ROOM = 5, PSNR_E_LIMIT = 6, PSNR_E_NO_HELLO = 7, PSNR_E_NAME_TAKEN = 8
++};
++
++/* One reply or push. type 0 = the connection dropped before the reply came. */
++typedef struct {
++    uint8_t   type;
++    uint32_t  req;        /* 0 for a push */
++    const uint8_t* data;  /* payload after the request id */
++    uint32_t  len;
++} np_psnr_msg;
++
++/* Big-endian readers for payloads. */
++static inline uint16_t np_get16(const uint8_t* p) { return (uint16_t)((p[0] << 8) | p[1]); }
++static inline uint32_t np_get32(const uint8_t* p) { return ((uint32_t)np_get16(p) << 16) | np_get16(p + 2); }
++static inline uint64_t np_get64(const uint8_t* p) { return ((uint64_t)np_get32(p) << 32) | np_get32(p + 4); }
++
++/* Configuration */
++int         np_psnr_enabled(void);        /* PS3_NET_ONLINE and PSNR_SERVER set */
++const char* np_psnr_online_id(void);      /* the player's name */
++uint16_t    np_psnr_p2p_port(void);
++uint32_t    np_psnr_user_id(void);        /* 0 until connected */
++/* HELLO_ACK flags: bit 0 the server relays; bit 1 (this project's psnr_server.py)
++ * room-list entries end with the owner's user id and P2P address. */
++#define NP_PSNR_FLAG_RELAY        0x01
++#define NP_PSNR_FLAG_LIST_ADDRESS 0x02
++uint8_t     np_psnr_server_flags(void);
++void        np_psnr_public_ip(uint8_t ip[4]);   /* as psnr sees us (0.0.0.0 until connected) */
++int         np_psnr_trace(void);
++
++/* Connect (once per process) as this title. 0 connected, -1 not. */
++int  np_psnr_connect(const char* comm_id);
++int  np_psnr_connected(void);
++
++/* Send a request; fn(user, reply) runs from np_psnr_pump(). 0 if not sent. */
++typedef void (*np_psnr_reply_fn)(void* user, const np_psnr_msg* reply);
++uint32_t np_psnr_request(uint8_t type, const void* body, uint32_t len,
++                         np_psnr_reply_fn fn, void* user);
++
++/* Where pushes go (room events). */
++void np_psnr_on_push(void (*fn)(const np_psnr_msg* push));
++/* Called at the start of every pump, for time-based work (quick match timeouts). */
++void np_psnr_on_tick(void (*fn)(void));
++
++/* Read replies and pushes, run their handlers, send heartbeats/probes/punches.
++ * Called from cellSysutilCheckCallback. */
++void np_psnr_pump(void);
++
++/* ---- The title's P2P datagram socket (sysNet.c owns it) ----
++ * sysNet registers how to send from it once the title binds it; np_psnr sends
++ * NAT probes to psnr, punches to peers and RTT pings from there. Every
++ * datagram that arrives on it goes through np_psnr_p2p_filter first, which
++ * consumes psnr's control packets (all start with "PSNR"): 1 = drop it. */
++typedef int (*np_psnr_p2p_send_fn)(const void* buf, uint32_t len, const uint8_t ip[4], uint16_t port);
++void np_psnr_set_p2p_sender(np_psnr_p2p_send_fn fn);
++int  np_psnr_p2p_filter(const void* buf, uint32_t len, const uint8_t from_ip[4], uint16_t from_port);
++
++/* A peer became known (room member): punch toward it and start RTT pings. */
++void np_psnr_peer_add(uint32_t user, const uint8_t ip[4], uint16_t port);
++void np_psnr_peer_remove(uint32_t user);
++/* Last measured round trip to that peer in ms, or -1 if none yet. */
++int  np_psnr_peer_rtt_ms(uint32_t user);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/libs/network/sceNp.c b/libs/network/sceNp.c
+index 6260452..ae3180c 100644
+--- a/libs/network/sceNp.c
++++ b/libs/network/sceNp.c
+@@ -6,9 +6,11 @@
+  */
+ 
+ #include "sceNp.h"
++#include "np_psnr.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdint.h>
++#include <time.h>
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
+ 
+ 
+@@ -33,11 +35,18 @@ void sceNpSetFakeUsername(const char* username)
+     }
+ }
+ 
++/* The player's name: PS3_NP_ONLINE_ID when online through psnr (two
++ * instances on one machine need different names), the fake profile otherwise. */
++static const char* np_username(void)
++{
++    return np_psnr_enabled() ? np_psnr_online_id() : s_fake_username;
++}
++
+ /* Build a fake NP ID from the current username */
+ static void np_build_fake_id(SceNpId* npId)
+ {
+     memset(npId, 0, sizeof(SceNpId));
+-    strncpy(npId->handle.data, s_fake_username, SCE_NP_ONLINEID_MAX_LENGTH);
++    strncpy(npId->handle.data, np_username(), SCE_NP_ONLINEID_MAX_LENGTH);
+     npId->handle.term = '\0';
+ }
+ 
+@@ -51,7 +60,7 @@ s32 sceNpInit(u32 poolSize, void* poolPtr)
+     (void)poolPtr;
+ 
+     printf("[sceNp] Init(poolSize=%u, username=\"%s\")\n",
+-           poolSize, s_fake_username);
++           poolSize, np_username());
+ 
+     if (s_np_initialized)
+         return SCE_NP_ERROR_ALREADY_INITIALIZED;
+@@ -81,8 +90,11 @@ s32 sceNpGetNpId(s32 userId, SceNpId* npId)
+     if (!npId)
+         return SCE_NP_ERROR_INVALID_ARGUMENT;
+ 
+-    np_build_fake_id(npId);
+-    printf("[sceNp] GetNpId(user=%d) -> \"%s\"\n", userId, s_fake_username);
++    /* npId is a GUEST address (the HLE adapter passes r4 through); writing
++     * through it as a host pointer faulted the moment Tekken 5 DR's online
++     * mode asked for the player's NP ID. */
++    np_build_fake_id(GUEST_PTR(npId, SceNpId*));
++    printf("[sceNp] GetNpId(user=%d) -> \"%s\"\n", userId, np_username());
+     return CELL_OK;
+ }
+ 
+@@ -98,10 +110,10 @@ s32 sceNpGetOnlineId(s32 userId, SceNpOnlineId* onlineId)
+         return SCE_NP_ERROR_INVALID_ARGUMENT;
+ 
+     memset(onlineId, 0, sizeof(SceNpOnlineId));
+-    strncpy(onlineId->data, s_fake_username, SCE_NP_ONLINEID_MAX_LENGTH);
++    strncpy(onlineId->data, np_username(), SCE_NP_ONLINEID_MAX_LENGTH);
+     onlineId->term = '\0';
+ 
+-    printf("[sceNp] GetOnlineId(user=%d) -> \"%s\"\n", userId, s_fake_username);
++    printf("[sceNp] GetOnlineId(user=%d) -> \"%s\"\n", userId, np_username());
+     return CELL_OK;
+ }
+ 
+@@ -117,11 +129,11 @@ s32 sceNpGetOnlineName(s32 userId, SceNpOnlineName* onlineName)
+         return SCE_NP_ERROR_INVALID_ARGUMENT;
+ 
+     memset(onlineName, 0, sizeof(SceNpOnlineName));
+-    strncpy(onlineName->data, s_fake_username,
++    strncpy(onlineName->data, np_username(),
+             SCE_NP_ONLINENAME_MAX_LENGTH - 1);
+ 
+     printf("[sceNp] GetOnlineName(user=%d) -> \"%s\"\n",
+-           userId, s_fake_username);
++           userId, np_username());
+     return CELL_OK;
+ }
+ 
+@@ -138,12 +150,12 @@ s32 sceNpGetUserProfile(s32 userId, SceNpUserInfo* userInfo)
+ 
+     memset(userInfo, 0, sizeof(SceNpUserInfo));
+     np_build_fake_id(&userInfo->npId);
+-    strncpy(userInfo->onlineName.data, s_fake_username,
++    strncpy(userInfo->onlineName.data, np_username(),
+             SCE_NP_ONLINENAME_MAX_LENGTH - 1);
+     /* Leave avatar URL empty */
+ 
+     printf("[sceNp] GetUserProfile(user=%d) -> \"%s\"\n",
+-           userId, s_fake_username);
++           userId, np_username());
+     return CELL_OK;
+ }
+ 
+@@ -219,8 +231,41 @@ s32 sceNpManagerGetStatus(s32* status)
+      * parameters straight through as guest values, so dereferencing one
+      * writes to whatever host address shares that number. Same trap as
+      * cellGcmSys had. Tokyo Jungle calls this during its online init. */
+-    vm_write32((uint32_t)(uintptr_t)status, (uint32_t)SCE_NP_MANAGER_STATUS_OFFLINE);
+-    printf("[sceNp] ManagerGetStatus() -> OFFLINE\n");
++    /* Signed in when there is a psnr server to be signed in to. */
++    s32 st = np_psnr_enabled() ? SCE_NP_MANAGER_STATUS_ONLINE : SCE_NP_MANAGER_STATUS_OFFLINE;
++    vm_write32((uint32_t)(uintptr_t)status, (uint32_t)st);
++    { static int once; if (!once++) printf("[sceNp] ManagerGetStatus() -> %s\n", st == SCE_NP_MANAGER_STATUS_ONLINE ? "ONLINE" : "OFFLINE"); }
++    return CELL_OK;
++}
++
++/* Parental-control flags: nothing restricted. Guest out-params. */
++s32 sceNpManagerGetContentRatingFlag(u32 isRestricted, u32 age)
++{
++    if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
++    if (isRestricted) vm_write32(isRestricted, 0);
++    if (age) vm_write32(age, 20);
++    return CELL_OK;
++}
++
++s32 sceNpManagerGetChatRestrictionFlag(u32 isRestricted)
++{
++    if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
++    if (isRestricted) vm_write32(isRestricted, 0);
++    return CELL_OK;
++}
++
++/* Network time as a CellRtcTick: microseconds since 0001-01-01. */
++s32 sceNpManagerGetNetworkTime(u32 pTick)
++{
++    if (!s_np_initialized) return SCE_NP_ERROR_NOT_INITIALIZED;
++    if (!pTick) return SCE_NP_ERROR_INVALID_ARGUMENT;
++    if (!np_psnr_enabled()) return SCE_NP_ERROR_OFFLINE;
++    /* The same clock as sys_time / cellRtc (runtime/syscalls/sys_timer.c), so
++     * PS3_FIXED_TIME pins it too. */
++    extern uint64_t ps3_wallclock_unix_nsec(void);
++    uint64_t t = ps3_wallclock_unix_nsec() / 1000ull + 62135596800ull * 1000000ull;
++    vm_write32(pTick, (uint32_t)(t >> 32));
++    vm_write32(pTick + 4, (uint32_t)t);
+     return CELL_OK;
+ }
+ 
+diff --git a/libs/network/sceNpBasic.c b/libs/network/sceNpBasic.c
+index 2c1edcb..1b1ce6a 100644
+--- a/libs/network/sceNpBasic.c
++++ b/libs/network/sceNpBasic.c
+@@ -88,6 +88,34 @@ s32 sceNpBasicRegisterHandler(SceNpBasicEventHandler handler,
+     return CELL_OK;
+ }
+ 
++/* The context-sensitive variant: the handler is per communication id. Guest
++ * addresses; stored only. There are no friends, invitations or messages to
++ * report, so it never fires. */
++s32 sceNpBasicRegisterContextSensitiveHandler(u32 context, u32 handler, u32 arg)
++{
++    (void)context; (void)handler; (void)arg;
++    printf("[sceNpBasic] RegisterContextSensitiveHandler(handler=0x%08X)\n", handler);
++    s_initialized = 1;
++    return CELL_OK;
++}
++
++/* "Players met" history: accepted and forgotten. */
++s32 sceNpBasicAddPlayersHistory(u32 npid, u32 description)
++{
++    (void)description;
++    if (!npid) return (s32)SCE_NP_BASIC_ERROR_INVALID_ARGUMENT;
++    printf("[sceNpBasic] AddPlayersHistory(%.16s)\n", GUEST_PTR(npid, const char*));
++    return CELL_OK;
++}
++
++/* Friend requests go through PSN; there is none here. */
++s32 sceNpBasicAddFriend(u32 npid, u32 message, u32 reqId)
++{
++    (void)npid; (void)message; (void)reqId;
++    printf("[sceNpBasic] AddFriend -> NOT_SUPPORTED\n");
++    return (s32)SCE_NP_BASIC_ERROR_NOT_SUPPORTED;
++}
++
+ s32 sceNpBasicUnregisterHandler(void)
+ {
+     printf("[sceNpBasic] UnregisterHandler()\n");
+diff --git a/libs/network/sceNpMatching.c b/libs/network/sceNpMatching.c
+new file mode 100644
+index 0000000..a798fd9
+--- /dev/null
++++ b/libs/network/sceNpMatching.c
+@@ -0,0 +1,1325 @@
++/*
++ * ps3recomp - sceNpMatching (first-generation NP matchmaking, "GUI" API)
++ * over a psnr server
++ *
++ * Titles from the 2006-2008 era (Tekken 5 DR Online among them) matchmake
++ * through sceNpMatching: rooms with attributes, searched by conditions, and
++ * the *GUI calls, which on a console open system dialogs (room browser,
++ * "searching for players...") and report through a GUI handler. Here there
++ * is no system UI: a GUI call does the room operation on psnr straight away
++ * and delivers COMMON_LOAD, the operation's event and COMMON_UNLOAD through
++ * the handler, exactly the sequence a title sees when the dialog closes.
++ * Results are fetched with GetResultGUI / GetResult as on a console.
++ *
++ * Rooms: a psnr room per NP room. The NP attribute list (the title's own
++ * game attributes plus the basic slot counts) is packed into psnr's opaque
++ * "external" room data, so searches filter client-side on what psnr lists.
++ * psnr room flags: bit 0 = stealth (ROOM_SEARCH_FLAG), bit 8 = made by a
++ * quick match (only quick matchers join those).
++ *
++ * Quick match: search for an open quick-match room that satisfies the
++ * conditions and join it; none -> create one and wait for the first player
++ * to join (QUICK_MATCH event then), or give up after the title's timeout
++ * (QUICK_MATCH_PLAYER_NOT_FOUND).
++ *
++ * Callbacks run on the title's polling thread: psnr replies are pumped from
++ * cellSysutilCheckCallback and the guest callbacks queued there are delivered
++ * by that same call. Result images contain pointers into themselves; they are
++ * built relocatable and patched when copied into the title's buffer.
++ *
++ * Layouts (SDK ABI, all big-endian in guest memory):
++ *   SceNpLobbyId / SceNpRoomId      36  opt[28] reserved[8]
++ *   SceNpMatchingAttr               20  next type id { num | ptr size }
++ *   SceNpMatchingSearchCondition    40  next target_type target_id comp_op comp_type compared(20)
++ *   SceNpMatchingRoomMember        224  next user_info(216: NpId 36, OnlineName 52, AvatarUrl 128) owner
++ *   SceNpMatchingRoomStatus         56  id(36) members num kick_actor opt opt_len
++ *   SceNpMatchingJoinedRoomInfo     92  lobbyid(36) room_status(56)
++ *   SceNpMatchingRoom               44  next id(36) attr
++ *   SceNpMatchingRoomList           52  lobbyid(36) range{start results total} head
++ *   SceNpMatchingSearchJoinRoomInfo 96  lobbyid(36) room_status(56) attr
++ */
++
++#include "sceNpMatching.h"
++#include "sceNp.h"
++#include "np_psnr.h"
++#include "../system/cellSysutil.h"
++#include "../../runtime/ppu/ppu_context.h"
++#include "../../runtime/ppu/ppu_memory.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* The guest call chain behind an NP call (PS3_NP_TRACE): which part of the
++ * title asked. The caller's saved LR sits at frame+16 of each back-chain link. */
++extern PPU_THREAD_LOCAL ppu_context* g_active_ctx;
++static void np_guest_backtrace(const char* what)
++{
++    ppu_context* ctx = g_active_ctx;
++    if (!ctx || !np_psnr_trace()) return;
++    char buf[256];
++    int p = snprintf(buf, sizeof buf, "lr=0x%x", (uint32_t)ctx->lr);
++    uint32_t sp = (uint32_t)ctx->gpr[1];
++    for (int i = 0; i < 8 && sp && sp < 0xF0000000u && p < (int)sizeof buf - 12; i++) {
++        uint32_t next = (uint32_t)vm_read64(sp);
++        if (!next || next < 0x10000u) break;
++        p += snprintf(buf + p, sizeof buf - p, " 0x%x", (uint32_t)vm_read64(next + 16));
++        sp = next;
++    }
++    printf("[sceNpMatching] %s from %s\n", what, buf);
++}
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef _WIN32
++#  define WIN32_LEAN_AND_MEAN
++#  include <windows.h>
++static uint64_t now_ms(void) { return GetTickCount64(); }
++#else
++#  include <time.h>
++static uint64_t now_ms(void)
++{
++    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
++}
++#endif
++
++/* ---- SDK constants ---- */
++#define E_NOT_INITIALIZED      0x8002a701
++#define E_INVALID_ARG          0x8002a703
++#define E_TIMEOUT              0x8002a705
++#define E_CTXID_NOT_AVAIL      0x8002a707
++#define E_CTX_NOT_FOUND        0x8002a709
++#define E_ROOM_NOT_FOUND       0x8002a70b
++#define E_MEMBER_NOT_FOUND     0x8002a70c
++#define E_CTX_STILL_RUNNING    0x8002a713
++#define E_INSUFFICIENT_BUFFER  0x8002a714
++#define E_INVALID_REQ_ID       0x8002a717
++#define E_RESULT_NOT_FOUND     0x8002a718
++#define E_BUSY                 0x8002a719
++#define E_ALREADY_JOINED_ROOM  0x8002a71a
++#define E_ROOM_MAX             0x8002a71b
++#define E_QM_PLAYER_NOT_FOUND  0x8002a71c
++#define E_CANCELED             0x8002a723
++#define E_SEARCH_JOIN_NOT_FOUND 0x8002a724
++#define SERVER_E_NO_SUCH_ROOM  0x8002a746
++#define SERVER_E_NOT_ALLOWED   0x8002a748
++#define SERVER_E_ROOM_CLOSED   0x8002a74e
++#define SERVER_E_OUT_OF_SERVICE 0x8002a740
++
++enum {   /* handler events */
++    EV_ERROR = 1, EV_LEAVE_ROOM_DONE = 2, EV_ROOM_UPDATE_NEW_MEMBER = 5, EV_ROOM_UPDATE_MEMBER_LEAVE = 6,
++    EV_ROOM_DISAPPEARED = 7, EV_GET_ROOM_INFO_DONE = 9, EV_SET_ROOM_INFO_DONE = 10,
++    EV_ROOM_UPDATE_OWNER_CHANGE = 12, EV_KICK_MEMBER_DONE = 13, EV_ROOM_KICKED = 14,
++    EV_SET_ROOM_SEARCH_FLAG_DONE = 16
++};
++enum {   /* GUI handler events */
++    GUI_CREATE_ROOM = 1, GUI_JOIN_ROOM = 2, GUI_SEARCH_JOIN = 4, GUI_QUICK_MATCH = 5,
++    GUI_SEND_INVITATION = 6, GUI_ACCEPT_INVITATION = 7, GUI_COMMON_LOAD = 8, GUI_COMMON_UNLOAD = 9,
++    GUI_GET_ROOM_LIST = 10, GUI_GET_ROOM_LIST_LIMIT = 11
++};
++enum { ATTR_BASIC_BIN = 1, ATTR_BASIC_NUM = 2, ATTR_GAME_BIN = 3, ATTR_GAME_NUM = 4 };
++enum { ROOM_ATTR_TOTAL_SLOT = 1, ROOM_ATTR_PRIVATE_SLOT = 2, ROOM_ATTR_CUR_TOTAL_NUM = 3,
++       ROOM_ATTR_CUR_PUBLIC_NUM = 4, ROOM_ATTR_CUR_PRIVATE_NUM = 5, ROOM_ATTR_PRIVILEGE_TYPE = 6,
++       ROOM_ATTR_ROOM_SEARCH_FLAG = 7 };
++enum { COND_EQ = 0, COND_NE = 1, COND_LT = 2, COND_LE = 3, COND_GT = 4, COND_GE = 5 };
++
++#define FLAG_STEALTH   0x1u
++#define FLAG_QUICK     0x100u
++#define DEFAULT_SLOTS  2
++#define MAX_MEMBERS    16
++#define MAX_ATTRS      32
++#define ROOM_CACHE     64
++#define RESULT_RING    32
++#define SEARCH_MAX     100
++
++/* ---- relocatable images ---- */
++typedef struct { u8* b; u32 len, cap; u32* rel; u32 nrel, relcap; } rb_t;
++
++static u32 rb_alloc(rb_t* r, u32 size, u32 align)
++{
++    u32 off = (r->len + align - 1) & ~(align - 1);
++    if (off + size > r->cap) {
++        while (off + size > r->cap) r->cap = r->cap ? r->cap * 2 : 1024;
++        r->b = (u8*)realloc(r->b, r->cap);
++    }
++    memset(r->b + r->len, 0, off + size - r->len);
++    r->len = off + size;
++    return off;
++}
++static void rb_16(rb_t* r, u32 o, u16 v) { r->b[o] = (u8)(v >> 8); r->b[o + 1] = (u8)v; }
++static void rb_32(rb_t* r, u32 o, u32 v) { rb_16(r, o, (u16)(v >> 16)); rb_16(r, o + 2, (u16)v); }
++static void rb_ptr(rb_t* r, u32 o, u32 target)
++{
++    if (r->nrel == r->relcap) {
++        r->relcap = r->relcap ? r->relcap * 2 : 32;
++        r->rel = (u32*)realloc(r->rel, r->relcap * sizeof(u32));
++    }
++    r->rel[r->nrel++] = o;
++    rb_32(r, o, target);
++}
++static void rb_free(rb_t* r) { free(r->b); free(r->rel); memset(r, 0, sizeof(*r)); }
++/* Copy into the title's buffer at EA, relocating pointer fields. */
++static void rb_copy_out(const rb_t* r, u32 ea, u32 cap)
++{
++    u8* tmp = (u8*)malloc(r->len ? r->len : 1);
++    memcpy(tmp, r->b, r->len);
++    for (u32 i = 0; i < r->nrel; i++) {
++        u32 o = r->rel[i];
++        u32 v = ((u32)tmp[o] << 24) | ((u32)tmp[o + 1] << 16) | ((u32)tmp[o + 2] << 8) | tmp[o + 3];
++        if (v) v += ea;
++        tmp[o] = (u8)(v >> 24); tmp[o + 1] = (u8)(v >> 16); tmp[o + 2] = (u8)(v >> 8); tmp[o + 3] = (u8)v;
++    }
++    u32 n = r->len < cap ? r->len : cap;
++    memcpy(GUEST_PTR(ea, u8*), tmp, n);
++    free(tmp);
++}
++
++/* ---- attributes ---- */
++typedef struct {
++    u8  type, id;
++    u32 num;
++    u8  bin[256];
++    u16 size;
++} attr_t;
++
++static int attr_is_bin(u8 type) { return type == ATTR_BASIC_BIN || type == ATTR_GAME_BIN; }
++
++/* The NP attribute list at guest EA -> host array. */
++static int read_attrs(u32 ea, attr_t* out, int cap)
++{
++    int n = 0;
++    for (int guard = 0; ea && n < cap && guard < 64; guard++) {
++        attr_t* a = &out[n];
++        memset(a, 0, sizeof(*a));
++        a->type = (u8)vm_read32(ea + 4);
++        a->id = (u8)vm_read32(ea + 8);
++        if (attr_is_bin(a->type)) {
++            u32 p = vm_read32(ea + 12), sz = vm_read32(ea + 16);
++            if (sz > sizeof(a->bin)) sz = sizeof(a->bin);
++            a->size = (u16)sz;
++            if (p && sz) memcpy(a->bin, GUEST_PTR(p, const u8*), sz);
++        } else a->num = vm_read32(ea + 12);
++        n++;
++        ea = vm_read32(ea);
++    }
++    return n;
++}
++
++/* Pack: entries of type u8 | id u8 | kind u8 (0 num, 1 bin) | num u32 / len u16 + bytes */
++static u32 pack_attrs(const attr_t* a, int n, u8* out, u32 cap)
++{
++    u32 o = 0;
++    for (int i = 0; i < n; i++) {
++        u32 need = attr_is_bin(a[i].type) ? 5u + a[i].size : 7u;
++        if (o + need > cap) break;
++        out[o++] = a[i].type; out[o++] = a[i].id;
++        if (attr_is_bin(a[i].type)) {
++            out[o++] = 1; out[o++] = (u8)(a[i].size >> 8); out[o++] = (u8)a[i].size;
++            memcpy(out + o, a[i].bin, a[i].size); o += a[i].size;
++        } else {
++            out[o++] = 0;
++            out[o++] = (u8)(a[i].num >> 24); out[o++] = (u8)(a[i].num >> 16);
++            out[o++] = (u8)(a[i].num >> 8); out[o++] = (u8)a[i].num;
++        }
++    }
++    return o;
++}
++
++static int unpack_attrs(const u8* p, u32 len, attr_t* out, int cap)
++{
++    int n = 0;
++    u32 o = 0;
++    while (o + 3 <= len && n < cap) {
++        attr_t* a = &out[n];
++        memset(a, 0, sizeof(*a));
++        a->type = p[o]; a->id = p[o + 1];
++        u8 kind = p[o + 2]; o += 3;
++        if (kind) {
++            if (o + 2 > len) break;
++            u16 sz = np_get16(p + o); o += 2;
++            if (o + sz > len || sz > sizeof(a->bin)) break;
++            a->size = sz; memcpy(a->bin, p + o, sz); o += sz;
++        } else {
++            if (o + 4 > len) break;
++            a->num = np_get32(p + o); o += 4;
++        }
++        n++;
++    }
++    return n;
++}
++
++static attr_t* attr_find(attr_t* a, int n, u8 type, u8 id)
++{
++    for (int i = 0; i < n; i++) if (a[i].type == type && a[i].id == id) return &a[i];
++    return NULL;
++}
++
++/* Replace or append. */
++static int attr_merge(attr_t* a, int n, int cap, const attr_t* in, int nin)
++{
++    for (int i = 0; i < nin; i++) {
++        attr_t* e = attr_find(a, n, in[i].type, in[i].id);
++        if (e) *e = in[i];
++        else if (n < cap) a[n++] = in[i];
++    }
++    return n;
++}
++
++static void log_attrs(const char* what, const attr_t* a, int n)
++{
++    printf("[sceNpMatching] %s: %d attribute(s)\n", what, n);
++    for (int i = 0; i < n; i++) {
++        if (attr_is_bin(a[i].type)) {
++            printf("[sceNpMatching]   type %u id %u bin[%u]:", a[i].type, a[i].id, a[i].size);
++            for (int k = 0; k < a[i].size && k < 32; k++) printf(" %02x", a[i].bin[k]);
++            printf("%s\n", a[i].size > 32 ? " ..." : "");
++        } else
++            printf("[sceNpMatching]   type %u id %u num %u\n", a[i].type, a[i].id, a[i].num);
++    }
++}
++
++/* ---- conditions ---- */
++typedef struct { u8 target_type, target_id; s32 op; s32 comp_type; attr_t cmp; } cond_t;
++
++static int read_conds(u32 ea, cond_t* out, int cap)
++{
++    int n = 0;
++    for (int guard = 0; ea && n < cap && guard < 32; guard++) {
++        cond_t* c = &out[n];
++        memset(c, 0, sizeof(*c));
++        c->target_type = (u8)vm_read32(ea + 4);
++        c->target_id = (u8)vm_read32(ea + 8);
++        c->op = (s32)vm_read32(ea + 12);
++        c->comp_type = (s32)vm_read32(ea + 16);
++        c->cmp.type = (u8)vm_read32(ea + 24);
++        c->cmp.id = (u8)vm_read32(ea + 28);
++        if (attr_is_bin(c->cmp.type)) {
++            u32 p = vm_read32(ea + 32), sz = vm_read32(ea + 36);
++            if (sz > sizeof(c->cmp.bin)) sz = sizeof(c->cmp.bin);
++            c->cmp.size = (u16)sz;
++            if (p && sz) memcpy(c->cmp.bin, GUEST_PTR(p, const u8*), sz);
++        } else c->cmp.num = vm_read32(ea + 32);
++        n++;
++        ea = vm_read32(ea);
++    }
++    return n;
++}
++
++static void log_conds(const char* what, const cond_t* c, int n)
++{
++    printf("[sceNpMatching] %s: %d condition(s)\n", what, n);
++    for (int i = 0; i < n; i++)
++        printf("[sceNpMatching]   attr type %u id %u op %d comp_type %d vs %s%u\n", c[i].target_type, c[i].target_id,
++               c[i].op, c[i].comp_type, attr_is_bin(c[i].cmp.type) ? "bin " : "", attr_is_bin(c[i].cmp.type) ? c[i].cmp.size : c[i].cmp.num);
++}
++
++/* ---- state ---- */
++typedef struct {
++    u16  member_id;
++    u32  user;
++    char online_id[17];
++    u8   ip[4];
++    u16  port;
++    int  owner;
++} member_t;
++
++typedef struct {
++    int      in_room;
++    u64      room_id;
++    u16      my_member, owner;
++    u8       max;
++    u32      flags;
++    attr_t   attrs[MAX_ATTRS];
++    int      nattrs;
++    member_t members[MAX_MEMBERS];
++    int      nmembers;
++} room_t;
++
++typedef struct {   /* a room seen in a list, for GetRoomInfo on rooms we are not in */
++    u64    room_id;
++    u8     cur, max;
++    u32    flags;
++    char   owner[17];
++    u32    owner_user;      /* the owner's P2P endpoint (psnr_server.py extension), */
++    u8     owner_ip[4];     /* so the title can ping a host from the room browser */
++    u16    owner_port;
++    attr_t attrs[MAX_ATTRS];
++    int    nattrs;
++} room_cache_t;
++
++static int    s_init;
++static int    s_ctx_used;
++static u32    s_handler, s_handler_arg;     /* matching handler OPD + arg */
++static u32    s_gui_handler, s_gui_arg;
++static int    s_gui_busy;
++static char   s_comm_id[13] = "NPWR00045";
++static room_t s_room;
++static room_cache_t s_cache[ROOM_CACHE];
++static int    s_ncache;
++static u32    s_next_req = 0x1000;
++
++/* GetResult images, by request id */
++static struct { u32 req; s32 event; rb_t img; } s_results[RESULT_RING];
++static int s_result_next;
++/* GetResultGUI image */
++static struct { s32 event; rb_t img; int valid; } s_gui_result;
++
++/* an operation in flight */
++typedef struct {
++    int    kind;        /* GUI_* or EV_* (non-GUI) */
++    u32    req_id;      /* for non-GUI ops */
++    cond_t conds[9];
++    int    nconds;
++    attr_t attrs[MAX_ATTRS];
++    int    nattrs;
++    u32    start, max;  /* room list range */
++    u16    req_attr_type[16], req_attr_id[16]; int nreq_attr;   /* GetRoomInfo */
++    u64    room_id;
++    int    available_num;
++    u64    deadline;    /* quick match */
++    int    waiting;     /* quick match: our room is up, waiting for a player */
++    u32    kick_member;
++} op_t;
++static op_t s_op;
++
++static const u8 LOBBY_ID[36] = { 'T','5','D','R','-','L','O','B','B','Y' };
++
++static void room_id_encode(u64 id, u8 out[36])
++{
++    memset(out, 0, 36);
++    memcpy(out, "T5DR", 4);
++    for (int i = 0; i < 8; i++) out[4 + i] = (u8)(id >> (56 - 8 * i));
++}
++static u64 room_id_decode(u32 ea)
++{
++    u64 id = 0;
++    if (!ea) return 0;
++    const u8* p = GUEST_PTR(ea, const u8*);
++    if (memcmp(p, "T5DR", 4) != 0) return 0;
++    for (int i = 0; i < 8; i++) id = (id << 8) | p[4 + i];
++    return id;
++}
++
++/* ---- callbacks into the title ---- */
++static void queue_cb(u32 opd, u64 a0, u64 a1, u64 a2, u64 a3, u64 a4)
++{
++    const u64 args[8] = { a0, a1, a2, a3, a4, 0, 0, 0 };
++    if (opd) cellSysutilQueueGuestCallbackArgs(opd, args);
++}
++static void gui_event(s32 event, s32 error)
++{
++    if (np_psnr_trace() || error) printf("[sceNpMatching] GUI event %d error 0x%08X\n", event, (u32)error);
++    queue_cb(s_gui_handler, 1, (u64)(u32)event, (u64)(u32)error, s_gui_arg, 0);
++}
++static void gui_finish(s32 event, s32 error, rb_t* img)
++{
++    if (img) {
++        rb_free(&s_gui_result.img);
++        s_gui_result.img = *img;
++        memset(img, 0, sizeof(*img));
++        s_gui_result.event = event;
++        s_gui_result.valid = 1;
++    }
++    gui_event(event, error);
++    gui_event(GUI_COMMON_UNLOAD, 0);
++    s_gui_busy = 0;
++    s_op.kind = 0;
++}
++static void matching_event(u32 req, s32 event, s32 error, rb_t* img)
++{
++    if (img) {
++        int i = s_result_next++ % RESULT_RING;
++        rb_free(&s_results[i].img);
++        s_results[i].req = req;
++        s_results[i].event = event;
++        s_results[i].img = *img;
++        memset(img, 0, sizeof(*img));
++    }
++    if (np_psnr_trace() || error) printf("[sceNpMatching] event %d req %u error 0x%08X\n", event, req, (u32)error);
++    queue_cb(s_handler, 1, req, (u64)(u32)event, (u64)(u32)error, s_handler_arg);
++}
++
++/* ---- image builders ---- */
++static void put_user_info(rb_t* r, u32 o, const char* online_id)
++{
++    memset(r->b + o, 0, 216);
++    strncpy((char*)r->b + o, online_id, 16);          /* NpId.handle.data */
++    strncpy((char*)r->b + o + 36, online_id, 48);     /* OnlineName.data */
++}
++
++/* RoomStatus at offset o (56 bytes already allocated); members appended. */
++static void build_room_status(rb_t* r, u32 o)
++{
++    u8 rid[36];
++    room_id_encode(s_room.room_id, rid);
++    memcpy(r->b + o, rid, 36);
++    rb_32(r, o + 40, (u32)s_room.nmembers);
++    u32 prev = 0;
++    for (int i = 0; i < s_room.nmembers; i++) {
++        u32 m = rb_alloc(r, 224, 8);
++        put_user_info(r, m + 4, s_room.members[i].online_id);
++        rb_32(r, m + 220, s_room.members[i].owner ? 1 : 0);
++        if (prev) rb_ptr(r, prev, m); else rb_ptr(r, o + 36, m);
++        prev = m;
++    }
++}
++
++static void build_joined_room_info(rb_t* r)
++{
++    memset(r, 0, sizeof(*r));
++    u32 o = rb_alloc(r, 92, 8);
++    memcpy(r->b + o, LOBBY_ID, 36);
++    build_room_status(r, o + 36);
++}
++
++/* Attr chain for a room: `want` selects attributes (type,id); NULL = all stored + basic. */
++static u32 build_attr_chain(rb_t* r, const attr_t* stored, int nstored, u8 cur, u8 max, u32 flags,
++                            const u16* want_type, const u16* want_id, int nwant)
++{
++    attr_t basic[7];
++    memset(basic, 0, sizeof(basic));
++    for (int i = 0; i < 7; i++) { basic[i].type = ATTR_BASIC_NUM; basic[i].id = (u8)(i + 1); }
++    basic[0].num = max; basic[1].num = 0; basic[2].num = cur; basic[3].num = cur; basic[4].num = 0;
++    basic[5].num = 0; basic[6].num = (flags & FLAG_STEALTH) ? 1 : 0;
++
++    u32 head = 0, prev = 0;
++    int total = nwant ? nwant : nstored + 7;
++    for (int i = 0; i < total; i++) {
++        const attr_t* a;
++        if (nwant) {
++            a = NULL;
++            if (want_type[i] == ATTR_BASIC_NUM && want_id[i] >= 1 && want_id[i] <= 7) a = &basic[want_id[i] - 1];
++            else for (int k = 0; k < nstored; k++)
++                if (stored[k].type == want_type[i] && stored[k].id == want_id[i]) { a = &stored[k]; break; }
++            if (!a) {   /* unknown attribute: answer zero so the title's list stays intact */
++                static attr_t z; memset(&z, 0, sizeof(z)); z.type = (u8)want_type[i]; z.id = (u8)want_id[i]; a = &z;
++            }
++        } else a = i < nstored ? &stored[i] : &basic[i - nstored];
++        u32 e = rb_alloc(r, 20, 4);
++        rb_32(r, e + 4, a->type);
++        rb_32(r, e + 8, a->id);
++        if (attr_is_bin(a->type)) {
++            u32 d = rb_alloc(r, a->size ? a->size : 1, 4);
++            memcpy(r->b + d, a->bin, a->size);
++            rb_ptr(r, e + 12, d);
++            rb_32(r, e + 16, a->size);
++        } else rb_32(r, e + 12, a->num);
++        if (prev) rb_ptr(r, prev, e); else head = e;
++        prev = e;
++    }
++    return head;
++}
++
++/* ---- room list parsing (ROOM_LIST reply) ---- */
++typedef struct {
++    u64 id; char owner[17]; u8 cur, max; u32 flags; const u8* ext; u16 extlen;
++    u32 owner_user; u8 owner_ip[4]; u16 owner_port;
++} listed_t;
++
++static int parse_room_list(const u8* d, u32 len, listed_t* out, int cap, u16* total)
++{
++    int with_addr = (np_psnr_server_flags() & NP_PSNR_FLAG_LIST_ADDRESS) != 0;
++    if (len < 4) return 0;
++    *total = np_get16(d);
++    u16 count = np_get16(d + 2);
++    u32 o = 4;
++    int n = 0;
++    for (u16 i = 0; i < count && n < cap; i++) {
++        if (o + 8 + 16 + 1 + 1 + 4 + 2 > len) break;
++        listed_t* r = &out[n];
++        memset(r, 0, sizeof(*r));
++        r->id = np_get64(d + o); o += 8;
++        memcpy(r->owner, d + o, 16); r->owner[16] = 0; o += 16;
++        r->cur = d[o++]; r->max = d[o++];
++        r->flags = np_get32(d + o); o += 4;
++        r->extlen = np_get16(d + o); o += 2;
++        if (o + r->extlen > len) break;
++        r->ext = d + o; o += r->extlen;
++        if (with_addr) {
++            if (o + 10 > len) break;
++            r->owner_user = np_get32(d + o);
++            memcpy(r->owner_ip, d + o + 4, 4);
++            r->owner_port = np_get16(d + o + 8);
++            o += 10;
++        }
++        n++;
++    }
++    return n;
++}
++
++static int cond_matches(const cond_t* c, const attr_t* a, int n, u8 cur, u8 max, u32 flags)
++{
++    attr_t basic; memset(&basic, 0, sizeof(basic));
++    const attr_t* t = NULL;
++    if (c->target_type == ATTR_BASIC_NUM && c->target_id >= 1 && c->target_id <= 7) {
++        basic.type = ATTR_BASIC_NUM; basic.id = c->target_id;
++        switch (c->target_id) {
++            case ROOM_ATTR_TOTAL_SLOT: basic.num = max; break;
++            case ROOM_ATTR_CUR_TOTAL_NUM: case ROOM_ATTR_CUR_PUBLIC_NUM: basic.num = cur; break;
++            case ROOM_ATTR_ROOM_SEARCH_FLAG: basic.num = (flags & FLAG_STEALTH) ? 1 : 0; break;
++            default: basic.num = 0;
++        }
++        t = &basic;
++    } else
++        for (int i = 0; i < n; i++) if (a[i].type == c->target_type && a[i].id == c->target_id) { t = &a[i]; break; }
++    if (!t) return c->op == COND_NE;   /* no such attribute: only "not equal" holds */
++    if (attr_is_bin(t->type)) {
++        int eq = t->size == c->cmp.size && memcmp(t->bin, c->cmp.bin, t->size) == 0;
++        return c->op == COND_NE ? !eq : eq;
++    }
++    u32 v = t->num, w = c->cmp.num;
++    switch (c->op) {
++        case COND_EQ: return v == w;
++        case COND_NE: return v != w;
++        case COND_LT: return v < w;
++        case COND_LE: return v <= w;
++        case COND_GT: return v > w;
++        case COND_GE: return v >= w;
++    }
++    return 0;
++}
++
++/* Rooms are few on a private server: a quick match joins any open room that
++ * satisfies its conditions, including ones made with "create room", and the
++ * room browser lists quick-match rooms too. (PSN kept the two apart.) */
++static int room_matches(const listed_t* r, const cond_t* c, int nc, int quick_only)
++{
++    attr_t a[MAX_ATTRS];
++    int n = unpack_attrs(r->ext, r->extlen, a, MAX_ATTRS);
++    (void)quick_only;
++    if (r->flags & FLAG_STEALTH) return 0;
++    if (r->cur >= r->max) return 0;
++    for (int i = 0; i < nc; i++) if (!cond_matches(&c[i], a, n, r->cur, r->max, r->flags)) return 0;
++    return 1;
++}
++
++static void cache_room(const listed_t* r)
++{
++    room_cache_t* c = NULL;
++    for (int i = 0; i < s_ncache; i++) if (s_cache[i].room_id == r->id) { c = &s_cache[i]; break; }
++    if (!c) c = &s_cache[s_ncache < ROOM_CACHE ? s_ncache++ : (ROOM_CACHE - 1)];
++    memset(c, 0, sizeof(*c));
++    c->room_id = r->id; c->cur = r->cur; c->max = r->max; c->flags = r->flags;
++    memcpy(c->owner, r->owner, 17);
++    c->owner_user = r->owner_user; memcpy(c->owner_ip, r->owner_ip, 4); c->owner_port = r->owner_port;
++    c->nattrs = unpack_attrs(r->ext, r->extlen, c->attrs, MAX_ATTRS);
++}
++
++/* ---- ROOM_JOINED reply -> s_room ---- */
++static int parse_room_joined(const u8* d, u32 len)
++{
++    if (len < 8 + 2 + 2 + 1 + 4 + 2) return -1;
++    u32 o = 0;
++    room_t* r = &s_room;
++    memset(r, 0, sizeof(*r));
++    r->room_id = np_get64(d + o); o += 8;
++    r->my_member = np_get16(d + o); o += 2;
++    r->owner = np_get16(d + o); o += 2;
++    r->max = d[o++];
++    r->flags = np_get32(d + o); o += 4;
++    u16 extlen = np_get16(d + o); o += 2;
++    if (o + extlen + 2 > len) return -1;
++    r->nattrs = unpack_attrs(d + o, extlen, r->attrs, MAX_ATTRS); o += extlen;
++    u16 intlen = np_get16(d + o); o += 2 + intlen;
++    if (o + 1 > len) return -1;
++    u8 count = d[o++];
++    for (u8 i = 0; i < count && r->nmembers < MAX_MEMBERS; i++) {
++        if (o + 29 + 2 > len) return -1;
++        member_t* m = &r->members[r->nmembers];
++        m->member_id = np_get16(d + o); m->user = np_get32(d + o + 2);
++        memcpy(m->online_id, d + o + 6, 16); m->online_id[16] = 0;
++        memcpy(m->ip, d + o + 22, 4); m->port = np_get16(d + o + 26); m->owner = d[o + 28];
++        o += 29;
++        u16 dl = np_get16(d + o); o += 2 + dl;
++        r->nmembers++;
++    }
++    r->in_room = 1;
++    for (int i = 0; i < r->nmembers; i++)
++        np_psnr_peer_add(r->members[i].user, r->members[i].ip, r->members[i].port);
++    printf("[sceNpMatching] in room %llu as member %u (owner %u, %d/%u):", (unsigned long long)r->room_id,
++           r->my_member, r->owner, r->nmembers, r->max);
++    for (int i = 0; i < r->nmembers; i++)
++        printf(" %s@%u.%u.%u.%u:%u%s", r->members[i].online_id, r->members[i].ip[0], r->members[i].ip[1],
++               r->members[i].ip[2], r->members[i].ip[3], r->members[i].port, r->members[i].owner ? "(owner)" : "");
++    printf("\n");
++    return 0;
++}
++
++static void leave_room_locally(void)
++{
++    for (int i = 0; i < s_room.nmembers; i++) np_psnr_peer_remove(s_room.members[i].user);
++    memset(&s_room, 0, sizeof(s_room));
++}
++
++int np_matching_find_member(const char* online_id, uint32_t* user, u8 ip[4], u16* port)
++{
++    if (s_room.in_room)
++        for (int i = 0; i < s_room.nmembers; i++)
++            if (strncmp(s_room.members[i].online_id, online_id, 16) == 0) {
++                if (user) *user = s_room.members[i].user;
++                if (ip) memcpy(ip, s_room.members[i].ip, 4);
++                if (port) *port = s_room.members[i].port;
++                return 1;
++            }
++    /* Not a member: the host of a room in the last room list. The title pings
++     * every listed room's host from its room browser before joining. */
++    for (int i = 0; i < s_ncache; i++)
++        if (s_cache[i].owner_port && strncmp(s_cache[i].owner, online_id, 16) == 0) {
++            if (user) *user = s_cache[i].owner_user;
++            if (ip) memcpy(ip, s_cache[i].owner_ip, 4);
++            if (port) *port = s_cache[i].owner_port;
++            return 1;
++        }
++    return 0;
++}
++
++static s32 psnr_error_to_np(const np_psnr_msg* m, s32 fallback)
++{
++    if (m->type == 0) return (s32)SERVER_E_OUT_OF_SERVICE;
++    if (m->type != PSNR_ERROR || m->len < 4) return fallback;
++    switch (np_get32(m->data)) {
++        case PSNR_E_NOT_FOUND:   return (s32)SERVER_E_NO_SUCH_ROOM;
++        case PSNR_E_ROOM_FULL:   return (s32)SERVER_E_ROOM_CLOSED;
++        case PSNR_E_NOT_OWNER:   return (s32)SERVER_E_NOT_ALLOWED;
++        case PSNR_E_NOT_IN_ROOM: return (s32)SERVER_E_NO_SUCH_ROOM;
++        default:                 return fallback;
++    }
++}
++
++/* ---- requests ---- */
++static u32 send_create_room(const attr_t* a, int n, u8 max, u32 flags, np_psnr_reply_fn fn)
++{
++    u8 body[1 + 4 + 2 + 2048 + 2 + 2];
++    u32 o = 0;
++    body[o++] = max;
++    body[o++] = (u8)(flags >> 24); body[o++] = (u8)(flags >> 16); body[o++] = (u8)(flags >> 8); body[o++] = (u8)flags;
++    u32 el = pack_attrs(a, n, body + o + 2, 2048);
++    body[o] = (u8)(el >> 8); body[o + 1] = (u8)el; o += 2 + el;
++    body[o++] = 0; body[o++] = 0;   /* internal */
++    body[o++] = 0; body[o++] = 0;   /* member data */
++    return np_psnr_request(PSNR_CREATE_ROOM, body, o, fn, NULL);
++}
++static u32 send_search(np_psnr_reply_fn fn)
++{
++    u8 body[4] = { 0, 0, 0, SEARCH_MAX };
++    return np_psnr_request(PSNR_SEARCH_ROOMS, body, 4, fn, NULL);
++}
++static u32 send_join(u64 room_id, np_psnr_reply_fn fn)
++{
++    u8 body[10];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(room_id >> (56 - 8 * i));
++    body[8] = body[9] = 0;
++    return np_psnr_request(PSNR_JOIN_ROOM, body, 10, fn, NULL);
++}
++static u32 send_leave(u64 room_id, np_psnr_reply_fn fn)
++{
++    u8 body[8];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(room_id >> (56 - 8 * i));
++    return np_psnr_request(PSNR_LEAVE_ROOM, body, 8, fn, NULL);
++}
++static u32 send_set_data(u64 room_id, u8 which, const u8* data, u32 len, np_psnr_reply_fn fn)
++{
++    u8 body[8 + 1 + 2 + 2048];
++    if (len > 2048) len = 2048;
++    for (int i = 0; i < 8; i++) body[i] = (u8)(room_id >> (56 - 8 * i));
++    body[8] = which; body[9] = (u8)(len >> 8); body[10] = (u8)len;
++    memcpy(body + 11, data, len);
++    return np_psnr_request(PSNR_SET_ROOM_DATA, body, 11 + len, fn, NULL);
++}
++static u32 send_kick(u64 room_id, u16 member, np_psnr_reply_fn fn)
++{
++    u8 body[10];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(room_id >> (56 - 8 * i));
++    body[8] = (u8)(member >> 8); body[9] = (u8)member;
++    return np_psnr_request(PSNR_KICK_MEMBER, body, 10, fn, NULL);
++}
++
++static int ensure_connected(void)
++{
++    if (np_psnr_connected()) return 1;
++    return np_psnr_connect(s_comm_id) == 0;
++}
++
++/* The non-GUI reply handlers take the NP request id as `user`. */
++static u32 send_with_req(u8 type, const u8* body, u32 len, np_psnr_reply_fn fn, u32 req)
++{
++    return np_psnr_request(type, body, len, fn, (void*)(uintptr_t)req);
++}
++
++/* ---- reply handlers: GUI operations ---- */
++
++static void on_create_room_reply(void* user, const np_psnr_msg* m)
++{
++    (void)user;
++    rb_t img;
++    if (m->type != PSNR_ROOM_JOINED || parse_room_joined(m->data, m->len)) {
++        gui_finish(GUI_CREATE_ROOM, psnr_error_to_np(m, (s32)E_ROOM_MAX), NULL);
++        return;
++    }
++    build_joined_room_info(&img);
++    gui_finish(GUI_CREATE_ROOM, 0, &img);
++}
++
++static void on_join_room_reply(void* user, const np_psnr_msg* m)
++{
++    (void)user;
++    rb_t img;
++    int ev = s_op.kind == GUI_SEARCH_JOIN ? GUI_SEARCH_JOIN : s_op.kind == GUI_QUICK_MATCH ? GUI_QUICK_MATCH : GUI_JOIN_ROOM;
++    if (m->type != PSNR_ROOM_JOINED || parse_room_joined(m->data, m->len)) {
++        if (s_op.kind == GUI_SEARCH_JOIN) { gui_finish(ev, (s32)E_SEARCH_JOIN_NOT_FOUND, NULL); return; }
++        if (s_op.kind == GUI_QUICK_MATCH) { gui_finish(ev, (s32)E_QM_PLAYER_NOT_FOUND, NULL); return; }
++        gui_finish(ev, psnr_error_to_np(m, (s32)SERVER_E_NO_SUCH_ROOM), NULL);
++        return;
++    }
++    if (ev == GUI_SEARCH_JOIN) {
++        memset(&img, 0, sizeof(img));
++        u32 o = rb_alloc(&img, 96, 8);
++        memcpy(img.b + o, LOBBY_ID, 36);
++        build_room_status(&img, o + 36);
++        u32 head = build_attr_chain(&img, s_room.attrs, s_room.nattrs, (u8)s_room.nmembers, s_room.max, s_room.flags, NULL, NULL, 0);
++        if (head) rb_ptr(&img, o + 92, head);
++    } else build_joined_room_info(&img);
++    gui_finish(ev, 0, &img);
++}
++
++static void on_quick_create_reply(void* user, const np_psnr_msg* m)
++{
++    (void)user;
++    if (m->type != PSNR_ROOM_JOINED || parse_room_joined(m->data, m->len)) {
++        gui_finish(GUI_QUICK_MATCH, psnr_error_to_np(m, (s32)E_QM_PLAYER_NOT_FOUND), NULL);
++        return;
++    }
++    s_op.waiting = 1;
++    printf("[sceNpMatching] quick match: waiting in room %llu for a player (%d s)\n",
++           (unsigned long long)s_room.room_id, (int)((s_op.deadline - now_ms()) / 1000));
++}
++
++static void on_search_reply(void* user, const np_psnr_msg* m)
++{
++    (void)user;
++    listed_t rooms[SEARCH_MAX];
++    u16 total = 0;
++    int n = m->type == PSNR_ROOM_LIST ? parse_room_list(m->data, m->len, rooms, SEARCH_MAX, &total) : 0;
++    for (int i = 0; i < n; i++) cache_room(&rooms[i]);
++
++    if (s_op.kind == GUI_GET_ROOM_LIST_LIMIT) {
++        rb_t img;
++        memset(&img, 0, sizeof(img));
++        u32 o = rb_alloc(&img, 52, 8);
++        memcpy(img.b + o, LOBBY_ID, 36);
++        u32 prev = 0, results = 0, skipped = 0;
++        u32 first = s_op.start ? s_op.start - 1 : 0;   /* SceNpMatchingReqRange.start is 1-based */
++        for (int i = 0; i < n; i++) {
++            if (!room_matches(&rooms[i], s_op.conds, s_op.nconds, 0)) continue;
++            if (skipped < first) { skipped++; continue; }
++            if (s_op.max && results >= s_op.max) break;
++            attr_t a[MAX_ATTRS];
++            int na = unpack_attrs(rooms[i].ext, rooms[i].extlen, a, MAX_ATTRS);
++            u32 e = rb_alloc(&img, 44, 8);
++            u8 rid[36]; room_id_encode(rooms[i].id, rid);
++            memcpy(img.b + e + 4, rid, 36);
++            /* Every stored attribute plus the basic ones, whatever the title asked
++             * for: Tekken 5 DR asks for 13 but validates a joined room against
++             * GAME_NUM id 5 (its data version, 81100) read off this very list;
++             * a list without it made the joiner drop the connection. */
++            u32 head = build_attr_chain(&img, a, na, rooms[i].cur, rooms[i].max, rooms[i].flags, NULL, NULL, 0);
++            if (head) rb_ptr(&img, e + 40, head);
++            if (prev) rb_ptr(&img, prev, e); else rb_ptr(&img, o + 48, e);
++            prev = e;
++            results++;
++        }
++        u32 matching = 0;
++        for (int i = 0; i < n; i++) if (room_matches(&rooms[i], s_op.conds, s_op.nconds, 0)) matching++;
++        rb_32(&img, o + 36, s_op.start);
++        rb_32(&img, o + 40, results);
++        rb_32(&img, o + 44, matching);
++        printf("[sceNpMatching] room list: %u of %d room(s) match, %u listed from %u\n", matching, n, results, s_op.start);
++        gui_finish(GUI_GET_ROOM_LIST_LIMIT, 0, &img);
++        return;
++    }
++
++    int quick = s_op.kind == GUI_QUICK_MATCH;
++    for (int i = 0; i < n; i++) {
++        if (!room_matches(&rooms[i], s_op.conds, s_op.nconds, quick)) continue;
++        printf("[sceNpMatching] %s: joining room %llu (%s, %u/%u)\n", quick ? "quick match" : "search join",
++               (unsigned long long)rooms[i].id, rooms[i].owner, rooms[i].cur, rooms[i].max);
++        if (!send_join(rooms[i].id, on_join_room_reply))
++            gui_finish(s_op.kind, quick ? (s32)E_QM_PLAYER_NOT_FOUND : (s32)E_SEARCH_JOIN_NOT_FOUND, NULL);
++        return;
++    }
++    if (!quick) {
++        printf("[sceNpMatching] search join: no room of %d matches\n", n);
++        gui_finish(GUI_SEARCH_JOIN, (s32)E_SEARCH_JOIN_NOT_FOUND, NULL);
++        return;
++    }
++    /* Nobody to join: open a quick-match room from the conditions and wait. */
++    attr_t a[MAX_ATTRS];
++    int na = 0;
++    for (int i = 0; i < s_op.nconds && na < MAX_ATTRS; i++) {
++        if (s_op.conds[i].op != COND_EQ) continue;
++        if (s_op.conds[i].target_type == ATTR_BASIC_NUM) continue;
++        a[na] = s_op.conds[i].cmp;
++        a[na].type = s_op.conds[i].target_type;
++        a[na].id = s_op.conds[i].target_id;
++        na++;
++    }
++    u8 max = (u8)(s_op.available_num > 0 && s_op.available_num < 16 ? s_op.available_num : DEFAULT_SLOTS);
++    if (!send_create_room(a, na, max, FLAG_QUICK, on_quick_create_reply))
++        gui_finish(GUI_QUICK_MATCH, (s32)E_QM_PLAYER_NOT_FOUND, NULL);
++}
++
++/* ---- reply handlers: non-GUI operations ---- */
++
++static void on_leave_reply(void* user, const np_psnr_msg* m)
++{
++    u32 req = (u32)(uintptr_t)user;
++    rb_t img;
++    memset(&img, 0, sizeof(img));
++    u32 o = rb_alloc(&img, 56, 8);
++    build_room_status(&img, o);
++    leave_room_locally();
++    matching_event(req, EV_LEAVE_ROOM_DONE, m->type == PSNR_OK ? 0 : psnr_error_to_np(m, 0), &img);
++}
++
++static void on_set_info_reply(void* user, const np_psnr_msg* m)
++{
++    u32 req = (u32)(uintptr_t)user;
++    matching_event(req, EV_SET_ROOM_INFO_DONE, m->type == PSNR_OK ? 0 : psnr_error_to_np(m, (s32)SERVER_E_NOT_ALLOWED), NULL);
++}
++
++static void on_set_flag_reply(void* user, const np_psnr_msg* m)
++{
++    u32 req = (u32)(uintptr_t)user;
++    matching_event(req, EV_SET_ROOM_SEARCH_FLAG_DONE, m->type == PSNR_OK ? 0 : psnr_error_to_np(m, (s32)SERVER_E_NOT_ALLOWED), NULL);
++}
++
++static void on_kick_reply(void* user, const np_psnr_msg* m)
++{
++    u32 req = (u32)(uintptr_t)user;
++    matching_event(req, EV_KICK_MEMBER_DONE, m->type == PSNR_OK ? 0 : psnr_error_to_np(m, (s32)SERVER_E_NOT_ALLOWED), NULL);
++}
++
++/* ---- pushes ---- */
++
++static void room_status_event(s32 event)
++{
++    rb_t img;
++    memset(&img, 0, sizeof(img));
++    u32 o = rb_alloc(&img, 56, 8);
++    build_room_status(&img, o);
++    matching_event(s_next_req++, event, 0, &img);
++}
++
++static void on_push(const np_psnr_msg* m)
++{
++    if (!s_room.in_room || m->len < 8 || np_get64(m->data) != s_room.room_id) return;
++    const u8* d = m->data + 8;
++    u32 len = m->len - 8;
++    switch (m->type) {
++    case PSNR_MEMBER_JOINED: {
++        if (len < 29 || s_room.nmembers >= MAX_MEMBERS) return;
++        member_t* mb = &s_room.members[s_room.nmembers++];
++        memset(mb, 0, sizeof(*mb));
++        mb->member_id = np_get16(d); mb->user = np_get32(d + 2);
++        memcpy(mb->online_id, d + 6, 16);
++        memcpy(mb->ip, d + 22, 4); mb->port = np_get16(d + 26); mb->owner = d[28];
++        np_psnr_peer_add(mb->user, mb->ip, mb->port);
++        printf("[sceNpMatching] %s joined the room (%d/%u) at %u.%u.%u.%u:%u\n", mb->online_id, s_room.nmembers,
++               s_room.max, mb->ip[0], mb->ip[1], mb->ip[2], mb->ip[3], mb->port);
++        if (s_op.kind == GUI_QUICK_MATCH && s_op.waiting) {
++            rb_t img;
++            build_joined_room_info(&img);
++            s_op.waiting = 0;
++            gui_finish(GUI_QUICK_MATCH, 0, &img);
++        } else room_status_event(EV_ROOM_UPDATE_NEW_MEMBER);
++        break;
++    }
++    case PSNR_MEMBER_LEFT: {
++        if (len < 4) return;
++        u16 mid = np_get16(d), owner = np_get16(d + 2);
++        for (int i = 0; i < s_room.nmembers; i++)
++            if (s_room.members[i].member_id == mid) {
++                printf("[sceNpMatching] %s left the room\n", s_room.members[i].online_id);
++                np_psnr_peer_remove(s_room.members[i].user);
++                memmove(&s_room.members[i], &s_room.members[i + 1], (size_t)(s_room.nmembers - i - 1) * sizeof(member_t));
++                s_room.nmembers--;
++                break;
++            }
++        int owner_changed = owner != s_room.owner;
++        s_room.owner = owner;
++        for (int i = 0; i < s_room.nmembers; i++) s_room.members[i].owner = s_room.members[i].member_id == owner;
++        room_status_event(EV_ROOM_UPDATE_MEMBER_LEAVE);
++        if (owner_changed) room_status_event(EV_ROOM_UPDATE_OWNER_CHANGE);
++        break;
++    }
++    case PSNR_KICKED: {
++        rb_t img;
++        memset(&img, 0, sizeof(img));
++        u32 o = rb_alloc(&img, 56, 8);
++        build_room_status(&img, o);
++        printf("[sceNpMatching] kicked from the room\n");
++        leave_room_locally();
++        matching_event(s_next_req++, EV_ROOM_KICKED, 0, &img);
++        break;
++    }
++    case PSNR_ROOM_DATA: {
++        if (len < 3) return;
++        u8 which = d[0];
++        u16 dl = np_get16(d + 1);
++        if (3u + dl > len) return;
++        if (which == 0) s_room.nattrs = unpack_attrs(d + 3, dl, s_room.attrs, MAX_ATTRS);
++        else if (which == 2 && dl == 4) s_room.flags = np_get32(d + 3);
++        break;
++    }
++    default: break;
++    }
++}
++
++static void on_tick(void)
++{
++    if (s_op.kind == GUI_QUICK_MATCH && s_op.waiting && now_ms() >= s_op.deadline) {
++        printf("[sceNpMatching] quick match: nobody came, giving up\n");
++        s_op.waiting = 0;
++        if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++        gui_finish(GUI_QUICK_MATCH, (s32)E_QM_PLAYER_NOT_FOUND, NULL);
++    }
++}
++
++/* ---- API ---- */
++
++static void read_comm_id(u32 ea)
++{
++    if (!ea) return;
++    const char* p = GUEST_PTR(ea, const char*);
++    char id[13];
++    memset(id, 0, sizeof(id));
++    strncpy(id, p, 9);
++    if (id[0]) snprintf(s_comm_id, sizeof(s_comm_id), "%s_%02u", id, (unsigned)p[10]);
++}
++
++s32 sceNpMatchingCreateCtx(u32 npId, u32 handler, u32 arg, u32 ctxId)
++{
++    (void)npId;
++    printf("[sceNpMatching] CreateCtx(handler=0x%08X)\n", handler);
++    if (!ctxId) return (s32)E_INVALID_ARG;
++    if (s_ctx_used) return (s32)E_CTXID_NOT_AVAIL;
++    s_init = 1;
++    s_ctx_used = 1;
++    s_handler = handler;
++    s_handler_arg = arg;
++    np_psnr_on_push(on_push);
++    np_psnr_on_tick(on_tick);
++    vm_write32(ctxId, 1);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingDestroyCtx(u32 ctxId)
++{
++    printf("[sceNpMatching] DestroyCtx(%u)\n", ctxId);
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++    s_ctx_used = 0;
++    s_gui_busy = 0;
++    s_op.kind = 0;
++    return CELL_OK;
++}
++
++static s32 gui_begin(u32 ctxId, u32 handler, u32 arg, int kind)
++{
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    if (s_gui_busy) return (s32)E_CTX_STILL_RUNNING;
++    if (!ensure_connected()) return (s32)SERVER_E_OUT_OF_SERVICE;
++    s_gui_busy = 1;
++    s_gui_handler = handler;
++    s_gui_arg = arg;
++    memset(&s_op, 0, sizeof(s_op));
++    s_op.kind = kind;
++    s_gui_result.valid = 0;
++    gui_event(GUI_COMMON_LOAD, 0);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingCreateRoomGUI(u32 ctxId, u32 commId, u32 attr, u32 handler, u32 arg)
++{
++    read_comm_id(commId);
++    s32 r = gui_begin(ctxId, handler, arg, GUI_CREATE_ROOM);
++    if (r) { printf("[sceNpMatching] CreateRoomGUI -> 0x%08X\n", (u32)r); return r; }
++    s_op.nattrs = read_attrs(attr, s_op.attrs, MAX_ATTRS);
++    log_attrs("CreateRoomGUI", s_op.attrs, s_op.nattrs);
++    attr_t* slots = attr_find(s_op.attrs, s_op.nattrs, ATTR_BASIC_NUM, ROOM_ATTR_TOTAL_SLOT);
++    u8 max = (u8)(slots && slots->num > 0 && slots->num < 16 ? slots->num : DEFAULT_SLOTS);
++    attr_t* sf = attr_find(s_op.attrs, s_op.nattrs, ATTR_BASIC_NUM, ROOM_ATTR_ROOM_SEARCH_FLAG);
++    u32 flags = sf && sf->num ? FLAG_STEALTH : 0;
++    if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++    if (!send_create_room(s_op.attrs, s_op.nattrs, max, flags, on_create_room_reply)) {
++        gui_finish(GUI_CREATE_ROOM, (s32)SERVER_E_OUT_OF_SERVICE, NULL);
++    }
++    return CELL_OK;
++}
++
++s32 sceNpMatchingJoinRoomGUI(u32 ctxId, u32 roomId, u32 handler, u32 arg)
++{
++    s32 r = gui_begin(ctxId, handler, arg, GUI_JOIN_ROOM);
++    if (r) return r;
++    u64 id = room_id_decode(roomId);
++    printf("[sceNpMatching] JoinRoomGUI(room %llu)\n", (unsigned long long)id);
++    if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++    if (!id || !send_join(id, on_join_room_reply)) gui_finish(GUI_JOIN_ROOM, (s32)SERVER_E_NO_SUCH_ROOM, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingSearchJoinRoomGUI(u32 ctxId, u32 commId, u32 cond, u32 attr, u32 handler, u32 arg)
++{
++    read_comm_id(commId);
++    s32 r = gui_begin(ctxId, handler, arg, GUI_SEARCH_JOIN);
++    if (r) return r;
++    s_op.nconds = read_conds(cond, s_op.conds, 9);
++    s_op.nattrs = read_attrs(attr, s_op.attrs, MAX_ATTRS);
++    log_conds("SearchJoinRoomGUI", s_op.conds, s_op.nconds);
++    if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++    if (!send_search(on_search_reply)) gui_finish(GUI_SEARCH_JOIN, (s32)E_SEARCH_JOIN_NOT_FOUND, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingQuickMatchGUI(u32 ctxId, u32 commId, u32 cond, s32 availableNum, s32 timeout, u32 handler, u32 arg)
++{
++    read_comm_id(commId);
++    s32 r = gui_begin(ctxId, handler, arg, GUI_QUICK_MATCH);
++    if (r) return r;
++    s_op.nconds = read_conds(cond, s_op.conds, 9);
++    s_op.available_num = availableNum;
++    s_op.deadline = now_ms() + (u64)(timeout > 0 ? timeout : 300) * 1000u;
++    printf("[sceNpMatching] QuickMatchGUI(available_num=%d, timeout=%d s)\n", availableNum, timeout);
++    log_conds("QuickMatchGUI", s_op.conds, s_op.nconds);
++    if (s_room.in_room) { send_leave(s_room.room_id, NULL); leave_room_locally(); }
++    if (!send_search(on_search_reply)) gui_finish(GUI_QUICK_MATCH, (s32)E_QM_PLAYER_NOT_FOUND, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingGetRoomListLimitGUI(u32 ctxId, u32 commId, u32 range, u32 cond, u32 attr, u32 handler, u32 arg)
++{
++    read_comm_id(commId);
++    s32 r = gui_begin(ctxId, handler, arg, GUI_GET_ROOM_LIST_LIMIT);
++    if (r) return r;
++    s_op.start = range ? vm_read32(range) : 0;
++    s_op.max = range ? vm_read32(range + 4) : 0;
++    s_op.nconds = read_conds(cond, s_op.conds, 9);
++    attr_t want[16];
++    int nw = read_attrs(attr, want, 16);
++    s_op.nreq_attr = nw;
++    for (int i = 0; i < nw; i++) { s_op.req_attr_type[i] = want[i].type; s_op.req_attr_id[i] = want[i].id; }
++    printf("[sceNpMatching] GetRoomListLimitGUI(start=%u max=%u, %d attr(s) wanted:", s_op.start, s_op.max, nw);
++    for (int i = 0; i < nw; i++) printf(" %u/%u", want[i].type, want[i].id);
++    printf(")\n");
++    log_conds("GetRoomListLimitGUI", s_op.conds, s_op.nconds);
++    if (!send_search(on_search_reply)) gui_finish(GUI_GET_ROOM_LIST_LIMIT, (s32)SERVER_E_OUT_OF_SERVICE, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingSendInvitationGUI(u32 ctxId, u32 roomId, u32 commId, u32 dsts, s32 num, s32 slotType, u32 subject, u32 body)
++{
++    (void)roomId; (void)commId; (void)dsts; (void)num; (void)slotType; (void)subject; (void)body;
++    printf("[sceNpMatching] SendInvitationGUI: no friends list here -> CANCELED\n");
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    /* The handler/arg are the 10th/11th arguments, past r10: unreachable from
++     * this adapter. Report through the last GUI handler we were given. */
++    if (s_gui_busy) return (s32)E_CTX_STILL_RUNNING;
++    s_gui_busy = 1;
++    gui_event(GUI_COMMON_LOAD, 0);
++    gui_finish(GUI_SEND_INVITATION, (s32)E_CANCELED, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingAcceptInvitationGUI(u32 ctxId, u32 commId, u32 container, u32 handler, u32 arg)
++{
++    (void)commId; (void)container;
++    printf("[sceNpMatching] AcceptInvitationGUI: no invitations here -> CANCELED\n");
++    s32 r = gui_begin(ctxId, handler, arg, GUI_ACCEPT_INVITATION);
++    if (r) return r;
++    gui_finish(GUI_ACCEPT_INVITATION, (s32)E_CANCELED, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingGetResultGUI(u32 buf, u32 size, u32 event)
++{
++    if (!size) return (s32)E_INVALID_ARG;
++    if (!s_gui_result.valid) return (s32)E_RESULT_NOT_FOUND;
++    if (event) vm_write32(event, (u32)s_gui_result.event);
++    if (!buf) { vm_write32(size, s_gui_result.img.len); return CELL_OK; }
++    u32 cap = vm_read32(size);
++    if (cap < s_gui_result.img.len) return (s32)E_INSUFFICIENT_BUFFER;
++    rb_copy_out(&s_gui_result.img, buf, cap);
++    vm_write32(size, s_gui_result.img.len);
++    if (np_psnr_trace()) printf("[sceNpMatching] GetResultGUI -> event %d, %u bytes\n", s_gui_result.event, s_gui_result.img.len);
++    s_gui_result.valid = 0;
++    return CELL_OK;
++}
++
++s32 sceNpMatchingGetResult(u32 ctxId, u32 reqId, u32 buf, u32 size, u32 event)
++{
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    if (!size) return (s32)E_INVALID_ARG;
++    for (int i = 0; i < RESULT_RING; i++) {
++        if (s_results[i].req != reqId || !s_results[i].img.b) continue;
++        if (event) vm_write32(event, (u32)s_results[i].event);
++        if (!buf) { vm_write32(size, s_results[i].img.len); return CELL_OK; }
++        u32 cap = vm_read32(size);
++        if (cap < s_results[i].img.len) return (s32)E_INSUFFICIENT_BUFFER;
++        rb_copy_out(&s_results[i].img, buf, cap);
++        vm_write32(size, s_results[i].img.len);
++        if (np_psnr_trace()) printf("[sceNpMatching] GetResult(req %u) -> event %d, %u bytes\n", reqId, s_results[i].event, s_results[i].img.len);
++        rb_free(&s_results[i].img);
++        s_results[i].req = 0;
++        return CELL_OK;
++    }
++    return (s32)E_RESULT_NOT_FOUND;
++}
++
++s32 sceNpMatchingGetRoomMemberListLocal(u32 ctxId, u32 roomId, u32 buflen, u32 buf)
++{
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    if (!s_room.in_room || room_id_decode(roomId) != s_room.room_id) return (s32)E_ROOM_NOT_FOUND;
++    rb_t img;
++    memset(&img, 0, sizeof(img));
++    u32 o = rb_alloc(&img, 56, 8);
++    build_room_status(&img, o);
++    s32 r = CELL_OK;
++    if (!buf) vm_write32(buflen, img.len);
++    else {
++        u32 cap = vm_read32(buflen);
++        if (cap < img.len) r = (s32)E_INSUFFICIENT_BUFFER;
++        else rb_copy_out(&img, buf, cap);
++        if (np_psnr_trace()) printf("[sceNpMatching] GetRoomMemberListLocal -> %d member(s), %u bytes\n", s_room.nmembers, img.len);
++    }
++    rb_free(&img);
++    return r;
++}
++
++s32 sceNpMatchingLeaveRoom(u32 ctxId, u32 roomId, u32 reqId)
++{
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    u64 id = room_id_decode(roomId);
++    printf("[sceNpMatching] LeaveRoom(%llu)\n", (unsigned long long)id);
++    np_guest_backtrace("LeaveRoom");
++    if (!s_room.in_room || id != s_room.room_id) return (s32)E_ROOM_NOT_FOUND;
++    u32 req = s_next_req++;
++    if (reqId) vm_write32(reqId, req);
++    if (s_op.kind == GUI_QUICK_MATCH && s_op.waiting) { s_op.waiting = 0; gui_finish(GUI_QUICK_MATCH, (s32)E_CANCELED, NULL); }
++    u8 body[8];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(id >> (56 - 8 * i));
++    if (!send_with_req(PSNR_LEAVE_ROOM, body, 8, on_leave_reply, req)) {
++        rb_t img;
++        memset(&img, 0, sizeof(img));
++        u32 o = rb_alloc(&img, 56, 8);
++        build_room_status(&img, o);
++        leave_room_locally();
++        matching_event(req, EV_LEAVE_ROOM_DONE, 0, &img);
++    }
++    return CELL_OK;
++}
++
++s32 sceNpMatchingSetRoomInfoNoLimit(u32 ctxId, u32 lobbyId, u32 roomId, u32 attr, u32 reqId)
++{
++    (void)lobbyId;
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    u64 id = room_id_decode(roomId);
++    if (!s_room.in_room || id != s_room.room_id) return (s32)E_ROOM_NOT_FOUND;
++    attr_t in[MAX_ATTRS];
++    int n = read_attrs(attr, in, MAX_ATTRS);
++    log_attrs("SetRoomInfoNoLimit", in, n);
++    s_room.nattrs = attr_merge(s_room.attrs, s_room.nattrs, MAX_ATTRS, in, n);
++    u32 req = s_next_req++;
++    if (reqId) vm_write32(reqId, req);
++    u8 packed[2048];
++    u32 pl = pack_attrs(s_room.attrs, s_room.nattrs, packed, sizeof(packed));
++    u8 body[8 + 1 + 2 + 2048];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(id >> (56 - 8 * i));
++    body[8] = 0; body[9] = (u8)(pl >> 8); body[10] = (u8)pl;
++    memcpy(body + 11, packed, pl);
++    if (!send_with_req(PSNR_SET_ROOM_DATA, body, 11 + pl, on_set_info_reply, req))
++        matching_event(req, EV_SET_ROOM_INFO_DONE, (s32)SERVER_E_OUT_OF_SERVICE, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingGetRoomInfoNoLimit(u32 ctxId, u32 lobbyId, u32 roomId, u32 attr, u32 reqId)
++{
++    (void)lobbyId;
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    u64 id = room_id_decode(roomId);
++    attr_t want[16];
++    int nw = read_attrs(attr, want, 16);
++    u16 wt[16], wi[16];
++    for (int i = 0; i < nw; i++) { wt[i] = want[i].type; wi[i] = want[i].id; }
++    u32 req = s_next_req++;
++    if (reqId) vm_write32(reqId, req);
++    rb_t img;
++    memset(&img, 0, sizeof(img));
++    u32 e = rb_alloc(&img, 44, 8);
++    u8 rid[36]; room_id_encode(id, rid);
++    memcpy(img.b + e + 4, rid, 36);
++    u32 head = 0;
++    if (s_room.in_room && id == s_room.room_id)
++        head = build_attr_chain(&img, s_room.attrs, s_room.nattrs, (u8)s_room.nmembers, s_room.max, s_room.flags, NULL, NULL, 0);
++    else {
++        room_cache_t* c = NULL;
++        for (int i = 0; i < s_ncache; i++) if (s_cache[i].room_id == id) { c = &s_cache[i]; break; }
++        if (!c) {
++            rb_free(&img);
++            printf("[sceNpMatching] GetRoomInfoNoLimit(%llu): unknown room\n", (unsigned long long)id);
++            matching_event(req, EV_GET_ROOM_INFO_DONE, (s32)SERVER_E_NO_SUCH_ROOM, NULL);
++            return CELL_OK;
++        }
++        head = build_attr_chain(&img, c->attrs, c->nattrs, c->cur, c->max, c->flags, NULL, NULL, 0);
++    (void)wt; (void)wi;   /* answered with every attribute, like the room list */
++    }
++    if (head) rb_ptr(&img, e + 40, head);
++    if (np_psnr_trace()) printf("[sceNpMatching] GetRoomInfoNoLimit(%llu, %d attr(s)) -> req %u\n", (unsigned long long)id, nw, req);
++    matching_event(req, EV_GET_ROOM_INFO_DONE, 0, &img);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingSetRoomSearchFlag(u32 ctxId, u32 lobbyId, u32 roomId, s32 flag, u32 reqId)
++{
++    (void)lobbyId;
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    u64 id = room_id_decode(roomId);
++    if (!s_room.in_room || id != s_room.room_id) return (s32)E_ROOM_NOT_FOUND;
++    u32 req = s_next_req++;
++    if (reqId) vm_write32(reqId, req);
++    u32 flags = (s_room.flags & ~FLAG_STEALTH) | (flag ? FLAG_STEALTH : 0);
++    s_room.flags = flags;
++    printf("[sceNpMatching] SetRoomSearchFlag(%s)\n", flag ? "stealth" : "open");
++    u8 body[8 + 1 + 2 + 4];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(id >> (56 - 8 * i));
++    body[8] = 2; body[9] = 0; body[10] = 4;
++    body[11] = (u8)(flags >> 24); body[12] = (u8)(flags >> 16); body[13] = (u8)(flags >> 8); body[14] = (u8)flags;
++    if (!send_with_req(PSNR_SET_ROOM_DATA, body, 15, on_set_flag_reply, req))
++        matching_event(req, EV_SET_ROOM_SEARCH_FLAG_DONE, (s32)SERVER_E_OUT_OF_SERVICE, NULL);
++    return CELL_OK;
++}
++
++s32 sceNpMatchingKickRoomMember(u32 ctxId, u32 roomId, u32 userId, u32 reqId)
++{
++    if (ctxId != 1 || !s_ctx_used) return (s32)E_CTX_NOT_FOUND;
++    u64 id = room_id_decode(roomId);
++    if (!s_room.in_room || id != s_room.room_id) return (s32)E_ROOM_NOT_FOUND;
++    char name[17];
++    memset(name, 0, sizeof(name));
++    if (userId) strncpy(name, GUEST_PTR(userId, const char*), 16);
++    u16 member = 0;
++    for (int i = 0; i < s_room.nmembers; i++)
++        if (strncmp(s_room.members[i].online_id, name, 16) == 0) member = s_room.members[i].member_id;
++    printf("[sceNpMatching] KickRoomMember(%s -> member %u)\n", name, member);
++    if (!member) return (s32)E_MEMBER_NOT_FOUND;
++    u32 req = s_next_req++;
++    if (reqId) vm_write32(reqId, req);
++    u8 body[10];
++    for (int i = 0; i < 8; i++) body[i] = (u8)(id >> (56 - 8 * i));
++    body[8] = (u8)(member >> 8); body[9] = (u8)member;
++    if (!send_with_req(PSNR_KICK_MEMBER, body, 10, on_kick_reply, req))
++        matching_event(req, EV_KICK_MEMBER_DONE, (s32)SERVER_E_OUT_OF_SERVICE, NULL);
++    return CELL_OK;
++}
+diff --git a/libs/network/sceNpMatching.h b/libs/network/sceNpMatching.h
+new file mode 100644
+index 0000000..05a619b
+--- /dev/null
++++ b/libs/network/sceNpMatching.h
+@@ -0,0 +1,42 @@
++/*
++ * ps3recomp - sceNpMatching (the first-generation NP matchmaking API with its
++ * system GUI dialogs) over a psnr server. See sceNpMatching.c.
++ */
++#ifndef PS3RECOMP_SCE_NP_MATCHING_H
++#define PS3RECOMP_SCE_NP_MATCHING_H
++
++#include "ps3emu/ps3types.h"
++#include "ps3emu/error_codes.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Every pointer argument is a GUEST address (the HLE adapter passes r3..r10
++ * through), spelt u32 here so nobody dereferences one. */
++s32 sceNpMatchingCreateCtx(u32 npId, u32 handler, u32 arg, u32 ctxId);
++s32 sceNpMatchingDestroyCtx(u32 ctxId);
++s32 sceNpMatchingGetResult(u32 ctxId, u32 reqId, u32 buf, u32 size, u32 event);
++s32 sceNpMatchingGetResultGUI(u32 buf, u32 size, u32 event);
++s32 sceNpMatchingCreateRoomGUI(u32 ctxId, u32 commId, u32 attr, u32 handler, u32 arg);
++s32 sceNpMatchingJoinRoomGUI(u32 ctxId, u32 roomId, u32 handler, u32 arg);
++s32 sceNpMatchingSearchJoinRoomGUI(u32 ctxId, u32 commId, u32 cond, u32 attr, u32 handler, u32 arg);
++s32 sceNpMatchingQuickMatchGUI(u32 ctxId, u32 commId, u32 cond, s32 availableNum, s32 timeout, u32 handler, u32 arg);
++s32 sceNpMatchingGetRoomListLimitGUI(u32 ctxId, u32 commId, u32 range, u32 cond, u32 attr, u32 handler, u32 arg);
++s32 sceNpMatchingSendInvitationGUI(u32 ctxId, u32 roomId, u32 commId, u32 dsts, s32 num, s32 slotType, u32 subject, u32 body);
++s32 sceNpMatchingAcceptInvitationGUI(u32 ctxId, u32 commId, u32 container, u32 handler, u32 arg);
++s32 sceNpMatchingSetRoomInfoNoLimit(u32 ctxId, u32 lobbyId, u32 roomId, u32 attr, u32 reqId);
++s32 sceNpMatchingGetRoomInfoNoLimit(u32 ctxId, u32 lobbyId, u32 roomId, u32 attr, u32 reqId);
++s32 sceNpMatchingSetRoomSearchFlag(u32 ctxId, u32 lobbyId, u32 roomId, s32 flag, u32 reqId);
++s32 sceNpMatchingGetRoomMemberListLocal(u32 ctxId, u32 roomId, u32 buflen, u32 buf);
++s32 sceNpMatchingLeaveRoom(u32 ctxId, u32 roomId, u32 reqId);
++s32 sceNpMatchingKickRoomMember(u32 ctxId, u32 roomId, u32 userId, u32 reqId);
++
++/* For sceNpSignaling: the P2P endpoint of a member of the room we are in,
++ * by online ID. 1 if found. */
++int np_matching_find_member(const char* online_id, uint32_t* user, u8 ip[4], u16* port);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/libs/network/sceNpScore.c b/libs/network/sceNpScore.c
+new file mode 100644
+index 0000000..24690f7
+--- /dev/null
++++ b/libs/network/sceNpScore.c
+@@ -0,0 +1,366 @@
++/*
++ * ps3recomp - sceNpScore (NP leaderboards) over psnr
++ *
++ * Title contexts and transactions are local ids; record and ranking requests
++ * go to the psnr server's leaderboards (np_psnr.h). Offline, a transaction
++ * finishes with a community-server error and titles show "rankings
++ * unavailable". Ported from sp00nznet/ps3recomp's sceNpScore.c (MIT) onto
++ * this runtime's psnr client.
++ *
++ * The ranking calls take up to 15 arguments; everything past r10 comes from
++ * the caller's parameter save area (PPC64 ELFv1: arg n>8 at SP+112+8*(n-9)),
++ * so those are ctx handlers, registered the first time a title context is
++ * created (titles always do that before asking for rankings).
++ *
++ * Layouts (SDK ABI):
++ *   SceNpScoreRankData                                             128 bytes
++ *     0 npId (36) | 36 onlineName (48) | 84 pcId | 88 serialRank | 92 rank
++ *     96 highestRank | 104 scoreValue s64 | 112 hasGameData | 120 recordDate u64
++ *   SceNpScorePlayerRankData { s32 hasData; pad[4]; RankData }    136 bytes
++ *   SceNpScoreComment { char utf8Comment[64] }                     64 bytes
++ */
++#include "sceNp.h"
++#include "np_psnr.h"
++#include "../../runtime/ppu/ppu_context.h"
++#include "../../runtime/ppu/ppu_memory.h"
++#include "../../include/ps3emu/nid.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#ifdef _WIN32
++#  define WIN32_LEAN_AND_MEAN
++#  include <windows.h>
++static void sleep_10ms(void) { Sleep(10); }
++#else
++#  include <time.h>
++static void sleep_10ms(void) { struct timespec ts = { 0, 10000000L }; nanosleep(&ts, NULL); }
++#endif
++
++#define SCORE_ERROR_NO_SERVER      0x8002A1A1u   /* community server error: unavailable */
++#define SCORE_ERROR_INVALID_ID     0x8002A106u
++#define SCORE_ERROR_ABORTED        0x8002A10Au
++
++#define TITLE_MAX 8
++#define TRANS_MAX 32
++
++enum { T_FREE, T_IDLE, T_PENDING, T_DONE };
++
++typedef struct {
++    int state;
++    int title;
++    s32 result;
++    u32 tmp_rank_ea;
++    u32 rank_ea, comment_ea, total_ea, last_sort_ea;
++    u32 array_num;
++    int by_id;
++} score_trans;
++
++static int         s_titles[TITLE_MAX + 1];   /* 1-based ids */
++static score_trans s_trans[TRANS_MAX + 1];
++static int         s_ctx_registered;
++
++static u8* put16(u8* p, u16 v) { p[0] = (u8)(v >> 8); p[1] = (u8)v; return p + 2; }
++static u8* put32(u8* p, u32 v) { put16(p, (u16)(v >> 16)); put16(p + 2, (u16)v); return p + 4; }
++static u8* put64(u8* p, u64 v) { put32(p, (u32)(v >> 32)); put32(p + 4, (u32)v); return p + 8; }
++
++static void register_ctx_handlers(void);
++
++/* ---- contexts ---- */
++
++s32 sceNpScoreCreateTitleCtx(u32 commId, u32 passphrase, u32 selfNpId)
++{
++    (void)passphrase; (void)selfNpId;
++    register_ctx_handlers();
++    for (int i = 1; i <= TITLE_MAX; i++)
++        if (!s_titles[i]) {
++            s_titles[i] = 1;
++            /* psnr scopes boards by the title's communication ID; connect now
++             * in case matching has not. */
++            if (commId) {
++                char id[16] = {0}, data[10] = {0};
++                memcpy(data, GUEST_PTR(commId, const char*), 9);
++                snprintf(id, sizeof(id), "%s_%02u", data, vm_read8(commId + 10));
++                np_psnr_connect(id);
++            }
++            printf("[sceNpScore] CreateTitleCtx -> %d\n", i);
++            return i;
++        }
++    return (s32)SCE_NP_ERROR_OUT_OF_MEMORY;
++}
++
++s32 sceNpScoreDestroyTitleCtx(s32 titleCtxId)
++{
++    if (titleCtxId < 1 || titleCtxId > TITLE_MAX || !s_titles[titleCtxId])
++        return (s32)SCORE_ERROR_INVALID_ID;
++    s_titles[titleCtxId] = 0;
++    return CELL_OK;
++}
++
++s32 sceNpScoreCreateTransactionCtx(s32 titleCtxId)
++{
++    if (titleCtxId < 1 || titleCtxId > TITLE_MAX || !s_titles[titleCtxId])
++        return (s32)SCORE_ERROR_INVALID_ID;
++    for (int i = 1; i <= TRANS_MAX; i++)
++        if (s_trans[i].state == T_FREE) {
++            memset(&s_trans[i], 0, sizeof(s_trans[i]));
++            s_trans[i].state = T_IDLE;
++            s_trans[i].title = titleCtxId;
++            return i;
++        }
++    return (s32)SCE_NP_ERROR_OUT_OF_MEMORY;
++}
++
++static score_trans* trans_get(s32 id)
++{
++    return (id >= 1 && id <= TRANS_MAX && s_trans[id].state != T_FREE) ? &s_trans[id] : NULL;
++}
++
++s32 sceNpScoreDestroyTransactionCtx(s32 transId)
++{
++    score_trans* t = trans_get(transId);
++    if (!t) return (s32)SCORE_ERROR_INVALID_ID;
++    t->state = T_FREE;   /* a reply still in flight finds the slot free and is dropped */
++    return CELL_OK;
++}
++
++s32 sceNpScoreSetTimeout(s32 id, u32 timeout)  { (void)id; (void)timeout; return CELL_OK; }
++s32 sceNpScoreSetPlayerCharacterId(s32 id, s32 pcId) { (void)id; (void)pcId; return CELL_OK; }
++
++s32 sceNpScoreAbortTransaction(s32 transId)
++{
++    score_trans* t = trans_get(transId);
++    if (!t) return (s32)SCORE_ERROR_INVALID_ID;
++    if (t->state == T_PENDING) { t->state = T_DONE; t->result = (s32)SCORE_ERROR_ABORTED; }
++    return CELL_OK;
++}
++
++/* 0 = finished (result in *result), 1 = still running. */
++s32 sceNpScorePollAsync(s32 transId, u32 result)
++{
++    score_trans* t = trans_get(transId);
++    if (!t) return (s32)SCORE_ERROR_INVALID_ID;
++    if (t->state == T_PENDING) np_psnr_pump();
++    if (t->state == T_PENDING) return 1;
++    if (result) vm_write32(result, (u32)t->result);
++    return 0;
++}
++
++s32 sceNpScoreWaitAsync(s32 transId, u32 result)
++{
++    score_trans* t = trans_get(transId);
++    if (!t) return (s32)SCORE_ERROR_INVALID_ID;
++    for (int i = 0; i < 1000 && t->state == T_PENDING; i++) {   /* ~10 s */
++        np_psnr_pump();
++        if (t->state == T_PENDING) sleep_10ms();
++    }
++    if (t->state == T_PENDING) { t->state = T_DONE; t->result = (s32)SCORE_ERROR_NO_SERVER; }
++    if (result) vm_write32(result, (u32)t->result);
++    return t->result;
++}
++
++/* ---- requests ---- */
++
++static s32 fail_now(score_trans* t, s32 err)
++{
++    t->state = T_DONE;
++    t->result = err;
++    return CELL_OK;
++}
++
++static s32 trans_id_of(score_trans* t) { return (s32)(t - s_trans); }
++
++static void on_recorded(void* user, const np_psnr_msg* m)
++{
++    score_trans* t = trans_get((s32)(uintptr_t)user);
++    if (!t || t->state != T_PENDING) return;
++    t->state = T_DONE;
++    if (m->type != PSNR_SCORE_RECORDED || m->len < 4) { t->result = (s32)SCORE_ERROR_NO_SERVER; return; }
++    if (t->tmp_rank_ea) vm_write32(t->tmp_rank_ea, np_get32(m->data));
++    t->result = CELL_OK;
++}
++
++/* RECORD_SCORE: board u32 | order u8 | score s64 | comment blob */
++static s32 record(s32 transId, u32 boardId, s64 score, u32 comment, u32 tmpRank)
++{
++    score_trans* t = trans_get(transId);
++    u8 body[4 + 1 + 8 + 2 + 64];
++    if (!t) return (s32)SCORE_ERROR_INVALID_ID;
++    t->state = T_PENDING;
++    t->tmp_rank_ea = tmpRank;
++    if (!np_psnr_connected()) return fail_now(t, (s32)SCORE_ERROR_NO_SERVER);
++
++    u8* p = put32(body, boardId);
++    *p++ = 0;   /* every board ranks higher-is-better */
++    p = put64(p, (u64)score);
++    size_t cl = comment ? strnlen(GUEST_PTR(comment, const char*), 63) : 0;
++    p = put16(p, (u16)cl);
++    if (cl) { memcpy(p, GUEST_PTR(comment, const char*), cl); p += cl; }
++    printf("[sceNpScore] RecordScore(board %u, %lld)\n", boardId, (long long)score);
++    if (!np_psnr_request(PSNR_RECORD_SCORE, body, (u32)(p - body), on_recorded,
++                         (void*)(uintptr_t)trans_id_of(t)))
++        return fail_now(t, (s32)SCORE_ERROR_NO_SERVER);
++    return CELL_OK;
++}
++
++s32 sceNpScoreRecordScoreAsync(s32 transId, u32 boardId, s64 score, u32 comment,
++                               u32 gameInfo, u32 tmpRank, s32 prio, u32 option)
++{
++    (void)gameInfo; (void)prio; (void)option;
++    return record(transId, boardId, score, comment, tmpRank);
++}
++
++s32 sceNpScoreRecordScore(s32 transId, u32 boardId, s64 score, u32 comment,
++                          u32 gameInfo, u32 tmpRank, u32 option)
++{
++    (void)gameInfo; (void)option;
++    s32 r = record(transId, boardId, score, comment, tmpRank);
++    return r < 0 ? r : sceNpScoreWaitAsync(transId, 0);
++}
++
++/* Write one SceNpScoreRankData from a RANKING entry. */
++static const u8* put_rank(u32 at, const u8* e, const u8* end, u32 comment_at)
++{
++    if (e + 4 + 16 + 8 + 2 > end) return NULL;
++    u32 rank = np_get32(e);
++    char id[17] = {0};
++    memcpy(id, e + 4, 16);
++    u64 score = np_get64(e + 20);
++    u16 cl = np_get16(e + 28);
++    const u8* c = e + 30;
++    if (c + cl + 8 > end) return NULL;
++    u64 when = np_get64(c + cl);
++
++    memset(GUEST_PTR(at, u8*), 0, 128);
++    memcpy(GUEST_PTR(at, char*), id, strnlen(id, 16));           /* npId.handle */
++    memcpy(GUEST_PTR(at + 36, char*), id, strnlen(id, 16));      /* onlineName */
++    vm_write32(at + 88, rank);                          /* serialRank */
++    vm_write32(at + 92, rank);                          /* rank */
++    vm_write32(at + 96, rank);                          /* highestRank */
++    vm_write64(at + 104, score);
++    vm_write64(at + 120, when ? (when + 62135596800ull) * 1000000ull : 0);   /* CellRtcTick */
++    if (comment_at) {
++        memset(GUEST_PTR(comment_at, u8*), 0, 64);
++        memcpy(GUEST_PTR(comment_at, u8*), c, cl < 63 ? cl : 63);
++    }
++    return c + cl + 8;
++}
++
++static void on_ranking(void* user, const np_psnr_msg* m)
++{
++    score_trans* t = trans_get((s32)(uintptr_t)user);
++    if (!t || t->state != T_PENDING) return;
++    t->state = T_DONE;
++    if (m->type != PSNR_RANKING || m->len < 6) { t->result = (s32)SCORE_ERROR_NO_SERVER; return; }
++    u32 total = np_get32(m->data);
++    u16 n = np_get16(m->data + 4);
++    const u8 *e = m->data + 6, *end = m->data + m->len;
++    u32 filled = 0;
++    for (u16 i = 0; i < n && i < t->array_num && e; i++) {
++        u32 stride = t->by_id ? 136 : 128;
++        u32 at = t->rank_ea + i * stride;
++        if (t->by_id) vm_write32(at, np_get32(e) ? 1 : 0);   /* hasData */
++        e = put_rank(t->by_id ? at + 8 : at, e, end, t->comment_ea ? t->comment_ea + i * 64 : 0);
++        filled++;
++    }
++    if (t->total_ea) vm_write32(t->total_ea, total);
++    if (t->last_sort_ea) vm_write64(t->last_sort_ea, 0);
++    if (np_psnr_trace()) printf("[sceNpScore] ranking: %u of %u entries\n", filled, total);
++    /* The synchronous call returns 0 on success (RPCS3: set_result_and_wake(CELL_OK));
++     * Tekken 5 DR takes anything else for a failure. */
++    t->result = CELL_OK;
++}
++
++static u64 stack_arg(ppu_context* ctx, int n)   /* n >= 9 */
++{
++    return vm_read64((u32)ctx->gpr[1] + 112u + 8u * (u32)(n - 9));
++}
++
++/* GetRankingByRange[Async](transId, boardId, startSerialRank, rankArray*, rankArraySize,
++ *   commentArray*, commentArraySize, infoArray*, infoArraySize, arrayNum,
++ *   lastSortDate*, totalRecord*, [prio,] option) */
++static void ranking_by_range(ppu_context* ctx)
++{
++    score_trans* t = trans_get((s32)ctx->gpr[3]);
++    u8 body[10];
++    if (!t) { ctx->gpr[3] = (u64)(s64)(s32)SCORE_ERROR_INVALID_ID; return; }
++    t->state = T_PENDING;
++    t->by_id = 0;
++    t->rank_ea = (u32)ctx->gpr[6];
++    t->comment_ea = (u32)ctx->gpr[8];
++    t->array_num = (u32)stack_arg(ctx, 10);
++    t->last_sort_ea = (u32)stack_arg(ctx, 11);
++    t->total_ea = (u32)stack_arg(ctx, 12);
++    ctx->gpr[3] = 0;
++    if (np_psnr_trace()) printf("[sceNpScore] GetRankingByRange(board %u, from %u, %u)\n",
++                                 (u32)ctx->gpr[4], (u32)ctx->gpr[5], t->array_num);
++    if (!np_psnr_connected()) { fail_now(t, (s32)SCORE_ERROR_NO_SERVER); return; }
++    u8* p = put32(body, (u32)ctx->gpr[4]);
++    p = put32(p, (u32)ctx->gpr[5] ? (u32)ctx->gpr[5] : 1);
++    p = put16(p, (u16)(t->array_num > 100 ? 100 : t->array_num));
++    if (!np_psnr_request(PSNR_GET_RANKING, body, 10, on_ranking, (void*)(uintptr_t)trans_id_of(t)))
++        fail_now(t, (s32)SCORE_ERROR_NO_SERVER);
++}
++
++static void hle_ranking_by_range_async(ppu_context* ctx) { ranking_by_range(ctx); }
++static void hle_ranking_by_range(ppu_context* ctx)
++{
++    s32 id = (s32)ctx->gpr[3];
++    ranking_by_range(ctx);
++    if ((s32)ctx->gpr[3] == 0) ctx->gpr[3] = (u64)(s64)sceNpScoreWaitAsync(id, 0);
++}
++
++/* GetRankingByNpId[Async](transId, boardId, npIdArray*, npIdArraySize, rankArray*,
++ *   rankArraySize, commentArray*, commentArraySize, infoArray*, infoArraySize,
++ *   arrayNum, lastSortDate*, totalRecord*, [prio,] option) */
++static void ranking_by_npid(ppu_context* ctx)
++{
++    score_trans* t = trans_get((s32)ctx->gpr[3]);
++    if (!t) { ctx->gpr[3] = (u64)(s64)(s32)SCORE_ERROR_INVALID_ID; return; }
++    t->state = T_PENDING;
++    t->by_id = 1;
++    t->rank_ea = (u32)ctx->gpr[7];
++    t->comment_ea = (u32)ctx->gpr[9];
++    t->array_num = (u32)stack_arg(ctx, 11);
++    t->last_sort_ea = (u32)stack_arg(ctx, 12);
++    t->total_ea = (u32)stack_arg(ctx, 13);
++    ctx->gpr[3] = 0;
++    if (np_psnr_trace()) printf("[sceNpScore] GetRankingByNpId(board %u, %u ids)\n", (u32)ctx->gpr[4], t->array_num);
++    if (!np_psnr_connected()) { fail_now(t, (s32)SCORE_ERROR_NO_SERVER); return; }
++    u32 ids = (u32)ctx->gpr[5], n = t->array_num > 100 ? 100 : t->array_num;
++    u8* body = (u8*)malloc(6 + 16 * n);
++    u8* p = put32(body, (u32)ctx->gpr[4]);
++    p = put16(p, (u16)n);
++    for (u32 i = 0; i < n; i++, p += 16) {   /* SceNpId is 36 bytes; the handle leads */
++        memset(p, 0, 16);
++        memcpy(p, GUEST_PTR(ids + i * 36, const char*), strnlen(GUEST_PTR(ids + i * 36, const char*), 16));
++    }
++    if (!np_psnr_request(PSNR_GET_RANKING_BY_ID, body, (u32)(p - body), on_ranking,
++                         (void*)(uintptr_t)trans_id_of(t)))
++        fail_now(t, (s32)SCORE_ERROR_NO_SERVER);
++    free(body);
++}
++
++static void hle_ranking_by_npid_async(ppu_context* ctx) { ranking_by_npid(ctx); }
++static void hle_ranking_by_npid(ppu_context* ctx)
++{
++    s32 id = (s32)ctx->gpr[3];
++    ranking_by_npid(ctx);
++    if ((s32)ctx->gpr[3] == 0) ctx->gpr[3] = (u64)(s64)sceNpScoreWaitAsync(id, 0);
++}
++
++extern void ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
++
++static void register_ctx_handlers(void)
++{
++    if (s_ctx_registered) return;
++    s_ctx_registered = 1;
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetRankingByRangeAsync"),
++                         "sceNpScoreGetRankingByRangeAsync", hle_ranking_by_range_async);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetRankingByRange"),
++                         "sceNpScoreGetRankingByRange", hle_ranking_by_range);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetRankingByNpIdAsync"),
++                         "sceNpScoreGetRankingByNpIdAsync", hle_ranking_by_npid_async);
++    ps3_hle_register_ctx(ps3_compute_nid("sceNpScoreGetRankingByNpId"),
++                         "sceNpScoreGetRankingByNpId", hle_ranking_by_npid);
++}
+diff --git a/libs/network/sceNpSignaling.c b/libs/network/sceNpSignaling.c
+index b841644..456888e 100644
+--- a/libs/network/sceNpSignaling.c
++++ b/libs/network/sceNpSignaling.c
+@@ -1,135 +1,267 @@
+ /*
+- * ps3recomp - sceNpSignaling HLE implementation
++ * ps3recomp - sceNpSignaling HLE
+  *
+- * Offline stub. Init/term and context management work.
+- * Connection operations return NOT_CONNECTED.
++ * On a console, signaling negotiates a direct UDP path between two PSN users
++ * (NAT traversal through the NP servers) and tells the title the peer's
++ * address and port. Here a peer's address is what the psnr room already
++ * handed out for that member (see sceNpMatching.c), so a connection is
++ * ACTIVE as soon as the title activates it; np_psnr punches toward the peer
++ * and pings it from the title's own P2P socket, which is where the RTT the
++ * title shows in its lobby comes from.
++ *
++ * PS3_NP_PEER_OVERRIDE=ip:port reports that address for every peer instead:
++ * a UDP proxy on localhost (tools/udp_proxy.py) can then add latency and
++ * loss between two instances.
++ *
++ * Layouts (SDK ABI):
++ *   SceNpSignalingNetInfo        28  size local_addr mapped_addr nat_status upnp_status npport_status npport u16
++ *   SceNpSignalingConnectionInfo 36  union { rtt u32 | bandwidth u32 | npId | { addr u32 port u16 } | packet_loss u32 }
+  */
+ 
+ #include "sceNpSignaling.h"
++#include "sceNpMatching.h"
++#include "np_psnr.h"
++#include "../system/cellSysutil.h"
++#include "../../runtime/ppu/ppu_memory.h"
++
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+-#include "../../runtime/ppu/ppu_memory.h"   /* vm_write*: guest EA -> host, byte-swapped */
+ 
+-/* Internal state */
++#define E_NOT_INITIALIZED     0x8002a801
++#define E_INVALID_ARGUMENT    0x8002a815
++#define E_CTX_NOT_FOUND       0x8002a805
++#define E_CONN_NOT_FOUND      0x8002a80e
++#define E_CONNID_NOT_AVAIL    0x8002a80d
++#define E_PEER_UNREACHABLE    0x8002a80f
++#define E_OWN_NP_ID           0x8002a816
++#define E_CTX_MAX             0x8002a812
++
++enum { CONN_INACTIVE = 0, CONN_PENDING = 1, CONN_ACTIVE = 2 };
++enum { EV_DEAD = 0, EV_ESTABLISHED = 1 };
++enum { INFO_RTT = 1, INFO_BANDWIDTH = 2, INFO_PEER_NPID = 3, INFO_PEER_ADDRESS = 4, INFO_MAPPED_ADDRESS = 5, INFO_PACKET_LOSS = 6 };
+ 
+-static int s_initialized = 0;
++#define CTX_MAX  4
++#define CONN_MAX 16
+ 
+ typedef struct {
+-    int in_use;
+-    SceNpSignalingHandler handler;
+-    void* handlerArg;
+-} SignalingCtx;
++    int      in_use;
++    char     online_id[17];
++    uint32_t user;
++    u8       ip[4];
++    u16      port;
++    int      last_status;   /* trace: status + 1 last reported, 0 = none */
++    int      info_logged;
++} conn_t;
+ 
+-static SignalingCtx s_ctx[SCE_NP_SIGNALING_CTX_MAX];
++typedef struct {
++    int    in_use;
++    u32    handler, arg;
++    conn_t conn[CONN_MAX + 1];   /* ids are 1-based */
++} ctx_t;
+ 
+-/* Lifecycle */
++static ctx_t s_ctx[CTX_MAX + 1];
+ 
+-s32 sceNpSignalingInit(void)
++static int override_peer(u8 ip[4], u16* port)
+ {
+-    printf("[sceNpSignaling] Init()\n");
+-    if (s_initialized)
+-        return (s32)SCE_NP_SIGNALING_ERROR_ALREADY_INITIALIZED;
+-    memset(s_ctx, 0, sizeof(s_ctx));
+-    s_initialized = 1;
+-    return CELL_OK;
++    const char* o = getenv("PS3_NP_PEER_OVERRIDE");
++    if (!o || !*o) return 0;
++    unsigned a, b, c, d, p;
++    if (sscanf(o, "%u.%u.%u.%u:%u", &a, &b, &c, &d, &p) != 5) return 0;
++    ip[0] = (u8)a; ip[1] = (u8)b; ip[2] = (u8)c; ip[3] = (u8)d;
++    *port = (u16)p;
++    return 1;
+ }
+ 
+-s32 sceNpSignalingTerm(void)
++static void queue_handler(ctx_t* c, u32 ctx_id, u32 conn_id, s32 event, s32 error)
+ {
+-    printf("[sceNpSignaling] Term()\n");
+-    s_initialized = 0;
+-    return CELL_OK;
++    const u64 args[8] = { ctx_id, conn_id, (u64)(u32)event, (u64)(u32)error, c->arg, 0, 0, 0 };
++    if (c->handler) cellSysutilQueueGuestCallbackArgs(c->handler, args);
+ }
+ 
+-/* Context management */
++s32 sceNpSignalingInit(void) { return CELL_OK; }
++s32 sceNpSignalingTerm(void) { memset(s_ctx, 0, sizeof(s_ctx)); return CELL_OK; }
+ 
+-s32 sceNpSignalingCreateCtx(const void* npId, SceNpSignalingHandler handler,
+-                              void* arg, SceNpSignalingCtxId* ctxId)
++s32 sceNpSignalingCreateCtx(u32 npId, u32 handler, u32 arg, u32 ctxId)
+ {
+     (void)npId;
+-    printf("[sceNpSignaling] CreateCtx()\n");
+-
+-    if (!s_initialized) return (s32)SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED;
+-    if (!ctxId) return (s32)SCE_NP_SIGNALING_ERROR_INVALID_ARGUMENT;
+-
+-    for (int i = 0; i < SCE_NP_SIGNALING_CTX_MAX; i++) {
++    if (!ctxId) return (s32)E_INVALID_ARGUMENT;
++    for (u32 i = 1; i <= CTX_MAX; i++)
+         if (!s_ctx[i].in_use) {
+-            memset(&s_ctx[i], 0, sizeof(SignalingCtx));
++            memset(&s_ctx[i], 0, sizeof(s_ctx[i]));
+             s_ctx[i].in_use = 1;
+             s_ctx[i].handler = handler;
+-            s_ctx[i].handlerArg = arg;
+-            vm_write32((u32)(uintptr_t)ctxId, (u32)i);
++            s_ctx[i].arg = arg;
++            vm_write32(ctxId, i);
++            printf("[sceNpSignaling] CreateCtx -> %u (handler 0x%08X)\n", i, handler);
+             return CELL_OK;
+         }
+-    }
+-    return (s32)SCE_NP_SIGNALING_ERROR_OUT_OF_MEMORY;
++    return (s32)E_CTX_MAX;
+ }
+ 
+-s32 sceNpSignalingDestroyCtx(SceNpSignalingCtxId ctxId)
++s32 sceNpSignalingDestroyCtx(u32 ctxId)
+ {
+     printf("[sceNpSignaling] DestroyCtx(%u)\n", ctxId);
+-    if (ctxId >= SCE_NP_SIGNALING_CTX_MAX || !s_ctx[ctxId].in_use)
+-        return (s32)SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND;
++    if (ctxId < 1 || ctxId > CTX_MAX || !s_ctx[ctxId].in_use) return (s32)E_CTX_NOT_FOUND;
+     s_ctx[ctxId].in_use = 0;
+     return CELL_OK;
+ }
+ 
+-/* Connection operations — offline stubs */
++static ctx_t* ctx_get(u32 id) { return (id >= 1 && id <= CTX_MAX && s_ctx[id].in_use) ? &s_ctx[id] : NULL; }
++static conn_t* conn_get(ctx_t* c, u32 id) { return (c && id >= 1 && id <= CONN_MAX && c->conn[id].in_use) ? &c->conn[id] : NULL; }
++
++s32 sceNpSignalingActivateConnection(u32 ctxId, u32 peerNpId, u32 connId)
++{
++    ctx_t* c = ctx_get(ctxId);
++    if (!c) return (s32)E_CTX_NOT_FOUND;
++    if (!peerNpId || !connId) return (s32)E_INVALID_ARGUMENT;
++    char name[17];
++    memset(name, 0, sizeof(name));
++    strncpy(name, GUEST_PTR(peerNpId, const char*), 16);
++    if (strncmp(name, np_psnr_online_id(), 16) == 0) return (s32)E_OWN_NP_ID;
++
++    uint32_t user = 0; u8 ip[4] = {0}; u16 port = 0;
++    if (!np_matching_find_member(name, &user, ip, &port)) {
++        printf("[sceNpSignaling] ActivateConnection(%s): not a room member\n", name);
++        return (s32)E_PEER_UNREACHABLE;
++    }
++    /* one connection per peer */
++    for (u32 i = 1; i <= CONN_MAX; i++)
++        if (c->conn[i].in_use && strncmp(c->conn[i].online_id, name, 16) == 0) {
++            vm_write32(connId, i);
++            return CELL_OK;
++        }
++    for (u32 i = 1; i <= CONN_MAX; i++)
++        if (!c->conn[i].in_use) {
++            conn_t* k = &c->conn[i];
++            memset(k, 0, sizeof(*k));
++            k->in_use = 1;
++            memcpy(k->online_id, name, 17);
++            k->user = user;
++            memcpy(k->ip, ip, 4);
++            k->port = port;
++            override_peer(k->ip, &k->port);
++            np_psnr_peer_add(user, k->ip, k->port);
++            vm_write32(connId, i);
++            printf("[sceNpSignaling] ActivateConnection(%s) -> conn %u at %u.%u.%u.%u:%u\n", name, i,
++                   k->ip[0], k->ip[1], k->ip[2], k->ip[3], k->port);
++            queue_handler(c, ctxId, i, EV_ESTABLISHED, 0);
++            return CELL_OK;
++        }
++    return (s32)E_CONNID_NOT_AVAIL;
++}
+ 
+-s32 sceNpSignalingActivateConnection(SceNpSignalingCtxId ctxId,
+-                                       const void* peerNpId,
+-                                       SceNpSignalingConnId* connId)
++s32 sceNpSignalingDeactivateConnection(u32 ctxId, u32 connId)
+ {
+-    (void)ctxId; (void)peerNpId; (void)connId;
+-    printf("[sceNpSignaling] ActivateConnection() - offline\n");
+-    return (s32)SCE_NP_SIGNALING_ERROR_NOT_CONNECTED;
++    ctx_t* c = ctx_get(ctxId);
++    conn_t* k = conn_get(c, connId);
++    if (!k) return (s32)E_CONN_NOT_FOUND;
++    printf("[sceNpSignaling] DeactivateConnection(%u: %s)\n", connId, k->online_id);
++    k->in_use = 0;
++    return CELL_OK;
+ }
+ 
+-s32 sceNpSignalingDeactivateConnection(SceNpSignalingCtxId ctxId,
+-                                         SceNpSignalingConnId connId)
++s32 sceNpSignalingTerminateConnection(u32 ctxId, u32 connId)
+ {
+-    (void)ctxId; (void)connId;
++    ctx_t* c = ctx_get(ctxId);
++    conn_t* k = conn_get(c, connId);
++    if (!k) return (s32)E_CONN_NOT_FOUND;
++    if (np_psnr_trace()) printf("[sceNpSignaling] TerminateConnection(%u: %s)\n", connId, k->online_id);
++    k->in_use = 0;
+     return CELL_OK;
+ }
+ 
+-s32 sceNpSignalingGetConnectionStatus(SceNpSignalingCtxId ctxId,
+-                                        SceNpSignalingConnId connId,
+-                                        s32* connStatus,
+-                                        u32* peerAddr, u16* peerPort)
++s32 sceNpSignalingGetConnectionStatus(u32 ctxId, u32 connId, u32 connStatus, u32 peerAddr, u32 peerPort)
+ {
+-    (void)ctxId; (void)connId;
+-    if (connStatus) vm_write32((u32)(uintptr_t)connStatus, (u32)SCE_NP_SIGNALING_CONN_STATUS_INACTIVE);
+-    if (peerAddr) vm_write32((u32)(uintptr_t)peerAddr, (u32)0);
+-    if (peerPort) vm_write16((u32)(uintptr_t)peerPort, (u16)0);
++    ctx_t* c = ctx_get(ctxId);
++    conn_t* k = conn_get(c, connId);
++    if (!k) return (s32)E_CONN_NOT_FOUND;
++    /* a member who left the room is gone */
++    int present = np_matching_find_member(k->online_id, NULL, NULL, NULL);
++    s32 st = present ? CONN_ACTIVE : CONN_INACTIVE;
++    if (np_psnr_trace() && k->last_status != st + 1) {
++        k->last_status = st + 1;
++        printf("[sceNpSignaling] GetConnectionStatus(%u: %s) -> %s\n", connId, k->online_id,
++               st == CONN_ACTIVE ? "ACTIVE" : "INACTIVE");
++    }
++    if (connStatus) vm_write32(connStatus, (u32)st);
++    if (peerAddr) vm_write32(peerAddr, ((u32)k->ip[0] << 24) | ((u32)k->ip[1] << 16) | ((u32)k->ip[2] << 8) | k->ip[3]);
++    if (peerPort) vm_write16(peerPort, k->port);
+     return CELL_OK;
+ }
+ 
+-s32 sceNpSignalingGetConnectionInfo(SceNpSignalingCtxId ctxId,
+-                                      SceNpSignalingConnId connId,
+-                                      SceNpSignalingConnectionInfo* info)
++s32 sceNpSignalingGetConnectionInfo(u32 ctxId, u32 connId, s32 code, u32 info)
+ {
+-    (void)ctxId; (void)connId;
+-    if (!info) return (s32)SCE_NP_SIGNALING_ERROR_INVALID_ARGUMENT;
+-    u32 info_ea = (u32)(uintptr_t)info;
+-    for (u32 o = 0; o < sizeof(SceNpSignalingConnectionInfo); o += 4)
+-        vm_write32(info_ea + o, 0);
+-    vm_write32(info_ea, SCE_NP_SIGNALING_CONN_STATUS_INACTIVE);
++    ctx_t* c = ctx_get(ctxId);
++    conn_t* k = conn_get(c, connId);
++    if (!k) return (s32)E_CONN_NOT_FOUND;
++    if (!info) return (s32)E_INVALID_ARGUMENT;
++    for (u32 o = 0; o < 36; o += 4) vm_write32(info + o, 0);
++    if (np_psnr_trace() && k->info_logged < 4) {
++        k->info_logged++;
++        printf("[sceNpSignaling] GetConnectionInfo(%u: %s, code %d) rtt %d ms\n", connId, k->online_id, code,
++               np_psnr_peer_rtt_ms(k->user));
++    }
++    switch (code) {
++    case INFO_RTT: {
++        int rtt = np_psnr_peer_rtt_ms(k->user);
++        vm_write32(info, (u32)(rtt < 0 ? 0 : rtt) * 1000u);   /* microseconds */
++        break;
++    }
++    case INFO_BANDWIDTH: vm_write32(info, 10000000u); break;
++    case INFO_PEER_NPID: memcpy(GUEST_PTR(info, char*), k->online_id, 16); break;
++    case INFO_PEER_ADDRESS:
++        vm_write32(info, ((u32)k->ip[0] << 24) | ((u32)k->ip[1] << 16) | ((u32)k->ip[2] << 8) | k->ip[3]);
++        vm_write16(info + 4, k->port);
++        break;
++    case INFO_MAPPED_ADDRESS: {
++        u8 ip[4]; np_psnr_public_ip(ip);
++        vm_write32(info, ((u32)ip[0] << 24) | ((u32)ip[1] << 16) | ((u32)ip[2] << 8) | ip[3]);
++        vm_write16(info + 4, np_psnr_p2p_port());
++        break;
++    }
++    case INFO_PACKET_LOSS: vm_write32(info, 0); break;
++    default: return (s32)E_INVALID_ARGUMENT;
++    }
+     return CELL_OK;
+ }
+ 
+-s32 sceNpSignalingGetLocalNetInfo(u32* localAddr, u16* localPort)
++/* The console's own address, which the title binds its P2P socket to. We
++ * bind every interface anyway (sysNet.c), so what matters is that it is a
++ * valid address: the LAN address of this machine, or loopback. */
++static u32 local_ip(void)
++{
++    static u32 v;
++    if (v) return v;
++    const char* e = getenv("PS3_NP_LOCAL_IP");
++    unsigned a, b, c, d;
++    if (e && sscanf(e, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) return v = (a << 24) | (b << 16) | (c << 8) | d;
++    return v = 0x7F000001u;
++}
++
++s32 sceNpSignalingGetLocalNetInfo(u32 ctxId, u32 info)
+ {
+-    if (localAddr) vm_write32((u32)(uintptr_t)localAddr, (u32)0x7F000001); /* 127.0.0.1 */
+-    if (localPort) vm_write16((u32)(uintptr_t)localPort, (u16)0);
++    (void)ctxId;
++    if (!info) return (s32)E_INVALID_ARGUMENT;
++    u8 pub[4]; np_psnr_public_ip(pub);
++    u32 mapped = ((u32)pub[0] << 24) | ((u32)pub[1] << 16) | ((u32)pub[2] << 8) | pub[3];
++    vm_write32(info + 0, 28);
++    vm_write32(info + 4, local_ip());
++    vm_write32(info + 8, mapped ? mapped : local_ip());
++    vm_write32(info + 12, 1);   /* nat_status: open */
++    vm_write32(info + 16, 0);   /* upnp */
++    vm_write32(info + 20, 0);   /* npport_status: open */
++    vm_write16(info + 24, np_psnr_p2p_port());
++    printf("[sceNpSignaling] GetLocalNetInfo -> local 0x%08X, p2p port %u\n", local_ip(), np_psnr_p2p_port());
+     return CELL_OK;
+ }
+ 
+-s32 sceNpSignalingGetPeerNetInfo(SceNpSignalingCtxId ctxId,
+-                                   SceNpSignalingConnId connId,
+-                                   u32* peerAddr, u16* peerPort)
++s32 sceNpSignalingGetPeerNetInfo(u32 ctxId, u32 connId, u32 peerAddr, u32 peerPort)
+ {
+-    (void)ctxId; (void)connId;
+-    if (peerAddr) vm_write32((u32)(uintptr_t)peerAddr, (u32)0);
+-    if (peerPort) vm_write16((u32)(uintptr_t)peerPort, (u16)0);
++    ctx_t* c = ctx_get(ctxId);
++    conn_t* k = conn_get(c, connId);
++    if (!k) return (s32)E_CONN_NOT_FOUND;
++    if (peerAddr) vm_write32(peerAddr, ((u32)k->ip[0] << 24) | ((u32)k->ip[1] << 16) | ((u32)k->ip[2] << 8) | k->ip[3]);
++    if (peerPort) vm_write16(peerPort, k->port);
+     return CELL_OK;
+ }
+diff --git a/libs/network/sceNpSignaling.h b/libs/network/sceNpSignaling.h
+index 62c41f0..3ea4cdb 100644
+--- a/libs/network/sceNpSignaling.h
++++ b/libs/network/sceNpSignaling.h
+@@ -1,10 +1,6 @@
+ /*
+- * ps3recomp - sceNpSignaling HLE
+- *
+- * P2P connection signaling for NAT traversal and direct player connections.
+- * Offline stub — returns NOT_CONNECTED for connection operations.
++ * ps3recomp - sceNpSignaling HLE (see sceNpSignaling.c)
+  */
+-
+ #ifndef PS3RECOMP_SCE_NP_SIGNALING_H
+ #define PS3RECOMP_SCE_NP_SIGNALING_H
+ 
+@@ -15,78 +11,20 @@
+ extern "C" {
+ #endif
+ 
+-/* Error codes */
+-#define SCE_NP_SIGNALING_ERROR_NOT_INITIALIZED       0x80022A01
+-#define SCE_NP_SIGNALING_ERROR_ALREADY_INITIALIZED   0x80022A02
+-#define SCE_NP_SIGNALING_ERROR_INVALID_ARGUMENT      0x80022A03
+-#define SCE_NP_SIGNALING_ERROR_OUT_OF_MEMORY         0x80022A04
+-#define SCE_NP_SIGNALING_ERROR_NOT_CONNECTED         0x80022A05
+-#define SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND         0x80022A06
+-#define SCE_NP_SIGNALING_ERROR_CONN_NOT_FOUND        0x80022A07
+-
+-/* Constants */
+-#define SCE_NP_SIGNALING_CTX_MAX           8
+-#define SCE_NP_SIGNALING_CONN_MAX          16
+-
+-/* Connection status */
+-#define SCE_NP_SIGNALING_CONN_STATUS_INACTIVE    0
+-#define SCE_NP_SIGNALING_CONN_STATUS_PENDING     1
+-#define SCE_NP_SIGNALING_CONN_STATUS_ACTIVE      2
+-
+-/* Event types */
+-#define SCE_NP_SIGNALING_EVENT_CONNECTED         1
+-#define SCE_NP_SIGNALING_EVENT_DEAD              2
+-#define SCE_NP_SIGNALING_EVENT_ESTABLISHED       3
+-
+-/* Types */
+-typedef u32 SceNpSignalingCtxId;
+-typedef u32 SceNpSignalingConnId;
+-
+-typedef struct SceNpSignalingConnectionInfo {
+-    u32 address;
+-    u16 port;
+-    u16 padding;
+-    u32 status;
+-    u32 peerAddress;
+-    u16 peerPort;
+-    u16 reserved;
+-} SceNpSignalingConnectionInfo;
+-
+-typedef void (*SceNpSignalingHandler)(SceNpSignalingCtxId ctxId,
+-                                       SceNpSignalingConnId connId,
+-                                       u32 event, s32 errorCode,
+-                                       void* arg);
+-
+-/* Functions */
++/* Every pointer argument is a GUEST address, spelt u32. */
+ s32 sceNpSignalingInit(void);
+ s32 sceNpSignalingTerm(void);
+-
+-s32 sceNpSignalingCreateCtx(const void* npId, SceNpSignalingHandler handler,
+-                              void* arg, SceNpSignalingCtxId* ctxId);
+-s32 sceNpSignalingDestroyCtx(SceNpSignalingCtxId ctxId);
+-
+-s32 sceNpSignalingActivateConnection(SceNpSignalingCtxId ctxId,
+-                                       const void* peerNpId,
+-                                       SceNpSignalingConnId* connId);
+-s32 sceNpSignalingDeactivateConnection(SceNpSignalingCtxId ctxId,
+-                                         SceNpSignalingConnId connId);
+-
+-s32 sceNpSignalingGetConnectionStatus(SceNpSignalingCtxId ctxId,
+-                                        SceNpSignalingConnId connId,
+-                                        s32* connStatus,
+-                                        u32* peerAddr, u16* peerPort);
+-
+-s32 sceNpSignalingGetConnectionInfo(SceNpSignalingCtxId ctxId,
+-                                      SceNpSignalingConnId connId,
+-                                      SceNpSignalingConnectionInfo* info);
+-
+-s32 sceNpSignalingGetLocalNetInfo(u32* localAddr, u16* localPort);
+-s32 sceNpSignalingGetPeerNetInfo(SceNpSignalingCtxId ctxId,
+-                                   SceNpSignalingConnId connId,
+-                                   u32* peerAddr, u16* peerPort);
++s32 sceNpSignalingCreateCtx(u32 npId, u32 handler, u32 arg, u32 ctxId);
++s32 sceNpSignalingDestroyCtx(u32 ctxId);
++s32 sceNpSignalingActivateConnection(u32 ctxId, u32 peerNpId, u32 connId);
++s32 sceNpSignalingDeactivateConnection(u32 ctxId, u32 connId);
++s32 sceNpSignalingTerminateConnection(u32 ctxId, u32 connId);
++s32 sceNpSignalingGetConnectionStatus(u32 ctxId, u32 connId, u32 connStatus, u32 peerAddr, u32 peerPort);
++s32 sceNpSignalingGetConnectionInfo(u32 ctxId, u32 connId, s32 code, u32 info);
++s32 sceNpSignalingGetLocalNetInfo(u32 ctxId, u32 info);
++s32 sceNpSignalingGetPeerNetInfo(u32 ctxId, u32 connId, u32 peerAddr, u32 peerPort);
+ 
+ #ifdef __cplusplus
+ }
+ #endif
+-
+-#endif /* PS3RECOMP_SCE_NP_SIGNALING_H */
++#endif
+diff --git a/libs/network/sceNpUtil.c b/libs/network/sceNpUtil.c
+index f13c75e..4c6d9c1 100644
+--- a/libs/network/sceNpUtil.c
++++ b/libs/network/sceNpUtil.c
+@@ -144,6 +144,14 @@ s32 sceNpUtilCmpNpIdInOrder(const void* npId1, const void* npId2, s32* order)
+     if (!npId1 || !npId2 || !order)
+         return (s32)SCE_NP_UTIL_ERROR_INVALID_ARGUMENT;
+ 
+-    vm_write32((u32)(uintptr_t)order, (u32)memcmp(npId1, npId2, 36));
++    /* Guest addresses, like CmpNpId above: Tekken 5 DR compares the sender
++     * NP ID of every P2P packet with its room members through this call, and
++     * a memcmp on the raw guest values read host memory instead. The SDK
++     * orders by the online ID (strcmp), then the rest of the ID. */
++    const u8* a = GUEST_PTR(npId1, const u8*);
++    const u8* b = GUEST_PTR(npId2, const u8*);
++    int r = strncmp((const char*)a, (const char*)b, 16);
++    if (r == 0) r = memcmp(a + 16, b + 16, 20);
++    vm_write32((u32)(uintptr_t)order, (u32)(s32)(r < 0 ? -1 : r > 0 ? 1 : 0));
+     return CELL_OK;
+ }
+diff --git a/libs/network/sysNet.c b/libs/network/sysNet.c
+index 0aa810e..26aa044 100644
+--- a/libs/network/sysNet.c
++++ b/libs/network/sysNet.c
+@@ -46,6 +46,7 @@
+ #endif
+ 
+ #include "sysNet.h"
++#include "np_psnr.h"   /* P2P sockets: this instance's port, NAT probes/punches, RTT pings */
+ #include "../../runtime/ppu/ppu_context.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../include/ps3emu/nid.h"
+@@ -76,11 +77,37 @@ typedef struct {
+     host_socket_t host_fd;
+     int           in_use;
+     int           nonblocking;
++    int           p2p;      /* SOCK_DGRAM_P2P: bound to this instance's P2P port */
++    uint16_t      vport;    /* the P2P vport the title bound (sockaddr_in_p2p +8) */
+ } net_socket_slot;
+ 
+ static net_socket_slot s_sockets[SYS_NET_MAX_SOCKETS];
+ static int s_net_initialized = 0;
+ 
++/* The title's P2P datagram socket: np_psnr sends its probes, punches and
++ * pings from it, so a peer's router sees our traffic come from the port
++ * psnr handed out. */
++static int s_p2p_dgram = -1;
++
++static int p2p_send(const void* buf, uint32_t len, const uint8_t ip[4], uint16_t port)
++{
++    struct sockaddr_in a;
++    if (s_p2p_dgram < 0 || !s_sockets[s_p2p_dgram].in_use) return -1;
++    memset(&a, 0, sizeof(a));
++    a.sin_family = AF_INET;
++    memcpy(&a.sin_addr, ip, 4);
++    a.sin_port = htons(port);
++    return (int)sendto(s_sockets[s_p2p_dgram].host_fd, (const char*)buf, (int)len, 0,
++                       (struct sockaddr*)&a, sizeof(a));
++}
++
++static int net_trace(void)
++{
++    static int v = -1;
++    if (v < 0) v = getenv("PS3_NET_TRACE") ? 1 : 0;
++    return v;
++}
++
+ /* Guest scratch, allocated on first use through the allocator the runtime
+  * handed ps3_net_host_register. */
+ static unsigned int (*s_alloc)(unsigned int, unsigned int) = NULL;
+@@ -284,13 +311,28 @@ int32_t sys_net_bnet_socket(int32_t domain, int32_t type, int32_t protocol)
+         host_closesocket(fd);
+         return fail(SYS_NET_ENOMEM);
+     }
+-    printf("[sys_net] socket(%d, %d, %d) -> %d\n", domain, type, protocol, slot);
++    s_sockets[slot].p2p = (type == SYS_NET_SOCK_DGRAM_P2P);
++    s_sockets[slot].vport = 0;
++#ifdef _WIN32
++    if (host_type == SOCK_DGRAM) {
++        /* A peer's closed port otherwise makes the next recvfrom fail with
++         * WSAECONNRESET, which titles take for a dead socket. */
++        BOOL off = FALSE; DWORD n = 0;
++        WSAIoctl(fd, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof(off), NULL, 0, &n, NULL, NULL);
++    }
++#endif
++    printf("[sys_net] socket(%d, %d, %d) -> %d%s\n", domain, type, protocol, slot,
++           s_sockets[slot].p2p ? " (p2p)" : "");
+     return slot;
+ }
+ 
+ int32_t sys_net_bnet_close(int32_t s)
+ {
+     if (!valid_socket(s)) return fail(SYS_NET_EBADF);
++    if (s == s_p2p_dgram) {
++        s_p2p_dgram = -1;
++        np_psnr_set_p2p_sender(NULL);
++    }
+     host_closesocket(s_sockets[s].host_fd);
+     s_sockets[s].in_use = 0;
+     return 0;
+@@ -302,9 +344,29 @@ int32_t sys_net_bnet_bind(int32_t s, const sys_net_sockaddr* addr, uint32_t addr
+     struct sockaddr_in a;
+     if (!valid_socket(s)) return fail(SYS_NET_EBADF);
+     if (read_sockaddr(EA(addr), &a)) return fail(SYS_NET_EINVAL);
++    if (s_sockets[s].p2p) {
++        /* A P2P socket lives on this instance's P2P port (PS3_NET_P2P_PORT,
++         * default 3658) whatever port the title names -- that is the port
++         * psnr hands to peers -- and on every interface: titles bind the
++         * console's own address, and Windows then refuses to send from that
++         * socket to a peer on 127.0.0.1. sockaddr_in_p2p keeps the vport at
++         * offset 8; it comes back in every recvfrom (titles compare it). */
++        s_sockets[s].vport = vm_read16(EA(addr) + 8);
++        a.sin_port = htons(np_psnr_p2p_port());
++        /* PS3_NET_BIND picks the interface (default 127.0.0.1: two instances on
++         * one PC, and no Windows Firewall prompt); 0.0.0.0 for play across PCs. */
++        const char* bind_ip = getenv("PS3_NET_BIND");
++        a.sin_addr.s_addr = inet_addr(bind_ip && *bind_ip ? bind_ip : "127.0.0.1");
++        if (a.sin_addr.s_addr == INADDR_NONE) a.sin_addr.s_addr = htonl(INADDR_ANY);
++    }
+     if (bind(s_sockets[s].host_fd, (struct sockaddr*)&a, sizeof(a)) == HOST_SOCKET_ERROR)
+         return host_fail();
+-    printf("[sys_net] bind(%d, port %u)\n", s, ntohs(a.sin_port));
++    printf("[sys_net] bind(%d, port %u%s)\n", s, ntohs(a.sin_port),
++           s_sockets[s].p2p ? ", p2p" : "");
++    if (s_sockets[s].p2p && s_p2p_dgram < 0) {
++        s_p2p_dgram = s;
++        np_psnr_set_p2p_sender(p2p_send);
++    }
+     return 0;
+ }
+ 
+@@ -389,6 +451,12 @@ int32_t sys_net_bnet_sendto(int32_t s, const void* buf, uint32_t len, int32_t fl
+     if (would_block(s, flags, POLLOUT)) return fail(SYS_NET_EWOULDBLOCK);
+     int n = sendto(s_sockets[s].host_fd, GUEST_PTR(EA(buf), const char*), (int)len, 0,
+                    (struct sockaddr*)&a, sizeof(a));
++    if (net_trace()) {
++        char ip[16], hex[3 * 24 + 1] = "";
++        const uint8_t* b = GUEST_PTR(EA(buf), const uint8_t*);
++        for (uint32_t i = 0; i < len && i < 24; i++) snprintf(hex + 3 * i, 4, "%02x ", b[i]);
++        printf("[sys_net] sendto(%d) %u B -> %s:%u = %d  %s\n", s, len, ip_str(&a.sin_addr, ip), ntohs(a.sin_port), n, hex);
++    }
+     return n == HOST_SOCKET_ERROR ? host_fail() : n;
+ }
+ 
+@@ -404,15 +472,32 @@ int32_t sys_net_bnet_recvfrom(int32_t s, void* buf, uint32_t len, int32_t flags,
+                               sys_net_sockaddr* from, uint32_t* fromlen)
+ {
+     struct sockaddr_in a;
+-    socklen_t alen = sizeof(a);
++    socklen_t alen;
++    int n;
+     if (!valid_socket(s)) return fail(SYS_NET_EBADF);
+-    if (would_block(s, flags, POLLIN)) return fail(SYS_NET_EWOULDBLOCK);
+ 
+-    memset(&a, 0, sizeof(a));
+-    int n = recvfrom(s_sockets[s].host_fd, GUEST_PTR(EA(buf), char*), (int)len,
++    /* On a P2P socket, psnr's own packets (probe replies, punches, pings)
++     * are consumed here; the title only ever sees its own traffic. */
++    for (;;) {
++        if (would_block(s, flags, POLLIN)) return fail(SYS_NET_EWOULDBLOCK);
++        memset(&a, 0, sizeof(a));
++        alen = sizeof(a);
++        n = recvfrom(s_sockets[s].host_fd, GUEST_PTR(EA(buf), char*), (int)len,
+                      host_recv_flags(flags), (struct sockaddr*)&a, &alen);
+-    if (n == HOST_SOCKET_ERROR) return host_fail();
++        if (n == HOST_SOCKET_ERROR) return host_fail();
++        if (s_sockets[s].p2p && n > 0 &&
++            np_psnr_p2p_filter(GUEST_PTR(EA(buf), const char*), (uint32_t)n, (const uint8_t*)&a.sin_addr, ntohs(a.sin_port)))
++            continue;
++        break;
++    }
++    if (net_trace()) {
++        char ip[16], hex[3 * 24 + 1] = "";
++        const uint8_t* b = GUEST_PTR(EA(buf), const uint8_t*);
++        for (int i = 0; i < n && i < 24; i++) snprintf(hex + 3 * i, 4, "%02x ", b[i]);
++        printf("[sys_net] recvfrom(%d) %d B <- %s:%u  %s\n", s, n, ip_str(&a.sin_addr, ip), ntohs(a.sin_port), hex);
++    }
+     write_sockaddr(EA(from), EA(fromlen), &a);
++    if (from && s_sockets[s].p2p) vm_write16(EA(from) + 8, s_sockets[s].vport);
+     return n;
+ }
+ 
+diff --git a/libs/system/cellSysutil.c b/libs/system/cellSysutil.c
+index d535386..c5c1d6c 100644
+--- a/libs/system/cellSysutil.c
++++ b/libs/system/cellSysutil.c
+@@ -204,6 +204,10 @@ s32 cellSysutilCheckCallback(void)
+      * its dismissal. Done before the drain so the callback it queues is
+      * delivered on this same poll. */
+     { extern void cellMsgDialog_tick(void); cellMsgDialog_tick(); }
++    /* NP over psnr: read the server's replies and room pushes here, on the
++     * title's own polling thread; the guest callbacks they queue are
++     * delivered by the drain right below, in this same poll. */
++    { extern void np_psnr_pump(void); np_psnr_pump(); }
+     drain_guest_completions();
+     /* No cellMsgDialog_pump() here: #155 replaced that mechanism with
+      * drain_guest_completions() above, deferring a dialog answer to this poll
+diff --git a/runtime/syscalls/sys_memory.h b/runtime/syscalls/sys_memory.h
+index 1845295..438b182 100644
+--- a/runtime/syscalls/sys_memory.h
++++ b/runtime/syscalls/sys_memory.h
+@@ -62,6 +62,7 @@ int64_t sys_memory_allocate_from_container(ppu_context* ctx);
+ int64_t sys_memory_get_user_memory_size(ppu_context* ctx);
+ int64_t sys_memory_get_page_attribute(ppu_context* ctx);
+ int64_t sys_memory_container_create(ppu_context* ctx);
++int64_t sys_memory_allocate_from_container(ppu_context* ctx);
+ int64_t sys_memory_container_destroy(ppu_context* ctx);
+ int64_t sys_memory_container_get_size(ppu_context* ctx);
+ int64_t sys_mmapper_allocate_address(ppu_context* ctx);

@@ -1,0 +1,1380 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index d466a4a..9ff24e3 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -15,6 +15,7 @@
+ #include "../../runtime/memory/vm.h"   /* vm_commit */
+ #include "cellAudio.h"
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_read64, vm_write32 */
++#include "../../runtime/platform/host_sched.h"   /* mixer thread priority */
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -617,6 +618,7 @@ static void audio_notify_event_queues(void)
+ static unsigned __stdcall audio_mix_thread_func(void* arg)
+ {
+     (void)arg;
++    host_sched_thread_start(HS_ROLE_AUDIO, 0, "audio-mix");
+     printf("[cellAudio] Mixing thread started\n");
+ 
+     /* Pace to the device clock. The PS3 consumes one block every 5.33 ms;
+diff --git a/libs/codec/cellAdec.c b/libs/codec/cellAdec.c
+index c3986c9..9af5f3f 100644
+--- a/libs/codec/cellAdec.c
++++ b/libs/codec/cellAdec.c
+@@ -26,6 +26,7 @@
+ #include "cellAdec.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../runtime/platform/win32_compat.h"
++#include "../../runtime/platform/host_sched.h"
+ #include "../../third_party/at3_standalone/at3_bridge.h"
+ #include "ps3emu/guest_call.h"
+ #include <stdio.h>
+@@ -253,6 +254,7 @@ static u32 atx_decode(Adec* a, int f, const u8* au, u32 size)
+ 
+ static DWORD WINAPI adec_worker(LPVOID arg)
+ {
++    host_sched_thread_start(HS_ROLE_DECODER, 0, "adec");
+     Adec* a = &s_adec[(int)(intptr_t)arg];
+     lock();
+     for (;;) {
+diff --git a/libs/codec/cellDmux.c b/libs/codec/cellDmux.c
+index 9963b71..0a4bdcf 100644
+--- a/libs/codec/cellDmux.c
++++ b/libs/codec/cellDmux.c
+@@ -33,6 +33,7 @@
+ #include "cellDmux.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../runtime/platform/win32_compat.h"
++#include "../../runtime/platform/host_sched.h"
+ #include "ps3emu/guest_call.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -542,6 +543,7 @@ static void demux_stream(Dmux* d, int di, u32 addr, u32 size)
+ 
+ static DWORD WINAPI dmux_worker(LPVOID arg)
+ {
++    host_sched_thread_start(HS_ROLE_DECODER, 0, "dmux");
+     const int di = (int)(intptr_t)arg;
+     Dmux* d = &s_dmux[di];
+     lock();
+diff --git a/libs/codec/cellVdec.c b/libs/codec/cellVdec.c
+index b585c17..6831e44 100644
+--- a/libs/codec/cellVdec.c
++++ b/libs/codec/cellVdec.c
+@@ -27,6 +27,7 @@
+ #include "cellVdec.h"
+ #include "mf_h264.h"
+ #include "../../runtime/ppu/ppu_memory.h"
++#include "../../runtime/platform/host_sched.h"
+ #include "../../runtime/platform/win32_compat.h"
+ #include "ps3emu/guest_call.h"
+ #include <stdio.h>
+@@ -219,6 +220,7 @@ static void deliver(Vdec* v, PicList* l, int gen)
+ 
+ static DWORD WINAPI vdec_worker(LPVOID arg)
+ {
++    host_sched_thread_start(HS_ROLE_DECODER, 0, "vdec");
+     Vdec* v = &s_vdec[(int)(intptr_t)arg];
+     PicList pl = { NULL, 0, 0, v };
+     lock();
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index d70a1ff..607ef80 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -11,6 +11,7 @@
+ 
+ #include "cellSpurs.h"
+ #include "../../runtime/platform/win32_compat.h"
++#include "../../runtime/platform/host_sched.h"   /* worker priority / CPU set, trace */
+ #include "../../runtime/ps3_log.h"
+ #include "spu_workload.h"   /* SPU image -> lifted-entry dispatch (runtime/spu) */
+ #include "spurs_taskset.h"  /* REAL BE CellSpursTaskset layout builders (fork Option-B) */
+@@ -2751,6 +2752,7 @@ static void jl_drain(jc_walk* w, const jc_bins* bins, u32 base, u32 sz, u32 n)
+ static DWORD WINAPI jl_worker(LPVOID unused)
+ {
+     (void)unused;
++    host_sched_thread_start(HS_ROLE_SPURS, 0, "spurs-job");
+     extern void spurs_job_keep_ls(int keep);
+     spurs_job_keep_ls(0);          /* list jobs keep no store: spurs_job.c */
+     u64 seen = 0;
+@@ -2815,6 +2817,7 @@ static void jc_run_joblist(jc_walk* w, u32 base, u32 sz, u32 n)
+       } }
+     extern void spurs_job_keep_ls(int keep);
+     spurs_job_keep_ls(0);          /* list jobs keep no store: spurs_job.c */
++    host_sched_trace(HS_EV_JOBLIST0, n);
+     if (n > 1 && jl_workers() > 0 &&
+         _InterlockedCompareExchange(&s_jl.owner, 1, 0) == 0) {
+         AcquireSRWLockExclusive(&s_jl.lock);
+@@ -2840,6 +2843,7 @@ static void jc_run_joblist(jc_walk* w, u32 base, u32 sz, u32 n)
+         for (u32 k = 0; k < n; k++)            /* serial: one job at a time */
+             jc_walk_job(w, base + k * sz, sz, &bins);
+     }
++    host_sched_trace(HS_EV_JOBLIST1, n);
+     spurs_job_keep_ls(1);
+ }
+ 
+@@ -2952,9 +2956,12 @@ static int jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc, volatile long* shu
+     return w.self;
+ }
+ 
++static void jc_walk_once(int slot);
++
+ static DWORD WINAPI jc_thread(LPVOID p)
+ {
+     int slot = (int)(intptr_t)p;
++    host_sched_thread_start(HS_ROLE_SPURS, 0, "spurs-chain");
+     /* TIMING PROBE (SPURS_JC_DELAY=ms): the real jm2 chain walker is async and
+      * picks up jobs as the PPU appends them + fills their descriptors. Our walk
+      * is one-shot; if it reads descriptors before the PPU populates the I/O
+@@ -2962,6 +2969,47 @@ static DWORD WINAPI jc_thread(LPVOID p)
+      * Confirms timing-vs-never before committing to the async rewrite. */
+     { const char* d = getenv("SPURS_JC_DELAY");
+       if (d && *d) Sleep((unsigned)atoi(d)); }
++    jc_walk_once(slot);
++    return 0;
++}
++
++/* A walker that stays: Tekken 5 DR re-creates and re-kicks its skinning chain
++ * every frame, and a fresh CreateThread per kick cost 1-3 ms (more on a busy
++ * machine) before the first job ran -- time the main thread then spends in
++ * its wait for the chain. One parked thread per chain slot instead, woken by
++ * an event (PS3_SCHED_JCPOOL=0 or PS3_SCHED=0: a thread per kick, as before). */
++static HANDLE s_jc_wake[MAX_JOBCHAINS];
++static DWORD WINAPI jc_thread_parked(LPVOID p)
++{
++    int slot = (int)(intptr_t)p;
++    host_sched_thread_start(HS_ROLE_SPURS, 0, "spurs-chain");
++    for (;;) {
++        WaitForSingleObject(s_jc_wake[slot], INFINITE);
++        jc_walk_once(slot);
++    }
++    return 0;
++}
++
++static int jc_kick_parked(int slot)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3_SCHED_JCPOOL");
++                  on = host_sched_enabled() && !(e && *e == '0') && !getenv("SPURS_JC_DELAY"); }
++    if (!on) return 0;
++    if (!s_jc_wake[slot]) {          /* jc_start runs on the guest thread that kicks */
++        HANDLE ev = CreateEventA(NULL, FALSE, FALSE, NULL);
++        if (!ev) return 0;
++        HANDLE th = CreateThread(NULL, 1u << 20, jc_thread_parked, (LPVOID)(intptr_t)slot, 0, NULL);
++        if (!th) { CloseHandle(ev); return 0; }
++        CloseHandle(th);
++        s_jc_wake[slot] = ev;
++    }
++    SetEvent(s_jc_wake[slot]);
++    return 1;
++}
++
++static void jc_walk_once(int slot)
++{
+     LARGE_INTEGER t0, t1, fq;
+     QueryPerformanceCounter(&t0);
+     const int self = jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+@@ -2978,7 +3026,6 @@ static DWORD WINAPI jc_thread(LPVOID p)
+     /* Last: once this reads 0, Join may return and the title may re-create
+      * and re-kick the chain, so nothing of this walk may still be running. */
+     __atomic_store_n(&s_jobchains[slot].running, 0, __ATOMIC_RELEASE);
+-    return 0;
+ }
+ 
+ /* cellSpursRunJobChain -- start job chain execution (async, like the real one). */
+@@ -3013,11 +3060,14 @@ static s32 jc_start(u64 jc_ea, const char* who)
+           } }
+         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
+         /* Coalesce: a chain already being walked must not start twice. */
++        host_sched_trace(HS_EV_JC_KICK, i);
+         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
+             s_jobchains[i].shutdown = 0;     /* a fresh walk has not been shut down */
+-            HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
+-            if (th) CloseHandle(th);
+-            else s_jobchains[i].running = 0;
++            if (!jc_kick_parked(i)) {
++                HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
++                if (th) CloseHandle(th);
++                else s_jobchains[i].running = 0;
++            }
+         }
+         return CELL_OK;
+     }
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 541eb8e..a65c26f 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -12,6 +12,7 @@
+ #include "rsx_draw_engine.h"
+ #include "cellGcmSys.h"
+ #include "../../runtime/platform/win32_compat.h"
++#include "../../runtime/platform/host_sched.h"   /* PS3_SCHED_TRACE handshake events */
+ #include "../../runtime/ppu/ppu_memory.h"   /* vm_write32 (translate + byte-swap, OOB-safe) */
+ #include "../../runtime/memory/vm.h"    /* VM_HLE_INJECT_BASE */
+ #include "rsx_commands.h"                    /* rsx_state, rsx_process_command_buffer */
+@@ -611,20 +612,46 @@ void cellGcmSetFlipMode(u32 mode)
+ }
+ 
+ /* NID: 0xC44D8F34 */
++/* Signalled whenever the pump completes a flip (ppu_gcm_pump). */
++static void* gcm_flip_event(void)
++{
++    static void* volatile ev = NULL;
++    if (!ev) {
++        void* e = (void*)CreateEventA(NULL, FALSE, FALSE, NULL);
++        if (InterlockedCompareExchangePointer((void* volatile*)&ev, e, NULL) != NULL)
++            CloseHandle((HANDLE)e);
++    }
++    return ev;
++}
++
+ void cellGcmSetWaitFlip(void)
+ {
+     /* Block until the pending flip completes (the present thread marks it done
+      * via cellGcmTickFlip, ~once per display refresh). This throttles the title
+      * to vsync; without it the guest loops unthrottled and many frames batch
+      * into a single host present -> the console text stacks/duplicates. */
+-#ifdef _WIN32
+-    __declspec(dllimport) void __stdcall Sleep(unsigned long);
+-#endif  /* elsewhere: runtime/platform/win32_compat.h */
+     /* A flip queued in the FIFO: the walker holds at it until it is shown,
+      * which is the wait this call asks for (see gcm_vsync_flip). */
+     if (gcm_vsync_flip() && s_fifo_flips_queued > 0) return;
+-    for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++)
+-        Sleep(1);
++    /* Otherwise woken by the flip itself, not by polling: Sleep(1) slices made
++     * every frame start 1-2 ms after its flip (15.6 ms when Windows ignores the
++     * 1 ms timer for a minimized window); Tekken 5 DR calls this once per
++     * frame, on the main thread's critical path (PS3_GCM_VSYNC_FLIP=0). The
++     * 2 ms timeout only covers flip completions that do not go through the
++     * pump; the 64 ms cap is the old 64 x Sleep(1). */
++    static int on = -1;     /* PS3_SCHED_FLIPWAIT=0 (or PS3_SCHED=0): the old polling */
++    if (on < 0) { const char* e = getenv("PS3_SCHED_FLIPWAIT");
++                  on = host_sched_enabled() && !(e && *e == '0'); }
++    if (!on) {
++        for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++)
++            Sleep(1);
++        s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
++        return;
++    }
++    const ULONGLONG t_end = GetTickCount64() + 64;
++    HANDLE ev = (HANDLE)gcm_flip_event();
++    while (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING && GetTickCount64() < t_end)
++        WaitForSingleObject(ev, 2);
+     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+ }
+ 
+@@ -736,12 +763,16 @@ void ppu_gcm_pump(void)
+                            calls, nv, nf, s_vblank_count, 10); } }
+     if ((p & 1) && s_vblank_handler_opd && g_ps3_guest_caller) {
+         ydkj_restore_handler_opd(s_vblank_handler_opd, s_vblank_handler_code);
++        host_sched_trace(HS_EV_PUMP_VB0, s_vblank_count);
+         g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)s_vblank_count,
+                            0, 0, 0, 0, 0, 0, 0);
++        host_sched_trace(HS_EV_PUMP_VB1, s_vblank_count);
+     }
+     if (p & 2) {
+         s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+         rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
++        SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
++        host_sched_trace(HS_EV_FLIP_DONE, 0);
+         if (s_flip_handler_opd && g_ps3_guest_caller) {
+             ydkj_restore_handler_opd(s_flip_handler_opd, s_flip_handler_code);
+             g_ps3_guest_caller(s_flip_handler_opd, 1, 0, 0, 0, 0, 0, 0, 0);
+@@ -749,6 +780,7 @@ void ppu_gcm_pump(void)
+     }
+     if (user) {
+         u32 cmd = (u32)user;
++        host_sched_trace(HS_EV_PUMP_USER, cmd);
+         if (s_user_handler_opd && g_ps3_guest_caller)
+             g_ps3_guest_caller(s_user_handler_opd, (uint64_t)cmd, 0, 0, 0, 0, 0, 0, 0);
+         rsx_pf_stamp(RSX_PF_USERCMD_QPC);
+@@ -758,7 +790,7 @@ void ppu_gcm_pump(void)
+ 
+ /* Back-compat: the old direct entry points now just mark a tick pending (so any
+  * caller other than the ticker still works) -- delivery stays on the main thread. */
+-void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
++void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); host_sched_trace(HS_EV_VBLANK, s_vblank_count); }
+ /* Only deliver a flip completion when a flip is actually outstanding.
+  *
+  * Ticking unconditionally at 60 Hz fires the guest's flip handler even when
+@@ -1542,6 +1574,11 @@ void cellGcm_rsx_process_fifo(void)
+     QueryPerformanceCounter(&pf1);
+     ReleaseSRWLockExclusive(&s_gcm_fifo_lock);
+     rsx_pf_add(RSX_PF_FIFO_TICKS, pf1.QuadPart - pf0.QuadPart);
++    /* PS3_SCHED_TRACE: only drains that did work (~10k empty ones a second) */
++    if (g_host_sched_trace_on && pf1.QuadPart - pf0.QuadPart > 200) {
++        host_sched_trace_at(HS_EV_FIFO0, 0, pf0.QuadPart);
++        host_sched_trace_at(HS_EV_FIFO1, 0, pf1.QuadPart);
++    }
+ }
+ 
+ static void gcm_rsx_process_fifo_unlocked(void)
+@@ -3506,6 +3543,7 @@ void cellGcmSetVBlankFrequency(u32 freq)
+ void cellGcmSetUserCommand(void* ctx, u32 cause)
+ {
+     const u32 c = (u32)(uintptr_t)ctx;
++    host_sched_trace(HS_EV_USERCMD, cause);
+     { static int n, dbg = -1; if (dbg < 0) dbg = getenv("GCM_USERCMD_DBG") ? 1 : 0;
+       if (dbg && n++ < 8) fprintf(stderr, "[gcm] SetUserCommand ctx=0x%08X cause=0x%X begin=0x%08X end=0x%08X cur=0x%08X io=0x%08X getoff=0x%X put=0x%X\n",
+         c, cause, c ? vm_read32(c) : 0, c ? vm_read32(c + 4) : 0, c ? vm_read32(c + 8) : 0,
+@@ -3526,6 +3564,14 @@ void cellGcmSetUserCommand(void* ctx, u32 cause)
+                 if (io != 0xFFFFFFFFu && io > vm_read32(GCM_CONTROL_GUEST_ADDR)) {
+                     atomic_thread_fence(memory_order_release);
+                     vm_write32(GCM_CONTROL_GUEST_ADDR, io);
++                    /* Wake the present thread now: it is parked in
++                     * cellGcm_fifo_kick_wait for up to 4 ms, and the whole
++                     * frame's commands -- this is the title's only flush --
++                     * wait behind that timeout before the walker starts. */
++                    static int kick = -1;   /* PS3_SCHED_KICK=0: wait for the tick */
++                    if (kick < 0) { const char* e = getenv("PS3_SCHED_KICK");
++                                    kick = host_sched_enabled() && !(e && *e == '0'); }
++                    if (kick) SetEvent((HANDLE)cellGcm_fifo_kick_event());
+                 }
+             }
+             return;
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 0be8637..88a7678 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "rsx_live_draw.h"
++#include "../../runtime/platform/host_sched.h"   /* PS3_SCHED_TRACE present events */
+ #include "ps3emu/yz_runtime_config.h"
+ #include "ps3emu/yz_frontier_trace.h"
+ 
+@@ -9737,6 +9738,7 @@ void rsx_live_draw_present(u32 buffer_id)
+     const LONGLONG pf_present_flushed = ld_pf_qpc();
+     g_pf.present_flush_ticks += pf_present_flushed - pf_present_begin;
+     {
++        host_sched_trace(HS_EV_PRESENT0, g_ld_frames + 1u);
+         const HRESULT present_hr = g.swap->lpVtbl->Present(
+             g.swap, g_ld_present_interval,
+             g_ldp.fs_exclusive ? (g_ld_present_flags & ~(UINT)DXGI_PRESENT_ALLOW_TEARING) : g_ld_present_flags);
+@@ -9790,6 +9792,7 @@ void rsx_live_draw_present(u32 buffer_id)
+       packets_at_last_frame = g_ld_stats.packets_seen; }
+     g_ld_frames++;
+     ld_pf_frame_log(pf_present_begin);
++    host_sched_trace(HS_EV_PRESENT, g_ld_frames);
+ #if defined(YZ_PERF_PROFILE)
+     ld_profile_present(g_ld_frames);
+ #endif
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+new file mode 100644
+index 0000000..904a292
+--- /dev/null
++++ b/runtime/platform/host_sched.c
+@@ -0,0 +1,577 @@
++/*
++ * ps3recomp - host scheduling policy for the runtime's threads (Windows).
++ * See host_sched.h for the model.
++ *
++ * Environment (all optional; defaults in brackets):
++ *   PS3_SCHED=0               stock behaviour everywhere this file decides
++ *                             (thread names stay): only the old "guest prio
++ *                             < 256 -> ABOVE_NORMAL" boost, the per-call
++ *                             usleep timer, the Sleep(1) flip wait, no FIFO
++ *                             kick on the user command, a thread per SPURS
++ *                             chain kick
++ *   PS3_SCHED_LOG=1           one line per thread with what it was given
++ *   PS3_SCHED_PRIO_<ROLE>=n   host priority level for a role: -2..2, 15 =
++ *                             TIME_CRITICAL, x = leave alone. Roles: MAIN [1]
++ *                             TICKER [2] SPU [2] SPURS [1] AUDIO [15]
++ *                             DECODER [x] TIMER [x] BG [-1], and PPUHI [1] /
++ *                             PPU [1] / PPULO [x] for guest threads by lv2
++ *                             priority (< 256 / < PS3_SCHED_PPU_LO / rest)
++ *   PS3_SCHED_PPU_LO=n        first lv2 priority that counts as background
++ *                             [1002: Tekken's loaders, decoder, http]
++ *   PS3_PRIORITY_CLASS=c      normal | above | high [normal]
++ *   PS3_SCHED_MMCSS_<ROLE>=t  join MMCSS task t ("Games", "Pro Audio", ...)
++ *                             [none]
++ *   PS3_SCHED_CPUS=g          CPU set for the whole process: all | fast |
++ *                             slow | 0x<mask of logical processors> [all]
++ *                             (fast = the last-level-cache group holding the
++ *                             cores the firmware ranks fastest, i.e. CCD0 on a
++ *                             Ryzen 7950X; slow = every other group)
++ *   PS3_SCHED_CPUS_<ROLE>=g   same, for one role's threads [all]
++ *   PS3_SCHED_IDEAL=1         ideal processor hints: MAIN, TICKER, SPU, AUDIO
++ *                             each on their own of the fastest-ranked cores,
++ *                             SPURS workers on the rest [off]
++ *   PS3_SCHED_THROTTLE=0      leave Windows power throttling (EcoQoS, and the
++ *                             Windows 11 rule that drops the 1 ms timer of a
++ *                             minimized or occluded window) in charge [opted out]
++ *   PS3_SCHED_TIMER=0         usleep >= 1 ms on a fresh standard waitable
++ *                             timer, as before, instead of a cached
++ *                             high-resolution one [high-resolution]
++ *   PS3_SCHED_SPIN_US=n       lv2 semaphore waits poll n us before parking [0]
++ *   PS3_SCHED_SUBMS=m         usleep < 1 ms: spin (SwitchToThread, as before) |
++ *                             pause (PAUSE, yield every 50 us) | timer [spin]
++ *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
++ *                             when cellGcmSetUserCommand advances put [wake]
++ *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
++ *                             Sleep(1) again [woken by the flip]
++ *   PS3_SCHED_JCPOOL=0        (cellSpurs.c) a new thread per job-chain kick
++ *                             [one parked walker per chain]
++ *   PS3_SCHED_TRACE=<file>    binary event trace (16-byte records:
++ *                             u64 qpc, u16 kind, u16 tid, u32 arg; the file
++ *                             starts with "HSTR", u32 version, u64 qpc freq)
++ *
++ * Measured: Tekken 5 DR, scripted 2-pad VS fight, 40 s windows, Ryzen 9
++ * 7950X (2 CCDs, SMT), minimized window, fps from the presents, mean of 2-3
++ * runs. Other agents' builds and game instances kept 13-29 of the 32 logical
++ * processors busy in almost every run (run-to-run noise ~ +-8 fps); the one
++ * quiet run (4 busy) of the default policy reached 58.9 fps.
++ *
++ *   Before patch 0005 (flip completed at call time, SetWaitFlip blocking),
++ *   machine saturated (25-29 cores busy elsewhere):
++ *     stock (PS3_SCHED=0)                   27.0 fps, 97% of frames > 20 ms
++ *     handshake fixes only                  34.9-37.4 (user command -> FIFO
++ *                                           drain 4.9 -> 1.5 ms, flip -> main
++ *                                           0.8 -> 0.04 ms, kick -> first
++ *                                           skinning job 3.9 -> 1.4 ms)
++ *     + per-thread priority map             48.3
++ *     map + class ABOVE_NORMAL              50.8
++ *     class ABOVE_NORMAL / HIGH alone       38.0 / 41.6
++ *     MMCSS Games (main, ticker) + Pro
++ *       Audio (SPU, mixer)                  47.4 (54 and 40: unstable)
++ *     SPURS_JOB_THREADS 2/4/6/8/12          43/41/35/44/49 (job list 13/5.3/
++ *                                           3.6/3.3/2.4 ms)
++ *     CPU sets: all on CCD0 / CCD0 + SPURS
++ *       workers on CCD1 / ideal hints       49.1 / 49.4 / 48.5 (= the map)
++ *   With 0005 (vsync'd in-FIFO flips: a fight frame is 16.7 or 33.3 ms):
++ *     saturated: stock 28.8 (38% of frames > 34 ms), handshake only 34.5
++ *     (4.6%), map 37.1 (1.6%), map + ABOVE_NORMAL 29.0 (12%)
++ *     13-18 cores busy: stock 35.9 fps, 103 late audio blocks per 5 s;
++ *     default 40.9 fps, 33 late blocks
++ *   usleep < 1 ms (the main thread polls the flip status with usleep(100)
++ *   for most of a 30 fps frame): PAUSE spin or a high-resolution timer
++ *   instead of the SwitchToThread spin -- no gain, the timer adds 0.2 ms to
++ *   flip -> main (PS3_SCHED_SUBMS=pause|timer to try).
++ *   Spinning before parking on an lv2 semaphore: no use -- the main thread
++ *   never parks on one in a fight (its frame semaphore always has a token)
++ *   and post -> wake is 8-9 us at the median.
++ */
++#include "host_sched.h"
++
++int g_host_sched_trace_on = 0;
++
++#ifndef _WIN32
++
++void    host_sched_process_init(void) {}
++void    host_sched_thread_start(int role, int guest_prio, const char* name)
++        { (void)role; (void)guest_prio; (void)name; }
++int     host_sched_enabled(void) { return 0; }
++int     host_sched_sleep_us(uint64_t usec) { (void)usec; return 0; }
++int     host_sched_sleep_subms(uint64_t usec) { (void)usec; return 0; }
++int64_t host_sched_spin_ticks(void) { return 0; }
++void    host_sched_trace_(int kind, uint32_t arg) { (void)kind; (void)arg; }
++void    host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid) { (void)kind; (void)arg; (void)tid; }
++void host_sched_trace_tag(uint32_t tid) { (void)tid; }
++void host_sched_trace_at(int kind, uint32_t arg, int64_t qpc) { (void)kind; (void)arg; (void)qpc; }
++void host_sched_trace_tid_at(int kind, uint32_t arg, uint32_t tid, int64_t qpc) { (void)kind; (void)arg; (void)tid; (void)qpc; }
++int64_t host_sched_qpc(void) { return 0; }
++
++#else
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static const char* const k_role_name[HS_ROLE_COUNT] = {
++    "PPU", "MAIN", "TICKER", "SPU", "SPURS", "AUDIO", "DECODER", "TIMER", "BG"
++};
++
++/* ---- configuration --------------------------------------------------------- */
++#define HS_KEEP 99                 /* "leave the priority alone" */
++
++static INIT_ONCE s_once = INIT_ONCE_STATIC_INIT;
++static int  s_on = 1;              /* PS3_SCHED */
++static int  s_log = 0;
++static int  s_timer = 1;
++static int  s_ppu_lo = 1002;
++static int  s_ideal = 0;
++static int  s_subms = 0;           /* PS3_SCHED_SUBMS: 0 spin, 1 pause, 2 timer */
++static int64_t s_spin_ticks = 0;
++static LARGE_INTEGER s_qpf;
++
++/* Host priority per role; PPU threads use the three PPU* entries below. */
++static int  s_prio[HS_ROLE_COUNT];
++static int  s_prio_ppuhi, s_prio_ppu, s_prio_ppulo;
++static char s_mmcss[HS_ROLE_COUNT][32];
++static char s_cpus_role[HS_ROLE_COUNT][24];
++
++/* ---- topology ---------------------------------------------------------------- */
++/* Mirror of SYSTEM_CPU_SET_INFORMATION (Windows 10+); declared here so the
++ * build does not depend on the SDK's _WIN32_WINNT. */
++typedef struct {
++    DWORD Size;
++    DWORD Type;
++    DWORD Id;
++    WORD  Group;
++    BYTE  LogicalProcessorIndex;
++    BYTE  CoreIndex;
++    BYTE  LastLevelCacheIndex;
++    BYTE  NumaNodeIndex;
++    BYTE  EfficiencyClass;
++    BYTE  AllFlags;
++    BYTE  SchedulingClass;
++    BYTE  pad[3];
++    DWORD64 AllocationTag;
++} hs_cpuset_info;
++
++#define HS_MAX_CPUS 256
++typedef struct { ULONG id; BYTE lp, core, llc, sched, eff; } hs_cpu;
++static hs_cpu s_cpu[HS_MAX_CPUS];
++static int    s_ncpu = 0;
++static BYTE   s_fast_llc = 0xFF;
++static int    s_ranked_lp[HS_MAX_CPUS];   /* first LP of each core, fastest first */
++static int    s_nranked = 0;
++
++typedef BOOL (WINAPI *pfn_GetSystemCpuSetInformation)(void*, ULONG, PULONG, HANDLE, ULONG);
++typedef BOOL (WINAPI *pfn_SetThreadSelectedCpuSets)(HANDLE, const ULONG*, ULONG);
++typedef BOOL (WINAPI *pfn_SetProcessDefaultCpuSets)(HANDLE, const ULONG*, ULONG);
++typedef HRESULT (WINAPI *pfn_SetThreadDescription)(HANDLE, PCWSTR);
++typedef BOOL (WINAPI *pfn_SetProcessInformation)(HANDLE, int, LPVOID, DWORD);
++typedef HANDLE (WINAPI *pfn_AvSetMmThreadCharacteristicsA)(LPCSTR, LPDWORD);
++static pfn_SetThreadSelectedCpuSets      p_SetThreadSelectedCpuSets;
++static pfn_SetProcessDefaultCpuSets      p_SetProcessDefaultCpuSets;
++static pfn_SetThreadDescription          p_SetThreadDescription;
++static pfn_AvSetMmThreadCharacteristicsA p_AvSetMmThreadCharacteristicsA;
++
++static void hs_topology(void)
++{
++    HMODULE k32 = GetModuleHandleA("kernel32.dll");
++    pfn_GetSystemCpuSetInformation get = (pfn_GetSystemCpuSetInformation)(void*)
++        GetProcAddress(k32, "GetSystemCpuSetInformation");
++    if (!get) return;
++    ULONG len = 0;
++    get(NULL, 0, &len, GetCurrentProcess(), 0);
++    if (!len) return;
++    BYTE* buf = (BYTE*)malloc(len);
++    if (!buf) return;
++    if (get(buf, len, &len, GetCurrentProcess(), 0)) {
++        for (ULONG off = 0; off + 8 <= len && s_ncpu < HS_MAX_CPUS; ) {
++            const hs_cpuset_info* c = (const hs_cpuset_info*)(buf + off);
++            if (!c->Size) break;
++            if (c->Type == 0 && c->Group == 0) {          /* CpuSetInformation, group 0 */
++                hs_cpu* d = &s_cpu[s_ncpu++];
++                d->id = c->Id; d->lp = c->LogicalProcessorIndex; d->core = c->CoreIndex;
++                d->llc = c->LastLevelCacheIndex; d->sched = c->SchedulingClass;
++                d->eff = c->EfficiencyClass;
++            }
++            off += c->Size;
++        }
++    }
++    free(buf);
++    /* The fast cache group: the one holding the best-ranked core. Ties (a CPU
++     * that ranks nothing) fall to the group of logical processor 0. Hybrid
++     * parts rank by efficiency class first. */
++    int best = -1;
++    for (int i = 0; i < s_ncpu; i++) {
++        if (best < 0 ||
++            s_cpu[i].eff > s_cpu[best].eff ||
++            (s_cpu[i].eff == s_cpu[best].eff && s_cpu[i].sched > s_cpu[best].sched))
++            best = i;
++    }
++    if (best >= 0) s_fast_llc = s_cpu[best].llc;
++    /* One LP per core, best first (stable on LP index). */
++    for (int i = 0; i < s_ncpu; i++) {
++        int dup = 0;
++        for (int j = 0; j < s_nranked; j++)
++            if (s_cpu[s_ranked_lp[j]].core == s_cpu[i].core) { dup = 1; break; }
++        if (!dup) s_ranked_lp[s_nranked++] = i;
++    }
++    for (int i = 1; i < s_nranked; i++) {        /* insertion sort, descending */
++        int v = s_ranked_lp[i], j = i - 1;
++        while (j >= 0 && (s_cpu[s_ranked_lp[j]].eff < s_cpu[v].eff ||
++                          (s_cpu[s_ranked_lp[j]].eff == s_cpu[v].eff &&
++                           s_cpu[s_ranked_lp[j]].sched < s_cpu[v].sched))) {
++            s_ranked_lp[j + 1] = s_ranked_lp[j]; j--;
++        }
++        s_ranked_lp[j + 1] = v;
++    }
++}
++
++/* Resolve a CPU-set spec to CPU set ids. Returns the count; 0 = no constraint. */
++static ULONG hs_cpus(const char* spec, ULONG* ids)
++{
++    if (!spec || !*spec || !strcmp(spec, "all") || s_ncpu == 0) return 0;
++    ULONG n = 0;
++    if (!strcmp(spec, "fast") || !strcmp(spec, "slow")) {
++        const int want_fast = spec[0] == 'f';
++        for (int i = 0; i < s_ncpu; i++)
++            if ((s_cpu[i].llc == s_fast_llc) == want_fast) ids[n++] = s_cpu[i].id;
++        return n;
++    }
++    unsigned long long mask = strtoull(spec, NULL, 0);
++    for (int i = 0; i < s_ncpu; i++)
++        if (s_cpu[i].lp < 64 && (mask >> s_cpu[i].lp & 1)) ids[n++] = s_cpu[i].id;
++    return n;
++}
++
++/* ---- trace ----------------------------------------------------------------- */
++typedef struct { volatile LONG64 qpc; uint16_t kind, tid; uint32_t arg; } hs_rec;
++#define HS_TRACE_CAP (1u << 22)              /* 4M records, 64 MB */
++static hs_rec* s_tr;
++static volatile LONG s_tr_head;
++static FILE* s_tr_file;
++static __declspec(thread) uint16_t t_tag;    /* guest tid, or 0x100 + role */
++
++static DWORD WINAPI hs_trace_flusher(LPVOID unused)
++{
++    (void)unused;
++    ULONG done = 0;
++    host_sched_thread_start(HS_ROLE_BACKGROUND, 0, "sched-trace");
++    for (;;) {
++        Sleep(250);
++        ULONG head = (ULONG)s_tr_head;
++        if (head > HS_TRACE_CAP) head = HS_TRACE_CAP;
++        ULONG end = done;
++        while (end < head && s_tr[end].qpc != 0) end++;
++        if (end > done) {
++            fwrite(&s_tr[done], sizeof(hs_rec), end - done, s_tr_file);
++            fflush(s_tr_file);
++            done = end;
++        }
++        if (done >= HS_TRACE_CAP) {
++            fprintf(stderr, "[sched] trace full (%u records), stopped\n", HS_TRACE_CAP);
++            g_host_sched_trace_on = 0;
++            return 0;
++        }
++    }
++}
++
++static void hs_trace_put_at(int kind, uint32_t arg, uint16_t tid, LONG64 qpc)
++{
++    ULONG i = (ULONG)InterlockedIncrement(&s_tr_head) - 1;
++    if (i >= HS_TRACE_CAP) return;
++    s_tr[i].kind = (uint16_t)kind; s_tr[i].tid = tid; s_tr[i].arg = arg;
++    InterlockedExchange64(&s_tr[i].qpc, qpc ? qpc : 1);
++}
++
++static void hs_trace_put(int kind, uint32_t arg, uint16_t tid)
++{
++    LARGE_INTEGER now; QueryPerformanceCounter(&now);
++    ULONG i = (ULONG)InterlockedIncrement(&s_tr_head) - 1;
++    if (i >= HS_TRACE_CAP) return;
++    s_tr[i].kind = (uint16_t)kind; s_tr[i].tid = tid; s_tr[i].arg = arg;
++    InterlockedExchange64(&s_tr[i].qpc, now.QuadPart ? now.QuadPart : 1);
++}
++
++void host_sched_trace_(int kind, uint32_t arg) { hs_trace_put(kind, arg, t_tag); }
++void host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid)
++{
++    if (g_host_sched_trace_on) hs_trace_put(kind, arg, (uint16_t)tid);
++}
++void host_sched_trace_tag(uint32_t tid) { t_tag = (uint16_t)tid; }
++void host_sched_trace_at(int kind, uint32_t arg, int64_t qpc)
++{
++    if (g_host_sched_trace_on) hs_trace_put_at(kind, arg, t_tag, (LONG64)qpc);
++}
++void host_sched_trace_tid_at(int kind, uint32_t arg, uint32_t tid, int64_t qpc)
++{
++    if (g_host_sched_trace_on) hs_trace_put_at(kind, arg, (uint16_t)tid, (LONG64)qpc);
++}
++int64_t host_sched_qpc(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
++
++/* ---- init -------------------------------------------------------------------- */
++static int env_int(const char* name, int def)
++{
++    const char* e = getenv(name);
++    if (!e || !*e) return def;
++    if (*e == 'x' || *e == 'X') return HS_KEEP;
++    return (int)strtol(e, NULL, 0);
++}
++static void env_str(const char* name, char* out, size_t cap, const char* def)
++{
++    const char* e = getenv(name);
++    snprintf(out, cap, "%s", e ? e : def);
++}
++
++static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    QueryPerformanceFrequency(&s_qpf);
++    s_on = env_int("PS3_SCHED", 1) != 0;
++    s_log = env_int("PS3_SCHED_LOG", 0);
++    HMODULE k32 = GetModuleHandleA("kernel32.dll");
++    p_SetThreadDescription = (pfn_SetThreadDescription)(void*)GetProcAddress(k32, "SetThreadDescription");
++
++    /* The trace works with the policy on or off: it is how the two compare. */
++    { const char* tf = getenv("PS3_SCHED_TRACE");
++      if (tf && *tf) {
++          s_tr = (hs_rec*)VirtualAlloc(NULL, (SIZE_T)HS_TRACE_CAP * sizeof(hs_rec),
++                                       MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
++          s_tr_file = fopen(tf, "wb");
++          if (s_tr && s_tr_file) {
++              const uint32_t ver = 1;
++              fwrite("HSTR", 1, 4, s_tr_file);
++              fwrite(&ver, 4, 1, s_tr_file);
++              fwrite(&s_qpf.QuadPart, 8, 1, s_tr_file);
++              fflush(s_tr_file);
++              g_host_sched_trace_on = 1;
++              HANDLE th = CreateThread(NULL, 0, hs_trace_flusher, NULL, 0, NULL);
++              if (th) CloseHandle(th);
++              fprintf(stderr, "[sched] trace -> %s\n", tf);
++          }
++      } }
++    if (!s_on) {
++        fprintf(stderr, "[sched] PS3_SCHED=0: stock thread scheduling\n");
++        return TRUE;
++    }
++
++    s_timer  = env_int("PS3_SCHED_TIMER", 1) != 0;
++    s_ppu_lo = env_int("PS3_SCHED_PPU_LO", 1002);
++    s_ideal  = env_int("PS3_SCHED_IDEAL", 0);
++    { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm, "spin");
++      s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
++    s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
++    if (s_spin_ticks < 0) s_spin_ticks = 0;
++
++    /* Default host priorities (Tekken 5 DR fights, measured under load; see
++     * the table at the top). The frame is one chain -- main thread, draw
++     * request managers (lv2 prio 1000/1001), SPURS skinning, then the ticker's
++     * FIFO drain -- so every link of it goes up one step, the ticker (which
++     * drains a whole frame of commands in one go) and the SPU sound core (a
++     * 5.33 ms deadline, ~85% of a core) two, the audio mixer (a few us every
++     * 250 us) to TIME_CRITICAL. Loaders (lv2 prio >= 1002) stay NORMAL. */
++    s_prio[HS_ROLE_PPU]        = 0;
++    s_prio[HS_ROLE_MAIN]       = env_int("PS3_SCHED_PRIO_MAIN",    THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio[HS_ROLE_TICKER]     = env_int("PS3_SCHED_PRIO_TICKER",  THREAD_PRIORITY_HIGHEST);
++    s_prio[HS_ROLE_SPU]        = env_int("PS3_SCHED_PRIO_SPU",     THREAD_PRIORITY_HIGHEST);
++    s_prio[HS_ROLE_SPURS]      = env_int("PS3_SCHED_PRIO_SPURS",   THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio[HS_ROLE_AUDIO]      = env_int("PS3_SCHED_PRIO_AUDIO",   THREAD_PRIORITY_TIME_CRITICAL);
++    s_prio[HS_ROLE_DECODER]    = env_int("PS3_SCHED_PRIO_DECODER", HS_KEEP);
++    s_prio[HS_ROLE_TIMER]      = env_int("PS3_SCHED_PRIO_TIMER",   HS_KEEP);
++    s_prio[HS_ROLE_BACKGROUND] = env_int("PS3_SCHED_PRIO_BG",      THREAD_PRIORITY_BELOW_NORMAL);
++    s_prio_ppuhi = env_int("PS3_SCHED_PRIO_PPUHI", THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio_ppu   = env_int("PS3_SCHED_PRIO_PPU",   THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio_ppulo = env_int("PS3_SCHED_PRIO_PPULO", HS_KEEP);
++    for (int r = 0; r < HS_ROLE_COUNT; r++) {
++        char k[48];
++        snprintf(k, sizeof k, "PS3_SCHED_MMCSS_%s", k_role_name[r]);
++        env_str(k, s_mmcss[r], sizeof s_mmcss[r], "");
++        snprintf(k, sizeof k, "PS3_SCHED_CPUS_%s", k_role_name[r]);
++        env_str(k, s_cpus_role[r], sizeof s_cpus_role[r], "");
++    }
++
++    hs_topology();
++    p_SetThreadSelectedCpuSets = (pfn_SetThreadSelectedCpuSets)(void*)
++        GetProcAddress(k32, "SetThreadSelectedCpuSets");
++    p_SetProcessDefaultCpuSets = (pfn_SetProcessDefaultCpuSets)(void*)
++        GetProcAddress(k32, "SetProcessDefaultCpuSets");
++    for (int r = 0; r < HS_ROLE_COUNT; r++)
++        if (s_mmcss[r][0] && !p_AvSetMmThreadCharacteristicsA) {
++            HMODULE avrt = LoadLibraryA("avrt.dll");
++            if (avrt) p_AvSetMmThreadCharacteristicsA = (pfn_AvSetMmThreadCharacteristicsA)(void*)
++                          GetProcAddress(avrt, "AvSetMmThreadCharacteristicsA");
++        }
++
++    /* Power throttling. Windows may run a background process under EcoQoS
++     * (low clocks, efficiency cores) and, on Windows 11, ignores the 1 ms
++     * timeBeginPeriod of a process whose window is minimized or occluded --
++     * every 1-4 ms wait in the frame handshakes then rounds to the 15.6 ms
++     * tick. Opt out of both: ControlMask = what we decide, StateMask 0 = off. */
++    if (env_int("PS3_SCHED_THROTTLE", 1)) {
++        struct { ULONG Version, ControlMask, StateMask; } pt = { 1, 0x1u | 0x4u, 0 };
++        pfn_SetProcessInformation spi = (pfn_SetProcessInformation)(void*)
++            GetProcAddress(k32, "SetProcessInformation");
++        BOOL ok = spi && spi(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &pt, sizeof pt);
++        if (!ok) {          /* older Windows: no timer-resolution bit */
++            pt.ControlMask = 0x1u;
++            ok = spi && spi(GetCurrentProcess(), 4, &pt, sizeof pt);
++        }
++        fprintf(stderr, "[sched] power throttling off: %s\n", ok ? "yes" : "FAILED");
++    }
++
++    /* Process class: NORMAL by default. ABOVE_NORMAL on top of the per-thread
++     * map halved the late audio blocks with the machine saturated, but its
++     * frame times were not consistently better (+2.5 fps in one series, -8 in
++     * the next, inside the run-to-run noise), so it stays opt-in. */
++    { char pc[16]; env_str("PS3_PRIORITY_CLASS", pc, sizeof pc, "normal");
++      DWORD cls = !strcmp(pc, "above") ? ABOVE_NORMAL_PRIORITY_CLASS :
++                  !strcmp(pc, "high")  ? HIGH_PRIORITY_CLASS : 0;
++      if (cls) fprintf(stderr, "[sched] priority class %s: %s\n", pc,
++                       SetPriorityClass(GetCurrentProcess(), cls) ? "ok" : "FAILED"); }
++
++    { char spec[24]; ULONG ids[HS_MAX_CPUS];
++      env_str("PS3_SCHED_CPUS", spec, sizeof spec, "all");
++      ULONG n = hs_cpus(spec, ids);
++      if (n && p_SetProcessDefaultCpuSets)
++          fprintf(stderr, "[sched] process CPU set %s (%lu logical processors): %s\n", spec,
++                  (unsigned long)n, p_SetProcessDefaultCpuSets(GetCurrentProcess(), ids, n) ? "ok" : "FAILED"); }
++
++    fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
++            s_ncpu, (unsigned)s_fast_llc);
++    for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
++    fprintf(stderr, "%c", 10);
++    return TRUE;
++}
++
++void host_sched_process_init(void)
++{
++    InitOnceExecuteOnce(&s_once, hs_init_once, NULL, NULL);
++}
++
++int host_sched_enabled(void)
++{
++    host_sched_process_init();
++    return s_on;
++}
++
++int64_t host_sched_spin_ticks(void)
++{
++    host_sched_process_init();
++    return s_on ? s_spin_ticks : 0;
++}
++
++/* ---- per thread ---------------------------------------------------------------- */
++static volatile LONG s_ideal_next = 0;
++
++void host_sched_thread_start(int role, int guest_prio, const char* name)
++{
++    host_sched_process_init();
++    if (role < 0 || role >= HS_ROLE_COUNT) role = HS_ROLE_BACKGROUND;
++    t_tag = (role == HS_ROLE_PPU || role == HS_ROLE_MAIN) ? 0 : (uint16_t)(0x100 + role);
++
++    if (p_SetThreadDescription && name && *name) {
++        wchar_t w[64];
++        int n = MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64);
++        if (n <= 0) { w[0] = 0; }
++        w[63] = 0;
++        p_SetThreadDescription(GetCurrentThread(), w);
++    }
++
++    if (!s_on) {           /* stock: the one boost sys_ppu_thread_create had */
++        if (role == HS_ROLE_PPU && guest_prio < 256)
++            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
++        return;
++    }
++
++    int prio = s_prio[role];
++    if (role == HS_ROLE_PPU)
++        prio = guest_prio < 256 ? s_prio_ppuhi : guest_prio < s_ppu_lo ? s_prio_ppu : s_prio_ppulo;
++    if (prio != HS_KEEP) SetThreadPriority(GetCurrentThread(), prio);
++
++    const char* mm = s_mmcss[role];
++    if (role == HS_ROLE_PPU) mm = "";                 /* MMCSS only for host roles + MAIN */
++    int mm_ok = 0;
++    if (mm[0] && p_AvSetMmThreadCharacteristicsA) {
++        DWORD idx = 0;
++        mm_ok = p_AvSetMmThreadCharacteristicsA(mm, &idx) != NULL;
++    }
++
++    ULONG ids[HS_MAX_CPUS];
++    ULONG n = hs_cpus(s_cpus_role[role], ids);
++    int cpus_ok = 0;
++    if (n && p_SetThreadSelectedCpuSets)
++        cpus_ok = p_SetThreadSelectedCpuSets(GetCurrentThread(), ids, n) != 0;
++
++    int ideal = -1;
++    if (s_ideal && s_nranked > 0) {
++        int slot = role == HS_ROLE_MAIN ? 0 : role == HS_ROLE_TICKER ? 1 :
++                   role == HS_ROLE_SPU ? 2 : role == HS_ROLE_AUDIO ? 3 : -1;
++        if (slot < 0 && role == HS_ROLE_SPURS)          /* workers: the rest, in rank order */
++            slot = 4 + (int)(InterlockedIncrement(&s_ideal_next) - 1) % (s_nranked > 4 ? s_nranked - 4 : 1);
++        if (slot >= 0 && slot < s_nranked) {
++            ideal = s_cpu[s_ranked_lp[slot]].lp;
++            SetThreadIdealProcessor(GetCurrentThread(), (DWORD)ideal);
++        }
++    }
++
++    if (s_log)
++        fprintf(stderr, "[sched] thread '%s' role=%s guest_prio=%d -> host prio %d%s%s%s cpus=%s%s ideal=%d\n",
++                name ? name : "?", k_role_name[role], guest_prio, GetThreadPriority(GetCurrentThread()),
++                mm[0] ? " mmcss=" : "", mm, mm[0] ? (mm_ok ? "(ok)" : "(FAILED)") : "",
++                s_cpus_role[role][0] ? s_cpus_role[role] : "-", n ? (cpus_ok ? "(ok)" : "(FAILED)") : "",
++                ideal);
++}
++
++/* ---- timers -------------------------------------------------------------------- */
++static __declspec(thread) HANDLE t_timer;
++static __declspec(thread) int    t_timer_tried;
++
++static int hs_timer_wait(uint64_t usec)
++{
++    if (!t_timer_tried) {
++        t_timer_tried = 1;
++        /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION (Windows 10 1803+): expires on
++         * its due time instead of the next timer tick, independent of
++         * timeBeginPeriod. One per thread, kept: creating and closing a timer
++         * per usleep was two extra kernel objects per guest poll. */
++        t_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
++        if (!t_timer) t_timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
++    }
++    if (!t_timer) return 0;
++    LARGE_INTEGER due;
++    due.QuadPart = -(LONGLONG)(usec * 10);
++    if (!SetWaitableTimer(t_timer, &due, 0, NULL, NULL, FALSE)) return 0;
++    WaitForSingleObject(t_timer, INFINITE);
++    return 1;
++}
++
++int host_sched_sleep_us(uint64_t usec)
++{
++    host_sched_process_init();
++    if (!s_on || !s_timer) return 0;
++    return hs_timer_wait(usec);
++}
++
++int host_sched_sleep_subms(uint64_t usec)
++{
++    host_sched_process_init();
++    if (!s_on || s_subms == 0) return 0;
++    if (s_subms == 2) return hs_timer_wait(usec);
++    /* pause: spin on the deadline with PAUSE (leaves the core's other
++     * hardware thread its execution resources), yielding every 50 us. */
++    LARGE_INTEGER t0, t;
++    QueryPerformanceCounter(&t0);
++    const LONGLONG end = t0.QuadPart + (LONGLONG)(usec * (uint64_t)s_qpf.QuadPart / 1000000u);
++    const LONGLONG every = s_qpf.QuadPart / 20000;
++    LONGLONG next_yield = t0.QuadPart + every;
++    do {
++        for (int i = 0; i < 32; i++) YieldProcessor();
++        QueryPerformanceCounter(&t);
++        if (t.QuadPart >= next_yield) { SwitchToThread(); next_yield = t.QuadPart + every; }
++    } while (t.QuadPart < end);
++    return 1;
++}
++
++#endif /* _WIN32 */
+diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
+new file mode 100644
+index 0000000..eca8287
+--- /dev/null
++++ b/runtime/platform/host_sched.h
+@@ -0,0 +1,110 @@
++/*
++ * ps3recomp - host scheduling policy for the runtime's threads (Windows).
++ *
++ * The PS3 ran the guest's threads on two PPU hardware threads and six SPUs
++ * with lv2's strict priority scheduler. Here every guest thread, SPU thread,
++ * SPURS worker, the vblank/RSX ticker and the audio mixer is a host thread
++ * that Windows schedules at NORMAL priority wherever it likes, next to
++ * everything else on the machine. This module gives each thread a role and
++ * maps the role to a host priority, an optional MMCSS class and an optional
++ * CPU set, and sets the process-wide knobs (power throttling, timer
++ * resolution, priority class). Every knob has an environment override; see
++ * host_sched.c for the list and the measurements behind the defaults.
++ *
++ * It also carries PS3_SCHED_TRACE=<file>: a lock-free per-event timeline
++ * (QPC stamps) of the frame handshakes, for offline analysis.
++ *
++ * Off Windows every function is a no-op.
++ */
++#ifndef PS3RECOMP_HOST_SCHED_H
++#define PS3RECOMP_HOST_SCHED_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum host_sched_role {
++    HS_ROLE_PPU = 0,     /* a guest PPU thread: policy from its guest priority */
++    HS_ROLE_MAIN,        /* the guest's primary PPU thread (runs the frame)    */
++    HS_ROLE_TICKER,      /* vblank clock + FIFO drain + present (boot_main)    */
++    HS_ROLE_SPU,         /* a raw/lifted SPU thread (Tekken: the sound core)   */
++    HS_ROLE_SPURS,       /* SPURS job-chain walker and job-list workers        */
++    HS_ROLE_AUDIO,       /* cellAudio mixer / WASAPI feeder                    */
++    HS_ROLE_DECODER,     /* cellAdec / cellVdec / cellDmux workers             */
++    HS_ROLE_TIMER,       /* sys_timer threads                                  */
++    HS_ROLE_BACKGROUND,  /* anything else that should never compete           */
++    HS_ROLE_COUNT
++};
++
++/* Process-wide settings. Called once from main(); later calls are no-ops. */
++void host_sched_process_init(void);
++
++/* Called by a thread on itself, first thing after it starts. guest_prio is the
++ * lv2 priority for HS_ROLE_PPU / HS_ROLE_MAIN (0 = highest .. 3071), ignored
++ * otherwise. name names the host thread (debuggers, profilers, the trace). */
++void host_sched_thread_start(int role, int guest_prio, const char* name);
++
++/* Was the stock "guest prio < 256 -> ABOVE_NORMAL" boost for PPU threads. */
++int host_sched_enabled(void);
++
++/* Sleep `usec` (>= 1000) on a cached high-resolution waitable timer. Returns 0
++ * when the policy is off or the timer is unavailable (caller falls back). */
++int host_sched_sleep_us(uint64_t usec);
++/* A sub-millisecond usleep (PS3_SCHED_SUBMS=pause|timer); 0 = caller spins. */
++int host_sched_sleep_subms(uint64_t usec);
++
++/* Spin budget (QPC ticks) a blocking lv2 wait may poll before it parks; 0 =
++ * park at once. */
++int64_t host_sched_spin_ticks(void);
++
++/* ---- event trace (PS3_SCHED_TRACE=<file>) ---------------------------------- */
++enum host_sched_ev {
++    HS_EV_SEM_WAIT0 = 1,  /* arg = sem id: about to block / poll               */
++    HS_EV_SEM_WAIT1,      /* arg = sem id: wait returned with a token          */
++    HS_EV_SEM_POST,       /* arg = sem id                                      */
++    HS_EV_USLEEP0,        /* arg = usec                                        */
++    HS_EV_USLEEP1,        /* arg = usec                                        */
++    HS_EV_VBLANK,         /* arg = vblank count (ticker)                       */
++    HS_EV_PUMP_VB0,       /* vblank handler delivery begins (any thread)       */
++    HS_EV_PUMP_VB1,       /* ... ends                                          */
++    HS_EV_FLIP_DONE,      /* flip status -> DONE (pump)                        */
++    HS_EV_USERCMD,        /* cellGcmSetUserCommand, arg = cause                */
++    HS_EV_PRESENT,        /* live-draw frame presented, arg = frame number     */
++    HS_EV_JOBLIST0,       /* SPURS job list begins, arg = job count            */
++    HS_EV_JOBLIST1,       /* ... all jobs done                                 */
++    HS_EV_JC_KICK,        /* job chain run requested, arg = chain slot         */
++    HS_EV_EQ_RECV0,       /* sys_event_queue_receive blocks, arg = queue id    */
++    HS_EV_EQ_RECV1,
++    HS_EV_LWC_WAIT0,      /* lwcond wait, arg = slot                           */
++    HS_EV_LWC_WAIT1,
++    HS_EV_PRESENT0,       /* live-draw present begins (ticker)                 */
++    HS_EV_FIFO0,          /* ticker FIFO drain begins / ends                   */
++    HS_EV_FIFO1,
++    HS_EV_MARK,           /* free-form, arg = caller's tag                     */
++    HS_EV_PUMP_USER,      /* GCM user-command handler delivered, arg = cause    */
++    HS_EV_SC0,            /* main thread enters an lv2 syscall, arg = number    */
++    HS_EV_SC1,
++    HS_EV_HLE0,           /* main thread enters an HLE import, arg = NID        */
++    HS_EV_HLE1
++};
++
++extern int g_host_sched_trace_on;
++void host_sched_trace_(int kind, uint32_t arg);
++#define host_sched_trace(kind, arg) \
++    do { if (g_host_sched_trace_on) host_sched_trace_((kind), (uint32_t)(arg)); } while (0)
++/* Same, attributed to the given guest thread id instead of the current tag. */
++void host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid);
++/* The current thread's trace tag (a PPU thread's guest id). */
++void host_sched_trace_tag(uint32_t tid);
++/* An event stamped with an earlier QueryPerformanceCounter value. */
++void host_sched_trace_at(int kind, uint32_t arg, int64_t qpc);
++void host_sched_trace_tid_at(int kind, uint32_t arg, uint32_t tid, int64_t qpc);
++int64_t host_sched_qpc(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* PS3RECOMP_HOST_SCHED_H */
+diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
+index 17cf4a5..e2096d0 100644
+--- a/runtime/ppu/ppu_hle.cpp
++++ b/runtime/ppu/ppu_hle.cpp
+@@ -154,6 +154,7 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd,
+ /* Weak: builds that don't link cellGcmSys.c (test harnesses) get a null and skip. */
+ extern "C" __attribute__((weak)) void ppu_gcm_pump(void);
+ #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
++#include "../platform/host_sched.h"         /* PS3_SCHED_TRACE: the main thread's HLE calls */
+ 
+ /* An unresolved NID is a firmware import we never registered. Returning
+  * CELL_OK "so the game keeps going" is the single biggest source of
+@@ -257,6 +258,13 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+                       unsigned t = (unsigned)c->thread_id;
+                       if (t < PS3_HLE_INFLIGHT_MAX) g_hle_inflight[t] = nullptr; }
+     } _tg{ ctx, ctx->gpr[2], ctx->gpr[1] };
++    /* Only calls that took a while: lwmutex lock/unlock alone are ~27k a second. */
++    struct _HsTrace { uint32_t nid, tid; int64_t t0;
++        ~_HsTrace(){ if (t0) { const int64_t t1 = host_sched_qpc();
++                               if (t1 - t0 > 200) { host_sched_trace_tid_at(HS_EV_HLE0, nid, tid, t0);
++                                                    host_sched_trace_tid_at(HS_EV_HLE1, nid, tid, t1); } } }
++    } _hst{ nid, ctx ? (uint32_t)ctx->thread_id : 0,
++            (g_host_sched_trace_on && ctx && ctx->thread_id < 0x100) ? host_sched_qpc() : 0 };
+     /* Deliver any pending vblank/flip tick on THIS (guest) thread, serialized with
+      * guest execution -- the vblank ticker only marks ticks pending; the handlers
+      * run here so guest code never executes concurrently on the ticker thread. */
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 750cdfd..4af2724 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -31,6 +31,7 @@
+ #include "../ppu_tls.h"
+ #include "../../platform/win32_compat.h"      /* Sleep, GetTickCount64, threads on POSIX */
+ #include "../../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
++#include "../../platform/host_sched.h"        /* thread roles: priority, CPU set, name */
+ /* The lifted ppu_recomp.h already defines `struct ppu_context` (identical to
+  * runtime/ppu/ppu_context.h by design -- "keep the two in sync"). A syscall
+  * header included later (sys_ppu_thread.h -> lv2_syscall_table.h -> ppu_context.h)
+@@ -456,6 +457,8 @@ static volatile DWORD g_ticker_tid = 0;   /* PS3_HOST_PROF_WHO=ticker */
+ static DWORD WINAPI vblank_ticker(LPVOID)
+ {
+     g_ticker_tid = GetCurrentThreadId();
++    /* The handshake thread: vblank clock, FIFO drain, present, GCM handlers. */
++    host_sched_thread_start(HS_ROLE_TICKER, 0, "ticker");
+     /* Window caption: $PS3_TITLE wins, else the TITLE field PARAM.SFO already
+      * gave cellGame, else a neutral name. It used to fall back to a specific
+      * other title, so every port announced itself as that game. */
+@@ -1274,6 +1277,7 @@ int main(int argc, char** argv)
+     timeBeginPeriod(1);   /* 1ms timer resolution: the default ~15.6ms granularity
+                            * inflates every sub-15ms wait (the game's event polls,
+                            * usleeps) and throttled the whole title. */
++    host_sched_process_init();   /* power throttling, priority class, CPU sets */
+     SetUnhandledExceptionFilter(ydkj_crash_filter);
+     AddVectoredExceptionHandler(0 /*last*/, [](EXCEPTION_POINTERS* ep)->LONG{
+         if (ep->ExceptionRecord->ExceptionCode == 0xC00000FDu /*STACK_OVERFLOW*/) {
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+index d8134ea..451d4bd 100644
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -15,6 +15,7 @@
+ #include "ps3emu/nid.h"   /* ps3_compute_nid (static inline) */
+ #include "lv2_syscall_table.h"
+ #include "sys_ppu_thread.h"
++#include "../platform/host_sched.h"   /* SPU thread priority / CPU set */
+ #include "sys_mutex.h"
+ #include "sys_cond.h"
+ #include "sys_semaphore.h"
+@@ -864,6 +865,7 @@ static void* spu_exec_thread_proc(void* arg)
+ #ifdef _WIN32
+     { ULONG g = 256 * 1024; SetThreadStackGuarantee(&g); }  /* let SO reach the reporter */
+ #endif
++    host_sched_thread_start(HS_ROLE_SPU, 0, "spu");
+     spu_thread_t* t = (spu_thread_t*)arg;
+     spu_lifted_thread_result r;
+     spu_lifted_thread_run(t->sctx, &r);
+@@ -896,6 +898,7 @@ static void* spu_fallback_thread_proc(void* arg)
+ #ifdef _WIN32
+     { ULONG g = 256 * 1024; SetThreadStackGuarantee(&g); }  /* let SO reach the reporter */
+ #endif
++    host_sched_thread_start(HS_ROLE_SPU, 0, "spu");
+     spu_thread_t* t = (spu_thread_t*)arg;
+     int32_t rc = 0;
+     if (t->fb_handler) {
+@@ -2763,7 +2766,13 @@ int lv2_try_syscall(ppu_context* ctx)
+     uint32_t _a3 = (uint32_t)ctx->gpr[3], _a4 = (uint32_t)ctx->gpr[4], _a5 = (uint32_t)ctx->gpr[5];
+     uint32_t _a6 = (uint32_t)ctx->gpr[6], _a7 = (uint32_t)ctx->gpr[7], _a8 = (uint32_t)ctx->gpr[8],
+              _a9 = (uint32_t)ctx->gpr[9];
++    const int64_t _tr = (g_host_sched_trace_on && ctx->thread_id < 0x100) ? host_sched_qpc() : 0;
+     ctx->gpr[3] = (uint64_t)h(ctx);
++    if (_tr) {                 /* guest threads' syscalls that took > ~20 us */
++        const int64_t _t1 = host_sched_qpc();
++        if (_t1 - _tr > 200) { host_sched_trace_tid_at(HS_EV_SC0, num, (uint32_t)ctx->thread_id, _tr);
++                               host_sched_trace_tid_at(HS_EV_SC1, num, (uint32_t)ctx->thread_id, _t1); }
++    }
+     /* LV2_ERRDBG=1: every syscall that returns non-OK, deduped by (number,
+      * result). A guest that asserts on a result once per frame is easier to
+      * find from this side than by reading its lifted code. */
+diff --git a/runtime/syscalls/sys_event.c b/runtime/syscalls/sys_event.c
+index 18245fc..bb3bb51 100644
+--- a/runtime/syscalls/sys_event.c
++++ b/runtime/syscalls/sys_event.c
+@@ -5,6 +5,7 @@
+ #include "sys_event.h"
+ #include "../ps3_log.h"
+ #include "sys_timer.h"             /* lv2_usec_deadline: sub-ms timed waits */
++#include "../platform/host_sched.h"   /* PS3_SCHED_TRACE */
+ #include "../memory/vm.h"
+ #include "../spu/spu_workload.h"   /* spu_elf_image_size, spu_workload_dispatch_async */
+ #include <string.h>
+@@ -472,9 +473,11 @@ int64_t sys_event_queue_receive(ppu_context* ctx)
+     EnterCriticalSection(&q->lock);
+ 
+     if (timeout_us == 0) {
++        if (q->count == 0) host_sched_trace_tid(HS_EV_EQ_RECV0, queue_id, (uint32_t)ctx->thread_id);
+         while (q->count == 0 && q->active && !q->cancelled) {
+             SleepConditionVariableCS(&q->not_empty, &q->lock, INFINITE);
+         }
++        host_sched_trace_tid(HS_EV_EQ_RECV1, queue_id, (uint32_t)ctx->thread_id);
+         if (q->count == 0 && q->cancelled) {
+             LeaveCriticalSection(&q->lock);
+             return (int64_t)(int32_t)CELL_ECANCELED;
+diff --git a/runtime/syscalls/sys_lwsync.c b/runtime/syscalls/sys_lwsync.c
+index f55cfa5..d2b3d4a 100644
+--- a/runtime/syscalls/sys_lwsync.c
++++ b/runtime/syscalls/sys_lwsync.c
+@@ -19,6 +19,7 @@
+ #include "lv2_syscall_table.h"
+ #include "../../include/ps3emu/error_codes.h"
+ #include "../platform/win32_compat.h"
++#include "../platform/host_sched.h"   /* PS3_SCHED_TRACE */
+ #include <limits.h>
+ #include <string.h>
+ 
+@@ -123,7 +124,9 @@ static void awake(waiter* w)
+ static int sleep_on(waiter* w, uint64_t timeout_us)
+ {
+     if (!timeout_us) {
++        host_sched_trace_tid(HS_EV_LWC_WAIT0, 0, (uint32_t)w->tid);
+         while (!w->woken) SleepConditionVariableSRW(&w->cv, &s_lock, INFINITE, 0);
++        host_sched_trace_tid(HS_EV_LWC_WAIT1, 0, (uint32_t)w->tid);
+         return 1;
+     }
+     LARGE_INTEGER f, t0, t;
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index ee91099..9eb022a 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -25,6 +25,7 @@ static PPU_TLS int     s_exit_done = 0;
+ #include <stddef.h>
+ #include "sys_ppu_thread.h"
+ #include "../platform/win32_compat.h"   /* GetCurrentThreadId on POSIX */
++#include "../platform/host_sched.h"     /* host priority/affinity/name per thread */
+ #include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>   /* getenv (else return value truncated to int on x64) */
+@@ -138,6 +139,9 @@ static void* ppu_host_thread_proc(void* param)
+      * backtrace that would name the recursing function is lost. */
+     { ULONG g = 256 * 1024; SetThreadStackGuarantee(&g); }
+ #endif
++    /* Host priority / CPU set / name from the lv2 priority (host_sched.c). */
++    host_sched_thread_start(HS_ROLE_PPU, info->priority, info->name);
++    host_sched_trace_tag((uint32_t)info->ctx.thread_id);
+ 
+     /* Register this thread's context for lwarx/stwcx cross-thread reservation
+      * invalidation (ppu_loader.cpp) -- so a concurrent stwcx breaks this thread's
+@@ -289,6 +293,9 @@ uint64_t ppu_thread_register_main(void)
+ #endif
+     }
+     table_unlock();
++    /* Called on the host thread that runs the guest's main thread. */
++    host_sched_thread_start(HS_ROLE_MAIN, g_ppu_primary_prio, "main");
++    host_sched_trace_tag(1);
+     return 1;
+ }
+ 
+@@ -497,11 +504,9 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+      * I/O pollers. At normal host priority they wake late under a busy frame:
+      * The Simpsons Arcade Game's music thread (prio 0) polls the audio read
+      * index every 2.5 ms and misses a 5.3 ms block whenever it is delayed, and
+-     * each miss is an audible gap. A mild boost, not TIME_CRITICAL: these
+-     * threads sleep between polls.
+-     * ponytail: two host levels only; map the full range if a title needs it. */
+-    if (priority < 256)
+-        SetThreadPriority(t->host_thread, THREAD_PRIORITY_ABOVE_NORMAL);
++     * each miss is an audible gap. The thread maps its lv2 priority to a host
++     * one itself, first thing (ppu_host_thread_proc -> host_sched.c; prio < 256
++     * is still ABOVE_NORMAL there). */
+ #else
+     /* Same reservation, for the same reason. This is the HOST stack the
+      * recompiled C frames run on, not the guest stack (allocated above out of
+diff --git a/runtime/syscalls/sys_semaphore.c b/runtime/syscalls/sys_semaphore.c
+index 79a9ef2..143d96c 100644
+--- a/runtime/syscalls/sys_semaphore.c
++++ b/runtime/syscalls/sys_semaphore.c
+@@ -5,6 +5,7 @@
+ #include "sys_semaphore.h"
+ #include "../ps3_log.h"
+ #include "sys_timer.h"   /* lv2_usec_deadline: sub-ms timed waits */
++#include "../platform/host_sched.h"   /* spin-before-park budget, PS3_SCHED_TRACE */
+ #include "../memory/vm.h"
+ #include <string.h>
+ #include <stdlib.h>      /* getenv (else the pointer return is truncated to int) */
+@@ -383,18 +384,39 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
+     /* value is the only count. The kernel semaphore is only a wake channel;
+      * every wake re-checks value under the lock. */
+     int64_t deadline = (timeout_us > 0) ? lv2_usec_deadline(timeout_us) : 0;
++    host_sched_trace_tid(HS_EV_SEM_WAIT0, sem_id, (uint32_t)ctx->thread_id);
++    int spun = 0;
+     for (;;) {
+         /* Take a token if available (the ONLY count, under the lock). */
+         EnterCriticalSection(&s->value_lock);
+         if (s->value > 0) {
+             s->value--;
+             LeaveCriticalSection(&s->value_lock);
++            host_sched_trace_tid(HS_EV_SEM_WAIT1, sem_id, (uint32_t)ctx->thread_id);
+             return CELL_OK;
+         }
+         if (timeout_us > 0 && lv2_deadline_passed(deadline)) {
+             LeaveCriticalSection(&s->value_lock);
+             return (int64_t)(int32_t)CELL_ETIMEDOUT;
+         }
++        /* PS3_SCHED_SPIN_US: poll the count a little before parking, once per
++         * wait -- a post that lands within the budget is taken without the
++         * kernel round trip and the waker's wake-up latency. */
++        if (!spun) {
++            spun = 1;
++            const int64_t budget = host_sched_spin_ticks();
++            if (budget > 0) {
++                LeaveCriticalSection(&s->value_lock);
++                LARGE_INTEGER t0, t;
++                QueryPerformanceCounter(&t0);
++                do {
++                    YieldProcessor();
++                    if (*(volatile int32_t*)&s->value > 0) break;
++                    QueryPerformanceCounter(&t);
++                } while (t.QuadPart - t0.QuadPart < budget);
++                continue;               /* re-check under the lock */
++            }
++        }
+         s->waiters++;
+         LeaveCriticalSection(&s->value_lock);
+ 
+@@ -535,6 +557,7 @@ int64_t sys_semaphore_post(ppu_context* ctx)
+         return (int64_t)(int32_t)CELL_ESRCH;
+ 
+ #ifdef _WIN32
++    host_sched_trace_tid(HS_EV_SEM_POST, sem_id, (uint32_t)ctx->thread_id);
+     EnterCriticalSection(&s->value_lock);
+     if (s->value + count > s->max_value) {
+         if (getenv("PS3_SEMTRACE")) { static int _n=0; if(__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED)<6)
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index 49fc67d..e5108bf 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -5,6 +5,7 @@
+ #include "sys_timer.h"
+ #include "sys_event.h"
+ #include "../memory/vm.h"
++#include "../platform/host_sched.h"   /* cached high-resolution sleep timer, trace */
+ #include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
+ #include <string.h>
+ #include <stdlib.h>
+@@ -213,8 +214,13 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+         ppu_log_host_chain("usleep1ms"); } }
+ 
+ #ifdef _WIN32
+-    /* Use high-resolution sleep via waitable timer for better precision */
+-    if (usec >= 1000) {
++    host_sched_trace_tid(HS_EV_USLEEP0, (uint32_t)usec, (uint32_t)ctx->thread_id);
++    /* A cached high-resolution timer per thread (host_sched.c): exact to the
++     * due time whatever the timer resolution, and no kernel objects created
++     * per call. The block below is the fallback (PS3_SCHED=0 / _TIMER=0). */
++    if (usec >= 1000 && host_sched_sleep_us(usec)) {
++        /* slept */
++    } else if (usec >= 1000) {
+         HANDLE timer = CreateWaitableTimerW(NULL, TRUE, NULL);
+         if (timer) {
+             LARGE_INTEGER due;
+@@ -234,6 +240,7 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+          * Busy-wait to a precise QPC deadline, yielding inside the spin
+          * (SwitchToThread) so a sibling host thread the guest may be waiting on
+          * still gets the core. Mirrors RPCS3's "Usleep Only" TSC busy-tail. */
++        if (!host_sched_sleep_subms(usec)) {
+         ensure_qpc_init();
+         LARGE_INTEGER qpc_start, qpc_now;
+         QueryPerformanceCounter(&qpc_start);
+@@ -243,7 +250,9 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+             SwitchToThread();
+             QueryPerformanceCounter(&qpc_now);
+         } while (qpc_now.QuadPart < qpc_deadline);
++        }
+     }
++    host_sched_trace_tid(HS_EV_USLEEP1, (uint32_t)usec, (uint32_t)ctx->thread_id);
+ #else
+     if (usec > 0) {
+         struct timespec ts;
+@@ -402,6 +411,7 @@ static void timer_send_event(sys_timer_info* t);
+ static DWORD WINAPI timer_thread_proc(LPVOID param)
+ {
+     sys_timer_info* t = (sys_timer_info*)param;
++    host_sched_thread_start(HS_ROLE_TIMER, 0, "sys_timer");
+ 
+     while (t->running) {
+         DWORD ms = (DWORD)(t->period_usec / 1000);
+diff --git a/tests/sync_stress/CMakeLists.txt b/tests/sync_stress/CMakeLists.txt
+index 52fb821..cc1bb6b 100644
+--- a/tests/sync_stress/CMakeLists.txt
++++ b/tests/sync_stress/CMakeLists.txt
+@@ -58,6 +58,8 @@ add_executable(sync_stress
+     "${RUNTIME_SYNC_DIR}/sys_semaphore.c"
+     "${RUNTIME_SYNC_DIR}/sys_event.c"
+     "${RUNTIME_SYNC_DIR}/sys_rwlock.c"
++    # sys_semaphore.c asks it for the spin budget and traces through it
++    "${PS3RECOMP_TREE_ROOT}/runtime/platform/host_sched.c"
+ )
+ if(NOT WIN32)
+     # The Win32 handle, wait and thread API the harness drives.

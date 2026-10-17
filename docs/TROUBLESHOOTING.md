@@ -289,7 +289,6 @@ at the last lines. Then see [How to collect logs](#how-to-collect-logs).
 Known causes:
 
 - The memory bug (see below).
-- The game's own **Online** menu entry crashes after the terms screen (known).
 - Once in 8 test runs of the release build, the game ended by itself after about
   48 seconds with exit code -1 and no `[CRASH]` line. Not explained yet. If it
   happens to you, please send the log.
@@ -560,41 +559,36 @@ idle at the title or attract screen reaches the same state after about 3 minutes
 
 Saves live in `native\gamedata\dev_hdd0\home\00000001\savedata\`. In the Play
 tab, **Open saves folder** opens `native\gamedata`. Folder names look like
-`NPUB30009-SYSNET` (system data) and `NPUB30009-CN1970...` (play data).
+`NPUB30009-SYSNET` ("PLAY DATA") and `NPUB30009-CN<date>` ("CUSTOMIZE DATA").
+The game keeps using the same folders; new ones do not pile up.
 
-Known problems (from our QA run):
+**Options > Delete Save Data** opens a list of the game's saves over the game
+window, like the PS3's own list: the save's picture, name, date and size. Pick
+one with up/down and CROSS (or Enter), confirm with "Yes", go back with CIRCLE
+(or Esc). Nothing is lost for good: a deleted save is moved to
+`savedata\.deleted\<folder>.<date-time>`. To get it back, close the game and
+move the folder back into `savedata` (drop the `.<date-time>` part of its name).
 
-- **The first save on a fresh profile can fail silently.** The folder is left with
-  only a `PARAM.SFO`, and the next start says "Unable to load Play Data". On a
-  fresh profile, the online terms screen may say "Unable to save properly". Saves
-  did work in other tests (saved and reloaded). Our runtime lacks a system call
-  that the save code needs.
-- **The clock reads 1970.** New save folders with `1970` in their name keep
-  appearing.
-- **Options > Delete Save Data does nothing.**
-
-What to do:
-
-- Back up `native\gamedata` now and then. Copying `native` to a new release folder
-  keeps your saves.
-- If "Unable to load Play Data" appears: close the game, back up
-  `native\gamedata`, and delete the save folders that hold only a `PARAM.SFO`.
-  **(untested)** Then start the game again.
-- To delete a save, close the game and delete its folder by hand. **(untested)**
+Back up `native\gamedata` now and then. Copying `native` to a new release folder
+keeps your saves.
 
 ## Other known problems
 
 From our QA report of 2026-10-16. None of these is a problem with your PC.
 
-- **Every fighter's face is dark** (brown or black). The rest of the skin is fine.
-- **Light see-through rectangles** on floors and walls in some fights (temple,
-  Chinatown). They move with the camera.
-- **Some background figures are flat white** (spectators at the construction site,
-  wolves in the forest).
-- **Gallery** needs PSN. Offline it fails cleanly (no crash). The Online Manual
-  (it opens a browser) is missing.
-- **Online** (the game's own menu): crashes after you accept the terms. Do not use
-  it. See "Online" in the README.
+- **Gallery** downloads its list of movies and pictures from Namco's update
+  server, which is gone. The game says "Unable to update content list" and
+  offers to go back to the title. On a PS3 today it is the same.
+- **Options > Online Manual** opened the PS3's web browser on a page that no
+  longer exists. The port has no PS3 browser: nothing happens when you choose it.
+- **Online** (the game's own menu): after the terms screen the game says "A
+  network error occurred. Returning to the title screen." and goes back to the
+  title. It needs Sony's servers, which are gone. Use the launcher's Online tab
+  instead (see "Online" in the README).
+
+Fixed since the QA report of 2026-10-16: dark faces, see-through rectangles on
+floors, flat white background figures (spectators, wolves), the 1970 clock and
+the failing first save.
 
 ## How to collect logs
 

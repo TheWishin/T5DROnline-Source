@@ -153,8 +153,10 @@ middle : Anna Marduk Law Hwoarang King Lili Dragunov Heihachi Christie Paul Jack
 bottom : RogerJr Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma
 ```
 
-Panda has no cell (Kuma's cell with the alternate confirm button, `T5_DF_ALT_BUTTON`,
-default CIRCLE -- unverified).
+Kuma and Panda share the last bottom cell: a punch button (SQUARE) confirms
+Kuma, a kick button Panda. The driver presses SQUARE for Kuma and
+`T5_DF_ALT_BUTTON` (default CIRCLE) for Panda; checked by forcing both
+(before, Kuma was confirmed with CROSS and came out as Panda).
 
 ## After the match: no input reaches the select screen
 

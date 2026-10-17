@@ -39,8 +39,8 @@ clean PC and a match between two real PCs over the internet are still to come.
 |---|---|
 | Start-up | Works. Boots, opens the window, reaches the title, menus, character select and fights. |
 | Menus, fights | 60 fps, also with other programs busy on the PC. Weaker PCs are not measured yet. |
-| Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery needs PSN and fails cleanly offline. |
-| Fighters, stages | Render correctly. Faces and floor shadows are fixed. Some background figures may still look flat white. |
+| Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
+| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
@@ -199,8 +199,8 @@ Good to know:
   disconnecting counts as a loss. A desync voids the match.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
-Do not use the game's own **Online** menu entry. Sony's servers are gone. After
-the terms screen it crashes (known).
+The game's own **Online** menu entry needs Sony's servers, which are gone: after
+the terms screen it says "A network error occurred" and goes back to the title.
 
 You can run your own server: on a small Linux VPS, with Docker, on a Mac, or
 with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md).

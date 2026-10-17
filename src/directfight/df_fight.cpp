@@ -102,7 +102,7 @@ const int kGrid[36] = {
 int cell_of(int chr)
 {
     for (int c = 0; c < 35; c++) if (kGrid[c] == chr) return c;
-    if (chr == 12) return cell_of(11);      /* Panda shares Kuma's cell (alternate confirm button) */
+    if (chr == 12) return cell_of(11);      /* Panda shares Kuma's cell (a kick button confirms Panda) */
     return -1;
 }
 int cell_row(int c) { return c >= 24 ? 0 : c >= 12 ? 2 : 1; }         /* 0 top, 1 middle, 2 bottom */
@@ -703,8 +703,12 @@ void fight_on_frame(uint32_t f)
                 const int target = cell_of(g_cfg.chr[p]);
                 if (target < 0) { if (g_steps[p]++ == 0) note("player %d: no cell for character %d", p + 1, g_cfg.chr[p]); continue; }
                 if (navigate(p, target, f)) {
-                    const bool shared = (g_cfg.chr[p] == 12);   /* Panda on Kuma's cell */
-                    press(p, shared ? g_alt_button : B_CROSS, f);
+                    /* Kuma and Panda share a cell: a punch button (SQUARE) picks
+                     * Kuma, a kick button (CROSS/CIRCLE) Panda -- so Kuma cannot
+                     * be confirmed with CROSS like everyone else (it gave Panda). */
+                    const uint16_t confirm = g_cfg.chr[p] == 12 ? g_alt_button
+                                           : g_cfg.chr[p] == 11 ? (uint16_t)B_SQUARE : (uint16_t)B_CROSS;
+                    press(p, confirm, f);
                 }
             } else if (st == 9) {
                 press(p, g_cfg.color[p] == 2 ? B_TRIANGLE : B_CROSS, f);

@@ -281,7 +281,8 @@ def gallery_offline(ctx):
 
 @test("save_reload", ("full",),
       "fresh profile: change a setting in OPTIONS so the game saves, quit, boot again on the same gamedata: "
-      "the save loads (QA issue 4: the first save into a new folder failed)", budget=150)
+      "the save loads (QA issue 4: the first save into a new folder failed); then OPTIONS > DELETE SAVE DATA "
+      "deletes one of the two saves through the system list", budget=180)
 def save_reload(ctx):
     g = ctx.boot(label="boot1")
     if to_title(g):
@@ -303,6 +304,27 @@ def save_reload(ctx):
               f"{loads} existing save(s) loaded, {bad} 'Unable to load' dialog(s)", evidence="game.log")
     g2.wait(3)
     g2.shot("title-after-reload")
+    # OPTIONS > DELETE SAVE DATA opens the system's save data list (ps3_sysui,
+    # patch 0033): second save, "Delete this saved data?" Yes, back to the game.
+    g2.phase("delete-save", "menu")
+    pick_mode(g2, OPTIONS, wait=2.5)
+    for _ in range(4):
+        g2.press("DOWN", gap=450)                # DELETE SAVE DATA
+    g2.press("CROSS", gap=1500)
+    listed = g2.wait_log(r"\[sysui\] list .*: 2 item", timeout=10)
+    g2.press("DOWN", gap=600)
+    g2.press("CROSS", gap=900)                   # "Delete this saved data?" (cursor on No)
+    g2.press("LEFT", gap=600)                    # Yes
+    g2.press("CROSS", gap=2500)                  # deleted -> "Deleted." -> the list again
+    left = g2.wait_log(r"\[sysui\] list .*: 1 item", timeout=10)
+    g2.press("CIRCLE", gap=1500)                 # back to the game's OPTIONS menu
+    gone = g2.wait_log(r"Delete2: 1 save\(s\) deleted", timeout=10)
+    g2.expect("deleted", listed and left and gone,
+              "the list showed 2 saves, one was deleted, 1 left" if listed and left and gone else
+              f"list with 2 saves: {listed}, 1 left after deleting: {left}, Delete2 reported it: {gone}",
+              evidence="game.log")
+    g2.wait(2)
+    g2.shot("options-after-delete")
 
 
 @test("idle_attract", ("full",), "10 minutes with no input: title <-> attract demo cycling by itself", budget=610)

@@ -40,8 +40,8 @@ Internet stehen noch aus.
 |---|---|
 | Start | Funktioniert. Startet, öffnet das Fenster, erreicht Titel, Menüs, Charakterwahl und Kämpfe. |
 | Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Schwächere PCs sind noch nicht gemessen. |
-| Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery braucht PSN und scheitert offline sauber. |
-| Kämpfer, Stages | Werden richtig dargestellt. Gesichter und Bodenschatten sind behoben. Manche Figuren im Hintergrund können noch flach weiß aussehen. |
+| Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
+| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
@@ -178,8 +178,9 @@ Gut zu wissen:
   ungültig.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
-Benutze nicht den Menüpunkt **Online** des Spiels. Sonys Server gibt es nicht
-mehr. Nach dem Nutzungsbedingungs-Bildschirm stürzt er ab (bekannt).
+Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
+gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error
+occurred" und kehrt zum Titel zurück.
 
 Du kannst einen eigenen Server betreiben: auf einem kleinen Linux-VPS, mit
 Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe

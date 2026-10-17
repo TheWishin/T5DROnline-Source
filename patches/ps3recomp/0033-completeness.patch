@@ -1,0 +1,1320 @@
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index c2f0b99..53e85fc 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -14,6 +14,7 @@
+ 
+ #include <time.h>
+ #include "cellPad.h"
++#include "../system/ps3_sysui.h"   /* ps3_sysui_pad_swallow */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -129,6 +130,14 @@ static void pad_sample_port(u32 port)
+     PadHostPort st;
+     if (port >= PAD_MAX_HOST_PORTS) return;
+     padh_read(port, PADH_READER_GAME, &st, padh_min_interval_us());
++    /* A system dialog (ps3_sysui: the save data delete list) holds the pads:
++     * the title reads a neutral pad until the press that closed it is
++     * released, so none of the dialog's presses reach the game menu. */
++    if (ps3_sysui_pad_swallow(port, st.buttons)) {
++        st.buttons = 0; st.tapped = 0;
++        st.lx = st.ly = st.rx = st.ry = 0x80;
++        st.l2 = st.r2 = 0;
++    }
+     s_tapped[port] = st.tapped;
+     PadHostState* hs = &s_host_state[port];
+     hs->connected = st.connected;
+diff --git a/libs/network/cellHttp.c b/libs/network/cellHttp.c
+index 8b546e0..14da604 100644
+--- a/libs/network/cellHttp.c
++++ b/libs/network/cellHttp.c
+@@ -906,8 +906,9 @@ s32 cellHttpAddRequestHeader(CellHttpTransId transId, const char* name,
+     h->value[sizeof(h->value) - 1] = '\0';
+     t->custom_header_count++;
+ 
++    /* name/value are guest addresses: print the host copies. */
+     printf("[cellHttp] AddRequestHeader(trans=%u, '%s: %s')\n",
+-           transId, name, value);
++           transId, h->name, h->value);
+     return CELL_OK;
+ }
+ 
+@@ -925,3 +926,31 @@ s32 cellHttpAbortTransaction(CellHttpTransId transId)
+     printf("[cellHttp] AbortTransaction(trans=%u)\n", transId);
+     return CELL_OK;
+ }
++
++/* ---------------------------------------------------------------------------
++ * The SDK's names for four calls this file implements under older names.
++ * Tekken 5 DR imports cellHttpResponseGetStatusCode,
++ * cellHttpResponseGetContentLength, cellHttpRequestSetContentLength and
++ * cellHttpTransactionAbortConnection (NIDs 0x10D0D7FC, 0x464FF889,
++ * 0xAF73A64E, 0x2D52848B); the table registers by name, so all four were
++ * unresolved and faked CELL_OK with untouched out-params.
++ * -----------------------------------------------------------------------*/
++s32 cellHttpResponseGetStatusCode(CellHttpTransId transId, s32* code)
++{
++    return cellHttpGetStatusCode(transId, code);
++}
++
++s32 cellHttpResponseGetContentLength(CellHttpTransId transId, u64* length)
++{
++    return cellHttpGetResponseContentLength(transId, length);
++}
++
++s32 cellHttpRequestSetContentLength(CellHttpTransId transId, u64 length)
++{
++    return cellHttpSetRequestContentLength(transId, length);
++}
++
++s32 cellHttpTransactionAbortConnection(CellHttpTransId transId)
++{
++    return cellHttpAbortTransaction(transId);
++}
+diff --git a/libs/network/cellHttp.h b/libs/network/cellHttp.h
+index 14c767d..ae8a123 100644
+--- a/libs/network/cellHttp.h
++++ b/libs/network/cellHttp.h
+@@ -111,6 +111,11 @@ s32 cellHttpSetRequestContentLength(CellHttpTransId transId, u64 length);
+ s32 cellHttpAddRequestHeader(CellHttpTransId transId, const char* name,
+                              const char* value);
+ s32 cellHttpAbortTransaction(CellHttpTransId transId);
++/* SDK names of the four calls above (aliases, cellHttp.c) */
++s32 cellHttpResponseGetStatusCode(CellHttpTransId transId, s32* code);
++s32 cellHttpResponseGetContentLength(CellHttpTransId transId, u64* length);
++s32 cellHttpRequestSetContentLength(CellHttpTransId transId, u64 length);
++s32 cellHttpTransactionAbortConnection(CellHttpTransId transId);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libs/system/cellGame.c b/libs/system/cellGame.c
+index 071b9ec..ba750af 100644
+--- a/libs/system/cellGame.c
++++ b/libs/system/cellGame.c
+@@ -814,3 +814,19 @@ s32 cellGameContentErrorDialog(s32 type, s32 errNeedSizeKB, const char* dirName)
+ 
+     return CELL_OK;
+ }
++
++/* cellHddGameExitBroken (sysutil 0xAFD605B3): on hardware the system shows
++ * "the game data is corrupted" and ends the game; the call does not return.
++ * Tekken 5 DR calls it when cellHddGameCheck reports CELL_HDDGAME_ERROR_BROKEN
++ * (0x162D20), which this runtime never does -- but if it ever happens, end the
++ * process with the reason in the log instead of returning a fake CELL_OK into
++ * a boot path that expects the game to be gone. */
++extern void sys_process_exit(int32_t exitcode);   /* libs/system/sysPrxForUser.c */
++s32 cellHddGameExitBroken(void)
++{
++    printf("[cellGame] *** HddGameExitBroken: the game data is broken -- the title exits "
++           "(rebuild the game data from the package)\n");
++    fflush(stdout);
++    sys_process_exit(1);   /* does not return */
++    return CELL_OK;
++}
+diff --git a/libs/system/cellGame.h b/libs/system/cellGame.h
+index b7dfd50..d9fa1c9 100644
+--- a/libs/system/cellGame.h
++++ b/libs/system/cellGame.h
+@@ -178,6 +178,7 @@ s32 cellGameGetLocalWebContentPath(char* path);
+  * right after; the type and dirName are the only record of what it objected
+  * to, so the implementation logs them. */
+ s32 cellGameContentErrorDialog(s32 type, s32 errNeedSizeKB, const char* dirName);
++s32 cellHddGameExitBroken(void);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libs/system/cellMsgDialog.c b/libs/system/cellMsgDialog.c
+index d1fa7b2..d8d4d38 100644
+--- a/libs/system/cellMsgDialog.c
++++ b/libs/system/cellMsgDialog.c
+@@ -109,12 +109,39 @@ static int msg_offers_to_abort(const char* msg)
+     return 0;
+ }
+ 
++/* Open2 with the text already on the host (NULL = no text): the shared body
++ * of Open2 and OpenErrorCode, which builds its text itself. */
++static s32 msgdialog_open(CellMsgDialogType type, const char* text,
++                          CellMsgDialogCallback callback, void* userdata);
++
+ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
+                         CellMsgDialogCallback callback, void* userdata,
+                         void* extParam)
++{
++    (void)extParam;
++    return msgdialog_open(type, msgString ? guest_str(msgString) : NULL, callback, userdata);
++}
++
++/* cellMsgDialogOpenErrorCode(errorCode, callback, userData, extParam): the
++ * system's error dialog -- a fixed "An error occurred" text with the code and
++ * one OK button. Tekken 5 DR's error-dialog helper (0x1EA7BC) calls it; it
++ * was unregistered, so the title got CELL_OK and never a callback. Same
++ * headless model as Open2: the text goes to the log, OK is answered. */
++s32 cellMsgDialogOpenErrorCode(u32 errorCode, CellMsgDialogCallback callback,
++                               void* userdata, void* extParam)
++{
++    (void)extParam;
++    char text[96];
++    snprintf(text, sizeof(text), "An error occurred. (%08X)", errorCode);
++    return msgdialog_open(CELL_MSGDIALOG_TYPE_SE_TYPE_ERROR | CELL_MSGDIALOG_TYPE_BUTTON_TYPE_OK,
++                          text, callback, userdata);
++}
++
++static s32 msgdialog_open(CellMsgDialogType type, const char* text,
++                          CellMsgDialogCallback callback, void* userdata)
+ {
+     printf("[cellMsgDialog] Open2(type=0x%08X, msg='%s')\n",
+-           type, guest_str(msgString));
++           type, text ? text : "<null>");
+ 
+     if (s_dialog_open) {
+         printf("[cellMsgDialog] WARNING: dialog already open, closing previous\n");
+@@ -127,9 +154,9 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
+     memset(s_progress, 0, sizeof(s_progress));
+ 
+     /* Print the message so developers can see it */
+-    if (msgString) {
++    if (text) {
+         printf("========================================\n");
+-        printf("[DIALOG] %s\n", guest_str(msgString));
++        printf("[DIALOG] %s\n", text);
+         printf("========================================\n");
+     }
+ 
+@@ -220,7 +247,7 @@ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
+                 else if (e && (e[0] == 'a' || e[0] == 'A')) forced = 2;   /* heuristic */
+                 else                                        forced = 0;   /* always YES (default) */
+             }
+-            int auto_no = (forced == 2) ? msg_offers_to_abort(guest_str(msgString)) : 0;
++            int auto_no = (forced == 2) ? msg_offers_to_abort(text ? text : "") : 0;
+             int no_ = (forced == 2) ? auto_no : forced;
+             result = no_ ? CELL_MSGDIALOG_BUTTON_NO : CELL_MSGDIALOG_BUTTON_YES;
+             printf("[cellMsgDialog] Auto-responding: %s%s\n", no_ ? "NO" : "YES",
+diff --git a/libs/system/cellMsgDialog.h b/libs/system/cellMsgDialog.h
+index 632e646..b6aefa9 100644
+--- a/libs/system/cellMsgDialog.h
++++ b/libs/system/cellMsgDialog.h
+@@ -66,6 +66,8 @@ s32 cellMsgDialogOpen(CellMsgDialogType type, const char* msgString,
+ s32 cellMsgDialogOpen2(CellMsgDialogType type, const char* msgString,
+                         CellMsgDialogCallback callback, void* userdata,
+                         void* extParam);
++s32 cellMsgDialogOpenErrorCode(u32 errorCode, CellMsgDialogCallback callback,
++                               void* userdata, void* extParam);
+ 
+ s32 cellMsgDialogClose(float delayMs);
+ 
+diff --git a/libs/system/cellRtc.c b/libs/system/cellRtc.c
+index b5a6a10..3c10156 100644
+--- a/libs/system/cellRtc.c
++++ b/libs/system/cellRtc.c
+@@ -300,6 +300,28 @@ s32 cellRtcTickAddMonths(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAd
+     return CELL_OK;
+ }
+ 
++/* cellRtcTickAddTicks / cellRtcTickAddWeeks: Tekken 5 DR's online menu
++ * (ranking periods, 0x15F290 / 0x15F4E0) imports both; unregistered, they
++ * answered CELL_OK and left the output tick untouched, so the title went on
++ * with whatever the stack held. A tick is one microsecond. */
++s32 cellRtcTickAddTicks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s64 iAdd)
++{
++    if (!pTick0 || !pTick1)
++        return CELL_EINVAL;
++
++    rtc_tick_write(pTick0, rtc_tick_read(pTick1) + (u64)iAdd);
++    return CELL_OK;
++}
++
++s32 cellRtcTickAddWeeks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd)
++{
++    if (!pTick0 || !pTick1)
++        return CELL_EINVAL;
++
++    rtc_tick_write(pTick0, rtc_tick_read(pTick1) + (u64)((s64)iAdd * 7LL * 24LL * 3600LL * USEC_PER_SEC));
++    return CELL_OK;
++}
++
+ s32 cellRtcTickAddDays(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd)
+ {
+     if (!pTick0 || !pTick1)
+diff --git a/libs/system/cellRtc.h b/libs/system/cellRtc.h
+index 6392ccd..630affc 100644
+--- a/libs/system/cellRtc.h
++++ b/libs/system/cellRtc.h
+@@ -62,11 +62,13 @@ s32 cellRtcSetTime_t(CellRtcTick* pTick, s64 iTime);
+ 
+ s32 cellRtcTickAddYears(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
+ s32 cellRtcTickAddMonths(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
++s32 cellRtcTickAddWeeks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
+ s32 cellRtcTickAddDays(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
+ s32 cellRtcTickAddHours(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
+ s32 cellRtcTickAddMinutes(CellRtcTick* pTick0, const CellRtcTick* pTick1, s32 iAdd);
+ s32 cellRtcTickAddSeconds(CellRtcTick* pTick0, const CellRtcTick* pTick1, s64 iAdd);
+ s32 cellRtcTickAddMicroseconds(CellRtcTick* pTick0, const CellRtcTick* pTick1, s64 iAdd);
++s32 cellRtcTickAddTicks(CellRtcTick* pTick0, const CellRtcTick* pTick1, s64 iAdd);
+ 
+ s32 cellRtcConvertLocalTimeToUtc(const CellRtcTick* pLocalTime, CellRtcTick* pUtc);
+ s32 cellRtcConvertUtcToLocalTime(const CellRtcTick* pUtc, CellRtcTick* pLocalTime);
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index bc77293..92b237c 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include "cellSaveData.h"
++#include "ps3_sysui.h"   /* the save data delete list */
+ #include "ps3emu/guest_call.h"
+ #include "../../runtime/ppu/ppu_memory.h"
+ #include "../../runtime/memory/vm.h"
+@@ -1332,10 +1333,12 @@ s32 cellSaveDataAutoLoad2(u32 version, const char* dirName,
+ 
+ /* cellSaveDataDelete2(container): on hardware the system shows this title's
+  * save data list, the user picks one to delete (or backs out), and the call
+- * returns CELL_OK after a deletion or CELL_SAVEDATA_RET_CANCEL (1). There is
+- * no system UI here, so the choice comes from PS3_SAVEDATA_DELETE:
++ * returns CELL_OK after a deletion or CELL_SAVEDATA_RET_CANCEL (1). The
++ * runtime shows that list itself (ps3_sysui, savedata_delete_dialog below).
++ * PS3_SAVEDATA_DELETE skips the list for scripted runs and tests, and is the
++ * fallback when the dialog is off (PS3_SYSUI=0):
+  *
+- *   all (default)  every save of this title (dirName starting with the title
++ *   all (fallback) every save of this title (dirName starting with the title
+  *                  ID) -- "Delete Save Data" in a title's options resets it
+  *   newest         only the most recently written one
+  *   <dirName>      exactly that directory
+@@ -1384,9 +1387,121 @@ static int savedata_trash_dir(const char* dirName)
+     return 0;
+ }
+ 
++/* Bytes in a save directory, every file counted (the system list shows the
++ * size including icons). */
++static u64 savedata_dir_bytes(const char* save_path)
++{
++    u64 total = 0;
++#ifdef _WIN32
++    char search[1100];
++    snprintf(search, sizeof(search), "%s\\*", save_path);
++    WIN32_FIND_DATAA fd;
++    HANDLE h = FindFirstFileA(search, &fd);
++    if (h == INVALID_HANDLE_VALUE) return 0;
++    do {
++        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
++        total += ((u64)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
++    } while (FindNextFileA(h, &fd));
++    FindClose(h);
++#else
++    CellSaveDataFileStat st[64];
++    const u32 n = enumerate_save_files(save_path, st, 64);
++    for (u32 i = 0; i < n && i < 64; i++) total += st[i].st_size;
++#endif
++    return total;
++}
++
++/* The system's save data delete list (ps3_sysui): the title's saves with
++ * their PARAM.SFO title, subtitle and detail, the date and the size; CROSS
++ * on one asks "Delete this saved data?", yes moves it to .deleted/ (as the
++ * policy path does) and the list comes back; CIRCLE leaves. Returns CELL_OK
++ * when something was deleted, CANCEL when the player backed out. */
++static s32 savedata_delete_dialog(void)
++{
++    extern const char* cellGame_get_title_id(void);
++    const char* prefix = cellGame_get_title_id();
++    static const char* kHeading = "Delete Saved Data";
++    u32 deleted = 0;
++    int cursor = 0;
++    for (;;) {
++        u32 count = enumerate_save_dirs(prefix, NULL, 0);
++        CellSaveDataDirList* dirs = count ? (CellSaveDataDirList*)calloc(count, sizeof(*dirs)) : NULL;
++        ps3_sysui_item* items = count ? (ps3_sysui_item*)calloc(count, sizeof(*items)) : NULL;
++        s64* mtimes = count ? (s64*)calloc(count, sizeof(*mtimes)) : NULL;
++        if (count && (!dirs || !items || !mtimes)) {
++            free(dirs); free(items); free(mtimes);
++            return CELL_SAVEDATA_ERROR_INTERNAL;
++        }
++        count = enumerate_save_dirs(prefix, dirs, count);
++        if (count == 0) {
++            free(dirs); free(items); free(mtimes);
++            if (!deleted)
++                ps3_sysui_notice(kHeading, "There is no saved data.", 0);
++            printf("[cellSaveData] Delete2: %u save(s) deleted, none left\n", deleted);
++            return deleted ? CELL_OK : SAVEDATA_RET_CANCEL;
++        }
++        for (u32 i = 0; i < count; i++) {
++            char path[1024], sfo[1100];
++            build_save_path(path, sizeof(path), dirs[i].dirName);
++            CellSaveDataSystemFileParam sp;
++            read_param_sfo(path, &sp);
++            snprintf(items[i].title, sizeof(items[i].title), "%s", sp.title[0] ? sp.title : dirs[i].dirName);
++            snprintf(items[i].subtitle, sizeof(items[i].subtitle), "%s", sp.subTitle);
++            snprintf(items[i].icon, sizeof(items[i].icon), "%s/ICON0.PNG", path);
++            snprintf(sfo, sizeof(sfo), "%s/PARAM.SFO", path);
++            HOST_STAT_T st;
++            char when[40] = "";
++            if (HOST_STAT(sfo, &st) == 0 || HOST_STAT(path, &st) == 0) {
++                time_t t = (time_t)st.st_mtime;
++                struct tm lt;
++#ifdef _WIN32
++                localtime_s(&lt, &t);
++#else
++                localtime_r(&t, &lt);
++#endif
++                strftime(when, sizeof(when), "%Y/%m/%d %H:%M", &lt);
++                mtimes[i] = (s64)st.st_mtime;
++            }
++            const double kb = (double)savedata_dir_bytes(path) / 1024.0;
++            if (kb >= 1024.0)
++                snprintf(items[i].detail, sizeof(items[i].detail), "%s    %s    %.1f MB", sp.detail, when, kb / 1024.0);
++            else
++                snprintf(items[i].detail, sizeof(items[i].detail), "%s    %s    %.0f KB", sp.detail, when, kb);
++        }
++        /* newest first, as the system list orders them */
++        for (u32 i = 1; i < count; i++)
++            for (u32 j = i; j > 0 && mtimes[j] > mtimes[j - 1]; j--) {
++                CellSaveDataDirList td = dirs[j]; dirs[j] = dirs[j - 1]; dirs[j - 1] = td;
++                ps3_sysui_item ti = items[j]; items[j] = items[j - 1]; items[j - 1] = ti;
++                s64 tm = mtimes[j]; mtimes[j] = mtimes[j - 1]; mtimes[j - 1] = tm;
++            }
++        if (cursor >= (int)count) cursor = (int)count - 1;
++        const int pick = ps3_sysui_list(kHeading, "Delete", items, (int)count, cursor);
++        if (pick < 0) {
++            free(dirs); free(items); free(mtimes);
++            printf("[cellSaveData] Delete2: %u save(s) deleted, the player went back\n", deleted);
++            return deleted ? CELL_OK : SAVEDATA_RET_CANCEL;
++        }
++        cursor = pick;
++        if (ps3_sysui_yesno(kHeading, "Delete this saved data?", &items[pick], 0)) {
++            if (savedata_trash_dir(dirs[pick].dirName)) {
++                deleted++;
++                ps3_sysui_notice(kHeading, "Deleted.", 1500);
++            } else {
++                ps3_sysui_notice(kHeading, "The saved data could not be deleted.", 0);
++            }
++        }
++        free(dirs); free(items); free(mtimes);
++    }
++}
++
+ s32 cellSaveDataDelete2(u32 container)
+ {
+     const char* policy = getenv("PS3_SAVEDATA_DELETE");
++    if ((!policy || !policy[0]) && ps3_sysui_available()) {
++        printf("[cellSaveData] Delete2(container=0x%08X): system list\n", container);
++        return savedata_delete_dialog();
++    }
+     if (!policy || !policy[0]) policy = "all";
+     printf("[cellSaveData] Delete2(container=0x%08X) policy=%s\n", container, policy);
+ 
+diff --git a/libs/system/cellWebBrowser.c b/libs/system/cellWebBrowser.c
+new file mode 100644
+index 0000000..38d2cfe
+--- /dev/null
++++ b/libs/system/cellWebBrowser.c
+@@ -0,0 +1,53 @@
++/*
++ * ps3recomp - cellWebBrowser (sysutil web browser), "not available" model
++ *
++ * The PS3's system web browser is not part of the runtime. Before this file
++ * every cellWebBrowser import was unregistered, so the unresolved-NID default
++ * answered CELL_OK with untouched out-params: Tekken 5 DR's Options -> ONLINE
++ * MANUAL (0x20A288) went on with an uninitialised configuration and asked
++ * lv2 for a memory container sized by whatever cellWebBrowserEstimate
++ * "returned" (0 -- the container call then failed by luck).
++ *
++ * Every call here reports the utility as unavailable, so a title takes its
++ * own "the browser could not start" path before it reserves memory for it.
++ * Tekken 5 DR checks cellWebBrowserConfigSetDisableTabs first, prints its
++ * error and leaves the menu as it was; the manual's server is gone anyway
++ * (f218manual.tekken.bng.jp).
++ */
++#include "cellWebBrowser.h"
++#include "ps3emu/error_codes.h"
++#include <stdio.h>
++
++/* The web browser utility could not be loaded: CELL_ENOSYS, "not implemented
++ * on this system". Titles only test for non-zero. */
++#define CELL_WEBBROWSER_ERROR_UNAVAILABLE ((s32)0x80010003)
++
++static s32 webbrowser_unavailable(const char* fn)
++{
++    static int logged = 0;
++    if (!logged) {
++        logged = 1;
++        printf("[cellWebBrowser] %s: the PS3 web browser is not available in the native port "
++               "(the title's online manual / web pages cannot open)\n", fn);
++    }
++    return CELL_WEBBROWSER_ERROR_UNAVAILABLE;
++}
++
++s32 cellWebBrowserConfig(u32 config, u32 version)            { (void)config; (void)version; return webbrowser_unavailable("Config"); }
++s32 cellWebBrowserConfig2(u32 config, u32 version)           { (void)config; (void)version; return webbrowser_unavailable("Config2"); }
++s32 cellWebBrowserConfigWithVer(u32 config, u32 version)     { (void)config; (void)version; return webbrowser_unavailable("ConfigWithVer"); }
++s32 cellWebBrowserConfigSetDisableTabs(u32 config, u32 v)    { (void)config; (void)v; return webbrowser_unavailable("ConfigSetDisableTabs"); }
++s32 cellWebBrowserConfigSetFunction(u32 config, u32 funcset) { (void)config; (void)funcset; return webbrowser_unavailable("ConfigSetFunction"); }
++s32 cellWebBrowserConfigSetFunction2(u32 config, u32 funcset){ (void)config; (void)funcset; return webbrowser_unavailable("ConfigSetFunction2"); }
++s32 cellWebBrowserConfigSetHeapSize(u32 config, u32 size)    { (void)config; (void)size; return webbrowser_unavailable("ConfigSetHeapSize"); }
++s32 cellWebBrowserConfigSetHeapSize2(u32 config, u32 size)   { (void)config; (void)size; return webbrowser_unavailable("ConfigSetHeapSize2"); }
++s32 cellWebBrowserEstimate(u32 config)                       { (void)config; return webbrowser_unavailable("Estimate"); }
++s32 cellWebBrowserEstimate2(u32 config, u32 memSize)         { (void)config; (void)memSize; return webbrowser_unavailable("Estimate2"); }
++s32 cellWebBrowserInitialize(u32 systemCb, u32 container)    { (void)systemCb; (void)container; return webbrowser_unavailable("Initialize"); }
++s32 cellWebBrowserCreate(u32 config)                         { (void)config; return webbrowser_unavailable("Create"); }
++s32 cellWebBrowserCreate2(u32 config, u32 userData)          { (void)config; (void)userData; return webbrowser_unavailable("Create2"); }
++s32 cellWebBrowserCreateWithConfig(u32 url, u32 config)      { (void)url; (void)config; return webbrowser_unavailable("CreateWithConfig"); }
++s32 cellWebBrowserCreateWithConfigFull(u32 url, u32 config)  { (void)url; (void)config; return webbrowser_unavailable("CreateWithConfigFull"); }
++s32 cellWebBrowserDestroy(void)                              { return CELL_OK; }
++s32 cellWebBrowserDestroy2(void)                             { return CELL_OK; }
++s32 cellWebBrowserShutdown(void)                             { return CELL_OK; }
+diff --git a/libs/system/cellWebBrowser.h b/libs/system/cellWebBrowser.h
+new file mode 100644
+index 0000000..9f1c550
+--- /dev/null
++++ b/libs/system/cellWebBrowser.h
+@@ -0,0 +1,34 @@
++/* cellWebBrowser: the "not available" model (cellWebBrowser.c). */
++#ifndef PS3RECOMP_CELL_WEBBROWSER_H
++#define PS3RECOMP_CELL_WEBBROWSER_H
++
++#include "ps3emu/ps3types.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++s32 cellWebBrowserConfig(u32 config, u32 version);
++s32 cellWebBrowserConfig2(u32 config, u32 version);
++s32 cellWebBrowserConfigWithVer(u32 config, u32 version);
++s32 cellWebBrowserConfigSetDisableTabs(u32 config, u32 v);
++s32 cellWebBrowserConfigSetFunction(u32 config, u32 funcset);
++s32 cellWebBrowserConfigSetFunction2(u32 config, u32 funcset);
++s32 cellWebBrowserConfigSetHeapSize(u32 config, u32 size);
++s32 cellWebBrowserConfigSetHeapSize2(u32 config, u32 size);
++s32 cellWebBrowserEstimate(u32 config);
++s32 cellWebBrowserEstimate2(u32 config, u32 memSize);
++s32 cellWebBrowserInitialize(u32 systemCb, u32 container);
++s32 cellWebBrowserCreate(u32 config);
++s32 cellWebBrowserCreate2(u32 config, u32 userData);
++s32 cellWebBrowserCreateWithConfig(u32 url, u32 config);
++s32 cellWebBrowserCreateWithConfigFull(u32 url, u32 config);
++s32 cellWebBrowserDestroy(void);
++s32 cellWebBrowserDestroy2(void);
++s32 cellWebBrowserShutdown(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/libs/system/ps3_sysui.c b/libs/system/ps3_sysui.c
+new file mode 100644
+index 0000000..95b8984
+--- /dev/null
++++ b/libs/system/ps3_sysui.c
+@@ -0,0 +1,578 @@
++/*
++ * ps3_sysui -- modal system dialogs over the game window (see ps3_sysui.h).
++ *
++ * Why it exists: cellSaveDataDelete2 opens the PS3's own save data list, the
++ * player picks a save, confirms, and the call returns. With no UI at all the
++ * runtime had to guess (PS3_SAVEDATA_DELETE, default "all"), so Tekken 5 DR's
++ * Options -> DELETE SAVE DATA silently removed every save on one press.
++ *
++ * How: a small panel is rendered with GDI into a memory bitmap and shown in a
++ * layered, non-activating, topmost popup centred on the game window (the D3D12
++ * swap chain underneath is not touched). The calling guest thread runs the
++ * dialog loop itself -- the PS3 call blocks it too -- and reads the pads with
++ * cellPad_sample_local (every port, keyboard and PS3_PAD_FILE scripts
++ * included). While a dialog is up, and until the buttons that closed it are
++ * released, cellPadGetData hands the title neutral pads (ps3_sysui_pad_swallow),
++ * as the PS3 does while a system utility holds the controller.
++ */
++#include "ps3_sysui.h"
++#include "../input/cellPad.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static long s_active = 0;          /* a dialog is open                         */
++static long s_swallow_mask = 0;    /* ports whose closing press is still held   */
++
++int ps3_sysui_active(void)
++{
++    return __atomic_load_n(&s_active, __ATOMIC_ACQUIRE) != 0;
++}
++
++int ps3_sysui_pad_swallow(unsigned port, unsigned buttons)
++{
++    if (port >= 31) return 0;
++    if (__atomic_load_n(&s_active, __ATOMIC_ACQUIRE)) return 1;
++    const long bit = 1L << port;
++    if (!(__atomic_load_n(&s_swallow_mask, __ATOMIC_ACQUIRE) & bit)) return 0;
++    if (buttons == 0)
++        __atomic_and_fetch(&s_swallow_mask, ~bit, __ATOMIC_ACQ_REL);   /* released: the title gets this port back */
++    return 1;
++}
++
++#ifndef _WIN32
++int ps3_sysui_available(void) { return 0; }
++int ps3_sysui_list(const char* h, const char* t, const ps3_sysui_item* i, int n, int s)
++{ (void)h; (void)t; (void)i; (void)n; (void)s; return -1; }
++int ps3_sysui_yesno(const char* h, const char* t, const ps3_sysui_item* i, int d)
++{ (void)h; (void)t; (void)i; return d; }
++void ps3_sysui_notice(const char* h, const char* t, unsigned ms) { (void)h; (void)t; (void)ms; }
++#else
++
++#define COBJMACROS
++#include <windows.h>
++#include <wincodec.h>
++
++extern void* rsx_null_backend_get_hwnd(void);
++
++int ps3_sysui_available(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("PS3_SYSUI");
++        v = (e && e[0] == '0') ? 0 : 1;
++    }
++    return v;
++}
++
++/* ---------------------------------------------------------------- state */
++enum { MODE_LIST, MODE_YESNO, MODE_NOTICE };
++
++typedef struct {
++    int mode;
++    const char* heading;
++    const char* text;                 /* yes/no question, notice text */
++    const char* hint;
++    const ps3_sysui_item* items;      /* list items, or the yes/no item */
++    int n;
++    int cursor;                       /* list row, or 0 = yes / 1 = no */
++} ui_state;
++
++/* ---------------------------------------------------------------- icons
++ * A save's ICON0.PNG, decoded with WIC (COM only -- no import library) and
++ * flattened onto the panel colour, cached for the dialog's lifetime. */
++static const GUID kClsidWicFactory = {0xcacaf262, 0x9370, 0x4615, {0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a}};
++static const GUID kIidWicFactory   = {0xec5ec8a9, 0xc395, 0x4314, {0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70}};
++static const GUID kWicPbgra32      = {0x6fddc324, 0x4e03, 0x4bfe, {0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10}};
++
++typedef struct { char path[260]; COLORREF bg; HBITMAP bmp; HDC dc; int w, h; } icon_t;
++static icon_t s_icons[16];
++static int    s_n_icons;
++static int    s_com;             /* 1 = we initialised COM on this thread */
++
++static const icon_t* icon_get(const char* path, COLORREF bg)
++{
++    if (!path || !path[0]) return NULL;
++    for (int i = 0; i < s_n_icons; i++)
++        if (s_icons[i].bg == bg && !strcmp(s_icons[i].path, path))
++            return s_icons[i].bmp ? &s_icons[i] : NULL;
++    if (s_n_icons >= 16) return NULL;
++    icon_t* ic = &s_icons[s_n_icons++];
++    memset(ic, 0, sizeof *ic);
++    snprintf(ic->path, sizeof ic->path, "%s", path);
++    ic->bg = bg;
++    if (!s_com) { HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED); s_com = (hr == S_OK || hr == S_FALSE) ? 1 : -1; }
++    IWICImagingFactory* f = NULL;
++    IWICBitmapDecoder* dec = NULL;
++    IWICBitmapFrameDecode* fr = NULL;
++    IWICFormatConverter* cv = NULL;
++    wchar_t wp[260];
++    MultiByteToWideChar(CP_UTF8, 0, path, -1, wp, 260);
++    wp[259] = 0;
++    UINT w = 0, h = 0;
++    if (FAILED(CoCreateInstance(&kClsidWicFactory, NULL, CLSCTX_INPROC_SERVER, &kIidWicFactory, (void**)&f))) goto done;
++    if (FAILED(IWICImagingFactory_CreateDecoderFromFilename(f, wp, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec))) goto done;
++    if (FAILED(IWICBitmapDecoder_GetFrame(dec, 0, &fr))) goto done;
++    if (FAILED(IWICImagingFactory_CreateFormatConverter(f, &cv))) goto done;
++    if (FAILED(IWICFormatConverter_Initialize(cv, (IWICBitmapSource*)fr, &kWicPbgra32, WICBitmapDitherTypeNone, NULL, 0.0, WICBitmapPaletteTypeCustom))) goto done;
++    IWICFormatConverter_GetSize(cv, &w, &h);
++    if (!w || !h || w > 2048 || h > 2048) goto done;
++    {
++        BITMAPINFO bi;
++        memset(&bi, 0, sizeof bi);
++        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
++        bi.bmiHeader.biWidth = (LONG)w;
++        bi.bmiHeader.biHeight = -(LONG)h;
++        bi.bmiHeader.biPlanes = 1;
++        bi.bmiHeader.biBitCount = 32;
++        void* bits = NULL;
++        HDC screen = GetDC(NULL);
++        ic->bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
++        ReleaseDC(NULL, screen);
++        if (!ic->bmp || FAILED(IWICFormatConverter_CopyPixels(cv, NULL, w * 4, w * h * 4, (BYTE*)bits))) {
++            if (ic->bmp) DeleteObject(ic->bmp);
++            ic->bmp = NULL;
++            goto done;
++        }
++        /* premultiplied BGRA over the background colour */
++        BYTE* px = (BYTE*)bits;
++        for (UINT i = 0; i < w * h; i++, px += 4) {
++            const unsigned a = px[3];
++            px[0] = (BYTE)(px[0] + GetBValue(bg) * (255u - a) / 255u);
++            px[1] = (BYTE)(px[1] + GetGValue(bg) * (255u - a) / 255u);
++            px[2] = (BYTE)(px[2] + GetRValue(bg) * (255u - a) / 255u);
++            px[3] = 255;
++        }
++        ic->dc = CreateCompatibleDC(NULL);
++        SelectObject(ic->dc, ic->bmp);
++        ic->w = (int)w;
++        ic->h = (int)h;
++    }
++done:
++    if (cv) IWICFormatConverter_Release(cv);
++    if (fr) IWICBitmapFrameDecode_Release(fr);
++    if (dec) IWICBitmapDecoder_Release(dec);
++    if (f) IWICImagingFactory_Release(f);
++    return ic->bmp ? ic : NULL;
++}
++
++static void icons_free(void)
++{
++    for (int i = 0; i < s_n_icons; i++) {
++        if (s_icons[i].dc) DeleteDC(s_icons[i].dc);
++        if (s_icons[i].bmp) DeleteObject(s_icons[i].bmp);
++    }
++    s_n_icons = 0;
++    if (s_com == 1) CoUninitialize();
++    s_com = 0;
++}
++
++/* Draws the icon into the box, keeping its aspect; returns the width used. */
++static int icon_draw(HDC dc, const char* path, COLORREF bg, int x, int y, int box_h)
++{
++    const icon_t* ic = icon_get(path, bg);
++    if (!ic) return 0;
++    const int bw = box_h * ic->w / ic->h;
++    SetStretchBltMode(dc, HALFTONE);
++    SetBrushOrgEx(dc, 0, 0, NULL);
++    StretchBlt(dc, x, y, bw, box_h, ic->dc, 0, 0, ic->w, ic->h, SRCCOPY);
++    return bw;
++}
++
++static HWND    s_wnd;
++static int     s_placed_reset;     /* window_place: a new window, place it again */
++static HBITMAP s_bmp;
++static HDC     s_bmp_dc;
++static int     s_w, s_h;
++
++static wchar_t* widen(const char* s, wchar_t* buf, int cap)
++{
++    buf[0] = 0;
++    if (s) MultiByteToWideChar(CP_UTF8, 0, s, -1, buf, cap);
++    buf[cap - 1] = 0;
++    return buf;
++}
++
++static LRESULT CALLBACK ui_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
++{
++    if (m == WM_PAINT) {
++        PAINTSTRUCT ps;
++        HDC dc = BeginPaint(h, &ps);
++        if (s_bmp_dc) BitBlt(dc, 0, 0, s_w, s_h, s_bmp_dc, 0, 0, SRCCOPY);
++        EndPaint(h, &ps);
++        return 0;
++    }
++    if (m == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
++    return DefWindowProcW(h, m, w, l);
++}
++
++/* Panel size from the game window's client area (the game draws 1280x720
++ * and scales up; the panel keeps the same proportion of it). */
++static void panel_rect(RECT* screen, HWND game)
++{
++    RECT c = {0, 0, 1280, 720};
++    POINT o = {0, 0};
++    if (game && GetClientRect(game, &c)) ClientToScreen(game, &o);
++    int cw = c.right - c.left, ch = c.bottom - c.top;
++    if (cw < 320 || ch < 180) { cw = 1280; ch = 720; }
++    int w = cw * 62 / 100, h = ch * 66 / 100;
++    screen->left = o.x + (cw - w) / 2;
++    screen->top = o.y + (ch - h) / 2;
++    screen->right = screen->left + w;
++    screen->bottom = screen->top + h;
++}
++
++static HFONT make_font(int px, int bold)
++{
++    return CreateFontW(-px, 0, 0, 0, bold ? FW_SEMIBOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
++                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
++                       DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
++}
++
++/* The PS3 button glyphs: blue cross, red circle. */
++static void draw_glyph(HDC dc, int x, int y, int sz, int circle)
++{
++    HPEN pen = CreatePen(PS_SOLID, sz / 7 + 1, circle ? RGB(235, 80, 80) : RGB(110, 160, 255));
++    HGDIOBJ op = SelectObject(dc, pen);
++    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
++    if (circle) Ellipse(dc, x, y, x + sz, y + sz);
++    else {
++        MoveToEx(dc, x + 1, y + 1, NULL); LineTo(dc, x + sz - 1, y + sz - 1);
++        MoveToEx(dc, x + sz - 1, y + 1, NULL); LineTo(dc, x + 1, y + sz - 1);
++    }
++    SelectObject(dc, ob);
++    SelectObject(dc, op);
++    DeleteObject(pen);
++}
++
++static void text_at(HDC dc, int x, int y, int w, int h, const char* s, COLORREF col, UINT fmt)
++{
++    wchar_t wb[512];
++    RECT r = {x, y, x + w, y + h};
++    SetTextColor(dc, col);
++    DrawTextW(dc, widen(s, wb, 512), -1, &r, fmt | DT_NOPREFIX | DT_END_ELLIPSIS);
++}
++
++static void ensure_bitmap(int w, int h)
++{
++    if (s_bmp && s_w == w && s_h == h) return;
++    if (s_bmp) { DeleteDC(s_bmp_dc); DeleteObject(s_bmp); s_bmp = NULL; s_bmp_dc = NULL; }
++    BITMAPINFO bi;
++    memset(&bi, 0, sizeof bi);
++    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
++    bi.bmiHeader.biWidth = w;
++    bi.bmiHeader.biHeight = -h;
++    bi.bmiHeader.biPlanes = 1;
++    bi.bmiHeader.biBitCount = 32;
++    void* bits = NULL;
++    HDC screen = GetDC(NULL);
++    s_bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
++    s_bmp_dc = CreateCompatibleDC(screen);
++    ReleaseDC(NULL, screen);
++    SelectObject(s_bmp_dc, s_bmp);
++    s_w = w; s_h = h;
++}
++
++static void render(const ui_state* st, int w, int h)
++{
++    ensure_bitmap(w, h);
++    HDC dc = s_bmp_dc;
++    const int u = h / 24 > 8 ? h / 24 : 8;              /* text unit */
++    RECT all = {0, 0, w, h};
++    HBRUSH bg = CreateSolidBrush(RGB(14, 16, 24));
++    FillRect(dc, &all, bg);
++    DeleteObject(bg);
++    HBRUSH frame = CreateSolidBrush(RGB(96, 104, 128));
++    FrameRect(dc, &all, frame);
++    DeleteObject(frame);
++    SetBkMode(dc, TRANSPARENT);
++
++    HFONT fh = make_font(u * 3 / 2, 1), fb = make_font(u, 0), fs = make_font(u * 4 / 5, 0);
++    HGDIOBJ of = SelectObject(dc, fh);
++    const int pad = u;
++    text_at(dc, pad, pad / 2, w - 2 * pad, u * 2, st->heading, RGB(240, 240, 245), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
++    HPEN line = CreatePen(PS_SOLID, 1, RGB(70, 76, 96));
++    HGDIOBJ op = SelectObject(dc, line);
++    MoveToEx(dc, pad, pad / 2 + u * 2, NULL);
++    LineTo(dc, w - pad, pad / 2 + u * 2);
++    int top = pad / 2 + u * 2 + u / 2;
++    const int foot = h - u * 2;
++    MoveToEx(dc, pad, foot - u / 3, NULL);
++    LineTo(dc, w - pad, foot - u / 3);
++    SelectObject(dc, op);
++    DeleteObject(line);
++
++    if (st->mode == MODE_LIST) {
++        const int row = u * 4;
++        const int rows = (foot - top - u / 2) / row > 0 ? (foot - top - u / 2) / row : 1;
++        int first = st->cursor - rows + 1 > 0 ? st->cursor - rows + 1 : 0;
++        for (int i = first; i < st->n && i < first + rows; i++) {
++            const int y = top + (i - first) * row;
++            const COLORREF rowbg = i == st->cursor ? RGB(36, 78, 150) : RGB(14, 16, 24);
++            if (i == st->cursor) {
++                RECT sel = {pad / 2, y, w - pad / 2, y + row - u / 4};
++                HBRUSH b = CreateSolidBrush(rowbg);
++                FillRect(dc, &sel, b);
++                DeleteObject(b);
++            }
++            const int iw = icon_draw(dc, st->items[i].icon, rowbg, pad, y + u / 4, row - u * 3 / 4);
++            const int tx = pad + (iw ? iw + u * 2 / 3 : 0);
++            SelectObject(dc, fb);
++            text_at(dc, tx, y + u / 4, w - tx - pad, u + u / 3, st->items[i].title, RGB(245, 245, 250), DT_LEFT | DT_SINGLELINE);
++            text_at(dc, tx, y + u + u / 2, w - tx - pad, u + u / 3, st->items[i].subtitle, RGB(205, 210, 220), DT_LEFT | DT_SINGLELINE);
++            SelectObject(dc, fs);
++            text_at(dc, tx, y + 2 * u + u * 2 / 3, w - tx - pad, u, st->items[i].detail, RGB(150, 156, 170), DT_LEFT | DT_SINGLELINE);
++        }
++        if (st->n > rows) {
++            char pos[32];
++            snprintf(pos, sizeof pos, "%d / %d", st->cursor + 1, st->n);
++            SelectObject(dc, fs);
++            text_at(dc, pad, foot - u * 3 / 2, w - 2 * pad, u, pos, RGB(150, 156, 170), DT_RIGHT | DT_SINGLELINE);
++        }
++    } else {
++        SelectObject(dc, fb);
++        int y = top + u;
++        if (st->items) {
++            const int ih = u * 4;
++            const icon_t* ic = icon_get(st->items->icon, RGB(14, 16, 24));
++            if (ic) {
++                icon_draw(dc, st->items->icon, RGB(14, 16, 24), (w - ih * ic->w / ic->h) / 2, y - u / 2, ih);
++                y += ih;
++            }
++            text_at(dc, pad, y, w - 2 * pad, u + u / 3, st->items->title, RGB(245, 245, 250), DT_CENTER | DT_SINGLELINE);
++            text_at(dc, pad, y + u + u / 3, w - 2 * pad, u + u / 3, st->items->subtitle, RGB(205, 210, 220), DT_CENTER | DT_SINGLELINE);
++            SelectObject(dc, fs);
++            text_at(dc, pad, y + 2 * u + u / 2, w - 2 * pad, u, st->items->detail, RGB(150, 156, 170), DT_CENTER | DT_SINGLELINE);
++            SelectObject(dc, fb);
++            y += u * 4;
++        }
++        text_at(dc, pad, y, w - 2 * pad, foot - y - u * 3, st->text, RGB(240, 240, 245), DT_CENTER | DT_WORDBREAK);
++        if (st->mode == MODE_YESNO) {
++            const int bw = u * 6, bh = u * 3 / 2, by = foot - u * 3;
++            for (int b = 0; b < 2; b++) {
++                const int bx = w / 2 + (b ? u : -u - bw);
++                RECT br = {bx, by, bx + bw, by + bh};
++                HBRUSH fill = CreateSolidBrush(b == st->cursor ? RGB(36, 78, 150) : RGB(34, 38, 52));
++                FillRect(dc, &br, fill);
++                DeleteObject(fill);
++                text_at(dc, bx, by, bw, bh, b ? "No" : "Yes", RGB(245, 245, 250), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
++            }
++        }
++    }
++
++    /* footer: button hints */
++    SelectObject(dc, fs);
++    const int gy = foot + (h - foot - u) / 2, gs = u;
++    int x = w - pad;
++    const char* back = st->mode == MODE_NOTICE ? NULL : "Back";
++    const char* ok = st->mode == MODE_LIST ? (st->hint ? st->hint : "Select") : "OK";
++    char buf[64];
++    SIZE sz;
++    wchar_t wb[64];
++    if (back) {
++        snprintf(buf, sizeof buf, "%s", back);
++        widen(buf, wb, 64);
++        GetTextExtentPoint32W(dc, wb, (int)wcslen(wb), &sz);
++        x -= sz.cx;
++        text_at(dc, x, gy, sz.cx + u / 2, u + u / 2, buf, RGB(220, 222, 230), DT_LEFT | DT_SINGLELINE);
++        x -= gs + u / 3;
++        draw_glyph(dc, x, gy + 1, gs - 2, 1);
++        x -= u * 3 / 2;
++    }
++    snprintf(buf, sizeof buf, "%s", ok);
++    widen(buf, wb, 64);
++    GetTextExtentPoint32W(dc, wb, (int)wcslen(wb), &sz);
++    x -= sz.cx;
++    text_at(dc, x, gy, sz.cx + u / 2, u + u / 2, buf, RGB(220, 222, 230), DT_LEFT | DT_SINGLELINE);
++    x -= gs + u / 3;
++    draw_glyph(dc, x, gy + 1, gs - 2, 0);
++
++    SelectObject(dc, of);
++    DeleteObject(fh); DeleteObject(fb); DeleteObject(fs);
++    GdiFlush();
++}
++
++static void dump_bitmap(void)
++{
++    static const char* dir = (const char*)-1;
++    static unsigned n = 0;
++    if (dir == (const char*)-1) dir = getenv("PS3_SYSUI_DUMP");
++    if (!dir || !s_bmp) return;
++    BITMAPINFO bi;
++    memset(&bi, 0, sizeof bi);
++    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
++    bi.bmiHeader.biWidth = s_w;
++    bi.bmiHeader.biHeight = -s_h;
++    bi.bmiHeader.biPlanes = 1;
++    bi.bmiHeader.biBitCount = 32;
++    const DWORD bytes = (DWORD)s_w * (DWORD)s_h * 4u;
++    void* px = malloc(bytes);
++    if (!px) return;
++    GetDIBits(s_bmp_dc, s_bmp, 0, (UINT)s_h, px, &bi, DIB_RGB_COLORS);
++    char path[MAX_PATH];
++    snprintf(path, sizeof path, "%s\\sysui_%03u.bmp", dir, n++);
++    FILE* f = fopen(path, "wb");
++    if (f) {
++        BITMAPFILEHEADER fh;
++        memset(&fh, 0, sizeof fh);
++        fh.bfType = 0x4D42;
++        fh.bfOffBits = sizeof fh + sizeof bi.bmiHeader;
++        fh.bfSize = fh.bfOffBits + bytes;
++        fwrite(&fh, sizeof fh, 1, f);
++        fwrite(&bi.bmiHeader, sizeof bi.bmiHeader, 1, f);
++        fwrite(px, 1, bytes, f);
++        fclose(f);
++        fprintf(stderr, "[sysui] panel -> %s\n", path);
++    }
++    free(px);
++}
++
++static void window_open(void)
++{
++    static int registered = 0;
++    HINSTANCE inst = GetModuleHandleW(NULL);
++    if (!registered) {
++        WNDCLASSW wc;
++        memset(&wc, 0, sizeof wc);
++        wc.lpfnWndProc = ui_wndproc;
++        wc.hInstance = inst;
++        wc.lpszClassName = L"PS3SysUiPanel";
++        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
++        registered = RegisterClassW(&wc) != 0;
++    }
++    s_wnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
++                            L"PS3SysUiPanel", L"System", WS_POPUP, 0, 0, 16, 16,
++                            NULL, NULL, inst, NULL);
++    if (s_wnd) SetLayeredWindowAttributes(s_wnd, 0, 246, LWA_ALPHA);
++    s_placed_reset = 1;
++}
++
++static void window_close(void)
++{
++    if (s_wnd) { DestroyWindow(s_wnd); s_wnd = NULL; }
++    MSG msg;
++    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
++}
++
++/* Place the panel over the game window; hidden while the game window is
++ * minimised or hidden (PS3_WINDOW_BACKGROUND runs) -- the dialog still runs. */
++static void window_place(int* w, int* h)
++{
++    HWND game = (HWND)rsx_null_backend_get_hwnd();
++    RECT r;
++    panel_rect(&r, game);
++    *w = r.right - r.left;
++    *h = r.bottom - r.top;
++    if (!s_wnd) return;
++    static RECT last;
++    static int last_visible = -1;
++    if (s_placed_reset) { s_placed_reset = 0; last_visible = -1; }
++    const int visible = game && IsWindowVisible(game) && !IsIconic(game);
++    if (visible == last_visible && (!visible || EqualRect(&r, &last))) return;
++    last_visible = visible;
++    last = r;
++    if (visible)
++        SetWindowPos(s_wnd, HWND_TOPMOST, r.left, r.top, *w, *h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
++    else
++        ShowWindow(s_wnd, SW_HIDE);
++}
++
++/* ---------------------------------------------------------------- input */
++static u16 sample_buttons(void)
++{
++    u16 b = 0;
++    for (u32 p = 0; p < 4; p++) {
++        CellPadData d;
++        if (cellPad_sample_local(p, &d) == 0 && d.len > 0)
++            b |= (u16)(d.button[CELL_PAD_BTN_OFFSET_DIGITAL1] | (d.button[CELL_PAD_BTN_OFFSET_DIGITAL2] << 8));
++    }
++    /* the keyboard on its own, focused or not on the game window */
++    HWND fg = GetForegroundWindow();
++    if (fg && fg == (HWND)rsx_null_backend_get_hwnd()) {
++        if (GetAsyncKeyState(VK_UP) & 0x8000)     b |= CELL_PAD_CTRL_UP;
++        if (GetAsyncKeyState(VK_DOWN) & 0x8000)   b |= CELL_PAD_CTRL_DOWN;
++        if (GetAsyncKeyState(VK_LEFT) & 0x8000)   b |= CELL_PAD_CTRL_LEFT;
++        if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  b |= CELL_PAD_CTRL_RIGHT;
++        if (GetAsyncKeyState(VK_RETURN) & 0x8000) b |= CELL_PAD_CTRL_CROSS;
++        if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) || (GetAsyncKeyState(VK_BACK) & 0x8000))
++            b |= CELL_PAD_CTRL_CIRCLE;
++    }
++    return b;
++}
++
++/* The dialog loop. Returns 1 for CROSS, 0 for CIRCLE (and the timeout). */
++static int run(ui_state* st, unsigned timeout_ms)
++{
++    __atomic_store_n(&s_swallow_mask, 0x7FFFFFFFL, __ATOMIC_RELEASE);
++    __atomic_store_n(&s_active, 1L, __ATOMIC_RELEASE);
++    window_open();
++    const ULONGLONG t0 = GetTickCount64();
++    u16 prev = 0xFFFF;                /* every button counts as held until first released */
++    ULONGLONG rep_at = 0;
++    int w = 0, h = 0, last_cursor = -2, result = 0;
++    for (;;) {
++        window_place(&w, &h);
++        if (st->cursor != last_cursor || w != s_w || h != s_h) {
++            render(st, w, h);
++            if (s_wnd) InvalidateRect(s_wnd, NULL, FALSE);
++            dump_bitmap();
++            last_cursor = st->cursor;
++        }
++        MSG msg;
++        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
++        Sleep(15);
++
++        const u16 b = sample_buttons();
++        if (prev == 0xFFFF) { if (b == 0) prev = 0; continue; }
++        const u16 down = (u16)(b & ~prev);
++        const ULONGLONG now = GetTickCount64();
++        int step = 0;
++        if (down & (CELL_PAD_CTRL_UP | CELL_PAD_CTRL_LEFT))   { step = -1; rep_at = now + 400; }
++        if (down & (CELL_PAD_CTRL_DOWN | CELL_PAD_CTRL_RIGHT)) { step = 1;  rep_at = now + 400; }
++        if (!step && (b & (CELL_PAD_CTRL_UP | CELL_PAD_CTRL_DOWN | CELL_PAD_CTRL_LEFT | CELL_PAD_CTRL_RIGHT)) && now >= rep_at && rep_at) {
++            step = (b & (CELL_PAD_CTRL_UP | CELL_PAD_CTRL_LEFT)) ? -1 : 1;
++            rep_at = now + 110;
++        }
++        prev = b;
++        if (step && st->mode == MODE_LIST && st->n > 0)
++            st->cursor = (st->cursor + step + st->n) % st->n;
++        if (step && st->mode == MODE_YESNO)
++            st->cursor = step < 0 ? 0 : 1;
++        if (down & CELL_PAD_CTRL_CROSS)  { result = 1; break; }
++        if (down & CELL_PAD_CTRL_CIRCLE) { result = 0; break; }
++        if (timeout_ms && now - t0 >= timeout_ms) { result = 0; break; }
++    }
++    window_close();
++    icons_free();
++    __atomic_store_n(&s_active, 0L, __ATOMIC_RELEASE);
++    /* the title gets each port back once the closing press is released */
++    return result;
++}
++
++int ps3_sysui_list(const char* heading, const char* hint, const ps3_sysui_item* items, int n, int start)
++{
++    ui_state st = {MODE_LIST, heading, NULL, hint, items, n, start >= 0 && start < n ? start : 0};
++    fprintf(stderr, "[sysui] list '%s': %d item(s)\n", heading, n);
++    const int ok = run(&st, 0);
++    fprintf(stderr, "[sysui] list '%s' -> %s %d\n", heading, ok ? "picked" : "back", ok ? st.cursor : -1);
++    return ok ? st.cursor : -1;
++}
++
++int ps3_sysui_yesno(const char* heading, const char* text, const ps3_sysui_item* item, int default_yes)
++{
++    ui_state st = {MODE_YESNO, heading, text, NULL, item, 0, default_yes ? 0 : 1};
++    fprintf(stderr, "[sysui] question '%s'\n", text);
++    const int ok = run(&st, 0);
++    const int yes = ok && st.cursor == 0;
++    fprintf(stderr, "[sysui] question '%s' -> %s\n", text, yes ? "yes" : "no");
++    return yes;
++}
++
++void ps3_sysui_notice(const char* heading, const char* text, unsigned timeout_ms)
++{
++    ui_state st = {MODE_NOTICE, heading, text, NULL, NULL, 0, 0};
++    fprintf(stderr, "[sysui] notice '%s'\n", text);
++    run(&st, timeout_ms);
++}
++#endif
+diff --git a/libs/system/ps3_sysui.h b/libs/system/ps3_sysui.h
+new file mode 100644
+index 0000000..b4f536f
+--- /dev/null
++++ b/libs/system/ps3_sysui.h
+@@ -0,0 +1,55 @@
++/*
++ * ps3_sysui -- the few system dialogs a title can open that must be ANSWERED
++ * by the player (the save data delete list), drawn as a small panel over the
++ * game window and driven by the pads (cellPad_sample_local) and the keyboard.
++ *
++ * Every call is modal and blocks the calling (guest) thread, as the PS3's
++ * system utilities block theirs. Windows only; elsewhere, and when
++ * PS3_SYSUI=0, ps3_sysui_available() is 0 and callers keep their headless
++ * behaviour.
++ *
++ *   PS3_SYSUI=0            no dialogs (callers fall back)
++ *   PS3_SYSUI_DUMP=<dir>   every rendered panel as sysui_NNN.bmp (tests)
++ */
++#ifndef PS3RECOMP_PS3_SYSUI_H
++#define PS3RECOMP_PS3_SYSUI_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct ps3_sysui_item {
++    char title[128];      /* first line (UTF-8)              */
++    char subtitle[128];   /* second line                     */
++    char detail[160];     /* third line, dimmer (date, size) */
++    char icon[260];       /* host path of a PNG shown with it (optional) */
++} ps3_sysui_item;
++
++int ps3_sysui_available(void);
++
++/* A list to pick from: returns the chosen index, -1 when the player backed
++ * out. `start` is the initial cursor. */
++int ps3_sysui_list(const char* heading, const char* hint,
++                   const ps3_sysui_item* items, int n, int start);
++
++/* A yes/no question about `item` (may be NULL): 1 = yes, 0 = no. */
++int ps3_sysui_yesno(const char* heading, const char* text,
++                    const ps3_sysui_item* item, int default_yes);
++
++/* A notice the player closes with CROSS/CIRCLE (or after `timeout_ms`, 0 = never). */
++void ps3_sysui_notice(const char* heading, const char* text, unsigned timeout_ms);
++
++/* cellPadGetData asks for every title read: 1 = hand the title a neutral pad
++ * on `port` (a dialog is open, or the press that closed it is still held;
++ * `buttons` is what the port holds now). */
++int ps3_sysui_pad_swallow(unsigned port, unsigned buttons);
++
++/* 1 while a dialog is open: the game window ignores Esc (it would close the
++ * game; in a dialog Esc means "back"). */
++int ps3_sysui_active(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index ef23a9d..136d84c 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -3803,3 +3803,13 @@ void cellGcm_syscall_set_fifo(u32 put, u32 get)
+     s_fifo_getoff  = get;
+     s_fifo_calloff = 0;
+ }
++
++/* _cellGcmFunc15(context): a libgcm-internal export the title links
++ * (0x3A4F98 wraps it with the current context; no caller was seen running).
++ * Its purpose is undocumented; RPCS3 implements it as a no-op too. Registered
++ * so it is no longer an unresolved import. */
++s32 _cellGcmFunc15(u32 context)
++{
++    (void)context;
++    return CELL_OK;
++}
+diff --git a/libs/video/cellGcmSys.h b/libs/video/cellGcmSys.h
+index 83bf51c..2698920 100644
+--- a/libs/video/cellGcmSys.h
++++ b/libs/video/cellGcmSys.h
+@@ -227,6 +227,7 @@ u32 cellGcmGetCurrentField(void);
+ 
+ /* NID: 0xA53D12AE */
+ void cellGcmSetFlipMode(u32 mode);
++s32 _cellGcmFunc15(u32 context);
+ 
+ /* NID: 0xC44D8F34 */
+ void cellGcmSetWaitFlip(void);
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 9003360..add34dc 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -30,6 +30,7 @@
+ #define WIN32_LEAN_AND_MEAN
+ #endif
+ #include <windows.h>
++#include "../system/ps3_sysui.h"   /* ps3_sysui_active: Esc in a system dialog */
+ 
+ /* D3D12 headers */
+ #include <d3d12.h>
+@@ -501,7 +502,7 @@ static LRESULT CALLBACK d3d12_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+         PostQuitMessage(0);
+         return 0;
+     case WM_KEYDOWN:
+-        if (wp == VK_ESCAPE) {
++        if (wp == VK_ESCAPE && !ps3_sysui_active()) {   /* in a system dialog Esc is "back" */
+             s_d3d.window_closed = 1;
+             DestroyWindow(hwnd);
+         }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index ae7f371..5019a64 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -11623,6 +11623,22 @@ void rsx_live_draw_present(u32 buffer_id)
+                     g_ld_stats.packets_movie + g_ld_stats.packets_queue_full ? "ok" : "BAD",
+                 g_ld_stats.groups_seen == ld_groups_accounted() ? "ok" : "BAD",
+                 g_ld_bind_white, g_ld_bind_real, g_ld_bind_surf);
++    /* RSX_METHOD_REPORT=<n>: every n frames, every NV4097 register the title
++     * has written so far, as method:writes:last-value (8 per line). The
++     * completeness audit diffs this against the registers this engine reads,
++     * to find state the title sets that the translation ignores. */
++    { static int every = -1;
++      if (every < 0) { const char* e = getenv("RSX_METHOD_REPORT"); every = e ? atoi(e) : 0; }
++      if (every > 0 && g_ld_frames && (g_ld_frames % (u32)every) == 0) {
++          char line[512]; int n = 0, k = 0;
++          for (u32 r = 0; r < RSX_DSP_NUM_REGS; r++) {
++              if (!g.rsx.seen[r]) continue;
++              n += snprintf(line + n, sizeof(line) - (size_t)n, " %04X:%u:%08X",
++                            r << 2, g.rsx.seen[r], g.rsx.regs[r]);
++              if (++k == 8) { fprintf(stderr, "[rsx-methods] f=%u%s\n", g_ld_frames, line); n = 0; k = 0; }
++          }
++          if (k) fprintf(stderr, "[rsx-methods] f=%u%s\n", g_ld_frames, line);
++      } }
+     /* [fps] heartbeat: direct frame-rate logging, one line per ~5s wall.
+      * Exists because pace repeatedly had to be inferred from frame-counter
+      * arithmetic and log ordering, and two such inferences were wrong in one
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 960e5a4..7ea2eae 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -18,6 +18,7 @@
+ #define WIN32_LEAN_AND_MEAN
+ #endif
+ #include <windows.h>
++#include "../system/ps3_sysui.h"   /* ps3_sysui_active: Esc in a system dialog */
+ 
+ /* ---------------------------------------------------------------------------
+  * Internal state
+@@ -224,7 +225,7 @@ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_KEYDOWN:
+         if (wp == VK_F11) {
+             null_set_fullscreen(hwnd, !s_fullscreen);
+-        } else if (wp == VK_ESCAPE) {
++        } else if (wp == VK_ESCAPE && !ps3_sysui_active()) {   /* in a system dialog Esc is "back" */
+             if (s_fullscreen) {              /* Esc leaves fullscreen first */
+                 null_set_fullscreen(hwnd, 0);
+             } else {
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+index c8bd9b9..402731c 100644
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -696,6 +696,54 @@ static void hle_net_socket(ppu_context* ctx) { static uint32_t s_fd = 3; ctx->gp
+ /* sendto: report the full length as sent (packets vanish into the void, matching
+  * the RPCS3-offline oracle where broadcasts go out and nothing answers). */
+ static void hle_net_sendto(ppu_context* ctx) { ctx->gpr[3] = (uint32_t)ctx->gpr[5]; }
++/* shutdown and the address helpers. Tekken 5 DR's online menu calls inet_ntoa
++ * on the address GetLocalNetInfo reported (0x858A930B); unregistered, it
++ * returned NULL as the string pointer. inet_* are pure functions with no
++ * network behind them, so the offline model answers them for real; shutdown
++ * on an offline socket succeeds like socketclose does. */
++static void hle_net_inet_ntoa(ppu_context* ctx)
++{
++    static uint32_t s_buf = 0;
++    if (!s_buf) s_buf = gcm_guest_alloc(16, 16);
++    const uint32_t a = (uint32_t)ctx->gpr[3];      /* struct in_addr by value, network order = BE */
++    char tmp[16];
++    snprintf(tmp, sizeof tmp, "%u.%u.%u.%u", a >> 24, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF);
++    if (s_buf) for (uint32_t i = 0; i < 16; i++) vm_write8(s_buf + i, (uint8_t)tmp[i]);
++    ctx->gpr[3] = s_buf;
++}
++static int net_parse_ipv4(uint32_t ea, uint32_t* out)
++{
++    uint32_t parts[4] = {0}, n = 0, have = 0;
++    for (uint32_t i = 0; ea && i < 64; i++) {
++        const uint8_t ch = vm_read8(ea + i);
++        if (ch >= '0' && ch <= '9') { parts[n] = parts[n] * 10 + (ch - '0'); have = 1; if (parts[n] > 255) return 0; }
++        else if (ch == '.' && have && n < 3) { n++; have = 0; }
++        else if (ch == 0) break;
++        else return 0;
++    }
++    if (n != 3 || !have) return 0;
++    *out = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
++    return 1;
++}
++static void hle_net_inet_addr(ppu_context* ctx)
++{
++    uint32_t a;
++    ctx->gpr[3] = net_parse_ipv4((uint32_t)ctx->gpr[3], &a) ? a : 0xFFFFFFFFu;   /* INADDR_NONE */
++}
++static void hle_net_inet_aton(ppu_context* ctx)
++{
++    uint32_t a;
++    const int ok = net_parse_ipv4((uint32_t)ctx->gpr[3], &a);
++    if (ok && (uint32_t)ctx->gpr[4]) vm_write32((uint32_t)ctx->gpr[4], a);
++    ctx->gpr[3] = ok ? 1 : 0;
++}
++
++/* cellPadGetRawData (sys_io 0x3F797DFF): the title's pad reader (0x375874)
++ * takes this branch instead of cellPadGetData for a pad it flags as raw.
++ * Answer it through the cellPadGetData dispatch, so the scripted / netplay /
++ * direct-fight overrides of that NID see these reads too. */
++extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx);
++static void hle_pad_get_raw_data(ppu_context* ctx) { ps3_hle_call(0x8B72CDA1u /* cellPadGetData */, ctx); }
+ 
+ /* ---- liblv2 (sysPrxForUser): SPU images, formatted output, SPU printf -----
+  *
+@@ -1132,6 +1180,11 @@ extern "C" void ppu_sysprx_register(void)
+     ps3_hle_register_ctx(0x71F4C717u, "netGetHostByName",       hle_net_zero);   /* NULL: DNS down */
+     ps3_hle_register_ctx(0xB68D5625u, "netFinalizeNetwork",     hle_net_zero);
+     ps3_hle_register_ctx(0xFDB8F926u, "netFreethreadContext",   hle_net_zero);
++    ps3_hle_register_ctx(ps3_compute_nid("shutdown"),  "shutdown",  hle_net_zero);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_ntoa"), "inet_ntoa", hle_net_inet_ntoa);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_addr"), "inet_addr", hle_net_inet_addr);
++    ps3_hle_register_ctx(ps3_compute_nid("inet_aton"), "inet_aton", hle_net_inet_aton);
++    ps3_hle_register_ctx(ps3_compute_nid("cellPadGetRawData"), "cellPadGetRawData", hle_pad_get_raw_data);
+     /* Route the GCM command-buffer-full callback (invoked indirectly via the
+      * context OPD) into cellGcm_fifo_recycle so the FIFO ring recycles on wrap. */
+     ppu_register_function(GCM_FIFO_CALLBACK_SENTINEL_EA, hle_gcm_callback);

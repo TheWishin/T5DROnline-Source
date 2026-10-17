@@ -185,7 +185,7 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 1
+CODE_VERSION = 2   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS
 
 
 def code_id():
@@ -379,12 +379,35 @@ def step_lift(a):
         f.write(lifter_id + "\n")
 
 
+# Function entries of the sound core that its function finder cannot see: the
+# DSP effect table in the core's data (LS 0x11AB0-0x11B84, records named
+# "DLAY", "DPL2", "HPF ", "IIRF", "LHPF", "MIX ", "MONO", "MUX ", "PTCH", "REVB",
+# "TMPL", "VOLP" plus one more process function) holds pointers to 13
+# functions that nothing branches to directly. Unlifted, every call landed in
+# the runtime's SPU interpreter (~600 entries a second in a fight, each
+# interpreting a whole effect over its sample block) instead of native code.
+SPU_CORE_EXTRA_FUNCS = ("bnuscore=0xF9B8,0x59A8,0x5D90,0x5FD8,0x68A0,0x6E98,0x7528,"
+                        "0x7598,0x7618,0x7690,0x7968,0x8B70,0x8BC0")
+
+
 def step_spu(a):
     core_done = os.path.exists(os.path.join(P.spu, "spu_workloads.c"))
     jobs_done = os.path.exists(os.path.join(P.spu, "lifted", "jcsignal", "spu_recomp.c"))
-    if core_done and jobs_done and not a.force:
+    # The core is lifted again when its lift arguments changed (a lift without
+    # the stamp predates SPU_CORE_EXTRA_FUNCS).
+    stamp = os.path.join(P.spu, ".core_lift_args")
+    core_args_ok = os.path.exists(stamp) and open(stamp).read().strip() == SPU_CORE_EXTRA_FUNCS
+    if core_done and jobs_done and core_args_ok and not a.force:
         print("  already done")
         return
+    if core_done and not core_args_ok and not a.force:
+        print("  the sound core's lift arguments changed: lifting it again")
+        run([PY, os.path.join(P.tools, "build_spu_workloads.py"), "--images", os.path.join(P.spu, "images"),
+             "--lifted", os.path.join(P.spu, "lifted"), "--out", os.path.join(P.spu, "spu_workloads.c"),
+             "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf,
+             "--relift", "--extra-funcs", SPU_CORE_EXTRA_FUNCS])
+        with open(stamp, "w") as f:
+            f.write(SPU_CORE_EXTRA_FUNCS + "\n")
     if a.force or not core_done:
         if os.path.isdir(P.spu):
             shutil.rmtree(P.spu)
@@ -398,7 +421,10 @@ def step_spu(a):
         os.rename(os.path.join(images, found[0]), os.path.join(images, "bnuscore.elf"))
         run([PY, os.path.join(P.tools, "build_spu_workloads.py"), "--images", images,
              "--lifted", os.path.join(P.spu, "lifted"), "--out", os.path.join(P.spu, "spu_workloads.c"),
-             "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf])
+             "--register-fn", "t5dr_spu_register_all", "--constructor", "--title", "t5dr", "--eboot", P.elf,
+             "--extra-funcs", SPU_CORE_EXTRA_FUNCS])
+        with open(stamp, "w") as f:
+            f.write(SPU_CORE_EXTRA_FUNCS + "\n")
     # The SPURS jobs (vertex skinning + the chain's signal job) are raw images
     # in the ELF's data segment, not SPU ELFs; they need their own extractor.
     run([PY, os.path.join(ROOT, "tools", "lift_spu_jobs.py"), "--elf", P.elf, "--spu", P.spu, "--ps3recomp", P.deps]

@@ -67,7 +67,7 @@ small JPEG), `<shot>.png` (full-size frames the scenario asked for).
 | `survival_loop` | full | SURVIVAL, 80 s of fights back to back (CIRCLE = kick, RETRY on results) |
 | `options` | full | OPTIONS: game page, sound page (BGM volume +1), controller page, EXIT, back at the title |
 | `gallery_offline` | full | GALLERY with no network: "retry?" NO, "return to title?" YES, back at the title |
-| `save_reload` | full | fresh profile, the OPTIONS round trip (leaving with a changed setting saves), quit, second boot on the same gamedata loads the save |
+| `save_reload` | full | fresh profile, the OPTIONS round trip (leaving with a changed setting saves), quit, second boot on the same gamedata loads the save; OPTIONS > DELETE SAVE DATA then deletes one of the two saves through the system's save data list (patch 0033) |
 | `idle_attract` | full | 10 min with no input: title and attract demo cycle by themselves |
 
 Fights are reached by tapping CROSS (both pads in VS) and START every second
@@ -86,7 +86,7 @@ Per run (the check ids in the report):
 |---|---|
 | `no-crash` | a `[CRASH]` line, or the game exited by itself |
 | `no-hang` | no `[fps]` line for 12 s (`hang_gap_s`), or none in the first 60 s |
-| `reach.<milestone>` | the scenario did not get somewhere (`title`, `fight`, `attract1`, `back-to-title`, `saved`, `loaded`) |
+| `reach.<milestone>` | the scenario did not get somewhere (`title`, `fight`, `attract1`, `back-to-title`, `saved`, `loaded`, `deleted`) |
 | `fps.<phase>` | title/menu phases: median of the phase's full 5-s windows below 58 (`fps_min.title`, `fps_min.menu`); fights are reported (`fps_min.fight` = 0) |
 | `audio.<phase>` | menu/fight/attract phases: median silent blocks above 10 % (`audio_silent.*`); the title menu is silent by design and not checked |
 | `picture.<phase>` | more than half the phase's frames are black, white or one flat colour |

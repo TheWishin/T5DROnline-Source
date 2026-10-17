@@ -1,0 +1,22 @@
+wait \[cellVdec\] Open
+f120 START
+f126
+wait \[cellVdec\] Open
+f180 DOWN
+f186
+f216 DOWN
+f222
+f252 DOWN
+f258
+f330 CROSS
+f336
+f540 RIGHT
+f546
+f600 RIGHT
+f606
+f660 RIGHT
+f666
+f720 RIGHT
+f726
+f840 CROSS
+f846

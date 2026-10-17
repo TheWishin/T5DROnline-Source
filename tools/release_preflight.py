@@ -21,11 +21,22 @@ not on PATH). Exit code 0 = safe to tag. Work files go to build/preflight/ (remo
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+
+
+def rmtree(path):
+    """shutil.rmtree that also removes read-only files (git objects in the ps3recomp clone)."""
+    def onerror(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    if os.path.exists(path):
+        shutil.rmtree(path, onerror=onerror)
 
 
 def step(title, cmd, **kw):
@@ -45,11 +56,13 @@ def main():
     a = ap.parse_args()
     ver = a.version[1:] if a.version.startswith("v") else a.version
     py = sys.executable
-    work = os.path.join(ROOT, "build", "preflight")
+    base = os.path.join(ROOT, "build", "preflight")
+    for old in (os.listdir(base) if os.path.isdir(base) else []):   # earlier runs
+        rmtree(os.path.join(base, old))
+    work = os.path.join(base, f"{ver}-{time.strftime('%H%M%S')}")
     llvm = os.path.abspath(a.llvm)
     if not os.path.isfile(os.path.join(llvm, "bin", "clang-cl.exe")):
         sys.exit(f"no LLVM at {llvm}: run python tools/fetch_llvm.py --dest {llvm}")
-    shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
 
     step("1. changelog section", [py, "tools/release_notes.py", "--version", ver, "--check"])
@@ -74,7 +87,7 @@ def main():
     step("6. unit tests", [py, "-m", "unittest", "discover", "-s", "tests"])
     print(f"\nPREFLIGHT OK for {ver}: safe to tag v{ver}", flush=True)
     if not a.keep:
-        shutil.rmtree(work, ignore_errors=True)
+        rmtree(work)
 
 
 if __name__ == "__main__":

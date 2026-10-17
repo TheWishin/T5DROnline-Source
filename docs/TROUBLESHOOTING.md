@@ -15,6 +15,7 @@ Contents:
 - [The game starts, but...](#the-game-starts-but)
 - [No sound](#no-sound)
 - [Controllers and keyboard](#controllers-and-keyboard)
+- [Online play](#online-play)
 - [Low frame rate](#low-frame-rate)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
@@ -352,12 +353,70 @@ Arcade sticks and keyboards can press opposite directions at once. The default
 `socd = neutral` cancels them. Other choices are in
 [controls.ini](controls.ini).
 
+## Online play
+
+How a match goes: **Online** tab, pick the server (the public one is the
+default), type a name and click **Play as guest** (accounts are needed for
+ranked matches only), pick a character, click **Quick match**. When an opponent
+is found both of you get a bar with the ping and **Accept** / **Decline**. You
+have 15 seconds. Then the game opens by itself, straight in the fight (first to
+three rounds). The result is sent to the lobby by itself. After the match the
+game stays open at the character select, and the bar offers a **Rematch**.
+Closing the game ends the session with that opponent.
+
+### Windows asks whether `t5dr.exe` may use the network
+
+The first time a game starts a match, Windows Firewall shows "Do you want to
+allow public and private networks to access this app?" for `t5dr.exe`
+(publisher "unknown": the program is not signed). Click **Allow**. The window can
+open behind the (minimized) game window or only flash on the taskbar; look for
+it if the match does not start. Windows asks once per folder the program runs
+from, so a new release extracted to a new folder asks again. If you clicked
+Cancel, Windows keeps blocking incoming packets for that program: open Windows
+Security > Firewall & network protection > Allow an app through firewall and
+tick `t5dr.exe` for private networks. The launcher does not need administrator
+rights, and neither does the game. Windows itself asks for them only if you
+change the firewall. (We did not test a match with the firewall left blocking.)
+
+### "Lobby: ..." or "Lobby error: ..." when you log in
+
+The launcher could not talk to the lobby server. Check the internet connection;
+the lobby uses TCP port 7781 and UDP ports 7781 and 7782 (outgoing). A
+company or school network, a VPN or an antivirus "network shield" may block
+them. If the server is down, the Online tab says so; try again later or use a
+friend's server (README, "Online"). **(untested)**
+
+### The match is found but the game does not start, or the status bar says...
+
+| Message | What it means |
+|---|---|
+| "Nobody accepted in time." | One of you did not click Accept within 15 seconds. Search again. |
+| "No UDP connection to the lobby server (firewall?)." | UDP 7781/7782 to the server is blocked. Allow `t5dr.exe` (and, if Windows asks, the launcher's `python\pythonw.exe`) through the firewall, or leave the VPN. |
+| "Could not connect the two PCs, not even through the relay." | Neither a direct connection nor the lobby's relay worked. Same checks; then try again. |
+| "Your opponent's game could not be reached (firewall or router?)." | The game on the other side did not answer. They may have closed it, or their firewall prompt is still open. |
+| "Your opponent's game is a different build." | You do not run the same release. See below. |
+| "Your opponent closed the game." / "The connection to your opponent's game was lost." | The match ended early. It is not counted as a win for the one who left. |
+
+### I never get matched / the lobby shows "other build"
+
+You are only matched with players who have the same build: the same release
+**and** a build made from it. After you update to a new release, click BUILD
+GAME again (the Play tab tells you). Ask your opponent to do the same.
+
+### Lag during an online match
+
+A match needs a steady connection more than a fast one: the two games advance in
+lockstep, so a late packet makes both wait. The lobby suggests an input delay from
+the measured ping (2 frames on one PC or LAN, 3 at about 40 ms, 5 at about 100
+ms). Use a cable instead of Wi-Fi, stop downloads, and close other games. The
+result bar can show how many frames behind a match was.
+
 ## Low frame rate
 
-Menus run at 60 fps. **Fights run at about 30-45 fps** even on the (fast)
-development PC: about 40-44 fps there, and about 36 fps on average in a 10-minute
-Survival run (lowest 11). This is a known open problem, not your setup. The cost
-is not the skinning jobs; the work to find it is ongoing.
+Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
+2026-10-17 (two games on one PC with other test programs running). Earlier notes
+said 30-45 fps; that was fixed by later work. If yours is lower, the sections
+below may help.
 
 What may help a little:
 

@@ -320,6 +320,24 @@ PadInput sample_local(uint32_t f)
     return in;
 }
 
+/* sample_local(t) for the per-frame sample -- only if frame t's local input
+ * is still open. A frame a scene barrier already filled with neutral input
+ * (while it waited for the peer, docs/NETPLAY.md) keeps that input, and the
+ * sample would be thrown away; reading the pad anyway would also throw away
+ * the presses the pad layer's tap latch handed to it (ps3recomp 0025: a tap
+ * between two samples is reported once, at the next read). Not reading
+ * leaves them latched for the next open frame. Main thread only, like every
+ * writer of local_max. */
+PadInput sample_local_open(uint32_t t)
+{
+    State& s = S();
+    {
+        std::lock_guard<std::mutex> lk(s.mu);
+        if (t < s.local_max) return kNeutral;   /* decided: not used */
+    }
+    return sample_local(t);
+}
+
 /* ---- transport --------------------------------------------------------- */
 
 std::string addr_str(const sockaddr_in& a)
@@ -1122,7 +1140,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         note("lockstep starts: frame 0, delay %d", s.delay);
     }
 
-    PadInput local = sample_local(f + (uint32_t)s.delay);
+    PadInput local = sample_local_open(f + (uint32_t)s.delay);
     {
         std::lock_guard<std::mutex> lk(s.mu);
         uint32_t i = f % kRing;
@@ -1224,7 +1242,7 @@ void rb_sample_local(uint32_t f)
 {
     State& s = S();
     if (s.mode == Mode::Off) return;
-    PadInput local = sample_local(f + (uint32_t)s.delay);
+    PadInput local = sample_local_open(f + (uint32_t)s.delay);
     std::lock_guard<std::mutex> lk(s.mu);
     const uint32_t t = f + (uint32_t)s.delay;
     for (uint32_t g = s.local_max; g <= t; g++) {   /* hold the sample over any gap; a decided input never changes */

@@ -90,6 +90,15 @@ thread from boot on and completes from either side; keepalives (PING, every
 begun. Protocol v2 (2026-10-17): every packet header carries the sender's
 per-process nonce, and with a key a SipHash-2-4 tag (below).
 
+**Short taps** (ps3recomp patch 0025, `PAD_TAP_LATCH`): the local sample
+(`cellPad_sample_local`, once per live frame, never in a rollback re-sim) also
+carries every press the pad layer's 1 ms sampler saw since the previous
+sample, so a tap between two frames is that frame's input and released in the
+next. A frame whose local input a scene barrier already filled with neutral
+input is not sampled at all, so such a press goes out with the next open
+frame instead of being thrown away. Test: `tools/tap_latch_test.py --pair`
+(also `--rollback`): 2-5 ms taps, each one press of exactly one frame, in sync.
+
 **Game hooks** (`t5_hooks.cpp`). How the game reads pads, from its code: a
 `keyread` thread, woken by the VBlank handler, polls `cellPadGetData` for both
 ports and writes 16-bit masks into a ring; the main loop reads the newest ring

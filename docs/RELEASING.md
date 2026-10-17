@@ -9,15 +9,45 @@ which pushes with the owner's own git login.
 How the zip is put together, and why, is in [RELEASE.md](RELEASE.md). This page
 is the procedure.
 
+## Two repositories (since 2026-10-17)
+
+Like Tekken 6 Native Online:
+
+- **TheWishin/T5DROnline-Dev** (private): all code, history, CI and the release
+  workflow. `origin` of every checkout.
+- **TheWishin/T5DROnline** (public): only README.md, README.de.md,
+  TROUBLESHOOTING.md and LICENSE, in one commit by a neutral author (no
+  contributors shown), plus the Releases with the zips.
+
+Never push source to the public repository. Its content is made with
+`python tools/make_public_repo.py --out C:/T5DR-public` and committed there as
+`T5DR Online <noreply@t5dr-online.invalid>` (a separate clone, remote `public`).
+Update it when the player README changes (amend + force-push keeps it at one
+commit).
+
 ## One-time setup (the owner, in the GitHub web UI)
 
 Only the owner's account (TheWishin) may publish releases: the owner, or the
 main Claude session, which pushes with the owner's own git login (the owner's
-choice, 2026-10-17). Three things enforce that.
+choice, 2026-10-17).
 
-**1. Nobody else has write access.** Settings -> Collaborators and teams: no one
-listed (or only with Read). Without write access nobody else can push a tag or
-start a workflow.
+**0. The token that lets the private workflow publish into the public repo.**
+
+1. github.com -> your picture -> **Settings** -> **Developer settings** ->
+   **Personal access tokens** -> **Fine-grained tokens** -> **Generate new token**.
+2. Name `T5DR release`, Expiration e.g. 1 year, Resource owner `TheWishin`.
+3. **Repository access** -> **Only select repositories** -> `TheWishin/T5DROnline`
+   (the public one only).
+4. **Permissions** -> Repository permissions -> **Contents: Read and write**
+   (Metadata: Read-only is added by itself). Nothing else.
+5. **Generate token** and copy it (it is shown once).
+6. In **T5DROnline-Dev** -> Settings -> Secrets and variables -> Actions ->
+   **New repository secret**: name `PUBLIC_RELEASE_TOKEN`, paste, **Add secret**.
+
+Nobody else ever sees the token; the workflow uses it only in the publish job.
+
+**1. Nobody else has write access** to either repository (Settings ->
+Collaborators and teams: no one, or only Read).
 
 **2. A tag ruleset -- only the admin creates, moves or deletes release tags.**
 

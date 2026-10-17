@@ -7,9 +7,12 @@
 #            tools/package_release.py --release does on a developer PC, scans it
 #            for game data, unpacks and smoke-tests it, and keeps zip + SHA256SUMS
 #            + release notes as a workflow artifact;
-#   publish  (environment "release": waits for the owner's approval) creates the
-#            GitHub Release from that artifact. A suffix (-preview, -rc1, ...)
-#            makes it a pre-release. Release notes = the tag's section of CHANGELOG.md.
+#   publish  (environment "release") creates the GitHub Release from that
+#            artifact in the PUBLIC repository (TheWishin/T5DROnline, README +
+#            releases only), with the token in the secret PUBLIC_RELEASE_TOKEN.
+#            This repository (T5DROnline-Dev) is private. A suffix (-preview,
+#            -rc1, ...) makes it a pre-release. Release notes = the tag's section
+#            of CHANGELOG.md.
 #
 # Dry runs build and check everything and publish nothing: "Run workflow" on the
 # Actions tab, or any push to a branch that changes the release tooling (the
@@ -183,7 +186,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python tools/release_notes.py --version "$VERSION" ${NOTES_FLAGS:+"$NOTES_FLAGS"} \
+          # --repo "": no links into this private repository in the public notes
+          python tools/release_notes.py --version "$VERSION" ${NOTES_FLAGS:+"$NOTES_FLAGS"} --repo "" \
             --release-json "dist/T5DR-Online-$VERSION/release.json" --sums dist/SHA256SUMS --out dist/RELEASE_NOTES.md
           {
             echo "## T5DR Online $VERSION"
@@ -216,16 +220,16 @@ jobs:
     if: needs.build.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Required reviewer = the owner; deployments limited to tags v* (docs/RELEASING.md).
-    # The job waits here until the owner approves it on GitHub.
+    # Deployments limited to tags v*; a required reviewer is optional (docs/RELEASING.md).
     environment:
       name: release
-      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.build.outputs.tag }}
+      url: https://github.com/${{ vars.PUBLIC_REPO || 'TheWishin/T5DROnline' }}/releases/tag/${{ needs.build.outputs.tag }}
     permissions:
-      contents: write
+      contents: read
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
+      # A fine-grained token of the owner: only the public repository, Contents read/write.
+      GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+      GH_REPO: ${{ vars.PUBLIC_REPO || 'TheWishin/T5DROnline' }}
       TAG: ${{ needs.build.outputs.tag }}
       VERSION: ${{ needs.build.outputs.version }}
       PRERELEASE: ${{ needs.build.outputs.prerelease }}
@@ -240,6 +244,14 @@ jobs:
             echo "::error::Only $OWNER makes releases (actor: $ACTOR, started by: $TRIGGERING_ACTOR)."
             exit 1
           fi
+
+      - name: Token for the public repository
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The secret PUBLIC_RELEASE_TOKEN is missing (docs/RELEASING.md, one-time setup). The zip is kept as this run's artifact; add the secret and re-run this job."
+            exit 1
+          fi
+          gh api "repos/$GH_REPO" --jq .full_name
 
       - uses: actions/download-artifact@v8
         with:
@@ -259,7 +271,9 @@ jobs:
           zip="T5DR-Online-$VERSION.zip"
           title="T5DR Online $VERSION"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" "$zip" SHA256SUMS --verify-tag --title "$title" \
+            # The tag is made in the public repository, on its main (the README commit),
+            # so the release's "Source code" archives hold the README only.
+            gh release create "$TAG" "$zip" SHA256SUMS --target main --title "$title" \
               --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
           else
             draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)

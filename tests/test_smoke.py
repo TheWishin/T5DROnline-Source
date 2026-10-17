@@ -257,6 +257,9 @@ class KnownIssues(unittest.TestCase):
         cs = [checks.check("picture.title3", "fail")]
         checks.apply_known("other_test", cs, self.KNOWN)
         self.assertEqual(cs[0]["status"], "fail")
+        cs = [checks.check("fps.title3", "warn", "unreliable: 3 other t5dr.exe")]
+        checks.apply_known("title_twice", cs, self.KNOWN)      # a WARN is no evidence: stays WARN
+        self.assertEqual([c["status"] for c in cs], ["warn", "xpass"])
 
     def test_xpass_once_per_issue(self):
         cs = [checks.check("picture.title3", "pass"), checks.check("no-hang", "pass")]

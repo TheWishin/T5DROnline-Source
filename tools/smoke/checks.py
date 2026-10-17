@@ -337,7 +337,7 @@ def apply_known(test, checks, known_failures):
             seen.setdefault(k["issue"], False)
             expect_fail[k["issue"]] = expect_fail.get(k["issue"], False) or k.get("expect", "fail") == "fail"
     for c in checks:
-        if c["status"] not in ("fail", "warn"):
+        if c["status"] != "fail":          # a WARN (unreliable under load) is not evidence either way
             continue
         for k in known_failures:
             if _matches(k, test, c):

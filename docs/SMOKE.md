@@ -13,6 +13,11 @@ Run it after every merge:
     python tools/smoke/run.py --only vs_two_pads,practice
     python tools/smoke/run.py --list
 
+Times are for a quiet PC (boot to the title ~24 s). Next to other game
+instances and parallel builds everything runs slower -- on 2026-10-17 with
+up to 12 other `t5dr.exe` and 35 compiler processes the quick suite took
+7.3 min and fps/audio came out as WARN (see "Under load" below).
+
 Options: `--exe PATH` (default `build/cmake/t5dr.exe`; copy the exe first if
 you want to relink while the suite runs), `--out DIR` (default
 `build/smoke/<time>-<suite>/`), `--set KEY=VALUE` to change a threshold,
@@ -53,21 +58,25 @@ small JPEG), `<shot>.png` (full-size frames the scenario asked for).
 
 | test | suite | what |
 |---|---|---|
-| `boot_menu` | quick | boot, START skips the intro movie, title menu, 12 s idle, cursor down/up |
-| `arcade_fight` | quick | ARCADE, character select, GAME START, 20 s of round 1 |
-| `vs_two_pads` | quick | VS: P1 and P2 pick (P2 one to the right), 10 s on the select screen, stage select, 20 s fight with both pads |
-| `practice` | quick | PRACTICE: both fighters and stage confirmed, 15 s |
-| `title_twice` | quick | title, attract demo, START, title, attract, START, title (third scene load) |
-| `ghost` | full | GHOST BATTLE, 25 s fight |
-| `survival_loop` | full | SURVIVAL, 2 min of fights back to back (CIRCLE = kick, RETRY on results) |
-| `options` | full | OPTIONS: game, sound, controller pages and back |
-| `gallery_offline` | full | GALLERY with no network: "retry?" NO, "return to title?" YES |
-| `save_reload` | full | fresh profile, VS round so the game saves, quit, second boot on the same gamedata loads it |
+| `boot_menu` | quick | boot, START skips the intro movie, title menu, cursor down and back up |
+| `arcade_fight` | quick | ARCADE, character select, GAME START, 15 s of round 1 |
+| `vs_two_pads` | quick | VS: P1 and P2 pick (P2 one to the right), 10 s on the select screen, stage select, 15 s fight with both pads |
+| `practice` | quick | PRACTICE: both fighters and stage confirmed, 12 s |
+| `title_twice` | quick | title, attract demo, START, title, attract, START, title (the scene loads that ran out of memory before patch 0012, QA issue 1) |
+| `ghost` | full | GHOST BATTLE, 15 s fight |
+| `survival_loop` | full | SURVIVAL, 80 s of fights back to back (CIRCLE = kick, RETRY on results) |
+| `options` | full | OPTIONS: game, sound, controller pages, EXIT, back at the title |
+| `gallery_offline` | full | GALLERY with no network: "retry?" NO, "return to title?" YES, back at the title |
+| `save_reload` | full | fresh profile, lose an ARCADE match (the game saves), quit, second boot on the same gamedata loads the save |
 | `idle_attract` | full | 10 min with no input: title and attract demo cycle by themselves |
 
-Fights are reached by tapping CROSS (both pads in VS) until two dumped frames
-in a row show the fight HUD; that gets through character select, stage
-select, the VS splash and intros whatever their timing.
+Fights are reached by tapping CROSS (both pads in VS) and START every second
+until a dumped frame shows the fight HUD: CROSS confirms the fighter, GAME
+START and the stage; START skips the VS splash and the intros (CROSS does
+not skip arcade intros); tapping stops at the first HUD frame, before START
+could pause the fight. Scenario steps wait for what the screen shows (the
+attract demo, the title, the HUD), not for fixed times, so a slow machine
+makes a test longer, not wrong.
 
 ## Checks
 
@@ -77,7 +86,7 @@ Per run (the check ids in the report):
 |---|---|
 | `no-crash` | a `[CRASH]` line, or the game exited by itself |
 | `no-hang` | no `[fps]` line for 12 s (`hang_gap_s`), or none in the first 60 s |
-| `reach.<milestone>` | the scenario did not get somewhere (`title`, `fight`, `saved`, `loaded`) |
+| `reach.<milestone>` | the scenario did not get somewhere (`title`, `fight`, `attract1`, `back-to-title`, `saved`, `loaded`) |
 | `fps.<phase>` | title/menu phases: median of the phase's full 5-s windows below 58 (`fps_min.title`, `fps_min.menu`); fights are reported (`fps_min.fight` = 0) |
 | `audio.<phase>` | menu/fight/attract phases: median silent blocks above 10 % (`audio_silent.*`); the title menu is silent by design and not checked |
 | `picture.<phase>` | more than half the phase's frames are black, white or one flat colour |
@@ -85,6 +94,7 @@ Per run (the check ids in the report):
 | `fighters` | fight phases: no frame with the fight HUD, or the spike score (below) too high |
 | `shot.<name>` | a frame the scenario asked for is missing, not content, or (fight shots) shows no HUD |
 | `nids` | an `[hle] unresolved NID` that is not in `known_issues.json` |
+| `guest-faults` | the runtime caught a NULL call/read/write or an unregistered OPD (none on a healthy run) |
 | `memory` | private bytes grow more than 400 MB after the title (`mem_growth_mb`); runs over 5 min also fail above 15 MB/min in the second half |
 
 `--set KEY=VALUE` overrides any threshold in `checks.DEFAULTS`.
@@ -124,16 +134,22 @@ anyway. Everything else fails regardless.
   are fnmatch patterns over test names and check ids.
 
 A failing check that matches is reported **KNOWN (issue)** and does not
-fail the suite. A matching check that *passes* is reported **XPASS**: the
-issue may be fixed -- confirm, then delete the entry (or set
-`"expect": "maybe"` for checks that pass on some builds anyway). Issue ids
-are `QA-n` for build/qa/REPORT.md's open issues; use the same scheme for new
-ones (the id, one line of what and why, where it is tracked).
+fail the suite; an optional `"detail"` regex narrows the match (e.g. a hang
+only counts as the known issue in the phase where that issue hits). When
+none of an issue's entries fail in a test, the report adds one check
+`known.<issue>` = **XPASS**: the issue no longer reproduces -- confirm, then
+delete its entries (`"expect": "maybe"` suppresses that for checks that pass
+on some builds anyway). A WARN (fps/audio under load) never counts as a
+known failure. Issue ids are `QA-n` for build/qa/REPORT.md's open issues;
+use the same scheme for new ones (the id, one line of what and why, where it
+is tracked).
 
-Current entries: **QA-1** (sys_memory never reuses freed ranges; the third
-scene load through the title goes white -- `title_twice`, `idle_attract`)
-and **QA-4** (the first save into a new folder fails -- `save_reload`).
-Both are expected to fail on main until their fixes land.
+History: **QA-1** (sys_memory never reused freed ranges; after the second
+return to the title the next scene load went white, hung or called NULL)
+failed `title_twice` on the 23:13 main build and passes since patch 0012
+-- its entries are gone. Current entries: **QA-4** (the first save into a
+new folder failed -- `save_reload`), kept until `save_reload` confirms the
+fix in patch 0012.
 
 ## Adding a test
 

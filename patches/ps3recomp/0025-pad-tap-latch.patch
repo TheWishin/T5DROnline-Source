@@ -1,0 +1,762 @@
+diff --git a/docs/controls.ini b/docs/controls.ini
+index 8816685..6e0a931 100644
+--- a/docs/controls.ini
++++ b/docs/controls.ini
+@@ -44,6 +44,19 @@ latency_log = 0       ; 1: every 5 s, how old the samples are when the game read
+                       ; them (env PS3_PAD_LATENCY)
+ min_interval_us = 1000 ; a port is re-sampled at most this often (only matters
+                       ; for titles that spin on the pad; env PS3_PAD_MIN_INTERVAL_US)
++tap_latch = 1         ; no press is lost, however short: every pad, stick and the
++                      ; keyboard are read every millisecond on a background
++                      ; thread, and a button pressed AND released between two
++                      ; reads of the game is reported held for exactly one read
++                      ; (released in the next). Directions too (d-pad, hat,
++                      ; stick = dpad); analog sticks are always the newest value.
++                      ; DirectInput sticks also report presses shorter than a
++                      ; millisecond. Netplay sends such a press as that frame's
++                      ; input. 0 = off: devices are read only when the game reads
++                      ; (env PAD_TAP_LATCH). Cost: ~1% of one CPU core.
++tap_period_us = 1000  ; how often that thread reads (250-10000; env PAD_TAP_PERIOD_US)
++tap_max_age_ms = 250  ; a latched press the game has not read within this time is
++                      ; dropped (loading screens; env PAD_TAP_MAX_AGE_MS)
+ 
+ ; ---------------------------------------------------------------------------
+ ; Ports. device = auto | none | xinput | xinput:<0-3> | dinput |
+@@ -151,3 +164,7 @@ preset = ps
+ ; e.g. "DOWN CROSS" or "1+2"), LX=n LY=n RX=n RY=n (0-255), and optionally
+ ; T=<time.perf_counter_ns()> to time the input in the latency log. While a
+ ; script is in use, physical pads are ignored unless PS3_PAD_DEVICES=1.
++; With the tap latch the file is read every millisecond too, so a script can
++; tap for a few milliseconds. PS3_PAD_READ_LOG=<file> writes every read (the
++; game's and netplay's) with its time; latency_log = 1 adds a [pad-tap] line
++; every 5 s (sampler rate, cost, CPU, taps held). Test: tools/tap_latch_test.py.
+diff --git a/libs/input/cellPad.c b/libs/input/cellPad.c
+index 55a4f43..c2f0b99 100644
+--- a/libs/input/cellPad.c
++++ b/libs/input/cellPad.c
+@@ -117,15 +117,19 @@ static void pad_shutdown_backend(void)
+  * that finds a newer sample gets len > 0, a read that does not gets len = 0
+  * (see the note at "emit" in cellPadGetData). */
+ static u32 s_handed_seq[PAD_MAX_HOST_PORTS];
++/* Buttons of the last read that only the tap latch held (PS3_PAD_LOG). */
++static u16 s_tapped[PAD_MAX_HOST_PORTS];
+ 
+-/* Sample port `port` now (rate-limited to PS3_PAD_MIN_INTERVAL_US) into
+- * s_host_state[port]. Called from cellPadGetData, right where the title
+- * reads, so the data it gets is microseconds old. */
++/* The title's read of port `port` into s_host_state[port]: the newest host
++ * sample (taken here if the port's last one is older than
++ * PS3_PAD_MIN_INTERVAL_US) plus every press the tap latch caught since the
++ * title's previous read (pad_host.h). Called from cellPadGetData. */
+ static void pad_sample_port(u32 port)
+ {
+     PadHostPort st;
+     if (port >= PAD_MAX_HOST_PORTS) return;
+-    padh_sample(port, &st, padh_min_interval_us());
++    padh_read(port, PADH_READER_GAME, &st, padh_min_interval_us());
++    s_tapped[port] = st.tapped;
+     PadHostState* hs = &s_host_state[port];
+     hs->connected = st.connected;
+     hs->buttons   = st.buttons;
+@@ -149,12 +153,41 @@ static void pad_sample_port(u32 port)
+     }
+ }
+ 
++/* PS3_PAD_READ_LOG=<file>: one line per read, "<time ns> <port> <buttons>
++ * <tap> <G|L>" -- G = a packet the title got from cellPadGetData (len > 0),
++ * L = cellPad_sample_local (netplay's local input); tap = buttons only the
++ * tap latch held. Time on the QueryPerformanceCounter clock as Python's
++ * time.perf_counter_ns() gives it. Its own file, so lines never mix with
++ * other threads' output (tools/tap_latch_test.py). */
++static INIT_ONCE s_read_log_once = INIT_ONCE_STATIC_INIT;
++static FILE* s_read_log;
++static BOOL CALLBACK pad_read_log_init(PINIT_ONCE once, PVOID param, PVOID* ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    const char* p = getenv("PS3_PAD_READ_LOG");
++    if (p && *p && !(s_read_log = fopen(p, "w"))) printf("[cellPad] PS3_PAD_READ_LOG=%s: cannot write\n", p);
++    return TRUE;
++}
++static void pad_read_log(char who, u32 port, u16 buttons, u16 tapped)
++{
++    InitOnceExecuteOnce(&s_read_log_once, pad_read_log_init, NULL, NULL);
++    if (!s_read_log) return;
++    LARGE_INTEGER t, f;
++    QueryPerformanceCounter(&t); QueryPerformanceFrequency(&f);
++    const unsigned long long q = (unsigned long long)t.QuadPart, fr = (unsigned long long)f.QuadPart;
++    fprintf(s_read_log, "%llu %u %04X %04X %c\n", (q / fr) * 1000000000ull + ((q % fr) * 1000000000ull) / fr,
++            port + 1, (unsigned)buttons, (unsigned)tapped, who);
++    fflush(s_read_log);
++}
++
+ /* PS3_PAD_LOG=1 ([general] log = 1): log every packet the title reads that
+- * differs from the previous one on that port -- exactly what it was handed. */
++ * differs from the previous one on that port -- exactly what it was handed;
++ * "tap=" names buttons only the tap latch held. */
+ static void pad_note_read(u32 port, const CellPadData* d)
+ {
+     if (port >= PAD_MAX_HOST_PORTS) return;
+     padh_note_read(port, NULL, d->len != 0);
++    if (d->len) pad_read_log('G', port, (u16)((d->button[3] << 8) | (d->button[2] & 0xFF)), s_tapped[port]);
+     if (!padh_log_reads()) return;
+     static u16 last[PAD_MAX_HOST_PORTS][6];
+     static int have[PAD_MAX_HOST_PORTS];
+@@ -163,8 +196,12 @@ static void pad_note_read(u32 port, const CellPadData* d)
+     if (have[port] && !memcmp(cur, last[port], sizeof cur)) return;
+     memcpy(last[port], cur, sizeof cur);
+     have[port] = 1;
+-    printf("[cellPad] read port %u: len=%d buttons=0x%04X L=(%u,%u) R=(%u,%u)\n", port + 1, d->len,
+-           (unsigned)((cur[1] << 8) | cur[0]), cur[2], cur[3], cur[4], cur[5]);
++    if (s_tapped[port])
++        printf("[cellPad] read port %u: len=%d buttons=0x%04X L=(%u,%u) R=(%u,%u) tap=0x%04X\n", port + 1, d->len,
++               (unsigned)((cur[1] << 8) | cur[0]), cur[2], cur[3], cur[4], cur[5], (unsigned)s_tapped[port]);
++    else
++        printf("[cellPad] read port %u: len=%d buttons=0x%04X L=(%u,%u) R=(%u,%u)\n", port + 1, d->len,
++               (unsigned)((cur[1] << 8) | cur[0]), cur[2], cur[3], cur[4], cur[5]);
+     fflush(stdout);
+ }
+ 
+@@ -1158,7 +1195,10 @@ s32 cellPadClearBuf(u32 port_no)
+  * touches guest memory or the len=0 "already read" state of cellPadGetData.
+  *
+  * Netplay overrides the cellPadGetData NID and calls this for the LOCAL
+- * player(s) instead of reading devices itself. */
++ * player(s) instead of reading devices itself, once per frame at the real
++ * sample (never while rollback re-simulates). Each call is a read with its
++ * own tap latch (PADH_READER_LOCAL): a press that came and went since the
++ * previous call is in this one, held, and gone from the next. */
+ s32 cellPad_sample_local(u32 port_no, CellPadData* out)
+ {
+     if (!out || port_no >= CELL_PAD_MAX_PORT_NUM)
+@@ -1166,9 +1206,10 @@ s32 cellPad_sample_local(u32 port_no, CellPadData* out)
+     memset(out, 0, sizeof *out);
+ #if PAD_BACKEND_XINPUT
+     PadHostPort st;
+-    padh_sample(port_no, &st, 0);
++    padh_read(port_no, PADH_READER_LOCAL, &st, 0);
+     if (!st.connected) return CELL_OK;           /* len = 0: nothing there */
+     const u16 b = st.buttons;
++    pad_read_log('L', port_no, b, st.tapped);
+     out->len = CELL_PAD_LEN_CHANGE_DEFAULT;
+     out->button[1] = (u16)(0x70 | (CELL_PAD_LEN_CHANGE_DEFAULT / 2));
+     out->button[CELL_PAD_BTN_OFFSET_DIGITAL1] = (u16)(b & 0xFF);
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+index 78476f2..4ec711e 100644
+--- a/libs/input/pad_host.h
++++ b/libs/input/pad_host.h
+@@ -13,9 +13,19 @@
+  * Mapping, port assignment and options come from controls.ini; see
+  * docs/controls.ini in this tree for the format and every default.
+  *
+- * Devices are sampled when the title reads the pad (cellPadGetData), not on a
+- * timer: what the title gets is at most PS3_PAD_MIN_INTERVAL_US old (default
+- * 1000 us, only to stop spin-polling titles from hammering the drivers).
++ * Tap latch (default on; PAD_TAP_LATCH=0 or [general] tap_latch = 0 turns it
++ * off): a background thread samples every port that has a source every
++ * PAD_TAP_PERIOD_US (1000 us) and remembers, per reader, the buttons that went
++ * down since that reader's last read (DirectInput devices also report presses
++ * from their event buffer, so even a press shorter than the period counts).
++ * A read gets the newest state OR those presses, then the latch is cleared:
++ * a tap that falls between two reads is reported held for exactly one read.
++ * Sticks are the newest value; a latched direction also tilts the left stick
++ * when mirror_stick applied to it. A press older than PAD_TAP_MAX_AGE_MS
++ * (250) at the read is dropped (the reader was not reading).
++ * A read samples the port itself when the newest sample is older than the
++ * reader allows (PS3_PAD_MIN_INTERVAL_US for the title, 0 = always for
++ * netplay); without the latch that is the only sampling, as before.
+  * Enumeration and hot-plug run on a background thread, never on the read path.
+  *
+  * Ports here are 0-based (PS3 port 0 = "port1" in controls.ini = player 1).
+@@ -39,9 +49,19 @@ typedef struct PadHostPort {
+     u16 buttons;
+     u8  lx, ly, rx, ry;
+     u8  l2, r2;             /* trigger pressure 0..255 */
++    u16 tapped;             /* padh_read: buttons reported only because the tap latch
++                               held them (pressed and released since the last read) */
+     u32 seq;                /* increments with every new host sample of the port */
+ } PadHostPort;
+ 
++/* Who reads a port; each has its own tap latch, so one never takes a press
++ * from the other. */
++enum {
++    PADH_READER_GAME  = 0,  /* cellPadGetData: the title */
++    PADH_READER_LOCAL = 1,  /* cellPad_sample_local: netplay's local input, once per frame */
++    PADH_READERS      = 2
++};
++
+ /* Load controls.ini, enumerate devices, start the hot-plug thread.
+  * Idempotent; safe to call from any thread. */
+ void padh_init(void);
+@@ -55,6 +75,15 @@ int  padh_port_connected(u32 port);
+  * (returns 0 then); returns 1 when a new sample was taken. */
+ int  padh_sample(u32 port, PadHostPort* out, u32 min_interval_us);
+ 
++/* A read by `reader`: like padh_sample, plus the presses the tap latch holds
++ * for that reader (out->tapped), which are then cleared. If nothing new was
++ * sampled since this reader's last read, it gets that read's data again
++ * (same seq) and keeps its latch. Without the tap latch = padh_sample. */
++int  padh_read(u32 port, int reader, PadHostPort* out, u32 min_interval_us);
++
++/* Is the tap latch on (PAD_TAP_LATCH, [general] tap_latch)? */
++int  padh_tap_latch(void);
++
+ /* The rate limit cellPadGetData uses (PS3_PAD_MIN_INTERVAL_US, default 1000). */
+ u32  padh_min_interval_us(void);
+ 
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 639dacb..46bcead 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -81,12 +81,15 @@ static const char* const k_cls_name[] = { "keys", "xinput", "dinput" };
+ 
+ typedef struct {
+     u32 bits[(CID_COUNT + 31) / 32];
++    u32 tap[(CID_COUNT + 31) / 32];  /* down at some instant since the previous read of
++                                        the device (DInput buffered events; tap latch) */
+     s32 axis[NAXES];                 /* -32768..32767, centre 0 */
+     u8  lt, rt;                      /* XInput trigger values (pressure) */
+ } RawState;
+ 
+ static int  raw_get(const RawState* r, unsigned id) { return (r->bits[id >> 5] >> (id & 31)) & 1; }
+ static void raw_set(RawState* r, unsigned id) { r->bits[id >> 5] |= 1u << (id & 31); }
++static void raw_set_tap(RawState* r, unsigned id) { r->tap[id >> 5] |= 1u << (id & 31); }
+ 
+ /* ---------------------------------------------------------------------------
+  * Names
+@@ -580,6 +583,9 @@ static struct {
+     int  latency;
+     int  devices;                    /* physical devices enabled */
+     u32  min_interval_us;
++    int  tap_latch;                  /* PAD_TAP_LATCH: 1 ms sampler + press latch */
++    u32  tap_period_us;              /* sampler period (PAD_TAP_PERIOD_US, 1000) */
++    u32  tap_max_age_ms;             /* a latched press older than this is dropped */
+     char file[2][MAX_PATH * 2];      /* PS3_PAD_FILE / PS3_PAD_FILE2 */
+     PortCfg port[PADH_MAX_PORTS];
+     BindTable keys[2];
+@@ -668,6 +674,11 @@ static void load_config(void)
+     g_cfg.log         = env_int("PS3_PAD_LOG", ini_int("general", "log", 0));
+     g_cfg.latency     = env_int("PS3_PAD_LATENCY", ini_int("general", "latency_log", 0));
+     g_cfg.min_interval_us = (u32)env_int("PS3_PAD_MIN_INTERVAL_US", ini_int("general", "min_interval_us", 1000));
++    g_cfg.tap_latch   = env_int("PAD_TAP_LATCH", ini_int("general", "tap_latch", 1)) != 0;
++    { int us = env_int("PAD_TAP_PERIOD_US", ini_int("general", "tap_period_us", 1000));
++      g_cfg.tap_period_us = (u32)(us < 250 ? 250 : us > 10000 ? 10000 : us); }
++    { int ms = env_int("PAD_TAP_MAX_AGE_MS", ini_int("general", "tap_max_age_ms", 250));
++      g_cfg.tap_max_age_ms = (u32)(ms < 20 ? 20 : ms > 10000 ? 10000 : ms); }
+     int socd = parse_socd(ini_get("general", "socd"), SOCD_NEUTRAL);
+ 
+     const char* f0 = getenv("PS3_PAD_FILE");
+@@ -714,6 +725,8 @@ typedef struct {
+     BindTable bind;
+     u32  last_bits[(CID_COUNT + 31) / 32];
+     u8   rumble[2];
++    int  di_buffered;          /* DInput event buffer set up (tap latch) */
++    int  di_primed;            /* first drain done: older events discarded */
+ } PadDev;
+ 
+ static PadDev   g_dev[MAX_DEVS];
+@@ -733,8 +746,17 @@ typedef struct {
+     LONGLONG file_t_seen;         /* when we first sampled it */
+     int file_t_pending;           /* not yet handed to the title */
+     u16 file_btns;                /* buttons the file held last time */
++    /* tap latch (PAD_TAP_LATCH), one set per reader (PADH_READER_*): buttons
++     * that went down in a sample since that reader's last read, when, and
++     * which latched directions were mirrored onto the left stick */
++    u16 latch[PADH_READERS];
++    u16 latch_mirror[PADH_READERS];
++    LONGLONG edge_t[PADH_READERS][16];
++    PadHostPort rout[PADH_READERS];   /* what the reader got last */
++    int rhave[PADH_READERS];
+     /* latency statistics */
+     u64 n_reads, n_fresh, n_samples;
++    u64 tap_held[PADH_READERS], tap_stale[PADH_READERS];   /* since start ([pad-tap]) */
+     double cost_sum, cost_max, age_sum, age_max;
+     LONGLONG last_read, stat_t0;
+     double ival_sum; u64 ival_n;
+@@ -769,6 +791,53 @@ static void axis_dirs(RawState* r)
+     }
+ }
+ 
++/* Hat angle -> direction bits (diagonals set both). */
++static void pov_set(u32* bits, int h, DWORD pov)
++{
++    if (LOWORD(pov) == 0xFFFF) return;                /* centred */
++    pov %= 36000;
++    unsigned id = CID_HAT + (unsigned)h * 4;
++    if (pov >= 31500 || pov <= 4500)  bits[(id + 0) >> 5] |= 1u << ((id + 0) & 31);
++    if (pov >= 4500  && pov <= 13500) bits[(id + 1) >> 5] |= 1u << ((id + 1) & 31);
++    if (pov >= 13500 && pov <= 22500) bits[(id + 2) >> 5] |= 1u << ((id + 2) & 31);
++    if (pov >= 22500 && pov <= 31500) bits[(id + 3) >> 5] |= 1u << ((id + 3) & 31);
++}
++
++/* Tap latch, DirectInput: the device also keeps an event buffer
++ * (DIPROP_BUFFERSIZE), drained at every read. A button, hat direction or
++ * axis direction that was down in any event since the last drain is marked
++ * in r->tap -- a press shorter than the sampler period is not lost even when
++ * GetDeviceState never sees it. Events from before the device was first read
++ * are thrown away. */
++static void di_drain(PadDev* d, RawState* r)
++{
++    IDirectInputDevice8W* di = d->di;
++    DIDEVICEOBJECTDATA ev[32];
++    for (int round = 0; round < 8; round++) {
++        DWORD n = 32;
++        HRESULT hr = di->lpVtbl->GetDeviceData(di, sizeof ev[0], ev, &n, 0);
++        if (FAILED(hr)) return;
++        if (d->di_primed) {
++            for (DWORD i = 0; i < n; i++) {
++                DWORD ofs = ev[i].dwOfs;
++                if (ofs >= FIELD_OFFSET(DIJOYSTATE2, rgbButtons) && ofs < FIELD_OFFSET(DIJOYSTATE2, rgbButtons) + 128) {
++                    if (ev[i].dwData & 0x80) raw_set_tap(r, ofs - FIELD_OFFSET(DIJOYSTATE2, rgbButtons));
++                } else if (ofs >= FIELD_OFFSET(DIJOYSTATE2, rgdwPOV) && ofs < FIELD_OFFSET(DIJOYSTATE2, rgdwPOV) + 16) {
++                    pov_set(r->tap, (int)(ofs - FIELD_OFFSET(DIJOYSTATE2, rgdwPOV)) / 4, ev[i].dwData);
++                } else if (ofs < FIELD_OFFSET(DIJOYSTATE2, rgdwPOV) && (ofs & 3) == 0) {
++                    /* lX lY lZ lRx lRy lRz sliders: the axis order of dev_read */
++                    const LONG v = (LONG)ev[i].dwData;
++                    const unsigned a = ofs / 4;
++                    if (v > 16384) raw_set_tap(r, CID_AXIS + a * 2);
++                    if (v < -16384) raw_set_tap(r, CID_AXIS + a * 2 + 1);
++                }
++            }
++        }
++        if (n < 32) break;
++    }
++    d->di_primed = 1;
++}
++
+ /* Read one device now. 0 = gone. */
+ static int dev_read(PadDev* d, RawState* r)
+ {
+@@ -804,15 +873,8 @@ static int dev_read(PadDev* d, RawState* r)
+     }
+     if (FAILED(hr)) { InterlockedExchange(&d->lost, 1); return 0; }
+     for (int i = 0; i < 128; i++) if (js.rgbButtons[i] & 0x80) raw_set(r, (unsigned)i);
+-    for (int h = 0; h < 4; h++) {
+-        DWORD pov = js.rgdwPOV[h];
+-        if (LOWORD(pov) == 0xFFFF) continue;          /* centred */
+-        pov %= 36000;
+-        if (pov >= 31500 || pov <= 4500)  raw_set(r, CID_HAT + h * 4 + 0);
+-        if (pov >= 4500  && pov <= 13500) raw_set(r, CID_HAT + h * 4 + 1);
+-        if (pov >= 13500 && pov <= 22500) raw_set(r, CID_HAT + h * 4 + 2);
+-        if (pov >= 22500 && pov <= 31500) raw_set(r, CID_HAT + h * 4 + 3);
+-    }
++    for (int h = 0; h < 4; h++) pov_set(r->bits, h, js.rgdwPOV[h]);
++    if (d->di_buffered) di_drain(d, r);
+     r->axis[0] = js.lX;  r->axis[1] = js.lY;  r->axis[2] = js.lZ;
+     r->axis[3] = js.lRx; r->axis[4] = js.lRy; r->axis[5] = js.lRz;
+     r->axis[6] = js.rglSlider[0]; r->axis[7] = js.rglSlider[1];
+@@ -935,11 +997,20 @@ static void di_scan(void)
+         dz.diph.dwSize = sizeof dz; dz.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+         dz.diph.dwObj = 0; dz.diph.dwHow = DIPH_DEVICE; dz.dwData = 0;
+         di->lpVtbl->SetProperty(di, DIPROP_DEADZONE, &dz.diph);
++        /* Tap latch: an event buffer next to the immediate state (both work
++         * on one device), so a press between two samples is still seen. */
++        int buffered = 0;
++        if (g_cfg.tap_latch) {
++            DIPROPDWORD bs;
++            bs.diph.dwSize = sizeof bs; bs.diph.dwHeaderSize = sizeof(DIPROPHEADER);
++            bs.diph.dwObj = 0; bs.diph.dwHow = DIPH_DEVICE; bs.dwData = 64;
++            buffered = SUCCEEDED(di->lpVtbl->SetProperty(di, DIPROP_BUFFERSIZE, &bs.diph));
++        }
+         HRESULT ahr = di->lpVtbl->Acquire(di);
+         AcquireSRWLockExclusive(&g_dev_lock);
+         PadDev* d = dev_alloc();
+         if (!d) { ReleaseSRWLockExclusive(&g_dev_lock); di->lpVtbl->Release(di); continue; }
+-        d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance;
++        d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance; d->di_buffered = buffered;
+         d->vid = vid; d->pid = pid; d->order = ++g_dev_order;
+         snprintf(d->name, sizeof d->name, "%s", name);
+         ReleaseSRWLockExclusive(&g_dev_lock);
+@@ -1073,6 +1144,7 @@ static DWORD WINAPI hotplug_main(LPVOID arg)
+  * -----------------------------------------------------------------------*/
+ 
+ static INIT_ONCE g_init_once = INIT_ONCE_STATIC_INIT;
++static void sampler_start(void);
+ 
+ static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
+ {
+@@ -1099,6 +1171,9 @@ static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
+         g_hotplug_thread = CreateThread(NULL, 0, hotplug_main, NULL, 0, NULL);
+         if (g_hotplug_thread) SetThreadPriority(g_hotplug_thread, THREAD_PRIORITY_BELOW_NORMAL);
+     }
++    if (g_cfg.tap_latch) sampler_start();
++    else printf("[pad] tap latch off (PAD_TAP_LATCH=0): devices are read only when the game reads the pad\n");
++    fflush(stdout);
+     return TRUE;
+ }
+ 
+@@ -1132,6 +1207,7 @@ int padh_port_connected(u32 port)
+ 
+ typedef struct {
+     u16 btn;
++    u16 tap_btn;        /* buttons down in a device event since its last read (tap latch) */
+     s32 ax[4];          /* LX LY RX RY, -32768..32767 */
+     u8  l2, r2;
+     int kb_dirs;        /* directions came from the keyboard */
+@@ -1147,7 +1223,9 @@ static void merge_axis(Merge* m, int t, s32 v)
+ static void apply_table(Merge* m, const BindTable* t, const RawState* r, int cls)
+ {
+     for (int i = 0; i < t->n; i++) {
+-        if (!raw_get(r, t->b[i].src)) continue;
++        const unsigned src = t->b[i].src;
++        if ((r->tap[src >> 5] >> (src & 31)) & 1) m->tap_btn |= t->b[i].mask;
++        if (!raw_get(r, src)) continue;
+         m->btn |= t->b[i].mask;
+         if (cls == CLS_XINPUT && (t->b[i].src == 16 || t->b[i].src == 17)) {
+             u8 v = t->b[i].src == 16 ? r->lt : r->rt;
+@@ -1193,10 +1271,17 @@ static void apply_keys(Merge* m, const BindTable* t)
+ static void apply_file(Merge* m, PortState* ps, u32 port, LONGLONG now)
+ {
+     const char* path = g_cfg.file[port];
+-    char buf[512]; size_t n = 0;
++    char buf[512]; DWORD n = 0;
+     u16 fb = 0;
+-    FILE* f = fopen(path, "rb");
+-    if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
++    /* With the tap latch this runs every millisecond (on the sampler
++     * thread): Win32 directly, no CRT stream, sharing everything so the
++     * script rewriting the file is never blocked by us. */
++    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (h != INVALID_HANDLE_VALUE) {
++        if (!ReadFile(h, buf, sizeof buf - 1, &n, NULL)) n = 0;
++        CloseHandle(h);
++    }
+     buf[n] = 0;
+     char* save = NULL;
+     for (char* tok = strtok_s(buf, " \t\r\n,", &save); tok; tok = strtok_s(NULL, " \t\r\n,", &save)) {
+@@ -1267,29 +1352,29 @@ static u16 stick_to_dirs(s32 x, s32 y)
+ 
+ static u8 axis_u8(s32 v) { int u = (v + 32768) >> 8; return (u8)(u < 0 ? 0 : u > 255 ? 255 : u); }
+ 
+-int padh_sample(u32 port, PadHostPort* out, u32 min_interval_us)
++#define DIRS_LR (CELL_PAD_CTRL_LEFT | CELL_PAD_CTRL_RIGHT)
++#define DIRS_UD (CELL_PAD_CTRL_UP | CELL_PAD_CTRL_DOWN)
++
++/* Sample `port` now (devices, keyboard, file), merge into ps->last and, with
++ * the tap latch on, record the buttons that went down since the previous
++ * sample for every reader. Port lock held. Runs on the sampler thread every
++ * PAD_TAP_PERIOD_US, and on a reader's thread when its port's sample is
++ * older than the reader allows. */
++static void sample_locked(u32 port, PortState* ps, LONGLONG t0)
+ {
+-    padh_init();
+-    memset(out, 0, sizeof *out);
+-    out->lx = out->ly = out->rx = out->ry = 128;
+-    if (port >= PADH_MAX_PORTS) return 0;
+-    PortState* ps = &g_port[port];
+-    AcquireSRWLockExclusive(&ps->lock);
+-    LONGLONG t0 = qpc_now();
+-    if (min_interval_us && ps->have && t0 - ps->t_end < qpc_from_us(min_interval_us)) {
+-        *out = ps->last;
+-        ReleaseSRWLockExclusive(&ps->lock);
+-        return 0;
+-    }
++    PadHostPort o;
++    memset(&o, 0, sizeof o);
+     Merge m; memset(&m, 0, sizeof m);
+-    int focus = -1, connected = 0;
++    int focus = -1;
+     if (g_cfg.devices) {
+         AcquireSRWLockShared(&g_dev_lock);
+         for (int i = 0; i < MAX_DEVS; i++) {
+             PadDev* d = &g_dev[i];
+             if (!d->kind || d->port != (int)port || d->lost) continue;
+-            connected = 1;
+-            if (!g_cfg.background) { if (focus < 0) focus = window_focused(); if (!focus) continue; }
++            if (!g_cfg.background) {
++                if (focus < 0) focus = window_focused();
++                if (!focus) { d->di_primed = 0; continue; }   /* presses made elsewhere are not ours */
++            }
+             RawState r;
+             if (!dev_read(d, &r)) continue;
+             apply_table(&m, &d->bind, &r, d->kind == DEV_XINPUT ? CLS_XINPUT : CLS_DINPUT);
+@@ -1312,31 +1397,265 @@ int padh_sample(u32 port, PadHostPort* out, u32 min_interval_us)
+     m.btn = socd_clean(ps, m.btn, g_cfg.port[port].socd);
+     /* Keyboard (or, with mirror_stick = all, any) directions also drive the
+      * left stick when it is otherwise centred, for titles that only read it. */
+-    if ((g_cfg.mirror == MIRROR_ALL || (g_cfg.mirror == MIRROR_KEYBOARD && m.kb_dirs)) &&
+-        !m.ax[TGT_LX] && !m.ax[TGT_LY]) {
++    const int mirror = (g_cfg.mirror == MIRROR_ALL || (g_cfg.mirror == MIRROR_KEYBOARD && m.kb_dirs)) &&
++                       !m.ax[TGT_LX] && !m.ax[TGT_LY];
++    if (mirror) {
+         if (m.btn & CELL_PAD_CTRL_LEFT)  m.ax[TGT_LX] = -32768;
+         if (m.btn & CELL_PAD_CTRL_RIGHT) m.ax[TGT_LX] = 32767;
+         if (m.btn & CELL_PAD_CTRL_UP)    m.ax[TGT_LY] = -32768;
+         if (m.btn & CELL_PAD_CTRL_DOWN)  m.ax[TGT_LY] = 32767;
+     }
+-    out->buttons = m.btn;
+-    out->lx = axis_u8(m.ax[TGT_LX]); out->ly = axis_u8(m.ax[TGT_LY]);
+-    out->rx = axis_u8(m.ax[TGT_RX]); out->ry = axis_u8(m.ax[TGT_RY]);
+-    out->l2 = (m.btn & CELL_PAD_CTRL_L2) ? (m.l2 ? m.l2 : 255) : 0;
+-    out->r2 = (m.btn & CELL_PAD_CTRL_R2) ? (m.r2 ? m.r2 : 255) : 0;
+-    (void)connected;
+-    out->connected = padh_port_connected(port);
+-    out->seq = ps->last.seq + 1;
+-    ps->last = *out;
++    o.buttons = m.btn;
++    o.lx = axis_u8(m.ax[TGT_LX]); o.ly = axis_u8(m.ax[TGT_LY]);
++    o.rx = axis_u8(m.ax[TGT_RX]); o.ry = axis_u8(m.ax[TGT_RY]);
++    o.l2 = (m.btn & CELL_PAD_CTRL_L2) ? (m.l2 ? m.l2 : 255) : 0;
++    o.r2 = (m.btn & CELL_PAD_CTRL_R2) ? (m.r2 ? m.r2 : 255) : 0;
++    o.connected = padh_port_connected(port);
++    o.seq = ps->last.seq + 1;
++    if (g_cfg.tap_latch) {
++        /* Down now or in a device event since the last sample, up in the
++         * previous sample: a press. Every reader gets it at its next read. */
++        const u16 prev = ps->have ? ps->last.buttons : 0;
++        const u16 rise = (u16)((m.btn | m.tap_btn) & ~prev);
++        if (rise) {
++            for (int r = 0; r < PADH_READERS; r++) {
++                ps->latch[r] |= rise;
++                if (mirror) ps->latch_mirror[r] |= rise & (DIRS_LR | DIRS_UD);
++                for (int b = 0; b < 16; b++) if (rise & (1u << b)) ps->edge_t[r][b] = t0;
++            }
++        }
++    }
++    ps->last = o;
+     ps->have = 1;
+     ps->t_begin = t0;
+     ps->t_end = qpc_now();
+     ps->n_samples++;
+     { double c = qpc_to_us(ps->t_end - t0); ps->cost_sum += c; if (c > ps->cost_max) ps->cost_max = c; }
++}
++
++int padh_sample(u32 port, PadHostPort* out, u32 min_interval_us)
++{
++    padh_init();
++    memset(out, 0, sizeof *out);
++    out->lx = out->ly = out->rx = out->ry = 128;
++    if (port >= PADH_MAX_PORTS) return 0;
++    PortState* ps = &g_port[port];
++    AcquireSRWLockExclusive(&ps->lock);
++    LONGLONG t0 = qpc_now();
++    if (min_interval_us && ps->have && t0 - ps->t_end < qpc_from_us(min_interval_us)) {
++        *out = ps->last;
++        ReleaseSRWLockExclusive(&ps->lock);
++        return 0;
++    }
++    sample_locked(port, ps, t0);
++    *out = ps->last;
+     ReleaseSRWLockExclusive(&ps->lock);
+     return 1;
+ }
+ 
++/* Directions in a read = held ones + latched ones; the port's SOCD rule
++ * decides an opposing pair (held left + a left-over tap of right). */
++static u16 socd_merge(u16 cur, u16 extra, int mode)
++{
++    u16 out = cur | extra;
++    if (mode == SOCD_OFF) return out;
++    const u16 pair[2] = { DIRS_LR, DIRS_UD };
++    for (int k = 0; k < 2; k++) {
++        if ((out & pair[k]) != pair[k]) continue;
++        if (mode == SOCD_UP && k == 1) { out &= (u16)~CELL_PAD_CTRL_DOWN; continue; }
++        if (mode == SOCD_LAST && (extra & pair[k]) && (extra & pair[k]) != pair[k]) {
++            out = (u16)((out & ~pair[k]) | (extra & pair[k]));   /* the tap is the newer press */
++            continue;
++        }
++        out &= (u16)~pair[k];                                     /* neutral */
++    }
++    return out;
++}
++
++/* Hand reader `r` the newest sample plus its latched presses, then clear its
++ * latch. Port lock held. */
++static void deliver_locked(u32 port, PortState* ps, int r, LONGLONG now, PadHostPort* out)
++{
++    PadHostPort o = ps->last;
++    o.tapped = 0;
++    u16 lat = ps->latch[r];
++    if (lat) {
++        /* A press the reader did not pick up in time (it stopped reading:
++         * loading, netplay not started yet) is history, not input. */
++        const LONGLONG max_age = qpc_from_us((u64)g_cfg.tap_max_age_ms * 1000u);
++        for (int b = 0; b < 16; b++)
++            if (((lat >> b) & 1) && now - ps->edge_t[r][b] > max_age) {
++                lat &= (u16)~(1u << b);
++                if (!(o.buttons & (1u << b))) ps->tap_stale[r]++;
++            }
++        const u16 extra = (u16)(lat & ~o.buttons);
++        if (extra) {
++            const u16 b = socd_merge(o.buttons, extra, g_cfg.port[port].socd);
++            o.tapped = (u16)(b & ~o.buttons);
++            o.buttons = b;
++            if ((o.tapped & CELL_PAD_CTRL_L2) && !o.l2) o.l2 = 255;
++            if ((o.tapped & CELL_PAD_CTRL_R2) && !o.r2) o.r2 = 255;
++            const u16 md = o.tapped & ps->latch_mirror[r];
++            if (md && o.lx == 128 && o.ly == 128) {
++                if (md & CELL_PAD_CTRL_LEFT)  o.lx = 0;
++                if (md & CELL_PAD_CTRL_RIGHT) o.lx = 255;
++                if (md & CELL_PAD_CTRL_UP)    o.ly = 0;
++                if (md & CELL_PAD_CTRL_DOWN)  o.ly = 255;
++            }
++            if (o.tapped) ps->tap_held[r]++;
++        }
++    }
++    ps->latch[r] = 0;
++    ps->latch_mirror[r] = 0;
++    ps->rout[r] = o;
++    ps->rhave[r] = 1;
++    *out = o;
++}
++
++int padh_read(u32 port, int reader, PadHostPort* out, u32 min_interval_us)
++{
++    padh_init();
++    if (!g_cfg.tap_latch || reader < 0 || reader >= PADH_READERS) return padh_sample(port, out, min_interval_us);
++    memset(out, 0, sizeof *out);
++    out->lx = out->ly = out->rx = out->ry = 128;
++    if (port >= PADH_MAX_PORTS) return 0;
++    PortState* ps = &g_port[port];
++    AcquireSRWLockExclusive(&ps->lock);
++    LONGLONG t0 = qpc_now();
++    int fresh = 0;
++    if (!ps->have || !min_interval_us || t0 - ps->t_end >= qpc_from_us(min_interval_us)) {
++        sample_locked(port, ps, t0);
++        fresh = 1;
++    }
++    if (ps->rhave[reader] && ps->rout[reader].seq == ps->last.seq)
++        *out = ps->rout[reader];          /* nothing new since this reader's last read */
++    else
++        deliver_locked(port, ps, reader, t0, out);
++    ReleaseSRWLockExclusive(&ps->lock);
++    return fresh;
++}
++
++int padh_tap_latch(void) { padh_init(); return g_cfg.tap_latch; }
++
++/* ---------------------------------------------------------------------------
++ * Tap latch: the sampler thread
++ *
++ * Every PAD_TAP_PERIOD_US (1 ms) it samples each port that has a source
++ * (device, keyboard, script file). It sleeps on a high-resolution waitable
++ * timer, which keeps its period whatever the process timer resolution is
++ * (Windows 11 ignores timeBeginPeriod for a minimized window unless the
++ * process opts out -- host_sched does; this timer does not depend on it).
++ * -----------------------------------------------------------------------*/
++
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++  #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
++#endif
++
++static HANDLE g_sampler;
++
++static u32 sampler_ports(void)
++{
++    u32 mask = 0;
++    if (g_cfg.devices) {
++        AcquireSRWLockShared(&g_dev_lock);
++        for (int i = 0; i < MAX_DEVS; i++)
++            if (g_dev[i].kind && g_dev[i].port >= 0 && g_dev[i].port < PADH_MAX_PORTS && !g_dev[i].lost)
++                mask |= 1u << g_dev[i].port;
++        ReleaseSRWLockShared(&g_dev_lock);
++    }
++    if (g_cfg.kb_port >= 0) mask |= 1u << g_cfg.kb_port;
++    if (g_cfg.kb2_port >= 0) mask |= 1u << g_cfg.kb2_port;
++    for (int p = 0; p < 2; p++) if (g_cfg.file[p][0]) mask |= 1u << p;
++    return mask;
++}
++
++static u64 ft_100ns(FILETIME f) { return ((u64)f.dwHighDateTime << 32) | f.dwLowDateTime; }
++
++static DWORD WINAPI sampler_main(LPVOID arg)
++{
++    (void)arg;
++    HANDLE tmr = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
++    if (!tmr) tmr = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
++    const LONGLONG period = qpc_from_us(g_cfg.tap_period_us);
++    LONGLONG next = qpc_now() + period;
++    /* statistics (latency_log / PS3_PAD_LATENCY=1) */
++    LONGLONG st_t0 = qpc_now(), prev_tick = 0;
++    u64 st_n = 0, st_late = 0;
++    double st_ival_max = 0, st_cost_sum = 0, st_cost_max = 0;
++    FILETIME fc, fe, fk, fu;
++    GetThreadTimes(GetCurrentThread(), &fc, &fe, &fk, &fu);
++    u64 cpu0 = ft_100ns(fk) + ft_100ns(fu);
++    for (;;) {
++        LONGLONG now = qpc_now();
++        if (next > now) {
++            LARGE_INTEGER due;
++            due.QuadPart = -(LONGLONG)((double)(next - now) * 1e7 / (double)g_qpf);   /* relative, 100 ns */
++            if (due.QuadPart == 0) due.QuadPart = -1;
++            if (tmr && SetWaitableTimer(tmr, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(tmr, INFINITE);
++            else Sleep(1);
++        }
++        const LONGLONG t = qpc_now();
++        const u32 mask = sampler_ports();
++        for (u32 p = 0; p < PADH_MAX_PORTS; p++) {
++            if (!(mask & (1u << p))) continue;
++            PortState* ps = &g_port[p];
++            AcquireSRWLockExclusive(&ps->lock);
++            sample_locked(p, ps, qpc_now());
++            ReleaseSRWLockExclusive(&ps->lock);
++        }
++        next += period;
++        if (t - next > 8 * period) next = t + period;    /* stalled (debugger, sleep): no burst */
++        if (!g_cfg.latency) continue;
++        const LONGLONG t1 = qpc_now();
++        st_n++;
++        { double c = qpc_to_us(t1 - t); st_cost_sum += c; if (c > st_cost_max) st_cost_max = c; }
++        if (prev_tick) {
++            double iv = qpc_to_us(t - prev_tick);
++            if (iv > st_ival_max) st_ival_max = iv;
++            if (iv > 2.0 * g_cfg.tap_period_us) st_late++;
++        }
++        prev_tick = t;
++        const double wall = qpc_to_us(t1 - st_t0);
++        if (wall >= 5e6) {
++            GetThreadTimes(GetCurrentThread(), &fc, &fe, &fk, &fu);
++            const u64 cpu1 = ft_100ns(fk) + ft_100ns(fu);
++            u64 held[PADH_READERS] = { 0 }, stale[PADH_READERS] = { 0 };
++            for (u32 p = 0; p < PADH_MAX_PORTS; p++)
++                for (int r = 0; r < PADH_READERS; r++) { held[r] += g_port[p].tap_held[r]; stale[r] += g_port[p].tap_stale[r]; }
++            printf("[pad-tap] sampler: %.1f Hz (ports 0x%02X), interval max %.2f ms, %llu over %.1f ms"
++                   " | sample cost avg %.1f us max %.1f us | thread CPU %.2f%% of one core"
++                   " | reads that held a tap: game %llu, local %llu; stale dropped %llu/%llu\n",
++                   (double)st_n * 1e6 / wall, mask, st_ival_max / 1000.0, (unsigned long long)st_late,
++                   2.0 * g_cfg.tap_period_us / 1000.0, st_n ? st_cost_sum / (double)st_n : 0.0, st_cost_max,
++                   (double)(cpu1 - cpu0) / 10.0 / wall * 100.0,
++                   (unsigned long long)held[PADH_READER_GAME], (unsigned long long)held[PADH_READER_LOCAL],
++                   (unsigned long long)stale[PADH_READER_GAME], (unsigned long long)stale[PADH_READER_LOCAL]);
++            fflush(stdout);
++            cpu0 = cpu1; st_t0 = t1; st_n = st_late = 0;
++            st_ival_max = st_cost_sum = st_cost_max = 0;
++        }
++    }
++}
++
++static void sampler_start(void)
++{
++    g_sampler = CreateThread(NULL, 0, sampler_main, NULL, 0, NULL);
++    if (!g_sampler) {
++        printf("[pad] tap latch: cannot start the sampler thread (error %lu); pads are read at the game's poll only\n",
++               (unsigned long)GetLastError());
++        g_cfg.tap_latch = 0;
++        return;
++    }
++    /* Above the game's threads so the 1 ms cadence holds under load; a
++     * sample takes microseconds. */
++    SetThreadPriority(g_sampler, THREAD_PRIORITY_HIGHEST);
++    typedef HRESULT (WINAPI *SetThreadDescription_t)(HANDLE, PCWSTR);
++    SetThreadDescription_t sd = (SetThreadDescription_t)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
++    if (sd) sd(g_sampler, L"pad sampler");
++    printf("[pad] tap latch on: pads sampled every %u us; a press between two game reads is reported at the next read"
++           " (PAD_TAP_LATCH=0 turns it off)\n", g_cfg.tap_period_us);
++}
++
+ /* ---------------------------------------------------------------------------
+  * Statistics: what the title got, and how old it was
+  * -----------------------------------------------------------------------*/
+@@ -1368,10 +1687,10 @@ void padh_note_read(u32 port, const PadHostPort* st, int fresh)
+     }
+     if (!ps->stat_t0) ps->stat_t0 = now;
+     if (qpc_to_us(now - ps->stat_t0) >= 5e6) {
+-        printf("[pad-lat] port %u: %llu reads (%llu fresh) every %.2f ms | sample cost avg %.1f us max %.1f us"
++        printf("[pad-lat] port %u: %llu reads (%llu fresh) every %.2f ms | %llu samples, cost avg %.1f us max %.1f us"
+                " | sample age at read avg %.1f us max %.1f us\n",
+                port + 1, (unsigned long long)ps->n_reads, (unsigned long long)ps->n_fresh,
+-               ps->ival_n ? ps->ival_sum / (double)ps->ival_n / 1000.0 : 0.0,
++               ps->ival_n ? ps->ival_sum / (double)ps->ival_n / 1000.0 : 0.0, (unsigned long long)ps->n_samples,
+                ps->n_samples ? ps->cost_sum / (double)ps->n_samples : 0.0, ps->cost_max,
+                ps->n_reads ? ps->age_sum / (double)ps->n_reads : 0.0, ps->age_max);
+         ps->n_reads = ps->n_fresh = ps->n_samples = 0;

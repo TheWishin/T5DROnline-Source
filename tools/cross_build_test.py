@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Two different builds of the game in one netplay pair: do they compute the same state?
 
+    python tools/cross_build_test.py --build HOSTDIR --out NAME          (builds both DLLs itself)
     python tools/cross_build_test.py --exe1 A/t5dr.exe --exe2 B/t5dr.exe --out NAME
         [--modes rollback,lockstep] [--fight 26,33,20,2] [--next 33,34,24,2 ...]
         [--rtt 50] [--jitter 5] [--loss 3] [--audit] [--control] [--env1 K=V] [--env2 K=V]
@@ -27,7 +28,15 @@ sides with the same matches: a desync that this pair shows too is a rollback or
 timing problem of the port, not a difference between the builds (the report
 says so; the exit code still follows the mixed pair).
 
-Building the two DLLs (same lift, same runtime):
+--build HOSTDIR does the building: HOSTDIR holds a runtime built with
+-DT5DR_GAME_DLL=ON (t5dr.exe + t5dr.lib, as a release ships it); the tool compiles
+the lift (--recomp, --spu, --deps; the developer tree's defaults) twice with
+tools/build_game_dll.py, --march x86-64-v3 (--march1) for the host and --march none
+(--march2) for the joiner, into build/cross-build-runs/bin/<march>/ (objects kept
+there, so a rerun only recompiles what changed), adds --audit, and runs the
+baseline joiner as a PC without FMA3 runs it: PS3_FP_SOFT_FMA=1 (the software fma
+although this CPU has FMA3) and PS3_CRT_FMA3=0 (the C runtime's non-FMA3 paths);
+--hw-fma keeps the instructions. By hand (same lift, same runtime):
     python tools/build_game_dll.py ... --march x86-64-v3 --out X/v3/t5dr_game.dll
     python tools/build_game_dll.py ... --march none      --out X/base/t5dr_game.dll
 (copy t5dr.exe next to each). docs/NETPLAY.md, "Same game state on every CPU".
@@ -214,10 +223,48 @@ def check_run(d, mode, min_frames):
     return ok, lines
 
 
+def build_pair(a):
+    """--build: t5dr_game.dll for --march1 and --march2 from one lift, each next to a copy
+    of the runtime; returns the two t5dr.exe paths."""
+    import shutil
+    host_exe, host_lib = os.path.join(a.build, "t5dr.exe"), os.path.join(a.build, "t5dr.lib")
+    if not (os.path.exists(host_exe) and os.path.exists(host_lib)):
+        sys.exit(f"--build: {a.build} needs t5dr.exe and t5dr.lib of a -DT5DR_GAME_DLL=ON build")
+    exes = []
+    for march in (a.march1, a.march2):
+        d = os.path.join(a.runs, "bin", march)
+        os.makedirs(d, exist_ok=True)
+        shutil.copyfile(host_exe, os.path.join(d, "t5dr.exe"))
+        cmd = [PY, os.path.join(ROOT, "tools", "build_game_dll.py"), "--recomp", a.recomp, "--spu", a.spu,
+               "--deps", a.deps, "--host-lib", host_lib, "--out", os.path.join(d, "t5dr_game.dll"),
+               "--obj", os.path.join(d, "obj"), "--march", march, "--jobs", str(a.jobs)]
+        print(f"[build] {' '.join(cmd)}", flush=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+        last = (r.stdout.strip().splitlines() or ["?"])[-1]
+        print(f"[build] {march}: {last}", flush=True)
+        if r.returncode:
+            print(r.stdout[-3000:] + r.stderr[-3000:])
+            sys.exit(f"--build: the {march} game DLL did not build")
+        exes.append(os.path.join(d, "t5dr.exe"))
+    return exes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--exe1", required=True, help="host build: t5dr.exe (t5dr_game.dll beside it)")
-    ap.add_argument("--exe2", required=True, help="joiner build")
+    ap.add_argument("--exe1", help="host build: t5dr.exe (t5dr_game.dll beside it)")
+    ap.add_argument("--exe2", help="joiner build")
+    ap.add_argument("--build", metavar="HOSTDIR",
+                    help="build both game DLLs first: HOSTDIR has t5dr.exe + t5dr.lib of a -DT5DR_GAME_DLL=ON runtime")
+    ap.add_argument("--march1", default="x86-64-v3", help="--build: the host's target (default x86-64-v3)")
+    ap.add_argument("--march2", default="none", help="--build: the joiner's target (default none, the baseline)")
+    ap.add_argument("--hw-fma", action="store_true",
+                    help="--build: let a baseline joiner use this CPU's FMA3 instructions (default: the software fma "
+                         "and the C runtime's non-FMA3 paths, as on a CPU without FMA3)")
+    ap.add_argument("--recomp", default=os.path.join(ROOT, "build", "recomp"), help="--build: the lifted PPU code")
+    ap.add_argument("--spu", default=os.path.join(ROOT, "build", "spu"), help="--build: the lifted SPU images")
+    ap.add_argument("--deps", default=os.path.join(ROOT, "deps", "ps3recomp"),
+                    help="--build: the patched ps3recomp the runtime was built from (headers)")
+    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="--build: compile jobs")
     ap.add_argument("--out", required=True)
     ap.add_argument("--modes", default="rollback,lockstep")
     ap.add_argument("--fight", default="26,33,20,2", help="first match: p1,p2,stage,rounds (Asuka vs Lili, stage 20)")
@@ -248,6 +295,17 @@ def main():
     a = ap.parse_args()
     if not os.path.exists(os.path.join(a.vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")):
         sys.exit(f"no game in {a.vfs} (--vfs)")
+    if a.build:
+        a.exe1, a.exe2 = build_pair(a)
+        a.audit = True
+        if "none" in (a.march1, a.march2) and not a.hw_fma:
+            soft = ["PS3_FP_SOFT_FMA=1", "PS3_CRT_FMA3=0"]
+            if a.march2 == "none":
+                a.env2 = soft + a.env2
+            elif a.march1 == "none":
+                a.env1 = soft + a.env1
+    elif not (a.exe1 and a.exe2):
+        sys.exit("give --exe1 and --exe2, or --build HOSTDIR")
     nxt = [n for n in (a.next if a.next is not None else ["33,34,24,2"]) if n != "none"]   # --next none: one match
     matches = 1 + len(nxt)
     base = os.path.join(a.runs, a.out)

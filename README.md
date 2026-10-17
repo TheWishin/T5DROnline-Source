@@ -4,8 +4,8 @@ Tekken 5: Dark Resurrection (PS3, PlayStation Network release) running natively
 on Windows. It is recompiled, not emulated. Online play between friends is
 being built.
 
-**Test release 0.1.2-preview (2026-10-17).** Download
-`T5DR-Online-0.1.2-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Test release 0.1.3-preview (2026-10-17).** Download
+`T5DR-Online-0.1.3-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
 **Online is in a test phase:** it works on one PC and through the lobby server;
@@ -46,7 +46,7 @@ clean PC and a match between two real PCs over the internet are still to come.
 | Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Delay-based netcode (2-3 frames of input delay); rollback is being finished. Not yet played between two real PCs over the internet. |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode (2 frames of input delay, tested at 0/50/150 ms ping with packet loss). Not yet played between two real PCs over the internet. |
 | Build from your copy | Works on the development PC. |
 
 ## Requirements
@@ -168,8 +168,9 @@ Good to know:
 - A cable is better than Wi-Fi.
 - The first time, Windows Firewall asks whether the game and Python may use the
   network. Allow it for **private networks**.
-- Netcode: delay-based for now (2-3 frames of input delay). Rollback is being
-  finished.
+- Netcode: rollback, like Tekken 6 Native Online (2 frames of input delay at any
+  ping). If a match stutters on a slow PC, one player can switch to delay
+  netcode: Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).

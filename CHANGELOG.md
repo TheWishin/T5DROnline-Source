@@ -3,6 +3,23 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.3-preview (2026-10-17)
+
+**Rollback netcode is the online default, like Tekken 6 Native Online.** Both
+players need 0.1.3 (the lobby pairs only equal versions).
+
+- **Rollback:** your own inputs act after 2 frames, whatever the ping. When the
+  opponent's input arrives late, the game corrects itself in the background.
+  Tested at 0, 50 and 150 ms ping with 3 % packet loss and jitter: two matches
+  plus a rematch in one game, in sync, no crash, no hang.
+- **Sound with rollback:** a sound is never played twice and never cut; music
+  runs on without gaps.
+- **Fallback:** if a match stutters because a PC is too slow, one player can
+  switch to the older delay netcode: launcher -> Settings -> "Advanced: extra settings",
+  add the line `T5_RB_MODE=off`. The match then runs with delay netcode on both PCs.
+- Players who don't offer rollback (older builds of the same version) get delay
+  netcode automatically.
+
 ## v0.1.2-preview (2026-10-17)
 
 **Use this version for online play.** 0.1.0 and 0.1.1 could not play online:

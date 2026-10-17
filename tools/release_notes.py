@@ -85,6 +85,16 @@ def footer(version, info, sums, repo, run_url):
     return "\n".join(out)
 
 
+def display_path(path):
+    """`path` relative to the repository for messages and annotations. On Windows a
+    file on another drive has no relative path (os.path.relpath raises ValueError:
+    a CI runner has the checkout on D: and the temp folder on C:), so it is shown whole."""
+    try:
+        return os.path.relpath(path, ROOT).replace(os.sep, "/")
+    except ValueError:
+        return path.replace(os.sep, "/")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", required=True)
@@ -100,7 +110,7 @@ def main():
 
     with open(a.changelog, encoding="utf-8") as f:
         body = find_section(f.read(), version)
-    rel = os.path.relpath(a.changelog, ROOT).replace(os.sep, "/")
+    rel = display_path(a.changelog)
     if not body:
         why = "is empty" if body == "" else "is missing"
         msg = (f"{rel}: the section for {version} {why} -- add a heading '## v{version} (YYYY-MM-DD)' "

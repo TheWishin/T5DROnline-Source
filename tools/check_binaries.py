@@ -39,6 +39,11 @@ WINDOWS_DLLS = {
 OPTIONAL_DLLS = {"mfplat.dll", "mf.dll", "mfreadwrite.dll", "evr.dll"}
 # The Microsoft C/C++ library objects in a /MAP (CPUID-dispatched AVX/FMA/SSE4.2 code is fine there).
 MS_CRT_LIBS = ("libucrt", "libvcruntime", "libcpmt", "libcmt", "libconcrt", "ucrt", "vcruntime", "msvcprt")
+# Our own functions compiled for a newer instruction set and only called after a CPUID check
+# (function -> the guard that dispatches to it).
+DISPATCHED_FUNCS = {
+    "ppu_fma_hw": "ppu_fp_cpu_fma() in runtime/ppu/ppu_fp_det.h (patch 0032)",
+}
 
 BMI = {"andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi", "mulx", "pdep", "pext", "rorx", "sarx", "shlx", "shrx"}
 
@@ -97,6 +102,8 @@ def isa_findings(disassembly, syms):
         i = bisect.bisect_right(addrs, int(m.group(1), 16)) - 1
         obj = syms[i][2] if i >= 0 else "?"
         if obj.split(":")[0].lower().startswith(MS_CRT_LIBS):
+            continue
+        if i >= 0 and syms[i][1] in DISPATCHED_FUNCS:
             continue
         bad[f"{syms[i][1] if i >= 0 else '?'} [{obj}]"][cls] += 1
     return bad

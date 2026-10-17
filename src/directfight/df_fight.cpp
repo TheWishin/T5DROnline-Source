@@ -359,6 +359,7 @@ bool g_intro_hold = false;      /* the pads are held through the fight's loading
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
+bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
 bool g_restart_low = false;     /* Reset by a select restart: the select screen has gone through its set-up again */
 ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
@@ -787,12 +788,27 @@ void fight_on_frame(uint32_t f)
         }
         break;
     case Ph::WaitGame:
-        /* first frame in the game mode: apply the setup the loader reads, start lockstep */
-        resolve_stage(true);
-        wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
-        if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
+        /* first frame in the game mode: apply the setup the loader reads */
+        if (!g_wait_setup) {
+            g_wait_setup = true;
+            resolve_stage(true);
+            wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
+            if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
+            write_hud(g_cfg, f);
+        }
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
-        write_hud(g_cfg, f);
+        /* FIGHT START (lockstep frame 0 is the next frame) at the first frame the
+         * game mode's own phase word has reached 7 -- not at the first frame the
+         * mode manager says "game": a game that has played and a fresh one
+         * switch modes at a different point of the game mode's set-up (phase 0,
+         * 2, 7, 8 one frame each). Started at "mode 4", netplay frame 1 found
+         * the played game at phase 7 and the fresh one at 8 (reset-fix run
+         * dump1); started at phase 7 both are at the same set-up frame (run
+         * bss_stall: the four hashed areas equal at frame 1). The end of the
+         * loading stays a sync point as before. The pads stay held meanwhile
+         * (the driver's injection is still on). */
+        if (mode == kModeGame && rd32(kSelectState) < 7 && f < g_ph_frame + 60) break;
+        g_wait_setup = false;
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
         g_match++;
@@ -917,9 +933,11 @@ void fight_on_frame(uint32_t f)
                     g_mode_asked = true;
                     gcall(kFnModeRequest, kModeTitle, 0);
                     note("frame %u: to the title for a fresh select screen (mode request 1)", f);
-                } else if (g_fresh && select_live()) {
-                    note("frame %u: the select screen is fresh already (no fight since the title)", f);
-                    reset_done(f);
+                } else if (g_fresh) {                       /* entered from the title, untouched: wait for its records */
+                    if (select_live()) {
+                        note("frame %u: the select screen is fresh already (no fight since the title)", f);
+                        reset_done(f);
+                    }
                 } else {
                     g_mode_asked = true; g_restart_low = false;
                     gcall(kFnStartGame, 4, 3);
@@ -930,8 +948,17 @@ void fight_on_frame(uint32_t f)
         if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: reset: waiting in mode %u", f, mode);
         break;
     case Ph::Leave:
-        /* out of a fight whose session ended: the game's own way back to select */
+        /* out of a fight whose session ended: the game's own way back to select --
+         * once the fight's loading and intros are over (phase word past 12). The
+         * game itself never leaves its game mode before the fight has begun; a
+         * request made in the loading is taken only when the loading is done
+         * anyway (63 frames later in run rs1), and a loading that hangs never
+         * takes it (the dry run's host: stuck_check() ends such a game) */
         if (mode == kModeSelect) { set_phase(Ph::Reset, "reset", f); break; }
+        if (!g_mode_asked && mode == kModeGame && rd32(kSelectState) <= 12) {
+            if (f == g_ph_frame) note("frame %u: leave: the fight's loading / intros first (phase %u)", f, rd32(kSelectState));
+            break;
+        }
         if (!g_mode_asked && mode == kModeGame) {
             g_mode_asked = true;
             gcall(kFnModeRequest, kModeSelect, 0);
@@ -974,7 +1001,7 @@ void fight_init()
     if (const char* r = getenv("T5_DF_STUCK_SECONDS")) g_stuck_s = (uint32_t)atoi(r);
     {
         const char* spec = getenv("T5_DF_FRESH_RANGES");
-        if (!spec || !*spec) spec = "1008E000:4000,10099600:600,100A0900:200,100A3B00:300";
+        if (!spec || !*spec) spec = "1008E000:17000";   /* the fight-state block 0x1008E000..0x100A5000 (reset-fix: leftovers beyond the four hashed areas) */
         for (const char* p = spec; *p;) {
             char* e;
             const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;

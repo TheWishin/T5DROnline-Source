@@ -29,9 +29,10 @@ Every cycle is "match -> abnormal end -> next match", the way the launcher drive
   3. the next match (a new session, O restarted if it died) is played to its end:
      both results name it, the same winner and gameplay hash, 0 mismatching frames.
 
-Each cycle fails on: a bad guest call ("not registered"), a NULL call/write, a FIFO
-error (unmapped JUMP, resync, fence queue overflow), a crash, S stuck leaving a fight
-or resetting, S not back at neutral, or the next match not confirmed. Both players
+Each cycle fails on: a bad guest call ("not registered"), a NULL call/read/write, a
+fence queue overflow, a crash, S stuck leaving a fight or resetting, S not back at
+neutral, or the next match not confirmed. The FIFO walker's unmapped-JUMP/CALL
+resyncs are counted and reported per cycle (main has them in ordinary fights too). Both players
 mash buttons in fights (--mash, default on) so matches end in ~20-60 s.
 Exit code 0 = every cycle passed. Windows open minimized; every game is killed at the end.
 """
@@ -56,12 +57,21 @@ BAD = [
     ("bad_guest_call", re.compile(r"guest_call: OPD .* not registered")),
     ("null_call", re.compile(r"\[null-call\]")),
     ("null_write", re.compile(r"\[null-write\]")),
-    ("fifo_jump", re.compile(r"FIFO JUMP to unmapped")),
-    ("fifo_resync", re.compile(r"FIFO resync")),
+    ("null_read", re.compile(r"\[null-read\]")),
     ("fence_overflow", re.compile(r"fence queue overflow")),
     ("crash", re.compile(r"\[CRASH\]")),
     ("leave_stuck", re.compile(r"leave: waiting in mode")),
     ("reset_stuck", re.compile(r"reset: waiting in mode")),
+    ("stuck_exit", re.compile(r"STUCK:")),
+]
+# The FIFO walker's own recoveries: a JUMP/CALL to an unmapped IO address, then a
+# resync. Main has them in ordinary fights too (an offline fight with no netplay:
+# 1; build/dp's persistent runs: 1-8 per game log), so they are counted and
+# reported separately; with a fence queue overflow or a bad guest call (the dry
+# run's broken game) the cycle fails through BAD.
+FIFO = [
+    ("fifo_unmapped", re.compile(r"FIFO (JUMP|CALL) to unmapped")),
+    ("fifo_resync", re.compile(r"FIFO resync")),
 ]
 
 
@@ -129,9 +139,9 @@ def log_guard(games, limit_mb, stop):
         stop.wait(2.0)
 
 
-def bad_lines(text):
+def bad_lines(text, table=None):
     found = {}
-    for name, rx in BAD:
+    for name, rx in (table or BAD):
         n = len(rx.findall(text))
         if n:
             found[name] = n
@@ -145,6 +155,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cycles", type=int, default=10)
     ap.add_argument("--ends", default="stall,kill,quit,peer_idle,idle,no_peer,desync,normal")
+    ap.add_argument("--points", default="loading,fight,select", help="where the first match ends, in turn")
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--delay", type=int, default=2)
     ap.add_argument("--chars", default="kaz,hei,lil,dra,asu,law")
@@ -165,6 +176,7 @@ def main():
         return 2
     os.makedirs(a.out, exist_ok=True)
     ends = [e.strip() for e in a.ends.split(",") if e.strip()]
+    points = [p.strip() for p in a.points.split(",") if p.strip()]
 
     S, O = Player(a, 1, "host"), Player(a, 2, "join")
     for g in (S, O):
@@ -268,7 +280,7 @@ def main():
     try:
         for c in range(1, a.cycles + 1):
             end = ends[(c - 1) % len(ends)]
-            point = "fight" if end == "desync" else ("loading", "fight", "select")[(c - 1) % 3]
+            point = "fight" if end == "desync" else points[(c - 1) % len(points)]
             cyc = {"cycle": c, "end": end, "point": point}
             log(f"=== cycle {c}: end '{end}' at {point}")
             # ---- 1. the match that ends abnormally
@@ -341,12 +353,15 @@ def main():
             log(f"cycle {c}: next match {mid2} {'CONFIRMED' if ok2 else 'NOT confirmed'}: to FIGHT {det2['to_fight_s']}, "
                 f"{[(i, r.get('winner'), r.get('desync'), r.get('hash')) for i, r in det2['results'].items()]}")
             # ---- 3. the logs
-            bad_s, bad_o = bad_lines(S.log_since()), bad_lines(O.log_since())
+            text_s, text_o = S.log_since(), O.log_since()
+            bad_s, bad_o = bad_lines(text_s), bad_lines(text_o)
             cyc["bad_s"], cyc["bad_o"] = bad_s, bad_o
+            cyc["fifo_s"], cyc["fifo_o"] = bad_lines(text_s, FIFO), bad_lines(text_o, FIFO)
             cyc["ok"] = ok2 and took is not None and not bad_s and S.running()
             ok_all &= cyc["ok"]
             report["cycles"].append(cyc)
-            log(f"cycle {c}: {'PASS' if cyc['ok'] else 'FAIL'} (S log: {bad_s or 'clean'}; O log: {bad_o or 'clean'})")
+            log(f"cycle {c}: {'PASS' if cyc['ok'] else 'FAIL'} (S log: {bad_s or 'clean'}; O log: {bad_o or 'clean'}; "
+                f"FIFO walker resyncs S {cyc['fifo_s'] or 0}, O {cyc['fifo_o'] or 0})")
             with open(os.path.join(a.out, "report.json"), "w") as f:
                 json.dump(report, f, indent=1)
             if not S.running():

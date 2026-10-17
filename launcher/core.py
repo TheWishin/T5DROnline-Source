@@ -425,6 +425,11 @@ def explain_exit(code, lines):
     if "[game-dll] cannot load" in text:
         return ("t5dr_game.dll could not be loaded (missing or blocked). Press BUILD GAME again, and look in "
                 "the antivirus quarantine.")
+    if code == 6 or "STUCK:" in text:
+        # docs/DIRECTFIGHT.md "After a session ends": a persistent game that could not get back to
+        # character select after a match ends itself; the next match starts a fresh one.
+        return ("The game could not get back to character select after the last match and closed itself. "
+                "It starts again for your next match.")
     crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
     if code == 0 and not crashed:
         return None

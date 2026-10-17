@@ -215,25 +215,45 @@ def survival_loop(ctx):
     g.shot("survival-end", expect="any")
 
 
-@test("options", ("full",), "OPTIONS: game, sound and controller settings pages, EXIT back to the title", budget=60)
+@test("options", ("full",), "OPTIONS: game, sound (BGM volume changed) and controller pages, EXIT back to the title",
+      budget=60)
 def options(ctx):
     g = ctx.boot()
     if not to_title(g):
         return
     g.phase("options", "menu")
-    pick_mode(g, OPTIONS, wait=2.5)              # GAME OPTIONS, SOUND, CONTROLLER SETUP, ONLINE MANUAL, DELETE SAVE DATA, EXIT
+    options_round_trip(g)
+    back_to_title(g)
+
+
+def options_round_trip(g):
+    """OPTIONS menu: GAME OPTIONS, SOUND OPTIONS, CONTROLLER SETUP,
+    ONLINE MANUAL, DELETE SAVE DATA, EXIT. Visits the first three pages,
+    turns the BGM volume up one step (so there is a setting to save) and
+    leaves through EXIT. The game and sound pages go back with CIRCLE; the
+    controller page only through its own EXIT item."""
+    pick_mode(g, OPTIONS, wait=2.5)
     g.shot("options")
-    for page, downs in (("game", 0), ("sound", 1), ("controller", 1)):
-        for _ in range(downs):
-            g.press("DOWN", gap=400)
-        g.press("CROSS", gap=1500)
-        g.shot(f"options-{page}")
-        g.wait(1.0)                              # pages ignore CIRCLE while they slide in
-        g.press("CIRCLE", gap=1500)
+    g.press("CROSS", gap=1500)                   # GAME OPTIONS
+    g.shot("options-game")
+    g.wait(1.0)                                  # pages ignore CIRCLE while they slide in
+    g.press("CIRCLE", gap=1500)
+    g.press("DOWN", gap=400)
+    g.press("CROSS", gap=1500)                   # SOUND OPTIONS
+    g.press("DOWN", gap=400)                     # SPEAKER OUTPUT -> BGM VOLUME
+    g.press("RIGHT", gap=600)
+    g.shot("options-sound")
+    g.press("CIRCLE", gap=1500)
+    g.press("DOWN", gap=400)
+    g.press("CROSS", gap=1500)                   # CONTROLLER SETUP
+    g.shot("options-controller")
+    g.wait(1.0)
+    g.press("DOWN", gap=400)                     # SETTINGS -> DEFAULT -> EXIT
+    g.press("DOWN", gap=400)
+    g.press("CROSS", gap=1500)
     for _ in range(3):
         g.press("DOWN", gap=400)                 # CONTROLLER SETUP -> EXIT
     g.press("CROSS")
-    back_to_title(g)
 
 
 @test("gallery_offline", ("full",), "GALLERY with no network: the update fails cleanly, back to the title", budget=60)
@@ -253,19 +273,15 @@ def gallery_offline(ctx):
 
 
 @test("save_reload", ("full",),
-      "fresh profile: lose an ARCADE match so the game saves, quit, boot again on the same gamedata: "
-      "the save loads (QA issue 4: the first save into a new folder failed)", budget=225)
+      "fresh profile: change a setting in OPTIONS so the game saves, quit, boot again on the same gamedata: "
+      "the save loads (QA issue 4: the first save into a new folder failed)", budget=150)
 def save_reload(ctx):
     g = ctx.boot(label="boot1")
     if to_title(g):
-        g.phase("arcade-select", "menu")
-        pick_mode(g, ARCADE, wait=3.0)
-        if start_fight(g):
-            # No input: the CPU wins two rounds and the game saves the profile.
-            g.phase("lose-match", "fight")
-            g.shot("lose-match", expect="fight")
-            g.wait_log(r"\[cellSaveData\] SAVE dir=", timeout=170)
-            g.wait(4)
+        g.phase("options", "menu")
+        options_round_trip(g)                    # leaving OPTIONS with a changed setting saves the profile
+        g.wait_log(r"\[cellSaveData\] SAVE complete", timeout=20)
+        g.wait(4)
     log = g.log_bytes()
     saves, fails = log.count(b"[cellSaveData] SAVE complete"), log.count(b"Unable to save")
     g.expect("saved", saves > 0 and fails == 0, f"{saves} 'SAVE complete', {fails} 'Unable to save' dialog(s)",

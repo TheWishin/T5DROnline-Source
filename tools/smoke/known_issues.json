@@ -4,18 +4,5 @@
     "0x224E1610": "cellHttpClientSetRecvTimeout -- network setup at boot / Gallery (QA report #9)",
     "0x71714CDC": "cellHttpClientSetSendTimeout -- same"
   },
-  "failures": [
-    {
-      "issue": "QA-4",
-      "test": "save_reload",
-      "check": "boot1.reach.saved",
-      "note": "The first save into a new save folder fails ('Unable to save Play Data'; the folder keeps only PARAM.SFO; sys_memory_allocate_from_container, syscall 350, is unimplemented)."
-    },
-    {
-      "issue": "QA-4",
-      "test": "save_reload",
-      "check": "boot2.reach.loaded",
-      "note": "same: the next boot says 'Unable to load Play Data'"
-    }
-  ]
+  "failures": []
 }

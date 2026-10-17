@@ -65,9 +65,9 @@ small JPEG), `<shot>.png` (full-size frames the scenario asked for).
 | `title_twice` | quick | title, attract demo, START, title, attract, START, title (the scene loads that ran out of memory before patch 0012, QA issue 1) |
 | `ghost` | full | GHOST BATTLE, 15 s fight |
 | `survival_loop` | full | SURVIVAL, 80 s of fights back to back (CIRCLE = kick, RETRY on results) |
-| `options` | full | OPTIONS: game, sound, controller pages, EXIT, back at the title |
+| `options` | full | OPTIONS: game page, sound page (BGM volume +1), controller page, EXIT, back at the title |
 | `gallery_offline` | full | GALLERY with no network: "retry?" NO, "return to title?" YES, back at the title |
-| `save_reload` | full | fresh profile, lose an ARCADE match (the game saves), quit, second boot on the same gamedata loads the save |
+| `save_reload` | full | fresh profile, the OPTIONS round trip (leaving with a changed setting saves), quit, second boot on the same gamedata loads the save |
 | `idle_attract` | full | 10 min with no input: title and attract demo cycle by themselves |
 
 Fights are reached by tapping CROSS (both pads in VS) and START every second
@@ -146,10 +146,12 @@ is tracked).
 
 History: **QA-1** (sys_memory never reused freed ranges; after the second
 return to the title the next scene load went white, hung or called NULL)
-failed `title_twice` on the 23:13 main build and passes since patch 0012
--- its entries are gone. Current entries: **QA-4** (the first save into a
-new folder failed -- `save_reload`), kept until `save_reload` confirms the
-fix in patch 0012.
+failed `title_twice` on the 23:13 main build; **QA-4** (the first save into
+a new folder failed, the next boot said "Unable to load Play Data") failed
+`save_reload`. Both pass with patch 0012 (`save_reload` reported
+`known.QA-4` XPASS), so their entries are gone and the list is empty. The
+two NIDs listed (cellHttp timeouts) no longer appear on main either; they
+stay listed because they are harmless.
 
 ## Adding a test
 

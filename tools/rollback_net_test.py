@@ -20,7 +20,9 @@ UDP proxy on localhost that adds --rtt/2 ms of one-way delay (with +-jitter)
 and drops --loss percent of the packets.
 
 --mode1/--mode2 set T5_RB_MODE of the host/joiner (default net; "off" is the
-lockstep fallback: a peer that does not offer rollback). --audio records each
+lockstep fallback: a peer that does not offer rollback). --exe2 gives the joiner
+another build (its own t5dr.exe + t5dr_game.dll): two PCs whose lifted code was
+compiled differently (tools/cross_build_test.py). --audio records each
 instance's final mix (AUDIO_WAV, audio.f32: raw f32le stereo 48 kHz).
 --matches N ends the run once both instances finished N matches.
 
@@ -205,6 +207,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--seconds", type=float, default=150)
     ap.add_argument("--exe", default=EXE)
+    ap.add_argument("--exe2", help="the joiner's t5dr.exe (t5dr_game.dll beside it is taken along); default: --exe")
     ap.add_argument("--rtt", type=float, default=0, help="round-trip time added by the proxy, ms")
     ap.add_argument("--jitter", type=float, default=0, help="+- one-way jitter, ms")
     ap.add_argument("--loss", type=float, default=0, help="packet loss, percent")
@@ -233,11 +236,19 @@ def main():
 
     d = os.path.join(a.runs, a.out)
     os.makedirs(d, exist_ok=True)
-    exe = os.path.join(d, "t5dr.exe")
-    shutil.copyfile(a.exe, exe)
-    game_dll = os.path.join(os.path.dirname(a.exe), "t5dr_game.dll")   # the release layout (T5DR_GAME_DLL=ON)
-    if os.path.exists(game_dll):
-        shutil.copyfile(game_dll, os.path.join(d, "t5dr_game.dll"))
+    def stage(src, dst_dir):
+        """t5dr.exe (+ t5dr_game.dll beside it, the release layout T5DR_GAME_DLL=ON) into dst_dir"""
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, "t5dr.exe")
+        shutil.copyfile(src, dst)
+        game_dll = os.path.join(os.path.dirname(os.path.abspath(src)), "t5dr_game.dll")
+        if os.path.exists(game_dll):
+            shutil.copyfile(game_dll, os.path.join(dst_dir, "t5dr_game.dll"))
+        elif os.path.exists(os.path.join(dst_dir, "t5dr_game.dll")):
+            os.remove(os.path.join(dst_dir, "t5dr_game.dll"))
+        return dst
+    exe = stage(a.exe, d)
+    exe2 = stage(a.exe2, os.path.join(d, "bin2")) if a.exe2 else exe
     host_port, proxy_port = a.port, a.port + 1
     proxy = None
     log = open(os.path.join(d, "proxy.log"), "w")
@@ -303,7 +314,8 @@ def main():
             k, v = kv.split("=", 1)
             env[k] = v
         glog = open(os.path.join(wd, "game.log"), "w")
-        p = subprocess.Popen([exe, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd, stdout=glog, stderr=subprocess.STDOUT)
+        p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
+                             stdout=glog, stderr=subprocess.STDOUT)
         procs.append((who, p, glog))
         print(f"{who}: pid {p.pid} in {wd}", flush=True)
         time.sleep(1.5)

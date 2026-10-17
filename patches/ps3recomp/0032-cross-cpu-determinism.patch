@@ -1,0 +1,979 @@
+diff --git a/runtime/platform/fp_env.c b/runtime/platform/fp_env.c
+new file mode 100644
+index 0000000..6de7c79
+--- /dev/null
++++ b/runtime/platform/fp_env.c
+@@ -0,0 +1,120 @@
++/*
++ * ps3recomp - the SSE environment of the threads that run guest code.
++ *
++ * Guest floating point is computed with the host's SSE instructions, and their
++ * results depend on MXCSR: the rounding mode, flush-to-zero (FTZ) and
++ * denormals-are-zero (DAZ). Two PCs that must compute bit-identical guest state
++ * (lockstep or rollback netplay) need the same MXCSR on every guest thread. A
++ * new Windows thread starts with 0x1F80, but code running on a guest thread
++ * (OS, driver or overlay code reached through an HLE call) may change it and
++ * not put it back, and a thread could inherit something else on another OS. So:
++ *
++ *   - every runtime thread sets PPU_MXCSR_CANON when it starts
++ *     (host_sched_thread_start -> ppu_fp_thread_init), and so does the lifted
++ *     SPU entry (spu_run_with_halt) for the threads that do not go through it;
++ *   - ps3_hle_call, lv2_syscall and ppu_guest_call check it (ppu_fp_env_check,
++ *     ppu_fp_det.h: one stmxcsr and a compare) and restore it when it changed,
++ *     with a log line ("[fp] MXCSR changed ...") for the first few.
++ *
++ * Test switches (both PCs of a netplay test would normally leave them unset):
++ *   PS3_FP_TEST_MXCSR=0x....   guest threads run with this MXCSR instead (a
++ *                              deliberately different FP environment: the
++ *                              desync check must catch it)
++ *   PS3_CRT_FMA3=0             ucrtbase.dll's math takes its non-FMA3 paths
++ *                              (_set_FMA3_enable(0)), as on a CPU without FMA3
++ */
++#include "../ppu/ppu_fp_det.h"
++#include <stdio.h>
++#include <stdlib.h>
++
++#if defined(_WIN32) && defined(PPU_FP_X64)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++int __cdecl _set_FMA3_enable(int flag);
++#endif
++
++static volatile long s_fp_init = 0;            /* 0 not yet, 1 in progress, 2 done */
++static unsigned s_fp_mxcsr = PPU_MXCSR_CANON;  /* the control bits every guest thread gets */
++static volatile long s_fp_violations = 0;
++static volatile long s_fp_odd_start = 0;
++
++static void fp_process_init(void)
++{
++    const char* e = getenv("PS3_FP_TEST_MXCSR");
++    if (e && *e) {
++        s_fp_mxcsr = (unsigned)strtoul(e, NULL, 0) & PPU_MXCSR_CTRL;
++        fprintf(stderr, "[fp] TEST: guest threads run with MXCSR 0x%04X instead of 0x%04X (PS3_FP_TEST_MXCSR)\n",
++                s_fp_mxcsr, PPU_MXCSR_CANON);
++    }
++#if defined(_WIN32) && defined(PPU_FP_X64)
++    e = getenv("PS3_CRT_FMA3");
++    if (e && *e == '0') {
++        _set_FMA3_enable(0);
++        fprintf(stderr, "[fp] TEST: the C runtime's math takes its non-FMA3 paths (PS3_CRT_FMA3=0)\n");
++    }
++#endif
++#if defined(PPU_FP_X64) && !defined(__FMA__)
++    const char* soft = getenv("PS3_FP_SOFT_FMA");
++    const char* fma = ppu_fp_cpu_fma() ? "FMA3 instructions"
++                    : (soft && *soft == '1') ? "exact software (PS3_FP_SOFT_FMA=1)" : "exact software (this CPU has no FMA3)";
++#elif defined(PPU_FP_X64)
++    const char* fma = "FMA3 instructions";
++#else
++    const char* fma = "host fma";
++#endif
++    fprintf(stderr, "[fp] guest threads: MXCSR 0x%04X (round to nearest, no FTZ/DAZ, exceptions masked); "
++                    "fused multiply-add in runtime code: %s\n", s_fp_mxcsr, fma);
++}
++
++void ppu_fp_thread_init(const char* who)
++{
++#ifdef PPU_FP_X64
++#ifdef _WIN32
++    if (InterlockedCompareExchange(&s_fp_init, 1, 0) == 0) {
++        fp_process_init();
++        InterlockedExchange(&s_fp_init, 2);
++    }
++    while (s_fp_init != 2) Sleep(0);
++#else
++    if (__sync_bool_compare_and_swap(&s_fp_init, 0, 1)) { fp_process_init(); __sync_lock_test_and_set(&s_fp_init, 2); }
++    while (s_fp_init != 2) { }
++#endif
++    const unsigned m = _mm_getcsr();
++    if ((m & PPU_MXCSR_CTRL) != s_fp_mxcsr && (m & PPU_MXCSR_CTRL) != PPU_MXCSR_CANON) {
++#ifdef _WIN32
++        const long n = InterlockedIncrement(&s_fp_odd_start);
++#else
++        const long n = __sync_add_and_fetch(&s_fp_odd_start, 1);
++#endif
++        if (n <= 8)
++            fprintf(stderr, "[fp] thread '%s' started with MXCSR 0x%04X; set to 0x%04X\n",
++                    who ? who : "?", m & PPU_MXCSR_CTRL, s_fp_mxcsr);
++    }
++    _mm_setcsr(s_fp_mxcsr);   /* also clears the sticky status flags */
++#else
++    (void)who;
++#endif
++}
++
++void ppu_fp_env_fix(uint32_t seen, const char* where)
++{
++#ifdef PPU_FP_X64
++    if (s_fp_init != 2) { ppu_fp_thread_init(where); return; }
++    if ((seen & PPU_MXCSR_CTRL) == s_fp_mxcsr) return;          /* PS3_FP_TEST_MXCSR in force */
++#ifdef _WIN32
++    const long n = InterlockedIncrement(&s_fp_violations);
++#else
++    const long n = __sync_add_and_fetch(&s_fp_violations, 1);
++#endif
++    if (n <= 8 || (n & (n - 1)) == 0)
++        fprintf(stderr, "[fp] MXCSR changed to 0x%04X on a guest thread (found after: %s); restored to 0x%04X (%ld time(s))\n",
++                seen & PPU_MXCSR_CTRL, where ? where : "?", s_fp_mxcsr, n);
++    _mm_setcsr((seen & ~PPU_MXCSR_CTRL) | s_fp_mxcsr);
++#else
++    (void)seen; (void)where;
++#endif
++}
++
++uint32_t ppu_fp_env_violations(void) { return (uint32_t)s_fp_violations; }
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index 904a292..7e2ca32 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -85,6 +85,7 @@
+  *   and post -> wake is 8-9 us at the median.
+  */
+ #include "host_sched.h"
++#include "../ppu/ppu_fp_det.h"   /* ppu_fp_thread_init: the guest threads' MXCSR (fp_env.c) */
+ 
+ int g_host_sched_trace_on = 0;
+ 
+@@ -92,7 +93,7 @@ int g_host_sched_trace_on = 0;
+ 
+ void    host_sched_process_init(void) {}
+ void    host_sched_thread_start(int role, int guest_prio, const char* name)
+-        { (void)role; (void)guest_prio; (void)name; }
++        { (void)role; (void)guest_prio; ppu_fp_thread_init(name); }
+ int     host_sched_enabled(void) { return 0; }
+ int     host_sched_sleep_us(uint64_t usec) { (void)usec; return 0; }
+ int     host_sched_sleep_subms(uint64_t usec) { (void)usec; return 0; }
+@@ -467,6 +468,9 @@ static volatile LONG s_ideal_next = 0;
+ 
+ void host_sched_thread_start(int role, int guest_prio, const char* name)
+ {
++    /* Every runtime thread that may run guest code starts here: the same SSE
++     * environment (MXCSR) on all of them, on every PC (fp_env.c). */
++    ppu_fp_thread_init(name);
+     host_sched_process_init();
+     if (role < 0 || role >= HS_ROLE_COUNT) role = HS_ROLE_BACKGROUND;
+     t_tag = (role == HS_ROLE_PPU || role == HS_ROLE_MAIN) ? 0 : (uint16_t)(0x100 + role);
+diff --git a/runtime/ppu/ppu_fp_det.h b/runtime/ppu/ppu_fp_det.h
+new file mode 100644
+index 0000000..0e3e7c2
+--- /dev/null
++++ b/runtime/ppu/ppu_fp_det.h
+@@ -0,0 +1,325 @@
++/* ppu_fp_det.h -- floating point that gives the same bits on every x64 PC.
++ *
++ * Two PCs running one game in lockstep or rollback netplay must compute
++ * bit-identical guest state, whichever x64 CPU they have and however the
++ * lifted code was compiled (-march=x86-64-v3 with AVX2/FMA, or the x86-64
++ * baseline). IEEE-754 already fixes + - * / sqrt and the conversions, given the
++ * same SSE control register (MXCSR). What it does not fix, and what this header
++ * replaces for the lifted PPU and SPU code:
++ *
++ *  - The C runtime's math. ucrtbase.dll picks its code path by CPU: fma/fmaf
++ *    are one vfmadd instruction on a CPU with FMA3 and a software routine
++ *    without it (same values in our tests, other NaN payloads), sin/exp/pow
++ *    have an FMA3 and an SSE2 implementation that disagree in the last bit,
++ *    and the DLL itself comes with Windows, so its version differs between
++ *    PCs. A baseline build of the lifted code called fma/fmaf/trunc/ldexp from
++ *    it; every build called sqrt/sqrtf there for a negative argument (math
++ *    errno). Everything below is plain SSE2 (or the matching SSE4.1/FMA
++ *    instruction when the build has it): no library call.
++ *  - Fused multiply-add on a build without FMA instructions: exact software
++ *    versions (ppu_fma_soft, ppu_fmaf_soft) that give the bits vfmadd gives,
++ *    tested against it (runtime/ppu/tests/test_fp_det.c).
++ *  - MXCSR: the runtime sets PPU_MXCSR_CANON on every thread that runs guest
++ *    code (ppu_fp_thread_init) and checks it after every HLE call and lv2
++ *    syscall (ppu_fp_env_check), in case OS or driver code changed it.
++ *
++ * Never use rcpps/rsqrtps (or the rcp14/rsqrt14 forms) for guest results:
++ * Intel and AMD return different bits for them. The PPU estimate instructions
++ * are 1/x and 1/sqrt(x), correctly rounded, which every x64 CPU agrees on.
++ */
++#ifndef PPU_FP_DET_H
++#define PPU_FP_DET_H
++
++#include <stdint.h>
++#include <string.h>
++#if defined(__x86_64__) || defined(_M_X64)
++#define PPU_FP_X64 1
++#include <stdlib.h>   /* getenv: PS3_FP_SOFT_FMA */
++#include <emmintrin.h>
++#if defined(__SSE4_1__)
++#include <smmintrin.h>
++#endif
++#if defined(__FMA__)
++#include <immintrin.h>
++#endif
++#if defined(_MSC_VER)
++#include <intrin.h>
++#endif
++#else
++#include <math.h>   /* other hosts (arm64 builds of ps3recomp): the plain C functions */
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#ifdef __clang__
++#define PPU_FP_NOCONTRACT _Pragma("clang fp contract(off)")
++#else
++#define PPU_FP_NOCONTRACT
++#endif
++#define PPU_FP_INL static inline
++
++/* ---- the SSE environment of every guest thread ---- */
++#define PPU_MXCSR_CANON 0x1F80u   /* all exceptions masked, round to nearest, no FTZ, no DAZ */
++#define PPU_MXCSR_CTRL  0xFFC0u   /* control bits; the low six are sticky status flags */
++
++/* Runtime side (runtime/platform/fp_env.c): set the canonical MXCSR on this thread (thread
++ * entries), and restore + count + log a changed one (the check below). */
++void ppu_fp_thread_init(const char* who);
++void ppu_fp_env_fix(uint32_t seen, const char* where);
++uint32_t ppu_fp_env_violations(void);
++PPU_FP_INL void ppu_fp_env_check(const char* where)
++{
++#ifdef PPU_FP_X64
++    const uint32_t m = _mm_getcsr();
++    if (__builtin_expect((m & PPU_MXCSR_CTRL) != PPU_MXCSR_CANON, 0)) ppu_fp_env_fix(m, where);
++#else
++    (void)where;
++#endif
++}
++
++/* ---- bit access ---- */
++PPU_FP_INL uint64_t ppu_fp_u64(double d) { uint64_t u; memcpy(&u, &d, 8); return u; }
++PPU_FP_INL double   ppu_fp_f64(uint64_t u) { double d; memcpy(&d, &u, 8); return d; }
++PPU_FP_INL uint32_t ppu_fp_u32(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
++PPU_FP_INL float    ppu_fp_f32(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++
++#ifdef PPU_FP_X64
++/* ---- square root: sqrtsd/sqrtss, never the library (no errno path) ---- */
++PPU_FP_INL double ppu_sqrt_det(double x) { return _mm_cvtsd_f64(_mm_sqrt_sd(_mm_set_sd(x), _mm_set_sd(x))); }
++PPU_FP_INL float  ppu_sqrtf_det(float x) { return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(x))); }
++
++/* ---- conversions to integer: cvtsd2si (MXCSR rounding = nearest) / cvttsd2si ---- */
++PPU_FP_INL int32_t ppu_cvt_i32(double v, int rn)   /* v already in int32 range */
++{ return rn ? _mm_cvtsd_si32(_mm_set_sd(v)) : _mm_cvttsd_si32(_mm_set_sd(v)); }
++PPU_FP_INL int64_t ppu_cvt_i64(double v, int rn)   /* v already in int64 range */
++{ return rn ? _mm_cvtsd_si64(_mm_set_sd(v)) : _mm_cvttsd_si64(_mm_set_sd(v)); }
++#else
++PPU_FP_INL double ppu_sqrt_det(double x) { return __builtin_sqrt(x); }
++PPU_FP_INL float  ppu_sqrtf_det(float x) { return __builtin_sqrtf(x); }
++PPU_FP_INL int32_t ppu_cvt_i32(double v, int rn) { return rn ? (int32_t)nearbyint(v) : (int32_t)v; }
++PPU_FP_INL int64_t ppu_cvt_i64(double v, int rn) { return rn ? (int64_t)nearbyint(v) : (int64_t)v; }
++#endif
++
++/* ---- round a float to an integral float: the SSE4.1 roundss result, SSE2 only ---- */
++/* mode: 0 nearest (even), 1 toward -inf, 2 toward +inf, 3 toward zero */
++PPU_FP_INL float ppu_roundf_det(float x, int mode)
++{
++#if !defined(PPU_FP_X64)
++    return mode == 0 ? nearbyintf(x) : mode == 1 ? floorf(x) : mode == 2 ? ceilf(x) : truncf(x);
++#elif defined(__SSE4_1__)
++    const __m128 v = _mm_set_ss(x);
++    switch (mode) {
++    case 0:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
++    case 1:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
++    case 2:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
++    default: return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
++    }
++#else
++    const uint32_t u = ppu_fp_u32(x);
++    if ((u & 0x7FFFFFFFu) >= 0x4B000000u) return (u & 0x7FFFFFFFu) > 0x7F800000u ? x + x : x;  /* |x| >= 2^23, inf, NaN (quieted) */
++    const __m128 v = _mm_set_ss(x);
++    float t = (float)(mode == 0 ? _mm_cvtss_si32(v) : _mm_cvttss_si32(v));   /* exact: |x| < 2^23 */
++    if (mode == 1 && t > x) t -= 1.0f;
++    if (mode == 2 && t < x) t += 1.0f;
++    return ppu_fp_f32((ppu_fp_u32(t) & 0x7FFFFFFFu) | (u & 0x80000000u));   /* the sign of x, also for a zero */
++#endif
++}
++
++/* ---- exact power-of-two scaling, |e| <= 126: one multiply by 2^e, which is
++ * exactly what ldexpf returns (rounding only for a subnormal result) ---- */
++PPU_FP_INL float ppu_scalef_det(float x, int e) { return x * ppu_fp_f32((uint32_t)(127 + e) << 23); }
++
++/* ---- fused multiply-add, double: x*y + z rounded once ---- */
++#if defined(__SIZEOF_INT128__)
++typedef unsigned __int128 ppu_fp_u128;
++PPU_FP_INL int ppu_fp_clz128(ppu_fp_u128 v)   /* v != 0 */
++{
++    const uint64_t hi = (uint64_t)(v >> 64);
++    return hi ? __builtin_clzll(hi) : 64 + __builtin_clzll((uint64_t)v);
++}
++/* Exact integer implementation (what a CPU without FMA3 runs). The product of
++ * the two 53-bit significands is formed exactly in 128 bits; both terms are
++ * placed with their top bit at bit 124, the smaller one shifted right with the
++ * bits it loses folded into its bit 0 (that makes the sum the round-to-odd
++ * value at bit 0, which keeps the final rounding exact), added, and rounded
++ * once to nearest-even -- subnormal results and overflow included. */
++static inline __attribute__((noinline)) double ppu_fma_soft(double x, double y, double z)
++{
++    PPU_FP_NOCONTRACT
++    const uint64_t ux = ppu_fp_u64(x), uy = ppu_fp_u64(y), uz = ppu_fp_u64(z), F = 0x000FFFFFFFFFFFFFull;
++    const int bx = (int)(ux >> 52 & 0x7FF), by = (int)(uy >> 52 & 0x7FF), bz = (int)(uz >> 52 & 0x7FF);
++    if (bx == 0x7FF || by == 0x7FF || bz == 0x7FF) {
++        /* inf/NaN: no rounding question. A finite x*y could overflow in a separate
++         * multiply, so an infinite (or NaN) z with finite x, y is the result itself. */
++        if (bx != 0x7FF && by != 0x7FF) return z + z;
++        const double p = x * y;
++        return p + z;
++    }
++    uint64_t mx = ux & F, my = uy & F, mz = uz & F;
++    if (bx) mx |= 1ull << 52;
++    if (by) my |= 1ull << 52;
++    if (bz) mz |= 1ull << 52;
++    if (!mx || !my) { const double p = x * y; return p + z; }   /* exact zero product */
++    if (!mz) return x * y;    /* z = +-0 never changes a nonzero exact product: one rounding */
++    const int sp = (int)((ux ^ uy) >> 63), sz = (int)(uz >> 63);
++    /* value = m * 2^(b - 1075), a subnormal's b counted as 1 */
++    ppu_fp_u128 P = (ppu_fp_u128)mx * my, Z = mz;
++    int pe = (bx ? bx : 1) + (by ? by : 1) - 2 * 1075, ze = (bz ? bz : 1) - 1075;
++    const int shp = ppu_fp_clz128(P) - 3, shz = ppu_fp_clz128(Z) - 3;   /* top bit -> bit 124 */
++    P <<= shp; pe -= shp;
++    Z <<= shz; ze -= shz;
++    ppu_fp_u128 A, B; int sa, sb, e, d;
++    if (pe >= ze) { A = P; sa = sp; B = Z; sb = sz; e = pe; d = pe - ze; }
++    else          { A = Z; sa = sz; B = P; sb = sp; e = ze; d = ze - pe; }
++    if (d >= 128) B = B != 0;
++    else if (d) B = (B >> d) | (ppu_fp_u128)((B & (((ppu_fp_u128)1 << d) - 1)) != 0);
++    ppu_fp_u128 R; int sr;
++    if (sa == sb)   { R = A + B; sr = sa; }
++    else if (A > B) { R = A - B; sr = sa; }
++    else if (B > A) { R = B - A; sr = sb; }
++    else return 0.0;          /* exact cancellation: +0 when rounding to nearest */
++    const int msb = 127 - ppu_fp_clz128(R);
++    const int E = msb + e;    /* the exponent of the leading bit */
++    const uint64_t sign = (uint64_t)sr << 63;
++    if (E > 1023) return ppu_fp_f64(sign | 0x7FF0000000000000ull);
++    int lsb = E - 52;
++    if (lsb < -1074) lsb = -1074;
++    const int s = lsb - e;    /* bits to drop */
++    uint64_t q;
++    if (s <= 0) q = (uint64_t)(R << -s);
++    else if (s >= 127) q = 0;  /* R < 2^126 <= half an ulp: rounds to zero */
++    else {
++        const ppu_fp_u128 one = 1, rem = R & ((one << s) - 1), half = one << (s - 1);
++        q = (uint64_t)(R >> s);
++        if (rem > half || (rem == half && (q & 1))) q++;
++    }
++    if (q >> 53) { q >>= 1; lsb++; }
++    if (q < (1ull << 52)) return ppu_fp_f64(sign | q);              /* subnormal or zero */
++    if (lsb + 1075 >= 2047) return ppu_fp_f64(sign | 0x7FF0000000000000ull);
++    return ppu_fp_f64(sign | ((uint64_t)(lsb + 1075) << 52) | (q & F));
++}
++#endif /* __SIZEOF_INT128__ */
++
++#if !defined(__FMA__) && defined(PPU_FP_X64)
++/* A build without FMA instructions on a CPU that has them: use them (same bits). */
++PPU_FP_INL int ppu_fp_cpu_fma(void)
++{
++    static int s_have = -1;
++    int h = __atomic_load_n(&s_have, __ATOMIC_RELAXED);
++    if (__builtin_expect(h < 0, 0)) {
++        int r[4];
++#if defined(_MSC_VER)
++        __cpuid(r, 1);
++#else
++        __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(1), "c"(0));
++#endif
++        h = 0;
++        if ((r[2] & (1 << 12)) && (r[2] & (1 << 27)) && (r[2] & (1 << 28))) {   /* FMA, OSXSAVE, AVX */
++            uint32_t lo, hi;
++            __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
++            h = (lo & 6u) == 6u;   /* the OS saves the YMM state */
++        }
++        /* PS3_FP_SOFT_FMA=1 (tests): the software fma even on a CPU with FMA3,
++         * as a CPU without it would run (tools/cross_build_test.py) */
++        { const char* e = getenv("PS3_FP_SOFT_FMA"); if (e && *e == '1') h = 0; }
++        __atomic_store_n(&s_have, h, __ATOMIC_RELAXED);
++    }
++    return h;
++}
++static inline __attribute__((target("fma"), noinline)) double ppu_fma_hw(double x, double y, double z)
++{
++    __m128d r;
++    __asm__("vfmadd213sd %3, %2, %0" : "=x"(r) : "0"(_mm_set_sd(x)), "x"(_mm_set_sd(y)), "x"(_mm_set_sd(z)));
++    return _mm_cvtsd_f64(r);
++}
++#endif
++
++PPU_FP_INL double ppu_fma_det(double x, double y, double z)
++{
++#if defined(__FMA__) && defined(PPU_FP_X64)
++    return _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(x), _mm_set_sd(y), _mm_set_sd(z)));
++#elif defined(PPU_FP_X64)
++    if (__builtin_expect(ppu_fp_cpu_fma(), 1)) return ppu_fma_hw(x, y, z);
++    return ppu_fma_soft(x, y, z);
++#else
++    return __builtin_fma(x, y, z);   /* arm64: one fused instruction */
++#endif
++}
++
++/* ---- fused multiply-add, single ----
++ * The product of two singles is exact in double; the sum is rounded once in
++ * double and its exact error is known (TwoSum). Rounding that sum to odd (an
++ * inexact one gets an odd last bit) and then to single gives the correctly
++ * rounded single result -- double has more than 2 * 24 + 1 bits. */
++PPU_FP_INL float ppu_fmaf_soft(float x, float y, float z)
++{
++    PPU_FP_NOCONTRACT
++    const double p = (double)x * (double)y, dz = (double)z;
++    double s = p + dz;
++    const double bb = s - p;
++    const double err = (p - (s - bb)) + (dz - bb);    /* NaN for inf/NaN operands: s is the result then */
++    if (err != 0.0 && err == err) {
++        uint64_t u = ppu_fp_u64(s);
++        if (!(u & 1)) u = ((err > 0.0) == (s > 0.0)) ? u + 1 : u - 1;
++        s = ppu_fp_f64(u);
++    }
++    return (float)s;
++}
++
++PPU_FP_INL float ppu_fmaf_det(float x, float y, float z)
++{
++#if defined(__FMA__) && defined(PPU_FP_X64)
++    return _mm_cvtss_f32(_mm_fmadd_ss(_mm_set_ss(x), _mm_set_ss(y), _mm_set_ss(z)));
++#elif defined(PPU_FP_X64)
++    return ppu_fmaf_soft(x, y, z);
++#else
++    return __builtin_fmaf(x, y, z);
++#endif
++}
++
++/* ---- 2^x and log2(x) for the VMX estimate instructions (vexptefp, vlogefp):
++ * the ISA asks for an estimate; these are fixed double-precision formulas
++ * (only + - * /, no fused ops), so every PC gets the same bits. Accurate to
++ * well under one float ulp. ---- */
++PPU_FP_INL float ppu_exp2f_det(float f)
++{
++    PPU_FP_NOCONTRACT
++    if (f != f) return f + f;
++    if (f >= 128.0f) return ppu_fp_f32(0x7F800000u);
++    if (f < -151.0f) return 0.0f;
++    const float fl = ppu_roundf_det(f, 1);
++    const int i = (int)fl;
++    const double r = ((double)f - (double)fl) * 0.69314718055994530942;   /* in [0, ln 2) */
++    double t = 1.0 / 6227020800.0;                                       /* e^r, Taylor to r^13 */
++    static const double inv_fact[13] = { 1.0 / 479001600.0, 1.0 / 39916800.0, 1.0 / 3628800.0, 1.0 / 362880.0,
++                                         1.0 / 40320.0, 1.0 / 5040.0, 1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0,
++                                         1.0 / 6.0, 0.5, 1.0, 1.0 };
++    for (int k = 0; k < 13; k++) t = t * r + inv_fact[k];
++    return (float)(t * ppu_fp_f64((uint64_t)(1023 + i) << 52));          /* 2^i exact in double for i >= -152 */
++}
++PPU_FP_INL float ppu_log2f_det(float f)
++{
++    PPU_FP_NOCONTRACT
++    const uint32_t u = ppu_fp_u32(f);
++    if (f != f) return f + f;
++    if (u == 0x7F800000u) return f;
++    if ((u & 0x7FFFFFFFu) == 0) return ppu_fp_f32(0xFF800000u);          /* log2(+-0) = -inf */
++    if (u >> 31) return ppu_fp_f32(0x7FC00000u);                         /* negative: NaN */
++    /* x = m * 2^e with m in [sqrt(1/2), sqrt(2)) */
++    double d = (double)f;
++    uint64_t b = ppu_fp_u64(d);
++    int e = (int)(b >> 52) - 1023;
++    double m = ppu_fp_f64((b & 0x000FFFFFFFFFFFFFull) | 0x3FF0000000000000ull);
++    if (m > 1.41421356237309504880) { m *= 0.5; e += 1; }
++    const double t = (m - 1.0) / (m + 1.0), t2 = t * t;                   /* |t| < 0.1716 */
++    double s = 1.0 / 23.0;                                               /* atanh(t)/t = sum t^2k/(2k+1) */
++    for (int k = 21; k >= 1; k -= 2) s = s * t2 + 1.0 / k;
++    return (float)((double)e + (2.0 * t * s) * 1.44269504088896340736);
++}
++
++#ifdef __cplusplus
++}
++#endif
++#endif /* PPU_FP_DET_H */
+diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
+index e2096d0..3453b9d 100644
+--- a/runtime/ppu/ppu_hle.cpp
++++ b/runtime/ppu/ppu_hle.cpp
+@@ -17,6 +17,7 @@
+  * Compiled as C++ (matches the lifted output). Game-agnostic.
+  */
+ #include "ppu_recomp.h"   /* ppu_context */
++#include "ppu_fp_det.h"   /* ppu_fp_env_check: the guest threads' MXCSR (fp_env.c) */
+ #include "ps3emu/nid.h"   /* ps3_nid_table, ps3_nid_entry */
+ #include "ps3emu/milestone.h" /* ps3_msf -- boot milestone log */
+ #include <stdlib.h>       /* getenv */
+@@ -217,6 +218,11 @@ extern "C" uint32_t ppu_prof_resolve_host(void* ra);
+ extern "C" uint32_t ppu_prof_resolve_host_cached(void* ra);
+ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+ {
++    /* Host code (the OS, drivers) ran on this guest thread: its MXCSR must be
++     * the canonical one again when the guest code continues (fp_env.c). One
++     * stmxcsr and a compare on every return path. */
++    struct FpEnvGuard { ~FpEnvGuard() { ppu_fp_env_check("hle call"); } } fp_env_guard;
++    (void)fp_env_guard;
+     /* HLE_BT_EVERY=<n>: dump the calling thread's guest stack every nth HLE
+      * call it makes. WAITBT_EVERY only samples threads that are blocking on an
+      * event queue, which misses a thread that stops looping while it is BUSY --
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 7941031..f2ea55a 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -40,6 +40,7 @@
+ #include "ppu_recomp.h"
+ #include "ps3emu/milestone.h"   /* ps3_ms / ps3_msf -- boot milestone log */     /* ppu_context, func decls, ppu_recomp_register */
+ #include "ppu_game_dll.h"      /* PS3_GAME_DLL: lifted code in a separate DLL */
++#include "ppu_fp_det.h"        /* the guest threads' MXCSR (fp_env.c) */
+ #include "../memory/vm.h"   /* vm_commit -- sys_mmapper_search_and_map maps for real */
+ #include "../platform/win32_compat.h"      /* Win32 types, interlocked ops, Sleep/QPC on POSIX */
+ #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
+@@ -3453,7 +3454,9 @@ extern "C" void lv2_syscall(ppu_context* ctx)
+     struct _ScGuard {
+         ppu_context* c;
+         ~_ScGuard() { unsigned t = (unsigned)c->thread_id;
+-                      if (t < PS3_SC_INFLIGHT_MAX) g_sc_inflight[t] = 0; }
++                      if (t < PS3_SC_INFLIGHT_MAX) g_sc_inflight[t] = 0;
++                      /* host code ran: the guest's MXCSR must be what it was (fp_env.c) */
++                      ppu_fp_env_check("lv2 syscall"); }
+     } _sg{ ctx };
+     { unsigned t = (unsigned)ctx->thread_id;
+       if (t < PS3_SC_INFLIGHT_MAX) g_sc_inflight[t] = (uint32_t)num; }
+@@ -4102,6 +4105,9 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
+      * frame is reused -- corrupting the crash handler / any diagnostic that reads the
+      * current-thread ctx. Restore the caller's. */
+     ppu_context* saved_active = g_active_ctx;
++    /* Callbacks run on host threads too (ticker, decoders, audio): the guest
++     * code gets the canonical MXCSR on every one (ppu_fp_det.h, fp_env.c). */
++    ppu_fp_env_check("guest callback");
+     /* Thread identity: a zeroed scratch ctx used to run callbacks as thread_id 0
+      * -- aliasing the main thread in every owner-tracking primitive. Inherit the
+      * calling guest thread's id; host-only threads (ticker) get a per-host-thread
+@@ -4130,6 +4136,7 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
+     if (!code) return 0;
+     ppu_fn fn = ppu_lookup(code);
+     if (!fn) { fprintf(stderr, "[ppu] guest_call_ct: code 0x%08X not registered\n", code); return 0; }
++    ppu_fp_env_check("guest callback");   /* see ppu_guest_call */
+ 
+     static PPU_THREAD_LOCAL uint32_t s_cb_sp = 0;
+     if (!s_cb_sp) s_cb_sp = ppu_callback_stack();
+diff --git a/runtime/ppu/ppu_vmx.h b/runtime/ppu/ppu_vmx.h
+index cf7a730..b337ebc 100644
+--- a/runtime/ppu/ppu_vmx.h
++++ b/runtime/ppu/ppu_vmx.h
+@@ -18,6 +18,7 @@
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
++#include "ppu_fp_det.h"   /* the same bits on every x64 PC: no C library math */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -279,12 +280,12 @@ VMX_INL void vmx_vmaddfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_P
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+-        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(fmaf(x, z, y))), vscr)); } VMX_OUT; }
++        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(ppu_fmaf_det(x, z, y))), vscr)); } VMX_OUT; }
+ VMX_INL void vmx_vnmsubfp(VMX_D, VMX_A, VMX_B, VMX_C, uint32_t vscr) { VMX_ARGS_PREP; const uint8_t* c = (const uint8_t*)c_;
+     for (int i = 0; i < 4; i++) {
+         float x = vmx_f(vmx_flush(vmx_w(a, i), vscr)), y = vmx_f(vmx_flush(vmx_w(b, i), vscr)),
+               z = vmx_f(vmx_flush(vmx_w(c, i), vscr));
+-        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(-fmaf(x, z, -y))), vscr)); } VMX_OUT; }
++        vmx_sw(r, i, vmx_flush(vmx_fix(vmx_u(-ppu_fmaf_det(x, z, -y))), vscr)); } VMX_OUT; }
+ 
+ #define VMX_FUN(name, expr, flush_in, nanmode) \
+ VMX_INL void name(VMX_D, VMX_B, uint32_t vscr) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16]; \
+@@ -292,28 +293,28 @@ VMX_INL void name(VMX_D, VMX_B, uint32_t vscr) { const uint8_t* b = (const uint8
+         float f = vmx_f(y); uint32_t z = vmx_u(expr); \
+         vmx_sw(r, i, nanmode == 2 ? vmx_flush(vmx_vnan1(z, y), vscr) : vmx_fix(z)); } VMX_OUT; }
+ VMX_FUN(vmx_vrefp, 1.0f / f, 1, 2)
+-VMX_FUN(vmx_vrsqrtefp, 1.0f / sqrtf(f), 1, 2)
+-VMX_FUN(vmx_vexptefp, exp2f(f), 0, 1)
+-VMX_FUN(vmx_vlogefp, log2f(f), 0, 1)
+-VMX_FUN(vmx_vrfin, nearbyintf(f), 0, 2)      /* host default rounding: to nearest even */
+-VMX_FUN(vmx_vrfiz, truncf(f), 0, 2)
+-VMX_FUN(vmx_vrfip, ceilf(f), 1, 2)
+-VMX_FUN(vmx_vrfim, floorf(f), 1, 2)
++VMX_FUN(vmx_vrsqrtefp, 1.0f / ppu_sqrtf_det(f), 1, 2)
++VMX_FUN(vmx_vexptefp, ppu_exp2f_det(f), 0, 1)
++VMX_FUN(vmx_vlogefp, ppu_log2f_det(f), 0, 1)
++VMX_FUN(vmx_vrfin, ppu_roundf_det(f, 0), 0, 2)   /* to nearest even */
++VMX_FUN(vmx_vrfiz, ppu_roundf_det(f, 3), 0, 2)
++VMX_FUN(vmx_vrfip, ppu_roundf_det(f, 2), 1, 2)
++VMX_FUN(vmx_vrfim, ppu_roundf_det(f, 1), 1, 2)
+ 
+ /* int <-> float with a 2^uimm scale */
+ VMX_INL void vmx_vcfux(VMX_D, VMX_B, unsigned uimm) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16];
+-    for (int i = 0; i < 4; i++) vmx_sw(r, i, vmx_u(ldexpf((float)vmx_w(b, i), -(int)uimm))); VMX_OUT; }
++    for (int i = 0; i < 4; i++) vmx_sw(r, i, vmx_u(ppu_scalef_det((float)vmx_w(b, i), -(int)uimm))); VMX_OUT; }
+ VMX_INL void vmx_vcfsx(VMX_D, VMX_B, unsigned uimm) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16];
+-    for (int i = 0; i < 4; i++) vmx_sw(r, i, vmx_u(ldexpf((float)(int32_t)vmx_w(b, i), -(int)uimm))); VMX_OUT; }
++    for (int i = 0; i < 4; i++) vmx_sw(r, i, vmx_u(ppu_scalef_det((float)(int32_t)vmx_w(b, i), -(int)uimm))); VMX_OUT; }
+ VMX_INL void vmx_vctsxs(VMX_D, VMX_B, unsigned uimm, uint32_t* vscr) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16];
+-    for (int i = 0; i < 4; i++) { float f = vmx_f(vmx_w(b, i)) * ldexpf(1.0f, (int)uimm); int32_t v;
++    for (int i = 0; i < 4; i++) { float f = vmx_f(vmx_w(b, i)) * ppu_scalef_det(1.0f, (int)uimm); int32_t v;
+         if (f != f) v = 0;
+         else if (f < -2147483648.0f) { v = INT32_MIN; *vscr |= VMX_SAT; }
+         else if (f >= 2147483648.0f) { v = INT32_MAX; *vscr |= VMX_SAT; }
+         else v = (int32_t)f;
+         vmx_sw(r, i, (uint32_t)v); } VMX_OUT; }
+ VMX_INL void vmx_vctuxs(VMX_D, VMX_B, unsigned uimm, uint32_t* vscr) { const uint8_t* b = (const uint8_t*)b_; uint8_t r[16];
+-    for (int i = 0; i < 4; i++) { float f = vmx_f(vmx_w(b, i)) * ldexpf(1.0f, (int)uimm); uint32_t v;
++    for (int i = 0; i < 4; i++) { float f = vmx_f(vmx_w(b, i)) * ppu_scalef_det(1.0f, (int)uimm); uint32_t v;
+         if (f != f) v = 0;
+         else if (f < 0.0f) { v = 0; *vscr |= VMX_SAT; }
+         else if (f >= 4294967296.0f) { v = 0xFFFFFFFFu; *vscr |= VMX_SAT; }
+diff --git a/runtime/ppu/tests/test_fp_det.c b/runtime/ppu/tests/test_fp_det.c
+new file mode 100644
+index 0000000..d85f200
+--- /dev/null
++++ b/runtime/ppu/tests/test_fp_det.c
+@@ -0,0 +1,225 @@
++/* Checks runtime/ppu/ppu_fp_det.h against the hardware instructions it stands in for
++ * (x64 with FMA3 and SSE4.1 needed to run it). Built for the x86-64 baseline (no
++ * -mfma/-msse4.1), so the header's software paths are the ones under test; the
++ * references use target attributes:
++ *   clang-cl /O2 -I runtime/ppu /clang:-ffp-contract=off runtime/ppu/tests/test_fp_det.c
++ *   test_fp_det [N]   N random cases per test (default 200M; ~2 min plus the
++ *                     exhaustive 2^32-float loops) -- prints PASS or FAIL */
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <string.h>
++#include <math.h>
++#include <immintrin.h>
++#include "ppu_fp_det.h"
++
++void ppu_fp_thread_init(const char* w) { (void)w; }
++void ppu_fp_env_fix(uint32_t s, const char* w) { (void)s; (void)w; }
++uint32_t ppu_fp_env_violations(void) { return 0; }
++
++static uint64_t st = 0x243F6A8885A308D3ull;
++static inline uint64_t rnd(void) { st ^= st << 13; st ^= st >> 7; st ^= st << 17; return st; }
++__attribute__((target("fma"))) static double ref_fma(double a, double b, double c)
++{ return _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(a), _mm_set_sd(b), _mm_set_sd(c))); }
++__attribute__((target("fma"))) static float ref_fmaf(float a, float b, float c)
++{ return _mm_cvtss_f32(_mm_fmadd_ss(_mm_set_ss(a), _mm_set_ss(b), _mm_set_ss(c))); }
++__attribute__((target("sse4.1"))) static float ref_round(float x, int mode)
++{
++    __m128 v = _mm_set_ss(x);
++    switch (mode) {
++    case 0:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
++    case 1:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
++    case 2:  return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
++    default: return _mm_cvtss_f32(_mm_round_ss(v, v, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
++    }
++}
++static double d_of(uint64_t u) { double d; memcpy(&d, &u, 8); return d; }
++static uint64_t u_of(double d) { uint64_t u; memcpy(&u, &d, 8); return u; }
++static int isnan64(uint64_t u) { return (u & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull; }
++static int isnan32(uint32_t u) { return (u & 0x7FFFFFFFu) > 0x7F800000u; }
++/* random double: any bits, or exponent around e0 */
++static double gd(int kind, int e0, int spread)
++{
++    uint64_t r = rnd();
++    if (kind == 0) return d_of(r);
++    int e = e0 + (int)(rnd() % (2 * spread + 1)) - spread;
++    if (e < 0) e = 0;
++    if (e > 2046) e = 2046;
++    if ((rnd() & 15) == 0) r &= ~((1ull << (rnd() % 52)) - 1);   /* short significands: ties, exact results */
++    return d_of((r & 0x800FFFFFFFFFFFFFull) | ((uint64_t)e << 52));
++}
++static float gf(int kind, int e0, int spread)
++{
++    uint32_t r = (uint32_t)rnd();
++    if (kind == 0) { memcpy(&r, &r, 4); float f; memcpy(&f, &r, 4); return f; }
++    int e = e0 + (int)(rnd() % (2 * spread + 1)) - spread;
++    if (e < 0) e = 0;
++    if (e > 254) e = 254;
++    if ((rnd() & 15) == 0) r &= ~((1u << (rnd() % 23)) - 1);
++    r = (r & 0x807FFFFFu) | ((uint32_t)e << 23);
++    float f; memcpy(&f, &r, 4); return f;
++}
++
++/* the lifter's float->int helpers: before (C library) and after (ppu_fp_det.h) */
++static uint32_t old_f2i32(double v, int rn) { if (v != v) return 0x80000000u; double r = rn ? nearbyint(v) : trunc(v);
++    if (r >= 2147483647.0) return 0x7FFFFFFFu; if (r <= -2147483648.0) return 0x80000000u; return (uint32_t)(int32_t)r; }
++static uint64_t old_f2i64(double v, int rn) { if (v != v) return 0x8000000000000000ULL; double r = rn ? nearbyint(v) : trunc(v);
++    if (r >= 9223372036854775807.0) return 0x7FFFFFFFFFFFFFFFULL; if (r <= -9223372036854775808.0) return 0x8000000000000000ULL; return (uint64_t)(int64_t)r; }
++static uint32_t new_f2i32(double v, int rn) { if (v != v) return 0x80000000u; if (v >= 2147483647.0) return 0x7FFFFFFFu;
++    if (v <= -2147483648.0) return 0x80000000u; return (uint32_t)ppu_cvt_i32(v, rn); }
++static uint64_t new_f2i64(double v, int rn) { if (v != v) return 0x8000000000000000ULL; if (v >= 9223372036854775807.0) return 0x7FFFFFFFFFFFFFFFULL;
++    if (v <= -9223372036854775808.0) return 0x8000000000000000ULL; return (uint64_t)ppu_cvt_i64(v, rn); }
++
++int main(int argc, char** argv)
++{
++    long n = argc > 1 ? atol(argv[1]) : 200000000L;
++    int fails = 0;
++    printf("cpu has FMA3: %d\n", ppu_fp_cpu_fma());
++
++    /* 1. double fma: soft path and the dispatched hardware path against vfmadd */
++    long bad = 0, badhw = 0, nanonly = 0;
++    for (long i = 0; i < n; i++) {
++        double a, b, c;
++        switch (i % 8) {
++        case 0: a = gd(0, 0, 0); b = gd(0, 0, 0); c = gd(0, 0, 0); break;
++        case 1: a = gd(1, 1023, 40); b = gd(1, 1023, 40); c = gd(1, 1023, 80); break;
++        case 2: a = gd(1, 1023, 3); b = gd(1, 1023, 3); c = -a * b; if (rnd() & 1) c = d_of(u_of(c) + (rnd() % 5) - 2); break;
++        case 3: a = gd(1, 520, 30); b = gd(1, 520, 30); c = gd(1, 30, 60); break;            /* products near the subnormal range */
++        case 4: a = gd(1, 10, 10); b = gd(1, 1023, 60); c = gd(1, 0, 3); break;              /* subnormal operands */
++        case 5: a = gd(1, 1535, 20); b = gd(1, 1535, 20); c = gd(1, 2046, 2); break;         /* overflow region */
++        case 6: a = gd(1, 1023, 30); b = gd(1, 1023, 30); c = gd(1, 1023 - 60 + (int)(rnd() % 120), 0); break;
++        default: { int e = (int)(rnd() % 2047); a = gd(1, e, 0); b = gd(1, 2046 - e + (int)(rnd() % 60) - 30, 0); c = gd(1, (int)(rnd() % 2047), 0); }
++        }
++        const uint64_t r0 = u_of(ref_fma(a, b, c)), r1 = u_of(ppu_fma_soft(a, b, c)), r2 = u_of(ppu_fma_det(a, b, c));
++        if (r0 != r1) {
++            if (isnan64(r0) && isnan64(r1)) nanonly++;
++            else if (bad++ < 5) printf("  fma_soft(%a, %a, %a) = %a, vfmadd %a\n", a, b, c, d_of(r1), d_of(r0));
++        }
++        if (r0 != r2 && !(isnan64(r0) && isnan64(r2)) && badhw++ < 5) printf("  fma_det(%a, %a, %a) = %a, vfmadd %a\n", a, b, c, d_of(r2), d_of(r0));
++    }
++    /* special operands */
++    static const double sp[] = { 0.0, -0.0, 1.0, -1.0, INFINITY, -INFINITY, NAN, 0x1p-1074, -0x1p-1074, 0x1p-1022,
++                                 0x1.fffffffffffffp1023, -0x1.fffffffffffffp1023, 0x1p-537, 0x1p512, 0x1.8p-1074, 3.0, 0x1p-1060 };
++    const int ns = (int)(sizeof sp / sizeof sp[0]);
++    for (int i = 0; i < ns; i++) for (int j = 0; j < ns; j++) for (int k = 0; k < ns; k++) {
++        const uint64_t r0 = u_of(ref_fma(sp[i], sp[j], sp[k])), r1 = u_of(ppu_fma_soft(sp[i], sp[j], sp[k]));
++        if (r0 != r1 && !(isnan64(r0) && isnan64(r1)) && bad++ < 10) printf("  fma_soft(%a, %a, %a) = %a, vfmadd %a\n", sp[i], sp[j], sp[k], d_of(r1), d_of(r0));
++    }
++    printf("fma (double): %ld random + %d special cases: soft %ld differ (%ld NaN payload only), dispatched %ld differ\n",
++           n, ns * ns * ns, bad, nanonly, badhw);
++    fails += bad != 0 || badhw != 0;
++
++    /* 2. single fma: round-to-odd in double against vfmadd213ss */
++    bad = nanonly = 0;
++    for (long i = 0; i < n; i++) {
++        float a, b, c;
++        switch (i % 6) {
++        case 0: a = gf(0, 0, 0); b = gf(0, 0, 0); c = gf(0, 0, 0); break;
++        case 1: a = gf(1, 127, 20); b = gf(1, 127, 20); c = gf(1, 127, 50); break;
++        case 2: a = gf(1, 127, 3); b = gf(1, 127, 3); c = -(float)((double)a * b); if (rnd() & 1) { uint32_t u; memcpy(&u, &c, 4); u += (uint32_t)(rnd() % 5) - 2; memcpy(&c, &u, 4); } break;
++        case 3: a = gf(1, 50, 20); b = gf(1, 50, 20); c = gf(1, 2, 10); break;
++        case 4: a = gf(1, 190, 10); b = gf(1, 190, 10); c = gf(1, 254, 1); break;
++        default: a = gf(1, 127, 12); b = gf(1, 127, 12); c = gf(1, 127 + (int)(rnd() % 60) - 30, 0); break;
++        }
++        uint32_t r0, r1;
++        float f0 = ref_fmaf(a, b, c), f1 = ppu_fmaf_soft(a, b, c);
++        memcpy(&r0, &f0, 4); memcpy(&r1, &f1, 4);
++        if (r0 != r1) {
++            if (isnan32(r0) && isnan32(r1)) nanonly++;
++            else if (bad++ < 5) printf("  fmaf_soft(%a, %a, %a) = %a, vfmadd %a\n", a, b, c, f1, f0);
++        }
++    }
++    printf("fmaf (single): %ld random cases: soft %ld differ (%ld NaN payload only)\n", n, bad, nanonly);
++    fails += bad != 0;
++
++    /* 3. round to integral, all 2^32 floats, four modes: SSE2 path against roundss */
++    for (int mode = 0; mode < 4; mode++) {
++        bad = 0;
++        uint32_t u = 0;
++        do {
++            float x; memcpy(&x, &u, 4);
++            float a = ref_round(x, mode), b = ppu_roundf_det(x, mode);
++            uint32_t ua, ub; memcpy(&ua, &a, 4); memcpy(&ub, &b, 4);
++            if (ua != ub && bad++ < 3) printf("  round mode %d (%a) = %a, roundss %a\n", mode, x, b, a);
++        } while (++u);
++        printf("round mode %d: all 2^32 floats, %ld differ\n", mode, bad);
++        fails += bad != 0;
++    }
++
++    /* 4. power-of-two scaling against ldexpf, conversions against the C library */
++    bad = 0;
++    for (long i = 0; i < n / 10; i++) {
++        float x = gf((int)(i & 1), 127, 120);
++        int e = (int)(rnd() % 63) - 31;
++        float a = ldexpf(x, e), b = ppu_scalef_det(x, e);
++        uint32_t ua, ub; memcpy(&ua, &a, 4); memcpy(&ub, &b, 4);
++        if (ua != ub && !(isnan32(ua) && isnan32(ub)) && bad++ < 3) printf("  scalef(%a, %d) = %a, ldexpf %a\n", x, e, b, a);
++    }
++    printf("scalef: %ld cases, %ld differ from ldexpf\n", n / 10, bad);
++    fails += bad != 0;
++    bad = 0;
++    for (long i = 0; i < n / 10; i++) {
++        double v = gd(1, 1023, 34);
++        if (fabs(v) >= 2147483647.0) continue;
++        if (ppu_cvt_i32(v, 1) != (int32_t)nearbyint(v) || ppu_cvt_i32(v, 0) != (int32_t)trunc(v)) bad++;
++        if (fabs(v) < 9.2e18 && (ppu_cvt_i64(v, 1) != (int64_t)nearbyint(v) || ppu_cvt_i64(v, 0) != (int64_t)trunc(v))) bad++;
++    }
++    printf("int conversions: %ld differ from nearbyint/trunc\n", bad);
++    fails += bad != 0;
++    bad = 0;
++    for (long i = 0; i < n / 10; i++) {
++        double v;
++        switch (i % 4) {
++        case 0: v = gd(0, 0, 0); break;
++        case 1: v = gd(1, 1023 + 31, 2); break;                                   /* around 2^31 */
++        case 2: v = gd(1, 1023 + 63, 2); break;                                   /* around 2^63 */
++        default: { static const double e[] = { 2147483647.0, 2147483647.5, 2147483646.5, 2147483646.7, 2147483648.0,
++                   -2147483648.0, -2147483648.5, -2147483647.5, -2147483648.4, -2147483649.0, 9223372036854775807.0,
++                   -9223372036854775808.0, 0.5, -0.5, 1.5, -1.5, 2.5, INFINITY, -INFINITY, NAN };
++                   v = e[(i / 4) % (sizeof e / sizeof e[0])]; if (rnd() & 1) v = d_of(u_of(v) + (rnd() % 3) - 1); }
++        }
++        for (int rn = 0; rn < 2; rn++)
++            if (old_f2i32(v, rn) != new_f2i32(v, rn) || old_f2i64(v, rn) != new_f2i64(v, rn)) {
++                if (bad++ < 3) printf("  f2i(%a, rn=%d): old %08X/%016llX new %08X/%016llX\n", v, rn, old_f2i32(v, rn),
++                                      (unsigned long long)old_f2i64(v, rn), new_f2i32(v, rn), (unsigned long long)new_f2i64(v, rn));
++            }
++    }
++    printf("lifter fctiw/fctid helpers: %ld differ between the C library version and the new one\n", bad);
++    fails += bad != 0;
++
++    /* 5. sqrt */
++    bad = 0;
++    for (long i = 0; i < n / 10; i++) {
++        double v = gd(0, 0, 0);
++        double a = sqrt(v), b = ppu_sqrt_det(v);
++        if (u_of(a) != u_of(b) && !(isnan64(u_of(a)) && isnan64(u_of(b)))) bad++;
++    }
++    printf("sqrt: %ld differ from the C library (NaN payloads aside)\n", bad);
++    fails += bad != 0;
++
++    /* 6. the VMX estimates: exp2f/log2f, error against the C library, all floats */
++    double maxe = 0, maxl = 0; long ne = 0, nl = 0;
++    uint32_t u = 0;
++    do {
++        float x; memcpy(&x, &u, 4);
++        float a = exp2f(x), b = ppu_exp2f_det(x);
++        uint32_t ua, ub; memcpy(&ua, &a, 4); memcpy(&ub, &b, 4);
++        if (ua != ub && !(isnan32(ua) && isnan32(ub))) {
++            ne++;
++            double d = fabs((double)(int32_t)ua - (double)(int32_t)ub);
++            if (d > maxe) maxe = d;
++        }
++        a = log2f(x); b = ppu_log2f_det(x);
++        memcpy(&ua, &a, 4); memcpy(&ub, &b, 4);
++        if (ua != ub && !(isnan32(ua) && isnan32(ub))) {
++            nl++;
++            double d = fabs((double)(int32_t)ua - (double)(int32_t)ub);
++            if (d > maxl) maxl = d;
++        }
++    } while (++u);
++    printf("exp2f: %ld of 2^32 differ from the C library, at most %.0f ulp; log2f: %ld differ, at most %.0f ulp\n",
++           ne, maxe, nl, maxl);
++    fails += maxe > 1 || maxl > 1;
++    printf(fails ? "FAIL\n" : "PASS\n");
++    return fails != 0;
++}
+diff --git a/runtime/spu/spu_channels.c b/runtime/spu/spu_channels.c
+index 3aa0a67..d5ad4e5 100644
+--- a/runtime/spu/spu_channels.c
++++ b/runtime/spu/spu_channels.c
+@@ -349,6 +349,9 @@ void spu_stop(spu_context* ctx)
+ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+ {
+     int halted = 0;
++    /* Every lifted SPU run starts here, also on threads host_sched_thread_start
++     * never saw (the raw SPU thread of a sound core): canonical MXCSR (fp_env.c). */
++    ppu_fp_env_check("spu entry");
+     /* Job-args probe: image-1 (the WWS job binary) entries arrive at the crt
+      * with r3/r4 zeroed in SOME runs while the jm2 runner sets them -- count
+      * and stamp every image-1 run here to find the argless caller. */
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+index 1317792..2c0ab8a 100644
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -16,6 +16,7 @@
+ #include "spu_context.h"
+ #include <string.h>
+ #include <math.h>
++#include "../ppu/ppu_fp_det.h"   /* fma without the C library: the same bits on every PC */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -600,7 +601,7 @@ static inline uint32_t spu__fm_fast(uint32_t x, uint32_t y) {
+ static inline uint32_t spu__fma_fast(uint32_t x, uint32_t y, uint32_t z, uint32_t negp, uint32_t negc) {
+     if (!spu__sf_plain(x) || !spu__sf_plain(y) || !spu__sf_plain(z)) return 0;
+     const double p = (double)spu__sf_f(x ^ negp) * (double)spu__sf_f(y);      /* exact */
+-    return spu__sf_from_d(fma(1.0, p, (double)spu__sf_f(z ^ negc)), 1);
++    return spu__sf_from_d(ppu_fma_det(1.0, p, (double)spu__sf_f(z ^ negc)), 1);
+ }
+ static inline uint32_t spu__fa_any(uint32_t x, uint32_t y) { const uint32_t f = spu__fa_fast(x, y); return f ? f : spu__fa_lane(x, y); }
+ static inline uint32_t spu__fm_any(uint32_t x, uint32_t y) { const uint32_t f = spu__fm_fast(x, y); return f ? f : spu__fm_lane(x, y); }
+@@ -1061,7 +1062,7 @@ static inline u128 spu__dfmx(u128 a, u128 b, u128 c, int negate, int subtract) {
+         const uint64_t x = spu__dw_get(a, i), y = spu__dw_get(b, i), z = spu__dw_get(c, i);
+         if (spu__d_isnan(x) || spu__d_isnan(y) || spu__d_isnan(z)) { spu__dw_put(&r, i, 0x7FF8000000000000ull); continue; }
+         const double zz = subtract ? -spu__d_in(z) : spu__d_in(z);
+-        const double v = fma(spu__d_in(x), spu__d_in(y), zz);
++        const double v = ppu_fma_det(spu__d_in(x), spu__d_in(y), zz);
+         /* Negate the RESULT by its sign bit: written as -fma(..) the compiler may fold it into a
+          * negated fused multiply-add, (-x*y) - z, which differs from -(x*y + z) in the sign of an
+          * exact zero. */
+diff --git a/runtime/spu/spu_interp.c b/runtime/spu/spu_interp.c
+index 772c2d6..0cb261f 100644
+--- a/runtime/spu/spu_interp.c
++++ b/runtime/spu/spu_interp.c
+@@ -525,6 +525,7 @@ uint32_t spu_interp_run(spu_context* ctx, uint32_t start_lsa) {
+ }
+ 
+ uint32_t spu_interp_run_until(spu_context* ctx, uint32_t start_lsa, uint32_t stop_lsa) {
++    ppu_fp_env_check("spu interpreter");   /* canonical MXCSR, as spu_run_with_halt (fp_env.c) */
+     ctx->pc = start_lsa & 0x3FFFC;
+     ctx->status = SPU_STATUS_RUNNING;
+     uint64_t steps = 0;
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 1c3d933..a5e0d95 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -350,27 +350,27 @@ SOURCE_PREAMBLE = """\
+ #include <stdio.h>
+ #include <string.h>
+ #include <math.h>
++#include "ppu_fp_det.h"   /* FP that gives the same bits on every x64 PC (runtime/ppu) */
+ 
+ /* Float->int conversion per Book I 4.6.7: SATURATE out-of-range (positive
+  * overflow => max, negative => min, NaN => min) and honor the rounding mode
+- * (rn=1: FPSCR default round-to-nearest-even via nearbyint; rn=0: the z
+- * forms truncate). A plain C cast here is UB on overflow/NaN and MSVC
+- * sign-flips positive overflow to INT_MIN on x86. */
++ * (rn=1: FPSCR default round-to-nearest-even; rn=0: the z forms truncate).
++ * A plain C cast here is UB on overflow/NaN and MSVC sign-flips positive
++ * overflow to INT_MIN on x86. The in-range conversion is cvtsd2si/cvttsd2si
++ * (ppu_fp_det.h), never the C library: the same bits on every PC. */
+ static inline uint32_t ppu_f2i32(double v, int rn)
+ {
+     if (v != v) return 0x80000000u;
+-    double r = rn ? nearbyint(v) : trunc(v);
+-    if (r >= 2147483647.0)  return 0x7FFFFFFFu;
+-    if (r <= -2147483648.0) return 0x80000000u;
+-    return (uint32_t)(int32_t)r;
++    if (v >= 2147483647.0)  return 0x7FFFFFFFu;
++    if (v <= -2147483648.0) return 0x80000000u;
++    return (uint32_t)ppu_cvt_i32(v, rn);
+ }
+ static inline uint64_t ppu_f2i64(double v, int rn)
+ {
+     if (v != v) return 0x8000000000000000ULL;
+-    double r = rn ? nearbyint(v) : trunc(v);
+-    if (r >= 9223372036854775807.0)  return 0x7FFFFFFFFFFFFFFFULL;
+-    if (r <= -9223372036854775808.0) return 0x8000000000000000ULL;
+-    return (uint64_t)(int64_t)r;
++    if (v >= 9223372036854775807.0)  return 0x7FFFFFFFFFFFFFFFULL;
++    if (v <= -9223372036854775808.0) return 0x8000000000000000ULL;
++    return (uint64_t)ppu_cvt_i64(v, rn);
+ }
+ 
+ /* PPC FP NaN semantics (Book I 4.6.5.2): a propagated input NaN keeps its
+@@ -413,7 +413,7 @@ static inline double ppu_fmadd_core(double a, double c, double b, int neg_b, int
+     if (a != a) return ppu_fp_quiet(a);
+     if (b != b) return ppu_fp_quiet(b);
+     if (c != c) return ppu_fp_quiet(c);
+-    double r = fma(a, c, neg_b ? -b : b);
++    double r = ppu_fma_det(a, c, neg_b ? -b : b);   /* ppu_fp_det.h: vfmadd, or the exact software fma */
+     if (r != r) return ppu_fp_default_qnan();
+     return neg_res ? -r : r;
+ }
+@@ -2305,15 +2305,15 @@ class PPULifter:
+             frd = _reg_idx(ops[0])
+             frb = _reg_idx(ops[1])
+             if mn_base.endswith("s"):
+-                return f"ctx->fpr[{frd}] = (double)(float)sqrt(ctx->fpr[{frb}]);"
+-            return f"ctx->fpr[{frd}] = sqrt(ctx->fpr[{frb}]);"
++                return f"ctx->fpr[{frd}] = (double)(float)ppu_sqrt_det(ctx->fpr[{frb}]);"
++            return f"ctx->fpr[{frd}] = ppu_sqrt_det(ctx->fpr[{frb}]);"
+ 
+         if mn_base in ("frsqrte", "frsqrtes"):
+             frd = _reg_idx(ops[0])
+             frb = _reg_idx(ops[1])
+             if mn_base == "frsqrtes":
+-                return f"ctx->fpr[{frd}] = (double)(float)(1.0 / sqrt(ctx->fpr[{frb}]));"
+-            return f"ctx->fpr[{frd}] = 1.0 / sqrt(ctx->fpr[{frb}]);"
++                return f"ctx->fpr[{frd}] = (double)(float)(1.0 / ppu_sqrt_det(ctx->fpr[{frb}]));"
++            return f"ctx->fpr[{frd}] = 1.0 / ppu_sqrt_det(ctx->fpr[{frb}]);"
+ 
+         if mn_base in ("fre", "fres"):
+             frd = _reg_idx(ops[0])

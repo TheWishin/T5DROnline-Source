@@ -100,10 +100,14 @@ def main():
               "-I" + os.path.join(ps3, "runtime", "ppu"), "-I" + os.path.join(ps3, "runtime", "spu"),
               "-I" + os.path.join(ps3, "include")]
     # The lifted PPU code is built for this PC: x86-64-v3 (AVX2/FMA/BMI2/MOVBE) when
-    # it has AVX2 -- byte-swapped guest accesses become movbe, the VMX helpers'
-    # fmaf calls single vfmadd instructions with the same fused result -- else the
-    # x86-64 baseline. -ffp-contract=off either way: no fusing of a*b+c that the
-    # PPU code wrote as two operations (the lifter spells real fused ops fma()).
+    # it has AVX2 -- byte-swapped guest accesses become movbe, the fused ops single
+    # vfmadd instructions -- else the x86-64 baseline. -ffp-contract=off either way:
+    # no fusing of a*b+c that the PPU code wrote as two operations. Both targets
+    # compute the same bits, so players with either can play each other: the
+    # lifter's FP helpers (ps3recomp runtime/ppu/ppu_fp_det.h, patch 0032) never
+    # call the C runtime's math, and a fused op without FMA instructions is an
+    # exact software fma (docs/NETPLAY.md, "Same game state on every CPU";
+    # tools/cross_build_test.py checks it).
     march = a.march
     why = ""
     if march == "auto":

@@ -114,10 +114,13 @@ endif()
 # Target CPU of the lifted PPU code (tools/build_game_dll.py --march does the same
 # for the player's build). auto = x86-64-v3 (AVX2, FMA, BMI2, MOVBE) when this
 # PC has AVX2, else the x86-64 baseline. v3 cut the main thread's work per fight
-# frame by ~25-30% (byte-swapped loads/stores become movbe; the VMX helpers'
-# fmaf calls become vfmadd -- the same fused result). -ffp-contract=off always:
-# with FMA available clang would otherwise fuse a*b+c written as two operations,
-# which changes results; the PPU's fused ops are spelt fma() by the lifter.
+# frame by ~25-30% (byte-swapped loads/stores become movbe; the fused ops become
+# vfmadd). -ffp-contract=off always: with FMA available clang would otherwise
+# fuse a*b+c written as two operations, which changes results; the PPU's fused
+# ops go through ppu_fp_det.h (ps3recomp patch 0032), which gives the same bits
+# with or without FMA instructions and never calls the C runtime's math -- so
+# builds for different targets play each other in sync (docs/NETPLAY.md, "Same
+# game state on every CPU").
 set(T5DR_LIFTED_ARCH "auto" CACHE STRING "-march for the lifted PPU code: auto, x86-64-v3, native, none")
 set(_lifted_arch "${T5DR_LIFTED_ARCH}")
 if(_lifted_arch STREQUAL "auto")
@@ -194,6 +197,9 @@ set_source_files_properties(${ROLLBACK_SOURCES} PROPERTIES COMPILE_DEFINITIONS _
 file(GLOB NETPLAY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/netplay/*.cpp")
 target_sources(t5dr PRIVATE ${NETPLAY_SOURCES})
 set_source_files_properties(${NETPLAY_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+if(NOT T5DR_GAME_DLL)   # the netplay log names the lifted code's target (the game DLL exports its own)
+    set_property(SOURCE ${NETPLAY_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS "T5DR_LIFTED_ARCH_NAME=\"${_lifted_arch}\"")
+endif()
 
 # Direct fight (our own code, src/directfight/): boot straight into a VS fight
 # with the characters/stage from T5_FIGHT, hold between matches, report the

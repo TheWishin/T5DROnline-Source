@@ -123,7 +123,8 @@ python tools/netplay_test.py --exe build/cmake/t5dr.exe --out build/nptest --pai
 ```
 
 `frames.log` in each instance directory has one line per frame (both inputs,
-state hash); `game.log` has the `[netplay]` lines, including
+state hash; under rollback also `f F <hash>`, the frame's final hash once every
+input before it is confirmed); `game.log` has the `[netplay]` lines, including
 `sync check through frame N: 0 mismatching frame(s) -- in sync` every 600 frames.
 
 `tools/fight_flow_test.py` plays many direct-fight matches in a row the way the
@@ -269,6 +270,65 @@ generator states, and the fight block 0x1008E000-0x10091FFF: round state at
 decided), round timer 0x1008F054 (frames left), the fighters at roughly
 0x1008F800 and 0x100900D0 (0x8D0 apart), plus 0x10099600-0x10099BFF,
 0x100A0900-0x100A0AFF and 0x100A3B00-0x100A3DFF. About 25 KB per frame.
+
+## Same game state on every CPU
+
+Every player compiles the lifted game code on their own PC
+(`tools/build_game_dll.py`, the launcher's Build): `-march=x86-64-v3` (AVX2,
+FMA, BMI2, MOVBE) when the PC has AVX2, else the x86-64 baseline. Two PCs
+play each other whatever they built, so both builds, on any x64 CPU (Intel or
+AMD), must compute bit-identical game state. Since ps3recomp patch 0032
+(branch cross-cpu, 2026-10-17) they do; the build ID does not need the CPU
+class and the lobby keeps pairing everyone.
+
+What can make two x64 PCs compute different floating-point results, and what
+the lifted code does about each:
+
+| Source | Before | Now |
+|---|---|---|
+| FMA contraction (a*b+c fused where the PPU code had two ops) | `-ffp-contract=off` for the lifted PPU code | unchanged |
+| The C runtime's math (ucrtbase.dll) | a baseline build imported `fma`, `fmaf`, `trunc`, `truncf`, `ldexp`, `sqrt`, `sqrtf` from ucrtbase (every build `ldexp`, `sqrt`, `sqrtf`: the errno path of a negative square root). ucrtbase picks its path by CPU: `fma`/`fmaf` are one `vfmadd` with FMA3 and a software routine without (`_set_FMA3_enable`); `sin`/`exp`/`pow`/`atan2` have an FMA3 and an SSE2 version that disagree in 0.01-1 % of results; and the DLL's version comes with Windows | no library math in the lifted PPU or SPU code (`fp_audit.py`: "C runtime math imported: none" for v3, baseline and native builds). `runtime/ppu/ppu_fp_det.h`: square roots are `sqrtsd`/`sqrtss`, conversions `cvtsd2si`/`cvttsd2si`, rounding `roundss` (or an SSE2 version that matches it on all 2^32 floats), scaling an exact multiply |
+| Fused multiply-add without FMA instructions | the C runtime's `fma`/`fmaf` | an exact software fma (128-bit integer product, one rounding) and fmaf (the double sum rounded to odd, then to single); a baseline build on a CPU with FMA3 uses the instruction. Checked against `vfmadd` on 300 M random and 4 913 special cases: 0 different results |
+| `rcpps`/`rsqrtps` (Intel and AMD return different bits) | none in any build | none (`fp_audit.py` checks for them, their AVX-512 forms, `dpps`/`dppd`, x87 and `ldmxcsr`). The PPU estimates (`fres`, `frsqrte`, `vrefp`, `vrsqrtefp`) are the correctly rounded 1/x and 1/sqrt(x), the SPU's `frest`/`frsqest` the hardware table |
+| MXCSR (rounding mode, flush-to-zero, denormals-are-zero) | nothing set or checked it | `runtime/platform/fp_env.c`: every runtime thread sets 0x1F80 when it starts (`host_sched_thread_start`), every lifted SPU run and guest callback checks it, and so does the return of every HLE call and lv2 syscall (OS or driver code on a guest thread could change it): restored, logged as `[fp] MXCSR changed to ...` |
+| x87 | none (x64 code is SSE) | `fp_audit.py` checks |
+| Code generation, undefined behaviour, uninitialised memory | -- | the cross-build pairs below: v3, baseline and `-march=native` (AVX-512 on this Ryzen) code agree on every frame |
+| `vexptefp`/`vlogefp` (not used by this title) | `exp2f`/`log2f` from the C runtime | fixed double-precision formulas, within 1 ulp of the library |
+
+**Test it:** `tools/cross_build_test.py` runs a pair whose host and joiner
+are different builds (same lift, same runtime) through
+`tools/rollback_net_test.py` -- direct fight, scripted attacks, RTT 50 +-5 ms,
+3 % loss -- once with rollback (the default) and once with `T5_RB_MODE=off`
+(lockstep), and compares the two games' state hash of every frame (rollback:
+the final hash, `f F <hash>` in frames.log; lockstep: `f I ... <hash>`). It
+fails on any differing frame, on a mismatch the built-in check reported, on
+result files that disagree, on a crash or hang, or when fewer than 3000 frames
+were compared:
+
+```
+python tools/build_game_dll.py --recomp build/recomp --spu build/spu --deps deps/ps3recomp \
+    --host-lib build/cmake/t5dr.lib --out X/v3/t5dr_game.dll --obj X/v3/obj --march x86-64-v3
+python tools/build_game_dll.py ... --out X/base/t5dr_game.dll --obj X/base/obj --march none
+(copy t5dr.exe next to both)
+python tools/cross_build_test.py --exe1 X/v3/t5dr.exe --exe2 X/base/t5dr.exe --out v3_vs_base \
+    --audit --env2 PS3_FP_SOFT_FMA=1 --env2 PS3_CRT_FMA3=0
+```
+
+`PS3_FP_SOFT_FMA=1` makes a baseline build use the software fma although the
+CPU has FMA3, `PS3_CRT_FMA3=0` sends the C runtime's own math down its
+non-FMA3 paths -- together that is what a PC without FMA3 runs.
+`PS3_FP_TEST_MXCSR=<value>` runs the guest threads with another MXCSR (a
+negative test: the check must flag it). `--audit` adds `tools/fp_audit.py
+--strict` on both DLLs; ps3recomp's `runtime/ppu/tests/test_fp_det.c` checks
+the software paths against the instructions (PASS/FAIL). The netplay log says
+what each side ran: `fp: game code -march=x86-64-v3, main thread MXCSR 0x1F80`.
+
+Results (2026-10-17, this Ryzen 9 7950X; one PC cannot be Intel and AMD at
+once, so the vendor question is answered by what the code is made of: only
+IEEE-754 basic operations, conversions and `sqrt`, which every x64 CPU
+computes alike under the same MXCSR -- no estimates, no library):
+
+CROSS_BUILD_RESULTS
 
 ## Tested
 

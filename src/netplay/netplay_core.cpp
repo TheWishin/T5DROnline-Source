@@ -36,6 +36,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <xmmintrin.h>   /* _mm_getcsr: the FP environment line in the log */
 
 #include <atomic>
 #include <cstdarg>
@@ -285,6 +286,21 @@ const char* env_raw(const char* k)
 }
 
 const char* env(const char* k) { const char* v = env_raw(k); return (v && *v) ? v : nullptr; }
+
+/* What decides this PC's floating-point results, for the log: the target the
+ * lifted code was compiled for (t5dr_game.dll exports it; a one-exe build has
+ * it from CMake) and the guest thread's MXCSR. Both PCs must compute the same
+ * bits with any of them (docs/NETPLAY.md, "Same game state on every CPU"). */
+void note_fp_env()
+{
+    const char* arch = nullptr;
+    if (HMODULE dll = GetModuleHandleA("t5dr_game.dll"))
+        arch = (const char*)GetProcAddress(dll, "t5dr_game_march");   /* tools/gamedll/t5dr_game_dll.c */
+#ifdef T5DR_LIFTED_ARCH_NAME
+    if (!arch) arch = T5DR_LIFTED_ARCH_NAME;
+#endif
+    note_("fp: game code -march=%s, main thread MXCSR 0x%04X", arch ? arch : "unknown", _mm_getcsr() & 0xFFC0u);
+}
 
 std::vector<ScriptEvent> parse_script(const char* spec)
 {
@@ -1206,6 +1222,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2])
         s.started = true;
         if (s.connected && !s.peer_lost) send_ping_locked();   /* tell the peer at once */
         note("lockstep starts: frame 0, delay %d", s.delay);
+        note_fp_env();
     }
 
     PadInput local = sample_local_open(f + (uint32_t)s.delay);
@@ -1304,6 +1321,7 @@ void rb_begin(uint32_t f)
     s.started = true;
     if (s.connected && !s.peer_lost) send_ping_locked();
     note("rollback mode starts: frame 0, delay %d", s.delay);
+    note_fp_env();
 }
 
 void rb_sample_local(uint32_t f, bool neutral)
@@ -1379,6 +1397,10 @@ void rb_push_hash(uint32_t f, uint64_t h)
     State& s = S();
     std::lock_guard<std::mutex> lk(s.mu);
     const uint32_t i = f % kRing;
+    if (s.log) {   /* "f F <hash>": the final hash, what the peers compare (tools/cross_build_test.py) */
+        std::lock_guard<std::mutex> lk2(s.log_mu);
+        fprintf(s.log, "%u F %016llx\n", f, (unsigned long long)h);
+    }
     s.local.hash[i] = h; s.local.hash_tag[i] = f + 1;
     if (f + 1 > s.local_hash_max) s.local_hash_max = f + 1;
     if (s.mode == Mode::Local) { s.remote.hash[i] = h; s.remote.hash_tag[i] = f + 1; }

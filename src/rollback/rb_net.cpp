@@ -11,6 +11,9 @@
 #include "rb_state.h"
 #include "rb_net.h"
 
+extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);   /* patch 0024 */
+extern "C" void cellAtrac_rb_rolled_back(void);
+
 namespace rb { namespace net {
 
 namespace {
@@ -232,6 +235,13 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     } else {
         g_st.commit_ms += cms;
         g_st.frames++;
+        /* the title's ATRAC streaming rings are the feeder thread's: never rewound */
+        if ((f % 30) == 0) {
+            uint32_t ea[16], sz[16];
+            const int n = cellAtrac_rb_live_rings(ea, sz, 16);
+            for (int i = 0; i < n; i++)
+                if (state_add_exclude(ea[i], sz[i])) note("rbnet: ATRAC streaming ring %08X+%X excluded from the rollback state", ea[i], sz[i]);
+        }
         /* a phase transition since the last live boundary: barrier + lockstep window */
         const uint32_t phase = rd32(kPhaseWord);
         if (g_last_phase != 0xFFFFFFFFu && phase != g_last_phase) {
@@ -312,6 +322,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
                  f, first_wrong, depth, state_oldest_frame(), g_floor);
         } else {
+            cellAtrac_rb_rolled_back();   /* the title's pending stream adds were decided before this */
             g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++;
             if (depth > g_st.max_depth) g_st.max_depth = depth;
             QueryPerformanceCounter(&g_resim_t0);

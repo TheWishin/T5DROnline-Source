@@ -939,3 +939,38 @@ same handle while the feeder thread is mid-stream. The fix is to make that
 second, identical request a no-op in the HLE (same handle, same buffer, same
 file header: keep the slot), or to hold the switch in the title until the
 frame is confirmed. Until then rollback stays opt-in (`T5_RB_MODE=net`).
+
+---
+
+# Phase 8 -- the music stream across rollbacks (branch `rollback8`, patch 0024)
+
+## 17. What was tried, what the runs say
+
+Patch 0024 (`libs/codec/cellAtrac.c`) does three things: a repeated
+`cellAtracSetDataAndGetMemSize` for a live stream with the same handle, ring
+and file header keeps the slot (it never fired: the title does not repeat
+the call, so the double-switch hypothesis of section 16 was wrong); the HLE
+lists its live streaming rings and the loop excludes those pages from the
+rollback state (`cellAtrac_rb_live_rings`, `state_add_exclude`); and after a
+restore the title's next stream adds are dropped until it asks
+`cellAtracGetStreamDataInfo` again (`cellAtrac_rb_rolled_back`), on the
+theory that the add was decided with a write position obtained before the
+rollback. None of it stops the decode errors: with rollbacks running, both
+peers log ~2 000 `Invalid start bit` per 10 000 frames whether or not they
+abort, and the joiner still aborts at a round end at RTT 50-150 (k0, l50,
+l150, m150), while whole matches at RTT 0 go through (l0: 12 000 frames,
+790 rollbacks, 0 mismatches, no abort; m0: 10 200 frames, 648 rollbacks,
+0 mismatches, no abort). Separately, m50 showed the round-end phase
+divergence of section 15 again (4 830 mismatching frames from 5 370: one
+side's rollback straddled the KO), so that barrier is probabilistic, not a
+guarantee.
+
+Standing hypothesis for the stream: the title's sound update (on the main
+thread, skipped in re-simulated frames, its bookkeeping restored) writes the
+next file chunk into the ring at a position and from a file offset it keeps
+itself, not the ones the HLE hands back, so after a rollback it rewrites a
+chunk the HLE has already consumed at the HLE's current write pointer and
+the decoder reads garbage until the ring cycles. The way to settle it is an
+`ATRAC_TRACE=1` run with rollbacks (every add with its ring and file
+offsets) compared with the title's own counters in the restored memory --
+not done. Rollback stays opt-in.

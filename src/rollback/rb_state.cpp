@@ -41,12 +41,20 @@ const Range kHashExclude[] = {
     { 0x444F9000u, 0x0006E000u },   /* per-frame render scratch, written every frame */
 };
 const size_t kHashExcludeN = sizeof kHashExclude / sizeof kHashExclude[0];
-static std::vector<Range> g_hash_exclude_dyn;
+static std::vector<Range> g_hash_exclude_dyn, g_exclude_dyn;
 
 bool excluded_page(uint32_t ea)
 {
     for (const Range& r : kExclude) if (ea >= r.base && ea < r.base + r.len) return true;
+    for (const Range& r : g_exclude_dyn) if (ea >= r.base && ea < r.base + r.len) return true;
     return false;
+}
+bool state_add_exclude(uint32_t ea, uint32_t len)
+{
+    const uint32_t a = ea & ~0xFFFu, e = (ea + len + 0xFFFu) & ~0xFFFu;
+    for (const Range& r : g_exclude_dyn) if (r.base == a && r.len == e - a) return false;
+    g_exclude_dyn.push_back({ a, e - a });
+    return true;
 }
 bool hash_excluded_page(uint32_t ea)
 {

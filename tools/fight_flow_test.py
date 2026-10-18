@@ -199,8 +199,9 @@ class Game:
         lf = open(self.log_path, "w")
         vfs = os.path.abspath(self.a.vfs)
         exe = self.a.exe2 if self.role == "join" and self.a.exe2 else self.a.exe
+        flags = 0x00004000 if getattr(self.a, "below_normal", False) and os.name == "nt" else 0   # BELOW_NORMAL_PRIORITY_CLASS
         self.proc = subprocess.Popen([os.path.abspath(exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
-                                     cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT)
+                                     cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT, creationflags=flags)
         log(f"game {self.idx} ({self.role}) started, pid {self.proc.pid}, log {self.log_path}")
 
     def stop(self):
@@ -303,6 +304,8 @@ def main():
     ap.add_argument("--stutter", type=int, default=0, help="suspend the joiner's game for MS every 0.2-0.6 s in matches")
     ap.add_argument("--close", action="append", default=[], help="K:ROLE:S -- WM_CLOSE to ROLE's window S s into match K")
     ap.add_argument("--hz2", type=float, default=0.0, help="the joiner's display rate (RSX_TEST_DISPLAY_HZ)")
+    ap.add_argument("--polite", action="store_true",
+                    help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--fresh-at", type=int, default=0, help="persistent: restart the joiner's game before this match")
     ap.add_argument("--rematch-wait", type=float, default=1.0,
                     help="seconds between a match's results and the next command (players clicking Rematch late: 20)")
@@ -316,6 +319,9 @@ def main():
                                    "tools/cross_build_test.py --flow persistent)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    a.below_normal = a.polite
+    if a.polite:
+        a.env = a.env + ["PS3_AUDIO_MUTE=1"]
     if a.hz2:
         a.env2 = a.env2 + [f"RSX_TEST_DISPLAY_HZ={a.hz2:g}"]
     closes = {}

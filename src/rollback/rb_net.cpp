@@ -861,7 +861,7 @@ bool early_check()
     if (!f || f < g_lock_until || f < g_started_at + g_warmup) return false;
     if (g_intro_rule && g_select_lock && t5_df_mode_cur() == 6) return false;   /* lockstep at the select screen */
     LARGE_INTEGER t; QueryPerformanceCounter(&t);
-    if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 2000) return false;   /* every 0.5 ms */
+    if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 5000) return false;   /* every 0.2 ms (was 0.5) */
     g_early_last_check = t;
     np::rb_poll();
     const uint32_t upto = std::min(np::rb_remote_contig(), f);

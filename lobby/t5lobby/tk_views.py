@@ -751,7 +751,7 @@ class OnlineView:
 
     def _build_footer(self, box):
         tab, px = self.tab, self.px
-        err = self.card(box, "Err.TFrame", 10)
+        err = self.card(box, "Err.TFrame", 6)
         err.columnconfigure(1, weight=1)
         icon = tk.Canvas(err, width=px(20), height=px(20), bg=C["err_bg"], highlightthickness=0, takefocus=0)
         icon.create_oval(1, 1, px(20) - 1, px(20) - 1, fill=C["bad"], outline="")
@@ -764,7 +764,7 @@ class OnlineView:
         ttk.Button(err, text=t("Dismiss"), style="Err.Ghost.TButton", command=self.clear_error).grid(
             row=0, column=2, sticky="e")
         self.err_frame = err
-        note = self.card(box, "Note.TFrame", 10)
+        note = self.card(box, "Note.TFrame", 6)
         note.columnconfigure(1, weight=1)
         ttk.Label(note, text=t("Server").upper(), style="Note.Caps.TLabel").grid(row=0, column=0, sticky="nw",
                                                                                   padx=(0, px(10)))

@@ -121,7 +121,7 @@ def run_stub(base, wait_for, timeout):
     # CreateProcess takes no working directory longer than MAX_PATH, so a very long folder is started from here.
     p = subprocess.Popen([os.path.join(base, "T5DR Online.exe")], cwd=base if len(base) < 240 else None)
     try:
-        rc = p.wait(30)
+        rc = p.wait(min(30, timeout))
     except subprocess.TimeoutExpired:
         rc = "hung"
     while time.time() - t0 < timeout and not os.path.exists(os.path.join(base, wait_for)):
@@ -131,13 +131,26 @@ def run_stub(base, wait_for, timeout):
 
 
 UNICODE_DIR = "Tekken Früh Ł東京"       # ue is in cp1252; the Polish L and Kanji are not
-LONG_DIR = os.path.join("long-" + "d" * 110, "path-" + "e" * 110)    # the install path goes over 260 characters
 
 
-def marker_test(base, release, variant_dir, extra_prefix=""):
+def padded(head, target):
+    """`head` extended with folders of x until the path is `target` characters long."""
+    path = head
+    while len(path) < target:
+        add = min(80, target - len(path) - 1)
+        path = os.path.join(path, "x" * add) if add > 0 else path + "x"
+    return path
+
+
+# Windows starts no program whose own path is over 259 characters, so 243 is the deepest install folder
+# ("T5DR Online.exe" is 15 + 1 characters) -- and python\pythonw.exe inside it is then 262.
+DEEP, EDGE = 200, 243
+
+
+def marker_test(base, release, variant_dir, extra_prefix="", timeout=60):
     """Run the stand-in launcher through the stub in `base`; returns 'ok' or what differs."""
     prepare_test_folder(base, release, variant_dir, shim_real=False)
-    rc = run_stub(base, "marker.json", 60)
+    rc = run_stub(base, "marker.json", timeout)
     marker = os.path.join(base, "marker.json")
     if not os.path.exists(marker):
         stop_leftovers(base)
@@ -168,9 +181,10 @@ def test_variant(work, release, variant, variant_dir):
     res = {}
     res["marker"], res["marker_info"] = marker_test(os.path.join(work, variant + "-marker"), release, variant_dir)
     res["unicode"], _ = marker_test(os.path.join(work, variant + "-u", UNICODE_DIR), release, variant_dir)
-    res["longpath"], _ = marker_test(os.path.join(work, variant + "-l", LONG_DIR), release, variant_dir)
-    shutil.rmtree(os.path.join(work, variant + "-u"), ignore_errors=True)
-    shutil.rmtree(os.path.join(work, variant + "-l"), ignore_errors=True)
+    res["longpath"], _ = marker_test(padded(os.path.join(work, variant + "-l"), DEEP), release, variant_dir)
+    res["edge"], _ = marker_test(padded(os.path.join(work, variant + "-e"), EDGE), release, variant_dir, timeout=12)
+    for suffix in ("-u", "-l", "-e"):
+        shutil.rmtree(os.path.join(work, variant + suffix), ignore_errors=True)
     base = os.path.join(work, variant + "-launcher")
     return _launcher_test(res, work, release, variant, variant_dir, base)
 
@@ -236,10 +250,11 @@ def main():
         if not a.no_test and a.release_folder:
             row.update(test_variant(work, a.release_folder, variant, vdir))
         else:
-            row["marker"] = row["launcher"] = row["unicode"] = row["longpath"] = "not tested"
+            row["marker"] = row["launcher"] = row["unicode"] = row["longpath"] = row["edge"] = "not tested"
         rows.append(row)
         print(f"{row['file']}: {row['size']:,} bytes, sha256 {row['sha256'][:16]}..., marker {row['marker'][:60]}, "
-              f"unicode {row['unicode'][:30]}, long path {row['longpath'][:30]}, launcher {row['launcher'][:60]}", flush=True)
+              f"unicode {row['unicode'][:30]}, 200-char folder {row['longpath'][:30]}, 243-char folder {row['edge'][:50]}, "
+              f"launcher {row['launcher'][:60]}", flush=True)
     shutil.rmtree(work, ignore_errors=True)
     with open(os.path.join(out, "variants.md"), "w", encoding="utf-8") as f:
         f.write(f"Launcher stub variants, version {a.version}, built {time.strftime('%Y-%m-%d %H:%M')} with "

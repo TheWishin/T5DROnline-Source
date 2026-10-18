@@ -703,12 +703,16 @@ class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
         self.game(1)
         self.pump(lambda: self.bar_button("Leave set (counts as a loss)") is not None)
         self.assertIn("Set 1-0 -- game 2 of 3 -- starts in", tab.bar_text.get())        # no rematch vote
+        self.root.update()
+        self.assertEqual((tab.view._stage, tab.view._bar_kind), ("bar", "result"))    # the result card + countdown
+        self.assertEqual(tab.set_var.get(), "Set 1-0 -- game 2 of 3")                   # the cards' gold tag
         self.assertIsNone(self.bar_button("Rematch Rival"))
         self.assertEqual(str(tab.actions["ranked"].cget("state")), "disabled")       # the set goes on by itself
         self.assertEqual(str(tab.char_cb.cget("state")), "disabled")
         self.game(2)                                                                  # it started by itself
         self.pump(lambda: "You won the set 2-0" in tab.status_var.get())
         self.assertIn("rating", tab.status_var.get())
+        self.assertTrue(tab.view.result_info["text"].startswith("You won the set 2-0"))   # on the result card
         self.assertEqual(tab.set_var.get(), "Set 2-0")
         self.pump(lambda: self.bar_button("Rematch Rival") is not None)              # a rematch = a new set
         self.assertEqual(str(tab.char_cb.cget("state")), "readonly")

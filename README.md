@@ -113,7 +113,8 @@ precompiled. Your PC only translates and compiles the code from your copy.
    Time: about 90 seconds on the development PC (16 cores). On a typical PC we
    expect a few minutes (estimate, not measured). **Cancel** is safe: BUILD GAME
    continues where it stopped.
-6. **Play** tab: type a name (optional) and click **PLAY**.
+6. **Play offline** tab: type a name (optional) and click **PLAY OFFLINE** (Arcade, Versus,
+   Practice ... on this PC). For matches over the internet use the **Play online** tab.
 
 Everything the build makes stays in the `native` folder next to the launcher.
 It is game data. Do not share it. To uninstall, delete the whole folder.
@@ -250,7 +251,7 @@ The launcher offers new versions; click **Update**.
   launcher again. That takes a few seconds plus the download.
 - Your `native` folder (unpacked game, saves, logs) and your settings stay as
   they are.
-- If the new version changes the game code, the Play tab says **Build the game
+- If the new version changes the game code, the Play offline tab says **Build the game
   once (about 2 minutes)**. Click **BUILD GAME**. Only the code is rebuilt.
 - The launcher never updates while the game, a build or an online match (or a
   search) is running. If anything goes wrong, it puts the old files back and
@@ -262,13 +263,13 @@ update keeps failing):
 1. Extract the new release into a **new** folder.
 2. Copy your old `native` folder into it. This keeps the unpacked game and your
    saves.
-3. Start the launcher. If the new version changes the game code, the Play tab
-   says so. Click **BUILD GAME** again. Only the code is rebuilt.
+3. Start the launcher. If the new version changes the game code, the Play offline
+   tab says so. Click **BUILD GAME** again. Only the code is rebuilt.
 
 ## Bug reports
 
-**Problems? Click "Report a problem"** (Play tab; also in the Build tab, and in
-the Online tab after a match). The launcher makes ONE zip on your Desktop and
+**Problems? Click "Report a problem"** (Play offline tab; also in the Build tab,
+and in the Play online tab after a match). The launcher makes ONE zip on your Desktop and
 opens its folder. Send the zip to the person who gave you the game, or attach it
 to an issue at https://github.com/TheWishin/T5DROnline/issues. You can add a few
 words about what happened in the window.
@@ -317,8 +318,8 @@ key data from github.com (see Credits).
 **Why is Windows warning me about the launcher?** `T5DR Online.exe` is a tiny
 unsigned starter. Code signing is not set up yet.
 
-**Where are my saves?** In `native\gamedata`. The Play tab has an **Open saves
-folder** button. Back it up before you experiment.
+**Where are my saves?** In `native\gamedata`. The Play offline tab has an **Open
+saves folder** button. Back it up before you experiment.
 
 **Is the PSN "Online" mode coming back?** No. The servers are gone. Online play
 will use our own lobby.

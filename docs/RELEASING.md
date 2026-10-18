@@ -147,9 +147,10 @@ Job **build** (`windows-latest`, read-only token):
 | LLVM | `tools/fetch_llvm.py`: the official **LLVM 23.1.3** `clang+llvm-23.1.3-x86_64-pc-windows-msvc.tar.xz`, SHA-256 checked against the pin |
 | MSVC | `ilammy/msvc-dev-cmd` (MSVC + Windows SDK of the runner image), Ninja |
 | ps3recomp | `tools/prepare_ps3recomp.py`: the pinned commit + `patches/ps3recomp/*.patch` |
-| package | `tools/package_release.py --release`: stages everything, builds the runtime host and `T5DR Online.exe` with the pinned clang-cl, self-tests the bundled Python, scans folder and zip, writes `SHA256SUMS` |
+| code signing | only when a signing service is set up (see "Code signing"), only for tag runs: `package_release.py --sign-stage prepare`, the service signs `T5DR Online.exe` and `runtime/t5dr.exe`, `--sign-stage finish` installs them. Without the secrets this step is skipped |
+| package | `tools/package_release.py --release`: stages everything, builds the runtime host with the pinned clang-cl and `T5DR Online.exe` with MSVC (see "The launcher stub"), self-tests the bundled Python, scans folder and zip, writes `SHA256SUMS` |
 | guard on the zip | `package_release.py --scan-only` on the zip once more |
-| smoke test | `tools/smoke_release.py`: unpack into a fresh folder; layout, version stamp, bundled Python with a bare `PATH`, `prereqs.py` finds everything inside the folder, clang-cl version, `t5dr.exe` and the starter import only Windows DLLs. Then (informational only) the launcher renders offscreen and `T5DR Online.exe` starts it |
+| smoke test | `tools/smoke_release.py`: unpack into a fresh folder; layout, version stamp, bundled Python with a bare `PATH`, `prereqs.py` finds everything inside the folder, clang-cl version, `t5dr.exe` and the starter import only Windows DLLs, every signature is `Valid` (signed releases). Then (informational only) the launcher renders offscreen and `T5DR Online.exe` starts it |
 | notes | `tools/release_notes.py`: the CHANGELOG section + download facts (SHA-256, LLVM/Python versions, ps3recomp pin, commit, run link) |
 | artifact | `T5DR-Online-<version>` (zip, `SHA256SUMS`, `RELEASE_NOTES.md`), kept 30 days |
 
@@ -164,7 +165,8 @@ published release with a *different* zip is never overwritten (yank it first).
 What the zip ships, pinned: LLVM 23.1.3 (clang-cl, lld-link, clang's headers),
 CPython 3.12.10 with Tcl/Tk 8.6 and pycryptodome 4.0.0, ps3recomp `f17bcd3` +
 our patches, and the runtime host built by clang-cl 23.1.3 against the runner
-image's MSVC libraries and Windows SDK (static C runtime). To move a pin:
+image's MSVC libraries and Windows SDK (static C runtime), and the starter `T5DR Online.exe`
+built by the runner's MSVC (`cl.exe`, `link.exe`). To move a pin:
 LLVM in `tools/fetch_llvm.py`, Python in `release.yml` (`PYTHON_VERSION`),
 pycryptodome in `tools/release-requirements.txt`, ps3recomp in
 `tools/build_game.py`. python.org's "embeddable" Python is not used: it has no
@@ -185,7 +187,8 @@ Both stop after the artifact. A missing CHANGELOG section is only a warning.
 ## Re-running
 
 - **The build failed** (a download, the runner): Actions -> the run -> **Re-run
-  failed jobs** (owner only). Approve again when it reaches publish.
+  failed jobs** (owner only). Approve again when it reaches publish. A signed release asks for
+  the SignPath approval again.
 - **Publish failed half-way**: **Re-run failed jobs** re-runs only publish,
   with the same artifact (same bytes, same checksum), and finishes the release.
 - **Rejected, or not approved in time** (GitHub waits 30 days): re-run the
@@ -217,6 +220,213 @@ Both stop after the artifact. A missing CHANGELOG section is only a warning.
 - **Game data in a zip** (the scans exist to make this impossible): delete the
   release at once, as above, and fix the scan so it catches that file before
   anything else.
+
+## The launcher stub: MSVC or clang-cl
+
+`T5DR Online.exe` (123 KB) is built by `tools/package_release.py`. Two compilers can build it:
+
+- **MSVC** (the default): `cl.exe` and `link.exe` with `/O2 /MT /GS /guard:cf` and
+  `/DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE`, the same icon, version info and manifest.
+  This is the file Microsoft's own tools make. Some machine-learning scanners like it better.
+- **clang-cl**: the build of 1.0.0.
+
+The two give different files, so the scanners can judge them differently. Pick by the VirusTotal result
+of the zip:
+
+| VirusTotal result for the MSVC stub | What to do |
+|---|---|
+| Clean | Nothing. MSVC is the default. |
+| Still flagged by ML engines | Try clang-cl (below), upload that zip, keep whichever is cleaner. Then report the rest (see "Reporting false positives"). |
+
+How to switch:
+
+- **Release workflow:** GitHub -> T5DROnline-Dev -> Settings -> Secrets and variables -> Actions ->
+  **Variables** -> **New repository variable**: name `T5DR_STUB_COMPILER`, value `clang` (or `msvc`).
+  Set it before you push the tag. Delete the variable to go back to the default.
+- **Dry run:** Actions -> Release -> Run workflow -> **stub_compiler** = `clang` or `msvc`.
+- **On this PC:** `python tools/package_release.py ... --stub-compiler clang`, or set the
+  environment variable `T5DR_STUB_COMPILER`.
+
+The zip's `release.json` says which compiler was used (`stub_compiler`). If MSVC is not found,
+the build warns and uses clang-cl. On the runner MSVC is always there.
+
+## Code signing
+
+Code signing puts a publisher name on our programs. It is **off** today. The release workflow signs
+only when the secrets of a signing service exist. Without them it does nothing and the release is
+built as before. We prepared two services: SignPath (free for open source) and Azure Artifact Signing
+(paid). You need only one.
+
+### What is signed
+
+- `T5DR Online.exe` and `runtime/t5dr.exe`. A DLL that we add next to them later is signed too.
+- Not signed, on purpose:
+  - `python/`. python.org signs its own files (publisher "Python Software Foundation"), and
+    `vcruntime140.dll` is signed by Microsoft. Checked on CPython 3.12.10.
+  - `toolchain/llvm/`. LLVM's Windows binaries are **not** signed (checked on 23.1.3). They are not our
+    programs, so we do not sign them.
+  - pycryptodome's `.pyd` files. They are unsigned too, and not ours.
+- `t5dr_game.dll` is built on the player's PC from the player's own game. Nobody can sign it.
+
+### What changes for players
+
+- Windows shows a publisher name on `T5DR Online.exe` (right-click, Properties, Digital Signatures),
+  not "Unknown publisher".
+- SmartScreen ("Windows protected your PC") is about reputation. Reputation grows with downloads and
+  time. A signature does not switch the warning off on the first day.
+- Some virus scanners judge unsigned programs by guesswork (machine learning). A signature from a known
+  publisher makes a false alarm less likely. It does not rule it out. Keep reporting false positives.
+- Publisher name: with SignPath it is "SignPath Foundation" (they are the legal publisher of what they
+  sign). With Azure it is the name you validate for the account. For a person that is the name on
+  the ID, plus city, state and country.
+
+### How a signed release runs
+
+1. You push the tag as always. The workflow builds the first half: everything is staged and checked.
+2. The two programs go to the signing service. SignPath waits for your click (it e-mails you);
+   the workflow waits up to 30 minutes for it. Azure signs at once.
+3. The second half installs the signed copies. It checks that each is the built file plus a signature
+   that Windows reports as `Valid`, and nothing else changed. If not, the run stops.
+4. The zip, the checks, the smoke test and the draft release go on as before. The release notes say
+   which files are signed.
+
+Only tag runs are signed. Dry runs (pushes to a branch) are not, so they never wait for you.
+To test the setup, use Actions -> Release -> Run workflow and tick **sign**. It never publishes.
+
+### Which one
+
+| | SignPath Foundation | Azure Artifact Signing |
+|---|---|---|
+| Cost | Free for approved open source projects | Paid Azure subscription (no free or trial one). Basic includes 5,000 signatures a month. The price is on Azure's pricing page (about 10 USD a month at launch). Billed in full every month from the day the account exists |
+| Who can get it | An open source project with an OSI license, public source, released, maintained. SignPath decides, no appeal | A person in the USA or Canada, or an organization in the USA, Canada, EU, UK, Australia, New Zealand, Japan, South Korea, Singapore, Switzerland, Norway or Israel |
+| Wait | Review by SignPath (days to weeks, not stated) | Identity check: 1 to 20 business days |
+| Publisher shown | SignPath Foundation | The validated name |
+| Each release | You approve it in SignPath's web page | Automatic |
+| Their rules | Code signing policy page, team roles listed, MFA on GitHub and SignPath, build from the repository | Keep the secret safe; the certificate lasts 3 days, so the workflow timestamps |
+
+The text for the SignPath application is ready in [SIGNING_APPLICATION.md](SIGNING_APPLICATION.md).
+SignPath is the first choice: free, and the publisher is not you. Azure is the plan B if SignPath says no.
+
+### A. SignPath Foundation: your steps
+
+1. Read [SIGNING_APPLICATION.md](SIGNING_APPLICATION.md). Check the list "Before you apply".
+2. Apply at https://signpath.org/apply with the text from that page.
+3. Wait for SignPath's e-mail. Turn on two-factor login (MFA) for your SignPath and GitHub accounts.
+4. In SignPath, make the **artifact configuration** (it can be the project's default one) from this XML.
+   It signs exactly the two programs:
+
+       <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+         <zip-file>
+           <pe-file-set>
+             <include path="T5DR Online.exe"/>
+             <include path="runtime/t5dr.exe"/>
+             <for-each>
+               <authenticode-sign/>
+             </for-each>
+           </pe-file-set>
+         </zip-file>
+       </artifact-configuration>
+
+   A DLL added later needs one more `<include path="runtime/name.dll"/>` line.
+5. In SignPath, make an API token for a user who may submit signing requests for the project's
+   signing policy. Copy it.
+6. Install the SignPath GitHub app on the repository where releases are built, if SignPath asks for it
+   (github.com/apps/signpath). Follow the setup mail from SignPath for the policy file in the repository.
+7. GitHub -> the repository -> Settings -> Secrets and variables -> Actions:
+   - **Secret** `SIGNPATH_API_TOKEN`: the token.
+   - **Variables** `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG`,
+     and, if the configuration from step 4 is not the default one, `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`.
+   (A variable may also be a secret. The workflow takes either.)
+8. Test: Actions -> Release -> Run workflow -> tick **sign**. Approve the request in SignPath.
+9. Add the code signing policy and the credit line from SIGNING_APPLICATION.md to the public README
+   (SignPath's terms ask for it).
+
+If SignPath's policy forbids re-runs of signed builds (`disallow_reruns`), "Re-run failed jobs"
+(see "Re-running") will not be signed. Push a fresh tag instead.
+
+### B. Azure Artifact Signing: your steps
+
+(Microsoft renamed "Trusted Signing" to "Artifact Signing". Older guides use the old name.)
+
+1. Check that you qualify (table above). For a person: you must live in the USA or Canada.
+2. Make a paid Azure subscription (pay-as-you-go). In it, register the resource provider
+   `Microsoft.CodeSigning`.
+3. Azure portal -> **Artifact Signing Accounts** -> Create. Pick a region and the **Basic** plan.
+4. In the account: **Identity validations** -> New -> Public. A person uses the Verified ID check
+   (government ID and the Microsoft Authenticator app). Wait for **Completed**.
+5. **Certificate profiles** -> Create -> **Public Trust**, with that identity.
+6. Microsoft Entra -> App registrations -> New. Add a client secret. Give this app the role
+   **Artifact Signing Certificate Profile Signer** on the account (Access control).
+7. GitHub -> the repository -> Settings -> Secrets and variables -> Actions:
+   - **Secrets** `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`.
+   - `ARTIFACT_SIGNING_ENDPOINT`: the regional address, for example `https://weu.codesigning.azure.net`
+     (West Europe) or `https://eus.codesigning.azure.net` (East US). It must be the region of the account.
+   - `ARTIFACT_SIGNING_ACCOUNT`: the account name. `ARTIFACT_SIGNING_PROFILE`: the profile name.
+   (These three may be variables or secrets.)
+8. Test: Actions -> Release -> Run workflow -> tick **sign**.
+9. Put the client secret's end date in your calendar. When it runs out, signing stops (the workflow
+   then fails and says so).
+
+### Switching and checking
+
+- Both set up: SignPath is used. The repository variable `SIGNING_PROVIDER` (`signpath`, `azure`
+  or `none`) overrides this. `none` turns signing off for all runs.
+- Half set up (a token, but no organization ID, for example): the run stops and names what is missing,
+  so a release is never made unsigned by mistake.
+- Check a downloaded zip: unpack it, then
+  `python tools/code_signing.py verify "T5DR Online.exe" runtime/t5dr.exe` (from a checkout), or
+  right-click the file -> Properties -> Digital Signatures. `release.json` in the zip lists the
+  signed files.
+- Local test without a service: `tools/package_release.py --sign-stage prepare`, sign
+  `dist/to-sign/*` yourself, then `--sign-stage finish --signed-dir DIR`. `--accept-untrusted-signature`
+  allows a self-signed test certificate.
+
+## Reporting false positives
+
+A scanner on VirusTotal that flags our zip or `T5DR Online.exe` is usually guessing: names like
+"Suspicious", "Gen", "ML.Score" mean a machine-learning model, not a known virus. The vendors fix such
+cases after a report, often within days. Report each one.
+
+**What to send each vendor**
+
+1. The file: `T5DR Online.exe` (123 KB, small enough for every form). The zip is 90 MB, which most
+   forms refuse. Give the zip as a link, and its SHA-256 from `SHA256SUMS`. A draft release is not
+   visible to vendors, so use the released zip, or a download link you control.
+2. The VirusTotal link of the scan, and the detection name the vendor showed.
+3. This text (copy it):
+
+       Open-source game launcher, MIT license. "T5DR Online.exe" only starts python\pythonw.exe with
+       launcher\t5dr_launcher.pyw from its own folder (source: launcher/stub/t5dr_stub.c). The zip holds
+       no game files. Source: https://github.com/TheWishin/T5DROnline-Source
+       Release: <the GitHub release link>. SHA-256 of the zip: <hash>. Detection: <name> by <scanner>.
+       Please check and remove the false positive.
+
+**Where** (the e-mail addresses and forms are from VirusTotal's own list of false-positive contacts,
+https://docs.virustotal.com/docs/false-positive-contacts, and the vendors' pages; look there if one fails)
+
+| Scanner | Where |
+|---|---|
+| Webroot | The vendor form https://www.webroot.com/us/en/business/support/vendor-dispute-contact-us. Or upload the file at https://snup.webrootcloudav.com/SkyStoreFileUploader/upload.aspx and choose the reason "False Positive detection". (VirusTotal also lists https://support.threatintel.opentext.com/tools/change-request.php, which Webroot uses for web addresses.) |
+| Trapmine | E-mail fp@trapmine.com |
+| Symantec | https://symsubmit.symantec.com -> **Clean software incorrectly detected**. Upload the file or give a link. Add your e-mail; the tracking number goes there. |
+| Bkav | E-mail fpreport@bkav.com (or bkav@bkav.com) |
+| SecureAge | https://www.secureage.com/support/report-false-positive (put the file in a ZIP first). Or https://www.secureage.com/contact-us. Help: docs@secureage.com |
+| Bitdefender | E-mail virus_submission@bitdefender.com, or the form https://www.bitdefender.com/consumer/support/answer/29358/ (business form: https://www.bitdefender.com/business/support/en/77211-343057-submitting-sample-files-and-websites-for-analysis.html). Choose **False positive**. Put big files in a ZIP. |
+
+Bitdefender's engine is also inside ALYac, Arcabit, Emsisoft, G Data and VIPRE. When Bitdefender
+removes its detection, those usually follow. If one still flags after a week, report to it too:
+
+| Scanner | Where |
+|---|---|
+| ALYac | E-mail esrc@estsecurity.com |
+| Arcabit | E-mail vt.fp@arcabit.pl |
+| Emsisoft | E-mail submit@emsisoft.com or fp@emsisoft.com, or https://www.emsisoft.com/en/support/contact/ |
+| G Data | https://www.gdata.de/help/en/general/GeneralInformation/submitFileAppURL/ |
+| VIPRE | https://helpdesk.vipre.com/hc/en-us/requests/new |
+
+After a vendor answers, open the VirusTotal page of the zip and press **Reanalyze**. Vendors update
+their detections on their own schedule. Do not publish the release while a scanner still flags it
+(the owner's rule); fix, report, and scan again.
 
 ## Local build
 

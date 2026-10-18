@@ -1253,7 +1253,9 @@ def main(argv=None):
     if a.apply:
         return apply_plan(a.apply)
     if a.check:
-        rel, problem = check_latest(os.path.join(ROOT, CACHE_FILE), force=True)
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:           # no cache: always ask GitHub
+            rel, problem = check_latest(os.path.join(d, CACHE_FILE), force=True)
         print(json.dumps({"local": local_version(), "latest": rel, "problem": problem,
                           "newer": bool(rel and is_newer(rel["version"], local_version()))}, indent=1))
         return 0 if not problem else 1

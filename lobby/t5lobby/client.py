@@ -240,7 +240,10 @@ class LobbyClient:
                 await self._dispatch(msg)
         except asyncio.IncompleteReadError:
             reason = "the lobby server closed the connection"      # (not asyncio's "0 bytes read on a total of ...")
-        except (ConnectionError, OSError) as e:
+        except ConnectionError:
+            # (not "[WinError 10054] <the message in the Windows language>": a player reads this)
+            reason = "the connection to the lobby server was cut"
+        except OSError as e:
             reason = str(e) or reason
         except asyncio.LimitOverrunError:
             reason = "message too long"

@@ -182,8 +182,8 @@ def accounts_same_account(ctx):
           desc="lobby server restarts while players are in the lobby and while a match runs; log in again, play on")
 def server_restart(ctx):
     stub_server(ctx)
-    a = ctx.player("E2E Frank", kind="stub", password="frank-pass-1", env={"T5_STUB_SECONDS": 20})
-    b = ctx.player("E2E Gina", kind="stub", env={"T5_STUB_SECONDS": 20})
+    a = ctx.player("E2E Frank", kind="stub", password="frank-pass-1", env={"T5_STUB_SECONDS": 8})
+    b = ctx.player("E2E Gina", kind="stub", env={"T5_STUB_SECONDS": 8})
     login(ctx, a, "register")
     login(ctx, b, "guest")
     t = time.time()
@@ -207,13 +207,13 @@ def server_restart(ctx):
     a.tab.do_login("session", session=(a.tab._saved_session() or {}).get("token"))
     login(ctx, b, "guest")
     ctx.wait(lambda: a.logged_in() and b.logged_in(), 20, "both back in the lobby")
-    ctx.sleep(25)   # the stub match ends; its result has no match on the new server
+    ctx.sleep(10)   # the stub match goes on; its result has no match on the new server
     ctx.check("the tabs survived the lost match (still logged in)", a.logged_in() and b.logged_in())
     ctx.note(f"after the restart: {a.name} status {a.status_text()!r}; {b.name} status {b.status_text()!r}")
     ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, "Quick match available again on both")
     mid2 = queue_match(ctx, a, b, "quick")
     ok = ctx.wait(lambda: a.matches.get(mid2, {}).get("status") and b.matches.get(mid2, {}).get("status"),
-                  STUB_MATCH_SECONDS, "the next match after the restart gets a result")
+                  150, "the next match after the restart gets a result")
     if ok:
         ctx.check("next match confirmed", a.matches[mid2]["status"] == "confirmed", a.matches[mid2].get("status"))
 

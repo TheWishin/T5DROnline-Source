@@ -132,7 +132,7 @@ class ScenarioListTest(unittest.TestCase):
             if "quick" in s.suites:
                 self.assertFalse(s.game, f"{s.name}: the quick suite needs no game")
         groups = {s.group.split(" ")[0] for s in scenarios.SCENARIOS}
-        self.assertEqual(groups, {str(i) for i in range(1, 11)})
+        self.assertEqual(groups, {str(i) for i in range(1, 12)})
 
     def test_unmerged_features_skip(self):
         feats = scenarios.features()

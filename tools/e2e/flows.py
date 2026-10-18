@@ -198,6 +198,15 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
         ctx.check(f"{label or mid}: {p.name}'s game: no crash, no FIFO stall",
                   not seg["crash"] and not seg["fifo"].get("fifo_stall") and not seg["fifo"].get("drain_stalled"),
                   f"crash {seg['crash']}, fifo {seg['fifo']}")
+        fought = fighters_of(seg, mid)
+        row[p.name]["fought"] = fought
+        want = lobby_fighters(p, ma.get("fight"))
+        if want and fought:
+            ctx.check(f"{label or mid}: {p.name}'s game fought the fighters the lobby sent", same_fighters(fought, want),
+                      f"game {fought[0]} vs {fought[1]}, lobby {want[0]} vs {want[1]}")
+        elif want:
+            ctx.check(f"{label or mid}: {p.name}'s game reached FIGHT START of this match", False,
+                      "no FIGHT START line with this match id")
     if same_result:
         ra, rb = row[a.name]["result_file"], row[b.name]["result_file"]
         ctx.check(f"{label or mid}: both games wrote this match's result", ra.get("match") == mid and rb.get("match") == mid,
@@ -218,6 +227,33 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
              f"({ctx.shaper.describe()}), {'rematch in session' if row['cont'] else 'new session'}; "
              f"{a.name}: {_brief(row[a.name])}; {b.name}: {_brief(row[b.name])}; fps {fa}/{fb}")
     return row
+
+
+def fighters_of(seg, mid):
+    """(P1 name, P2 name) from this match's FIGHT START line in a game log segment, or None."""
+    for ln in seg["fight_start"]:
+        m = RE_FIGHT.search(ln)
+        if m and m.group(3).rstrip(":") == mid:
+            names = m.group(4).split(" vs ")
+            if len(names) == 2:
+                return names[0].strip(), names[1].strip()
+    return None
+
+
+def lobby_fighters(p, fight):
+    if not fight or not fight.get("p1") or not fight.get("p2"):
+        return None
+    t = p.tab.table
+    return t.fighter_name(fight["p1"]), t.fighter_name(fight["p2"])
+
+
+def _norm(n):
+    return re.sub(r"[^a-z0-9]", "", str(n).lower())
+
+
+def same_fighters(game, lobby):
+    """The game's short names ("Law", "Xiaoyu") against the lobby's ("Marshall Law", "Ling Xiaoyu")."""
+    return all(_norm(g) and (_norm(g) in _norm(w) or _norm(w) in _norm(g)) for g, w in zip(game, lobby))
 
 
 def _med(v):

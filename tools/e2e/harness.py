@@ -673,8 +673,21 @@ class Player:
         return self.app.game
 
     def result_file(self, mid):
-        """The game's own result file for a match, as the driver archived it."""
-        return read_json(os.path.join(self.out, "logs", "online", "results", f"{mid}.json"))
+        """The game's own result file for a match, as the driver archived it (results/<id>.json), or one the
+        driver moved aside (unreported-*/stale-*: the lobby had settled the match first)."""
+        d = os.path.join(self.out, "logs", "online", "results")
+        r = read_json(os.path.join(d, f"{mid}.json"))
+        if r is not None:
+            return r
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return None
+        for n in names:
+            r = read_json(os.path.join(d, n))
+            if isinstance(r, dict) and r.get("match") == mid:
+                return dict(r, moved_aside=n)
+        return None
 
     def log_segment(self, mid, end_mark=None):
         """Game log lines from this match's start to the end of the file (or end_mark)."""

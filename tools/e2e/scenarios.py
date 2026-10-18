@@ -1296,6 +1296,94 @@ def settings_persist(ctx):
     ctx.check("the tab shows them", a2.tab.char_var.get() == "Feng" and a2.tab.strict_var.get() == 1)
 
 
+# ============================================================================== 11. opponents and characters (owner, 1.0.0)
+def _play(ctx, a, b, mid, label, timeout=180):
+    """Wait for this match's fight and both results, then check it like every match (fighters, sync)."""
+    ok = wait_fight(ctx, mid, (a, b), timeout=timeout)
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", label)
+    if not ok:
+        for p in (a, b):
+            st = p.tab.driver.df_status if p.tab.driver else None
+            ctx.note(f"{label}: {p.name}'s game status {st}")
+    return row
+
+
+def _new_pairing(ctx, a, b, label):
+    for p in ctx.players:
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, f"{label}: both free to search")
+    ctx.sleep(1)
+    return queue_match(ctx, a, b, "quick")
+
+
+@scenario("opponent_switch", "11 opponents and characters", game=True, suites=("game",),
+          desc="A and B play a match and a rematch; A (played game) meets C (fresh game); C meets B (both played "
+               "other opponents); B restarts its game and meets A again, then a rematch")
+def opponent_switch(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Ava", char="kazuya")
+    b = ctx.player("E2E Bo", char="lili")
+    c = ctx.player("E2E Cy", char="steve")
+    for p, ch in ((a, "kazuya"), (b, "lili"), (c, "steve")):
+        login(ctx, p)
+        p.set_char(ch)
+    mid = queue_match(ctx, a, b, "quick")
+    _play(ctx, a, b, mid, "A-B match 1 (both fresh)")
+    mid = rematch(ctx, a, b)
+    _play(ctx, a, b, mid, "A-B rematch")
+    pid_a = a.game().proc.pid
+    mid = _new_pairing(ctx, a, c, "A-C")
+    ctx.check("A keeps its game, C starts its first", a.game().proc.pid == pid_a and len(c.games) == 1)
+    _play(ctx, a, c, mid, "A (played 2 matches) vs C (fresh game)")
+    mid = _new_pairing(ctx, c, b, "C-B")
+    _play(ctx, c, b, mid, "C vs B (both played other opponents)")
+    for p in (c, b):
+        leave(ctx, p)
+    n = close_window(b)
+    ctx.note(f"{b.name} closes its game between matches ({n} window(s))")
+    ctx.wait(lambda: not b.game_running(), 20, "B's game closed")
+    mid = _new_pairing(ctx, b, a, "B-A")
+    ctx.check("B starts a fresh game, A keeps its own", len(b.games) == 2 and a.game().proc.pid == pid_a)
+    _play(ctx, b, a, mid, "B (restarted, fresh) vs A (played 4 matches)")
+    mid = rematch(ctx, b, a)
+    _play(ctx, b, a, mid, "B-A rematch after the switch")
+
+
+@scenario("rematch_char_change", "11 opponents and characters", game=True, suites=("game",),
+          desc="casual rematch with a character change: P1 changes, P2 changes, both change -- each rematch starts on "
+               "both PCs with the new fighters and stays in sync")
+def rematch_char_change(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Cat", char="paul")
+    b = ctx.player("E2E Dov", char="nina")
+    login(ctx, a)
+    login(ctx, b)
+    a.set_char("paul")
+    b.set_char("nina")
+    mid = queue_match(ctx, a, b, "quick")
+    _play(ctx, a, b, mid, "match 1")
+    p1, p2 = (a, b) if a.matches[mid].get("slot") == 0 else (b, a)
+    for label, change in (("P1 changes (rematch)", {p1: "king"}), ("P2 changes (rematch)", {p2: "asuka"}),
+                          ("both change (rematch)", {p1: "steve", p2: "hwoarang"}),
+                          ("nobody changes (rematch)", {})):
+        t = time.time()
+        for p, key in change.items():
+            ctx.wait(lambda p=p: str(p.tab.char_cb.cget("state")) == "readonly", 10, f"{p.name}: character box open")
+            p.set_char(key)
+        ctx.sleep(1.5)
+        ctx.check(f"{label}: no character change refused", not any(p.saw_status("locked|Lobby:", t) for p in (a, b)),
+                  [p.status_text() for p in (a, b)])
+        want = {p: change.get(p) for p in (p1, p2)}
+        mid = rematch(ctx, a, b)
+        f = a.matches[mid].get("fight") or {}
+        ctx.check(f"{label}: continues in the running session", a.matches[mid].get("cont"))
+        ctx.check(f"{label}: the lobby sends the new fighters", (want[p1] is None or f.get("p1") == want[p1]) and
+                  (want[p2] is None or f.get("p2") == want[p2]), f"fight {f.get('p1')} vs {f.get('p2')}, wanted "
+                  f"{want[p1] or 'same'} vs {want[p2] or 'same'}")
+        _play(ctx, a, b, mid, label)
+
+
 # ============================================================================== 9. character select (ingame-select)
 def _need_ingame_pick():
     """The in-game select (branch ingame-select): the lobby offers it ('ingame_pick') and the test helpers that

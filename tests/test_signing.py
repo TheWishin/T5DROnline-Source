@@ -1,12 +1,13 @@
 """Code signing support of the release tooling (tools/code_signing.py, package_release.py
 --sign-stage / --stub-compiler). No signing service, no certificate and no toolchain needed: the
 programs are small fake PE files and Windows' verdict is replaced by a stand-in."""
+import fnmatch
 import os
 import tempfile
 import unittest
 from unittest import mock
 
-from helpers import load_tool, put
+from helpers import ROOT, load_tool, put
 
 signing = load_tool("code_signing")
 package = load_tool("package_release")
@@ -159,6 +160,25 @@ class StubCompiler(unittest.TestCase):
         for value, want in (("clang", "clang"), (" CLANG ", "clang"), ("msvc", "msvc"), ("gcc", "msvc")):
             with mock.patch.dict(os.environ, {"T5DR_STUB_COMPILER": value}):
                 self.assertEqual(package.default_stub_compiler(), want, value)
+
+
+class ProductName(unittest.TestCase):
+    """SignPath Foundation wants the product name of every signed program to be the project's name;
+    both programs carry it in their version information."""
+
+    def read(self, *parts):
+        with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def test_runtime_version_resource_is_built_and_shipped(self):
+        self.assertIn("t5dr.rc.in", self.read("CMakeLists.txt"))
+        self.assertIn("T5DR_VERSION", self.read("CMakeLists.txt"))
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "src", "platform", "t5dr.rc.in")))
+        self.assertTrue(any(fnmatch.fnmatch("src/platform/t5dr.rc.in", g) for g in package.OUR_GLOBS))
+
+    def test_both_programs_name_the_same_product(self):
+        self.assertIn('VALUE "ProductName", "T5DR Online"', self.read("src", "platform", "t5dr.rc.in"))
+        self.assertIn('VALUE "ProductName", "T5DR Online"', package.STUB_RC)
 
 
 if __name__ == "__main__":

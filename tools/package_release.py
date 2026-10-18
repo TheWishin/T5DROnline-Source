@@ -102,7 +102,7 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
-             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*/*.c"]
+             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]
@@ -465,7 +465,7 @@ def add_llvm(stage, llvm):
     log(f"  llvm: {mb(dir_size(dst))} (clang resource headers {ver})")
 
 
-def add_prebuilt_host(stage, clang, jobs):
+def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
     """runtime/t5dr.exe + t5dr.lib: ps3recomp's runtime without any game code (CMake
     -DT5DR_GAME_DLL=ON), built from exactly the sources staged above, static C runtime
     (no Visual C++ redistributable needed). The player's PC then compiles only the
@@ -478,6 +478,7 @@ def add_prebuilt_host(stage, clang, jobs):
     try:
         args = [f'"{cm}"', "-S", f'"{stage}"', "-B", f'"{tmp}"', "-G", "Ninja", f'-DCMAKE_MAKE_PROGRAM="{nj}"',
                 "-DCMAKE_BUILD_TYPE=Release", "-DT5DR_GAME_DLL=ON", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+                f'-DT5DR_VERSION="{version}"',
                 f'-DPS3RECOMP_DIR="{os.path.join(stage, "deps", "ps3recomp")}"', f'-DSPU_DIR="{tmp}"',
                 f'-DPython3_EXECUTABLE="{sys.executable}"',
                 f'-DCMAKE_C_COMPILER="{clang[0]}"', f'-DCMAKE_CXX_COMPILER="{clang[0]}"']
@@ -977,7 +978,7 @@ def main():
         if a.llvm:
             add_llvm(stage, a.llvm)
         if a.prebuilt_host:
-            add_prebuilt_host(stage, clang, a.jobs)
+            add_prebuilt_host(stage, clang, a.jobs, version)
         stub = build_stub(stage, clang, version, a.stub_compiler)
         if not stub and a.release:
             fail("--release needs the native starter T5DR Online.exe (MSVC or clang-cl)")

@@ -540,7 +540,7 @@ class SystemInfo(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows APIs")
     def test_real_values_on_this_pc(self):
-        self.assertRegex(report.windows_version(), r"^Windows \d+")
+        self.assertRegex(report.windows_version(), r"^Windows (\d+|Server \d+)")   # CI runs on Windows Server
         self.assertRegex(report.cpu_info(), r"\d+ logical processors")
         self.assertRegex(report.memory_info(), r"[\d.]+ GB total, [\d.]+ GB free")
         for name, ver, date, mem in report.gpu_info():

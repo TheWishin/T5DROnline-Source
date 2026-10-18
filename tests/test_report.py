@@ -466,6 +466,20 @@ class SizeCap(unittest.TestCase):
             res = report.build(report.Context(out, user_names=["ab"], pc_names=[]), os.path.join(d, "o"), cap=cap)
         self.assertLessEqual(res.total, cap)
 
+    def test_a_short_user_name_does_not_cut_a_small_file(self):
+        """"al" becomes "<user>": the clean text is longer than the file. That must not cut it."""
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "native")
+            put(os.path.join(out, "build.log"), "# exit code 1\n" + "C:\\Users\\al\\x\n" * 500)
+            put(os.path.join(out, "controls.ini"), "[general]\n# C:\\Users\\al\\x\n")
+            res = report.build(report.Context(out, user_names=["al"], pc_names=[]), os.path.join(d, "o"))
+            with zipfile.ZipFile(res.path) as z:
+                t = z.read("build.log").decode()
+                self.assertNotIn("bytes removed", t)
+                self.assertEqual(t.count("C:\\Users\\<user>\\x"), 500)
+                self.assertEqual(z.read("controls.ini").decode(), "[general]\n# C:\\Users\\<user>\\x\n")
+                self.assertNotIn("bytes removed", z.read("system.txt").decode())
+
     def test_the_default_cap_is_20_mb(self):
         self.assertEqual(report.DEFAULT_CAP, 20 * 1024 * 1024)
 

@@ -840,8 +840,12 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
     members = []                                         # (arcname, bytes, original size, removed, note)
     state = {"left": cap - MANIFEST_ROOM}
 
-    def put_text(arcname, data, original, removed, limit, note=""):
-        """Scrub `data` (bytes of a text file), keep it within `limit`, add it. False: left out."""
+    def put_text(arcname, data, original, removed, room, note="", reserve=0):
+        """Scrub `data` (bytes of a text file) and add it. `room` is what the file was read for. A
+        placeholder can be longer than the name it replaced ("al" -> "<user>"), so the clean text may be
+        longer than `room`, as long as the budget (minus `reserve`, kept for the game logs) allows it.
+        False: left out."""
+        limit = max(state["left"] - reserve, room)
         out = sc.text(data.decode("utf-8", "replace"))
         if not sc.clean(out):                            # the first pass exposed something more
             out = sc.text(out)
@@ -872,7 +876,7 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
                 if room <= 0:
                     res.skipped.append((it.arcname, "no room left in the size limit"))
                     continue
-                put_text(it.arcname, data[:room], len(data), max(len(data) - room, 0), room, it.note)
+                put_text(it.arcname, data[:room], len(data), max(len(data) - room, 0), room, it.note, reserve)
                 continue
             room = room_for(it.size, it.limit, reserve)
             if room <= 0:
@@ -895,7 +899,7 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
                 if not data and it.size:
                     res.skipped.append((it.arcname, "could not be read"))
                     continue
-                put_text(it.arcname, data, it.size, removed, room, it.note)
+                put_text(it.arcname, data, it.size, removed, room, it.note, reserve)
 
     # game logs, newest first: the newest takes most of what is left, older ones the rest
     for idx, it in enumerate(logs):

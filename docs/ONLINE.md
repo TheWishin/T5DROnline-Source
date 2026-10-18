@@ -26,6 +26,7 @@ install for players or for whoever runs the server.
 - [Tests, demo, measurements](#tests-demo-measurements)
 - [Plugging in: launcher and netplay](#plugging-in-launcher-and-netplay)
 - [Controller in the launcher](#controller-in-the-launcher)
+- [Languages](#languages)
 - [What is left](#what-is-left)
 
 ## Pieces
@@ -617,10 +618,26 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
   character select. Set `background = 0` if that gets in the way.
 - Test hook: `T5_PAD_FILE=<file>` makes a virtual pad of the buttons named in the file (`A`, or
   `dinput:054C:09CC B2`); with it the real pads are ignored (`T5_PAD_DEVICES=1`: both).
+- Setting the buttons: Settings -> **Set up controllers...** (`launcher/controls_ui.py`, `launcher/controls_edit.py`)
+  writes the same `controls.ini` the game and this tab read; it uses padnav's device readers and the same foreground
+  rule (nothing is read unless its window is in front). The tab picks up a saved change by itself (it reads the file
+  again when it changes).
 - Code: `lobby/t5lobby/padmap.py` (controls.ini), `lobby/t5lobby/padnav.py` (devices, polling rules, thread),
   `lobby/t5lobby/tk_tab.py` (what each button does). Tests: `lobby/tests/test_padnav.py`,
   `lobby/tests/test_tk_pad.py`, `tests/test_padmap_sync.py`; they use a fake pad and a fake clock.
   Not tried with a real stick yet (the XInput pad on the development PC was only read, not pressed).
+
+## Languages
+
+The launcher and the Online tab speak English and German (Settings -> Language; Auto follows Windows).
+`lobby/t5lobby/i18n.py` has the lookup: `t("English text", name=value)`; the English text is the key, the German
+catalog is `i18n_de.py`. The lobby server stays English and sends English: its error texts, notices and kick
+reasons carry a `code` or a fixed sentence, and the client puts the sentences it knows into German
+(`i18n.translate_message`, the list is `i18n_known.py`; an unknown sentence is shown as it came). The lag
+check is built on the client from the numbers in the `lag_check` event (`lag.describe_event`), not from its
+`text`. A new server message, client error or build-tool error needs an entry in `i18n_known.py` and a
+German text; `python tools/i18n_extract.py` lists what is missing and `tests/test_i18n.py` fails until it
+is there.
 
 ## What is left
 

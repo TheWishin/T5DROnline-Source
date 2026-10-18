@@ -15,6 +15,23 @@ part is in the README's status table.
 - Needs the new launcher on both sides; against an older one every ranked game counts on its own, as
   before. docs/RANKED.md "Ranked sets".
 
+### Controls screen
+- New in the launcher: **Settings -> Set up controllers...**. Pads, arcade sticks and
+  hitboxes get their buttons there instead of by editing `controls.ini`. It lists
+  the controllers per player with a live "press a button" test, asks "Press the
+  button for 1 (Left Punch)..." one button at a time (1 2 3 4, the macros 1+2, 3+4,
+  1+2+3+4 and the others, Start, Select, directions) with Skip and Clear, and starts
+  from a layout if you like: Xbox, PlayStation, Switch, arcade stick with 8 buttons
+  (Vewlix), 6 buttons (Noir / Sega Astro), hitbox. It also sets which player a
+  controller is, the left stick mode and the SOCD mode (left+right at once).
+- Save writes the `controls.ini` the game reads, in the same format; your comments and
+  other keys stay (the old file is kept once as `controls.ini.bak`). **Reset to
+  defaults** takes a controller back. The controller itself works the screen once it
+  is chosen (Up / Down, Cross, Triangle, Start, Circle).
+- Checked against the game's own `controls.ini` parser (a test compiles the runtime's
+  file reader and compares hundreds of generated files) and with simulated controllers;
+  not yet tried with a real arcade stick by a person.
+
 ### Report a problem
 - New launcher button **Report a problem...** (Play tab, Build tab, and the Online
   tab after a match). It makes one zip on the Desktop and opens its folder: the

@@ -266,6 +266,107 @@ How to switch:
 The zip's `release.json` says which compiler was used (`stub_compiler`). If MSVC is not found,
 the build warns and uses clang-cl. On the runner MSVC is always there.
 
+### Variants of the starter for the antivirus tests
+
+Two machine-learning scanners (Trapmine, Webroot) guessed wrong about the 1.0.0 starter. The default
+build stays as it is until the VirusTotal result of the MSVC build is in. Meanwhile there are three
+variants, each one changes a small thing. `python tools/stub_variants.py --out DIR --release-folder <a
+built release folder>` builds all four, tests each, and writes `DIR/v0-current.exe` ... `DIR/v3-inprocess.exe`
+and `DIR/variants.md` (size, SHA-256, what differs, test results). Upload them to VirusTotal one by one
+and compare.
+
+| Variant | What differs from the one above it | Size | What it costs to adopt |
+|---|---|---|---|
+| `current` (default) | MSVC, static C runtime, PNG icon, no debug entry, starts `python\pythonw.exe` as a child process, falls back to a `pythonw.exe` on PATH | 124 KB | nothing |
+| `plain` | never runs a PATH python, a CodeView debug entry (a PDB name only), the small icon sizes as bitmaps | 143 KB | nothing (the bitmap icon is `launcher/stub/t5dr_bmp.ico`, made by `tools/make_stub_icon.py`) |
+| `dynamic` | plain + the dynamic C runtime: it imports `vcruntime140.dll` and the Windows UCRT, like `pythonw.exe` does | 52 KB | `vcruntime140.dll` (Microsoft's, signed) beside the exe in the zip; the smoke test must allow it |
+| `inprocess` | plain + no child process: the starter loads `python\python312.dll` and calls `Py_Main`, as `pythonw.exe` does itself. It is then the launcher's process | 147 KB | the launcher process is `T5DR Online.exe`, not `pythonw.exe`: the update busy-check in `launcher/updater.py` and `launcher_processes()` in `tools/smoke_release.py` must look for the starter too; the build needs the import library of the bundled Python (`libs\python312.lib`) |
+
+Use a variant in a release: repository variable `T5DR_STUB_VARIANT` (`plain`, `dynamic`, `inprocess`,
+or delete it for `current`), the **stub_variant** input of a manual run, or `--stub-variant`.
+`release.json` records it (`stub_variant`).
+
+What the tests show (Windows 11, all four variants): the launcher gets the same Python as under
+`pythonw.exe` (`sys.executable` is `python\pythonw.exe`, `sys.prefix` and `sys.path` stay inside
+`python\`, a child process and `multiprocessing` start with it, tkinter works); the real launcher renders
+all its tabs; a folder with a name like `Tekken Früh Ł東京` and a 200-character folder work. An install
+folder of 243 characters (the deepest Windows can start the starter from) fails in every variant, as it did
+in 1.0.0: `python\pythonw.exe` inside it is over 259 characters and Windows refuses it.
+Not tested here: Windows "N" editions (the starter uses nothing from Media Foundation) and other Windows
+versions.
+
+### What a scanner sees in the starter
+
+`python tools/pe_features.py FILE` prints these features (standard library only, reads the file and
+changes nothing). The first column is the 1.0.0 starter (clang-cl). `pythonw.exe` is CPython 3.12.10's
+own, which is signed.
+
+| Feature | 1.0.0 (clang-cl) | Default (MSVC) | `pythonw.exe` |
+|---|---|---|---|
+| Rich header (the MSVC tools that made it) | none | yes | yes |
+| Header checksum correct (`/RELEASE`) | no | yes | yes |
+| Control Flow Guard | no | yes | no |
+| ASLR and high-entropy ASLR | yes | yes | yes |
+| Debug directory | none | POGO entry only | CodeView with PDB path, features, POGO |
+| Build time | real | real (not `/Brepro`) | real |
+| Version info, `OriginalFilename` | `T5DR Online.exe` | `T5DR Online.exe` | `pythonw.exe` |
+| Overlay (bytes after the last section) | none | none | none |
+| Sections | `.text .rdata .data .pdata .rsrc .reloc` + `.fptable`, `_RDATA` | the same + `.fptable` | `.text .rdata .data .pdata .rsrc .reloc` |
+| Entropy of `.rsrc` (8 = random) | 7.7 (PNG icon) | 7.7 | 6.2 |
+| Imports | kernel32 (77) + user32 `MessageBoxW` | the same | `python312.dll!Py_Main`, vcruntime, UCRT |
+| Signature | none | none | Python Software Foundation |
+
+What cannot be fixed on this PC: the file is new with every release (no download history), and it has
+no signature. Both are things ML models weigh, and both change with time and with code signing.
+
+What the starter does: it finds its own folder, checks that `python\pythonw.exe` exists (the default
+build otherwise takes a `pythonw.exe` from PATH), and starts `pythonw.exe launcher\t5dr_launcher.pyw` as a
+child process with the folder as working directory. It hides nothing (no hidden window flag, `pythonw.exe`
+is a normal windowed program), makes no network connection, writes no file and changes no setting.
+Two things in it look like a "dropper" to a model: it starts an interpreter with a script path, and it
+has a PATH fallback. Options weighed:
+
+| Option | For | Against |
+|---|---|---|
+| Child process (default) | Simple. `pythonw.exe` stays the launcher's process, as every tool in the repository expects | The classic chain starter -> interpreter -> script in a behavior log |
+| No PATH fallback (`plain`) | A release folder always has its own Python. Removes the one path an outside program could take | none |
+| Dynamic C runtime (`dynamic`) | Imports and size like `pythonw.exe` | One more file in the zip |
+| In the same process (`inprocess`) | No `CreateProcess`. The imports are those of `pythonw.exe` | The process in Task Manager is `T5DR Online.exe`; two small code changes; ties the starter to Python 3.12 |
+| `ShellExecute` instead of `CreateProcess` | none | It is the API droppers use. Not built |
+| Python script inside the exe | none | A big blob in the exe raises the entropy. Not built |
+
+Order to try, after the VirusTotal result for `current`: `plain` first (it costs nothing), then
+`dynamic`, then `inprocess`.
+
+### Scanning with the local Windows Defender
+
+`python tools/av_local_scan.py <release folder or zip>` lists every program (PE file) in it and scans
+each with `MpCmdRun.exe -Scan -ScanType 3 -File <file> -DisableRemediation`. It only reports, changes no
+Defender setting and uploads nothing. (Defender itself may ask Microsoft's cloud about a file when the PC's
+cloud protection is on.)
+
+Result on 2026-10-18 (Defender engine 1.1.26090.9, signatures from that day): the 1.0.2 test build had
+**85 programs** (84 since `tix84.dll` was dropped) and Defender found nothing in any of them, nor in the zip.
+
+| Group | Files | Signed |
+|---|---|---|
+| Ours: `T5DR Online.exe`, `runtime/t5dr.exe` | 2 | no (until a signing service is set up) |
+| Bundled CPython 3.12.10 (`python/`) | 37 (38 with `tix84.dll`, which is unsigned and unused) | yes, by the Python Software Foundation or Microsoft |
+| pycryptodome (`python/Lib/site-packages/Crypto`) | 43 `.pyd` | no. Only AES is used |
+| LLVM (`toolchain/llvm/bin`: `clang-cl.exe`, `lld-link.exe`) | 2, 190 MB | no |
+
+VirusTotal opens a zip and shows its members, so every one of these is judged, and so is the zip.
+`t5dr_game.dll` is not in the zip. The player's PC builds it from their own game, so VirusTotal never
+sees it; the player's own antivirus does.
+
+The control that shows the scan works: the old `T5DR-Online-0.1.8-preview.zip` (with the script
+files) is detected by Defender as `Trojan:Win32/Tecabans.STV!cl`, a cloud detection. The 0.1.9, 1.0.0
+and 1.0.2 zips are clean. If that name ever shows up for a new zip, report it at
+https://www.microsoft.com/wdsi/filesubmission (see "Reporting false positives").
+
+Possible next steps, not done: fewer unsigned programs in the zip (keep only the `.pyd` files AES
+needs: far fewer than the 43), and signing (see "Code signing").
+
 ## Code signing
 
 Code signing puts a publisher name on our programs. It is **off** today. The release workflow signs
@@ -409,13 +510,25 @@ cases after a report, often within days. Report each one.
    forms refuse. Give the zip as a link, and its SHA-256 from `SHA256SUMS`. A draft release is not
    visible to vendors, so use the released zip, or a download link you control.
 2. The VirusTotal link of the scan, and the detection name the vendor showed.
-3. This text (copy it):
+3. The text. `tools/fp_pack.py` writes one file per vendor below, with the sizes and SHA-256 of
+   your files, the vendor's own detection name, where to send it and what to attach. It sends nothing:
 
-       Open-source game launcher, MIT license. "T5DR Online.exe" only starts python\pythonw.exe with
-       launcher\t5dr_launcher.pyw from its own folder (source: launcher/stub/t5dr_stub.c). The zip holds
-       no game files. Source: https://github.com/TheWishin/T5DROnline-Source
-       Release: <the GitHub release link>. SHA-256 of the zip: <hash>. Detection: <name> by <scanner>.
-       Please check and remove the false positive.
+       python tools/fp_pack.py --zip dist/T5DR-Online-1.0.2.zip --exe "dist/T5DR-Online-1.0.2/T5DR Online.exe" ^
+           --release-url https://github.com/TheWishin/T5DROnline/releases/tag/v1.0.2 --vt-url <VirusTotal link> ^
+           --out build/fp-pack --detection Trapmine=Suspicious.low.ml.score --detection Webroot=Win.Trojan.Gen
+
+   The body of every report reads like this (the file facts are filled in):
+
+       this is a false positive report for an open source program.
+       Program: T5DR Online.exe (123,904 bytes), SHA-256 <hash>. Archive: T5DR-Online-1.0.2.zip, SHA-256 <hash>.
+       Detection: <name>. VirusTotal: <link>. Release: <link>. Source: https://github.com/TheWishin/T5DROnline-Source (MIT).
+       What it is: T5DR Online is an open source Windows port of a PlayStation 3 fighting game, with online
+       play. "T5DR Online.exe" is a small starter (about 120 KB, built with Microsoft Visual C++ from
+       launcher/stub/t5dr_stub.c). It has one job: start python\pythonw.exe with launcher\t5dr_launcher.pyw from
+       its own folder. The starter makes no network connection, writes no file and changes no setting. The zip
+       holds the launcher (Python and tkinter, a private CPython), the game runtime runtime\t5dr.exe, an LLVM
+       compiler, and no game files. Online play connects to a lobby server the player chooses; the launcher
+       can ask GitHub for newer releases. Please check the file and remove the detection.
 
 **Where** (the e-mail addresses and forms are from VirusTotal's own list of false-positive contacts,
 https://docs.virustotal.com/docs/false-positive-contacts, and the vendors' pages; look there if one fails)
@@ -427,6 +540,7 @@ https://docs.virustotal.com/docs/false-positive-contacts, and the vendors' pages
 | Symantec | https://symsubmit.symantec.com -> **Clean software incorrectly detected**. Upload the file or give a link. Add your e-mail; the tracking number goes there. |
 | Bkav | E-mail fpreport@bkav.com (or bkav@bkav.com) |
 | SecureAge | https://www.secureage.com/support/report-false-positive (put the file in a ZIP first). Or https://www.secureage.com/contact-us. Help: docs@secureage.com |
+| Microsoft Defender | https://www.microsoft.com/wdsi/filesubmission: choose "Software developer", upload the exe, say that you believe the file is clean. Use it when Defender (not VirusTotal) shows a detection such as `Trojan:Win32/Tecabans.STV!cl`. |
 | Bitdefender | E-mail virus_submission@bitdefender.com, or the form https://www.bitdefender.com/consumer/support/answer/29358/ (business form: https://www.bitdefender.com/business/support/en/77211-343057-submitting-sample-files-and-websites-for-analysis.html). Choose **False positive**. Put big files in a ZIP. |
 
 Bitdefender's engine is also inside ALYac, Arcabit, Emsisoft, G Data and VIPRE. When Bitdefender

@@ -63,6 +63,7 @@ import urllib.parse
 
 from . import fighters, proto, ranks
 from .handover import MatchTicket, read_result_file
+from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
 
@@ -86,18 +87,18 @@ CTL_ACK_SECONDS = 10.0
 CTL_ACK_BOOT_SECONDS = 90.0
 
 # Why a game could not finish its match (result file "reason", netplay log), for the player.
-REASON_TEXT = {
-    "peer_quit": "Your opponent closed the game.",
-    "peer_timeout": "The connection to your opponent's game was lost.",
-    "peer_stalled": "Your opponent's game stopped responding.",
-    "start_timeout": "Your opponent's game did not get to the fight.",
-    "peer_restarted": "Your opponent's game was restarted; the match cannot go on.",
-    "peer_lost": "The connection to your opponent's game was lost.",
-    "no_peer": "Your opponent's game could not be reached (firewall or router?).",
-    "build_mismatch": "Your opponent's game is a different build.",
-    "rejected": "Your opponent's game is in another match.",
-    "bind_failed": "The game could not open its network port (another program uses it?).",
-    "quit": "You closed the game during the match: it counts as a loss.",
+REASON_TEXT = {         # English; word(REASON_TEXT, key) where it is shown
+    "peer_quit": N_("Your opponent closed the game."),
+    "peer_timeout": N_("The connection to your opponent's game was lost."),
+    "peer_stalled": N_("Your opponent's game stopped responding."),
+    "start_timeout": N_("Your opponent's game did not get to the fight."),
+    "peer_restarted": N_("Your opponent's game was restarted; the match cannot go on."),
+    "peer_lost": N_("The connection to your opponent's game was lost."),
+    "no_peer": N_("Your opponent's game could not be reached (firewall or router?)."),
+    "build_mismatch": N_("Your opponent's game is a different build."),
+    "rejected": N_("Your opponent's game is in another match."),
+    "bind_failed": N_("The game could not open its network port (another program uses it?)."),
+    "quit": N_("You closed the game during the match: it counts as a loss."),
 }
 # Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp).
 EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch"}
@@ -467,24 +468,24 @@ class MatchDriver:
 
     # ------------------------------------------------------------------ lobby events
     def on_event(self, ev):
-        t = ev.get("t")
-        if t == "match_found":
+        kind = ev.get("t")
+        if kind == "match_found":
             if not ev.get("keep"):
                 self._release_game()
-        elif t == "match_start":
+        elif kind == "match_start":
             if ev.get("ticket") is not None or ev.get("continue"):
                 self._start(ev)
-        elif t == "match_result":
+        elif kind == "match_result":
             self._finished(ev)
-        elif t == "rematch":
+        elif kind == "rematch":
             if ev.get("state") == "offered":
                 self.note("rematch_offer", match=ev["match"], opponent=ev.get("from", {}).get("name", "?"),
                           timeout=ev.get("timeout", 20))
                 if self.auto_rematch > 0:
                     self.rematch(ev["match"], True)
             elif ev.get("state") == "declined":
-                self.status("Your opponent does not want a rematch.")
-        elif t == "disconnected":
+                self.status(t("Your opponent does not want a rematch."))
+        elif kind == "disconnected":
             self.ticket = None
 
     def _release_game(self):
@@ -497,12 +498,12 @@ class MatchDriver:
         self.stop_game()
 
     def _start(self, ev):
-        t = ev.get("ticket")
+        ticket = ev.get("ticket")
         mid = ev["match"]
         if ev.get("continue"):
             # Rematch inside the running games: same process, same connection.
             if not self.game_running():
-                self.status("The game is not running any more; leaving the rematch.")
+                self.status(t("The game is not running any more; leaving the rematch."))
                 self._call(self.client.leave_match, mid)
                 return
             self.ticket = _Continued(mid, ev, self.session_ticket)
@@ -520,11 +521,12 @@ class MatchDriver:
                 line = self.fight_line(ev)
                 if line and self.fight_path:
                     self._write_fight_file(line, mid, ev)   # the game picks it up at character select
-            self.status(f"Rematch against {ev['opponent']['name']}: same connection, the game stays open.")
+            self.status(t("Rematch against {name}: same connection, the game stays open.",
+                          name=ev["opponent"]["name"]))
             self._call(self.client.game_started, mid)
             return
-        self.ticket = t
-        self.session_ticket = t
+        self.ticket = ticket
+        self.session_ticket = ticket
         self.match_ev = ev
         self.reported = False
         self.saw_fight = False
@@ -537,7 +539,7 @@ class MatchDriver:
             if self.glog is not None:
                 self.glog.poll()
                 self.need_session = self.glog.sessions + 1
-            self._send_fight(mid, self.match_env(ev, t))
+            self._send_fight(mid, self.match_env(ev, ticket))
         else:
             self.stop_game()
             self.session = mid
@@ -552,7 +554,7 @@ class MatchDriver:
                     os.remove(p)
                 except OSError:
                     pass
-            env = self.match_env(ev, t)
+            env = self.match_env(ev, ticket)
             if self.mode == "persistent":
                 self.ctl = Control(os.path.join(self.workdir, "ctl"))
                 launch_env = {"T5_CTL_DIR": self.ctl.dir}
@@ -562,16 +564,16 @@ class MatchDriver:
                 env = launch_env
             game = self.launch(env)
             if game is None:
-                self.status("The game could not start; leaving the match.")
+                self.status(t("The game could not start; leaving the match."))
                 self._call(self.client.leave_match, mid)
                 self.ticket = None
                 return
-            if getattr(t, "_dup_socket", None) is not None and getattr(game, "proc", None) is not None:
-                t.share_socket(game.proc.pid)
+            if getattr(ticket, "_dup_socket", None) is not None and getattr(game, "proc", None) is not None:
+                ticket.share_socket(game.proc.pid)
             self.game = game
             self.glog = GameLog(getattr(game, "log_path", None))
         self.mark = self.glog.mark() if self.glog else (0, 0, 0, 0)
-        self.status(f"Playing against {t.summary()}")
+        self.status(t("Playing against {summary}", summary=ticket.summary()))
         self._call(self.client.game_started, mid)
 
     def _send_fight(self, mid, env, rematch=False, booting=False):
@@ -605,11 +607,12 @@ class MatchDriver:
         if self.ctl_failures < 2:
             return
         self.mode = "process"
-        self.status("The game did not answer its control channel; it is restarted for every opponent from now on.")
-        ev, t = self.match_ev, self.ticket
+        self.status(t("The game did not answer its control channel; it is restarted for every opponent from "
+                      "now on."))
+        ev, ticket = self.match_ev, self.ticket
         self.stop_game()
-        if ev is not None and isinstance(t, MatchTicket) and not self.reported:
-            self._start(dict(ev, ticket=t))
+        if ev is not None and isinstance(ticket, MatchTicket) and not self.reported:
+            self._start(dict(ev, ticket=ticket))
 
     def _send_lag(self, mid):
         """Report this match's lag numbers (the lobby shows both players the comparison)."""
@@ -677,9 +680,9 @@ class MatchDriver:
             pass
         return out
 
-    STATE_TEXT = {"title": "The game is starting...", "select": "Character select...",
-                  "stage": "Stage select...", "loading": "Loading the fight...", "fight": "Fight!",
-                  "over": "Match over.", "neutral": "At character select, waiting for the next match."}
+    STATE_TEXT = {"title": N_("The game is starting..."), "select": N_("Character select..."),
+                  "stage": N_("Stage select..."), "loading": N_("Loading the fight..."), "fight": N_("Fight!"),
+                  "over": N_("Match over."), "neutral": N_("At character select, waiting for the next match.")}
 
     def _watch_state(self):
         """The direct-fight status file: where the game is (shown to the player)."""
@@ -709,7 +712,7 @@ class MatchDriver:
             self.game_state = state
             self.note("game_state", state=state, match=st.get("match"))
             if state in self.STATE_TEXT and self.ticket is not None:
-                self.status(self.STATE_TEXT[state])
+                self.status(t(self.STATE_TEXT[state]))
 
     def _evidence(self):
         """Desync count since the match started, from the game log."""
@@ -718,8 +721,8 @@ class MatchDriver:
         self.glog.poll()
         return max(0, self.glog.mismatches - self.mark[0])
 
-    def _check(self, t):
-        mid = t.match_id
+    def _check(self, ticket):
+        mid = ticket.match_id
         if self.glog is not None:
             self.glog.poll()
         res = read_result_file(self.result_path) if self.result_path else None
@@ -728,7 +731,7 @@ class MatchDriver:
             if extra.get("match") and str(extra["match"]) != str(mid):
                 # Left over from another match (a voided one, or an old game): never this one's.
                 self._discard_result("stale")
-                self.status("Ignored a result the game wrote for an earlier match.")
+                self.status(t("Ignored a result the game wrote for an earlier match."))
                 return
             self._archive(mid)
             self._perf(extra.get("fps"))
@@ -738,12 +741,13 @@ class MatchDriver:
             if reason == "quit":
                 # This player closed the game window mid-match (exit code 7): a quit, i.e. a loss.
                 self._report(mid, None, res[1], "quit", desync=desync, reason="quit")
-                self.status(REASON_TEXT["quit"])
+                self.status(t(REASON_TEXT["quit"]))
                 return
             if reason:
                 # The game could not play the match to its end (lost its opponent, no connection).
                 self._report(mid, None, res[1], "disconnect", desync=desync, reason=str(reason)[:32])
-                self.status(REASON_TEXT.get(reason, f"The match could not be finished ({reason})."))
+                self.status(t(REASON_TEXT[reason]) if reason in REASON_TEXT
+                            else t("The match could not be finished ({reason}).", reason=reason))
                 return
             self._report(mid, res[0], res[1], "game", desync=desync, hash=extra.get("hash"),
                          frames=extra.get("frames"))
@@ -774,7 +778,7 @@ class MatchDriver:
                 # give it a moment before reporting from the log)
                 reason = g.lost_reason or "peer_lost"
                 self._report(mid, None, None, "disconnect", desync=self._evidence() or 0, reason=reason)
-                self.status(REASON_TEXT.get(reason, REASON_TEXT["peer_lost"]))
+                self.status(t(REASON_TEXT.get(reason, REASON_TEXT["peer_lost"])))
                 return
         if running:
             return
@@ -784,7 +788,7 @@ class MatchDriver:
             # match id, or the file could not be written): the same quit.
             self.note("game_closed", code=code, crashed=False)
             self._report(mid, None, None, "quit", desync=self._evidence() or 0, reason="quit")
-            self.status(REASON_TEXT["quit"])
+            self.status(t(REASON_TEXT["quit"]))
             return
         if code in EXIT_REASON:
             # The netplay session could not go on and the game closed itself (no result file?).
@@ -792,31 +796,32 @@ class MatchDriver:
             reason = reason or EXIT_REASON[code]
             self.note("game_closed", code=code, crashed=False)
             self._report(mid, None, None, "disconnect", desync=self._evidence() or 0, reason=reason)
-            self.status(REASON_TEXT.get(reason, f"The match could not be played ({reason})."))
+            self.status(t(REASON_TEXT[reason]) if reason in REASON_TEXT
+                        else t("The match could not be played ({reason}).", reason=reason))
             return
         crashed = (g is not None and g.crashed) or (code not in (0, None))
         self.note("game_closed", code=code, crashed=crashed)
         if crashed:
             self._report(mid, None, None, "crash", reason=f"exit {code}")
-            self.status("The game stopped unexpectedly; the match does not count (repeated crashes do).")
+            self.status(t("The game stopped unexpectedly; the match does not count (repeated crashes do)."))
         elif self.ask_manual:
             self.reported = True     # wait for the player's answer (answer())
-            self.note("ask_result", match=mid, opponent=t.opponent.get("name", "?"), slot=t.slot)
+            self.note("ask_result", match=mid, opponent=ticket.opponent.get("name", "?"), slot=ticket.slot)
         else:
             self.answer("quit")
 
     def answer(self, what):
         """The player's answer when the game closed without a result: won | lost | draw | quit."""
-        t = self.ticket
-        if t is None:
+        ticket = self.ticket
+        if ticket is None:
             return
-        mid = t.match_id
+        mid = ticket.match_id
         if what == "quit":
             self.reported = True
             self.history.append((mid, {"source": "quit"}))
             self._call(self.client.leave_match, mid)
             return
-        winner = {"won": t.slot, "lost": 1 - t.slot, "draw": None}[what]
+        winner = {"won": ticket.slot, "lost": 1 - ticket.slot, "draw": None}[what]
         self._report(mid, winner, None, "manual")
 
     def _grace(self, key, seconds=3.0):
@@ -850,8 +855,8 @@ class MatchDriver:
         self.history.append((mid, dict(ev, winner=winner, score=score, source=source)))
         self._call(functools.partial(self.client.report_result, winner, score, mid, source=source, **ev))
         if source == "game":
-            self.status("Result sent" + (f" (the games went out of sync on {ev['desync']} frames)"
-                                         if ev.get("desync") else "") + "; waiting for the lobby...")
+            self.status(t("Result sent (the games went out of sync on {frames} frames); waiting for the lobby...",
+                          frames=ev["desync"]) if ev.get("desync") else t("Result sent; waiting for the lobby..."))
 
     def _archive(self, mid):
         d = os.path.join(self.workdir, "results")
@@ -870,7 +875,8 @@ def _call_now(notes, fn, *args):
         return fn(*args)
     except Exception as e:   # noqa: BLE001 -- reported, never raised into the UI loop
         notes.put({"t": "driver", "kind": "status",
-                   "text": proto.scrub_addresses(f"Lobby: {getattr(e, 'msg', '') or e}")})
+                   "text": proto.scrub_addresses(t("Lobby: {message}", message=translate_message(
+                       getattr(e, "msg", "") or str(e))))})
         return None
 
 

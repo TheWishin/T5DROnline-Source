@@ -702,7 +702,7 @@ class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
         self.start()
         self.game(1)
         self.pump(lambda: self.bar_button("Leave set (counts as a loss)") is not None)
-        self.assertIn("Set 1-0 -- game 2 of 3 starts in", tab.bar_text.get())        # no rematch vote
+        self.assertIn("Set 1-0 -- game 2 of 3 -- starts in", tab.bar_text.get())        # no rematch vote
         self.assertIsNone(self.bar_button("Rematch Rival"))
         self.assertEqual(str(tab.actions["ranked"].cget("state")), "disabled")       # the set goes on by itself
         self.assertEqual(str(tab.char_cb.cget("state")), "disabled")
@@ -736,10 +736,10 @@ class SetTextTest(unittest.TestCase):
         self.assertEqual(setsmod.status_text(self.info(), slot=0), "Set 1-0 -- game 2 of 3")
         self.assertEqual(setsmod.status_text(self.info(), slot=1), "Set 0-1 -- game 2 of 3")
         self.assertEqual(setsmod.status_text(self.info(next={"in": 4.2, "number": 2, "replay": False}), slot=0),
-                         "Set 1-0 -- game 2 of 3 starts in 5 s")
+                         "Set 1-0 -- game 2 of 3 -- starts in 5 s")
         self.assertEqual(setsmod.status_text(self.info(wins=[0, 0], number=1, replays=1,
                                                        next={"in": 3, "number": 1, "replay": True}), slot=0),
-                         "Set 0-0 -- game 1 of 3 again (no winner) starts in 3 s")
+                         "Set 0-0 -- game 1 of 3 again (no winner) -- starts in 3 s")
         self.assertEqual(setsmod.status_text({"id": "s", "game": 2, "locked": True, "ranked": True}, slot=0), "")
         self.assertEqual(setsmod.status_text(None, slot=0), "")
 
@@ -756,6 +756,25 @@ class SetTextTest(unittest.TestCase):
         ev = {"rated": True, "status": "void", "result": None, "wins": [1, 1], "outcome_reason": "desync"}
         self.assertEqual(setsmod.result_text(ev), "The set does not count (the two games went out of sync); "
                                                   "no rating change")
+
+    def test_german(self):
+        from t5lobby import i18n
+        i18n.set_language("de")
+        i18n.clear_missing()
+        try:
+            self.assertEqual(setsmod.status_text(self.info(next={"in": 4.2, "number": 2, "replay": False}), slot=0),
+                             "Set 1-0 -- Spiel 2 von 3 -- startet in 5 s")
+            ev = {"rated": True, "status": "confirmed", "result": "win", "wins": [2, 1],
+                  "rating": {"after": {"r": 1532}, "delta": 32, "event": None, "rank_after": {"rank": "1st Dan"}}}
+            self.assertTrue(setsmod.result_text(ev).startswith("Du hast das Set 2-1 gewonnen"))
+            void = {"rated": True, "status": "void", "result": None, "outcome_reason": "server_restart"}
+            self.assertEqual(setsmod.result_text(void),
+                             "Das Set zählt nicht (der Lobby-Server wurde neu gestartet); keine Wertungsänderung")
+            self.assertEqual(setsmod.history_text({"game": 2, "result": "win", "score": [2, 1]}),
+                             " -- Set-Spiel 2, Set gewonnen 2-1")
+            self.assertEqual(i18n.missing(), [])
+        finally:
+            i18n.set_language("en")
 
     def test_hud_names_show_the_set_score(self):
         ev = {"players": [{"name": "Alice", "tier": 11}, {"name": "Bartholomew_Long", "tier": 3}],

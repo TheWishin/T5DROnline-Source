@@ -87,7 +87,8 @@ OUR_FILES = [
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def",
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
-    "launcher/problem_report.py", "launcher/problem_report_ui.py", "launcher/stub/t5dr_stub.c",
+    "launcher/problem_report.py", "launcher/problem_report_ui.py",
+    "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",
@@ -380,8 +381,9 @@ def add_python(stage):
                 copy(os.path.join(dp, f), os.path.join(dst, "DLLs", os.path.relpath(os.path.join(dp, f),
                                                                                      os.path.join(base, "DLLs"))))
     for dp, dns, fns in os.walk(os.path.join(base, "tcl")):
+        # tix8.4.3 (tkinter.tix, nothing here uses it) holds tix84.dll, the only unsigned DLL of python.org's Tcl/Tk
         dns[:] = [d for d in dns if (d not in ("demos", "tzdata", "msgs", "encoding") or "tk" in dp.lower())
-                  and d != "nmake"]
+                  and d != "nmake" and not d.lower().startswith("tix")]
         for f in fns:
             rel = os.path.relpath(os.path.join(dp, f), base)
             copy(os.path.join(dp, f), os.path.join(dst, rel))
@@ -569,6 +571,32 @@ def default_stub_compiler():
     return v if v in STUB_COMPILERS else "msvc"
 
 
+# Launcher stub variants for the antivirus experiments (docs/RELEASING.md "The launcher stub"). The default,
+# 'current', is the build that was sent to VirusTotal; the others change one thing at a time:
+#   plain      current + no PATH fallback + a CodeView debug entry (PDB name only, like ordinary programs)
+#              + an icon whose small sizes are bitmaps (the resource section stops looking packed)
+#   dynamic    plain + the dynamic C runtime (imports like pythonw.exe; vcruntime140.dll ships beside the exe)
+#   inprocess  plain + no child process: python312.dll is loaded into the stub and Py_Main is called, as
+#              pythonw.exe does itself (needs the import library of the CPython that is bundled)
+STUB_VARIANTS = {
+    "current": {"icon": "t5dr.ico", "defines": [], "crt": "/MT", "debug": False, "python": False,
+                "vcruntime": False},
+    "plain": {"icon": "t5dr_bmp.ico", "defines": ["T5DR_STUB_NO_PATH_FALLBACK"], "crt": "/MT", "debug": True,
+              "python": False, "vcruntime": False},
+    "dynamic": {"icon": "t5dr_bmp.ico", "defines": ["T5DR_STUB_NO_PATH_FALLBACK"], "crt": "/MD", "debug": True,
+                "python": False, "vcruntime": True},
+    "inprocess": {"icon": "t5dr_bmp.ico", "defines": ["T5DR_STUB_INPROCESS"], "crt": "/MT", "debug": True,
+                  "python": True, "vcruntime": False},
+}
+
+
+def default_stub_variant():
+    """--stub-variant's default: the environment variable T5DR_STUB_VARIANT, else current."""
+    v = os.environ.get("T5DR_STUB_VARIANT", "").strip().lower()
+    return v if v in STUB_VARIANTS else "current"
+
+
+
 def find_msvc_tools(pre):
     """(cl.exe, link.exe, rc.exe, toolset version) of the MSVC environment `pre` sets up (see
     msvc_prefix), or None when it has no cl.exe/link.exe/rc.exe. Paths come from VCToolsInstallDir and
@@ -590,17 +618,21 @@ def find_msvc_tools(pre):
     return cl, link, rc, ver
 
 
-def build_stub(stage, clang, version="0.0.0", compiler=None):
+def build_stub(stage, clang, version="0.0.0", compiler=None, variant=None):
     """T5DR Online.exe from launcher/stub/t5dr_stub.c: an ordinary Windows application (static
     C runtime, version information, icon, manifest).
 
     compiler 'msvc' (the default): cl.exe + link.exe + rc.exe of the MSVC environment, with
     /O2 /MT /GS /guard:cf and /DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE -- what Microsoft's own tools
     emit, which some machine-learning scanners like better. Falls back to clang-cl (with a warning)
-    when this PC has no cl.exe/link.exe. 'clang': clang-cl + lld-style resources, as before 1.0.1.
-    Without either, a .cmd starter stands in (developer zips only; --release fails).
+    when this PC has no cl.exe/link.exe. 'clang': clang-cl, as before 1.0.1.
+    variant (msvc only; STUB_VARIANTS): 'current' is the default build; the others are the antivirus
+    experiments described at STUB_VARIANTS.
+    Without either compiler, a .cmd starter stands in (developer zips only; --release fails).
     Returns a text naming the compiler that was used ('MSVC 14.44.35207 ...'), or None for the .cmd."""
     compiler = compiler or default_stub_compiler()
+    variant = variant or default_stub_variant()
+    spec = STUB_VARIANTS[variant]
     src = os.path.join(ROOT, "launcher", "stub", "t5dr_stub.c")
     out = os.path.join(stage, "T5DR Online.exe")
     pre = msvc_prefix()
@@ -613,6 +645,8 @@ def build_stub(stage, clang, version="0.0.0", compiler=None):
                      "instead (--stub-compiler clang)")
             else:
                 warn("T5DR Online.exe: no cl.exe/link.exe/rc.exe in the MSVC environment and no clang-cl")
+        if variant != "current" and not tools:
+            fail(f"--stub-variant {variant} needs the MSVC tools (cl.exe, link.exe)")
         if tools or clang[0]:
             tmp = tempfile.mkdtemp(prefix="t5dr_stub_")
             try:
@@ -627,7 +661,7 @@ def build_stub(stage, clang, version="0.0.0", compiler=None):
                 with open(manifest, "wb") as f:
                     f.write(xml)
                 with open(rc, "w", encoding="utf-8") as f:
-                    f.write(STUB_RC.format(ico=os.path.join(stub_dir, "t5dr.ico").replace("\\", "/"),
+                    f.write(STUB_RC.format(ico=os.path.join(stub_dir, spec["icon"]).replace("\\", "/"),
                                            manifest=manifest.replace("\\", "/"),
                                            v1=nums[0], v2=nums[1], v3=nums[2], version=version))
                 res = os.path.join(tmp, "stub.res")
@@ -635,11 +669,21 @@ def build_stub(stage, clang, version="0.0.0", compiler=None):
                 built = os.path.join(tmp, "stub.exe")     # linked in the short temp path, copied to `out` after
                 if tools:
                     cl, link, rcexe, ver = tools
+                    defs = "".join(f" /D{d}" for d in spec["defines"])
+                    libs = ""
+                    if spec["python"]:
+                        if sys.version_info[:2] != (3, 12):
+                            fail("--stub-variant inprocess is written for python312.dll (the pinned CPython 3.12)")
+                        pylib = os.path.join(sys.base_prefix, "libs", "python312.lib")
+                        if not os.path.exists(pylib):
+                            fail(f"--stub-variant inprocess needs {pylib} (the import library of this Python)")
+                        libs = f' /DELAYLOAD:python312.dll delayimp.lib "{pylib}"'
+                    dbg = " /DEBUG /PDBALTPATH:t5dr_stub.pdb /OPT:REF /OPT:ICF" if spec["debug"] else ""
                     cmd = (f'{pre}"{rcexe}" /nologo /fo "{res}" "{rc}" && '
-                           f'"{cl}" /nologo /c /O2 /MT /GS /guard:cf /W3 "{src}" /Fo"{obj}" && '
+                           f'"{cl}" /nologo /c /O2 {spec["crt"]} /GS /guard:cf /W3{defs} "{src}" /Fo"{obj}" && '
                            f'"{link}" /nologo /OUT:"{built}" /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO '
-                           f'/DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE "{obj}" "{res}" kernel32.lib user32.lib')
-                    used = f"MSVC {ver} (cl.exe + link.exe)"
+                           f'/DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE{dbg} "{obj}" "{res}" kernel32.lib user32.lib{libs}')
+                    used = f"MSVC {ver} (cl.exe + link.exe)" + ("" if variant == "current" else f", variant {variant}")
                 else:
                     llvm_rc = os.path.join(os.path.dirname(clang[0]), "llvm-rc.exe")
                     rcexe = f'"{llvm_rc}"' if os.path.exists(llvm_rc) else "rc.exe"
@@ -653,6 +697,14 @@ def build_stub(stage, clang, version="0.0.0", compiler=None):
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             if r.returncode == 0 and os.path.exists(out):
+                if spec["vcruntime"]:     # the dynamic C runtime: Microsoft's own DLL beside the exe
+                    for cand in (os.path.join(stage, "python", "vcruntime140.dll"),
+                                 os.path.join(sys.base_prefix, "vcruntime140.dll")):
+                        if os.path.exists(cand):
+                            copy(cand, os.path.join(os.path.dirname(out), "vcruntime140.dll"))
+                            break
+                    else:
+                        fail("--stub-variant dynamic needs vcruntime140.dll (from the bundled or the running Python)")
                 log(f"  T5DR Online.exe: {os.path.getsize(out):,} bytes, built with {used}")
                 return used
             fail("launcher stub build failed:\n" + r.stdout + r.stderr)
@@ -923,6 +975,10 @@ def main():
                     help="what builds T5DR Online.exe: msvc = cl.exe + link.exe (default; falls back to clang-cl "
                          "with a warning when this PC has no MSVC tools), clang = clang-cl. Default: the "
                          "environment variable T5DR_STUB_COMPILER, else msvc")
+    ap.add_argument("--stub-variant", choices=sorted(STUB_VARIANTS), default=default_stub_variant(),
+                    help="antivirus experiments with T5DR Online.exe (see STUB_VARIANTS in this file and "
+                         "docs/RELEASING.md): current (default), plain, dynamic, inprocess. Default: the "
+                         "environment variable T5DR_STUB_VARIANT, else current")
     ap.add_argument("--sign-stage", choices=("prepare", "finish"),
                     help="code signing in two halves: 'prepare' builds and stages, runs the checks and copies the "
                          "files to sign to <out>/to-sign/ (no zip); 'finish' (needs --signed-dir) installs the "
@@ -980,7 +1036,7 @@ def main():
             add_llvm(stage, a.llvm)
         if a.prebuilt_host:
             add_prebuilt_host(stage, clang, a.jobs, version)
-        stub = build_stub(stage, clang, version, a.stub_compiler)
+        stub = build_stub(stage, clang, version, a.stub_compiler, a.stub_variant)
         if not stub and a.release:
             fail("--release needs the native starter T5DR Online.exe (MSVC or clang-cl)")
         add_docs(stage, version)
@@ -988,7 +1044,7 @@ def main():
                 "ps3recomp": build_game.PS3RECOMP_COMMIT, "patches": patches, "game": build_game.GAME_NAME,
                 "commit": source_commit(), "built": build_time(),
                 "llvm": clang[1] if a.llvm else None, "python": py_ver, "prebuilt_host": bool(a.prebuilt_host),
-                "stub_compiler": stub, "signed": []}
+                "stub_compiler": stub, "stub_variant": a.stub_variant, "signed": []}
         with open(release_json, "w") as f:
             json.dump(info, f, indent=1)
 

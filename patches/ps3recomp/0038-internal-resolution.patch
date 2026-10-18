@@ -1,0 +1,1038 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 3884e1d..e53cadc 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -127,6 +127,8 @@ void* rsx_live_draw_get_present_thread_handle(void) { return NULL; }
+ u32  rsx_live_draw_get_last_draws(void) { return 0; }
+ double rsx_live_draw_get_present_fps(void) { return 0.0; }
+ float rsx_live_draw_get_res_scale(void) { return 1.0f; }
++float rsx_internal_res_scale(void) { return 1.0f; }
++const char* rsx_internal_res_label(void) { return "Native (720p)"; }
+ int  rsx_live_draw_fullscreen_request(int on) { (void)on; return 0; }
+ void rsx_live_draw_dump_present_samples(void) {}
+ void rsx_live_draw_a010_probe_begin(void) {}
+@@ -276,7 +278,9 @@ typedef struct {
+     u32 location, offset;
+     ID3D12Resource* tex;
+     u32 w, h;
+-    u32 pw, ph;               /* host pixels: w, h times PS3_RES_SCALE */
++    u32 pw, ph;               /* host pixels: w, h times `scale` */
++    float scale;              /* internal-resolution factor of this surface (patch 0038) */
++    u32 scale_gen;            /* g_ld_scale_gen it was sized for */
+     DXGI_FORMAT fmt;
+     ID3D12Resource* fb_tex;   /* feedback copy, see surface_feedback_srv */
+ #if !defined(YZ_PERF_CLEAN)
+@@ -304,6 +308,7 @@ typedef struct {
+     ID3D12Resource* tex;
+     ID3D12Resource* snapshot;
+     u32 w, h;
++    float scale;       /* host pixels = guest * scale: the scale of the pass it is bound with */
+     u32 snapshot_w, snapshot_h;
+     D3D12_RESOURCE_STATES snapshot_state;
+     int cleared;
+@@ -464,18 +469,59 @@ typedef struct {
+ 
+ static ld_state g;
+ 
+-/* PS3_RES_SCALE=<f> (1..4, or 1080/1440/2160 = target height over 720):
+- * every live render target, depth buffer and their viewports/scissors are
+- * created at f times the size the guest declared. The guest keeps seeing its
+- * own sizes (surface keys, texture-descriptor matching, blit addressing);
+- * only host pixels change, so the game's 2D/HUD passes simply rasterise at
+- * the higher resolution and the present blit scales to the window. */
++/* Internal resolution (patch 0038; was PS3_RES_SCALE of 0010 and
++ * PS3_RENDER_SCALE of 0027): every live render target, depth buffer and
++ * their viewports/scissors are created at a factor times the size the guest
++ * declared. The guest keeps seeing its own sizes (surface keys,
++ * texture-descriptor matching, blit addressing); only host pixels change, so
++ * the game's 2D/HUD passes simply rasterise at the higher resolution and the
++ * present blit scales to the window. The setting itself is parsed by
++ * rsx_internal_res_scale() (below the display options).
++ *
++ * Each surface carries its own factor (surface_t.scale, zdepth_t.scale):
++ * above native every target scales; below native only the full-screen 3D
++ * targets do, while the display buffers (HUD, text, the picture the present
++ * shows) and the small offscreen targets (shadow map, glow) keep the guest
++ * size -- see ld_surface_scale(). */
+ static float g_ld_res_scale = 1.0f;
+-static u32 ld_px(u32 v)
++static u32 ld_pxs(u32 v, float scale)
+ {
+-    if (g_ld_res_scale == 1.0f) return v;
+-    const u32 p = (u32)((float)v * g_ld_res_scale + 0.5f);
+-    return p || !v ? p : 1u;              /* PS3_RENDER_SCALE < 1: never 0 wide */
++    if (scale == 1.0f) return v;
++    const u32 p = (u32)((float)v * scale + 0.5f);
++    return p || !v ? p : 1u;              /* below native: never 0 wide */
++}
++
++/* Bumped whenever the factor a surface would get can change (a display
++ * buffer registered); surface_get() re-sizes a surface whose scale_gen is
++ * older and whose factor differs. */
++static u32 g_ld_scale_gen = 1;
++
++/* The factor of one colour surface, from its guest key.
++ *
++ * Above native (1080p/1440p/4K) everything scales: the 3D pass, the shadow map
++ * (finer shadow edges), the glow buffers and the display buffers with the HUD.
++ *
++ * Below native (Lower/Lowest) only targets at least as large as the guest
++ * canvas that are not display buffers shrink: in Tekken 5 DR that is the
++ * 2048x1440 3D pass (2.9 M pixels, ~70 % of a fight frame's pixels; the game
++ * supersamples it and draws it down into the 1280x720 display buffer). The
++ * display buffers keep 1280x720, so the HUD, text and 2D menus stay sharp and
++ * the game's own downsample still filters the smaller 3D pass; the 512x512
++ * shadow map and the 128x128 glow buffers (0.3 M pixels together) keep their
++ * size, so shadows look the same. The GPU work that matters still shrinks:
++ * 2.9 M -> 1.6 M (0.75x) or 0.74 M (0.5x) pixels. */
++static float ld_surface_scale(u32 location, u32 offset, u32 w, u32 h)
++{
++    const float s = g_ld_res_scale;
++    if (s >= 1.0f) return s;
++    if (w < g.width || h < g.height) return 1.0f;
++    for (u32 b = 0; b < 8; b++) {
++        const display_buffer_t* d = &g.display_buffers[b];
++        if (d->valid && d->location == location && d->offset == offset &&
++            d->width == w && d->height == h)
++            return 1.0f;
++    }
++    return s;
+ }
+ 
+ #define LD_VERTEX_HOIST_FETCH       (1u << 0)
+@@ -3891,11 +3937,22 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+      * aliasing, the fix is one surface plus a copy on redeclare -- not going
+      * back to destroying content. */
+     u32 slot = MAX_SURFACES;
++    float want_scale = 0.0f;
+     for (u32 i = 0; i < g.n_surfaces; i++)
+         if (g.surfaces[i].location == location && g.surfaces[i].offset == offset &&
+             g.surfaces[i].w == want_w && g.surfaces[i].h == want_h &&
+-            g.surfaces[i].fmt == want_fmt)
+-            return i;
++            g.surfaces[i].fmt == want_fmt) {
++            surface_t* hit = &g.surfaces[i];
++            if (hit->scale_gen == g_ld_scale_gen) return i;
++            /* A display buffer was registered (or the setting changed) since
++             * this surface was sized: keep it unless its factor changed. */
++            want_scale = ld_surface_scale(location, offset, want_w, want_h);
++            if (hit->scale == want_scale) { hit->scale_gen = g_ld_scale_gen; return i; }
++            fprintf(stderr, "[res] surface %u:0x%X %ux%u re-sized x%.3g -> x%.3g\n",
++                    location, offset, want_w, want_h, (double)hit->scale, (double)want_scale);
++            slot = i;
++            break;
++        }
+     /* Never destroy a usable render target because a malformed live command
+      * briefly decoded a guest pointer as clip dimensions.  The known-good
+      * orphanage stream never exceeds 1280x1024; D3D12 rejects the observed
+@@ -3912,7 +3969,7 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+                     slot < MAX_SURFACES ? "existing" : "none");
+         return slot < MAX_SURFACES ? slot : LD_INVALID_SURFACE;
+     }
+-    if (g.n_surfaces >= MAX_SURFACES) {
++    if (slot == MAX_SURFACES && g.n_surfaces >= MAX_SURFACES) {
+         /* Out of slots is now the only way a surface can be lost, so say so
+          * once rather than silently returning an invalid handle. */
+         static u32 full_logs = 0;
+@@ -3922,15 +3979,20 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+                     (unsigned)MAX_SURFACES, location, offset, want_w, want_h);
+         return LD_INVALID_SURFACE;
+     }
+-    slot = g.n_surfaces;
+-    { static u32 new_logs = 0;
+-      if (__atomic_fetch_add(&new_logs, 1, __ATOMIC_RELAXED) < 24)
+-          fprintf(stderr, "[surfsz] new live surface %u:0x%X %ux%u (slot %u)\n",
+-                  location, offset, want_w, want_h, slot); }
++    if (slot == MAX_SURFACES) {
++        slot = g.n_surfaces;
++        want_scale = ld_surface_scale(location, offset, want_w, want_h);
++        { static u32 new_logs = 0;
++          if (__atomic_fetch_add(&new_logs, 1, __ATOMIC_RELAXED) < 24)
++              fprintf(stderr, "[surfsz] new live surface %u:0x%X %ux%u (slot %u) host %ux%u\n",
++                      location, offset, want_w, want_h, slot,
++                      ld_pxs(want_w, want_scale), ld_pxs(want_h, want_scale)); }
++    }
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = ld_px(want_w); rd.Height = ld_px(want_h); rd.DepthOrArraySize = 1;
++    rd.Width = ld_pxs(want_w, want_scale); rd.Height = ld_pxs(want_h, want_scale);
++    rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1; rd.Format = want_fmt; rd.SampleDesc.Count = 1;
+     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+     D3D12_CLEAR_VALUE cv = {0}; cv.Format = rd.Format;
+@@ -3966,6 +4028,8 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
+     s->pw = (u32)rd.Width; s->ph = rd.Height;
++    s->scale = want_scale;
++    s->scale_gen = g_ld_scale_gen;
+     s->fmt = want_fmt;
+ #if !defined(YZ_PERF_CLEAN)
+     s->resource_serial = ++g_ld_surface_resource_serial;
+@@ -4041,6 +4105,189 @@ static int surface_containing(u32 location, u32 abs, u32 pitch, u32 w, u32 h,
+     return -1;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Surface-to-surface copies at each surface's own internal-resolution factor
++ * (patch 0038). Same factor: an exact CopyTextureRegion, as before. Different
++ * factors (below native a 3D target is smaller than the display buffers):
++ * a draw that samples the source rect bilinearly into the destination rect.
++ * -----------------------------------------------------------------------*/
++static struct {
++    int tried;
++    ID3D12RootSignature* rootsig;
++    ID3D12PipelineState* pso_rgba8;
++    ID3D12PipelineState* pso_rgba16f;
++} g_ld_copy;
++
++static int ld_copy_pipeline(void)
++{
++    if (g_ld_copy.tried) return g_ld_copy.pso_rgba8 != NULL;
++    g_ld_copy.tried = 1;
++    /* uv over the viewport, which ld_surface_copy places so that it covers
++     * the whole source texture mapped into destination pixels; the scissor
++     * keeps the destination rect. */
++    static const char vs_src[] =
++        "void main(uint id : SV_VertexID, out float4 pos : SV_Position,\n"
++        "          out float2 uv : TEXCOORD0) {\n"
++        "    uv = float2((id << 1) & 2, id & 2);\n"
++        "    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
++        "}\n";
++    static const char ps_src[] =
++        "Texture2D src : register(t0);\n"
++        "SamplerState smp : register(s0);\n"
++        "float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
++        "    return src.SampleLevel(smp, uv, 0);\n"
++        "}\n";
++    ID3DBlob *vs = NULL, *ps = NULL, *err = NULL, *sig = NULL;
++    HRESULT hr = D3DCompile(vs_src, sizeof(vs_src) - 1, "copy_vs", NULL, NULL, "main",
++                            "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err);
++    if (SUCCEEDED(hr))
++        hr = D3DCompile(ps_src, sizeof(ps_src) - 1, "copy_ps", NULL, NULL, "main",
++                        "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err);
++    if (SUCCEEDED(hr)) {
++        D3D12_DESCRIPTOR_RANGE range = {0};
++        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++        range.NumDescriptors = 1;
++        D3D12_ROOT_PARAMETER param = {0};
++        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        param.DescriptorTable.NumDescriptorRanges = 1;
++        param.DescriptorTable.pDescriptorRanges = &range;
++        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        D3D12_STATIC_SAMPLER_DESC smp = {0};
++        smp.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
++        smp.AddressU = smp.AddressV = smp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++        smp.MaxLOD = D3D12_FLOAT32_MAX;
++        smp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++        rsd.NumParameters = 1; rsd.pParameters = &param;
++        rsd.NumStaticSamplers = 1; rsd.pStaticSamplers = &smp;
++        hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++        if (SUCCEEDED(hr))
++            hr = g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                                                    sig->lpVtbl->GetBufferSize(sig),
++                                                    &IID_ID3D12RootSignature, (void**)&g_ld_copy.rootsig);
++    }
++    for (int f = 0; f < 2 && SUCCEEDED(hr); f++) {
++        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_ld_copy.rootsig;
++        pd.VS.pShaderBytecode = vs->lpVtbl->GetBufferPointer(vs);
++        pd.VS.BytecodeLength = vs->lpVtbl->GetBufferSize(vs);
++        pd.PS.pShaderBytecode = ps->lpVtbl->GetBufferPointer(ps);
++        pd.PS.BytecodeLength = ps->lpVtbl->GetBufferSize(ps);
++        pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++        pd.SampleMask = 0xFFFFFFFFu;
++        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++        pd.RasterizerState.DepthClipEnable = TRUE;
++        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++        pd.NumRenderTargets = 1;
++        pd.RTVFormats[0] = f ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
++        pd.SampleDesc.Count = 1;
++        hr = g.dev->lpVtbl->CreateGraphicsPipelineState(
++            g.dev, &pd, &IID_ID3D12PipelineState,
++            (void**)(f ? &g_ld_copy.pso_rgba16f : &g_ld_copy.pso_rgba8));
++    }
++    if (FAILED(hr))
++        fprintf(stderr, "[res] scaled-copy pipeline failed hr=0x%08lX %s\n", (unsigned long)hr,
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "");
++    if (vs) vs->lpVtbl->Release(vs);
++    if (ps) ps->lpVtbl->Release(ps);
++    if (sig) sig->lpVtbl->Release(sig);
++    if (err) err->lpVtbl->Release(err);
++    if (FAILED(hr) && g_ld_copy.pso_rgba8) {
++        g_ld_copy.pso_rgba8->lpVtbl->Release(g_ld_copy.pso_rgba8);
++        g_ld_copy.pso_rgba8 = NULL;
++    }
++    return g_ld_copy.pso_rgba8 != NULL;
++}
++
++/* Copy the guest rect (sx, sy, w, h) of surface si to (dx, dy) of surface di.
++ * Both are in RENDER_TARGET state before and after. Returns 1 when copied. */
++static int ld_surface_copy(u32 si, u32 sx, u32 sy, u32 di, u32 dx, u32 dy, u32 w, u32 h)
++{
++    surface_t* S = &g.surfaces[si];
++    surface_t* D = &g.surfaces[di];
++    u32 sl = ld_pxs(sx, S->scale), st = ld_pxs(sy, S->scale);
++    u32 sr = ld_pxs(sx + w, S->scale), sb = ld_pxs(sy + h, S->scale);
++    u32 dl = ld_pxs(dx, D->scale), dt = ld_pxs(dy, D->scale);
++    u32 dr = ld_pxs(dx + w, D->scale), db = ld_pxs(dy + h, D->scale);
++    if (sr > S->pw) sr = S->pw;
++    if (sb > S->ph) sb = S->ph;
++    if (dr > D->pw) dr = D->pw;
++    if (db > D->ph) db = D->ph;
++    if (sl >= sr || st >= sb || dl >= dr || dt >= db) return 0;
++    D3D12_RESOURCE_BARRIER b[2] = {0};
++    for (int k = 0; k < 2; k++) {
++        b[k].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        b[k].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++        b[k].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    }
++    if (S->scale == D->scale || !ld_copy_pipeline() ||
++        (D->fmt != DXGI_FORMAT_R8G8B8A8_UNORM && D->fmt != DXGI_FORMAT_R16G16B16A16_FLOAT)) {
++        /* 1:1 in host pixels: the clipped source rect lands at the destination */
++        D3D12_BOX box = { sl, st, 0, sr, sb, 1 };
++        if (dl + (box.right - box.left) > D->pw) box.right = box.left + D->pw - dl;
++        if (dt + (box.bottom - box.top) > D->ph) box.bottom = box.top + D->ph - dt;
++        b[0].Transition.pResource = S->tex; b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++        b[1].Transition.pResource = D->tex; b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        D3D12_TEXTURE_COPY_LOCATION s = {0}, d = {0};
++        s.pResource = S->tex; s.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        d.pResource = D->tex; d.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++        g.list->lpVtbl->CopyTextureRegion(g.list, &d, dl, dt, 0, &s, &box);
++        for (int k = 0; k < 2; k++) {
++            b[k].Transition.StateBefore = b[k].Transition.StateAfter;
++            b[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        }
++        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        return 1;
++    }
++    if (g.srv_ring_used + 1u > SRV_RING_TABLES) {
++        ld_flush(LD_FLUSH_DESCRIPTOR_RING);
++        if (!g.ready) return 0;
++        g.srv_ring_used = 0;
++        g.smp_ring_used = 0;
++    }
++    const u32 base = g.srv_ring_used++ * SRV_TABLE_SIZE;
++    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
++    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
++    g.srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g.srv_heap, &cpu);
++    g.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(g.srv_heap, &gpu);
++    cpu.ptr += (size_t)base * g.srv_step;
++    gpu.ptr += (u64)base * g.srv_step;
++    g.dev->lpVtbl->CopyDescriptorsSimple(g.dev, 1, cpu, srv_cpu(SRV_SURFACE_BASE + si),
++                                         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    b[0].Transition.pResource = S->tex;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++    /* Viewport over the whole source texture in destination pixels: uv is then
++     * the source coordinate of every destination pixel; the scissor keeps the
++     * destination rect. */
++    const float kx = (float)(sr - sl) / (float)(dr - dl), ky = (float)(sb - st) / (float)(db - dt);
++    D3D12_VIEWPORT vp = { (float)dl - (float)sl / kx, (float)dt - (float)st / ky,
++                          (float)S->pw / kx, (float)S->ph / ky, 0.0f, 1.0f };
++    const D3D12_RECT sc = { (LONG)dl, (LONG)dt, (LONG)dr, (LONG)db };
++    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(LD_SWAP_BUFFERS + di);
++    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
++    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
++    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
++    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ld_copy.rootsig);
++    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
++    g.list->lpVtbl->SetPipelineState(g.list, D->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
++                                                 ? g_ld_copy.pso_rgba16f : g_ld_copy.pso_rgba8);
++    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
++    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++    { static u32 n = 0;
++      if (n++ < 8)
++          fprintf(stderr, "[res] scaled copy surface %u (x%.3g) -> %u (x%.3g), guest %ux%u\n",
++                  si, (double)S->scale, di, (double)D->scale, w, h); }
++    return 1;
++}
++
+ /* NV3089 scaled-image blit whose SOURCE is a live surface: the pixels exist
+  * only on the GPU, so the guest-memory copy in cellGcmSys moves black. GH3
+  * copies its 1040x592 scene out to 0x1651500 every frame, runs its post pass
+@@ -4058,6 +4305,18 @@ int rsx_live_draw_blit(u32 src_loc, u32 src_abs, u32 src_pitch,
+ {
+     if (g.ready) ld_begin_recording();
+     const int r = ld_blit_gpu(src_loc, src_abs, src_pitch, dst_loc, dst_abs, dst_pitch, w, h);
++    /* Copies out of a live surface are where a fixed internal size would show
++     * (patch 0038): name the first few. Tekken 5 DR makes none (2D blits are
++     * texture uploads from guest memory, r == -1). */
++    if (r != -1) {
++        static u32 n = 0;
++        if (n < 16) {
++            n++;
++            fprintf(stderr, "[res] 2D blit from a live surface %u:0x%X -> %u:0x%X %ux%u: %s (%d)\n",
++                    src_loc, src_abs, dst_loc, dst_abs, w, h,
++                    r == 1 ? "copied on the GPU" : "not copied", r);
++        }
++    }
+     if (s_csv_file && s_csv_gate_open) {
+         fprintf(s_csv_file, "#blit,%u,%u:0x%X/%u,%u:0x%X/%u,%ux%u,gpu=%d\n", g_ld_frames,
+                 src_loc, src_abs, src_pitch, dst_loc, dst_abs, dst_pitch, w, h, r);
+@@ -4145,31 +4404,14 @@ int rsx_live_draw_resolve_blit(u32 src_loc, u32 src_abs, u32 src_pitch, u32 ds,
+     if (dy + h > dst->h) h = dst->h - dy;
+     if (sx + w > g.surfaces[si].w) w = g.surfaces[si].w - sx;
+     if (sy + h > g.surfaces[si].h) h = g.surfaces[si].h - sy;
+-    ID3D12Resource* s = g.surfaces[si].tex;
+-    D3D12_RESOURCE_BARRIER b[2] = {0};
+-    for (int q = 0; q < 2; q++) {
+-        b[q].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+-        b[q].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+-        b[q].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    }
+-    b[0].Transition.pResource = s;        b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    b[1].Transition.pResource = dst->tex; b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
+-    D3D12_TEXTURE_COPY_LOCATION sl = {0}, dl = {0};
+-    sl.pResource = s;        sl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    dl.pResource = dst->tex; dl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { ld_px(sx), ld_px(sy), 0, ld_px(sx + w), ld_px(sy + h), 1 };
+-    if (box.right > g.surfaces[si].pw) box.right = g.surfaces[si].pw;
+-    if (box.bottom > g.surfaces[si].ph) box.bottom = g.surfaces[si].ph;
+-    if (ld_px(dx) + (box.right - box.left) > dst->pw) box.right = box.left + dst->pw - ld_px(dx);
+-    if (ld_px(dy) + (box.bottom - box.top) > dst->ph) box.bottom = box.top + dst->ph - ld_px(dy);
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dl, ld_px(dx), ld_px(dy), 0, &sl, &box);
+-    for (int q = 0; q < 2; q++) {
+-        b[q].Transition.StateBefore = b[q].Transition.StateAfter;
+-        b[q].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    }
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    if (!ld_surface_copy((u32)si, sx, sy, slot, dx, dy, w, h)) return 0;
+     ld_surface_note_write(slot, LD_SURFACE_WRITE_COPY);
++    { static u32 n = 0;
++      if (n < 8) {
++          n++;
++          fprintf(stderr, "[res] scaled 2D blit (resolve) %u:0x%X -> display buffer %u, %ux%u\n",
++                  src_loc, src_abs, (u32)bi, w, h);
++      } }
+     if (s_csv_file && s_csv_gate_open) {
+         fprintf(s_csv_file, "#resolve,%u,%u:0x%X,%u:0x%X,%u,%u,%ux%u\n", g_ld_frames,
+                 src_loc, src_abs, dst_loc, dst_abs, sx, sy, w, h);
+@@ -4215,33 +4457,7 @@ static int ld_blit_gpu(u32 src_loc, u32 src_abs, u32 src_pitch,
+     }
+     if (di == si) return -4;
+     if (g.surfaces[di].fmt != g.surfaces[si].fmt) return -5;
+-    ID3D12Resource* src = g.surfaces[si].tex;
+-    ID3D12Resource* dst = g.surfaces[di].tex;
+-    D3D12_RESOURCE_BARRIER b[2] = {0};
+-    for (int k = 0; k < 2; k++) {
+-        b[k].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+-        b[k].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+-        b[k].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    }
+-    b[0].Transition.pResource = src; b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    b[1].Transition.pResource = dst; b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
+-    D3D12_TEXTURE_COPY_LOCATION s = {0}, d = {0};
+-    s.pResource = src; s.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    d.pResource = dst; d.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-    D3D12_BOX box = { ld_px(sx), ld_px(sy), 0, ld_px(sx + w), ld_px(sy + h), 1 };
+-    if (box.right > g.surfaces[si].pw) box.right = g.surfaces[si].pw;
+-    if (box.bottom > g.surfaces[si].ph) box.bottom = g.surfaces[si].ph;
+-    if (ld_px(dx) + (box.right - box.left) > g.surfaces[di].pw)
+-        box.right = box.left + g.surfaces[di].pw - ld_px(dx);
+-    if (ld_px(dy) + (box.bottom - box.top) > g.surfaces[di].ph)
+-        box.bottom = box.top + g.surfaces[di].ph - ld_px(dy);
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &d, ld_px(dx), ld_px(dy), 0, &s, &box);
+-    for (int k = 0; k < 2; k++) {
+-        b[k].Transition.StateBefore = b[k].Transition.StateAfter;
+-        b[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    }
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    if (!ld_surface_copy((u32)si, sx, sy, (u32)di, dx, dy, w, h)) return -6;
+     ld_surface_note_write((u32)di, LD_SURFACE_WRITE_COPY);
+     return 1;
+ }
+@@ -4283,7 +4499,7 @@ static D3D12_CPU_DESCRIPTOR_HANDLE dsv_handle(u32 slot)
+ }
+ 
+ /* Returns DSV slot 1+i. Slot 0 is the legacy shared depth fallback. */
+-static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
++static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h, float scale)
+ {
+     if (!honor_zeta_track()) return 0;
+     /* The DSV must cover the complete live framebuffer/viewport it is bound
+@@ -4297,7 +4513,7 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+     for (u32 i = 0; i < g.n_zdepths; i++) {
+         zdepth_t* z = &g.zdepths[i];
+         if (z->location == location && z->offset == offset) {
+-            if (z->w >= want_w && z->h >= want_h) return 1 + i;
++            if (z->w >= want_w && z->h >= want_h && z->scale == scale) return 1 + i;
+             slot = i;
+             break;
+         }
+@@ -4313,8 +4529,9 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+         if (want_w < old->w) want_w = old->w;
+         if (want_h < old->h) want_h = old->h;
+         fprintf(stderr,
+-                "[zetatrack] live zeta %u:0x%X outgrown %ux%u -> %ux%u\n",
+-                location, offset, old->w, old->h, want_w, want_h);
++                "[zetatrack] live zeta %u:0x%X outgrown %ux%u -> %ux%u (x%.3g -> x%.3g)\n",
++                location, offset, old->w, old->h, want_w, want_h,
++                (double)old->scale, (double)scale);
+         if (old->tex) {
+             /* Draws already recorded in the open command list may still
+              * reference this DSV.  D3D12 command lists do not retain resource
+@@ -4333,8 +4550,8 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC rd = {0};
+     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    rd.Width = ld_px(want_w);
+-    rd.Height = ld_px(want_h);
++    rd.Width = ld_pxs(want_w, scale);
++    rd.Height = ld_pxs(want_h, scale);
+     rd.DepthOrArraySize = 1;
+     rd.MipLevels = 1;
+     rd.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
+@@ -4361,6 +4578,7 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+     z->offset = offset;
+     z->w = want_w;
+     z->h = want_h;
++    z->scale = scale;
+     z->had_write = 0;
+     z->snapshot_valid = 0;
+     z->snapshot_w = rt_w ? rt_w : want_w;
+@@ -4379,8 +4597,8 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+      * not a depth-resource copy operation. */
+     D3D12_RESOURCE_DESC snapshot_rd = {0};
+     snapshot_rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    snapshot_rd.Width = ld_px(z->snapshot_w);
+-    snapshot_rd.Height = ld_px(z->snapshot_h);
++    snapshot_rd.Width = ld_pxs(z->snapshot_w, scale);
++    snapshot_rd.Height = ld_pxs(z->snapshot_h, scale);
+     snapshot_rd.DepthOrArraySize = 1;
+     snapshot_rd.MipLevels = 1;
+     snapshot_rd.Format = DXGI_FORMAT_R32_FLOAT;
+@@ -4410,9 +4628,9 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h)
+     z->cleared = 1;
+     fprintf(stderr,
+             "[zetatrack] live new #%u %u:0x%X backing=%ux%u "
+-            "clip=%ux%u canvas=%ux%u\n",
++            "clip=%ux%u canvas=%ux%u host x%.3g\n",
+             slot, location, offset, want_w, want_h,
+-            rt_w, rt_h, g.width, g.height);
++            rt_w, rt_h, g.width, g.height, (double)scale);
+     if (slot == g.n_zdepths) g.n_zdepths++;
+     return 1 + slot;
+ }
+@@ -4472,8 +4690,8 @@ static int zdepth_snapshot(u32 slot)
+     g.list->lpVtbl->SetComputeRootDescriptorTable(
+         g.list, 1, destination_table);
+     g.list->lpVtbl->Dispatch(
+-        g.list, (ld_px(z->snapshot_w) + 7u) / 8u,
+-        (ld_px(z->snapshot_h) + 7u) / 8u, 1);
++        g.list, (ld_pxs(z->snapshot_w, z->scale) + 7u) / 8u,
++        (ld_pxs(z->snapshot_h, z->scale) + 7u) / 8u, 1);
+ 
+     D3D12_RESOURCE_BARRIER uav_done = {0};
+     uav_done.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+@@ -8920,7 +9138,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     rsx_dsp_get_surface(&g.rsx, &sf);
+     rsx_dsp_get_viewport(&g.rsx, &vp);
+     const u32 current_zslot = g.depth
+-        ? zdepth_get(sf.zeta_location, sf.zeta_offset, sf.clip_w, sf.clip_h)
++        ? zdepth_get(sf.zeta_location, sf.zeta_offset, sf.clip_w, sf.clip_h,
++                     g.surfaces[target].scale)
+         : 0;
+     u32 slots[SRV_TABLE_SIZE], smp_slots[SMP_TABLE_SIZE];
+     u32 surf_used[SRV_TABLE_SIZE], n_surf_used = 0;
+@@ -9328,7 +9547,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         memcpy(s_cb_xf, xf, sizeof(xf));
+     }
+ 
+-    D3D12_VIEWPORT dvp = {0, 0, W * g_ld_res_scale, H * g_ld_res_scale, 0.0f, 1.0f};
++    /* The whole surface in host pixels (W x H guest pixels times its factor):
++     * the vertex shader maps the guest viewport into it (xf above). */
++    const float tscale = g.surfaces[target].scale;
++    D3D12_VIEWPORT dvp = {0, 0, W * tscale, H * tscale, 0.0f, 1.0f};
++    if (g.surfaces[target].w == (u32)W && g.surfaces[target].h == (u32)H) {
++        dvp.Width = (float)g.surfaces[target].pw;      /* exactly the rounded host size */
++        dvp.Height = (float)g.surfaces[target].ph;
++    }
+     D3D12_RECT sc = {
+         0, 0,
+         (LONG)(g.surfaces[target].w ? g.surfaces[target].w : g.width),
+@@ -9357,9 +9583,21 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+             if (sc.bottom < sc.top)      sc.bottom = sc.top;
+         }
+     }
+-    if (g_ld_res_scale != 1.0f) {   /* guest pixels -> host pixels */
+-        sc.left = (LONG)ld_px((u32)sc.left);   sc.top = (LONG)ld_px((u32)sc.top);
+-        sc.right = (LONG)ld_px((u32)sc.right); sc.bottom = (LONG)ld_px((u32)sc.bottom);
++    if (tscale != 1.0f) {   /* guest pixels -> host pixels */
++        sc.left = (LONG)ld_pxs((u32)sc.left, tscale);   sc.top = (LONG)ld_pxs((u32)sc.top, tscale);
++        sc.right = (LONG)ld_pxs((u32)sc.right, tscale); sc.bottom = (LONG)ld_pxs((u32)sc.bottom, tscale);
++        /* Below native: one host pixel more to the right and below. Most
++         * stages draw the 3D pass into part of the 2048x1440 target (1536x1024
++         * .. 1792x1440, scissor = viewport) and the game's downsample samples
++         * up to its edge; a host texel is then 1.3-2 guest texels wide and the
++         * bilinear tap at the last column/row reached the cleared black
++         * outside it (Lowest: right column ~20 % darker, bottom row ~6 %).
++         * The extra pixel gets the scene's own continuation (the guest
++         * viewport is not a clip edge here; only the scissor is). */
++        if (tscale < 1.0f) {
++            if (sc.right > sc.left && sc.right < (LONG)g.surfaces[target].pw) sc.right += 1;
++            if (sc.bottom > sc.top && sc.bottom < (LONG)g.surfaces[target].ph) sc.bottom += 1;
++        }
+     }
+     g.list->lpVtbl->RSSetViewports(g.list, 1, &dvp);
+     g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+@@ -9576,7 +9814,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+         rsx_dsp_surface sf;
+         rsx_dsp_get_surface(&g.rsx, &sf);
+         const u32 zslot = zdepth_get(sf.zeta_location, sf.zeta_offset,
+-                                     sf.clip_w, sf.clip_h);
++                                     sf.clip_w, sf.clip_h, g.surfaces[target].scale);
+         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_handle(zslot);
+         D3D12_CLEAR_FLAGS clear_flags = (D3D12_CLEAR_FLAGS)0;
+         if (mask & RSX_CLEAR_DEPTH)
+@@ -9782,10 +10020,10 @@ static int make_depth_snapshot_pipeline(void)
+ /* ---------------------------------------------------------------------------
+  * PC display: a swap chain that follows the window's client size, a scaled and
+  * letterboxed present blit, vsync on/off and exclusive fullscreen.
+- *   PS3_RES_SCALE=<f>         internal resolution (see ld_px)
+- *   PS3_RENDER_SCALE=<f>      0.25..1: below the guest size, for weak GPUs
+- *                             (multiplies PS3_RES_SCALE; RSX_GPU_TIME=1 or
+- *                             PS3_FRAMELOG measures the GPU time per frame)
++ *   PS3_INTERNAL_RES=<step>   internal resolution, rsx_internal_res_scale()
++ *                             (aliases PS3_RES_SCALE, PS3_RENDER_SCALE;
++ *                             RSX_GPU_TIME=1 or PS3_FRAMELOG measure the GPU
++ *                             time per frame)
+  *   PS3_VSYNC=0               present without waiting for vblank (tearing
+  *                             allowed when the OS supports it)
+  *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
+@@ -9816,31 +10054,94 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+ #define LD_PRESENT_FLAGS \
+     ((!g_ldp.vsync && g_ldp.tearing && !g_ldp.fs_exclusive) ? DXGI_PRESENT_ALLOW_TEARING : 0u)
+ 
+-static void ld_display_config(void)
++/* ---------------------------------------------------------------------------
++ * Internal resolution (patch 0038): ONE setting, like an emulator's.
++ *
++ *   PS3_INTERNAL_RES = lowest | lower | native | 1080p | 1440p | 4k
++ *                      (0.5x / 0.75x / 1x = 720p / 1.5x / 2x / 3x)
++ *                      or a factor 0.25..4, or an output height (360..2880)
++ *
++ * The launcher's Settings -> Internal resolution writes it. The two older
++ * switches are aliases read the same way: PS3_RES_SCALE (patch 0010, higher
++ * resolutions) and PS3_RENDER_SCALE (patch 0027, the launcher's former
++ * "3D resolution"); both set multiply, PS3_INTERNAL_RES wins over both.
++ * Only host pixels change -- the guest's memory, its commands and therefore
++ * the game state are the same at every step (netplay peers may differ).
++ * The window's size does not depend on it (Display setting, DPI); the present
++ * scales the picture to the window. */
++static float ld_res_parse(const char* e, int* ok)
++{
++    static const struct { const char* name; float scale; } steps[] = {
++        {"lowest", 0.5f}, {"lower", 0.75f}, {"native", 1.0f}, {"original", 1.0f},
++        {"720p", 1.0f}, {"1080p", 1.5f}, {"1440p", 2.0f}, {"4k", 3.0f}, {"2160p", 3.0f},
++    };
++    *ok = 0;
++    if (!e || !e[0]) return 1.0f;
++    for (u32 i = 0; i < sizeof(steps) / sizeof(steps[0]); i++)
++        if (_stricmp(e, steps[i].name) == 0) { *ok = 1; return steps[i].scale; }
++    char* end = NULL;
++    float s = (float)strtod(e, &end);
++    if (!end || end == e || !(s > 0.0f)) return 1.0f;
++    if (s >= 100.0f) s /= 720.0f;              /* an output height: 1080 -> 1.5 */
++    *ok = 1;
++    return s;
++}
++
++static const char* g_ld_res_source = "default";
++
++float rsx_internal_res_scale(void)
+ {
+-    const char* e = getenv("PS3_RES_SCALE");
++    static float cached = 0.0f;
++    if (cached > 0.0f) return cached;
+     float s = 1.0f;
++    int ok = 0;
++    const char* e = getenv("PS3_INTERNAL_RES");
+     if (e && e[0]) {
+-        s = (float)atof(e);
+-        if (s >= 240.0f) s /= 720.0f;          /* 1080 / 1440 / 2160 */
+-        if (!(s >= 1.0f)) s = 1.0f;
+-        if (s > 4.0f) s = 4.0f;
+-    }
+-    /* PS3_RENDER_SCALE=<f> (0.25..1, or 540/360 = target height over 720):
+-     * the same mechanism below the guest size, for graphics cards that cannot
+-     * fill 1280x720 at 60 fps. Multiplies PS3_RES_SCALE. Only host pixels
+-     * change -- the guest's memory, its commands and therefore the game state
+-     * are the same at every scale (netplay peers may differ). */
+-    e = getenv("PS3_RENDER_SCALE");
+-    if (e && e[0]) {
+-        float r = (float)atof(e);
+-        if (r >= 100.0f) r /= 720.0f;
+-        if (!(r > 0.0f)) r = 1.0f;
+-        if (r < 0.25f) r = 0.25f;
+-        if (r > 1.0f) r = 1.0f;
+-        s *= r;
+-    }
++        s = ld_res_parse(e, &ok);
++        g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
++        if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
++    } else {
++        const char* a = getenv("PS3_RES_SCALE");
++        const char* b = getenv("PS3_RENDER_SCALE");
++        int oka = 0, okb = 0;
++        const float sa = ld_res_parse(a, &oka), sb = ld_res_parse(b, &okb);
++        s = (oka ? sa : 1.0f) * (okb ? sb : 1.0f);
++        if (oka || okb)
++            g_ld_res_source = oka && okb ? "PS3_RES_SCALE x PS3_RENDER_SCALE"
++                                         : oka ? "PS3_RES_SCALE" : "PS3_RENDER_SCALE";
++    }
++    if (!(s >= 0.25f)) s = 0.25f;
++    if (s > 4.0f) s = 4.0f;
++    cached = s;
++    return s;
++}
++
++/* "1080p (1.5x)" for logs and the window title. */
++const char* rsx_internal_res_label(void)
++{
++    static char label[48];
++    const float s = rsx_internal_res_scale();
++    if (!label[0]) {
++        if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
++        else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
++        else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
++        else if (s == 1.5f)   snprintf(label, sizeof label, "1080p (1.5x)");
++        else if (s == 2.0f)   snprintf(label, sizeof label, "1440p (2x)");
++        else if (s == 3.0f)   snprintf(label, sizeof label, "4K (3x)");
++        else snprintf(label, sizeof label, "%up (%.3gx)", (unsigned)(720.0f * s + 0.5f), (double)s);
++    }
++    return label;
++}
++
++static void ld_display_config(void)
++{
++    const char* e;
++    const float s = rsx_internal_res_scale();
+     g_ld_res_scale = s;
++    fprintf(stderr, "[display] internal resolution %s from %s: display buffers %ux%u%s\n",
++            rsx_internal_res_label(), g_ld_res_source,
++            ld_pxs(g.width, s < 1.0f ? 1.0f : s), ld_pxs(g.height, s < 1.0f ? 1.0f : s),
++            s < 1.0f ? ", full-screen 3D targets scaled below native" : "");
+     e = getenv("PS3_VSYNC");
+     g_ldp.vsync = !(e && e[0] == '0');
+     e = getenv("PS3_FULLSCREEN");
+@@ -9859,7 +10160,7 @@ static void ld_display_config(void)
+         f5->lpVtbl->Release(f5);
+     }
+     g_ldp.swap_flags = g_ldp.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+-    fprintf(stderr, "[display] res_scale=%.3g vsync=%d tearing=%d fullscreen=%s filter=%s\n",
++    fprintf(stderr, "[display] res_scale=%.3g vsync=%d tearing=%d fullscreen=%s present filter=%s\n",
+             (double)g_ld_res_scale, g_ldp.vsync, g_ldp.tearing,
+             g_ldp.exclusive_cfg ? "exclusive" : "borderless", g_ldp.filter_point ? "point" : "linear");
+ }
+@@ -9870,6 +10171,18 @@ static void ld_display_client_size(HWND hwnd, u32 fallback_w, u32 fallback_h, u3
+ {
+     RECT rc;
+     *w = fallback_w; *h = fallback_h;
++    /* RSX_TEST_CLIENT_SIZE=WxH (tests, patch 0038): the swap chain as if the
++     * client area had that size -- a 2560x1440 or 3840x2160 borderless
++     * fullscreen, a 16:10 or 21:9 monitor -- while the test window stays
++     * minimised; RSX_TEST_BB_SHOT reads the result back. */
++    { static int tw = -1, th = 0;
++      if (tw < 0) {
++          const char* e = getenv("RSX_TEST_CLIENT_SIZE");
++          tw = 0;
++          if (e && sscanf(e, "%dx%d", &tw, &th) != 2) tw = 0;
++          if (tw <= 0 || th <= 0) tw = 0;
++      }
++      if (tw > 0) { *w = (u32)tw; *h = (u32)th; return; } }
+     if (hwnd && !IsIconic(hwnd) && GetClientRect(hwnd, &rc) &&
+         rc.right > rc.left && rc.bottom > rc.top) {
+         *w = (u32)(rc.right - rc.left);
+@@ -9885,11 +10198,24 @@ static int ld_display_pipeline(void)
+         "    uv = float2((id << 1) & 2, id & 2);\n"
+         "    pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+         "}\n";
++    /* Larger picture than the window (e.g. 4K internal in a 1280x720 window,
++     * 1440p on a 1080p monitor): n x n bilinear taps spread over each window
++     * pixel's footprint (patch 0038) -- an exact box filter for the integer
++     * ratios (2x, 3x), instead of one bilinear tap that skips texels and
++     * shimmers. Same size or smaller: one tap, as before. */
+     static const char ps_src[] =
+         "Texture2D src : register(t0);\n"
+         "SamplerState smp : register(s0);\n"
++        "cbuffer k : register(b0) { float2 tap_step; float taps; float pad; };\n"
+         "float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {\n"
+-        "    return float4(src.SampleLevel(smp, uv, 0).rgb, 1.0);\n"
++        "    if (taps < 2.0) return float4(src.SampleLevel(smp, uv, 0).rgb, 1.0);\n"
++        "    const int n = (int)taps;\n"
++        "    const float2 o0 = uv - 0.5 * (taps - 1.0) * tap_step;\n"
++        "    float3 acc = 0;\n"
++        "    for (int y = 0; y < n; y++)\n"
++        "        for (int x = 0; x < n; x++)\n"
++        "            acc += src.SampleLevel(smp, o0 + tap_step * float2(x, y), 0).rgb;\n"
++        "    return float4(acc / (taps * taps), 1.0);\n"
+         "}\n";
+     ID3DBlob *vs = NULL, *ps = NULL, *err = NULL;
+     if (FAILED(D3DCompile(vs_src, sizeof(vs_src) - 1, "present_vs", NULL, NULL, "main",
+@@ -9905,11 +10231,15 @@ static int ld_display_pipeline(void)
+     D3D12_DESCRIPTOR_RANGE range = {0};
+     range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+     range.NumDescriptors = 1;
+-    D3D12_ROOT_PARAMETER param = {0};
+-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+-    param.DescriptorTable.NumDescriptorRanges = 1;
+-    param.DescriptorTable.pDescriptorRanges = &range;
+-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    D3D12_ROOT_PARAMETER param[2] = {0};
++    param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    param[0].DescriptorTable.NumDescriptorRanges = 1;
++    param[0].DescriptorTable.pDescriptorRanges = &range;
++    param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++    param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++    param[1].Constants.ShaderRegister = 0;
++    param[1].Constants.Num32BitValues = 4;
++    param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+     D3D12_STATIC_SAMPLER_DESC smp = {0};
+     smp.Filter = g_ldp.filter_point ? D3D12_FILTER_MIN_MAG_MIP_POINT
+                                     : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+@@ -9917,7 +10247,7 @@ static int ld_display_pipeline(void)
+     smp.MaxLOD = D3D12_FLOAT32_MAX;
+     smp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+     D3D12_ROOT_SIGNATURE_DESC rsd = {0};
+-    rsd.NumParameters = 1; rsd.pParameters = &param;
++    rsd.NumParameters = 2; rsd.pParameters = param;
+     rsd.NumStaticSamplers = 1; rsd.pStaticSamplers = &smp;
+     ID3DBlob* sig = NULL;
+     HRESULT hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+@@ -10038,6 +10368,76 @@ static void ld_display_sync(void)
+             (unsigned long)hr);
+ }
+ 
++/* RSX_TEST_BB_SHOT=<file> (tests, patch 0038): a tool writes an output path
++ * into <file>; the next present reads the BACKBUFFER back after the present
++ * blit (letterbox, scaling, downscale filter: what the window shows) and
++ * writes it there as PPM, then deletes <file>. bb is in COPY_DEST. */
++static void ld_test_backbuffer_shot(ID3D12Resource* bb)
++{
++    static const char* req = (const char*)-1;
++    if (req == (const char*)-1) req = getenv("RSX_TEST_BB_SHOT");
++    if (!req || !req[0] || GetFileAttributesA(req) == INVALID_FILE_ATTRIBUTES) return;
++    char outp[MAX_PATH] = {0};
++    FILE* f = fopen(req, "rb");
++    if (!f) return;
++    size_t n = fread(outp, 1, sizeof outp - 1, f);
++    fclose(f);
++    while (n && (outp[n - 1] == '\n' || outp[n - 1] == '\r' || outp[n - 1] == ' ')) n--;
++    outp[n] = '\0';
++    DeleteFileA(req);
++    if (!outp[0]) return;
++    D3D12_RESOURCE_DESC bd;
++    bb->lpVtbl->GetDesc(bb, &bd);
++    const u32 width = (u32)bd.Width, height = bd.Height;
++    const u32 pitch = (width * 4u + 255u) & ~255u;
++    D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
++    D3D12_RESOURCE_DESC rd = {0};
++    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = (UINT64)pitch * height;
++    rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++    rd.Format = DXGI_FORMAT_UNKNOWN; rd.SampleDesc.Count = 1;
++    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    ID3D12Resource* rb = NULL;
++    if (FAILED(g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++            D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void**)&rb)))
++        return;
++    D3D12_RESOURCE_BARRIER b = {0};
++    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b.Transition.pResource = bb;
++    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
++    src.pResource = bb; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    dst.pResource = rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++    dst.PlacedFootprint.Footprint.Format = bd.Format;
++    dst.PlacedFootprint.Footprint.Width = width;
++    dst.PlacedFootprint.Footprint.Height = height;
++    dst.PlacedFootprint.Footprint.Depth = 1;
++    dst.PlacedFootprint.Footprint.RowPitch = pitch;
++    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    ld_flush(LD_FLUSH_READBACK);
++    u8* px = NULL;
++    D3D12_RANGE rr = {0, (SIZE_T)pitch * height};
++    if (SUCCEEDED(rb->lpVtbl->Map(rb, 0, &rr, (void**)&px))) {
++        FILE* o = fopen(outp, "wb");
++        if (o) {
++            fprintf(o, "P6\n%u %u\n255\n", width, height);
++            for (u32 y = 0; y < height; y++)
++                for (u32 x = 0; x < width; x++)
++                    fwrite(px + (SIZE_T)y * pitch + x * 4u, 1, 3, o);
++            fclose(o);
++            fprintf(stderr, "[display] backbuffer %ux%u written to %s\n", width, height, outp);
++        }
++        D3D12_RANGE wr = {0, 0};
++        rb->lpVtbl->Unmap(rb, 0, &wr);
++    }
++    rb->lpVtbl->Release(rb);
++}
++
+ /* Replaces the present's CopyResource(bb, src). Same contract: src is in
+  * COPY_SOURCE, bb in COPY_DEST, and both are left that way. When the sizes
+  * match this IS that copy; otherwise src is drawn scaled into the backbuffer,
+@@ -10094,6 +10494,28 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     g.list->lpVtbl->SetDescriptorHeaps(g.list, 1, &g_ldp.heap);
+     g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ldp.rootsig);
+     g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
++    {
++        /* downscale taps: n per axis = the source/window ratio rounded up (max 4) */
++        const float rx = (float)sd.Width / vw, ry = (float)sd.Height / vh;
++        const float r = rx > ry ? rx : ry;
++        float taps = 1.0f;
++        if (!g_ldp.filter_point && r > 1.01f) {
++            taps = (float)(int)(r + 0.99f);
++            if (taps > 4.0f) taps = 4.0f;
++        }
++        const float k[4] = { 1.0f / (vw * taps), 1.0f / (vh * taps), taps, 0.0f };
++        g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 1, 4, k, 0);
++        static float last_taps = -1.0f;
++        if (taps != last_taps) {
++            last_taps = taps;
++            fprintf(stderr, "[display] present %llux%u -> %.0fx%.0f in a %llux%u window: %s\n",
++                    (unsigned long long)sd.Width, sd.Height, vw, vh,
++                    (unsigned long long)bd.Width, bd.Height,
++                    taps > 1.0f ? (taps == 2.0f ? "downscale, 2x2 taps"
++                                   : taps == 3.0f ? "downscale, 3x3 taps" : "downscale, 4x4 taps")
++                                : g_ldp.filter_point ? "point" : "bilinear");
++        }
++    }
+     g.list->lpVtbl->SetPipelineState(g.list, g_ldp.pso);
+     g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
+     g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+@@ -10445,7 +10867,11 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+         D3D12_HEAP_PROPERTIES dhp = {0}; dhp.Type = D3D12_HEAP_TYPE_DEFAULT;
+         D3D12_RESOURCE_DESC drd = {0};
+         drd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-        drd.Width = ld_px(width); drd.Height = ld_px(height); drd.DepthOrArraySize = 1;
++        /* legacy shared depth (RSX_NO_ZETA_TRACK / zeta table full): the
++         * display buffers' factor, never below native (patch 0038) */
++        const float dscale = g_ld_res_scale < 1.0f ? 1.0f : g_ld_res_scale;
++        drd.Width = ld_pxs(width, dscale); drd.Height = ld_pxs(height, dscale);
++        drd.DepthOrArraySize = 1;
+         drd.MipLevels = 1; drd.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT; drd.SampleDesc.Count = 1;
+         drd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+         D3D12_CLEAR_VALUE dcv = {0}; dcv.Format = drd.Format; dcv.DepthStencil.Depth = 1.0f;
+@@ -10511,6 +10937,7 @@ void rsx_live_draw_set_display_buffer(
+     display->height = height;
+     display->valid = width && height;
+     display->resolve_src = 0;
++    g_ld_scale_gen++;          /* below native a display buffer keeps the guest size */
+     fprintf(stderr,
+             "[live-draw] display buffer %u = loc%u:0x%08X pitch=%u %ux%u\n",
+             buffer_id, location, offset, pitch, width, height);
+@@ -11473,6 +11900,7 @@ void rsx_live_draw_present(u32 buffer_id)
+     g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
+ 
+     ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);
++    ld_test_backbuffer_shot(bb);
+ 
+     bar[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     bar[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+@@ -11565,7 +11993,7 @@ void rsx_live_draw_present(u32 buffer_id)
+         const u64 n = g_gt.done_lists - g_gt.stat_lists;
+         if (gl)
+             fprintf(stderr, "[gpu-time] %.2f ms of GPU per frame over the last 600 frames "
+-                            "(%llu command lists), render scale %.3g\n",
++                            "(%llu command lists), internal resolution x%.3g\n",
+                     (double)(g_gt.done_ticks - g_gt.stat_ticks) * g_gt.us_per_tick / 1000.0 / 600.0,
+                     (unsigned long long)n, (double)g_ld_res_scale);
+         g_gt.stat_ticks = g_gt.done_ticks; g_gt.stat_lists = g_gt.done_lists;
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 71cd32b..8a78538 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -138,11 +138,17 @@ u32  rsx_live_draw_get_last_draws(void);
+  * recomputes its selected interval from the preserved raw QPC samples. */
+ double rsx_live_draw_get_present_fps(void);
+ 
+-/* PC display options (PS3_RES_SCALE, PS3_FULLSCREEN=exclusive). The scale is
++/* PC display options (PS3_INTERNAL_RES, PS3_FULLSCREEN=exclusive). The scale is
+  * the internal-resolution factor, 1.0 when unset. fullscreen_request returns 1
+  * when exclusive fullscreen is configured and the request was queued for the
+  * present thread, 0 when the window should go borderless itself. */
+ float rsx_live_draw_get_res_scale(void);
++/* The internal-resolution setting (patch 0038): PS3_INTERNAL_RES = lowest |
++ * lower | native | 1080p | 1440p | 4k (0.5/0.75/1/1.5/2/3), a factor or an
++ * output height; PS3_RES_SCALE and PS3_RENDER_SCALE are aliases. Parsed once,
++ * callable before the renderer starts. The label is "1080p (1.5x)" etc. */
++float rsx_internal_res_scale(void);
++const char* rsx_internal_res_label(void);
+ int  rsx_live_draw_fullscreen_request(int on);
+ 
+ /* End-only persistence hook used by the window-close path. Safe to call more
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 4b77e21..409182a 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -401,26 +401,15 @@ int rsx_null_backend_init(u32 width, u32 height, const char* title)
+     MONITORINFO target_mi = { sizeof(target_mi) };
+     const int have_mi = GetMonitorInfoW(target_mon, &target_mi) != 0;
+ 
+-    /* With PS3_RES_SCALE the window opens at the scaled client size (aspect
+-     * kept) as far as the work area allows; it stays resizable and the
+-     * live-draw present letterboxes. s_state keeps the guest size. */
+-    {
+-        const char* e = getenv("PS3_RES_SCALE");
+-        float sc = e ? (float)atof(e) : 1.0f;
+-        if (sc >= 240.0f) sc /= (float)height;
+-        RECT wa = target_mi.rcWork;
+-        if (sc > 1.0f && have_mi) {
+-            const float fit_w = (float)(wa.right - wa.left) * 0.95f / (float)width;
+-            const float fit_h = (float)(wa.bottom - wa.top) * 0.90f / (float)height;
+-            if (sc > fit_w) sc = fit_w;
+-            if (sc > fit_h) sc = fit_h;
+-            if (sc > 1.0f) { width = (u32)(width * sc); height = (u32)(height * sc); }
+-        }
+-    }
++    /* The window's size does not follow the internal resolution (patch 0038;
++     * 0010 opened it at the PS3_RES_SCALE size): it is 1280x720 at the
++     * monitor's display scaling, the launcher's Display setting or the player
++     * resizes it, and the live-draw present scales and letterboxes the picture
++     * to whatever the client area is. s_state keeps the guest size. */
+ 
+     /* Client size at the monitor's scale (1280x720 at 100 %), kept inside its
+      * work area with the aspect; then the frame for that DPI. */
+-    u32 cw = width, chh = height;            /* PS3_RES_SCALE may have enlarged these */
++    u32 cw = width, chh = height;
+     if (dpi > 96) {
+         const u32 dw = (u32)((u64)s_state.width * dpi / 96), dh = (u32)((u64)s_state.height * dpi / 96);
+         if (dw > cw) { cw = dw; chh = dh; }
+@@ -524,17 +513,15 @@ int rsx_null_backend_pump_messages(void)
+         if (fps <= 0.0)
+             fps = (s_state.frame_count - s_state.title_frames) * 1000.0 /
+                   (double)(now - s_state.title_time);
+-        extern float rsx_live_draw_get_res_scale(void);
+-        const float rs = rsx_live_draw_get_res_scale();
++        extern const char* rsx_internal_res_label(void);
+         char tb[256];
+         if (s_esc_armed && now - s_esc_armed > 3000) s_esc_armed = 0;
+         if (s_esc_armed)
+             snprintf(tb, sizeof(tb), "%s | Press Esc again to close the game -- an online match counts as a loss",
+                      s_state.title);
+         else
+-            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %ux%u", s_state.title, fps,
+-                     rsx_live_draw_get_last_draws(), (u32)(s_state.width * rs + 0.5f),
+-                     (u32)(s_state.height * rs + 0.5f));
++            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %s", s_state.title, fps,
++                     rsx_live_draw_get_last_draws(), rsx_internal_res_label());
+         SetWindowTextA(s_state.hwnd, tb);
+         s_state.title_frames = s_state.frame_count;
+         s_state.title_time = now;

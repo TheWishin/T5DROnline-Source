@@ -43,7 +43,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
 | Music, sound effects, movies | Work. |
-| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -168,8 +168,28 @@ Keyboard (default) and Xbox controller:
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and
   stops. Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
-- To change keys or buttons, make a `controls.ini`. The documented sample with
-  every default is `docs\controls.ini` in this folder.
+- **Pad, arcade stick or hitbox: set the buttons in the launcher.** Open
+  **Settings** and click **Set up controllers...**. The window lists the
+  controllers Windows sees, one row per player, and lights the row when you
+  press a button (the row also names the game button it is). Pick a controller
+  (or just press a button on it), then click **Set up all buttons**: it asks
+  "Press the button for 1 (Left Punch)..." and goes on with 2, 3, 4, 1+2, 3+4,
+  1+3, 2+4, 1+2+3+4, Start and Select. **Skip** keeps a button as it is,
+  **Clear** gives it no button. **Set selected** sets one row (also the other
+  macros: 1+4, 2+3, 1+2+3 and so on), **Set up directions** is for sticks that
+  send their directions as buttons. **Layout** starts from a ready layout: Xbox,
+  PlayStation, Switch, arcade stick with 8 buttons (Vewlix), 6 buttons
+  (Noir / Sega Astro) or hitbox. For a hitbox you also choose what happens when
+  left and right are pressed together (SOCD) and whether the left stick counts as
+  a d-pad. **Save** writes `native\controls.ini`; the game reads it when it
+  starts. **Reset to defaults** takes the controller back to the default buttons.
+  Your comments and other settings in the file are kept.
+  With the controller itself: Up / Down choose a button, Cross sets it,
+  Triangle clears it, Start saves, Circle closes (the controller's buttons as
+  your `controls.ini` has them). This works only while that window is in front;
+  untick "Move through this window with the controller" to only test buttons.
+- The keyboard and everything else is set in `controls.ini`. The documented
+  sample with every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.
   Examples (from the sample):
   - `[keys1]` / `preset = tekken` -- WASD to move, U I J K for the buttons.

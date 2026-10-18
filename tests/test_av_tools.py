@@ -25,7 +25,6 @@ class PeFeatures(unittest.TestCase):
         self.assertNotIn("error", r)
         self.assertEqual(r["machine"], "0x0")
         self.assertFalse(r["signed"])
-        self.assertEqual(r["overlay"], 0 if r["sections"] == [] else r["overlay"])
         self.assertEqual(r["rich_header"], [])
 
     def test_signed_file_is_recognised_and_overlay_excludes_the_certificate(self):

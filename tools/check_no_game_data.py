@@ -41,6 +41,9 @@ ALLOW = {
     # Our own launcher icon (a "T5" drawn with Pillow in Arial Bold, 2026-10-18), compiled
     # into T5DR Online.exe so virus scanners see an ordinary application.
     "launcher/stub/t5dr.ico",
+    # The same pictures with the small sizes as bitmaps instead of PNG (tools/make_stub_icon.py), for the
+    # stub variants: a PNG is compressed data and makes the resource section look packed.
+    "launcher/stub/t5dr_bmp.ico",
 }
 
 BLOCKED_EXT = {

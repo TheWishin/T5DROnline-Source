@@ -83,6 +83,7 @@ void spurs_job_put_reset(void);
 static const uint64_t* g_job_lines = nullptr;
 static uint32_t g_job_base = 0, g_job_pages = 0;
 static bool g_job_active = false;   /* only while a match is fought (job_gate) */
+static bool g_job_spent = false;    /* the match was decided: not again before the next barrier (state_drop_logs / state_reset) */
 static inline bool job_page(uint32_t ea)
 {
     const uint32_t i = (ea - g_job_base) >> 12;
@@ -451,6 +452,7 @@ void state_reset()
 {
     if (!g_ready) return;
     job_pages_forget();
+    g_job_active = false; g_job_spent = false;
     memset(g_log, 0, sizeof g_log);
     g_ring_pos = 0; g_newest = 0; g_oldest = 0;
     state_commit(0, nullptr, nullptr);
@@ -483,16 +485,24 @@ static void job_gate()
 {
     if (!g_job_lines) return;
     uint32_t ph; memcpy(&ph, vm_base + 0x1008F070u, 4);
-    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0;
+    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0 && !g_job_spent;
     if (fight == g_job_active) return;
     if (fight) { spurs_job_put_reset(); g_job_active = true; }
-    else { job_pages_forget(); g_job_active = false; }
+    else {
+        const uint32_t n = state_job_pages();
+        job_pages_forget(); g_job_active = false;
+        if (vm_base[0x1008EBD5u] != 0) g_job_spent = true;   /* decided (a round end only pauses it) */
+        static int notes = 0;
+        if (notes++ < 8) note("state: the fight is over (phase %u, decided %u): the %u job-filled pages are state again until the next barrier",
+                              _byteswap_ulong(ph), vm_base[0x1008EBD5u], n);
+    }
 }
 void state_drop_logs()
 {
     for (Log& l : g_log) l.tag = 0;
     g_oldest = g_newest;
     job_pages_forget();
+    g_job_active = false; g_job_spent = false;   /* a barrier: the next fight starts a new record */
 }
 uint32_t state_log_pages(uint32_t f)
 {

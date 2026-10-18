@@ -1073,7 +1073,9 @@ class Updater:
     def _checked(self, rel, problem, manual):
         from tkinter import messagebox
         if self.button is not None:
-            self.button.configure(state="normal", text="Check for updates")
+            known = self.release and is_newer(self.release["version"], self.local)
+            self.button.configure(state="normal", text=f"Update to {self.release['version']}…" if known
+                                  else "Check for updates")
         if problem:
             if manual:
                 messagebox.showinfo("Updates", f"Could not check for updates.\n\n{problem}", parent=self.app)

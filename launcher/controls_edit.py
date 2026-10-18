@@ -508,7 +508,7 @@ class ControlsEditor:
         data = text.encode("latin-1", "replace")
         d = os.path.dirname(os.path.abspath(path))
         os.makedirs(d, exist_ok=True)
-        if now is not None and not self.backed_up and now != data:
+        if now is not None and now != data and (not self.backed_up or now != self.disk_bytes):
             try:
                 with open(path + ".bak", "wb") as f:
                     f.write(now)

@@ -448,6 +448,8 @@ class SaveLoadTest(unittest.TestCase):
         ed.save(force=True)
         with open(self.path, "rb") as f:
             self.assertNotIn(b"someone edited", f.read())
+        with open(self.path + ".bak", "rb") as f:                                        # what was overwritten is kept
+            self.assertIn(b"someone edited", f.read())
 
     def test_non_ascii_bytes_in_comments_survive(self):
         os.makedirs(os.path.dirname(self.path))
@@ -470,6 +472,26 @@ class SaveLoadTest(unittest.TestCase):
         self.assertEqual(ce.controls_path(out, {}), os.path.join(out, "build", "cmake", "controls.ini"))
         forced = os.path.join(self.tmp.name, "mine.ini")
         self.assertEqual(ce.controls_path(out, {"PS3_CONTROLS": forced}), forced)
+
+
+class ShippingTest(unittest.TestCase):
+    def test_the_screen_ships_in_the_release(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import package_release
+        import smoke_release
+        for f in ("launcher/controls_ui.py", "launcher/controls_edit.py"):
+            self.assertIn(f, package_release.OUR_FILES)
+            self.assertIn(f, smoke_release.REQUIRED)
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, *f.split("/"))))
+
+    def test_the_launcher_has_the_button_and_hands_over_to_the_module(self):
+        path = os.path.join(ROOT, "launcher", "t5dr_launcher.pyw")
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        for needle in ("import controls_ui", "def open_controls(self)", "controls_ui.open_dialog(self)",
+                       "controls_ui.close_for_app(self)", "Set up controllers"):
+            self.assertIn(needle, src)
+        compile(src, path, "exec")
 
 
 class RuntimeAgreementTest(unittest.TestCase):
@@ -1348,6 +1370,27 @@ class DialogTest(DialogBase):
         self.press(stick, "B13")
         self.assertIn("[dinput]", d.editor.doc.render())
         self.assertNotIn("[dinput.0F0D:00EE]", d.editor.doc.render())
+
+    def test_a_scripted_pad_file_keeps_the_real_controllers_out(self):
+        # what the launcher does when it builds its readers (T5_PAD_FILE: only the virtual pad, never a real one)
+        path = os.path.join(self.out, "pad.txt")
+        with open(path, "w") as f:
+            f.write("dinput:0F0D:00EE B2")
+        old = {k: os.environ.get(k) for k in ("T5_PAD_FILE", "T5_PAD_DEVICES")}
+        os.environ["T5_PAD_FILE"] = path
+        os.environ.pop("T5_PAD_DEVICES", None)
+        self.addCleanup(lambda: [os.environ.__setitem__(k, v) if v is not None else os.environ.pop(k, None)
+                                 for k, v in old.items()])
+        sources = padnav.default_sources()
+        self.assertEqual([type(s).__name__ for s in sources], ["FileSource"])
+        d = cu.ControlsDialog(self.root, FakeSettings(self.out), sources=None, foreground=lambda: True,
+                              clock=self.clock, thread=False, ask=lambda *a: True)
+        self.dlg = d
+        self.addCleanup(self.cleanup_dialog)
+        self.assertEqual([type(s).__name__ for s in d.poller.sources], ["FileSource"])
+        self.run_for(0.2)
+        self.assertEqual(d.chosen, "file")
+        self.assertIn("scripted pad", d.head_var.get())
 
     def test_it_fits_the_window(self):
         d = self.open(FakePad())

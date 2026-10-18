@@ -44,7 +44,7 @@ In the folder where you extracted the release (say `C:\T5DR`):
 | `native\build.log` | The log of the last build. Overwritten by every build. |
 | `native\logs\game-<date>-<time>.log` | One log per game start. The last 10 are kept. |
 | `native\gamedata\` | Your saves. |
-| `native\controls.ini` | Your own control settings (optional, you make it). |
+| `native\controls.ini` | Your own control settings (optional). The launcher's Settings -> Set up controllers... writes it; you can edit it by hand too. |
 | `native\game\`, `native\build\`, `native\keys\` | Unpacked game, build output, key file. Game data. |
 | `native\logs\update-<date>-<time>.log` | What the last self-update did (one per update). |
 | `update-check.json` | When the launcher last asked GitHub for a new version. |
@@ -438,6 +438,10 @@ not focused. The keyboard works only while the game window has the focus.
 
 ### The buttons are wrong, or I want other buttons
 
+Use the launcher: **Settings** -> **Set up controllers...** (see the README,
+"Controls"). It writes `native\controls.ini` for you and keeps what is already in
+that file. The rest of this section is for editing the file by hand.
+
 Make `native\controls.ini` (the sample with every default and all key names is
 [controls.ini](controls.ini)) and restart the game. To see the raw button names
 of an unknown pad, add this line under "extra settings" in the launcher's Settings
@@ -451,6 +455,55 @@ The log then prints each press, for example `[pad] port 2 Wireless Controller: B
 pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
 a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
 `[pad] found DInput` log lines).
+
+### The Controls screen (Settings -> Set up controllers...)
+
+Not tried with a real arcade stick by a person yet: it was checked with simulated
+controllers and against the game's own reading of `controls.ini`. If it does
+something odd with yours, send the report (Report a problem) and say which
+controller it is.
+
+- **It shows no controller, or the row does not light up when I press a button.**
+  The window reads controllers only while it is the window in front (nothing is
+  read while the game or another program has the focus). Click into it and
+  press again. Does Windows see the controller? Open `joy.cpl` and press a
+  button. Xbox pads and XInput-mode sticks show as "Xbox pad (XInput)", everything
+  else as "DirectInput controller". The screen reads DirectInput controllers
+  through the Windows joystick API, which knows buttons B1 to B32 and one hat;
+  a button above B32 has to be written by hand (`1 = B40`).
+- **"That was several buttons at once".** Two buttons (or a stick moved
+  diagonally) went down together. Press one button, or move the stick in one
+  direction only. Macros like 1+2 are set by pressing the one button that should
+  do both.
+- **A game button shows "-".** It has no controller button. Pressing a button
+  that another game button used takes it from that one ("B2 was 3 (Left Kick);
+  that one has no button now"): a controller button can only be one game button.
+  Set the other one again, or press Revert.
+- **A trigger or stick direction (for example RX-) seems pressed all the time.**
+  Some controllers rest their triggers at the end of the range. The screen
+  ignores such an axis until it has moved once.
+- **I saved, but the game plays as before.** The game reads the file when it
+  starts: close it and start it again (a game that is already running says so
+  in the status line). The line `[pad] controls: ...` in the game log shows which
+  file the game loaded. If there is a `controls.ini` next to `t5dr.exe`
+  (`native\build\cmake`), it wins over `native\controls.ini`, and `PS3_CONTROLS=`
+  under "extra settings" wins over both; the screen writes to the one the game
+  reads.
+- **"controls.ini changed".** The file was edited by you or another program
+  while the window was open. Say Yes to overwrite it with the screen's version;
+  the file as it was is kept as `controls.ini.bak`. (The first save of each
+  session keeps the old file there as well.)
+- **Reset to defaults** removes the button lines, the layout and the player
+  options of the chosen controller, and asks before it also removes the lines
+  that are for all controllers of that kind. Comments, `[general]` and which
+  controller is which player stay.
+- **Two pads of the same model have to have different buttons.** The buttons
+  are kept per model (one section `[dinput.VVVV:PPPP]` in the file), so two
+  identical pads share them. Choose "Only the controller on player N's port"
+  under "Your changes apply to" to set one of them on its own.
+- **Hitbox: both directions at once.** Pick what you want under "Opposite
+  directions" (both cancel is the default). For a hitbox set to left-stick mode
+  choose "8-way d-pad presses" under "Left stick".
 
 ### Two pads, or my pad acts as player 1 *and* player 2 (DS4Windows, Steam Input)
 

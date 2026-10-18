@@ -617,6 +617,10 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
   character select. Set `background = 0` if that gets in the way.
 - Test hook: `T5_PAD_FILE=<file>` makes a virtual pad of the buttons named in the file (`A`, or
   `dinput:054C:09CC B2`); with it the real pads are ignored (`T5_PAD_DEVICES=1`: both).
+- Setting the buttons: Settings -> **Set up controllers...** (`launcher/controls_ui.py`, `launcher/controls_edit.py`)
+  writes the same `controls.ini` the game and this tab read; it uses padnav's device readers and the same foreground
+  rule (nothing is read unless its window is in front). The tab picks up a saved change by itself (it reads the file
+  again when it changes).
 - Code: `lobby/t5lobby/padmap.py` (controls.ini), `lobby/t5lobby/padnav.py` (devices, polling rules, thread),
   `lobby/t5lobby/tk_tab.py` (what each button does). Tests: `lobby/tests/test_padnav.py`,
   `lobby/tests/test_tk_pad.py`, `tests/test_padmap_sync.py`; they use a fake pad and a fake clock.

@@ -141,7 +141,31 @@ Tastatur (Standard) und Xbox-Controller:
   über DirectInput gelesen. Du musst nichts installieren. Ein Arcade-Stick wurde
   mit echter Hardware getestet: alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
-- Um Tasten oder Knöpfe zu ändern, lege eine `controls.ini` an. Die
+- **Pad, Arcade-Stick oder Hitbox: die Knöpfe stellst du im Launcher ein.**
+  Öffne **Settings** und klicke **Set up controllers...** (Controller
+  einrichten). Das Fenster zeigt die Controller, die Windows sieht, eine Zeile
+  pro Spieler, und die Zeile leuchtet, wenn du einen Knopf drückst (sie nennt
+  auch den Spielknopf dazu). Wähle einen Controller (oder drücke einfach einen
+  Knopf darauf) und klicke **Set up all buttons** (alle Knöpfe einrichten): Es
+  fragt "Press the button for 1 (Left Punch)..." (Drücke den Knopf für ...) und
+  macht weiter mit 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, Start und Select.
+  **Skip** (Überspringen) lässt einen Knopf, wie er ist, **Clear** (Löschen)
+  gibt ihm keinen Knopf. **Set selected** (Ausgewählten setzen) stellt eine
+  Zeile ein, auch die anderen Makros (1+4, 2+3, 1+2+3 usw.), **Set up
+  directions** (Richtungen einrichten) ist für Sticks, die ihre Richtungen als
+  Knöpfe senden. **Layout** (Belegung) startet mit einer fertigen Belegung:
+  Xbox, PlayStation, Switch, Arcade-Stick mit 8 Knöpfen (Vewlix), 6 Knöpfen
+  (Noir / Sega Astro) oder Hitbox. Bei einer Hitbox wählst du auch, was
+  passiert, wenn links und rechts zugleich gedrückt werden (SOCD), und ob der
+  linke Stick als Steuerkreuz zählt. **Save** (Speichern) schreibt
+  `native\controls.ini`; das Spiel liest sie beim Start. **Reset to defaults**
+  (auf Standard zurücksetzen) stellt den Controller auf die Standardknöpfe
+  zurück. Deine Kommentare und übrigen Einstellungen in der Datei bleiben
+  erhalten. Mit dem Controller selbst: Oben / Unten wählen einen Knopf, Kreuz
+  setzt ihn, Dreieck löscht ihn, Start speichert, Kreis schließt (die Knöpfe
+  des Controllers, wie deine `controls.ini` sie hat). Das geht nur, solange
+  dieses Fenster vorne ist.
+- Die Tastatur und alles andere stellst du in der `controls.ini` ein. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).
   Lege deine Datei als `native\controls.ini` ab und starte das Spiel neu.
   Beispiele (aus der Vorlage):

@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased
+
+### Report a problem
+- New launcher button **Report a problem...** (Play tab, Build tab, and the Online
+  tab after a match). It makes one zip on the Desktop and opens its folder: the
+  newest game logs, `build.log` when the build failed, the launcher's own log
+  (`launcher.log`, new), the files of the last online match, `controls.ini`, desync
+  dumps and `system.txt` (Windows, processor, graphics card and driver, memory,
+  screens with refresh rate and scaling, release version and build id, the
+  settings in use). A box "What happened?" is saved as `report.txt`.
+- Private data is removed first: the Windows user name in paths (`<user>`), internet
+  IP addresses (`<ip>`, local network addresses stay), passwords, tokens and match
+  keys. The zip holds at most 20 MB; a huge log keeps its start and its end.
+
 ## v1.0.0 (2026-10-18)
 
 **Tekken 5: Dark Resurrection Online 1.0.** Tekken 5: Dark Resurrection runs

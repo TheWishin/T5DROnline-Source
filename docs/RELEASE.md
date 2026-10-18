@@ -301,7 +301,9 @@ Python/tkinter (in the bundled Python), started by `T5DR Online.exe`.
   game code), starts `t5dr.exe` without a console with the defaults from
   `run_game.py` (`RSX_LIVE_DRAW=1`, `PS3_VERBOSE=0`, `PS3_GCM_TICKER_PUMP=1`),
   name (`PS3_NICKNAME`), logs to `native\logs\game-*.log` (last 10 kept),
-  shows run time and the `[fps]` value, Stop.
+  shows run time and the `[fps]` value, Stop. **Report a problem...** (here,
+  in the Build tab, and in the Online tab after a match) makes one zip on the
+  Desktop for the person who gave the game, see "Problem report" below.
 - **Settings:** window 1280x720 / 1920x1080 / 2560x1440 (shrunk to the work
   area) / maximized / borderless fullscreen -- applied by the launcher to the
   game window, since the runtime's swap chain stretches its 1280x720 image to
@@ -363,3 +365,45 @@ running game -- used for the screenshots in `build/ln/shots`.
    many-core PCs; trimming clang's resource headers and building a
    single X86-only `clang-cl` + `lld` binary would shrink the zip.
 5. Netplay: fill in `launcher/online.py`.
+
+## Problem report
+
+`launcher/report.py` (no tkinter, runs from a console: `python launcher/report.py
+--out <native> --dest-dir <dir>`) and `launcher/report_ui.py` (the window). One click
+makes `T5DR-report-<date>-<time>.zip` on the Desktop (the real Desktop folder, also
+under OneDrive) and opens its folder with the zip selected.
+
+- **In the zip:** `system.txt` (Windows version, processor and cores, graphics card +
+  driver + video memory from the display adapter class key, RAM, every screen's
+  size / refresh rate / DPI, release version, build id, code id, the settings in use,
+  start-up lines of the newest game log), `report.txt` (the "What happened?" box),
+  the newest two `logs/game-*.log` and `rb_frames.log` / `df_frames.log`, `build.log`
+  (ticked by itself when it does not end with `# exit code 0`), `launcher.log`
+  (+ `.1`), `online/` (result / status / fight files of the newest match id, the
+  newest reported results, `ctl/cmd.json` + `state.json`, and
+  `lobby-summary.txt` from `OnlineTab.report_info()`), `controls.ini`, `desync/`
+  (`np_desync_*.bin`, `rb_desync_*.bin`, binary, copied as they are), `contents.txt`.
+- **Scrubbing** (`report.Scrubber`, every text file, then once more to prove it is
+  clean): `C:\Users\NAME\` and `C:/Users/NAME/` -> `<user>` (names with spaces,
+  other drives, JSON-escaped), the user and PC name anywhere -> `<user>` / `<pc>`,
+  public IPv4/IPv6 -> `<ip>` (the port stays; loopback, private, link-local and
+  unique-local are kept), secrets by name (`password`, `token`, `T5_NET_KEY`, `api_key`,
+  `cookie`, `--password x`, `user:pass@host`, `Bearer ...`) -> `<removed>`, hex strings of
+  32+ digits -> `<hex>` (except the game program's SHA-1 and the source commit),
+  exact secret values harvested from `launcher.json`, `online.json` (the lobby session
+  token) and `ctl/cmd.json` are removed from every file, e-mail -> `<email>`,
+  the `.pkg` file name -> `<package>.pkg`, `OneDrive - Company` -> `OneDrive - <org>`.
+  `launcher.json` and `online.json` themselves are never read into the zip. Known
+  limit: a four-number version string such as `1.2.3.4` looks like an address.
+- **Size:** at most 20 MB of content (`report.DEFAULT_CAP`; the zip is about a tenth).
+  Small files first, then the newest game log (70 % of what is left), then the older
+  one; a file that does not fit keeps 25 % from its start and the rest from its end,
+  with a marker line between. Cut at line ends.
+- **launcher.log** (`core.log()`, next to `launcher.json`, 512 KB then `.1`): launcher
+  start, status-bar messages (which include the Online tab's), build start / error / end,
+  game start (process, log file, settings given, names -- never values -- of what the
+  launcher added), game exit with the explanation, errors inside the launcher (Tk
+  callbacks), the report itself.
+- Tests: `tests/test_report.py` (scrubbing incl. user path / IPv4 / IPv6 / private ranges /
+  fake token / password, the size cap, the whole zip against a made-up `native\`, system
+  info, launcher log, the window with its Tk window never shown).

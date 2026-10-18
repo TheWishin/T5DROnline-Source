@@ -221,19 +221,29 @@ with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md
 
 ## Bug reports
 
-Please send:
+**Problems? Click "Report a problem"** (Play tab; also in the Build tab, and in
+the Online tab after a match). The launcher makes ONE zip on your Desktop and
+opens its folder. Send the zip to the person who gave you the game, or attach it
+to an issue at https://github.com/TheWishin/T5DROnline/issues. You can add a few
+words about what happened in the window.
 
-- Build problems: `native\build.log` (Build tab, **Open build.log**). It is
-  overwritten by each build, so copy it before you build again.
-- Game problems: the newest file in `native\logs\` (Play tab, **Open newest game
-  log**). The last 10 logs are kept.
-- Your Windows version, graphics card and driver, and what you did just before.
+The zip holds the newest game logs, `build.log` when the build was the problem,
+the launcher's log, the files of your last online match, your `controls.ini`,
+desync dumps if there are any, and `system.txt`: Windows version, processor,
+graphics card and driver, memory, screens (refresh rate, scaling), the release
+version and build id, and the settings you use. The window lists everything
+before it saves. Nothing is uploaded: you send the zip yourself.
 
-Open an issue at https://github.com/TheWishin/T5DROnline/issues and attach the
-files.
+Before the zip is made, your Windows user name in file paths becomes `<user>`,
+internet IP addresses become `<ip>` (addresses of your own network stay), and
+passwords, tokens and match keys are left out. The zip is at most 20 MB; a
+bigger log keeps its start and its end. Your game files, keys, `.pkg` and `.rap`
+are never in it.
 
-The logs contain no game data and no keys. They do contain folder paths, which
-can include your Windows user name. Look before you post them in public.
+If the launcher itself does not start, send by hand `native\build.log` (build
+problems) or the newest file in `native\logs\` (game problems), plus your Windows
+version, graphics card and what you did just before. Those files contain folder
+paths with your Windows user name, so look at them before you post them in public.
 
 More help: `docs\TROUBLESHOOTING.md` in this folder.
 

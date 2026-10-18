@@ -5,6 +5,12 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
+**Problems? Click "Report a problem"** (launcher, Play tab; also in the Build tab
+and in the Online tab after a match). It makes one zip on your Desktop. Send the
+zip to the person who gave you the game, or attach it to an issue at
+https://github.com/TheWishin/T5DROnline/issues. Details:
+[How to collect logs](#how-to-collect-logs).
+
 Contents:
 
 - [Where things are](#where-things-are)
@@ -31,6 +37,8 @@ In the folder where you extracted the release (say `C:\T5DR`):
 |---|---|
 | `T5DR Online.exe` | The launcher's starter. |
 | `launcher.json` | The launcher's settings (made on first use). |
+| `launcher.log` | What the launcher did and saw (builds, game starts and exits, errors, status messages). The last two runs' worth; `launcher.log.1` is the older part. |
+| `T5DR-report-<date>-<time>.zip` | A problem report, on your Desktop (see [How to collect logs](#how-to-collect-logs)). |
 | `native\` | Everything built from your copy. Game data. Do not share it. |
 | `native\build.log` | The log of the last build. Overwritten by every build. |
 | `native\logs\game-<date>-<time>.log` | One log per game start. The last 10 are kept. |
@@ -608,6 +616,50 @@ the failing first save.
 
 ## How to collect logs
 
+**The easy way: Report a problem.** Click **Report a problem...** in the launcher:
+the Play tab, the Build tab, or the Online tab after a match. A window lists what
+would go into the zip, with a box "What happened?". Click **Save report on the
+Desktop**. The launcher makes ONE file, `T5DR-report-<date>-<time>.zip`, and opens
+its folder with the file selected. Nothing is uploaded: you send it yourself, to
+the person who gave you the game, or by attaching it to an issue at
+https://github.com/TheWishin/T5DROnline/issues.
+
+What is in the zip (each part only when it exists; you can untick a part):
+
+| In the zip | What it is |
+|---|---|
+| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window and 3D resolution, online input delay (netcode), extra settings. |
+| `report.txt` | What you wrote in "What happened?". |
+| `logs\game-*.log` | The newest two game logs, and `rb_frames.log` / `df_frames.log`. |
+| `build.log` | The last build. Ticked by itself when the last build failed or was cancelled. |
+| `launcher.log` | The launcher's own log. |
+| `online\` | The files of your last online match: result, status, the game's control files, and a short summary of the lobby and the match (server, ping, input delay). |
+| `controls.ini` | Your button settings, if you made one. |
+| `desync\*.bin` | Game state numbers of a desync (only if the game was started with `T5_NET_DESYNC_DUMP=1`). Binary. |
+| `contents.txt` | The list of files and what was removed. |
+
+Before a text file goes into the zip it is cleaned:
+
+- Your Windows user name in a path (`C:\Users\Name\...` and `C:/Users/Name/...`)
+  becomes `<user>`, and your user and PC name anywhere else too.
+- Internet IP addresses (IPv4 and IPv6) become `<ip>`; a port after it stays.
+  Addresses of your own network (`127.0.0.1`, `192.168.x.x`, `10.x.x.x`,
+  `172.16-31.x.x`, link-local, `::1`) are kept.
+- Passwords, tokens, match keys and cookies are left out (`<removed>`), also a long
+  hex string. Your lobby login (`online.json`) and `launcher.json` are never put
+  in the zip; their secret values are removed from every file.
+- E-mail addresses become `<email>`, the file name of your `.pkg` becomes
+  `<package>.pkg`, the company name in `OneDrive - Company` becomes `<org>`.
+
+You can open the zip and read it before you send it. Your game data, keys, `.pkg`
+and `.rap` are never in it. The desync dumps are the only binary files.
+
+**Size limit: 20 MB** of content (the zip is much smaller). The newest files come
+first. A log that does not fit keeps its start and its end; the middle is
+replaced by one line saying how many bytes were removed.
+
+**By hand** (when the launcher does not start):
+
 1. Close the game. (The launcher keeps the log of each start.)
 2. Build problem: open `native\build.log` (Build tab, **Open build.log**). It is
    overwritten by the next build: copy it first.
@@ -621,11 +673,11 @@ the failing first save.
    - `[cellAudio]` — sound device problems.
 5. Write down: your Windows version, graphics card and driver version, what you
    were doing, and how long the game had been running.
-6. Open an issue at https://github.com/TheWishin/T5DROnline/issues and attach the
-   files (zip a large log first).
+6. Send the files as above (zip a large log first).
 
-The logs contain no game data and no keys. They contain folder paths, which can
-include your Windows user name. Look before you post them in public.
+Files you send by hand are not cleaned. They contain folder paths, which can
+include your Windows user name, and (online) the other player's IP address. Look
+before you post them in public.
 
 **Do not send** anything from `native\game\`, `native\build\` or `native\keys\`,
 or your `.pkg` / `.rap`. Those are game data and keys.

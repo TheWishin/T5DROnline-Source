@@ -198,9 +198,12 @@ def main():
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for O only")
     ap.add_argument("--below-normal", action="store_true", help="start the games at below-normal CPU priority (the PC is in use)")
     ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1 for both games (the mix is zeroed; the PC is in use)")
+    ap.add_argument("--polite", action="store_true", help="--mute and --below-normal (as fight_flow_test --polite)")
     a = ap.parse_args()
     a.mash = not a.no_mash
     a.exe2 = None
+    if a.polite:
+        a.mute = a.below_normal = True
     if a.mute:
         a.env = a.env + ["PS3_AUDIO_MUTE=1"]
     if not os.path.isfile(os.path.join(a.vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")):

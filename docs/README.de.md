@@ -203,21 +203,32 @@ Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
 
 ## Fehler melden
 
-Bitte schicke:
+**Probleme? Klicke auf "Report a problem"** (Reiter Play; auch im Reiter Build und
+im Reiter Online nach einem Match). Der Launcher macht EINE Zip-Datei auf deinem
+Desktop und öffnet den Ordner. Schicke das Zip der Person, die dir das Spiel
+gegeben hat, oder hänge es an ein Issue unter
+https://github.com/TheWishin/T5DROnline/issues. Im Fenster kannst du ein paar
+Worte dazu schreiben, was passiert ist.
 
-- Probleme beim Bauen: `native\build.log` (Reiter Build, **Open build.log**). Die
-  Datei wird bei jedem Bauen überschrieben. Kopiere sie, bevor du neu baust.
-- Probleme im Spiel: die neueste Datei in `native\logs\` (Reiter Play, **Open
-  newest game log**). Die letzten 10 Logs bleiben erhalten.
-- Deine Windows-Version, Grafikkarte samt Treiber und was du kurz vorher getan
-  hast.
+Im Zip sind die neuesten Spiel-Logs, `build.log` wenn das Bauen das Problem war,
+das Log des Launchers, die Dateien deines letzten Online-Matches, deine
+`controls.ini`, Desync-Dumps (falls es welche gibt) und `system.txt`:
+Windows-Version, Prozessor, Grafikkarte samt Treiber, Arbeitsspeicher, Bildschirme
+(Bildwiederholrate, Skalierung), Release-Version und Build-ID und deine
+Einstellungen. Das Fenster zeigt alles an, bevor es speichert. Es wird nichts
+hochgeladen: du schickst das Zip selbst.
 
-Eröffne ein Issue unter https://github.com/TheWishin/T5DROnline/issues und hänge
-die Dateien an.
+Bevor das Zip entsteht, wird dein Windows-Benutzername in Dateipfaden zu `<user>`,
+IP-Adressen aus dem Internet werden zu `<ip>` (Adressen deines eigenen Netzes
+bleiben), und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Das Zip
+ist höchstens 20 MB groß; ein größeres Log behält seinen Anfang und sein Ende.
+Deine Spieldateien, Schlüssel, `.pkg` und `.rap` sind nie darin.
 
-Die Logs enthalten keine Spieldaten und keine Schlüssel. Sie enthalten aber
-Ordnerpfade, und die können deinen Windows-Benutzernamen enthalten. Schau vorher
-hinein, bevor du sie öffentlich postest.
+Wenn der Launcher selbst nicht startet, schicke von Hand `native\build.log`
+(Probleme beim Bauen) oder die neueste Datei in `native\logs\` (Probleme im Spiel),
+dazu deine Windows-Version, Grafikkarte und was du kurz vorher getan hast. Diese
+Dateien enthalten Ordnerpfade mit deinem Windows-Benutzernamen. Schau vorher hinein,
+bevor du sie öffentlich postest.
 
 Mehr Hilfe: [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (auf Englisch). Die
 wichtigsten Fälle in Kürze:

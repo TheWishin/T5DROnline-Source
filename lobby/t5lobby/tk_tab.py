@@ -292,7 +292,12 @@ class OnlineTab:
         ttk.Label(self.bar, textvariable=self.bar_text, style="H2.TLabel", wraplength=620,
                   justify="left").pack(side="left")
         self.match_var = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.match_var, style="Muted.TLabel").grid(row=3, column=0, sticky="w")
+        info_row = ttk.Frame(box)
+        info_row.grid(row=3, column=0, sticky="we")
+        # After a match: one click makes the problem report (the launcher's window, launcher/problem_report.py).
+        # Shown only when the launcher offers it and a match has been played (packed first: it keeps its room).
+        self.report_btn = ttk.Button(info_row, text="Report a problem...", command=self.do_report)
+        ttk.Label(info_row, textvariable=self.match_var, style="Muted.TLabel").pack(side="left")
 
         # --- notebook: lobby | leaderboard | profile
         nb = ttk.Notebook(box)
@@ -1196,6 +1201,8 @@ class OnlineTab:
     def _show_result(self, ev):
         self.match = None
         self.last_result = ev
+        if hasattr(self.app, "report_problem") and not self.report_btn.winfo_ismapped():
+            self.report_btn.pack(side="right")
         st = ev["status"]
         text = RESULT_TEXT.get(st, st)
         if ev.get("reason") and ev["reason"] in REASON_TEXT:
@@ -1366,6 +1373,45 @@ class OnlineTab:
             return
         self._pad_until = now + PAD_COOLDOWN_S
         act[1]()
+
+    # ------------------------------------------------------------------ problem report
+    def do_report(self):
+        fn = getattr(self.app, "report_problem", None)
+        if fn:
+            fn()
+
+    def report_info(self):
+        """Technical lines about the lobby and the last match for the problem report. No names,
+        addresses, keys or tokens: the report tool cleans every file again, this is the first filter."""
+        L = []
+
+        def add(label, fn):
+            try:
+                L.append(f"{label}: {fn()}")
+            except Exception as e:      # noqa: BLE001 -- whatever is missing stays out
+                L.append(f"{label}: ? ({e})")
+        c = self.client
+        add("Server", lambda: self._server_key())
+        add("Logged in", lambda: "no" if not (c and c.me) else ("as a guest" if c.me.get("guest") else "with an account"))
+        add("Encrypted connection", lambda: bool(c and c.tls))
+        add("Ping to the server (ms)", lambda: f"{c.server_rtt:.0f}" if c and c.server_rtt else "?")
+        add("Game mode setting", lambda: self.cfg.get("game_mode", "auto"))
+        d = self.driver
+        if d is not None:
+            add("Match driver mode", lambda: d.mode)
+            add("Games that failed to answer", lambda: d.ctl_failures)
+            add("Speed of this PC in its last match (fps)", lambda: d.last_fps)
+            add("Matches reported", lambda: [(h[0], h[1].get("source")) for h in d.history[-6:]])
+            t = d.session_ticket
+            if t is not None:
+                add("Last match", lambda: (f"id {t.match_id}, {t.role} slot {t.slot}, path {t.path}, ping {t.rtt_ms:.0f} ms, "
+                                           f"jitter {t.jitter_ms:.0f} ms, delay {t.delay}, rounds {t.rounds}, "
+                                           f"ranked {t.ranked}, input delay {t.input_delay}, build {t.build}"))
+        r = self.last_result
+        if r:
+            keep = ("match", "status", "reason", "winner", "score", "blame", "ranked", "fight", "rematch_window")
+            add("Last result", lambda: {k: r.get(k) for k in keep})
+        return "\n".join(L) + "\n"
 
     # ------------------------------------------------------------------ launcher hooks
     def on_show(self):

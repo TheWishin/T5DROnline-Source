@@ -628,7 +628,8 @@ class OnlineTab:
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
-                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True, sets=True)
+                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
+                        sets=bool(self.cfg.get("sets", True)))   # online.json "sets": false: no ranked sets
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:

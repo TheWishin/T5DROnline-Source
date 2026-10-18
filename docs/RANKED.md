@@ -332,6 +332,10 @@ sets in their own table (`sets`); the games point to it (`matches.set_id`, `set_
 launcher that does not (1.0.0 and older) is played the old way: every game is rated when it ends, and the
 next one is a rematch vote. `T5L_RANKED_SET_WINS=1` turns sets off for everybody.
 
+**Opting in (tools and tests).** `LobbyClient(..., sets=True)` announces sets (the default is `False`, so
+scripts and tests written before keep per-game rating); `MatchDriver` then answers `set_next` by itself.
+The Online tab turns it on; `"sets": false` in its online.json turns it off for that launcher.
+
 **In-game character select** (ingame-select branch): only game 1 of a set is picked; the lobby keeps the
 characters locked for games 2 and 3 (`match_start.set.number` > 1, `continue: true`).
 

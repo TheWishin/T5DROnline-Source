@@ -13,19 +13,30 @@ through t5lobby.i18n (German in i18n_de.py).
 """
 import math
 
-from .i18n import N_, t
+from .i18n import t
 
-# Why a set (or its last game) ended without a result, for the player.
-REASON_TEXT = {"desync": N_("the two games went out of sync"), "too_short": N_("a game was too short to count"),
-               "no_result": N_("a fight ended without a winner"), "draw": N_("too many games without a winner"),
-               "disputed": N_("the reports disagreed"), "crash": N_("a game crashed"),
-               "connection": N_("the connection between the games failed"),
-               "no_report": N_("a player did not report"), "both_left": N_("both players left"),
-               "timeout": N_("no result in time"), "lag": N_("left after the lag check"),
-               "server_restart": N_("the lobby server restarted"), "early_quit": N_("a player left right away"),
-               "cancelled": N_("the next game could not start"), "left": N_("a player left before a game counted"),
-               "disconnect": N_("a player lost the lobby connection"), "declined": N_("a player left")}
-SET_RESULT = {"win": N_("set won"), "loss": N_("set lost")}
+# Why a set (or its last game) ended without a result, for the player. (Functions, not N_() marks: every text
+# is a literal t() call where it is translated.)
+REASON_TEXT = {
+    "desync": lambda: t("the two games went out of sync"),
+    "too_short": lambda: t("a game was too short to count"),
+    "no_result": lambda: t("a fight ended without a winner"),
+    "draw": lambda: t("too many games without a winner"),
+    "disputed": lambda: t("the reports disagreed"),
+    "crash": lambda: t("a game crashed"),
+    "connection": lambda: t("the connection between the games failed"),
+    "no_report": lambda: t("a player did not report"),
+    "both_left": lambda: t("both players left"),
+    "timeout": lambda: t("no result in time"),
+    "lag": lambda: t("left after the lag check"),
+    "server_restart": lambda: t("the lobby server restarted"),
+    "early_quit": lambda: t("a player left right away"),
+    "cancelled": lambda: t("the next game could not start"),
+    "left": lambda: t("a player left before a game counted"),
+    "disconnect": lambda: t("a player lost the lobby connection"),
+    "declined": lambda: t("a player left"),
+}
+SET_RESULT = {"win": lambda: t("set won"), "loss": lambda: t("set lost")}
 
 
 def status_text(info, slot=0):
@@ -76,7 +87,7 @@ def result_text(ev):
     if ev.get("status") not in ("confirmed", "forfeit") or res not in ("win", "loss"):
         why = REASON_TEXT.get(ev.get("outcome_reason") or ev.get("reason") or "")
         if why:
-            return t("The set does not count ({why}); no rating change", why=t(why))
+            return t("The set does not count ({why}); no rating change", why=why())
         return t("The set does not count; no rating change")
     w = ev.get("wins") or [0, 0]
     if ev.get("status") == "forfeit":
@@ -99,5 +110,5 @@ def history_text(sv):
     text = " -- " + t("set game {number}", number=sv.get("game"))
     sc = sv.get("score")
     if sv.get("result") in SET_RESULT and sc:
-        text += ", " + t(SET_RESULT[sv["result"]]) + f" {sc[0]}-{sc[1]}"
+        text += ", " + SET_RESULT[sv["result"]]() + f" {sc[0]}-{sc[1]}"
     return text

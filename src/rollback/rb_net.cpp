@@ -166,6 +166,11 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+/* frame-time branch (T5_RB_NET_LAZY, default on): during a re-simulation the
+ * boundaries before g_commit_from record no undo log, g_commit_from's only
+ * refreshes the shadow (0: off / done) */
+bool     g_lazy = true;
+uint32_t g_commit_from = 0;
 /* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
  * to rb_desync_f<frame>.bin when the peer's hash for that frame differs (both
  * sides do; tools/netplay_memdiff.py diffs the two files) */
@@ -215,6 +220,7 @@ struct Stats {
     uint32_t rs_frames_timed = 0;
     double depth_ms[17] = {}, depth_ms_max[17] = {};   /* restore + re-simulation, by depth */
     uint32_t late = 0; double late_ms = 0, late_ms_max = 0;   /* early rollbacks that ended after their tick: how late */
+    uint32_t commits_skipped = 0, refreshes = 0;             /* re-simulated boundaries without an undo log (T5_RB_NET_LAZY) */
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
 
@@ -313,10 +319,11 @@ void report()
         const double n = g_st.rs_frames_timed ? (double)g_st.rs_frames_timed : 1.0;
         note("rbnet: re-simulated frames %u: per frame commit %.2f ms, rest of the boundary %.2f ms, game frame %.2f ms; "
              "rollbacks: main thread CPU %.1f of %.1f ms wall (%.1f ms not running: waits, preemption); "
-             "restore+resim ms by depth (avg/max)%s; early rollbacks that ended after their tick %u (%.2f ms late on average, max %.2f)",
+             "restore+resim ms by depth (avg/max)%s; early rollbacks that ended after their tick %u (%.2f ms late on average, max %.2f); "
+             "boundaries without an undo log %u, shadow refreshes %u",
              g_st.rs_frames_timed, g_st.rs_commit_ms / n, g_st.rs_bnd_ms / n, g_st.rs_game_ms / n,
              g_st.rs_cpu_ms, g_st.rs_wall_ms, g_st.rs_wall_ms - g_st.rs_cpu_ms, k ? dh : " -",
-             g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max);
+             g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes);
     }
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
@@ -396,6 +403,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_LAZY")) g_lazy = *s != '0';
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
@@ -446,6 +454,7 @@ void session_reset()
 {
     if (!g_active) return;
     if (g_resim) { set_bypass(false); sound_skip(false); cut_set(false); g_resim = false; }
+    g_commit_from = 0;   /* state_reset() below brings the shadow up to date */
     /* The game goes on without the loop (back to a select screen for the
      * next opponent): what start() changed in it goes back -- the present's
      * vblank pacing -- and the sound hooks forget the session's frames (a
@@ -608,7 +617,17 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     uint32_t pages = 0; double rms = 0;
     QueryPerformanceCounter(&g_rb_t0);
     g_rs_cyc0 = thread_cycles();
-    bool ok = first_wrong >= g_floor && state_rollback(first_wrong, &pages, &rms);
+    /* Frame-time branch: the boundaries before g_checked (every input before
+     * them confirmed) are never rolled back to again, so the re-simulation
+     * keeps no undo log for them: the restore leaves the shadow to the first
+     * commit (lazy), the boundaries up to g_checked - 1 commit nothing, and
+     * g_checked's boundary only brings the shadow up to date (state_refresh).
+     * scan_mispredictions() has just set g_checked > first_wrong; the inputs
+     * known now do not change during the re-simulation (no poll in it). */
+    const bool lazy = g_lazy && g_checked > first_wrong && g_checked <= f;
+    bool ok = first_wrong >= g_floor && (lazy ? state_rollback_lazy(first_wrong, &pages, &rms)
+                                              : state_rollback(first_wrong, &pages, &rms));
+    g_commit_from = ok && lazy ? g_checked : 0;
     if (!ok) {
         note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
              f, first_wrong, depth, state_oldest_frame(), g_floor);
@@ -678,8 +697,11 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     post_record(f);
     double cms = 0;
-    const uint32_t dirty = state_commit(f, nullptr, &cms);
-    (void)dirty;
+    /* a boundary of a re-simulated frame no rollback can reach back to: no
+     * undo log (start_rollback); the last such one brings the shadow up to date */
+    if (g_resim && g_commit_from && f < g_commit_from) g_st.commits_skipped++;
+    else if (g_resim && g_commit_from && f == g_commit_from) { state_refresh(&cms); g_commit_from = 0; g_st.refreshes++; }
+    else state_commit(f, nullptr, &cms);
     g_bnd_cms = cms;
     reader_sem_save(f);
     /* the gameplay hash (the netplay desync check's regions): what the peers

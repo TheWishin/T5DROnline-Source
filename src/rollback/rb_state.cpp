@@ -428,7 +428,11 @@ uint32_t state_log_pages(uint32_t f)
  * after it would flush a put behind the walker's get. */
 static const Range kKeepWords[] = { { 0x0F800000u, 0x10u } };
 
-bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
+static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy);
+bool state_rollback(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, false); }
+bool state_rollback_lazy(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, !g_page_hashing); }
+void state_refresh(double* ms) { state_commit(0, nullptr, ms); }
+static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
 {
     PumpHold hold;
     uint8_t keep[sizeof kKeepWords / sizeof kKeepWords[0]][0x10];
@@ -463,7 +467,7 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
             touched.push_back(pg);
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             memcpy(vm_base + e.ea, src, 0x1000);
-            memcpy(shadow_rw(e.ea), src, 0x1000);
+            if (!lazy) memcpy(shadow_rw(e.ea), src, 0x1000);   /* lazy: the page stays dirty, the refresh copies it */
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
@@ -478,10 +482,11 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
     if (g_oldest > to) g_oldest = to;
     for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) {
         memcpy(vm_base + kKeepWords[i].base, keep[i], kKeepWords[i].len);
-        if (uint8_t* sh = shadow_rw(kKeepWords[i].base)) memcpy(sh, keep[i], kKeepWords[i].len);
+        if (uint8_t* sh = shadow_rw(kKeepWords[i].base); sh && !lazy) memcpy(sh, keep[i], kKeepWords[i].len);
     }
-    /* our own writes must not count as the next frame's dirt */
-    for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
+    /* our own writes must not count as the next frame's dirt -- unless lazy:
+     * then they must, so the refresh brings the shadow to them */
+    if (!lazy) for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);
     if (pages) *pages = n;
     if (ms) *ms = 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;

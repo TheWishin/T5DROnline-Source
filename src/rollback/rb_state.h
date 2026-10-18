@@ -67,6 +67,17 @@ void     state_commit_stats(char* out, size_t cap, bool reset);
  * Afterwards the hash is the hash the run had at that boundary, and the
  * write watch is reset. pages/ms report the work done. */
 bool     state_rollback(uint32_t to, uint32_t* pages, double* ms);
+/* The same for the netplay loop when the boundary of `to` will never be a
+ * rollback target again (its input is confirmed) -- frame-time branch: the
+ * guest pages are put back, the shadow and the write watch are not; the
+ * restored pages stay dirty, and the first commit after it must be a refresh
+ * (state_refresh) at a boundary no later than the first one a rollback may
+ * still target. Saves a page copy per restored page and a watch reset over
+ * the whole state set. Falls back to state_rollback when page hashing is on. */
+bool     state_rollback_lazy(uint32_t to, uint32_t* pages, double* ms);
+/* Bring the shadow up to the guest state now without recording an undo log
+ * (the frames since the last commit can never be rolled back to). */
+void     state_refresh(double* ms);
 uint32_t state_oldest_frame();       /* the oldest boundary a rollback can reach */
 void     state_drop_logs();          /* forget every undo log (a barrier: no rollback past now) */
 void     state_reset();              /* a new netplay session (persistent game): no logs, frame numbers from 0, shadow brought up to date */

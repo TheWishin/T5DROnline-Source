@@ -154,6 +154,16 @@ def _compile_patterns():
     return [(rx, tpl) for _n, rx, tpl in pats]
 
 
+def _param(name, value):
+    """A value inside a known message: player states ("idle", "queue") and the pieces of a joined list are
+    translated, everything else (names, numbers, paths, texts an admin wrote) stays as it came."""
+    if name == "status":
+        return _cat.get(value, value)
+    if name == "parts":
+        return "; ".join(translate_message(x) for x in value.split("; "))
+    return value
+
+
 def translate_message(msg):
     """A text that came in English from the lobby server, the build tool or a library: the same text in
     the current language when it is a known one, else `msg` unchanged. Never raises."""
@@ -174,7 +184,7 @@ def translate_message(msg):
             german = _cat.get(tpl)
             if german is None:
                 return msg
-            vals = {k: _cat.get(v, v) for k, v in m.groupdict().items()}      # (status words: "idle", "queue", ...)
+            vals = {k: _param(k, v) for k, v in m.groupdict().items()}
             try:
                 return german.format(**vals)
             except (KeyError, IndexError, ValueError):

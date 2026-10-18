@@ -128,7 +128,7 @@ KW_SINKS = {"text", "title", "message", "label", "placeholder"}
 CALL_SINKS = {"status", "set_status", "chat_line", "show_bar", "showinfo", "showerror", "showwarning", "askyesno",
               "askstring", "ask_string", "ask_yes_no", "showmessage", "tell"}
 # Constants that are not words for a player (file names, technical names, keys of a table).
-TECHNICAL = {"Segoe UI", "Consolas", "launcher.json", "online.json"}
+TECHNICAL = {"Segoe UI", "Consolas", "launcher.json", "online.json", "Tekken 5: Dark Resurrection Online"}
 
 
 def _texty(node):
@@ -167,7 +167,18 @@ def unwrapped(paths=None, skip=()):
                     out.append(f"{rel}: {k.arg}= {ast.unparse(k.value)[:70]}")
             fn = node.func
             fname = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else None
-            if fname in CALL_SINKS:
+            for k in node.keywords:
+                if (k.arg == "value" and fname == "StringVar") or (k.arg == "values" and fname in ("insert", "Combobox")):
+                    if _texty(k.value) and not isinstance(k.value, ast.IfExp):
+                        out.append(f"{rel}: {fname}({k.arg}={ast.unparse(k.value)[:60]})")
+            if fname == "show_bar":          # show_bar(text, [(label, command, pad button), ...])
+                if node.args and _texty(node.args[0]):
+                    out.append(f"{rel}: show_bar({ast.unparse(node.args[0])[:70]})")
+                for a in node.args[1:]:
+                    for tup in getattr(a, "elts", []):
+                        if isinstance(tup, ast.Tuple) and tup.elts and _texty(tup.elts[0]):
+                            out.append(f"{rel}: show_bar button {ast.unparse(tup.elts[0])[:50]}")
+            elif fname in CALL_SINKS:
                 for a in node.args:
                     if _texty(a):
                         out.append(f"{rel}: {fname}({ast.unparse(a)[:70]})")

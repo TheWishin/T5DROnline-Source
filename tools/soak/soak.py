@@ -643,12 +643,17 @@ def sc_online_accept(d):
     g = d.g
     g.phase("online", "menu")
     d.pick(ONLINE, wait=4.0)
-    for i in range(3):
-        g.press("RIGHT", gap=1500)
-    g.shot("online-terms", expect="any", settle=0.5, timeout=2)
     n0 = g.log_bytes().count(b"net ranking")
-    g.press("CROSS", gap=3000)                  # YES on the last page
-    ok = g.wait_log(r"net ranking", timeout=30, count=n0 + 1)
+    ok = False
+    for attempt in range(3):                    # pages ignore presses while they slide (slow under load)
+        for i in range(3):
+            g.press("RIGHT", gap=1500)
+        if attempt == 0:
+            g.shot("online-terms", expect="any", settle=0.5, timeout=2)
+        g.press("CROSS", gap=3000)              # YES on the last page
+        ok = g.wait_log(r"net ranking", timeout=15, count=n0 + 1)
+        if ok or g.mode != M_ONLINE:
+            break
     g.expect("online-check", ok, "the online check ran (net ranking thread)" if ok else "no online check in 30 s")
     g.wait(8)
     g.shot("online-after", expect="any", settle=0.5, timeout=2)

@@ -64,13 +64,14 @@ def main():
     ap.add_argument("--exe", required=True)
     ap.add_argument("--dir", required=True)
     ap.add_argument("--cpus", type=int)
+    ap.add_argument("--cpu-offset", type=int, default=0)
     ap.add_argument("--dump-every", type=int, default=30)
     ap.add_argument("--keep-gamedata", action="store_true")
     ap.add_argument("--seed-gamedata")
     ap.add_argument("env", nargs="*")
     a = ap.parse_args()
     env = dict(kv.split("=", 1) for kv in a.env)
-    g = SoakGame(a.dir, cpus=a.cpus, exe=a.exe, env=env, dump_every=a.dump_every, abort_hang=0,
+    g = SoakGame(a.dir, cpus=a.cpus, cpu_offset=a.cpu_offset, exe=a.exe, env=env, dump_every=a.dump_every, abort_hang=0,
                  keep_gamedata=a.keep_gamedata, seed_gamedata=a.seed_gamedata, console=True)
     cmd_path = os.path.join(a.dir, "cmd.txt")
     done_path = os.path.join(a.dir, "done.txt")

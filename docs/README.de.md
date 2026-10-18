@@ -108,7 +108,9 @@ Ordner.
 - Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf
   das Fenster. Unter **Settings** gibt es Fenstergrößen, maximiert, randlos
   (experimentell: noch nicht mit dem echten Spielfenster getestet) und Stumm.
-- **Esc** beendet das Spiel. Der Knopf **Stop game** auch.
+- **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
+  Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
+  das X des Fensters), verliert das Match.
 - Zwei Spieler an einem PC: Schließe ein zweites Pad an, wähle dann Versus.
 - Tipps für jetzt:
   - Gehe so selten wie möglich zum Titelbildschirm zurück (Speicherfehler).

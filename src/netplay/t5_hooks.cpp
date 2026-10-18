@@ -52,7 +52,7 @@
  *   T5_NET_HASH      regions hashed into the per-frame state hash,
  *                    "addr:len,addr:len" (hex). Default: kDefaultHash.
  *   T5_NET_HASH_SKIP words inside those regions left out (default kDefaultHashSkip)
- *   T5_NET_DESYNC_DUMP=1  on a hash mismatch, write the hashed bytes of that
+ *   T5_NET_DESYNC_DUMP=1  on a hash mismatch, write the hashed bytes of that (=<n>: up to n files, default 20)
  *                    frame to np_desync_f<frame>.bin (diff the two PCs' files)
  *   T5_NET_PAGEHASH  "addr:len[:every]" (hex, every in frames, default 60):
  *                    write per-4KB-page hashes of that range to the frame log.
@@ -346,6 +346,7 @@ bool g_desync_dump = false;
 std::vector<uint8_t> g_snap[kSnapFrames];
 uint32_t g_snap_tag[kSnapFrames];
 uint32_t g_desync_dumps = 0;
+uint32_t g_desync_dump_max = 20;   /* T5_NET_DESYNC_DUMP=<n> (n > 1): this many files at most (default 20) */
 
 /* ---- the pad, as the game sees it ------------------------------------------ */
 
@@ -1175,7 +1176,7 @@ void on_frame_start(ppu_context* ctx)
     uint64_t h = state_hash(&parts);
     if (g_directfight && intro_phase_now()) h = kIntroHash;   /* the fight's loading and intros: not compared (below) */
     for (uint32_t mf; g_desync_dump && np::take_mismatch(&mf);) {
-        if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= 20) continue;
+        if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= g_desync_dump_max) continue;
         char path[64];
         snprintf(path, sizeof path, "np_desync_f%06u.bin", mf);
         if (FILE* fp = fopen(path, "wb")) {
@@ -1407,7 +1408,8 @@ void h_cellPadInit(ppu_context* ctx)
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
-    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
+    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); const int n = dd ? atoi(dd) : 0;
+      g_desync_dump = n >= 1; if (n > 1) g_desync_dump_max = (uint32_t)n; }
     InitializeCriticalSection(&g_result_cs);
     read_session_env();
     { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }

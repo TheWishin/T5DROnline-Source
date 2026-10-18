@@ -329,6 +329,8 @@ def main():
     ap.add_argument("--pick-seconds", type=int, default=30)
     ap.add_argument("--locked-after", type=int, default=0)
     ap.add_argument("--no-pick", action="store_true", help="the lines' characters, no in-game select (comparison runs)")
+    ap.add_argument("--keep-going", action="store_true", help="go on after a match with a desync or other problem")
+    ap.add_argument("--buttons", default="", help="--no-pick: buttons=b1|b2 on the lines (costumes, 1-4)")
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--delay", type=int, default=2)
     ap.add_argument("--mash", action="store_true")
@@ -368,7 +370,7 @@ def main():
             n_in_session = k - sess_first
             lock = a.locked_after and n_in_session >= a.locked_after and locked
             if a.no_pick:
-                line = f"{p1c},{p2c},{stages[k % len(stages)]},{a.rounds}"
+                line = f"{p1c},{p2c},{stages[k % len(stages)]},{a.rounds}" + (f" buttons={a.buttons}" if a.buttons else "")
                 spec = None
             elif lock:
                 line = f"{locked[0]},{locked[1]},{stages[k % len(stages)]},{a.rounds}"
@@ -473,7 +475,7 @@ def main():
             log(f"match {k}: {'OK' if m['ok'] else 'FAILED'} -- picks {got.get(1)}, to FIGHT {m['to_fight_s']}, winners "
                 f"{[r and r.get('winner') for r in (r1, r2)]}, desync {[r and r.get('desync') for r in (r1, r2)]}"
                 + (f"; problems {problems}" if problems else ""))
-            if not res_ok or not all(g.running() for g in games):
+            if (not res_ok and not a.keep_going) or not all(g.running() for g in games) or len(results) < 2:
                 ok_all = False
                 break
             time.sleep(a.rematch_wait)

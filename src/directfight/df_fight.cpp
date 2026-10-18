@@ -213,6 +213,13 @@ bool parse_fight(const char* s, Fight& out)
         else if (_stricmp(k.c_str(), "names") == 0) names = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "pick") == 0) { const int n = atoi(cur.substr(eq + 1).c_str()); f.pick = n < 0 ? 0 : n > 120 ? 120 : n; }
+        else if (_stricmp(k.c_str(), "buttons") == 0) {   /* buttons=b1|b2: the confirm buttons (costumes), 1-4, 0 = default */
+            const std::string v = cur.substr(eq + 1);
+            const size_t bar = v.find('|');
+            const int b1 = atoi(v.c_str()), b2 = bar == std::string::npos ? 0 : atoi(v.c_str() + bar + 1);
+            f.btn[0] = b1 >= 1 && b1 <= 4 ? b1 : 0;
+            f.btn[1] = b2 >= 1 && b2 <= 4 ? b2 : 0;
+        }
         cur.clear();
     };
     for (const char* p = s; p && *p; p++) {
@@ -388,6 +395,7 @@ uint32_t g_restart_frame = 0;   /* ... and the frame start VS was called at the 
 ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
 uint32_t g_stuck_s = 60;        /* T5_DF_STUCK_SECONDS: a reset / leave that gets nowhere in this long ends the process */
 uint32_t g_session_matches = 0; /* fights started in this netplay session (the in-game select's exchange key) */
+int g_last_chr[2] = { -1, -1 }, g_last_btn[2] = { 0, 0 };   /* the session's last fight: who with which button (costume) */
 bool g_pause_asked = false;     /* in-game select: the lockstep's pause is requested (after a match) */
 CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
 bool g_cmd_rematch = false;
@@ -542,6 +550,11 @@ void begin_select(uint32_t f)
     }
     note("stage %d, rounds %d", g_cfg.stage, g_cfg.rounds);
     if (g_cfg.pick > 0 && pick_begin(f)) return;
+    /* the same fighter as in the session's last fight keeps its costume (a
+     * ranked set's later games: the lock names the characters only); the same
+     * on both PCs, which played the same fights */
+    for (int p = 0; p < 2; p++)
+        if (!g_cfg.btn[p] && g_cfg.chr[p] == g_last_chr[p] && g_last_btn[p]) g_cfg.btn[p] = g_last_btn[p];
     set_phase(Ph::Select, "select", f);
 }
 
@@ -588,6 +601,8 @@ void start_session_fight(uint32_t f)
     g_session = t5_netplay_session_begin() != 0;
     g_sessions++;
     g_session_matches = 0;
+    g_last_chr[0] = g_last_chr[1] = -1;
+    g_last_btn[0] = g_last_btn[1] = 0;
     g_pause_asked = false;
     g_session_key = session_key();
     g_after_match = false;
@@ -1143,6 +1158,7 @@ void fight_on_frame(uint32_t f)
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
         pick_fight_start(f);
+        for (int p = 0; p < 2; p++) { g_last_chr[p] = g_cfg.chr[p]; g_last_btn[p] = g_cfg.btn[p]; }
         g_session_matches++;
         g_match++;
         g_over_clear = false;

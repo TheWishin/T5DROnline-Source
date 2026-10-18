@@ -136,12 +136,6 @@ def stamp(ts):
     return f"{lt.tm_mday} {months[lt.tm_mon - 1]} {time.strftime('%H:%M', lt)}"
 
 
-def clock(seconds):
-    """m:ss for a number of seconds."""
-    s = max(0, int(seconds))
-    return f"{s // 60}:{s % 60:02d}"
-
-
 # ---------------------------------------------------------------------------- texts from outside
 
 _HOLE = re.compile(r"\{(\w+)\}")

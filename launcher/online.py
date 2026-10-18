@@ -37,6 +37,8 @@ except ImportError as _e:      # lobby/ missing from this copy: keep the launche
     import tkinter as tk  # noqa: F401
     from tkinter import ttk
 
+    from core import t  # noqa: E402  (the launcher's own lookup; English only without lobby/)
+
     AVAILABLE = False
     _why = str(_e)
 
@@ -44,10 +46,10 @@ except ImportError as _e:      # lobby/ missing from this copy: keep the launche
         def __init__(self, parent, app):
             box = ttk.Frame(parent, padding=24)
             box.pack(fill="both", expand=True)
-            ttk.Label(box, text="Online play", style="H1.TLabel").pack(anchor="w")
-            ttk.Label(box, wraplength=640, justify="left", text=(
+            ttk.Label(box, text=t("Online play"), style="H1.TLabel").pack(anchor="w")
+            ttk.Label(box, wraplength=640, justify="left", text=t(
                 "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so online play "
-                f"is not available.\n\n({_why})")).pack(anchor="w", pady=(6, 16))
+                "is not available.\n\n({reason})", reason=_why)).pack(anchor="w", pady=(6, 16))
 
         def on_show(self):
             pass

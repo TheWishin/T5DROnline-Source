@@ -76,6 +76,15 @@ DEFAULTS = {
 }
 
 
+LANGUAGE_CHOICES = [("auto", N_("Auto (Windows language)")), ("de", N_("Deutsch")), ("en", N_("English"))]
+
+
+def clock(seconds):
+    """m:ss for a number of seconds."""
+    s = max(0, int(seconds))
+    return f"{s // 60}:{s % 60:02d}"
+
+
 def apply_language(settings):
     """Switch the texts to the language in the settings ('auto' = the Windows language). -> 'de' | 'en'."""
     return i18n.init(settings["language"]) if I18N else "en"

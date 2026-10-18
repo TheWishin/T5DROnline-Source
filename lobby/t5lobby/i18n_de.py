@@ -11,6 +11,191 @@ texts to paste into the right group.
 """
 
 MESSAGES = {
+    # ---- launcher/controls_edit.py
+    "Attack buttons": "Angriffstasten",
+    "Several buttons with one press (macros)": "Mehrere Tasten mit einem Druck (Makros)",
+    "Start, Select and the other buttons": "Start, Select und die anderen Tasten",
+    "Directions": "Richtungen",
+    "1 (Left Punch)": "1 (Linker Schlag)",
+    "2 (Right Punch)": "2 (Rechter Schlag)",
+    "3 (Left Kick)": "3 (Linker Tritt)",
+    "4 (Right Kick)": "4 (Rechter Tritt)",
+    "Select": "Select",
+    "Start / pause": "Start / Pause",
+    "Down": "Runter",
+    "Left": "Links",
+    "Up": "Hoch",
+    "Right": "Rechts",
+    "PlayStation pad, default": "PlayStation-Pad, Standard",
+    "Xbox pad, default": "Xbox-Pad, Standard",
+    "X Y A B are 1 2 3 4; bumpers and triggers are L1 R1 L2 R2.":
+        "X Y A B sind 1 2 3 4; Schultertasten und Trigger sind L1 R1 L2 R2.",
+    "Square Triangle Cross Circle are 1 2 3 4 (DualShock 4, DualSense and most "
+    "PS3/PS4-mode sticks).":
+        "Quadrat Dreieck Kreuz Kreis sind 1 2 3 4 (DualShock 4, DualSense und die meisten "
+        "Sticks im PS3/PS4-Modus).",
+    "Switch pad, default": "Switch-Pad, Standard",
+    "Y X B A are 1 2 3 4 (Switch Pro controller, sticks in Switch mode).":
+        "Y X B A sind 1 2 3 4 (Switch-Pro-Controller, Sticks im Switch-Modus).",
+    "Xbox-style pad (generic)": "Xbox-ähnliches Pad (allgemein)",
+    "A B X Y buttons and LB RB, for Xbox-like pads that Windows does not give to XInput.":
+        "A-B-X-Y-Tasten und LB RB, für Xbox-ähnliche Pads, die Windows nicht an XInput gibt.",
+    "8-button stick (Vewlix layout)": "8-Tasten-Stick (Vewlix-Layout)",
+    "Top row 1 2 [1+2] [1+3], bottom row 3 4 [3+4] [2+4]: X Y RB LB over A B RT LT.":
+        "Obere Reihe 1 2 [1+2] [1+3], untere Reihe 3 4 [3+4] [2+4]: X Y RB LB über A B RT "
+        "LT.",
+    "Top row 1 2 [1+2] [1+3], bottom row 3 4 [3+4] [2+4]: B1 B4 B6 B5 over B2 B3 B8 B7.":
+        "Obere Reihe 1 2 [1+2] [1+3], untere Reihe 3 4 [3+4] [2+4]: B1 B4 B6 B5 über B2 B3 "
+        "B8 B7.",
+    "6-button stick (Noir / Sega Astro)": "6-Tasten-Stick (Noir / Sega Astro)",
+    "Top row 1 2 [1+2], bottom row 3 4 [3+4]: X Y RB over A B RT. LB and LT stay L1 and "
+    "L2.":
+        "Obere Reihe 1 2 [1+2], untere Reihe 3 4 [3+4]: X Y RB über A B RT. LB und LT "
+        "bleiben L1 und L2.",
+    "Top row 1 2 [1+2], bottom row 3 4 [3+4]: B1 B4 B6 over B2 B3 B8. B5 and B7 stay L1 "
+    "and L2.":
+        "Obere Reihe 1 2 [1+2], untere Reihe 3 4 [3+4]: B1 B4 B6 über B2 B3 B8. B5 und B7 "
+        "bleiben L1 und L2.",
+    "Hitbox": "Hitbox",
+    "The 8-button layout above. Directions come from the d-pad or the left stick, which "
+    "is read as 8-way d-pad presses; left+right (up+down) at once cancel.":
+        "Das 8-Tasten-Layout von oben. Die Richtungen kommen vom Steuerkreuz oder vom linken "
+        "Stick, der als 8-Wege-Steuerkreuz gelesen wird; links+rechts (hoch+runter) zugleich "
+        "heben sich auf.",
+    "The 8-button layout above. Directions come from the hat or the left stick, which is "
+    "read as 8-way d-pad presses; left+right (up+down) at once cancel.":
+        "Das 8-Tasten-Layout von oben. Die Richtungen kommen vom Hat oder vom linken Stick, "
+        "der als 8-Wege-Steuerkreuz gelesen wird; links+rechts (hoch+runter) zugleich heben "
+        "sich auf.",
+    "The file has {n} settings; the game reads at most {max}.":
+        "Die Datei hat {n} Einstellungen; das Spiel liest höchstens {max}.",
+    "The file has {n} sections; the game reads at most {max}.":
+        "Die Datei hat {n} Abschnitte; das Spiel liest höchstens {max}.",
+    "Changed lines of {sections} that would have overridden this ({what}).":
+        "Geänderte Zeilen aus {sections}, die das überschrieben hätten ({what}).",
+    "Lines of your file in other sections still change some buttons.":
+        "Zeilen deiner Datei in anderen Abschnitten ändern weiterhin einige Tasten.",
+    "Other lines in your file ({sections}) still change this layout.":
+        "Andere Zeilen deiner Datei ({sections}) ändern dieses Layout weiterhin.",
+    "{n} lines removed.": "{n} Zeilen entfernt.",
+    # ---- launcher/controls_ui.py
+    "DirectInput controller": "DirectInput-Controller",
+    "Xbox pad (XInput)": "Xbox-Pad (XInput)",
+    "Controls - T5DR Online": "Steuerung - T5DR Online",
+    "Press a button on a controller to pick it, then set its buttons. The game reads the "
+    "file when it starts.":
+        "Drücke eine Taste an einem Controller, um ihn auszuwählen, und stelle dann seine "
+        "Tasten ein. Das Spiel liest die Datei beim Start.",
+    "Controllers": "Controller",
+    "Player": "Spieler",
+    "Controller": "Controller",
+    "Pressed now": "Gerade gedrückt",
+    "Move through this window with the controller": "Dieses Fenster mit dem Controller bedienen",
+    "Buttons": "Tasten",
+    "Game button": "Spieltaste",
+    "Controller button": "Controller-Taste",
+    "Set up all buttons": "Alle Tasten einstellen",
+    "Set up directions": "Richtungen einstellen",
+    "Set selected": "Ausgewählte einstellen",
+    "Clear": "Löschen",
+    "Layout": "Layout",
+    "Use this layout": "Dieses Layout benutzen",
+    "Reset to defaults": "Auf Standard zurücksetzen",
+    "Your changes apply to": "Deine Änderungen gelten für",
+    "Player and directions": "Spieler und Richtungen",
+    "Automatic": "Automatisch",
+    "Player 1": "Spieler 1",
+    "Player 2": "Spieler 2",
+    "8-way d-pad": "8-Wege-Steuerkreuz",
+    "Analog stick": "Analogstick",
+    "Both cancel (neutral)": "Beide heben sich auf (neutral)",
+    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter ist Hoch)",
+    "Last direction wins": "Die letzte Richtung gewinnt",
+    "Pass both through": "Beide durchlassen",
+    "This controller is": "Dieser Controller ist",
+    "Left stick": "Linker Stick",
+    "Opposite directions": "Gegenüberliegende Richtungen",
+    "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction "
+    "as a stick; the game then reads it as d-pad presses. Left+Right (or Up+Down) at "
+    "once happens on keyboards and hitboxes; the game cannot take both. Stick and "
+    "opposite directions belong to the player's port.":
+        "Linker Stick, 8-Wege-Steuerkreuz: Eine Hitbox oder ein Stick im Linker-Stick-Modus "
+        "sendet die Richtung als Stick; das Spiel liest sie dann als Steuerkreuz-Drücke. "
+        "Links+Rechts (oder Hoch+Runter) zugleich kommt auf Tastaturen und Hitboxen vor; das "
+        "Spiel kann nicht beides nehmen. Stick und gegenüberliegende Richtungen gehören zum "
+        "Port des Spielers.",
+    "Skip": "Überspringen",
+    "Stop": "Stopp",
+    "Save": "Speichern",
+    "Revert": "Verwerfen",
+    "Close": "Schließen",
+    "no controller": "kein Controller",
+    "Controllers cannot be read on this PC.": "Controller lassen sich auf diesem PC nicht lesen.",
+    "No controller found. Plug one in; it shows up here by itself.":
+        "Kein Controller gefunden. Stecke einen an; er erscheint hier von selbst.",
+    "switched off in [general]": "in [general] ausgeschaltet",
+    "no free player port": "kein freier Spieler-Port",
+    "No controller chosen": "Kein Controller ausgewählt",
+    "This controller model ({vid}:{pid})": "Dieses Controller-Modell ({vid}:{pid})",
+    "This controller model (no USB ID)": "Dieses Controller-Modell (ohne USB-ID)",
+    "All DirectInput controllers": "Alle DirectInput-Controller",
+    "All Xbox pads (XInput)": "Alle Xbox-Pads (XInput)",
+    "Only the controller on player {n}'s port": "Nur der Controller am Port von Spieler {n}",
+    "no player": "kein Spieler",
+    "player {n}": "Spieler {n}",
+    "yours": "deins",
+    "Your own layout": "Dein eigenes Layout",
+    "Player {n}": "Spieler {n}",
+    "Buttons you set yourself, or a mix. Pick a layout to start from it.":
+        "Tasten, die du selbst eingestellt hast, oder eine Mischung. Wähle ein Layout, um "
+        "davon auszugehen.",
+    "On the controller: {up} / {down} choose a button, {accept} sets it, {clear} clears "
+    "it, {save} saves, {back} closes. The game reads the file when it starts.":
+        "Am Controller: {up} / {down} wählt eine Taste, {accept} stellt sie ein, {clear} "
+        "löscht sie, {save} speichert, {back} schließt. Das Spiel liest die Datei beim "
+        "Start.",
+    "(no game button)": "(keine Spieltaste)",
+    "Press a button on a controller first, or pick one in the list.":
+        "Drücke zuerst eine Taste an einem Controller, oder wähle einen in der Liste.",
+    "Press the button for {button}...": "Drücke die Taste für {button}...",
+    "Press only that one button on the controller.": "Drücke am Controller nur diese eine Taste.",
+    "{n} of {total}.": "{n} von {total}.",
+    "Wait a few seconds to skip it.": "Warte ein paar Sekunden, um sie zu überspringen.",
+    "That was several buttons at once ({sources}). Press one button only.":
+        "Das waren mehrere Tasten auf einmal ({sources}). Drücke nur eine Taste.",
+    "{button}: skipped.": "{button}: übersprungen.",
+    "{button} = {source}.": "{button} = {source}.",
+    "{source} was {other}; that one has no button now.": "{source} war {other}; das hat jetzt keine Taste mehr.",
+    "Stopped.": "Gestoppt.",
+    "{button}: cleared.": "{button}: gelöscht.",
+    "Layout: {name}.": "Layout: {name}.",
+    "Pick a layout in the list first.": "Wähle zuerst ein Layout in der Liste.",
+    "Put {name} back to the default buttons? Your comments and other settings in "
+    "controls.ini stay.":
+        "{name} auf die Standardtasten zurücksetzen? Deine Kommentare und anderen "
+        "Einstellungen in controls.ini bleiben.",
+    "The part of the file that is for all {kind} controllers has button lines too. Reset "
+    "those as well?":
+        "Der Teil der Datei für alle Controller vom Typ {kind} hat auch Tastenzeilen. Diese "
+        "ebenfalls zurücksetzen?",
+    "Reset to the defaults. Save to keep it.": "Auf Standard zurückgesetzt. Speichere, um es zu behalten.",
+    "{name} is {player}. Save to keep it.": "{name} ist {player}. Speichere, um es zu behalten.",
+    "controls.ini changed": "controls.ini geändert",
+    "controls.ini was changed by something else since this screen opened. Overwrite it "
+    "with your settings? (The old file is kept as controls.ini.bak.)":
+        "controls.ini wurde seit dem Öffnen dieses Fensters von etwas anderem geändert. Mit "
+        "deinen Einstellungen überschreiben? (Die alte Datei bleibt als controls.ini.bak "
+        "erhalten.)",
+    "Could not save: {error}": "Speichern nicht möglich: {error}",
+    "Saved {path}. The game reads it when it starts.": "{path} gespeichert. Das Spiel liest sie beim Start.",
+    "The game that is running keeps its old buttons until you start it again.":
+        "Das laufende Spiel behält seine alten Tasten, bis du es neu startest.",
+    "Changes undone.": "Änderungen verworfen.",
+    "There are unsaved changes. Save them first, or close with the mouse.":
+        "Es gibt ungespeicherte Änderungen. Speichere sie zuerst, oder schließe mit der "
+        "Maus.",
+    "Controls": "Steuerung",
+    "Save the changes to controls.ini?": "Die Änderungen in controls.ini speichern?",
     # ---- launcher/core.py
     "Auto (Windows language)": "Auto (Sprache von Windows)",
     "Deutsch": "Deutsch",
@@ -181,7 +366,6 @@ MESSAGES = {
         "Aus den Textdateien entfernt: {user} Benutzer- oder PC-Namen, {ip} IP-Adressen, "
         "{secret} Passwörter, Tokens oder Schlüssel, {email} E-Mail-Adressen.",
     "Open folder": "Ordner öffnen",
-    "Close": "Schließen",
     # ---- launcher/t5dr_launcher.pyw
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
@@ -209,10 +393,8 @@ MESSAGES = {
     "Enter": "Enter",
     "START": "START",
     "Start": "Start",
-    "Start / pause": "Start / Pause",
     "Back": "Back",
     "SELECT": "SELECT",
-    "Select": "Select",
     "Tab": "Tab",
     "Esc": "Esc",
     "Quit the game": "Spiel beenden",
@@ -280,7 +462,12 @@ MESSAGES = {
     "opponent picked the same, otherwise Auto. Ranked matches always use 2.":
         "Frames. Auto: 1 bis etwa 60 ms Ping, darüber 2. 0/1/2 gelten nur, wenn dein Gegner "
         "dasselbe gewählt hat, sonst Auto. Ranked-Matches nutzen immer 2.",
-    "Controls": "Steuerung",
+    "Set up controllers…": "Controller einstellen…",
+    "Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
+    "or start from a layout.":
+        "Wähle ein Pad, einen Stick oder eine Hitbox, drücke die Tasten, die du für 1 2 3 4 "
+        "und den Rest willst, oder starte von einem Layout.",
+    "(needs the lobby files, which are missing)": "(braucht die Lobby-Dateien, die fehlen)",
     "Action (Tekken default)": "Aktion (Tekken-Standard)",
     "PS3 button": "PS3-Taste",
     "Keyboard": "Tastatur",
@@ -908,7 +1095,6 @@ MESSAGES = {
     "Challenge expired.": "Herausforderung abgelaufen.",
     "direct": "direkt",
     "via the lobby server's relay": "über das Relay des Lobby-Servers",
-    "Player": "Spieler",
     "Rank": "Rang",
     "Rating": "Wertung",
     "Record": "Bilanz",

@@ -23,12 +23,12 @@ import threading
 import time
 import tkinter as tk
 from collections import namedtuple
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
 import controls_edit as ce
 from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
-from t5lobby import padmap, padnav
+from t5lobby import dialogs, padmap, padnav
 from t5lobby.padmap import DINPUT, XINPUT
 
 POLL_HZ = 60
@@ -256,8 +256,8 @@ class PadNavigator:
 
 def _ask(kind, title, text, parent):
     if kind == "yesnocancel":
-        return messagebox.askyesnocancel(title, text, parent=parent)
-    return messagebox.askyesno(title, text, parent=parent)
+        return dialogs.ask_yes_no_cancel(title, text, parent=parent)      # (buttons in the launcher's language)
+    return dialogs.ask_yes_no(title, text, parent=parent)
 
 
 def _kind_name(kind):

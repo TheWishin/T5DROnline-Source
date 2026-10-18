@@ -386,12 +386,12 @@ class App(tk.Tk):
         # Set the buttons of pads, arcade sticks and hitboxes here instead of editing controls.ini (controls_ui.py)
         cbar = ttk.Frame(ctl)
         cbar.pack(fill="x", pady=(0, 6))
-        self.controls_btn = ttk.Button(cbar, text="Set up controllers…", command=self.open_controls,
+        self.controls_btn = ttk.Button(cbar, text=t("Set up controllers…"), command=self.open_controls,
                                        state="normal" if controls_ui else "disabled")
         self.controls_btn.pack(side="left")
-        ttk.Label(cbar, style="Muted.TLabel", text=(
-            "  Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
-            "or start from a layout." if controls_ui else "  (needs the lobby files, which are missing)")).pack(
+        ttk.Label(cbar, style="Muted.TLabel", text="  " + (
+            t("Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
+              "or start from a layout.") if controls_ui else t("(needs the lobby files, which are missing)"))).pack(
             side="left")
         tv = ttk.Treeview(ctl, columns=("ps3", "kb", "pad"), show="tree headings", height=len(CONTROLS),
                           selectmode="none")

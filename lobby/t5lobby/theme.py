@@ -668,7 +668,8 @@ class Theme:
         st, px, f = self.style, self.px, self.fonts
         st.configure("Treeview", background=C["surface"], fieldbackground=C["surface"], foreground=C["text"],
                      bordercolor=C["surface"], lightcolor=C["surface"], darkcolor=C["surface"],
-                     rowheight=px(28), font=f["body"], borderwidth=0, padding=0, indent=px(4))
+                     rowheight=px(24), font=f["body"], borderwidth=0, padding=0, indent=px(4))
+        st.configure("Lobby.Treeview", rowheight=px(28))
         st.map("Treeview", background=[("selected", "focus", C["sel"]), ("selected", mix(C["sel"], C["surface"], 0.35))],
                foreground=[("selected", C["text"]), ("disabled", C["faint"])])
         st.configure("Treeview.Heading", background=C["surface"], foreground=C["faint"], font=f["caps"],
@@ -821,7 +822,29 @@ def apply(widget):
     if th is None:
         th = Theme(root)
         root._t5_theme = th
+        # dark title bars for the main window and every dialog (Windows 10 20H1+ / 11)
+        root.bind("<Map>", lambda e: dark_title_bar(e.widget) if e.widget is root else None, add="+")
+        root.bind_class("Toplevel", "<Map>", lambda e: dark_title_bar(e.widget), add="+")
     return th
+
+
+def dark_title_bar(win):
+    """Ask Windows for the dark caption of a top-level window (cosmetic; ignored where unsupported)."""
+    if getattr(win, "_t5_dark_caption", False):
+        return
+    try:
+        win._t5_dark_caption = True
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
+        on = ctypes.c_int(1)
+        dwm = ctypes.windll.dwmapi
+        for attr in (20, 19):            # DWMWA_USE_IMMERSIVE_DARK_MODE (20; 19 before Windows 10 20H1)
+            if dwm.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), attr, ctypes.byref(on), ctypes.sizeof(on)) == 0:
+                break
+    except (AttributeError, OSError, tk.TclError):
+        pass
 
 
 def get(widget):

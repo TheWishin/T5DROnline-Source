@@ -160,6 +160,7 @@ class OnlineView:
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
         tv = ttk.Treeview(frame, columns=cols, show="tree headings" if image_col else "headings", height=height,
+                          style="Lobby.Treeview",
                           selectmode=select)
         if image_col:
             tv.heading("#0", text="")

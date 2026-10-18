@@ -203,6 +203,22 @@ def _launcher_test(res, work, release, variant, variant_dir, base):
     return res
 
 
+def write_table(out, rows, version, used):
+    """DIR/variants.md from the result rows: what to upload, and what each file is and passed."""
+    with open(os.path.join(out, "variants.md"), "w", encoding="utf-8") as f:
+        f.write(f"Launcher stub variants, version {version}, built {time.strftime('%Y-%m-%d %H:%M')} with {used}.\n\n"
+                "| file | size | SHA-256 | what differs | tests |\n|---|---|---|---|---|\n")
+        for r in rows:
+            extra = f" **Needs {', '.join(r['extra_files'])} beside it.**" if r["extra_files"] else ""
+            f.write(f"| `{r['file']}` | {r['size']:,} | `{r['sha256']}` | {r['differs']}.{extra} | "
+                    f"python as under pythonw.exe: {r['marker'][:30]}; folder with unicode name: {r['unicode'][:30]}; "
+                    f"200-character folder: {r['longpath'][:30]}; real launcher: {r['launcher'][:30]} |\n")
+        f.write("\nA 243-character install folder (the deepest Windows can start the stub from) fails in every variant: "
+                "python\\pythonw.exe or python312.dll inside it is over 259 characters and CreateProcess/LoadLibrary "
+                "refuse it. The 1.0.0 stub had the same limit.\n")
+        f.write("\n```\n" + "\n".join(r["features"] for r in rows) + "\n```\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", required=True)
@@ -211,11 +227,15 @@ def main():
     ap.add_argument("--llvm", default=os.path.join(ROOT, "build", "rd", "llvm"))
     ap.add_argument("--variants", nargs="+", default=list(P.STUB_VARIANTS), choices=sorted(P.STUB_VARIANTS))
     ap.add_argument("--no-test", action="store_true")
+    ap.add_argument("--rewrite-table", action="store_true", help="only write variants.md again from variants.json")
     ap.add_argument("--test-only", action="store_true",
                     help="do not build: test the v<n>-<variant>.exe files that are already in --out")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
+    if a.rewrite_table:
+        write_table(out, json.load(open(os.path.join(out, "variants.json"))), a.version, "MSVC (existing files)")
+        return
     clang = P.find_clang(a.llvm) if os.path.exists(os.path.join(a.llvm, "bin", "clang-cl.exe")) else (None, None)
     rows = []
     work = os.path.join(out, "_test")
@@ -256,15 +276,8 @@ def main():
               f"unicode {row['unicode'][:30]}, 200-char folder {row['longpath'][:30]}, 243-char folder {row['edge'][:50]}, "
               f"launcher {row['launcher'][:60]}", flush=True)
     shutil.rmtree(work, ignore_errors=True)
-    with open(os.path.join(out, "variants.md"), "w", encoding="utf-8") as f:
-        f.write(f"Launcher stub variants, version {a.version}, built {time.strftime('%Y-%m-%d %H:%M')} with "
-                f"{used}.\n\n| file | size | SHA-256 | what differs | starts the launcher |\n|---|---|---|---|---|\n")
-        for r in rows:
-            extra = f" (needs {', '.join(r['extra_files'])} beside it)" if r["extra_files"] else ""
-            f.write(f"| `{r['file']}` | {r['size']:,} | `{r['sha256']}` | {r['differs']}{extra} | "
-                    f"marker: {r['marker'][:40]}; real launcher: {r['launcher'][:40]} |\n")
-        f.write("\n```\n" + "\n".join(r["features"] for r in rows) + "\n```\n")
     json.dump(rows, open(os.path.join(out, "variants.json"), "w"), indent=1)
+    write_table(out, rows, a.version, used)
     print(f"table: {os.path.join(out, 'variants.md')}")
 
 

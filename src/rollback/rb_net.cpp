@@ -21,6 +21,7 @@ extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);  
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode (4) */
 extern "C" int32_t t5_sem_count(uint32_t id);          /* src/netplay/t5_hooks.cpp: a kernel semaphore's count */
+extern "C" long cellSpurs_jobs_run(void);              /* ps3recomp patch 0039: SPURS jobs run so far */
 extern "C" int t5_sem_set_count(uint32_t id, int32_t v);
 
 namespace rb { namespace net {
@@ -221,6 +222,7 @@ struct Stats {
     double depth_ms[17] = {}, depth_ms_max[17] = {};   /* restore + re-simulation, by depth */
     uint32_t late = 0; double late_ms = 0, late_ms_max = 0;   /* early rollbacks that ended after their tick: how late */
     uint32_t commits_skipped = 0, refreshes = 0;             /* re-simulated boundaries without an undo log (T5_RB_NET_LAZY) */
+    long rs_jobs = 0;                                        /* SPURS jobs (skinning) run during re-simulations */
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
 
@@ -265,6 +267,7 @@ bool fighting_now() { return rd32(kPhaseWordF) == 17 && vm_base[kDecidedByteF] =
 LARGE_INTEGER g_t_bnd_out;   /* when the last boundary handed the game its frame */
 bool g_t_bnd_out_ok = false;
 uint64_t g_rs_cyc0 = 0;      /* main thread cycles at the rollback's start */
+long g_rs_jobs0 = 0;         /* SPURS jobs run at the rollback's start */
 double g_rs_restore_ms = 0;
 LARGE_INTEGER g_t_tick_seen; /* the swallowed tick of an early boundary */
 double g_cyc_per_ms = 0;
@@ -320,10 +323,10 @@ void report()
         note("rbnet: re-simulated frames %u: per frame commit %.2f ms, rest of the boundary %.2f ms, game frame %.2f ms; "
              "rollbacks: main thread CPU %.1f of %.1f ms wall (%.1f ms not running: waits, preemption); "
              "restore+resim ms by depth (avg/max)%s; early rollbacks that ended after their tick %u (%.2f ms late on average, max %.2f); "
-             "boundaries without an undo log %u, shadow refreshes %u",
+             "boundaries without an undo log %u, shadow refreshes %u; SPURS jobs run during re-simulations %ld",
              g_st.rs_frames_timed, g_st.rs_commit_ms / n, g_st.rs_bnd_ms / n, g_st.rs_game_ms / n,
              g_st.rs_cpu_ms, g_st.rs_wall_ms, g_st.rs_wall_ms - g_st.rs_cpu_ms, k ? dh : " -",
-             g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes);
+             g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes, g_st.rs_jobs);
     }
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     { char rs[256]; state_restore_stats(rs, sizeof rs, true); note("rbnet: restores: %s; heap pages the SPURS jobs fill, left out of the state: %u", rs, state_job_pages()); }
@@ -618,6 +621,7 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     uint32_t pages = 0; double rms = 0;
     QueryPerformanceCounter(&g_rb_t0);
     g_rs_cyc0 = thread_cycles();
+    g_rs_jobs0 = cellSpurs_jobs_run();
     /* Frame-time branch: the boundaries before g_checked (every input before
      * them confirmed) are never rolled back to again, so the re-simulation
      * keeps no undo log for them: the restore leaves the shadow to the first
@@ -682,6 +686,7 @@ static void rollback_done(uint32_t f)
     const double wall = 1000.0 * (double)(t.QuadPart - g_rb_t0.QuadPart) / (double)g_qpf.QuadPart;
     const double cpu = (double)(thread_cycles() - g_rs_cyc0) / cyc_per_ms();
     g_st.rs_wall_ms += wall; g_st.rs_cpu_ms += cpu;
+    g_st.rs_jobs += cellSpurs_jobs_run() - g_rs_jobs0;
     const uint32_t d = std::min<uint32_t>(g_resim_target - g_resim_from, 16);
     g_st.depth_ms[d] += wall; if (wall > g_st.depth_ms_max[d]) g_st.depth_ms_max[d] = wall;
     if (g_early_f == f && !g_tick_waited && g_early_tick_seen) {   /* an early rollback that the tick overtook */

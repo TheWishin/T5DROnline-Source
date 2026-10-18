@@ -380,8 +380,9 @@ def add_python(stage):
                 copy(os.path.join(dp, f), os.path.join(dst, "DLLs", os.path.relpath(os.path.join(dp, f),
                                                                                      os.path.join(base, "DLLs"))))
     for dp, dns, fns in os.walk(os.path.join(base, "tcl")):
+        # tix8.4.3 (tkinter.tix, nothing here uses it) holds tix84.dll, the only unsigned DLL of python.org's Tcl/Tk
         dns[:] = [d for d in dns if (d not in ("demos", "tzdata", "msgs", "encoding") or "tk" in dp.lower())
-                  and d != "nmake"]
+                  and d != "nmake" and not d.lower().startswith("tix")]
         for f in fns:
             rel = os.path.relpath(os.path.join(dp, f), base)
             copy(os.path.join(dp, f), os.path.join(dst, rel))

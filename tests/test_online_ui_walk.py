@@ -28,9 +28,11 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOBBY = os.path.join(ROOT, "lobby")
-for p in (os.path.join(ROOT, "launcher"), LOBBY, os.path.join(LOBBY, "tests")):
+if os.path.join(ROOT, "launcher") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "launcher"))
+for p in (LOBBY, os.path.join(LOBBY, "tests")):          # appended: lobby/run.py must not hide tools' run modules
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 os.environ["T5_PAD_NAV"] = "0"                   # never this PC's controllers
 
 try:
@@ -104,6 +106,7 @@ class StubGame:
 @unittest.skipIf(tk is None, "no tkinter")
 class OnlineUiWalk(unittest.TestCase):
     def setUp(self):
+        self._path = list(sys.path)            # (launcher/online.py puts lobby/ first: put the path back after)
         import util
         from t5lobby import dialogs, i18n
         self.util = util
@@ -194,6 +197,7 @@ class OnlineUiWalk(unittest.TestCase):
         else:
             os.environ["T5_LANG"] = self._lang
         self.i18n.set_language("en")
+        sys.path[:] = self._path
         self.app = self.tab = None
         import gc
         gc.collect()
@@ -389,7 +393,7 @@ class OnlineUiWalk(unittest.TestCase):
         self.wait(1.2)
         self.shot("searching")
         self.cli("Rival", "--quick", "--", sys.executable, STUB, env={"T5_STUB_SECONDS": "4"})
-        self.pump(lambda: self.found("ready"), 30, "match found")
+        self.pump(lambda: self.found("ready"), 90, "match found (the CLI client starts slowly on a busy PC)")
         self.assertIsNotNone(tab.view.ring)
         self.assertIn("Accept (A)", [str(w.cget("text")) for w in tab.bar_buttons.winfo_children()])
         self.wait(1.0)

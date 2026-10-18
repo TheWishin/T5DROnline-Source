@@ -628,8 +628,8 @@ class RenderTests(Base):
         app.update()
         texts = all_texts(app)
         self.assertEqual(app.language, "en")
-        for expect in ("Build", "Play", "Settings", "Online", "BUILD GAME", "PLAY", "Quick match", "Ranked match",
-                       "Log in", "Language"):
+        for expect in ("Build", "Play offline", "Settings", "Play online", "BUILD GAME", "PLAY OFFLINE",
+                       "Online tab", "Quick match", "Ranked match", "Log in", "Language"):
             self.assertTrue(any(expect in t for t in texts), expect)
         self.assertNotIn("Bauen", " ".join(texts))
 
@@ -642,8 +642,9 @@ class RenderTests(Base):
         keys = set(i18n_de.MESSAGES)
         english_left = sorted({t for t in texts if t in keys and i18n_de.MESSAGES[t] != t})
         self.assertEqual(english_left, [], "English texts still on screen")
-        for expect in ("Bauen", "Spielen", "Einstellungen", "BUILD GAME", "PLAY", "Quick Match", "Ranked-Match",
-                       "Anmelden", "Als Gast spielen", "Sprache", "Rangliste"):
+        for expect in ("Bauen", "Offline spielen", "Einstellungen", "Online spielen", "BUILD GAME", "OFFLINE SPIELEN",
+                       "Online-Reiter", "Quick Match", "Ranked-Match", "Anmelden", "Als Gast spielen", "Sprache",
+                       "Rangliste"):
             self.assertTrue(any(expect in t for t in texts), expect)
         # most of the screen changed
         i18n.set_language("en")

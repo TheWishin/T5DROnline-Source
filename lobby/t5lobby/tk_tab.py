@@ -967,6 +967,10 @@ class OnlineTab:
                 score = f"{h['score'][0]}-{h['score'][1]}" if h.get("score") else ""
                 delta = f"{h['delta']:+.0f}" if h.get("delta") is not None else ("" if h["ranked"] else "casual")
                 st = h["status"] + (f" ({REASON_TEXT.get(h['reason'], h['reason'])})" if h.get("reason") else "")
+                sv = h.get("set")
+                if sv:          # a game of a ranked set: which one, and how the set went
+                    st += f" -- set game {sv.get('game')}" + (
+                        f", set {sv['result']} {sv['score'][0]}-{sv['score'][1]}" if sv.get("score") else "")
                 self.tv_hist.insert("", "end", values=(when, h["result"], h["opponent"], chars, score, delta, st))
         self.call(self.client.profile, name, 20, then=done)
 

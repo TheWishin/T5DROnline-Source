@@ -542,7 +542,7 @@ class SetDriverTest(Base):
 
     def run_set(self, mode, stub):
         a, b = self.acc("Alice"), self.acc("Bob")
-        drivers, games = [], []
+        drivers = []
         for c, n in ((a, "a"), (b, "b")):
             d = tempfile.mkdtemp(prefix=f"set{n}")
             drivers.append(MatchDriver(c, self.launch_stub(d, stub), d, mode=mode, ask_manual=False))

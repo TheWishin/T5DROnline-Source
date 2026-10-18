@@ -1435,7 +1435,8 @@ class LobbyServer:
     def create_match(self, host, join, ranked, origin, room=None, rematch_of=None, keep=False, game_set=None):
         note = None
         going_on = game_set or (rematch_of.set if rematch_of is not None else None)
-        if going_on is not None and going_on.rated and going_on.state == "active" and                 {id(x) for x in going_on.players} == {id(host), id(join)}:
+        if going_on is not None and going_on.rated and going_on.state == "active" and (
+                {id(x) for x in going_on.players} == {id(host), id(join)}):
             pass                     # the next game of a rated set: the set was ranked (and capped) when it began
         elif ranked and host.account_id is not None and join.account_id is not None and self.cfg.pair_cap > 0:
             n = self.store.pair_ranked(host.account_id, join.account_id, time.time() - DAY)

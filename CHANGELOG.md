@@ -5,6 +5,16 @@ part is in the README's status table.
 
 ## Unreleased
 
+### Ranked sets: best of 3, rated once
+- A ranked match is now a set: the first player to win 2 games wins it (each game is still first to 3
+  rounds). The rank moves once, at the end of the set. Between two games the next one starts by itself
+  after a short countdown, with the same characters; the Online tab shows "Set 1-0 -- game 2 of 3", and
+  the names in the fight show the games won ("Alice [1]").
+- Leaving or quitting in the middle of a set loses it. A game that went out of sync is played again (at
+  most twice per set). The daily limit of ranked results between the same two players counts sets.
+- Needs the new launcher on both sides; against an older one every ranked game counts on its own, as
+  before. docs/RANKED.md "Ranked sets".
+
 ### Report a problem
 - New launcher button **Report a problem...** (Play tab, Build tab, and the Online
   tab after a match). It makes one zip on the Desktop and opens its folder: the

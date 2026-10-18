@@ -37,7 +37,11 @@ LIMIT = 1 << 20     # 1 MiB
 
 # Paths exempt from the binary / magic checks -- only for fixtures we made
 # ourselves. Keep it empty unless there is a reason, and say the reason here.
-ALLOW = set()
+ALLOW = {
+    # Our own launcher icon (a "T5" drawn with Pillow in Arial Bold, 2026-10-18), compiled
+    # into T5DR Online.exe so virus scanners see an ordinary application.
+    "launcher/stub/t5dr.ico",
+}
 
 BLOCKED_EXT = {
     ".pkg", ".rap", ".rif", ".edat", ".sdat", ".self", ".sprx", ".prx", ".elf",

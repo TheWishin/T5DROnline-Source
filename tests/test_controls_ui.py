@@ -1083,6 +1083,17 @@ class DialogTest(DialogBase):
         self.assertEqual(c.table(DINPUT, 0, 0x0F0D, 0x00EE).sources_exactly(padmap.target_mask("1")), ["B13"])
         self.assertFalse(d.editor.dirty)
 
+    def test_the_online_tabs_pad_reader_sees_a_saved_change(self):
+        # lobby/t5lobby/padnav.py reads the same file: Cross of this stick is what the screen says it is
+        stick = FakePad()
+        d = self.open(stick, ini="")
+        files = padmap.ControlsFile(lambda: self.ini)
+        self.assertEqual(files.refresh().face_sources(DINPUT, 0, 0x0F0D, 0x00EE)["cross"], ["B2"])
+        d.begin(["3"])
+        self.press(stick, "B13")
+        d.do_save()
+        self.assertEqual(files.refresh().face_sources(DINPUT, 0, 0x0F0D, 0x00EE)["cross"], ["B13"])
+
     def test_taking_a_button_from_another_one_says_so(self):
         stick = FakePad()
         d = self.open(stick)

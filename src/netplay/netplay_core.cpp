@@ -1441,6 +1441,12 @@ void rb_sample_local(uint32_t f, bool neutral, const PadInput* forced)
         PadInput theirs = kNeutral;
         if (s.localpad) device_input(1, &theirs);
         theirs.buttons |= script_mask(s.script2, t) | s.padfile2.poll(t);
+        /* the second player follows the same rules a peer's game applies at
+         * this boundary (the intro takes no input, the post-match input is a
+         * rule): a real peer never presses there, and with T5_NET_LOCAL_LAG a
+         * press there would roll the game back into the fight's loading */
+        if (forced) theirs = *forced;
+        else if (neutral) theirs = kNeutral;
         for (uint32_t g = s.remote_contig; g <= t; g++) { s.remote.in[g % kRing] = theirs; s.remote.in_tag[g % kRing] = g + 1; }
         while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
         return;

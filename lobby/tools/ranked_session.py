@@ -298,6 +298,10 @@ def main():
     ap.add_argument("--queue", choices=["ranked", "quick", "room"], default="ranked",
                     help="how the two find each other: the ranked or quick queue, or a lobby room (rematches in it)")
     ap.add_argument("--room-ranked", action="store_true", help="--queue room: a ranked room")
+    ap.add_argument("--sets", type=int, default=1, help="pairings in a row (--matches each); after a set both "
+                                                       "queue again: the next opponent, a new netplay session")
+    ap.add_argument("--fresh-p2", action="store_true", help="--sets: player 2's game is closed before every new "
+                                                            "pairing (a fresh game against a persistent one)")
     ap.add_argument("--pick1", default="timeout", help="real game, --ingame-pick: player 1's picks")
     ap.add_argument("--pick2", default="timeout", help="real game, --ingame-pick: player 2's picks")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
@@ -331,12 +335,35 @@ def main():
             for p in players:
                 (p.client.quick_match if a.queue == "quick" else p.client.ranked_match)()
         t_end = time.time() + a.seconds
+        total = a.matches * a.sets
+        set_no = 1
         while time.time() < t_end:
             for p in players:
                 p.pump()
             done = [len(p.results()) for p in players]
-            if min(done) >= a.matches:
+            if min(done) >= total:
                 break
+            if min(done) >= a.matches * set_no:
+                # the set is over: both leave it and meet again as a new pairing (a new netplay
+                # session in the running games, as for the next opponent); --fresh-p2: player 2's
+                # game is closed first, so a fresh game meets a persistent one
+                set_no += 1
+                for p in players:
+                    last = p.results()[-1]["match"]
+                    try:
+                        p.client.rematch(last, False)
+                    except Exception as e:      # noqa: BLE001 -- the set may have ended already
+                        print(f"  [{p.name}] leave the set: {e}", flush=True)
+                if a.fresh_p2:
+                    print(f"  [{players[1].name}] closing the game: a fresh one meets the next opponent", flush=True)
+                    players[1].driver.stop_game()
+                time.sleep(2.0)
+                for p in players:
+                    p.driver.auto_rematch = a.matches - 1
+                    p.driver.rematch_sent.clear()
+                    (p.client.quick_match if a.queue == "quick" else p.client.ranked_match)()
+                print(f"--- set {set_no}: a new pairing", flush=True)
+                continue
             if all(p.results() and not p.results()[-1].get("rematch_window") for p in players) and \
                     all(not p.driver.game_running() for p in players):
                 break

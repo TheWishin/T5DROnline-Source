@@ -101,6 +101,7 @@ class OnlineView:
         self._anim_t = time.monotonic()
         self._wraps = []                   # (label, container, margin): wraplength follows the width
         self._wrap_bound = set()
+        self._wrap_after = None
         self.revealed = None               # the opponent once both accepted (match_reveal)
         self.challenger = None
         self.match_ev = None               # match_start of the match being played
@@ -110,12 +111,14 @@ class OnlineView:
         self.result_dismissed = True
         self.queue_counts = {}
         self.search_t0 = None
+        self.rematch_pending = False       # we offered a rematch and wait for the opponent
         self.err_var = tk.StringVar(tab.parent, value="")
         self.pw2_var = tk.StringVar(tab.parent, value="")
         self.host_var = tk.StringVar(tab.parent, value="")
         self.ring = None
         self.bar_spinner = None
         self._build()
+        tab.set_var.trace_add("write", lambda *_: self.refresh())
 
     # ------------------------------------------------------------------ helpers
     def card(self, parent, style="Card.TFrame", pad=14):
@@ -125,34 +128,42 @@ class OnlineView:
         return ttk.Frame(parent, style=style)
 
     def wrap(self, label, container, margin=0):
-        """The label wraps at the container's width (less `margin` pixels at 96 DPI)."""
+        """The label wraps at the container's width (less `margin` pixels at 96 DPI). It starts narrow,
+        so it never makes its container wider than the window gives it; widths are applied once the
+        layout has settled (debounced), and small changes are ignored (no relayout ping-pong)."""
         self._wraps.append((label, container, margin))
+        try:
+            label.configure(wraplength=self.px(300))
+        except tk.TclError:
+            pass
         key = str(container)
         if key not in self._wrap_bound:
             self._wrap_bound.add(key)
-            container.bind("<Configure>", lambda _e, c=container: self._wrap_in(c), add="+")
+            container.bind("<Configure>", lambda _e: self._on_resize(), add="+")
         return label
 
-    def _wrap_in(self, container):
-        w = container.winfo_width()
-        if w <= 50:
-            return
-        for label, cont, margin in self._wraps:
-            if cont is container:
-                try:
-                    want = max(120, w - self.px(margin))
-                    if int(str(label.cget("wraplength") or 0)) != want:
-                        label.configure(wraplength=want)
-                except (tk.TclError, ValueError):
-                    pass
-
     def _on_resize(self, _e=None):
+        if self._wrap_after is None:
+            try:
+                self._wrap_after = self.box.after(60, self._apply_wraps)
+            except tk.TclError:
+                self._wrap_after = None
+
+    def _apply_wraps(self):
+        self._wrap_after = None
+        slack = self.px(8)
         for label, cont, margin in self._wraps:
             try:
+                if not label.winfo_exists():
+                    continue
                 w = cont.winfo_width()
-                if w > 50:
-                    label.configure(wraplength=max(120, w - self.px(margin)))
-            except tk.TclError:
+                if w <= 50:
+                    continue
+                want = max(self.px(120), w - self.px(margin))
+                cur = int(float(str(label.cget("wraplength") or 0)))
+                if abs(cur - want) > slack:
+                    label.configure(wraplength=want)
+            except (tk.TclError, ValueError):
                 pass
 
     def tree(self, parent, cols, widths, height=6, image_col=True, select="browse"):
@@ -472,6 +483,7 @@ class OnlineView:
         cb.grid(row=0, column=2, rowspan=2, sticky="e")
         cb.bind("<<ComboboxSelected>>", lambda _e: tab.on_char())
         tab.char_cb = cb
+        self.lock_label = ttk.Label(top, text="Locked for this ranked set", style="Card.Faint.TLabel")
         tab.actions = {}
         tab.action_text = {}
         b = ttk.Button(f, text="Ranked match", style="Card.Hero.TButton", state="disabled",
@@ -544,6 +556,7 @@ class OnlineView:
         ttk.Label(head, text="IN MATCH", style="Card.Caps.TLabel").grid(row=0, column=0, sticky="w")
         self.m_pill = ttk.Label(head, text="CASUAL", style="Card.Pill.TLabel")
         self.m_pill.grid(row=0, column=1, sticky="w", padx=(px(8), 0))
+        self.m_set = ttk.Label(head, text="", style="Card.PillGold.TLabel")
         self.m_dot = tk.Canvas(head, width=px(10), height=px(10), bg=C["surface"], highlightthickness=0, takefocus=0)
         self.m_dot.grid(row=0, column=3, sticky="e", padx=(0, px(6)))
         self.m_state = ttk.Label(head, text="", style="Card.Bold.TLabel")
@@ -829,8 +842,15 @@ class OnlineView:
             self.challenger = ev.get("from")
         elif t == "match_found":
             self.revealed = None
+            self.rematch_pending = False
             self.clear_error()
             self.result_dismissed = True
+        elif t == "rematch" and ev.get("state") == "declined":
+            self.rematch_pending = False
+            self._res_sig = None
+        elif t == "set_end":
+            self.rematch_pending = False
+            self._res_sig = None
         elif t == "match_reveal":
             self.revealed = ev.get("opponent")
         elif t == "match_start":
@@ -840,7 +860,14 @@ class OnlineView:
             self.result_dismissed = True
         elif t in ("match_cancel", "disconnected"):
             self.revealed = None
+        if (t == "match_cancel" and ev.get("reason") in ("udp_unreachable", "no_connection")) or t in (
+                "disconnected", "kicked"):
+            self.show_error(tab.status_var.get())          # the tab has just said what happened
         self.refresh()
+
+    def rematch_sent(self, accept):
+        self.rematch_pending = bool(accept)
+        self._res_sig = None
 
     def after_driver(self, n):
         if n.get("kind") == "game_state":
@@ -981,6 +1008,10 @@ class OnlineView:
         guest = (me or {}).get("guest", True)
         self.ranked_sub.configure(text="Create an account to play ranked" if me and guest else
                                   "Rated: close to your rank, good connection")
+        if tab.set_locked and not self.lock_label.winfo_manager():
+            self.lock_label.grid(row=2, column=1, columnspan=2, sticky="e")
+        elif not tab.set_locked and self.lock_label.winfo_manager():
+            self.lock_label.grid_forget()
 
     # --- searching
     def _update_search(self):
@@ -1016,10 +1047,16 @@ class OnlineView:
         drv = tab.driver
         running = bool(drv is not None and drv.game_running())
         phase = self.game_phase
-        sig = (id(ev), running, phase, self.fighters)
+        set_text = self.set_text(ev)
+        sig = (id(ev), running, phase, self.fighters, set_text)
         if sig == self._match_sig:
             return
         self._match_sig = sig
+        if set_text:
+            self.m_set.configure(text=set_text)
+            self.m_set.grid(row=0, column=2, sticky="w", padx=(self.px(6), 0))
+        else:
+            self.m_set.grid_forget()
         opp = ev.get("opponent") or (getattr(drv.ticket, "opponent", None) if drv and drv.ticket else None) or {}
         ranked = ev.get("ranked")
         self.m_pill.configure(text=("RANKED" if ranked else "CASUAL") + ("  ·  REMATCH" if ev.get("origin") ==
@@ -1076,7 +1113,8 @@ class OnlineView:
         kind = self._bar_kind_now()
         lag = (tab.lag or {}).get("text")
         sig = (kind, id(tab.match), (self.revealed or {}).get("name"), tab.ready_sent, tab.challenge,
-               tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None)
+               tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None,
+               tab.set_var.get())
         if sig == self._bar_sig:
             return
         self._bar_sig = sig
@@ -1112,7 +1150,18 @@ class OnlineView:
         sub = "Guest" if guest else f"{ranks.label(opp)}  ·  rating {opp.get('rating', '?')}"
         ttk.Label(parent, text=sub, style="Card.Muted.TLabel").grid(row=row + 1, column=1, sticky="nw")
 
-    def _head(self, parent, caps, ranked, extra=None):
+    def set_text(self, ev=None):
+        """The ranked set on a card: tab.set_var when the set code fills it ("Set 1-0, game 2 of 3"),
+        else "SET, GAME n" from the server's set info from the second game on."""
+        own = self.tab.set_var.get().strip()
+        if own:
+            return own.upper()
+        st = (ev or {}).get("set") or {}
+        if st.get("ranked") and int(st.get("game") or 0) > 1:
+            return f"SET \u00b7 GAME {st['game']}"
+        return ""
+
+    def _head(self, parent, caps, ranked, extra=None, ev=None):
         px = self.px
         head = self.body(parent)
         ttk.Label(head, text=caps, style="Card.Caps.TLabel").pack(side="left")
@@ -1120,6 +1169,9 @@ class OnlineView:
                   style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel").pack(side="left", padx=(px(8), 0))
         if extra:
             ttk.Label(head, text=extra, style="Card.Pill.TLabel").pack(side="left", padx=(px(6), 0))
+        st = self.set_text(ev)
+        if st:
+            ttk.Label(head, text=st, style="Card.PillGold.TLabel").pack(side="left", padx=(px(6), 0))
         return head
 
     def _visual_ready(self, v):
@@ -1130,7 +1182,8 @@ class OnlineView:
         left.grid(row=0, column=0, sticky="nw")
         left.columnconfigure(1, weight=1)
         self._head(left, "OPPONENT FOUND", m.get("ranked"),
-                   "REMATCH" if m.get("origin") == "rematch" else None).grid(row=0, column=0, columnspan=2, sticky="w")
+                   "REMATCH" if m.get("origin") == "rematch" else None, m).grid(row=0, column=0, columnspan=2,
+                                                                                sticky="w")
         opp = self.revealed or (None if m.get("blind") else m.get("opponent"))
         if opp:
             self._opponent_row(left, opp, 1)
@@ -1176,8 +1229,8 @@ class OnlineView:
         left = self.body(v)
         left.grid(row=0, column=0, sticky="nw")
         self._head(left, "MATCH READY", m.get("ranked"),
-                   "REMATCH" if m.get("origin") == "rematch" else None).grid(row=0, column=0, columnspan=2, sticky="w",
-                                                                             pady=(0, px(8)))
+                   "REMATCH" if m.get("origin") == "rematch" else None, m).grid(row=0, column=0, columnspan=2,
+                                                                                sticky="w", pady=(0, px(8)))
         opp = self.revealed or m.get("opponent")
         if opp:
             self._opponent_row(left, opp, 1)
@@ -1230,6 +1283,9 @@ class OnlineView:
                                                                                        sticky="w")
         sub = ("Ranked" if info.get("ranked") else "Casual") + " match" + (
             f" vs {info['opp']}" if info.get("opp") else "")
+        set_text = self.set_text(ev)
+        if set_text:
+            sub += "  \u00b7  " + set_text.capitalize()
         ttk.Label(banner, text=sub, style=pre + "Bold.TLabel").grid(row=0, column=1, sticky="sw", padx=(px(16), 0))
         ttk.Label(banner, text=info.get("text", ""), style=pre + "Small.TLabel").grid(row=1, column=1, sticky="nw",
                                                                                         padx=(px(16), 0))
@@ -1279,7 +1335,8 @@ class OnlineView:
 
     def _render_result_card(self):
         tab, px = self.tab, self.px
-        sig = (id(self.result_info), (tab.lag or {}).get("text"), tab.client is not None)
+        sig = (id(self.result_info), (tab.lag or {}).get("text"), tab.client is not None, tab.set_var.get(),
+               self.rematch_pending)
         if sig == self._res_sig:
             return
         self._res_sig = sig
@@ -1289,6 +1346,14 @@ class OnlineView:
             w.destroy()
         self._visual_result(self.res_visual)
         info = self.result_info or {}
+        self.res_spinner = None
+        if self.rematch_pending:
+            row = self.body(self.res_visual)
+            row.grid(row=9, column=0, sticky="w", pady=(px(10), 0))
+            self.res_spinner = theme.Spinner(row, size=20, width=3)
+            self.res_spinner.pack(side="left", padx=(0, px(8)))
+            ttk.Label(row, text="Rematch offered. Waiting for {opp}...".format(opp=info.get("opp") or "your opponent"),
+                      style="Card.Accent.TLabel").pack(side="left")
         ttk.Button(self.res_buttons, text="Next game", style="Card.Accent.TButton",
                    command=self._next_game).pack(side="left")
         ttk.Button(self.res_buttons, text="Back to the lobby", style="Card.TButton",
@@ -1316,6 +1381,8 @@ class OnlineView:
     # ------------------------------------------------------------------ animation
     def _anim_needed(self):
         if self._stage == "search":
+            return True
+        if self._stage == "result" and getattr(self, "res_spinner", None) is not None:
             return True
         return self._stage == "bar" and (self.ring is not None or self.bar_spinner is not None)
 
@@ -1345,6 +1412,8 @@ class OnlineView:
                 self._update_ring()
             if self.bar_spinner is not None and shown:
                 self.bar_spinner.step(dt)
+            if self._stage == "result" and getattr(self, "res_spinner", None) is not None and shown:
+                self.res_spinner.step(dt)
         except tk.TclError:
             return
         if self._anim_needed():
@@ -1354,12 +1423,14 @@ class OnlineView:
                 self._anim_id = None
 
     def close(self):
-        if self._anim_id is not None:
-            try:
-                self.box.after_cancel(self._anim_id)
-            except (tk.TclError, ValueError):
-                pass
-            self._anim_id = None
+        for attr in ("_anim_id", "_wrap_after"):
+            aid = getattr(self, attr)
+            if aid is not None:
+                try:
+                    self.box.after_cancel(aid)
+                except (tk.TclError, ValueError):
+                    pass
+                setattr(self, attr, None)
 
     # ------------------------------------------------------------------ windows
     def codes_window(self, codes, first, save):

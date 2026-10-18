@@ -79,6 +79,7 @@ TIER_ABBR = {0: "B", 17: "SH", 18: "EX", 19: "WA", 20: "MA", 21: "VI", 22: "CH",
              36: "KN"}
 
 PING_GOOD, PING_OK = 60, 120      # ms: green up to 60, yellow up to 120, red above
+_PNG_CACHE = {}                    # (image key, size, scale) -> PNG data: a second window reuses the drawing
 
 
 def tier_color(tier):
@@ -173,35 +174,57 @@ def _png(w, h, rgba):
     return base64.b64encode(png).decode("ascii")
 
 
-def raster(w, h, layers, ss=4):
+def raster(w, h, layers, ss=4, bg=None, band=None):
     """RGBA bytes of `layers` painted in order: (inside(x, y) -> bool, "#rrggbb", convex). Edges are
-    anti-aliased by 4x4 supersampling; a convex shape skips pixels whose four corners agree."""
-    out = bytearray(w * h * 4)
+    anti-aliased by 4x4 supersampling; a convex shape skips pixels whose four corners agree. With `bg`
+    the picture starts from that colour (opaque), else from transparent. `band`: the shapes are
+    rectangles with rounded corners no larger than `band` pixels -- only the corner zones and one
+    middle row / column are worked out, the rest is copied (much faster)."""
     sub = [(i + 0.5) / ss for i in range(ss)]
     n = float(ss * ss)
-    cols = [(_rgb(col), inside, convex) for inside, col, convex in layers]
-    for y in range(h):
-        for x in range(w):
+    cols = [(_rgb(col), inside, convex, getattr(inside, "bbox", None)) for inside, col, convex in layers]
+    b0 = _rgb(bg) if bg else None
+
+    def pixel(x, y):
+        if b0:
+            pr, pg, pb, pa = float(b0[0]), float(b0[1]), float(b0[2]), 1.0
+        else:
             pr = pg = pb = pa = 0.0
-            for (cr, cg, cb), inside, convex in cols:
-                if convex:
-                    k = inside(x, y) + inside(x + 1, y) + inside(x, y + 1) + inside(x + 1, y + 1)
-                    if k == 0:
-                        continue
-                    cov = 1.0 if k == 4 else sum(inside(x + sx, y + sy) for sy in sub for sx in sub) / n
-                else:
-                    cov = sum(inside(x + sx, y + sy) for sy in sub for sx in sub) / n
-                if cov <= 0.0:
+        for (cr, cg, cb), inside, convex, bb in cols:
+            if bb is not None and (x + 1 < bb[0] or x > bb[2] or y + 1 < bb[1] or y > bb[3]):
+                continue
+            if convex:
+                k = inside(x, y) + inside(x + 1, y) + inside(x, y + 1) + inside(x + 1, y + 1)
+                if k == 0:
                     continue
-                q = 1.0 - cov
-                pr, pg, pb, pa = cr * cov + pr * q, cg * cov + pg * q, cb * cov + pb * q, cov + pa * q
-            if pa > 0.0:
-                i = (y * w + x) * 4
-                out[i] = int(pr / pa + 0.5)
-                out[i + 1] = int(pg / pa + 0.5)
-                out[i + 2] = int(pb / pa + 0.5)
-                out[i + 3] = int(pa * 255 + 0.5)
-    return out
+                cov = 1.0 if k == 4 else sum(inside(x + sx, y + sy) for sy in sub for sx in sub) / n
+            else:
+                cov = sum(inside(x + sx, y + sy) for sy in sub for sx in sub) / n
+            if cov <= 0.0:
+                continue
+            q = 1.0 - cov
+            pr, pg, pb, pa = cr * cov + pr * q, cg * cov + pg * q, cb * cov + pb * q, cov + pa * q
+        if pa <= 0.0:
+            return bytes(4)
+        return bytes((int(pr / pa + 0.5), int(pg / pa + 0.5), int(pb / pa + 0.5), int(pa * 255 + 0.5)))
+
+    if band is None or w < 2 * band + 3 or h < 2 * band + 3:
+        out = bytearray()
+        for y in range(h):
+            for x in range(w):
+                out += pixel(x, y)
+        return out
+    xs = list(range(band)) + [band] + list(range(w - band, w))
+
+    def row(y):
+        px_ = {x: pixel(x, y) for x in xs}
+        left = b"".join(px_[x] for x in range(band))
+        right = b"".join(px_[x] for x in range(w - band, w))
+        return left + px_[band] * (w - 2 * band) + right
+    top = [row(y) for y in range(band)]
+    mid = row(band)
+    bot = [row(y) for y in range(h - band, h)]
+    return bytearray(b"".join(top) + mid * (h - 2 * band) + b"".join(bot))
 
 
 def rrect(x0, y0, x1, y1, r):
@@ -241,6 +264,7 @@ def stroke(points, width):
     """inside() of a polyline drawn `width` wide (round joins)."""
     segs = list(zip(points, points[1:]))
     hw2 = (width / 2.0) ** 2
+    hw = width / 2.0
 
     def inside(x, y):
         for (ax, ay), (bx, by) in segs:
@@ -251,6 +275,8 @@ def stroke(points, width):
             if ex * ex + ey * ey <= hw2:
                 return True
         return False
+    inside.bbox = (min(p[0] for p in points) - hw, min(p[1] for p in points) - hw,
+                   max(p[0] for p in points) + hw, max(p[1] for p in points) + hw)
     return inside
 
 
@@ -287,6 +313,7 @@ class Theme:
         self.s = scale_of(root)
         self.images = {}            # every PhotoImage made here (Tk drops an image nobody holds)
         self.fonts = {}
+        self._element_names = None
         self.style = ttk.Style(root)
         self._fonts()
         self._build()
@@ -294,10 +321,16 @@ class Theme:
     def px(self, v):
         return int(round(v * self.s))
 
-    def photo(self, key, w, h, layers):
+    def photo(self, key, w, h, layers, bg=None, band=None):
+        """A PhotoImage drawn from `layers` (see raster); opaque on `bg` when given (fast to draw)."""
         img = self.images.get(key)
         if img is None:
-            img = tk.PhotoImage(master=self.root, data=_png(w, h, raster(w, h, layers)))
+            ck = (key, w, h, self.s)
+            data = _PNG_CACHE.get(ck)
+            if data is None:
+                ss = 4 if self.s < 1.4 else 3          # (edges are already finer at high DPI)
+                data = _PNG_CACHE[ck] = _png(w, h, raster(w, h, layers, ss=ss, bg=bg, band=band))
+            img = tk.PhotoImage(master=self.root, data=data)
             self.images[key] = img
         return img
 
@@ -338,8 +371,9 @@ class Theme:
     def font(self, key):
         return self.fonts[key]
 
-    # --- images
-    def _rounded(self, key, w, h, r, fill, line=None, line_w=1, ring_col=None, ring_w=2):
+    # --- images (opaque: every corner is blended into the colour it sits on, so Tk copies them as plain
+    # bitmaps; partly transparent images are blended by Tk in software, tile by tile, which is very slow)
+    def _rounded(self, key, w, h, r, fill, bg, line=None, line_w=1, ring_col=None, ring_w=2):
         layers = []
         if ring_col:
             layers.append((rrect(0, 0, w, h, r), ring_col, True))
@@ -351,14 +385,20 @@ class Theme:
             layers.append((rrect(d, d, w - d, h - d, r - d), fill, True))
         elif fill:
             layers.append((rrect(0, 0, w, h, r), fill, True))
-        return self.photo(key, w, h, layers)
+        return self.photo(key, w, h, layers, bg, band=int(r) + 3)
 
-    def _ring_only(self, key, w, h, r, col, width):
+    def _ring_only(self, key, w, h, r, col, width, bg):
         d = width
-        return self.photo(key, w, h, [(ring(rrect(0, 0, w, h, r), rrect(d, d, w - d, h - d, r - d)), col, False)])
+        return self.photo(key, w, h, [(ring(rrect(0, 0, w, h, r), rrect(d, d, w - d, h - d, r - d)), col, False)],
+                          bg, band=int(r) + 3)
 
-    def _blank(self, key, w, h):
-        return self.photo(key, w, h, [])
+    def _blank(self, key, w, h, bg=None):
+        return self.photo(key, w, h, [], bg, band=2)
+
+    def _element(self, name, *args, **kw):
+        if name not in self._elements():
+            self.style.element_create(name, "image", *args, **kw)
+            self._element_names.add(name)
 
     # --- ttk
     def _build(self):
@@ -376,42 +416,31 @@ class Theme:
                      disabledforeground=C["faint"])
         st.map(".", foreground=[("disabled", C["faint"])])
 
-        containers = {"": C["bg"], "Card.": C["surface"], "Tile.": C["raised"], "Err.": C["err_bg"],
-                      "Note.": C["note_bg"]}
-        # frames
+        # frames: cards on the page, tiles on cards, banners
         st.configure("TFrame", background=C["bg"])
-        r = px(12)
-        size = 2 * r + 4
-        card = self._rounded("card", size, size, r, C["surface"], line=C["line"])
-        st.element_create("Card.bg", "image", card, border=r + 1, sticky="nsew")
-        st.layout("Card.TFrame", [("Card.bg", {"sticky": "nsew"})])
-        st.configure("Card.TFrame", background=C["bg"], padding=px(14))
-        rt = px(8)
-        tsize = 2 * rt + 4
-        tile = self._rounded("tile", tsize, tsize, rt, C["raised"])
-        st.element_create("Tile.bg", "image", tile, border=rt + 1, sticky="nsew")
-        st.layout("Tile.TFrame", [("Tile.bg", {"sticky": "nsew"})])
-        st.configure("Tile.TFrame", background=C["surface"], padding=(px(12), px(8)))
-        for name, fill, line in (("Err", C["err_bg"], C["err_line"]), ("Note", C["note_bg"], C["note_line"]),
-                                 ("Win", C["ok_bg"], mix(C["ok"], C["ok_bg"], 0.55)),
-                                 ("Loss", C["bad_bg"], mix(C["bad"], C["bad_bg"], 0.6)),
-                                 ("Even", C["raised"], C["line_hi"])):
-            img = self._rounded("banner_" + name, tsize, tsize, rt, fill, line=line)
-            st.element_create(f"{name}.bg", "image", img, border=rt + 1, sticky="nsew")
+        for name, fill, line, on, r, center, pad in (
+                ("Card", C["surface"], C["line"], C["bg"], 12, 48, px(14)),
+                ("Tile", C["raised"], None, C["surface"], 8, 32, (px(12), px(8))),
+                ("Err", C["err_bg"], C["err_line"], C["bg"], 8, 32, (px(12), px(8))),
+                ("Note", C["note_bg"], C["note_line"], C["bg"], 8, 32, (px(12), px(8))),
+                ("Win", C["ok_bg"], mix(C["ok"], C["ok_bg"], 0.55), C["surface"], 8, 32, (px(12), px(8))),
+                ("Loss", C["bad_bg"], mix(C["bad"], C["bad_bg"], 0.6), C["surface"], 8, 32, (px(12), px(8))),
+                ("Even", C["raised"], C["line_hi"], C["surface"], 8, 32, (px(12), px(8)))):
+            rr = px(r)
+            size = 2 * rr + px(center)
+            img = self._rounded("frame_" + name, size, size, rr, fill, on, line=line)
+            self._element(f"{name}.bg", img, border=rr + 1, sticky="nsew")
             st.layout(f"{name}.TFrame", [(f"{name}.bg", {"sticky": "nsew"})])
-            st.configure(f"{name}.TFrame", background=C["surface"] if name in ("Win", "Loss", "Even") else C["bg"],
-                         padding=(px(12), px(8)))
-        containers.update({"Win.": C["ok_bg"], "Loss.": C["bad_bg"], "Even.": C["raised"]})
-        # plain frames inside a card / tile / banner (for rows of widgets)
-        st.configure("CardBody.TFrame", background=C["surface"])
-        st.configure("TileBody.TFrame", background=C["raised"])
-        st.configure("ErrBody.TFrame", background=C["err_bg"])
-        st.configure("NoteBody.TFrame", background=C["note_bg"])
-        st.configure("WinBody.TFrame", background=C["ok_bg"])
-        st.configure("LossBody.TFrame", background=C["bad_bg"])
-        st.configure("EvenBody.TFrame", background=C["raised"])
+            st.configure(f"{name}.TFrame", background=on, padding=pad)
+        # plain frames inside a card / tile / banner (rows of widgets)
+        for name, bg in (("CardBody", C["surface"]), ("TileBody", C["raised"]), ("ErrBody", C["err_bg"]),
+                         ("NoteBody", C["note_bg"]), ("WinBody", C["ok_bg"]), ("LossBody", C["bad_bg"]),
+                         ("EvenBody", C["raised"])):
+            st.configure(f"{name}.TFrame", background=bg)
 
-        # labels
+        # labels: a role (font, colour) on each background
+        containers = {"": C["bg"], "Card.": C["surface"], "Tile.": C["raised"], "Err.": C["err_bg"],
+                      "Note.": C["note_bg"], "Win.": C["ok_bg"], "Loss.": C["bad_bg"], "Even.": C["raised"]}
         roles = {
             "": dict(font=f["body"], foreground=C["text"]),
             "Muted.": dict(font=f["body"], foreground=C["muted"]),
@@ -435,23 +464,19 @@ class Theme:
                 st.configure(f"{pre}{role}TLabel", background=bg, **opts)
         # pills ([RANKED], [CASUAL] ...): rounded labels
         rp = px(9)
-        psize = 2 * rp + 4
+        psize = 2 * rp + 4                     # (small: the image is also the least size of a pill)
         for name, fill, fg in (("Pill", C["hover"], C["muted"]), ("PillAccent", C["accent"], C["on_accent"]),
                                ("PillOk", mix(C["ok"], C["surface"], 0.2), "#08130c"),
                                ("PillBad", mix(C["bad"], C["surface"], 0.15), "#1a0707"),
                                ("PillGold", C["gold"], "#1d1704"), ("PillWarn", C["warn"], "#1d1404")):
-            el = f"{name}.bg"
-            if el not in self._elements():
-                img = self._rounded(f"pill_{name}", psize, psize, rp, fill)
-                st.element_create(el, "image", img, border=rp + 1, sticky="nsew")
-            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"]),
-                            ("Win.", C["ok_bg"]), ("Loss.", C["bad_bg"]), ("Even.", C["raised"])):
-                st.layout(f"{pre}{name}.TLabel", [(el, {"sticky": "nsew", "children": [
+            for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
+                img = self._rounded(f"pill_{name}_{pre}", psize, psize, rp, fill, bg)
+                self._element(f"{pre}{name}.bg", img, border=rp + 1, sticky="nsew")
+                st.layout(f"{pre}{name}.TLabel", [(f"{pre}{name}.bg", {"sticky": "nsew", "children": [
                     ("Label.padding", {"sticky": "nsew", "children": [("Label.label", {"sticky": "nsew"})]})]})])
                 st.configure(f"{pre}{name}.TLabel", background=bg, foreground=fg, font=f["caps"],
                              padding=(px(9), px(2)), anchor="center")
 
-        # buttons
         self._buttons()
         self._checks()
         self._fields()
@@ -469,76 +494,74 @@ class Theme:
         self._options()
 
     def _elements(self):
-        try:
-            return set(self.style.element_names())
-        except tk.TclError:
-            return set()
+        if self._element_names is None:
+            try:
+                self._element_names = set(self.style.element_names())
+            except tk.TclError:
+                self._element_names = set()
+        return self._element_names
 
-    def _button_family(self, name, fill, hover, pressed, disabled, ring_col, line=None, fg=C["text"],
-                       fg_dis=C["faint"]):
-        """A rounded button element with its states, and the style `name` laid out with it."""
+    # backgrounds buttons sit on (their corners are blended into it): the page, cards, the error banner
+    BUTTON_GROUNDS = (("", "bg"), ("Card.", "surface"), ("Err.", "err_bg"))
+
+    def _button_family(self, name, fill, hover, pressed, disabled, ring_col, line=None):
+        """Rounded button elements (one per background) with their states, and their layouts."""
         st, px = self.style, self.px
         r = px(7)
-        size = 2 * r + 6
+        size = 2 * r + px(18)
         rw = max(2, px(2))
-        imgs = {}
-        for state, col in (("normal", fill), ("hover", hover), ("pressed", pressed), ("disabled", disabled)):
-            if col is None:
-                imgs[state] = self._blank(f"btn_{name}_{state}", size, size)
+        for pre, key in self.BUTTON_GROUNDS:
+            bg = C[key]
+            imgs = {}
+            for state, col in (("normal", fill), ("hover", hover), ("pressed", pressed), ("disabled", disabled)):
+                k = f"btn_{name}_{state}_{pre}"
+                if col is None:
+                    imgs[state] = self._blank(k, size, size, bg)
+                else:
+                    imgs[state] = self._rounded(k, size, size, r, col, bg, line=line if state != "disabled" else None)
+            if fill is None:
+                imgs["focus"] = self._ring_only(f"btn_{name}_focus_{pre}", size, size, r, ring_col, rw, bg)
             else:
-                imgs[state] = self._rounded(f"btn_{name}_{state}", size, size, r, col,
-                                            line=line if state != "disabled" else None)
-        if fill is None:
-            imgs["focus"] = self._ring_only(f"btn_{name}_focus", size, size, r, ring_col, rw)
-        else:
-            imgs["focus"] = self._rounded(f"btn_{name}_focus", size, size, r, fill, ring_col=ring_col, ring_w=rw)
-        imgs["focus_hover"] = self._rounded(f"btn_{name}_focus_hover", size, size, r, hover or C["hover"],
-                                            ring_col=ring_col, ring_w=rw)
-        el = f"{name}.bg"
-        if el not in self._elements():
-            st.element_create(el, "image", imgs["normal"],
-                              ("disabled", imgs["disabled"]), ("pressed", imgs["pressed"]),
-                              ("focus", "active", imgs["focus_hover"]), ("focus", imgs["focus"]),
-                              ("active", imgs["hover"]), border=r + 2, sticky="nsew")
-        st.layout(f"{name}.TButton" if name != "Base" else "TButton", [(el, {"sticky": "nsew", "children": [
-            ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
-        style = f"{name}.TButton" if name != "Base" else "TButton"
-        st.configure(style, foreground=fg, background=C["bg"], anchor="center", relief="flat")
-        st.map(style, foreground=[("disabled", fg_dis)])
-        return style
+                imgs["focus"] = self._rounded(f"btn_{name}_focus_{pre}", size, size, r, fill, bg, ring_col=ring_col,
+                                              ring_w=rw)
+            imgs["focus_hover"] = self._rounded(f"btn_{name}_fh_{pre}", size, size, r, hover or C["hover"], bg,
+                                                ring_col=ring_col, ring_w=rw)
+            el = f"{pre}{name}.bg"
+            self._element(el, imgs["normal"], ("disabled", imgs["disabled"]), ("pressed", imgs["pressed"]),
+                          ("focus", "active", imgs["focus_hover"]), ("focus", imgs["focus"]),
+                          ("active", imgs["hover"]), border=r + 2, sticky="nsew")
+            style = (pre + "TButton") if name == "Base" else f"{pre}{name}.TButton"
+            st.layout(style, [(el, {"sticky": "nsew", "children": [
+                ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
+            st.configure(style, background=bg, anchor="center", relief="flat")
 
     def _buttons(self):
         st, px, f = self.style, self.px, self.fonts
-        base = self._button_family("Base", C["raised"], C["hover"], C["pressed"], mix(C["raised"], C["bg"], 0.5),
-                                   C["accent"], line=C["line"])
-        st.configure(base, font=f["button"], padding=(px(14), px(6)))
-        acc = self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], C["accent_dim"],
-                                  "#ffffff", fg=C["on_accent"], fg_dis=mix(C["on_accent"], C["accent_dim"], 0.55))
-        st.configure(acc, font=f["button"], padding=(px(16), px(6)))
-        st.layout("Hero.TButton", st.layout(acc))
-        st.configure("Hero.TButton", font=f["hero"], padding=(px(22), px(13)), foreground=C["on_accent"])
-        st.map("Hero.TButton", foreground=[("disabled", mix(C["on_accent"], C["accent_dim"], 0.55))])
-        st.layout("HeroAlt.TButton", st.layout(base))
-        st.configure("HeroAlt.TButton", font=f["hero"], padding=(px(22), px(13)))
-        ghost = self._button_family("Ghost", None, C["hover"], C["pressed"], None, C["accent"],
-                                    fg=C["muted"])
-        st.configure(ghost, font=f["button"], padding=(px(8), px(4)))
-        st.map(ghost, foreground=[("disabled", C["faint"]), ("active", C["text"])])
-        st.layout("Link.TButton", st.layout(ghost))
-        st.configure("Link.TButton", font=f["small"], padding=(px(6), px(2)), foreground=C["accent_hi"])
-        st.map("Link.TButton", foreground=[("disabled", C["faint"]), ("active", C["text"])])
-        st.layout("Small.TButton", st.layout(base))
-        st.configure("Small.TButton", font=f["small"], padding=(px(10), px(3)))
-        st.layout("Danger.TButton", st.layout(base))
-        st.configure("Danger.TButton", font=f["button"], padding=(px(14), px(6)), foreground=C["bad"])
-        st.map("Danger.TButton", foreground=[("disabled", C["faint"])])
-        # the same buttons on a card / a tile / a banner: only the corner blend colour differs
-        for pre, bg in (("Card.", C["surface"]), ("Tile.", C["raised"]), ("Err.", C["err_bg"]),
-                        ("Note.", C["note_bg"]), ("Win.", C["ok_bg"]), ("Loss.", C["bad_bg"]),
-                        ("Even.", C["raised"])):
-            for s in ("TButton", "Accent.TButton", "Hero.TButton", "HeroAlt.TButton", "Ghost.TButton",
-                      "Link.TButton", "Small.TButton", "Danger.TButton"):
-                st.configure(pre + s, background=bg)
+        self._button_family("Base", C["raised"], C["hover"], C["pressed"], mix(C["raised"], C["bg"], 0.5),
+                            C["accent"], line=C["line"])
+        self._button_family("Accent", C["accent"], C["accent_hi"], C["accent_lo"], C["accent_dim"], "#ffffff")
+        self._button_family("Ghost", None, C["hover"], C["pressed"], None, C["accent"])
+        acc_dis = mix(C["on_accent"], C["accent_dim"], 0.55)
+        # (style suffix, layout family, font, padding, foreground, disabled / active foreground)
+        kinds = (("TButton", "Base", f["button"], (px(14), px(6)), C["text"], None),
+                 ("Accent.TButton", "Accent", f["button"], (px(16), px(6)), C["on_accent"], acc_dis),
+                 ("Hero.TButton", "Accent", f["hero"], (px(22), px(13)), C["on_accent"], acc_dis),
+                 ("HeroAlt.TButton", "Base", f["hero"], (px(22), px(13)), C["text"], None),
+                 ("Ghost.TButton", "Ghost", f["button"], (px(8), px(4)), C["muted"], "active"),
+                 ("Link.TButton", "Ghost", f["small"], (px(6), px(2)), C["accent_hi"], "active"),
+                 ("Small.TButton", "Base", f["small"], (px(10), px(3)), C["text"], None),
+                 ("Danger.TButton", "Base", f["button"], (px(14), px(6)), C["bad"], None))
+        for pre, key in self.BUTTON_GROUNDS:
+            for suffix, fam, font, pad, fg, dis in kinds:
+                style = pre + suffix
+                base_style = (pre + "TButton") if fam == "Base" else f"{pre}{fam}.TButton"
+                if style != base_style:
+                    st.layout(style, st.layout(base_style))
+                st.configure(style, font=font, padding=pad, foreground=fg, background=C[key], anchor="center")
+                if dis == "active":
+                    st.map(style, foreground=[("disabled", C["faint"]), ("active", C["text"])])
+                else:
+                    st.map(style, foreground=[("disabled", dis or C["faint"])])
 
     def _checks(self):
         st, px = self.style, self.px
@@ -550,117 +573,108 @@ class Theme:
         sw = max(1.6, b * 0.14)
         box = rrect(pad, pad, pad + b, pad + b, r)
         lw = max(1, px(1))
-        inner2 = rrect(pad + lw, pad + lw, pad + b - lw, pad + b - lw, r - lw)
-
-        def img(key, fill, line, check=None):
-            layers = [(box, line, True), (inner2, fill, True)]
-            if check:
-                layers.append((stroke(chk, sw), check, False))
-            return self.photo(key, w, w, layers)
-        off = img("chk_off", C["raised"], C["line_hi"])
-        off_h = img("chk_off_h", C["hover"], C["muted"])
-        on = img("chk_on", C["accent"], C["accent"], "#ffffff")
-        on_h = img("chk_on_h", C["accent_hi"], C["accent_hi"], "#ffffff")
-        off_d = img("chk_off_d", C["surface"], C["line"])
-        on_d = img("chk_on_d", C["accent_dim"], C["accent_dim"], C["muted"])
-        if "Check.ind" not in self._elements():
-            st.element_create("Check.ind", "image", off, ("disabled", "selected", on_d), ("disabled", off_d),
-                              ("selected", "active", on_h), ("selected", on), ("active", off_h), sticky="")
-        # radio
+        inner = rrect(pad + lw, pad + lw, pad + b - lw, pad + b - lw, r - lw)
         cx = cy = w / 2.0
         rr = b / 2.0
+        for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
+            def img(key, fill, line, check=None):
+                layers = [(box, line, True), (inner, fill, True)]
+                if check:
+                    layers.append((stroke(chk, sw), check, False))
+                return self.photo(key + pre, w, w, layers, bg)
 
-        def rimg(key, fill, line, dot=None):
-            layers = [(circle(cx, cy, rr), line, True), (circle(cx, cy, rr - lw), fill, True)]
-            if dot:
-                layers.append((circle(cx, cy, rr * 0.42), dot, True))
-            return self.photo(key, w, w, layers)
-        roff = rimg("rad_off", C["raised"], C["line_hi"])
-        roff_h = rimg("rad_off_h", C["hover"], C["muted"])
-        ron = rimg("rad_on", C["raised"], C["accent"], C["accent"])
-        ron_h = rimg("rad_on_h", C["hover"], C["accent_hi"], C["accent_hi"])
-        roff_d = rimg("rad_off_d", C["surface"], C["line"])
-        ron_d = rimg("rad_on_d", C["surface"], C["line"], C["faint"])
-        if "Radio.ind" not in self._elements():
-            st.element_create("Radio.ind", "image", roff, ("disabled", "selected", ron_d), ("disabled", roff_d),
-                              ("selected", "active", ron_h), ("selected", ron), ("active", roff_h), sticky="")
-        for cls, ind in (("TCheckbutton", "Check.ind"), ("TRadiobutton", "Radio.ind")):
-            part = "Checkbutton" if cls == "TCheckbutton" else "Radiobutton"
-            st.layout(cls, [(f"{part}.padding", {"sticky": "nswe", "children": [
-                (ind, {"side": "left", "sticky": ""}),
-                (f"{part}.focus", {"side": "left", "sticky": "w", "children": [
-                    (f"{part}.label", {"sticky": "nswe"})]})]})])
-            st.configure(cls, background=C["bg"], foreground=C["text"], padding=(px(2), px(3)),
-                         focuscolor=C["accent"], focusthickness=1, indicatormargin=0)
-            st.map(cls, foreground=[("disabled", C["faint"])], background=[("active", C["bg"])])
-            for pre, bg in (("Card.", C["surface"]), ("Tile.", C["raised"])):
-                st.configure(pre + cls, background=bg)
-                st.map(pre + cls, background=[("active", bg)])
-        # segmented choice: radiobuttons drawn as a tab strip
+            def rimg(key, fill, line, dot=None):
+                layers = [(circle(cx, cy, rr), line, True), (circle(cx, cy, rr - lw), fill, True)]
+                if dot:
+                    layers.append((circle(cx, cy, rr * 0.42), dot, True))
+                return self.photo(key + pre, w, w, layers, bg)
+            self._element(f"{pre}Check.ind", img("chk_off", C["raised"], C["line_hi"]),
+                          ("disabled", "selected", img("chk_on_d", C["accent_dim"], C["accent_dim"], C["muted"])),
+                          ("disabled", img("chk_off_d", C["surface"], C["line"])),
+                          ("selected", "active", img("chk_on_h", C["accent_hi"], C["accent_hi"], "#ffffff")),
+                          ("selected", img("chk_on", C["accent"], C["accent"], "#ffffff")),
+                          ("active", img("chk_off_h", C["hover"], C["muted"])), sticky="")
+            self._element(f"{pre}Radio.ind", rimg("rad_off", C["raised"], C["line_hi"]),
+                          ("disabled", "selected", rimg("rad_on_d", C["surface"], C["line"], C["faint"])),
+                          ("disabled", rimg("rad_off_d", C["surface"], C["line"])),
+                          ("selected", "active", rimg("rad_on_h", C["hover"], C["accent_hi"], C["accent_hi"])),
+                          ("selected", rimg("rad_on", C["raised"], C["accent"], C["accent"])),
+                          ("active", rimg("rad_off_h", C["hover"], C["muted"])), sticky="")
+            for cls, ind in (("TCheckbutton", "Check.ind"), ("TRadiobutton", "Radio.ind")):
+                part = "Checkbutton" if cls == "TCheckbutton" else "Radiobutton"
+                st.layout(pre + cls, [(f"{part}.padding", {"sticky": "nswe", "children": [
+                    (pre + ind, {"side": "left", "sticky": ""}),
+                    (f"{part}.focus", {"side": "left", "sticky": "w", "children": [
+                        (f"{part}.label", {"sticky": "nswe"})]})]})])
+                st.configure(pre + cls, background=bg, foreground=C["text"], padding=(px(2), px(3)),
+                             focuscolor=C["accent"], focusthickness=1, indicatormargin=0)
+                st.map(pre + cls, foreground=[("disabled", C["faint"])], background=[("active", bg)])
+        # a segmented choice: radiobuttons drawn as a tab strip on a raised track
         rs = px(7)
-        ssize = 2 * rs + 6
-        seg_on = self._rounded("seg_on", ssize, ssize, rs, C["hover"])
-        seg_off = self._blank("seg_off", ssize, ssize)
-        seg_h = self._rounded("seg_h", ssize, ssize, rs, C["raised"])
-        seg_f = self._ring_only("seg_f", ssize, ssize, rs, C["accent"], max(2, px(2)))
-        seg_on_f = self._rounded("seg_on_f", ssize, ssize, rs, C["hover"], ring_col=C["accent"], ring_w=max(2, px(2)))
-        if "Seg.bg" not in self._elements():
-            st.element_create("Seg.bg", "image", seg_off, ("selected", "focus", seg_on_f), ("selected", seg_on),
-                              ("focus", seg_f), ("active", seg_h), border=rs + 2, sticky="nsew")
+        ssize = 2 * rs + px(18)
+        track = C["raised"]
+        fw = max(2, px(2))
+        self._element("Seg.bg", self._blank("seg_off", ssize, ssize, track),
+                      ("selected", "focus", self._rounded("seg_on_f", ssize, ssize, rs, C["hover"], track,
+                                                          ring_col=C["accent"], ring_w=fw)),
+                      ("selected", self._rounded("seg_on", ssize, ssize, rs, C["hover"], track)),
+                      ("focus", self._ring_only("seg_f", ssize, ssize, rs, C["accent"], fw, track)),
+                      ("active", self._rounded("seg_h", ssize, ssize, rs, mix(C["raised"], C["hover"], 0.5), track)),
+                      border=rs + 2, sticky="nsew")
         st.layout("Seg.TRadiobutton", [("Seg.bg", {"sticky": "nsew", "children": [
             ("Radiobutton.padding", {"sticky": "nsew", "children": [("Radiobutton.label", {"sticky": "nsew"})]})]})])
-        st.configure("Seg.TRadiobutton", background=C["raised"], foreground=C["muted"], font=self.fonts["button"],
+        st.configure("Seg.TRadiobutton", background=track, foreground=C["muted"], font=self.fonts["button"],
                      padding=(px(12), px(5)), anchor="center")
         st.map("Seg.TRadiobutton", foreground=[("selected", C["text"]), ("active", C["text"])],
-               background=[("active", C["raised"])])
-        seg_track = self._rounded("seg_track", ssize + 2, ssize + 2, rs + 1, C["raised"])
-        if "SegTrack.bg" not in self._elements():
-            st.element_create("SegTrack.bg", "image", seg_track, border=rs + 3, sticky="nsew")
+               background=[("active", track)])
+        tsize = 2 * (rs + 1) + px(18)
+        self._element("SegTrack.bg", self._rounded("seg_track", tsize, tsize, rs + 1, track, C["surface"]),
+                      border=rs + 3, sticky="nsew")
         st.layout("SegTrack.TFrame", [("SegTrack.bg", {"sticky": "nsew"})])
         st.configure("SegTrack.TFrame", background=C["surface"], padding=px(3))
 
     def _fields(self):
         st, px = self.style, self.px
         r = px(6)
-        size = 2 * r + 6
+        size = 2 * r + px(18)
         lw = max(1, px(1))
-        normal = self._rounded("field", size, size, r, C["raised"], line=C["line_hi"], line_w=lw)
-        hover = self._rounded("field_h", size, size, r, C["raised"], line=C["muted"], line_w=lw)
-        focus = self._rounded("field_f", size, size, r, C["raised"], line=C["accent"], line_w=max(2, px(2)))
-        dis = self._rounded("field_d", size, size, r, C["surface"], line=C["line"], line_w=lw)
-        if "Field.bg" not in self._elements():
-            st.element_create("Field.bg", "image", normal, ("disabled", dis), ("focus", focus), ("active", hover),
-                              border=r + 2, sticky="nsew")
-        st.layout("TEntry", [("Field.bg", {"sticky": "nswe", "children": [
-            ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
-        st.configure("TEntry", background=C["bg"], foreground=C["text"], fieldbackground=C["raised"],
-                     insertcolor=C["text"], padding=(px(9), px(6)), selectbackground=C["sel"],
-                     selectforeground=C["text"], insertwidth=max(1, px(1)))
-        st.map("TEntry", foreground=[("disabled", C["faint"])], fieldbackground=[("disabled", C["surface"])])
-        # combobox: the same field and a drawn chevron
         aw, ah = px(26), px(14)
         cw = px(5)
         mid = aw / 2.0 - px(2)
         chev = [(mid - cw, ah / 2.0 - cw / 2.0), (mid, ah / 2.0 + cw / 2.0), (mid + cw, ah / 2.0 - cw / 2.0)]
-        arrow = self.photo("chev", aw, ah, [(stroke(chev, max(1.6, px(2))), C["muted"], False)])
-        arrow_h = self.photo("chev_h", aw, ah, [(stroke(chev, max(1.6, px(2))), C["text"], False)])
-        arrow_d = self.photo("chev_d", aw, ah, [(stroke(chev, max(1.6, px(2))), C["faint"], False)])
-        if "Chevron.arrow" not in self._elements():
-            st.element_create("Chevron.arrow", "image", arrow, ("disabled", arrow_d), ("active", arrow_h),
-                              ("pressed", arrow_h), sticky="")
-        st.layout("TCombobox", [("Field.bg", {"sticky": "nswe", "children": [
-            ("Chevron.arrow", {"side": "right", "sticky": "ns"}),
-            ("Combobox.padding", {"sticky": "nswe", "children": [("Combobox.textarea", {"sticky": "nswe"})]})]})])
-        st.configure("TCombobox", background=C["bg"], foreground=C["text"], fieldbackground=C["raised"],
-                     insertcolor=C["text"], padding=(px(9), px(6), px(2), px(6)), selectbackground=C["raised"],
-                     selectforeground=C["text"], arrowsize=px(12))
-        st.map("TCombobox", foreground=[("disabled", C["faint"])],
-               fieldbackground=[("readonly", C["raised"]), ("disabled", C["surface"])],
-               selectbackground=[("readonly", C["raised"]), ("!readonly", "focus", C["sel"])],
-               selectforeground=[("readonly", C["text"])])
-        for pre, bg in (("Card.", C["surface"]), ("Tile.", C["raised"])):
-            st.configure(pre + "TEntry", background=bg)
-            st.configure(pre + "TCombobox", background=bg)
+        sw = max(1.6, px(2))
+        # the chevron sits on the field's fill (raised; surface when disabled)
+        self._element("Chevron.arrow", self.photo("chev", aw, ah, [(stroke(chev, sw), C["muted"], False)], C["raised"]),
+                      ("disabled", self.photo("chev_d", aw, ah, [(stroke(chev, sw), C["faint"], False)], C["surface"])),
+                      ("active", self.photo("chev_h", aw, ah, [(stroke(chev, sw), C["text"], False)], C["raised"])),
+                      ("pressed", self.photo("chev_p", aw, ah, [(stroke(chev, sw), C["text"], False)], C["raised"])),
+                      sticky="")
+        for pre, bg in (("", C["bg"]), ("Card.", C["surface"]), ("Tile.", C["raised"])):
+            el = f"{pre}Field.bg"
+            self._element(el, self._rounded("field" + pre, size, size, r, C["raised"], bg, line=C["line_hi"], line_w=lw),
+                          ("disabled", self._rounded("field_d" + pre, size, size, r, C["surface"], bg, line=C["line"],
+                                                     line_w=lw)),
+                          ("focus", self._rounded("field_f" + pre, size, size, r, C["raised"], bg, line=C["accent"],
+                                                  line_w=max(2, px(2)))),
+                          ("active", self._rounded("field_h" + pre, size, size, r, C["raised"], bg, line=C["muted"],
+                                                   line_w=lw)),
+                          border=r + 2, sticky="nsew")
+            st.layout(pre + "TEntry", [(el, {"sticky": "nswe", "children": [
+                ("Entry.padding", {"sticky": "nswe", "children": [("Entry.textarea", {"sticky": "nswe"})]})]})])
+            st.configure(pre + "TEntry", background=bg, foreground=C["text"], fieldbackground=C["raised"],
+                         insertcolor=C["text"], padding=(px(9), px(6)), selectbackground=C["sel"],
+                         selectforeground=C["text"], insertwidth=max(1, px(1)))
+            st.map(pre + "TEntry", foreground=[("disabled", C["faint"])], fieldbackground=[("disabled", C["surface"])])
+            st.layout(pre + "TCombobox", [(el, {"sticky": "nswe", "children": [
+                ("Chevron.arrow", {"side": "right", "sticky": "ns"}),
+                ("Combobox.padding", {"sticky": "nswe", "children": [("Combobox.textarea", {"sticky": "nswe"})]})]})])
+            st.configure(pre + "TCombobox", background=bg, foreground=C["text"], fieldbackground=C["raised"],
+                         insertcolor=C["text"], padding=(px(9), px(6), px(2), px(6)), selectbackground=C["raised"],
+                         selectforeground=C["text"], arrowsize=px(12))
+            st.map(pre + "TCombobox", foreground=[("disabled", C["faint"])],
+                   fieldbackground=[("readonly", C["raised"]), ("disabled", C["surface"])],
+                   selectbackground=[("readonly", C["raised"]), ("!readonly", "focus", C["sel"])],
+                   selectforeground=[("readonly", C["text"])])
         st.configure("ComboboxPopdownFrame", background=C["raised"], bordercolor=C["line_hi"], relief="solid",
                      borderwidth=1)
 
@@ -694,13 +708,13 @@ class Theme:
     def _notebook(self):
         st, px, f = self.style, self.px, self.fonts
         bar = max(2, px(3))
-        w, h = px(8), px(8) + bar
-        normal = self._blank("tab_n", w, h)
-        sel = self.photo("tab_s", w, h, [(lambda x, y: y >= h - bar, C["accent"], True)])
-        hov = self.photo("tab_h", w, h, [(lambda x, y: y >= h - max(1, px(1)), C["line_hi"], True)])
-        if "Tab.line" not in self._elements():
-            st.element_create("Tab.line", "image", normal, ("selected", sel), ("active", hov),
-                              border=(px(3), px(3), px(3), bar), sticky="nsew")
+        w, h = px(32), px(8) + bar
+        bg = C["bg"]
+        self._element("Tab.line", self._blank("tab_n", w, h, bg),
+                      ("selected", self.photo("tab_s", w, h, [(lambda x, y: y >= h - bar, C["accent"], True)], bg)),
+                      ("active", self.photo("tab_h", w, h, [(lambda x, y: y >= h - max(1, px(1)), C["line_hi"], True)],
+                                            bg)),
+                      border=(px(3), px(3), px(3), bar), sticky="nsew")
         st.layout("TNotebook.Tab", [("Tab.line", {"sticky": "nswe", "children": [
             ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
                 ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [

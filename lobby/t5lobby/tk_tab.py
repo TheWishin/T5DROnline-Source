@@ -206,6 +206,9 @@ class OnlineTab:
         self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
         self.bar_text = tk.StringVar()
         self.match_var = tk.StringVar(value="")
+        # A ranked set's score ("Set 1-0, game 2 of 3"): shown as a tag on the match cards when set
+        # (empty: the cards say "game N" from the server's set info by themselves).
+        self.set_var = tk.StringVar(value="")
         self.chat_var = tk.StringVar()
         self.prof_title = tk.StringVar(value="Double-click a player in the lobby or the leaderboard.")
         self.prof_text = tk.StringVar(value="")
@@ -921,6 +924,7 @@ class OnlineTab:
         self.status("Result sent; waiting for your opponent's report...")
 
     def _rematch(self, accept):
+        self.view.rematch_sent(bool(accept))
         self.hide_bar()
         if self.driver:
             self.driver.rematch(None, accept)

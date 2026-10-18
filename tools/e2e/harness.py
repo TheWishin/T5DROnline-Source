@@ -339,11 +339,14 @@ class Shaper:
         env["T5_NET_DELAY"] = str(proto.suggest_delay(self.rtt, self.jitter))
         return env
 
-    def stats(self):
+    def stats(self, since=None):
+        """Packets through the proxies (and dropped / cut), minus a former stats() result `since`."""
         out = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0}
         for px in self.proxies.values():
             for k in out:
                 out[k] += px.stats[k]
+        if since:
+            out = {k: v - since.get(k, 0) for k, v in out.items()}
         return out
 
     def close(self):
@@ -636,8 +639,16 @@ class Player:
         return [spec[1] for spec in self.tab.bar_spec]
 
     def bar_button(self, prefix):
+        """A button of the tab's bar by its English label (or its start); in another language the
+        translated label (t5lobby.i18n) counts too."""
+        wanted = {prefix}
+        try:
+            from t5lobby import i18n
+            wanted.add(i18n.t(prefix))
+        except ImportError:
+            pass
         for b, label, _pad in self.tab.bar_spec:
-            if label == prefix or label.startswith(prefix):
+            if any(label == w or label.startswith(w) for w in wanted):
                 return b
         return None
 
@@ -791,6 +802,13 @@ class Run:
         filedialog.askopenfilenames = answered("askopenfilenames", ())
         for n in ("askstring", "askinteger", "askfloat"):
             setattr(simpledialog, n, answered(n, None))
+        try:        # the launcher's own boxes (buttons in the chosen language; they block in a nested loop)
+            from t5lobby import dialogs
+            for n, v in (("ask_yes_no", False), ("ask_yes_no_cancel", None), ("show_info", None),
+                         ("show_error", None), ("ask_string", None)):
+                setattr(dialogs, n, answered("dialogs." + n, v))
+        except ImportError:
+            pass
         orig_top = tk.Toplevel.__init__
 
         def top_init(w, *a, **kw):

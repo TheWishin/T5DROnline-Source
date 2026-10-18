@@ -162,8 +162,9 @@ def rematch(ctx, a, b, timeout=40):
 def leave(ctx, p):
     """Leave after a result (the rematch bar's Leave, or No thanks on an offer)."""
     for label in ("Leave", "No thanks"):
-        if p.bar_button(label) is not None and not p.bar_button(label).cget("text").startswith("Leave:"):
-            p.click(label)
+        b = p.bar_button(label)
+        if b is not None and ":" not in b.cget("text"):        # not "Leave: too laggy"
+            b.invoke()
             return True
     return False
 

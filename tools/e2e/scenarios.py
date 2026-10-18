@@ -771,6 +771,7 @@ NET_LOCKSTEP = [
 def net_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, expect, mode="rollback"):
     from t5lobby import proto
     ctx.shaper.set(rtt, jitter, loss, on=not relay)
+    stats0 = ctx.shaper.stats()
     for p in (a, b):
         p.app.settings["input_delay"] = delay
         p.tab.driver.input_delay = delay
@@ -793,7 +794,7 @@ def net_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, expect, mode="ro
         want = proto.suggest_delay(rtt, jitter) if not relay else None
         got = [(r or {}).get("connected") for r in (parse_segment(host.log_segment(mid)), parse_segment(join.log_segment(mid)))]
         ctx.note(f"{label}: lockstep delay host/joiner {got}, lobby-style delay for the shaped path {want}")
-    ctx.note(f"{label}: proxy {ctx.shaper.stats()}")
+    ctx.note(f"{label}: proxy {ctx.shaper.stats(stats0)}")
     for p in (a, b):
         leave(ctx, p)
     ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
@@ -836,6 +837,53 @@ def net_lockstep(ctx):
             for p in (a, b):
                 leave(ctx, p)
             ctx.sleep(5)
+
+
+@scenario("net_internal_res", "6 netcode", game=True, suites=("game", "net"),
+          desc="different internal resolutions on the two PCs (4K against Lowest, the launcher's setting): a match and "
+               "a rematch stay in sync")
+def net_internal_res(ctx):
+    import core
+    if "internal_res" not in core.DEFAULTS:
+        raise Skip("this launcher has no 'Internal resolution' setting (internal-res is not merged)")
+    game_server(ctx)
+    a = ctx.player("E2E Res4K", char="lili")
+    b = ctx.player("E2E ResLow", char="dragunov")
+    a.app.settings["internal_res"] = "4k"
+    b.app.settings["internal_res"] = "lowest"
+    login(ctx, a)
+    login(ctx, b)
+    a.set_char("lili")
+    b.set_char("dragunov")
+    mid = queue_match(ctx, a, b, "quick")
+    for label, (p, want) in (("4K side", (a, "4k")), ("Lowest side", (b, "lowest"))):
+        ctx.wait(lambda p=p: p.game() is not None and p.game().log_path, 20)
+        ok = ctx.wait(lambda p=p, want=want: log_line(p, r"\[display\] internal resolution " + want), 60,
+                      f"{label}: the game runs at internal resolution {want}")
+        if ok:
+            ctx.note(f"{label}: {log_line(p, r'\[display\] internal resolution')}")
+    row = _play(ctx, a, b, mid, "match 1 (4K vs Lowest)")
+    fps_check(ctx, row, (a, b))
+    mid = rematch(ctx, a, b)
+    row = _play(ctx, a, b, mid, "rematch (4K vs Lowest)")
+    fps_check(ctx, row, (a, b))
+
+
+def log_line(p, pattern):
+    """The first line of p's current game log matching `pattern`, or None."""
+    import re as _re
+    g = p.game()
+    if g is None or not g.log_path:
+        return None
+    rx = _re.compile(pattern, _re.I)
+    try:
+        with open(g.log_path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if rx.search(ln):
+                    return ln.strip()
+    except OSError:
+        pass
+    return None
 
 
 @scenario("net_mixed_fallback", "6 netcode", game=True, suites=("game", "net"),
@@ -1092,8 +1140,12 @@ def report_problem(ctx):
     desk = os.path.join(ctx.dir, "Desktop")
     os.makedirs(desk, exist_ok=True)
     s = a.app.settings
-    lines = report.settings_lines(s, {"display": dict(core.DISPLAY_MODES), "render_scale": core.RENDER_SCALES,
-                                      "input_delay": core.INPUT_DELAYS}, s.env_overrides(), s.out_dir)
+    labels = {"display": dict(core.DISPLAY_MODES), "input_delay": core.INPUT_DELAYS}      # as t5dr_launcher.pyw
+    if hasattr(core, "INTERNAL_RES_LABELS"):
+        labels["internal_res"] = core.INTERNAL_RES_LABELS
+    elif hasattr(core, "RENDER_SCALES"):
+        labels["render_scale"] = core.RENDER_SCALES
+    lines = report.settings_lines(s, labels, s.env_overrides(), s.out_dir)
     online_info = a.tab.report_info()
 
     def make_context():
@@ -1258,6 +1310,53 @@ def update_check(ctx):
         ctx.check("swap", False, repr(e))
 
 
+@scenario("i18n_de", "8 launcher", suites=("quick", "lobby"),
+          desc="the Online tab in German: register, guest, quick match, accept, result, rematch offer and Leave, the "
+               "problem report -- no launcher error, every text the tab shows has a German entry")
+def i18n_de(ctx):
+    try:
+        from t5lobby import i18n
+    except ImportError:
+        raise Skip("this launcher has no translations (i18n is not merged)")
+    prev = i18n.language()
+    i18n.set_language("de")
+    i18n.clear_missing()
+    try:
+        stub_server(ctx)
+        a = ctx.player("E2E Uwe", kind="stub", password="uwe-pass-1")
+        b = ctx.player("E2E Vera", kind="stub")
+        ctx.check("the tab is built in German", a.tab.b_guest.cget("text") == i18n.t("Play as guest") != "Play as guest",
+                  a.tab.b_guest.cget("text"))
+        login(ctx, a, "register")
+        login(ctx, b, "guest")
+        t = time.time()
+        a.press("quick")
+        ctx.sleep(0.3)
+        b.press("quick")
+        mid = found_both(ctx, a, b, t)
+        ctx.check("the ready bar is German", a.bar_button("Accept") is not None and
+                  a.bar_button("Accept").cget("text").startswith(i18n.t("Accept")), a.bar_labels())
+        accept(ctx, a, mid)
+        accept(ctx, b, mid)
+        started_both(ctx, a, b, mid)
+        wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
+        ctx.check("the result is confirmed", a.matches[mid].get("status") == "confirmed", a.matches[mid].get("status"))
+        ctx.note(f"status lines: {a.status_text()!r} / {b.status_text()!r}")
+        t = time.time()
+        ctx.wait(lambda: a.bar_button("Rematch") is not None, 15, "German result bar with Rematch")
+        a.click("Rematch")
+        ctx.wait(lambda: b.bar_button("No thanks") is not None or b.bar_button("Leave") is not None, 15,
+                 "the offer reaches the other player")
+        leave(ctx, b)
+        ctx.wait(lambda: any(ev.get("state") == "declined" for ev in a.events_of("rematch", t)), 10, "declined")
+        a.logout(forget=False)
+        ctx.wait(lambda: a.tab.client is None, 10, "log out")
+        miss = [m for m in i18n.missing() if not m.startswith("E2E")]
+        ctx.check("every text shown has a German entry", not miss, miss[:30])
+    finally:
+        i18n.set_language(prev)
+
+
 @scenario("settings_persist", "8 launcher", suites=("quick", "lobby"),
           desc="launcher settings and Online tab settings survive a restart; the speed of the last match is kept")
 def settings_persist(ctx):
@@ -1265,16 +1364,26 @@ def settings_persist(ctx):
     stub_server(ctx)
     path = os.path.join(ctx.dir, "launcher.json")
     s = core.Settings(path)
-    s.update(display="borderless", render_scale="0.75", input_delay="2", mute=True, nickname="E2E Sue",
-             extra_env="FOO_E2E=1")
+    keys = [k for k in ("display", "internal_res", "render_scale", "input_delay", "mute", "nickname", "extra_env",
+                        "language") if k in core.DEFAULTS]
+    s.update(display="borderless", input_delay="2", mute=True, nickname="E2E Sue", extra_env="FOO_E2E=1")
+    if "internal_res" in core.DEFAULTS:
+        s["internal_res"] = "1440p"
+    else:
+        s["render_scale"] = "0.75"
+    if "language" in core.DEFAULTS:
+        s["language"] = "de"
     s.save()
     s2 = core.Settings(path)
-    ctx.check("launcher.json: every setting back after a restart",
-              all(s2[k] == s[k] for k in ("display", "render_scale", "input_delay", "mute", "nickname", "extra_env")),
-              {k: s2[k] for k in ("display", "render_scale", "input_delay", "mute")})
+    ctx.check("launcher.json: every setting back after a restart", all(s2[k] == s[k] for k in keys),
+              {k: s2[k] for k in keys if k != "extra_env"})
     env = s2.env_overrides()
-    ctx.check("settings reach the game: input delay, scale, nickname, extra lines",
-              env.get("T5_RB_NET_DELAY") == "2" and env.get("PS3_RENDER_SCALE") == "0.75" and env.get("FOO_E2E") == "1"
+    if "internal_res" in core.DEFAULTS:
+        res_ok = env.get("PS3_INTERNAL_RES") == "1440p"
+    else:
+        res_ok = env.get("PS3_RENDER_SCALE") == "0.75"
+    ctx.check("settings reach the game: input delay, internal resolution, nickname, extra lines",
+              env.get("T5_RB_NET_DELAY") == "2" and res_ok and env.get("FOO_E2E") == "1"
               and env.get("PS3_NICKNAME") == "E2E Sue", env)
     a = ctx.player("E2E Sue", kind="stub", input_delay="1")
     b = ctx.player("E2E Tom", kind="stub")

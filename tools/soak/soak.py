@@ -89,7 +89,7 @@ class Driver:
             if taps:
                 for b in taps:
                     btn, _, pad = b.partition("@")             # "CIRCLE@2": player 2
-                    self.g.press(*btn.split("+"), gap=60, pad=int(pad or 1))
+                    self.g.press(*btn.split("+"), ms=300 if "+" in btn else 100, gap=60, pad=int(pad or 1))
                 self.g.wait(max(0.0, every - 0.16 * len(taps)))
             else:
                 self.g.wait(0.2)
@@ -104,7 +104,7 @@ class Driver:
             if taps:
                 for b in taps:
                     btn, _, pad = b.partition("@")             # "CIRCLE@2": player 2
-                    self.g.press(*btn.split("+"), gap=60, pad=int(pad or 1))
+                    self.g.press(*btn.split("+"), ms=300 if "+" in btn else 100, gap=60, pad=int(pad or 1))
                 self.g.wait(max(0.0, every - 0.16 * len(taps)))
             else:
                 self.g.wait(0.2)
@@ -152,9 +152,10 @@ class Driver:
                 g.phase("menu", "title")
                 g.wait(1.0)               # the menu ignores input while it slides in
                 return True
-            if g.mode in (M_SELECT, M_OPTION, M_ONLINE):  # a mode's own menus: back out
+            if g.mode == M_SELECT:                 # START+SELECT: the soft reset to the title
+                g.press("START", "SELECT", ms=300, gap=300)
+            elif g.mode in (M_OPTION, M_ONLINE):   # their own menus: back out
                 g.press("CIRCLE", gap=150)
-                g.press2("CIRCLE", gap=150)
             else:
                 g.press("START", gap=300)
         g.expect("menu", False, f"main menu not recognised in {timeout:.0f}s (mode {g.mode} {g.mode_name})")
@@ -188,7 +189,7 @@ class Driver:
                 return m
             self.cursor = got
             g.expect(f"pick-{MENU[idx].lower()}-{attempt}", False, f"entered {MENU[got]} instead of {MENU[idx]}; retrying")
-            if not (self.back_to_title(taps=("CIRCLE", "CIRCLE@2"), timeout=60) and self.open_menu()):
+            if not (self.back_to_title(taps=("START+SELECT", "CIRCLE"), timeout=60) and self.open_menu()):
                 return m
         return m
 
@@ -363,7 +364,7 @@ def sc_vs(d, matches=1, timeout=400):
         g.event("vs", f"match {sel['n']} over: mode {g.mode} {g.mode_name}")
     g.expect("vs-matches", sel["n"] >= matches, f"{sel['n']} match(es)")
     g.phase("vs-exit", "menu")
-    d.back_to_title(taps=("CIRCLE", "CIRCLE@2"), timeout=60)
+    d.back_to_title(taps=("START+SELECT",), timeout=60)   # the soft reset: VS has no other way out
 
 
 def sc_online(d):
@@ -391,10 +392,10 @@ def sc_survival(d, wins=4, timeout=600):
     g.shot("survival-wins", expect="any", settle=0.5, timeout=3)
     g.phase("survival-lose", "fight")
     hold_health(d, P1_HEALTH, attack=False, timeout=400,
-                until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT), idle_taps=())
-    g.expect("survival-end", g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT), f"mode {g.mode} {g.mode_name}")
+                until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT, M_SELECT), idle_taps=())
+    g.expect("survival-end", g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT, M_SELECT), f"mode {g.mode} {g.mode_name}")
     g.shot("survival-end", expect="any", settle=0.5, timeout=3)
-    d.wait_mode(M_TITLE, timeout=200, taps=("CROSS", "START"), every=2.0)
+    d.back_to_title(taps=("START+SELECT",), timeout=90)
 
 
 def sc_practice(d, seconds=30):
@@ -589,7 +590,7 @@ def plan_modes(opts):
                 continue
             fn(d)
             if g.mode != M_TITLE:
-                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=90)
+                d.back_to_title(taps=("START+SELECT", "CIRCLE"), timeout=90)
         g.wait_log(r"\[cellSaveData\] SAVE complete", timeout=10)
         g.wait(3)
     run_one(opts, "modes", body, cwd=cwd)
@@ -657,7 +658,7 @@ def plan_mixed(opts):
         while g.now() < end:
             seg = k % 8
             if not d.open_menu():
-                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=60)
+                d.back_to_title(taps=("START+SELECT", "CIRCLE"), timeout=60)
                 k += 1
                 continue
             g.event("segment", f"#{k} kind {seg}")
@@ -679,7 +680,7 @@ def plan_mixed(opts):
                 g.phase(f"idle{k}", "attract")       # the title idles into the attract demo and back
                 g.wait(90)
             if g.mode != M_TITLE:
-                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=90)
+                d.back_to_title(taps=("START+SELECT", "CIRCLE"), timeout=90)
             k += 1
         g.expect("segments", k >= 8, f"{k} segments in {opts.minutes:.0f} min")
     run_one(opts, "mixed", body)

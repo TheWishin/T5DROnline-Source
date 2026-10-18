@@ -1320,8 +1320,10 @@ def _new_pairing(ctx, a, b, label):
 @scenario("opponent_switch", "11 opponents and characters", game=True, suites=("game",),
           desc="A and B play a match and a rematch; A (played game) meets C (fresh game); C meets B (both played "
                "other opponents); B restarts its game and meets A again, then a rematch")
-def opponent_switch(ctx):
+def opponent_switch(ctx, rtt=None):
     game_server(ctx)
+    if rtt:
+        ctx.shaper.set(rtt, rtt / 6.0, 0.5)
     a = ctx.player("E2E Ava", char="kazuya")
     b = ctx.player("E2E Bo", char="lili")
     c = ctx.player("E2E Cy", char="steve")
@@ -1353,8 +1355,10 @@ def opponent_switch(ctx):
 @scenario("rematch_char_change", "11 opponents and characters", game=True, suites=("game",),
           desc="casual rematch with a character change: P1 changes, P2 changes, both change -- each rematch starts on "
                "both PCs with the new fighters and stays in sync")
-def rematch_char_change(ctx):
+def rematch_char_change(ctx, rtt=None):
     game_server(ctx)
+    if rtt:
+        ctx.shaper.set(rtt, rtt / 6.0, 0.5)
     a = ctx.player("E2E Cat", char="paul")
     b = ctx.player("E2E Dov", char="nina")
     login(ctx, a)
@@ -1382,6 +1386,19 @@ def rematch_char_change(ctx):
                   (want[p2] is None or f.get("p2") == want[p2]), f"fight {f.get('p1')} vs {f.get('p2')}, wanted "
                   f"{want[p1] or 'same'} vs {want[p2] or 'same'}")
         _play(ctx, a, b, mid, label)
+
+
+@scenario("opponent_switch_rtt", "11 opponents and characters", game=True, suites=("game",),
+          desc="opponent_switch over an internet-like link: RTT 30 ms, jitter +-5 ms, 0.5% loss (the owner's 1.0.0 "
+               "game had RTT 26 ms)")
+def opponent_switch_rtt(ctx):
+    opponent_switch(ctx, rtt=30)
+
+
+@scenario("rematch_char_change_rtt", "11 opponents and characters", game=True, suites=("game",),
+          desc="rematch_char_change over RTT 30 ms, jitter +-5 ms, 0.5% loss")
+def rematch_char_change_rtt(ctx):
+    rematch_char_change(ctx, rtt=30)
 
 
 # ============================================================================== 9. character select (ingame-select)

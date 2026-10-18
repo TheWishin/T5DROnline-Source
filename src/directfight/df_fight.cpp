@@ -358,6 +358,7 @@ bool g_held = false;            /* the pads are held neutral until the next sele
 bool g_intro_hold = false;      /* the pads are held through the fight's loading and intros (netplay) */
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
+bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
@@ -761,8 +762,25 @@ void fight_on_frame(uint32_t f)
          * Counted from the first frame the title runs with no mode change
          * pending (a request made a frame ago may still be on its way). */
         if (mode != kModeTitle || mode_next() != kModeNone) { g_title_seen = f; break; }
+        /* Not while the title's savedata autosave still runs: it takes a memory
+         * container and 1 MB blocks from the same sys_memory window as the
+         * select mode's 65 MB block (allocated right after start VS), so the
+         * two orders put the fight's heap 1 MB apart -- and the heap pointers
+         * in the fight state with it: a whole match desynced from the first
+         * compared frame (reset_cycle_test F11 cycle 5: S's block at
+         * 0x45C00000, O's at 0x45D00000, 38 differing words, all pointers
+         * 0x100000 apart). Both games wait for it here, so both allocate in the
+         * same order. At most 10 s (an autosave takes well under one).
+         * The boot state goes back after the wait, right before start VS as
+         * before. */
+        if ((f >= g_title_seen + 30 || (g_restore_due && f >= g_title_seen + g_fresh_at)) &&
+            autosave_running() && GetTickCount64() - g_ph_ms < 10000) {
+            if (!g_autosave_wait) { g_autosave_wait = true; note("frame %u: waiting for the title's autosave before start VS", f); }
+            break;
+        }
         if (g_restore_due && f >= g_title_seen + g_fresh_at) { g_restore_due = false; fresh_restore(f); }
         if (f >= g_title_seen + 30) {
+            if (g_autosave_wait) { g_autosave_wait = false; note("frame %u: the autosave is done", f); }
             /* the boot state is taken (at boot) and put back (after a reset) at
              * the same point: the title settled, right before start VS */
             fresh_take(f);

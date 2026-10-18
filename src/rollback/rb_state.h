@@ -23,6 +23,7 @@ extern const Range kSave[];        extern const size_t kSaveN;
 extern const Range kExclude[];     extern const size_t kExcludeN;
 extern const Range kHashExclude[]; extern const size_t kHashExcludeN;
 bool excluded_page(uint32_t ea);
+uint32_t state_job_pages();        /* heap pages the SPURS jobs fill completely: left out of the state */
 bool hash_excluded_page(uint32_t ea);
 void state_add_hash_exclude(uint32_t ea, uint32_t len);   /* T5_RB_HASH_EXCLUDE */
 /* A range written by another thread (neither saved, restored nor hashed from

@@ -326,7 +326,7 @@ void report()
              g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes);
     }
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
-    { char rs[256]; state_restore_stats(rs, sizeof rs, true); note("rbnet: restores: %s", rs); }
+    { char rs[256]; state_restore_stats(rs, sizeof rs, true); note("rbnet: restores: %s; heap pages the SPURS jobs fill, left out of the state: %u", rs, state_job_pages()); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
          g_st.early_rollbacks, g_st.rollbacks, g_st.early_wait_ms, g_st.frames ? g_st.early_commit_ms / g_st.frames : 0.0,

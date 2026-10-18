@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <vector>
+#include <string>
 #include <algorithm>
 
 #include "rb.h"
@@ -68,8 +69,35 @@ const Range kHashExclude[] = {
 const size_t kHashExcludeN = sizeof kHashExclude / sizeof kHashExclude[0];
 static std::vector<Range> g_hash_exclude_dyn, g_exclude_dyn;
 
+/* Pages the title's SPURS jobs fill completely (the vertex skinning's output
+ * buffers: render data only the RSX reads) are not game state: left out of
+ * snapshots and restores (frame-time branch, ps3recomp patch 0039 records
+ * them; T5_RB_JOB_PAGES=keep keeps them in). The record is forgotten at every
+ * barrier (state_drop_logs: a load may give the heap another use), after the
+ * shadow has been brought up to the guest for those pages. */
+extern "C" {
+void spurs_job_put_track(int on);
+const uint64_t* spurs_job_put_lines(uint32_t* base, uint32_t* pages);
+void spurs_job_put_reset(void);
+}
+static const uint64_t* g_job_lines = nullptr;
+static uint32_t g_job_base = 0, g_job_pages = 0;
+static bool g_job_active = false;   /* only while a match is fought (job_gate) */
+static inline bool job_page(uint32_t ea)
+{
+    const uint32_t i = (ea - g_job_base) >> 12;
+    return g_job_active && ea >= g_job_base && i < g_job_pages && g_job_lines[i] == ~0ull;
+}
+static void job_pages_forget();
+uint32_t state_job_pages()
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; g_job_lines && i < g_job_pages; i++) n += g_job_lines[i] == ~0ull;
+    return n;
+}
 bool excluded_page(uint32_t ea)
 {
+    if (job_page(ea)) return true;
     for (const Range& r : kExclude) if (ea >= r.base && ea < r.base + r.len) return true;
     for (const Range& r : g_exclude_dyn) if (ea >= r.base && ea < r.base + r.len) return true;
     return false;
@@ -280,6 +308,13 @@ void state_init()
         state_add_exclude(0x444F9000u, 0x0006E000u);
         note("state: draw lists and render scratch left out of the rollback state (T5_RB_RENDER_STATE=drop)");
     }
+    {   const char* e = getenv("T5_RB_JOB_PAGES");
+        if (!(e && !strcmp(e, "keep"))) {
+            g_job_lines = spurs_job_put_lines(&g_job_base, &g_job_pages);
+            spurs_job_put_reset();
+            spurs_job_put_track(1);
+            note("state: pages the SPURS jobs fill (vertex skinning output) are left out of the rollback state (T5_RB_JOB_PAGES=keep keeps them)");
+        } }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;
@@ -326,8 +361,10 @@ void state_commit_stats(char* out, size_t cap, bool reset)
     if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); memset(g_cs_heap, 0, sizeof g_cs_heap); }
 }
 
+static void job_gate();
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
 {
+    job_gate();
     PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
@@ -413,15 +450,49 @@ uint32_t state_oldest_frame()
 void state_reset()
 {
     if (!g_ready) return;
+    job_pages_forget();
     memset(g_log, 0, sizeof g_log);
     g_ring_pos = 0; g_newest = 0; g_oldest = 0;
     state_commit(0, nullptr, nullptr);
 }
 
+/* Forget the job-filled pages: the shadow takes their current content first
+ * (they were not committed while left out), then they count as state again
+ * until the jobs fill them anew. */
+static void job_pages_forget()
+{
+    if (!g_job_lines || !g_shadow) return;
+    if (!g_job_active) { spurs_job_put_reset(); return; }
+    PumpHold hold;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < g_job_pages; i++) {
+        if (g_job_lines[i] != ~0ull) continue;
+        const uint32_t ea = g_job_base + (i << 12);
+        if (uint8_t* sh = shadow_rw(ea)) { memcpy(sh, vm_base + ea, 0x1000); n++; }
+    }
+    spurs_job_put_reset();
+    (void)n;
+}
+/* Only while a match is fought (game phase 17, the match not decided): what
+ * the heap holds around a fight -- the intro's loads, the result screen, the
+ * win pose -- may take the skinning buffers' place (test run g1: the result
+ * screen's records at 0x1008E690 came out different after a restore once
+ * pages were left out past the deciding KO). Leaving the fight forgets the
+ * pages (the shadow takes them in again); entering it starts a new record. */
+static void job_gate()
+{
+    if (!g_job_lines) return;
+    uint32_t ph; memcpy(&ph, vm_base + 0x1008F070u, 4);
+    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0;
+    if (fight == g_job_active) return;
+    if (fight) { spurs_job_put_reset(); g_job_active = true; }
+    else { job_pages_forget(); g_job_active = false; }
+}
 void state_drop_logs()
 {
     for (Log& l : g_log) l.tag = 0;
     g_oldest = g_newest;
+    job_pages_forget();
 }
 uint32_t state_log_pages(uint32_t f)
 {
@@ -483,6 +554,7 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
             if (w & bit) continue;
             w |= bit;
             touched.push_back(pg);
+            if (job_page(e.ea)) continue;   /* filled by the SPURS jobs since it was logged: not state */
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             if (e.ea - 0x43D00000u < 0x340000u) g_rs_pages[1]++;        /* stats: render-only parts of the heap */
             else if (e.ea - 0x444F9000u < 0x6E000u) g_rs_pages[2]++;
@@ -492,6 +564,20 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
+    }
+    /* T5_RB_RESTORE_DUMP=N: the pages of the first N restores, by 64 KB block (diagnostics) */
+    static int dump_left = -1;
+    if (dump_left < 0) { const char* e = getenv("T5_RB_RESTORE_DUMP"); dump_left = e ? atoi(e) : 0; }
+    if (dump_left > 0) {
+        dump_left--;
+        std::vector<uint32_t> v(touched.begin(), touched.end());
+        std::sort(v.begin(), v.end());
+        std::string line; char t[32];
+        for (size_t i = 0; i < v.size();) {
+            size_t j = i; while (j < v.size() && (v[j] >> 4) == (v[i] >> 4)) j++;
+            snprintf(t, sizeof t, " %08X:%u", (v[i] >> 4) << 16, (unsigned)(j - i)); line += t; i = j;
+        }
+        logline("D restore to %u: %zu pages by 64 KB block:%s", to, v.size(), line.c_str());
     }
     for (uint32_t pg : touched) seen[pg >> 6] = 0;
     g_rs_count++;

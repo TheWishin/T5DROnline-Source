@@ -2114,8 +2114,9 @@ semaphore post (id at +0x50) per queued request (0x35BE6C), adds 1 to +8 while
 it works through its queue, posts "done" (+0x58), takes the 1 away and parks.
 The spin is no barrier: the thread may not have woken yet when the main thread
 looks, and the draw manager's sync right after (0x357714) hands it more work --
-so at the boundary it is sometimes still working (FF3: 0-88 of every 600-1 865
-boundaries, 0.3-1.3 ms each until it parks). A snapshot then holds +8 = 1; a
+so at the boundary it is sometimes still working (FF3: 235 of 87 670 boundaries
+on the host, 1 949 of 108 622 on the joiner, which re-simulates more; about
+1 ms each until it parks, the longest 65 ms). A snapshot then holds +8 = 1; a
 rollback to that frame writes the 1 back after the thread has parked; every
 later wake adds and removes its own 1, so +8 never reaches 0 again, and the
 next present spins for good. The same rule as the file manager: a thread that
@@ -2128,6 +2129,15 @@ and the wait. NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at
 the boundary by construction (the present's 0x357714 waits for its wake counter
 at +0xA8 to drop to 0); its request list may already hold the next frame's
 first requests, queued and not taken.
+
+| run | build | flow | matches | result | rollbacks (host / joiner) |
+|---|---|---|---|---|---|
+| FF1 | fixes 1 + 2, rebased | persistent NNRR, mash, stutter 60, skew 2 s | 14 of 32 | host hung in match 15 | -- |
+| FF2 | same, hang watcher | same | 0 of 32 | host hung in match 1 (the dump above) | -- |
+| FF3 | + fix 3 | same | **32 of 32** | 0 mismatching frames, the same result hash on both PCs in every match, no hang, no abort, no fd above 4 | 3 981 / 9 577 |
+
+FF3 ran muted at below-normal priority next to 3-7 other game instances (fps
+11-40 in the busiest stretch).
 
 **A whole-match desync after a title visit (fix 4, direct fight, not rollback).**
 On the rebased build the first cycle of `reset_cycle_test.py --start-cycle 5`

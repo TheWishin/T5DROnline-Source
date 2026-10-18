@@ -1,4 +1,4 @@
-"""The "Report a problem" button (launcher/report.py, report_ui.py): the zip a player sends.
+"""The "Report a problem" button (launcher/problem_report.py, problem_report_ui.py): the zip a player sends.
 
 Scrubbing (user names in paths, IP addresses, tokens and passwords), what goes into the zip, the size
 cap, the system information, the launcher log, and the window itself (never shown: the Tk window is
@@ -20,11 +20,11 @@ from helpers import ROOT, load_tool
 sys.path.insert(0, os.path.join(ROOT, "launcher"))
 sys.path.insert(0, os.path.join(ROOT, "lobby"))
 import core    # noqa: E402
-import report  # noqa: E402
+import problem_report as report  # noqa: E402
 
 try:
     import tkinter as tk
-    import report_ui
+    import problem_report_ui as report_ui
 except ImportError:      # pragma: no cover
     tk = None
 
@@ -597,11 +597,11 @@ class LauncherLog(unittest.TestCase):
 
     def test_the_report_tool_and_window_ship_in_the_release(self):
         package = load_tool("package_release")
-        for f in ("launcher/report.py", "launcher/report_ui.py"):
+        for f in ("launcher/problem_report.py", "launcher/problem_report_ui.py"):
             self.assertIn(f, package.OUR_FILES)
             self.assertTrue(os.path.isfile(os.path.join(ROOT, *f.split("/"))))
         smoke = load_tool("smoke_release")
-        self.assertIn("launcher/report.py", smoke.REQUIRED)
+        self.assertIn("launcher/problem_report.py", smoke.REQUIRED)
 
 
 class CommandLine(unittest.TestCase):

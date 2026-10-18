@@ -3,7 +3,7 @@ problem, made safe to send.
 
 Nothing here imports tkinter or the launcher, so it runs (and is tested) from a console:
 
-    python launcher/report.py --out <native folder> [--dest-dir DIR] [--note "what happened"]
+    python launcher/problem_report.py --out <native folder> [--dest-dir DIR] [--note "what happened"]
 
 What goes in (each part only when it exists):
   system.txt     Windows, processor, graphics card + driver + memory, RAM, screens (refresh rate, DPI),

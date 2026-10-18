@@ -368,8 +368,8 @@ running game -- used for the screenshots in `build/ln/shots`.
 
 ## Problem report
 
-`launcher/report.py` (no tkinter, runs from a console: `python launcher/report.py
---out <native> --dest-dir <dir>`) and `launcher/report_ui.py` (the window). One click
+`launcher/problem_report.py` (no tkinter, runs from a console: `python launcher/problem_report.py
+--out <native> --dest-dir <dir>`) and `launcher/problem_report_ui.py` (the window). One click
 makes `T5DR-report-<date>-<time>.zip` on the Desktop (the real Desktop folder, also
 under OneDrive) and opens its folder with the zip selected.
 

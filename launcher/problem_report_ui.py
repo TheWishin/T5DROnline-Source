@@ -1,4 +1,4 @@
-"""The 'Report a problem' window of the launcher: tkinter front end of report.py.
+"""The 'Report a problem' window of the launcher: tkinter front end of problem_report.py.
 
     ReportDialog(parent, make_context, dest_dir, reveal=..., issues_url=...)
 
@@ -15,7 +15,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-import report
+import problem_report as report
 
 NOTE_MAX = 2000
 PRIVACY = (

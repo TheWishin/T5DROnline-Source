@@ -294,7 +294,7 @@ class OnlineTab:
         self.match_var = tk.StringVar(value="")
         info_row = ttk.Frame(box)
         info_row.grid(row=3, column=0, sticky="we")
-        # After a match: one click makes the problem report (the launcher's window, launcher/report.py).
+        # After a match: one click makes the problem report (the launcher's window, launcher/problem_report.py).
         # Shown only when the launcher offers it and a match has been played (packed first: it keeps its room).
         self.report_btn = ttk.Button(info_row, text="Report a problem...", command=self.do_report)
         ttk.Label(info_row, textvariable=self.match_var, style="Muted.TLabel").pack(side="left")

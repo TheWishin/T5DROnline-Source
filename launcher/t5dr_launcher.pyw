@@ -19,8 +19,8 @@ from tkinter.scrolledtext import ScrolledText
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core    # noqa: E402
 import online  # noqa: E402
-import report  # noqa: E402
-import report_ui  # noqa: E402
+import problem_report as report  # noqa: E402
+import problem_report_ui as report_ui  # noqa: E402
 
 APP_TITLE = "T5DR Online"
 COLORS = {"ok": "#1a7f37", "warn": "#9a6700", "error": "#cf222e", "muted": "#57606a",

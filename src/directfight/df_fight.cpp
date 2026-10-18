@@ -1042,6 +1042,9 @@ extern "C" void t5_df_window_closed(void)
  * Read from guest memory (the tcb pool), so it is game state: the same on
  * both PCs at the same frame, and right inside a re-simulation too. */
 extern "C" int t5_df_game_mode(void) { return df::mode_manager() && df::mode_cur() == df::kModeGame ? 1 : 0; }
+/* ... and the mode it has asked for (14 = none): game state as well (rb_net.cpp post-match rule) */
+extern "C" uint32_t t5_df_mode_next(void) { return df::mode_manager() ? df::mode_next() : 14u; }
+extern "C" uint32_t t5_df_mode_cur(void) { return df::mode_manager() ? df::mode_cur() : 0u; }
 
 namespace df {
 

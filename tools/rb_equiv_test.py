@@ -7,7 +7,8 @@
 Both runs are the direct-fight match in netplay's local mode (T5_NET_MODE=local: no peer, both
 players scripted -- the --moves mash of tools/fight_flow_test.py, motion inputs included -- and the
 rollback loop running as online), with the same seed and fixed clock. The reference run has nothing
-else; the test run adds --force (T5_RB_NET_FORCE=every:depth, a rollback of `depth` frames every
+else; the test run adds --lag N (P2's input known N frames late: the loop predicts it, mispredicts,
+rolls back and re-simulates, as against a peer N frames away), --force (T5_RB_NET_FORCE=every:depth, a rollback of `depth` frames every
 `every` fight frames, re-simulated with the same inputs) and/or --test-env (anything a second PC may
 differ in: T5_TEST_HITCH, PS3_CPUS, PS3_TEST_FS_DELAY, RSX_TEST_DISPLAY_HZ, ...). Each run's
 frames.log has the final gameplay hash of every frame ("f F <hash>"); a deterministic game gives the
@@ -92,14 +93,17 @@ def run(a, name, extra, dump=None):
                     hashes[int(m.group(1))] = m.group(2)
     except OSError:
         pass
-    forced = 0
+    forced = rollbacks = 0
     with open(os.path.join(d, "game.log"), encoding="utf-8", errors="replace") as f:
         for ln in f:
             m = re.search(r"forced rollbacks (\d+)", ln)
             if m:
                 forced = max(forced, int(m.group(1)))
+            m = re.search(r"rbnet: \d+ frames in .*?, (\d+) rollbacks \(", ln)
+            if m:
+                rollbacks += int(m.group(1))
     result = open(res).read().strip() if os.path.exists(res) else None
-    print(f"[{name}] {len(hashes)} final hashes, {forced} forced rollbacks (last report), {time.time() - t0:.0f} s, result {result}",
+    print(f"[{name}] {len(hashes)} final hashes, {rollbacks} rollbacks ({forced} forced) in the 300-frame reports, {time.time() - t0:.0f} s, result {result}",
           flush=True)
     return hashes, d
 
@@ -121,6 +125,8 @@ def main():
     ap.add_argument("--gap", type=int, default=12, help="mash: at most this many frames between inputs")
     ap.add_argument("--no-moves", action="store_true", help="plain mash, no motion inputs")
     ap.add_argument("--force", default="", help="test run: T5_RB_NET_FORCE=every:depth")
+    ap.add_argument("--lag", type=int, default=0, help="test run: P2's input known N frames late (T5_NET_LOCAL_LAG): "
+                                                       "predicted, mispredicted, rolled back as over a network")
     ap.add_argument("--test-env", action="append", default=[], help="NAME=VALUE for the test run only")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both runs")
     ap.add_argument("--cpus", default="", help="test run: N logical processors or 0xMASK")
@@ -130,7 +136,7 @@ def main():
     ap.add_argument("--seconds", type=float, default=400)
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    test_extra = list(a.test_env) + ([f"T5_RB_NET_FORCE={a.force}"] if a.force else [])
+    test_extra = list(a.test_env) + ([f"T5_RB_NET_FORCE={a.force}"] if a.force else []) +         ([f"T5_NET_LOCAL_LAG={a.lag}"] if a.lag else [])
     if a.ref:
         h_ref = {}
         with open(os.path.join(a.ref, "frames.log"), encoding="utf-8", errors="replace") as f:

@@ -301,7 +301,8 @@ Entertainment or Sony Interactive Entertainment. Tekken is a trademark of Bandai
 Namco. Rules about decrypting and converting games you own differ by country.
 You are responsible for following yours. This is not legal advice.
 
-This project's own code and docs are under the MIT License (`LICENSE`).
+This project's own code and docs are under the MIT License (`LICENSE`). Source code:
+https://github.com/TheWishin/T5DROnline-Source
 ps3recomp is MIT-licensed too. The license covers none of the game.
 <!-- players:end -->
 

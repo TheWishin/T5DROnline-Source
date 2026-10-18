@@ -299,7 +299,7 @@ und Umwandeln von Spielen, die du besitzt, sind von Land zu Land verschieden. Du
 bist selbst dafür verantwortlich, deine einzuhalten. Das ist keine Rechtsberatung.
 
 Der eigene Code und die Doku dieses Projekts stehen unter der MIT-Lizenz
-(`LICENSE`). ps3recomp steht ebenfalls unter der MIT-Lizenz. Die Lizenz gilt für
+(`LICENSE`). Quellcode: https://github.com/TheWishin/T5DROnline-Source ps3recomp steht ebenfalls unter der MIT-Lizenz. Die Lizenz gilt für
 nichts vom Spiel.
 
 ## Aus dem Quellcode bauen

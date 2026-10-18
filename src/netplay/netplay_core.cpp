@@ -1288,6 +1288,12 @@ uint32_t match_seed()
     std::lock_guard<std::mutex> lk(s.mu);
     return s.seed ? s.seed : s.session;
 }
+uint32_t session_seed()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.seed;
+}
 
 void log_extra(uint32_t f, const char* text)
 {

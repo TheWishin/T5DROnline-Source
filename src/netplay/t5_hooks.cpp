@@ -82,6 +82,7 @@ namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
+extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the mode manager's current mode (6 = select) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
@@ -929,6 +930,17 @@ void on_frame_start(ppu_context* ctx)
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
         g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */
+    /* Direct fight with a session: while the select mode runs, the TLS generator
+     * is pinned to the session's seed at every boundary. The select screen and
+     * the game mode's set-up draw from it before lockstep frame 0 reseeds it --
+     * the set-up picks Mokujin's fighter for the match (0x121E0C <- 0x5A304 <-
+     * 0x53C88, game mode phase 2) -- and how many draws the select screen made
+     * depended on how long each PC took there; Mokujin copied Feng on one PC
+     * and Kazuya on the other (desync hunt runs v1c/v5: 0x1009094C 0x1001F vs
+     * 0x1000F from the first frame). Pinned, the set-up draws the same on both. */
+    if (g_main_tls && (g_directfight || g_persistent) && np::enabled() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
+        t5_df_mode_cur() == 6)
+        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu);
     if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */

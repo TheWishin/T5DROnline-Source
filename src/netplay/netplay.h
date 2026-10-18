@@ -60,6 +60,9 @@ void connect();
 /* A number both peers share once frame 0 has begun (the host's session id):
  * seeds the game's random generators identically on both sides. */
 uint32_t match_seed();
+/* T5_NET_SEED of this session (the host's once the handshake is done), 0 = none:
+ * known before the handshake, the same on both PCs in a lobby match */
+uint32_t session_seed();
 
 /* Next frame whose state hash differed from the peer's, if any (for the
  * hooks' T5_NET_DESYNC_DUMP diagnostics). */

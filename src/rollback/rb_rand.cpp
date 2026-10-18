@@ -67,6 +67,9 @@
 #include "rb.h"
 #include "rb_detour.h"
 
+extern "C" uint32_t t5_df_mode_cur(void);    /* src/directfight/df_fight.cpp: the mode manager's current / next mode */
+extern "C" uint32_t t5_df_mode_next(void);
+
 namespace rb {
 
 namespace {
@@ -145,7 +148,9 @@ void trace_tls(ppu_context* ctx, bool priv)
     if (g_trace == 2) {
         static std::map<std::string, int> chains;
         std::string c = guest_backtrace(24);
-        if (chains[c]++ == 0 && trace_log()) fprintf(g_log, "TLS rng chain (frame %u%s): %s\n", sim_frame(), priv ? ", private" : "", c.c_str());
+        if (chains[c]++ == 0 && trace_log())
+            fprintf(g_log, "TLS rng chain (frame %u, mode %u->%u, phase %u%s): %s\n", sim_frame(), t5_df_mode_cur(), t5_df_mode_next(),
+                    _byteswap_ulong(*(const uint32_t*)(vm_base + 0x1008F070u)), priv ? ", private" : "", c.c_str());
     }
     trace_dump_locked();
 }

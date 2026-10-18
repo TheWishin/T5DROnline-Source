@@ -175,10 +175,13 @@ tkinter, and the launcher is a tkinter program.
 ## Dry runs (nothing is published)
 
 - **Actions -> Release -> Run workflow** (owner only), optionally with a
-  version to stamp; default `0.0.0-dryrun.<run number>`.
+  version to stamp; default `0.0.0-dryrun.<run number>`. Tick **sign** to sign it too (needs the
+  signing secrets, see "Code signing"); pick **stub_compiler** to try the other compiler for
+  `T5DR Online.exe` (see "The launcher stub").
 - **Any push to a branch** that changes the release tooling
   (`release.yml`, `tools/package_release.py`, `fetch_llvm.py`,
-  `release_notes.py`, `smoke_release.py`, `release-requirements.txt`) runs the
+  `release_notes.py`, `smoke_release.py`, `code_signing.py`, `release-requirements.txt`,
+  `launcher/stub/`) runs the
   same build -- so merging a tooling change to `main` tests it before the next
   tag.
 

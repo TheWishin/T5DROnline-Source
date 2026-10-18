@@ -64,6 +64,7 @@ on:
 
 permissions:
   contents: read
+  actions: read     # SignPath reads the uploaded artifact and this run's details (private repository, no SignPath app)
 
 concurrency:
   group: release-${{ github.ref }}

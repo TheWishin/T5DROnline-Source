@@ -88,13 +88,53 @@ def log(msg):
     print(f"[{time.time() - T0:7.1f}s] {msg}", flush=True)
 
 
-def mash_script(path, seed, frames=400000, gap=6):
+# Pad bits (PadInput.buttons: DIGITAL1 | DIGITAL2 << 8) and the Tekken buttons 1/2/3/4 = LP/RP/LK/RK.
+U, R, D, L = 0x10, 0x20, 0x40, 0x80
+B1, B2, B3, B4 = 0x8000, 0x1000, 0x4000, 0x2000
+
+
+def motion_moves(fwd, back):
+    """What players do and a random mash almost never does: frame-exact motion inputs (electrics,
+    hellsweeps, dragon-punch and half-circle motions, dashes, sidesteps), throws and the all-buttons
+    ki charge -- each a list of (mask, frames). fwd/back: the direction bits for one facing."""
+    df, db = D | fwd, D | back
+    return [
+        [(fwd, 1), (0, 1), (D, 1), (df | B2, 2)],                 # electric wind god fist (f,n,d,df+2)
+        [(fwd, 1), (0, 1), (D, 1), (df | B1, 2)],                 # wind god fist family, df+1
+        [(fwd, 1), (0, 1), (D, 1), (df | B4, 2)],                 # hellsweep (f,n,d,df+4)
+        [(fwd, 2), (0, 2), (D, 2), (df, 1), (df | B2, 3)],        # slower wgf
+        [(D, 1), (df, 1), (fwd | B1, 2)],                         # qcf+1
+        [(D, 1), (db, 1), (back | B2, 2)],                        # qcb+2
+        [(fwd, 1), (df, 1), (D, 1), (db, 1), (back | B1, 2)],     # hcb+1
+        [(back, 1), (db, 1), (D, 1), (df, 1), (fwd | B3, 2)],     # hcf+3
+        [(fwd, 2), (0, 2), (fwd, 6)],                             # dash
+        [(back, 2), (0, 2), (back, 2), (0, 2), (back, 2)],        # backdash
+        [(U, 1), (0, 3)], [(D, 1), (0, 3)],                       # sidesteps
+        [(B1 | B3, 2)], [(B2 | B4, 2)],                           # throws
+        [(df | B1 | B2, 2)], [(back | B1 | B2, 3)], [(fwd | B3 | B4, 2)], [(U | fwd | B3 | B4, 2)],
+        [(B1 | B2 | B3 | B4, 40)],                                # ki charge (Mishimas)
+        [(D, 6), (df | B2, 2)], [(D, 6), (D | B4, 2)],            # crouch moves
+        [(fwd | B2, 2), (0, 4), (B1, 2)], [(B1, 2), (0, 3), (B2, 2), (0, 3), (B1, 2)],   # strings
+        [(back, 20), (back | B2, 2)],                             # charged back moves
+    ]
+
+
+def mash_script(path, seed, frames=400000, gap=6, moves=False):
     """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that pauses a fight).
-    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts)."""
+    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts).
+    moves: half of the inputs are motion inputs (motion_moves) in either facing."""
     rnd = random.Random(seed)
     buttons = [0x4000, 0x2000, 0x8000, 0x1000, 0x4000 | 0x2000, 0x8000 | 0x1000, 0x10, 0x20, 0x40, 0x80, 0x20, 0x80]
+    seqs = motion_moves(R, L) + motion_moves(L, R)
     out, f = [], 30
     while f < frames:
+        if moves and rnd.random() < 0.5:
+            for mask, n in rnd.choice(seqs):
+                if mask:
+                    out.append(f"{f} {n} {mask:#x}")
+                f += n
+            f += rnd.randint(1, gap)
+            continue
         n = rnd.randint(1, 4)
         out.append(f"{f} {n} {rnd.choice(buttons):#x}")
         f += n + rnd.randint(1, gap)
@@ -208,7 +248,7 @@ class Game:
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
-                                               gap=getattr(self.a, "mash_gap", 6))
+                                               gap=getattr(self.a, "mash_gap", 6), moves=getattr(self.a, "moves", False))
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
@@ -333,6 +373,8 @@ def main():
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--mash", action="store_true")
     ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
+    ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (electrics, hellsweeps, qcf/hcb, "
+                                                        "dashes, throws, ki charge): what players do")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
     ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
     ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")

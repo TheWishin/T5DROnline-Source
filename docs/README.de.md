@@ -164,7 +164,8 @@ Tastatur (Standard) und Xbox-Controller:
   erhalten. Mit dem Controller selbst: Oben / Unten wählen einen Knopf, Kreuz
   setzt ihn, Dreieck löscht ihn, Start speichert, Kreis schließt (die Knöpfe
   des Controllers, wie deine `controls.ini` sie hat). Das geht nur, solange
-  dieses Fenster vorne ist.
+  dieses Fenster vorne ist; nimm das Häkchen bei "Move through this window with
+  the controller" weg, wenn du Knöpfe nur testen willst.
 - Die Tastatur und alles andere stellst du in der `controls.ini` ein. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).
   Lege deine Datei als `native\controls.ini` ab und starte das Spiel neu.

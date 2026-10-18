@@ -1207,6 +1207,24 @@ class DialogTest(DialogBase):
         self.press(stick, "B3")                                           # Circle: close
         self.assertFalse(d.alive())
 
+    def test_the_controller_can_be_switched_off_to_just_test_buttons(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.pad_var.set(False)
+        d.pad_hint(d.dev())
+        self.assertIn("pick it", d.intro_var.get())
+        for src in ("HAT_DOWN", "B2", "B4", "B10", "B3"):
+            self.press(stick, src)
+        self.assertEqual(d.selected_key(), "1")                           # nothing moved, nothing started
+        self.assertIsNone(d.capture)
+        self.assertFalse(d.editor.dirty)
+        self.assertTrue(d.alive())
+        d.pad_var.set(True)
+        d.pad_hint(d.dev())
+        self.assertIn("choose a button", d.intro_var.get())
+        self.press(stick, "HAT_DOWN")
+        self.assertEqual(d.selected_key(), "2")
+
     def test_holding_down_moves_on_and_a_capture_started_with_the_pad_gives_up(self):
         stick = FakePad()
         d = self.open(stick)

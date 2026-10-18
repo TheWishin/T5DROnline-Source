@@ -182,7 +182,8 @@ Keyboard (default) and Xbox controller:
   Your comments and other settings in the file are kept.
   With the controller itself: Up / Down choose a button, Cross sets it,
   Triangle clears it, Start saves, Circle closes (the controller's buttons as
-  your `controls.ini` has them). This works only while that window is in front.
+  your `controls.ini` has them). This works only while that window is in front;
+  untick "Move through this window with the controller" to only test buttons.
 - The keyboard and everything else is set in `controls.ini`. The documented
   sample with every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.

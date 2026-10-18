@@ -350,6 +350,10 @@ class ControlsDialog:
         self.tv_players.bind("<<TreeviewSelect>>", self._on_player_select)
         self.pad_note = ttk.Label(pl, style="Muted.TLabel", wraplength=900, justify="left")
         self.pad_note.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        # the controller moves through this window (Up / Down, Cross, ...); off: it only lights the lamps
+        self.pad_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(pl, text=t("Move through this window with the controller"), variable=self.pad_var,
+                        command=lambda: self.pad_hint(self.dev())).grid(row=2, column=0, sticky="w")
 
         # --- the buttons
         bt = ttk.LabelFrame(body, text="  " + t("Buttons") + "  ", padding=(8, 4))
@@ -555,7 +559,7 @@ class ControlsDialog:
                 self._capture_result(res)
         else:
             dev = self.dev()
-            if dev is not None:
+            if dev is not None and self.pad_var.get() and (mine or self.nav._rep):
                 for action in self.nav.feed(now, mine, held.get(self.chosen, frozenset()), nav_map(self.editor, dev)):
                     self._do_action(action)
         if not self._closed:
@@ -679,7 +683,8 @@ class ControlsDialog:
         scope = self.scope()
         self.scope_var.set(scope)
         avail = self.editor.scopes(dev)
-        names = {ce.SCOPE_MODEL: t("This controller model ({vid}:{pid})", vid=f"{dev.vid:04X}", pid=f"{dev.pid:04X}"),
+        names = {ce.SCOPE_MODEL: t("This controller model ({vid}:{pid})", vid=f"{dev.vid:04X}", pid=f"{dev.pid:04X}")
+                 if dev.vid else t("This controller model (no USB ID)"),
                  ce.SCOPE_KIND: t("All Xbox pads (XInput)") if dev.kind == XINPUT else t("All DirectInput controllers"),
                  ce.SCOPE_PORT: t("Only the controller on player {n}'s port", n=dev.port + 1)}
         for sc, b in self.scope_btns.items():
@@ -749,7 +754,7 @@ class ControlsDialog:
         self.preset_text.set(t("Buttons you set yourself, or a mix. Pick a layout to start from it."))
 
     def pad_hint(self, dev):
-        if dev is None:
+        if dev is None or not self.pad_var.get():
             self.intro_var.set(t("Press a button on a controller to pick it, then set its buttons. "
                                  "The game reads the file when it starts."))
             return

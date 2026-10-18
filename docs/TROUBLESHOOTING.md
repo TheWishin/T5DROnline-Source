@@ -475,6 +475,10 @@ controller it is.
   diagonally) went down together. Press one button, or move the stick in one
   direction only. Macros like 1+2 are set by pressing the one button that should
   do both.
+- **Pressing buttons to test them starts a question or clears a button.** With
+  "Move through this window with the controller" ticked, Cross sets the chosen
+  row, Triangle clears it, Start saves and Circle closes the window. Untick it to
+  only watch the lamps.
 - **A game button shows "-".** It has no controller button. Pressing a button
   that another game button used takes it from that one ("B2 was 3 (Left Kick);
   that one has no button now"): a controller button can only be one game button.

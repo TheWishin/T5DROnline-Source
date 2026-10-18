@@ -61,6 +61,12 @@ on:
         default: default
         type: choice
         options: [default, msvc, clang]
+      stub_variant:
+        description: "Antivirus experiment with T5DR Online.exe (docs/RELEASING.md): default = the variable T5DR_STUB_VARIANT, else current."
+        required: false
+        default: default
+        type: choice
+        options: [default, current, plain, dynamic, inprocess]
 
 permissions:
   contents: read
@@ -78,6 +84,8 @@ env:
   # msvc (default) or clang: what builds T5DR Online.exe (tools/package_release.py --stub-compiler).
   # An empty value means msvc.
   T5DR_STUB_COMPILER: ${{ (inputs.stub_compiler && inputs.stub_compiler != 'default') && inputs.stub_compiler || vars.T5DR_STUB_COMPILER }}
+  # current (default), plain, dynamic or inprocess: the variants of T5DR Online.exe for the antivirus tests.
+  T5DR_STUB_VARIANT: ${{ (inputs.stub_variant && inputs.stub_variant != 'default') && inputs.stub_variant || vars.T5DR_STUB_VARIANT }}
 
 jobs:
   build:

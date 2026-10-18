@@ -136,6 +136,11 @@ uint32_t rb_peer_ack();                          /* the peer has our inputs for 
 /* While on, the local player's sample is exactly `buttons` (direct-fight menu
  * driving during lockstep; see t5_netplay_inject). */
 void  set_local_inject(bool on, uint16_t buttons);
+/* In-game select (docs/DIRECTFIGHT.md "Character select in the game"): this
+ * player's pick for the match `key` (0 = none), resent by the network thread
+ * every 100 ms until the peer acknowledges it; the peer's pick once it came. */
+void  pick_set(uint32_t key, uint32_t val);
+bool  pick_peer(uint32_t key, uint32_t* val);
 /* T5_NET_SCRIPT_FIGHT=1 (tests): the scripted local input (T5_NET_SCRIPT) applies
  * only while the direct-fight driver is in a fight, so it never presses
  * anything in the menus direct fight drives between matches. */
@@ -193,6 +198,15 @@ extern "C" int         t5_netplay_persistent(void);
  * the runtime, so the control channel puts a match's variables here. Once a
  * key was set through the overlay it reads from it (unset after
  * t5_env_overlay_begin() unless set again); other keys come from getenv(). */
+/* In-game select (src/directfight): the pick is exchanged over the session's
+ * socket (PICK packets) while the select screens run on their own. Lockstep is
+ * paused for it between two matches of a session (t5_netplay_pause(): at the
+ * next frame, a sync point; t5_netplay_start() resumes it at the next fight). */
+extern "C" void        t5_netplay_pick_send(unsigned key, unsigned pick);
+extern "C" int         t5_netplay_pick_peer(unsigned key, unsigned* pick);
+extern "C" int         t5_netplay_connected(void);
+extern "C" void        t5_netplay_pause(void);
+extern "C" int         t5_netplay_paused(void);
 extern "C" void        t5_env_overlay_begin(void);
 extern "C" void        t5_env_overlay_set(const char* key, const char* value);
 extern "C" const char* t5_env(const char* key);

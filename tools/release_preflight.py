@@ -65,6 +65,13 @@ def main():
         sys.exit(f"no LLVM at {llvm}: run python tools/fetch_llvm.py --dest {llvm}")
     os.makedirs(work)
 
+    # The tag builds what is committed: an uncommitted or untracked file passes the index checks
+    # here and fails on the runner (1.0.0's first run: a new icon the guard had not seen).
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True).stdout
+    dirty = [l for l in dirty.splitlines() if l.strip() and not l[3:].startswith("runs/")]
+    if dirty:
+        print("PREFLIGHT FAILED: commit everything first; uncommitted or untracked:\n  " + "\n  ".join(dirty[:20]))
+        sys.exit(1)
     step("1. changelog section", [py, "tools/release_notes.py", "--version", ver, "--check"])
     step("2a. guard: index", [py, "tools/check_no_game_data.py"])
     last = subprocess.run(["git", "describe", "--tags", "--abbrev=0"], cwd=ROOT, capture_output=True,

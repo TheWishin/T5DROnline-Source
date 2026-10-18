@@ -50,7 +50,7 @@ from soakgame import Abort, SoakGame, find_game_root  # noqa: E402
 ARCADE, GHOST, VS, ONLINE, SURVIVAL, PRACTICE, GALLERY, OPTIONS = range(8)
 MENU = ["ARCADE", "GHOST", "VS", "ONLINE", "SURVIVAL", "PRACTICE", "GALLERY", "OPTIONS"]
 # Mode manager ids (tcb_*mode_t classes, from the probe)
-M_INIT, M_TITLE, M_GAME, M_LOGO, M_SELECT, M_END, M_RANKING, M_RESULT, M_ONLINE = 0, 1, 4, 5, 6, 8, 10, 11, 13
+M_INIT, M_TITLE, M_OPTION, M_GAME, M_LOGO, M_SELECT, M_END, M_RANKING, M_RESULT, M_ONLINE = 0, 1, 3, 4, 5, 6, 8, 10, 11, 13
 P2_HEALTH = 0x10090FBC          # i16, CPU's current health in arcade (build/au/GAPS.md "Endings")
 
 
@@ -72,7 +72,8 @@ class Driver:
                 return True
             if taps:
                 for b in taps:
-                    self.g.press(*b.split("+"), gap=60)
+                    btn, _, pad = b.partition("@")             # "CIRCLE@2": player 2
+                    self.g.press(*btn.split("+"), gap=60, pad=int(pad or 1))
                 self.g.wait(max(0.0, every - 0.16 * len(taps)))
             else:
                 self.g.wait(0.2)
@@ -86,7 +87,8 @@ class Driver:
                 return self.g.mode
             if taps:
                 for b in taps:
-                    self.g.press(*b.split("+"), gap=60)
+                    btn, _, pad = b.partition("@")             # "CIRCLE@2": player 2
+                    self.g.press(*btn.split("+"), gap=60, pad=int(pad or 1))
                 self.g.wait(max(0.0, every - 0.16 * len(taps)))
             else:
                 self.g.wait(0.2)
@@ -134,7 +136,11 @@ class Driver:
                 g.phase("menu", "title")
                 g.wait(1.0)               # the menu ignores input while it slides in
                 return True
-            g.press("START", gap=300)
+            if g.mode in (M_SELECT, M_OPTION, M_ONLINE):  # a mode's own menus: back out
+                g.press("CIRCLE", gap=150)
+                g.press2("CIRCLE", gap=150)
+            else:
+                g.press("START", gap=300)
         g.expect("menu", False, f"main menu not recognised in {timeout:.0f}s (mode {g.mode} {g.mode_name})")
         return False
 
@@ -147,7 +153,7 @@ class Driver:
         gt0, n0 = g.game_type, len(g.mode_log)
         g.press("CROSS", gap=300)
         self.cursor = idx
-        m = self.wait_mode_change(timeout=8, start=n0)
+        m = self.wait_mode_change(timeout=15, start=n0)       # slow under load
         g.event("menu", f"picked {MENU[idx]} ({n} down): mode {m} {g.mode_name}, game type {gt0} -> {g.game_type}")
         g.wait(wait)
         return m
@@ -260,6 +266,10 @@ def sc_arcade(d, char_moves=(), name="arcade", to_end=True, timeout=1500):
     g.shot(f"{name}-select", expect="content")
     g.press("CROSS", gap=1500)
     g.phase(f"{name}-run", "fight")
+    # after the fighter: ITEM SHOP & EQUIP / GAME START / NAME ENTRY -- CROSS takes GAME START
+    if not d.wait_mode(M_GAME, timeout=40, taps=("CROSS",), every=2.0):
+        g.expect(f"{name}-start", False, f"ARCADE did not start (mode {g.mode} {g.mode_name})")
+        return
     done = lambda: g.mode in (M_RANKING, M_LOGO, M_END, M_TITLE)  # noqa: E731
     if to_end:
         n = hold_health(d, P2_HEALTH, until=done, timeout=timeout)
@@ -319,7 +329,7 @@ def sc_vs(d, matches=1, timeout=400):
         g.event("vs", f"match {sel['n']} over: mode {g.mode} {g.mode_name}")
     g.expect("vs-matches", sel["n"] >= matches, f"{sel['n']} match(es)")
     g.phase("vs-exit", "menu")
-    d.back_to_title(taps=("CIRCLE",), timeout=60)
+    d.back_to_title(taps=("CIRCLE", "CIRCLE@2"), timeout=60)
 
 
 def sc_online(d):
@@ -538,12 +548,14 @@ def plan_modes(opts):
         seq = [("arcade", lambda d: sc_arcade(d, to_end=False)), ("ghost", sc_ghost), ("vs", sc_vs),
                ("online", sc_online), ("survival", sc_survival), ("practice", sc_practice),
                ("gallery", sc_gallery), ("options", sc_options)]
+        if opts.scenarios:
+            seq = [s for s in seq if s[0] in opts.scenarios.split(",")]
         for name, fn in seq:
             if not d.open_menu():
                 continue
             fn(d)
             if g.mode != M_TITLE:
-                d.back_to_title(taps=("CIRCLE", "START"), timeout=90)
+                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=90)
         g.wait_log(r"\[cellSaveData\] SAVE complete", timeout=10)
         g.wait(3)
     run_one(opts, "modes", body, cwd=cwd)
@@ -611,7 +623,7 @@ def plan_mixed(opts):
         while g.now() < end:
             seg = k % 8
             if not d.open_menu():
-                d.back_to_title(taps=("CIRCLE", "START"), timeout=60)
+                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=60)
                 k += 1
                 continue
             g.event("segment", f"#{k} kind {seg}")
@@ -633,7 +645,7 @@ def plan_mixed(opts):
                 g.phase(f"idle{k}", "attract")       # the title idles into the attract demo and back
                 g.wait(90)
             if g.mode != M_TITLE:
-                d.back_to_title(taps=("CIRCLE", "START"), timeout=90)
+                d.back_to_title(taps=("CIRCLE", "CIRCLE@2", "START"), timeout=90)
             k += 1
         g.expect("segments", k >= 8, f"{k} segments in {opts.minutes:.0f} min")
     run_one(opts, "mixed", body)
@@ -729,6 +741,7 @@ def main():
     ap.add_argument("--cpu-offset", type=int, default=0, help="with --cpus: the first logical processor of the mask")
     ap.add_argument("--chars", type=int, default=3)
     ap.add_argument("--online-repeats", type=int, default=1, help="ringcheck: how often the online check runs")
+    ap.add_argument("--scenarios", help="modes: comma-separated subset (arcade,ghost,vs,online,survival,practice,gallery,options)")
     ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1 (the mix is still measured)")
     ap.add_argument("--dump-every", type=int, default=30, help="frame read-back every N flips (navigation needs ~2/s)")
     ap.add_argument("--keep-gamedata", action="store_true")

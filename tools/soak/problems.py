@@ -116,11 +116,12 @@ def scan(text, fps_min=59.0, keep=8):
             vals["frame"] = int(m.group(1))
             if ld_first is None:
                 ld_first = vals
-            if ld_last and any(vals[k] > ld_last[k] for k in LD_KEYS):
+            # tex_full is the texture cache's LRU eviction (rsx_live_draw.c), not a drop
+            if ld_last and any(vals[k] > ld_last[k] for k in LD_KEYS if k != "tex_full"):
                 r = out.setdefault("render", {"count": 0, "first": []})
                 r["count"] += 1
                 if len(r["first"]) < keep:
-                    grew = {k: vals[k] - ld_last[k] for k in LD_KEYS if vals[k] > ld_last[k]}
+                    grew = {k: vals[k] - ld_last[k] for k in LD_KEYS if vals[k] > ld_last[k] and k != "tex_full"}
                     r["first"].append(f"{no}: frame {vals['frame']}: +{grew}")
             ld_last = vals
             continue

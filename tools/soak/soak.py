@@ -197,7 +197,7 @@ class Driver:
             g.release(pad=pad)
             for b in ("SQUARE", "TRIANGLE", "CROSS", "CIRCLE")[i % 2:][:3]:
                 g.press(b, gap=120, pad=pad)
-            g.press("DOWN+CIRCLE", gap=200, pad=pad)
+            g.press("DOWN", "CIRCLE", gap=200, pad=pad)
             i += 1
         return len(g.mode_log) > start
 
@@ -235,7 +235,7 @@ def hold_health(d, addr, value=1, every=1.0, until=None, timeout=300.0, attack=T
                 g.wait(0.25)
                 g.release(pad=pad)
                 g.press("SQUARE", gap=120, pad=pad)
-                g.press("DOWN+CIRCLE", gap=150, pad=pad)
+                g.press("DOWN", "CIRCLE", gap=150, pad=pad)
             else:
                 g.wait(0.5)
         else:

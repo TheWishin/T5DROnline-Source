@@ -72,6 +72,8 @@ arcade, 1 ghost, 2 attract demo, 4 VS, 10 practice), 5 Namco logo, 6 select,
   the game's online check (sceNp init, the "net ranking" thread, cellHttp),
   then "A network error occurred. Returning to the title screen."
 - GALLERY: "Unable to update content list. Retry?" NO, then YES to return.
+- OPTIONS is mode 3 (tcb_optionmode_t); EXIT leaves it.
+- VS returns to the select screen after a match; CIRCLE backs out to the title.
 
 ## Audio measurements
 
@@ -85,9 +87,13 @@ empty). Since 0041 every player's log also gets a line when they add up to
 
     [cellAudio] sound glitches: 41 audio block(s) not written by the game in time, 0 device underrun(s) in 1 window(s) of 5 s (937 blocks in the last one) [t=123.4s]
 
-`[spu-raw-rtt]` (with AUDIO_RATE=1 or SPU_RAW_RTT=1) times the sound core's
-answer to each audio tick: the PPU's 'STAT' mailbox write to its read of the
-'END ' reply, against the 5.33 ms tick.
+`[spu-tick]` (with AUDIO_RATE=1 or SPU_TICK_STATS=1) times the sound core's
+answer to each audio tick -- the SPU thread's receive_event returning the PPU's
+'STAT' to its next send_event -- every 5 s: wall time (what the audio sees)
+and the thread's own CPU cycles per answer (QueryThreadCycleTime: the work,
+which a busy PC's preemption does not inflate):
+
+    [spu-tick] tid 0x2000: 937 answers, mean 3.10 ms, p95 3.75, p99 4.50, max 6.20, over 5.33 ms: 2; on the CPU 14.30 M cycles per answer
 
 ## Results
 

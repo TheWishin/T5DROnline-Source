@@ -1,0 +1,538 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index 9ae2a26..f34ce39 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -157,6 +157,9 @@ static unsigned g_audio_pad_min = ~0u, g_audio_starved;
+ static unsigned g_audio_last_pad;   /* device queue level before the last submit */
+ static unsigned g_audio_waited, g_audio_unwritten;
+ static double   g_audio_wait_max;
++/* The same two holes, never reset: the [cellAudio] "sound glitches" line every
++ * player's log gets (audio_health_check), with or without AUDIO_RATE. */
++static unsigned long long g_audio_unwritten_all, g_audio_starved_all;
+ static volatile int  s_mix_thread_running = 0;
+ static thread_t      s_mix_thread;
+ #ifndef _WIN32
+@@ -779,7 +782,7 @@ static int audio_backend_submit(const float* stereo_samples, u32 num_samples)
+         HRESULT hr = s_wasapi_client->lpVtbl->GetCurrentPadding(s_wasapi_client, &padding);
+         if (SUCCEEDED(audio_dev_check_locked(hr, "GetCurrentPadding", 0))) {
+             if (padding < g_audio_pad_min) g_audio_pad_min = padding;
+-            if (padding == 0) g_audio_starved++;
++            if (padding == 0) { g_audio_starved++; g_audio_starved_all++; }
+             g_audio_last_pad = padding;
+             UINT32 available = s_wasapi_buf_frames - padding;
+             if (num_samples > available) {
+@@ -915,8 +918,16 @@ static int audio_ports_written(void)
+  *                     working device and every mix/pacing path runs as normal
+  *                     (unlike PS3_NO_AUDIO, which changes what the guest does).
+  *                     AUDIO_WAV still records the real mix. */
++/* Whether the block audio_submit_mix() was handed had any sound, taken before
++ * PS3_AUDIO_MUTE zeroes it: AUDIO_RATE's "silent" share measures the title's
++ * mix, muted or not (under the mute it read 100 %). */
++static int s_mix_had_sound;
++
+ static void audio_submit_mix(void)
+ {
++    { int nz = 0;
++      for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
++      s_mix_had_sound = nz; }
+     { static FILE* _wf = (FILE*)-1;
+       if (_wf == (FILE*)-1) { const char* e = getenv("AUDIO_WAV"); _wf = e ? fopen(e, "wb") : NULL; }
+       if (_wf) { fwrite(s_mix_buffer, sizeof(float), CELL_AUDIO_BLOCK_SAMPLES * 2, _wf); fflush(_wf); } }
+@@ -1059,6 +1070,35 @@ static void audio_notify_event_queues(void)
+ }
+ 
+ #ifdef _WIN32
++/* t5dr offline soak (0041): one line in every player's log when sound breaks
++ * up. A friend's offline run had "audio problems" and a log with nothing to
++ * say about them; AUDIO_RATE is a developer switch. Every 5 s: blocks the
++ * title had not written when their time (plus PS3_AUDIO_WAIT_US) came, and
++ * device underruns. 5 or more in a window (an audible crackle about every
++ * second) gives a line; the first three such windows each, then at most one
++ * line a minute with the totals since the last one. */
++static void audio_health_check(void)
++{
++    static ULONGLONG t0, last_line;
++    static unsigned long long un0, st0, blocks, un_acc, st_acc, win_acc;
++    static unsigned lines;
++    const ULONGLONG now = GetTickCount64();
++    blocks++;
++    if (!t0) { t0 = now; un0 = g_audio_unwritten_all; st0 = g_audio_starved_all; return; }
++    if (now - t0 < 5000) return;
++    const unsigned long long un = g_audio_unwritten_all - un0, st = g_audio_starved_all - st0;
++    if (un + st >= 5) {
++        un_acc += un; st_acc += st; win_acc++;
++        if (lines < 3 || now - last_line >= 60000) {
++            fprintf(stderr, "[cellAudio] sound glitches: %llu audio block(s) not written by the game in time, "
++                            "%llu device underrun(s) in %llu window(s) of 5 s (%llu blocks in the last one) [t=%.1fs]\n",
++                    un_acc, st_acc, win_acc, blocks, audio_now_s());
++            lines++; last_line = now; un_acc = st_acc = win_acc = 0;
++        }
++    }
++    t0 = now; un0 = g_audio_unwritten_all; st0 = g_audio_starved_all; blocks = 0;
++}
++
+ static unsigned __stdcall audio_mix_thread_func(void* arg)
+ {
+     (void)arg;
+@@ -1144,7 +1184,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+             /* AUDIO_RATE: blocks that had to wait for the title, and blocks it
+              * still had not written when the wait ran out. */
+             const double late_ms = (double)(now.QuadPart - due) * 1000.0 / (double)qf.QuadPart;
+-            if (!written) g_audio_unwritten++;
++            if (!written) { g_audio_unwritten++; g_audio_unwritten_all++; }
+             else if (late_ms > 0.5) { g_audio_waited++; if (late_ms > g_audio_wait_max) g_audio_wait_max = late_ms; }
+         }
+         /* Queue the lead as silence ahead of the first block, and again after
+@@ -1174,8 +1214,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+         { static int on = -1; if (on < 0) on = getenv("AUDIO_RATE") ? 1 : 0;
+           if (on) { static ULONGLONG t0; static unsigned n, z; static unsigned long long d0;
+             ULONGLONG now = GetTickCount64(); if (!t0) t0 = now; n++;
+-            { int nz = 0; for (u32 i = 0; i < CELL_AUDIO_BLOCK_SAMPLES * 2; i++) if (s_mix_buffer[i] != 0.0f) { nz = 1; break; }
+-              if (!nz) z++; }
++            if (!s_mix_had_sound) z++;
+             if (now - t0 >= 5000) {
+                 fprintf(stderr, "[audio-rate] %.1f blocks/s (real time 187.5), silent %.1f%%, dropped %.0f frames/s, device buf %u, queue min %u, starved %u, "
+                                 "waited for %u (max %.1f ms), not written %u, no device %u%c",
+@@ -1190,6 +1229,7 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+                 g_audio_pad_min = ~0u; g_audio_starved = 0;
+                 g_audio_waited = g_audio_unwritten = g_audio_nodev = 0; g_audio_wait_max = 0;
+                 n = z = 0; d0 = g_audio_dropped; t0 = now; } } }
++        audio_health_check();
+ 
+         /* Notify event queues */
+         audio_notify_event_queues();
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index 6e75ef9..a36e3ea 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -1173,6 +1173,7 @@ static DWORD WINAPI debug_console(LPVOID param)
+             dbg_printf("  stat             flips, HLE breadcrumb, uptime%c", 10);
+             dbg_printf("  mem <hex> [len]  hexdump guest memory%c", 10);
+             dbg_printf("  poke32 <hex> <v> write a guest u32%c", 10);
++            dbg_printf("  poke16 <hex> <v> write a guest u16%c", 10);
+             dbg_printf("  knobs [prefix]   diagnostics this run was started with%c", 10);
+         } else if (!strcmp(verb, "threads")) {
+             dump_threads("console", self);
+@@ -1237,6 +1238,14 @@ static DWORD WINAPI debug_console(LPVOID param)
+                 memcpy(vm_base + a, &be, 4);
+                 dbg_printf("  [0x%08X] = 0x%08X%c", a, b, 10);
+             } else dbg_printf("  vm_base not live yet%c", 10);
++        } else if (!strcmp(verb, "poke16") && sscanf(cmd, "%*s %x %x", &a, &b) == 2) {
++            /* poke16 <hex> <v>: a guest big-endian u16 (t5dr offline soak: a
++             * fighter's health is an i16 next to other fields). */
++            if (vm_base) {
++                const uint8_t be[2] = { (uint8_t)(b >> 8), (uint8_t)b };
++                memcpy(vm_base + a, be, 2);
++                dbg_printf("  [0x%08X] = 0x%04X%c", a, b & 0xFFFF, 10);
++            } else dbg_printf("  vm_base not live yet%c", 10);
+         } else if (!strcmp(verb, "knobs")) {
+             char pfx[64] = {0};
+             sscanf(cmd, "%*s %63s", pfx);
+@@ -1250,6 +1259,8 @@ static DWORD WINAPI debug_console(LPVOID param)
+     return 0;
+ }
+ 
++extern "C" unsigned rsx_live_draw_get_frames(void);   /* rsx_live_draw.c */
++
+ static DWORD WINAPI hang_watchdog(LPVOID)
+ {
+     HMODULE self = NULL;
+@@ -1262,11 +1273,28 @@ static DWORD WINAPI hang_watchdog(LPVOID)
+     int t1 = 8, t2 = 15;
+     { const char* e = getenv("WATCHDOG_AT"); int a = 0, b = 0;
+       if (e && sscanf(e, "%d,%d", &a, &b) == 2 && a > 0 && b > a) { t1 = a; t2 = b; } }
++    /* t5dr offline soak (0041): sample only when the boot is wedged. A
++     * sample suspends every thread in turn and resolves module names
++     * (GetModuleFileName takes the loader lock) while one is suspended; in
++     * every healthy boot it only added ~650 lines to the player's log, at
++     * 8 s and 15 s, while the intro movie and its sound run. Frames still
++     * being presented (live draw) = not wedged: one line instead.
++     * WATCHDOG_ALWAYS=1 samples regardless. */
++    const bool always = getenv("WATCHDOG_ALWAYS") != NULL;
+     char lbl[64];
+-    Sleep((DWORD)t1 * 1000);
+-    snprintf(lbl, sizeof lbl, "%ds sample", t1); dump_threads(lbl, self);
+-    Sleep((DWORD)(t2 - t1) * 1000);
+-    snprintf(lbl, sizeof lbl, "%ds sample", t2); dump_threads(lbl, self);
++    for (int k = 0; k < 2; k++) {
++        const int at = k ? t2 : t1, prev = k ? t1 : 0;
++        Sleep((DWORD)(at - prev) * 1000 - 500);
++        const unsigned f0 = rsx_live_draw_get_frames();
++        Sleep(500);
++        const unsigned f1 = rsx_live_draw_get_frames();
++        if (!always && f1 > f0) {
++            dbg_printf("[WATCHDOG] %ds: %u frames presented in the last 0.5 s, no sample (WATCHDOG_ALWAYS=1 samples anyway)\n",
++                       at, f1 - f0);
++            continue;
++        }
++        snprintf(lbl, sizeof lbl, "%ds sample", at); dump_threads(lbl, self);
++    }
+     return 0;
+ }
+ 
+diff --git a/runtime/spu/spu_helpers.h b/runtime/spu/spu_helpers.h
+index f5ccca0..87a9820 100644
+--- a/runtime/spu/spu_helpers.h
++++ b/runtime/spu/spu_helpers.h
+@@ -933,9 +933,11 @@ SPU__SX_INLINE u128 spu__sx_fa(u128 a, u128 b, uint32_t negb) {
+     if (!spu__sx_all4(ok)) r = spu__sx_fa_fix(r, ok, xa, yb, negb);
+     return spu__sx_st(r);
+ }
++#if !defined(SPU_NEAR_FLOAT)
+ SPU__SX_INLINE u128 spu_fa(u128 a, u128 b) { return spu__sx_fa(a, b, 0); }
+ SPU__SX_INLINE u128 spu_fs(u128 a, u128 b) { return spu__sx_fa(a, b, 0x80000000u); }
+-SPU__SX_INLINE u128 spu_fm(u128 a, u128 b) {
++#endif
++SPU__SX_INLINE u128 spu__sx_fm(u128 a, u128 b) {
+     const __m128i x = spu__sx_ld(a), y = spu__sx_ld(b);
+     __m128i ok;
+     __m128i r = spu__sx_trunc0(_mm_mul_pd(spu__sx_lo(x), spu__sx_lo(y)), _mm_mul_pd(spu__sx_hi(x), spu__sx_hi(y)),
+@@ -962,10 +964,85 @@ SPU__SX_INLINE u128 spu__sx_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t
+     if (!spu__sx_all4(ok)) r = spu__sx_fma_fix(r, ok, xa, y, zc, negp, negc);
+     return spu__sx_st(r);
+ }
++#if !defined(SPU_NEAR_FLOAT)
++SPU__SX_INLINE u128 spu_fm(u128 a, u128 b) { return spu__sx_fm(a, b); }
+ SPU__SX_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__sx_fma(a, b, c, 0, 0); }            /* a*b + c */
+ SPU__SX_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__sx_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
+ SPU__SX_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__sx_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
+ #else
++/* SPU_NEAR_FLOAT (a compile definition, set per lifted image; t5dr offline soak,
++ * patch 0041): the SPU's float semantics in host IEEE single precision except
++ * for the rounding of the last bit -- to nearest instead of toward zero.
++ *   - an operand whose biased exponent is 0 is zero (the SPU has no denormals);
++ *   - a result that comes out denormal or zero is +0 (the SPU flushes, and never
++ *     makes -0);
++ *   - an operand or a result with biased exponent 255 (the SPU's extended range,
++ *     IEEE's Inf/NaN; also every overflow) sends the whole vector to the exact
++ *     path above, so saturation and extended-range values stay exactly as on
++ *     the SPU;
++ *   - fma/fms/fnms round twice (product, then sum), so the result does not
++ *     depend on whether the host has FMA instructions: the same bits on every
++ *     x86 CPU and for both build targets (no contraction: -ffp-contract=off).
++ * Ordinary values differ from the exact path by at most 1 unit in the last place
++ * (the multiply-adds by 2): -138 dB for audio. Unlike SPU_FAST_FLOAT nothing is
++ * ever denormal, so an IIR filter or reverb decaying in silence reaches zero as
++ * on the SPU instead of settling on the smallest denormal -- where every
++ * operation would take a microcode assist on many Intel CPUs. For Tekken 5 DR's
++ * sound core (FFT butterflies, mixing), which only makes audio samples: with
++ * the exact path it needs 4-7 ms of its 5.33 ms audio tick on a fast desktop
++ * core, so slower CPUs miss the tick and the sound breaks up. */
++SPU__SX_INLINE __m128i spu__nf_be(__m128i x) { return _mm_and_si128(_mm_srli_epi32(x, 23), _mm_set1_epi32(0xFF)); }
++SPU__SX_INLINE __m128 spu__nf_daz(__m128i x) {          /* biased exponent 0 -> +0 */
++    return _mm_castsi128_ps(_mm_andnot_si128(_mm_cmpeq_epi32(spu__nf_be(x), _mm_setzero_si128()), x));
++}
++SPU__SX_INLINE __m128i spu__nf_ext(__m128i x) { return _mm_cmpeq_epi32(spu__nf_be(x), _mm_set1_epi32(255)); }
++/* The SPU form of an IEEE result: denormal or zero -> +0. *bad is nonzero when a lane
++ * overflowed (Inf) or is NaN: that vector is redone on the exact path. */
++SPU__SX_INLINE __m128i spu__nf_out(__m128 r, int* bad) {
++    const __m128i ri = _mm_castps_si128(r), be = spu__nf_be(ri);
++    const __m128i ext = _mm_cmpeq_epi32(be, _mm_set1_epi32(255));
++    *bad = !_mm_testz_si128(ext, ext);
++    return _mm_andnot_si128(_mm_cmpeq_epi32(be, _mm_setzero_si128()), ri);
++}
++SPU__SX_INLINE u128 spu__nf_fa(u128 a, u128 b, uint32_t negb) {
++    const __m128i x = spu__sx_ld(a), y = _mm_xor_si128(spu__sx_ld(b), _mm_set1_epi32((int)negb));
++    const __m128i e = _mm_or_si128(spu__nf_ext(x), spu__nf_ext(y));
++    if (_mm_testz_si128(e, e)) {
++        int bad;
++        const __m128i r = spu__nf_out(_mm_add_ps(spu__nf_daz(x), spu__nf_daz(y)), &bad);
++        if (!bad) return spu__sx_st(r);
++    }
++    return spu__sx_fa(a, b, negb);
++}
++SPU__SX_INLINE u128 spu_fa(u128 a, u128 b) { return spu__nf_fa(a, b, 0); }
++SPU__SX_INLINE u128 spu_fs(u128 a, u128 b) { return spu__nf_fa(a, b, 0x80000000u); }
++SPU__SX_INLINE u128 spu_fm(u128 a, u128 b) {
++    const __m128i x = spu__sx_ld(a), y = spu__sx_ld(b);
++    const __m128i e = _mm_or_si128(spu__nf_ext(x), spu__nf_ext(y));
++    if (_mm_testz_si128(e, e)) {
++        int bad;
++        const __m128i r = spu__nf_out(_mm_mul_ps(spu__nf_daz(x), spu__nf_daz(y)), &bad);
++        if (!bad) return spu__sx_st(r);
++    }
++    return spu__sx_fm(a, b);
++}
++SPU__SX_INLINE u128 spu__nf_fma(u128 a, u128 b, u128 c, uint32_t negp, uint32_t negc) {
++    const __m128i x = _mm_xor_si128(spu__sx_ld(a), _mm_set1_epi32((int)negp)), y = spu__sx_ld(b);
++    const __m128i z = _mm_xor_si128(spu__sx_ld(c), _mm_set1_epi32((int)negc));
++    const __m128i e = _mm_or_si128(_mm_or_si128(spu__nf_ext(x), spu__nf_ext(y)), spu__nf_ext(z));
++    if (_mm_testz_si128(e, e)) {
++        int bad;
++        const __m128 p = _mm_mul_ps(spu__nf_daz(x), spu__nf_daz(y));
++        const __m128i r = spu__nf_out(_mm_add_ps(p, spu__nf_daz(z)), &bad);
++        if (!bad) return spu__sx_st(r);
++    }
++    return spu__sx_fma(a, b, c, negp, negc);
++}
++SPU__SX_INLINE u128 spu_fma(u128 a, u128 b, u128 c)  { return spu__nf_fma(a, b, c, 0, 0); }            /* a*b + c */
++SPU__SX_INLINE u128 spu_fms(u128 a, u128 b, u128 c)  { return spu__nf_fma(a, b, c, 0, 0x80000000u); }  /* a*b - c */
++SPU__SX_INLINE u128 spu_fnms(u128 a, u128 b, u128 c) { return spu__nf_fma(a, b, c, 0x80000000u, 0); }  /* c - a*b */
++#endif
++#else
+ static inline u128 spu_fa(u128 a, u128 b) { return spu__fa_s(a, b); }
+ static inline u128 spu_fs(u128 a, u128 b) { return spu__fs_s(a, b); }
+ static inline u128 spu_fm(u128 a, u128 b) { return spu__fm_s(a, b); }
+diff --git a/runtime/spu/tests/test_spu_near_float.c b/runtime/spu/tests/test_spu_near_float.c
+new file mode 100644
+index 0000000..bf0ef2c
+--- /dev/null
++++ b/runtime/spu/tests/test_spu_near_float.c
+@@ -0,0 +1,150 @@
++/*
++ * SPU_NEAR_FLOAT (spu_helpers.h, t5dr patch 0041): the SPU's float semantics in
++ * host IEEE single precision except for the last bit's rounding (to nearest
++ * instead of toward zero). Checked against the exact emulation (spu_*_ref):
++ *   - ordinary operands: within 1 ulp (fa/fs/fm), 3 ulp (the multiply-adds,
++ *     outside cancellation), random values over a wide exponent range;
++ *   - SPU zero rules: an exponent-0 operand (denormal pattern) is zero, an
++ *     underflowing result is +0, never -0 -- bit-identical to the exact path;
++ *   - extended range (exponent 255) operands and overflowing results take the
++ *     exact path: bit-identical;
++ *   - a value decaying by 0.5 per step reaches +0 (it would settle on a
++ *     denormal with plain IEEE floats);
++ *   - the same bits whatever the host: the multiply-add rounds twice, so this
++ *     test's results do not depend on FMA instructions (compare a /arch:AVX2
++ *     build's printed checksum with a baseline one).
++ *
++ * Build: clang-cl /O2 /DSPU_NEAR_FLOAT -msse4.1 /I.. test_spu_near_float.c
++ *        (and once more with -march=x86-64-v3: the checksum line must match)
++ * Exit code 0 if all passed.
++ */
++#include "../spu_helpers.h"
++#include <stdio.h>
++#include <string.h>
++
++static int g_pass, g_fail;
++
++static uint32_t rnd(uint64_t* s)
++{
++    *s = *s * 6364136223846793005ull + 1442695040888963407ull;
++    return (uint32_t)(*s >> 32);
++}
++/* A random ordinary single: exponent within +-2^40, either sign. */
++static uint32_t rnd_float(uint64_t* s)
++{
++    const uint32_t r = rnd(s);
++    const uint32_t e = 127u - 40u + (r >> 8) % 81u;
++    return (r & 0x80000000u) | (e << 23) | (rnd(s) & 0x7FFFFFu);
++}
++static float f_of(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
++
++static double ulps(uint32_t a, uint32_t b)
++{
++    const float fa = f_of(a), fb = f_of(b);
++    if (fa == fb) return 0.0;
++    int e = (int)((b >> 23) & 0xFFu) - 127 - 23;
++    double ulp = 1.0;
++    while (e > 0) { ulp *= 2.0; e--; }
++    while (e < 0) { ulp /= 2.0; e++; }
++    const double d = (double)fa - (double)fb;
++    return (d < 0 ? -d : d) / ulp;
++}
++
++static void near(const char* what, u128 got, u128 ref, double limit, double* worst)
++{
++    for (int i = 0; i < 4; i++) {
++        const uint32_t r = ref._u32[i];
++        const uint32_t be = (r >> 23) & 0xFFu;
++        if (be == 0 || be == 0xFFu) {                  /* zero / extended: must be bit-identical */
++            if (got._u32[i] == r) g_pass++;
++            else { if (g_fail < 10) printf("  FAIL %s: %08X, exact %08X\n", what, got._u32[i], r); g_fail++; }
++            continue;
++        }
++        const double u = ulps(got._u32[i], r);
++        if (u > *worst) *worst = u;
++        if (u > limit) { if (g_fail < 10) printf("  FAIL %s: %08X, exact %08X (%.1f ulp)\n", what, got._u32[i], r, u); g_fail++; }
++        else g_pass++;
++    }
++}
++
++static void same(const char* what, u128 got, u128 ref)
++{
++    for (int i = 0; i < 4; i++) {
++        if (got._u32[i] == ref._u32[i]) g_pass++;
++        else { if (g_fail < 20) printf("  FAIL %s lane %d: %08X, exact %08X\n", what, i, got._u32[i], ref._u32[i]); g_fail++; }
++    }
++}
++
++static u128 v4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) { u128 r; r._u32[0] = a; r._u32[1] = b; r._u32[2] = c; r._u32[3] = d; return r; }
++
++int main(void)
++{
++    printf("SPU near float (SPU_NEAR_FLOAT)\n");
++#ifndef SPU_NEAR_FLOAT
++    printf("  built without SPU_NEAR_FLOAT: nothing to compare\n");
++    return 1;
++#else
++    uint64_t s = 20261019, sum = 1469598103934665603ull;
++    double w_fa = 0, w_fs = 0, w_fm = 0, w_fma = 0, w_fms = 0, w_fnms = 0;
++    for (int n = 0; n < 300000; n++) {
++        u128 a, b, c;
++        for (int i = 0; i < 4; i++) { a._u32[i] = rnd_float(&s); b._u32[i] = rnd_float(&s); c._u32[i] = rnd_float(&s); }
++        const u128 ra = spu_fa(a, b), rs = spu_fs(a, b), rm = spu_fm(a, b), rf = spu_fma(a, b, c);
++        for (int i = 0; i < 4; i++) {
++            sum = (sum ^ ra._u32[i]) * 1099511628211ull; sum = (sum ^ rs._u32[i]) * 1099511628211ull;
++            sum = (sum ^ rm._u32[i]) * 1099511628211ull; sum = (sum ^ rf._u32[i]) * 1099511628211ull;
++        }
++        near("fa", ra, spu_fa_ref(a, b), 1.0, &w_fa);
++        near("fs", rs, spu_fs_ref(a, b), 1.0, &w_fs);
++        near("fm", rm, spu_fm_ref(a, b), 1.0, &w_fm);
++        const double p = (double)f_of(a._u32[0]) * (double)f_of(b._u32[0]);
++        const double z = (double)f_of(c._u32[0]);
++        const double ap = p < 0 ? -p : p, az = z < 0 ? -z : z;
++        if (az < ap / 4 || az > ap * 4) {
++            u128 a1 = a, b1 = b, c1 = c;
++            for (int i = 1; i < 4; i++) { a1._u32[i] = a._u32[0]; b1._u32[i] = b._u32[0]; c1._u32[i] = c._u32[0]; }
++            near("fma",  spu_fma(a1, b1, c1),  spu_fma_ref(a1, b1, c1),  3.0, &w_fma);
++            near("fms",  spu_fms(a1, b1, c1),  spu_fms_ref(a1, b1, c1),  3.0, &w_fms);
++            near("fnms", spu_fnms(a1, b1, c1), spu_fnms_ref(a1, b1, c1), 3.0, &w_fnms);
++        }
++    }
++    /* SPU zero rules, bit-identical to the exact path: denormal patterns are zero, -0 never comes out */
++    {
++        const u128 den = v4(0x00000001u, 0x807FFFFFu, 0x00400000u, 0x80000000u);
++        const u128 one = v4(0x3F800000u, 0xBF800000u, 0x3F800000u, 0x3F800000u);
++        same("den+1", spu_fa(den, one), spu_fa_ref(den, one));
++        same("den*1", spu_fm(den, one), spu_fm_ref(den, one));
++        same("1-1", spu_fs(one, one), spu_fs_ref(one, one));
++        same("den*1+den", spu_fma(den, one, den), spu_fma_ref(den, one, den));
++        /* underflow: 2^-100 * 2^-100 */
++        const u128 tiny = v4(0x0D800000u, 0x8D800000u, 0x0D800000u, 0x00800000u);
++        same("tiny*tiny", spu_fm(tiny, tiny), spu_fm_ref(tiny, tiny));
++        same("tiny*tiny+0", spu_fma(tiny, tiny, v4(0, 0, 0x80000000u, 0)), spu_fma_ref(tiny, tiny, v4(0, 0, 0x80000000u, 0)));
++    }
++    /* extended range and overflow go the exact way */
++    {
++        const u128 big = v4(0x7F7FFFFFu, 0xFF000000u, 0x7F800000u, 0x7FFFFFFFu);   /* max, -2^127, ext, ext max */
++        const u128 two = v4(0x40000000u, 0x40000000u, 0x3F800000u, 0x3F800000u);
++        same("big*2", spu_fm(big, two), spu_fm_ref(big, two));
++        same("big+big", spu_fa(big, big), spu_fa_ref(big, big));
++        same("big*2+big", spu_fma(big, two, big), spu_fma_ref(big, two, big));
++        const u128 m = v4(0x7F7FFFFFu, 0x3F800000u, 0x3F800000u, 0x3F800000u);   /* one overflowing lane */
++        same("max+max (one lane)", spu_fa(m, m), spu_fa_ref(m, m));
++    }
++    /* a decaying value reaches +0 */
++    {
++        u128 x = v4(0x3F800000u, 0xBF800000u, 0x00800000u, 0x3F000000u), h;
++        for (int i = 0; i < 4; i++) h._u32[i] = 0x3F000000u;              /* 0.5 */
++        for (int k = 0; k < 400; k++) x = spu_fm(x, h);
++        for (int i = 0; i < 4; i++) { if (x._u32[i] == 0) g_pass++; else { g_fail++; printf("  FAIL decay lane %d: %08X\n", i, x._u32[i]); } }
++        u128 y = v4(0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u), k9;
++        for (int i = 0; i < 4; i++) k9._u32[i] = 0x3F666666u;              /* 0.9 */
++        for (int k = 0; k < 2000; k++) y = spu_fma(y, k9, v4(0, 0, 0, 0)); /* IIR with no input */
++        for (int i = 0; i < 4; i++) { if (y._u32[i] == 0) g_pass++; else { g_fail++; printf("  FAIL iir lane %d: %08X\n", i, y._u32[i]); } }
++    }
++    printf("  worst ulp: fa %.1f fs %.1f fm %.1f fma %.1f fms %.1f fnms %.1f\n", w_fa, w_fs, w_fm, w_fma, w_fms, w_fnms);
++    printf("  checksum %016llX (the same for every build target and CPU)\n", (unsigned long long)sum);
++    printf("SPU near float: %d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++#endif
++}
+diff --git a/runtime/syscalls/lv2_register.c b/runtime/syscalls/lv2_register.c
+index 451d4bd..dba0afe 100644
+--- a/runtime/syscalls/lv2_register.c
++++ b/runtime/syscalls/lv2_register.c
+@@ -1785,6 +1785,86 @@ static int64_t sys_spu_thread_group_connect_event_all_threads_handler(ppu_contex
+     return (int64_t)(int32_t)result;
+ }
+ 
++/* t5dr offline soak (0041): SPU_TICK_STATS=1 (or AUDIO_RATE=1) times every
++ * request an lv2 SPU thread answers -- from its receive_event returning an
++ * event to its next send_event -- and prints one line per SPU thread every
++ * 5 s:
++ *   [spu-tick] tid 0x2000: 937 answers, mean 3.62 ms, p95 4.25, p99 4.75, max 5.10, over 5.33 ms: 0
++ * Tekken 5 DR's sound core ("bnusCore") gets 'STAT' once per 5.33 ms audio
++ * tick and answers when the tick's mix is done, so this is its work per tick
++ * against the budget: a core slower than the tick drops audio blocks ("not
++ * written" in [audio-rate], "sound glitches" in the log) however the rest of
++ * the game runs. */
++#define SPU_TICK_SLOTS 4
++static struct {
++    uint32_t  spu_id;
++    long long t0, last_print;
++    unsigned long long c0;                /* the thread's cycle count at the event */
++    int       pending;
++    unsigned  n, over, bins[80];          /* 0.25 ms bins, the last one open-ended */
++    double    sum, max, cyc;
++} s_tick[SPU_TICK_SLOTS];
++
++static int spu_tick_on(void)
++{
++    static int v = -1;
++    if (v < 0) v = (getenv("SPU_TICK_STATS") || getenv("AUDIO_RATE")) ? 1 : 0;
++    return v;
++}
++
++static int spu_tick_slot(uint32_t spu_id)
++{
++    for (int i = 0; i < SPU_TICK_SLOTS; i++) {
++        if (s_tick[i].spu_id == spu_id) return i;
++        if (!s_tick[i].spu_id) { s_tick[i].spu_id = spu_id; return i; }
++    }
++    return -1;
++}
++
++static void spu_tick_begin(uint32_t spu_id)      /* on the SPU's own host thread */
++{
++    if (!spu_tick_on()) return;
++    const int i = spu_tick_slot(spu_id);
++    if (i < 0) return;
++    LARGE_INTEGER q; QueryPerformanceCounter(&q);
++    s_tick[i].t0 = q.QuadPart; s_tick[i].pending = 1;
++    ULONG64 cy = 0; QueryThreadCycleTime(GetCurrentThread(), &cy); s_tick[i].c0 = cy;
++}
++
++static void spu_tick_end(uint32_t spu_id)        /* the same SPU thread, its send_event */
++{
++    if (!spu_tick_on()) return;
++    const int i = spu_tick_slot(spu_id);
++    if (i < 0 || !s_tick[i].pending) return;
++    LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
++    const double ms = (double)(q.QuadPart - s_tick[i].t0) * 1000.0 / (double)f.QuadPart;
++    s_tick[i].pending = 0;
++    { ULONG64 cy = 0; QueryThreadCycleTime(GetCurrentThread(), &cy); s_tick[i].cyc += (double)(cy - s_tick[i].c0); }
++    int b = (int)(ms / 0.25); if (b > 79) b = 79;
++    s_tick[i].bins[b]++; s_tick[i].n++; s_tick[i].sum += ms;
++    if (ms > s_tick[i].max) s_tick[i].max = ms;
++    if (ms > 5.333) s_tick[i].over++;
++    if (!s_tick[i].last_print) s_tick[i].last_print = q.QuadPart;
++    if (q.QuadPart - s_tick[i].last_print >= 5 * f.QuadPart) {
++        unsigned acc = 0, p95 = 0, p99 = 0;
++        for (int k = 0; k < 80; k++) {
++            acc += s_tick[i].bins[k];
++            if (!p95 && acc * 100u >= s_tick[i].n * 95u) p95 = (unsigned)k + 1;
++            if (!p99 && acc * 100u >= s_tick[i].n * 99u) p99 = (unsigned)k + 1;
++        }
++        /* "on the CPU": the thread's own cycles (QueryThreadCycleTime), which a busy
++         * PC's preemption does not inflate -- the work per tick, comparable
++         * between runs; the ms figures are wall time, what the audio sees. */
++        fprintf(stderr, "[spu-tick] tid 0x%X: %u answers, mean %.2f ms, p95 %.2f, p99 %.2f, max %.2f, over 5.33 ms: %u; "
++                        "on the CPU %.2f M cycles per answer\n",
++                spu_id, s_tick[i].n, s_tick[i].sum / s_tick[i].n, p95 * 0.25, p99 * 0.25, s_tick[i].max, s_tick[i].over,
++                s_tick[i].cyc / s_tick[i].n / 1e6);
++        memset(s_tick[i].bins, 0, sizeof s_tick[i].bins);
++        s_tick[i].n = s_tick[i].over = 0; s_tick[i].sum = s_tick[i].max = s_tick[i].cyc = 0.0;
++        s_tick[i].last_print = q.QuadPart;
++    }
++}
++
+ /* The interrupt mailbox encodes send_event (0..63) or throw_event (64..127).
+  * The preceding ordinary mailbox word is data, not a separate PPU event. */
+ static int spu_deliver_user_event(spu_context* spu, uint32_t value)
+@@ -1838,6 +1918,7 @@ static int spu_deliver_user_event(spu_context* spu, uint32_t value)
+             }
+         }
+         result = CELL_ENOTCONN;
++        if (spu->spu_group_id && code < 64) spu_tick_end(spu->spu_id);
+         if (queue) {
+             int rc = sys_event_queue_push_by_id(queue, 0xFFFFFFFF53505501ull,
+                 spu->spu_id, ((uint64_t)port << 32) | (value & 0xFFFFFFu), data);
+@@ -1965,6 +2046,7 @@ static int spu_lv2_stop_service(spu_context* spu)
+                        : (int32_t)0x80010002;         /* EINVAL: nothing bound */
+     spu->rcv_evt[0] = (uint32_t)rc;
+     if (rc == CELL_OK) {
++        spu_tick_begin(spu->spu_id);
+         spu->rcv_evt[1] = (uint32_t)ev.data1;
+         spu->rcv_evt[2] = (uint32_t)ev.data2;
+         spu->rcv_evt[3] = (uint32_t)ev.data3;

@@ -40,6 +40,18 @@ bool fight_configured();                 /* T5_FIGHT, T5_FIGHT_FILE or T5_CTL_DI
 void fight_init();                       /* parse the environment (static init time) */
 void fight_on_frame(uint32_t f);         /* main thread, top of every frame */
 
+/* in-game character select (df_pick.cpp; docs/DIRECTFIGHT.md "Character select in the game") */
+uint16_t    pick_read_local_pad();         /* the local pad for the select screen: directions, face buttons, Select */
+void        plates_save();                 /* the select screen's name plates (VS custom data) as they are now */
+void        plates_restore();
+void        plate_text(int p, const char* text);   /* a hint under side p's portrait; nullptr = its name again */
+uint32_t    pick_pack(int chr, int cell, int btn, int model);
+bool        pick_unpack(uint32_t v, int* chr, int* cell, int* btn, int* model);
+uint16_t    btn_bits(int btn);             /* 1 Square, 2 Triangle, 3 Cross, 4 Circle */
+int         btn_index(uint16_t bits);
+const char* btn_name(int btn);
+int         model_char(int model);         /* the character of a select-record model id, -1 unknown */
+
 /* game control channel of a persistent game (df_ctl.cpp, T5_CTL_DIR) */
 struct CtlCmd {
     uint32_t seq = 0;

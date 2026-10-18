@@ -571,12 +571,16 @@ def find_msvc_tools(pre):
     """(cl.exe, link.exe, rc.exe, toolset version) of the MSVC environment `pre` sets up (see
     msvc_prefix), or None when it has no cl.exe/link.exe/rc.exe. Paths come from VCToolsInstallDir and
     the Windows SDK's folder, not from a PATH search: Git for Windows has its own link.exe (coreutils)."""
-    r = subprocess.run(f"{pre}echo %VCToolsInstallDir%&& echo %VCToolsVersion%&& where rc.exe",
-                       shell=True, capture_output=True, text=True, errors="replace")
-    lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-    if r.returncode or len(lines) < 3 or "%" in lines[0]:
+    # `set VCTools` lists VCToolsInstallDir=... and VCToolsVersion=... (an `echo %VAR%` on the same line
+    # as the vcvars call would be expanded before vcvars ran).
+    r = subprocess.run(f"{pre}set VCTools&& where rc.exe", shell=True, capture_output=True, text=True,
+                       errors="replace")
+    env = dict(l.strip().split("=", 1) for l in r.stdout.splitlines() if l.startswith("VCTools") and "=" in l)
+    rcs = [l.strip() for l in r.stdout.splitlines() if l.strip().lower().endswith("rc.exe")]
+    tools_dir, ver = env.get("VCToolsInstallDir", ""), env.get("VCToolsVersion", "?")
+    if r.returncode or not tools_dir or not rcs:
         return None
-    tools_dir, ver, rc = lines[0], lines[1], lines[2]
+    rc = rcs[0]
     cl = os.path.join(tools_dir, "bin", "Hostx64", "x64", "cl.exe")
     link = os.path.join(tools_dir, "bin", "Hostx64", "x64", "link.exe")
     if not (os.path.exists(cl) and os.path.exists(link) and os.path.exists(rc)):
@@ -613,27 +617,37 @@ def build_stub(stage, clang, version="0.0.0", compiler=None):
                 nums = (re.findall(r"\d+", str(version).split("-")[0]) + ["0", "0", "0"])[:3]
                 rc = os.path.join(tmp, "stub.rc")
                 stub_dir = os.path.join(ROOT, "launcher", "stub")
+                # The manifest with LF line endings whatever git's autocrlf did to the checkout: the same
+                # sources give the same T5DR Online.exe on every PC.
+                manifest = os.path.join(tmp, "t5dr_stub.manifest")
+                with open(os.path.join(stub_dir, "t5dr_stub.manifest"), "rb") as f:
+                    xml = f.read().replace(b"\r\n", b"\n")
+                with open(manifest, "wb") as f:
+                    f.write(xml)
                 with open(rc, "w", encoding="utf-8") as f:
                     f.write(STUB_RC.format(ico=os.path.join(stub_dir, "t5dr.ico").replace("\\", "/"),
-                                           manifest=os.path.join(stub_dir, "t5dr_stub.manifest").replace("\\", "/"),
+                                           manifest=manifest.replace("\\", "/"),
                                            v1=nums[0], v2=nums[1], v3=nums[2], version=version))
                 res = os.path.join(tmp, "stub.res")
                 obj = os.path.join(tmp, "stub.obj")
+                built = os.path.join(tmp, "stub.exe")     # linked in the short temp path, copied to `out` after
                 if tools:
                     cl, link, rcexe, ver = tools
                     cmd = (f'{pre}"{rcexe}" /nologo /fo "{res}" "{rc}" && '
                            f'"{cl}" /nologo /c /O2 /MT /GS /guard:cf /W3 "{src}" /Fo"{obj}" && '
-                           f'"{link}" /nologo /OUT:"{out}" /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO '
+                           f'"{link}" /nologo /OUT:"{built}" /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO '
                            f'/DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE "{obj}" "{res}" kernel32.lib user32.lib')
                     used = f"MSVC {ver} (cl.exe + link.exe)"
                 else:
                     llvm_rc = os.path.join(os.path.dirname(clang[0]), "llvm-rc.exe")
                     rcexe = f'"{llvm_rc}"' if os.path.exists(llvm_rc) else "rc.exe"
                     cmd = (f'{pre}{rcexe} /nologo /fo "{res}" "{rc}" && '
-                           f'"{clang[0]}" /nologo /O2 /MT "{src}" /Fo"{obj}" /Fe"{out}" '
+                           f'"{clang[0]}" /nologo /O2 /MT "{src}" /Fo"{obj}" /Fe"{built}" '
                            f'/link /SUBSYSTEM:WINDOWS /MANIFEST:NO "{res}" kernel32.lib user32.lib')
                     used = f"clang-cl {clang[1]}"
                 r = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors="replace")
+                if r.returncode == 0 and os.path.exists(built):
+                    shutil.copy2(built, out)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
             if r.returncode == 0 and os.path.exists(out):

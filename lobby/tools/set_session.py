@@ -142,7 +142,8 @@ class Player:
         self.fight_base = 0
         self.next_times = []           # result -> next game's FIGHT START, seconds
         self.driver = MatchDriver(self.client, self.launch, self.dir, mode="persistent" if a.exe else a.mode,
-                                  ask_manual=False, auto_rematch=len(a.plans) - 1)
+                                  ask_manual=False, auto_rematch=len(a.plans) - 1,
+                                  extra_env=dict(kv.split("=", 1) for kv in a.env))
 
     def launch(self, env):
         a = self.a
@@ -272,6 +273,7 @@ def main():
     ap.add_argument("--next-seconds", type=float, default=6.0, help="server: countdown to the set's next game")
     ap.add_argument("--mode", choices=["process", "persistent"], default="persistent", help="stub games only")
     ap.add_argument("--seconds", type=float, default=1800.0, help="give up after this long")
+    ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games (every match too)")
     ap.add_argument("--names", default="SetAlpha,SetBravo")
     ap.add_argument("--chars", default="kazuya,heihachi")
     a = ap.parse_args()

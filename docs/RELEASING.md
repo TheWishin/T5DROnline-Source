@@ -133,6 +133,19 @@ job asks for `contents: write` itself; the build job only reads.
 8. **Check the release page**: the zip and `SHA256SUMS` are attached, the notes
    are right, the pre-release badge is there for a suffixed version.
 
+**What players' launchers do with it** (`launcher/updater.py`, README "Updating"): launchers with the
+self-update ask `GET /repos/TheWishin/T5DROnline/releases/latest` at start (at most once an hour) and
+offer what it returns. That endpoint never returns drafts or pre-releases, so:
+
+- a draft is offered to nobody; **Publish release** offers it to everyone within about an hour;
+- a suffixed version (`-preview`, `-rc1`) is a GitHub pre-release and is **not** offered by the
+  launcher (players get it by hand); only a plain `vX.Y.Z` reaches everyone;
+- the launcher needs the two assets exactly as the workflow names them, `T5DR-Online-<version>.zip`
+  and `SHA256SUMS`, and refuses a zip whose SHA-256 differs from `SHA256SUMS` or from GitHub's own
+  digest; never replace a published zip (release a new version);
+- the release notes' "Code ID" line tells the launcher whether players must build the game once
+  after the update (it says so in the offer).
+
 ## What the workflow does
 
 Job **build** (`windows-latest`, read-only token):

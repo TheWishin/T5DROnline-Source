@@ -194,6 +194,26 @@ Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
 
 ## Aktualisieren
 
+Der Launcher bietet neue Versionen an; klicke auf **Update**.
+
+- Beim Start (höchstens einmal pro Stunde) und mit **Check for updates** oben
+  fragt der Launcher GitHub nach dem neuesten veröffentlichten Release. Er zeigt
+  die Version, was neu ist und die Downloadgröße.
+- **Update now** lädt das Zip (etwa 90 MB), prüft es gegen die veröffentlichte
+  SHA-256-Prüfsumme, ersetzt die Programmdateien und startet den Launcher neu.
+  Das dauert ein paar Sekunden plus den Download.
+- Dein Ordner `native` (entpacktes Spiel, Speicherstände, Logs) und deine
+  Einstellungen bleiben, wie sie sind.
+- Wenn die neue Version den Spielcode ändert, steht im Reiter Play **Build the
+  game once (about 2 minutes)**. Klicke auf **BUILD GAME**. Nur der Code wird neu
+  gebaut.
+- Der Launcher aktualisiert nie, solange das Spiel, ein Build oder ein
+  Online-Match (oder eine Suche) läuft. Geht etwas schief, legt er die alten
+  Dateien zurück und sagt, warum.
+
+Von Hand (Versionen 1.0.0 und älter, die sich noch nicht selbst aktualisieren,
+oder wenn das Update immer wieder scheitert):
+
 1. Entpacke das neue Release in einen **neuen** Ordner.
 2. Kopiere deinen alten Ordner `native` hinein. So bleiben das entpackte Spiel
    und deine Speicherstände erhalten.

@@ -312,7 +312,10 @@ game still runs, connected to the opponent's (`set_next` with `keep`). When both
 inside the running games, exactly like a rematch (`match_start` with `continue: true`): the launcher writes
 the next fight to the game, about 2-4 s from the command to the fight. Otherwise (a game was closed or
 crashed, or after a desync) the next game gets a new connection (punch or relay, like a new match, but no
-ready check). A player whose lobby connection drops between two games has the same 60 s
+ready check). In a persistent game the last session's end ("peer lost (peer_quit)" when the other game went
+idle first) may reach the log after the next game was handed over; the match driver counts a lost opponent
+only from the new session's own lines (found in the first real-game runs: the replay after a desync was
+reported as a disconnect). A player whose lobby connection drops between two games has the same 60 s
 (`T5L_RECONNECT_GRACE`) as in a match; the launcher reconnects by itself and the set goes on.
 
 **Server restart.** A running set lives in the server's memory, like a running match. When the server
@@ -331,6 +334,18 @@ next one is a rematch vote. `T5L_RANKED_SET_WINS=1` turns sets off for everybody
 
 **In-game character select** (ingame-select branch): only game 1 of a set is picked; the lobby keeps the
 characters locked for games 2 and 3 (`match_start.set.number` > 1, `continue: true`).
+
+**Measured (2026-10-19, `lobby/tools/set_session.py`, main's t5dr.exe, two persistent games on one PC
+loaded by other work, 1 round per game to save time).** A 2-0 set (run e5, Heihachi vs Kazuya) and a 2-1
+set (run e6, Asuka vs Lili, games won/lost/won as planned): every game confirmed, no rating change until
+the deciding game, then one update (1500 -> 1662 / 1338, the same as one won game between two new
+players); games 2 and 3 continued in the running games; from a game's result to the next game's FIGHT
+START 7.8-10.7 s (6 s of it the countdown), 22 s after a desync (new connection, the games reset first).
+The same runs played the rules live: desynced games replayed over a new connection, a set void after the
+third desync, a crash voiding a set with the crasher blamed, a too-slow game voiding as no_report. Those
+desyncs are the game's, not the lobby's: identical inputs in both frame logs, no rollback before them, in
+lockstep (`T5_RB_MODE=off`) too -- 6 of 14 lockstep games, 3 of 3 rollback games, about 1,000-1,700 frames
+into the fight while one player stood still (runs build/bo3/runs/e3..e6, local only).
 
 ## The match flow (glue)
 

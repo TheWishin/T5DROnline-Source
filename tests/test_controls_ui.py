@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from helpers import ROOT
@@ -669,6 +670,703 @@ class RuntimeDifferentialTest(unittest.TestCase):
         self.compare(ed.doc.render(), "pins")
         ed.assign_port("dinput:Hori", 0)
         self.compare(ed.doc.render(), "pin by name")
+
+
+# ====================================================================== capture, navigation, the screen
+# Fake controllers only (no device is ever read), a fake clock, and a withdrawn Tk root: nothing is shown.
+
+try:
+    import tkinter as tk
+    import controls_ui as cu
+except ImportError:                                 # no tkinter in this Python
+    tk = cu = None
+
+from t5lobby import padnav  # noqa: E402
+from t5lobby.padnav import Device  # noqa: E402
+
+
+class FakePad(padnav.PadSource):
+    """A controller that does what the test says."""
+
+    def __init__(self, kind=DINPUT, key="winmm:0", name="Fake Stick", vid=0x0F0D, pid=0x00EE, slot=None):
+        self.kind, self.key, self.name, self.vid, self.pid, self.slot = kind, key, name, vid, pid, slot
+        self.held = set()
+        self.plugged = True
+        self.reads = 0
+
+    def read(self):
+        self.reads += 1
+        if not self.plugged:
+            return []
+        return [Device(self.kind, self.key, self.name, self.vid, self.pid, self.slot, frozenset(self.held))]
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+class FakeSettings:
+    def __init__(self, out):
+        self.out_dir = out
+
+    def env_overrides(self):
+        return {}
+
+
+def xpad():
+    return FakePad(XINPUT, "xinput:0", "XInput #1 (gamepad)", 0, 0, 0)
+
+
+@unittest.skipIf(cu is None, "no tkinter")
+class PollerTest(unittest.TestCase):
+    def rig(self, *pads, front=True):
+        self.clock = Clock()
+        self.front = front
+        self.poller = cu.DevicePoller(pads, foreground=lambda: self.front, clock=self.clock)
+
+    def run_for(self, seconds):
+        end = self.clock.t + seconds
+        while self.clock.t < end - 1e-9:
+            self.poller.step(self.clock.t)
+            self.clock.t += 1 / 60
+
+    def test_a_press_is_one_edge_and_a_held_button_is_not_repeated(self):
+        pad = FakePad()
+        self.rig(pad)
+        self.run_for(0.1)
+        pad.held = {"B2"}
+        self.run_for(0.3)
+        pad.held = {"B2", "HAT_UP"}
+        self.run_for(0.1)
+        edges = [(e.key, e.source) for e in self.poller.drain()]
+        self.assertEqual(edges, [("winmm:0", "B2"), ("winmm:0", "HAT_UP")])
+        self.assertEqual(self.poller.held["winmm:0"], {"B2", "HAT_UP"})
+
+    def test_buttons_held_when_the_window_comes_forward_make_no_edge(self):
+        pad = FakePad()
+        pad.held = {"B1"}
+        self.rig(pad)
+        self.run_for(0.2)
+        self.assertEqual(self.poller.drain(), [])
+        pad.held = set()
+        self.run_for(0.1)
+        pad.held = {"B1"}
+        self.run_for(0.1)
+        self.assertEqual([e.source for e in self.poller.drain()], ["B1"])
+
+    def test_an_axis_resting_at_its_end_is_not_a_press_until_it_has_been_let_go(self):
+        pad = FakePad()
+        pad.held = {"RX-", "RY-"}                       # DualShock triggers rest at -32768
+        self.rig(pad)
+        self.run_for(0.2)
+        self.assertEqual(self.poller.held["winmm:0"], frozenset())
+        pad.held = {"RX-", "RY-", "B7"}
+        self.run_for(0.1)
+        self.assertEqual([e.source for e in self.poller.drain()], ["B7"])
+        pad.held = {"RX-", "RY-", "RX+"}                # RX left its end ... and goes to the other
+        self.run_for(0.1)
+        pad.held = {"RY-"}
+        self.run_for(0.1)
+        self.poller.drain()
+        pad.held = {"RY-", "RX-"}                       # RX- is a real press now
+        self.run_for(0.1)
+        self.assertEqual([e.source for e in self.poller.drain()], ["RX-"])
+
+    def test_nothing_is_read_while_the_window_is_not_in_front(self):
+        pad = FakePad()
+        self.rig(pad, front=False)
+        self.run_for(1.0)
+        self.assertEqual(pad.reads, 0)
+        self.assertEqual(self.poller.devices, ())
+        self.front = True
+        self.run_for(0.1)
+        self.assertGreater(pad.reads, 0)
+        pad.held = {"B1"}
+        self.run_for(0.1)
+        self.poller.drain()
+        self.front = False
+        n = pad.reads
+        self.run_for(0.5)
+        self.assertEqual(pad.reads, n)
+        self.assertEqual(self.poller.held, {})
+        self.front = True
+        self.run_for(0.2)                               # B1 is still down: forgotten, so it is not a press
+        self.assertEqual(self.poller.drain(), [])
+
+    def test_plugging_in_and_out(self):
+        pad = FakePad()
+        pad.plugged = False
+        self.rig(pad)
+        self.run_for(0.2)
+        self.assertEqual(self.poller.devices, ())
+        pad.plugged = True
+        pad.held = {"B3"}
+        self.run_for(0.2)
+        self.assertEqual(len(self.poller.devices), 1)
+        self.assertEqual(self.poller.drain(), [])       # held when it appeared: not a press
+        pad.plugged = False
+        self.run_for(0.2)
+        self.assertEqual(self.poller.devices, ())
+
+    def test_a_source_that_raises_does_not_stop_the_others(self):
+        class Bad(padnav.PadSource):
+            def read(self):
+                raise OSError("boom")
+        good = FakePad()
+        self.rig(Bad(), good)
+        self.run_for(0.1)
+        self.assertEqual(len(self.poller.devices), 1)
+        self.assertIn("boom", self.poller.error)
+
+    def test_the_real_thread_polls(self):
+        pad = FakePad()
+        poller = cu.DevicePoller([pad], foreground=lambda: True)
+        poller.start()
+        try:
+            time.sleep(0.15)
+            pad.held = {"B5"}
+            deadline = time.time() + 2
+            while time.time() < deadline and not poller.edges.qsize():
+                time.sleep(0.02)
+            self.assertEqual([e.source for e in poller.drain()], ["B5"])
+        finally:
+            poller.stop()
+
+
+@unittest.skipIf(cu is None, "no tkinter")
+class CaptureTest(unittest.TestCase):
+    E = cu.Edge if cu else None
+
+    def test_one_press_is_taken_after_the_settle_time(self):
+        c = cu.Capture(0.0)
+        self.assertIsNone(c.update(1.00, [self.E(1.00, "k", "B3")]))
+        self.assertIsNone(c.update(1.04, []))
+        self.assertEqual(c.update(1.10, []), ("ok", "B3"))
+
+    def test_presses_together_are_several_buttons(self):
+        c = cu.Capture(0.0)
+        c.update(1.00, [self.E(1.00, "k", "HAT_UP")])
+        self.assertEqual(c.update(1.10, [self.E(1.03, "k", "HAT_RIGHT")]), ("multi", ["HAT_UP", "HAT_RIGHT"]))
+
+    def test_a_second_press_after_the_settle_time_is_not_part_of_it(self):
+        c = cu.Capture(0.0)
+        c.update(1.00, [self.E(1.00, "k", "B1")])
+        self.assertEqual(c.update(1.20, [self.E(1.15, "k", "B2")]), ("ok", "B1"))
+
+    def test_timeout_only_when_asked_for(self):
+        self.assertIsNone(cu.Capture(0.0).update(100.0, []))
+        self.assertEqual(cu.Capture(0.0, timeout_s=8).update(8.5, []), ("timeout", None))
+        c = cu.Capture(0.0, timeout_s=8)
+        c.update(7.0, [self.E(7.0, "k", "B1")])
+        self.assertEqual(c.update(9.0, []), ("ok", "B1"))
+
+
+@unittest.skipIf(cu is None, "no tkinter")
+class NavigationTest(unittest.TestCase):
+    def test_the_sources_that_are_cross_circle_triangle_start_up_down(self):
+        ed = ControlsEditor("")
+        m = cu.nav_map(ed, DI)
+        self.assertEqual((m["B2"], m["B3"], m["B4"], m["B10"], m["HAT_UP"], m["HAT_DOWN"]),
+                         ("accept", "back", "clear", "save", "up", "down"))
+        m = cu.nav_map(ed, XI)
+        self.assertEqual((m["A"], m["B"], m["Y"], m["START"], m["DUP"], m["LDOWN"]),
+                         ("accept", "back", "clear", "save", "up", "down"))
+
+    def test_it_follows_the_players_own_buttons_and_falls_back_when_cleared(self):
+        ed = ControlsEditor("")
+        ed.bind(DI, ce.SCOPE_MODEL, "3", ["B13"])
+        self.assertEqual(cu.nav_map(ed, DI)["B13"], "accept")
+        self.assertNotIn("B2", cu.nav_map(ed, DI))
+        ed.clear(DI, ce.SCOPE_MODEL, "3")
+        self.assertEqual(cu.nav_map(ed, DI)["B2"], "accept")           # the default layout's Cross
+
+    def test_up_and_down_repeat_while_held(self):
+        nav = cu.PadNavigator(delay=0.4, repeat=0.1)
+        m = {"HAT_DOWN": "down", "B2": "accept"}
+        out = nav.feed(0.0, [cu.Edge(0.0, "k", "HAT_DOWN")], {"HAT_DOWN"}, m)
+        self.assertEqual(out, ["down"])
+        self.assertEqual(nav.feed(0.3, [], {"HAT_DOWN"}, m), [])
+        self.assertEqual(nav.feed(0.45, [], {"HAT_DOWN"}, m), ["down"])
+        self.assertEqual(nav.feed(0.6, [], {"HAT_DOWN"}, m), ["down"])
+        self.assertEqual(nav.feed(0.7, [], set(), m), [])
+        self.assertEqual(nav.feed(2.0, [], set(), m), [])
+        self.assertEqual(nav.feed(2.1, [cu.Edge(2.1, "k", "B2")], {"B2"}, m), ["accept"])      # no repeat for accept
+        self.assertEqual(nav.feed(3.0, [], {"B2"}, m), [])
+
+
+@unittest.skipIf(cu is None, "no tkinter")
+class DialogBase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.root = tk.Tk()
+        except tk.TclError:
+            raise unittest.SkipTest("no display for Tk")
+        cls.root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.root.destroy()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.out = self.tmp.name
+        self.ini = os.path.join(self.out, "controls.ini")
+        self.clock = Clock()
+        self.front = True
+        self.answer = True
+        self.asked = []
+        self.dlg = None
+
+    def open(self, *pads, ini=None, running=False):
+        if ini is not None:
+            with open(self.ini, "wb") as f:
+                f.write(ini.encode("latin-1"))
+        pads = pads or (FakePad(),)
+
+        def ask(kind, title, text):
+            self.asked.append((kind, title, text))
+            return self.answer
+        self.dlg = cu.ControlsDialog(self.root, FakeSettings(self.out), sources=list(pads),
+                                     foreground=lambda: self.front, clock=self.clock, thread=False, ask=ask,
+                                     game_running=lambda: running)
+        self.addCleanup(self.cleanup_dialog)
+        self.run_for(0.2)
+        return self.dlg
+
+    def cleanup_dialog(self):
+        if self.dlg is not None and self.dlg.alive():
+            self.dlg.editor.saved_text = self.dlg.editor.doc.render()        # (nothing to ask on the way out)
+            self.dlg.close()
+
+    def run_for(self, seconds):
+        end = self.clock.t + seconds
+        while self.clock.t < end - 1e-9:
+            self.dlg.poller.step(self.clock.t)
+            self.dlg.pump()
+            self.clock.t += 1 / 60
+
+    def press(self, pad, *srcs, hold=0.15, then=0.25):
+        pad.held |= set(srcs)
+        self.run_for(hold)
+        pad.held -= set(srcs)
+        self.run_for(then)
+
+    def values(self, key):
+        return self.dlg.tv.item(key, "values")
+
+    def saved(self):
+        with open(self.ini, encoding="latin-1") as f:
+            return f.read()
+
+
+class DialogTest(DialogBase):
+    def test_it_shows_the_controller_on_its_player_with_its_buttons(self):
+        stick = FakePad()
+        d = self.open(stick)
+        self.assertEqual(d.chosen, "winmm:0")
+        rows = {i: d.tv_players.item(i, "values") for i in d.tv_players.get_children()}
+        self.assertIn("Fake Stick", rows["p0"][2])
+        self.assertIn("0F0D:00EE", rows["p0"][2])
+        self.assertEqual(rows["p0"][1], "Player 1")
+        self.assertEqual(rows["p1"][2], "no controller")                  # player 2 has none
+        self.assertEqual([self.values(k)[0] for k in ("1", "2", "3", "4")], ["B1", "B4", "B2", "B3"])
+        self.assertEqual(self.values("1+2")[0], "-")
+        self.assertEqual(d.preset_var.get(), "PlayStation pad, default")
+        self.assertIn("choose a button", d.intro_var.get())
+        self.assertIn("hat up / hat down", d.intro_var.get())
+        self.assertFalse(d.editor.dirty)
+        self.assertEqual(str(d.btn_save.cget("state")), "disabled")
+
+    def test_the_live_test_lights_the_controller_and_the_game_button(self):
+        stick = FakePad()
+        d = self.open(stick)
+        stick.held = {"B2", "B13"}
+        self.run_for(0.2)
+        state = d.tv_players.item("p0", "values")
+        self.assertEqual(state[0], "●")
+        self.assertIn("B2 = 3", state[3])
+        self.assertIn("B13", state[3])
+        self.assertIn("live", d.tv.item("3", "tags"))
+        self.assertNotIn("live", d.tv.item("1", "tags"))
+        stick.held = set()
+        self.run_for(0.2)
+        self.assertEqual(d.tv_players.item("p0", "values")[0], "○")
+        self.assertNotIn("live", d.tv.item("3", "tags"))
+
+    def test_press_the_button_for_1_sets_it_and_saves_to_the_file_the_game_reads(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["1"])
+        self.assertTrue(d.prompt.winfo_manager())
+        self.assertEqual(d.prompt_var.get(), "Press the button for 1 (Left Punch)...")
+        self.press(stick, "B13")
+        self.assertEqual(d.editor.sources(d.dev(), "1"), ["B13"])
+        self.assertEqual(self.values("1")[0], "B13")
+        self.assertEqual(self.values("1")[1], "yours")
+        self.assertEqual(self.values("3")[0], "B2")
+        self.assertFalse(d.prompt.winfo_manager())
+        self.assertTrue(d.editor.dirty)
+        self.assertFalse(os.path.exists(self.ini))                         # nothing written before Save
+        self.assertTrue(d.do_save())
+        self.assertIn("1 = B13", self.saved())
+        self.assertIn("[dinput.0F0D:00EE]", self.saved())
+        self.assertIn(self.ini, d.status_var.get())
+        # the game's view of the saved file: padmap (the Online tab's PadNav reads the same way)
+        c = padmap.Controls.load(self.ini)
+        self.assertEqual(c.table(DINPUT, 0, 0x0F0D, 0x00EE).sources_exactly(padmap.target_mask("1")), ["B13"])
+        self.assertFalse(d.editor.dirty)
+
+    def test_taking_a_button_from_another_one_says_so(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["1"])
+        self.press(stick, "B2")                                            # B2 was 3 (Left Kick)
+        self.assertIn("B2 was 3 (Left Kick)", d.status_var.get())
+        self.assertEqual(self.values("3")[0], "-")
+
+    def test_several_buttons_at_once_are_refused_and_asked_again(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["2"])
+        self.press(stick, "B13", "B14")
+        self.assertIn("several buttons", d.status_var.get())
+        self.assertIsNotNone(d.capture)
+        self.assertEqual(self.values("2")[0], "B4")
+        self.press(stick, "B14")
+        self.assertEqual(self.values("2")[0], "B14")
+
+    def test_resting_triggers_do_not_get_in_the_way(self):
+        stick = FakePad()
+        stick.held = {"RX-", "RY-"}
+        d = self.open(stick)
+        d.begin(["1+2"])
+        self.press(stick, "B6")
+        self.assertEqual(d.editor.sources(d.dev(), "1+2"), ["B6"])
+
+    def test_the_guided_run_goes_one_button_at_a_time_with_skip_and_clear(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.start_all()
+        shown = []
+        shown.append(d.prompt_var.get())
+        self.press(stick, "B9")                                            # 1
+        shown.append(d.prompt_var.get())
+        d.cap_skip()                                                       # 2: skip, it keeps B4
+        shown.append(d.prompt_var.get())
+        d.cap_clear()                                                      # 3: clear
+        shown.append(d.prompt_var.get())
+        self.press(stick, "B12")                                           # 4
+        self.assertEqual(shown[0], "Press the button for 1 (Left Punch)...")
+        self.assertIn("2 (Right Punch)", shown[1])
+        self.assertIn("3 (Left Kick)", shown[2])
+        self.assertIn("4 (Right Kick)", shown[3])
+        self.assertEqual([self.values(k)[0] for k in ("1", "2", "3", "4")], ["B9", "B4", "-", "B12"])
+        self.assertIn("1+2", d.prompt_var.get())
+        self.assertIn("5 of 11", d.prompt_hint.get())
+        d.cap_stop()
+        self.assertIsNone(d.capture)
+        self.assertFalse(d.prompt.winfo_manager())
+        # the third button stays cleared in the file
+        d.do_save()
+        self.assertRegex(self.saved(), r"\n3 =\r?\n")
+
+    def test_the_guided_run_ends_after_the_last_button(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["START", "SELECT"])
+        self.press(stick, "B13")
+        self.press(stick, "B14")
+        self.assertIsNone(d.capture)
+        self.assertEqual(d.editor.sources(d.dev(), "START"), ["B13"])
+        self.assertEqual(d.editor.sources(d.dev(), "SELECT"), ["B14"])
+
+    def test_directions_can_be_buttons_of_a_stick_that_sends_them_so(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.start_directions()
+        for src in ("B20", "B21", "B22", "B23"):
+            self.press(stick, src)
+        self.assertEqual([d.editor.sources(d.dev(), k) for k in ("UP", "DOWN", "LEFT", "RIGHT")],
+                         [["B20"], ["B21"], ["B22"], ["B23"]])
+
+    def test_a_row_can_be_set_and_cleared_on_its_own(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.tv.selection_set("4")
+        d.set_selected()
+        self.assertEqual(d.cap_key, "4")
+        self.press(stick, "B15")
+        self.assertEqual(self.values("4")[0], "B15")
+        d.tv.selection_set("1")
+        d.clear_selected()
+        self.assertEqual(self.values("1")[0], "-")
+
+    def test_the_controller_itself_runs_the_screen(self):
+        stick = FakePad()
+        d = self.open(stick)
+        self.assertEqual(d.selected_key(), "1")
+        self.press(stick, "HAT_DOWN")                                     # Down
+        self.assertEqual(d.selected_key(), "2")
+        self.press(stick, "HAT_DOWN")
+        self.assertEqual(d.selected_key(), "3")
+        self.press(stick, "B2")                                           # Cross: set it
+        self.assertEqual(d.cap_key, "3")
+        self.assertTrue(d.pad_started)
+        self.press(stick, "B13")
+        self.assertEqual(self.values("3")[0], "B13")
+        self.assertIsNone(d.capture)
+        self.press(stick, "HAT_UP")
+        self.assertEqual(d.selected_key(), "2")
+        self.press(stick, "B4")                                           # Triangle: clear
+        self.assertEqual(self.values("2")[0], "-")
+        self.assertTrue(d.editor.dirty)
+        self.press(stick, "B3")                                           # Circle with unsaved changes: stays
+        self.assertTrue(d.alive())
+        self.assertIn("unsaved", d.status_var.get())
+        self.press(stick, "B10")                                          # Start: save
+        self.assertFalse(d.editor.dirty)
+        self.assertIn("3 = B13", self.saved())
+        self.press(stick, "B3")                                           # Circle: close
+        self.assertFalse(d.alive())
+
+    def test_holding_down_moves_on_and_a_capture_started_with_the_pad_gives_up(self):
+        stick = FakePad()
+        d = self.open(stick)
+        stick.held = {"HAT_DOWN"}
+        self.run_for(1.0)
+        self.assertGreaterEqual([s.key for s in ce.SLOTS].index(d.selected_key()), 4)
+        stick.held = set()
+        self.run_for(0.3)
+        d.set_selected(pad=True)
+        self.assertIsNotNone(d.capture)
+        self.run_for(cu.PAD_TIMEOUT_S + 1)
+        self.assertIsNone(d.capture)                                      # nobody pressed: it skipped
+        self.assertIn("skipped", d.status_var.get())
+        self.assertFalse(d.editor.dirty)
+
+    def test_the_mouse_ends_a_capture_even_with_no_press(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["1"])
+        self.run_for(30)                                                   # started by the mouse: no timeout
+        self.assertIsNotNone(d.capture)
+        d.top.event_generate("<Escape>")
+        d._escape()
+        self.assertIsNone(d.capture)
+
+    def test_a_press_on_another_controller_selects_it(self):
+        stick, ds4 = FakePad(), FakePad(DINPUT, "winmm:1", "Wireless Controller", 0x054C, 0x09CC)
+        d = self.open(stick, ds4)
+        self.assertEqual(d.chosen, "winmm:0")
+        rows = {i: d.tv_players.item(i, "values")[2] for i in d.tv_players.get_children()}
+        self.assertIn("Fake Stick", rows["p0"])
+        self.assertIn("Wireless Controller", rows["p1"])
+        self.press(ds4, "B7")
+        self.assertEqual(d.chosen, "winmm:1")
+        self.assertEqual(d.dev().port, 1)
+        self.assertEqual(d.tv_players.selection(), ("p1",))
+        self.assertIn("Wireless Controller", d.head_var.get())
+        d.begin(["1"])
+        self.press(ds4, "B13")
+        self.assertIn("[dinput.054C:09CC]", d.editor.doc.render())
+        self.assertEqual(d.editor.sources(DeviceRef(DINPUT, 0, 0x0F0D, 0x00EE), "1"), ["B1"])     # the stick is untouched
+
+    def test_the_mouse_picks_a_controller_too(self):
+        stick, ds4 = FakePad(), FakePad(DINPUT, "winmm:1", "Wireless Controller", 0x054C, 0x09CC)
+        d = self.open(stick, ds4)
+        d.tv_players.selection_set("p1")
+        d.top.update_idletasks()
+        d._on_player_select()
+        self.assertEqual(d.chosen, "winmm:1")
+
+    def test_xinput_pad(self):
+        pad = xpad()
+        d = self.open(pad)
+        self.assertEqual([self.values(k)[0] for k in ("1", "2", "3", "4")], ["X", "Y", "A", "B"])
+        self.assertEqual(d.scope_var.get(), ce.SCOPE_KIND)
+        d.begin(["1+2"])
+        self.press(pad, "RB")
+        self.assertEqual(d.editor.sources(d.dev(), "1+2"), ["RB"])
+        d.do_save()
+        self.assertIn("[xinput]", self.saved())
+        self.assertIn("1+2 = RB", self.saved())
+
+    def test_layouts(self):
+        stick = FakePad()
+        d = self.open(stick)
+        titles = list(d.preset_box.cget("values"))
+        self.assertIn("Arcade stick, 8 buttons (Vewlix layout)", titles)
+        self.assertIn("Hitbox (button-only stick)", titles)
+        d.preset_var.set("Arcade stick, 8 buttons (Vewlix layout)")
+        d._show_preset_text()
+        self.assertIn("1+2", d.preset_text.get())
+        d.apply_preset()
+        self.assertEqual([self.values(k)[0] for k in ("1+2", "3+4", "1+3", "2+4")], ["B6", "B8", "B5", "B7"])
+        self.assertEqual(d.preset_var.get(), "Arcade stick, 8 buttons (Vewlix layout)")
+        d.preset_var.set("Hitbox (button-only stick)")
+        d.apply_preset()
+        self.assertEqual(d.preset_var.get(), "Hitbox (button-only stick)")
+        self.assertEqual(d.stick_var.get(), "8-way d-pad presses (hitbox or stick in left-stick mode)")
+        d.do_save()
+        again = ControlsEditor.load(self.ini)
+        self.assertEqual(again.detect_recipe(DI), "hitbox")
+
+    def test_stick_mode_socd_and_player(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.socd_var.set("The direction pressed last wins")
+        d._on_socd()
+        d.stick_var.set("8-way d-pad presses (hitbox or stick in left-stick mode)")
+        d._on_stick()
+        d.do_save()
+        text = self.saved()
+        self.assertRegex(text, r"\[port1\]\r?\n[^\[]*socd = last")
+        self.assertRegex(text, r"stick = dpad")
+        d.player_var.set("Player 2")
+        d._on_player_opt()
+        self.assertEqual(d.editor.pinned(1), "dinput:0F0D:00EE")
+        self.run_for(0.2)
+        self.assertEqual(d.dev().port, 1)                                  # the game would now give it player 2
+        self.assertEqual(d.player_var.get(), "Player 2")
+        d.player_var.set("Automatic")
+        d._on_player_opt()
+        self.run_for(0.2)
+        self.assertEqual(d.dev().port, 0)
+
+    def test_reset_to_defaults_asks_and_goes_back(self):
+        stick = FakePad()
+        d = self.open(stick, ini=sample_text())
+        d.preset_var.set("Arcade stick, 8 buttons (Vewlix layout)")
+        d.apply_preset()
+        d.begin(["1"])
+        self.press(stick, "B13")
+        d.do_save()
+        self.answer = False
+        d.reset_defaults()
+        self.assertEqual(self.asked[-1][0], "yesno")
+        self.assertEqual(self.values("1")[0], "B13")                       # No: nothing happened
+        self.answer = True
+        d.reset_defaults()
+        self.assertEqual([self.values(k)[0] for k in ("1", "2", "3", "4", "1+2")], ["B1", "B4", "B2", "B3", "-"])
+        self.assertEqual(d.preset_var.get(), "PlayStation pad, default")
+        d.do_save()
+        self.assertIn("; ps3recomp controls (Windows)", self.saved())      # the sample's comments are all still there
+        self.assertNotIn("B13", self.saved())
+
+    def test_revert_and_close_with_unsaved_changes(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["1"])
+        self.press(stick, "B13")
+        d.do_revert()
+        self.assertEqual(self.values("1")[0], "B1")
+        self.assertFalse(d.editor.dirty)
+        d.begin(["1"])
+        self.press(stick, "B13")
+        self.answer = None                                                 # Cancel
+        self.assertFalse(d.close())
+        self.assertTrue(d.alive())
+        self.assertEqual(self.asked[-1][0], "yesnocancel")
+        self.answer = False                                                # No: leave without saving
+        self.assertTrue(d.close())
+        self.assertFalse(d.alive())
+        self.assertFalse(os.path.exists(self.ini))
+
+    def test_close_can_save(self):
+        stick = FakePad()
+        d = self.open(stick)
+        d.begin(["1"])
+        self.press(stick, "B13")
+        self.answer = True
+        self.assertTrue(d.close())
+        self.assertIn("1 = B13", self.saved())
+
+    def test_a_file_changed_by_someone_else_is_asked_about(self):
+        stick = FakePad()
+        d = self.open(stick, ini="[general]\nsocd = up\n")
+        d.begin(["1"])
+        self.press(stick, "B13")
+        with open(self.ini, "ab") as f:
+            f.write(b"; edited meanwhile\n")
+        self.answer = False
+        self.assertFalse(d.do_save())
+        self.assertNotIn("B13", self.saved())
+        self.answer = True
+        self.assertTrue(d.do_save())
+        self.assertIn("1 = B13", self.saved())
+        self.assertTrue(os.path.exists(self.ini + ".bak"))
+
+    def test_a_running_game_is_told_it_keeps_the_old_buttons(self):
+        stick = FakePad()
+        d = self.open(stick, running=True)
+        d.begin(["1"])
+        self.press(stick, "B13")
+        d.do_save()
+        self.assertIn("keeps its old buttons", d.status_var.get())
+
+    def test_no_controller(self):
+        d = self.open(FakePad())
+        d.poller.sources[0].plugged = False
+        self.run_for(0.3)
+        self.assertIsNone(d.chosen)
+        self.assertIn("No controller found", d.pad_note.cget("text"))
+        self.assertEqual(str(d.btn_all.cget("state")), "disabled")
+        d.begin(["1"])
+        self.assertIsNone(d.capture)
+        self.assertIn("Press a button on a controller first", d.status_var.get())
+        d.poller.sources[0].plugged = True
+        self.run_for(0.3)
+        self.assertEqual(d.chosen, "winmm:0")
+        self.assertEqual(str(d.btn_all.cget("state")), "normal")
+
+    def test_nothing_is_read_while_another_window_is_in_front(self):
+        stick = FakePad()
+        d = self.open(stick)
+        self.front = False
+        n = stick.reads
+        stick.held = {"B13"}
+        d.begin(["1"])
+        self.run_for(1.0)
+        self.assertEqual(stick.reads, n)
+        self.assertIsNotNone(d.capture)                                    # still waiting
+        self.assertEqual(self.values("1")[0], "B1")
+
+    def test_scope_choices(self):
+        stick = FakePad()
+        d = self.open(stick)
+        self.assertEqual(d.scope_var.get(), ce.SCOPE_MODEL)
+        self.assertEqual(str(d.scope_btns[ce.SCOPE_PORT].cget("state")), "normal")
+        d.scope_var.set(ce.SCOPE_KIND)
+        d._on_scope()
+        d.begin(["1"])
+        self.press(stick, "B13")
+        self.assertIn("[dinput]", d.editor.doc.render())
+        self.assertNotIn("[dinput.0F0D:00EE]", d.editor.doc.render())
+
+    def test_it_fits_the_window(self):
+        d = self.open(FakePad())
+        d.top.update_idletasks()
+        self.assertLessEqual(d.top.winfo_reqwidth(), 980)
+        self.assertLessEqual(d.top.winfo_reqheight(), 720)
+
+    def test_a_file_with_the_players_own_lines_is_edited_where_they_are(self):
+        stick = FakePad()
+        d = self.open(stick, ini=HAND_MADE)
+        self.assertEqual(d.scope_var.get(), ce.SCOPE_PORT)                 # [port1.dinput] already has a line
+        d.begin(["START"])
+        self.press(stick, "B14")
+        text = d.editor.doc.render()
+        self.assertIn("unknown_key = 12", text)
+        self.assertIn("foo = bar              ; a key nobody knows", text)
+        self.assertIn("START = B14", text)
+
+
 
 
 if __name__ == "__main__":

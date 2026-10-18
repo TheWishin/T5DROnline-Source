@@ -527,6 +527,8 @@ class ControlsDialog:
 
     def pump(self):
         """Take what the poller saw: edges, devices. Runs on the Tk thread (tests call it by hand)."""
+        if self._closed:
+            return
         now = self.poller.clock()
         edges = self.poller.drain()
         devices = self.poller.devices
@@ -549,7 +551,8 @@ class ControlsDialog:
             if dev is not None:
                 for action in self.nav.feed(now, mine, held.get(self.chosen, frozenset()), nav_map(self.editor, dev)):
                     self._do_action(action)
-        self._live(held)
+        if not self._closed:
+            self._live(held)
 
     # ---------------------------------------------------------------- devices
     def _sync_devices(self, devices):
@@ -746,11 +749,12 @@ class ControlsDialog:
         for src, act in nav.items():
             names.setdefault(act, src)
         if {"up", "down", "accept"} <= set(names):
+            nice = {a: ce.describe_source(dev.kind, src) for a, src in names.items()}
             self.intro_var.set(t(
                 "On the controller: {up} / {down} choose a button, {accept} sets it, {clear} clears it, {save} saves, "
-                "{back} closes. The game reads the file when it starts.", up=names["up"], down=names["down"],
-                accept=names["accept"], clear=names.get("clear", "-"), save=names.get("save", "-"),
-                back=names.get("back", "-")))
+                "{back} closes. The game reads the file when it starts.", up=nice["up"], down=nice["down"],
+                accept=nice["accept"], clear=nice.get("clear", "-"), save=nice.get("save", "-"),
+                back=nice.get("back", "-")))
 
     def _update_buttons(self):
         self.btn_save.configure(state="normal" if self.editor.dirty else "disabled")

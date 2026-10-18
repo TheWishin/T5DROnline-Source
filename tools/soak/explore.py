@@ -11,6 +11,7 @@ appended to <dir>/cmd.txt, one per line; each finished command is appended to
     wait 2.5
     shot NAME [any|content|fight]     next read-back frame -> NAME.png (nothing on the desktop)
     seq DOWN DOWN CROSS               taps, 400 ms apart
+    con poke16 10090FBC 1             a debug-console command (PS3_DEBUG)
     quit
 """
 import argparse
@@ -49,6 +50,8 @@ def run_cmd(g, line):
     elif c == "seq":
         for b in p[1:]:
             g.press(*b.upper().split("+"), gap=400)
+    elif c == "con":
+        g.event("console", f"{line[4:]}: {g.console(line[4:])}")
     elif c == "phase":
         g.phase(p[1], p[2] if len(p) > 2 else "menu")
     else:
@@ -68,7 +71,7 @@ def main():
     a = ap.parse_args()
     env = dict(kv.split("=", 1) for kv in a.env)
     g = SoakGame(a.dir, cpus=a.cpus, exe=a.exe, env=env, dump_every=a.dump_every, abort_hang=0,
-                 keep_gamedata=a.keep_gamedata, seed_gamedata=a.seed_gamedata)
+                 keep_gamedata=a.keep_gamedata, seed_gamedata=a.seed_gamedata, console=True)
     cmd_path = os.path.join(a.dir, "cmd.txt")
     done_path = os.path.join(a.dir, "done.txt")
     os.makedirs(a.dir, exist_ok=True)

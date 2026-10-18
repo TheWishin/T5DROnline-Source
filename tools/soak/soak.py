@@ -203,49 +203,97 @@ class Driver:
 
 
 # -------------------------------------------------------------------- scenarios
-def sc_arcade_loss(d):
-    """ARCADE: a character, a stage where P1 stands still and loses, the continue
-    countdown runs out -> the rankings -> Namco logo -> the title."""
+# Exits found with tools/soak/explore.py (docs/SOAK.md "Menu flows"):
+#   ARCADE / GHOST: no pause menu; a lost match -> continue countdown -> rankings
+#     (mode 10) -> Namco logo -> the title. The attract demo is the game mode with
+#     game type 2. Game types: 0 arcade, 1 ghost, 2 demo, 4 VS, 10 practice.
+#   PRACTICE: START -> the practice menu; RETURN TO TITLE SCREEN is the 10th item,
+#     then RIGHT (YES) and CROSS.
+#   ONLINE: the terms of use; CIRCLE cancels back to the title.
+P1_HEALTH = 0x100906EC
+
+
+def hold_health(d, addr, value=1, every=1.0, until=None, timeout=300.0, attack=True, pad=1):
+    """While the fight HUD is up: write the fighter's health (debug console poke16) about
+    every `every` s and attack with `pad`; between fights tap CROSS/START (intros, win
+    poses, results). Stops when until() is true or after `timeout`. Returns fights seen."""
     g = d.g
-    g.phase("arcade-select", "menu")
+    end = time.perf_counter() + timeout
+    fights, in_fight, last_poke = 0, False, 0.0
+    while time.perf_counter() < end and not (until and until()):
+        f = g.latest_frame() or {}
+        if f.get("fight", {}).get("is_fight"):
+            if not in_fight:
+                fights += 1
+                g.event("fight", f"#{fights} (mode {g.mode}, game type {g.game_type})")
+            in_fight = True
+            if time.perf_counter() - last_poke >= every:
+                g.console(f"poke16 {addr:08X} {value:X}")
+                last_poke = time.perf_counter()
+            if attack:
+                g.hold("RIGHT", pad=pad)
+                g.wait(0.25)
+                g.release(pad=pad)
+                g.press("SQUARE", gap=120, pad=pad)
+                g.press("DOWN+CIRCLE", gap=150, pad=pad)
+            else:
+                g.wait(0.5)
+        else:
+            in_fight = False
+            g.press("CROSS", gap=350)
+            g.press("START", gap=350)
+    return fights
+
+
+def sc_arcade(d, char_moves=(), name="arcade", to_end=True, timeout=1500):
+    """ARCADE. to_end: the CPU's health is held at 1, every stage is won up to GAME OVER
+    and the title. Otherwise P1 is held at 1 and stands still: the CPU wins (or the
+    round times out), the continue countdown runs out, the rankings, the title."""
+    g = d.g
+    g.phase(f"{name}-select", "menu")
     d.pick(ARCADE)
-    g.shot("arcade-select", expect="content")
-    ok = d.until_fight(taps=(("CROSS", 1),))       # CROSS confirms; arcade intros are not skipped
-    g.expect("arcade-fight", ok, "arcade fight HUD" if ok else "no arcade fight")
-    if not ok:
-        return
-    g.phase("arcade-fight", "fight")
-    g.shot("arcade-fight", expect="fight")
-    g.phase("arcade-lose", "fight")
-    # P1 does nothing: the CPU wins the stage, the continue screen times out, GAME OVER.
-    ok = d.wait_mode((M_RANKING, M_TITLE, M_LOGO), timeout=180)
-    g.expect("arcade-over", ok, f"after the loss: mode {g.mode} {g.mode_name}")
-    g.shot("arcade-after", expect="any")
-    if g.mode == M_RANKING:
-        g.phase("rankings", "attract")
-    d.wait_mode(M_TITLE, timeout=150)
+    g.wait(1.0)
+    for mv in char_moves:
+        g.press(mv, gap=350)
+    g.shot(f"{name}-select", expect="content")
+    g.press("CROSS", gap=1500)
+    g.phase(f"{name}-run", "fight")
+    done = lambda: g.mode in (M_RANKING, M_LOGO, M_END, M_TITLE)  # noqa: E731
+    if to_end:
+        n = hold_health(d, P2_HEALTH, until=done, timeout=timeout)
+    else:
+        n = hold_health(d, P1_HEALTH, until=done, timeout=timeout, attack=False)
+    g.expect(f"{name}-end", done(), f"{n} fight(s), then mode {g.mode} {g.mode_name}")
+    g.shot(f"{name}-end", expect="any", settle=0.5, timeout=3)
+    d.wait_mode(M_TITLE, timeout=200, taps=("START",), every=3.0)
 
 
-def sc_ghost(d):
+def sc_ghost(d, wins=2, timeout=600):
+    """GHOST BATTLE: `wins` ghosts beaten (their health held at 1), then P1 at 1 HP
+    standing still loses -> rankings -> the title."""
     g = d.g
     g.phase("ghost-select", "menu")
     d.pick(GHOST)
     g.shot("ghost-select", expect="content")
-    ok = d.until_fight()
-    g.expect("ghost-fight", ok, "ghost fight HUD" if ok else "no ghost fight")
-    if not ok:
-        return
-    g.phase("ghost-fight", "fight")
-    g.shot("ghost-fight", expect="fight")
-    won = d.mash_until_mode_change(120)
-    g.phase("ghost-after", "menu")
-    g.shot("ghost-after", expect="any")
-    g.event("ghost", f"fight ended: {won}, mode {g.mode} {g.mode_name}")
+    g.phase("ghost-win", "fight")
+    state = {"n": 0}
+
+    def enough():
+        return g.mode in (M_RANKING, M_LOGO, M_TITLE) or state["n"] >= wins
+    end = time.perf_counter() + timeout
+    while not enough() and time.perf_counter() < end:
+        n = hold_health(d, P2_HEALTH, timeout=40, until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE))
+        state["n"] += n
+    g.shot("ghost-wins", expect="any", settle=0.5, timeout=3)
+    g.phase("ghost-lose", "fight")
+    hold_health(d, P1_HEALTH, attack=False, timeout=400, until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE))
+    g.expect("ghost-end", g.mode in (M_RANKING, M_LOGO, M_TITLE), f"mode {g.mode} {g.mode_name}")
+    d.wait_mode(M_TITLE, timeout=200, taps=("START",), every=3.0)
 
 
-def sc_vs(d, seconds=None):
-    """VS with both pads: P1 picks the cursor's fighter, P2 the one to the right; a full
-    match (P1 attacks, P2 stands); the game goes back to the select screen."""
+def sc_vs(d, matches=1, timeout=400):
+    """VS with both pads: P1 the cursor's fighter, P2 one to the right; P2's health held at 1
+    so P1 wins each round fast; after `matches` matches CIRCLE back out to the title."""
     g = d.g
     g.phase("vs-select", "menu")
     d.pick(VS)
@@ -253,17 +301,22 @@ def sc_vs(d, seconds=None):
     g.press("CROSS", gap=1200)
     g.press2("RIGHT", gap=400)
     g.press2("CROSS", gap=600)
-    g.wait(3)
-    ok = d.until_fight(taps=(("CROSS", 1), ("CROSS", 2), ("START", 1)))
-    g.expect("vs-fight", ok, "VS fight HUD" if ok else "no VS fight")
-    if not ok:
-        return
+    g.wait(2)
     g.phase("vs-fight", "fight")
-    g.shot("vs-fight", expect="fight")
-    ended = d.mash_until_mode_change(seconds or 240)
-    g.phase("vs-after", "menu")
-    g.shot("vs-after", expect="any")
-    g.event("vs", f"match ended: {ended}, mode {g.mode} {g.mode_name}")
+    sel = {"n": 0}
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end and sel["n"] < matches:
+        ok = d.until_fight(taps=(("CROSS", 1), ("CROSS", 2), ("START", 1)), timeout=90)
+        if not ok:
+            break
+        g.shot(f"vs-fight{sel['n'] + 1}", expect="fight", settle=1, timeout=3)
+        n0 = len(g.mode_log)
+        hold_health(d, P2_HEALTH, timeout=240, until=lambda: len(g.mode_log) > n0)
+        sel["n"] += 1
+        g.event("vs", f"match {sel['n']} over: mode {g.mode} {g.mode_name}")
+    g.expect("vs-matches", sel["n"] >= matches, f"{sel['n']} match(es)")
+    g.phase("vs-exit", "menu")
+    d.back_to_title(taps=("CIRCLE",), timeout=60)
 
 
 def sc_online(d):
@@ -271,27 +324,34 @@ def sc_online(d):
     g.phase("online", "menu")
     d.pick(ONLINE)
     ok = d.wait_mode(M_ONLINE, timeout=10)
+    g.wait(2)
     g.shot("online-terms", expect="content")
     g.expect("online", ok, "the online mode's terms of use" if ok else f"mode {g.mode}")
+    d.back_to_title(taps=("CIRCLE",), timeout=30)
 
 
-def sc_survival(d, seconds=90):
+def sc_survival(d, wins=4, timeout=600):
+    """SURVIVAL: `wins` opponents beaten (health held at 1), then P1 at 1 HP loses."""
     g = d.g
     g.phase("survival-select", "menu")
     d.pick(SURVIVAL)
     g.shot("survival-select", expect="content")
-    ok = d.until_fight()
-    g.expect("survival-fight", ok, "survival fight HUD" if ok else "no survival fight")
-    if not ok:
-        return
     g.phase("survival", "fight")
-    g.shot("survival-fight", expect="fight")
-    d.mash_until_mode_change(seconds)
-    g.phase("survival-end", "fight")
-    g.shot("survival-end", expect="any")
+    state = {"n": 0}
+    end = time.perf_counter() + timeout
+    while state["n"] < wins and time.perf_counter() < end and g.mode not in (M_RANKING, M_LOGO, M_TITLE):
+        state["n"] += hold_health(d, P2_HEALTH, timeout=30, until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE))
+    g.shot("survival-wins", expect="any", settle=0.5, timeout=3)
+    g.phase("survival-lose", "fight")
+    hold_health(d, P1_HEALTH, attack=False, timeout=400,
+                until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT))
+    g.expect("survival-end", g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT), f"mode {g.mode} {g.mode_name}")
+    g.shot("survival-end", expect="any", settle=0.5, timeout=3)
+    d.wait_mode(M_TITLE, timeout=200, taps=("CROSS", "START"), every=2.0)
 
 
 def sc_practice(d, seconds=30):
+    """PRACTICE: both fighters, `seconds` of attacks, the practice menu, RETURN TO TITLE."""
     g = d.g
     g.phase("practice-select", "menu")
     d.pick(PRACTICE)
@@ -306,6 +366,13 @@ def sc_practice(d, seconds=30):
     g.phase("practice-menu", "menu")
     g.press("START", gap=1500)
     g.shot("practice-menu", expect="content")
+    for _ in range(9):
+        g.press("DOWN", gap=350)                    # RETURN TO TITLE SCREEN
+    g.press("CROSS", gap=800)
+    g.press("RIGHT", gap=600)                       # [No] -> [Yes]
+    g.press("CROSS", gap=1500)
+    ok = d.wait_mode(M_TITLE, timeout=30)
+    g.expect("practice-exit", ok, "practice menu -> RETURN TO TITLE SCREEN" if ok else f"mode {g.mode}")
 
 
 def sc_gallery(d):
@@ -318,6 +385,8 @@ def sc_gallery(d):
     g.press("CROSS", gap=2500)
     g.shot("gallery-return", expect="content")      # "... Return to Title Screen?"
     g.press("CROSS")                                 # YES
+    ok = d.wait_mode(M_TITLE, timeout=30)
+    g.expect("gallery-exit", ok, "back at the title" if ok else f"mode {g.mode}")
 
 
 def sc_options(d, change=True):
@@ -347,6 +416,7 @@ def sc_options(d, change=True):
     for _ in range(3):
         g.press("DOWN", gap=400)
     g.press("CROSS")
+    d.back_to_title(taps=("CIRCLE",), timeout=30)
 
 
 PLANS = {}
@@ -359,15 +429,19 @@ def plan(name):
     return deco
 
 
-def run_one(opts, name, body, probe=True, env=None, keep_gamedata=False, seed=None):
+def run_one(opts, name, body, probe=True, env=None, keep_gamedata=False, seed=None, console=True, cwd=None):
     d_run = os.path.join(opts.out, name)
     e = {"RSX_SHADER_CACHE_DIR": opts.shader_cache}
+    if opts.tag:
+        name = f"{name}-{opts.tag}"
+        d_run = os.path.join(opts.out, name)
     if probe:
         e.update({"T5_DF_PROBE": "1", "T5_DF_WATCH": "1008EBAC"})
     e.update(env or {})
-    g = SoakGame(d_run, cpus=opts.cpus, exe=opts.exe, env=e, dump_every=opts.dump_every, mute=opts.mute,
+    g = SoakGame(d_run, cpus=opts.cpus, cpu_offset=opts.cpu_offset, exe=opts.exe, env=e, dump_every=opts.dump_every, mute=opts.mute,
                  abort_hang=60, boot_timeout=90, keep_gamedata=keep_gamedata or opts.keep_gamedata,
-                 seed_gamedata=seed or opts.seed_gamedata, cwd=os.path.join(opts.out, "cwd"))
+                 seed_gamedata=seed or opts.seed_gamedata, cwd=cwd or os.path.join(d_run, "cwd"),
+                 console=console and probe)
     err = None
     print(f"== {name}: {d_run}", flush=True)
     try:
@@ -447,45 +521,39 @@ def write_summary(d_run, pr):
 # -------------------------------------------------------------------- plans
 @plan("modes")
 def plan_modes(opts):
+    cwd = os.path.join(opts.out, "modes-cwd")
+
     def body(d):
         g = d.g
         d.boot_to_title(watch_intro=True)
-        # the title movie, then the title idles into the attract demo / rankings and back
-        g.phase("title-idle", "attract")
-        g.wait(60)
-        g.shot("title-idle", expect="any")
-        seq = [("arcade", sc_arcade_loss), ("ghost", sc_ghost), ("vs", sc_vs), ("online", sc_online),
-               ("survival", sc_survival), ("practice", sc_practice), ("gallery", sc_gallery), ("options", sc_options)]
+        # after the intro the title runs the attract demo (a fight) and the rankings by itself
+        g.phase("attract", "attract")
+        ok = d.wait_mode(M_GAME, timeout=60)
+        g.expect("attract-demo", ok and g.game_type == 2, f"attract demo: mode {g.mode}, game type {g.game_type}")
+        g.wait(10)
+        g.shot("attract-demo", expect="any")
+        seq = [("arcade", lambda d: sc_arcade(d, to_end=False)), ("ghost", sc_ghost), ("vs", sc_vs),
+               ("online", sc_online), ("survival", sc_survival), ("practice", sc_practice),
+               ("gallery", sc_gallery), ("options", sc_options)]
         for name, fn in seq:
             if not d.open_menu():
-                g.expect(f"{name}-menu", False, f"main menu not reached (mode {g.mode} {g.mode_name})")
                 continue
             fn(d)
-            d.back_to_title(taps=("CIRCLE",) if name not in ("practice",) else ("CIRCLE", "START"))
+            if g.mode != M_TITLE:
+                d.back_to_title(taps=("CIRCLE", "START"), timeout=90)
         g.wait_log(r"\[cellSaveData\] SAVE complete", timeout=10)
         g.wait(3)
-    run_one(opts, "modes", body)
+    run_one(opts, "modes", body, cwd=cwd)
 
     def body2(d):
+        import re
         g = d.g
         d.boot_to_title()
-        import re
         log = g.log_bytes()
         loads = len(re.findall(rb"\[cellSaveData\] LOAD dir='[^']+' \(new=0\)", log))
         g.expect("save-loaded", loads > 0, f"{loads} existing save(s) loaded at the second boot")
         g.wait(5)
-    run_one(opts, "modes-reload", body2, keep_gamedata=True)
-
-
-def poke_env(start=600, end=400000, every=60, budget=30000):
-    """T5_DF_POKE entries that hold the CPU's health (P2, i16 0x10090FBC) at 1: one write every
-    `every` frames. The variable is capped at ~30 KB (Windows allows 32 K characters), so a long
-    run thins the writes out instead of stopping early."""
-    n = (end - start) // every
-    while n * 20 > budget:
-        every *= 2
-        n = (end - start) // every
-    return ",".join(f"{f}:{P2_HEALTH:08X}:2:1" for f in range(start, end, every))
+    run_one(opts, "modes-reload", body2, keep_gamedata=True, cwd=cwd)
 
 
 def set_easy_one_round(d):
@@ -503,71 +571,119 @@ def set_easy_one_round(d):
     for _ in range(5):
         g.press("DOWN", gap=400)                # EXIT
     g.press("CROSS", gap=2500)
-    d.back_to_title()
+    d.back_to_title(taps=("CIRCLE",), timeout=30)
 
 
-def sc_arcade_to_end(d, char_moves=(), name="arcade", timeout=1500):
-    """ARCADE with the CPU at 1 HP (T5_DF_POKE): every stage to GAME OVER and the title.
-    char_moves: cursor moves on the select screen before CROSS."""
-    g = d.g
-    g.phase(f"{name}-select", "menu")
-    d.pick(ARCADE)
-    g.wait(1.0)
-    for mv in char_moves:
-        g.press(mv, gap=350)
-    g.shot(f"{name}-select", expect="content")
-    g.press("CROSS", gap=1500)
-    g.phase(f"{name}-run", "fight")
-    end = time.perf_counter() + timeout
-    k = fights = 0
-    in_fight = False
-    stages = set()
-    while time.perf_counter() < end:
-        if g.mode in (M_RANKING, M_LOGO, M_END) or (g.mode == M_TITLE and k > 10):
-            break
-        f = g.latest_frame() or {}
-        if f.get("fight", {}).get("is_fight"):
-            if not in_fight:
-                fights += 1
-                g.event("arcade", f"fight {fights}")
-                if fights % 2 == 1:
-                    g.shot(f"{name}-fight{fights:02d}", expect="fight", settle=2, timeout=4)
-            in_fight = True
-            g.hold("RIGHT")
-            g.wait(0.3)
-            g.release()
-            g.press("SQUARE", gap=150)
-            g.press("TRIANGLE", gap=150)
-            g.press("DOWN+CIRCLE", gap=200)
-        else:
-            in_fight = False
-            g.press("CROSS", gap=400)               # intros, win poses, "next battle"
-            g.press("START", gap=400)
-        k += 1
-        if k % 40 == 0:
-            g.shot(f"{name}-{int(g.now()):04d}", expect="any", settle=0.3, timeout=2)
-    g.expect(f"{name}-end", g.mode in (M_RANKING, M_LOGO, M_END, M_TITLE),
-             f"{fights} fights, then mode {g.mode} {g.mode_name}")
-    g.shot(f"{name}-end", expect="any", settle=0.5, timeout=3)
-    d.wait_mode(M_TITLE, timeout=200, taps=("START",), every=3.0)
+CHAR_MOVES = [(), ("RIGHT", "RIGHT", "RIGHT"), ("DOWN", "LEFT", "LEFT"), ("UP", "RIGHT"), ("DOWN", "DOWN", "RIGHT"),
+              ("UP", "LEFT", "LEFT", "LEFT"), ("DOWN", "RIGHT", "RIGHT", "RIGHT", "RIGHT")]
 
 
 @plan("arcade")
 def plan_arcade(opts):
-    chars = [(), ("RIGHT", "RIGHT", "RIGHT"), ("DOWN", "LEFT", "LEFT"), ("UP", "RIGHT"), ("DOWN", "DOWN", "RIGHT")]
-
+    """EASY, 1 round; ARCADE to the end (boss, GAME OVER, the unlock) with --chars characters."""
     def body(d):
         g = d.g
         d.boot_to_title()
-        d.open_menu()
-        set_easy_one_round(d)
+        if d.open_menu():
+            set_easy_one_round(d)
         for i in range(opts.chars):
             if not d.open_menu():
                 break
-            sc_arcade_to_end(d, chars[i % len(chars)], name=f"arcade{i + 1}")
+            sc_arcade(d, CHAR_MOVES[i % len(CHAR_MOVES)], name=f"arcade{i + 1}", to_end=True)
         g.wait(5)
         g.shot("title-after", expect="any")
-    run_one(opts, "arcade", body, env={"T5_DF_POKE": poke_env(end=3000 + opts.chars * 30000)})
+    run_one(opts, "arcade", body)
+
+
+@plan("mixed")
+def plan_mixed(opts):
+    """--minutes of everything in turn, one process: arcade to the end (a different character
+    each time), VS matches, survival, practice, ghost, options, gallery, online terms, idle
+    on the title with the attract demo."""
+    def body(d):
+        g = d.g
+        d.boot_to_title()
+        k = 0
+        end = g.now() + opts.minutes * 60
+        while g.now() < end:
+            seg = k % 8
+            if not d.open_menu():
+                d.back_to_title(taps=("CIRCLE", "START"), timeout=60)
+                k += 1
+                continue
+            g.event("segment", f"#{k} kind {seg}")
+            if seg == 0:
+                sc_arcade(d, CHAR_MOVES[(k // 8) % len(CHAR_MOVES)], name=f"arcade{k}", to_end=True)
+            elif seg == 1:
+                sc_vs(d, matches=2)
+            elif seg == 2:
+                sc_survival(d, wins=3)
+            elif seg == 3:
+                sc_practice(d, seconds=25)
+            elif seg == 4:
+                sc_ghost(d, wins=2)
+            elif seg == 5:
+                sc_options(d, change=(k // 8) % 2 == 0)
+            elif seg == 6:
+                sc_gallery(d) if (k // 8) % 2 == 0 else sc_online(d)
+            else:
+                g.phase(f"idle{k}", "attract")       # the title idles into the attract demo and back
+                g.wait(90)
+            if g.mode != M_TITLE:
+                d.back_to_title(taps=("CIRCLE", "START"), timeout=90)
+            k += 1
+        g.expect("segments", k >= 8, f"{k} segments in {opts.minutes:.0f} min")
+    run_one(opts, "mixed", body)
+
+
+def sc_online_accept(d):
+    """ONLINE BATTLE: the terms (4 pages), YES -> the profile is saved and the game's online
+    check runs (sceNp init, the "net ranking" thread, Score/Matching/Signaling contexts,
+    cellHttp, manager status OFFLINE) -> "A network error occurred" -> the title."""
+    g = d.g
+    g.phase("online", "menu")
+    d.pick(ONLINE, wait=4.0)
+    for i in range(3):
+        g.press("RIGHT", gap=1500)
+    g.shot("online-terms", expect="any", settle=0.5, timeout=2)
+    g.press("CROSS", gap=3000)                  # YES on the last page
+    ok = g.wait_log(r"net ranking", timeout=30)
+    g.expect("online-check", ok, "the online check ran (net ranking thread)" if ok else "no online check in 30 s")
+    g.wait(8)
+    g.shot("online-after", expect="any", settle=0.5, timeout=2)
+    for _ in range(6):
+        if g.mode == M_TITLE:
+            break
+        g.press("CROSS", gap=3000)
+
+
+@plan("ringcheck")
+def plan_ringcheck(opts):
+    """The second 1.0.0 player's offline path (coordinator, 2026-10-19): boot, the intro to its
+    end, the attract demo (the first fight-scene load: the 212-job skinning list), the rankings,
+    the title; the main menu, ONLINE (terms, YES: the online check), back at the title, then
+    --minutes in the menus. Counted: ring recycles, flips the FIFO walker never reached."""
+    def body(d):
+        g = d.g
+        d.boot_to_title(watch_intro=True)
+        g.phase("attract", "attract")
+        ok = d.wait_mode(M_GAME, timeout=60)
+        g.expect("demo-fight", ok, f"attract demo (first fight load), game type {g.game_type}")
+        d.wait_mode(M_TITLE, timeout=150)
+        if d.open_menu():
+            sc_online_accept(d)
+        g.phase("menus", "title")
+        end = g.now() + opts.minutes * 60
+        while g.now() < end:
+            if d.open_menu(timeout=30):
+                g.wait(min(20, max(0.0, end - g.now())))
+            g.shot(f"menus-{int(g.now()):04d}", expect="any", settle=0.3, timeout=2)
+        log = g.log_bytes()
+        rec = log.count(b"recycled the title's own ring")
+        stall = log.count(b"queued flip never reached")
+        g.expect("no-ring-recycle", rec == 0, f"{rec} 'recycled the title's own ring' line(s)")
+        g.expect("no-flip-stall", stall == 0, f"{stall} 'queued flip never reached' line(s)")
+    run_one(opts, f"ringcheck-{opts.cpus or 'all'}cpu", body, console=False)
 
 
 @plan("idle")
@@ -597,6 +713,7 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--minutes", type=float, default=30)
     ap.add_argument("--cpus", type=int)
+    ap.add_argument("--cpu-offset", type=int, default=0, help="with --cpus: the first logical processor of the mask")
     ap.add_argument("--chars", type=int, default=3)
     ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1 (the mix is still measured)")
     ap.add_argument("--dump-every", type=int, default=30, help="frame read-back every N flips (navigation needs ~2/s)")
@@ -604,6 +721,7 @@ def main():
     ap.add_argument("--seed-gamedata")
     ap.add_argument("--shader-cache")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--tag", help="suffix for the run directory (e.g. the build)")
     opts = ap.parse_args()
     random.seed(opts.seed)
     if opts.plan == "report":

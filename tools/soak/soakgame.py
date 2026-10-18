@@ -155,15 +155,18 @@ class SoakGame(Game):
     """Game with the polite start and the resource sampler. Extra args:
     cpus (None = all), sample_s (resource sample interval)."""
 
-    def __init__(self, test_dir, cpus=None, sample_s=10.0, env=None, mute=True, **kw):
+    def __init__(self, test_dir, cpus=None, sample_s=10.0, env=None, mute=True, console=False, cpu_offset=0, **kw):
         e = {"PS3_WINDOW_BACKGROUND": "1", "PAD_NO_KEYBOARD": "1", "AUDIO_RATE": "1"}
         if mute:
             e["PS3_AUDIO_MUTE"] = "1"
+        if console:
+            e["PS3_DEBUG"] = os.path.join(os.path.abspath(test_dir), "dbg.txt").replace("\\", "/")
         if cpus:
             e["PS3_CPUS"] = str(cpus)
         e.update(env or {})
         super().__init__(test_dir, env=e, **kw)
         self.cpus = cpus
+        self.cpu_offset = cpu_offset
         self.sample_s = sample_s
         self.res = []                  # (t, phase, dict)
         self.last_fps = None
@@ -213,10 +216,10 @@ class SoakGame(Game):
             raise Abort(self.start_error)
         if self.cpus:
             h = _k32.OpenProcess(0x0200 | 0x0400, False, self.proc.pid)   # SET_INFORMATION | QUERY
-            ok = bool(h) and bool(_k32.SetProcessAffinityMask(h, ctypes.c_size_t((1 << self.cpus) - 1)))
+            ok = bool(h) and bool(_k32.SetProcessAffinityMask(h, ctypes.c_size_t(((1 << self.cpus) - 1) << self.cpu_offset)))
             if h:
                 _k32.CloseHandle(h)
-            self.event("affinity", f"first {self.cpus} logical processors: {'ok' if ok else 'FAILED'}")
+            self.event("affinity", f"{self.cpus} logical processors from {self.cpu_offset}: {'ok' if ok else 'FAILED'}")
         self.event("start", f"pid={self.proc.pid} exe={argv[0]} below-normal")
         self._resf = open(os.path.join(self.dir, "resources.tsv"), "w", buffering=1, encoding="utf-8")
         self._resf.write("t\tphase\thandles\tthreads\tprivate_mb\tws_mb\tgdi\tuser\tcpu_s\tfps\tsys_busy_pct\t"
@@ -249,6 +252,25 @@ class SoakGame(Game):
                 except ValueError:
                     return
             self._stop.wait(self.sample_s)
+
+    def console(self, cmd, timeout=3.0):
+        """One command to the runtime's debug console (PS3_DEBUG=<file>, started with
+        console=True): write it, wait until the console consumed it (it empties the file).
+        Returns True when consumed."""
+        path = self.extra_env.get("PS3_DEBUG")
+        if not path:
+            return False
+        with open(path, "w") as f:
+            f.write(cmd + "\n")
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:
+            try:
+                if os.path.getsize(path) == 0:
+                    return True
+            except OSError:
+                pass
+            time.sleep(0.05)
+        return False
 
     def stop(self):
         res = super().stop()

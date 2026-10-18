@@ -60,6 +60,13 @@ class FakeApp:
         self.reports += 1
 
 
+def hidden_window(parent):
+    """A Toplevel that is never shown (the tests read and click its widgets all the same)."""
+    w = tk.Toplevel(parent)
+    w.withdraw()
+    return w
+
+
 @unittest.skipIf(tk is None, "no tkinter")
 class TkBase(unittest.TestCase):
     server_cfg = {}
@@ -84,6 +91,11 @@ class TkBase(unittest.TestCase):
         self.app = FakeApp(self.dir)
         self.tab = OnlineTab(self.root, self.app)
         self.tab._build_info = lambda: (BUILD, None)
+        # Nothing appears on the screen: the tab's own windows (recovery codes, blocked players) are made
+        # hidden, and its questions are answered here unless a test answers them itself.
+        self.tab.new_window = hidden_window
+        self.tab.ask_string = lambda *a, **k: None
+        self.tab.ask_yes_no = lambda *a, **k: False
         self.other = None
 
     def tearDown(self):

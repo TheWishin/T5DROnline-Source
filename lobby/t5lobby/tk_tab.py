@@ -126,6 +126,7 @@ class OnlineTab:
         self._auto_tried = False
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
+        self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -340,6 +341,12 @@ class OnlineTab:
 
     def _poll(self):
         try:
+            alive = bool(self.parent.winfo_exists()) and bool(self.view.box.winfo_exists())
+        except tk.TclError:
+            alive = False
+        if not alive:
+            return                                  # the tab's widgets are gone (the launcher closed or rebuilt it)
+        try:
             while True:
                 self.ui_q.get_nowait()()
         except queue.Empty:
@@ -358,10 +365,11 @@ class OnlineTab:
                 self._set_actions()
         except queue.Empty:
             pass
-        if self.client is not None:
+        c = self.client
+        if c is not None:
             try:
-                while True:
-                    ev = self.client.events.get_nowait()
+                while self.client is c:             # ("disconnected" drops the client: its queue is done)
+                    ev = c.events.get_nowait()
                     if self.driver is not None:
                         self.driver.on_event(ev)
                     self.on_event(ev)
@@ -675,7 +683,7 @@ class OnlineTab:
 
     def _blocks_window(self, rows):
         px = self.view.px
-        w = tk.Toplevel(self.parent)
+        w = self.new_window(self.parent)
         w.title("Blocked players")
         bar = self.view.card(w, pad=16)                  # (the buttons are children of this frame)
         bar.pack(fill="both", expand=True, padx=px(10), pady=px(10))
@@ -725,10 +733,13 @@ class OnlineTab:
 
     # ------------------------------------------------------------------ leaderboard / profile
     def _on_subtab(self):
-        tab = self.nb.tab(self.nb.select(), "text").strip()
-        if tab == "Leaderboard":
+        try:
+            cur = self.nb.index("current")          # 0 lobby, 1 leaderboard, 2 profile (texts may be translated)
+        except tk.TclError:
+            return                                  # (no tab selected: the tab is being taken down)
+        if cur == 1:
             self.load_leaderboard()
-        elif tab == "Profile" and self.client and self.profile_name is None:
+        elif cur == 2 and self.client and self.profile_name is None:
             self.show_profile(None)
 
     def load_leaderboard(self):

@@ -221,8 +221,8 @@ class OnlineView:
         head.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, px(12)))
         ttk.Label(head, text="Play online", style="H1.TLabel").pack(anchor="w")
         ttk.Label(head, style="Muted.TLabel", text=(
-            "Log in or play as a guest. Find an opponent; the game starts by itself, straight into the "
-            "fight, and the result comes back here.")).pack(anchor="w")
+            "Against other players over the internet. Log in or play as a guest; the game starts by itself, "
+            "straight into the fight, and the result comes back here.")).pack(anchor="w")
 
         card = self.card(scr, pad=18)
         card.grid(row=1, column=0, sticky="nsew", padx=(0, px(12)))
@@ -472,7 +472,7 @@ class OnlineView:
         top = self.body(f)
         top.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, px(10)))
         top.columnconfigure(0, weight=1)
-        ttk.Label(top, text="FIND A MATCH", style="Card.Caps.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="FIND AN OPPONENT ONLINE", style="Card.Caps.TLabel").grid(row=0, column=0, sticky="w")
         self.room_label = ttk.Label(top, text="", style="Card.Accent.TLabel")
         self.room_label.grid(row=1, column=0, sticky="w")
         ttk.Label(top, text="Character", style="Card.Muted.TLabel").grid(row=0, column=1, rowspan=2, sticky="e",
@@ -1436,7 +1436,7 @@ class OnlineView:
     def codes_window(self, codes, first, save):
         """The recovery codes, once: big, numbered, with 'Save to a file...' and 'I have saved them'."""
         px = self.px
-        w = tk.Toplevel(self.tab.parent)
+        w = self.tab.new_window(self.tab.parent)
         w.title("Recovery codes")
         w.configure(bg=C["bg"])
         card = self.card(w, pad=20)

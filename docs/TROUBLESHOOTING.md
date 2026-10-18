@@ -5,7 +5,7 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
-**Problems? Click "Report a problem"** (launcher, Play tab; also in the Build tab
+**Problems? Click "Report a problem"** (launcher, Play offline tab; also in the Build tab
 and in the Online tab after a match). It makes one zip on your Desktop. Send the
 zip to the person who gave you the game, or attach it to an issue at
 https://github.com/TheWishin/T5DROnline/issues. Details:
@@ -18,7 +18,7 @@ Contents:
 - [The launcher does not start](#the-launcher-does-not-start)
 - [Updates](#updates)
 - [SmartScreen and antivirus](#smartscreen-and-antivirus)
-- [The Play tab](#the-play-tab)
+- [The Play offline tab](#the-play-offline-tab)
 - [The game starts, but...](#the-game-starts-but)
 - [No sound](#no-sound)
 - [Controllers and keyboard](#controllers-and-keyboard)
@@ -218,7 +218,7 @@ extract the newest release zip over your folder (say yes to replacing files);
 `native` and your settings stay. Then delete the `.update` folder.
 
 **The game asks to be built again after an update.** The new version changed
-the game code: the Play tab says "Build the game once (about 2 minutes)". Click
+the game code: the Play offline tab says "Build the game once (about 2 minutes)". Click
 **BUILD GAME**. The unpacked game and your saves are kept.
 
 ## SmartScreen and antivirus
@@ -245,15 +245,15 @@ If you do not trust the zip, do not run it. All source is public: this
 repository holds our code and our patches, and ps3recomp is on GitHub too. You
 can build everything yourself (see "Building from source" in the README).
 
-## The Play tab
+## The Play offline tab
 
 | Message | What to do |
 |---|---|
 | "The game is not built yet." | Open the Build tab, choose `.pkg` and `.rap`, click BUILD GAME. |
 | "t5dr.exe is there but the game data is missing." | Build again. |
 | "The decrypted program has SHA-1 ..., not the supported version." | Build again from the supported package. |
-| "Build the game once (about 2 minutes)" (after an update) | Click BUILD GAME on the Play tab. Your game data and saves are kept. Only the code is rebuilt. |
-| PLAY is grey | The build is not finished or the check above failed. Read the text on the Play tab. |
+| "Build the game once (about 2 minutes)" (after an update) | Click BUILD GAME on the Play offline tab. Your game data and saves are kept. Only the code is rebuilt. |
+| PLAY OFFLINE is grey | The build is not finished or the check above failed. Read the text on the Play offline tab. |
 | "Close the game first." (when you click BUILD GAME) | A game is still running. Click Stop game, or end `t5dr.exe` in the Task Manager. |
 
 ## The game starts, but...
@@ -262,7 +262,7 @@ can build everything yourself (see "Building from source" in the README).
 
 The first seconds can be black while the game loads. If it stays black:
 
-- **Start the game with PLAY in the launcher.** The launcher sets
+- **Start the game with PLAY OFFLINE in the launcher.** The launcher sets
   `RSX_LIVE_DRAW=1`. Without it the default renderer shows only black. If you
   start `t5dr.exe` by hand, it also lacks the other settings it needs.
 - Open **Settings**, "extra settings". There must be no line `RSX_LIVE_DRAW=0`.
@@ -350,8 +350,8 @@ PC's clock -- except on a 60 Hz monitor, where it follows the monitor.
 
 ### The game closes by itself
 
-The Play tab says "The game stopped (exit code N)..." and adds "after a crash"
-when the log has a `[CRASH]` line. Open the newest game log (Play tab) and look
+The Play offline tab says "The game stopped (exit code N)..." and adds "after a crash"
+when the log has a `[CRASH]` line. Open the newest game log (Play offline tab) and look
 at the last lines. Then see [How to collect logs](#how-to-collect-logs).
 
 Known causes:
@@ -363,7 +363,7 @@ Known causes:
 
 ### The movies do not play
 
-Intro and title movies are decoded with Windows Media Foundation. The Play tab
+Intro and title movies are decoded with Windows Media Foundation. The Play offline tab
 still says "Intro movies are skipped in this version". That text is out of date.
 Movies play. Movies slow down when the game runs under 60 fps.
 
@@ -553,7 +553,7 @@ friend's server (README, "Online"). **(untested)**
 
 You are only matched with players who have the same build: the same release
 **and** a build made from it. After you update to a new release, click BUILD
-GAME again (the Play tab tells you). Ask your opponent to do the same.
+GAME again (the Play offline tab tells you). Ask your opponent to do the same.
 
 ### Lag during an online match
 
@@ -670,7 +670,7 @@ the failing first save.
 ## How to collect logs
 
 **The easy way: Report a problem.** Click **Report a problem...** in the launcher:
-the Play tab, the Build tab, or the Online tab after a match. A window lists what
+the Play offline tab, the Build tab, or the Play online tab after a match. A window lists what
 would go into the zip, with a box "What happened?". Click **Save report on the
 Desktop**. The launcher makes ONE file, `T5DR-report-<date>-<time>.zip`, and opens
 its folder with the file selected. Nothing is uploaded: you send it yourself, to
@@ -716,7 +716,7 @@ replaced by one line saying how many bytes were removed.
 1. Close the game. (The launcher keeps the log of each start.)
 2. Build problem: open `native\build.log` (Build tab, **Open build.log**). It is
    overwritten by the next build: copy it first.
-3. Game problem: open the newest `native\logs\game-<date>-<time>.log` (Play tab,
+3. Game problem: open the newest `native\logs\game-<date>-<time>.log` (Play offline tab,
    **Open newest game log**).
 4. In the game log, these lines matter:
    - `[CRASH]` — the game crashed. The lines after it say where.

@@ -195,8 +195,8 @@ class App(tk.Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
-        for key, label in (("build", "  Build  "), ("play", "  Play  "), ("settings", "  Settings  "),
-                           ("online", "  Online  ")):
+        for key, label in (("build", "  Build  "), ("play", "  Play offline  "), ("settings", "  Settings  "),
+                           ("online", "  Play online  ")):
             f = ttk.Frame(self.nb)
             self.nb.add(f, text=label)
             self.tabs[key] = f
@@ -327,7 +327,16 @@ class App(tk.Tk):
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Play", style="H1.TLabel").pack(anchor="w")
+        ttk.Label(box, text="Play offline", style="H1.TLabel").pack(anchor="w")
+        # what "offline" means, and the way to the Online tab (internet play)
+        what = ttk.Frame(box)
+        what.pack(anchor="w", pady=(2, 0))
+        ttk.Label(what, style="Muted.TLabel", text=(
+            "Arcade, Versus, Practice and the other modes on this PC. To play against people over the "
+            "internet, use the")).pack(side="left")
+        self.to_online_btn = ttk.Button(what, text="Online tab", style="Link.TButton", cursor="hand2",
+                                        command=lambda: self.nb.select(self.tabs["online"]))
+        self.to_online_btn.pack(side="left")
         self.state_var = tk.StringVar(value="Checking the build…")
         self.state_lbl = ttk.Label(box, textvariable=self.state_var, wraplength=820, justify="left")
         self.state_lbl.pack(anchor="w", pady=(6, 14))
@@ -338,7 +347,7 @@ class App(tk.Tk):
         ttk.Entry(nick, textvariable=self.nick_var, width=20).pack(side="left", padx=8)
         row = ttk.Frame(box)
         row.pack(anchor="w")
-        self.play_btn = self.big_button(row, "PLAY", self.play)
+        self.play_btn = self.big_button(row, "PLAY OFFLINE", self.play)
         self.play_btn.pack(side="left")
         self.stop_btn = ttk.Button(row, text="Stop game", command=self.stop_game, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
@@ -707,7 +716,7 @@ class App(tk.Tk):
             self.play_btn.configure(text="BUILD GAME", command=self.build_from_play)
             set_big_state(self.play_btn, not running and not self.build)
         else:
-            self.play_btn.configure(text="PLAY", command=self.play)
+            self.play_btn.configure(text="PLAY OFFLINE", command=self.play)
             set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
 
@@ -830,12 +839,19 @@ class App(tk.Tk):
         self.after(150, self._tick)
 
     def _on_tab(self, _e=None):
-        tab = self.nb.tab(self.nb.select(), "text").strip()
-        if tab == "Play":
-            self.refresh_game_state()
-        elif tab == "Online":
-            self.online.on_show()
-        self.save_settings()
+        # By the tab's frame, not its text (translated texts; and while the window closes or its tabs are
+        # rebuilt there may be no tab selected at all: nothing to do then).
+        try:
+            cur = self.nb.select()
+            if not cur:
+                return
+            if cur == str(self.tabs["play"]):
+                self.refresh_game_state()
+            elif cur == str(self.tabs["online"]):
+                self.online.on_show()
+            self.save_settings()
+        except tk.TclError:
+            pass
 
     def on_close(self):
         if self.build and not messagebox.askyesno(APP_TITLE, "A build is running. Stop it and quit?"):

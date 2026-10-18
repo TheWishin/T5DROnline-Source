@@ -722,8 +722,18 @@ class MatchDriver:
                 return
             self._archive(mid)
             self._perf(extra.get("fps"))
-            desync = self._evidence() or 0
-            desync = max(desync, int(extra.get("desync") or 0))
+            if "desync" in extra:
+                # The game counts the mismatching frames of this match itself, from its FIGHT START sync point
+                # (netplay match_begin). The log's count is cumulative and only printed every 600 frames: a
+                # line printed after this match's FIGHT START still holds mismatches of the frames before it
+                # (the last match's win pose and select screen) -- e2e run: a rematch voided as a desync
+                # while both games said 0.
+                try:
+                    desync = int(extra["desync"])
+                except (TypeError, ValueError):
+                    desync = self._evidence() or 0
+            else:
+                desync = self._evidence() or 0      # (older games write no count)
             reason = extra.get("reason")
             if reason == "quit":
                 # This player closed the game window mid-match (exit code 7): a quit, i.e. a loss.

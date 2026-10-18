@@ -790,6 +790,34 @@ class DriverResultFileTest(unittest.TestCase):
         self.drv.poll()
         self.assertEqual([(r["match"], r["winner"]) for r in self.client.reports], [("m2", 0)])
 
+    def test_the_games_own_desync_count_wins_over_the_logs_late_total(self):
+        # The log's cumulative count is printed every 600 frames: a line printed after this match's FIGHT START
+        # still counts mismatches of the frames before it (the last match's end). The game counts from FIGHT START.
+        log = os.path.join(self.dir, "game.log")
+        with open(log, "w") as f:
+            f.write("[netplay] sync check through frame 2999: 668 mismatching frame(s)\n")
+        from t5lobby.match_driver import GameLog
+        self.drv.glog = GameLog(log)
+        self.drv.mark = self.drv.glog.mark()                           # FIGHT START of this match
+        with open(log, "a") as f:
+            f.write("[netplay] sync check through frame 3599: 927 mismatching frame(s)\n")
+        self.write({"match": "m1", "winner": 1, "score": [0, 1], "desync": 0, "hash": "ab"})
+        self.drv.poll()
+        self.assertEqual(self.client.reports[0]["desync"], 0)
+
+    def test_a_game_without_its_own_count_still_reports_the_logs(self):
+        log = os.path.join(self.dir, "game.log")
+        with open(log, "w") as f:
+            f.write("[netplay] sync check through frame 599: 0 mismatching frame(s)\n")
+        from t5lobby.match_driver import GameLog
+        self.drv.glog = GameLog(log)
+        self.drv.mark = self.drv.glog.mark()
+        with open(log, "a") as f:
+            f.write("[netplay] sync check through frame 1199: 12 mismatching frame(s)\n")
+        self.write({"match": "m1", "winner": 1, "score": [0, 1]})
+        self.drv.poll()
+        self.assertEqual(self.client.reports[0]["desync"], 12)
+
     def test_reason_means_disconnect(self):
         self.write({"match": "m1", "winner": None, "score": [1, 0], "reason": "peer_timeout"})
         self.drv.poll()

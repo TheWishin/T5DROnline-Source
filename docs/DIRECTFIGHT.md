@@ -266,7 +266,38 @@ for a ranked set's lock. A match passes when both games log the same picks
 (character, button, model) at FIGHT START, scripted picks are what was asked,
 and both results have the same winner and state hash with 0 mismatching frames.
 
-RESULTS_PLACEHOLDER
+**Results** (2026-10-18/19, two games on this PC, muted, minimized, below-normal
+priority, other agents' games beside them -- 22-55 fps):
+
+- **Through a local lobby** (`lobby/tools/ranked_session.py --exe ... --persistent
+  --attacks --ingame-pick --pick1 ... --pick2 ...`, the launcher's glue, scripted
+  picks): **19 matches, every one started on both PCs with the same fighters and
+  costumes, every result confirmed, 0 mismatching frames.**
+
+  | Run | Mode | What |
+  |---|---|---|
+  | e2e_ranked | rollback | ranked set of 3: game 1 picked Jin (Triangle) vs Lili (Cross) over the launchers' Kazuya/Heihachi; games 2 and 3 skipped the select screen with the same fighters and costumes; the history says jin vs lili |
+  | e2e_ranked_ls | lockstep | ranked set of 2: Select = random (Heihachi), Kuma's cell + Cross = Panda; game 2 locked to Panda vs Heihachi |
+  | e2e_room_ls | lockstep | room match, then the room rematch with both changing; a random pick, a timeout (the launcher's character) |
+  | e2e_room_rb | rollback | room match + rematch, both changing, a pick 6 s late |
+  | e2e_quick_rb | rollback | quick match + rematch, both changing |
+  | e2e_sets_rb | rollback | ranked set of 2, then the next opponent (a new pairing, a new session) against a **freshly started game** (P2's game closed in between), P1 changes Jin -> Steve, set of 2 again |
+  | e2e_sets_ls | lockstep | quick: 2 pairings of 2, rematches where only P1 changes (Kazuya -> Julia, Asuka -> Law), a fresh game in the second pairing |
+
+- **`tools/pick_flow_test.py`** (no lobby; persistent unless noted): 20 of 25
+  matches OK across the runs t1, rep1, big_ls, final_rb, proc_rb. The 5 others:
+  Devil Jin (big_ls match 6; see "Known transient mismatches"); two short
+  mismatches under rollback in final_rb (22 frames Wang vs Heihachi, 1 frame
+  Raven vs Asuka, mid-fight, same winner; the same pairs ran clean in
+  e2e_room_rb); one hang that was the driver's cursor (from column 11 -- Bruce,
+  Kuma -- the top row was never reached; fixed); and in process mode under
+  rollback at ~22 fps one game showed "The installed game data is corrupted"
+  after a KO (mode 8, the game's end) -- the post-match loads under deep
+  rollbacks (depth 9), the known rollback-over-loads problem (ROLLBACK.md 31),
+  not the select screen.
+- Picks seen: every costume button, Xiaoyu's four costumes, Kuma/Panda,
+  random, timeouts on either side, a late pick, mirror matches (P2 gets the
+  other costume: logged, not a mismatch).
 
 ## After the match: no input reaches the select screen
 

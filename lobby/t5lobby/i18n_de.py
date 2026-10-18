@@ -721,6 +721,11 @@ MESSAGES = {
         "Ranked-Matches kommen auf diesem Server aus der Ranked-Suche",
     "your character is locked until this ranked set ends":
         "Dein Charakter ist gesperrt, bis dieses Ranked-Set vorbei ist",
+    "the ranked set goes on by itself": "Das Ranked-Set geht von selbst weiter",
+    "you are in a ranked set ({mine}-{theirs}); leave it first (that counts as a loss)":
+        "Du bist in einem Ranked-Set ({mine}-{theirs}); verlass es zuerst (das zählt als Niederlage)",
+    "that player is in a ranked set": "Dieser Spieler ist gerade in einem Ranked-Set",
+    "you are not in a ranked set": "Du bist in keinem Ranked-Set",
     "finish your running match with the same game build first":
         "Beende zuerst dein laufendes Match mit demselben Spiel-Build",
     "this PC ran its last match at {fps} fps; ranked needs at least {min_fps} (both "
@@ -1080,6 +1085,31 @@ MESSAGES = {
     "{wins}W {losses}L": "{wins}W {losses}L",
     "{draws}D": "{draws}D",
     "{rank} (placement {done}/{total})": "{rank} (Platzierung {done}/{total})",
+    # ---- lobby/t5lobby/sets.py
+    "a game was too short to count": "ein Spiel war zu kurz, um zu zählen",
+    "a fight ended without a winner": "ein Kampf endete ohne Sieger",
+    "too many games without a winner": "zu viele Spiele ohne Sieger",
+    "left after the lag check": "nach dem Lag-Check verlassen",
+    "the lobby server restarted": "der Lobby-Server wurde neu gestartet",
+    "a player left right away": "ein Spieler ist sofort gegangen",
+    "the next game could not start": "das nächste Spiel konnte nicht starten",
+    "a player left before a game counted": "ein Spieler ist gegangen, bevor ein Spiel gezählt hat",
+    "a player lost the lobby connection": "ein Spieler hat die Verbindung zur Lobby verloren",
+    "set won": "Set gewonnen",
+    "set lost": "Set verloren",
+    "Set {mine}-{theirs}": "Set {mine}-{theirs}",
+    "game {number} of {best}": "Spiel {number} von {best}",
+    "game {number} of {best} again (no winner)": "Spiel {number} von {best} noch einmal (kein Sieger)",
+    "starts in {seconds} s": "startet in {seconds} s",
+    "The set does not count ({why}); no rating change": "Das Set zählt nicht ({why}); keine Wertungsänderung",
+    "The set does not count; no rating change": "Das Set zählt nicht; keine Wertungsänderung",
+    "You won the set (your opponent left it)": "Du hast das Set gewonnen (dein Gegner hat es verlassen)",
+    "You won the set": "Du hast das Set gewonnen",
+    "You lost the set (you left it)": "Du hast das Set verloren (du hast es verlassen)",
+    "You lost the set": "Du hast das Set verloren",
+    "You won the set {mine}-{theirs}": "Du hast das Set {mine}-{theirs} gewonnen",
+    "You lost the set {mine}-{theirs}": "Du hast das Set {mine}-{theirs} verloren",
+    "set game {number}": "Set-Spiel {number}",
     # ---- lobby/t5lobby/theme.py
     "Good connection": "Gute Verbindung",
     "Laggy connection": "Verbindung mit Lag",
@@ -1087,6 +1117,11 @@ MESSAGES = {
     "Ping not known yet": "Ping noch nicht bekannt",
     "sec": "Sek.",
     # ---- lobby/t5lobby/tk_tab.py
+    "Leave set (counts as a loss)": "Set verlassen (zählt als Niederlage)",
+    "Leave the ranked set": "Ranked-Set verlassen",
+    "Leave this ranked set?\n\nLeaving a ranked set counts as losing it.":
+        "Dieses Ranked-Set verlassen?\n\nWer ein Ranked-Set verlässt, hat es verloren.",
+    "Rematch? (a new set)": "Rematch? (ein neues Set)",
     "in a room": "in einem Raum",
     "in lobby": "in der Lobby",
     "matching": "im Match-Aufbau",

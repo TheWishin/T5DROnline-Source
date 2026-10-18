@@ -1151,8 +1151,8 @@ class OnlineView:
     # --- the bar: questions, found match, result + rematch
     def _bar_kind_now(self):
         tab = self.tab
-        if tab.rematch_bar is not None:
-            return "result"
+        if tab.rematch_bar is not None or getattr(tab, "set_bar", None) is not None:
+            return "result"                 # (a ranked set between two games: the result, the countdown, Leave set)
         if tab.challenge is not None:
             return "challenge"
         drv = tab.driver
@@ -1186,7 +1186,9 @@ class OnlineView:
             self._visual_challenge(self.bar_visual)
         elif kind == "result":
             self._visual_result(self.bar_visual)
-            show_text = tab.rematch_bar is not None and tab.bar_text.get() != tab.rematch_bar[0]
+            # (the countdown to a ranked set's next game shows too)
+            show_text = (tab.rematch_bar is not None and tab.bar_text.get() != tab.rematch_bar[0]) or (
+                getattr(tab, "set_bar", None) is not None)
         if show_text:
             self.bar_label.configure(style="Card.H3.TLabel" if kind == "question" else "Card.Accent.TLabel")
             self.bar_label.grid(row=1, column=0, sticky="w", pady=(self.px(10) if kind != "question" else 0, 0))

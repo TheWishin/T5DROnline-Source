@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS notices (
     text TEXT NOT NULL,
     cleared REAL                       -- set by `admin notice --clear`
 );
+CREATE TABLE IF NOT EXISTS sets (
+    id TEXT PRIMARY KEY,               -- a ranked set (docs/RANKED.md "Ranked sets"): first to wins_needed games
+    created REAL NOT NULL, ended REAL,
+    ranked INTEGER NOT NULL,
+    p1_name TEXT, p2_name TEXT, p1_account INTEGER, p2_account INTEGER,     -- P1 / P2 of every game of the set
+    wins_needed INTEGER NOT NULL,
+    status TEXT NOT NULL,              -- playing | confirmed | forfeit | void
+    winner INTEGER,                    -- 0 = P1, 1 = P2, NULL = no winner
+    score TEXT,                        -- JSON [games won by P1, by P2]
+    games TEXT,                        -- JSON [{match, number, status, winner, score, reason}] in order (replays too)
+    rating TEXT,                       -- JSON [P1 change, P2 change]: the one rating update of the set
+    reason TEXT, blame INTEGER
+);
 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
 CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
@@ -89,6 +102,8 @@ RANKED_COLUMNS = [
     ("matches", "reason", "TEXT"),
     ("matches", "blame", "INTEGER"),
     ("matches", "lag", "TEXT"),            # the post-game lag check (JSON): ping, expected and observed frames
+    ("matches", "set_id", "TEXT"),         # a game of a ranked set (sets.id): rated with the set, not on its own
+    ("matches", "set_game", "INTEGER"),    # its number in the set (1, 2, 3; a replay keeps the number)
 ]
 # Moderation (the admin tool, docs/HOSTING.md): account bans. Address bans live in ip_bans.
 MODERATION_COLUMNS = [
@@ -99,6 +114,8 @@ RANKED_INDEXES = """
 CREATE INDEX IF NOT EXISTS matches_p1 ON matches (p1_account, ended);
 CREATE INDEX IF NOT EXISTS matches_p2 ON matches (p2_account, ended);
 CREATE INDEX IF NOT EXISTS matches_created ON matches (created);
+CREATE INDEX IF NOT EXISTS sets_p1 ON sets (p1_account, ended);
+CREATE INDEX IF NOT EXISTS sets_p2 ON sets (p2_account, ended);
 """
 PERMANENT = 32503680000.0     # 3000-01-01: "banned for ever"
 
@@ -286,14 +303,14 @@ class Store:
         self.db.execute(
             "INSERT OR REPLACE INTO matches (id, created, ended, ranked, p1_name, p2_name, p1_account, "
             "p2_account, build, path, rtt_ms, delay, status, winner, score, reports, rating, origin, started, "
-            "duration, p1_char, p2_char, stage, reason, blame) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "duration, p1_char, p2_char, stage, reason, blame, set_id, set_game) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (m["id"], m["created"], m.get("ended"), int(m["ranked"]), m["p1_name"], m["p2_name"],
              m.get("p1_account"), m.get("p2_account"), m.get("build"), m.get("path"), m.get("rtt_ms"),
              m.get("delay"), m["status"], m.get("winner"), json.dumps(m.get("score")),
              json.dumps(m.get("reports")), json.dumps(m.get("rating")), m.get("origin"), m.get("started"),
              m.get("duration"), m.get("p1_char"), m.get("p2_char"), m.get("stage"), m.get("reason"),
-             m.get("blame")))
+             m.get("blame"), m.get("set_id"), m.get("set_game")))
 
     def match_row(self, mid):
         r = self.db.execute("SELECT * FROM matches WHERE id = ?", (mid,)).fetchone()
@@ -302,11 +319,15 @@ class Store:
     def history(self, aid, limit=20, offset=0):
         """Finished matches of an account, newest first, from that player's side:
         {match, time, ranked, status, opponent, you_char, opp_char, stage, result: win|loss|draw|-,
-         score [you, opp], delta, reason}."""
+         score [you, opp], delta, reason}. A game of a ranked set also has
+         set {id, game, status, result: win|loss|-, score [you, opp], delta}: the set's outcome; the
+         rating change of the set shows as `delta` on its deciding game only."""
         out = []
         for r in self.db.execute(
-                "SELECT * FROM matches WHERE (p1_account = ? OR p2_account = ?) AND status != 'playing' "
-                "ORDER BY COALESCE(ended, created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
+                "SELECT m.*, s.status AS s_status, s.winner AS s_winner, s.score AS s_score, s.rating AS s_rating, "
+                "s.games AS s_games FROM matches m LEFT JOIN sets s ON s.id = m.set_id "
+                "WHERE (m.p1_account = ? OR m.p2_account = ?) AND m.status != 'playing' "
+                "ORDER BY COALESCE(m.ended, m.created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
             r = dict(r)
             side = 0 if r["p1_account"] == aid else 1
             score = json.loads(r["score"]) if r["score"] else None
@@ -328,7 +349,74 @@ class Store:
                 "score": (score if side == 0 else score[::-1]) if score else None,
                 "delta": rating[side]["delta"] if rating else None,
                 "path": r["path"], "rtt_ms": r["rtt_ms"], "delay": r["delay"]})
+            if r.get("set_id"):
+                view = _set_view(r["set_id"], r["set_game"], r["s_status"], r["s_winner"], r["s_score"],
+                                 r["s_rating"], side)
+                out[-1]["set"] = view
+                games = json.loads(r["s_games"]) if r.get("s_games") else []
+                if view["delta"] is not None and games and games[-1].get("match") == r["id"]:
+                    out[-1]["delta"] = view["delta"]       # the deciding game carries the set's rating change
         return out
+
+    # ----------------------------------------------------------------- ranked sets
+    def save_set(self, s):
+        self.db.execute(
+            "INSERT OR REPLACE INTO sets (id, created, ended, ranked, p1_name, p2_name, p1_account, p2_account, "
+            "wins_needed, status, winner, score, games, rating, reason, blame) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (s["id"], s["created"], s.get("ended"), int(s["ranked"]), s["p1_name"], s["p2_name"], s.get("p1_account"),
+             s.get("p2_account"), s["wins_needed"], s["status"], s.get("winner"), json.dumps(s.get("score")),
+             json.dumps(s.get("games") or []), json.dumps(s.get("rating")), s.get("reason"), s.get("blame")))
+
+    def set_row(self, sid):
+        r = self.db.execute("SELECT * FROM sets WHERE id = ?", (sid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        for k in ("score", "games", "rating"):
+            d[k] = json.loads(d[k]) if d[k] else None
+        return d
+
+    def set_history(self, aid, limit=10, offset=0):
+        """Finished ranked sets of an account, newest first, from that player's side: {id, time, status,
+        reason, opponent, result: win|loss|-, score [you, opp], delta, games [{match, number, status, reason,
+        result, score [you, opp], you_char, opp_char, stage}]}."""
+        out = []
+        for r in self.db.execute(
+                "SELECT * FROM sets WHERE (p1_account = ? OR p2_account = ?) AND status != 'playing' "
+                "ORDER BY COALESCE(ended, created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
+            r = dict(r)
+            side = 0 if r["p1_account"] == aid else 1
+            d = _set_view(r["id"], None, r["status"], r["winner"], r["score"], r["rating"], side)
+            d.pop("game")
+            games = []
+            for g in json.loads(r["games"]) if r["games"] else []:
+                row = self.db.execute("SELECT p1_char, p2_char, stage FROM matches WHERE id = ?",
+                                      (g.get("match"),)).fetchone()
+                sc = g.get("score")
+                games.append({"match": g.get("match"), "number": g.get("number"), "status": g.get("status"),
+                              "reason": g.get("reason"),
+                              "result": "-" if g.get("winner") is None else ("win" if g["winner"] == side else "loss"),
+                              "score": (sc if side == 0 else sc[::-1]) if sc else None,
+                              "you_char": row[0 if side == 0 else 1] if row else None,
+                              "opp_char": row[1 if side == 0 else 0] if row else None,
+                              "stage": row[2] if row else None})
+            d.update({"time": r["ended"] or r["created"], "reason": r["reason"],
+                      "opponent": r["p2_name"] if side == 0 else r["p1_name"], "games": games})
+            out.append(d)
+        return out
+
+    def void_open_sets(self, reason="server_restart", now=None):
+        """Sets still 'playing' in the database belong to a server that stopped: a running set lives in the
+        server's memory only. Each becomes void -- no rating changes during a set, so there is nothing to
+        undo -- and so does any game of it still 'playing'. -> how many sets."""
+        now = now or time.time()
+        ids = [r[0] for r in self.db.execute("SELECT id FROM sets WHERE status = 'playing'")]
+        for sid in ids:
+            self.db.execute("UPDATE sets SET status = 'void', reason = ?, ended = ? WHERE id = ?", (reason, now, sid))
+            self.db.execute("UPDATE matches SET status = 'void', reason = ?, ended = ? WHERE set_id = ? AND "
+                            "status = 'playing'", (reason, now, sid))
+        return len(ids)
 
     def char_usage(self, aid, limit=5):
         """[{char, games, wins}] over counted matches, most played first."""
@@ -359,12 +447,18 @@ class Store:
             (since, aid, aid)).fetchone()[0]
 
     def pair_ranked(self, a, b, since):
-        """Counted ranked matches between accounts a and b since `since` (anti win-trading cap)."""
-        return self.db.execute(
-            "SELECT COUNT(*) FROM matches WHERE ranked = 1 AND ended >= ? AND status IN "
+        """Rated results between accounts a and b since `since` (anti win-trading cap): ranked sets that
+        counted, plus ranked games rated on their own (the games of a set are not counted one by one)."""
+        games = self.db.execute(
+            "SELECT COUNT(*) FROM matches WHERE ranked = 1 AND ended >= ? AND set_id IS NULL AND status IN "
             "('confirmed','onesided','forfeit','resolved') AND "
             "((p1_account = ? AND p2_account = ?) OR (p1_account = ? AND p2_account = ?))",
             (since, a, b, b, a)).fetchone()[0]
+        sets = self.db.execute(
+            "SELECT COUNT(*) FROM sets WHERE ranked = 1 AND ended >= ? AND status IN ('confirmed','forfeit') AND "
+            "((p1_account = ? AND p2_account = ?) OR (p1_account = ? AND p2_account = ?))",
+            (since, a, b, b, a)).fetchone()[0]
+        return games + sets
 
     def place(self, aid):
         """Leaderboard place of an account (1 = top), None when it has no ranked match."""
@@ -529,3 +623,16 @@ class Store:
 
 # Statuses whose result counts (record, rating when ranked).
 COUNTED = ("confirmed", "onesided", "forfeit", "resolved")
+# ... and those of a ranked set (decided by its games, or by a player leaving it).
+SET_COUNTED = ("confirmed", "forfeit")
+
+
+def _set_view(sid, game, status, winner, score, rating, side):
+    """A ranked set from one player's side (history rows)."""
+    score = json.loads(score) if isinstance(score, str) else score
+    rating = json.loads(rating) if isinstance(rating, str) else rating
+    counted = status in SET_COUNTED and winner is not None
+    return {"id": sid, "game": game, "status": status,
+            "result": ("win" if winner == side else "loss") if counted else "-",
+            "score": (score if side == 0 else score[::-1]) if score else None,
+            "delta": rating[side]["delta"] if rating else None}

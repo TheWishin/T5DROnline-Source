@@ -284,7 +284,7 @@ built as before. We prepared two services: SignPath (free for open source) and A
 
 1. You push the tag as always. The workflow builds the first half: everything is staged and checked.
 2. The two programs go to the signing service. SignPath waits for your click (it e-mails you);
-   the workflow waits up to 30 minutes for it. Azure signs at once.
+   the workflow waits up to 20 minutes for it, so approve at once (the Windows runner waits, and its minutes count double in a private repository). Azure signs at once.
 3. The second half installs the signed copies. It checks that each is the built file plus a signature
    that Windows reports as `Valid`, and nothing else changed. If not, the run stops.
 4. The zip, the checks, the smoke test and the draft release go on as before. The release notes say

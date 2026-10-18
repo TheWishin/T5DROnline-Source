@@ -249,7 +249,7 @@ jobs:
         run: python tools/package_release.py --release --version $env:VERSION --llvm "$env:RUNNER_TEMP/llvm" --ps3recomp deps/ps3recomp --out dist --sign-stage prepare
 
       # SignPath (free for open source: SignPath Foundation). The owner approves each release in
-      # SignPath's web page (they send an e-mail); this step waits up to 30 minutes for it.
+      # SignPath's web page (they send an e-mail); this step waits up to 20 minutes for it (a Windows runner minute counts double in a private repository).
       - name: Upload the unsigned programs (SignPath reads them from here)
         id: unsigned
         if: steps.signing.outputs.provider == 'signpath'
@@ -272,7 +272,7 @@ jobs:
           artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
           wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 1800
+          wait-for-completion-timeout-in-seconds: 1200
           output-artifact-directory: dist/signed
 
       # Azure Artifact Signing (formerly Trusted Signing): signs the files of a folder in place.

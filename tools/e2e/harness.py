@@ -1,7 +1,7 @@
 """End-to-end harness: a local lobby server, players driven through the launcher's own Online tab,
 real (or stub) games, a network shaper between the two games.
 
-What is real here and what stands in (docs/E2E.md has the long form):
+What is real here and what stands in (docs/SMOKE.md "End-to-end online scenarios"):
 
   real   the lobby server (python -m t5lobby.server, its own process, its own database, local ports
          only), the Online tab (launcher/online.py -> t5lobby.tk_tab.OnlineTab) with its LobbyClient

@@ -359,6 +359,7 @@ bool g_intro_hold = false;      /* the pads are held through the fight's loading
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
+ULONGLONG g_cmd_ms = 0;         /* when the pending "fight" came (stuck_check) */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
@@ -692,6 +693,7 @@ void persistent_frame(uint32_t f)
     if (c.cmd != "fight") { note("control command %u: '%s' unknown, ignored", c.seq, c.cmd.c_str()); return; }
     g_cmd = c;
     g_pending_cmd = true;
+    g_cmd_ms = GetTickCount64();
     g_ctl_error.clear();
     /* the same session (a rematch) when the launcher says so or the netplay variables are the session's */
     std::string key;
@@ -725,11 +727,17 @@ uint32_t g_leave_phase = 10;    /* T5_DF_LEAVE_PHASE (diagnostics): a fight is l
 ULONGLONG g_stuck_dumped = 0;   /* g_ph_ms of the phase whose wait was dumped */
 void stuck_check(uint32_t f)
 {
-    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken);
+    /* Neutral with a "fight" pending waits for the select screen to take input
+     * (select_live); a select mode that never gets past its loading (phase word
+     * 1, every loader parked: reset_cycle_test F10, F12 under heavy load) held
+     * the game there for good -- counted from the command, as a reset. */
+    const bool neutral_wait = g_ph == Ph::Neutral && g_pending_cmd;
+    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken) || neutral_wait;
     if (!g_ctl || !g_stuck_s || !waiting) return;
-    const ULONGLONG ms = GetTickCount64() - g_ph_ms;
-    if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != g_ph_ms) {   /* half way: what it waits on */
-        g_stuck_dumped = g_ph_ms;
+    const ULONGLONG since = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_ms : g_ph_ms;
+    const ULONGLONG ms = GetTickCount64() - since;
+    if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != since) {   /* half way: what it waits on */
+        g_stuck_dumped = since;
         note("frame %u: %s for %u s (mode %u, next %u, phase word %u):", f, g_state_name, (unsigned)(ms / 1000),
              mode_cur(), mode_next(), rd32(kSelectState));
         stuck_dump(f);

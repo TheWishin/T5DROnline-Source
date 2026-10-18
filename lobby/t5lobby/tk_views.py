@@ -100,6 +100,7 @@ class OnlineView:
         self._anim_id = None
         self._anim_t = time.monotonic()
         self._wraps = []                   # (label, container, margin): wraplength follows the width
+        self._wrap_bound = set()
         self.revealed = None               # the opponent once both accepted (match_reveal)
         self.challenger = None
         self.match_ev = None               # match_start of the match being played
@@ -124,8 +125,26 @@ class OnlineView:
         return ttk.Frame(parent, style=style)
 
     def wrap(self, label, container, margin=0):
+        """The label wraps at the container's width (less `margin` pixels at 96 DPI)."""
         self._wraps.append((label, container, margin))
+        key = str(container)
+        if key not in self._wrap_bound:
+            self._wrap_bound.add(key)
+            container.bind("<Configure>", lambda _e, c=container: self._wrap_in(c), add="+")
         return label
+
+    def _wrap_in(self, container):
+        w = container.winfo_width()
+        if w <= 50:
+            return
+        for label, cont, margin in self._wraps:
+            if cont is container:
+                try:
+                    want = max(120, w - self.px(margin))
+                    if int(str(label.cget("wraplength") or 0)) != want:
+                        label.configure(wraplength=want)
+                except (tk.TclError, ValueError):
+                    pass
 
     def _on_resize(self, _e=None):
         for label, cont, margin in self._wraps:
@@ -707,8 +726,12 @@ class OnlineView:
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
         self.status_label.grid(row=0, column=0, sticky="w")
+        rep = ttk.Frame(st)
+        rep.grid(row=0, column=1, sticky="e", padx=(px(10), px(10)))
+        # after a match: the launcher's "Report a problem" window (tk_tab packs it into this frame)
+        tab.report_btn = ttk.Button(rep, text="Report a problem...", style="Small.TButton", command=tab.do_report)
         pad = ttk.Frame(st)
-        pad.grid(row=0, column=1, sticky="e")
+        pad.grid(row=0, column=2, sticky="e")
         ttk.Label(pad, textvariable=tab.pad_info_var, style="Faint.TLabel").pack(side="left", padx=(0, px(10)))
         tab.pad_check = ttk.Checkbutton(pad, text="Use a controller here", variable=tab.pad_var,
                                         command=tab._pad_toggle)
@@ -1273,6 +1296,9 @@ class OnlineView:
         if opp and tab.client is not None:
             ttk.Button(self.res_buttons, text=f"Block {opp}", style="Card.Danger.TButton",
                        command=lambda: tab.block_opponent(opp)).pack(side="left", padx=(px(8), 0))
+        if hasattr(tab.app, "report_problem"):
+            ttk.Button(self.res_buttons, text="Report a problem...", style="Card.Link.TButton",
+                       command=tab.do_report).pack(side="left", padx=(px(12), 0))
         self._on_resize()
 
     def _next_game(self):

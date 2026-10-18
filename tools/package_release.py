@@ -6,6 +6,9 @@
                                     [--keys FILE] [--game-dir DIR ...]
     python tools/package_release.py [--version V] [--bundle-python] [--llvm DIR] [--prebuilt-host] [--zip] ...
     python tools/package_release.py --scan-only PATH      (a folder or a zip)
+    python tools/package_release.py --release ... --stub-compiler msvc|clang
+    python tools/package_release.py --release ... --sign-stage prepare       (code signing, 1st half)
+    python tools/package_release.py --release ... --sign-stage finish --signed-dir DIR   (2nd half)
 
 --release is the published layout (= --bundle-python --prebuilt-host --zip, and
 --llvm is required). The same command runs on a developer PC and in
@@ -22,7 +25,8 @@ stamped into README.txt, into release.json (the launcher shows it in its title
 bar and header) and into the folder/zip name.
 
 What goes in:
-  T5DR Online.exe          small native starter (launcher/stub), built here with clang-cl
+  T5DR Online.exe          small native starter (launcher/stub), built here with MSVC cl.exe + link.exe
+                           (--stub-compiler msvc, the default) or with clang-cl (--stub-compiler clang)
   launcher/                the launcher (Python/tkinter)
   lobby/                   the lobby client, and the server for "Host for friends" (run.py, deploy/windows)
   tools/                   build_game.py, run_game.py, make_keys.py, unself.py, prereqs.py, ...
@@ -39,6 +43,14 @@ What goes in:
                            compiles the game DLL with these (tools/build_game_dll.py)
   runtime/                 (--prebuilt-host) t5dr.exe + t5dr.lib, the runtime without game code
   LICENSES/, README.txt, release.json
+
+Code signing (docs/RELEASING.md "Code signing"): the release workflow signs T5DR Online.exe and
+runtime/t5dr.exe with a signing service when its secrets exist. A service works on files, so the run
+is split in two: `--sign-stage prepare` builds and stages everything and copies the files to sign to
+<out>/to-sign/ (same relative paths); after the service has signed them into a folder,
+`--sign-stage finish --signed-dir DIR` puts the signed copies in, checks that each is the built file
+plus a valid signature, recomputes the code ID (it hashes runtime/t5dr.exe) and writes the zip. Without
+--sign-stage nothing changes: one run, unsigned.
 
 What must never go in -- checked on the folder and again on the zip, the run
 fails if any check fails:
@@ -66,6 +78,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import build_game  # noqa: E402
 import check_binaries  # noqa: E402
+import code_signing  # noqa: E402
 import prereqs     # noqa: E402
 
 OUR_FILES = [
@@ -73,7 +86,8 @@ OUR_FILES = [
     "tools/build_game.py", "tools/run_game.py", "tools/make_keys.py", "tools/unself.py", "tools/prereqs.py",
     "tools/build_game_dll.py", "tools/lift_spu_jobs.py", "tools/gamedll/t5dr_game_dll.c", "tools/gamedll/t5dr_host.def",
     "tools/gamedll/ucrt_min.def",
-    "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/stub/t5dr_stub.c",
+    "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
+    "launcher/problem_report.py", "launcher/problem_report_ui.py", "launcher/stub/t5dr_stub.c",
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",
@@ -89,7 +103,7 @@ OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
              "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
-             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*/*.c"]
+             "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*.rc.in", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
 PS3_KEEP_DIRS = ["include", "libs", "runtime", "third_party"]
@@ -131,6 +145,12 @@ PY_SELFTEST = (
 
 def log(msg):
     print(msg, flush=True)
+
+
+def warn(msg):
+    log(f"WARNING: {msg}")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning::{msg.splitlines()[0]}", flush=True)
 
 
 def fail(msg):
@@ -446,7 +466,7 @@ def add_llvm(stage, llvm):
     log(f"  llvm: {mb(dir_size(dst))} (clang resource headers {ver})")
 
 
-def add_prebuilt_host(stage, clang, jobs):
+def add_prebuilt_host(stage, clang, jobs, version="0.0.0-dev"):
     """runtime/t5dr.exe + t5dr.lib: ps3recomp's runtime without any game code (CMake
     -DT5DR_GAME_DLL=ON), built from exactly the sources staged above, static C runtime
     (no Visual C++ redistributable needed). The player's PC then compiles only the
@@ -459,6 +479,7 @@ def add_prebuilt_host(stage, clang, jobs):
     try:
         args = [f'"{cm}"', "-S", f'"{stage}"', "-B", f'"{tmp}"', "-G", "Ninja", f'-DCMAKE_MAKE_PROGRAM="{nj}"',
                 "-DCMAKE_BUILD_TYPE=Release", "-DT5DR_GAME_DLL=ON", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+                f'-DT5DR_VERSION="{version}"',
                 f'-DPS3RECOMP_DIR="{os.path.join(stage, "deps", "ps3recomp")}"', f'-DSPU_DIR="{tmp}"',
                 f'-DPython3_EXECUTABLE="{sys.executable}"',
                 f'-DCMAKE_C_COMPILER="{clang[0]}"', f'-DCMAKE_CXX_COMPILER="{clang[0]}"']
@@ -538,40 +559,108 @@ END
 """
 
 
-def build_stub(stage, clang, version="0.0.0"):
+STUB_COMPILERS = ("msvc", "clang")
+
+
+def default_stub_compiler():
+    """--stub-compiler's default: the T5DR_STUB_COMPILER environment variable (the release workflow
+    sets it from the repository variable of that name), else msvc."""
+    v = os.environ.get("T5DR_STUB_COMPILER", "").strip().lower()
+    return v if v in STUB_COMPILERS else "msvc"
+
+
+def find_msvc_tools(pre):
+    """(cl.exe, link.exe, rc.exe, toolset version) of the MSVC environment `pre` sets up (see
+    msvc_prefix), or None when it has no cl.exe/link.exe/rc.exe. Paths come from VCToolsInstallDir and
+    the Windows SDK's folder, not from a PATH search: Git for Windows has its own link.exe (coreutils)."""
+    # `set VCTools` lists VCToolsInstallDir=... and VCToolsVersion=... (an `echo %VAR%` on the same line
+    # as the vcvars call would be expanded before vcvars ran).
+    r = subprocess.run(f"{pre}set VCTools&& where rc.exe", shell=True, capture_output=True, text=True,
+                       errors="replace")
+    env = dict(l.strip().split("=", 1) for l in r.stdout.splitlines() if l.startswith("VCTools") and "=" in l)
+    rcs = [l.strip() for l in r.stdout.splitlines() if l.strip().lower().endswith("rc.exe")]
+    tools_dir, ver = env.get("VCToolsInstallDir", ""), env.get("VCToolsVersion", "?")
+    if r.returncode or not tools_dir or not rcs:
+        return None
+    rc = rcs[0]
+    cl = os.path.join(tools_dir, "bin", "Hostx64", "x64", "cl.exe")
+    link = os.path.join(tools_dir, "bin", "Hostx64", "x64", "link.exe")
+    if not (os.path.exists(cl) and os.path.exists(link) and os.path.exists(rc)):
+        return None
+    return cl, link, rc, ver
+
+
+def build_stub(stage, clang, version="0.0.0", compiler=None):
     """T5DR Online.exe from launcher/stub/t5dr_stub.c: an ordinary Windows application (static
-    C runtime, version information, icon, manifest). Without clang-cl or MSVC, a .cmd starter
-    stands in (developer zips only; --release fails)."""
+    C runtime, version information, icon, manifest).
+
+    compiler 'msvc' (the default): cl.exe + link.exe + rc.exe of the MSVC environment, with
+    /O2 /MT /GS /guard:cf and /DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE -- what Microsoft's own tools
+    emit, which some machine-learning scanners like better. Falls back to clang-cl (with a warning)
+    when this PC has no cl.exe/link.exe. 'clang': clang-cl + lld-style resources, as before 1.0.1.
+    Without either, a .cmd starter stands in (developer zips only; --release fails).
+    Returns a text naming the compiler that was used ('MSVC 14.44.35207 ...'), or None for the .cmd."""
+    compiler = compiler or default_stub_compiler()
     src = os.path.join(ROOT, "launcher", "stub", "t5dr_stub.c")
     out = os.path.join(stage, "T5DR Online.exe")
     pre = msvc_prefix()
-    if clang[0] and pre is not None:
-        tmp = tempfile.mkdtemp(prefix="t5dr_stub_")
-        nums = (re.findall(r"\d+", str(version).split("-")[0]) + ["0", "0", "0"])[:3]
-        rc = os.path.join(tmp, "stub.rc")
-        stub_dir = os.path.join(ROOT, "launcher", "stub")
-        with open(rc, "w", encoding="utf-8") as f:
-            f.write(STUB_RC.format(ico=os.path.join(stub_dir, "t5dr.ico").replace("\\", "/"),
-                                   manifest=os.path.join(stub_dir, "t5dr_stub.manifest").replace("\\", "/"),
-                                   v1=nums[0], v2=nums[1], v3=nums[2], version=version))
-        llvm_rc = os.path.join(os.path.dirname(clang[0]), "llvm-rc.exe")
-        rcexe = f'"{llvm_rc}"' if os.path.exists(llvm_rc) else "rc.exe"
-        res = os.path.join(tmp, "stub.res")
-        obj = os.path.join(tmp, "stub.obj")
-        cmd = (f'{pre}{rcexe} /nologo /fo "{res}" "{rc}" && '
-               f'"{clang[0]}" /nologo /O2 /MT "{src}" /Fo"{obj}" /Fe"{out}" '
-               f'/link /SUBSYSTEM:WINDOWS /MANIFEST:NO "{res}" kernel32.lib user32.lib')
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-        if r.returncode == 0 and os.path.exists(out):
-            log(f"  T5DR Online.exe: {os.path.getsize(out):,} bytes")
-            return True
-        fail("launcher stub build failed:\n" + r.stdout + r.stderr)
-    log("  no clang-cl/MSVC here: using a .cmd starter instead of T5DR Online.exe")
+    used = None
+    if pre is not None:
+        tools = find_msvc_tools(pre) if compiler == "msvc" else None
+        if compiler == "msvc" and not tools:
+            if clang[0]:
+                warn("T5DR Online.exe: no cl.exe/link.exe/rc.exe in the MSVC environment, building it with clang-cl "
+                     "instead (--stub-compiler clang)")
+            else:
+                warn("T5DR Online.exe: no cl.exe/link.exe/rc.exe in the MSVC environment and no clang-cl")
+        if tools or clang[0]:
+            tmp = tempfile.mkdtemp(prefix="t5dr_stub_")
+            try:
+                nums = (re.findall(r"\d+", str(version).split("-")[0]) + ["0", "0", "0"])[:3]
+                rc = os.path.join(tmp, "stub.rc")
+                stub_dir = os.path.join(ROOT, "launcher", "stub")
+                # The manifest with LF line endings whatever git's autocrlf did to the checkout: the same
+                # sources give the same T5DR Online.exe on every PC.
+                manifest = os.path.join(tmp, "t5dr_stub.manifest")
+                with open(os.path.join(stub_dir, "t5dr_stub.manifest"), "rb") as f:
+                    xml = f.read().replace(b"\r\n", b"\n")
+                with open(manifest, "wb") as f:
+                    f.write(xml)
+                with open(rc, "w", encoding="utf-8") as f:
+                    f.write(STUB_RC.format(ico=os.path.join(stub_dir, "t5dr.ico").replace("\\", "/"),
+                                           manifest=manifest.replace("\\", "/"),
+                                           v1=nums[0], v2=nums[1], v3=nums[2], version=version))
+                res = os.path.join(tmp, "stub.res")
+                obj = os.path.join(tmp, "stub.obj")
+                built = os.path.join(tmp, "stub.exe")     # linked in the short temp path, copied to `out` after
+                if tools:
+                    cl, link, rcexe, ver = tools
+                    cmd = (f'{pre}"{rcexe}" /nologo /fo "{res}" "{rc}" && '
+                           f'"{cl}" /nologo /c /O2 /MT /GS /guard:cf /W3 "{src}" /Fo"{obj}" && '
+                           f'"{link}" /nologo /OUT:"{built}" /SUBSYSTEM:WINDOWS /MANIFEST:NO /INCREMENTAL:NO '
+                           f'/DYNAMICBASE /NXCOMPAT /GUARD:CF /RELEASE "{obj}" "{res}" kernel32.lib user32.lib')
+                    used = f"MSVC {ver} (cl.exe + link.exe)"
+                else:
+                    llvm_rc = os.path.join(os.path.dirname(clang[0]), "llvm-rc.exe")
+                    rcexe = f'"{llvm_rc}"' if os.path.exists(llvm_rc) else "rc.exe"
+                    cmd = (f'{pre}{rcexe} /nologo /fo "{res}" "{rc}" && '
+                           f'"{clang[0]}" /nologo /O2 /MT "{src}" /Fo"{obj}" /Fe"{built}" '
+                           f'/link /SUBSYSTEM:WINDOWS /MANIFEST:NO "{res}" kernel32.lib user32.lib')
+                    used = f"clang-cl {clang[1]}"
+                r = subprocess.run(cmd, shell=True, capture_output=True, text=True, errors="replace")
+                if r.returncode == 0 and os.path.exists(built):
+                    shutil.copy2(built, out)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            if r.returncode == 0 and os.path.exists(out):
+                log(f"  T5DR Online.exe: {os.path.getsize(out):,} bytes, built with {used}")
+                return used
+            fail("launcher stub build failed:\n" + r.stdout + r.stderr)
+    log("  no MSVC/clang-cl here: using a .cmd starter instead of T5DR Online.exe")
     with open(os.path.join(stage, "T5DR Online.cmd"), "w") as f:
         f.write('@echo off\r\ncd /d "%~dp0"\r\nif exist python\\pythonw.exe (start "" python\\pythonw.exe '
                 'launcher\\t5dr_launcher.pyw) else (start "" pythonw launcher\\t5dr_launcher.pyw)\r\n')
-    return False
+    return None
 
 
 def add_docs(stage, version):
@@ -730,6 +819,82 @@ def report(label, bad, count, size):
     return True
 
 
+# --------------------------------------------------------------------------- code signing
+
+def export_to_sign(stage, dest):
+    """Copy the files we sign (tools/code_signing.py signable_files) to `dest`, keeping their relative
+    paths: what the signing service gets. Nothing else leaves the folder."""
+    files = code_signing.signable_files(stage)
+    if not files:
+        fail("--sign-stage prepare: no program to sign in the staged folder")
+    if os.path.exists(dest):
+        shutil.rmtree(dest)
+    for rel in files:
+        target = os.path.join(dest, *rel.split("/"))
+        copy(os.path.join(stage, *rel.split("/")), target)
+        log(f"  to sign: {rel} ({os.path.getsize(target):,} bytes, sha256 {sha256_file(target)[:16]}...)")
+    return files
+
+
+def install_signed(stage, signed_dir, accept_untrusted=False):
+    """Put the signed copies from `signed_dir` over the built files. Each one must exist, carry a
+    signature that Windows reports as Valid, and be the built file plus that signature -- a signing
+    service may add a certificate to our program and change nothing else. Returns the list."""
+    files = code_signing.signable_files(stage)
+    if not files:
+        fail("--sign-stage finish: no program to sign in the staged folder")
+    done = []
+    for rel in files:
+        built = os.path.join(stage, *rel.split("/"))
+        signed = os.path.join(signed_dir, *rel.split("/"))
+        if not os.path.isfile(signed):
+            fail(f"{rel}: the signing service returned no signed copy (expected {signed})")
+        with open(built, "rb") as f:
+            built_bytes = f.read()
+        with open(signed, "rb") as f:
+            signed_bytes = f.read()
+        try:
+            has_sig = code_signing.certificate_table(signed_bytes)[1] > 0
+            same = code_signing.same_program(built_bytes, signed_bytes)
+        except ValueError as e:
+            fail(f"{rel}: {e}")
+        if not has_sig:
+            fail(f"{rel}: the returned file has no signature")
+        if not same:
+            fail(f"{rel}: the signed file is not the file built in this run (more than a signature differs)")
+        status, subject = code_signing.authenticode_status(signed)
+        if status != "Valid" and not (accept_untrusted and status in ("UnknownError", "NotTrusted")):
+            fail(f"{rel}: Windows reports the signature as {status} (signer: {subject or 'none'})")
+        shutil.copy2(signed, built)
+        log(f"  signed: {rel} -- {status}, {subject}")
+        done.append(rel)
+    return done
+
+
+def check_stage(stage, clang, release, key_pats, game_index):
+    """The checks on the staged folder before it becomes a zip (or before it is sent to be signed)."""
+    sweep_pycache(stage)
+    llvm_bin = os.path.dirname(clang[0]) if clang[0] else None
+    if llvm_bin and os.path.exists(os.path.join(llvm_bin, "llvm-readobj.exe")):
+        log("checking the binaries for a clean Windows 10/11 (tools/check_binaries.py)")
+        problems, _ = check_binaries.check_release(stage, llvm_bin, log=log)
+        if problems:
+            fail("binaries that would not run on every Windows 10/11 PC:\n  " + "\n  ".join(problems))
+    else:
+        log("  (no llvm-readobj next to clang-cl: import check skipped)")
+
+    # Script files in a game download are what virus scanners flag first: 0.1.8/0.1.9-preview got
+    # "Generic.BAT.Downloader" from 8 of 62-65 scanners. The zip carries none.
+    scripts = [os.path.relpath(os.path.join(dp, f), stage) for dp, _, fns in os.walk(stage) for f in fns
+               if f.lower().endswith((".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta"))]
+    if scripts and release:
+        fail("script files in the release (virus scanners flag them): " + ", ".join(sorted(scripts)[:20]))
+    ok = report("folder", *scan_files(iter_dir(stage), key_pats, game_index))
+    if not ok:
+        fail("refusing to package: see the scan above")
+    log(f"folder: {mb(dir_size(stage))}")
+
+
 # --------------------------------------------------------------------------- main
 
 def main():
@@ -754,6 +919,19 @@ def main():
     ap.add_argument("--game-dir", action="append", help="folder of game-derived files to cross-check (repeatable)")
     ap.add_argument("--zip", action="store_true", help="also write the zip and SHA256SUMS")
     ap.add_argument("--scan-only", metavar="PATH", help="only scan this folder or zip")
+    ap.add_argument("--stub-compiler", choices=STUB_COMPILERS, default=default_stub_compiler(),
+                    help="what builds T5DR Online.exe: msvc = cl.exe + link.exe (default; falls back to clang-cl "
+                         "with a warning when this PC has no MSVC tools), clang = clang-cl. Default: the "
+                         "environment variable T5DR_STUB_COMPILER, else msvc")
+    ap.add_argument("--sign-stage", choices=("prepare", "finish"),
+                    help="code signing in two halves: 'prepare' builds and stages, runs the checks and copies the "
+                         "files to sign to <out>/to-sign/ (no zip); 'finish' (needs --signed-dir) installs the "
+                         "signed copies and writes the zip. Without it: one run, nothing signed")
+    ap.add_argument("--signed-dir", metavar="DIR",
+                    help="with --sign-stage finish: the folder the signing service filled, same relative paths "
+                         "as <out>/to-sign/")
+    ap.add_argument("--accept-untrusted-signature", action="store_true",
+                    help="testing only: accept a signature Windows does not trust (a self-signed test certificate)")
     a = ap.parse_args()
 
     key_pats = load_key_patterns(a.keys)
@@ -770,52 +948,55 @@ def main():
         if not a.llvm:
             fail("--release needs --llvm (python tools/fetch_llvm.py --dest DIR gets the pinned LLVM)")
         a.bundle_python = a.prebuilt_host = a.zip = True
+    if a.sign_stage == "finish" and not a.signed_dir:
+        fail("--sign-stage finish needs --signed-dir (the folder with the signed copies)")
+    if a.signed_dir and a.sign_stage != "finish":
+        fail("--signed-dir belongs to --sign-stage finish")
     clang = find_clang(a.llvm)
 
     out = os.path.abspath(a.out)
     name = f"T5DR-Online-{version}"
     stage = os.path.join(out, name)
-    if os.path.exists(stage):
-        shutil.rmtree(stage)
-    os.makedirs(stage)
-    log(f"staging {stage}")
-    add_our_files(stage)
-    patches = add_ps3recomp(stage, a.ps3recomp)
-    py_ver = add_python(stage) if a.bundle_python else None
-    if a.llvm:
-        add_llvm(stage, a.llvm)
-    if a.prebuilt_host:
-        add_prebuilt_host(stage, clang, a.jobs)
-    if not build_stub(stage, clang, version) and a.release:
-        fail("--release needs the native starter T5DR Online.exe (clang-cl + MSVC)")
-    add_docs(stage, version)
-    info = {"name": "T5DR Online", "version": version, "code_id": staged_code_id(stage),
-            "ps3recomp": build_game.PS3RECOMP_COMMIT, "patches": patches, "game": build_game.GAME_NAME,
-            "commit": source_commit(), "built": build_time(),
-            "llvm": clang[1] if a.llvm else None, "python": py_ver, "prebuilt_host": bool(a.prebuilt_host)}
-    with open(os.path.join(stage, "release.json"), "w") as f:
-        json.dump(info, f, indent=1)
-    sweep_pycache(stage)
+    release_json = os.path.join(stage, "release.json")
 
-    llvm_bin = os.path.dirname(clang[0]) if clang[0] else None
-    if llvm_bin and os.path.exists(os.path.join(llvm_bin, "llvm-readobj.exe")):
-        log("checking the binaries for a clean Windows 10/11 (tools/check_binaries.py)")
-        problems, _ = check_binaries.check_release(stage, llvm_bin, log=log)
-        if problems:
-            fail("binaries that would not run on every Windows 10/11 PC:\n  " + "\n  ".join(problems))
+    if a.sign_stage == "finish":
+        if not os.path.isfile(release_json):
+            fail(f"--sign-stage finish: no staged folder at {stage} (run --sign-stage prepare first)")
+        with open(release_json) as f:
+            info = json.load(f)
+        info["signed"] = install_signed(stage, os.path.abspath(a.signed_dir), a.accept_untrusted_signature)
+        info["code_id"] = staged_code_id(stage)      # hashes runtime/t5dr.exe, which now carries a signature
+        with open(release_json, "w") as f:
+            json.dump(info, f, indent=1)
     else:
-        log("  (no llvm-readobj next to clang-cl: import check skipped)")
+        if os.path.exists(stage):
+            shutil.rmtree(stage)
+        os.makedirs(stage)
+        log(f"staging {stage}")
+        add_our_files(stage)
+        patches = add_ps3recomp(stage, a.ps3recomp)
+        py_ver = add_python(stage) if a.bundle_python else None
+        if a.llvm:
+            add_llvm(stage, a.llvm)
+        if a.prebuilt_host:
+            add_prebuilt_host(stage, clang, a.jobs, version)
+        stub = build_stub(stage, clang, version, a.stub_compiler)
+        if not stub and a.release:
+            fail("--release needs the native starter T5DR Online.exe (MSVC or clang-cl)")
+        add_docs(stage, version)
+        info = {"name": "T5DR Online", "version": version, "code_id": staged_code_id(stage),
+                "ps3recomp": build_game.PS3RECOMP_COMMIT, "patches": patches, "game": build_game.GAME_NAME,
+                "commit": source_commit(), "built": build_time(),
+                "llvm": clang[1] if a.llvm else None, "python": py_ver, "prebuilt_host": bool(a.prebuilt_host),
+                "stub_compiler": stub, "signed": []}
+        with open(release_json, "w") as f:
+            json.dump(info, f, indent=1)
 
-    # Script files in a game download are what virus scanners flag first: 0.1.8/0.1.9-preview got
-    # "Generic.BAT.Downloader" from 8 of 62-65 scanners. The zip carries none.
-    scripts = [os.path.relpath(os.path.join(dp, f), stage) for dp, _, fns in os.walk(stage) for f in fns
-               if f.lower().endswith((".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta"))]
-    if scripts and a.release:
-        fail("script files in the release (virus scanners flag them): " + ", ".join(sorted(scripts)[:20]))
-    ok = report("folder", *scan_files(iter_dir(stage), key_pats, game_index))
-    if not ok:
-        fail("refusing to package: see the scan above")
-    log(f"folder: {mb(dir_size(stage))}")
+    check_stage(stage, clang, a.release, key_pats, game_index)
+    if a.sign_stage == "prepare":
+        export_to_sign(stage, os.path.join(out, "to-sign"))
+        log("prepare done: sign the files in to-sign/, then run again with --sign-stage finish --signed-dir DIR")
+        return
     if a.zip:
         zpath = os.path.join(out, name + ".zip")
         write_zip(stage, zpath, name)

@@ -43,6 +43,7 @@ class FakeApp:
         self.settings = FakeSettings(d)
         self.games = []
         self.statuses = []
+        self.reports = 0
 
     def game_state(self):
         return {"ok": True}
@@ -54,6 +55,9 @@ class FakeApp:
 
     def set_status(self, text):
         self.statuses.append(text)
+
+    def report_problem(self):                    # the launcher's "Report a problem" window
+        self.reports += 1
 
 
 @unittest.skipIf(tk is None, "no tkinter")
@@ -121,6 +125,7 @@ class TkTabTest(TkBase):
         self.pump(lambda: tab.client is not None and tab.client.me is not None)
         self.pump(lambda: str(tab.actions["quick"].cget("state")) == "normal")
         self.assertEqual(str(tab.actions["ranked"].cget("state")), "disabled")   # guests: no ranked
+        self.assertEqual(tab.report_btn.winfo_manager(), "")       # "Report a problem" comes after a match
 
         self.other = client(self.s, "Rival", auto_ready=True)
         self.pump(lambda: len(tab.tv_players.get_children()) == 2)
@@ -143,6 +148,9 @@ class TkTabTest(TkBase):
         self.other.report_result(my_slot, None)
         self.pump(lambda: "Result confirmed" in tab.status_var.get())
         self.assertIn("1W 0L", tab.me_var.get())
+        self.assertEqual(tab.report_btn.winfo_manager(), "pack")   # now offered, next to the match line
+        tab.report_btn.invoke()
+        self.assertEqual(self.app.reports, 1)
 
     def test_the_tests_never_touch_the_real_clipboard(self):
         for name in ("clipboard_clear", "clipboard_append", "clipboard_get"):

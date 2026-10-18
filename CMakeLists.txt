@@ -16,6 +16,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 project(t5dr C CXX)
+if(WIN32)
+    enable_language(RC)     # t5dr.exe's version information (src/platform/t5dr.rc.in)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD 17)
@@ -241,6 +244,21 @@ if(WIN32)
     # per-monitor DPI awareness; gpu_preference.c exports the hybrid-laptop
     # hints for the discrete GPU; cpu_check.cpp stops with a message on a CPU
     # without SSE4.1. Both in the developer and the release build.
+    # Version information (Explorer's Details tab; scanners and SmartScreen read it; SignPath's artifact
+    # configuration checks the product name). package_release.py passes -DT5DR_VERSION=<release>.
+    set(T5DR_VERSION "0.0.0-dev" CACHE STRING "Version in t5dr.exe's version information")
+    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _t5dr_ver "${T5DR_VERSION}")
+    if(_t5dr_ver)
+        set(T5DR_VER_MAJOR ${CMAKE_MATCH_1})
+        set(T5DR_VER_MINOR ${CMAKE_MATCH_2})
+        set(T5DR_VER_PATCH ${CMAKE_MATCH_3})
+    else()
+        set(T5DR_VER_MAJOR 0)
+        set(T5DR_VER_MINOR 0)
+        set(T5DR_VER_PATCH 0)
+    endif()
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/platform/t5dr.rc.in" "${CMAKE_CURRENT_BINARY_DIR}/t5dr_version.rc" @ONLY)
+    target_sources(t5dr PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/t5dr_version.rc")
     target_sources(t5dr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/t5dr.manifest"
                                 "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/gpu_preference.c"
                                 "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/cpu_check.cpp")

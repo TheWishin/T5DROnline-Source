@@ -5,7 +5,10 @@
  * Built by tools/package_release.py as an ordinary Windows application: static C
  * runtime, version information, icon and manifest (t5dr_stub.rc, written there).
  * The first builds (a 3.5 KB exe with its own entry point and no resources) were
- * flagged by 3 of 71 machine-learning scanners on VirusTotal.
+ * flagged by 3 of 71 machine-learning scanners on VirusTotal. The 1.0.0 build (clang-cl,
+ * with these resources) still got 2 ML hits, so the default is now MSVC (cl.exe + link.exe
+ * with /guard:cf, /DYNAMICBASE, /NXCOMPAT): package_release.py --stub-compiler msvc|clang.
+ * The release workflow signs the exe when a signing service is set up (docs/RELEASING.md).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

@@ -219,8 +219,8 @@ LLVM 23.1.3, or use `tools/fetch_llvm.py` to get exactly that.)
 | zip / unpacked | 16.3 MB / 46.7 MB | 90.0 MB / 250.0 MB |
 | BUILD GAME on this PC | 120 s (below-normal priority, other agents busy; before main's 0002-0007) | 90 s |
 
-Contents (recommended layout): `T5DR Online.exe` (3.5 KB starter, our C, built with
-clang-cl, kernel32/user32 only), `launcher/`, `tools/`, `patches/`,
+Contents (recommended layout): `T5DR Online.exe` (124 KB starter, our C, built with
+MSVC or clang-cl, kernel32/user32 only; icon, version info, manifest), `launcher/`, `tools/`, `patches/`,
 `CMakeLists.txt`, `deps/ps3recomp/` (MIT; pinned commit + our patches; only
 `include libs runtime third_party`, top-level `tools/*.py|json`,
 `CMakeLists.txt`, `LICENSE`), `python/`, `toolchain/llvm/`,
@@ -356,8 +356,9 @@ running game -- used for the screenshots in `build/ln/shots`.
    recommended layout the default of package_release.py.
 2. Run the zip once on a PC that never had Visual Studio, LLVM or
    Python (a fresh Windows VM).
-3. A license for our own code; code signing for `T5DR Online.exe` would
-   avoid the SmartScreen warning.
+3. Code signing for `T5DR Online.exe` and `runtime/t5dr.exe` is prepared (RELEASING.md,
+   "Code signing"); it waits for the owner's SignPath or Azure account. The SmartScreen
+   warning needs reputation, which grows with downloads and time.
 4. Smaller chunks (`--max-chunk-lines 40000`) for faster builds on
    many-core PCs; trimming clang's resource headers and building a
    single X86-only `clang-cl` + `lld` binary would shrink the zip.

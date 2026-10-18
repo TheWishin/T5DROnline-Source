@@ -277,7 +277,7 @@ void write_text(const std::string& path, const std::string& text)
         fwrite(text.data(), 1, text.size(), fp);
         fclose(fp);
         /* the launcher may be reading the file this very moment (Windows refuses the replace then) */
-        for (int i = 0; i < 20 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
+        for (int i = 0; i < 60 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
     }
 }
 

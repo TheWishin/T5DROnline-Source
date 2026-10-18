@@ -383,7 +383,7 @@ def main():
                         e = g.base_env()
                         e["T5_CTL_DIR"] = g.ctl
                         g.seq = 0
-                        for p in (os.path.join(g.ctl, "cmd.json"), os.path.join(g.ctl, "state.json")):
+                        for p in (os.path.join(g.ctl, "cmd.json"), os.path.join(g.ctl, "state.json"), g.status_path):
                             try:
                                 os.remove(p)
                             except OSError:

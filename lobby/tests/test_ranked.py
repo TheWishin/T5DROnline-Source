@@ -400,6 +400,28 @@ class IntegrityTest(Base):
         self.assertEqual(self.account("Alice")["losses"], 1)
         self.assertEqual(a.profile()["voids_24h"], 1)
 
+    def closed_game(self, quitter_first):
+        # Alt+F4 mid-match (rematch-fix): the quitter's game exits with 7, its launcher reports "quit";
+        # the opponent's game got BYE and reports a disconnect with peer_quit. A loss for the quitter,
+        # not a void (the 0.1.9 test: a closed game used to run on and void the match as a desync).
+        a, b, ea, eb = self.setup_match()
+        if quitter_first:
+            a.report_result(None, None, source="quit", reason="quit")
+            b.report_result(None, None, source="disconnect", reason="peer_quit")
+        else:
+            b.report_result(None, None, source="disconnect", reason="peer_quit")
+            a.report_result(None, None, source="quit", reason="quit")
+        ev = expect(b, "match_result")
+        self.assertEqual((ev["status"], ev["reason"], ev["winner"]), ("forfeit", "quit", eb["slot"]))
+        ev = expect(a, "match_result")
+        self.assertEqual(ev["blame"], "you")
+
+    def test_closed_game_is_a_forfeit(self):
+        self.closed_game(True)
+
+    def test_closed_game_is_a_forfeit_whoever_reports_first(self):
+        self.closed_game(False)
+
     def test_both_disconnect_is_void_without_blame(self):
         a, b, ea, eb = self.setup_match()
         a.report_result(None, None, source="disconnect")
@@ -772,6 +794,39 @@ class DriverResultFileTest(unittest.TestCase):
         self.drv.poll()
         r = self.client.reports[0]
         self.assertEqual((r["source"], r["reason"]), ("disconnect", "peer_lost"))
+
+    def test_closed_window_is_a_quit(self):
+        # Alt+F4 / the X button / Esc mid-match: the game writes "quit", tells the peer and exits with 7
+        self.write({"match": "m1", "winner": None, "score": [1, 0], "reason": "quit"})
+        class Proc:
+            returncode = 7
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        self.assertEqual(len(self.client.reports), 1)
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"]), ("quit", "quit"))
+
+    def test_closed_window_without_result_file_is_a_quit(self):
+        class Proc:
+            returncode = 7
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"]), ("quit", "quit"))
+
+    def test_closed_window_after_the_ko_keeps_the_result(self):
+        # closed after the match was decided: the game's result stands (no quit)
+        self.write({"match": "m1", "winner": 0, "score": [3, 1], "desync": 0, "hash": "cd", "frames": 7000})
+        class Proc:
+            returncode = 7
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["winner"]), ("game", 0))
+
 
 
 if __name__ == "__main__":

@@ -224,7 +224,7 @@ void ctl_state(const char* state, uint32_t f, const std::string& match, const ch
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         fwrite(text.data(), 1, text.size(), fp);
         fclose(fp);
-        for (int i = 0; i < 20 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
+        for (int i = 0; i < 60 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(1);
     }
 }
 

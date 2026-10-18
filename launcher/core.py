@@ -25,7 +25,7 @@ import run_game    # noqa: E402
 
 # English or German (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
 # is translated where it is shown. The launcher chooses the language once, at start (apply_language).
-sys.path.insert(0, os.path.join(ROOT, "lobby"))
+sys.path.append(os.path.join(ROOT, "lobby"))      # (appended: lobby/run.py must not hide another run module)
 try:
     from t5lobby import i18n  # noqa: E402
     from t5lobby.i18n import N_, t, translate_message  # noqa: E402,F401

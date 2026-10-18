@@ -59,7 +59,7 @@ IS_WIN = os.name == "nt"
 # English or German (lobby/t5lobby/i18n.py) for what the launcher shows. The swap step runs this file alone,
 # from a copy of the bundled Python without lobby/: there the texts stay English (they go to swap.log and
 # result.json, which the launcher shows through translate_message()).
-sys.path.insert(0, os.path.join(ROOT, "lobby"))
+sys.path.append(os.path.join(ROOT, "lobby"))
 try:
     from t5lobby.i18n import N_, num, t, translate_message
 except ImportError:

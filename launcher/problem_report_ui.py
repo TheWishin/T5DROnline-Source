@@ -20,7 +20,7 @@ from tkinter import ttk
 import problem_report as report
 
 # English or German (lobby/t5lobby/i18n.py). The zip's own files stay English: they are for whoever reads the report.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lobby"))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lobby"))
 try:
     from t5lobby import i18n
     from t5lobby.i18n import N_, t, translate_message

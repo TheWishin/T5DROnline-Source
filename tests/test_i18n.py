@@ -24,6 +24,7 @@ for sub in ("tools", "lobby", "launcher"):
     sys.path.insert(0, os.path.join(ROOT, sub))
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
 
+import core  # noqa: E402,F401  (imported now: it puts tools/ on the path, and other test modules import run late)
 import i18n_extract as x   # noqa: E402
 from t5lobby import i18n, i18n_de, i18n_known, lag   # noqa: E402
 
@@ -73,10 +74,20 @@ def calls_in(path, names, arg_index, keyword=None):
     return out
 
 
-class German:
+class Base(unittest.TestCase):
+    """The launcher's modules put lobby/ in front of sys.path when they are loaded (lobby/run.py then hides
+    tools/smoke/run.py from another test module): each test gives the path back as it found it."""
+
+    def setUp(self):
+        saved = list(sys.path)
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved))
+
+
+class German(Base):
     """Context: the texts in German for the test, English again afterwards."""
 
     def setUp(self):
+        super().setUp()
         i18n.set_language("de")
         i18n.clear_missing()
 
@@ -84,7 +95,7 @@ class German:
         i18n.set_language("en")
 
 
-class CatalogTests(unittest.TestCase):
+class CatalogTests(Base):
     @classmethod
     def setUpClass(cls):
         cls.r = x.check()
@@ -134,7 +145,7 @@ class CatalogTests(unittest.TestCase):
                                      "problem_report_ui.py"})
 
 
-class EngineTests(German, unittest.TestCase):
+class EngineTests(German):
     def test_default_language_is_english(self):
         i18n.set_language("en")
         self.assertEqual(i18n.t("Quick match"), "Quick match")
@@ -195,7 +206,7 @@ class EngineTests(German, unittest.TestCase):
         self.assertEqual(i18n.stamp(ts), "18 Oct 21:05")
 
 
-class MessageCoverageTests(German, unittest.TestCase):
+class MessageCoverageTests(German):
     """Messages written in English elsewhere must be known (or listed as for programmers)."""
 
     def covered(self, sample):
@@ -369,7 +380,7 @@ class MessageCoverageTests(German, unittest.TestCase):
                          "Lobby: wrong name or password")
 
 
-class LagTextTests(German, unittest.TestCase):
+class LagTextTests(German):
     CASES = (
         (2, [None, None]),
         (2, [{"frames": 600, "waited_ms": 10.0, "pc_fps": 60.0, "fps": 60.0},
@@ -420,7 +431,7 @@ class LagTextTests(German, unittest.TestCase):
         self.assertEqual(lag.describe_event({}), "")
 
 
-class SettingsTests(unittest.TestCase):
+class SettingsTests(Base):
     def test_language_setting_is_saved(self):
         import core
         with tempfile.TemporaryDirectory() as d:
@@ -519,7 +530,7 @@ def all_texts(root):
 
 
 @unittest.skipIf(tk is None, "no tkinter")
-class RenderTests(unittest.TestCase):
+class RenderTests(Base):
     """The launcher window, built for real (not shown), in each language."""
 
     def setUp(self):
@@ -658,7 +669,7 @@ class FakeClient:
 
 
 @unittest.skipIf(tk is None, "no tkinter")
-class OnlineTabGermanTests(German, unittest.TestCase):
+class OnlineTabGermanTests(German):
     """Events and answers of the lobby, shown by the Online tab in German."""
 
     def setUp(self):
@@ -829,7 +840,7 @@ class OnlineTabGermanTests(German, unittest.TestCase):
 
 
 @unittest.skipIf(tk is None, "no tkinter")
-class ReportAndUpdateTests(German, unittest.TestCase):
+class ReportAndUpdateTests(German):
     """The problem report window and the update offer (windows of launcher/problem_report_ui.py, updater.py)."""
 
     def setUp(self):
@@ -950,7 +961,7 @@ class ReportAndUpdateTests(German, unittest.TestCase):
         self.assertEqual(i18n.missing(), [])
 
 
-class DriverTextTests(German, unittest.TestCase):
+class DriverTextTests(German):
     def test_reasons_and_states(self):
         from t5lobby import match_driver
         for key, text in match_driver.REASON_TEXT.items():

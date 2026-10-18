@@ -219,6 +219,43 @@ def server_restart(ctx):
 
 
 # ============================================================================== 2. quick match
+@scenario("lobby_drop", "1 accounts", suites=("quick", "lobby"),
+          desc="the lobby connection drops mid-match: back within the grace time the match carries on and counts; "
+               "away for good it is a forfeit for the one who dropped")
+def lobby_drop(ctx):
+    stub_server(ctx, T5L_RECONNECT_GRACE=8, T5L_PLACEMENT=1)
+    a = ctx.player("E2E Ida", kind="stub", password="ida-pass-1", env={"T5_STUB_SECONDS": 12})
+    b = ctx.player("E2E Jan", kind="stub", password="jan-pass-1", env={"T5_STUB_SECONDS": 12})
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    mid = queue_match(ctx, a, b, "ranked")
+    ctx.wait(lambda: a.game_running() and b.game_running(), 20, "both games run")
+    t = time.time()
+    a.client._loop.call_soon_threadsafe(a.client._writer.transport.abort)      # the line drops (no FIN, no logout)
+    ctx.wait(lambda: a.events_of("reconnected", t), 30, "the launcher resumes the session by itself")
+    ctx.wait(lambda: any(ev.get("code") == "opponent_dropped" for ev in b.events_of("notice", t)), 10,
+             "the opponent is told and waits", fail=False)
+    wait_results(ctx, mid, (a, b), 120)
+    ctx.check("back in time: the match counts (confirmed, rated)", a.matches[mid].get("status") == "confirmed" and
+              a.matches[mid].get("rating"), f"{a.matches[mid].get('status')} {a.matches[mid].get('reason')}")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("ranked") and b.action_on("ranked"), 30, "both free again")
+    # away for good: the dropped launcher does not come back (reconnect off), the grace time runs out
+    mid2 = queue_match(ctx, a, b, "ranked")
+    ctx.wait(lambda: a.game_running() and b.game_running(), 20, "both games run (match 2)")
+    ctx.sleep(2)
+    a.client.reconnect_window = 0
+    a.client._loop.call_soon_threadsafe(a.client._writer.transport.abort)
+    ok = ctx.wait(lambda: b.matches.get(mid2, {}).get("status"), 150, "the match is settled without the dropped player")
+    if ok:
+        mb = b.matches[mid2]
+        ctx.check("away for good: forfeit for the dropped player (or the result the games reached)",
+                  (mb.get("status") == "forfeit" and mb.get("reason") == "disconnect" and mb.get("blame") == "opponent")
+                  or mb.get("status") in ("onesided", "confirmed"),
+                  f"{mb.get('status')} {mb.get('reason')} blame {mb.get('blame')}")
+
+
 @scenario("quick_match", "2 quick match", game=True, suites=("game",),
           desc="queue, blind found (ping only), accept/accept, the reveal, a real match, confirmed, Leave")
 def quick_match(ctx):

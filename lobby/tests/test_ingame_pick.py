@@ -245,5 +245,45 @@ class StubSetTest(Base):
         self.assertEqual(drivers[0].history[0][1].get("chars"), ["kazuya", "lili"])
 
 
+try:
+    from test_tk_tab import TkBase
+except Exception:        # pragma: no cover  (no tkinter)
+    TkBase = None
+
+
+@unittest.skipIf(TkBase is None, "no tkinter")
+class TabPickTest(TkBase if TkBase is not None else unittest.TestCase):
+    """The Online tab with a game build that can pick in the game: the cap, pick=N on the fight
+    line, the match line, and the fighters once the fight starts."""
+
+    def test_the_tab_offers_and_shows_the_in_game_pick(self):
+        tab = self.tab
+        cm = os.path.join(self.dir, "build", "cmake")
+        os.makedirs(cm, exist_ok=True)
+        with open(os.path.join(cm, "t5dr.exe"), "wb") as f:      # a game build with the in-game select
+            f.write(b"MZ" + b"\0" * 64 + b"T5_DF_PICK" + b"\0" * 64)
+        tab.server_var.set(self.s.addr)
+        tab.name_var.set("TabUser")
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        self.assertTrue(tab.client.ingame_pick)
+        self.assertIn("pick your fighter in the game", tab.hint_var.get())
+        self.other = client(self.s, "Rival", auto_ready=True, ingame_pick=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        tab.actions["quick"].invoke()
+        self.other.quick_match("paul")
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: len(self.app.games) == 1)
+        self.assertIn(" pick=30", self.app.games[0].env["T5_FIGHT"])
+        self.assertIn("pick your fighter in the game (30 s)", tab.match_var.get())
+        # the game says the fight started with what was picked (Kazuya vs Lili)
+        drv = tab.driver
+        import json
+        with open(drv.status_path, "w") as f:
+            json.dump({"state": "fight", "match": 1, "p1": 15, "p2": 33}, f)
+        self.pump(lambda: "Kazuya vs Lili" in tab.match_var.get())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,13 @@
     python lobby/tools/ranked_session.py --persistent            # stub games in persistent (T5_CTL_DIR) mode
     python lobby/tools/ranked_session.py --exe <t5dr.exe> --seconds 420 \\
         --env-host T5_NET_SCRIPT=@... --env-join T5_NET_SCRIPT=@...   # the real game, scripted input
+    python lobby/tools/ranked_session.py --exe <t5dr.exe> --persistent --attacks --ingame-pick \\
+        --pick1 jin:rp --pick2 lil:lk                                # picked on the game's select screen
+
+--ingame-pick: both clients announce the in-game select (docs/RANKED.md "Character select in the
+game"); with the real game, --pick1/--pick2 give each player's picks per pick round (comma-separated,
+the last one repeats; tools/pick_flow_test.py's scenarios: <char>:<lp|rp|lk|rk>, random, timeout,
+late<s>:<char>:<button>), pressed through the game's PS3_PAD_FILE.
 
 With --exe both instances open minimized (PS3_WINDOW_BACKGROUND=1), no pads or keyboard
 unless --input; every game started here is killed at the end.
@@ -20,9 +27,11 @@ unless --input; every game started here is killed at the end.
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -101,7 +110,7 @@ class Player:
         self.a, self.idx, self.name, self.char = a, idx, name, char
         self.dir = os.path.abspath(os.path.join(a.out, f"p{idx}"))
         os.makedirs(self.dir, exist_ok=True)
-        self.client = LobbyClient(addr, build, auto_ready=True)
+        self.client = LobbyClient(addr, build, auto_ready=True, ingame_pick=a.ingame_pick)
         self.client.connect()
         try:
             self.client.login(name, "password-" + name)
@@ -146,6 +155,11 @@ class Player:
             full["T5_NET_LOG"] = os.path.join(self.dir, f"frames{n}.log")
             if not a.input:
                 full.update({"T5_NET_LOCALPAD": "0", "PAD_NO_KEYBOARD": "1"})
+            if a.ingame_pick and not a.input:
+                # the picks on the select screen: this player's pad file, pressed by a PickPlayer
+                full["PS3_PAD_FILE"] = os.path.join(self.dir, f"pad{n}.txt")
+                full["T5_DF_TRACE"] = "1"
+                open(full["PS3_PAD_FILE"], "w").close()
             cmd = [os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")]
         else:
             if self.idx == 2 and a.fail_p2 and n == 1:
@@ -157,6 +171,9 @@ class Player:
             cmd = [sys.executable, os.path.join(HERE, "stub_game.py")]
         g = ProcGame(cmd, full, self.dir, log, minimized=bool(a.exe))
         self.games.append(g)
+        if a.exe and full.get("PS3_PAD_FILE"):
+            specs = (a.pick1 if self.idx == 1 else a.pick2).split(",")
+            PickPlayer(g, full["PS3_PAD_FILE"], specs, self.name).start()
         print(f"  [{self.name}] game {n} started (pid {g.proc.pid}): "
               + " ".join(f"{k}={env[k]}" for k in sorted(env) if k.startswith(("T5_FIGHT", "T5_HUD", "T5_NET_MODE",
                                                                                 "T5_NET_DELAY", "T5_CTL"))),
@@ -202,6 +219,59 @@ class Player:
         self.client.close()
 
 
+class PickPlayer(threading.Thread):
+    """Plays this player's in-game picks: every time the game's select screen comes up for a pick
+    (its log says so), the next scenario through tools/pick_flow_test.py's Picker."""
+
+    def __init__(self, game, pad_path, specs, name):
+        super().__init__(daemon=True)
+        self.g, self.pad_path, self.specs, self.name = game, pad_path, specs, name
+
+    # what pick_flow_test.Picker needs of a game
+    def log_since(self, pos):
+        try:
+            with open(self.g.log_path, "rb") as f:
+                f.seek(pos)
+                return f.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
+
+    def pad(self, text):
+        for _ in range(100):
+            try:
+                with open(self.pad_path, "w") as f:
+                    f.write(text)
+                return
+            except PermissionError:
+                time.sleep(0.002)
+
+    def press(self, buttons, hold=0.08, gap=0.17):
+        self.pad(buttons)
+        time.sleep(hold)
+        self.pad("")
+        time.sleep(gap)
+
+    def run(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        from pick_flow_test import Picker
+        pos, k = 0, 0
+        while self.g.running():
+            text = self.log_since(pos)
+            m = re.search(r"in-game select: player \d picks on the select screen", text)
+            if not m:
+                time.sleep(0.2)
+                continue
+            start = pos + len(text[:m.start()].encode("utf-8"))
+            spec = self.specs[min(k, len(self.specs) - 1)]
+            k += 1
+            print(f"  [{self.name}] select screen: pick {spec}", flush=True)
+            pk = Picker(self, spec, start, time.time() + 120)
+            pk.run()
+            if pk.note:
+                print(f"  [{self.name}] pick: {pk.note}", flush=True)
+            pos = start + 1
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", help="t5dr.exe with netplay; without it the stub game runs")
@@ -224,6 +294,9 @@ def main():
     ap.add_argument("--names", default="Kazuya,Heihachi")
     ap.add_argument("--chars", default="kazuya,heihachi")
     ap.add_argument("--input", action="store_true", help="real game: allow pads/keyboard")
+    ap.add_argument("--ingame-pick", action="store_true", help="both clients offer the in-game select")
+    ap.add_argument("--pick1", default="timeout", help="real game, --ingame-pick: player 1's picks")
+    ap.add_argument("--pick2", default="timeout", help="real game, --ingame-pick: player 2's picks")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
     ap.add_argument("--env1", action="append", default=[], help="NAME=VALUE for player 1's game")
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for player 2's game")

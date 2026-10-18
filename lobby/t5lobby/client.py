@@ -45,6 +45,7 @@ import time
 
 from . import proto
 from .handover import MatchTicket
+from .i18n import t
 from .nat import GameSocket, local_ipv4s, server_rtt
 from .proto import LobbyError
 
@@ -472,7 +473,7 @@ class LobbyClient:
     async def _nat_register(self, msg):
         await self._drop_game_socket()
         mid = msg["match"]
-        self._status(mid, "register", "Contacting the lobby server over UDP...")
+        self._status(mid, "register", t("Contacting the lobby server over UDP..."))
         gs = await GameSocket.open(self.game_port, (self.server_ip, int(msg["udp_port"])),
                                    int(msg.get("udp_port2") or 0), bytes.fromhex(msg["token"]),
                                    bytes.fromhex(msg["tag"]), int(msg["side"]),
@@ -480,7 +481,7 @@ class LobbyClient:
         self._gs = gs
         reg = await gs.register()
         if reg is None:
-            self._status(mid, "register", "UDP to the lobby server is blocked (firewall?)")
+            self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"))
             return
         public, probe = reg
         nat = "unknown" if probe is None else ("eim" if probe[1] == public[1] else "symmetric")
@@ -492,13 +493,13 @@ class LobbyClient:
         mid, phase = msg["match"], "punch"
         gs = self._gs
         cands = [(c["ip"], int(c["port"]), c.get("kind", "public")) for c in msg.get("candidates", [])]
-        self._status(mid, "punch", "Connecting to your opponent...")
+        self._status(mid, "punch", t("Connecting to your opponent..."))
         got = await gs.punch(cands, timeout=float(msg.get("timeout", 3.0)))
         if got is None:
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
             return
         addr, kind = got
-        self._status(mid, "measure", "Measuring the connection...")
+        self._status(mid, "measure", t("Measuring the connection..."))
         m = await gs.measure(addr)
         if m is None:
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
@@ -512,7 +513,7 @@ class LobbyClient:
         mid, phase = msg["match"], "relay"
         gs = self._gs
         relay = (self.server_ip, int(msg["udp_port"]))
-        self._status(mid, "relay", "Direct connection not possible; using the lobby server's relay...")
+        self._status(mid, "relay", t("Direct connection not possible; using the lobby server's relay..."))
         if not await gs.relay_bind(relay):
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
             return
@@ -821,8 +822,8 @@ class LobbyClient:
                 except (OSError, ConnectionError, asyncio.TimeoutError):
                     pass
             await self._drop_game_socket()
-            for t in self._tasks:
-                t.cancel()
+            for task in self._tasks:
+                task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
             if self._writer is not None:
                 self._writer.close()

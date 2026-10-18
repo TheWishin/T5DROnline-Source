@@ -9,9 +9,22 @@
  * with these resources) still got 2 ML hits, so the default is now MSVC (cl.exe + link.exe
  * with /guard:cf, /DYNAMICBASE, /NXCOMPAT): package_release.py --stub-compiler msvc|clang.
  * The release workflow signs the exe when a signing service is set up (docs/RELEASING.md).
+ *
+ * Variants for the antivirus experiments (package_release.py --stub-variant, tools/stub_variants.py,
+ * docs/RELEASING.md "The launcher stub"). Without any of these macros this file is the default build:
+ *   T5DR_STUB_NO_PATH_FALLBACK  never run a pythonw.exe found on PATH: only the one in the folder.
+ *   T5DR_STUB_INPROCESS         no child process: load python\python312.dll into this process and call
+ *                               Py_Main, as pythonw.exe itself does (pythonw.exe is a 100 KB program that
+ *                               imports Py_Main). sys.executable is still python\pythonw.exe (argv[0]).
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#ifdef T5DR_STUB_INPROCESS
+/* python312.lib (the Python that is bundled) resolves this; /DELAYLOAD:python312.dll, so the DLL
+ * is loaded from the folder's python\ by LoadLibraryExW in wWinMain before the first call. */
+__declspec(dllimport) int Py_Main(int argc, wchar_t** argv);
+#endif
 
 static int exists(const wchar_t* p)
 {
@@ -31,6 +44,16 @@ static void cat(wchar_t* dst, const wchar_t* src, int cap)
 #define PATH_CAP 32768
 static wchar_t dir[PATH_CAP], py[PATH_CAP], script[PATH_CAP], cmd[3 * PATH_CAP];
 
+#if defined(T5DR_STUB_NO_PATH_FALLBACK) || defined(T5DR_STUB_INPROCESS)
+static int fail(void)
+{
+    MessageBoxW(NULL, L"Could not start the launcher.\n\nThe folder must contain python\\pythonw.exe "
+                      L"and launcher\\t5dr_launcher.pyw -- extract the whole zip again.",
+                L"T5DR Online", MB_ICONERROR);
+    return 1;
+}
+#endif
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show)
 {
     (void)inst; (void)prev; (void)args; (void)show;
@@ -41,8 +64,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show)
 
     lstrcpyW(script, dir); cat(script, L"launcher\\t5dr_launcher.pyw", PATH_CAP);
     lstrcpyW(py, dir);     cat(py, L"python\\pythonw.exe", PATH_CAP);
+#if defined(T5DR_STUB_NO_PATH_FALLBACK) || defined(T5DR_STUB_INPROCESS)
+    if (!exists(py) || !exists(script)) return fail();
+#else
     if (!exists(py)) lstrcpyW(py, L"pythonw.exe");   /* installed Python on PATH */
+#endif
 
+#ifdef T5DR_STUB_INPROCESS
+    {
+        static wchar_t dll[PATH_CAP];
+        wchar_t* argv[3];
+        lstrcpyW(dll, dir); cat(dll, L"python\\python312.dll", PATH_CAP);
+        SetCurrentDirectoryW(dir);                /* where the child process of the default build starts */
+        if (!LoadLibraryExW(dll, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)) return fail();
+        argv[0] = py; argv[1] = script; argv[2] = NULL;
+        return Py_Main(2, argv);
+    }
+#else
     cmd[0] = 0;
     cat(cmd, L"\"", 3 * PATH_CAP); cat(cmd, py, 3 * PATH_CAP);
     cat(cmd, L"\" \"", 3 * PATH_CAP); cat(cmd, script, 3 * PATH_CAP);
@@ -60,4 +98,5 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR args, int show)
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return 0;
+#endif
 }

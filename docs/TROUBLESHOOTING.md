@@ -44,7 +44,7 @@ In the folder where you extracted the release (say `C:\T5DR`):
 | `native\build.log` | The log of the last build. Overwritten by every build. |
 | `native\logs\game-<date>-<time>.log` | One log per game start. The last 10 are kept. |
 | `native\gamedata\` | Your saves. |
-| `native\controls.ini` | Your own control settings (optional, you make it). |
+| `native\controls.ini` | Your own control settings (optional). The launcher's Settings -> Set up controllers... writes it; you can edit it by hand too. |
 | `native\game\`, `native\build\`, `native\keys\` | Unpacked game, build output, key file. Game data. |
 | `native\logs\update-<date>-<time>.log` | What the last self-update did (one per update). |
 | `update-check.json` | When the launcher last asked GitHub for a new version. |
@@ -308,8 +308,12 @@ machines cannot run the game.
 ### The window is not where I want it, or too big
 
 Settings > Display. The window size options never exceed your screen's work
-area. "Borderless fullscreen" is experimental and was not tested with the real
-game window. The game draws at 1280 x 720 and scales up.
+area. "Borderless fullscreen" starts the game in its own borderless
+fullscreen (the same as Alt+Enter or F11 in the game: Esc or Alt+Enter goes
+back to a window). The picture is scaled to the window with its 16:9 shape
+kept (black bars on 16:10 or ultra-wide screens); how sharp it is depends on
+Settings > Internal resolution, not on the window size (see [The picture is
+blurry](#the-picture-is-blurry-on-a-big-screen)).
 
 - **Display scaling (125 %, 150 %, 200 %)**: the window opens at 1280 x 720
   times the scaling (1920 x 1080 pixels at 150 %), as far as the screen
@@ -322,6 +326,28 @@ game window. The game draws at 1280 x 720 and scales up.
 - **Alt+Tab**: borderless fullscreen (the default) switches like any window.
   With `PS3_FULLSCREEN=exclusive`, Alt+Tab leaves exclusive mode; Alt+Enter
   goes back. Not tested.
+
+### The picture is blurry on a big screen
+
+The game draws at the PS3's 1280 x 720 (Settings > Internal resolution:
+Native) and scales that up to the window. On a 1920 x 1080 or larger screen,
+in fullscreen or a big window, that looks soft. Choose the step that matches
+your screen (the launcher names it under Internal resolution): **1080p** for
+1920 x 1080, **1440p** for 2560 x 1440, **4K** for 3840 x 2160. Higher steps
+need a stronger graphics card (2.25, 4 and 9 times the pixels of Native; an
+RTX 3090 needs 1-2 ms of a 16.7 ms frame at 4K); if fights drop below 60 fps,
+go one step down. A step larger than the window is
+fine too: the picture is then scaled down with a filter, which smooths edges
+(like anti-aliasing). The other player online may use any step; the game
+itself is the same.
+
+- **Lower** and **Lowest** only draw the 3D scene smaller; the health bars,
+  names and menus stay at full sharpness.
+- The log names the step: `[display] internal resolution 1440p (2x) ...`, and
+  the window title shows it.
+- Old settings `PS3_RES_SCALE` and `PS3_RENDER_SCALE` (extra settings) still
+  work and mean the same; `PS3_INTERNAL_RES` (what the launcher sets) wins
+  when both are there.
 
 ### High refresh rate (120/144/165 Hz), G-Sync/FreeSync, 50 Hz TVs
 
@@ -438,6 +464,10 @@ not focused. The keyboard works only while the game window has the focus.
 
 ### The buttons are wrong, or I want other buttons
 
+Use the launcher: **Settings** -> **Set up controllers...** (see the README,
+"Controls"). It writes `native\controls.ini` for you and keeps what is already in
+that file. The rest of this section is for editing the file by hand.
+
 Make `native\controls.ini` (the sample with every default and all key names is
 [controls.ini](controls.ini)) and restart the game. To see the raw button names
 of an unknown pad, add this line under "extra settings" in the launcher's Settings
@@ -451,6 +481,65 @@ The log then prints each press, for example `[pad] port 2 Wireless Controller: B
 pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
 a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
 `[pad] found DInput` log lines).
+
+### The Controls screen (Settings -> Set up controllers...)
+
+Not tried with a real arcade stick by a person yet: it was checked with simulated
+controllers and against the game's own reading of `controls.ini`. If it does
+something odd with yours, send the report (Report a problem) and say which
+controller it is.
+
+- **It shows no controller, or the row does not light up when I press a button.**
+  The window reads controllers only while it is the window in front (nothing is
+  read while the game or another program has the focus). Click into it and
+  press again. Does Windows see the controller? Open `joy.cpl` and press a
+  button. Xbox pads and XInput-mode sticks show as "Xbox pad (XInput)", everything
+  else as "DirectInput controller". The screen reads DirectInput controllers
+  through the Windows joystick API, which knows buttons B1 to B32 and one hat;
+  a button above B32 has to be written by hand (`1 = B40`).
+- **"That was several buttons at once".** Two buttons (or a stick moved
+  diagonally) went down together. Press one button, or move the stick in one
+  direction only. Macros like 1+2 are set by pressing the one button that should
+  do both.
+- **Pressing buttons to test them starts a question or clears a button.** With
+  "Move through this window with the controller" ticked, Cross sets the chosen
+  row, Triangle clears it, Start saves and Circle closes the window. Untick it to
+  only watch the lamps.
+- **A game button shows "-".** It has no controller button. Pressing a button
+  that another game button used takes it from that one ("B2 was 3 (Left Kick);
+  that one has no button now"): a controller button can only be one game button.
+  Set the other one again, or press Revert.
+- **A trigger or stick direction (for example RX-) seems pressed all the time.**
+  Some controllers rest their triggers at the end of the range. The screen
+  ignores such an axis until it has moved once.
+- **I saved, but the game plays as before.** The game reads the file when it
+  starts: close it and start it again (a game that is already running says so
+  in the status line). The line `[pad] controls: ...` in the game log shows which
+  file the game loaded. If there is a `controls.ini` next to `t5dr.exe`
+  (`native\build\cmake`), it wins over `native\controls.ini`, and `PS3_CONTROLS=`
+  under "extra settings" wins over both; the screen writes to the one the game
+  reads.
+- **"controls.ini changed".** The file was edited by you or another program
+  while the window was open. Say Yes to overwrite it with the screen's version;
+  the file as it was is kept as `controls.ini.bak`. (The first save of each
+  session keeps the old file there as well.)
+- **Reset to defaults** removes the button lines, the layout and the player
+  options of the chosen controller, and asks before it also removes the lines
+  that are for all controllers of that kind. Comments, `[general]` and which
+  controller is which player stay.
+- **Two pads of the same model have to have different buttons.** The buttons
+  are kept per model (one section `[dinput.VVVV:PPPP]` in the file), so two
+  identical pads share them. Choose "Only the controller on player N's port"
+  under "Your changes apply to" to set one of them on its own.
+- **The game seems to ignore the layout of one controller.** The screen keeps
+  buttons per model by the USB IDs it shows in brackets (for example 0F0D:00EE). The
+  game names the same IDs in its log line `[pad] found DInput 'name' VVVV:PPPP`.
+  If the two differ, choose "All DirectInput controllers" under "Your changes apply
+  to" and set the buttons again (or put the IDs from the game log in the section
+  name by hand).
+- **Hitbox: both directions at once.** Pick what you want under "Opposite
+  directions" (both cancel is the default). For a hitbox set to left-stick mode
+  choose "8-way d-pad presses" under "Left stick".
 
 ### Two pads, or my pad acts as player 1 *and* player 2 (DS4Windows, Steam Input)
 
@@ -588,9 +677,11 @@ Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 said 30-45 fps; that was fixed by later work. On a weaker PC:
 
 - **Weak graphics card** (laptop, integrated graphics): in the launcher,
-  **Settings** -> **3D resolution** -> **Lower**, or **Lowest** if that is not
-  enough. The picture gets softer; the game itself does not change, so you can
-  play online against someone who uses Original.
+  **Settings** -> **Internal resolution** -> **Lower**, or **Lowest** if that
+  is not enough. The 3D scene gets softer, the HUD stays sharp; the game
+  itself does not change, so you can play online against someone who uses
+  another step. If you chose 1080p, 1440p or 4K, go back to **Native** first:
+  those need a strong graphics card.
 - **Few CPU cores**: the game sets its number of helper threads to the cores
   it may use; there is nothing to set. In our tests (fast desktop cores held to
   4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
@@ -681,7 +772,7 @@ What is in the zip (each part only when it exists; you can untick a part):
 
 | In the zip | What it is |
 |---|---|
-| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window and 3D resolution, online input delay (netcode), extra settings. |
+| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window, internal resolution, online input delay (netcode), extra settings. |
 | `report.txt` | What you wrote in "What happened?". |
 | `logs\game-*.log` | The newest two game logs, and `rb_frames.log` / `df_frames.log`. |
 | `build.log` | The last build. Ticked by itself when the last build failed or was cancelled. |

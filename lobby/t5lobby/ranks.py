@@ -29,6 +29,8 @@ How a player moves through the tiers (all numbers in RankRules):
 """
 from dataclasses import dataclass
 
+from .i18n import t
+
 # (name, rating threshold). Index 0 = Beginner (unplaced), index 1 has no threshold (the floor).
 RANKS = [
     ("Beginner", None),
@@ -144,5 +146,5 @@ def label(info):
         return ""
     if info.get("placement"):
         n, k = info["placement"]
-        return f"{info['rank']} (placement {n}/{k})"
+        return t("{rank} (placement {done}/{total})", rank=info["rank"], done=n, total=k)
     return info["rank"] + ("?" if info.get("provisional") else "")

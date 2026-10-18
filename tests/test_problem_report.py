@@ -550,13 +550,13 @@ class SystemInfo(unittest.TestCase):
             self.assertGreater(d["hz"], 0)
 
     def test_settings_lines_show_the_choices_and_no_paths_or_secrets(self):
-        st = {"pkg": "C:\\Users\\Zoltan Quux\\a.pkg", "rap": "C:\\x\\b.rap", "display": "window1080", "render_scale": "0.75",
+        st = {"pkg": "C:\\Users\\Zoltan Quux\\a.pkg", "rap": "C:\\x\\b.rap", "display": "window1080", "internal_res": "lower",
               "input_delay": "2", "mute": True, "extra_env": "PS3_PAD_LOG=2\n# c\n", "nickname": "Zed", "password": FAKE_PASSWORD}
-        labels = {"display": dict(core.DISPLAY_MODES), "render_scale": core.RENDER_SCALES, "input_delay": core.INPUT_DELAYS}
+        labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS, "input_delay": core.INPUT_DELAYS}
         lines = report.settings_lines(st, labels, {"T5_RB_NET_DELAY": "2"}, r"C:\x\native")
         text = "\n".join(lines)
         self.assertIn("Window, 1920 x 1080 [window1080]", text)
-        self.assertIn("Lower [0.75]", text)
+        self.assertIn("Internal resolution: Lower (0.75x) [lower]", text)
         self.assertIn("Online input delay (netcode): 2 [2]", text)
         self.assertIn("Mute sound: yes", text)
         self.assertIn("    PS3_PAD_LOG=2", text)

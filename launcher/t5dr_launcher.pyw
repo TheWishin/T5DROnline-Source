@@ -333,8 +333,9 @@ class App(tk.Tk):
             ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var,
                             command=self.save_settings).pack(anchor="w", pady=1)
         ttk.Label(disp, style="Muted.TLabel", wraplength=300, justify="left", text=t(
-            "The game renders at 1280 x 720 and is scaled to the window. You can also drag the window's "
-            "edges. The runtime has no exclusive fullscreen yet.")).pack(anchor="w", pady=(6, 0))
+            "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
+            "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
+            "in the game.")).pack(anchor="w", pady=(6, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
@@ -353,18 +354,22 @@ class App(tk.Tk):
         self.env_text.pack(anchor="w", fill="x")
         self.env_text.bind("<FocusOut>", lambda _e: self.save_settings())
 
-        # Like Tekken 6 Native Online's "3D resolution": for weaker graphics cards
-        # (PS3_RENDER_SCALE, docs/RENDER_PERF.md "Weaker PCs").
-        gfx = ttk.LabelFrame(right, text="  " + t("3D resolution") + "  ", padding=(12, 6))
+        # One "Internal resolution" like an emulator's (PS3_INTERNAL_RES, docs/RENDER_PERF.md
+        # "Internal resolution"): below Native for weak graphics cards, above for big screens.
+        gfx = ttk.LabelFrame(right, text="  " + t("Internal resolution") + "  ", padding=(12, 6))
         gfx.pack(fill="x", pady=(6, 0))
-        self.render_scale_var = tk.StringVar(value=self.settings["render_scale"]
-                                             if self.settings["render_scale"] in core.RENDER_SCALES else "1")
-        row = ttk.Frame(gfx)
-        row.pack(anchor="w")
-        for key, label in core.RENDER_SCALES.items():
-            ttk.Radiobutton(row, text=t(label), value=key, variable=self.render_scale_var,
-                            command=self.save_settings).pack(side="left", padx=(0, 14))
-        ttk.Label(row, style="Muted.TLabel", text=t("for weak graphics cards")).pack(side="left")
+        self.internal_res_var = tk.StringVar(value=self.settings["internal_res"]
+                                             if self.settings["internal_res"] in core.INTERNAL_RES else "native")
+        keys = list(core.INTERNAL_RES)
+        for part in (keys[:3], keys[3:]):
+            row = ttk.Frame(gfx)
+            row.pack(anchor="w")
+            for key in part:
+                ttk.Radiobutton(row, text=t(core.INTERNAL_RES[key][0]), value=key, variable=self.internal_res_var,
+                                command=self._internal_res_changed).pack(side="left", padx=(0, 14))
+        self.internal_res_hint = ttk.Label(gfx, style="Muted.TLabel", wraplength=390, justify="left")
+        self.internal_res_hint.pack(anchor="w", pady=(4, 0))
+        self._internal_res_changed(save=False)
 
         # Like Tekken 6 Native Online's input delay option (T5_RB_NET_DELAY, docs/NETPLAY.md
         # "Input delay"): Auto follows the ping; a fixed value counts when both players chose it.
@@ -742,11 +747,23 @@ class App(tk.Tk):
         if controls_ui and not self.readonly:
             controls_ui.open_dialog(self)
 
+    def _internal_res_changed(self, save=True):
+        key = self.internal_res_var.get()
+        text = t(core.INTERNAL_RES_HINTS.get(key, ""))
+        size = core.screen_size(core.window_center(self._hwnd()))
+        if size:
+            match = core.internal_res_for_screen(*size)
+            text += "\n" + t("Your screen: {width} x {height}. In fullscreen, {step} matches it.",
+                             width=size[0], height=size[1], step=t(core.INTERNAL_RES[match][0]))
+        self.internal_res_hint.configure(text=text)
+        if save:
+            self.save_settings()
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
-        self.settings["render_scale"] = self.render_scale_var.get()
+        self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
@@ -823,7 +840,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         out = self.settings.out_dir
-        labels = {"display": dict(core.DISPLAY_MODES), "render_scale": core.RENDER_SCALES,
+        labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
                   "input_delay": core.INPUT_DELAYS}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info

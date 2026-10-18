@@ -308,8 +308,12 @@ machines cannot run the game.
 ### The window is not where I want it, or too big
 
 Settings > Display. The window size options never exceed your screen's work
-area. "Borderless fullscreen" is experimental and was not tested with the real
-game window. The game draws at 1280 x 720 and scales up.
+area. "Borderless fullscreen" starts the game in its own borderless
+fullscreen (the same as Alt+Enter or F11 in the game: Esc or Alt+Enter goes
+back to a window). The picture is scaled to the window with its 16:9 shape
+kept (black bars on 16:10 or ultra-wide screens); how sharp it is depends on
+Settings > Internal resolution, not on the window size (see [The picture is
+blurry](#the-picture-is-blurry-on-a-big-screen)).
 
 - **Display scaling (125 %, 150 %, 200 %)**: the window opens at 1280 x 720
   times the scaling (1920 x 1080 pixels at 150 %), as far as the screen
@@ -322,6 +326,28 @@ game window. The game draws at 1280 x 720 and scales up.
 - **Alt+Tab**: borderless fullscreen (the default) switches like any window.
   With `PS3_FULLSCREEN=exclusive`, Alt+Tab leaves exclusive mode; Alt+Enter
   goes back. Not tested.
+
+### The picture is blurry on a big screen
+
+The game draws at the PS3's 1280 x 720 (Settings > Internal resolution:
+Native) and scales that up to the window. On a 1920 x 1080 or larger screen,
+in fullscreen or a big window, that looks soft. Choose the step that matches
+your screen (the launcher names it under Internal resolution): **1080p** for
+1920 x 1080, **1440p** for 2560 x 1440, **4K** for 3840 x 2160. Higher steps
+need a stronger graphics card (2.25, 4 and 9 times the pixels of Native; an
+RTX 3090 needs 1-2 ms of a 16.7 ms frame at 4K); if fights drop below 60 fps,
+go one step down. A step larger than the window is
+fine too: the picture is then scaled down with a filter, which smooths edges
+(like anti-aliasing). The other player online may use any step; the game
+itself is the same.
+
+- **Lower** and **Lowest** only draw the 3D scene smaller; the health bars,
+  names and menus stay at full sharpness.
+- The log names the step: `[display] internal resolution 1440p (2x) ...`, and
+  the window title shows it.
+- Old settings `PS3_RES_SCALE` and `PS3_RENDER_SCALE` (extra settings) still
+  work and mean the same; `PS3_INTERNAL_RES` (what the launcher sets) wins
+  when both are there.
 
 ### High refresh rate (120/144/165 Hz), G-Sync/FreeSync, 50 Hz TVs
 
@@ -651,9 +677,11 @@ Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 said 30-45 fps; that was fixed by later work. On a weaker PC:
 
 - **Weak graphics card** (laptop, integrated graphics): in the launcher,
-  **Settings** -> **3D resolution** -> **Lower**, or **Lowest** if that is not
-  enough. The picture gets softer; the game itself does not change, so you can
-  play online against someone who uses Original.
+  **Settings** -> **Internal resolution** -> **Lower**, or **Lowest** if that
+  is not enough. The 3D scene gets softer, the HUD stays sharp; the game
+  itself does not change, so you can play online against someone who uses
+  another step. If you chose 1080p, 1440p or 4K, go back to **Native** first:
+  those need a strong graphics card.
 - **Few CPU cores**: the game sets its number of helper threads to the cores
   it may use; there is nothing to set. In our tests (fast desktop cores held to
   4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
@@ -744,7 +772,7 @@ What is in the zip (each part only when it exists; you can untick a part):
 
 | In the zip | What it is |
 |---|---|
-| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window and 3D resolution, online input delay (netcode), extra settings. |
+| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window, internal resolution, online input delay (netcode), extra settings. |
 | `report.txt` | What you wrote in "What happened?". |
 | `logs\game-*.log` | The newest two game logs, and `rb_frames.log` / `df_frames.log`. |
 | `build.log` | The last build. Ticked by itself when the last build failed or was cancelled. |

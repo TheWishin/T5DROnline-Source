@@ -88,7 +88,7 @@ DEFAULTS = {
     "out": "",                 # empty: <package folder>/native
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
-    "render_scale": "1",       # 3D resolution: 1 (original) | 0.75 (lower) | 0.5 (lowest), PS3_RENDER_SCALE
+    "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
     "mute": False,
@@ -118,9 +118,15 @@ class Settings(dict):
         self.path = path
         try:
             with open(path, encoding="utf-8") as f:
-                self.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
-        except (OSError, ValueError):
+                saved = json.load(f)
+            self.update({k: v for k, v in saved.items() if k in DEFAULTS})
+            # launcher.json of 0.1.8 .. 1.0.x: "3D resolution" (render_scale 1 / 0.75 / 0.5)
+            if "internal_res" not in saved and "render_scale" in saved:
+                self["internal_res"] = OLD_RENDER_SCALES.get(str(saved["render_scale"]), "native")
+        except (OSError, ValueError, AttributeError):
             pass
+        if self["internal_res"] not in INTERNAL_RES:
+            self["internal_res"] = "native"
 
     def save(self):
         try:
@@ -141,8 +147,12 @@ class Settings(dict):
             env["PS3_NO_AUDIO"] = "1"
         if self["background"]:
             env["PS3_WINDOW_BACKGROUND"] = "1"
-        if self["render_scale"] in RENDER_SCALES and self["render_scale"] != "1":
-            env["PS3_RENDER_SCALE"] = self["render_scale"]
+        if self["internal_res"] in INTERNAL_RES and self["internal_res"] != "native":
+            env["PS3_INTERNAL_RES"] = self["internal_res"]
+        if self["display"] == "borderless":
+            # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
+            # it follows the monitor), not a restyled window from outside
+            env["PS3_FULLSCREEN"] = "1"
         if self["input_delay"] in INPUT_DELAYS:
             env["T5_RB_NET_DELAY"] = self["input_delay"]
         for line in self["extra_env"].splitlines():
@@ -546,7 +556,8 @@ class GameRun:
         logf.close()
         self.started = time.time()
         threading.Thread(target=self._tail, daemon=True).start()
-        if IS_WIN and not env_over.get("PS3_WINDOW_BACKGROUND") and self.settings["display"] != "window":
+        if IS_WIN and not env_over.get("PS3_WINDOW_BACKGROUND") and \
+                self.settings["display"] not in ("window", "borderless"):
             threading.Thread(target=self._place_window, daemon=True).start()
         return self.proc.pid
 
@@ -590,14 +601,78 @@ class GameRun:
 
 # --------------------------------------------------------------------------- windows (Win32)
 
-# "3D resolution" (like Tekken 6 Native Online's option): the game draws below 1280 x 720 and the
-# picture is scaled up to the window. Only the picture changes, never the game, so the two
-# players of an online match may choose differently. docs/RENDER_PERF.md "Weaker PCs".
-RENDER_SCALES = {        # English; t(label) where it is shown
-    "1": N_("Original"),
-    "0.75": N_("Lower"),
-    "0.5": N_("Lowest"),
+# "Internal resolution", like an emulator's: the size the game draws at (PS3_INTERNAL_RES; the
+# runtime's PS3_RES_SCALE and PS3_RENDER_SCALE are aliases). Native is the PS3's 1280 x 720; above
+# it the whole picture is drawn larger (sharper on big screens, more work for the graphics card);
+# below it only the 3D scene is smaller (the HUD stays sharp), for weak graphics cards. Only the
+# picture changes, never the game, so the two players of an online match may choose differently.
+# docs/RENDER_PERF.md "Internal resolution".
+INTERNAL_RES = {          # key: (English label, t(label) where it is shown; factor)
+    "lowest": (N_("Lowest (0.5x)"), 0.5),
+    "lower": (N_("Lower (0.75x)"), 0.75),
+    "native": (N_("Native (720p)"), 1.0),
+    "1080p": (N_("1080p (1.5x)"), 1.5),
+    "1440p": (N_("1440p (2x)"), 2.0),
+    "4k": (N_("4K (3x)"), 3.0),
 }
+INTERNAL_RES_LABELS = {k: v[0] for k, v in INTERNAL_RES.items()}
+OLD_RENDER_SCALES = {"1": "native", "0.75": "lower", "0.5": "lowest"}
+
+# Short hint per step: what it costs, in pixels the graphics card draws relative to Native (what
+# decides on a weak card; a fast card also has a fixed cost per frame, so an RTX 3090 needs only
+# ~1.3x / 1.7x / 3x Native's GPU time for 1080p / 1440p / 4K: docs/RENDER_PERF.md "Internal resolution").
+INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
+    "lowest": N_("The 3D scene at half size (a quarter of its pixels); HUD and text stay sharp. "
+                 "For integrated graphics and old laptops."),
+    "lower": N_("The 3D scene at 3/4 size (about half of its pixels); HUD and text stay sharp. "
+                "For weak graphics cards."),
+    "native": N_("The PS3's 1280 x 720. Light on any graphics card; the picture is scaled to your window."),
+    "1080p": N_("1920 x 1080: 2.25x the pixels of Native. Sharp on Full HD screens. "
+                "If fights drop below 60 fps, go one step down."),
+    "1440p": N_("2560 x 1440: 4x the pixels of Native. For strong graphics cards. "
+                "If fights drop below 60 fps, go one step down."),
+    "4k": N_("3840 x 2160: 9x the pixels of Native. For very strong graphics cards "
+             "(an RTX 3090 needs 1-2 ms of a 16.7 ms frame). If fights drop below 60 fps, go one step down."),
+}
+
+
+def internal_res_for_screen(width, height):
+    """The highest step whose picture fits a screen or window of width x height pixels
+    (a suggestion for the player; the game never picks it by itself)."""
+    best = "native"
+    for key, (_label, f) in INTERNAL_RES.items():
+        if f > 1.0 and 1280 * f <= width + 8 and 720 * f <= height + 8:
+            best = key
+    return best
+
+
+def screen_size(point=None):
+    """(width, height) in physical pixels of the monitor at point (x, y) -- the game opens on the
+    launcher's monitor -- or of the primary monitor; None when unknown."""
+    if not IS_WIN:
+        return None
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_ulong), ("mon", RECT), ("work", RECT), ("flags", ctypes.c_ulong)]
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    try:
+        with _PerMonitorDpi():
+            u = ctypes.windll.user32
+            u.MonitorFromPoint.restype = ctypes.c_void_p
+            u.MonitorFromPoint.argtypes = [POINT, ctypes.c_ulong]
+            mon = u.MonitorFromPoint(POINT(*(point or (0, 0))), 1)       # MONITOR_DEFAULTTOPRIMARY
+            mi = MONITORINFO()
+            mi.cb = ctypes.sizeof(mi)
+            if not mon or not u.GetMonitorInfoW(ctypes.c_void_p(mon), ctypes.byref(mi)):
+                return None
+            return mi.mon.r - mi.mon.l, mi.mon.b - mi.mon.t
+    except (AttributeError, OSError):
+        return None
 
 # Online input delay (like Tekken 6 Native Online's): frames between a press and the frame it
 # takes effect in, on both PCs. Auto follows the ping the game measures (1 frame up to ~60 ms,
@@ -615,7 +690,7 @@ DISPLAY_MODES = [        # English; t(label) where it is shown
     ("window1080", N_("Window, 1920 x 1080")),
     ("window1440", N_("Window, 2560 x 1440")),
     ("maximized", N_("Maximized window")),
-    ("borderless", N_("Borderless fullscreen (experimental)")),
+    ("borderless", N_("Borderless fullscreen (Alt+Enter or F11 switches in the game)")),
 ]
 
 

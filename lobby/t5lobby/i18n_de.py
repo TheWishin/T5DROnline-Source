@@ -303,16 +303,43 @@ MESSAGES = {
     "The game stopped (exit code {code}). The game log has the details.":
         "Das Spiel wurde beendet (Exit-Code {code}). Das Spiel-Log hat die Details.",
     "t5dr.exe is not built yet": "t5dr.exe ist noch nicht gebaut",
-    "Original": "Original",
-    "Lower": "Niedriger",
-    "Lowest": "Am niedrigsten",
+    "Lowest (0.5x)": "Am niedrigsten (0,5x)",
+    "Lower (0.75x)": "Niedriger (0,75x)",
+    "Native (720p)": "Nativ (720p)",
+    "1080p (1.5x)": "1080p (1,5x)",
+    "1440p (2x)": "1440p (2x)",
+    "4K (3x)": "4K (3x)",
+    "The 3D scene at half size (a quarter of its pixels); HUD and text stay sharp. "
+    "For integrated graphics and old laptops.":
+        "Die 3D-Szene in halber Größe (ein Viertel ihrer Pixel); HUD und Text bleiben scharf. "
+        "Für integrierte Grafik und alte Laptops.",
+    "The 3D scene at 3/4 size (about half of its pixels); HUD and text stay sharp. "
+    "For weak graphics cards.":
+        "Die 3D-Szene in 3/4 Größe (etwa die Hälfte ihrer Pixel); HUD und Text bleiben scharf. "
+        "Für schwache Grafikkarten.",
+    "The PS3's 1280 x 720. Light on any graphics card; the picture is scaled to your window.":
+        "Die 1280 x 720 der PS3. Leicht für jede Grafikkarte; das Bild wird auf dein Fenster skaliert.",
+    "1920 x 1080: 2.25x the pixels of Native. Sharp on Full HD screens. "
+    "If fights drop below 60 fps, go one step down.":
+        "1920 x 1080: 2,25-mal die Pixel von Nativ. Scharf auf Full-HD-Bildschirmen. "
+        "Fallen Kämpfe unter 60 fps, geh eine Stufe zurück.",
+    "2560 x 1440: 4x the pixels of Native. For strong graphics cards. "
+    "If fights drop below 60 fps, go one step down.":
+        "2560 x 1440: 4-mal die Pixel von Nativ. Für starke Grafikkarten. "
+        "Fallen Kämpfe unter 60 fps, geh eine Stufe zurück.",
+    "3840 x 2160: 9x the pixels of Native. For very strong graphics cards "
+    "(an RTX 3090 needs 1-2 ms of a 16.7 ms frame). If fights drop below 60 fps, go one step down.":
+        "3840 x 2160: 9-mal die Pixel von Nativ. Für sehr starke Grafikkarten "
+        "(eine RTX 3090 braucht 1-2 ms von 16,7 ms pro Bild). Fallen Kämpfe unter 60 fps, "
+        "geh eine Stufe zurück.",
     "Auto (by ping)": "Auto (nach Ping)",
     "Window, 1280 x 720 (native; larger with Windows display scaling)":
         "Fenster, 1280 x 720 (nativ; größer mit der Windows-Skalierung)",
     "Window, 1920 x 1080": "Fenster, 1920 x 1080",
     "Window, 2560 x 1440": "Fenster, 2560 x 1440",
     "Maximized window": "Maximiertes Fenster",
-    "Borderless fullscreen (experimental)": "Randloses Vollbild (experimentell)",
+    "Borderless fullscreen (Alt+Enter or F11 switches in the game)":
+        "Randloses Vollbild (Alt+Enter oder F11 schaltet im Spiel um)",
     # ---- launcher/online.py
     "Online play": "Online spielen",
     "The lobby files (lobby/t5lobby) are missing from this copy of the launcher, so "
@@ -446,17 +473,20 @@ MESSAGES = {
         "funktionieren beide; die Tasten stehen unter Einstellungen. Esc beendet das Spiel. "
         "START überspringt das Intro-Video.",
     "Display": "Anzeige",
-    "The game renders at 1280 x 720 and is scaled to the window. You can also drag the "
-    "window's edges. The runtime has no exclusive fullscreen yet.":
-        "Das Spiel rendert in 1280 x 720 und wird auf das Fenster skaliert. Du kannst auch "
-        "an den Rändern des Fensters ziehen. Exklusives Vollbild gibt es noch nicht.",
+    "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
+    "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
+    "in the game.":
+        "Das Bild wird auf das Fenster skaliert; wie scharf es ist, hängt von der internen "
+        "Auflösung ab. Du kannst auch an den Rändern des Fensters ziehen. Alt+Enter oder F11 "
+        "schaltet im Spiel auf randloses Vollbild um.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",
-    "3D resolution": "3D-Auflösung",
-    "for weak graphics cards": "für schwache Grafikkarten",
+    "Internal resolution": "Interne Auflösung",
+    "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
+        "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",
     "Frames. Auto: 1 up to about 60 ms ping, 2 above. 0/1/2 count only when your "
     "opponent picked the same, otherwise Auto. Ranked matches always use 2.":

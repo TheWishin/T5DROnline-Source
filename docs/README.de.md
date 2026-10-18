@@ -43,7 +43,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Schwächere PCs sind noch nicht gemessen. |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
 | Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
-| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
+| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |

@@ -118,7 +118,8 @@ def stop_leftovers(base):
 
 def run_stub(base, wait_for, timeout):
     t0 = time.time()
-    p = subprocess.Popen([os.path.join(base, "T5DR Online.exe")], cwd=base)
+    # CreateProcess takes no working directory longer than MAX_PATH, so a very long folder is started from here.
+    p = subprocess.Popen([os.path.join(base, "T5DR Online.exe")], cwd=base if len(base) < 240 else None)
     try:
         rc = p.wait(30)
     except subprocess.TimeoutExpired:
@@ -129,28 +130,52 @@ def run_stub(base, wait_for, timeout):
     return rc
 
 
-def test_variant(work, release, variant, variant_dir):
-    res = {}
-    base = os.path.join(work, variant + "-marker")
+UNICODE_DIR = "Tekken Früh Ł東京"       # ue is in cp1252; the Polish L and Kanji are not
+LONG_DIR = os.path.join("long-" + "d" * 110, "path-" + "e" * 110)    # the install path goes over 260 characters
+
+
+def marker_test(base, release, variant_dir, extra_prefix=""):
+    """Run the stand-in launcher through the stub in `base`; returns 'ok' or what differs."""
     prepare_test_folder(base, release, variant_dir, shim_real=False)
     rc = run_stub(base, "marker.json", 60)
     marker = os.path.join(base, "marker.json")
-    if os.path.exists(marker):
-        info = json.load(open(marker))
-        py = os.path.join(base, "python", "pythonw.exe").lower()
-        ok = (info["executable"].lower() == py and info["child"] == "42" and info["mp"] == "ok"
-              and not str(info["tk"]).startswith("FAILED") and info["prefix"].lower().startswith(
-                  os.path.join(base, "python").lower()) and all(
-                  not p or p.lower().startswith(os.path.join(base, "python").lower()) or p.lower() == base.lower()
-                  for p in info["path"]))
-        res["marker"] = "ok" if ok else f"DIFFERENT: {json.dumps(info)[:400]}"
-        res["marker_info"] = info
-    else:
-        res["marker"] = f"FAILED: stub exit {rc}, no marker file"
+    if not os.path.exists(marker):
+        stop_leftovers(base)
+        shutil.rmtree(base, ignore_errors=True)
+        return extra_prefix + f"FAILED: stub exit {rc}, no marker file", None
+    info = json.load(open(marker))
+    py = os.path.join(base, "python", "pythonw.exe").lower()
+    problems = []
+    if info["executable"].lower() != py:
+        problems.append("sys.executable " + info["executable"])
+    if info["child"] != "42":
+        problems.append("child process: " + str(info["child"]))
+    if info["mp"] != "ok":
+        problems.append("multiprocessing: " + str(info["mp"]))
+    if str(info["tk"]).startswith("FAILED"):
+        problems.append("tkinter: " + str(info["tk"]))
+    if not info["prefix"].lower().startswith(os.path.join(base, "python").lower()):
+        problems.append("sys.prefix " + info["prefix"])
+    for q in info["path"]:
+        if q and not q.lower().startswith(os.path.join(base, "python").lower()) and q.lower() != base.lower():
+            problems.append("sys.path has " + q)
     stop_leftovers(base)
     shutil.rmtree(base, ignore_errors=True)
+    return ("ok" if not problems else "DIFFERENT: " + "; ".join(problems)), info
 
+
+def test_variant(work, release, variant, variant_dir):
+    res = {}
+    res["marker"], res["marker_info"] = marker_test(os.path.join(work, variant + "-marker"), release, variant_dir)
+    res["unicode"], _ = marker_test(os.path.join(work, variant + "-u", UNICODE_DIR), release, variant_dir)
+    res["longpath"], _ = marker_test(os.path.join(work, variant + "-l", LONG_DIR), release, variant_dir)
+    shutil.rmtree(os.path.join(work, variant + "-u"), ignore_errors=True)
+    shutil.rmtree(os.path.join(work, variant + "-l"), ignore_errors=True)
     base = os.path.join(work, variant + "-launcher")
+    return _launcher_test(res, work, release, variant, variant_dir, base)
+
+
+def _launcher_test(res, work, release, variant, variant_dir, base):
     prepare_test_folder(base, release, variant_dir, shim_real=True)
     rc = run_stub(base, "launcher_exit.txt", 240)
     exit_file = os.path.join(base, "launcher_exit.txt")
@@ -172,26 +197,35 @@ def main():
     ap.add_argument("--llvm", default=os.path.join(ROOT, "build", "rd", "llvm"))
     ap.add_argument("--variants", nargs="+", default=list(P.STUB_VARIANTS), choices=sorted(P.STUB_VARIANTS))
     ap.add_argument("--no-test", action="store_true")
+    ap.add_argument("--test-only", action="store_true",
+                    help="do not build: test the v<n>-<variant>.exe files that are already in --out")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     os.makedirs(out, exist_ok=True)
     clang = P.find_clang(a.llvm) if os.path.exists(os.path.join(a.llvm, "bin", "clang-cl.exe")) else (None, None)
     rows = []
     work = os.path.join(out, "_test")
+    used = "MSVC (existing files)"
     for n, variant in enumerate(a.variants):
         vdir = os.path.join(out, "_build", variant)
-        shutil.rmtree(vdir, ignore_errors=True)
-        os.makedirs(vdir)
-        if variant == "dynamic" and a.release_folder:       # build_stub takes vcruntime140.dll from stage/python
-            os.makedirs(os.path.join(vdir, "python"))
-            shutil.copy2(os.path.join(a.release_folder, "python", "vcruntime140.dll"), os.path.join(vdir, "python"))
-        used = P.build_stub(vdir, clang, a.version, "msvc", variant)
-        if not used:
-            sys.exit("no MSVC tools: cannot build the variants")
-        shutil.rmtree(os.path.join(vdir, "python"), ignore_errors=True)
-        exe = os.path.join(vdir, "T5DR Online.exe")
         final = os.path.join(out, f"v{n}-{variant}.exe")
-        shutil.copy2(exe, final)
+        if a.test_only:
+            shutil.rmtree(vdir, ignore_errors=True)
+            os.makedirs(vdir)
+            shutil.copy2(final, os.path.join(vdir, "T5DR Online.exe"))
+            if variant == "dynamic":
+                shutil.copy2(os.path.join(a.release_folder, "python", "vcruntime140.dll"), vdir)
+        else:
+            shutil.rmtree(vdir, ignore_errors=True)
+            os.makedirs(vdir)
+            if variant == "dynamic" and a.release_folder:       # build_stub takes vcruntime140.dll from stage/python
+                os.makedirs(os.path.join(vdir, "python"))
+                shutil.copy2(os.path.join(a.release_folder, "python", "vcruntime140.dll"), os.path.join(vdir, "python"))
+            used = P.build_stub(vdir, clang, a.version, "msvc", variant)
+            if not used:
+                sys.exit("no MSVC tools: cannot build the variants")
+            shutil.rmtree(os.path.join(vdir, "python"), ignore_errors=True)
+            shutil.copy2(os.path.join(vdir, "T5DR Online.exe"), final)
         feat = pe_features.parse(final)
         row = {"variant": variant, "file": os.path.basename(final), "size": os.path.getsize(final),
                "sha256": sha256(final), "differs": DIFFERS[variant], "features": pe_features.table_row(feat),
@@ -202,10 +236,10 @@ def main():
         if not a.no_test and a.release_folder:
             row.update(test_variant(work, a.release_folder, variant, vdir))
         else:
-            row["marker"] = row["launcher"] = "not tested"
+            row["marker"] = row["launcher"] = row["unicode"] = row["longpath"] = "not tested"
         rows.append(row)
         print(f"{row['file']}: {row['size']:,} bytes, sha256 {row['sha256'][:16]}..., marker {row['marker'][:60]}, "
-              f"launcher {row['launcher'][:60]}", flush=True)
+              f"unicode {row['unicode'][:30]}, long path {row['longpath'][:30]}, launcher {row['launcher'][:60]}", flush=True)
     shutil.rmtree(work, ignore_errors=True)
     with open(os.path.join(out, "variants.md"), "w", encoding="utf-8") as f:
         f.write(f"Launcher stub variants, version {a.version}, built {time.strftime('%Y-%m-%d %H:%M')} with "

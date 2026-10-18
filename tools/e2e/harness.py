@@ -912,11 +912,14 @@ class Ctx:
 
     def wait(self, cond, timeout, what=None, fail=True):
         """Pump until cond() is true. On timeout: a failed check `what` (unless fail=False)."""
-        t_end = time.monotonic() + timeout
+        t0 = time.monotonic()
+        t_end = t0 + timeout
         while time.monotonic() < t_end:
             self.pump(0.05)
             try:
                 if cond():
+                    if what:
+                        self.check(what, True, f"after {time.monotonic() - t0:.1f} s")
                     return True
             except Exception as e:     # noqa: BLE001
                 log(f"[{self.name}] wait condition raised {e!r}")

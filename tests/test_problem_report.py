@@ -209,6 +209,61 @@ class Secrets(unittest.TestCase):
         self.assertEqual(found, {FAKE_TOKEN, FAKE_PASSWORD, "abcdef123456", FAKE_MATCH_KEY, "bare-key-value"})
 
 
+class PlayerNames(unittest.TestCase):
+    """Lobby names -- the player's own and the opponents' -- never go into a report (e2e finding: the HUD
+    line of the game log, T5_HUD_NAMES in cmd.json and PS3_NICKNAME in system.txt carried them)."""
+
+    def test_the_places_that_name_players(self):
+        sc = scrubber(player_names=["Zed Tiger", "Ox"])
+        t = ("[df] frame 1061: HUD identity: P1 'Ox' rank 0, P2 'Someone Else' rank 3\n"
+             '{"T5_HUD_NAMES": "Ox|Someone Else", "nickname": "Zed Tiger"}\n'
+             "Environment the launcher gives the game: PS3_NICKNAME=Zed Tiger, PS3_WINDOW_BACKGROUND=1\n"
+             "9,33,20,1 names=Ox|Someone%20Else ranks=0|3 match=m1\n")
+        out = sc.text(t)
+        for bad in ("Ox'", "Someone", "Zed", "Tiger", "Ox|"):
+            self.assertNotIn(bad, out)
+        self.assertIn("HUD identity: P1 '<player>' rank 0, P2 '<player>' rank 3", out)
+        self.assertIn("PS3_NICKNAME=<player>, PS3_WINDOW_BACKGROUND=1", out)
+        self.assertIn("names=<player> ranks=0|3 match=m1", out)
+        self.assertTrue(sc.clean(out))
+
+    def test_known_names_anywhere_but_short_names_and_log_words_only_in_those_places(self):
+        sc = scrubber(player_names=["Zed Tiger", "Ox", "Game"])
+        out = sc.text("status: Playing against zed tiger -- ping 20 ms\n[game-dll] loaded; Ox joined; boxing\n")
+        self.assertIn("Playing against <player> -- ping 20 ms", out)
+        self.assertIn("[game-dll] loaded; Ox joined; boxing", out)       # 2 letters / a log word: left alone
+
+    def test_names_are_collected_from_the_files_and_kept_out_of_the_zip(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        ctx = fake_context(d)
+        out = ctx.out_dir
+        put(os.path.join(ctx.root, "launcher.json"), json.dumps({"nickname": "Zed", "display": "window"}))
+        put(os.path.join(out, "logs", "online", "ctl", "cmd.json"), json.dumps(
+            {"match": "m1", "env": {"T5_HUD_NAMES": "Zed|Rival Kim", "T5_NET_KEY": FAKE_MATCH_KEY}}))
+        put(os.path.join(out, "logs", "online", "fight-m0.txt"), "9,33,20,1 names=Zed|Old%20Foe ranks=0|0 match=m0\n")
+        log = put(os.path.join(out, "logs", "game-20261018-130000.log"),
+                  "[df] frame 1061: HUD identity: P1 'Zed' rank 0, P2 'Rival Kim' rank 3\n"
+                  "[netplay] peer Rival Kim? no, Old Foe said hello\n" * 3)
+        os.utime(log, None)
+        with open(ctx.launcher_log, "a", encoding="utf-8") as f:
+            f.write("2026-10-18 20:01:00 status: Playing against Third Guy -- local network, ping 3 ms\n"
+                    "2026-10-18 20:05:00 status: Third Guy lost the lobby connection; waiting 60 s for them to return\n")
+        names = ctx.player_names()
+        for n in ("Zed", "Rival Kim", "Old Foe", "Third Guy"):
+            self.assertIn(n, names)
+        res = report.build(ctx, os.path.join(d, "Desktop"))
+        with zipfile.ZipFile(res.path) as z:
+            for name in z.namelist():
+                if name.startswith("desync/"):
+                    continue
+                t = z.read(name).decode("utf-8")
+                for bad in ("Rival Kim", "Old Foe", "Third Guy", "Zed"):
+                    self.assertNotIn(bad, t, f"{bad!r} in {name}")
+            self.assertIn("lobby player names", z.read("contents.txt").decode("utf-8"))
+        self.assertGreater(res.counts["player"], 0)
+
+
 class Reading(unittest.TestCase):
     def test_a_big_file_keeps_its_start_and_its_end(self):
         with tempfile.TemporaryDirectory() as d:

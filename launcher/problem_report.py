@@ -27,6 +27,11 @@ Privacy -- applied to every text file before it goes into the zip (class Scrubbe
     string of 32+ digits
   * e-mail addresses become <email>; the Sony package file name <package>.pkg; the company name in
     "OneDrive - Company" becomes <org>
+  * lobby player names -- this player's and every opponent's -- become <player>: where the files name
+    them (the fight HUD line of the game log, T5_HUD_NAMES / PS3_NICKNAME, a fight line's names=,
+    the nickname setting) and wherever else a name found there appears (status lines in launcher.log
+    ...). The names come from online.json, launcher.json, the control files, the fight files, the game
+    logs' HUD lines and launcher.log's status lines (Context.player_names)
 The lobby session token (online.json) and launcher.json are never read into the zip. Binary desync
 dumps hold game state numbers only and are copied as they are.
 
@@ -46,6 +51,7 @@ import os
 import platform
 import re
 import struct
+import urllib.parse
 import sys
 import zipfile
 
@@ -56,8 +62,8 @@ MIN_USEFUL = 8 * 1024        # a file that would get less than this room is left
 MANIFEST_ROOM = 24 * 1024    # kept free for contents.txt
 
 # placeholders
-P_USER, P_IP, P_REMOVED, P_EMAIL, P_ORG, P_PACKAGE, P_PC, P_HEX = (
-    "<user>", "<ip>", "<removed>", "<email>", "<org>", "<package>", "<pc>", "<hex>")
+P_USER, P_IP, P_REMOVED, P_EMAIL, P_ORG, P_PACKAGE, P_PC, P_HEX, P_PLAYER = (
+    "<user>", "<ip>", "<removed>", "<email>", "<org>", "<package>", "<pc>", "<hex>", "<player>")
 
 
 # --------------------------------------------------------------------------- scrubbing
@@ -109,6 +115,21 @@ _SECRET_KEY_NAME = re.compile(_NAME_CHARS + _SECRET_WORDS + _NAME_CHARS + r"|key
 
 _ENV_PREFIXES = ("PS3_", "T5_", "RSX_", "SPURS_", "ATRAC_", "LD_", "PAD_")
 
+# Where the files name lobby players (direct fight's HUD line, the launcher's environment for the game,
+# a fight line, the nickname setting). The value is replaced whatever the name is.
+_NAME_KEYS = r"(?:T5_HUD_NAMES|PS3_NICKNAME|PS3_TITLE)"
+_HUD_IDENTITY = re.compile(r"(HUD identity: P1 ')(.*?)(' rank -?\d+, P2 ')(.*?)(')")
+_NAME_ENV = re.compile(r"(?<![A-Za-z0-9_])(" + _NAME_KEYS + r"=)([^\r\n,]*)")
+_NAME_JSON = re.compile(r'("(?:' + _NAME_KEYS + r'|nickname)"\s*:\s*")((?:[^"\\\n]|\\.)*)(")', re.I)
+_FIGHT_NAMES = re.compile(r"(?<![A-Za-z0-9_])(names=)(\S+)")
+# Status lines the launcher logs that hold an opponent's name (launcher.log): harvested, then replaced everywhere
+_STATUS_NAMES = (re.compile(r"(?:Playing|Rematch) against (.{2,16}?)(?: --|:| \()"),
+                 re.compile(r"Opponent: (.{2,16}?) \("),
+                 re.compile(r"(?:^|status: |notice: )(.{2,16}?) (?:lost the lobby connection|is back in the lobby)", re.M),
+                 re.compile(r"(?:^|status: |notice: )(.{2,16}?)'s PC ran its last match", re.M),
+                 re.compile(r"(?:Blocked|Unblocked|Block) (.{2,16}?)(?:\.|\?| --|$)", re.M),
+                 re.compile(r"(?:^|status: )(.{2,16}?) wants a rematch", re.M))
+
 
 def _is_public(ip):
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -122,10 +143,11 @@ class Scrubber:
     secrets      exact values to remove wherever they appear (tokens read from online.json ...)
     user_names   names of the Windows user (default: the one running this); replaced everywhere
     pc_names     name of this PC (default: COMPUTERNAME)
+    player_names lobby names (this player's, the opponents'): replaced everywhere (3+ characters)
     keep         hex strings that may stay (the game program's SHA-1)
     """
 
-    def __init__(self, secrets=(), user_names=None, pc_names=None, keep=()):
+    def __init__(self, secrets=(), user_names=None, pc_names=None, keep=(), player_names=()):
         self.counts = collections.Counter()
         self.secrets = sorted({s for s in secrets if isinstance(s, str) and len(s) >= 6}, key=len, reverse=True)
         self.keep = {k.lower() for k in keep}
@@ -145,6 +167,13 @@ class Scrubber:
                     continue
                 self._name_res.append((re.compile(r"(?<![A-Za-z0-9_<])" + re.escape(n) + r"(?![A-Za-z0-9_>])", re.I),
                                        repl, key))
+        # Lobby names anywhere in the text: 3 characters or more, and not a word the logs are full of (a
+        # player called "Fight" keeps the logs readable; the places that name players are still cleaned).
+        players = sorted({n.strip() for n in player_names if isinstance(n, str) and len(n.strip()) >= 3
+                          and n.strip().lower() not in _LOG_WORDS and n.strip().lower() not in _SHARED_PROFILES},
+                         key=len, reverse=True)
+        self._player_re = re.compile(r"(?<![A-Za-z0-9_<])(?:" + "|".join(re.escape(n) for n in players)
+                                     + r")(?![A-Za-z0-9_>])", re.I) if players else None
 
     # ---- parts
     def _secret_kv(self, m):
@@ -164,6 +193,26 @@ class Scrubber:
             return m.group(0)
         self.counts["user"] += 1
         return m.group("pre") + P_USER
+
+    def _players(self, s):
+        """Lobby player names: the places that name them, then the known names anywhere."""
+        def hud(m):
+            self.counts["player"] += 2
+            return m.group(1) + P_PLAYER + m.group(3) + P_PLAYER + m.group(5)
+
+        def value(m):
+            v = m.group(2)
+            if not v.strip() or v.startswith(P_PLAYER):
+                return m.group(0)
+            self.counts["player"] += 1
+            return m.group(1) + P_PLAYER + (m.group(3) if m.re.groups >= 3 else "")
+        s = _HUD_IDENTITY.sub(hud, s)
+        s = _NAME_JSON.sub(value, s)
+        s = _NAME_ENV.sub(value, s)
+        s = _FIGHT_NAMES.sub(value, s)
+        if self._player_re is not None:
+            s = self._player_re.sub(lambda m: (self._count("player") or P_PLAYER), s)
+        return s
 
     def _hex(self, m):
         if m.group(0).lower() in self.keep:
@@ -216,6 +265,7 @@ class Scrubber:
         s = _ONEDRIVE_ORG.sub(lambda m: (self._count("user") or m.group(1) + P_ORG), s)
         for rx, repl, key in self._name_res:
             s = rx.sub(lambda m, repl=repl, key=key: (self._count(key) or repl), s)
+        s = self._players(s)
         s = _EMAIL.sub(lambda m: (self._count("email") or P_EMAIL), s)
         s = _PACKAGE.sub(lambda m: (self._count("user") or P_PACKAGE + ".pkg"), s)
         s = _V6.sub(self._v6, s)
@@ -655,7 +705,7 @@ class Context:
 
     def __init__(self, out_dir, root=None, launcher_log=None, settings_lines=(), release=None, build_info=None,
                  online_dir=None, online_info=None, build_problem=None, extra_secrets=(), user_names=None,
-                 pc_names=None, game_logs=2):
+                 pc_names=None, game_logs=2, player_names=()):
         self.out_dir = os.path.abspath(out_dir)
         self.root = root
         self.launcher_log = launcher_log
@@ -669,6 +719,7 @@ class Context:
         self.user_names = user_names
         self.pc_names = pc_names
         self.game_logs = game_logs
+        self.extra_player_names = list(player_names)
 
     @property
     def build_info(self):
@@ -685,6 +736,68 @@ class Context:
         for p in files:
             if p and os.path.isfile(p):
                 harvest_secrets(read_json(p), found)
+        return found
+
+    def player_names(self):
+        """Lobby names this report must not contain: this player's and the opponents' -- from the
+        settings files, the control channel, the fight files, the game logs' HUD lines and the status
+        lines in launcher.log. The opponents never agreed to be in somebody else's report."""
+        found = set(self.extra_player_names)
+
+        def add(v):
+            for n in str(v or "").split("|"):
+                n = urllib.parse.unquote(n).strip()
+                if 2 <= len(n) <= 32 and n != P_PLAYER:
+                    found.add(n)
+        st = read_json(os.path.join(self.root, "launcher.json")) if self.root else None
+        if isinstance(st, dict):
+            add(st.get("nickname"))
+        on = read_json(os.path.join(self.online_dir, "online.json")) if self.online_dir else None
+        if isinstance(on, dict):
+            add(on.get("name"))
+            for sess in (on.get("sessions") or {}).values():
+                if isinstance(sess, dict):
+                    add(sess.get("name"))
+        d = os.path.join(self.out_dir, "logs", "online")
+        cmd = read_json(os.path.join(d, "ctl", "cmd.json"))
+        if isinstance(cmd, dict) and isinstance(cmd.get("env"), dict):
+            add(cmd["env"].get("T5_HUD_NAMES"))
+            add(cmd["env"].get("PS3_NICKNAME"))
+        for p in glob.glob(os.path.join(d, "fight-*.txt*")) + glob.glob(os.path.join(d, "*", "fight-*.txt*")):
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    m = _FIGHT_NAMES.search(f.read(4096))
+                if m:
+                    add(m.group(2))
+            except OSError:
+                pass
+        for p in _newest(os.path.join(self.out_dir, "logs", "game-*.log"), 10):
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    for ln in f:
+                        if "HUD" not in ln:
+                            continue
+                        m = _HUD_IDENTITY.search(ln)
+                        if m:
+                            add(m.group(2))
+                            add(m.group(4))
+                        m = re.search(r"T5_HUD_NAMES=([^\r\n,]*)|\[netplay\] HUD: (.*?) ranks", ln)
+                        if m:
+                            add(m.group(1) or m.group(2))
+            except OSError:
+                pass
+        for p in (self.launcher_log, (self.launcher_log or "") + ".1"):
+            if p and os.path.isfile(p):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        text = f.read(4 << 20)
+                except OSError:
+                    continue
+                for rx in _STATUS_NAMES:
+                    for m in rx.finditer(text):
+                        add(m.group(1))
+                for m in _NAME_ENV.finditer(text):
+                    add(m.group(2))
         return found
 
 
@@ -840,7 +953,8 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
     groups = groups if groups is not None else discover(ctx, note, now)
     on = [g for g in groups if not g.can_untick or (enabled or {}).get(g.key, g.default_on)]
     sc = Scrubber(secrets=ctx.secrets(), user_names=ctx.user_names, pc_names=ctx.pc_names,
-                  keep=[ctx.build_info.get("elf_sha1") or "", ctx.release.get("commit") or ""])
+                  keep=[ctx.build_info.get("elf_sha1") or "", ctx.release.get("commit") or ""],
+                  player_names=ctx.player_names())
     res = Result()
     res.cap = cap
     members = []                                         # (arcname, bytes, original size, removed, note)
@@ -956,6 +1070,7 @@ def contents_text(res, now, left_out):
          f"  {res.counts['ip']} internet IP addresses -> {P_IP} (local network addresses stay)",
          f"  {res.counts['secret']} passwords, tokens, match keys or long hex strings -> {P_REMOVED} / {P_HEX}",
          f"  {res.counts['email']} e-mail addresses -> {P_EMAIL}",
+         f"  {res.counts['player']} lobby player names (yours and your opponents') -> {P_PLAYER}",
          "The desync dumps (desync/*.bin) are binary game state numbers and are copied as they are.",
          "", "Files:"]
     for m in res.members:

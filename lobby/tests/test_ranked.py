@@ -286,6 +286,16 @@ class AccountTest(Base):
         self.assertEqual(ev["match"], ea["match"])
         self.assertEqual(self.player("Anna").status, "playing")
 
+    def test_a_replaced_login_says_why_in_plain_words(self):
+        # e2e finding: the first PC's tab said "Lost the lobby connection: 0 bytes read on a total of
+        # undefined expected bytes" after the account logged in elsewhere
+        a = self.acc("Kuma")
+        a2 = self.c()
+        a2.login("Kuma", "pw-Kuma")
+        ev = expect(a, "disconnected", timeout=10)
+        self.assertEqual(ev["reason"], "removed from the lobby: logged in from another place")
+        self.assertNotIn("bytes read", ev["reason"])
+
 
 class RankedFlowTest(Base):
     def test_characters_ranks_profile_history_leaderboard(self):

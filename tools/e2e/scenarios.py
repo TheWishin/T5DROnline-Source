@@ -98,6 +98,7 @@ def accounts_login(ctx):
     ctx.sleep(1.0)
     # the forgotten token must be dead on the server too
     from t5lobby.client import LobbyClient
+    from t5lobby import proto
     from t5lobby.proto import LobbyError
     b, _ = a2.tab._build_info()
     c = LobbyClient(ctx.server.addr, b)
@@ -107,7 +108,7 @@ def accounts_login(ctx):
             c.login_session(token)
             ctx.check("forgotten token refused by the server", False, "it still logs in")
         except LobbyError as e:
-            ctx.check("forgotten token refused by the server", e.code == "auth", f"{e.code}: {e.msg}")
+            ctx.check("forgotten token refused by the server", e.code == proto.E_AUTH, f"{e.code}: {e.msg}")
     finally:
         c.close()
     # wrong password, then the right one
@@ -959,7 +960,7 @@ def report_problem(ctx):
     # internet match leaves (a public address, a match key)
     logs = os.path.join(a.out, "logs")
     real = [p for p in ctx.run.real_logs if os.path.isfile(p)]
-    pub = "203.0.113.77"
+    pub = "81.2.69.142"
     synth = os.path.join(logs, "game-29991231-235959.log")
     with open(synth, "w", encoding="utf-8") as f:
         if real:

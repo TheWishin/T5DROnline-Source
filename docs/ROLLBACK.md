@@ -1898,8 +1898,32 @@ game logs):
 | P1 | rollback, post-match rule + select lockstep | same | 8 | 7 | 0 / 0 | match 8: request-thread abort (fd 5) |
 | P2 | rollback, --stutter 60 | N R R R | 6 | 5 | 0 / 0 | match 6: `inflate failed`, host hung in a thread join |
 
-The final rows (FRB, FLS: the build as committed) are in CLAUDE.md
-"Open workstreams".
+| FRB (as committed) | rollback, joiner 240 Hz, --mash-gap 20 | N N R R, skew 2.0, P1 first | 7 | 6 | 0 / 0 | match 7: request-thread abort (fd 5) |
+| FLS (as committed) | lockstep | N N R R, skew 1.5 alt, --mash | 12 | 12 | 0 / 0 | -- |
+| FCR (as committed) | rollback | N R, P2 closes in match 2, P1 in match 4 | 5 | 3 + 2 closed (exit 7, quit / peer_quit, 0.3-2.7 s) | 0 / 0 | the matches after each close: new sessions against a fresh game, in sync |
+
+Every rematch in these runs reached FIGHT START on both sides, 1.8-5.7 s
+after its command; every match that was played to its end was confirmed with
+the same winner and state hash and 0 mismatching frames (rollback and
+lockstep); no walker resync or flip stall with the committed build.
+
+Offline, one game limited to a few logical processors (affinity +
+`PS3_CPUS`, muted, below-normal priority; a second player's 1.0.0 log, 6
+cores, had eight "recycled the title's own ring" lines, then flip stalls):
+Kazuya vs Heihachi, 100 s of fight each --
+
+| build | CPUs | "recycled the title's own ring" | heap header 0x40500000 overwritten | flip stalls / resyncs | silent 10 ms blocks in the fight |
+|---|---|---|---|---|---|
+| main (series to 0034) | 6 | 8 (the print cap) | -- (not watched) | 0 / 0 | 0 of 9 926 |
+| 0035 | 6 | 0 | -- | 0 / 0 | 0 of 10 040 |
+| main | 4 | 8 | yes, frame 2203: 0x405000C0 -> 0x20000000 | 0 / 0 | 0 of 10 034 |
+| 0035 | 4 | 0 | no | 0 / 0 | 0 of 10 044 |
+| main | 2 | 8 | yes | 0 / 0 | 175 of 12 833 (~30 fps: too few CPUs) |
+| 0035 | 2 | 0 | no | 0 / 0 | 97 of 12 830 (the same) |
+
+The race that turns a drain-thread recycle into a stall did not come up in
+these single offline fights (it did in the online runs above, about once in
+six matches); its precondition, the recycle, is gone.
 
 ## What is left
 

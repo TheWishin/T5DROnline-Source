@@ -26,6 +26,11 @@ within 15 s; the opponent's name comes after both accepted), "Strict" limits ran
 lag check ("ping X ms should mean about Y frames behind, it was Z") appears after a match with a
 way to leave without penalty, and a message from the server's admin shows in the status bar.
 
+Ranked sets (docs/RANKED.md "Ranked sets"): a ranked set is best of 3 and rated once at its end. One label
+shows where it stands ("Set 1-0 -- game 2 of 3", t5lobby.sets.status_text); between two games the bar
+counts down to the next game (it starts by itself) and offers "Leave set" (a loss); the set's result and
+its one rating change come with set_end (t5lobby.sets.result_text).
+
     python -m t5lobby.tk_tab --server 127.0.0.1:7781     # standalone window, stub game (testing)
 """
 import json
@@ -38,7 +43,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import fighters, padmap, padnav, proto, ranks, servers
+from . import fighters, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .match_driver import MatchDriver, fps_from_logs
@@ -131,6 +136,7 @@ class OnlineTab:
         self.set_locked = False          # a ranked set is running: the character cannot change
         self.rematch_bar = None          # (text, opponent name) while the "Rematch?" bar is up
         self.lag = None                  # the last lag_check event
+        self.set_bar = None              # (set info, my slot, monotonic end of the countdown) between two games of a set
         self.blocks_window = None        # the "Blocked players..." dialog
         self.blocks_list = None
         self.pad = None                  # padnav.PadNav once the tab has been shown (controller buttons)
@@ -297,6 +303,8 @@ class OnlineTab:
         # After a match: one click makes the problem report (the launcher's window, launcher/problem_report.py).
         # Shown only when the launcher offers it and a match has been played (packed first: it keeps its room).
         self.report_btn = ttk.Button(info_row, text="Report a problem...", command=self.do_report)
+        self.set_var = tk.StringVar(value="")            # a ranked set: "Set 1-0 -- game 2 of 3" (sets.status_text)
+        ttk.Label(info_row, textvariable=self.set_var, style="H2.TLabel").pack(side="left", padx=(0, 10))
         ttk.Label(info_row, textvariable=self.match_var, style="Muted.TLabel").pack(side="left")
 
         # --- notebook: lobby | leaderboard | profile
@@ -396,7 +404,8 @@ class OnlineTab:
         me = self.client.me if self.client and self.client.connected else None
         st = (me or {}).get("status")
         guest = (me or {}).get("guest", True)
-        busy = self.match is not None or (self.driver is not None and self.driver.ticket is not None)
+        busy = self.match is not None or (self.driver is not None and self.driver.ticket is not None) or \
+            self.set_bar is not None          # between two games of a ranked set: the next one comes by itself
         on = {
             "quick": me and st == "idle" and not busy,
             "ranked": me and st == "idle" and not busy and not guest,
@@ -536,6 +545,7 @@ class OnlineTab:
             for n in self.driver.poll():
                 self.on_driver(n)
         self._tick_ready()
+        self._tick_set()
         self._show_notice()
         self._pad_tick()
         try:
@@ -575,7 +585,7 @@ class OnlineTab:
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
-                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True)
+                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True, sets=True)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -713,6 +723,8 @@ class OnlineTab:
         self.ready_deadline = None
         self.set_locked = False
         self.rematch_bar = None
+        self.set_bar = None
+        self.set_var.set("")
         self.lag = None
         self.notice_var.set("")
         self.hide_bar()
@@ -982,10 +994,12 @@ class OnlineTab:
             self.match = ev
             self.hide_bar()
             self.rematch_bar = None
+            self.set_bar = None
             self.lag = None
             self.ready_sent = False
             if (ev.get("set") or {}).get("locked"):
                 self.set_locked = True
+            self.set_var.set(sets.status_text(ev.get("set"), ev.get("slot") or 0))
             if ev.get("blind"):
                 # a match from the queue: the ping and the rules now, the name after both accepted
                 self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
@@ -1031,7 +1045,9 @@ class OnlineTab:
             self.hide_bar()
             self.ready_deadline = None
             self.rematch_bar = None
+            self.set_bar = None
             self.lag = None
+            self.set_var.set(sets.status_text(ev.get("set"), ev.get("slot") or 0))
             f = ev.get("fight") or {}
             how = {"direct": "direct", "lan": "local network", "relay": "via the lobby server's relay"}
             self.match_var.set(
@@ -1167,9 +1183,28 @@ class OnlineTab:
         self.status("Lag check: " + ev["text"])
         if self.rematch_bar is not None:
             self._show_rematch_bar()
+        elif self.set_bar is not None:
+            self._show_set_bar()
 
     def _set_ended(self, ev):
         self.set_locked = False
+        if ev.get("rated"):
+            # a ranked set is over: its result and its one rating change
+            self.set_bar = None
+            text = sets.result_text(ev)
+            w = ev.get("wins") or [0, 0]
+            self.set_var.set(f"Set {w[0]}-{w[1]}")
+            self.status(text + ".")
+            if ev.get("reason") == "decided" and self.rematch_bar is not None:
+                self.rematch_bar = (text if len(text) < 70 else "Rematch? (a new set)", self.rematch_bar[1])
+                self._show_rematch_bar()          # a rematch is a new set
+            else:
+                self.rematch_bar = None
+                self.hide_bar()
+            if self.client:
+                self._show_me()
+                self._set_actions()
+            return
         if self.rematch_bar is not None:
             self.rematch_bar = None
             self.hide_bar()
@@ -1195,8 +1230,37 @@ class OnlineTab:
     def _leave_for_lag(self):
         self.hide_bar()
         self.rematch_bar = None
+        self.set_bar = None
         self.call(self.client.leave_set, "lag", then=lambda _r: self.status(
             "You left after the lag check. No penalty, no rating change."))
+
+    # ------------------------------------------------------------------ ranked sets (best of 3)
+    def _show_set_bar(self):
+        """Between two games of a ranked set: the countdown to the next game (no vote), and a way out."""
+        info, slot, _end = self.set_bar
+        buttons = [("Leave set (counts as a loss)", self._leave_set, "circle")]
+        lag = self.lag
+        if lag and lag.get("verdict") == "more_lag" and lag.get("can_leave"):
+            buttons.insert(0, ("Leave: too laggy", self._leave_for_lag))
+        self.show_bar(self._set_bar_text(), buttons)
+
+    def _set_bar_text(self):
+        info, slot, end = self.set_bar
+        nxt = dict(info.get("next") or {}, **{"in": max(0.0, end - time.monotonic())})
+        return sets.status_text(dict(info, next=nxt), slot)
+
+    def _tick_set(self):
+        """Keep the countdown in the set bar current."""
+        if self.set_bar is not None and self.bar_spec:
+            self.bar_text.set(self._set_bar_text())
+
+    def _leave_set(self):
+        if not self.ask_yes_no("Leave the ranked set", "Leave this ranked set?\n\nLeaving a ranked set counts as "
+                                                       "losing it.", parent=self.parent):
+            return
+        self.hide_bar()
+        self.set_bar = None
+        self.call(self.client.leave_set)
 
     def _show_result(self, ev):
         self.match = None
@@ -1226,7 +1290,15 @@ class OnlineTab:
                 text += f" -- placement {after['placement'][0]}/{after['placement'][1]}"
         self.status(text + ".")
         self.hide_bar()
-        if ev.get("rematch_window"):
+        s = ev.get("set") or {}
+        slot = self.driver.session_ticket.slot if self.driver and self.driver.session_ticket else 0
+        if s.get("rated"):
+            self.set_var.set(sets.status_text(s, slot))
+        if s.get("rated") and s.get("next"):
+            # the set goes on by itself: count down to the next game
+            self.set_bar = (s, slot, time.monotonic() + float(s["next"].get("in") or 0))
+            self._show_set_bar()
+        elif ev.get("rematch_window"):
             opp = (self.driver.session_ticket.opponent.get("name") if self.driver and self.driver.session_ticket
                    else "your opponent")
             self.rematch_bar = (text if len(text) < 60 else "Rematch?", opp)

@@ -9,7 +9,8 @@ after a countdown, and the rating changes once, at the end of the set.
 5. an older client (no "sets"): every ranked game is rated on its own, with the rematch vote, as before
 6. a server restart in the middle of a set: the set is void (nothing to undo: no game changed a rating)
 7. ranked rooms; the launcher's glue (match driver + stub games) through a whole set
-8. the set's texts (Online tab) and the set score in the fight HUD
+8. the Online tab: the set score, the countdown to the next game, Leave set, the set's result
+9. the set's texts and the set score in the fight HUD
 """
 import os
 import sys
@@ -593,7 +594,68 @@ class SetDriverTest(Base):
         self.assertEqual(len(drivers[0].history), len(results[0]))
 
 
-# ============================================================================== 8. texts, HUD
+# ============================================================================== 8. the Online tab
+try:
+    import tkinter as tk
+    import test_tk_tab as tkt
+except ImportError:      # pragma: no cover
+    tk = None
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class TkSetTest(tkt.TkBase if tk is not None else unittest.TestCase):
+    server_cfg = {"set_next_seconds": 1.5}
+    login_account = tkt.TkT6Test.login_account if tk is not None else None
+
+    def game(self, n, won=True):
+        """Game n of the set in the tab's (fake) game: it closes, the tab answers, Rival reports the same."""
+        tab = self.tab
+        self.pump(lambda: len(self.app.games) == n)
+        g = self.app.games[n - 1]
+        slot = 0 if g.env["T5_NET_MODE"] == "host" else 1
+        self.pump(lambda: f"game {n} of 3" in tab.set_var.get())
+        g.done = True
+        self.pump(lambda: self.bar_button("I won") is not None)
+        self.bar_button("I won" if won else "I lost").invoke()
+        self.other.report_result(slot if won else 1 - slot, None)
+
+    def start(self):
+        tab = self.tab
+        self.login_account()
+        self.other = client(self.s, "Rival", password="rival-pw1", register=True, auto_ready=True, sets=True)
+        tab.actions["ranked"].invoke()
+        self.other.ranked_match()
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.bar_button("Accept").invoke()
+
+    def test_the_set_score_the_countdown_and_the_result(self):
+        tab = self.tab
+        self.start()
+        self.game(1)
+        self.pump(lambda: self.bar_button("Leave set (counts as a loss)") is not None)
+        self.assertIn("Set 1-0 -- game 2 of 3 starts in", tab.bar_text.get())        # no rematch vote
+        self.assertIsNone(self.bar_button("Rematch Rival"))
+        self.assertEqual(str(tab.actions["ranked"].cget("state")), "disabled")       # the set goes on by itself
+        self.assertEqual(str(tab.char_cb.cget("state")), "disabled")
+        self.game(2)                                                                  # it started by itself
+        self.pump(lambda: "You won the set 2-0" in tab.status_var.get())
+        self.assertIn("rating", tab.status_var.get())
+        self.assertEqual(tab.set_var.get(), "Set 2-0")
+        self.pump(lambda: self.bar_button("Rematch Rival") is not None)              # a rematch = a new set
+        self.assertEqual(str(tab.char_cb.cget("state")), "readonly")
+
+    def test_leave_set_button(self):
+        tab = self.tab
+        self.start()
+        self.game(1)
+        self.pump(lambda: self.bar_button("Leave set (counts as a loss)") is not None)
+        tab.ask_yes_no = lambda *a, **k: True
+        self.bar_button("Leave set (counts as a loss)").invoke()
+        self.pump(lambda: "You lost the set (you left it)" in tab.status_var.get())
+        self.assertEqual(expect(self.other, "set_end")["result"], "win")
+
+
+# ============================================================================== 9. texts, HUD
 class SetTextTest(unittest.TestCase):
     def info(self, **kw):
         d = {"id": "s1", "rated": True, "wins_needed": 2, "best_of": 3, "wins": [1, 0], "number": 2, "replays": 0,

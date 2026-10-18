@@ -2340,6 +2340,7 @@ class LobbyServer:
     def _set_schedule_next(self, gs):
         """The countdown to the set's next game (no vote: it starts by itself)."""
         gs.next_keep = {}
+        self._save_set(gs)                              # (the score so far, should the server stop now)
         if gs.next_timer is not None:
             gs.next_timer.cancel()
         gs.next_due = time.monotonic() + self.cfg.set_next_seconds
@@ -2415,7 +2416,8 @@ class LobbyServer:
     def _decline_recent(self, gs, by):
         """`by` leaves the set: the last game's rematch offer is withdrawn and the other player told."""
         m = gs.last
-        if m is not None and self.recent.pop(m.id, None) is not None:
+        if m is not None and self.recent.pop(m.id, None) is not None and not (gs.rated and gs.outcome is None):
+            # (in the middle of a ranked set nothing was offered: set_end tells the other player)
             for q in gs.players:
                 if q is not by:
                     q.send({"t": "rematch", "match": m.id, "state": "declined", "from": by.brief()})

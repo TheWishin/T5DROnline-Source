@@ -316,7 +316,10 @@ class ControlsDialog:
         top = self.top
         top.title(t("Controls") + " - T5DR Online")
         top.minsize(880, 640)
-        top.geometry("980x720")
+        try:                                # over the launcher's window, not at the corner of the screen
+            top.geometry("980x720+%d+%d" % (max(self.app.winfo_rootx() + 30, 0), max(self.app.winfo_rooty() + 30, 0)))
+        except tk.TclError:
+            top.geometry("980x720")
         top.columnconfigure(0, weight=1)
         top.rowconfigure(2, weight=1)
         ttk.Label(top, text=t("Controls"), style="H1.TLabel").grid(row=0, column=0, sticky="w", padx=16, pady=(12, 0))
@@ -328,7 +331,7 @@ class ControlsDialog:
         body = ttk.Frame(top)
         body.grid(row=2, column=0, sticky="nsew", padx=12)
         body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
+        body.columnconfigure(1, weight=2, minsize=380)
         body.rowconfigure(1, weight=1)
 
         # --- players
@@ -394,7 +397,9 @@ class ControlsDialog:
         lay.grid(row=0, column=0, sticky="we")
         lay.columnconfigure(0, weight=1)
         self.preset_var = tk.StringVar()
-        self.preset_box = ttk.Combobox(lay, textvariable=self.preset_var, state="readonly", width=38)
+        self.preset_box = ttk.Combobox(lay, textvariable=self.preset_var, state="readonly",
+                                       width=max(len(t(ce.recipe_title(r, k))) for r in ce.RECIPES
+                                                 for k in r.specs) + 2)
         self.preset_box.grid(row=0, column=0, sticky="we")
         self.preset_box.bind("<<ComboboxSelected>>", lambda _e: self._show_preset_text())
         self.preset_text = tk.StringVar()
@@ -423,22 +428,24 @@ class ControlsDialog:
         self.stick_var = tk.StringVar()
         self.socd_var = tk.StringVar()
         self.player_opts = (("auto", t("Automatic")), ("0", t("Player 1")), ("1", t("Player 2")))
-        self.stick_opts = (("analog", t("Analog stick (the game reads the stick)")),
-                           ("dpad", t("8-way d-pad presses (hitbox or stick in left-stick mode)")))
-        self.socd_opts = (("neutral", t("Both cancel (neutral)")), ("up", t("Left+Right cancel, Up+Down is Up")),
-                          ("last", t("The direction pressed last wins")), ("off", t("Pass both through")))
+        self.stick_opts = (("analog", t("Analog stick")), ("dpad", t("8-way d-pad")))
+        self.socd_opts = (("neutral", t("Both cancel (neutral)")), ("up", t("Up wins (Up+Down is Up)")),
+                          ("last", t("Last direction wins")), ("off", t("Pass both through")))
         for r, (label, var, opts, cmd) in enumerate((
                 (t("This controller is"), self.player_var, self.player_opts, self._on_player_opt),
                 (t("Left stick"), self.stick_var, self.stick_opts, self._on_stick),
                 (t("Opposite directions"), self.socd_var, self.socd_opts, self._on_socd))):
             ttk.Label(pt, text=label).grid(row=r, column=0, sticky="w", pady=2, padx=(0, 6))
-            box = ttk.Combobox(pt, textvariable=var, values=[o[1] for o in opts], state="readonly", width=34)
+            box = ttk.Combobox(pt, textvariable=var, values=[o[1] for o in opts], state="readonly",
+                               width=max(len(o[1]) for o in opts) + 2)
             box.grid(row=r, column=1, sticky="we", pady=2)
             box.bind("<<ComboboxSelected>>", lambda _e, c=cmd: c())
             setattr(self, ("player", "stick", "socd")[r] + "_box", box)
-        ttk.Label(pt, style="Muted.TLabel", wraplength=330, justify="left", text=t(
-            "These three belong to the player port. Left+Right (and Up+Down) pressed together happen on keyboards "
-            "and hitboxes; the game cannot take both.")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(pt, style="Muted.TLabel", wraplength=340, justify="left", text=t(
+            "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction as a stick; the "
+            "game then reads it as d-pad presses. Left+Right (or Up+Down) at once happens on keyboards and "
+            "hitboxes; the game cannot take both. Stick and opposite directions belong to the player's port.")).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         # --- prompt (only while a button is being asked for)
         self.prompt = ttk.Frame(top, padding=(16, 6))
@@ -588,7 +595,7 @@ class ControlsDialog:
             iid = f"p{p}"
             self._rows[iid] = d.key if d else None
             tv.insert("", "end", iid=iid, values=("", t("Player {n}", n=p + 1), self._device_text(d) if d else
-                                                  t("no controller"), ""), tags=("" if d else "none",))
+                                                  t("no controller"), ""), tags=() if d else ("none",))
         for d in devices:
             if self.portmap.port.get(d.key, -1) < 0:
                 iid = "u:" + d.key
@@ -636,6 +643,8 @@ class ControlsDialog:
         key = self._rows.get(sel[0])
         if key is not None and key != self.chosen and self.capture is None:
             self._choose(key)
+        else:
+            self._select_row()                  # an empty row or a capture in progress: the selection stays put
 
     def _choose(self, key):
         self.chosen = key

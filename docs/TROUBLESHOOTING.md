@@ -501,6 +501,12 @@ controller it is.
   are kept per model (one section `[dinput.VVVV:PPPP]` in the file), so two
   identical pads share them. Choose "Only the controller on player N's port"
   under "Your changes apply to" to set one of them on its own.
+- **The game seems to ignore the layout of one controller.** The screen keeps
+  buttons per model by the USB IDs it shows in brackets (for example 0F0D:00EE). The
+  game names the same IDs in its log line `[pad] found DInput 'name' VVVV:PPPP`.
+  If the two differ, choose "All DirectInput controllers" under "Your changes apply
+  to" and set the buttons again (or put the IDs from the game log in the section
+  name by hand).
 - **Hitbox: both directions at once.** Pick what you want under "Opposite
   directions" (both cancel is the default). For a hitbox set to left-stick mode
   choose "8-way d-pad presses" under "Left stick".

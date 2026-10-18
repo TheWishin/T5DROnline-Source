@@ -494,6 +494,45 @@ class ShippingTest(unittest.TestCase):
         compile(src, path, "exec")
 
 
+class LauncherHookTest(unittest.TestCase):
+    """The Settings tab of the real launcher module has the button, and it opens the Controls window."""
+
+    def test_the_settings_tab_button(self):
+        if cu is None:
+            self.skipTest("no tkinter")
+        import importlib.machinery
+        import importlib.util
+        from tkinter import ttk
+        path = os.path.join(ROOT, "launcher", "t5dr_launcher.pyw")
+        loader = importlib.machinery.SourceFileLoader("t5dr_launcher_under_test", path)
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        self.assertIs(mod.controls_ui, cu)
+        try:
+            app = mod.App.__new__(mod.App)
+            tk.Tk.__init__(app)
+        except tk.TclError:
+            self.skipTest("no display for Tk")
+        app.withdraw()
+        self.addCleanup(app.destroy)
+        with tempfile.TemporaryDirectory() as d:
+            app.readonly = False
+            app.settings = mod.core.Settings(path=os.path.join(d, "launcher.json"))
+            app._style()
+            app._settings_tab(ttk.Frame(app))
+            self.assertEqual(str(app.controls_btn.cget("state")), "normal")
+            self.assertIn("controllers", str(app.controls_btn.cget("text")))
+            seen = []
+            mod.controls_ui = type("Fake", (), {"open_dialog": staticmethod(lambda a: seen.append(a)),
+                                                "close_for_app": staticmethod(lambda a: True)})
+            app.controls_btn.invoke()
+            self.assertEqual(seen, [app])
+            app.readonly = True                                  # (the screenshot mode never opens it)
+            app.controls_btn.invoke()
+            self.assertEqual(seen, [app])
+
+
 class RuntimeAgreementTest(unittest.TestCase):
     """What the editor writes only uses names and rules the runtime has (patches/ps3recomp/0009)."""
 
@@ -1223,18 +1262,18 @@ class DialogTest(DialogBase):
         stick = FakePad()
         d = self.open(stick)
         titles = list(d.preset_box.cget("values"))
-        self.assertIn("Arcade stick, 8 buttons (Vewlix layout)", titles)
-        self.assertIn("Hitbox (button-only stick)", titles)
-        d.preset_var.set("Arcade stick, 8 buttons (Vewlix layout)")
+        self.assertIn("8-button stick (Vewlix layout)", titles)
+        self.assertIn("Hitbox", titles)
+        d.preset_var.set("8-button stick (Vewlix layout)")
         d._show_preset_text()
         self.assertIn("1+2", d.preset_text.get())
         d.apply_preset()
         self.assertEqual([self.values(k)[0] for k in ("1+2", "3+4", "1+3", "2+4")], ["B6", "B8", "B5", "B7"])
-        self.assertEqual(d.preset_var.get(), "Arcade stick, 8 buttons (Vewlix layout)")
-        d.preset_var.set("Hitbox (button-only stick)")
+        self.assertEqual(d.preset_var.get(), "8-button stick (Vewlix layout)")
+        d.preset_var.set("Hitbox")
         d.apply_preset()
-        self.assertEqual(d.preset_var.get(), "Hitbox (button-only stick)")
-        self.assertEqual(d.stick_var.get(), "8-way d-pad presses (hitbox or stick in left-stick mode)")
+        self.assertEqual(d.preset_var.get(), "Hitbox")
+        self.assertEqual(d.stick_var.get(), "8-way d-pad")
         d.do_save()
         again = ControlsEditor.load(self.ini)
         self.assertEqual(again.detect_recipe(DI), "hitbox")
@@ -1242,9 +1281,9 @@ class DialogTest(DialogBase):
     def test_stick_mode_socd_and_player(self):
         stick = FakePad()
         d = self.open(stick)
-        d.socd_var.set("The direction pressed last wins")
+        d.socd_var.set("Last direction wins")
         d._on_socd()
-        d.stick_var.set("8-way d-pad presses (hitbox or stick in left-stick mode)")
+        d.stick_var.set("8-way d-pad")
         d._on_stick()
         d.do_save()
         text = self.saved()
@@ -1264,7 +1303,7 @@ class DialogTest(DialogBase):
     def test_reset_to_defaults_asks_and_goes_back(self):
         stick = FakePad()
         d = self.open(stick, ini=sample_text())
-        d.preset_var.set("Arcade stick, 8 buttons (Vewlix layout)")
+        d.preset_var.set("8-button stick (Vewlix layout)")
         d.apply_preset()
         d.begin(["1"])
         self.press(stick, "B13")

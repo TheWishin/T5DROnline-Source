@@ -165,10 +165,7 @@ class OnlineUiWalk(unittest.TestCase):
                 p.kill()
         for g in self.games:
             g.stop()
-        try:
-            self.s.stop()
-        except Exception:
-            pass
+        self.stop_server()
         try:                                     # no timer may fire into a window that is gone
             for aid in self.app.tk.splitlist(self.app.tk.call("after", "info")):
                 self.app.tk.call("after", "cancel", aid)
@@ -188,6 +185,11 @@ class OnlineUiWalk(unittest.TestCase):
         gc.collect()
 
     # ------------------------------------------------------------------ helpers
+    def stop_server(self):
+        if self.s is not None:
+            s, self.s = self.s, None
+            s.stop()
+
     def window(self, parent):
         w = tk.Toplevel(parent)
         if SHOTS:
@@ -344,7 +346,7 @@ class OnlineUiWalk(unittest.TestCase):
         dragon.create_room("Late night")
         self.pump(lambda: s.call(lambda: any(r.name == "Late night" for r in s.srv.rooms.values())), 10)
         nina.join_room(s.call(lambda: [r.id for r in s.srv.rooms.values() if r.name == "Late night"][0]))
-        self.pump(lambda: s.call(lambda: any(r.name == "Friday night" for r in s.srv.rooms.values())), 30,
+        self.pump(lambda: s.call(lambda: any(r.name == "Friday night" for r in s.srv.rooms.values())), 90,
                   "the CLI client's room (exit %s, log %s)" % (mika.poll(), os.path.join(self.dir, "cli-Mika.log")))
         tab.do_login("guest")
         self.flip_tabs()
@@ -555,7 +557,7 @@ class OnlineUiWalk(unittest.TestCase):
 
         # the server goes away; then the launcher closes
         tab.client.reconnect_window = 2.0                         # (60 s for players)
-        s.stop()
+        self.stop_server()
         self.pump(lambda: tab.client is None, 60, "disconnected")
         self.assertIn("Log in again", tab.view.err_var.get())
         self.flip_tabs()

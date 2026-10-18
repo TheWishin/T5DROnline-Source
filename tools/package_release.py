@@ -82,12 +82,13 @@ OUR_FILES = [
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
                       "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md"]
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
-# the Online tab's "Host for friends" and lobby/deploy/windows/ run a lobby server from the zip
+# the Online tab's "Host for friends" runs a lobby server from the zip (lobby/run.py host); the
+# Windows deploy scripts stay in the repository: script files in a game download get flagged
 # (docs/HOSTING.md). The Linux/Docker packaging stays in the repository.
 # src/ is the runtime's own code (netplay, direct fight, rollback, perf): CMakeLists.txt globs it,
 # so a staged tree without it builds a runtime with no online play at all (the host build does not fail).
 OUR_GLOBS = ["patches/ps3recomp/*.patch", "tools/gamedll/include/*.h", "lobby/t5lobby/*.py",
-             "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py", "lobby/deploy/windows/*",
+             "lobby/t5lobby/data/*.json", "lobby/t5lobby/server/*.py",
              "src/*/*.cpp", "src/*/*.h", "src/*/*.c", "src/*/*.manifest", "src/*/*/*.c"]
 
 # ps3recomp: only what tools/build_game.py and CMakeLists.txt use.
@@ -359,7 +360,8 @@ def add_python(stage):
                 copy(os.path.join(dp, f), os.path.join(dst, "DLLs", os.path.relpath(os.path.join(dp, f),
                                                                                      os.path.join(base, "DLLs"))))
     for dp, dns, fns in os.walk(os.path.join(base, "tcl")):
-        dns[:] = [d for d in dns if d not in ("demos", "tzdata", "msgs", "encoding") or "tk" in dp.lower()]
+        dns[:] = [d for d in dns if (d not in ("demos", "tzdata", "msgs", "encoding") or "tk" in dp.lower())
+                  and d != "nmake"]
         for f in fns:
             rel = os.path.relpath(os.path.join(dp, f), base)
             copy(os.path.join(dp, f), os.path.join(dst, rel))
@@ -757,6 +759,12 @@ def main():
     else:
         log("  (no llvm-readobj next to clang-cl: import check skipped)")
 
+    # Script files in a game download are what virus scanners flag first: 0.1.8/0.1.9-preview got
+    # "Generic.BAT.Downloader" from 8 of 62-65 scanners. The zip carries none.
+    scripts = [os.path.relpath(os.path.join(dp, f), stage) for dp, _, fns in os.walk(stage) for f in fns
+               if f.lower().endswith((".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta"))]
+    if scripts:
+        fail("script files in the release (virus scanners flag them): " + ", ".join(sorted(scripts)[:20]))
     ok = report("folder", *scan_files(iter_dir(stage), key_pats, game_index))
     if not ok:
         fail("refusing to package: see the scan above")

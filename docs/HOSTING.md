@@ -231,8 +231,8 @@ files and commands were run natively (see [verified](#what-was-verified-and-what
 ## Windows: host for friends, or always on
 
 **While you play: Host for friends.** The launcher's Online tab has a **Host for friends**
-button. Without the launcher, use `lobby\deploy\windows\host-for-friends.cmd` from the release
-folder, or `python lobby\run.py host`. It:
+button. Without the launcher, run `python\python.exe lobby\run.py host` in the release folder
+(the release zip carries no script files: virus scanners flag scripts in game downloads). It:
 
 - Starts a lobby server on this PC with its data in `%LOCALAPPDATA%\T5DR Online\lobby-host`
   (database, certificate, rotated logs, daily backups).
@@ -258,8 +258,8 @@ router's status page; no outside service is asked.
 **Windows Firewall:** the first time, Windows asks whether Python may accept connections.
 Allow it for private networks.
 
-**Always on (a PC that stays on):** `lobby\deploy\windows\install-task.ps1`, from an
-administrator PowerShell, registers the scheduled task "T5DR Lobby Server". It starts at boot,
+**Always on (a PC that stays on):** `lobby\deploy\windows\install-task.ps1` (in the source
+repository, not in the release zip), from an administrator PowerShell, registers the scheduled task "T5DR Lobby Server". It starts at boot,
 whether you are logged on or not (S4U, so no password is stored), runs as you with normal
 rights, has no time limit, and restarts every minute after a failure. It uses the release's
 `python\pythonw.exe`, so no window. Options:

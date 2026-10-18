@@ -2177,6 +2177,22 @@ back and start VS runs as before. A desync of this kind needs no rollback at
 all; it fits the "desync in match 2 with no rollback before it" reports
 (CLAUDE.md), not proven.
 
+**Not explained: a select screen that never loads, under heavy load.** Twice on
+the rebased build with 9-13 game instances on the PC (F10 and F12, both in
+cycle 5, both right after a title visit), S's select mode stayed in its loading
+for good: mode 6, phase word 1, no file opened, every loader parked (ZsAread,
+the file manager, the decoder), the music thread not started; the game itself
+ran at full rate. No rollback had happened in that process (session 1: 0
+rollbacks), so the restore is not involved. In F12 the reset's stuck check
+ended the game after 60 s (exit 6: the launcher starts a fresh one); in F10 the
+"fight" had come while the game sat in neutral, which had no such check, and
+it waited there for good. Mitigation (`df_fight.cpp stuck_check`): a "fight"
+pending in neutral counts too, from the moment the command came. Not seen in
+F9 (21 cycles, pre-rebase) nor in F13 on the final build; what the select mode
+waits for in phase 1 is not known yet -- `build/cr/stuckwatch.py` dumps the
+threads of a game whose "fight" command is followed by no state change (with
+`PS3_DEBUG`).
+
 ## What is left
 
 - The file request thread under rollback (sections 30-31): fixed in section 32,

@@ -504,16 +504,63 @@ def staged_code_id(stage):
     return r.stdout.strip().splitlines()[-1]
 
 
-def build_stub(stage, clang):
-    """T5DR Online.exe from launcher/stub/t5dr_stub.c (kernel32/user32 only). Without
-    clang-cl or MSVC, a .cmd starter stands in (developer zips only; --release fails)."""
+STUB_RC = """#include <windows.h>
+1 ICON "{ico}"
+1 24 "{manifest}"
+1 VERSIONINFO
+ FILEVERSION {v1},{v2},{v3},0
+ PRODUCTVERSION {v1},{v2},{v3},0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "CompanyName", "T5DR Online"
+      VALUE "FileDescription", "T5DR Online launcher"
+      VALUE "FileVersion", "{version}"
+      VALUE "InternalName", "T5DR Online"
+      VALUE "LegalCopyright", "MIT License - T5DR Online contributors"
+      VALUE "OriginalFilename", "T5DR Online.exe"
+      VALUE "ProductName", "T5DR Online"
+      VALUE "ProductVersion", "{version}"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"""
+
+
+def build_stub(stage, clang, version="0.0.0"):
+    """T5DR Online.exe from launcher/stub/t5dr_stub.c: an ordinary Windows application (static
+    C runtime, version information, icon, manifest). Without clang-cl or MSVC, a .cmd starter
+    stands in (developer zips only; --release fails)."""
     src = os.path.join(ROOT, "launcher", "stub", "t5dr_stub.c")
     out = os.path.join(stage, "T5DR Online.exe")
     pre = msvc_prefix()
     if clang[0] and pre is not None:
         tmp = tempfile.mkdtemp(prefix="t5dr_stub_")
-        cmd = (f'{pre}"{clang[0]}" /nologo /O2 /GS- "{src}" /Fo"{tmp}\\stub.obj" /Fe"{out}" '
-               f'/link /SUBSYSTEM:WINDOWS /ENTRY:start /NODEFAULTLIB kernel32.lib user32.lib')
+        nums = (re.findall(r"\d+", str(version).split("-")[0]) + ["0", "0", "0"])[:3]
+        rc = os.path.join(tmp, "stub.rc")
+        stub_dir = os.path.join(ROOT, "launcher", "stub")
+        with open(rc, "w", encoding="utf-8") as f:
+            f.write(STUB_RC.format(ico=os.path.join(stub_dir, "t5dr.ico").replace("\\", "/"),
+                                   manifest=os.path.join(stub_dir, "t5dr_stub.manifest").replace("\\", "/"),
+                                   v1=nums[0], v2=nums[1], v3=nums[2], version=version))
+        llvm_rc = os.path.join(os.path.dirname(clang[0]), "llvm-rc.exe")
+        rcexe = f'"{llvm_rc}"' if os.path.exists(llvm_rc) else "rc.exe"
+        res = os.path.join(tmp, "stub.res")
+        obj = os.path.join(tmp, "stub.obj")
+        cmd = (f'{pre}{rcexe} /nologo /fo "{res}" "{rc}" && '
+               f'"{clang[0]}" /nologo /O2 /MT "{src}" /Fo"{obj}" /Fe"{out}" '
+               f'/link /SUBSYSTEM:WINDOWS /MANIFEST:NO "{res}" kernel32.lib user32.lib')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         shutil.rmtree(tmp, ignore_errors=True)
         if r.returncode == 0 and os.path.exists(out):
@@ -739,7 +786,7 @@ def main():
         add_llvm(stage, a.llvm)
     if a.prebuilt_host:
         add_prebuilt_host(stage, clang, a.jobs)
-    if not build_stub(stage, clang) and a.release:
+    if not build_stub(stage, clang, version) and a.release:
         fail("--release needs the native starter T5DR Online.exe (clang-cl + MSVC)")
     add_docs(stage, version)
     info = {"name": "T5DR Online", "version": version, "code_id": staged_code_id(stage),
@@ -763,7 +810,7 @@ def main():
     # "Generic.BAT.Downloader" from 8 of 62-65 scanners. The zip carries none.
     scripts = [os.path.relpath(os.path.join(dp, f), stage) for dp, _, fns in os.walk(stage) for f in fns
                if f.lower().endswith((".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta"))]
-    if scripts:
+    if scripts and a.release:
         fail("script files in the release (virus scanners flag them): " + ", ".join(sorted(scripts)[:20]))
     ok = report("folder", *scan_files(iter_dir(stage), key_pats, game_index))
     if not ok:

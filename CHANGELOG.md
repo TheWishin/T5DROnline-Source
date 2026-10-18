@@ -34,6 +34,15 @@ versions). After the update press **BUILD GAME** once.
   don't allow it. Any two x64 PCs compute the same game (Intel/AMD, with or
   without AVX2).
 
+### Fewer virus-scanner false alarms
+- The zip carries **no script files** any more (0.1.8/0.1.9 were flagged as
+  "Generic.BAT.Downloader" by 8 of 62 scanners because of helper scripts that
+  never ran). The release build now refuses any script file.
+- `T5DR Online.exe` is now an ordinary Windows application with an icon,
+  version information and a manifest (the old 3.5 KB starter was flagged by 3 of
+  71 machine-learning scanners). It is not code-signed, so Windows SmartScreen
+  may still ask once: "More info" -> "Run anyway".
+
 ### Known issues (fixes planned for 1.0.1)
 - **Closing the game with Alt+F4 during a match** voids the match instead of
   counting it as a loss, and the next one or two matches against the same

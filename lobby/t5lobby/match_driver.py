@@ -22,6 +22,9 @@ From "match found" to "result reported" without the player doing anything:
     after         the game stays open at character select; a rematch with the same opponent
                   continues inside the running games: the next fight goes to T5_FIGHT_FILE
                   (no restart, no new connection)
+    ranked set    between two games of a ranked set (best of 3, docs/RANKED.md "Ranked sets") the
+                  next game starts by itself: the driver tells the lobby whether this game still
+                  runs connected (set_next keep), and the next game continues in it like a rematch
 
 Two ways to run the game:
 
@@ -46,6 +49,7 @@ poll() a few times a second and shows the notes it gets back:
     {"t": "driver", "kind": "status", "text": ...}
     {"t": "driver", "kind": "ask_result", "match": id, "opponent": name}   no result: ask the player
     {"t": "driver", "kind": "rematch_offer", "match": id, "opponent": name, "timeout": s}
+    {"t": "driver", "kind": "set_next", "match": id, "set": {...}}         a ranked set goes on by itself
     {"t": "driver", "kind": "game_closed"}
 """
 import functools
@@ -618,7 +622,14 @@ class MatchDriver:
                 # desync report): whatever our game writes for it now must not count for the next.
                 self._discard_result("unreported")
             self.ticket = None
-        if ev.get("rematch_window") and self.auto_rematch > 0:
+        s = ev.get("set") or {}
+        if s.get("rated") and s.get("next"):
+            # A ranked set goes on by itself (no vote): say whether this game can play the next one as it runs.
+            fn = getattr(self.client, "set_next", None)
+            if fn is not None:
+                self._call(fn, ev["match"], self.connected_game())
+            self.note("set_next", match=ev["match"], set=s)
+        elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
 
     def rematch(self, match_id=None, accept=True):
@@ -899,11 +910,18 @@ def fps_from_logs(log_dir):
 
 def hud_values(ev):
     """([P1 name, P2 name], [P1 tier, P2 tier]) for the fight HUD from match_start's players (P1
-    first, the same list on both PCs), or None. Guests and unplaced players get the Beginner badge."""
+    first, the same list on both PCs), or None. Guests and unplaced players get the Beginner badge.
+    In a ranked set from its second game on, each name ends with that player's games won ("Alice [1]";
+    match_start's `set.wins`, the same on both PCs)."""
     players = (ev or {}).get("players") or []
     if len(players) != 2:
         return None
     names = [str(p.get("name", ""))[:16] for p in players]
+    s = (ev or {}).get("set") or {}
+    wins = s.get("wins")
+    if s.get("rated") and int(s.get("number") or 1) > 1 and isinstance(wins, list) and len(wins) == 2:
+        # a ranked set from game 2 on: the games won so far after each name ("Alice [1]"), 16 characters at most
+        names = [f"{n[:12]} [{int(w)}]" for n, w in zip(names, wins)]
     tiers = []
     for p in players:
         t = p.get("tier")

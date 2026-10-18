@@ -38,17 +38,17 @@ from ..buildid import BuildInfo
 from ..proto import LobbyError
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
-from .store import COUNTED, Store, check_password, hash_password
+from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
 from .udp import UdpService
 
 log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
-CAPS = frozenset(("delta", "blind_ready", "notices"))     # optional protocol features a client may announce in hello
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets"))   # optional protocol features a client may announce in hello
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
-            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices"]
+            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -159,11 +159,17 @@ class GameSet:
     challenge) and every rematch of it. A ranked set locks both players' characters: whatever they
     had picked when the set began is what they play in every game of it. The set ends when a player
     leaves it (declines the rematch, queues again, blocks, leaves the lobby), the rematch window runs
-    out, or a game is cancelled. No game's rating changes when a set ends."""
+    out, or a game is cancelled.
 
-    def __init__(self, a, b, ranked):
+    A **rated set** (`wins_needed` > 1: a ranked set between two clients that announced "sets",
+    T5L_RANKED_SET_WINS, docs/RANKED.md "Ranked sets") is best of 2 * wins_needed - 1: its games are
+    not rated one by one; the next game starts by itself after a countdown, and the rating changes once,
+    when a player has won `wins_needed` games (or left the set). Otherwise (casual, or the old per-game
+    rating) no game's rating changes when a set ends: each game was rated when it ended."""
+
+    def __init__(self, a, b, ranked, wins_needed=0):
         self.id = "s" + _rid()
-        self.players = [a, b]
+        self.players = [a, b]           # P1 and P2 of every game of a rated set (sides stay)
         self.locked = bool(ranked)
         self.ranked = bool(ranked)
         self.picks = {}                 # player id -> the character picked for the whole (locked) set
@@ -172,10 +178,63 @@ class GameSet:
         self.current = None             # the match being set up or played
         self.last = None                # the last finished match
         self.state = "active"
+        self.created = time.time()
+        # rated set
+        self.wins_needed = wins_needed if ranked and wins_needed > 1 else 0
+        self.wins = {a.id: 0, b.id: 0}  # games won, by player id
+        self.number = 1                 # the set's game being played or next (a replay keeps the number)
+        self.replays = 0                # games played again (no winner: desync, draw, too short)
+        self.log = []                   # [{match, number, status, winner (0/1 = P1/P2 of the set), score, reason}]
+        self.next_timer = None          # countdown to the next game
+        self.next_due = 0.0             # (monotonic) when it ends
+        self.next_keep = {}             # player id -> True: that player's game still runs, connected (set_next)
+        self.fresh = False              # the next game needs a new connection (after a desync)
+        self.grace = {}                 # player id -> timer: lost the lobby between two games
+        self.outcome = None             # at the end: {status, winner, reason, blame (Players or None), changes}
+
+    @property
+    def rated(self):
+        return self.wins_needed > 1
+
+    def side(self, p):
+        return 0 if self.players[0] is p else 1 if self.players[1] is p else None
+
+    def other(self, p):
+        return self.players[1 - self.side(p)]
+
+    def score(self):
+        """[games won by P1, by P2] (P1 / P2 of the set)."""
+        return [self.wins[self.players[0].id], self.wins[self.players[1].id]]
 
     def info(self):
-        return {"id": self.id, "game": self.games, "locked": self.locked and self.state == "active",
-                "ranked": self.ranked}
+        d = {"id": self.id, "game": self.games, "locked": self.locked and self.state == "active",
+             "ranked": self.ranked}
+        if self.rated:
+            # wins by side (P1, P2: the same in every game of the set); number: "game 2 of 3"
+            d.update({"rated": True, "wins_needed": self.wins_needed, "best_of": 2 * self.wins_needed - 1,
+                      "wins": self.score(), "number": self.number, "replays": self.replays,
+                      "state": "active" if self.outcome is None else "ended"})
+            if self.next_timer is not None:
+                d["next"] = {"in": round(max(0.0, self.next_due - time.monotonic()), 1), "number": self.number,
+                             "replay": bool(self.log) and self.log[-1]["winner"] is None}
+            if self.outcome is not None:
+                o = self.outcome
+                d["result"] = {"status": o["status"], "reason": o["reason"],
+                               "winner": None if o["winner"] is None else self.side(o["winner"]),
+                               "blame": None if o["blame"] is None else self.side(o["blame"])}
+        return d
+
+    def view(self, p):
+        """The set from `p`'s side, for set_end: {result win|loss|None, wins [you, opp], rating (p's change)}."""
+        sd = self.side(p)
+        sc = self.score()
+        o = self.outcome or {}
+        w = o.get("winner")
+        return {"rated": True, "status": o.get("status"), "outcome_reason": o.get("reason"),
+                "result": None if w is None else ("win" if w is p else "loss"),
+                "wins": [sc[sd], sc[1 - sd]], "games": len(self.log), "best_of": 2 * self.wins_needed - 1,
+                "blame": None if o.get("blame") is None else ("you" if o["blame"] is p else "opponent"),
+                "rating": (o.get("changes") or {}).get(p.id)}
 
 
 class Match:
@@ -218,6 +277,8 @@ class Match:
         self.blind = [False, False]          # side -> got the blind ready check (no name, no side yet)
         self.lag = [None, None]              # side -> the game's lag report (docs/RANKED.md, lag check)
         self.lag_sent = False
+        self.lag_verdict = None              # the lag check's verdict (a ranked set may be left for free after "more_lag")
+        self.set_number = None               # its number in a rated set (1, 2, 3; a replay keeps it)
 
     def side(self, player):
         return 0 if self.players[0] is player else 1 if self.players[1] is player else None
@@ -366,7 +427,8 @@ class LobbyServer:
             "logins_account", "accounts_created", "login_failures", "kicked", "matches_found",
             "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
             "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
-            "lag_more", "lag_leaves", "notices_sent"), 0)
+            "lag_more", "lag_leaves", "notices_sent", "sets_confirmed", "sets_forfeit", "sets_void",
+            "set_replays"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
         self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
         self.name_block = self._load_blocklist(self.cfg.name_blocklist)
@@ -390,6 +452,11 @@ class LobbyServer:
             log.warning("no TLS certificate (T5L_TLS_CERT): account passwords cross the network readable; "
                         "see docs/HOSTING.md")
         self.sslctx = sslctx
+        n = self.store.void_open_sets("server_restart")
+        if n:
+            # A running ranked set lives in this process only: one the last server left open is void (its games
+            # changed no rating, so nothing is undone). docs/RANKED.md "Ranked sets", server restart.
+            log.info("%d ranked set(s) left open by the last server run: void (server_restart)", n)
         self.reload_bans()
         self.notices_by_id = {n["id"]: n for n in self.store.active_notices()}
         self.tcp = await asyncio.start_server(self._accept, self.cfg.host, self.cfg.port, ssl=sslctx,
@@ -627,7 +694,8 @@ class LobbyServer:
                 "tls": conn.writer.get_extra_info("ssl_object") is not None,
                 "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
                 "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay,
-                "strict_range": self.cfg.strict_range, "pair_cooldown": self.cfg.pair_cooldown}
+                "strict_range": self.cfg.strict_range, "pair_cooldown": self.cfg.pair_cooldown,
+                "set_wins": self.cfg.ranked_set_wins if "sets" in conn.caps else 1}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -715,7 +783,8 @@ class LobbyServer:
                     old.send({"t": "kicked", "reason": "logged in from another place"})
                     old.conn.player = None
                     old.conn.close()
-                if m is not None and m.state == "playing":
+                if (m is not None and m.state == "playing") or self._between_set_games(old):
+                    # (between two games of a ranked set the set moves with the player too)
                     return self._take_over(conn, old, session)
                 self.player_dropped(old, final=True)
             else:
@@ -845,6 +914,8 @@ class LobbyServer:
                 m.players[1 - side].send({"t": "notice", "code": "opponent_back", "match": m.id,
                                           "msg": f"{p.name} is back in the lobby"})
             asyncio.get_running_loop().call_soon(self._send_match_start, m, side)
+        elif self._between_set_games(p):
+            self._set_back(p.set, p)
         return reply
 
     async def h_logout(self, conn, msg):
@@ -961,7 +1032,11 @@ class LobbyServer:
                                       "grace": self.cfg.reconnect_grace,
                                       "msg": f"{p.name} lost the lobby connection; waiting "
                                              f"{self.cfg.reconnect_grace:.0f} s for them to return"})
-        if final or p.match is None:
+        if not final and self._between_set_games(p):
+            # Between two games of a ranked set: the launcher reconnects on its own, like mid-match. Not back
+            # within the grace period -> the set is lost (docs/RANKED.md "Ranked sets").
+            self._set_dropped(p.set, p)
+        elif final or p.match is None:
             self._forget(p)
         self.dirty = True
         self.note("drop", player=p.id)
@@ -1036,7 +1111,8 @@ class LobbyServer:
              "member_since": row["created"], "last_seen": row["last_seen"],
              "chars": self.store.char_usage(aid), "main": self.store.main_char(aid),
              "voids_24h": self.store.strikes(aid, time.time() - DAY),
-             "history": self.store.history(aid, max(0, min(50, n_history)))}
+             "history": self.store.history(aid, max(0, min(50, n_history))),
+             "sets": self.store.set_history(aid, max(0, min(20, n_history)))}
         d.update(ranks.describe(rank, rt.rd, self.rules))
         if online is not None:
             d["status"] = online.status
@@ -1220,6 +1296,8 @@ class LobbyServer:
             r = p.room
             if r is None or len(r.members) != 2 or r.match is not None:
                 raise LobbyError(proto.E_STATE, "no opponent in the room")
+            if r.set is not None and r.set.rated and r.set.state == "active":
+                raise LobbyError(proto.E_STATE, "the ranked set goes on by itself")
             self._room_start(r)
             return None
         prev = self.recent.get(msg.get("match"))
@@ -1227,6 +1305,13 @@ class LobbyServer:
             raise LobbyError(proto.E_NOT_FOUND, "that match is over; find a new opponent")
         side = prev.side(p)
         other = prev.players[1 - side]
+        gs = prev.set
+        if gs is not None and gs.rated and gs.state == "active":
+            # A ranked set goes on by itself (no vote); declining is leaving it.
+            if msg.get("accept", True) or gs.current is not None:
+                raise LobbyError(proto.E_STATE, "the ranked set goes on by itself")
+            self._end_set(gs, "left", by=p)
+            return None
         if not msg.get("accept", True):
             self.recent.pop(prev.id, None)
             other.send({"t": "rematch", "match": prev.id, "state": "declined", "from": p.brief()})
@@ -1326,10 +1411,10 @@ class LobbyServer:
             raise LobbyError(proto.E_BUSY, "challenge no longer possible")
         if self._is_blocked(src, p):
             raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
+        self._abandon_set(src, requester=p)
+        self._abandon_set(p)
         self._leave_queue(src)
         self._leave_queue(p)
-        self._abandon_set(src)
-        self._abandon_set(p)
         self.create_match(src, p, ranked=False, origin="challenge")
 
     async def h_challenge_cancel(self, conn, msg):
@@ -1349,7 +1434,10 @@ class LobbyServer:
     # ------------------------------------------------------------------ matches: setup
     def create_match(self, host, join, ranked, origin, room=None, rematch_of=None, keep=False, game_set=None):
         note = None
-        if ranked and host.account_id is not None and join.account_id is not None and self.cfg.pair_cap > 0:
+        going_on = game_set or (rematch_of.set if rematch_of is not None else None)
+        if going_on is not None and going_on.rated and going_on.state == "active" and                 {id(x) for x in going_on.players} == {id(host), id(join)}:
+            pass                     # the next game of a rated set: the set was ranked (and capped) when it began
+        elif ranked and host.account_id is not None and join.account_id is not None and self.cfg.pair_cap > 0:
             n = self.store.pair_ranked(host.account_id, join.account_id, time.time() - DAY)
             if n >= self.cfg.pair_cap:
                 # Anti win-trading: the same two accounts only move each other's rating so often a day.
@@ -1360,7 +1448,7 @@ class LobbyServer:
         m.rematch_of = rematch_of.id if rematch_of is not None else None
         self.matches[m.id] = m
         self._join_set(m, rematch_of, game_set)
-        skip_ready = origin in ("challenge", "rematch")
+        skip_ready = origin in ("challenge", "rematch", "set")
         est = self._est_ping(host, join)
         ping = {"ms": round(est), "kind": "estimate", "known": host.server_rtt is not None and join.server_rtt is not None}
         for side, p in enumerate(m.players):
@@ -1409,12 +1497,17 @@ class LobbyServer:
         if gs is None and rematch_of is not None:
             gs = rematch_of.set
         if gs is None or gs.state != "active" or {id(x) for x in gs.players} != {id(host), id(join)}:
-            gs = GameSet(host, join, m.ranked)
+            # A ranked set between two clients that know sets is best of 3 (T5L_RANKED_SET_WINS), rated once;
+            # with an older client every game is rated on its own, as before.
+            sets_ok = all("sets" in getattr(q.conn, "caps", ()) for q in (host, join))
+            gs = GameSet(host, join, m.ranked, self.cfg.ranked_set_wins if sets_ok else 0)
         if gs.locked:
             for q in (host, join):
                 gs.picks.setdefault(q.id, q.char)
             m.picks = [gs.picks[host.id], gs.picks[join.id]]
         gs.matches.append(m)
+        if gs.rated:
+            m.set_number = gs.number
         gs.current = m
         m.set = gs
         host.set = join.set = gs
@@ -1490,7 +1583,13 @@ class LobbyServer:
             if gs.current is m:
                 gs.current = None
             if gs.state == "active":
-                self._end_set(gs, "cancelled")
+                if gs.rated and by is not None and reason in ("opponent_left", "declined"):
+                    if by.online:
+                        self._end_set(gs, "left", by=by)     # the next game of a ranked set: leaving it
+                    # else: `by` lost the lobby while the game was set up -- player_dropped gives the set its
+                    # grace period (or ends it for a logout)
+                else:
+                    self._end_set(gs, "cancelled")
         self.counters["matches_cancelled"] += 1
         self.note("match_cancel", match=m.id, reason=reason)
         log.info("match %s cancelled: %s", m.id, reason)
@@ -1668,6 +1767,8 @@ class LobbyServer:
             self._send_match_start(m, side)
         self._timer(m, "match", self.cfg.match_timeout, self._match_timeout, m)
         self._save(m, "playing")
+        if m.set is not None and m.set.rated:
+            self._save_set(m.set)
         self.dirty = True
         self._count("matches_" + path)
         self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay)
@@ -1906,9 +2007,11 @@ class LobbyServer:
     def _finish(self, m, status, winner, score, reason=None, blame=None):
         self._cancel_timers(m)
         m.state = "done"
+        # A game of a rated set changes no rating and no record by itself: the set does, once, at its end.
+        gs = m.set if m.set is not None and m.set.rated and m.set.state == "active" else None
         counts = status in COUNTED
         changes = None
-        if counts:
+        if counts and gs is None:
             outcome = ["draw", "draw"] if winner is None else \
                 ["win" if winner == 0 else "loss", "win" if winner == 1 else "loss"]
             if m.ranked:
@@ -1953,6 +2056,13 @@ class LobbyServer:
                 m.set.current = None
             m.set.last = m
         asyncio.get_running_loop().call_later(self.cfg.rematch_window, self._expire_recent, m)
+        if gs is not None:
+            # the set decides what comes next: its next game after a countdown, or its end (and the rating)
+            self._set_game_over(gs, m, status, winner, score, reason, blame)
+            ch = gs.outcome and gs.outcome["changes"]
+            if ch:
+                changes = [ch[q.id] for q in m.players]
+        set_going = gs is not None and gs.outcome is None
         for side, p in enumerate(m.players):
             if p.match is m:
                 p.match = None
@@ -1962,9 +2072,15 @@ class LobbyServer:
                     "ranked": m.ranked, "rating": changes[side] if changes else None, "you": p.public(),
                     "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
                     "set": m.set.info() if m.set is not None else None,
-                    "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online else 0})
+                    "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online
+                    and not set_going else 0})
             if not p.online and p.match is None:
-                self._forget(p)
+                if set_going and self._between_set_games(p):
+                    self._set_dropped(gs, p)           # lost the lobby during the game: the set waits a while
+                else:
+                    self._forget(p)
+        if gs is not None and gs.outcome is not None:
+            self._announce_set_end(gs, "decided")
         if m.room is not None:
             m.room.match = None
         self._count("results_" + status)
@@ -1981,6 +2097,7 @@ class LobbyServer:
                 "build": m.build_id, "path": m.path, "rtt_ms": m.rtt, "delay": m.delay, "status": status,
                 "winner": winner, "score": score, "reports": m.reports, "rating": changes,
                 "origin": m.origin, "started": m.started,
+                "set_id": m.set.id if m.set is not None and m.set.rated else None, "set_game": m.set_number,
                 "duration": round(time.time() - m.started, 1) if m.started and status != "playing" else None,
                 "p1_char": m.chars[0] if m.chars else None, "p2_char": m.chars[1] if m.chars else None,
                 "stage": m.stage, "reason": reason, "blame": blame})
@@ -2073,16 +2190,227 @@ class LobbyServer:
 
     # ------------------------------------------------------------------ sets
     def _end_set(self, gs, reason, by=None):
-        """A set is over: characters unlock, both players are told. Ratings are not touched."""
+        """A set is over: characters unlock, both players are told. Ratings are not touched -- except for
+        a rated set left before it was decided: leaving it is losing it (_set_abort)."""
         if gs.state == "ended":
             return
+        if gs.rated and gs.outcome is None:
+            self._set_abort(gs, reason, by)
+        else:
+            self._close_set(gs)
+        self._announce_set_end(gs, reason, by)
+
+    def _close_set(self, gs):
         gs.state = "ended"
+        if gs.next_timer is not None:
+            gs.next_timer.cancel()
+            gs.next_timer = None
+        for h in gs.grace.values():
+            h.cancel()
+        gs.grace.clear()
         for q in gs.players:
             if q.set is gs:
                 q.set = None
-            q.send({"t": "set_end", "set": gs.id, "reason": reason,
-                    "by": None if by is None else ("you" if q is by else "opponent")})
+
+    def _announce_set_end(self, gs, reason, by=None):
+        for q in gs.players:
+            msg = {"t": "set_end", "set": gs.id, "reason": reason,
+                   "by": None if by is None else ("you" if q is by else "opponent")}
+            if gs.rated:
+                msg.update(gs.view(q))
+            q.send(msg)
         self.note("set_end", set=gs.id, reason=reason)
+        if gs.rated:
+            for q in gs.players:            # a player who lost the lobby waited for the set only
+                if not q.online and q.match is None:
+                    self._forget(q)
+
+    # ------------------------------------------------------------------ ranked sets (best of 3, rated once)
+    # docs/RANKED.md "Ranked sets". A rated set (GameSet.rated) is a ranked set between two clients that
+    # announced "sets": first to T5L_RANKED_SET_WINS games. After each game the next one starts by itself
+    # (T5L_SET_NEXT_SECONDS countdown, no vote; the same characters, the same sides); the rating changes once,
+    # when the set is decided. Leaving or quitting it is losing it (once a game has counted); a crash or a
+    # broken connection follows the integrity rules (void, blame); a game without a winner (desync, draw, too
+    # short) is played again, at most T5L_SET_REPLAYS times per set, then the set is void.
+    SET_REPLAY = ("desync", "too_short", "no_result")
+
+    def _between_set_games(self, p):
+        gs = p.set
+        return gs is not None and gs.rated and gs.state == "active" and gs.current is None and p.match is None
+
+    def _set_game_over(self, gs, m, status, winner, score, reason, blame):
+        """One game of a rated set ended (`_finish`): count it, then the next game or the end of the set."""
+        same = m.players[0] is gs.players[0]                 # (always: the games keep the set's sides)
+        win_side = None if winner is None else (winner if same else 1 - winner)
+        gs.log.append({"match": m.id, "number": gs.number, "status": status,
+                       "winner": win_side if status in COUNTED else None,
+                       "score": score if same or not score else score[::-1], "reason": reason})
+        if status == "forfeit":
+            loser = m.players[blame] if blame is not None else m.players[1 - winner]
+            self._set_conclude(gs, "forfeit", winner=gs.other(loser), reason=reason, blame=loser)
+        elif status in COUNTED and winner is not None:
+            w = m.players[winner]
+            gs.wins[w.id] += 1
+            if gs.wins[w.id] >= gs.wins_needed:
+                self._set_conclude(gs, "confirmed", winner=w)
+            else:
+                gs.number += 1
+                self._set_schedule_next(gs)
+        elif (status in COUNTED and winner is None) or (status == "void" and reason in self.SET_REPLAY):
+            # no winner: the same game again (a desync: over a new connection, the games reset first)
+            if gs.replays >= self.cfg.set_replays:
+                self._set_conclude(gs, "void", reason=reason or "draw")
+                return
+            gs.replays += 1
+            self._count("set_replays")
+            gs.fresh = gs.fresh or reason == "desync"
+            self._set_schedule_next(gs)
+        else:
+            culprit = m.players[blame] if blame is not None else None
+            if culprit is not None and reason in ("early_quit", "disconnect") and any(gs.wins.values()):
+                # quitting (or vanishing) right at the start of a later game is still leaving the set
+                self._set_conclude(gs, "forfeit", winner=gs.other(culprit), reason=reason, blame=culprit)
+            else:
+                # crash, broken connection, dispute, no reports: the integrity rules, for the whole set
+                self._set_conclude(gs, "void", reason=reason or status, blame=culprit)
+
+    def _set_abort(self, gs, reason, by):
+        """A rated set ends between two games (or its next game could not start): leaving it -- declining,
+        leave_set, logging out, blocking, not coming back to the lobby -- loses it once a game has counted;
+        a lag check that found more lag than the ping explains lets a player out for free (h_leave_set)."""
+        if reason == "lag" and by is not None:
+            self._set_conclude(gs, "void", reason="lag")
+        elif by is not None and reason in ("left", "declined", "disconnect") and any(gs.wins.values()):
+            self._set_conclude(gs, "forfeit", winner=gs.other(by), reason=reason, blame=by)
+        else:
+            self._set_conclude(gs, "void", reason=reason)
+
+    def _set_conclude(self, gs, status, winner=None, reason=None, blame=None):
+        """The end of a rated set: status confirmed | forfeit (decided, rated: ONE Glicko-2 update per player,
+        from the set's result) or void (no rating change). Unlocks the characters; announcing is the caller's."""
+        if gs.outcome is not None:
+            return
+        changes = None
+        if status in SET_COUNTED and winner is not None:
+            a, b = gs.players
+            na, nb = glicko.match(a.rating, b.rating, 1.0 if winner is a else 0.0)
+            changes = {}
+            for p, new in ((a, na), (b, nb)):
+                before_rank = p.rank_info()
+                rank_state, event = ranks.after_match(p.rank, new.r, self.rules)
+                ch = {"before": p.rating.as_dict(), "after": new.as_dict(), "delta": round(new.r - p.rating.r, 1),
+                      "rank_before": before_rank, "event": event}
+                p.rating = new
+                if not p.guest:
+                    p.rank = rank_state
+                ch["rank_after"] = p.rank_info()
+                changes[p.id] = ch
+                won = p is winner
+                p.record[0 if won else 1] += 1
+                if p.account_id is not None:
+                    self.store.set_rating(p.account_id, p.rating, "win" if won else "loss", p.rank)
+                    p.main = self.store.main_char(p.account_id)
+            self.pair_last[frozenset(self._pair_id(q) for q in gs.players)] = time.monotonic()
+        gs.outcome = {"status": status, "winner": winner, "reason": reason, "blame": blame, "changes": changes}
+        self._close_set(gs)
+        if gs.games > 0:
+            self._save_set(gs)
+        self._count("sets_" + status)
+        self.note("set_result", set=gs.id, status=status, reason=reason,
+                  winner=None if winner is None else winner.id, score=gs.score())
+        log.info("set %s %s%s: %s %d-%d %s", gs.id, status, f" ({reason})" if reason else "", gs.players[0].name,
+                 *gs.score(), gs.players[1].name)
+        self.dirty = True
+
+    def _save_set(self, gs):
+        a, b = gs.players
+        o = gs.outcome or {}
+        ch = o.get("changes")
+        try:
+            self.store.save_set({
+                "id": gs.id, "created": gs.created, "ended": time.time() if o else None, "ranked": gs.ranked,
+                "p1_name": a.name, "p2_name": b.name, "p1_account": a.account_id, "p2_account": b.account_id,
+                "wins_needed": gs.wins_needed, "status": o.get("status", "playing"),
+                "winner": None if o.get("winner") is None else gs.side(o["winner"]),
+                "score": gs.score(), "games": gs.log, "rating": [ch[a.id], ch[b.id]] if ch else None,
+                "reason": o.get("reason"), "blame": None if o.get("blame") is None else gs.side(o["blame"])})
+        except Exception:
+            log.exception("saving set %s", gs.id)
+
+    def _set_schedule_next(self, gs):
+        """The countdown to the set's next game (no vote: it starts by itself)."""
+        gs.next_keep = {}
+        if gs.next_timer is not None:
+            gs.next_timer.cancel()
+        gs.next_due = time.monotonic() + self.cfg.set_next_seconds
+        gs.next_timer = asyncio.get_running_loop().call_later(self.cfg.set_next_seconds, self._set_next, gs)
+
+    def _set_next(self, gs):
+        """The countdown is over: the set's next game, in the running games when both said their game still
+        runs connected (set_next keep), else over a new connection. Waits while a player is away from the
+        lobby (their grace timer decides)."""
+        gs.next_timer = None
+        if gs.state != "active" or gs.current is not None:
+            return
+        a, b = gs.players
+        if not (a.online and b.online):
+            return
+        if a.match is not None or b.match is not None:
+            self._end_set(gs, "cancelled")           # (cannot happen: the lobby refuses anything else meanwhile)
+            return
+        prev = gs.last
+        keep = (not gs.fresh and prev is not None and prev.path is not None
+                and all(gs.next_keep.get(q.id) for q in (a, b)))
+        gs.fresh = False
+        room = prev.room if prev is not None and prev.room is not None and prev.room.id in self.rooms else None
+        m = self.create_match(a, b, ranked=True, origin="set", room=room, rematch_of=prev, keep=keep, game_set=gs)
+        if room is not None and m.state != "cancelled":
+            room.match = m
+
+    def _set_dropped(self, gs, p):
+        """`p` lost the lobby between two games of a rated set: like mid-match, T5L_RECONNECT_GRACE to return."""
+        if p.id in gs.grace:
+            return
+        gs.grace[p.id] = asyncio.get_running_loop().call_later(self.cfg.reconnect_grace, self._set_grace_expired,
+                                                               gs, p)
+        gs.other(p).send({"t": "notice", "code": "opponent_dropped", "set": gs.id, "grace": self.cfg.reconnect_grace,
+                          "msg": f"{p.name} lost the lobby connection; waiting "
+                                 f"{self.cfg.reconnect_grace:.0f} s for them to return"})
+
+    def _set_grace_expired(self, gs, p):
+        gs.grace.pop(p.id, None)
+        if gs.state != "active" or p.online or gs.current is not None:
+            return
+        if not gs.other(p).online:
+            self._end_set(gs, "both_left")
+        else:
+            self._end_set(gs, "disconnect", by=p)
+
+    def _set_back(self, gs, p):
+        """`p` is back in the lobby (resumed) between two games: the set goes on."""
+        h = gs.grace.pop(p.id, None)
+        if h is not None:
+            h.cancel()
+            gs.other(p).send({"t": "notice", "code": "opponent_back", "set": gs.id,
+                              "msg": f"{p.name} is back in the lobby"})
+        if gs.next_timer is None and gs.current is None:
+            asyncio.get_running_loop().call_soon(self._set_next, gs)
+
+    async def h_set_next(self, conn, msg):
+        """Between two games of a ranked set: `keep` = this player's game still runs, connected to the
+        opponent's (the next game then continues in the running games). Optional: without it the next game
+        starts all the same, over a new connection."""
+        p = conn.player
+        gs = p.set
+        if gs is None or not gs.rated or gs.state != "active":
+            raise LobbyError(proto.E_STATE, "you are not in a ranked set")
+        if gs.current is not None:
+            return {"t": "set_next", "set": gs.id, "state": "started", "next": gs.current.id}
+        gs.next_keep[p.id] = bool(msg.get("keep"))
+        if gs.next_timer is None:
+            asyncio.get_running_loop().call_soon(self._set_next, gs)      # (the countdown is over already)
+        return {"t": "set_next", "set": gs.id, "state": "waiting",
+                "in": round(max(0.0, gs.next_due - time.monotonic()), 1)}
 
     def _decline_recent(self, gs, by):
         """`by` leaves the set: the last game's rematch offer is withdrawn and the other player told."""
@@ -2092,9 +2420,14 @@ class LobbyServer:
                 if q is not by:
                     q.send({"t": "rematch", "match": m.id, "state": "declined", "from": by.brief()})
 
-    def _abandon_set(self, p):
-        """`p` starts something new (queue, room, challenge): the old set is over."""
+    def _abandon_set(self, p, requester=None):
+        """`p` starts something new (queue, room, challenge): the old set is over. Not in the middle of a
+        ranked set: that has to be left on purpose (leave_set), and leaving it is losing it."""
         gs = p.set
+        if gs is not None and gs.rated and gs.state == "active":
+            a, b = gs.wins[p.id], gs.wins[gs.other(p).id]
+            raise LobbyError(proto.E_BUSY, f"you are in a ranked set ({a}-{b}); leave it first (that counts as a loss)"
+                             if requester is None else "that player is in a ranked set")
         if gs is not None and gs.state == "active" and gs.current is None:
             self._decline_recent(gs, p)
             self._end_set(gs, "left", by=p)
@@ -2102,8 +2435,8 @@ class LobbyServer:
     def _expire_recent(self, m):
         self.recent.pop(m.id, None)
         gs = m.set
-        if gs is not None and gs.state == "active" and gs.last is m and gs.current is None:
-            self._end_set(gs, "expired")
+        if gs is not None and gs.state == "active" and gs.last is m and gs.current is None and not gs.rated:
+            self._end_set(gs, "expired")         # (a ranked set waits for its next game, not for a rematch)
 
     async def h_leave_set(self, conn, msg):
         """Leave the set between two games, without a penalty: no forfeit, no strike, no rating change
@@ -2116,6 +2449,8 @@ class LobbyServer:
         if gs.current is not None:
             raise LobbyError(proto.E_BUSY, "finish or leave the running match first")
         reason = "lag" if msg.get("reason") == "lag" else "left"
+        if reason == "lag" and gs.rated and getattr(gs.last, "lag_verdict", None) != "more_lag":
+            reason = "left"     # a ranked set is left for free only after a lag check that found more lag
         self._decline_recent(gs, p)
         self._end_set(gs, reason, by=p)
         if reason == "lag":
@@ -2154,6 +2489,7 @@ class LobbyServer:
             h.cancel()
         delay = m.delay if m.delay is not None else 0
         a = lagmod.assess(delay, m.lag, self.cfg.warn_fps, self.cfg.lag_tolerance)
+        m.lag_verdict = a["verdict"]
         ping = m.rtt or 0.0
         try:
             self.store.set_match_lag(m.id, {"ping_ms": round(ping, 1), "jitter_ms": round(m.jitter or 0.0, 1),

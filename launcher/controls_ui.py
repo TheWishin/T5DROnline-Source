@@ -40,6 +40,7 @@ REPEAT_DELAY_S, REPEAT_S = 0.45, 0.12
 COLORS = {"ok": "#1a7f37", "muted": "#57606a", "live": "#dafbe1", "warn": "#9a6700", "error": "#cf222e"}
 
 Edge = namedtuple("Edge", "t key source")
+OK, WARN, ERROR, MUTED = "ok", "warn", "error", "muted"      # the colour of a status line
 
 
 # ---------------------------------------------------------------------- reading the controllers
@@ -314,7 +315,7 @@ class ControlsDialog:
     # ---------------------------------------------------------------- layout
     def _build(self):
         top = self.top
-        top.title(t("Controls") + " - T5DR Online")
+        top.title(t("Controls - T5DR Online"))
         top.minsize(880, 640)
         try:                                # over the launcher's window, not at the corner of the screen
             top.geometry("980x720+%d+%d" % (max(self.app.winfo_rootx() + 30, 0), max(self.app.winfo_rooty() + 30, 0)))
@@ -533,7 +534,7 @@ class ControlsDialog:
         try:
             self.pump()
         except Exception as e:                  # noqa: BLE001 -- a bad frame must not end the screen
-            self.status(f"{type(e).__name__}: {e}", "error")
+            self.status(f"{type(e).__name__}: {e}", ERROR)
         self._after = self.top.after(33, self._tick)
 
     def pump(self):
@@ -840,7 +841,7 @@ class ControlsDialog:
 
     def begin(self, keys, pad=False):
         if self.dev() is None:
-            self.status(t("Press a button on a controller first, or pick one in the list."), "warn")
+            self.status(t("Press a button on a controller first, or pick one in the list."), WARN)
             return
         self.queue = list(keys)
         self.cap_total = len(keys)
@@ -884,7 +885,7 @@ class ControlsDialog:
             self._next_capture()
         elif kind == "multi":
             self.status(t("That was several buttons at once ({sources}). Press one button only.",
-                          sources=" + ".join(payload)), "warn")
+                          sources=" + ".join(payload)), WARN)
             self.capture = Capture(self.poller.clock(), timeout_s=PAD_TIMEOUT_S if self.pad_started else None)
         else:
             self.status(t("{button}: skipped.", button=self.slot_label(key)))
@@ -896,7 +897,7 @@ class ControlsDialog:
         try:
             self.editor.bind(dev, scope, key, [src])
         except ValueError as e:
-            self.status(str(e), "error")
+            self.status(str(e), ERROR)
             return
         lost = [s.key for s in ce.SLOTS if s.key != key and src in before[s.key] and not self.editor.sources(dev, s.key)]
         msg = t("{button} = {source}.", button=self.slot_label(key), source=src)
@@ -955,10 +956,10 @@ class ControlsDialog:
                 msg = t("Layout: {name}.", name=title)
                 if self.editor.notes:
                     msg += " " + " ".join(self.editor.notes)
-                self.status(msg, "muted" if ok else "warn")
+                self.status(msg, MUTED if ok else WARN)
                 self._refresh_all()
                 return
-        self.status(t("Pick a layout in the list first."), "warn")
+        self.status(t("Pick a layout in the list first."), WARN)
 
     def reset_defaults(self):
         dev = self.dev()
@@ -1020,15 +1021,15 @@ class ControlsDialog:
             try:
                 self.editor.save(force=True)
             except (OSError, ValueError) as e:
-                self.status(str(e), "error")
+                self.status(str(e), ERROR)
                 return False
         except (OSError, ValueError) as e:
-            self.status(t("Could not save: {error}", error=str(e)), "error")
+            self.status(t("Could not save: {error}", error=str(e)), ERROR)
             return False
         msg = t("Saved {path}. The game reads it when it starts.", path=self.editor.path)
         if self.game_running():
             msg += " " + t("The game that is running keeps its old buttons until you start it again.")
-        self.status(msg, "ok")
+        self.status(msg, OK)
         self._refresh_all()
         return True
 
@@ -1044,7 +1045,7 @@ class ControlsDialog:
             return True
         if self.editor.dirty:
             if from_pad:
-                self.status(t("There are unsaved changes. Save them first, or close with the mouse."), "warn")
+                self.status(t("There are unsaved changes. Save them first, or close with the mouse."), WARN)
                 return False
             ans = self._ask("yesnocancel", t("Controls"), t("Save the changes to controls.ini?"))
             if ans is None:

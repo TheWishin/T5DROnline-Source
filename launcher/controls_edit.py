@@ -389,8 +389,8 @@ def recipe_text(kind, spec):
 
 def recipe_pairs(kind, spec):
     """{(source, mask)} the preset binds on a device of this kind."""
-    t = padmap.Controls(recipe_text(kind, spec)).table(kind, -1, 0, 0)
-    return frozenset((s, m) for s, m in t.binds)
+    tab = padmap.Controls(recipe_text(kind, spec)).table(kind, -1, 0, 0)
+    return frozenset((s, m) for s, m in tab.binds)
 
 
 # ---------------------------------------------------------------------- sources, for people

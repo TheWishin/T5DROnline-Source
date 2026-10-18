@@ -81,6 +81,10 @@
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
+extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
+/* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
+extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
+extern "C" void ps3_set_window_close_guard(int (*fn)(void));
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -796,6 +800,34 @@ void end_session(const char* reason, bool from_network_thread = false)
     TerminateProcess(GetCurrentProcess(), (UINT)code);
 }
 
+/* ---- the player closed the game window (Alt+F4, the X button, Esc) ----------
+ * Called by the runtime's ticker thread (boot_main.cpp, patch 0035) before it
+ * ends the process. With a netplay session set up, leaving is a quit: the
+ * result file gets "quit" (unless this match's result is out already -- a game
+ * closed after the KO keeps its result), the peer is told (BYE: peer_quit on
+ * its side, at once), and the exit code is 7, which the launcher reports to the
+ * lobby as this player's quit -- a loss (docs/RANKED.md). Before, the game ran
+ * on without its window at about a frame a second: the opponent stalled and
+ * went out of sync, and the match was voided as a desync instead (0.1.9). */
+void on_window_closed()
+{
+    if (g_ending.exchange(true)) {
+        Sleep(5000);                 /* a session end in progress: it ends the process with its own code */
+        return;
+    }
+    const bool online = g_persistent ? np::enabled() : (np::enabled() && !g_offline);
+    if (online) {
+        write_end_result("quit");
+        np::note("the game window was closed: this player leaves the session (quit); the peer is told (exit code 7)");
+        np::bye();
+    }
+    t5_df_window_closed();
+    fflush(stdout); fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), online ? 7u : 0u);
+}
+/* Esc closes the game only on a second press while a session is set up. */
+int close_guard() { return np::enabled() && !g_offline ? 1 : 0; }
+
 /* The network thread's fallback when the main thread does not get to
  * check_session() (blocked outside the lockstep waits). */
 void stuck_handler(const char* reason)
@@ -1382,6 +1414,9 @@ struct Register {
         ps3_hle_register_ctx(NID_cellPadInit,    "cellPadInit(netplay)",    h_cellPadInit);
         ps3_hle_register_ctx(NID_cellPadGetInfo, "cellPadGetInfo(netplay)", h_cellPadGetInfo);
         ps3_hle_register_ctx(NID_cellPadGetData, "cellPadGetData(netplay)", h_cellPadGetData);
+        /* the window closed = this player leaves (quit); Esc asks twice while online (patch 0035) */
+        ps3_set_window_closed_handler(on_window_closed);
+        ps3_set_window_close_guard(close_guard);
     }
 } g_register;
 

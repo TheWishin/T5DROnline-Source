@@ -431,7 +431,24 @@ void post_match_skip(uint32_t f)
 }
 
 void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; g_ph_ms = GetTickCount64(); g_mode_asked = false; status(name, f); }
-bool select_live() { return mode_cur() == kModeSelect && rd32(kSelectState) >= 3 && rd8(rec(0) + kRecState) == 3; }
+/* The select screen takes input for the players this PC drives: the select
+ * mode, its state 3, and every record this PC drives still "choosing". Under
+ * lockstep (a rematch) that is this PC's own player only. The peer's game may
+ * have taken its rematch command earlier and its player be on the way or
+ * confirmed already -- its presses come through the exchange -- so P1's record
+ * says nothing about this PC's readiness. Waiting for P1's record to read 3
+ * (the old test) never ended on P2 when P1 had confirmed before P2's command
+ * came: no FIGHT START, both games at the select screen for good (1.0.0, room
+ * "JinFury vs Wishin", rematch in session 2; tools/fight_flow_test.py
+ * --same-chars --skew 1.5: the rematch keeps the characters, P1's cursor sits on
+ * its cell and confirms within ~10 frames). */
+bool select_live()
+{
+    if (mode_cur() != kModeSelect || rd32(kSelectState) < 3) return false;
+    for (int p = 0; p < 2; p++)
+        if (drives(p) && rd8(rec(p) + kRecState) != 3) return false;
+    return true;
+}
 
 /* one navigation step for player p towards cell `target`; returns true when there */
 bool navigate(int p, int target, uint32_t f)
@@ -1009,6 +1026,15 @@ bool fight_configured() { return g_configured; }
 
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+
+/* The game window was closed (netplay's handler, on the runtime's ticker
+ * thread, right before the process ends): a persistent game tells its launcher
+ * in state.json (the exit code says the same). */
+extern "C" void t5_df_window_closed(void)
+{
+    if (!df::g_ctl) return;
+    df::ctl_state("quit", 0, df::g_ctl_match, "window_closed", df::g_sessions);
+}
 
 /* netplay / rollback: the game's mode manager is in the game mode (the fight,
  * its loading and intros, its win pose) -- with the phase word up to 12 that

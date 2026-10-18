@@ -78,6 +78,8 @@ bool     state_rollback_lazy(uint32_t to, uint32_t* pages, double* ms);
 /* Bring the shadow up to the guest state now without recording an undo log
  * (the frames since the last commit can never be rolled back to). */
 void     state_refresh(double* ms);
+/* "N restores: pages each (draw lists, render scratch, the rest)"; reset clears the sums. */
+void     state_restore_stats(char* out, size_t cap, bool reset);
 uint32_t state_oldest_frame();       /* the oldest boundary a rollback can reach */
 void     state_drop_logs();          /* forget every undo log (a barrier: no rollback past now) */
 void     state_reset();              /* a new netplay session (persistent game): no logs, frame numbers from 0, shadow brought up to date */

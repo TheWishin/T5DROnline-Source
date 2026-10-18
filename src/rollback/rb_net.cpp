@@ -326,6 +326,7 @@ void report()
              g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes);
     }
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
+    { char rs[256]; state_restore_stats(rs, sizeof rs, true); note("rbnet: restores: %s", rs); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
          g_st.early_rollbacks, g_st.rollbacks, g_st.early_wait_ms, g_st.frames ? g_st.early_commit_ms / g_st.frames : 0.0,
@@ -796,6 +797,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             else { LARGE_INTEGER t0; QueryPerformanceCounter(&t0); np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms); (void)t0; }   /* at the boundary, socket pumped */
             g_last_sleep_frame = f;
             g_st.sleeps++; g_st.sleep_ms += ms;
+            LATLOG('S', "%u %d %.2f", f, frames, ms);   /* PS3_LATENCY_LOG: a time-sync sleep at boundary f (frames, ms) */
             g_wait_acc_ms += ms;
             if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
         }
@@ -817,6 +819,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         rc = np::rb_wait_remote(need - 1, 2000);
         const double ms = ms_since(t0);
         g_st.stalls++; g_st.stall_ms += ms; if (warm || select) g_st.stall_ms_lock += ms;
+        LATLOG('T', "%u %.2f", f, ms);   /* PS3_LATENCY_LOG: boundary f waited for the peer's input (ms) */
         g_wait_acc_ms += ms;
         if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
                                         scene_flag ? "scene change" : warm ? "warm-up" : select ? "select screen" : "prediction window");

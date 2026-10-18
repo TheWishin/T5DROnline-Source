@@ -272,6 +272,14 @@ void state_init()
             while (*q == ',') q++;
         }
     }
+    /* T5_RB_RENDER_STATE=drop (frame-time branch, experiment): the draw lists
+     * and the per-frame render scratch -- render-only, rebuilt by every drawn
+     * frame -- are left out of the rollback state (no snapshot, no restore) */
+    if (const char* e = getenv("T5_RB_RENDER_STATE")) if (!strcmp(e, "drop")) {
+        state_add_exclude(0x43D00000u, 0x00340000u);
+        state_add_exclude(0x444F9000u, 0x0006E000u);
+        note("state: draw lists and render scratch left out of the rollback state (T5_RB_RENDER_STATE=drop)");
+    }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;
@@ -428,6 +436,16 @@ uint32_t state_log_pages(uint32_t f)
  * after it would flush a put behind the walker's get. */
 static const Range kKeepWords[] = { { 0x0F800000u, 0x10u } };
 
+/* what the restores copied (state_restore_stats, the loop's report) */
+static uint64_t g_rs_pages[3] = {}, g_rs_count = 0;
+void state_restore_stats(char* out, size_t cap, bool reset)
+{
+    const double n = g_rs_count ? (double)g_rs_count : 1.0;
+    snprintf(out, cap, "%llu restores: %.0f pages each (draw lists %.0f, render scratch %.0f, the rest %.0f)",
+             (unsigned long long)g_rs_count, (double)(g_rs_pages[0] + g_rs_pages[1] + g_rs_pages[2]) / n,
+             (double)g_rs_pages[1] / n, (double)g_rs_pages[2] / n, (double)g_rs_pages[0] / n);
+    if (reset) { memset(g_rs_pages, 0, sizeof g_rs_pages); g_rs_count = 0; }
+}
 static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy);
 bool state_rollback(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, false); }
 bool state_rollback_lazy(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, !g_page_hashing); }
@@ -466,6 +484,9 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
             w |= bit;
             touched.push_back(pg);
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
+            if (e.ea - 0x43D00000u < 0x340000u) g_rs_pages[1]++;        /* stats: render-only parts of the heap */
+            else if (e.ea - 0x444F9000u < 0x6E000u) g_rs_pages[2]++;
+            else g_rs_pages[0]++;
             memcpy(vm_base + e.ea, src, 0x1000);
             if (!lazy) memcpy(shadow_rw(e.ea), src, 0x1000);   /* lazy: the page stays dirty, the refresh copies it */
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
@@ -473,6 +494,7 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
         }
     }
     for (uint32_t pg : touched) seen[pg >> 6] = 0;
+    g_rs_count++;
     /* the logs above `to` describe frames that will be re-simulated: drop them
      * and hand their ring slots back (the ring position returns to the start
      * of frame `to`'s log) */

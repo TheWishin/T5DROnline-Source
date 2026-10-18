@@ -69,11 +69,12 @@ uint32_t sound_word();                             /* the guest address of that 
 
 uint32_t pad_calls();                              /* cellPadGetData override invocations so far */
 uint64_t main_tid();                               /* guest thread id of the main thread (1) */
-/* rand() with one generator per thread (rb_rand.cpp): the main thread's draws
- * no longer depend on a side thread's pace. Installed at static init (exe) or
- * the first frame boundary (game DLL). */
+/* The title's TLS random generator (rb_rand.cpp): the scene's own stream,
+ * effect and stage draws from a private one; reseeded at netplay's sync points.
+ * Installed at static init (exe) or the first frame boundary (game DLL). */
 void     rand_install();
-uint64_t rand_side_calls();                        /* draws made by other threads from their own generators */
+void     tls_rand_reseed(uint32_t tls_base, uint32_t seed);
+uint64_t rand_private_draws();                        /* draws made by other threads from their own generators */
 uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);   /* lifted function containing a host address, 0 if none */
 uint32_t guest_at_host(uintptr_t host_fn);                  /* lifted function whose entry IS this host address, 0 if none */
 

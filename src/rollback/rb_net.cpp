@@ -165,7 +165,8 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
-uint32_t g_force_every = 0, g_force_depth = 4, g_forced = 0, g_force_last = UINT32_MAX;   /* T5_RB_NET_FORCE=every[:depth] (tests) */
+uint32_t g_force_every = 0, g_force_depth = 4, g_forced = 0, g_force_last = UINT32_MAX;
+uint32_t g_wft_from = 0, g_wft_frames = 0;   /* T5_RB_WFT_NET=from:frames (tests): the write-fault tracer (T5_RB_WFT) over those live frames */   /* T5_RB_NET_FORCE=every[:depth] (tests) */
 /* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
  * to rb_desync_f<frame>.bin when the peer's hash for that frame differs (both
  * sides do; tools/netplay_memdiff.py diffs the two files) */
@@ -356,6 +357,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
+            if (const char* s = getenv("T5_RB_WFT_NET")) { unsigned a = 0, n = 1; sscanf(s, "%u:%u", &a, &n); g_wft_from = a; g_wft_frames = n; wft_install(); }
             if (const char* s = getenv("T5_RB_NET_FORCE")) {
                 unsigned e = 0, d = 4;
                 sscanf(s, "%u:%u", &e, &d);
@@ -667,6 +669,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
         }
         g_last_phase = phase;
+        if (g_wft_frames && wft_enabled()) {
+            if (f == g_wft_from) { wft_arm(); note("rbnet: write-fault trace armed at frame %u for %u frame(s)", f, g_wft_frames); }
+            if (f == g_wft_from + g_wft_frames) wft_disarm("net");
+        }
         if (!(g_early_f == f && !g_tick_waited)) live_tick_part(f);
     }
     /* Early rollback (T5_RB_NET_EARLY, docs/ROLLBACK.md section 26): this

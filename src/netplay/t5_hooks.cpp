@@ -77,7 +77,7 @@
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
-namespace rb { void rand_install(); }   /* rb_rand.cpp: rand() with one generator per thread */
+namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed); }   /* rb_rand.cpp: the TLS random generator */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
@@ -876,11 +876,17 @@ void skip_frames(uint32_t d)
     for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
 }
 
-/* Both random generators the game draws from, seeded the same on both PCs. */
+/* The random generators the game draws from, seeded the same on both PCs: the
+ * Mersenne Twister, the C rand(), and the main thread's TLS generator 0x3AFC3C
+ * (the scene's draws: camera, move effects, the game mode's set-up; without it
+ * a game that had played other opponents began each fight from a different
+ * state than one just started -- docs/NETPLAY.md "Desync hunt"). */
+uint32_t g_main_tls = 0;   /* the main thread's TLS block (its r13 - 0x7000), from its frame waits */
 void reseed(uint32_t seed)
 {
     gcall(kFnMtSeed, seed);
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
+    rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu);
 }
 
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
@@ -921,6 +927,8 @@ void offline_frame(ppu_context* ctx)
 void on_frame_start(ppu_context* ctx)
 {
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
+    if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
+        g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */
     if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */

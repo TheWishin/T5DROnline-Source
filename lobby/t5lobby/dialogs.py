@@ -5,6 +5,7 @@ Windows' own message boxes use the language of Windows, and tkinter.simpledialog
 messages and password prompts come from here: same calls, same results, buttons from t5lobby.i18n.
 
     ask_yes_no(title, message, parent=None) -> bool
+    ask_yes_no_cancel(title, message, parent=None) -> True | False | None   (None = cancelled)
     show_info(title, message, parent=None)
     show_error(title, message, parent=None)
     ask_string(title, prompt, parent=None, show=None, initialvalue=None) -> str | None   (None = cancelled)
@@ -76,6 +77,13 @@ def _show(parent, title, message, buttons, default, cancel, entry=False, show=No
 def ask_yes_no(title, message, parent=None, **_ignored):
     value, _text = _show(parent, title, message, [(t("Yes"), True), (t("No"), False)], True, False)
     return bool(value)
+
+
+def ask_yes_no_cancel(title, message, parent=None, **_ignored):
+    """True (Yes), False (No) or None (Cancel, Esc, the close button)."""
+    value, _text = _show(parent, title, message, [(t("Yes"), True), (t("No"), False), (t("Cancel"), None)],
+                         True, None)
+    return value
 
 
 def show_info(title, message, parent=None, **_ignored):

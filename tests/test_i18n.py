@@ -14,10 +14,12 @@ import importlib.machinery
 import importlib.util
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for sub in ("tools", "lobby", "launcher"):
@@ -30,8 +32,20 @@ from t5lobby import i18n, i18n_de, i18n_known, lag   # noqa: E402
 
 try:
     import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog
+    from t5lobby import dialogs
 except ImportError:      # pragma: no cover
     tk = None
+
+# Everything that could put a box in front of the person at this PC: the system's message boxes and file pickers,
+# tkinter.simpledialog and the launcher's own dialogs (t5lobby/dialogs.py). A test that reaches one fails.
+DIALOG_FUNCTIONS = [] if tk is None else [
+    (messagebox, n) for n in ("showinfo", "showwarning", "showerror", "askyesno", "askyesnocancel", "askokcancel",
+                              "askretrycancel", "askquestion")] + [
+    (filedialog, n) for n in ("askopenfilename", "askopenfilenames", "asksaveasfilename", "askdirectory")] + [
+    (simpledialog, n) for n in ("askstring", "askinteger", "askfloat")] + [
+    (dialogs, n) for n in ("ask_yes_no", "ask_yes_no_cancel", "show_info", "show_error", "ask_string")]
+REAL_DIALOGS = {n: getattr(dialogs, n) for _m, n in DIALOG_FUNCTIONS if _m is dialogs} if tk is not None else {}
 
 # Server messages written for programmers (a client of this launcher never sends the request that causes them):
 # they are not translated and show in English.
@@ -81,6 +95,26 @@ class Base(unittest.TestCase):
     def setUp(self):
         saved = list(sys.path)
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved))
+        # Nothing a test does may reach the person at this PC: no box, no file picker, and the launcher's log is a
+        # temporary file, not launcher.log in the program folder.
+        self.log_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.log_dir, True)
+        self.launcher_log = os.path.join(self.log_dir, "launcher.log")
+        patches = [mock.patch.object(core, "LAUNCHER_LOG", self.launcher_log)]
+        for module, name in DIALOG_FUNCTIONS:
+            def refuse(*_a, _n=f"{module.__name__}.{name}", **_k):
+                raise AssertionError(f"{_n} was called: a test must not open a dialog")
+            patches.append(mock.patch.object(module, name, refuse))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def launcher_log_text(self):
+        try:
+            with open(self.launcher_log, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
 
 
 class German(Base):
@@ -481,6 +515,22 @@ def load_launcher():
     return mod
 
 
+def assert_nothing_shown(test, root):
+    """No window of this Tk application is on screen (a test window is withdrawn; a dialog or window it opens too)."""
+    shown = []
+
+    def walk(w):
+        if w.winfo_class() in ("Tk", "Toplevel") and w.winfo_ismapped():
+            shown.append(str(w))
+        for c in w.winfo_children():
+            walk(c)
+    try:
+        walk(root)
+    except tk.TclError:
+        return
+    test.assertEqual(shown, [], "a window was on screen during a test")
+
+
 def cancel_timers(root):
     """Drop the pending after() callbacks of a window (the launcher schedules checks for later)."""
     try:
@@ -534,6 +584,7 @@ class RenderTests(Base):
     """The launcher window, built for real (not shown), in each language."""
 
     def setUp(self):
+        super().setUp()
         self.dir = tempfile.mkdtemp()
         self.old_env = os.environ.get("T5_ONLINE_DIR")
         os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")      # (the Online tab's settings: not the real ones)
@@ -558,9 +609,18 @@ class RenderTests(Base):
             self.skipTest(f"no display: {e}")
         app.withdraw()
         cancel_timers(app)            # nothing may run later: not the check of the tools, not the game state thread
-        self.addCleanup(lambda: (cancel_timers(app), app.online.on_close(), app.destroy()))
+        self.addCleanup(lambda: self.close_launcher(app))
         i18n.clear_missing()
         return app
+
+    def close_launcher(self, app):
+        try:
+            assert_nothing_shown(self, app)
+            cancel_timers(app)
+            app.online.on_close()
+            app.destroy()
+        except tk.TclError:
+            pass                                  # (already closed by the test)
 
     def test_english(self):
         app = self.launcher("en")
@@ -599,6 +659,54 @@ class RenderTests(Base):
             self.assertEqual(app.language, "de")
         finally:
             os.environ.pop("T5_LANG", None)
+
+    def test_switching_the_language_with_every_tab_selected(self):
+        """The language applies at the next start. Walk through that: start in each language, select every tab (both
+        directions), change the language box while each tab is up, close the window one way or the other. Whatever
+        goes wrong inside a Tk callback is written to launcher.log as 'error in the launcher'."""
+        for turn, language in enumerate(("en", "de", "en", "de", "auto")):
+            with mock.patch.dict(os.environ, {"T5_LANG": "de"}):
+                app = self.launcher(language)
+                app.refresh_game_state = lambda: None          # (it starts a thread that talks to Tk from outside)
+                app.update()
+                for key in app.tab_keys + app.tab_keys[::-1]:
+                    app.nb.select(app.tabs[key])
+                    app.update()
+                    self.assertEqual(app._selected_tab(), key)
+                app.nb.select(app.tabs["settings"])
+                for other in ("de", "en", "auto", language):
+                    app.language_var.set(other)
+                    app.language_changed()
+                    app.update()
+                    for key in app.tab_keys:
+                        app.nb.select(app.tabs[key])
+                        app.update()
+                self.assertEqual(i18n.missing(), [])
+                if turn % 2:
+                    app.on_close()                              # the close button
+                else:
+                    app.destroy()                               # what --screenshots and the tests do
+                self.assertNotIn("error in the launcher", self.launcher_log_text())
+        self.assertNotIn("Traceback", self.launcher_log_text())
+
+    def test_a_notebook_with_no_tab_selected_is_not_an_error(self):
+        """Taking the tabs away (what destroying the window does) makes Tk send <<NotebookTabChanged>> with nothing
+        selected; the handler used to fail with 'Invalid slave specification' and write 'error in the launcher'."""
+        app = self.launcher("de")
+        app.update()
+        app.nb.select(app.tabs["online"])
+        app.update()
+        app.online.nb.select(2)                                 # the Online tab's own tabs: Profile
+        app.update()
+        for notebook in (app.online.nb, app.nb):
+            for tab in notebook.tabs():
+                notebook.forget(tab)
+            app.update()
+        self.assertIsNone(app._selected_tab())
+        app._on_tab()                                           # (a direct call must not raise either)
+        app.online._on_subtab()
+        self.assertNotIn("error in the launcher", self.launcher_log_text())
+        self.assertNotIn("Traceback", self.launcher_log_text())
 
     def test_tab_names_are_found_by_position(self):
         app = self.launcher("de")
@@ -705,6 +813,7 @@ class OnlineTabGermanTests(German):
 
     def tearDown(self):
         try:
+            assert_nothing_shown(self, self.root)
             self.tab.client = None
             self.tab.on_close()
             self.root.destroy()
@@ -856,6 +965,7 @@ class ReportAndUpdateTests(German):
 
     def tearDown(self):
         try:
+            assert_nothing_shown(self, self.root)
             cancel_timers(self.root)
             self.root.destroy()
         finally:
@@ -929,6 +1039,7 @@ class ReportAndUpdateTests(German):
                       "notes": "- something", "published": "2026-10-20", "code_id": None}
         with mock.patch.object(updater, "busy_reason", return_value="The game is running. Close it first, then update."):
             up.offer()
+        up.win.withdraw()                                  # (never on screen)
         texts = all_texts(up.win)
         self.assertEqual(up.win.title(), "Update verfügbar")
         for expect in ("T5DR Online 9.9.9 ist da", "Jetzt aktualisieren", "Später", "Release-Seite"):
@@ -959,6 +1070,89 @@ class ReportAndUpdateTests(German):
                                     "die Internetverbindung und versuche es noch einmal."))
         self.assertEqual(box.call_args_list[1].args[2], "Du hast die neueste Version (%s)." % up.local)
         self.assertEqual(i18n.missing(), [])
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class DialogTests(German):
+    """t5lobby/dialogs.py: boxes with buttons in the chosen language. The window is withdrawn (never on screen) and
+    the test presses the button, which is what wait_window waits for."""
+
+    def setUp(self):
+        German.setUp(self)
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.shown = []
+        test = self
+
+        class QuietToplevel(tk.Toplevel):
+            press = None
+            typed = None
+
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.withdraw()
+
+            def wait_window(self, window=None):
+                texts = all_texts(self)
+                test.shown.append(texts)
+                entry = [w for w in self.winfo_children()[0].winfo_children() if w.winfo_class() == "TEntry"]
+                if entry and QuietToplevel.typed is not None:
+                    entry[0].delete(0, "end")
+                    entry[0].insert(0, QuietToplevel.typed)
+                for b in self.winfo_children()[1].winfo_children():
+                    if str(b.cget("text")) == QuietToplevel.press:
+                        b.invoke()
+                        return
+                test.fail(f"no button {QuietToplevel.press!r} in {texts}")
+        self.Quiet = QuietToplevel
+        patch = mock.patch.object(dialogs.tk, "Toplevel", QuietToplevel)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_buttons_follow_the_language(self):
+        self.Quiet.press = "Ja"
+        self.assertTrue(REAL_DIALOGS["ask_yes_no"]("Titel", "Frage?", parent=self.root))
+        self.assertIn("Nein", self.shown[-1])
+        self.Quiet.press = "Nein"
+        self.assertFalse(REAL_DIALOGS["ask_yes_no"]("Titel", "Frage?", parent=self.root))
+        i18n.set_language("en")
+        self.Quiet.press = "Yes"
+        self.assertTrue(REAL_DIALOGS["ask_yes_no"]("Title", "Question?", parent=self.root))
+        self.assertIn("No", self.shown[-1])
+
+    def test_yes_no_cancel(self):
+        for label, expect in (("Ja", True), ("Nein", False), ("Abbrechen", None)):
+            self.Quiet.press = label
+            self.assertIs(REAL_DIALOGS["ask_yes_no_cancel"]("T", "Speichern?", parent=self.root), expect)
+
+    def test_info_and_error_have_one_button(self):
+        self.Quiet.press = "OK"
+        REAL_DIALOGS["show_info"]("T", "Hallo", parent=self.root)
+        REAL_DIALOGS["show_error"]("T", "Fehler", parent=self.root)
+        self.assertIn("OK", self.shown[-1])
+        self.assertNotIn("Abbrechen", self.shown[-1])
+
+    def test_ask_string(self):
+        self.Quiet.press, self.Quiet.typed = "OK", "geheim"
+        self.assertEqual(REAL_DIALOGS["ask_string"]("T", "Passwort:", parent=self.root, show="*"), "geheim")
+        self.assertIn("Abbrechen", self.shown[-1])
+        self.Quiet.press = "Abbrechen"
+        self.assertIsNone(REAL_DIALOGS["ask_string"]("T", "Passwort:", parent=self.root))
+        self.Quiet.press, self.Quiet.typed = "OK", None
+        self.assertEqual(REAL_DIALOGS["ask_string"]("T", "Name:", parent=self.root, initialvalue="Bob"), "Bob")
+        self.assertEqual(i18n.missing(), [])
+
+    def test_the_tests_cannot_open_dialogs(self):
+        with self.assertRaises(AssertionError):
+            dialogs.ask_yes_no("T", "Q")
+        with self.assertRaises(AssertionError):
+            messagebox.showinfo("T", "Q")
+        with self.assertRaises(AssertionError):
+            filedialog.askopenfilename()
 
 
 class DriverTextTests(German):

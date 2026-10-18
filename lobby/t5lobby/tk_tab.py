@@ -949,7 +949,11 @@ class OnlineTab:
 
     # ------------------------------------------------------------------ leaderboard / profile
     def _on_subtab(self):
-        tab = self.nb.index(self.nb.select())          # 0 lobby, 1 leaderboard, 2 profile
+        try:
+            sel = self.nb.select()
+            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile
+        except tk.TclError:
+            return                                         # (the tabs are being destroyed)
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:

@@ -843,8 +843,19 @@ class App(tk.Tk):
                 self._update_play_buttons()
         self.after(150, self._tick)
 
+    def _selected_tab(self):
+        """Key of the selected tab ('build', 'play', 'settings', 'online'), or None when no tab is selected: Tk
+        sends <<NotebookTabChanged>> again while the window is taken apart, with nothing selected."""
+        try:
+            sel = self.nb.select()
+            return self.tab_keys[self.nb.index(sel)] if sel else None
+        except (tk.TclError, IndexError):
+            return None
+
     def _on_tab(self, _e=None):
-        tab = self.tab_keys[self.nb.index(self.nb.select())]
+        tab = self._selected_tab()
+        if tab is None:
+            return
         if tab == "play":
             self.refresh_game_state()
         elif tab == "online":
@@ -857,6 +868,7 @@ class App(tk.Tk):
         if self.build:
             self.build.cancel()
         self.save_settings()
+        self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
         self.destroy()
 

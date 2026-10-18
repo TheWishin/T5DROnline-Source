@@ -645,6 +645,44 @@ def rematch_timeout(ctx):
     ctx.check("a late Rematch is refused (the match is over)", "err" in box or b.saw_status("over", t), b.status_text())
 
 
+@scenario("rematch_late_answer", "5 rematch", game=True, suites=("game",),
+          desc="one player clicks Rematch at once, the other only after the lag check came in (8 s): the first one's "
+               "bar must not offer Rematch again meanwhile, and the rematch starts")
+def rematch_late_answer(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Gil")
+    b = ctx.player("E2E Hana")
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    wait_fight(ctx, mid, (a, b))
+    wait_results(ctx, mid, (a, b))
+    match_row(ctx, mid, (a, b), "confirmed", "match 1")
+    ctx.wait(lambda: a.bar_button("Rematch") is not None, 15, f"{a.name}: Rematch button")
+    t = time.time()
+    a.click("Rematch")
+    seen = []
+
+    def watch():
+        if a.bar_button("Rematch") is not None:
+            seen.append(round(time.time() - t, 1))
+        return False
+    ctx.wait(watch, 8)
+    lag = a.matches[mid].get("lag")
+    ctx.note(f"lag check: {(lag or {}).get('text')}")
+    ctx.check("after Rematch was clicked the bar does not offer Rematch again (it waits for the opponent)",
+              not seen, f"the Rematch button was back {len(seen)} poll(s), first {seen[0] if seen else '-'} s after the "
+              f"click (lag check {'arrived' if lag else 'not seen'})")
+    ctx.wait(lambda: b.bar_button("Rematch") is not None, 10, f"{b.name}: Rematch button")
+    t2 = time.time()
+    b.click("Rematch")
+    mid2 = found_both(ctx, a, b, t2)
+    started_both(ctx, a, b, mid2)
+    wait_fight(ctx, mid2, (a, b))
+    wait_results(ctx, mid2, (a, b))
+    match_row(ctx, mid2, (a, b), "confirmed", "the late-answered rematch")
+
+
 @scenario("rematch_chain", "5 rematch", game=True, suites=("game",),
           desc="rematch after rematch: 1 match + 5 rematches in the running games")
 def rematch_chain(ctx):

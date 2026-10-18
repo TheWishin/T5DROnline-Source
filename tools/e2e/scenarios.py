@@ -17,9 +17,9 @@ import urllib.error
 import zipfile
 
 from flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
-                   leave, log_has, login, match_row, parse_segment, profile, queue_match, rematch, started_both,
+                   leave, login, match_row, parse_segment, profile, queue_match, rematch, started_both,
                    wait_fight, wait_results, STUB_MATCH_SECONDS)
-from harness import Abort, Skip, log, read_json
+from harness import Abort, Skip
 
 SCENARIOS = []
 
@@ -802,7 +802,6 @@ def fail_close_window(ctx):
     mid = queue_match(ctx, a, b, "quick")
     wait_fight(ctx, mid, (a, b))
     ctx.sleep(12)
-    t = time.time()
     n = close_window(b)
     ctx.note(f"WM_CLOSE to {b.name}'s game ({n} window(s))")
     ctx.wait(lambda: not b.game_running(), 20, "the closed game ends itself")
@@ -1186,26 +1185,164 @@ def settings_persist(ctx):
 
 # ============================================================================== 9. character select (ingame-select)
 def _need_ingame_pick():
-    if "ingame_pick" not in features():
-        raise Skip("in-game character select is not on this branch yet (no 'ingame_pick' in the lobby's features; "
-                   "branch ingame-select)")
+    """The in-game select (branch ingame-select): the lobby offers it ('ingame_pick') and the test helpers that
+    press the picks closed-loop on the cursor cell (tools/pick_flow_test.py) are in this tree."""
+    if "ingame_pick" not in features() or not os.path.isfile(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "pick_flow_test.py")):
+        raise Skip("in-game character select is not on this branch yet (no 'ingame_pick' in the lobby's features, "
+                   "no tools/pick_flow_test.py; branch ingame-select)")
+    import pick_flow_test
+    return pick_flow_test
 
 
-for _name, _desc in (
-        ("cs_pick", "both pick a character on the game's own select screen; the picks are exchanged and fought"),
-        ("cs_costume", "a costume picked on the select screen shows up on both PCs"),
-        ("cs_random", "Random on the select screen: the same fighter on both PCs"),
-        ("cs_timeout", "nobody picks for 30 s: the select screen times out into the fight with the cursor's fighter"),
-        ("cs_rematch_select", "a rematch goes back to the select screen and a new pick is fought"),
-        ("cs_ranked_lock", "ranked set: game 1 picked in the game, later games keep that pick (locked)")):
-    def _mk(name, desc):
-        @scenario(name, "9 character select", game=True, suites=("game",), desc=desc, needs="ingame_pick")
-        def _cs(ctx):
-            _need_ingame_pick()
-            raise Skip("in-game select merged: scenario body to be finished against the merged protocol "
-                       "(pick= seconds in match_start, PICK packets)")
-        return _cs
-    _mk(_name, _desc)
+class _PadGame:
+    """What pick_flow_test.Picker needs from a game: its log and its pad file (PS3_PAD_FILE)."""
+
+    def __init__(self, p):
+        self.p = p
+        self.pad_path = os.path.join(p.dir, "pad.txt")
+
+    @property
+    def log_path(self):
+        g = self.p.game()
+        return g.log_path if g is not None else None
+
+    def log_since(self, pos):
+        try:
+            with open(self.log_path, "rb") as f:
+                f.seek(pos)
+                return f.read().decode("utf-8", "replace")
+        except (OSError, TypeError):
+            return ""
+
+    def pad(self, text):
+        for _ in range(100):
+            try:
+                with open(self.pad_path, "w") as f:
+                    f.write(text)
+                return
+            except PermissionError:
+                time.sleep(0.002)
+
+    def press(self, buttons, hold=0.08, gap=0.17):
+        self.pad(buttons)
+        time.sleep(hold)
+        self.pad("")
+        time.sleep(gap)
+
+
+def _cs_player(ctx, name, **kw):
+    import re as _re
+    d = os.path.join(ctx.dir, _re.sub(r"[^A-Za-z0-9_.-]", "_", name))
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "pad.txt"), "w").close()
+    env = {"PS3_PAD_FILE": os.path.join(d, "pad.txt"), "T5_DF_TRACE": "1", "T5_NET_SCRIPT_FIGHT": "1"}
+    env.update(kw.pop("env", {}))
+    return ctx.player(name, env=env, **kw)
+
+
+def _cs_match(ctx, pf, a, b, specs, label, mode="quick", again=False, expect_pick=True):
+    """One match picked on the select screen: specs = {player name: pick_flow_test scenario}
+    (<char>:<lp|rp|lk|rk>, random, timeout). Checks both games fought the same fighters, what was
+    asked for, no PICK MISMATCH, and the usual result evidence. Returns (match id, fighters line)."""
+    mid = rematch(ctx, a, b) if again else queue_match(ctx, a, b, mode)
+    fight = a.matches[mid].get("fight") or {}
+    ctx.check(f"{label}: the lobby {'offers' if expect_pick else 'does not offer'} the in-game select",
+              bool(fight.get("pick")) == expect_pick, f"fight.pick {fight.get('pick')}")
+    pickers = []
+    for p in (a, b):
+        mark = p.matches[mid].get("log_mark")
+        if expect_pick:
+            pk = pf.Picker(_PadGame(p), specs[p.name], mark[1] if mark else 0, time.time() + 150)
+            pk.start()
+            pickers.append((p, pk))
+    wait_fight(ctx, mid, (a, b), timeout=200)
+    for p, pk in pickers:
+        pk.join(5)
+        if pk.note:
+            ctx.check(f"{label}: {p.name}'s pick pressed", False, pk.note)
+    wait_results(ctx, mid, (a, b))
+    match_row(ctx, mid, (a, b), "confirmed", label)
+    lines = {}
+    for p in (a, b):
+        seg = "\n".join(p.log_segment(mid))
+        m = pf.RE_PICKS.search(seg)
+        lines[p.name] = m.groups() if m else None
+        ctx.check(f"{label}: {p.name}: no PICK MISMATCH", "PICK MISMATCH" not in seg)
+    ctx.check(f"{label}: both games fought the same fighters (character, costume, model)",
+              lines[a.name] is not None and lines[a.name] == lines[b.name], lines)
+    got = lines[a.name]
+    if got and expect_pick:
+        for p in (a, b):
+            slot = p.matches[mid].get("slot")
+            line_char = fight.get("p1") if slot == 0 else fight.get("p2")
+            want = pf.expected(specs[p.name], line_char)
+            have = (got[0], got[1]) if slot == 0 else (got[3], got[4])
+            if want is not None:
+                ctx.check(f"{label}: {p.name} (P{slot + 1}) got {want[0]} with {want[1]}", have == want, f"got {have}")
+    return mid, got
+
+
+def _cs_two(ctx, n1, n2, ranked=False, pick=30, **srv):
+    pf = _need_ingame_pick()
+    game_server(ctx, T5L_INGAME_PICK=pick, T5L_PLACEMENT=1, **srv)
+    a = _cs_player(ctx, n1, password=f"{n1.split()[-1].lower()}-pass-1" if ranked else None, char="king")
+    b = _cs_player(ctx, n2, password=f"{n2.split()[-1].lower()}-pass-1" if ranked else None, char="lili")
+    login(ctx, a, "register" if ranked else "guest")
+    login(ctx, b, "register" if ranked else "guest")
+    a.set_char("king")
+    b.set_char("lili")
+    return pf, a, b
+
+
+@scenario("cs_pick", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="both pick on the game's own select screen (Jin / Asuka); the picks are exchanged and fought")
+def cs_pick(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Pick1", "E2E Pick2")
+    _cs_match(ctx, pf, a, b, {a.name: "jin:lk", b.name: "asuka:lp"}, "pick")
+
+
+@scenario("cs_costume", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="the costume is the confirm button: Xiaoyu with RK, Lili with RP, the same model on both PCs")
+def cs_costume(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Cos1", "E2E Cos2")
+    _cs_match(ctx, pf, a, b, {a.name: "xiaoyu:rk", b.name: "lili:rp"}, "costume")
+
+
+@scenario("cs_random", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="Random (Select) on the select screen: drawn on that PC, the same fighter on both PCs")
+def cs_random(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Rnd1", "E2E Rnd2")
+    _cs_match(ctx, pf, a, b, {a.name: "random", b.name: "random"}, "random")
+
+
+@scenario("cs_timeout", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="one player picks nothing: after the pick time (10 s here, 30 s by default) the launcher's character")
+def cs_timeout(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Late1", "E2E Late2", pick=10)
+    _cs_match(ctx, pf, a, b, {a.name: "timeout", b.name: "paul:rp"}, "timeout")
+
+
+@scenario("cs_rematch_select", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="a rematch goes back to the select screen; a new pick is fought, twice")
+def cs_rematch_select(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Rem1", "E2E Rem2")
+    _mid, f1 = _cs_match(ctx, pf, a, b, {a.name: "jin:lk", b.name: "law:lp"}, "match 1")
+    _mid, f2 = _cs_match(ctx, pf, a, b, {a.name: "nina:rp", b.name: "steve:lk"}, "rematch 1", again=True)
+    _mid, f3 = _cs_match(ctx, pf, a, b, {a.name: "random", b.name: "timeout"}, "rematch 2", again=True)
+    ctx.check("each rematch fought its new picks", f1 != f2 and f2 != f3, [f1, f2, f3])
+
+
+@scenario("cs_ranked_lock", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="ranked set: game 1 picked in the game; the rematches skip the select screen and keep those fighters")
+def cs_ranked_lock(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Lock1", "E2E Lock2", ranked=True)
+    mid, f1 = _cs_match(ctx, pf, a, b, {a.name: "bryan:lk", b.name: "julia:rp"}, "ranked game 1", mode="ranked")
+    _mid, f2 = _cs_match(ctx, pf, a, b, {}, "ranked game 2 (locked)", again=True, expect_pick=False)
+    ctx.check("game 2 kept game 1's fighters (the lock)", f1 is not None and f1 == f2, [f1, f2])
+    prof = profile(ctx, a) or {}
+    ctx.check("the history records the fighters the game fought with",
+              any(h.get("you_char") in ("bryan", "julia") for h in prof.get("history", [])), prof.get("history"))
 
 
 # ============================================================================== 10. ranked sets (best of 3)

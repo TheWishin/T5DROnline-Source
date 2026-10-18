@@ -2,7 +2,9 @@
 with any characters, OneDrive, long paths, the launcher's explanations of the game's exit codes,
 the build's choice of target CPU and the files the release must ship for it. No game needed."""
 import io
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -231,6 +233,60 @@ class ReleaseFiles(unittest.TestCase):
     def test_stub_has_no_max_path_buffers(self):
         stub = text("launcher", "stub", "t5dr_stub.c")
         self.assertNotIn("[MAX_PATH]", stub)
+
+
+class InternalResolution(unittest.TestCase):
+    """Launcher Settings -> Internal resolution (docs/RENDER_PERF.md "Internal resolution")."""
+
+    def settings(self, saved=None):
+        d = tempfile.mkdtemp(prefix="t5dr-ires")
+        p = os.path.join(d, "launcher.json")
+        if saved is not None:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+        return core.Settings(p)
+
+    def test_native_by_default_sets_nothing(self):
+        s = self.settings()
+        self.assertEqual(s["internal_res"], "native")
+        env = s.env_overrides()
+        for k in ("PS3_INTERNAL_RES", "PS3_RES_SCALE", "PS3_RENDER_SCALE"):
+            self.assertNotIn(k, env)
+
+    def test_each_step_goes_to_the_game(self):
+        for key in core.INTERNAL_RES:
+            s = self.settings({"internal_res": key})
+            self.assertEqual(s.env_overrides().get("PS3_INTERNAL_RES"), None if key == "native" else key)
+            self.assertIn(key, core.INTERNAL_RES_HINTS)
+
+    def test_old_3d_resolution_migrates(self):
+        for old, new in (("1", "native"), ("0.75", "lower"), ("0.5", "lowest"), ("bogus", "native")):
+            self.assertEqual(self.settings({"render_scale": old})["internal_res"], new)
+        # a saved new setting wins over a stale old one
+        self.assertEqual(self.settings({"render_scale": "0.5", "internal_res": "4k"})["internal_res"], "4k")
+        self.assertEqual(self.settings({"internal_res": "8k"})["internal_res"], "native")
+
+    def test_extra_settings_still_win(self):
+        s = self.settings({"internal_res": "1080p", "extra_env": "PS3_INTERNAL_RES=2"})
+        self.assertEqual(s.env_overrides()["PS3_INTERNAL_RES"], "2")
+
+    def test_step_for_the_screen(self):
+        cases = {(1280, 720): "native", (1366, 768): "native", (1920, 1080): "1080p",
+                 (1920, 1200): "1080p", (2560, 1440): "1440p", (2560, 1600): "1440p",
+                 (3440, 1440): "1440p", (3840, 2160): "4k", (5120, 2880): "4k"}
+        for size, key in cases.items():
+            self.assertEqual(core.internal_res_for_screen(*size), key, size)
+
+    def test_borderless_is_the_games_own_fullscreen(self):
+        self.assertEqual(self.settings({"display": "borderless"}).env_overrides().get("PS3_FULLSCREEN"), "1")
+        self.assertNotIn("PS3_FULLSCREEN", self.settings({"display": "window1440"}).env_overrides())
+
+    def test_runtime_understands_every_launcher_step(self):
+        patch = text("patches", "ps3recomp", "0038-internal-resolution.patch")
+        for key, (_label, factor) in core.INTERNAL_RES.items():
+            self.assertRegex(patch, r'\{"%s", %sf\}' % (re.escape(key), re.escape(repr(factor))), key)
+        for alias in ("PS3_RES_SCALE", "PS3_RENDER_SCALE"):
+            self.assertIn('getenv("%s")' % alias, patch)
 
 
 if __name__ == "__main__":

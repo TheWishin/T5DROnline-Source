@@ -41,7 +41,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Menus, fights | 60 fps, also with other programs busy on the PC. Weaker PCs are not measured yet. |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
@@ -68,7 +68,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop
   cores); online against a far-away player (rollback, 150 ms) about 50 fps.
   See [Low frame rate](docs/TROUBLESHOOTING.md#low-frame-rate). Weak graphics:
-  **3D resolution** under [Playing](#playing).
+  **Internal resolution** under [Playing](#playing).
 - Any monitor: 60, 120, 144 Hz and more, also slower TVs (50 Hz). The game
   always runs at the PS3's 59.94 frames per second. Any Windows display
   scaling (100-200 %), several monitors.
@@ -125,13 +125,16 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   Auto follows the language of Windows. A change applies when the launcher
   starts again (the **Restart now** button does that). The game itself stays
   in English.
-- The game opens in its own window. It draws at 1280 x 720 and scales to the
-  window. **Settings** has window sizes, maximized, borderless (experimental:
-  not yet tested with the real game window) and mute.
-- Weak graphics card (laptop, integrated graphics)? **Settings** -> **3D
-  resolution** -> **Lower** or **Lowest**: a softer picture, less work for the
-  graphics card. It only changes the picture, so the other player online does
-  not need the same setting. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
+- The game opens in its own window and scales its picture to the window.
+  **Settings** has window sizes, maximized, borderless fullscreen and mute.
+- **Settings** -> **Internal resolution** sets how sharp the picture is, like
+  in an emulator: Native is the PS3's 1280 x 720; 1080p, 1440p and 4K draw the
+  game larger (sharp on big screens, more work for the graphics card: the
+  launcher names the step that matches your screen); Lower and Lowest draw the
+  3D scene smaller for weak graphics cards (laptops, integrated graphics), the
+  HUD stays sharp. It only changes the picture, so the other player online
+  does not need the same setting. If fights drop below 60 fps, go one step
+  down. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.

@@ -71,6 +71,12 @@ _USER_PATH = re.compile(
     r"(?P<pre>(?:[A-Za-z]:[\\/]+|(?<![\w:.\-/\\]))Users[\\/]+)"
     r"(?:(?P<n1>[^" + _SEG_BAD + r"]+?)(?=[\\/\"<>|\r\n]|\Z)|(?P<n2>[^" + _SEG_BAD + r"\s]+))", re.I)
 _SHARED_PROFILES = {"public", "default", "default user", "all users", P_USER}
+# A user called like a word our logs are full of ("game" in "[game-dll]") is only replaced inside
+# paths (C:\Users\game\...), not as a bare word: that would wreck every log line.
+_LOG_WORDS = {"game", "games", "build", "native", "logs", "log", "online", "user", "users", "public", "default",
+              "guest", "test", "tekken", "player", "windows", "system", "desktop", "documents", "downloads",
+              "python", "launcher", "release", "runtime", "tools", "lobby", "server", "client", "match", "fight",
+              "pad", "audio", "video", "input", "output", "pc", "ip", "org", "hex", "email", "boot", "scratch"}
 
 _ONEDRIVE_ORG = re.compile(r"(OneDrive - )([^\\/:*?\"<>|\r\n]+?)(?=[\\/\"<>|\r\n]|\Z)", re.I)
 _EMAIL = re.compile(r"(?<![\w.+\-])[\w.+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
@@ -135,7 +141,7 @@ class Scrubber:
         self._name_res = []
         for names, repl, key in ((user_names, P_USER, "user"), (pc_names, P_PC, "pc")):
             for n in sorted({n.strip() for n in names if n and len(n.strip()) >= 3}, key=len, reverse=True):
-                if n.lower() in _SHARED_PROFILES or n.lower() in {"user", "pc", "ip", "org", "hex", "email"}:
+                if n.lower() in _SHARED_PROFILES or n.lower() in _LOG_WORDS:
                     continue
                 self._name_res.append((re.compile(r"(?<![A-Za-z0-9_<])" + re.escape(n) + r"(?![A-Za-z0-9_>])", re.I),
                                        repl, key))

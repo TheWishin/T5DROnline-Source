@@ -94,6 +94,11 @@ class UserNames(unittest.TestCase):
         self.assertEqual(sc.text("hello zoltan quux, welcome to QUUX-DESKTOP; Zoltan Quuxx stays"),
                          "hello <user>, welcome to <pc>; Zoltan Quuxx stays")
 
+    def test_a_user_named_like_a_log_word_is_only_replaced_in_paths(self):
+        sc = scrubber(user_names=["game", "Max"])
+        self.assertEqual(sc.text("[game-dll] C:\\Users\\game\\x built by game and Max"),
+                         "[game-dll] C:\\Users\\<user>\\x built by game and <user>")
+
     def test_onedrive_company_name(self):
         sc = scrubber()
         self.assertEqual(sc.text(r"C:\Users\x\OneDrive - Contoso GmbH\Desktop\a"), r"C:\Users\<user>\OneDrive - <org>\Desktop\a")

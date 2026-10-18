@@ -570,11 +570,21 @@ def _spawn(cmd, cwd, env=None):
               close_fds=True)
     if not IS_WIN:
         return subprocess.Popen(cmd, start_new_session=True, **kw)
+    def popen(flags):
+        try:
+            return subprocess.Popen(cmd, creationflags=flags, **kw)
+        except OSError as e:
+            if getattr(e, "winerror", None) != 267 or not kw["cwd"]:
+                raise
+            # CreateProcess takes no working folder longer than MAX_PATH (even with long paths on)
+            import tempfile
+            kw["cwd"] = tempfile.gettempdir()
+            return subprocess.Popen(cmd, creationflags=flags, **kw)
     flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     try:
-        return subprocess.Popen(cmd, creationflags=flags | CREATE_BREAKAWAY_FROM_JOB, **kw)
-    except OSError:                    # a job that does not allow breaking away
-        return subprocess.Popen(cmd, creationflags=flags, **kw)
+        return popen(flags | CREATE_BREAKAWAY_FROM_JOB)
+    except OSError:                      # a job that does not allow breaking away
+        return popen(flags)
 
 
 # --------------------------------------------------------------------------- processes (Windows)
@@ -879,9 +889,9 @@ def apply_plan(plan_path, confirm_wait=CONFIRM_WAIT, list_processes=None):
             result.update(rolled_back=not problems, problems=problems, phase="undone")
             finish(False, f"the new launcher {plan['to']} did not start")
             return 6
+        shutil.rmtree(backup, ignore_errors=True)
         result["phase"] = "done"
         _write_json(res_path, result)
-        shutil.rmtree(backup, ignore_errors=True)
         log("done" + (" (the launcher confirmed)" if confirmed else " (no confirmation yet)"))
         return 0
     except BaseException as e:       # noqa: BLE001 -- the old launcher must come back whatever happened

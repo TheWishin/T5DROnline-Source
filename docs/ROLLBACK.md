@@ -1889,7 +1889,7 @@ game logs):
 | run | mode | flow | matches fought | in sync, confirmed | FIFO | end |
 |---|---|---|---|---|---|---|
 | e2b (before the fix) | rollback | N R, --same-chars --skew 1.5 | 1 of 2 | 1 | 0 / 0 | rematch never reached FIGHT START on either side (150 s) |
-| f1 | rollback | N R R, same, --mash | 3 | 3 | -- | all reached the fight |
+| f1 | rollback | N R R, same, --mash | 3 | 3 | 0 / 0 | all reached the fight |
 | f2 | rollback | N R, window closed in match 2, N R | 4 | 3 + the closed one (quit / peer_quit, exit 7) | 1 / 1 (before the ring fix) | -- |
 | R1 | rollback, joiner 240 Hz | N R R, skew 1.5 random | 9 | 9 | 0 / 0 | -- |
 | L1 | lockstep | N N R, skew 1.2 alt | 9 | 9 | 0 / 0 | -- |

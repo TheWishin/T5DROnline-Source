@@ -15,6 +15,7 @@ Checks (each one is printed; exit 1 if any fails):
   toolchain  toolchain/llvm's clang-cl is the version release.json names
   imports    runtime/t5dr.exe and T5DR Online.exe import only DLLs that are part of Windows
              (static C runtime: no Visual C++ redistributable needed)
+  signature  (when release.json lists signed files) Windows reports every signature as Valid
   launcher   (GUI) the launcher renders every tab offscreen and exits (--screenshots mode)
   starter    (GUI) T5DR Online.exe starts the launcher from the bundled Python; it is still
              running after a few seconds, and is then closed
@@ -32,6 +33,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+import code_signing  # noqa: E402
 from package_release import PY_SELFTEST, windows_only_env  # noqa: E402
 
 REQUIRED = [
@@ -198,6 +200,14 @@ def main():
             check(f"imports: {rel}", dlls and not bad, f"not part of Windows: {bad}" if bad else ", ".join(dlls))
         except (OSError, ValueError, struct.error) as e:
             check(f"imports: {rel}", False, str(e))
+
+    # A code-signed release (docs/RELEASING.md "Code signing"): Windows must accept every signature.
+    signed = info.get("signed") or []
+    for rel in signed:
+        status, subject = code_signing.authenticode_status(os.path.join(root, *rel.split("/")))
+        check(f"signature: {rel}", status == "Valid", f"{status}, {subject}")
+    if not signed:
+        print("[--] signature: this zip is not code-signed (no signing service set up)", flush=True)
 
     # The host build globs src/ (netplay, direct fight, rollback); a zip staged without it still
     # builds, just a runtime with no online play. The strings are the env variables the lobby sets.

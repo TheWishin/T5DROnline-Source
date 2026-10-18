@@ -104,6 +104,13 @@ np::PadInput g_post_in[4096];                     /* ... and the input the rule 
 uint32_t g_post_frames = 0;
 extern "C" uint32_t t5_df_mode_next(void);
 extern "C" uint32_t t5_df_mode_cur(void);
+/* ps3recomp patch 0035 (ppu_fs.cpp): open files follow the rollback -- opens and
+ * closes of re-run frames are taken back, closes wait until their frame is final */
+extern "C" void ppu_fs_rb_enable(int on);
+extern "C" void ppu_fs_rb_boundary(uint32_t f);
+extern "C" void ppu_fs_rb_confirm(uint32_t f);
+extern "C" void ppu_fs_rb_restore(uint32_t r);
+extern "C" void ppu_fs_rb_stats(unsigned* reopened, unsigned* revived);
 /* The select screen of a rematch runs in lockstep (rematch-fix): every frame
  * there waits for the peer's input instead of predicting it. Both drivers
  * press their own player's cursor there, the game loads the portraits and
@@ -380,6 +387,7 @@ void start(uint32_t f)
     state_init();
     g_saved_minvb[0] = rd32(kMinVblanks); g_saved_minvb[1] = rd32(kMinVblanks + 4);
     wr32(kMinVblanks, 0); wr32(kMinVblanks + 4, 0);   /* no vblank pacing in the present: re-simulated frames must not wait for one */
+    ppu_fs_rb_enable(1);
     g_active = true;
     g_started_at = f;
     g_next_f = f; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false;
@@ -405,9 +413,13 @@ void session_reset()
      * tick skipped, every stop dropped). */
     wr32(kMinVblanks, g_saved_minvb[0]); wr32(kMinVblanks + 4, g_saved_minvb[1]);
     sound_reset();
+    ppu_fs_rb_enable(0);
     report();
-    note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
-         g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens);
+    unsigned fs_reopened = 0, fs_revived = 0;
+    ppu_fs_rb_stats(&fs_reopened, &fs_revived);
+    note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u; "
+         "files taken back by restores: %u opens, %u closes)",
+         g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens, fs_reopened, fs_revived);
     g_active = false;
     memset(g_hash_tag, 0, sizeof g_hash_tag);
     memset(g_used_tag, 0, sizeof g_used_tag);
@@ -564,6 +576,7 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     }
     cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
     reader_sem_restore(first_wrong);   /* the reader's completion token, as at that boundary */
+    ppu_fs_rb_restore(first_wrong);    /* open files: as at that boundary (patch 0035) */
     LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
     g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
     if (depth > g_st.max_depth) g_st.max_depth = depth;
@@ -592,6 +605,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
+    ppu_fs_rb_boundary(f);
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     post_record(f);
@@ -731,6 +745,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         g_hash_sent = g + 1;
     }
 
+    ppu_fs_rb_confirm(std::min(g_checked, f));   /* frames before this are final: held-back closes happen */
     if (g_st.frames && (g_st.frames % 300) == 0) report();
     np::rb_account_frame((uint64_t)(g_wait_acc_ms * 1000.0));
     g_wait_acc_ms = 0;

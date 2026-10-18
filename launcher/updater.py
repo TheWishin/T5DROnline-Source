@@ -405,10 +405,8 @@ def _member_problem(name, top):
         return "'.', '..' or an empty part"
     if parts[0] != top:
         return f"outside the folder {top}"
-    if len(parts) > 1 and len(parts) == 2 and parts[1].lower() in _PROTECTED:
+    if len(parts) > 1 and parts[1].lower() in _PROTECTED:
         return "named like the player's own files"
-    if len(parts) > 2 and parts[1].lower() in _PROTECTED:
-        return "inside a folder named like the player's own files"
     return None
 
 
@@ -988,6 +986,8 @@ class Updater:
         app.after(100, self._pump)
         if os.environ.get(CONFIRM_ENV):
             app.after(300, confirm_started)       # runs once the main loop is up: the window is there
+        self._offered = False           # the offer window was shown once this session
+        self._focus_bound = False
         self.button = None
         if header is not None:
             from tkinter import ttk
@@ -1082,14 +1082,41 @@ class Updater:
             self.release = rel
             if self.button is not None:
                 self.button.configure(text=f"Update to {rel['version']}…")
-            why = busy_reason(self.app)
-            if manual or not why:
+            if manual or (not busy_reason(self.app) and self._in_front()):
                 self.offer()
             else:
-                self._status(f"Version {rel['version']} is available. Click 'Update to {rel['version']}' at the "
-                             "top when you are done.")
+                # Never pop up over another program (a game in front) or in the middle of a match: the
+                # button says it, and the offer opens when the launcher is next in front and free.
+                self._status(f"Version {rel['version']} is available: click 'Update to {rel['version']}' at "
+                             "the top.")
+                if not self._focus_bound:
+                    self._focus_bound = True
+                    self.app.bind("<FocusIn>", self._on_focus, add="+")
         elif manual:
             messagebox.showinfo("Updates", f"You have the newest version ({self.local}).", parent=self.app)
+
+    def _in_front(self):
+        """True when the launcher's window is the foreground window (Windows; elsewhere always)."""
+        if not IS_WIN:
+            return True
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            u.GetForegroundWindow.restype = ctypes.c_void_p
+            u.GetAncestor.restype = ctypes.c_void_p
+            u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            u.GetParent.restype = ctypes.c_void_p
+            hwnd = u.GetParent(self.app.winfo_id()) or self.app.winfo_id()
+            fg = u.GetForegroundWindow()
+            return bool(fg) and (fg == hwnd or u.GetAncestor(fg, 3) == hwnd)      # GA_ROOTOWNER
+        except Exception:     # noqa: BLE001
+            return False
+
+    def _on_focus(self, _e=None):
+        if (self.release and not self._offered and self.win is None and is_newer(self.release["version"], self.local)
+                and not busy_reason(self.app)):
+            self.app.after(200, self.offer)
+            self._offered = True
 
     def _status(self, text):
         try:
@@ -1108,6 +1135,7 @@ class Updater:
             self.win.lift()
             return
         rel = self.release
+        self._offered = True
         w = self.win = tk.Toplevel(self.app)
         w.title("Update available")
         w.transient(self.app)

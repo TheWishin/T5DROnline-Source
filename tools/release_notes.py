@@ -69,6 +69,10 @@ def footer(version, info, sums, repo, run_url):
         if info.get("ps3recomp"):
             n = len(info.get("patches") or [])
             rows.append(("ps3recomp", f"`{info['ps3recomp']}`" + (f" + {n} patches from `patches/ps3recomp`" if n else "")))
+        if info.get("signed"):
+            files = ", ".join(f"`{f}`" for f in info["signed"])
+            rows.append(("Code signing", f"{files} carry a digital signature (right-click the file, "
+                                         "Properties, Digital Signatures)"))
         if info.get("code_id"):
             rows.append(("Code ID", f"`{info['code_id']}` (the launcher asks for a rebuild when this changes)"))
         commit = (info.get("commit") or "").replace("-dirty", " (with local changes)")

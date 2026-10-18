@@ -28,6 +28,28 @@ CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000   # inherited by every tool the build starts
 SETTINGS_FILE = os.path.join(ROOT, "launcher.json")
+LAUNCHER_LOG = os.path.join(ROOT, "launcher.log")     # what the launcher did; goes into the problem report
+LAUNCHER_LOG_MAX = 512 * 1024                         # then it moves to launcher.log.1 (one old copy is kept)
+ISSUES_URL = "https://github.com/TheWishin/T5DROnline/issues"
+_log_lock = threading.Lock()
+
+
+def log(msg, path=None):
+    """Add one timestamped line to launcher.log. Never raises: a full disk must not stop the launcher."""
+    path = path or LAUNCHER_LOG
+    text = " | ".join(str(msg).rstrip().splitlines()) or "-"
+    line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {text}\n"
+    with _log_lock:
+        try:
+            try:
+                if os.path.getsize(path) > LAUNCHER_LOG_MAX:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(line)
+        except OSError:
+            pass
 
 
 def release_info():
@@ -305,8 +327,9 @@ def game_state(out):
         pass
     if info.get("code_id") != build_game.code_id():
         st["needs_rebuild"] = True
-        st["text"] = ("This version of the launcher changes the game code. Build again (your game data is kept; "
-                      "only the code is translated and compiled again).")
+        st["text"] = ("Build the game once (about 2 minutes): this version of the launcher changes the game code. "
+                      "Click BUILD GAME. Your unpacked game and saves are kept; only the code is translated and "
+                      "compiled again.")
         return st
     st["ok"] = True
     when = info.get("built", "?").replace("T", " ")
@@ -660,6 +683,23 @@ def _place_window(hwnd, mode):
 def open_path(path):
     if IS_WIN and os.path.exists(path):
         os.startfile(path)  # noqa: S606 -- the player's own file/folder
+
+
+def reveal_file(path):
+    """Open the file's folder in Explorer with the file selected (the finished report)."""
+    if IS_WIN and os.path.exists(path):
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    elif os.path.isdir(os.path.dirname(path)):
+        open_path(os.path.dirname(path))
+
+
+def desktop_dir():
+    """The Desktop folder (also when OneDrive or the player moved it), else the home folder."""
+    d = known_folder(KNOWN_FOLDERS["Desktop"])
+    if d and os.path.isdir(d):
+        return d
+    d = os.path.join(os.path.expanduser("~"), "Desktop")
+    return d if os.path.isdir(d) else os.path.expanduser("~")
 
 
 def file_sha1(path):

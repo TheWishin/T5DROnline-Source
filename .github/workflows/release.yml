@@ -18,6 +18,15 @@
 # Actions tab, or any push to a branch that changes the release tooling (the
 # paths below). Only the repository owner may push release tags or start runs
 # by hand. See docs/RELEASING.md (also: re-running, yanking a bad release).
+#
+# Code signing (docs/RELEASING.md "Code signing") is built in and OFF until the owner adds the
+# secrets of a signing service (SignPath Foundation, or Azure Artifact Signing). Without them the
+# "Code signing" steps are skipped and the run is the same as before. With them, tag runs sign
+# T5DR Online.exe and runtime/t5dr.exe before the zip is made; dry runs do not, unless started by
+# hand with "sign" ticked.
+#
+# The launcher stub T5DR Online.exe is built with MSVC (cl.exe + link.exe). The repository
+# variable T5DR_STUB_COMPILER=clang (or the "stub_compiler" input of a manual run) switches it to clang-cl.
 name: Release
 
 on:
@@ -32,6 +41,8 @@ on:
       - tools/release_notes.py
       - tools/smoke_release.py
       - tools/release-requirements.txt
+      - tools/code_signing.py
+      - launcher/stub/*
   workflow_dispatch:
     inputs:
       version:
@@ -39,9 +50,21 @@ on:
         required: false
         default: ""
         type: string
+      sign:
+        description: "Sign this test build too (needs the signing secrets; SignPath then waits for your approval). Never publishes."
+        required: false
+        default: false
+        type: boolean
+      stub_compiler:
+        description: "What builds T5DR Online.exe: default = the variable T5DR_STUB_COMPILER, else msvc."
+        required: false
+        default: default
+        type: choice
+        options: [default, msvc, clang]
 
 permissions:
   contents: read
+  actions: read     # SignPath reads the uploaded artifact and this run's details (private repository, no SignPath app)
 
 concurrency:
   group: release-${{ github.ref }}
@@ -52,6 +75,9 @@ env:
   # The CPython the zip ships in python/ (copied from this interpreter). 3.12.10
   # is the last 3.12 with python.org Windows binaries; the dev PC has the same.
   PYTHON_VERSION: "3.12.10"
+  # msvc (default) or clang: what builds T5DR Online.exe (tools/package_release.py --stub-compiler).
+  # An empty value means msvc.
+  T5DR_STUB_COMPILER: ${{ (inputs.stub_compiler && inputs.stub_compiler != 'default') && inputs.stub_compiler || vars.T5DR_STUB_COMPILER }}
 
 jobs:
   build:
@@ -158,8 +184,123 @@ jobs:
       - name: ps3recomp at the pin + patch series
         run: python tools/prepare_ps3recomp.py --dest deps/ps3recomp
 
+      # Code signing: which service, if any. Looks only at whether the secrets exist; the values are
+      # not printed. Needs: SignPath = SIGNPATH_API_TOKEN (secret) + SIGNPATH_ORGANIZATION_ID,
+      # SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG; Azure = AZURE_CLIENT_SECRET (secret) +
+      # AZURE_TENANT_ID, AZURE_CLIENT_ID, ARTIFACT_SIGNING_ENDPOINT, ARTIFACT_SIGNING_ACCOUNT,
+      # ARTIFACT_SIGNING_PROFILE. Everything but the two secrets may be a repository variable instead.
+      # The variable SIGNING_PROVIDER (signpath, azure or none) overrides the automatic choice.
+      - name: Code signing -- which service?
+        id: signing
+        shell: bash
+        env:
+          SIGN_THIS_RUN: ${{ (steps.ver.outputs.publish == 'true' || inputs.sign) && 'true' || 'false' }}
+          WANT: ${{ vars.SIGNING_PROVIDER }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID || vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ secrets.SIGNPATH_PROJECT_SLUG || vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG || vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT || vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT || vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ secrets.ARTIFACT_SIGNING_PROFILE || vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          set -euo pipefail
+          provider=none
+          if [ "$SIGN_THIS_RUN" = true ]; then
+            want="${WANT:-auto}"
+            case "$want" in auto|signpath|azure|none) ;; *) echo "::error::SIGNING_PROVIDER must be signpath, azure or none (it is '$want')."; exit 1 ;; esac
+            if [ "$want" = signpath ] || { [ "$want" = auto ] && [ -n "$SIGNPATH_API_TOKEN" ]; }; then
+              provider=signpath
+            elif [ "$want" = azure ] || { [ "$want" = auto ] && [ -n "$AZURE_CLIENT_SECRET" ]; }; then
+              provider=azure
+            fi
+            missing=""
+            if [ "$provider" = signpath ]; then
+              for v in SIGNPATH_API_TOKEN SIGNPATH_ORGANIZATION_ID SIGNPATH_PROJECT_SLUG SIGNPATH_SIGNING_POLICY_SLUG; do
+                [ -n "${!v}" ] || missing="$missing $v"
+              done
+            elif [ "$provider" = azure ]; then
+              for v in AZURE_CLIENT_SECRET AZURE_TENANT_ID AZURE_CLIENT_ID ARTIFACT_SIGNING_ENDPOINT ARTIFACT_SIGNING_ACCOUNT ARTIFACT_SIGNING_PROFILE; do
+                [ -n "${!v}" ] || missing="$missing $v"
+              done
+            fi
+            if [ -n "$missing" ]; then
+              echo "::error::Code signing with $provider is set up only in part; missing:$missing (docs/RELEASING.md, Code signing). Add them, or set the variable SIGNING_PROVIDER to none."
+              exit 1
+            fi
+          fi
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          case "$provider" in
+            none) echo "code signing: off (this run is not signed, or no signing service is set up)" ;;
+            *) echo "code signing: $provider" ;;
+          esac
+
       - name: Package (tools/package_release.py --release)
+        if: steps.signing.outputs.provider == 'none'
         run: python tools/package_release.py --release --version $env:VERSION --llvm "$env:RUNNER_TEMP/llvm" --ps3recomp deps/ps3recomp --out dist
+
+      # Signing in the middle of packaging: the first half builds everything and puts the programs to
+      # sign in dist/to-sign; the service signs them into dist/signed; the second half checks that each
+      # is the built file plus a valid signature, installs it and makes the zip.
+      - name: Package, first half (code signing)
+        if: steps.signing.outputs.provider != 'none'
+        run: python tools/package_release.py --release --version $env:VERSION --llvm "$env:RUNNER_TEMP/llvm" --ps3recomp deps/ps3recomp --out dist --sign-stage prepare
+
+      # SignPath (free for open source: SignPath Foundation). The owner approves each release in
+      # SignPath's web page (they send an e-mail); this step waits up to 20 minutes for it (a Windows runner minute counts double in a private repository).
+      - name: Upload the unsigned programs (SignPath reads them from here)
+        id: unsigned
+        if: steps.signing.outputs.provider == 'signpath'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-programs
+          path: dist/to-sign
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+      - name: Sign with SignPath
+        if: steps.signing.outputs.provider == 'signpath'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID || vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG || vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG || vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG || vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 1200
+          output-artifact-directory: dist/signed
+
+      # Azure Artifact Signing (formerly Trusted Signing): signs the files of a folder in place.
+      - name: Copy the programs to sign (Azure signs in place)
+        if: steps.signing.outputs.provider == 'azure'
+        run: Copy-Item dist/to-sign dist/signed -Recurse
+
+      - name: Sign with Azure Artifact Signing
+        if: steps.signing.outputs.provider == 'azure'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID || vars.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT || vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT || vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE || vars.ARTIFACT_SIGNING_PROFILE }}
+          files-folder: dist/signed
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Package, second half (install the signed programs, make the zip)
+        if: steps.signing.outputs.provider != 'none'
+        run: python tools/package_release.py --release --version $env:VERSION --llvm "$env:RUNNER_TEMP/llvm" --ps3recomp deps/ps3recomp --out dist --sign-stage finish --signed-dir dist/signed
 
       - name: Guard -- the zip (game files, lifted code, keys)
         run: python tools/package_release.py --scan-only "dist/T5DR-Online-$env:VERSION.zip"

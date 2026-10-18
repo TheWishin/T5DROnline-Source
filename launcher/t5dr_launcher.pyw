@@ -19,6 +19,9 @@ from tkinter.scrolledtext import ScrolledText
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core    # noqa: E402
 import online  # noqa: E402
+import problem_report as report  # noqa: E402
+import problem_report_ui as report_ui  # noqa: E402
+import updater  # noqa: E402
 try:
     import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
 except ImportError:
@@ -69,6 +72,10 @@ class App(tk.Tk):
         self.step_t0 = None
         self.cur_step = None
         self.sub = 0.0
+        self._last_status = None
+        if not offscreen:
+            core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
+                     f"output {self.settings.out_dir}")
         self.title(f"{APP_TITLE} {self.info.get('version', '')}".strip())
         self.minsize(900, 680)
         self.geometry("1000x780" + ("+60+60" if offscreen else ""))
@@ -84,6 +91,14 @@ class App(tk.Tk):
         self.after(200, self.refresh_inputs)
         self.after(300, self.refresh_prereqs)
         self.after(400, self.refresh_game_state)
+
+    def report_callback_exception(self, exc, val, tb):
+        """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
+        into launcher.log, so a problem report shows it."""
+        import traceback
+        if not self.readonly:
+            core.log("error in the launcher:\n" + "".join(traceback.format_exception(exc, val, tb)))
+        super().report_callback_exception(exc, val, tb)
 
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
@@ -136,6 +151,7 @@ class App(tk.Tk):
         ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
         ttk.Label(head, style="Muted.TLabel",
                   text=f"   native Windows build  ·  launcher {self.info.get('version', '?')}").pack(side="left")
+        self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
@@ -150,6 +166,7 @@ class App(tk.Tk):
         self.online = online.OnlineTab(self.tabs["online"], self)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
+        self.status.trace_add("write", self._log_status)
         bar = ttk.Frame(self, padding=(16, 4))
         bar.pack(fill="x")
         ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="left")
@@ -245,6 +262,7 @@ class App(tk.Tk):
                         command=self.save_settings).pack(side="left", padx=8)
         ttk.Button(row, text="Open build.log",
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "build.log"))).pack(side="right")
+        ttk.Button(row, text="Report a problem...", command=self.report_problem).pack(side="right", padx=8)
         self.error = tk.StringVar()
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=("Segoe UI", 10, "bold"))
@@ -284,6 +302,7 @@ class App(tk.Tk):
         ttk.Button(links, text="Open saves folder",
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "gamedata"))).pack(
             side="left", padx=8)
+        ttk.Button(links, text="Report a problem...", command=self.report_problem).pack(side="left")
         ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
             "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
@@ -528,6 +547,8 @@ class App(tk.Tk):
             self.error.set(f"Could not start the build: {e}")
             return
         self.build_t0 = time.time()
+        core.log(f"build started: steps {' '.join(steps) if steps else 'all'}, redo {self.force_var.get()}, "
+                 f"low priority {self.lowprio_var.get()}, output {self.settings.out_dir}")
         set_big_state(self.build_btn, False)
         self.cancel_btn.configure(state="normal")
         self.status.set("Building…")
@@ -583,6 +604,7 @@ class App(tk.Tk):
                 self.sub = val
             elif ev == "error":
                 self.error.set(val)
+                core.log(f"build error: {val}")
             elif ev == "end":
                 ended = val
         if self.cur_step and self.step_state.get(self.cur_step) == "running":
@@ -597,6 +619,7 @@ class App(tk.Tk):
 
     def _build_finished(self, code):
         el = int(time.time() - self.build_t0)
+        core.log(f"build ended: exit code {code} after {el} s" + (f", {self.error.get()}" if self.error.get() else ""))
         if code == 0:
             for s, st in self.step_state.items():
                 if st == "running":
@@ -641,8 +664,18 @@ class App(tk.Tk):
 
     def _update_play_buttons(self):
         running = bool(self.game and self.game.running())
-        set_big_state(self.play_btn, self.game_state().get("ok") and not running)
+        if self.game_state().get("needs_rebuild"):
+            # after an update that changes the game code: "Build the game once" (core.game_state)
+            self.play_btn.configure(text="BUILD GAME", command=self.build_from_play)
+            set_big_state(self.play_btn, not running and not self.build)
+        else:
+            self.play_btn.configure(text="PLAY", command=self.play)
+            set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
+
+    def build_from_play(self):
+        self.nb.select(self.tabs["build"])
+        self.start_build()
 
     def open_controls(self):
         """Settings -> Set up controllers...: the Controls window (controls_ui.py)."""
@@ -677,6 +710,9 @@ class App(tk.Tk):
             messagebox.showerror(APP_TITLE, f"Could not start the game:\n{e}")
             return None
         self.game = g
+        core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
+                 f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
+                 f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
         self.status.set(f"Game started (process {pid}). Log: native\\logs\\{os.path.basename(g.log_path)}")
         self._update_play_buttons()
         return g
@@ -703,6 +739,47 @@ class App(tk.Tk):
     def set_status(self, text):
         self.status.set(text)
 
+    def _log_status(self, *_):
+        t = self.status.get()
+        if t and t != self._last_status and not self.readonly:
+            self._last_status = t
+            core.log("status: " + t)
+
+    # ------------------------------------------------------------------ report a problem
+    def report_problem(self):
+        """Open the 'Report a problem' window (Build and Play tab, and the Online tab after a match).
+        Everything the zip needs from the launcher is read here, on the Tk thread; the window's worker
+        thread only gets plain values."""
+        if self.readonly:
+            return None
+        dlg = getattr(self, "_report_dlg", None)
+        try:
+            if dlg is not None and dlg.top.winfo_exists():
+                dlg.top.lift()
+                return dlg
+        except tk.TclError:
+            pass
+        out = self.settings.out_dir
+        labels = {"display": dict(core.DISPLAY_MODES), "render_scale": core.RENDER_SCALES,
+                  "input_delay": core.INPUT_DELAYS}
+        lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
+        info = self.info
+        build_problem = True if self.error.get() else None
+        try:
+            online_info = self.online.report_info()
+        except Exception as e:      # noqa: BLE001 -- the report goes on without the lobby part
+            online_info = f"(the Online tab could not say: {e})"
+        online_dir = getattr(self.online, "user_dir", None)
+
+        def make_context():
+            return report.Context(out, root=core.ROOT, launcher_log=core.LAUNCHER_LOG, settings_lines=lines,
+                                  release=info, build_info=lambda: report.build_info_for(out, info, core.ROOT),
+                                  online_dir=online_dir, online_info=online_info, build_problem=build_problem)
+        core.log("report window opened")
+        self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
+                                                  issues_url=core.ISSUES_URL, log=core.log)
+        return self._report_dlg
+
     # ------------------------------------------------------------------ loop
     def _tick(self):
         if self.build:
@@ -714,7 +791,8 @@ class App(tk.Tk):
                 self.run_var.set(f"Running — {el // 60}:{el % 60:02d} — {fps}")
             elif self.run_var.get().startswith("Running"):
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
-                self.run_var.set(why or "The game closed.")
+                core.log(f"game ended: exit code {self.game.proc.returncode}" + (f" -- {why}" if why else ""))
+                self.run_var.set((why + " Click Report a problem.") if why else "The game closed.")
                 self._update_play_buttons()
         self.after(150, self._tick)
 

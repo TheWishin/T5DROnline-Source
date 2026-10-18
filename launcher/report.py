@@ -615,15 +615,19 @@ def build_info_for(out_dir, release=None, root=None):
 # --------------------------------------------------------------------------- what goes in
 
 class Item:
-    """One thing that may go into the zip: a file on disk or text made here."""
+    """One thing that may go into the zip: a file on disk, or text made here (a string, or a function
+    that makes it when the zip is written)."""
 
-    def __init__(self, arcname, path=None, text=None, kind="text", limit=None, note=""):
+    def __init__(self, arcname, path=None, text=None, kind="text", limit=None, note="", size=None):
         self.arcname = arcname
         self.path = path
         self.text = text
         self.kind = kind                       # "text" (scrubbed) or "binary" (copied)
         self.limit = limit                     # most bytes this item may take (None: the budget decides)
         self.note = note
+        if size is not None:
+            self.size = size                   # an estimate, for the list in the window
+            return
         try:
             self.size = len(text.encode("utf-8")) if text is not None else os.path.getsize(path)
         except OSError:
@@ -717,8 +721,9 @@ def discover(ctx, note="", now=None):
     """The groups the zip can hold, in the order they are filled. Looks at the disk, reads nothing big."""
     out = ctx.out_dir
     groups = []
-    sysitem = Item("system.txt", text="x", limit=1 << 20)
-    sysitem.size = 6 * 1024
+    newest = _newest(os.path.join(out, "logs", "game-*.log"), 1)
+    sysitem = Item("system.txt", text=lambda: system_text(ctx, now, newest[0] if newest else None), limit=1 << 20,
+                   size=4 * 1024)
     groups.append(Group("system", "System information and the settings you use", [sysitem], True, False))
     if note.strip():
         groups.append(Group("note", "What happened (what you wrote)", [Item("report.txt", text=note.strip())],
@@ -848,9 +853,9 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
         state["left"] -= len(raw)
         return True
 
-    def room_for(item, reserve):
-        """Bytes this item may take now, or 0 when it is not worth a file."""
-        want = min(item.size, item.limit or item.size)
+    def room_for(size, limit, reserve):
+        """Bytes a thing of `size` may take now, or 0 when it is not worth a file."""
+        want = min(size, limit or size)
         room = min(want, state["left"] - reserve)
         return room if room >= min(want, MIN_USEFUL) and room > 0 else 0
 
@@ -861,7 +866,15 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
             if it.arcname.startswith("logs/game-"):
                 logs.append(it)
                 continue
-            room = room_for(it, reserve)
+            if it.text is not None:                      # text made here
+                data = (it.text() if callable(it.text) else it.text).encode("utf-8")
+                room = room_for(len(data), it.limit, reserve)
+                if room <= 0:
+                    res.skipped.append((it.arcname, "no room left in the size limit"))
+                    continue
+                put_text(it.arcname, data[:room], len(data), max(len(data) - room, 0), room, it.note)
+                continue
+            room = room_for(it.size, it.limit, reserve)
             if room <= 0:
                 res.skipped.append((it.arcname, "no room left in the size limit"))
                 continue
@@ -877,14 +890,6 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
                     continue
                 members.append((it.arcname, data, len(data), 0, it.note))
                 state["left"] -= len(data)
-            elif it.text is not None:
-                if it.arcname == "system.txt":
-                    newest = _newest(os.path.join(ctx.out_dir, "logs", "game-*.log"), 1)
-                    body = system_text(ctx, now, newest[0] if newest else None)
-                else:
-                    body = it.text
-                data = body.encode("utf-8")
-                put_text(it.arcname, data[:room], len(data), max(len(data) - room, 0), room, it.note)
             else:
                 data, removed = read_capped(it.path, room)
                 if not data and it.size:

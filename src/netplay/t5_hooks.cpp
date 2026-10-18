@@ -661,7 +661,7 @@ double drain_wait(uint32_t f)
  * NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at the
  * boundary by construction (0x357714 waits for it); it is only counted. */
 constexpr uint32_t kGeomMgr = 0x10742880u;   /* +8 busy count, +0x50 wake semaphore id */
-constexpr uint32_t kDrawMgr = 0x1074BE80u;   /* +0x4C request list, +0x98 wake counter (value u64 at +0xA8) */
+constexpr uint32_t kDrawMgr = 0x1074BE80u;   /* +0x98 wake counter (value u64 at +0xA8): 1 = working through its list */
 bool g_side_drain = true;                    /* T5_RB_SIDE_DRAIN=0: count only, do not wait */
 std::atomic<uint32_t> g_geom_sem{ 0 };
 uint64_t g_sd_geom = 0, g_sd_draw = 0, g_sd_us = 0, g_sd_max_us = 0, g_sd_frames = 0;
@@ -676,12 +676,13 @@ bool geom_idle()
     if (!s.active) return true;
     return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
 }
-bool draw_idle() { return rd32(kDrawMgr + 0x4C) == 0 && rd64(kDrawMgr + 0xA8) == 0; }
+/* (its request list may hold the next frame's first requests: queued, not taken) */
+bool draw_idle() { return rd64(kDrawMgr + 0xA8) == 0; }
 
 void side_drain(uint32_t f)
 {
     if (f && f % 600 == 0 && g_sd_frames) {
-        np::note("side drain: geometry manager busy at %llu of %llu boundaries (waited %.1f ms, longest %.2f ms), draw manager busy at %llu",
+        np::note("side drain: geometry manager busy at %llu of %llu boundaries (waited %.1f ms, longest %.2f ms), draw manager running at %llu",
                  (unsigned long long)g_sd_geom, (unsigned long long)g_sd_frames, g_sd_us / 1000.0, g_sd_max_us / 1000.0,
                  (unsigned long long)g_sd_draw);
         g_sd_geom = g_sd_draw = g_sd_us = g_sd_max_us = g_sd_frames = 0;

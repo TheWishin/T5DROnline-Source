@@ -211,8 +211,15 @@ Keyboard (default) and Xbox controller:
    the tab and keep the recovery codes it shows.
 3. Search a **quick** or **ranked** match, or open a lobby room for a friend.
    When an opponent is found you see the ping and accept within 15 seconds.
-4. The game starts directly in the fight: first to 3 rounds. Afterwards pick
-   **Rematch** or **Next game**. The game stays open between matches.
+4. The game shows its own character select. Pick your fighter with the pad or
+   stick within 30 seconds: the button you confirm with picks the costume,
+   **Select** picks at random. If you pick nothing, you get the character set
+   in the launcher. When both of you have picked, the fight starts: first to 3
+   rounds. The name under your fighter counts the seconds down; "PICKING..."
+   under the opponent means you wait for their pick.
+5. Afterwards pick **Rematch** or **Next game**. A rematch goes back to the
+   character select. In a ranked set the fighters of the first game stay for
+   every rematch. The game stays open between matches.
 
 Good to know:
 

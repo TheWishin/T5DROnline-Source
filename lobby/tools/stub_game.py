@@ -30,7 +30,9 @@ Knobs for tests (all optional):
     T5_STUB_LINGER    seconds to stay open after the last match (default 0)
     T5_FIGHT_FILE     like direct-fight: before the 2nd, 3rd ... match wait for this file
                       (the next fight), then rename it to .done
-    T5_DF_STATUS_FILE like direct-fight: {"state": fight|over|neutral, "match": n}
+    T5_DF_STATUS_FILE like direct-fight: {"state": pick|fight|over|neutral, "match": n, "p1": id, "p2": id}
+    T5_STUB_PICKS     "<P1 id>,<P2 id>": what the players "pick in the game" when the fight line has
+                      pick=N (in-game select); the status file then says these at "fight"
     T5_CTL_DIR        persistent mode (docs/RANKED.md, "Game control channel"): boot to
                       idle, then run every "fight" command from <dir>/cmd.json with its env;
                       "idle" ends the session, "quit" exits
@@ -214,7 +216,18 @@ class Session:
         return "ok"
 
 
-def status(env, state, match, last=None):
+def fight_chars(env, line):
+    """[P1 id, P2 id] of a fight line -- or, with pick=N on it (in-game select), T5_STUB_PICKS -- and
+    whether the line asks for the in-game select."""
+    toks = (line or "").replace(",", " ").split()
+    ids = [int(t) for t in toks[:2] if t.isdigit()]
+    pick = any(t.startswith("pick=") and t[5:] not in ("", "0") for t in toks)
+    if pick and env.get("T5_STUB_PICKS"):
+        ids = [int(x) for x in env["T5_STUB_PICKS"].split(",")[:2]]
+    return (ids if len(ids) == 2 else None), pick
+
+
+def status(env, state, match, last=None, chars=None):
     """T5_DF_STATUS_FILE, as the direct-fight code writes it."""
     path = env.get("T5_DF_STATUS_FILE")
     if path:
@@ -222,6 +235,8 @@ def status(env, state, match, last=None):
             d = {"state": state, "match": match}
             if last is not None:
                 d["last_winner"], d["last_score"] = last
+            if chars:
+                d["p1"], d["p2"] = chars
             json.dump(d, f)
         os.replace(path + ".tmp", path)
 
@@ -236,6 +251,7 @@ def run_env(env):
         if not s.connect():
             return 1
         fight_file = env.get("T5_FIGHT_FILE")
+        line = env.get("T5_FIGHT", "")
         for n in range(1, int(env.get("T5_STUB_MATCHES", "1") or 1) + 1):
             if n > 1:
                 r = s.exchange(int(float(env.get("T5_STUB_GAP", "2")) * 60))
@@ -255,9 +271,12 @@ def run_env(env):
                         if tok.startswith("match="):
                             s.match_id = tok[6:]
                     os.replace(fight_file, fight_file + ".done")
-            status(env, "fight", n)
+            chars, pick = fight_chars(env, line)
+            if pick:
+                status(env, "pick", n - 1, chars=chars)
+            status(env, "fight", n, chars=chars)
             r = s.play(n, env)
-            status(env, "over", n, getattr(s, "last", None))
+            status(env, "over", n, getattr(s, "last", None), chars=chars)
             if r == "crash":
                 print("[CRASH] stub: simulated crash", flush=True)
                 return 3
@@ -289,6 +308,7 @@ def persistent(ctl_dir):
                 time.sleep(0.01)
 
     seen = 0
+    fights = 0          # the status file's match counter, as the game's (every fight in the process)
     state("idle", 0)
     log(f"control channel {ctl_dir}: idle")
     t_idle = time.time()
@@ -322,7 +342,13 @@ def persistent(ctl_dir):
                     state("error", seen, match=cmd.get("match"), error="no peer")
                     continue
                 state("fight", seen, match=cmd.get("match"))
+                chars, pick = fight_chars(env, env.get("T5_FIGHT", ""))
+                if pick:
+                    status(env, "pick", fights, chars=chars)
+                fights += 1
+                status(env, "fight", fights, chars=chars)
                 r = s.play(1, env)
+                status(env, "over", fights, getattr(s, "last", None), chars=chars)
                 if r == "crash":
                     print("[CRASH] stub: simulated crash", flush=True)
                     return 3

@@ -1,0 +1,249 @@
+"""The in-game character select (docs/RANKED.md "Character select in the game"): the server offers
+it in match_start (fight.pick) when both players' clients can, the launcher puts pick=N on the
+game's fight line, the fighters the game fought with come back with the result (chars) -- into the
+history, and as the lock of a ranked set (its later games skip the select screen)."""
+import os
+import shutil
+import sys
+import tempfile
+import time
+import types
+import unittest
+
+import util
+from util import ServerThread, client, expect
+from t5lobby import proto
+from t5lobby.match_driver import MatchDriver, game_supports_pick
+from t5lobby.proto import LobbyError
+from t5lobby.server import Config
+
+STUB = os.path.join(os.path.dirname(util.HERE), "tools", "stub_game.py")
+
+
+class Base(unittest.TestCase):
+    server_cfg = {}
+
+    def setUp(self):
+        self.s = ServerThread(**self.server_cfg).start()
+        self.clients = []
+
+    def tearDown(self):
+        for c in self.clients:
+            c.close()
+        self.s.stop()
+
+    def acc(self, name, pick=True, **kw):
+        c = client(self.s, name, password="pw-" + name, register=True, auto_ready=True, ingame_pick=pick, **kw)
+        self.clients.append(c)
+        return c
+
+    def ranked(self, a, b, ca="jin", cb="paul"):
+        a.ranked_match(ca)
+        b.ranked_match(cb)
+        return expect(a, "match_start"), expect(b, "match_start")
+
+    @staticmethod
+    def mine(ev, fight=None):
+        f = fight or ev["fight"]
+        return (f["p1"], f["p2"]) if ev["slot"] == 0 else (f["p2"], f["p1"])        # (mine, theirs)
+
+    def report(self, a, b, ea, chars_a, chars_b, winner=0):
+        """Both report P1's win as the game would, with the fighters the game fought (P1, P2)."""
+        a.report_result(winner, [1, 0], ea["match"], source="game", chars=chars_a)
+        b.report_result(winner, [1, 0], ea["match"], source="game", chars=chars_b)
+        return expect(a, "match_result"), expect(b, "match_result")
+
+
+class OfferTest(Base):
+    def test_default_is_30_seconds(self):
+        self.assertEqual(Config().ingame_pick, 30)
+        self.assertEqual(Config.from_env({"T5L_INGAME_PICK": "0"}).ingame_pick, 0)
+
+    def test_offered_when_both_can(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.assertIn("ingame_pick", a.welcome["features"])
+        self.assertIn("ingame_pick", a.welcome["caps"])
+        ea, eb = self.ranked(a, b)
+        self.assertEqual((ea["fight"]["pick"], eb["fight"]["pick"]), (30, 30))
+        self.assertEqual(self.mine(ea), ("jin", "paul"))                   # the launchers' picks: the fallback
+
+    def test_not_when_one_cannot(self):
+        a, b = self.acc("Alice"), self.acc("Bob", pick=False)
+        ea, eb = self.ranked(a, b)
+        self.assertNotIn("pick", ea["fight"])
+        self.assertNotIn("pick", eb["fight"])
+
+
+class OffTest(Base):
+    server_cfg = {"ingame_pick": 0}
+
+    def test_the_server_can_switch_it_off(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, _ = self.ranked(a, b)
+        self.assertNotIn("pick", ea["fight"])
+
+
+class PickedTest(Base):
+    def test_ranked_set_locks_what_was_picked_in_the_game(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        # the game's picks: Alice Kazuya, Bob Lili (in P1/P2 order of this match)
+        picked = ["kazuya", "lili"] if ea["slot"] == 0 else ["lili", "kazuya"]
+        ra, rb = self.report(a, b, ea, picked, picked)
+        self.assertEqual(ra["status"], "confirmed")
+        self.assertEqual(self.mine(ea, ra["fight"]), ("kazuya", "lili"))   # the history has the real fighters
+        self.assertTrue(ra["set"]["locked"])
+        a.rematch(ra["match"], True, keep=True)
+        b.rematch(rb["match"], True, keep=True)
+        s = expect(a, "match_start")
+        self.assertNotIn("pick", s["fight"])                                # the second game skips the select screen
+        self.assertEqual(self.mine(s), ("kazuya", "lili"))
+        self.assertEqual((s["set"]["game"], s["set"]["locked"]), (2, True))
+        hist = a.profile("Alice", 5)["history"]
+        self.assertEqual((hist[0]["you_char"], hist[0]["opp_char"]), ("kazuya", "lili"))
+
+    def test_ids_are_taken_too_and_disagreement_keeps_the_launchers(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        ra, rb = self.report(a, b, ea, [15, 33], [9, 33])                  # the two games saw different fighters
+        self.assertEqual(self.mine(ea, ra["fight"]), ("jin", "paul"))
+        a.rematch(ra["match"], True, keep=True)
+        b.rematch(rb["match"], True, keep=True)
+        s = expect(a, "match_start")
+        self.assertEqual(self.mine(s), ("jin", "paul"))                    # the lock: what the launchers had
+
+    def test_one_report_is_enough(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        a.report_result(0, [1, 0], ea["match"], source="game", chars=[15, 12])   # Kazuya vs Panda (Kuma's cell)
+        b.report_result(0, [1, 0], ea["match"], source="game")
+        ra = expect(a, "match_result")
+        self.assertEqual((ra["fight"]["p1"], ra["fight"]["p2"]), ("kazuya", "panda"))
+
+    def test_casual_rematches_pick_again(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        a.quick_match("jin")
+        b.quick_match("paul")
+        ea, eb = expect(a, "match_start"), expect(b, "match_start")
+        self.assertEqual(ea["fight"]["pick"], 30)
+        ra, rb = self.report(a, b, ea, ["kazuya", "lili"], ["kazuya", "lili"])
+        self.assertFalse(ra["set"]["locked"])
+        a.rematch(ra["match"], True, keep=True)
+        b.rematch(rb["match"], True, keep=True)
+        self.assertEqual(expect(a, "match_start")["fight"]["pick"], 30)
+
+    def test_bad_chars_are_refused(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        for bad in (["jin"], ["jinpachi", "jin"], [35, 1], ["nobody", "jin"], [True, 1], "jin,law"):
+            with self.assertRaises(LobbyError) as e:
+                a.report_result(0, [1, 0], ea["match"], source="game", chars=bad)
+            self.assertEqual(e.exception.code, proto.E_BAD_REQUEST)
+
+
+class DriverUnitTest(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="drvpick")
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_fight_line_and_reported_chars(self):
+        calls = []
+
+        class Client:
+            def report_result(self, *a, **kw):
+                calls.append((a, kw))
+
+            def game_started(self, mid):
+                pass
+
+        drv = MatchDriver(Client(), lambda env: None, self.d, mode="process")
+        ev = {"fight": {"p1": "jin", "p2": "lili", "stage": "s20", "rounds": 3, "pick": 30}}
+        self.assertEqual(drv.fight_line(ev), "9,33,20,3 pick=30")
+        self.assertEqual(drv.fight_line({"fight": dict(ev["fight"], pick=0)}), "9,33,20,3")
+        drv.match_ev = ev
+        drv.ticket = types.SimpleNamespace(match_id="m1")
+        drv.fight_chars = [15, 12]                                         # the status file at FIGHT START
+        drv._report("m1", 0, [1, 0], "game", desync=0)
+        self.assertEqual(calls[-1][1]["chars"], ["kazuya", "panda"])
+        drv.match_ev = {"fight": dict(ev["fight"], pick=0)}                # no in-game select: nothing to say
+        drv._report("m1", 0, [1, 0], "game", desync=0)
+        self.assertNotIn("chars", calls[-1][1])
+
+    def test_build_marker(self):
+        exe = os.path.join(self.d, "t5dr.exe")
+        with open(exe, "wb") as f:
+            f.write(b"\0" * 100 + b"T5_DF_PICK" + b"\0" * 100)
+        self.assertTrue(game_supports_pick([exe, os.path.join(self.d, "missing.dll")]))
+        with open(exe, "wb") as f:
+            f.write(b"T5_CTL_DIR")
+        self.assertFalse(game_supports_pick([exe]))
+
+
+class StubSetTest(Base):
+    """A ranked set through the launcher's glue and the stub game in persistent mode: the first game
+    picked in the game, the rematch locked to those fighters with no select screen."""
+
+    def launch_stub(self, d, extra):
+        import subprocess
+
+        class G:
+            def __init__(self, env):
+                self.log_path = os.path.join(d, f"game-{time.monotonic_ns()}.log")
+                full = dict(os.environ, **extra)
+                full.update(env)
+                with open(self.log_path, "w") as lf:
+                    self.proc = subprocess.Popen([sys.executable, STUB], env=full, stdout=lf, stderr=lf)
+
+            def running(self):
+                return self.proc.poll() is None
+
+            def stop(self):
+                if self.running():
+                    self.proc.kill()
+                    self.proc.wait(5)
+        return G
+
+    def test_ranked_set_through_the_driver(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        stub = {"T5_STUB_SECONDS": "1", "T5_STUB_PICKS": "15,33"}         # the "game" picked Kazuya vs Lili
+        drivers, dirs = [], []
+        for c in (a, b):
+            d = tempfile.mkdtemp(prefix="drvset")
+            dirs.append(d)
+            drivers.append(MatchDriver(c, self.launch_stub(d, stub), d, mode="persistent", ask_manual=False,
+                                       auto_rematch=1))
+        starts, results = {0: [], 1: []}, {0: [], 1: []}
+        a.ranked_match("jin")
+        b.ranked_match("paul")
+        t_end = time.monotonic() + 40
+        try:
+            while time.monotonic() < t_end and min(len(results[0]), len(results[1])) < 2:
+                for i, (c, drv) in enumerate(zip((a, b), drivers)):
+                    while True:
+                        ev = c.next_event(0)
+                        if ev is None:
+                            break
+                        drv.on_event(ev)
+                        if ev["t"] == "match_start":
+                            starts[i].append(ev)
+                        if ev["t"] == "match_result":
+                            results[i].append(ev)
+                    drv.poll()
+                time.sleep(0.05)
+        finally:
+            for drv in drivers:
+                drv.close()
+            for d in dirs:
+                shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual([r["status"] for r in results[0]], ["confirmed", "confirmed"])
+        self.assertEqual(starts[0][0]["fight"]["pick"], 30)
+        self.assertEqual((results[0][0]["fight"]["p1"], results[0][0]["fight"]["p2"]), ("kazuya", "lili"))
+        self.assertNotIn("pick", starts[0][1]["fight"])                    # game 2: locked, no select screen
+        self.assertEqual((starts[0][1]["fight"]["p1"], starts[0][1]["fight"]["p2"]), ("kazuya", "lili"))
+        self.assertEqual(drivers[0].history[0][1].get("chars"), ["kazuya", "lili"])
+
+
+if __name__ == "__main__":
+    unittest.main()

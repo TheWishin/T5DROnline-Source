@@ -126,9 +126,18 @@ lobby/
    (process mode), or a "fight" command to the game that is already open
    (persistent mode, below). The server suggests the input delay from the
    measured round trip.
-8. **Result.** After the game both launchers report the winner (from the
-   game's result file, or the player answers "I won / I lost"). The server
-   reconciles the two reports and updates ratings.
+8. **Character select in the game.** When both players' launchers and games
+   can, `match_start.fight` has `pick` (seconds, 30): the game shows its own
+   select screen and each player picks fighter and costume there (the button
+   you confirm with is the costume, Select = random). The two games exchange
+   the picks and start the fight. Nothing picked in time: the character set in
+   the launcher. A rematch goes back to the select screen the same way; in a
+   ranked set only the first game is picked, the rest keep those fighters
+   (docs/RANKED.md "Character select in the game").
+9. **Result.** After the game both launchers report the winner (from the
+   game's result file, or the player answers "I won / I lost") and, after an
+   in-game pick, the fighters. The server reconciles the two reports and
+   updates ratings.
 
 ## Handover to the game
 
@@ -151,7 +160,7 @@ lobby/
 | `T5_NET_KEY` | yes | the match's secret (server -> both clients over TCP only): every netplay packet carries a SipHash-2-4 tag under it |
 | `T5_NET_RESULT_FILE` | yes | where the game writes the result (below) |
 | `T5_NET_SOCKET_FILE` | proposed | only with socket handover (below) |
-| `T5_FIGHT`, `T5_NET_START`, `PS3_FIXED_TIME` | direct fight | the fight from the server's `fight` (docs/DIRECTFIGHT.md) |
+| `T5_FIGHT`, `T5_NET_START`, `PS3_FIXED_TIME` | direct fight | the fight from the server's `fight` (docs/DIRECTFIGHT.md); with `pick=N` on it when the players pick in the game |
 | `T5_HUD_NAMES`, `T5_HUD_RANKS` | direct fight | both players' lobby names and rank tiers, shown in the fight HUD |
 
 **Persistent game (the default for builds that understand it).** Like Tekken 6
@@ -301,7 +310,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -318,7 +327,7 @@ Client to server:
 | `nat_local` | `match`, `addrs [[ip,port]]`, `nat: eim\|symmetric\|unknown`, `port` | |
 | `nat_result` | `match`, `phase: punch\|relay`, `ok`, `peer`, `kind`, `rtt_ms`, `jitter_ms` | |
 | `game_started` | `match` | |
-| `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]` | `result_ack`; the other player gets `notice result_pending` |
+| `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]`, `chars` (in-game select: the fighters) | `result_ack`; the other player gets `notice result_pending` |
 | `leave_match` | `match` | cancels before start; a loss report while playing |
 | `block` / `unblock` / `blocks` | `name` (or `player`) | `blocked` / `unblocked` / `blocks {rows}`; a match with that player ends like a quit |
 | `leave_set` | `reason` (`lag`) | leave the games in a row between two games, no penalty; `set_end` to both |
@@ -339,7 +348,7 @@ Server to client (pushed):
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2` |
 | `nat_punch` | `match`, `candidates [{ip, port, kind}]`, `timeout` |
 | `nat_relay` | `match`, `udp_port`, `reason` |
-| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed` |
+| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
 | `match_result` | `match`, `status`, `winner`, `score`, `ranked`, `rating {before, after, delta}`, `you` |
 | `set_end` | `set`, `reason: declined\|left\|lag\|expired\|cancelled`, `by: you\|opponent\|null` |
@@ -474,6 +483,7 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
 | `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 3, 6, 90 s | |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
+| `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
 | `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
@@ -582,7 +592,7 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 |---|---|
 | **A** (Cross) | Accept a found match or a challenge. Rematch (also when the opponent offers one). Search: ranked for an account at first, quick for a guest, afterwards the kind you searched last. After you left a game (B), A is "back to ranked". |
 | **B** (Circle) | Decline a found match or a challenge. Leave / No thanks after a game. Stop searching. |
-| **Y** (Triangle) | Nothing. Every match gets a random stage from the server, a rematch too, so there is no stage to choose. |
+| **Y** (Triangle) | Nothing. Every match gets a random stage from the server, a rematch too, so there is no stage to choose. (The fighter is picked in the game itself, with the game's controls.) |
 
 - The buttons say which pad button presses them: "Accept (A)", "Decline (B)", "Ranked match (A)". A stick
   shows its own button names, "Accept (B2)". The line under the lobby names the pad and its Cross, Circle and

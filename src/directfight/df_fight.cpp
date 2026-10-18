@@ -190,10 +190,13 @@ void parse_hud(Fight& f, const char* names, const char* ranks, bool encoded)
     }
 }
 
+int g_pick_default = 0;   /* T5_DF_PICK=<seconds>: the in-game select for fight lines without pick= (tests) */
+
 bool parse_fight(const char* s, Fight& out)
 {
     Fight f; f.text = s ? s : "";
     f.rounds = default_rounds();
+    f.pick = g_pick_default;
     /* the HUD identity carries over from the last fight (a rematch: same players) unless the line has its own */
     for (int p = 0; p < 2; p++) { f.names[p] = out.names[p]; f.rank[p] = out.rank[p]; }
     f.hud = out.hud;
@@ -1384,6 +1387,7 @@ void fight_init()
     if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
     if (const char* s = getenv("T5_DF_STATUS_FILE")) g_status_file = s;
     if (const char* a = getenv("T5_DF_ALT_BUTTON")) g_alt_button = (uint16_t)strtoul(a, nullptr, 16);
+    if (const char* pk = getenv("T5_DF_PICK")) { const int n = atoi(pk); g_pick_default = n < 0 ? 0 : n > 120 ? 120 : n; }
     { const char* t = getenv("T5_DF_TRACE"); g_trace_presses = t && *t == '1'; }
     if (fight && *fight && !g_ctl) parse_fight(fight, g_cfg);
     note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : g_ctl ? "(persistent game: fights from the control channel)"

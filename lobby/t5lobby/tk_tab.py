@@ -42,7 +42,7 @@ from . import dialogs, fighters, lag, padmap, padnav, proto, ranks, servers
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs
+from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
 
 AVAILABLE = True
@@ -618,7 +618,8 @@ class OnlineTab:
             spec, tls = spec[6:], True
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
-                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True)
+                        plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
+                        ingame_pick=self._game_can_pick())
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -629,6 +630,12 @@ class OnlineTab:
             out = getattr(self.app.settings, "out_dir", os.getcwd())
             c.perf_fps = fps_from_logs(os.path.join(out, "logs"))
         return c
+
+    def _game_can_pick(self):
+        """This PC's game picks the characters on its own select screen (in-game select)."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
+                                   os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
         name, pw = self.name_var.get().strip(), self.pw_var.get()
@@ -670,6 +677,9 @@ class OnlineTab:
             self._set_account_view(True)
             self._show_me()
             hint = t("Pick a character, then Ranked match (accounts) or Quick match.")
+            if client.ingame_pick and "ingame_pick" in (w.get("features") or []):
+                hint = t("Ranked match (accounts) or Quick match; then pick your fighter in the game (Select = "
+                         "random). The character here is used when you do not pick in time.")
             if w.get("motd"):
                 hint = w["motd"]
             self.hint_var.set((t("Encrypted connection (TLS).") + " " if client.tls else "") + hint)
@@ -1109,13 +1119,20 @@ class OnlineTab:
             self.lag = None
             f = ev.get("fight") or {}
             delay = ev.get("delay") or 0
-            self.match_var.set(" -- ".join((
-                t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
-                else t("Casual match vs {name}", name=ev["opponent"]["name"]),
-                t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")), p2=self.table.fighter_name(f.get("p2"))),
-                t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
-                  ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")), frames=ev.get("delay"),
-                  delay_ms=f"{delay * 16.7:.0f}"))))
+            self._match_head = (t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
+                                else t("Casual match vs {name}", name=ev["opponent"]["name"]))
+            self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
+                                 ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")),
+                                 frames=ev.get("delay"), delay_ms=f"{delay * 16.7:.0f}")
+            if f.get("pick"):
+                # in-game select: the fighters are picked on the game's own select screen
+                fighters_text = t("pick your fighter in the game ({secs} s)", secs=f["pick"])
+            else:
+                fighters_text = t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")),
+                                  p2=self.table.fighter_name(f.get("p2")))
+                if (ev.get("set") or {}).get("locked") and (ev.get("set") or {}).get("game", 1) > 1:
+                    fighters_text += " " + t("(locked for this ranked set)")
+            self.match_var.set(" -- ".join((self._match_head, fighters_text, self._match_tail)))
         elif kind == "match_result":
             self._show_result(ev)
         elif kind == "rematch":
@@ -1148,6 +1165,12 @@ class OnlineTab:
             self._save_cfg()
         if k == "status":
             self.status(n["text"])
+        elif k == "game_state":
+            # the fight started: show who fights (with the in-game select, what the players picked)
+            if n.get("state") == "fight" and n.get("chars") and getattr(self, "_match_head", None):
+                p1, p2 = n["chars"]
+                self.match_var.set(" -- ".join((self._match_head, t("{p1} vs {p2}", p1=self.table.fighter_name(p1),
+                                                                    p2=self.table.fighter_name(p2)), self._match_tail)))
         elif k == "ask_result":
             self.show_bar(t("The game closed. How did the match against {opponent} end?", opponent=n["opponent"]), [
                 (t("I won"), lambda: self._answer_result("won")),

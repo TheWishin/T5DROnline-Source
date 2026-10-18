@@ -1373,4 +1373,12 @@ MESSAGES = {
     "The lobby server stopped (exit code {code}); see its log in {folder}.":
         "Der Lobby-Server wurde beendet (Exit-Code {code}); sein Log liegt in {folder}.",
     "Stopped hosting.": "Hosten beendet.",
+    # in-game character select (branch ingame-select)
+    "Pick your fighter in the game ({secs} s; Select = random; no pick = the character set here).":
+        "Wähle deinen Kämpfer im Spiel ({secs} s; Select = zufällig; ohne Wahl der hier eingestellte Charakter).",
+    "Waiting for your opponent to pick...": "Warte auf die Wahl deines Gegners...",
+    "Ranked match (accounts) or Quick match; then pick your fighter in the game (Select = random). The character here is used when you do not pick in time.":
+        "Ranked Match (Konten) oder Quick Match; dann wählst du deinen Kämpfer im Spiel (Select = zufällig). Der Charakter hier gilt, wenn du nicht rechtzeitig wählst.",
+    "pick your fighter in the game ({secs} s)": "Kämpfer im Spiel wählen ({secs} s)",
+    "(locked for this ranked set)": "(fest für dieses Ranked-Set)",
 }

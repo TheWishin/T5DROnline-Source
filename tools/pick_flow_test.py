@@ -206,10 +206,21 @@ class Game:
         except (OSError, TypeError):
             return ""
 
+    def pad(self, text):
+        """The runtime re-reads the pad file on every poll and holds it open meanwhile: a rename over
+        it fails then, a plain rewrite does not (an empty read in between is one poll of nothing)."""
+        for _ in range(100):
+            try:
+                with open(self.pad_path, "w") as f:
+                    f.write(text)
+                return
+            except PermissionError:
+                time.sleep(0.002)
+
     def press(self, buttons, hold=0.08, gap=0.17):
-        write_atomic(self.pad_path, buttons)
+        self.pad(buttons)
         time.sleep(hold)
-        write_atomic(self.pad_path, "")
+        self.pad("")
         time.sleep(gap)
 
 
@@ -228,6 +239,12 @@ class Picker(threading.Thread):
         return int(cells[-1]) if cells else None
 
     def run(self):
+        try:
+            self.play()
+        except Exception as e:     # noqa: BLE001 -- reported with the match
+            self.note = f"picker failed: {e!r}"
+
+    def play(self):
         while time.time() < self.deadline and self.cell() is None:
             time.sleep(0.1)
         if self.cell() is None:

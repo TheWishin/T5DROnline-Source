@@ -22,6 +22,10 @@ From "match found" to "result reported" without the player doing anything:
     after         the game stays open at character select; a rematch with the same opponent
                   continues inside the running games: the next fight goes to T5_FIGHT_FILE
                   (no restart, no new connection)
+    in-game pick  when the lobby's `fight` has `pick` (seconds), the fight line carries pick=N:
+                  both players pick on the game's own select screen, the line's characters are the
+                  fallback; the fighters the game fought with go to the lobby with the result
+                  (`chars`: the history, and the first game of a ranked set locks them)
 
 Two ways to run the game:
 
@@ -62,6 +66,7 @@ from .handover import MatchTicket, read_result_file
 from .i18n import N_, t, translate_message
 
 CTL_MARKER = b"T5_CTL_DIR"
+PICK_MARKER = b"T5_DF_PICK"     # a game build with the in-game select (src/directfight, docs/DIRECTFIGHT.md)
 
 RE_SYNC = re.compile(r"\[netplay\] sync check through frame (\d+): (\d+) mismatching")
 RE_DESYNC = re.compile(r"\[netplay\] DESYNC at frame (\d+)")
@@ -280,7 +285,16 @@ _ctl_cache = {}
 
 def game_supports_control(paths):
     """Does this game build understand T5_CTL_DIR? (looks for the variable's name in the binaries)"""
-    key = []
+    return _has_marker(paths, CTL_MARKER)
+
+
+def game_supports_pick(paths):
+    """Can this game build pick the characters on its own select screen (pick=N on the fight line)?"""
+    return _has_marker(paths, PICK_MARKER)
+
+
+def _has_marker(paths, marker):
+    key = [marker]
     for p in paths:
         try:
             st = os.stat(p)
@@ -289,11 +303,11 @@ def game_supports_control(paths):
             pass
     key = tuple(key)
     if key not in _ctl_cache:
-        _ctl_cache[key] = _scan_for_control(paths)
+        _ctl_cache[key] = _scan_for(paths, marker)
     return _ctl_cache[key]
 
 
-def _scan_for_control(paths):
+def _scan_for(paths, marker):
     for p in paths:
         try:
             with open(p, "rb") as f:
@@ -301,9 +315,9 @@ def _scan_for_control(paths):
                     chunk = f.read(1 << 22)
                     if not chunk:
                         break
-                    if CTL_MARKER in chunk:
+                    if marker in chunk:
                         return True
-                    f.seek(-len(CTL_MARKER), os.SEEK_CUR)
+                    f.seek(-len(marker), os.SEEK_CUR)
                     if len(chunk) < (1 << 22):
                         break
         except OSError:
@@ -348,6 +362,7 @@ class MatchDriver:
         self.game_state = None       # last "state" from it
         self.df_status = None        # the whole last status
         self.saw_fight = False       # this match's fight was seen in the status file
+        self.fight_chars = None      # [P1 id, P2 id] the game fought this match with (status file at FIGHT START)
         self.t_over = None           # when the status said the fight is over (no result file yet)
         self.df_base = 0             # the status' match number before this match (its fight has a higher one)
         self.ticket = None           # MatchTicket of the match being played
@@ -431,7 +446,12 @@ class MatchDriver:
         if not (self.fight_env and self.table.fighter(fight.get("p1")) and self.table.fighter(fight.get("p2"))
                 and self.table.stage(fight.get("stage"))):
             return None
-        return self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
+        line = self.table.fight_env(fight["p1"], fight["p2"], fight["stage"], fight.get("rounds", 3))
+        if fight.get("pick"):
+            # in-game select: the players pick on the game's select screen within that many seconds;
+            # p1/p2 above are the fallback (the launchers' characters)
+            line += f" pick={int(fight['pick'])}"
+        return line
 
     def _write_fight_file(self, line, mid=None, ev=None):
         # match=<id>: the game puts it into this match's result file (older builds ignore it);
@@ -506,6 +526,7 @@ class MatchDriver:
             self.mark = self.glog.mark()
             self.reported = False
             self.saw_fight = False
+            self.fight_chars = None
             self.t_over = None
             self.df_base = int((self.df_status or {}).get("match") or 0)
             if self.mode == "persistent" and self.ctl is not None:
@@ -523,6 +544,7 @@ class MatchDriver:
         self.match_ev = ev
         self.reported = False
         self.saw_fight = False
+        self.fight_chars = None
         self.t_over = None
         self.df_base = int((self.df_status or {}).get("match") or 0) if self.game_running() else 0
         if self.mode == "persistent" and self.game_running() and self.ctl is not None:
@@ -662,6 +684,9 @@ class MatchDriver:
         return out
 
     STATE_TEXT = {"title": N_("The game is starting..."), "select": N_("Character select..."),
+                  "pick": N_("Pick your fighter in the game ({secs} s; Select = random; no pick = the character "
+                             "set here)."),
+                  "pick_wait": N_("Waiting for your opponent to pick..."),
                   "stage": N_("Stage select..."), "loading": N_("Loading the fight..."), "fight": N_("Fight!"),
                   "over": N_("Match over."), "neutral": N_("At character select, waiting for the next match.")}
 
@@ -683,6 +708,9 @@ class MatchDriver:
         # Only this match's fight counts (the status may still show the previous one for a moment).
         if state == "fight" and self.ticket is not None and k > self.df_base and not self.saw_fight:
             self.saw_fight = True
+            # the fighters of this match (with the in-game select: what the players picked)
+            if isinstance(st.get("p1"), int) and isinstance(st.get("p2"), int):
+                self.fight_chars = [st["p1"], st["p2"]]
             # FIGHT START is a netplay sync point (frame counters, input ring, random seeds): only
             # mismatches from here on belong to this match, not menu ones from before it.
             if self.glog is not None:
@@ -691,9 +719,11 @@ class MatchDriver:
             self.t_over = time.monotonic()
         if state and state != self.game_state:
             self.game_state = state
-            self.note("game_state", state=state, match=st.get("match"))
+            keys = [self._key(st.get("p1")), self._key(st.get("p2"))]
+            self.note("game_state", state=state, match=st.get("match"), chars=keys if all(keys) else None)
             if state in self.STATE_TEXT and self.ticket is not None:
-                self.status(t(self.STATE_TEXT[state]))
+                secs = ((self.match_ev or {}).get("fight") or {}).get("pick") or 30
+                self.status(t(self.STATE_TEXT[state], secs=secs))
 
     def _evidence(self):
         """Desync count since the match started, from the game log."""
@@ -827,7 +857,21 @@ class MatchDriver:
         if fn is not None:
             self._call(fn, self.last_fps)
 
+    def _key(self, fid):
+        """The lobby key of a game character id (status file), or None."""
+        f = self.table.fighter_by_id(fid) if isinstance(fid, int) and not isinstance(fid, bool) else None
+        return f["key"] if f and not f.get("boss") else None
+
+    def _picked_chars(self):
+        """[P1 key, P2 key] this match was fought with, when its characters were picked in the game."""
+        if not ((self.match_ev or {}).get("fight") or {}).get("pick") or not self.fight_chars:
+            return None
+        keys = [self._key(c) for c in self.fight_chars]
+        return keys if all(keys) else None
+
     def _report(self, mid, winner, score, source, **ev):
+        if "chars" not in ev:
+            ev["chars"] = self._picked_chars()
         self.reported = True
         self.t_reported = time.monotonic()
         ev = {k: v for k, v in ev.items() if v is not None}

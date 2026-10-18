@@ -23,19 +23,46 @@ the next command only 20 s after the results (people clicking Rematch late): the
 games wait at a live select screen meanwhile, which is where mashing used to start
 the game's own next VS battle.
 
+How real players differ from the scripted flow (rematch-fix, 2026-10-18):
+
+  --pattern NNR     persistent: the kind of every match in turn, N = a new session
+                    (a new opponent, or a room's "Ready" again: "idle", then "fight"
+                    with new ports/seed/key), R = a rematch in the running session.
+                    "NNR" = room match, Ready again, then Rematch (the 1.0.0 report).
+                    Match 1 is always N. Overrides --rematch-every.
+  --same-chars      a rematch keeps the last match's characters (the lobby does; the
+                    cursor then sits on the right cell and confirms at once)
+  --skew S          one launcher hands its game the command S seconds after the
+                    other (+-20 %); --skew-first host|join|alt|random says whose is
+                    first (default host: P1 first, the order that hung 1.0.0)
+  --stutter MS      the joiner's game is suspended for MS every 0.2-0.6 s during the
+                    matches (a choppy PC: rollbacks all the time, the select included)
+  --close K:ROLE:S  in match K, S seconds after that game's FIGHT START, the window of
+                    ROLE's game (host|join) gets WM_CLOSE (what Alt+F4 and the X button
+                    send). Expected: that game ends at once with "quit" in its result
+                    file and exit code 7, the other side's result says peer_quit; the
+                    closed game is started again (fresh, like the launcher) for the
+                    next match, which must be a new session (never the old one)
+  --hz2 HZ          the joiner's display runs at HZ (RSX_TEST_DISPLAY_HZ: 240 = no
+                    display lock, the game on the 59.94 Hz clock, like the friend's PC)
+
 Checks, per match: both games reach FIGHT START of that match, both write its
 result file (same winner and state hash, 0 mismatching frames). Prints the time
 from the command (fight file / control command) to FIGHT START on both sides.
+Every game log is scanned for FIFO stalls ("queued flip never reached by the FIFO
+walker", "drain stalled") and walker resyncs; a stall fails the run.
 Windows open minimized, host devices are ignored, every game is killed at the end.
 Exit code 0 = every match fought and confirmed on both sides.
 """
 import argparse
+import ctypes
 import json
 import os
 import random
 import re
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,6 +93,58 @@ def read_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+# ---- Windows helpers: a choppy PC (suspend/resume), a closed window (WM_CLOSE) ---------------
+_ntdll = ctypes.WinDLL("ntdll") if os.name == "nt" else None
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
+_u32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
+
+
+def suspend_process(pid, on):
+    h = _k32.OpenProcess(0x0800, False, pid)          # PROCESS_SUSPEND_RESUME
+    if not h:
+        return False
+    try:
+        return (_ntdll.NtSuspendProcess(h) if on else _ntdll.NtResumeProcess(h)) == 0
+    finally:
+        _k32.CloseHandle(h)
+
+
+def close_windows(pid):
+    """WM_CLOSE to every top-level window of the process (Alt+F4 / the X button). Returns how many."""
+    import ctypes.wintypes as wt
+    found = []
+    proto_ = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+    def cb(h, _lp):
+        p = wt.DWORD()
+        _u32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == pid and _u32.IsWindowVisible(h):
+            found.append(h)
+        return True
+    _u32.EnumWindows(proto_(cb), 0)
+    for h in found:
+        _u32.PostMessageW(h, 0x0010, 0, 0)
+    return len(found)
+
+
+FIFO_BAD = (("fifo_stall", re.compile(r"queued flip never reached by the FIFO walker")),
+            ("drain_stalled", re.compile(r"fifo recycle: drain stalled")),
+            ("fifo_resync", re.compile(r"\[cellGcmSys\] FIFO (resync|walker circling)")))
+
+
+def scan_fifo(path):
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                for name, rx in FIFO_BAD:
+                    if rx.search(ln):
+                        out[name] = out.get(name, 0) + 1
+    except OSError:
+        pass
+    return out
 
 
 def write_atomic(path, text):
@@ -158,11 +237,40 @@ def session_env(a, k, match, game, port0):
     return env
 
 
-def fight_line(a, k):
+def fight_line(a, k, prev=None):
+    """The k-th match's T5_FIGHT line; a rematch with --same-chars keeps prev's characters (the lobby
+    keeps the players' picks, the stage is drawn again)."""
     chars = a.chars.split(",")
     p1, p2 = chars[(2 * k) % len(chars)], chars[(2 * k + 1) % len(chars)]
+    if prev:
+        p1, p2 = prev.split(",")[:2]
     stages = [int(s) for s in a.stages.split(",")]
     return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}"
+
+
+def match_kind(a, k):
+    """'N' (a new session) or 'R' (a rematch in the running session) for match k."""
+    if k == 1:
+        return "N"
+    if a.flow == "rematch":
+        return "R"
+    if a.pattern:
+        return a.pattern[(k - 1) % len(a.pattern)].upper()
+    return "R" if a.rematch_every and (k - 1) % a.rematch_every == 0 else "N"
+
+
+def stutter_loop(games, ms, on, stop):
+    """--stutter: the joiner's game is suspended for `ms` every 0.2-0.6 s while `on` is set."""
+    while not stop.is_set():
+        time.sleep(random.uniform(0.2, 0.6))
+        if not on.is_set():
+            continue
+        g = games[1]
+        if not g.running():
+            continue
+        suspend_process(g.proc.pid, True)
+        time.sleep(ms / 1000.0)
+        suspend_process(g.proc.pid, False)
 
 
 def main():
@@ -178,6 +286,13 @@ def main():
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--mash", action="store_true")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
+    ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
+    ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")
+    ap.add_argument("--skew", type=float, default=0.0, help="the second launcher's command comes this many seconds later")
+    ap.add_argument("--skew-first", choices=["host", "join", "alt", "random"], default="host")
+    ap.add_argument("--stutter", type=int, default=0, help="suspend the joiner's game for MS every 0.2-0.6 s in matches")
+    ap.add_argument("--close", action="append", default=[], help="K:ROLE:S -- WM_CLOSE to ROLE's window S s into match K")
+    ap.add_argument("--hz2", type=float, default=0.0, help="the joiner's display rate (RSX_TEST_DISPLAY_HZ)")
     ap.add_argument("--fresh-at", type=int, default=0, help="persistent: restart the joiner's game before this match")
     ap.add_argument("--rematch-wait", type=float, default=1.0,
                     help="seconds between a match's results and the next command (players clicking Rematch late: 20)")
@@ -191,6 +306,14 @@ def main():
                                    "tools/cross_build_test.py --flow persistent)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
+    if a.hz2:
+        a.env2 = a.env2 + [f"RSX_TEST_DISPLAY_HZ={a.hz2:g}"]
+    closes = {}
+    for c in a.close:
+        k, role, sec = c.split(":")
+        closes[int(k)] = (role, float(sec))
+    if closes and a.flow != "persistent":
+        sys.exit("--close needs --flow persistent (the closed game comes back as a fresh persistent game)")
 
     games = [Game(a, 1, "host"), Game(a, 2, "join")]
     for g in games:
@@ -200,16 +323,26 @@ def main():
                 os.remove(p)
             except OSError:
                 pass
-    report = {"flow": a.flow, "mash": a.mash, "matches": []}
+    report = {"flow": a.flow, "mash": a.mash, "pattern": a.pattern, "skew": a.skew, "stutter": a.stutter,
+              "hz2": a.hz2, "env": a.env, "matches": []}
     ok_all = True
+    stop = threading.Event()
+    st_on = threading.Event()
+    if a.stutter:
+        threading.Thread(target=stutter_loop, args=(games, a.stutter, st_on, stop), daemon=True).start()
     try:
         port = a.port
         sess_k = 1
         fixed_time = str(int(time.time()))
+        prev_line = None
+        session_alive = False
         for k in range(1, a.matches + 1):
             mid = f"t{k:02d}"
-            line = fight_line(a, k)
-            rematch = a.flow == "rematch" and k > 1 or (a.rematch_every and k > 1 and (k - 1) % a.rematch_every == 0)
+            kind = match_kind(a, k)
+            if kind == "R" and a.flow == "persistent" and not session_alive:
+                kind = "N"                     # the session ended (a closed game): a new one
+            rematch = kind == "R"
+            line = fight_line(a, k, prev_line if (rematch and a.same_chars) else None)
             if a.flow == "persistent" and not rematch:
                 port = a.port + 4 * k
                 sess_k = k
@@ -219,11 +352,19 @@ def main():
                     os.replace(g.result_path, os.path.join(g.dir, f"result-before-{mid}.json"))
                 except OSError:
                     pass
+            # who gets the command first, and how much later the other one (two launchers)
+            first = {"host": 0, "join": 1, "alt": (k + 1) % 2, "random": random.randint(0, 1)}[a.skew_first]
+            order = [games[first], games[1 - first]]
+            delays = [0.0, a.skew * random.uniform(0.8, 1.2) if a.skew else 0.0]
             t_cmd = {}
-            for i, g in enumerate(games):
+            t_prev = time.time()
+            for (g, dly) in zip(order, delays):
                 env = session_env(a, sess_k, mid, g, port)
                 st = g.status()
                 base[g.idx] = int(st.get("match") or 0)
+                wait = dly - (time.time() - t_prev)
+                if wait > 0:
+                    time.sleep(wait)
                 if a.flow == "rematch":
                     if k == 1:
                         e = g.base_env()
@@ -231,7 +372,8 @@ def main():
                         e.update({"T5_FIGHT": line, "T5_FIGHT_FILE": g.fight_path, "PS3_FIXED_TIME": fixed_time})
                         g.start(e)
                     else:
-                        time.sleep(random.uniform(0.2, 1.5))       # two launchers never write at the same moment
+                        if not a.skew:
+                            time.sleep(random.uniform(0.2, 1.5))   # two launchers never write at the same moment
                         write_atomic(g.fight_path, f"{line} match={mid}\n")
                 else:
                     if a.fresh_at == k and g.role == "join" and g.running():
@@ -256,10 +398,18 @@ def main():
                             time.sleep(random.uniform(0.3, 1.0))   # the lobby's ready check and NAT punch
                         g.send("fight", match=mid, env=dict(env, T5_FIGHT=line), rematch=bool(rematch))
                 t_cmd[g.idx] = time.time()
-            log(f"match {k} ({mid}): {line}{' (rematch)' if rematch else ''}, ports {port}/{port + 1}")
-            m = {"k": k, "match": mid, "line": line, "rematch": bool(rematch)}
+            prev_line = line
+            session_alive = True
+            log(f"match {k} ({mid}): {line}{' (rematch)' if rematch else ' (new session)'}, ports {port}/{port + 1}, "
+                f"first {order[0].role}"
+                + (f", the other {t_cmd[order[1].idx] - t_cmd[order[0].idx]:.2f} s later" if a.skew else ""))
+            m = {"k": k, "match": mid, "line": line, "rematch": bool(rematch), "first": order[0].role}
             t_fight, results = {}, {}
             t_end = time.time() + a.match_seconds
+            close = closes.get(k)
+            closed = None                    # the Game whose window was closed
+            t_closed = None
+            st_on.set()
             while time.time() < t_end and time.time() - T0 < a.seconds:
                 for g in games:
                     st = g.status()
@@ -270,28 +420,60 @@ def main():
                     if r and r.get("match") == mid and g.idx not in results:
                         results[g.idx] = r
                         log(f"match {k}: game {g.idx} result {json.dumps(r)}")
+                if close and closed is None:
+                    role, sec = close
+                    g = games[0] if role == "host" else games[1]
+                    if g.idx in t_fight and time.time() - t_fight[g.idx] >= sec:
+                        st_on.clear()
+                        n = close_windows(g.proc.pid)
+                        closed, t_closed = g, time.time()
+                        log(f"match {k}: WM_CLOSE to game {g.idx}'s window(s): {n}")
+                if closed is not None:
+                    other = games[1] if closed is games[0] else games[0]
+                    if (not closed.running() and other.idx in results) or time.time() - t_closed > 40:
+                        break
+                    time.sleep(0.25)
+                    continue
                 if len(results) == 2 or not all(g.running() for g in games):
                     break
                 time.sleep(0.25)
+            st_on.clear()
             m["to_fight_s"] = {g.idx: round(t_fight[g.idx] - t_cmd[g.idx], 1) if g.idx in t_fight else None for g in games}
             m["results"] = results
             r1, r2 = results.get(1), results.get(2)
-            ok = (r1 is not None and r2 is not None and r1.get("winner") == r2.get("winner") and r1.get("winner") is not None
-                  and r1.get("hash") == r2.get("hash") and not r1.get("desync") and not r2.get("desync"))
+            if closed is not None:
+                other = games[1] if closed is games[0] else games[0]
+                rc, ro = results.get(closed.idx), results.get(other.idx)
+                code = closed.proc.poll()
+                m["closed"] = {"game": closed.idx, "exit_code": code,
+                               "own_reason": rc and rc.get("reason"), "peer_reason": ro and ro.get("reason")}
+                ok = (code == 7 and rc is not None and rc.get("reason") == "quit" and ro is not None
+                      and ro.get("reason") == "peer_quit")
+                log(f"match {k}: closed game {closed.idx}: exit code {code}, its result {rc}, the other's {ro}")
+                if closed.running():
+                    log(f"match {k}: game {closed.idx} still runs without its window -- killed")
+                    closed.stop()
+                session_alive = False
+            else:
+                ok = (r1 is not None and r2 is not None and r1.get("winner") == r2.get("winner")
+                      and r1.get("winner") is not None
+                      and r1.get("hash") == r2.get("hash") and not r1.get("desync") and not r2.get("desync"))
             m["ok"] = ok
             ok_all &= ok
             report["matches"].append(m)
             log(f"match {k}: {'OK' if ok else 'FAILED'} -- to FIGHT {m['to_fight_s']}, winners "
                 f"{[r and r.get('winner') for r in (r1, r2)]}, desync {[r and r.get('desync') for r in (r1, r2)]}")
-            if not ok or not all(g.running() for g in games):
+            if not ok or (closed is None and not all(g.running() for g in games)):
                 ok_all = False
                 break
             # the launcher waits for the lobby's verdict and the players' rematch clicks
             time.sleep(a.rematch_wait)
         time.sleep(2.0)
     finally:
+        stop.set()
         for g in games:
             g.stop()
+        fifo_total = {}
         for g in games:
             sync = []
             for fn in sorted(f for f in os.listdir(g.dir) if f.startswith("game") and f.endswith(".log")):
@@ -300,8 +482,16 @@ def main():
                         mm = re.search(r"sync check through frame (\d+): (\d+) mismatching", ln)
                         if mm:
                             sync.append((fn, int(mm.group(1)), int(mm.group(2))))
+                fifo = scan_fifo(os.path.join(g.dir, fn))
+                if fifo:
+                    report.setdefault("fifo", {})[f"{g.idx}/{fn}"] = fifo
+                    for kk, v in fifo.items():
+                        fifo_total[kk] = fifo_total.get(kk, 0) + v
             report[f"sync{g.idx}"] = sync[-3:]
             log(f"game {g.idx}: last sync checks {sync[-3:]}")
+        if fifo_total.get("fifo_stall") or fifo_total.get("drain_stalled"):
+            ok_all = False
+        log(f"FIFO: {fifo_total or 'no stall, no resync'}")
         report["ok"] = ok_all
         with open(os.path.join(a.out, "report.json"), "w") as f:
             json.dump(report, f, indent=1)

@@ -3,6 +3,18 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v0.1.9-preview (2026-10-18)
+
+Same game as 0.1.8, with one file fewer in the zip.
+
+- **Virus-scanner false alarm fixed.** 8 of 65 scanners on VirusTotal flagged
+  0.1.8's zip as "Generic.BAT.Downloader". The cause was a one-line helper script
+  for macOS developers that ships with every Python (`fetch_macholib.bat`, it
+  calls `svn export` with a web address). Nothing ever ran it. It is no longer in
+  the zip, and the release build now refuses any batch file in its Python.
+- 0.1.8 and 0.1.9 can play each other only if both have the same version: please
+  both update.
+
 ## v0.1.8-preview (2026-10-17)
 
 Less input lag, steadier online. Both players need 0.1.8. After the update press

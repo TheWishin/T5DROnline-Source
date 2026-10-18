@@ -338,13 +338,21 @@ def add_python(stage):
                 copy(p, os.path.join(dst, f))
     skip_lib = {"test", "idlelib", "ensurepip", "lib2to3", "turtledemo", "pydoc_data", "site-packages", "venv",
                 "__pycache__", "tkinter/test", "unittest/test", "distutils/tests"}
+    # macOS-only helper scripts. fetch_macholib.bat is one line ("svn export http://...") that
+    # virus scanners flag as a downloader (Generic.BAT.Downloader, 8/65 on VirusTotal for
+    # 0.1.8-preview); nothing ever runs it, so it stays out of the zip.
+    skip_files = {"ctypes/macholib/fetch_macholib", "ctypes/macholib/fetch_macholib.bat"}
     for dp, dns, fns in os.walk(os.path.join(base, "Lib")):
         rel = os.path.relpath(dp, os.path.join(base, "Lib")).replace("\\", "/")
         dns[:] = sorted(d for d in dns if (d if rel == "." else f"{rel}/{d}") not in skip_lib and d != "__pycache__"
                         and not d.startswith("test"))
         for f in fns:
-            if not f.endswith((".pyc",)):
+            if not f.endswith((".pyc",)) and (f if rel == "." else f"{rel}/{f}") not in skip_files:
                 copy(os.path.join(dp, f), os.path.join(dst, "Lib", "" if rel == "." else rel, f))
+    for dp, dns, fns in os.walk(dst):     # no batch files in the bundled Python at all
+        bats = [f for f in fns if f.lower().endswith((".bat", ".cmd"))]
+        if bats:
+            fail(f"batch file(s) in the bundled Python (virus scanners flag them): {dp}: {bats}")
     for dp, dns, fns in os.walk(os.path.join(base, "DLLs")):
         for f in fns:
             if not f.startswith(("_test", "_ctypes_test", "_testcapi")):

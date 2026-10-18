@@ -213,6 +213,25 @@ with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md
 
 ## Updating
 
+The launcher offers new versions; click **Update**.
+
+- At start (at most once an hour) and with **Check for updates** at the top,
+  the launcher asks GitHub for the newest published release. It shows the
+  version, what is new and the download size.
+- **Update now** downloads the zip (about 90 MB), checks it against the
+  published SHA-256 checksum, replaces the program files and starts the
+  launcher again. That takes a few seconds plus the download.
+- Your `native` folder (unpacked game, saves, logs) and your settings stay as
+  they are.
+- If the new version changes the game code, the Play tab says **Build the game
+  once (about 2 minutes)**. Click **BUILD GAME**. Only the code is rebuilt.
+- The launcher never updates while the game, a build or an online match (or a
+  search) is running. If anything goes wrong, it puts the old files back and
+  says why.
+
+By hand (versions 1.0.0 and older, which cannot update themselves, or if the
+update keeps failing):
+
 1. Extract the new release into a **new** folder.
 2. Copy your old `native` folder into it. This keeps the unpacked game and your
    saves.

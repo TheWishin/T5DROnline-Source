@@ -16,6 +16,7 @@ Contents:
 - [Where things are](#where-things-are)
 - [Building the game](#building-the-game)
 - [The launcher does not start](#the-launcher-does-not-start)
+- [Updates](#updates)
 - [SmartScreen and antivirus](#smartscreen-and-antivirus)
 - [The Play tab](#the-play-tab)
 - [The game starts, but...](#the-game-starts-but)
@@ -45,6 +46,9 @@ In the folder where you extracted the release (say `C:\T5DR`):
 | `native\gamedata\` | Your saves. |
 | `native\controls.ini` | Your own control settings (optional, you make it). |
 | `native\game\`, `native\build\`, `native\keys\` | Unpacked game, build output, key file. Game data. |
+| `native\logs\update-<date>-<time>.log` | What the last self-update did (one per update). |
+| `update-check.json` | When the launcher last asked GitHub for a new version. |
+| `C:\T5DR.update\` | Only while an update is installed, next to your folder. Removed afterwards. |
 
 To start over completely, delete `native\` (you lose your saves: copy
 `native\gamedata` first).
@@ -168,6 +172,55 @@ whole zip again."
 - Did antivirus remove `python\` files? Restore them, or extract again.
 - Is the folder in Program Files? Use another folder.
 
+## Updates
+
+The launcher looks for a new version at start (at most once an hour) and when
+you click **Check for updates**. It only offers releases that are published on
+https://github.com/TheWishin/T5DROnline/releases. How it works: README,
+"Updating".
+
+**"Could not check for updates."** No connection to GitHub (offline, a
+firewall, a proxy), or GitHub limits checks for a while ("Try again later";
+GitHub allows 60 checks an hour per internet connection). Nothing is wrong
+with your install. Try again later, or look at the releases page yourself.
+
+**The update window says the game, a build or an online match is running.**
+The launcher never updates while the game, a build, an online match or a
+search, or **Host for friends** runs. Finish or stop it, then click the update
+button at the top again. "Other programs from this folder are still running"
+means a second launcher window, a game or a lobby server started from this
+folder: close it (or end it in the Task Manager).
+
+**"The download is damaged or not the published file" / "SHA256SUMS ..."**
+The downloaded zip did not match the published checksum. Nothing was changed.
+Try again; if it keeps happening, download the zip from the releases page and
+update by hand (README, "Updating").
+
+**"Not enough free disk space."** The update needs about 600 MB free on the
+drive of the launcher's folder for a moment (download, unpacked copy). Free
+some space and try again.
+
+**"The launcher cannot write next to its folder or into it."** The folder is
+read-only for your Windows user (for example in Program Files). Move the whole
+folder to one of your own, for example `C:\Games\T5DR`, then update.
+
+**"The update to ... did not work" after the launcher restarted.** The
+launcher put the old files back and starts as the old version; the message says
+why (a file held by antivirus, the new launcher did not start, ...). Your
+`native` folder was never touched. `native\logs\update-<date>-<time>.log` has
+the details; please attach it to a bug report.
+
+**The launcher does not come back after an update** (rare: the PC was switched
+off in the middle of it). An update never touches your `native` folder. If a
+folder named like yours plus `.update` (for example `C:\T5DR.update`) exists
+next to it, its `backup` folder holds the old program files. Easiest fix:
+extract the newest release zip over your folder (say yes to replacing files);
+`native` and your settings stay. Then delete the `.update` folder.
+
+**The game asks to be built again after an update.** The new version changed
+the game code: the Play tab says "Build the game once (about 2 minutes)". Click
+**BUILD GAME**. The unpacked game and your saves are kept.
+
 ## SmartScreen and antivirus
 
 **"Windows protected your PC" when you start `T5DR Online.exe`.** The file is a
@@ -199,7 +252,7 @@ can build everything yourself (see "Building from source" in the README).
 | "The game is not built yet." | Open the Build tab, choose `.pkg` and `.rap`, click BUILD GAME. |
 | "t5dr.exe is there but the game data is missing." | Build again. |
 | "The decrypted program has SHA-1 ..., not the supported version." | Build again from the supported package. |
-| "This version of the launcher changes the game code." | Click BUILD GAME. Your game data is kept. Only the code is rebuilt. |
+| "Build the game once (about 2 minutes)" (after an update) | Click BUILD GAME on the Play tab. Your game data and saves are kept. Only the code is rebuilt. |
 | PLAY is grey | The build is not finished or the check above failed. Read the text on the Play tab. |
 | "Close the game first." (when you click BUILD GAME) | A game is still running. Click Stop game, or end `t5dr.exe` in the Task Manager. |
 

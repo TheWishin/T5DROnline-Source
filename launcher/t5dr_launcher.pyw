@@ -21,6 +21,7 @@ import core    # noqa: E402
 import online  # noqa: E402
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import updater  # noqa: E402
 
 APP_TITLE = "T5DR Online"
 COLORS = {"ok": "#1a7f37", "warn": "#9a6700", "error": "#cf222e", "muted": "#57606a",
@@ -146,6 +147,7 @@ class App(tk.Tk):
         ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
         ttk.Label(head, style="Muted.TLabel",
                   text=f"   native Windows build  ·  launcher {self.info.get('version', '?')}").pack(side="left")
+        self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
@@ -648,8 +650,18 @@ class App(tk.Tk):
 
     def _update_play_buttons(self):
         running = bool(self.game and self.game.running())
-        set_big_state(self.play_btn, self.game_state().get("ok") and not running)
+        if self.game_state().get("needs_rebuild"):
+            # after an update that changes the game code: "Build the game once" (core.game_state)
+            self.play_btn.configure(text="BUILD GAME", command=self.build_from_play)
+            set_big_state(self.play_btn, not running and not self.build)
+        else:
+            self.play_btn.configure(text="PLAY", command=self.play)
+            set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
+
+    def build_from_play(self):
+        self.nb.select(self.tabs["build"])
+        self.start_build()
 
     def save_settings(self):
         if self.readonly:

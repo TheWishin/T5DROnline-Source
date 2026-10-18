@@ -313,6 +313,13 @@ Python/tkinter (in the bundled Python), started by `T5DR Online.exe`.
   window (1280x720, 1920x1080, 2403x1352 on a 2560x1440 screen, 2560x1440
   borderless); with the real game window it is **untested** (it would have
   covered the screen of the person at this PC).
+- **Updates** (`launcher/updater.py`): "Check for updates" in the header and a check at start (once an
+  hour) against the public repository's latest published release; the offer shows version, notes and
+  size; the zip is downloaded only from this repository's GitHub release files, checked against
+  `SHA256SUMS`, unpacked next to the folder, and swapped in by a copy of the bundled Python after the
+  launcher closed (no script files), keeping `native\` and the settings; any failure puts the old
+  files back. Never while the game, a build or an online match runs. After an update that changes the
+  code ID the Play tab's button becomes BUILD GAME ("Build the game once").
 - **Online:** placeholder. `launcher/online.py` documents the contract for the
   netplay work: `OnlineTab(parent, app)`, `on_show()`, `on_close()`, and
   `app.start_game(env)` to start a match with extra environment variables,

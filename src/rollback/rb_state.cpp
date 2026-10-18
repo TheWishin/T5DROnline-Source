@@ -87,7 +87,22 @@ static bool g_job_spent = false;    /* the match was decided: not again before t
 static inline bool job_page(uint32_t ea)
 {
     const uint32_t i = (ea - g_job_base) >> 12;
-    return g_job_active && ea >= g_job_base && i < g_job_pages && g_job_lines[i] == ~0ull;
+    return g_job_active && g_job_lines && ea >= g_job_base && i < g_job_pages && g_job_lines[i] == ~0ull;
+}
+/* The same goes for the main thread's own render output while a match is
+ * fought: the NU draw lists (both buffers, rebuilt by every drawn frame) and
+ * the per-frame render scratch -- hash-excluded since phase 1. Left out of the
+ * state only while fighting, like the job pages (test run h3: after the
+ * deciding KO the result screen's transition read them back -- the phase word
+ * came out 1 instead of 2 after a restore; h4 / i*: none in the fight).
+ * T5_RB_RENDER_STATE=keep keeps them in. */
+static bool g_render_drop = true;
+static const Range kRenderOnly[] = { { 0x43D00000u, 0x00340000u }, { 0x444F9000u, 0x0006E000u } };
+static inline bool render_page(uint32_t ea)
+{
+    if (!g_job_active || !g_render_drop) return false;
+    for (const Range& r : kRenderOnly) if (ea - r.base < r.len) return true;
+    return false;
 }
 static void job_pages_forget();
 uint32_t state_job_pages()
@@ -98,7 +113,7 @@ uint32_t state_job_pages()
 }
 bool excluded_page(uint32_t ea)
 {
-    if (job_page(ea)) return true;
+    if (job_page(ea) || render_page(ea)) return true;
     for (const Range& r : kExclude) if (ea >= r.base && ea < r.base + r.len) return true;
     for (const Range& r : g_exclude_dyn) if (ea >= r.base && ea < r.base + r.len) return true;
     return false;
@@ -301,21 +316,19 @@ void state_init()
             while (*q == ',') q++;
         }
     }
-    /* T5_RB_RENDER_STATE=drop (frame-time branch, experiment): the draw lists
-     * and the per-frame render scratch -- render-only, rebuilt by every drawn
-     * frame -- are left out of the rollback state (no snapshot, no restore) */
-    if (const char* e = getenv("T5_RB_RENDER_STATE")) if (!strcmp(e, "drop")) {
-        state_add_exclude(0x43D00000u, 0x00340000u);
-        state_add_exclude(0x444F9000u, 0x0006E000u);
-        note("state: draw lists and render scratch left out of the rollback state (T5_RB_RENDER_STATE=drop)");
-    }
     {   const char* e = getenv("T5_RB_JOB_PAGES");
+        const char* r = getenv("T5_RB_RENDER_STATE");
+        g_render_drop = !(r && !strcmp(r, "keep"));
         if (!(e && !strcmp(e, "keep"))) {
             g_job_lines = spurs_job_put_lines(&g_job_base, &g_job_pages);
             spurs_job_put_reset();
             spurs_job_put_track(1);
-            note("state: pages the SPURS jobs fill (vertex skinning output) are left out of the rollback state (T5_RB_JOB_PAGES=keep keeps them)");
-        } }
+        }
+        note("state: while a match is fought, render output is left out of the rollback state: %s%s%s "
+             "(T5_RB_JOB_PAGES=keep / T5_RB_RENDER_STATE=keep keep them in)",
+             g_job_lines ? "the pages the SPURS jobs fill (vertex skinning)" : "",
+             g_job_lines && g_render_drop ? ", " : "", g_render_drop ? "the draw lists and the render scratch" : "");
+    }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;
@@ -463,16 +476,19 @@ void state_reset()
  * until the jobs fill them anew. */
 static void job_pages_forget()
 {
-    if (!g_job_lines || !g_shadow) return;
-    if (!g_job_active) { spurs_job_put_reset(); return; }
+    if (!g_shadow) return;
+    if (!g_job_active) { if (g_job_lines) spurs_job_put_reset(); return; }
     PumpHold hold;
     uint32_t n = 0;
-    for (uint32_t i = 0; i < g_job_pages; i++) {
+    for (uint32_t i = 0; g_job_lines && i < g_job_pages; i++) {
         if (g_job_lines[i] != ~0ull) continue;
         const uint32_t ea = g_job_base + (i << 12);
         if (uint8_t* sh = shadow_rw(ea)) { memcpy(sh, vm_base + ea, 0x1000); n++; }
     }
-    spurs_job_put_reset();
+    if (g_render_drop)
+        for (const Range& r : kRenderOnly)
+            if (uint8_t* sh = shadow_rw(r.base)) memcpy(sh, vm_base + r.base, r.len);
+    if (g_job_lines) spurs_job_put_reset();
     (void)n;
 }
 /* Only while a match is fought (game phase 17, the match not decided): what
@@ -483,11 +499,11 @@ static void job_pages_forget()
  * pages (the shadow takes them in again); entering it starts a new record. */
 static void job_gate()
 {
-    if (!g_job_lines) return;
+    if (!g_job_lines && !g_render_drop) return;
     uint32_t ph; memcpy(&ph, vm_base + 0x1008F070u, 4);
     const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0 && !g_job_spent;
     if (fight == g_job_active) return;
-    if (fight) { spurs_job_put_reset(); g_job_active = true; }
+    if (fight) { if (g_job_lines) spurs_job_put_reset(); g_job_active = true; }
     else {
         const uint32_t n = state_job_pages();
         job_pages_forget(); g_job_active = false;
@@ -564,7 +580,7 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
             if (w & bit) continue;
             w |= bit;
             touched.push_back(pg);
-            if (job_page(e.ea)) continue;   /* filled by the SPURS jobs since it was logged: not state */
+            if (job_page(e.ea) || render_page(e.ea)) continue;   /* render output left out of the state since it was logged */
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
             if (e.ea - 0x43D00000u < 0x340000u) g_rs_pages[1]++;        /* stats: render-only parts of the heap */
             else if (e.ea - 0x444F9000u < 0x6E000u) g_rs_pages[2]++;

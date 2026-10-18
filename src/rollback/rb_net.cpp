@@ -165,11 +165,13 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+uint32_t g_force_every = 0, g_force_depth = 4, g_forced = 0, g_force_last = UINT32_MAX;   /* T5_RB_NET_FORCE=every[:depth] (tests) */
 /* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
  * to rb_desync_f<frame>.bin when the peer's hash for that frame differs (both
  * sides do; tools/netplay_memdiff.py diffs the two files) */
 constexpr uint32_t kDumpFrames = 64, kDumpBytes = 0x6000;
 bool g_dump = false; uint32_t g_dumps = 0;
+uint32_t g_dump_from = 1, g_dump_to = 0;   /* T5_RB_DUMP_AT=from:to: rb_frame_f<frame>.bin, the final bytes (tools/rb_equiv_test.py) */
 uint8_t* g_dump_ring = nullptr; uint32_t g_dump_tag[kDumpFrames], g_dump_len[kDumpFrames];
 uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this */
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
@@ -267,8 +269,8 @@ void report()
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
-    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u",
-         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads);
+    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
+         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads, g_forced);
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
@@ -344,9 +346,23 @@ bool enabled()
             if (g_intro_rule) g_warmup = 0;   /* the intro takes no input: nothing there to wait for */
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
+            if (const char* s = getenv("T5_RB_DUMP_AT")) {   /* tests: from:to -- the final gameplay bytes of those frames */
+                unsigned a = 0, b = 0;
+                if (sscanf(s, "%u:%u", &a, &b) == 2 && b >= a) {
+                    g_dump_from = a; g_dump_to = b;
+                    if (!g_dump_ring) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes);
+                }
+            }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_FORCE")) {
+                unsigned e = 0, d = 4;
+                sscanf(s, "%u:%u", &e, &d);
+                g_force_every = e; g_force_depth = std::max(1u, std::min(d, 8u));
+                if (g_force_every && g_force_every <= g_force_depth) g_force_every = g_force_depth + 1;
+                if (g_force_every) note("rbnet: TEST: a %u-frame rollback every %u fight frames (T5_RB_NET_FORCE)", g_force_depth, g_force_every);
+            }
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
@@ -607,7 +623,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
      * not compared -- their state follows the loading, whose progress differs
      * between a game that has played and a fresh one (t5_hooks.cpp kIntroHash) */
     if (g_intro_rule && rd32(kPhaseWord) <= 12) g_hash[f % kHist] = 0x4F52544E49ull;
-    if (g_dump) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
+    if (g_dump_ring) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
     for (uint32_t mf; g_dump && np::take_mismatch(&mf);) {
         if (g_dump_tag[mf % kDumpFrames] != mf + 1 || g_dumps >= 20) continue;
         char path[64]; snprintf(path, sizeof path, "rb_desync_f%06u.bin", mf);
@@ -720,6 +736,19 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     const uint32_t upto = std::min(rc, f);
     const uint32_t first_wrong = scan_mispredictions(f, rc);
     if (first_wrong != UINT32_MAX && start_rollback(f, first_wrong, out)) return first_wrong;
+    /* T5_RB_NET_FORCE (tests): a rollback of g_force_depth frames every
+     * g_force_every live fight frames, re-simulated with the same inputs -- what
+     * a misprediction does, without needing one. A match played that way must
+     * give the same hash on every frame as the same match without it
+     * (tools/rb_equiv_test.py); anything the restore or the re-simulation's cuts
+     * leave different shows up there, on one PC, every run. */
+    if (g_force_every && f >= g_force_depth && (f % g_force_every) == 0 && f - g_force_depth >= g_floor && f != g_force_last) {
+        g_force_last = f;   /* once per frame: the boundary comes back here after the re-simulation */
+        bool ok = true;
+        for (uint32_t g = f - g_force_depth; g <= f && ok; g++)
+            ok = g_post_tag[g % 4096] == g + 1 && g_fighting[g % 4096] && (g == f || g_used_tag[g % kHist] == g + 1);
+        if (ok && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
+    }
 
     /* final hashes: every input before g is confirmed and no rollback is pending */
     for (uint32_t g = std::max(g_hash_sent, g_floor); g <= upto && g <= f; g++) {
@@ -728,6 +757,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
          * ends frames apart on a game that has played and a fresh one) */
         if (scene_flag && g == f) break;
         if (g_hash_tag[g % kHist] == g + 1) np::rb_push_hash(g, g_hash[g % kHist]);
+        if (g >= g_dump_from && g <= g_dump_to && g_dump_tag[g % kDumpFrames] == g + 1) {
+            char path[64]; snprintf(path, sizeof path, "rb_frame_f%06u.bin", g);
+            if (FILE* fp = fopen(path, "wb")) { fwrite(g_dump_ring + (size_t)(g % kDumpFrames) * kDumpBytes, 1, g_dump_len[g % kDumpFrames], fp); fclose(fp); }
+        }
         g_hash_sent = g + 1;
     }
 

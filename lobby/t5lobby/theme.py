@@ -30,6 +30,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
+from .i18n import t
+
 THEME = "t5dark"
 
 C = {
@@ -120,8 +122,8 @@ def ping_bars(ms):
 
 
 def ping_word(ms):
-    return {"good": "Good connection", "ok": "OK connection", "bad": "Laggy connection"}.get(
-        ping_quality(ms), "Ping not known yet")
+    return {"good": t("Good connection"), "ok": t("OK connection"), "bad": t("Laggy connection")}.get(
+        ping_quality(ms), t("Ping not known yet"))
 
 
 # ---------------------------------------------------------------------- colours
@@ -944,7 +946,7 @@ class CountdownRing(tk.Canvas):
         fam = self.th.fonts["big"].actual("family")
         self.num = self.create_text(self.d / 2.0, self.d / 2.0 - self.th.px(4), text="", fill=C["text"],
                                     font=(fam, max(10, int(size * 0.28)), "normal"))
-        self.unit = self.create_text(self.d / 2.0, self.d / 2.0 + self.th.px(size * 0.2), text="sec",
+        self.unit = self.create_text(self.d / 2.0, self.d / 2.0 + self.th.px(size * 0.2), text=t("sec"),
                                      fill=C["faint"], font=(self.th.fonts["caps"].actual("family"), 8))
 
     def set(self, left, total):
@@ -1057,8 +1059,8 @@ def ask_string(title, prompt, show=None, initialvalue=None, parent=None, **_kw):
     def ok(_e=None):
         result[0] = var.get()
         win.destroy()
-    ttk.Button(row, text="Cancel", style="Card.TButton", command=win.destroy).pack(side="right")
-    ttk.Button(row, text="OK", style="Card.Accent.TButton", command=ok).pack(side="right", padx=(0, th.px(8)))
+    ttk.Button(row, text=t("Cancel"), style="Card.TButton", command=win.destroy).pack(side="right")
+    ttk.Button(row, text=t("OK"), style="Card.Accent.TButton", command=ok).pack(side="right", padx=(0, th.px(8)))
     win.bind("<Return>", ok)
     win.bind("<Escape>", lambda _e: win.destroy())
     _modal(win, parent, e)
@@ -1079,8 +1081,8 @@ def ask_yes_no(title, message, parent=None, **_kw):
     def yes(_e=None):
         result[0] = True
         win.destroy()
-    ttk.Button(row, text="No", style="Card.TButton", command=win.destroy).pack(side="right")
-    b = ttk.Button(row, text="Yes", style="Card.Accent.TButton", command=yes)
+    ttk.Button(row, text=t("No"), style="Card.TButton", command=win.destroy).pack(side="right")
+    b = ttk.Button(row, text=t("Yes"), style="Card.Accent.TButton", command=yes)
     b.pack(side="right", padx=(0, th.px(8)))
     win.bind("<Return>", yes)
     win.bind("<Escape>", lambda _e: win.destroy())

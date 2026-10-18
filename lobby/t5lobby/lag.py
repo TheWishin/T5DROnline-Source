@@ -15,6 +15,7 @@ What it compares, with the numbers we really have (no game change is needed):
 Nothing here ends a match or changes a rating. The result is shown to both players; leaving the set
 afterwards is their choice (docs/RANKED.md, "Post-game lag check").
 """
+from .i18n import num, t
 from .proto import FRAME_MS
 
 MIN_FRAMES = 300        # a report over fewer frames says too little (the first speed line is at 600)
@@ -87,3 +88,32 @@ def describe(ping_ms, a, side, reports=None):
         f = fps(1 - side)
         return text + f" Your opponent's PC was the slow one{f' ({f:.0f} fps)' if f else ''}."
     return text + " Both PCs kept up, so the connection stalled now and then (jitter or lost packets)."
+
+
+def describe_event(ev):
+    """The same sentences as describe(), from the numbers in a lag_check event, in the player's language.
+    An event without them (an older server) shows the server's own English `text`."""
+    try:
+        ping = float(ev["ping_ms"])
+        expected = int(ev["expected_frames"])
+        verdict = ev["verdict"]
+    except (KeyError, TypeError, ValueError):
+        return str(ev.get("text", ""))
+    text = t("Ping {ping} ms should mean about {frames} frames behind.", ping=f"{ping:.0f}", frames=expected)
+    if verdict == "unknown" or ev.get("observed_frames") is None:
+        return text + " " + t("The games did not report how it went, so there is nothing to compare.")
+    text += " " + t("It was {observed}.", observed=num(ev["observed_frames"], 1))
+    if verdict == "ok":
+        return text + " " + t("That is what the ping explains.")
+    text += " " + t("That is more than the ping explains.")
+    cause = ev.get("cause")
+    if cause == "both_pcs":
+        return text + " " + t("Both PCs ran below full speed.")
+    if cause in ("your_pc", "opponent_pc"):
+        fps = (ev.get("yours" if cause == "your_pc" else "opponent") or {}).get("pc_fps")
+        if cause == "your_pc":
+            return text + " " + (t("Your PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
+                                 else t("Your PC was the slow one."))
+        return text + " " + (t("Your opponent's PC was the slow one ({fps} fps).", fps=f"{fps:.0f}") if fps
+                             else t("Your opponent's PC was the slow one."))
+    return text + " " + t("Both PCs kept up, so the connection stalled now and then (jitter or lost packets).")

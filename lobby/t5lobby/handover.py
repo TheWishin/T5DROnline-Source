@@ -38,6 +38,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
+from .i18n import N_, t
+
 
 @dataclass
 class MatchTicket:
@@ -113,9 +115,9 @@ class MatchTicket:
             self._dup_socket = None
 
     def summary(self):
-        how = {"direct": "direct connection", "lan": "local network", "relay": "through the lobby server"}
-        return (f"{self.opponent.get('name', '?')} -- {how.get(self.path, self.path)}, "
-                f"ping {self.rtt_ms:.0f} ms, input delay {self.delay}")
+        how = {"direct": N_("direct connection"), "lan": N_("local network"), "relay": N_("through the lobby server")}
+        return t("{name} -- {how}, ping {ms} ms, input delay {delay}", name=self.opponent.get("name", "?"),
+                 how=t(how[self.path]) if self.path in how else self.path, ms=f"{self.rtt_ms:.0f}", delay=self.delay)
 
 
 def read_result_file(path):

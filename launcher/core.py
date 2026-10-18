@@ -23,6 +23,25 @@ import build_game  # noqa: E402  (constants, pkg/sfo readers, code_id)
 import prereqs     # noqa: E402
 import run_game    # noqa: E402
 
+# English or German (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
+# is translated where it is shown. The launcher chooses the language once, at start (apply_language).
+sys.path.append(os.path.join(ROOT, "lobby"))      # (appended: lobby/run.py must not hide another run module)
+try:
+    from t5lobby import i18n  # noqa: E402
+    from t5lobby.i18n import N_, t, translate_message  # noqa: E402,F401
+    I18N = True
+except ImportError:     # lobby/ is missing from this copy: the launcher stays usable, in English
+    I18N = False
+
+    def N_(text):
+        return text
+
+    def t(text, /, **values):
+        return text.format(**values) if values else text
+
+    def translate_message(msg):
+        return msg
+
 IS_WIN = os.name == "nt"
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -71,11 +90,26 @@ DEFAULTS = {
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "render_scale": "1",       # 3D resolution: 1 (original) | 0.75 (lower) | 0.5 (lowest), PS3_RENDER_SCALE
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
+    "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
 }
+
+
+LANGUAGE_CHOICES = [("auto", N_("Auto (Windows language)")), ("de", N_("Deutsch")), ("en", N_("English"))]
+
+
+def clock(seconds):
+    """m:ss for a number of seconds."""
+    s = max(0, int(seconds))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def apply_language(settings):
+    """Switch the texts to the language in the settings ('auto' = the Windows language). -> 'de' | 'en'."""
+    return i18n.init(settings["language"]) if I18N else "en"
 
 
 class Settings(dict):
@@ -124,42 +158,45 @@ class Settings(dict):
 def describe_pkg(path):
     """(ok, level, text) for the chosen package; level is 'ok', 'warn' or 'error'."""
     if not path:
-        return False, "error", "No package chosen."
+        return False, "error", t("No package chosen.")
     if not os.path.exists(path):
-        return False, "error", "File not found."
+        return False, "error", t("File not found.")
     try:
         cid = build_game.pkg_content_id(path)
     except OSError as e:
-        return False, "error", f"Cannot read the file: {e}"
+        return False, "error", t("Cannot read the file: {error}", error=e)
     size = os.path.getsize(path)
     if cid is None:
-        return False, "error", "This is not a PS3 package (.pkg)."
+        return False, "error", t("This is not a PS3 package (.pkg).")
     if cid == build_game.CONTENT_ID:
-        return True, "ok", f"{cid}  ({size:,} bytes) -- the supported version"
+        return True, "ok", t("{id}  ({size} bytes) -- the supported version", id=cid, size=f"{size:,}")
     if build_game.TITLE_ID in cid:
-        return True, "warn", (f"{cid}  ({size:,} bytes) -- Tekken 5 DR, but not the supported package "
-                              f"({build_game.CONTENT_ID}). The build will most likely refuse it.")
-    return True, "warn", f"{cid}  ({size:,} bytes) -- not Tekken 5 DR Online ({build_game.TITLE_ID})."
+        return True, "warn", t("{id}  ({size} bytes) -- Tekken 5 DR, but not the supported package ({supported}). "
+                               "The build will most likely refuse it.", id=cid, size=f"{size:,}",
+                               supported=build_game.CONTENT_ID)
+    return True, "warn", t("{id}  ({size} bytes) -- not Tekken 5 DR Online ({title_id}).", id=cid, size=f"{size:,}",
+                           title_id=build_game.TITLE_ID)
 
 
 def describe_rap(path, pkg=None):
     if not path:
-        return False, "error", "No license chosen."
+        return False, "error", t("No license chosen.")
     if not os.path.exists(path):
-        return False, "error", "File not found."
+        return False, "error", t("File not found.")
     if os.path.getsize(path) != 16:
-        return False, "error", "Not a PS3 license: a .rap file is exactly 16 bytes."
+        return False, "error", t("Not a PS3 license: a .rap file is exactly 16 bytes.")
     name = os.path.basename(path)
     if build_game.CONTENT_ID in name:
-        return True, "ok", f"{name} -- matches the supported package"
+        return True, "ok", t("{name} -- matches the supported package", name=name)
     if pkg:
         try:
             cid = build_game.pkg_content_id(pkg)
         except OSError:
             cid = None
         if cid and cid in name:
-            return True, "ok", f"{name} -- matches the package"
-    return True, "warn", f"{name} -- the name does not match the package's content ID; it may be the wrong license."
+            return True, "ok", t("{name} -- matches the package", name=name)
+    return True, "warn", t("{name} -- the name does not match the package's content ID; it may be the wrong "
+                           "license.", name=name)
 
 
 # Known folders (SHGetKnownFolderPath): Downloads, Desktop and Documents are often not under
@@ -247,37 +284,39 @@ def find_candidates(roots=None):
 # Windows' classic limit is 260 (MAX_PATH); parts of the runtime keep MAX_PATH buffers (UTF-8 bytes).
 PATH_ROOM = 100
 MAX_PATH = 260
+EXAMPLE_DIR = r"C:\Games\T5DR"
 
 
 def install_warnings(root=ROOT, out=None):
     """Plain sentences about folder choices that break or slow the build/game (Build tab)."""
     warn = []
     out = out or os.path.join(root, "native")
-    for label, path in (("This folder", root), ("The output folder", out)):
+    for label, path in ((t("This folder"), root), (t("The output folder"), out)):
         n = len(os.path.abspath(path).encode("utf-8"))
         if n + PATH_ROOM > MAX_PATH:
-            warn.append(f"{label} has a long path ({n} bytes). Windows allows only {MAX_PATH} characters for "
-                        f"a file path, and the build writes files about {PATH_ROOM} characters deeper. Move the "
-                        r"folder to a short path, for example C:\Games\T5DR.")
+            warn.append(t("{label} has a long path ({bytes} bytes). Windows allows only {max} characters for "
+                          "a file path, and the build writes files about {room} characters deeper. Move the "
+                          "folder to a short path, for example {example}.", label=label, bytes=n, max=MAX_PATH,
+                          room=PATH_ROOM, example=EXAMPLE_DIR))
             break
     norm = os.path.normcase(os.path.abspath(root))
     for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
         od = os.environ.get(var)
         if od and (norm + os.sep).startswith(os.path.normcase(os.path.abspath(od)) + os.sep):
-            warn.append("This folder is inside OneDrive. OneDrive would upload about 1 GB of game data and can "
-                        "lock files while the game is built. Move the folder out of OneDrive, for example to "
-                        r"C:\Games\T5DR.")
+            warn.append(t("This folder is inside OneDrive. OneDrive would upload about 1 GB of game data and can "
+                          "lock files while the game is built. Move the folder out of OneDrive, for example to "
+                          "{example}.", example=EXAMPLE_DIR))
             break
     pf = [os.environ.get(v) for v in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")]
     if any(p and (norm + os.sep).startswith(os.path.normcase(p) + os.sep) for p in pf):
-        warn.append("This folder is in Program Files, where Windows does not let programs write. "
-                    r"Move it to a folder of your own, for example C:\Games\T5DR.")
+        warn.append(t("This folder is in Program Files, where Windows does not let programs write. "
+                      "Move it to a folder of your own, for example {example}.", example=EXAMPLE_DIR))
     elif os.path.isdir(root) and not _writable(root):
-        warn.append("Windows does not let the launcher write into this folder. Move it to a folder of your "
-                    r"own, for example C:\Games\T5DR.")
+        warn.append(t("Windows does not let the launcher write into this folder. Move it to a folder of your "
+                      "own, for example {example}.", example=EXAMPLE_DIR))
     if norm.startswith("\\"):
-        warn.append("This folder is on a network share. Building and playing from there is slow and was "
-                    "not tested; copy it to a local drive.")
+        warn.append(t("This folder is on a network share. Building and playing from there is slow and was "
+                      "not tested; copy it to a local drive."))
     return warn
 
 
@@ -307,17 +346,17 @@ def game_state(out):
     stamp = os.path.join(out, "build", "t5dr_build.json")
     st = dict(built=False, ok=False, needs_rebuild=False, elf_sha1=None, text="")
     if not os.path.exists(exe):
-        st["text"] = "The game is not built yet. Open the Build tab, choose your .pkg and .rap, press BUILD GAME."
+        st["text"] = t("The game is not built yet. Open the Build tab, choose your .pkg and .rap, press BUILD GAME.")
         return st
     st["built"] = True
     if not os.path.exists(elf):
-        st["text"] = "t5dr.exe is there but the game data is missing. Build again."
+        st["text"] = t("t5dr.exe is there but the game data is missing. Build again.")
         return st
     h = build_game.sha1(elf)
     st["elf_sha1"] = h
     if h != build_game.ELF_SHA1:
-        st["text"] = (f"The decrypted program has SHA-1 {h[:12]}..., not the supported version. "
-                      "Build again from the supported package.")
+        st["text"] = t("The decrypted program has SHA-1 {sha}..., not the supported version. "
+                       "Build again from the supported package.", sha=h[:12])
         return st
     info = {}
     try:
@@ -327,22 +366,22 @@ def game_state(out):
         pass
     if info.get("code_id") != build_game.code_id():
         st["needs_rebuild"] = True
-        st["text"] = ("Build the game once (about 2 minutes): this version of the launcher changes the game code. "
-                      "Click BUILD GAME. Your unpacked game and saves are kept; only the code is translated and "
-                      "compiled again.")
+        st["text"] = t("Build the game once (about 2 minutes): this version of the launcher changes the game code. "
+                       "Click BUILD GAME. Your unpacked game and saves are kept; only the code is translated and "
+                       "compiled again.")
         return st
     st["ok"] = True
     when = info.get("built", "?").replace("T", " ")
-    st["text"] = (f"Ready: {build_game.TITLE_ID} v{build_game.TITLE_VERSION}, program SHA-1 {h[:12]}... "
-                  f"verified, built {when}.")
+    st["text"] = t("Ready: {title_id} v{version}, program SHA-1 {sha}... verified, built {when}.",
+                   title_id=build_game.TITLE_ID, version=build_game.TITLE_VERSION, sha=h[:12], when=when)
     return st
 
 
 # --------------------------------------------------------------------------- build process
 
-STEP_TITLES = {
-    "deps": "Recompiler", "keys": "Key data", "decrypt": "Check & decrypt", "unpack": "Unpack",
-    "vfs": "Game files", "lift": "Translate code", "spu": "Sound core", "compile": "Compile",
+STEP_TITLES = {          # English; t(STEP_TITLES[step]) where it is shown
+    "deps": N_("Recompiler"), "keys": N_("Key data"), "decrypt": N_("Check & decrypt"), "unpack": N_("Unpack"),
+    "vfs": N_("Game files"), "lift": N_("Translate code"), "spu": N_("Sound core"), "compile": N_("Compile"),
 }
 # Rough share of the total time per step (measured on a 16-core PC; see docs/RELEASE.md).
 STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift": 40, "spu": 8, "compile": 35}
@@ -437,30 +476,31 @@ def explain_exit(code, lines):
     """One plain sentence for the Play tab when the game ended on its own; None when it closed normally."""
     text = "\n".join(lines[-80:])
     if code == 12 or "[gpu] device lost" in text:
-        return ("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
-                "Start the game again. If it happens again, update the graphics driver.")
+        return t("The graphics card stopped working for the game (the driver crashed, was reset or updated). "
+                 "Start the game again. If it happens again, update the graphics driver.")
     if code == 13 or "Direct3D 12 not available" in text or "needs a graphics card with Direct3D 12" in text:
-        return ("This PC's graphics card or driver cannot run Direct3D 12. Install the newest graphics driver "
-                "from AMD, Intel or NVIDIA.")
+        return t("This PC's graphics card or driver cannot run Direct3D 12. Install the newest graphics driver "
+                 "from AMD, Intel or NVIDIA.")
     if "[cpu] FATAL" in text:
-        return ("This processor is too old for the game: it lacks the SSE4.1 instructions (processors from "
-                "about 2008 on have them).")
+        return t("This processor is too old for the game: it lacks the SSE4.1 instructions (processors from "
+                 "about 2008 on have them).")
     if code == 14 or "was built for -march=" in text:
-        return ("The game was built on a PC with a newer processor (AVX2). Press BUILD GAME to build it again "
-                "for this PC; your saves are kept.")
+        return t("The game was built on a PC with a newer processor (AVX2). Press BUILD GAME to build it again "
+                 "for this PC; your saves are kept.")
     if "[game-dll] cannot load" in text:
-        return ("t5dr_game.dll could not be loaded (missing or blocked). Press BUILD GAME again, and look in "
-                "the antivirus quarantine.")
+        return t("t5dr_game.dll could not be loaded (missing or blocked). Press BUILD GAME again, and look in "
+                 "the antivirus quarantine.")
     if code == 6 or "STUCK:" in text:
         # docs/DIRECTFIGHT.md "After a session ends": a persistent game that could not get back to
         # character select after a match ends itself; the next match starts a fresh one.
-        return ("The game could not get back to character select after the last match and closed itself. "
-                "It starts again for your next match.")
+        return t("The game could not get back to character select after the last match and closed itself. "
+                 "It starts again for your next match.")
     crashed = "[CRASH]" in text or "[STACKOVERFLOW]" in text
     if code == 0 and not crashed:
         return None
-    return (f"The game stopped (exit code {code}){' after a crash' if crashed else ''}. "
-            "The game log has the details.")
+    if crashed:
+        return t("The game stopped after a crash (exit code {code}). The game log has the details.", code=code)
+    return t("The game stopped (exit code {code}). The game log has the details.", code=code)
 
 
 class GameRun:
@@ -482,7 +522,7 @@ class GameRun:
         env_over.update(extra_env or {})
         cmd, env, cwd = run_game.game_command(self.out, env_over)
         if not os.path.exists(cmd[0]):
-            raise FileNotFoundError("t5dr.exe is not built yet")
+            raise FileNotFoundError(t("t5dr.exe is not built yet"))
         logs = os.path.join(self.out, "logs")
         os.makedirs(logs, exist_ok=True)
         for old in sorted(glob.glob(os.path.join(logs, "game-*.log")))[:-9]:
@@ -553,29 +593,29 @@ class GameRun:
 # "3D resolution" (like Tekken 6 Native Online's option): the game draws below 1280 x 720 and the
 # picture is scaled up to the window. Only the picture changes, never the game, so the two
 # players of an online match may choose differently. docs/RENDER_PERF.md "Weaker PCs".
-RENDER_SCALES = {
-    "1": "Original",
-    "0.75": "Lower",
-    "0.5": "Lowest",
+RENDER_SCALES = {        # English; t(label) where it is shown
+    "1": N_("Original"),
+    "0.75": N_("Lower"),
+    "0.5": N_("Lowest"),
 }
 
 # Online input delay (like Tekken 6 Native Online's): frames between a press and the frame it
 # takes effect in, on both PCs. Auto follows the ping the game measures (1 frame up to ~60 ms,
 # 2 above). A fixed value counts only when both players chose the same; ranked matches use the
 # server's value. docs/NETPLAY.md "Input delay".
-INPUT_DELAYS = {
-    "auto": "Auto (by ping)",
+INPUT_DELAYS = {         # English; t(label) where it is shown
+    "auto": N_("Auto (by ping)"),
     "0": "0",
     "1": "1",
     "2": "2",
 }
 
-DISPLAY_MODES = [
-    ("window", "Window, 1280 x 720 (native; larger with Windows display scaling)"),
-    ("window1080", "Window, 1920 x 1080"),
-    ("window1440", "Window, 2560 x 1440"),
-    ("maximized", "Maximized window"),
-    ("borderless", "Borderless fullscreen (experimental)"),
+DISPLAY_MODES = [        # English; t(label) where it is shown
+    ("window", N_("Window, 1280 x 720 (native; larger with Windows display scaling)")),
+    ("window1080", N_("Window, 1920 x 1080")),
+    ("window1440", N_("Window, 2560 x 1440")),
+    ("maximized", N_("Maximized window")),
+    ("borderless", N_("Borderless fullscreen (experimental)")),
 ]
 
 

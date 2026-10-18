@@ -45,7 +45,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
-| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
@@ -103,6 +103,32 @@ Alles, was das Bauen erzeugt, bleibt im Ordner `native` neben dem Launcher. Das
 sind Spieldaten. Gib sie nicht weiter. Zum Deinstallieren löschst du den ganzen
 Ordner.
 
+## Sprache des Launchers
+
+Der Launcher spricht Deutsch oder Englisch. Unter **Einstellungen** -> **Sprache**
+stellst du ein: **Auto** nimmt die Sprache von Windows, dazu **Deutsch** und
+**English**. Eine Änderung gilt, wenn der Launcher neu startet (der Knopf **Jetzt
+neu starten** macht das). Das Spiel selbst bleibt englisch.
+
+Diese Anleitung nennt die Knöpfe oft englisch, so wie sie im englischen Launcher
+heißen. Im deutschen Launcher heißen sie:
+
+| Englisch | Deutsch |
+|---|---|
+| Build, Play, Settings (Reiter) | Bauen, Spielen, Einstellungen |
+| Cancel | Abbrechen |
+| Stop game | Spiel stoppen |
+| Open saves folder | Speicherordner öffnen |
+| Check for updates, Update now | Nach Updates suchen, Jetzt aktualisieren |
+| Report a problem | Problem melden |
+| Host for friends | Für Freunde hosten |
+| Online input delay | Online-Input-Delay |
+| Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
+| Mute sound | Ton aus |
+
+**BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
+Sprachen gleich.
+
 ## Spielen
 
 - Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf
@@ -141,7 +167,32 @@ Tastatur (Standard) und Xbox-Controller:
   über DirectInput gelesen. Du musst nichts installieren. Ein Arcade-Stick wurde
   mit echter Hardware getestet: alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
-- Um Tasten oder Knöpfe zu ändern, lege eine `controls.ini` an. Die
+- **Pad, Arcade-Stick oder Hitbox: die Knöpfe stellst du im Launcher ein.**
+  Öffne **Settings** und klicke **Set up controllers...** (Controller
+  einrichten). Das Fenster zeigt die Controller, die Windows sieht, eine Zeile
+  pro Spieler, und die Zeile leuchtet, wenn du einen Knopf drückst (sie nennt
+  auch den Spielknopf dazu). Wähle einen Controller (oder drücke einfach einen
+  Knopf darauf) und klicke **Set up all buttons** (alle Knöpfe einrichten): Es
+  fragt "Press the button for 1 (Left Punch)..." (Drücke den Knopf für ...) und
+  macht weiter mit 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, Start und Select.
+  **Skip** (Überspringen) lässt einen Knopf, wie er ist, **Clear** (Löschen)
+  gibt ihm keinen Knopf. **Set selected** (Ausgewählten setzen) stellt eine
+  Zeile ein, auch die anderen Makros (1+4, 2+3, 1+2+3 usw.), **Set up
+  directions** (Richtungen einrichten) ist für Sticks, die ihre Richtungen als
+  Knöpfe senden. **Layout** (Belegung) startet mit einer fertigen Belegung:
+  Xbox, PlayStation, Switch, Arcade-Stick mit 8 Knöpfen (Vewlix), 6 Knöpfen
+  (Noir / Sega Astro) oder Hitbox. Bei einer Hitbox wählst du auch, was
+  passiert, wenn links und rechts zugleich gedrückt werden (SOCD), und ob der
+  linke Stick als Steuerkreuz zählt. **Save** (Speichern) schreibt
+  `native\controls.ini`; das Spiel liest sie beim Start. **Reset to defaults**
+  (auf Standard zurücksetzen) stellt den Controller auf die Standardknöpfe
+  zurück. Deine Kommentare und übrigen Einstellungen in der Datei bleiben
+  erhalten. Mit dem Controller selbst: Oben / Unten wählen einen Knopf, Kreuz
+  setzt ihn, Dreieck löscht ihn, Start speichert, Kreis schließt (die Knöpfe
+  des Controllers, wie deine `controls.ini` sie hat). Das geht nur, solange
+  dieses Fenster vorne ist; nimm das Häkchen bei "Move through this window with
+  the controller" weg, wenn du Knöpfe nur testen willst.
+- Die Tastatur und alles andere stellst du in der `controls.ini` ein. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).
   Lege deine Datei als `native\controls.ini` ab und starte das Spiel neu.
   Beispiele (aus der Vorlage):

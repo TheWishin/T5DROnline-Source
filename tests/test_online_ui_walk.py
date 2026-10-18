@@ -105,7 +105,11 @@ class StubGame:
 class OnlineUiWalk(unittest.TestCase):
     def setUp(self):
         import util
+        from t5lobby import dialogs, i18n
         self.util = util
+        self.i18n = i18n
+        self._lang = os.environ.get("T5_LANG")
+        os.environ["T5_LANG"] = "en"                  # (the texts below are the English ones, whatever Windows says)
         self.dir = tempfile.mkdtemp(prefix="t5ui-walk-")
         os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "online")    # never the player's online.json
         self.L = L = load_launcher()
@@ -121,7 +125,8 @@ class OnlineUiWalk(unittest.TestCase):
         self._patched = []
         for mod, names in ((messagebox, ("showinfo", "showwarning", "showerror", "askyesno", "askokcancel",
                                          "askquestion", "askretrycancel", "askyesnocancel")),
-                           (filedialog, ("askopenfilename", "asksaveasfilename", "askdirectory"))):
+                           (filedialog, ("askopenfilename", "asksaveasfilename", "askdirectory")),
+                           (dialogs, ("ask_yes_no", "ask_yes_no_cancel", "show_info", "show_error", "ask_string"))):
             for n in names:
                 self._patched.append((mod, n, getattr(mod, n)))
                 setattr(mod, n, (lambda *a, **k: "") if mod is filedialog else (lambda *a, **k: False))
@@ -180,6 +185,11 @@ class OnlineUiWalk(unittest.TestCase):
             setattr(mod, n, fn)
         L.core.LAUNCHER_LOG = self._log
         L.core.Settings = self._settings
+        if self._lang is None:
+            os.environ.pop("T5_LANG", None)
+        else:
+            os.environ["T5_LANG"] = self._lang
+        self.i18n.set_language("en")
         self.app = self.tab = None
         import gc
         gc.collect()

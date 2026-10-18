@@ -33,6 +33,7 @@ import time
 from collections import namedtuple
 
 from . import padmap
+from .i18n import t
 from .padmap import DINPUT, XINPUT
 
 BUTTONS = ("cross", "circle", "triangle")
@@ -563,7 +564,7 @@ class PadNav:
                     labels[b] = "/".join(srcs[:2])
             summary = f"{d.name}: " + ", ".join(f"{b.capitalize()} = {labels[b]}" for b in BUTTONS if b in labels)
             if len(devs) > 1:
-                summary += f" (+{len(devs) - 1} more)"
+                summary += " " + t("(+{count} more)", count=len(devs) - 1)
         if labels != self.labels or summary != self.summary:
             self.labels, self.summary = labels, summary
             self.generation += 1

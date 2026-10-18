@@ -1,0 +1,59 @@
+diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
+index 5cfbb4d..31d5757 100644
+--- a/runtime/ppu/ppu_fs.cpp
++++ b/runtime/ppu/ppu_fs.cpp
+@@ -50,6 +50,30 @@ extern "C" void     vm_write32(uint64_t a, uint32_t v);
+ extern "C" void     vm_write64(uint64_t a, uint64_t v);
+ #include "../platform/win32_backtrace.h"   /* RtlCaptureStackBackTrace / GetModuleHandleA on POSIX */
+ 
++/* PS3_TEST_FS_DELAY=<ms per call>[:<ms per MB>] (tests, desync hunt): every
++ * cellFsOpen/Read/AioRead waits that long first -- a slow or cold disk on one
++ * PC of a netplay pair, whose file thread then finishes its requests frames
++ * later than the other PC's. Off unless set. */
++static void fs_test_delay(uint64_t bytes)
++{
++    static int s_ms = -1, s_ms_mb = 0;
++    if (s_ms < 0) {
++        const char* e = getenv("PS3_TEST_FS_DELAY");
++        int a = 0, b = 0;
++        if (e) sscanf(e, "%d:%d", &a, &b);
++        s_ms_mb = b > 0 ? b : 0;
++        s_ms = a > 0 ? a : 0;
++        if (s_ms || s_ms_mb) fprintf(stderr, "[fs] TEST: every open/read waits %d ms + %d ms per MB (PS3_TEST_FS_DELAY)\n", s_ms, s_ms_mb);
++    }
++    const uint64_t ms = (uint64_t)s_ms + (bytes * (uint64_t)s_ms_mb >> 20);
++    if (!ms) return;
++#ifdef _WIN32
++    Sleep((DWORD)ms);
++#else
++    usleep((useconds_t)(ms * 1000));
++#endif
++}
++
+ /* Host root that the PS3 mount points map into (dir containing PS3_GAME). */
+ extern "C" const char* ppu_vfs_root = ".";
+ 
+@@ -179,6 +203,7 @@ static void cellFsOpen(ppu_context* ctx)
+     uint32_t flags  = (uint32_t)ctx->gpr[4];
+     uint32_t fd_ptr = (uint32_t)ctx->gpr[5];
+     host_path(hpath, sizeof hpath, gpath);
++    fs_test_delay(0);
+ 
+     /* NPDRM: see the note in sys_fs.c -- an EDAT is decrypted once into a cache
+      * file and that is opened in its place. */
+@@ -389,6 +414,7 @@ static void cellFsRead(ppu_context* ctx)
+     uint64_t raw_nbytes = ctx->gpr[5];
+     long fpos_before = ftell(g_files[fd]);
+     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
++    fs_test_delay(nbytes);
+     fs_prefault(buf, nbytes);
+     size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
+     if (n > 0 && fd >= 0 && fd < FS_MAX) cellAtrac_fs_read(buf, (uint64_t)fpos_before, (uint32_t)n, g_fd_host[fd]);
+@@ -781,6 +807,7 @@ static void cellFsAioRead(ppu_context* ctx)
+     int32_t err = CELL_FS_ENOENT;
+     if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
+         if (ppu_vm_size && (uint64_t)buf + size > ppu_vm_size) size = ppu_vm_size - buf;
++        fs_test_delay(size);
+         fs_prefault(buf, size);
+         /* AIO reads are absolute -- they do not disturb the fd's own file
+          * position, and the guest interleaves them freely across threads. */

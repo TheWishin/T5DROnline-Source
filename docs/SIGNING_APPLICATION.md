@@ -22,6 +22,7 @@ Tick each line.
 - [ ] The download page says what the program does: the README of the public repository does.
 - [ ] Two-factor login (MFA) on your GitHub account and, once you have it, on SignPath.
 - [ ] A mailbox you read. SignPath answers by e-mail.
+- [ ] The two open points in section 6 are settled, or go into the application as questions.
 - [ ] Do **not** add SignPath's credit line to the README yet. It says "certificate by SignPath
       Foundation". Add it after the acceptance (section 7).
 
@@ -130,16 +131,48 @@ Proposed SignPath roles: Author, Reviewer and Approver are all the owner.
 6. Before pushing a tag the owner runs `tools/release_preflight.py`, which repeats the
    workflow's build and checks on a local PC.
 
-## 6. A question for SignPath: which repository?
+## 6. Owner checklist: two open points
 
-Our releases are built in the maintainer's development repository (private). The same code and the
-same workflow file are public in https://github.com/TheWishin/T5DROnline-Source. SignPath's origin
-check compares the build's repository with the one named in the SignPath project.
+Two things are not decided. Nothing here is a guess about SignPath's answer. Settle them before you
+send the application, or send the application with the questions in it and wait for the answer.
+Nobody applies for you: you send the form yourself.
 
-Ask in the application: *"The workflow runs in a private repository that mirrors the public one. Which
-repository should the SignPath project name? If the signed build must run in the public repository,
-we will run the same workflow there."* Whatever they answer, put the secrets in the repository that
-runs the build (RELEASING.md, "A. SignPath Foundation").
+**Point 1. Which repository builds the signed release?**
+
+- Facts. SignPath's origin check compares the repository of the build with the repository named in the
+  SignPath project (source repository URL, branch, commit, build job). Our releases are built by
+  `release.yml` in `TheWishin/T5DROnline-Dev`, which is private. The same code and the same workflow
+  file are public in `TheWishin/T5DROnline-Source`, but that mirror has other commit hashes and
+  carries no tags (a `v*` tag there would start a release run). SignPath's terms do not say whether
+  the repository must be public. Applicants' write-ups say it must.
+- [ ] Ask SignPath in the application. Paste: *"Our releases are built by GitHub Actions in a private
+      repository that mirrors the public one (link). Which repository should the SignPath project
+      name? May the signed build run in the private repository?"*
+- [ ] Write down their answer here: ______________________
+- [ ] If the build must run in the public repository: that is a change to how releases are made
+      (the secrets go into that repository, and it would need its own way to start a release run
+      without a tag). Decide how before changing anything.
+- [ ] If the private repository is accepted: put the secrets and variables into
+      `T5DROnline-Dev` (RELEASING.md, "A. SignPath Foundation"). Install the SignPath GitHub app there.
+
+**Point 2. Who is named as the team?**
+
+- Facts. SignPath's terms ask for the team roles and members on the code signing policy page
+  (Author, Reviewer, Approver). The project also wants no visible contributors on the public
+  repository. The repository owner's GitHub account `TheWishin` is already public as the owner.
+  SignPath Foundation is the publisher shown in Windows, not you.
+- [ ] Choose how the roles are written in the policy text (section 7):
+      - [ ] the account name `TheWishin` (the text below),
+      - [ ] a role only ("the repository owner"), if SignPath accepts that. Ask them first,
+      - [ ] none: use Azure Artifact Signing instead (RELEASING.md, "B."). Then the certificate
+            shows your validated name, and Azure only takes a person in the USA or Canada.
+- [ ] Write down their answer here: ______________________
+
+**Before you send**
+
+- [ ] MFA on your GitHub and SignPath accounts.
+- [ ] The contact e-mail in the form is an address you read. Keep it out of this repository.
+- [ ] The SignPath credit line is not in the README yet (section 0).
 
 ## 7. After the acceptance: text for the public README
 
@@ -154,7 +187,8 @@ https://github.com/TheWishin/T5DROnline (and into the release notes template):
 >
 > - What is signed: `T5DR Online.exe` and `runtime/t5dr.exe`, in the release zips only. They are built
 >   from the public source by GitHub Actions. Nothing else is signed.
-> - Roles: Author, Reviewer and Approver: the repository owner, GitHub account TheWishin. Every
+> - Roles (wording depends on section 6, point 2): Author, Reviewer and Approver: the repository owner,
+>   GitHub account TheWishin. Every
 >   release is approved by hand.
 > - Every team member uses two-factor login on GitHub and SignPath.
 > - Privacy: T5DR Online makes network connections only for online play: to the lobby server you pick

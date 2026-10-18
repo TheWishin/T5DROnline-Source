@@ -442,6 +442,8 @@ class Player:
         self.statuses = []        # (time, status text)
         self.matches = {}         # match id -> what this player saw of it
         self.app = E2EApp(self)
+        self.mash_gap = mash_gap
+        self.extra_env = dict(env or {})
         st = self.app.settings
         st["out"] = self.out
         st["nickname"] = name
@@ -531,6 +533,13 @@ class Player:
 
             def match_env(ev, ticket):
                 env = orig_env(ev, ticket)
+                if me.kind == "real" and not ev.get("continue") and "T5_NET_SCRIPT" not in (me.extra_env or {}):
+                    # every session its own presses (a session reads T5_NET_SCRIPT when it starts; the same
+                    # file every time would play the same match over and over)
+                    import fight_flow_test
+                    seed = (1000 + sum(map(ord, me.name)) + me.ctx.run.seed) * 7919 + sum(map(ord, ev.get("match", "")))
+                    env["T5_NET_SCRIPT"] = fight_flow_test.mash_script(
+                        os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap)
                 return me.ctx.shaper.rewrite(me, env)
             d.match_env = match_env
         tab._make_driver = make_driver

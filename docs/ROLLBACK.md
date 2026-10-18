@@ -1810,8 +1810,101 @@ the merge (the end of the fight's loading is the sync point, at phase 11,
 where the RNGs are reseeded) -- the first build after the rebase, before this
 fix, plays the same (RI3).
 
+## 31. Rematches and long sessions (rematch-fix, 2026-10-18)
+
+The owner's first two-PC sessions (0.1.9, 1.0.0) showed rematches that never
+started, a frozen picture, desyncs with no rollback before them and a quit
+counted as a desync. docs/DIRECTFIGHT.md "Rematches between two real PCs"
+has the hang (the rematch's start test looked at P1's record) and the closed
+window (a game that ran on without it); the rollback side:
+
+**The GCM ring's last word, and the drain thread's recycle.** cellGcmInit's
+context ended exactly at the ring's end (0x40500000), so a ring filled to the
+brim had the buffer-full callback write its JUMP back to begin at 0x40500000
+-- the first word of the title's own heap header after the ring in the same
+IO allocation (a T5_DF_WATCH run: 0x405000C0 -> 0x20000000 at frame 1447 of
+an offline fight, 18 such JUMPs in a 6-match run). And "current == end" was
+taken for an overrun, which switched on the walker's own recycle for good:
+from then on the drain thread rewound current, put and get to begin whenever
+current came near the end -- under a title still writing there, with a frame
+not yet flushed. The walker then parsed the previous lap's leftovers at
+begin: "FIFO JUMP to unmapped IO 0x1F7FFFD0 (word 0x3F7FFFD1)" 0x58-0x64
+bytes into the ring, a resync, the frame's flip skipped and the 1-second
+flip valve ("queued flip never reached by the FIFO walker"): a frozen picture
+and a stalled opponent, about once in six matches under rollback (runs f2,
+g2, h1; the new put log, `[FIFOPUT]`, caught it in g3: put=0 cur=0x404FF094
+get=0 -- the drain thread's recycle -- then garbage at 0x58). Patch 0035:
+the context's end leaves the last word for the JUMP, only a real overrun
+(current past end) turns the drain thread's recycle on, and a resync that
+steps over a queued flip completes it like a walked one (it used to wait for
+the valve). Since then no walker resync or stall in any run (rows below).
+
+**The post-match input is a rule.** From the boundary where the game shows
+the match decided (game mode, phase 17, the decided byte 0x1008EBD5 rising
+during the fight -- not the last match's byte, which stays set ~230 frames
+into a rematch's fight) both PCs send and predict the same input: neutral,
+START for 3 frames every 20 from 40 frames after the decision until the game
+asks for the select mode -- what the direct-fight driver did by hand. Before,
+the driver's START presses and the last mashed input before its hold were
+predicted as "the last input repeats": rollbacks all through the KO, the
+replay skip and the result screen, where the game loads. `post-match frames
+by rule` in the `rbnet:` lines (94-144 per match end). `T5_RB_NET_POSTMATCH=0`
+turns it off.
+
+**A rematch's select screen runs in lockstep.** Both drivers press their own
+player's cursor there through the exchanged input and the game loads
+portraits and models for each move; the select screen is a few seconds and
+needs no prediction. `select screen frames in lockstep` (~250 per rematch);
+`T5_RB_NET_SELECT_LOCK=0` turns it off. At a round trip up to ~2 x the input
+delay in frames it runs at full speed (this PC: rematch command to FIGHT
+START 1.8-4.3 s, as before).
+
+**Still open: the file request thread.** Every file open, read and close of
+the title is done by one worker, NU::File::RequestManager (thread 2: all 105
+opens of an offline run, `FS_CALLER=1` now logs the thread), for requests of
+the sound streamer, the draw and the main thread. A rollback across a frame
+that queued or completed a request leaves the worker and the restored
+request list disagreeing: a file handle stays open (the archive's opens move
+from fd 3/4 to 5, 6, 7 over a session) and sooner or later the worker calls
+through a stale request (`abort() is called from ... 0x374150`, exit code 1)
+or reads the archive at a stale position (`inflate failed`, then the fight's
+particle thread never joins). With both players mashing (fight_flow_test
+--mash, other agents' games loading the PC), about once in 8 matches of one
+session; never in lockstep. Tried and dropped: a journal of the fd table
+(opens, closes and positions taken back by a restore) -- wrong, the worker's
+operations are not re-run frames, and taking them back desynced the next
+fight within seconds; keeping 0x10750000..0x10753000 (the manager's object
+and lists) out of the rollback state -- those pages hold pad state too
+(desync at frame 229 of match 1, 0x10099F38); keeping only the manager's
+page out -- the abort after 2 matches. What it needs: the worker drained
+(idle, nothing queued) before every snapshot and restore -- its semaphore is
+shared with the sound streamer, which made a per-frame drain cost seconds in
+the lockstep era -- or the requests of a frame that may be re-run held back
+until the frame is final.
+
+Runs (this PC, two games, persistent game, `tools/fight_flow_test.py`; other
+agents' games running too; "FIFO" = walker resyncs / flip valve lines in all
+game logs):
+
+| run | mode | flow | matches fought | in sync, confirmed | FIFO | end |
+|---|---|---|---|---|---|---|
+| e2b (before the fix) | rollback | N R, --same-chars --skew 1.5 | 1 of 2 | 1 | 0 / 0 | rematch never reached FIGHT START on either side (150 s) |
+| f1 | rollback | N R R, same, --mash | 3 | 3 | -- | all reached the fight |
+| f2 | rollback | N R, window closed in match 2, N R | 4 | 3 + the closed one (quit / peer_quit, exit 7) | 1 / 1 (before the ring fix) | -- |
+| R1 | rollback, joiner 240 Hz | N R R, skew 1.5 random | 9 | 9 | 0 / 0 | -- |
+| L1 | lockstep | N N R, skew 1.2 alt | 9 | 9 | 0 / 0 | -- |
+| L2 | lockstep, joiner 240 Hz | N N R R, skew 2.0, P1 first | 9 | 9 | 0 / 0 | -- |
+| R2 | rollback | N N R R, skew 2.0, P1 first | 9 | 8 | 0 / 0 | match 9: request-thread abort (fd 6) |
+| P1 | rollback, post-match rule + select lockstep | same | 8 | 7 | 0 / 0 | match 8: request-thread abort (fd 5) |
+| P2 | rollback, --stutter 60 | N R R R | 6 | 5 | 0 / 0 | match 6: `inflate failed`, host hung in a thread join |
+
+The final rows (FRB, FLS: the build as committed) are in CLAUDE.md
+"Open workstreams".
+
 ## What is left
 
+- The file request thread under rollback (section 31): the one known way a
+  rollback session still ends a game.
 - Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
   vblank. Further cuts need whole functions (see the tails above), or an early
   start at the flush instead of after the present, which needs the render
@@ -1823,7 +1916,6 @@ fix, plays the same (RI3).
   (presents against the display's vblank grid) is the closer measure.
 - Under the same heavy stutter, about one match end in 15 aborts in
   NU::File::RequestManager (section 30, fx2 cycle 5; also on main, reset-fix
-  stut_rb1): a queued file request whose object is gone, after archive opens
-  got fds 5 and 6 (normally 3/4). Likely more kernel-side state that a
-  restore does not follow (open files, requests of the file thread that the
-  draw issues and the drain does not cover); not looked at further.
+  stut_rb1). Section 31 has more on it: it is not only stutter (with both
+  players mashing, about once in 8 matches of a session) and the worker
+  thread does every file operation of the title.

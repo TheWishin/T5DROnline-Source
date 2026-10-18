@@ -2100,11 +2100,62 @@ dumps of those runs were used up by the desynced session before (fixed now).
 It is the "two games with different histories" kind (CLAUDE.md's open item b);
 a dump of the next occurrence will name the words.
 
+**The present hang (fix 3).** On the rebased build the rematch agent's scenario
+(`fight_flow_test.py --flow persistent --pattern NNRR --mash --stutter 60 --skew
+2.0`) hung the host twice: FF1 in match 15, FF2 in match 1. The window stays, its
+log stops, the peer waits for input. `build/cr/hangwatch.py` asks a quiet game's
+debug console (`PS3_DEBUG=dbg.cmd`) for `threads` and the managers' memory: the
+main thread spins at 0x35C014, the geometry manager's thread is parked in its
+semaphore wait, the draw manager waits for its wake counter. The present
+(0x383C9C) starts with 0x35BF6C: it queues a request on
+NU::Draw::Geometry::RequestManager (thread 5, object 0x10742880, loop 0x35B888)
+and spins until the manager's busy count (+8) is 0. The manager is woken by one
+semaphore post (id at +0x50) per queued request (0x35BE6C), adds 1 to +8 while
+it works through its queue, posts "done" (+0x58), takes the 1 away and parks.
+The spin is no barrier: the thread may not have woken yet when the main thread
+looks, and the draw manager's sync right after (0x357714) hands it more work --
+so at the boundary it is sometimes still working (FF3: 0-88 of every 600-1 865
+boundaries, 0.3-1.3 ms each until it parks). A snapshot then holds +8 = 1; a
+rollback to that frame writes the 1 back after the thread has parked; every
+later wake adds and removes its own 1, so +8 never reaches 0 again, and the
+next present spins for good. The same rule as the file manager: a thread that
+runs beside the frame. Fix: before every rollback boundary (snapshot and
+restore, live and re-simulated) the netplay hooks wait until the geometry
+manager is parked with no post pending -- as the loaders are drained
+(`t5_hooks.cpp side_drain`, at most 2 s; `T5_RB_SIDE_DRAIN=0` counts without
+waiting). The `side drain:` line every 600 frames gives how often it was busy
+and the wait. NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at
+the boundary by construction (the present's 0x357714 waits for its wake counter
+at +0xA8 to drop to 0); its request list may already hold the next frame's
+first requests, queued and not taken.
+
+**A whole-match desync after a title visit (fix 4, direct fight, not rollback).**
+On the rebased build the first cycle of `reset_cycle_test.py --start-cycle 5`
+(F11) desynced the next match from its first compared frame (226) to its end,
+1 505 frames, while both games had played the same inputs. The dumps
+(`tools/rb_desync_diff.py`) differ in 38 words of 0x1009xxxx, every pair
+0x100000 apart: heap pointers. A persistent game visits the title for a new
+opponent; the title starts the savedata autosave thread, which takes a 5 MB
+memory container and 1 MB blocks from it; right after start VS the select
+mode takes its 65 MB block (0x4120000) from the same sys_memory window. Which
+comes first depends on when the autosave's host thread gets to run: on S the
+select block went first (0x45C00000, the autosave's block then at
+0x49D20000), on O the autosave's (0x45C00000, the select block at 0x45D00000):
+the whole fight heap 1 MB apart, every pointer in the fight state with it. On
+an idle PC the autosave finishes within the title's 30 frames (F9 passed this
+cycle); under load (F11: the host thread started 30 frames after its
+creation) it does not. Fix (`df_fight.cpp` Ph::Title): start VS waits until no
+`savedata_autosave` thread is alive (at most 10 s), then the boot state goes
+back and start VS runs as before. A desync of this kind needs no rollback at
+all; it fits the "desync in match 2 with no rollback before it" reports
+(CLAUDE.md), not proven.
+
 ## What is left
 
 - The file request thread under rollback (sections 30-31): fixed in section 32,
-  with the sound library's heap; open there: a 3-frame transient at "Fight!" in
-  the match after a deliberately desynced session.
+  with the sound library's heap, the geometry manager's drain (the present
+  hang) and the title autosave's heap race; open there: a 3-frame transient at
+  "Fight!" in the match after a deliberately desynced session.
 - Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
   vblank. Further cuts need whole functions (see the tails above), or an early
   start at the flush instead of after the present, which needs the render
@@ -2119,6 +2170,7 @@ a dump of the next occurrence will name the words.
   ELF data (TOC globals 0x106CDE80..0x106CECCC and 0x106D1B50..0x106D4838,
   written by its tick on live frames only and by its threads), the "particle"
   thread (stage effects, the rand() consumer of section 12), TNUD::ASync, the
-  two draw request managers (idle at the boundary). `T5_RB_KTRACE` and
+  draw request manager (idle at the boundary; the geometry manager is drained
+  there since section 32's fix 3). `T5_RB_KTRACE` and
   `T5_RB_WFT_ADDRS=1` show who writes what; the rule from section 32 applies:
   a thread the boundary does not drain must not have its memory restored.

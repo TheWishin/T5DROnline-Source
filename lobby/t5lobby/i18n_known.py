@@ -173,6 +173,83 @@ PREREQS = (
     N_("missing {tools}"),
 )
 
+# launcher/problem_report.py: the parts of the problem report the window lists (the report's own files stay English)
+REPORT = (
+    N_("System information and the settings you use"),
+    N_("What happened (what you wrote)"),
+    N_("Launcher log"),
+    N_("Game log (the newest one)"),
+    N_("Game log (the newest {count})"),
+    N_("Build log"),
+    N_("Build log (the last build went fine)"),
+    N_("Online: the files of the last match"),
+    N_("controls.ini (your button settings)"),
+    N_("Desync dumps (game state numbers, binary)"),
+    N_("could not be cleaned of private data"),
+    N_("no room left in the size limit"),
+    N_("could not be read"),
+)
+
+# launcher/updater.py: problems the update check, the download and the swap step report (they also go into
+# swap.log and result.json in English; the launcher shows them through translate_message())
+UPDATER = (
+    N_("The launcher cannot write next to its folder or into it, so it cannot update itself. Download the zip "
+       "from the releases page instead."),
+    N_("Refused to download from {host}: not this project's GitHub releases."),
+    N_("The download came from {host}. Nothing was changed."),
+    N_("GitHub did not return a published release."),
+    N_("The latest release has an unexpected version ({tag})."),
+    N_("Release {version} has no {name} with SHA256SUMS yet."),
+    N_("The downloaded release does not say it is version {version}. Nothing was changed."),
+    N_("The downloaded release has no launcher. Nothing was changed."),
+    N_("This folder has no python\\pythonw.exe, so the launcher cannot update itself (a development checkout?). "
+       "Download the zip from the releases page instead."),
+    N_("The download was sent to {host}, which is not GitHub's storage for this project. Nothing was changed."),
+    N_("Release {version}: {name} is not on this project's GitHub releases."),
+    N_("Release {version}: {name} is still being uploaded."),
+    N_("The download stopped early ({done} of {total} bytes). Try again."),
+    N_("The download is not a readable zip ({error}). Nothing was changed."),
+    N_("The download unpacks to far more than a release should. Nothing was changed."),
+    N_("Not enough free disk space: the update needs about {need} MB next to the folder, {free} MB are free."),
+    N_("SHA256SUMS of release {version} has no line for {name}. Nothing was changed."),
+    N_("SHA256SUMS and GitHub disagree about the download's checksum. Nothing was changed."),
+    N_("The download is damaged or not the published file: its SHA-256 is {got}..., SHA256SUMS says {want}.... "
+       "Nothing was changed."),
+    N_("The downloaded release has no python\\pythonw.exe. Nothing was changed."),
+    N_("The download is far bigger than a release should be. Nothing was changed."),
+    N_("The download contains an unexpected path ({name}: {why}). Nothing was changed."),
+    N_("The download contains an unexpected path ({name}). Nothing was changed."),
+    N_("Cancelled."),
+    N_("Could not download or unpack the update ({error}). Nothing was changed."),
+    N_("The download is damaged ({error}). Nothing was changed."),
+    N_("the new release contains {names} (the player's files)"),
+    N_("release.json does not say {version} after the swap"),
+    N_("launcher\\t5dr_launcher.pyw is missing after the swap"),
+    N_("python\\pythonw.exe is missing after the swap"),
+    N_("the update plan is incomplete"),
+    N_("the launcher did not close"),
+    N_("programs from the folder were still running ({names}); close them and try again"),
+    N_("the new launcher {version} did not start"),
+    N_("could not replace the program files: {error}"),
+    N_("unexpected error: {error}"),
+    N_("GitHub asks to wait with update checks until {time}."),
+    N_("GitHub limits update checks right now. Try again later."),
+    N_("GitHub answered with error {code}. Try again later."),
+    N_("No connection to GitHub. Check the internet connection and try again."),
+    N_("A build is running. Update when it is finished."),
+    N_("The game is running. Close it first, then update."),
+    N_("'Host for friends' is running. Stop hosting first, then update."),
+    N_("An online match was found. Update after the match."),
+    N_("An online match is running. Update after the match."),
+    N_("You are searching for or playing an online match. Update afterwards."),
+    N_("Other programs from this folder are still running ({names}): another launcher window, the game or a "
+       "lobby server. Close them, then update."),
+    N_("not a plain relative path"),
+    N_("'.', '..' or an empty part"),
+    N_("outside the folder {folder}"),
+    N_("named like the player's own files"),
+)
+
 # Words that are part of a message ("you are {status}": the server's player states), translated on their own.
 WORDS = (
     N_("idle"),
@@ -183,11 +260,19 @@ WORDS = (
 )
 
 
+GROUPS = (SERVER, CLIENT, BUILD_TOOL, PREREQS, REPORT, UPDATER)
+
+
 def templates():
     """The known messages that have {placeholders}: patterns for i18n.translate_message()."""
     seen = []
-    for group in (SERVER, CLIENT, BUILD_TOOL, PREREQS):
+    for group in GROUPS:
         for text in group:
             if "{" in text and text not in seen:
                 seen.append(text)
     return seen
+
+
+def exact():
+    """The known messages without placeholders."""
+    return {text for group in GROUPS for text in group if "{" not in text}

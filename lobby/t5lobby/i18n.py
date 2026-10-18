@@ -32,6 +32,7 @@ _lang = "en"
 _cat = {}              # English text -> text in the current language ({} while English)
 _missing = set()       # texts asked for in a language that has no entry for them (tests, development)
 _patterns = None       # [(regex, English template)] for translate_message()
+_exact = frozenset()   # the known messages without placeholders (i18n_known.py)
 
 
 def system_language():
@@ -143,7 +144,9 @@ _HOLE = re.compile(r"\{(\w+)\}")
 
 def _compile_patterns():
     """Regexes for the known English message templates that carry {placeholders} (i18n_known.py)."""
+    global _exact
     from . import i18n_known
+    _exact = frozenset(i18n_known.exact())
     pats = []
     for tpl in i18n_known.templates():
         parts = _HOLE.split(tpl)            # text, name, text, name, ... text
@@ -161,6 +164,8 @@ def _param(name, value):
         return _cat.get(value, value)
     if name == "parts":
         return "; ".join(translate_message(x) for x in value.split("; "))
+    if name in ("why", "error"):          # a reason that is itself one of the known messages
+        return translate_message(value)
     return value
 
 
@@ -170,14 +175,13 @@ def translate_message(msg):
     global _patterns
     if _lang == "en" or not isinstance(msg, str) or not msg:
         return msg
-    hit = _cat.get(msg)
-    if hit is not None and not _HOLE.search(msg):
-        return hit
     if _patterns is None:
         try:
             _patterns = _compile_patterns()
         except Exception:     # noqa: BLE001 -- no list: English
             _patterns = []
+    if msg in _exact:
+        return _cat.get(msg, msg)
     for rx, tpl in _patterns:
         m = rx.match(msg)
         if m:

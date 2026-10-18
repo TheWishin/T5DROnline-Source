@@ -71,10 +71,12 @@ MESSAGES = {
     "from the supported package.":
         "Das entschlüsselte Programm hat die SHA-1 {sha}... und ist nicht die unterstützte "
         "Version. Baue noch einmal mit dem unterstützten Paket.",
-    "This version of the launcher changes the game code. Build again (your game data is "
-    "kept; only the code is translated and compiled again).":
-        "Diese Version des Launchers ändert den Spielcode. Baue noch einmal (deine "
-        "Spieldaten bleiben erhalten, nur der Code wird neu übersetzt und kompiliert).",
+    "Build the game once (about 2 minutes): this version of the launcher changes the "
+    "game code. Click BUILD GAME. Your unpacked game and saves are kept; only the code "
+    "is translated and compiled again.":
+        "Baue das Spiel einmal (etwa 2 Minuten): Diese Version des Launchers ändert den "
+        "Spielcode. Klicke auf BUILD GAME. Dein entpacktes Spiel und deine Spielstände "
+        "bleiben erhalten; nur der Code wird neu übersetzt und kompiliert.",
     "Ready: {title_id} v{version}, program SHA-1 {sha}... verified, built {when}.":
         "Bereit: {title_id} v{version}, Programm-SHA-1 {sha}... geprüft, gebaut {when}.",
     "Check & decrypt": "Prüfen & entschlüsseln",
@@ -132,6 +134,54 @@ MESSAGES = {
     "online play is not available.\n\n({reason})":
         "Die Lobby-Dateien (lobby/t5lobby) fehlen in dieser Kopie des Launchers, darum ist "
         "Online-Spiel nicht möglich.\n\n({reason})",
+    # ---- launcher/problem_report_ui.py
+    "Before the zip is made, your Windows user name in file paths becomes <user>, "
+    "internet IP addresses become <ip> (addresses of your own network stay), and "
+    "passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap "
+    "are never included. Nothing is uploaded: you send the zip yourself.":
+        "Bevor die Zip-Datei entsteht, wird dein Windows-Benutzername in Dateipfaden zu "
+        "<user>, Internet-IP-Adressen werden zu <ip> (Adressen deines eigenen Netzwerks "
+        "bleiben), und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Deine "
+        "Spieldateien, Schlüssel, .pkg und .rap sind nie dabei. Es wird nichts hochgeladen: "
+        "Du schickst die Zip-Datei selbst.",
+    "{count} bytes": "{count} Bytes",
+    "Report a problem": "Problem melden",
+    "This makes one zip file on your Desktop with the logs and settings that help to "
+    "find the problem. Send the zip to the person who gave you the game, or attach it to "
+    "an issue.":
+        "Das erstellt eine Zip-Datei auf deinem Desktop mit den Logs und Einstellungen, die "
+        "helfen, das Problem zu finden. Schicke die Zip-Datei an die Person, von der du das "
+        "Spiel hast, oder hänge sie an ein Issue.",
+    "What happened? (optional)": "Was ist passiert? (freiwillig)",
+    "What goes into the zip": "Was in die Zip-Datei kommt",
+    "Nothing found yet: no game log, no build log.": "Noch nichts gefunden: kein Spiel-Log, kein Build-Log.",
+    "Could not look at the files: {error}": "Die Dateien lassen sich nicht ansehen: {error}",
+    "Save report on the Desktop": "Bericht auf dem Desktop speichern",
+    "Cancel": "Abbrechen",
+    "About {size} before it is packed (a zip is smaller).":
+        "Etwa {size}, bevor gepackt wird (eine Zip-Datei ist kleiner).",
+    "About {size}; the limit is {limit}, so the biggest logs are shortened in the "
+    "middle.":
+        "Etwa {size}; das Limit ist {limit}, darum werden die größten Logs in der Mitte "
+        "gekürzt.",
+    "Making the report...": "Erstelle den Bericht...",
+    "The report could not be made: {error}": "Der Bericht konnte nicht erstellt werden: {error}",
+    "Report saved": "Bericht gespeichert",
+    "{size}. Its folder is open.": "{size}. Der Ordner ist geöffnet.",
+    "Send this zip to the person who gave you the game, or attach it to an issue at "
+    "{url}.":
+        "Schicke diese Zip-Datei an die Person, von der du das Spiel hast, oder hänge sie an "
+        "ein Issue auf {url}.",
+    "Send this zip to the person who gave you the game.":
+        "Schicke diese Zip-Datei an die Person, von der du das Spiel hast.",
+    "(shortened in the middle)": "(in der Mitte gekürzt)",
+    "{name}   left out: {reason}": "{name}   weggelassen: {reason}",
+    "Removed from the text files: {user} user or PC names, {ip} IP addresses, {secret} "
+    "passwords, tokens or keys, {email} e-mail addresses.":
+        "Aus den Textdateien entfernt: {user} Benutzer- oder PC-Namen, {ip} IP-Adressen, "
+        "{secret} Passwörter, Tokens oder Schlüssel, {email} E-Mail-Adressen.",
+    "Open folder": "Ordner öffnen",
+    "Close": "Schließen",
     # ---- launcher/t5dr_launcher.pyw
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
@@ -197,10 +247,10 @@ MESSAGES = {
         "Klicke auf BUILD GAME. Das dauert ein paar Minuten. Die Spieldaten bleiben in "
         "diesem Ordner.",
     "BUILD GAME": "BUILD GAME",
-    "Cancel": "Abbrechen",
     "Redo every step": "Alle Schritte neu machen",
     "Keep the PC responsive (slower)": "PC bedienbar halten (langsamer)",
     "Open build.log": "build.log öffnen",
+    "Report a problem...": "Problem melden...",
     "Checking the build…": "Prüfe den Build…",
     "Your name (shown in the game)": "Dein Name (im Spiel sichtbar)",
     "PLAY": "PLAY",
@@ -312,8 +362,76 @@ MESSAGES = {
     "Game started (process {pid}). Log: {log}": "Spiel gestartet (Prozess {pid}). Log: {log}",
     "starting…": "startet…",
     "Running — {elapsed} — {fps}": "Läuft — {elapsed} — {fps}",
+    "Click Report a problem.": "Klicke auf „Problem melden...“.",
     "The game closed.": "Das Spiel wurde geschlossen.",
     "A build is running. Stop it and quit?": "Das Bauen läuft noch. Stoppen und beenden?",
+    # ---- launcher/updater.py
+    "Check for updates": "Nach Updates suchen",
+    "Updated from {old} to {new}.": "Von {old} auf {new} aktualisiert.",
+    "the new version": "die neue Version",
+    "The update to {version} failed and could not be undone completely: {error}.\n\nThe "
+    "old program files are in\n{folder}\nYour game, saves and settings (the native "
+    "folder) were not touched. Download the zip from the releases page and extract it "
+    "over this folder.":
+        "Das Update auf {version} ist fehlgeschlagen und konnte nicht ganz rückgängig "
+        "gemacht werden: {error}.\n\nDie alten Programmdateien liegen in\n{folder}\nDein "
+        "Spiel, deine Spielstände und Einstellungen (der Ordner native) wurden nicht "
+        "angefasst. Lade die Zip-Datei von der Releases-Seite herunter und entpacke sie über "
+        "diesen Ordner.",
+    "The update to {version} did not work: {error}.\n\nNothing was changed; this is "
+    "still version {current}. Try again later, or download the zip from the releases "
+    "page.":
+        "Das Update auf {version} hat nicht geklappt: {error}.\n\nEs wurde nichts geändert; "
+        "das ist weiterhin Version {current}. Versuche es später noch einmal, oder lade die "
+        "Zip-Datei von der Releases-Seite herunter.",
+    "Update": "Update",
+    "Updates": "Updates",
+    "This is a development checkout (no release.json and bundled Python), so it does not "
+    "update itself. Use git, or a release zip from\n{page}":
+        "Das ist ein Entwickler-Checkout (ohne release.json und ohne mitgeliefertes Python), "
+        "darum aktualisiert er sich nicht selbst. Nimm Git oder eine Release-Zip von\n{page}",
+    "Update to {version}…": "Auf {version} aktualisieren…",
+    "Could not check for updates.\n\n{problem}": "Die Suche nach Updates hat nicht geklappt.\n\n{problem}",
+    "Version {version} is available: click 'Update to {version}' at the top.":
+        "Version {version} ist da: Klicke oben auf „Auf {version} aktualisieren“.",
+    "You have the newest version ({version}).": "Du hast die neueste Version ({version}).",
+    "Update available": "Update verfügbar",
+    "T5DR Online {version} is available": "T5DR Online {version} ist da",
+    "Download: {size}, published {date}.": "Download: {size}, veröffentlicht {date}.",
+    "Download: {size}.": "Download: {size}.",
+    "You have {version}.": "Du hast {version}.",
+    "The launcher downloads it, checks it, replaces its program files and starts again. "
+    "Your game, saves and settings (the native folder) stay as they are.":
+        "Der Launcher lädt es herunter, prüft es, ersetzt seine Programmdateien und startet "
+        "neu. Dein Spiel, deine Spielstände und Einstellungen (der Ordner native) bleiben, "
+        "wie sie sind.",
+    "After this update the game is built once more (about 2 minutes): the Play tab "
+    "offers BUILD GAME. Only the code is rebuilt; the unpacked game and saves are kept.":
+        "Nach diesem Update wird das Spiel noch einmal gebaut (etwa 2 Minuten): Der Reiter "
+        "Spielen bietet BUILD GAME an. Nur der Code wird neu gebaut; das entpackte Spiel und "
+        "deine Spielstände bleiben erhalten.",
+    "The game itself does not need to be built again.": "Das Spiel selbst muss nicht neu gebaut werden.",
+    "If this update changes the game code, the Play tab asks you to build the game once "
+    "(about 2 minutes).":
+        "Ändert dieses Update den Spielcode, bittet dich der Reiter Spielen, das Spiel "
+        "einmal zu bauen (etwa 2 Minuten).",
+    "(no release notes)": "(keine Release-Notes)",
+    "Update now": "Jetzt aktualisieren",
+    "Later": "Später",
+    "Release page": "Release-Seite",
+    "Cancelling…": "Breche ab…",
+    "Downloading…": "Lade herunter…",
+    "Unexpected error: {error}": "Unerwarteter Fehler: {error}",
+    "Downloading… {done} of {total}": "Lade herunter… {done} von {total}",
+    "Downloading… {done}": "Lade herunter… {done}",
+    "Checking the download (SHA-256)…": "Prüfe den Download (SHA-256)…",
+    "Unpacking… {percent}%": "Entpacke… {percent}%",
+    "Preparing the restart…": "Bereite den Neustart vor…",
+    "Try again": "Noch einmal versuchen",
+    "Could not start the update step: {error}": "Der Update-Schritt konnte nicht gestartet werden: {error}",
+    "Installing {version}: the launcher restarts in a few seconds…":
+        "Installiere {version}: Der Launcher startet in ein paar Sekunden neu…",
+    "Updating to {version}…": "Aktualisiere auf {version}…",
     # ---- lobby/t5lobby/client.py
     "Contacting the lobby server over UDP...": "Verbinde mit dem Lobby-Server über UDP...",
     "UDP to the lobby server is blocked (firewall?)": "UDP zum Lobby-Server ist blockiert (Firewall?)",
@@ -547,6 +665,124 @@ MESSAGES = {
         "fehlt in toolchain\\llvm -- lade das Release noch einmal herunter",
     "not found": "nicht gefunden",
     "missing {tools}": "fehlt: {tools}",
+    "System information and the settings you use": "Systeminformationen und die Einstellungen, die du nutzt",
+    "What happened (what you wrote)": "Was passiert ist (was du geschrieben hast)",
+    "Launcher log": "Launcher-Log",
+    "Game log (the newest one)": "Spiel-Log (das neueste)",
+    "Game log (the newest {count})": "Spiel-Log (die neuesten {count})",
+    "Build log": "Build-Log",
+    "Build log (the last build went fine)": "Build-Log (der letzte Build lief gut)",
+    "Online: the files of the last match": "Online: die Dateien des letzten Matches",
+    "controls.ini (your button settings)": "controls.ini (deine Tastenbelegung)",
+    "Desync dumps (game state numbers, binary)": "Desync-Dumps (Zahlen des Spielzustands, binär)",
+    "could not be cleaned of private data": "ließ sich nicht von privaten Daten säubern",
+    "no room left in the size limit": "kein Platz mehr im Größenlimit",
+    "could not be read": "ließ sich nicht lesen",
+    "The launcher cannot write next to its folder or into it, so it cannot update "
+    "itself. Download the zip from the releases page instead.":
+        "Der Launcher kann neben seinem Ordner und in ihm nicht schreiben, darum kann er "
+        "sich nicht selbst aktualisieren. Lade stattdessen die Zip-Datei von der "
+        "Releases-Seite herunter.",
+    "Refused to download from {host}: not this project's GitHub releases.":
+        "Download von {host} abgelehnt: Das sind nicht die GitHub-Releases dieses Projekts.",
+    "The download came from {host}. Nothing was changed.": "Der Download kam von {host}. Es wurde nichts geändert.",
+    "GitHub did not return a published release.": "GitHub hat kein veröffentlichtes Release geliefert.",
+    "The latest release has an unexpected version ({tag}).":
+        "Das neueste Release hat eine unerwartete Version ({tag}).",
+    "Release {version} has no {name} with SHA256SUMS yet.": "Release {version} hat noch kein {name} mit SHA256SUMS.",
+    "The downloaded release does not say it is version {version}. Nothing was changed.":
+        "Das heruntergeladene Release sagt nicht, dass es Version {version} ist. Es wurde "
+        "nichts geändert.",
+    "The downloaded release has no launcher. Nothing was changed.":
+        "Dem heruntergeladenen Release fehlt der Launcher. Es wurde nichts geändert.",
+    "This folder has no python\\pythonw.exe, so the launcher cannot update itself (a "
+    "development checkout?). Download the zip from the releases page instead.":
+        "In diesem Ordner fehlt python\\pythonw.exe, darum kann sich der Launcher nicht "
+        "selbst aktualisieren (ein Entwickler-Checkout?). Lade stattdessen die Zip-Datei von "
+        "der Releases-Seite herunter.",
+    "The download was sent to {host}, which is not GitHub's storage for this project. "
+    "Nothing was changed.":
+        "Der Download wurde an {host} geschickt, das nicht der GitHub-Speicher dieses "
+        "Projekts ist. Es wurde nichts geändert.",
+    "Release {version}: {name} is not on this project's GitHub releases.":
+        "Release {version}: {name} gibt es nicht in den GitHub-Releases dieses Projekts.",
+    "Release {version}: {name} is still being uploaded.": "Release {version}: {name} wird noch hochgeladen.",
+    "The download stopped early ({done} of {total} bytes). Try again.":
+        "Der Download ist zu früh abgebrochen ({done} von {total} Bytes). Versuche es noch "
+        "einmal.",
+    "The download is not a readable zip ({error}). Nothing was changed.":
+        "Der Download ist keine lesbare Zip-Datei ({error}). Es wurde nichts geändert.",
+    "The download unpacks to far more than a release should. Nothing was changed.":
+        "Der Download enthält viel mehr Daten, als ein Release haben sollte. Es wurde nichts "
+        "geändert.",
+    "Not enough free disk space: the update needs about {need} MB next to the folder, "
+    "{free} MB are free.":
+        "Nicht genug freier Speicherplatz: Das Update braucht etwa {need} MB neben dem "
+        "Ordner, frei sind {free} MB.",
+    "SHA256SUMS of release {version} has no line for {name}. Nothing was changed.":
+        "In SHA256SUMS von Release {version} steht keine Zeile für {name}. Es wurde nichts "
+        "geändert.",
+    "SHA256SUMS and GitHub disagree about the download's checksum. Nothing was changed.":
+        "SHA256SUMS und GitHub sind sich über die Prüfsumme des Downloads nicht einig. Es "
+        "wurde nichts geändert.",
+    "The download is damaged or not the published file: its SHA-256 is {got}..., "
+    "SHA256SUMS says {want}.... Nothing was changed.":
+        "Der Download ist beschädigt oder nicht die veröffentlichte Datei: Seine SHA-256 ist "
+        "{got}..., SHA256SUMS sagt {want}.... Es wurde nichts geändert.",
+    "The downloaded release has no python\\pythonw.exe. Nothing was changed.":
+        "Dem heruntergeladenen Release fehlt python\\pythonw.exe. Es wurde nichts geändert.",
+    "The download is far bigger than a release should be. Nothing was changed.":
+        "Der Download ist viel größer, als ein Release sein sollte. Es wurde nichts "
+        "geändert.",
+    "The download contains an unexpected path ({name}: {why}). Nothing was changed.":
+        "Der Download enthält einen unerwarteten Pfad ({name}: {why}). Es wurde nichts "
+        "geändert.",
+    "The download contains an unexpected path ({name}). Nothing was changed.":
+        "Der Download enthält einen unerwarteten Pfad ({name}). Es wurde nichts geändert.",
+    "Cancelled.": "Abgebrochen.",
+    "Could not download or unpack the update ({error}). Nothing was changed.":
+        "Das Update konnte nicht heruntergeladen oder entpackt werden ({error}). Es wurde "
+        "nichts geändert.",
+    "The download is damaged ({error}). Nothing was changed.":
+        "Der Download ist beschädigt ({error}). Es wurde nichts geändert.",
+    "the new release contains {names} (the player's files)": "das neue Release enthält {names} (Dateien des Spielers)",
+    "release.json does not say {version} after the swap": "release.json nennt nach dem Tausch nicht {version}",
+    "launcher\\t5dr_launcher.pyw is missing after the swap": "launcher\\t5dr_launcher.pyw fehlt nach dem Tausch",
+    "python\\pythonw.exe is missing after the swap": "python\\pythonw.exe fehlt nach dem Tausch",
+    "the update plan is incomplete": "der Update-Plan ist unvollständig",
+    "the launcher did not close": "der Launcher wurde nicht geschlossen",
+    "programs from the folder were still running ({names}); close them and try again":
+        "Programme aus dem Ordner liefen noch ({names}); schließe sie und versuche es noch "
+        "einmal",
+    "the new launcher {version} did not start": "der neue Launcher {version} ist nicht gestartet",
+    "could not replace the program files: {error}": "die Programmdateien konnten nicht ersetzt werden: {error}",
+    "unexpected error: {error}": "unerwarteter Fehler: {error}",
+    "GitHub asks to wait with update checks until {time}.":
+        "GitHub bittet, mit der Update-Suche bis {time} zu warten.",
+    "GitHub limits update checks right now. Try again later.":
+        "GitHub begrenzt gerade die Update-Suchen. Versuche es später noch einmal.",
+    "GitHub answered with error {code}. Try again later.":
+        "GitHub hat mit Fehler {code} geantwortet. Versuche es später noch einmal.",
+    "No connection to GitHub. Check the internet connection and try again.":
+        "Keine Verbindung zu GitHub. Prüfe die Internetverbindung und versuche es noch "
+        "einmal.",
+    "A build is running. Update when it is finished.": "Das Bauen läuft noch. Aktualisiere, wenn es fertig ist.",
+    "The game is running. Close it first, then update.": "Das Spiel läuft. Schließe es zuerst, dann aktualisiere.",
+    "'Host for friends' is running. Stop hosting first, then update.":
+        "„Für Freunde hosten“ läuft. Beende zuerst das Hosten, dann aktualisiere.",
+    "An online match was found. Update after the match.":
+        "Ein Online-Match wurde gefunden. Aktualisiere nach dem Match.",
+    "An online match is running. Update after the match.": "Ein Online-Match läuft. Aktualisiere nach dem Match.",
+    "You are searching for or playing an online match. Update afterwards.":
+        "Du suchst ein Online-Match oder spielst gerade eins. Aktualisiere danach.",
+    "Other programs from this folder are still running ({names}): another launcher "
+    "window, the game or a lobby server. Close them, then update.":
+        "Andere Programme aus diesem Ordner laufen noch ({names}): ein anderes "
+        "Launcher-Fenster, das Spiel oder ein Lobby-Server. Schließe sie, dann aktualisiere.",
+    "not a plain relative path": "kein einfacher relativer Pfad",
+    "'.', '..' or an empty part": "„.“, „..“ oder ein leerer Teil",
+    "outside the folder {folder}": "außerhalb des Ordners {folder}",
+    "named like the player's own files": "heißt wie die eigenen Dateien des Spielers",
     "idle": "frei",
     "room": "im Raum",
     "queue": "in der Suche",
@@ -817,7 +1053,6 @@ MESSAGES = {
         "Gast ist blockiert, bis du dich abmeldest.",
     "Unblocked {name}.": "{name} ist nicht mehr blockiert.",
     "Unblock": "Freigeben",
-    "Close": "Schließen",
     "Block player": "Spieler blockieren",
     "Block {name}?\n\nYou will not be matched with them again. They are not told. You "
     "can unblock them under \"Blocked players...\".":

@@ -273,7 +273,7 @@ class App(tk.Tk):
                         command=self.save_settings).pack(side="left", padx=8)
         ttk.Button(row, text=t("Open build.log"),
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "build.log"))).pack(side="right")
-        ttk.Button(row, text="Report a problem...", command=self.report_problem).pack(side="right", padx=8)
+        ttk.Button(row, text=t("Report a problem..."), command=self.report_problem).pack(side="right", padx=8)
         self.error = tk.StringVar()
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=("Segoe UI", 10, "bold"))
@@ -712,10 +712,10 @@ class App(tk.Tk):
         running = bool(self.game and self.game.running())
         if self.game_state().get("needs_rebuild"):
             # after an update that changes the game code: "Build the game once" (core.game_state)
-            self.play_btn.configure(text="BUILD GAME", command=self.build_from_play)
+            self.play_btn.configure(text=t("BUILD GAME"), command=self.build_from_play)
             set_big_state(self.play_btn, not running and not self.build)
         else:
-            self.play_btn.configure(text="PLAY", command=self.play)
+            self.play_btn.configure(text=t("PLAY"), command=self.play)
             set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
 
@@ -757,7 +757,7 @@ class App(tk.Tk):
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
         self.status.set(t("Game started (process {pid}). Log: {log}", pid=pid,
-                          log="native\logs\\" + os.path.basename(g.log_path)))
+                          log="native\\logs\\" + os.path.basename(g.log_path)))
         self._update_play_buttons()
         return g
 

@@ -130,7 +130,8 @@ class CatalogTests(unittest.TestCase):
     def test_the_dynamic_lookups_are_few(self):
         # t(variable): the variable must hold a text marked with N_(); keep the list short and known
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
-        self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py"})
+        self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
+                                     "problem_report_ui.py"})
 
 
 class EngineTests(German, unittest.TestCase):
@@ -265,18 +266,68 @@ class MessageCoverageTests(German, unittest.TestCase):
         for n in ast.walk(check):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "add" and len(n.args) > 3:
                 names.append(python_sample(n.args[1]))
+                keys = {id(k) for d in ast.walk(n.args[3]) if isinstance(d, ast.Dict) for k in d.keys}
                 for c in ast.walk(n.args[3]):
-                    s = python_sample(c) if isinstance(c, (ast.Constant, ast.JoinedStr)) else None
+                    s = python_sample(c) if isinstance(c, (ast.Constant, ast.JoinedStr)) and id(c) not in keys else None
                     if s and re.search(r"[A-Za-z]{3,}", s) and s == s.strip():
                         details.append(s)
         self.assertEqual(len(names), 9)
         for s in names + details:
-            self.assertTrue(self.covered(s) or s in i18n_de.MESSAGES and i18n_de.MESSAGES[s] != s
-                            or s in {"Python 3.10+", "pycryptodome (Python AES)", "clang-cl + lld-link",
-                                     "Windows SDK (Direct3D 12)", "clang-cl 16+ (LLVM)", "CMake + Ninja"}
-                            and s in i18n_de.MESSAGES, s)
+            self.assertTrue(self.covered(s) or s in i18n_de.MESSAGES or s in ("CMake", "Ninja"), s)
         self.assertEqual(i18n.translate_message("missing CMake and Ninja"), "fehlt: CMake and Ninja")
         self.assertEqual(i18n.translate_message("3.12.10 at C:\\Python\\python.exe"), "3.12.10 in C:\\Python\\python.exe")
+
+    def test_updater_messages(self):
+        path = os.path.join(ROOT, "launcher", "updater.py")
+        found = [(f"updater.py:{ln}", s, src) for ln, s, src in calls_in(path, {"UpdateError", "SwapFailed", "Cancelled"}, 0)]
+        found += [(f"updater.py:{ln}", s, src) for ln, s, src in calls_in(path, {"finish"}, 1)]
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for fn in ast.walk(tree):          # the sentences these functions return: busy_reason, check_latest, member checks
+            if isinstance(fn, ast.FunctionDef) and fn.name in ("busy_reason", "check_latest", "_member_problem"):
+                for r in ast.walk(fn):
+                    if isinstance(r, ast.Return) and r.value is not None:
+                        parts = r.value.elts if isinstance(r.value, ast.Tuple) else [r.value]
+                        for part in parts:
+                            found.append((f"updater.py:{r.lineno}", python_sample(part), ast.unparse(part)))
+        self.assertGreater(len([f for f in found if f[1]]), 40)
+        # (a sentence built from a joined list, a conditional or a variable has no sample: checked below)
+        not_sentences = ("dev", "True", "False")
+        self.check_all([(w, s_, src) for w, s_, src in found
+                        if s_ and s_ not in not_sentences and not s_.startswith(("T5DR-Online-launcher", "X"))])
+        for sample in ("Other programs from this folder are still running (python.exe, t5dr.exe): another launcher "
+                       "window, the game or a lobby server. Close them, then update.",
+                       "could not replace the program files: the new release contains native (the player's files)",
+                       "The download contains an unexpected path (a/b: outside the folder top). Nothing was changed.",
+                       "GitHub asks to wait with update checks until 21:45."):
+            self.assertTrue(self.covered(sample), sample)
+        self.assertEqual(
+            i18n.translate_message("could not replace the program files: the new release contains native (the "
+                                   "player's files)"),
+            "die Programmdateien konnten nicht ersetzt werden: das neue Release enthält native (Dateien des Spielers)")
+
+    def test_report_parts(self):
+        path = os.path.join(ROOT, "launcher", "problem_report.py")
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        titles = [python_sample(n.args[1]) for n in ast.walk(tree)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "Group"]
+        self.assertGreaterEqual(len(titles), 8)
+        for title in ("System information and the settings you use", "What happened (what you wrote)", "Launcher log",
+                      "Game log (the newest one)", "Game log (the newest 3)", "Build log",
+                      "Build log (the last build went fine)", "Online: the files of the last match",
+                      "controls.ini (your button settings)", "Desync dumps (game state numbers, binary)"):
+            self.assertTrue(self.covered(title), title)
+        for t_ in titles:
+            if t_ and "Game log" not in t_ and "Build log" not in t_:
+                self.assertTrue(self.covered(t_), t_)
+        reasons = {n.elts[1].value for n in ast.walk(tree) if isinstance(n, ast.Tuple) and len(n.elts) == 2
+                   and isinstance(n.elts[1], ast.Constant) and isinstance(n.elts[1].value, str)
+                   and n.elts[1].value in ("could not be read", "no room left in the size limit",
+                                           "could not be cleaned of private data")}
+        self.assertEqual(len(reasons), 3)
+        for r in reasons:
+            self.assertTrue(self.covered(r), r)
 
     def test_translations_of_known_kinds(self):
         tm = i18n.translate_message
@@ -419,6 +470,18 @@ def load_launcher():
     return mod
 
 
+def cancel_timers(root):
+    """Drop the pending after() callbacks of a window (the launcher schedules checks for later)."""
+    try:
+        for after_id in root.tk.splitlist(root.tk.call("after", "info")):
+            try:
+                root.tk.call("after", "cancel", after_id)      # (Tcl's cancel: each widget deletes its own commands)
+            except tk.TclError:
+                pass
+    except tk.TclError:
+        pass
+
+
 def all_texts(root):
     """Every text a widget shows right now: labels, buttons, headings, rows, tab names, entries' variables."""
     out = []
@@ -483,7 +546,8 @@ class RenderTests(unittest.TestCase):
         except tk.TclError as e:
             self.skipTest(f"no display: {e}")
         app.withdraw()
-        self.addCleanup(lambda: (app.online.on_close(), app.destroy()))
+        cancel_timers(app)            # nothing may run later: not the check of the tools, not the game state thread
+        self.addCleanup(lambda: (cancel_timers(app), app.online.on_close(), app.destroy()))
         i18n.clear_missing()
         return app
 

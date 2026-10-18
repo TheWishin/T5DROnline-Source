@@ -56,6 +56,25 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IS_WIN = os.name == "nt"
 
+# English or German (lobby/t5lobby/i18n.py) for what the launcher shows. The swap step runs this file alone,
+# from a copy of the bundled Python without lobby/: there the texts stay English (they go to swap.log and
+# result.json, which the launcher shows through translate_message()).
+sys.path.insert(0, os.path.join(ROOT, "lobby"))
+try:
+    from t5lobby.i18n import N_, num, t, translate_message
+except ImportError:
+    def N_(text):
+        return text
+
+    def t(text, /, **values):
+        return text.format(**values) if values else text
+
+    def translate_message(msg):
+        return msg
+
+    def num(value, digits=0):
+        return f"{value:.{digits}f}"
+
 OWNER, REPO_NAME = "TheWishin", "T5DROnline"
 REPO = f"{OWNER}/{REPO_NAME}"
 # GitHub's numeric ID of that repository (api.github.com/repos/TheWishin/T5DROnline -> "id"). Release
@@ -957,7 +976,19 @@ def stale_stage_folders(root=ROOT, age=6 * 3600, now=None):
 # --------------------------------------------------------------------------- the launcher's side (Tk)
 
 def _mb(n):
-    return f"{n / 1e6:,.1f} MB"
+    return f"{num(n / 1e6, 1)} MB"
+
+
+def _box(kind, title, text, parent):
+    """A message box ('show_info' / 'show_warning'): lobby/t5lobby/dialogs.py, whose buttons follow the chosen
+    language; the system's own box if lobby/ is missing."""
+    try:
+        from t5lobby import dialogs
+        return getattr(dialogs, kind)(title, text, parent=parent)
+    except ImportError:
+        from tkinter import messagebox
+        return {"show_info": messagebox.showinfo, "show_warning": messagebox.showwarning}[kind](
+            title, text, parent=parent)
 
 
 def rebuild_needed(release, out_dir):
@@ -991,7 +1022,7 @@ class Updater:
         self.button = None
         if header is not None:
             from tkinter import ttk
-            self.button = ttk.Button(header, text="Check for updates", command=self.on_button)
+            self.button = ttk.Button(header, text=t("Check for updates"), command=self.on_button)
             self.button.pack(side="right")
         if not self.readonly:
             app.after(1500, self.report_last_update)     # after the build-tools check wrote its status
@@ -1016,7 +1047,7 @@ class Updater:
         logs = os.path.join(out_dir, "logs") if out_dir else None
         for sroot, res in pending_results(self.root):
             if res.get("ok") and res.get("to") == self.local:
-                self._status(f"Updated from {res.get('from')} to {res.get('to')}.")
+                self._status(t("Updated from {old} to {new}.", old=res.get("from"), new=res.get("to")))
                 try:
                     st = self.app.game_state() if hasattr(self.app, "game_state") else {}
                     if not st or "needs_rebuild" not in st:
@@ -1033,17 +1064,19 @@ class Updater:
             threading.Thread(target=shutil.rmtree, args=(d, True), daemon=True).start()
 
     def _show_failure(self, sroot, res):
-        from tkinter import messagebox
-        to = res.get("to") or "the new version"
+        to = res.get("to") or t("the new version")
+        error = translate_message(res.get("error"))
         if res.get("changed") and not res.get("rolled_back"):
-            text = (f"The update to {to} failed and could not be undone completely: {res.get('error')}.\n\n"
-                    f"The old program files are in\n{os.path.join(sroot, 'backup')}\n"
-                    "Your game, saves and settings (the native folder) were not touched. Download the zip "
-                    "from the releases page and extract it over this folder.")
+            text = t("The update to {version} failed and could not be undone completely: {error}.\n\n"
+                     "The old program files are in\n{folder}\n"
+                     "Your game, saves and settings (the native folder) were not touched. Download the zip "
+                     "from the releases page and extract it over this folder.", version=to, error=error,
+                     folder=os.path.join(sroot, "backup"))
         else:
-            text = (f"The update to {to} did not work: {res.get('error')}.\n\nNothing was changed; this is "
-                    f"still version {self.local}. Try again later, or download the zip from the releases page.")
-        self.app.after(300, lambda: messagebox.showwarning("Update", text, parent=self.app))
+            text = t("The update to {version} did not work: {error}.\n\nNothing was changed; this is still "
+                     "version {current}. Try again later, or download the zip from the releases page.",
+                     version=to, error=error, current=self.local)
+        self.app.after(300, lambda: _box("show_warning", t("Update"), text, self.app))
 
     # -------------------------------------------------------------- check
     def on_button(self):
@@ -1055,15 +1088,14 @@ class Updater:
             self.check(manual=True)
 
     def check(self, manual):
-        from tkinter import messagebox
         if not is_release_install(self.root):
             if manual:
-                messagebox.showinfo("Updates", "This is a development checkout (no release.json and bundled "
-                                    "Python), so it does not update itself. Use git, or a release zip from\n"
-                                    + RELEASES_PAGE, parent=self.app)
+                _box("show_info", t("Updates"),
+                     t("This is a development checkout (no release.json and bundled Python), so it does not "
+                       "update itself. Use git, or a release zip from\n{page}", page=RELEASES_PAGE), self.app)
             return
         if self.button is not None and manual:
-            self.button.configure(text="Checking…", state="disabled")
+            self.button.configure(text=t("Checking…"), state="disabled")
 
         def work():
             rel, problem = check_latest(self.cache_path, force=manual)
@@ -1071,31 +1103,32 @@ class Updater:
         threading.Thread(target=work, daemon=True).start()
 
     def _checked(self, rel, problem, manual):
-        from tkinter import messagebox
         if self.button is not None:
             known = self.release and is_newer(self.release["version"], self.local)
-            self.button.configure(state="normal", text=f"Update to {self.release['version']}…" if known
-                                  else "Check for updates")
+            self.button.configure(state="normal", text=t("Update to {version}…", version=self.release["version"])
+                                  if known else t("Check for updates"))
         if problem:
             if manual:
-                messagebox.showinfo("Updates", f"Could not check for updates.\n\n{problem}", parent=self.app)
+                _box("show_info", t("Updates"),
+                     t("Could not check for updates.\n\n{problem}", problem=translate_message(problem)), self.app)
             return
         if rel and is_newer(rel["version"], self.local):
             self.release = rel
             if self.button is not None:
-                self.button.configure(text=f"Update to {rel['version']}…")
+                self.button.configure(text=t("Update to {version}…", version=rel["version"]))
             if manual or (not busy_reason(self.app) and self._in_front()):
                 self.offer()
             else:
                 # Never pop up over another program (a game in front) or in the middle of a match: the
                 # button says it, and the offer opens when the launcher is next in front and free.
-                self._status(f"Version {rel['version']} is available: click 'Update to {rel['version']}' at "
-                             "the top.")
+                self._status(t("Version {version} is available: click 'Update to {version}' at the top.",
+                               version=rel["version"]))
                 if not self._focus_bound:
                     self._focus_bound = True
                     self.app.bind("<FocusIn>", self._on_focus, add="+")
         elif manual:
-            messagebox.showinfo("Updates", f"You have the newest version ({self.local}).", parent=self.app)
+            _box("show_info", t("Updates"), t("You have the newest version ({version}).", version=self.local),
+                 self.app)
 
     def _in_front(self):
         """True when the launcher's window is the foreground window (Windows; elsewhere always)."""
@@ -1139,32 +1172,36 @@ class Updater:
         rel = self.release
         self._offered = True
         w = self.win = tk.Toplevel(self.app)
-        w.title("Update available")
+        w.title(t("Update available"))
         w.transient(self.app)
         w.resizable(True, True)
         w.minsize(560, 440)
         w.protocol("WM_DELETE_WINDOW", self.close_window)
         box = ttk.Frame(w, padding=(18, 14))
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text=f"T5DR Online {rel['version']} is available", style="H2.TLabel").pack(anchor="w")
-        when = f", published {rel['published']}" if rel.get("published") else ""
+        ttk.Label(box, text=t("T5DR Online {version} is available", version=rel["version"]),
+                  style="H2.TLabel").pack(anchor="w")
+        size = _mb(rel["zip"]["size"])
+        download = (t("Download: {size}, published {date}.", size=size, date=rel["published"])
+                    if rel.get("published") else t("Download: {size}.", size=size))
         ttk.Label(box, wraplength=560, justify="left", text=(
-            f"You have {self.local}. Download: {_mb(rel['zip']['size'])}{when}. The launcher downloads it, checks "
-            "it, replaces its program files and starts again. Your game, saves and settings (the native folder) "
-            "stay as they are.")).pack(anchor="w", pady=(4, 0))
+            t("You have {version}.", version=self.local) + " " + download + " " +
+            t("The launcher downloads it, checks it, replaces its program files and starts again. Your game, "
+              "saves and settings (the native folder) stay as they are."))).pack(anchor="w", pady=(4, 0))
         out_dir = getattr(getattr(self.app, "settings", None), "out_dir", None)
         rb = rebuild_needed(rel, out_dir)
         if rb is True:
-            text, style = ("After this update the game is built once more (about 2 minutes): the Play tab offers "
-                           "BUILD GAME. Only the code is rebuilt; the unpacked game and saves are kept."), "warn.TLabel"
+            text, style = (t("After this update the game is built once more (about 2 minutes): the Play tab "
+                             "offers BUILD GAME. Only the code is rebuilt; the unpacked game and saves are "
+                             "kept."), "warn.TLabel")
         elif rb is False:
-            text, style = "The game itself does not need to be built again.", "Muted.TLabel"
+            text, style = t("The game itself does not need to be built again."), "Muted.TLabel"
         else:
-            text, style = ("If this update changes the game code, the Play tab asks you to build the game once "
-                           "(about 2 minutes)."), "Muted.TLabel"
+            text, style = (t("If this update changes the game code, the Play tab asks you to build the game once "
+                             "(about 2 minutes)."), "Muted.TLabel")
         ttk.Label(box, wraplength=560, justify="left", text=text, style=style).pack(anchor="w", pady=(4, 6))
         notes = tk.Text(box, height=12, wrap="word", relief="flat", font=("Segoe UI", 9), padx=8, pady=6)
-        notes.insert("1.0", rel.get("notes") or "(no release notes)")
+        notes.insert("1.0", rel.get("notes") or t("(no release notes)"))
         notes.configure(state="disabled")
         notes.pack(fill="both", expand=True)
         self.progress = ttk.Progressbar(box, maximum=1000)
@@ -1175,15 +1212,15 @@ class Updater:
                  font=("Segoe UI", 9, "bold")).pack(anchor="w")
         row = ttk.Frame(box)
         row.pack(fill="x", pady=(8, 0))
-        self.b_update = ttk.Button(row, text="Update now", command=self.start_update)
+        self.b_update = ttk.Button(row, text=t("Update now"), command=self.start_update)
         self.b_update.pack(side="left")
-        self.b_later = ttk.Button(row, text="Later", command=self.close_window)
+        self.b_later = ttk.Button(row, text=t("Later"), command=self.close_window)
         self.b_later.pack(side="left", padx=8)
-        ttk.Button(row, text="Release page", command=lambda: self._open_page(rel["page"])).pack(side="right")
+        ttk.Button(row, text=t("Release page"), command=lambda: self._open_page(rel["page"])).pack(side="right")
         self.progress_row = row
         why = busy_reason(self.app)
         if why:
-            self.err.set(why)
+            self.err.set(translate_message(why))
         w.after(50, lambda: (w.lift(), self.b_update.focus_set()))
 
     def _open_page(self, url):
@@ -1194,7 +1231,7 @@ class Updater:
     def close_window(self):
         if self.worker is not None and self.worker.is_alive():
             self.cancel.set()
-            self.msg.set("Cancelling…")
+            self.msg.set(t("Cancelling…"))
             return
         if self.win is not None:
             self.win.destroy()
@@ -1206,16 +1243,16 @@ class Updater:
             return
         why = busy_reason(self.app)
         if why:
-            self.err.set(why)
+            self.err.set(translate_message(why))
             return
         self.err.set("")
         self.cancel.clear()
         self.b_update.configure(state="disabled")
-        self.b_later.configure(text="Cancel")
+        self.b_later.configure(text=t("Cancel"))
         self.progress.pack(fill="x", pady=(6, 0), before=self.progress_row)
         self.progress["value"] = 0
         rel = self.release
-        self.msg.set("Downloading…")
+        self.msg.set(t("Downloading…"))
 
         def progress(stage, n, total):
             self.q.put(lambda: self._progress(stage, n, total))
@@ -1227,7 +1264,7 @@ class Updater:
                 self.q.put(lambda e=e: self._failed(str(e), isinstance(e, Cancelled)))
                 return
             except Exception as e:           # noqa: BLE001 -- a bug must not leave the window stuck
-                self.q.put(lambda e=e: self._failed(f"Unexpected error: {e}"))
+                self.q.put(lambda e=e: self._failed(t("Unexpected error: {error}", error=e)))
                 return
             self.q.put(lambda: self._ready(staged))
         self.worker = threading.Thread(target=work, daemon=True)
@@ -1238,16 +1275,17 @@ class Updater:
             return
         if stage == "download":
             self.progress["value"] = int(700 * n / total) if total else 0
-            self.msg.set(f"Downloading… {_mb(n)}" + (f" of {_mb(total)}" if total else ""))
+            self.msg.set(t("Downloading… {done} of {total}", done=_mb(n), total=_mb(total)) if total
+                         else t("Downloading… {done}", done=_mb(n)))
         elif stage == "verify":
             self.progress["value"] = 700
-            self.msg.set("Checking the download (SHA-256)…")
+            self.msg.set(t("Checking the download (SHA-256)…"))
         elif stage == "unpack":
             self.progress["value"] = 700 + (int(250 * n / total) if total else 0)
-            self.msg.set(f"Unpacking… {int(100 * n / total) if total else 0}%")
+            self.msg.set(t("Unpacking… {percent}%", percent=int(100 * n / total) if total else 0))
         elif stage == "runner":
             self.progress["value"] = 960
-            self.msg.set("Preparing the restart…")
+            self.msg.set(t("Preparing the restart…"))
 
     def _failed(self, text, cancelled=False):
         self.worker = None
@@ -1255,9 +1293,9 @@ class Updater:
             return
         self.progress.pack_forget()
         self.msg.set("")
-        self.err.set("" if cancelled else text)
-        self.b_update.configure(state="normal", text="Try again" if not cancelled else "Update now")
-        self.b_later.configure(text="Later")
+        self.err.set("" if cancelled else translate_message(text))
+        self.b_update.configure(state="normal", text=t("Try again") if not cancelled else t("Update now"))
+        self.b_later.configure(text=t("Later"))
         if cancelled:
             self.close_window()
 
@@ -1273,11 +1311,12 @@ class Updater:
             start_swap(staged, self.local, self.release["version"], out_dir=out_dir, root=self.root)
         except (OSError, UpdateError) as e:
             shutil.rmtree(staged["sroot"], ignore_errors=True)
-            self._failed(f"Could not start the update step: {e}")
+            self._failed(t("Could not start the update step: {error}", error=e))
             return
         self.progress["value"] = 1000
-        self.msg.set(f"Installing {self.release['version']}: the launcher restarts in a few seconds…")
-        self._status(f"Updating to {self.release['version']}…")
+        self.msg.set(t("Installing {version}: the launcher restarts in a few seconds…",
+                       version=self.release["version"]))
+        self._status(t("Updating to {version}…", version=self.release["version"]))
         self.app.after(400, self._close_app)
 
     def _close_app(self):

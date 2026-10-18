@@ -25,7 +25,7 @@ host and one joiner started with T5_FIGHT, the next matches as T5_FIGHT_FILE lin
 --locked-after K: from the (K+1)-th match of a session on, the line carries the
 characters the session's first match picked and no pick= (a ranked set's lock).
 
-Checks per match: both games log the same picks (character, button, model) at FIGHT
+Checks per match: both games log the same fighters (character, button, model) at FIGHT
 START, scripted picks are what was asked for (a timeout is the line's character), no
 "PICK MISMATCH", both results the same winner and state hash with 0 mismatching frames.
 Exit code 0 = every match OK. Every game is killed at the end; the games run minimized, muted
@@ -296,7 +296,7 @@ def session_env(a, k, match, game, port0):
     return env
 
 
-RE_PICKS = re.compile(r"in-game select: P1 (.+?) with (.+?) \(model 0x([0-9A-F]+)\), P2 (.+?) with (.+?) \(model 0x([0-9A-F]+)\)")
+RE_PICKS = re.compile(r"fighters: P1 (.+?) with (.+?) \(model 0x([0-9A-F]+)\), P2 (.+?) with (.+?) \(model 0x([0-9A-F]+)\)")
 
 
 def expected(spec, line_char):
@@ -320,12 +320,15 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--flow", choices=["persistent", "rematch"], default="persistent")
     ap.add_argument("--matches", type=int, default=4)
+    ap.add_argument("--first", type=int, default=1, help="the first match's number (match k's line, picks, seed and "
+                                                         "ports are the same in every run: --first 4 replays from match 4)")
     ap.add_argument("--rematch-every", type=int, default=3, help="persistent: a new session every K matches")
     ap.add_argument("--picks", default="jin:rp/lil:lk,random/kaz:lp,timeout/xia:rk,kum:lk/random")
     ap.add_argument("--chars", default="hei,dra,ask,law", help="the lines' (launcher) characters, cycled")
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--pick-seconds", type=int, default=30)
     ap.add_argument("--locked-after", type=int, default=0)
+    ap.add_argument("--no-pick", action="store_true", help="the lines' characters, no in-game select (comparison runs)")
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--delay", type=int, default=2)
     ap.add_argument("--mash", action="store_true")
@@ -355,16 +358,19 @@ def main():
         port, sess_k, sess_first = a.port, 1, 1
         locked = None
         fixed_time = str(int(time.time()))
-        for k in range(1, a.matches + 1):
+        for k in range(a.first, a.first + a.matches):
             mid = f"p{k:02d}"
-            new_session = a.flow == "persistent" and (k == 1 or (k - 1) % a.rematch_every == 0)
+            new_session = a.flow == "persistent" and (k == a.first or (k - 1) % a.rematch_every == 0)
             rematch = not new_session and k > 1
             if new_session:
                 port, sess_k, sess_first, locked = a.port + 4 * k, k, k, None
             p1c, p2c = chars[(2 * k) % len(chars)], chars[(2 * k + 1) % len(chars)]
             n_in_session = k - sess_first
             lock = a.locked_after and n_in_session >= a.locked_after and locked
-            if lock:
+            if a.no_pick:
+                line = f"{p1c},{p2c},{stages[k % len(stages)]},{a.rounds}"
+                spec = None
+            elif lock:
                 line = f"{locked[0]},{locked[1]},{stages[k % len(stages)]},{a.rounds}"
                 spec = None
             else:
@@ -381,7 +387,7 @@ def main():
             for g in games:
                 env = session_env(a, sess_k, mid, g, port)
                 if a.flow == "rematch":
-                    if k == 1:
+                    if k == a.first:
                         e = g.base_env()
                         e.update(env)
                         e.update({"T5_FIGHT": line, "T5_FIGHT_FILE": g.fight_path, "PS3_FIXED_TIME": fixed_time})

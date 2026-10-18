@@ -1018,11 +1018,12 @@ void pick_wait_frame(uint32_t f)
 void pick_fight_start(uint32_t f)
 {
     for (int p = 0; p < 2; p++) g_models[p] = (int)rd32(rec(p) + kRecModel);
+    note("frame %u: fighters: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)%s", f, kName[g_cfg.chr[0]],
+         btn_name(g_cfg.btn[0]), g_models[0], kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]), g_models[1],
+         g_pick.on ? " (in-game select)" : "");
     if (!g_pick.on) return;
     g_pick.on = false;
     const int me = g_pick.me, other = 1 - me;
-    note("frame %u: in-game select: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)", f, kName[g_cfg.chr[0]],
-         btn_name(g_cfg.btn[0]), g_models[0], kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]), g_models[1]);
     if (g_pick.have && g_models[me] != g_pick.model)
         note("frame %u: PICK MISMATCH: player %d's side has model 0x%X, picked 0x%X", f, me + 1, g_models[me], g_pick.model);
     if (g_pick.peer && g_models[other] != g_pick.peer_model)

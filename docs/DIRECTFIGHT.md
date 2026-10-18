@@ -225,8 +225,8 @@ The flow, per PC (`df_fight.cpp` phases Pick and PickWait, helpers in
    Then the driver moves the opponent's cursor to its pick and confirms with its
    button (as for a lobby-picked fight), then the stage (the line's, from the
    lobby), FIGHT START, lockstep frame 0 / the resume (below). At FIGHT START
-   both sides' model ids are logged ("in-game select: P1 ... (model 0x..), P2
-   ...") and compared with the picks ("PICK MISMATCH" if not).
+   both sides' model ids are logged ("fighters: P1 ... (model 0x..), P2 ...",
+   every fight) and compared with the picks ("PICK MISMATCH" if not).
 4. **Timeout.** No pick within N seconds of this player's select screen
    coming up: the driver picks the line's character for this player (the
    launcher's) with the default button ("TIME UP"), and that pick goes to the

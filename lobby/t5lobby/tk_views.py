@@ -206,7 +206,7 @@ class OnlineView:
         sb = ttk.Scrollbar(frame, orient="vertical", command=tv.yview)
         sb.grid(row=0, column=1, sticky="ns", padx=(self.px(4), 0))
         tv.configure(yscrollcommand=sb.set)
-        tv.tag_configure("me", foreground=C["accent_hi"])
+        tv.tag_configure("me", font=self.th.fonts["bold"])
         tv.tag_configure("other", foreground=C["faint"])
         tv.tag_configure("closed", foreground=C["muted"])
         return frame, tv
@@ -776,8 +776,8 @@ class OnlineView:
         st.columnconfigure(0, weight=1)
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
-        if not isinstance(getattr(tab.app, "status", None), tk.StringVar):
-            self.status_label.grid(row=0, column=0, sticky="w")    # (the launcher shows it in its own status bar)
+        self.status_label.grid(row=0, column=0, sticky="w")
+        self.box.after_idle(self._place_status)
         rep = ttk.Frame(st)
         rep.grid(row=0, column=1, sticky="e", padx=(px(10), px(10)))
         # after a match: the launcher's "Report a problem" window (tk_tab packs it into this frame)
@@ -789,6 +789,14 @@ class OnlineView:
         tab.pad_check = ttk.Checkbutton(pad, text=t("Use a controller here"), variable=tab.pad_var,
                                         command=tab._pad_toggle)
         tab.pad_check.pack(side="left")
+
+    def _place_status(self):
+        """The tab's own status line, unless the launcher shows the same line in its status bar."""
+        try:
+            if isinstance(getattr(self.tab.app, "status", None), tk.StringVar):
+                self.status_label.grid_remove()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------ screens
     def set_logged_in(self, on):

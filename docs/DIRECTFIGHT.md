@@ -250,7 +250,12 @@ START anyway.
 **Ranked lock.** After the first game of a ranked set the lobby sends no
 `pick` (the set's characters are those the first game picked): the select
 screen is skipped and the driver picks both sides as in a lobby-picked fight,
-on each PC locally (the lockstep is paused there all the same).
+on each PC locally (the lockstep is paused there all the same). A fighter that
+is the same as in the session's last fight keeps its costume (the lock names
+characters only). Whether the set's next game was voted (Rematch) or started
+by the lobby on its own, the game gets the same "fight" command in the running
+session; one that comes while the win pose still runs waits for the select
+screen.
 
 Not done: no in-game text beyond the name plates (the launcher's status line
 says the same: "Pick your fighter in the game", "Waiting for your opponent to

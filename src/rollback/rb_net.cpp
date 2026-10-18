@@ -315,6 +315,7 @@ bool offered_by_env()
 
 void offer()
 {
+    ktrace_install();   /* T5_RB_KTRACE: diagnostics only */
     if (g_offered) return;
     g_offered = true;
     if (!offered_by_env()) return;
@@ -407,6 +408,11 @@ void start(uint32_t f)
     np::PadInput r;
     for (uint32_t g = f; g > 0 && g + 64 > f; g--) if (np::rb_remote(g - 1, &r)) { g_last_remote = r; break; }
     QueryPerformanceCounter(&g_t_window);
+    ktrace_note("session: the rollback loop starts at frame %u", f);
+    if (ktrace_on()) {   /* the sound library's allocator callbacks (diagnostics) */
+        const uint32_t tbl[] = { 0x10088F0Cu, 0x10088F10u, 0x10088F88u, 0x10088F8Cu };
+        for (uint32_t a : tbl) { const uint32_t opd = rd32(a); ktrace_note("sound allocator slot %08X -> OPD %08X -> code %08X", a, opd, opd ? rd32(opd) : 0); }
+    }
     note("rbnet: rollback loop takes over at frame %u (delay %d, max prediction %u frames, peer inputs known for < %u)",
          f, g_delay, g_maxpred, np::rb_remote_contig());
 }
@@ -426,7 +432,9 @@ void session_reset()
     report();
     note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
          g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens);
+    { char hs[256]; sndheap_stats(hs, sizeof hs); note("rbnet: sound heap: %s", hs); }
     g_active = false;
+    ktrace_note("session over");
     memset(g_hash_tag, 0, sizeof g_hash_tag);
     memset(g_used_tag, 0, sizeof g_used_tag);
     memset(g_phase_tag, 0, sizeof g_phase_tag);
@@ -437,6 +445,7 @@ void session_reset()
     g_next_f = 0; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false; g_early_committed = 0;
     g_last_remote = np::kNeutral;
     g_st = Stats(); g_tot = Stats();
+    g_dumps = 0;   /* T5_NET_DESYNC_DUMP: 20 per session (a deliberately desynced session used to take them all) */
     state_reset();
 }
 
@@ -582,6 +591,7 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     }
     cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
     reader_sem_restore(first_wrong);   /* the reader's completion token, as at that boundary */
+    ktrace_note("rollback at %u to %u (%u frames)", f, first_wrong, depth);
     LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
     g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
     if (depth > g_st.max_depth) g_st.max_depth = depth;
@@ -610,6 +620,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
+    if (f) ktrace_boundary(f - 1, g_resim);
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     post_record(f);

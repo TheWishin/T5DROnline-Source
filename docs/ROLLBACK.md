@@ -8,8 +8,11 @@ NPUB30009 v01.00 and this runtime's memory map (`PS3_VM_WRITE_WATCH=1`).
 -- offered with direct fight unless `T5_RB_MODE=off`, lockstep when the peer
 does not offer it. Sections 20-25 are the current state, with sections
 26-30 (latency branch: 60 fps at RTT 150, input delay by ping, the
-end-of-match hang under heavy rollback); the earlier
-sections are the history that led there.
+end-of-match hang under heavy rollback), 31 (rematch-fix: rematches, the GCM
+ring end, post-match and select-screen rules) and 32 (rollback-crash branch:
+the file manager, the music stream object and the sound library's heap left
+out of the rollback state); the earlier sections are the history that led
+there.
 
 ## Verdict
 
@@ -1925,10 +1928,183 @@ The race that turns a drain-thread recycle into a stall did not come up in
 these single offline fights (it did in the online runs above, about once in
 six matches); its precondition, the recycle, is gone.
 
+## 32. The abort in the file manager: memory of threads that run beside the frame (branch rollback-crash)
+
+What was seen (section 30's fx2, reset-fix's stut_rb1): under `reset_cycle_test.py
+--stutter 80`, the side that rolls back aborts after several matches in the
+NU::File request manager's thread (`abort()` from 0x3C3AAC = `__cxa_pure_virtual`,
+called by the manager's loop 0x37408C at 0x37414C: a queued request whose object
+is already destroyed); just before, archive opens get fds 5 and 6 instead of 3
+and 4. Here it came back in 4-5 cycles of every traced run (k2, k3).
+
+**The tracer** (`src/rollback/rb_ktrace.cpp`, `T5_RB_KTRACE=1|2|3`, one
+`rb_ktrace_<pid>.log` per process in the working directory): every event tagged
+with the frame running and L(ive)/R(e-simulated). Level 1: the title's opens and
+closes (entry detours on the cellFsOpen/Close import stubs -- `rb_detour.cpp`
+now moves the stubs' `mov ecx, imm32` prologue -- and on the title's file
+device, 0x38C90C / 0x38C798), lv2 object creates and destroys, sys_memory,
+rollbacks, sessions. Level 2: reads and seeks, every request put into the file
+manager's list (0x374438: thread, slot, id, call chain) and every call of a
+request's process method (0x37414C, through the indirect-call hook), the
+loader's inflate (0x671E4), the sound library's heap calls. Level 3: per
+boundary, the main thread's wake/take syscalls of the frame that just ran.
+Answers for the brief's suspects, three runs: the main thread opens and closes
+no file and creates or destroys no lv2 object in a re-simulated frame (0 events
+in k1-k3); it starts a load there almost never (the reader's post: 0 times, its
+trywait: once -- section 30's case). What runs while the main thread
+re-simulates is other threads' work: the file manager and the music stream
+thread.
+
+**The file manager.** Its thread (`NU::File::RequestManager`, tid 2) serves two
+clients: the async reader ZsAread (open, seek, read, close of one archive entry
+per request -- drained at every boundary) and the music stream thread
+`CnuSound2Thread` (object 0x106CECD0: open/seek/read/close of the track at any
+time, keeping the handle at +0x13C). The main thread never calls it. Its whole
+state is guest memory in the rollback state: the file device 0x10750488 with 16
+file objects at 0x107507D0 (stride 0x58, host fd at +0x18), the manager
+0x10751A00 (lwmutex +8, semaphore +0x40, request ids +0x48, 16 request slots of
+0x40 from +0x4C, the request list +0x44C, the slot free list +0x540) and its
+node pool up to 0x10752034. A restore put those pages back to a boundary that
+the manager's thread, its clients, their kernel semaphores and the host's open
+files had all left behind. In k3 the slot ring stopped rotating (every request
+in slot 0x10751A4C from one session on), then a ZsAread Read and Close found no
+free slot -- handle 0x7B and fd 4 were never closed, the retry got fd 5 --, and
+at the next session t8's Open and t16's Seek were handed the same slot at the
+same moment; the manager processed the Open, the destructor reset the slot's
+vtable, the Seek's node was still queued: pure virtual call, abort. Write-fault
+trace w1 (`T5_RB_WFT_ADDRS=1`, every written word by guest thread and function)
+confirms the ownership: in 0x10750000..0x10751FFF only the manager's thread,
+ZsAread and the music thread write; in 0x10752000 the manager's node pool ends at
+0x10752033 and the rest is the main thread's (lwmutexes, draw handshake).
+
+**The music stream object** 0x106CECD0 (fields up to +0x5B4) is the stream
+thread's: it writes the file handle and the read positions; the main thread only
+through the library's music calls 0x334628 / 0x3349B0, which the sound hooks
+never repeat in a re-simulated frame; bnusCoreUpdateThread writes +0x428..+0x437
+and +0x480/+0x494. A restore gave the thread back a handle it had closed and lost
+the one it held.
+
+Fix 1 (`rb_state.cpp`): 0x10750000..0x10751FFF are `kExclude` (never saved or
+restored), and a new byte-exact `kKeepLive` list -- bytes a restore writes
+around, never over, not even for a moment as a save-and-rewrite would --
+holds the stream object 0x106CECD0+0x5B8 and the node pool tail
+0x10752000+0x40. They are masked out of the page hash.
+
+Section 31 (rematch-fix, at the same time) tried two neighbours of this and
+dropped them, for reasons this one avoids: 0x10750000..0x10753000 out of the
+state desynced match 1 (pad state, 0x10099F38) -- the third page is the main
+thread's from 0x10752088 on (the keyread tick's lwmutexes, the draw
+handshake: write-fault trace w1), only its first 0x34 bytes are the manager's,
+hence the byte-exact range; and the manager's page alone left the file
+device's page (the file objects with their fds and positions) restored, and
+the abort came back after two matches. Its fd journal (opens, closes and
+positions taken back by a restore) closed files the worker had opened for the
+music thread, which no re-simulated frame opens again.
+
+**The second abort.** With fix 1 the file-manager abort was gone (fx1: 32
+cycles, no fd above 4, no abort), but runs on the other schedule (fx3, from
+cycle 5) and the opponent of i1 aborted elsewhere: `inflate failed. error
+no:-3` (the loader thread's zlib inflate of an archive entry, 0x1EB58C ->
+0x671E4), the music stream ends, then `abort()` from 0x3AABC0 in the C
+library's `free()` (0x3AAA40), called by the ATRAC3+ decoder's teardown
+0x349AA4 at 0x349EB4. The same sequence is in the rematch agent's run
+`build/rm/runs/h1` (main + its branch, without this work): older than this fix.
+The C library heap (malloc 0x3AB2C8, free 0x3AAA40) keeps its state at
+0x10753EF0 -- rolled back -- and its first arena at 0x40000000 (excluded since
+phase 1 as "sound") and a second one at 0x45C00000 (rolled back). The sound
+library allocates from it through callbacks (0x10088F0C/F10, copied at init
+to 0x10088F88/F8C): at init on the main thread, and when a track starts or
+stops on the stream thread, the ATRAC3+ decoder thread and bnusCoreUpdateThread
+(trace a2: ~1 MB live, 79 blocks; during a fight nothing else uses the heap, at
+a KO, round end or match end these threads do). A restore rewound the free
+lists under blocks that stayed in use, a block went out twice -- a loader's
+compressed data overwritten (the inflate error), and the decoder's free()
+found a broken chunk.
+
+Fix 2 (`rb_sndheap.cpp`): every malloc whose caller is the sound library's code
+(0x326000..0x34B000; callers seen 0x32938C..0x34A944) comes from a pool at guest
+0x7F000000 (8 MB; nothing maps there -- sys_memory ends at 0x50000000, the HLE
+heap at 0x58000000, cellAudio 2 MB per port from 0x58000000, sys_vm
+0x60000000..0x70000000), bookkept in host memory; a free of a pool block, from
+any caller, goes back to it (entry detours on malloc and free). The C library
+heap is then only the main thread's and the drained loaders', whose work a
+restore and its re-simulation undo and redo together. The sound library is
+output state like the rest of the sound side (section 20): not rewound, not
+repeated. `T5_RB_SNDHEAP=0` turns it off; the session's last `rbnet:` lines
+give the pool's use (`sound heap: 1051 KB in use (peak 1051 KB) in 79 blocks`).
+Where the library's blocks live changes the layout of the C library heap, and
+that layout reaches the hashed state: a lockstep pair with the pool on one PC
+only (host default, joiner `T5_RB_MODE=off`) desynced from the first fight frame
+(MIX50: 4 233 mismatching frames; the same pair with `T5_RB_SNDHEAP=0` on the
+host: 0). So the pool is installed in every online session, rollback or
+lockstep, from the netplay hooks' cellPadInit (before the library's first
+allocation, in the exe and the game-DLL build alike), and in the rollback test
+modes; offline the game is unchanged. The final hash of a match changes with it
+(the same inputs end with another hash than without the pool), equally on both
+PCs.
+
+No runtime change was needed. The host's open files follow the title's file
+manager, which is no longer rewound, so the descriptor table needs no journal:
+a restore takes back no open and no close, because no open or close ever
+belonged to a re-simulated frame -- they are the file manager's thread's, done
+for the reader (whose requests the boundary completes) and for the music thread
+(whose state is now kept live). A journal that closed the files "opened in a
+re-run frame" on a restore would close the music thread's track under it.
+(Seen on the way: `runtime/ppu/ppu_fs.cpp` hands descriptor slots out and back
+without a lock; two opens at the same moment on two threads could share an fd.
+Not this bug's cause -- the file manager serialises the title's opens -- and
+left alone.)
+
+`tools/reset_cycle_test.py` now fails a cycle on the title's `abort()` in either
+game (before, an abort of O counted as "O log: clean"), keeps the end of a
+replaced game's log for the check, and has `--below-normal` / `--mute` for a PC
+in use; `fight_flow_test.py`'s control file write retries a replace Windows
+refuses (a run died on it after 15 cycles). `T5_NET_DESYNC_DUMP` writes up to 20
+dumps per session (a deliberately desynced session used to take them all).
+
+**Proof.** `reset_cycle_test.py --stutter 80` (O suspended 80 ms every 0.2-0.6 s:
+S predicts and rolls back all match long), one S process per run, every log of
+both games checked for `abort()`, `[CRASH]`, `inflate failed` and archive opens
+at fd 5 or above. Schedule 1 = cycles from 1, schedule 5 = from cycle 5 (other
+fighters and stages; the inflate abort only showed there).
+
+| run | build | schedule, cycles | match ends (S) | S rollbacks | aborts (S / O) | opens at fd >= 5 | result |
+|---|---|---|---|---|---|---|---|
+| k2, k3 | tracer, no fix | 1, 5 + 4 | 4 + 3 | 1 346 + 984 | file manager: 1 + 1 / 0 | 13 + 24 | S died in cycle 5 / 4 |
+| fx1 | fix 1 | 1, 32 | 33 | 10 447 | 0 / 0 | 0 | 29 pass, 3 "no_peer" (a fresh O took 25-30 s to boot under load, past the 20 s connect timeout) |
+| fx3, i1 | fix 1 | 5, 8 + 15 | 9 + 13 | 2 396 + 3 920 | inflate + free(): 2 + 1 / 0 + 1 | 0 | S died twice in fx3, once in i1; O once |
+| F5 + F6 | fixes 1 + 2 | 1 + 5, 22 + 15 | 24 + 17 | 6 351 + 5 407 | 0 / 0 | 0 | 36 pass; 1 cycle with a 3-frame transient (below) |
+| F9 | final | 5, 21 (stopped at cycle 26 for a pause; to finish) | 24 | 7228 | 0 / 0 | 0 | 21 pass |
+
+F5 and F6 were stopped early (F5 when the owner started playing on the PC, F6
+by the control-file race above); F9 ran muted at below-normal priority.
+
+Pairs on the final build (`rollback_net_test.py`, section 29's command, a whole
+match each; the PC was fully loaded -- 11 game instances --, so the fps are
+low): RTT 150 default/default (RB150c) 556 rollbacks on the joiner, 0
+mismatching frames, the same result hash on both PCs; lockstep RTT 50
+(LS50b, both `T5_RB_MODE=off`) and the fallback (MIX50b, host default, joiner
+`T5_RB_MODE=off`) 0 mismatching frames, the same hash. Smoke quick: PASS
+(74 checks, 9 fps/audio WARN under load; offline the change is inert). tests/
+143 OK; lobby/tests 297 OK (two ranked driver tests had timed out once under the
+load before).
+
+**Not explained: a 3-frame transient after a deliberately desynced session.** In
+F5 (cycle 15) and the overloaded first try F2 (cycle 7), the match after the
+`desync` cycle (the two games had fought on different stages) mismatched on
+frames 225-227 -- "Fight!", the first frames the check compares after the
+intros -- and agreed from 228 on, with the same final hash; both runs had the
+sound heap. It did not come back in four replays of the same schedule (D1, D3,
+D4, and F6's cycle 7) nor in fx1's four such matches without the pool; the
+dumps of those runs were used up by the desynced session before (fixed now).
+It is the "two games with different histories" kind (CLAUDE.md's open item b);
+a dump of the next occurrence will name the words.
+
 ## What is left
 
-- The file request thread under rollback (section 31): the one known way a
-  rollback session still ends a game.
+- The file request thread under rollback (sections 30-31): fixed in section 32,
+  with the sound library's heap; open there: a 3-frame transient at "Fight!" in
+  the match after a deliberately desynced session.
 - Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
   vblank. Further cuts need whole functions (see the tails above), or an early
   start at the flush instead of after the present, which needs the render
@@ -1938,8 +2114,11 @@ six matches); its precondition, the recycle, is gone.
   boundary; with early rollbacks a late live start makes one long and one short
   interval without a missed vblank. `tools/latency_test.py`'s display cadence
   (presents against the display's vblank grid) is the closer measure.
-- Under the same heavy stutter, about one match end in 15 aborts in
-  NU::File::RequestManager (section 30, fx2 cycle 5; also on main, reset-fix
-  stut_rb1). Section 31 has more on it: it is not only stutter (with both
-  players mashing, about once in 8 matches of a session) and the worker
-  thread does every file operation of the title.
+- Other memory of threads that run beside the frame is still in the rollback
+  state and was not seen to break anything: the rest of the sound library's
+  ELF data (TOC globals 0x106CDE80..0x106CECCC and 0x106D1B50..0x106D4838,
+  written by its tick on live frames only and by its threads), the "particle"
+  thread (stage effects, the rand() consumer of section 12), TNUD::ASync, the
+  two draw request managers (idle at the boundary). `T5_RB_KTRACE` and
+  `T5_RB_WFT_ADDRS=1` show who writes what; the rule from section 32 applies:
+  a thread the boundary does not drain must not have its memory restored.

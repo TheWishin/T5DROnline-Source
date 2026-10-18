@@ -87,6 +87,7 @@ extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: st
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
+namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -1394,6 +1395,12 @@ void h_cellPadInit(ppu_context* ctx)
     if (g_offline) { install_syscall_hooks(); return; }
     np::init();
     if (!np::enabled() && !g_persistent) return;
+    /* The sound library's heap (rb_sndheap.cpp): in every online session,
+     * rollback or lockstep (T5_RB_MODE=off too), before the library's first
+     * allocation. Where its blocks live changes the layout of the C library
+     * heap, which reaches the hashed state: a PC with it and one without
+     * desynced in lockstep (rollback-crash run MIX50: 4 233 frames). */
+    rb::sndheap_install();
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);

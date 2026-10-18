@@ -21,6 +21,7 @@
 #include <string>
 #include <algorithm>
 
+#include "sys_ppu_thread.h"
 #include "rb.h"
 
 extern "C" uint8_t* vm_base;
@@ -36,6 +37,15 @@ uint32_t g_only_addr = 0;                    /* T5_RB_WFT_ADDR=hex: record only 
 __declspec(thread) uintptr_t t_reprotect = 0;
 std::map<std::string, int> g_who;          /* "func chain|page" -> faults */
 std::map<uint32_t, int> g_pages;
+bool g_addrs = false;
+DWORD g_arm_tid = 0;                         /* the thread that armed the trace (the main thread, at a boundary) */
+std::map<std::string, int> g_addr_who;     /* "thread func word" -> writes (T5_RB_WFT_ADDRS) */
+const char* thread_name_of_host(DWORD host_tid)
+{
+    for (int i = 0; i < PPU_THREAD_MAX; i++)
+        if (g_ppu_threads[i].state != PPU_THREAD_STATE_FREE && g_ppu_threads[i].host_tid == host_tid) return g_ppu_threads[i].name;
+    return host_tid == g_arm_tid ? "main" : "?";
+}
 CRITICAL_SECTION g_cs;
 int g_faults = 0;
 
@@ -81,6 +91,10 @@ LONG CALLBACK veh(EXCEPTION_POINTERS* ep)
     snprintf(t, sizeof t, "|%08X", ea & ~0xFFFu);
     g_who[chain + t]++;
     g_pages[ea & ~0xFFFu]++;
+    if (g_addrs) {   /* T5_RB_WFT_ADDRS=1: every written word, by guest thread and writing function */
+        char k[96]; snprintf(k, sizeof k, "%s %06X %08X", thread_name_of_host(GetCurrentThreadId()), top, ea & ~3u);
+        g_addr_who[k]++;
+    }
     LeaveCriticalSection(&g_cs);
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -92,6 +106,7 @@ void wft_install()
     if (!e || !*e) return;
     if (const char* a = getenv("T5_RB_WFT_ALL")) g_all = *a == '1';
     if (const char* a = getenv("T5_RB_WFT_ADDR")) g_only_addr = (uint32_t)strtoul(a, nullptr, 16) & ~3u;
+    if (const char* a = getenv("T5_RB_WFT_ADDRS")) g_addrs = *a == '1';
     if (!strcmp(e, "diff")) {   /* ranges come later, from the test's page diff */
         InitializeCriticalSection(&g_cs);
         AddVectoredExceptionHandler(1, veh);
@@ -142,6 +157,7 @@ void wft_arm()
 {
     if (g_ranges.empty() || g_armed || g_ranges[0].len == 0) return;
     g_active = g_ranges;
+    g_arm_tid = GetCurrentThreadId();
     g_who.clear(); g_pages.clear(); g_faults = 0;
     g_armed = true;
     for (const R& r : g_active) {
@@ -176,6 +192,8 @@ void wft_disarm(const char* tag)
     if (v.size() <= 16) for (auto& e : v) note("writer (%s): %s", tag, e.second.c_str());   /* small traces also to the game log (flushed) */
     /* per page: writes by chain (one fault per page per window unless T5_RB_WFT_ALL) */
     for (auto& kv : g_who) logline("WP %s %s writes %d", tag, kv.first.c_str(), kv.second);
+    for (auto& kv : g_addr_who) logline("WA %s %s %d", tag, kv.first.c_str(), kv.second);
+    g_addr_who.clear();
 }
 
 } // namespace rb

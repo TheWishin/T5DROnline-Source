@@ -31,8 +31,8 @@ Every cycle is "match -> abnormal end -> next match", the way the launcher drive
      both results name it, the same winner and gameplay hash, 0 mismatching frames.
 
 Each cycle fails on: a bad guest call ("not registered"), a NULL call/read/write, a
-fence queue overflow, a crash, S stuck leaving a fight or resetting, S not back at
-neutral, or the next match not confirmed. The FIFO walker's unmapped-JUMP/CALL
+fence queue overflow, a crash or the title's abort() (in either game), S stuck leaving a
+fight or resetting, S not back at neutral, or the next match not confirmed. The FIFO walker's unmapped-JUMP/CALL
 resyncs are counted and reported per cycle (main has them in ordinary fights too). Both players
 mash buttons in fights (--mash, default on) so matches end in ~20-60 s.
 Exit code 0 = every cycle passed. Windows open minimized; every game is killed at the end.
@@ -61,6 +61,7 @@ BAD = [
     ("null_read", re.compile(r"\[null-read\]")),
     ("fence_overflow", re.compile(r"fence queue overflow")),
     ("crash", re.compile(r"\[CRASH\]")),
+    ("abort", re.compile(r"abort\(\) is called")),   # the title's own abort() (rollback-crash: file manager, sound heap)
     ("leave_stuck", re.compile(r"leave: waiting in mode")),
     ("reset_stuck", re.compile(r"reset: waiting in mode")),
     ("stuck_exit", re.compile(r"STUCK:")),
@@ -102,9 +103,9 @@ class Player(Game):
     def __init__(self, a, idx, role):
         super().__init__(a, idx, role)
         self.log_pos = 0
+        self.carry = ""   # the unread tail of the log of a game that was replaced (its abort, if it died)
 
-    def log_since(self):
-        """Text the game's current log got since the last call (at most 64 MB of it)."""
+    def _read_new(self):
         try:
             with open(self.log_path, encoding="utf-8", errors="replace") as f:
                 f.seek(self.log_pos)
@@ -113,6 +114,12 @@ class Player(Game):
                 return t
         except (OSError, AttributeError):
             return ""
+
+    def log_since(self):
+        """Text the game's logs got since the last call (at most 64 MB of the current one), including
+        the end of the previous game's log when it was restarted in between."""
+        t, self.carry = self.carry + self._read_new(), ""
+        return t
 
     def boot(self):
         e = self.base_env()
@@ -123,6 +130,7 @@ class Player(Game):
                 os.remove(p)
             except OSError:
                 pass
+        self.carry += self._read_new()   # what the game being replaced wrote last
         self.start(e)
         self.log_pos = 0
 
@@ -188,9 +196,13 @@ def main():
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
     ap.add_argument("--env1", action="append", default=[], help="NAME=VALUE for S only")
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for O only")
+    ap.add_argument("--below-normal", action="store_true", help="start the games at below-normal CPU priority (the PC is in use)")
+    ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1 for both games (the mix is zeroed; the PC is in use)")
     a = ap.parse_args()
     a.mash = not a.no_mash
     a.exe2 = None
+    if a.mute:
+        a.env = a.env + ["PS3_AUDIO_MUTE=1"]
     if not os.path.isfile(os.path.join(a.vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")):
         print(f"no game at {a.vfs} (--vfs <game/vfs of a built tree>)")
         return 2
@@ -389,7 +401,10 @@ def main():
             bad_s, bad_o = bad_lines(text_s), bad_lines(text_o)
             cyc["bad_s"], cyc["bad_o"] = bad_s, bad_o
             cyc["fifo_s"], cyc["fifo_o"] = bad_lines(text_s, FIFO), bad_lines(text_o, FIFO)
-            cyc["ok"] = ok2 and took is not None and not bad_s and S.running()
+            # a crash or abort of O fails the cycle too (O rolls back as well; rollback-crash found
+            # the sound heap abort on O, which the old check called "clean")
+            o_dead = {k: v for k, v in bad_o.items() if k in ("crash", "abort")}
+            cyc["ok"] = ok2 and took is not None and not bad_s and not o_dead and S.running()
             ok_all &= cyc["ok"]
             report["cycles"].append(cyc)
             log(f"cycle {c}: {'PASS' if cyc['ok'] else 'FAIL'} (S log: {bad_s or 'clean'}; O log: {bad_o or 'clean'}; "

@@ -324,7 +324,8 @@ class OnlineView:
         tab.b_guest = ttk.Button(pg, text=t("Play as guest"), style="Card.Accent.TButton",
                                  command=lambda: tab.do_login("guest"))
         tab.b_guest.grid(row=1, column=0, sticky="e", pady=(px(12), 0))
-        self.wrap(ttk.Label(card, textvariable=tab.hint_var, style="Card.Faint.TLabel", justify="left"),
+        self.wrap(ttk.Label(card, style="Card.Faint.TLabel", justify="left", text=t(
+            "Passwords are only sent to servers on this PC / your network, or over an encrypted (TLS) connection.")),
                   card, 40).grid(row=6, column=0, sticky="w", pady=(px(14), 0))
 
         # side: host for friends, how it works

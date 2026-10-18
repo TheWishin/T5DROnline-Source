@@ -69,6 +69,11 @@ uint32_t sound_word();                             /* the guest address of that 
 
 uint32_t pad_calls();                              /* cellPadGetData override invocations so far */
 uint64_t main_tid();                               /* guest thread id of the main thread (1) */
+/* rand() with one generator per thread (rb_rand.cpp): the main thread's draws
+ * no longer depend on a side thread's pace. Installed at static init (exe) or
+ * the first frame boundary (game DLL). */
+void     rand_install();
+uint64_t rand_side_calls();                        /* draws made by other threads from their own generators */
 uint32_t guest_of_host(uintptr_t host_pc, uint32_t* off);   /* lifted function containing a host address, 0 if none */
 uint32_t guest_at_host(uintptr_t host_fn);                  /* lifted function whose entry IS this host address, 0 if none */
 

@@ -50,8 +50,8 @@ def run(a, name, extra, dump=None):
         "T5_NET_MODE": "local", "T5_NET_START": "external", "T5_FIGHT": a.fight, "T5_NET_SEED": str(a.seed),
         "PS3_FIXED_TIME": str(a.clock), "T5_NET_LOG": os.path.join(d, "frames.log"),
         "T5_NET_RESULT_FILE": os.path.join(d, "result.json"), "T5_NET_SCRIPT_FIGHT": "1",
-        "T5_NET_SCRIPT": fft.mash_script(os.path.join(a.out, "p1.txt"), 101, gap=a.gap, moves=not a.no_moves),
-        "T5_NET_SCRIPT2": fft.mash_script(os.path.join(a.out, "p2.txt"), 102, gap=a.gap, moves=not a.no_moves),
+        "T5_NET_SCRIPT": fft.mash_script(os.path.join(os.path.abspath(a.out), "p1.txt"), 101, gap=a.gap, moves=not a.no_moves),
+        "T5_NET_SCRIPT2": fft.mash_script(os.path.join(os.path.abspath(a.out), "p2.txt"), 102, gap=a.gap, moves=not a.no_moves),
     })
     if a.full:
         env["T5_RB_HASH_FULL"] = "1"

@@ -77,6 +77,7 @@
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
+namespace rb { void rand_install(); }   /* rb_rand.cpp: rand() with one generator per thread */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
@@ -919,6 +920,7 @@ void offline_frame(ppu_context* ctx)
 
 void on_frame_start(ppu_context* ctx)
 {
+    rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */

@@ -813,8 +813,8 @@ class LobbyClient:
                 except (OSError, ConnectionError, asyncio.TimeoutError):
                     pass
             await self._drop_game_socket()
-            for t in self._tasks:
-                t.cancel()
+            for task in self._tasks:
+                task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)
             if self._writer is not None:
                 self._writer.close()

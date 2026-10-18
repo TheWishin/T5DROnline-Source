@@ -51,20 +51,6 @@ const Range kExclude[] = {
      * docs/ROLLBACK.md section 26). Neither saved nor restored now; the write
      * pointer in CellGcmContextData is kept across restores (kKeepWords). */
     { 0x40100000u, 0x00400000u },
-    /* NU::File::RequestManager: the manager object (0x10751A28, its thread's
-     * argument), its request list and its lwmutex. Every file open, read and
-     * close of the title is done by its worker thread (FS_CALLER: thread 2 for
-     * all 105 opens of an offline run, boot and fight), for requests of the sound streamer (whose
-     * state is out of the rollback state already: the first heap chunk), the
-     * draw and the main thread. A restore rewound the list under the worker:
-     * a request it was processing went back into the queue or was overwritten,
-     * the worker called through a stale vtable (0x374150 -> abort) or read
-     * the archive at a stale position ("inflate failed", the fight's particle
-     * thread never joined) and file handles leaked (fds 5, 6, 7 instead of
-     * 3/4) -- after 8 matches without stutter, 2 in 6 match ends with a choppy
-     * opponent (rematch-fix runs R2, g4, P2). Never rewound now, like the GCM
-     * ring; hash-excluded as before. */
-    { 0x10750000u, 0x00003000u },
     { 0x10114000u, 0x00058000u },   /* sound core mix/output area (bnusCore) */
     { 0x40000000u, 0x00100000u },   /* first heap chunk: sound system voice slots, requests, shared areas (sound threads) */
     { 0x45F00000u, 0x00100000u },   /* decoder / streaming */

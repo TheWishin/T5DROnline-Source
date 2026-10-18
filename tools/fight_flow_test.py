@@ -73,15 +73,16 @@ def log(msg):
     print(f"[{time.time() - T0:7.1f}s] {msg}", flush=True)
 
 
-def mash_script(path, seed, frames=400000):
-    """Face buttons and directions, 1-4 frames each, a few frames apart (no START: that pauses a fight)."""
+def mash_script(path, seed, frames=400000, gap=6):
+    """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that pauses a fight).
+    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts)."""
     rnd = random.Random(seed)
     buttons = [0x4000, 0x2000, 0x8000, 0x1000, 0x4000 | 0x2000, 0x8000 | 0x1000, 0x10, 0x20, 0x40, 0x80, 0x20, 0x80]
     out, f = [], 30
     while f < frames:
         n = rnd.randint(1, 4)
         out.append(f"{f} {n} {rnd.choice(buttons):#x}")
-        f += n + rnd.randint(1, 6)
+        f += n + rnd.randint(1, gap)
     with open(path, "w") as fp:
         fp.write("\n".join(out) + "\n")
     return path
@@ -184,7 +185,8 @@ class Game:
             "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": "20",
         })
         if self.a.mash:
-            env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx)
+            env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
+                                               gap=getattr(self.a, "mash_gap", 6))
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
@@ -292,6 +294,7 @@ def main():
     ap.add_argument("--chars", default="kaz,hei,lil,dra")
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--mash", action="store_true")
+    ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
     ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
     ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")

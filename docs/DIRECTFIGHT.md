@@ -566,13 +566,15 @@ did:
   command that way (one in ~20). The game opens it with delete sharing now,
   and the launcher retries the replace (`match_driver.replace_retry`).
 - **Under rollback the post-match frames and a rematch's select screen are no
-  longer predicted** (docs/ROLLBACK.md section 31): the input after the KO is
-  a rule of the game state on both PCs (the same hold and START skip the
-  driver did), the select screen of a rematch runs in lockstep, and open files
-  follow restores. Rollbacks across the game's loads there leaked file
-  handles until its file request thread aborted (after 8 matches with no
-  stutter, run R2) or read the archive at the wrong position (`inflate
-  failed`, then a hang in the particle thread's join).
+  longer predicted, and the file request manager is never rewound**
+  (docs/ROLLBACK.md section 31): the input after the KO is a rule of the game
+  state on both PCs (the same hold and START skip the driver did), the select
+  screen of a rematch runs in lockstep, and the title's file request manager
+  (its worker thread does every file open, read and close) is out of the
+  rollback state. Restores had rewound its request list under the worker:
+  file handles leaked until the worker aborted (after 8 matches with no
+  stutter, run R2) or read the archive at a stale position (`inflate failed`,
+  then a hang in the particle thread's join).
 
 The driver's own START skip and pad hold stay as they were offline and in
 lockstep; under rollback the rule decides the post-match input and the

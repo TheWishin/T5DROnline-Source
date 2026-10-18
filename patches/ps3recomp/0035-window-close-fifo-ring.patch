@@ -194,153 +194,27 @@ index 85e1369..c2c364b 100644
  /* --- headless software build only ---------------------------------------
   * Off Windows this backend has no window: it renders into a host-memory
 diff --git a/runtime/ppu/ppu_fs.cpp b/runtime/ppu/ppu_fs.cpp
-index bbe280d..c1982cd 100644
+index bbe280d..5cfbb4d 100644
 --- a/runtime/ppu/ppu_fs.cpp
 +++ b/runtime/ppu/ppu_fs.cpp
-@@ -27,6 +27,7 @@
- #include <string.h>
- #include <stdlib.h>
- #include <sys/stat.h>
-+#include <mutex>
- #include "../platform/win32_dirent.h"   /* <dirent.h>, or a Win32 stand-in */
- 
- /* Guest-resolving host backtrace (ppu_loader.cpp). Must be declared at file scope:
-@@ -165,6 +166,104 @@ static int fd_alloc_file(FILE* f)
-     for (int i = 3; i < FS_MAX; i++) if (!g_files[i] && !g_dirs[i]) { g_files[i] = f; return i; }
-     return -1;
- }
-+/* ---- Patch 0035: file handles under a rollback netcode ----------------------
-+ * An open file is host state: a restore of guest memory does not take back an
-+ * open, a close or a file position. The title opens and closes its archive in
-+ * many frames (stage streaming, the result screen, the select screen); a
-+ * rollback that re-ran such a frame opened the file a second time while the
-+ * first fd stayed open for good (the restored game had never heard of it), or
-+ * closed it twice. In a T5DR rollback session the archive fds climbed one by
-+ * one (3/4 -> 5 -> 6 -> 7) and the title's file request manager aborted at a
-+ * match end or a fight's loading (NU::File::RequestManager, 0x374150 ->
-+ * abort; after 8 matches without any stutter, 2 in 6 with a choppy opponent).
-+ *
-+ * The rollback layer reports its frame boundaries, how far frames are final
-+ * and its restores (ppu_fs_rb_*); while that runs:
-+ *   - every open and close is tagged with the frame that does it;
-+ *   - a close is held back (the FILE* stays, the fd is not reused) until its
-+ *     frame is final;
-+ *   - a restore to boundary r closes every file opened in a frame >= r, revives
-+ *     every file closed in one, and puts each open file back to its position at
-+ *     boundary r -- so the re-run frames get the same fds and positions.
-+ * Off by default; nothing changes without a rollback session. */
-+#define FS_RB_NONE 0xFFFFFFFFu
-+#define FS_RB_HIST 128            /* boundaries whose file positions are kept */
-+#define FS_RB_POS  16             /* open files per boundary */
-+static std::mutex s_fs_lock;
-+static int      s_rb_on = 0;
-+static uint32_t s_rb_frame = 0;                 /* the frame running now */
-+static uint32_t s_open_frame[FS_MAX];           /* opened in this frame (FS_RB_NONE: before the journal) */
-+static uint32_t s_close_frame[FS_MAX];          /* the guest closed it in this frame (FS_RB_NONE: open) */
-+struct FsRbPos { uint32_t tag; uint8_t n; uint8_t fd[FS_RB_POS]; long pos[FS_RB_POS]; };
-+static FsRbPos  s_rb_pos[FS_RB_HIST];
-+static unsigned s_rb_reopened = 0, s_rb_revived = 0;
-+
-+extern "C" void ppu_fs_rb_enable(int on)
-+{
-+    std::lock_guard<std::mutex> lk(s_fs_lock);
-+    for (int i = 0; i < FS_MAX; i++) {
-+        if (!on && s_rb_on && g_files[i] && s_close_frame[i] != FS_RB_NONE) {   /* held-back closes: now */
-+            fclose(g_files[i]); g_files[i] = nullptr; g_fd_usm[i] = 0;
-+        }
-+        s_open_frame[i] = FS_RB_NONE; s_close_frame[i] = FS_RB_NONE;
-+    }
-+    memset(s_rb_pos, 0, sizeof s_rb_pos);
-+    s_rb_on = on;
-+}
-+
-+/* boundary f: frame f runs next; the open files' positions as of now */
-+extern "C" void ppu_fs_rb_boundary(uint32_t f)
-+{
-+    if (!s_rb_on) return;
-+    std::lock_guard<std::mutex> lk(s_fs_lock);
-+    s_rb_frame = f;
-+    FsRbPos& p = s_rb_pos[f % FS_RB_HIST];
-+    p.tag = f + 1; p.n = 0;
-+    for (int i = 3; i < FS_MAX && p.n < FS_RB_POS; i++)
-+        if (g_files[i] && s_close_frame[i] == FS_RB_NONE) { p.fd[p.n] = (uint8_t)i; p.pos[p.n] = ftell(g_files[i]); p.n++; }
-+}
-+
-+/* frames < f are final: the closes held back for them happen now */
-+extern "C" void ppu_fs_rb_confirm(uint32_t f)
-+{
-+    if (!s_rb_on) return;
-+    std::lock_guard<std::mutex> lk(s_fs_lock);
-+    for (int i = 3; i < FS_MAX; i++) {
-+        if (!g_files[i]) continue;
-+        if (s_close_frame[i] != FS_RB_NONE && s_close_frame[i] < f) {
-+            fclose(g_files[i]); g_files[i] = nullptr; g_fd_usm[i] = 0;
-+            s_open_frame[i] = s_close_frame[i] = FS_RB_NONE;
-+        } else if (s_open_frame[i] != FS_RB_NONE && s_open_frame[i] < f) {
-+            s_open_frame[i] = FS_RB_NONE;
-+        }
-+    }
-+}
-+
-+/* back to boundary r (the rollback layer restored guest memory to it) */
-+extern "C" void ppu_fs_rb_restore(uint32_t r)
-+{
-+    if (!s_rb_on) return;
-+    std::lock_guard<std::mutex> lk(s_fs_lock);
-+    for (int i = 3; i < FS_MAX; i++) {
-+        if (!g_files[i]) continue;
-+        if (s_open_frame[i] != FS_RB_NONE && s_open_frame[i] >= r) {   /* opened in a frame that runs again */
-+            fclose(g_files[i]); g_files[i] = nullptr; g_fd_usm[i] = 0;
-+            s_open_frame[i] = s_close_frame[i] = FS_RB_NONE;
-+            s_rb_reopened++;
-+        } else if (s_close_frame[i] != FS_RB_NONE && s_close_frame[i] >= r) {   /* closed in one: open again */
-+            s_close_frame[i] = FS_RB_NONE;
-+            s_rb_revived++;
-+        }
-+    }
-+    const FsRbPos& p = s_rb_pos[r % FS_RB_HIST];
-+    if (p.tag == r + 1)
-+        for (int k = 0; k < p.n; k++)
-+            if (g_files[p.fd[k]] && s_close_frame[p.fd[k]] == FS_RB_NONE) fseek(g_files[p.fd[k]], p.pos[k], SEEK_SET);
-+    s_rb_frame = r;
-+}
-+
-+extern "C" void ppu_fs_rb_stats(unsigned* reopened, unsigned* revived) { *reopened = s_rb_reopened; *revived = s_rb_revived; }
-+
- static int fd_alloc_dir(DIR* d)
+@@ -238,7 +238,7 @@ static void cellFsOpen(ppu_context* ctx)
+     if (fd >= 0 && fd < FS_MAX) { strncpy(g_fd_host[fd], hpath, sizeof g_fd_host[fd]-1); g_fd_host[fd][sizeof g_fd_host[fd]-1]=0; }
+     { char who[64] = "?";
+       if (getenv("FS_CALLER")) { ppu_guest_caller(who, sizeof who);
+-          fprintf(stderr, "[fs] open '%s' -> fd %d  (opened by %s)\n", gpath, fd, who);
++          fprintf(stderr, "[fs] open '%s' -> fd %d  (opened by %s, thread %llu)\n", gpath, fd, who, (unsigned long long)ctx->thread_id);
+           /* FS_STACK=<substr>: every open funnels through one guest wrapper, so
+            * one caller level says nothing about WHICH subsystem wanted the file.
+            * Dump the guest call chain for the opens that matter. */
+@@ -347,7 +347,7 @@ static void cellFsClose(ppu_context* ctx)
  {
-     for (int i = 3; i < FS_MAX; i++) if (!g_files[i] && !g_dirs[i]) { g_dirs[i] = d; return i; }
-@@ -226,7 +325,12 @@ static void cellFsOpen(ppu_context* ctx)
-         close(hfd);
-         ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return;
-     }
--    int fd = fd_alloc_file(f);
-+    int fd;
-+    {   /* patch 0035: the fd table is shared with the rollback journal (ppu_fs_rb_*) */
-+        std::lock_guard<std::mutex> lk(s_fs_lock);
-+        fd = fd_alloc_file(f);
-+        if (fd >= 0 && s_rb_on) { s_open_frame[fd] = s_rb_frame; s_close_frame[fd] = FS_RB_NONE; }
-+    }
-     if (fd < 0) { fclose(f); ctx->gpr[3] = (uint64_t)(int64_t)CELL_FS_EIO; return; }
-     if (fd_ptr) vm_write32(fd_ptr, (uint32_t)fd);
-     g_fd_usm[fd] = (strstr(gpath, ".usm") != nullptr) ? 1 : 0;
-@@ -348,9 +452,15 @@ static void cellFsClose(ppu_context* ctx)
      int fd = (int)(uint32_t)ctx->gpr[3];
      if (getenv("FS_CALLER")) { char w[64]="?"; ppu_guest_caller(w,sizeof w);
-         fprintf(stderr, "[fs] close fd=%d  (by %s)\n", fd, w); }
-+    std::lock_guard<std::mutex> lk(s_fs_lock);
+-        fprintf(stderr, "[fs] close fd=%d  (by %s)\n", fd, w); }
++        fprintf(stderr, "[fs] close fd=%d  (by %s, thread %llu)\n", fd, w, (unsigned long long)ctx->thread_id); }
      if (fd >= 0 && fd < FS_MAX && g_files[fd]) {
          if (g_fd_usm[fd] && getenv("PS3_FSLOG_READS")) fprintf(stderr, "[USMRD] CLOSE usm fd=%d\n", fd);
--        fclose(g_files[fd]); g_files[fd] = nullptr; g_fd_usm[fd] = 0;
-+        if (s_rb_on) {
-+            /* patch 0035: held back until its frame is final (a rollback may run it again) */
-+            if (s_close_frame[fd] == FS_RB_NONE) s_close_frame[fd] = s_rb_frame;
-+        } else {
-+            fclose(g_files[fd]); g_files[fd] = nullptr; g_fd_usm[fd] = 0;
-+        }
-     }
-     ctx->gpr[3] = CELL_OK;
- }
+         fclose(g_files[fd]); g_files[fd] = nullptr; g_fd_usm[fd] = 0;
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
 index ec250a3..6e75ef9 100644
 --- a/runtime/ppu/tests/boot_main.cpp

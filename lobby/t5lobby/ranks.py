@@ -140,6 +140,14 @@ def describe(state, rd, rules=None):
             "placement": [state.games, rules.placement] if placing else None}
 
 
+def record_label(rec, draws=False):
+    """[wins, losses(, draws)] -> '5W 3L' (and ' 1D' when asked for and not zero)."""
+    out = t("{wins}W {losses}L", wins=rec[0], losses=rec[1])
+    if draws and len(rec) > 2 and rec[2]:
+        out += " " + t("{draws}D", draws=rec[2])
+    return out
+
+
 def label(info):
     """'2nd Dan', '2nd Dan?' (provisional), 'Beginner (placement 2/5)'."""
     if not info:

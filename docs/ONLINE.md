@@ -44,7 +44,9 @@ lobby/
     lag.py        the post-game lag check: ping X should mean Y frames behind, it was Z
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
-    tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
+    tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
+    tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
+    theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
     padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
     padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
     cli.py        python -m t5lobby.cli: the same from a console
@@ -572,6 +574,28 @@ zip carries `lobby/t5lobby/` (tools/package_release.py).
 `T5_NET_MATCH`, the host calling `T5_NET_PEER`, `T5_NET_BUILD` in the HELLO and
 `T5_NET_KEY` are done. Left: optionally adopt the socket from
 `T5_NET_SOCKET_FILE` (snippet above).
+
+## How the Online tab looks
+
+One dark theme for the whole launcher (`lobby/t5lobby/theme.py`, plain Tk 8.6: no image files, no game
+assets; Segoe UI and Bahnschrift). The Online tab (`tk_views.py`, driven by the state in `tk_tab.py`)
+shows one card at a time next to the player's profile card (name, rank badge drawn in the tier's
+colour, rating, W-L):
+
+| State | The card |
+|---|---|
+| Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
+| In the lobby | Ranked match and Quick match, the character, Strict; the players, rooms (a lock = cannot be joined now) and chat below |
+| Searching | A turning ring, the time searching, the queues, Stop searching (B) |
+| Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
+| In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
+| Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
+| Errors | One line on a red banner: what went wrong and what to do |
+
+A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a
+tag. Tests: `tests/test_online_ui_walk.py` walks the launcher through every state (local server, two
+CLI clients, scripted players) and fails on any error in launcher.log; with `T5_UI_SHOTS=<dir>` it also
+saves a picture of each state (run that on a desktop nobody looks at: the window is mapped, transparent).
 
 ## Controller in the launcher
 

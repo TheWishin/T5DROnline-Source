@@ -646,8 +646,9 @@ def sc_online_accept(d):
     for i in range(3):
         g.press("RIGHT", gap=1500)
     g.shot("online-terms", expect="any", settle=0.5, timeout=2)
+    n0 = g.log_bytes().count(b"net ranking")
     g.press("CROSS", gap=3000)                  # YES on the last page
-    ok = g.wait_log(r"net ranking", timeout=30)
+    ok = g.wait_log(r"net ranking", timeout=30, count=n0 + 1)
     g.expect("online-check", ok, "the online check ran (net ranking thread)" if ok else "no online check in 30 s")
     g.wait(8)
     g.shot("online-after", expect="any", settle=0.5, timeout=2)
@@ -670,8 +671,12 @@ def plan_ringcheck(opts):
         ok = d.wait_mode(M_GAME, timeout=60)
         g.expect("demo-fight", ok, f"attract demo (first fight load), game type {g.game_type}")
         d.wait_mode(M_TITLE, timeout=150)
-        if d.open_menu():
-            sc_online_accept(d)
+        for k in range(max(1, opts.online_repeats)):
+            if g.log_bytes().count(b"queued flip never reached"):
+                break
+            if d.open_menu():
+                sc_online_accept(d)
+                d.wait_mode(M_TITLE, timeout=60, taps=("CROSS",), every=3.0)
         g.phase("menus", "title")
         end = g.now() + opts.minutes * 60
         while g.now() < end:
@@ -715,6 +720,7 @@ def main():
     ap.add_argument("--cpus", type=int)
     ap.add_argument("--cpu-offset", type=int, default=0, help="with --cpus: the first logical processor of the mask")
     ap.add_argument("--chars", type=int, default=3)
+    ap.add_argument("--online-repeats", type=int, default=1, help="ringcheck: how often the online check runs")
     ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1 (the mix is still measured)")
     ap.add_argument("--dump-every", type=int, default=30, help="frame read-back every N flips (navigation needs ~2/s)")
     ap.add_argument("--keep-gamedata", action="store_true")

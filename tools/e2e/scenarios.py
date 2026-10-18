@@ -895,11 +895,13 @@ def fail_restart_between(ctx):
     ctx.check("match 1 stays confirmed", status1 == "confirmed")
 
 
-@scenario("fail_version", "7 failures", game=True, suites=("game",),
-          desc="another build is refused: queue never pairs, room join and challenge refused; two games with "
-               "different builds refuse each other")
-def fail_version(ctx):
-    a, b = _two(ctx, "E2E Ned", "E2E Ora")
+@scenario("version_lobby", "7 failures", suites=("quick", "lobby"),
+          desc="another build in the lobby: marked, never paired by the queue, room join and challenge refused; "
+               "a server pinned to one build and an old lobby protocol are refused at the door")
+def version_lobby(ctx):
+    stub_server(ctx)
+    a = ctx.player("E2E Ned", kind="stub")
+    login(ctx, a)
     c = ctx.player("E2E Old", kind="stub")
     ob = other_build(c)
     c.tab._build_info = lambda: (ob, None)
@@ -908,6 +910,8 @@ def fail_version(ctx):
              10, "the lobby list marks the other build")
     a.press("room")
     ctx.wait(lambda: len(c.tab.tv_rooms.get_children()) == 1, 10, "room listed")
+    ctx.check("the room list marks the other build", "other version" in str(c.tab.tv_rooms.item(
+        c.tab.tv_rooms.get_children()[0], "values")))
     t = time.time()
     c.tab.tv_rooms.selection_set(c.tab.tv_rooms.get_children()[0])
     c.press("join")
@@ -925,6 +929,40 @@ def fail_version(ctx):
     t = time.time()
     c.press("challenge")
     ctx.wait(lambda: c.saw_status("different build", t), 10, "challenging another build is refused")
+    # a server that accepts one build only (T5L_BUILDS), and a launcher with an older lobby protocol
+    from t5lobby import proto
+    from t5lobby.client import LobbyClient
+    from t5lobby.proto import LobbyError
+    mine, _ = a.tab._build_info()
+    for p in (a, c):
+        p.logout()
+    ctx.wait(lambda: a.tab.client is None and c.tab.client is None, 10, "both log out")
+    ctx.server.env["T5L_BUILDS"] = mine.build_id
+    ctx.server.restart()
+    t = time.time()
+    c.tab.do_login("guest")
+    ctx.wait(lambda: c.saw_status("not accepted by this server", t), 15,
+             "a server pinned to one build refuses another at the door, with a sentence to update")
+    ctx.check("... and the other build is not logged in", not c.logged_in())
+    old = proto.PROTO_VERSION
+    cl = LobbyClient(ctx.server.addr, mine)
+    try:
+        proto.PROTO_VERSION = old - 1 if old > 1 else old + 1
+        try:
+            cl.connect()
+            ctx.check("an older lobby protocol is refused", False, "connected")
+        except LobbyError as e:
+            ctx.check("an older lobby protocol is refused", e.code == proto.E_PROTO and "update" in e.msg, f"{e.code}: {e.msg}")
+    finally:
+        proto.PROTO_VERSION = old
+        cl.close()
+
+
+@scenario("fail_version", "7 failures", game=True, suites=("game",),
+          desc="two games told different build ids refuse each other: no fight, a disconnect for both, void; "
+               "the next match with equal builds plays")
+def fail_version(ctx):
+    a, b = _two(ctx, "E2E Ned", "E2E Ora")
     # the games themselves: one told another build id
     ctx.shaper.build_override[b.name] = "e2e-tampered-build"
     mid = queue_match(ctx, a, b, "quick")

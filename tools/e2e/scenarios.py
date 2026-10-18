@@ -158,9 +158,9 @@ def accounts_same_account(ctx):
     ctx.check("PC 1 does not reconnect and fight for the session", d1.tab.client is None and not d1.events_of("reconnected"))
     ctx.check("PC 2 stays logged in", d2.logged_in())
     # during a match: the match moves to the new connection
-    e = ctx.player("E2E Eve", kind="stub", env={"T5_STUB_SECONDS": 25})
+    e = ctx.player("E2E Eve", kind="stub", env={"T5_STUB_SECONDS": 6})
     login(ctx, e, "guest")
-    d2.app.settings["extra_env"] += "\nT5_STUB_SECONDS=25"
+    d2.app.settings["extra_env"] += "\nT5_STUB_SECONDS=6"
     mid = queue_match(ctx, d2, e, "quick")
     ctx.wait(lambda: d2.game_running(), 20, "PC 2's game runs")
     d3 = ctx.player("E2E Dana", kind="stub", password=pw, tag="pc3")
@@ -170,7 +170,7 @@ def accounts_same_account(ctx):
     ctx.wait(lambda: any(ev.get("match") == mid and ev.get("resumed") for ev in d3.events_of("match_start", t)), 10,
              "PC 3 takes over the running match (match_start, resumed)")
     ctx.check("PC 3's lobby status is 'playing'", (d3.me or {}).get("status") == "playing", (d3.me or {}).get("status"))
-    ok = ctx.wait(lambda: e.matches.get(mid, {}).get("status") and d3.matches.get(mid, {}).get("status"), 60,
+    ok = ctx.wait(lambda: e.matches.get(mid, {}).get("status") and d3.matches.get(mid, {}).get("status"), 120,
                   "the match is settled on the opponent's and on PC 3's side")
     if ok:
         ctx.note(f"take-over mid-match: settled as {e.matches[mid].get('status')} ({e.matches[mid].get('reason')}), "

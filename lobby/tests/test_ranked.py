@@ -805,6 +805,17 @@ class DriverResultFileTest(unittest.TestCase):
         r = self.client.reports[0]
         self.assertEqual((r["source"], r["reason"]), ("disconnect", "peer_lost"))
 
+    def test_a_game_that_gave_up_its_reset_is_not_a_crash(self):
+        # exit code 6: the persistent game's reset for this match was stuck for 60 s and it ended itself
+        # (e2e: the match was voided as this player's crash -- a strike -- before the fight even started)
+        class Proc:
+            returncode = 6
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"]), ("disconnect", "game_stuck"))
+
     def test_closed_window_is_a_quit(self):
         # Alt+F4 / the X button / Esc mid-match: the game writes "quit", tells the peer and exits with 7
         self.write({"match": "m1", "winner": None, "score": [1, 0], "reason": "quit"})

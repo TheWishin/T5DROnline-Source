@@ -348,12 +348,14 @@ MESSAGES = {
         "Online-Spiel nicht möglich.\n\n({reason})",
     # ---- launcher/problem_report_ui.py
     "Before the zip is made, your Windows user name in file paths becomes <user>, "
-    "internet IP addresses become <ip> (addresses of your own network stay), and "
-    "passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap "
-    "are never included. Nothing is uploaded: you send the zip yourself.":
+    "internet IP addresses become <ip> (addresses of your own network stay), lobby player "
+    "names (yours and your opponents') become <player>, and passwords, tokens and match keys "
+    "are left out. Your game files, keys, .pkg and .rap are never included. Nothing is "
+    "uploaded: you send the zip yourself.":
         "Bevor die Zip-Datei entsteht, wird dein Windows-Benutzername in Dateipfaden zu "
         "<user>, Internet-IP-Adressen werden zu <ip> (Adressen deines eigenen Netzwerks "
-        "bleiben), und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Deine "
+        "bleiben), Spielernamen aus der Lobby (deiner und die deiner Gegner) werden zu "
+        "<player>, und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Deine "
         "Spieldateien, Schlüssel, .pkg und .rap sind nie dabei. Es wird nichts hochgeladen: "
         "Du schickst die Zip-Datei selbst.",
     "{count} bytes": "{count} Bytes",
@@ -1037,6 +1039,8 @@ MESSAGES = {
         "Programm?).",
     "You closed the game during the match: it counts as a loss.":
         "Du hast das Spiel während des Matches geschlossen: Das zählt als Niederlage.",
+    "The game could not get back to character select and closed itself; it starts again for your next match.":
+        "Das Spiel kam nicht zur Charakterauswahl zurück und hat sich beendet; zu deinem nächsten Match startet es neu.",
     "Your opponent does not want a rematch.": "Dein Gegner will kein Rematch.",
     "The game is not running any more; leaving the rematch.":
         "Das Spiel läuft nicht mehr; das Rematch wird verlassen.",

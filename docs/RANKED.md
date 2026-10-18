@@ -192,7 +192,7 @@ id, winner, score, desync count (from the match's sync point), the state hash of
 the deciding frame and the frames played (docs/NETPLAY.md); the game's log adds
 the desync count as a cross-check (`DESYNC at frame` / `sync check ... N
 mismatching`), a lost opponent (`peer lost (<reason>)`) and crashes (`[CRASH]`,
-or an exit code other than 0, 3, 4, 5, 7); a game window closed without a result
+or an exit code other than 0, 3, 4, 5, 6, 7; 6 = a persistent game that gave up resetting for the next match, reported as a disconnect); a game window closed without a result
 is a quit (the tab asks "How did it end?" when it cannot tell).
 
 **Closing the game mid-match is a quit** (rematch-fix): a game whose window is

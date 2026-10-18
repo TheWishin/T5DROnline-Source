@@ -95,9 +95,15 @@ REASON_TEXT = {         # English; word(REASON_TEXT, key) where it is shown
     "rejected": N_("Your opponent's game is in another match."),
     "bind_failed": N_("The game could not open its network port (another program uses it?)."),
     "quit": N_("You closed the game during the match: it counts as a loss."),
+    "game_stuck": N_("The game could not get back to character select and closed itself; it starts again for "
+                     "your next match."),
 }
-# Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp).
-EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch"}
+# Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp), and 6: a persistent
+# game whose reset to character select for the next match was stuck for 60 s ended itself ("STUCK";
+# docs/DIRECTFIGHT.md "After a session ends") -- it gave up on purpose before this match's fight, not a
+# crash, so no strike (e2e run: a rolled-back KO left the game unable to reset, and the next match was voided
+# as this player's crash).
+EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch", 6: "game_stuck"}
 # The player closed the game window (Alt+F4, the X button, Esc) while a netplay session was set up:
 # the game told the opponent and ended itself; for the lobby that is this player's quit (a loss).
 EXIT_QUIT = 7

@@ -1,0 +1,789 @@
+"""German and English texts of the launcher and the Online tab (lobby/t5lobby/i18n.py, i18n_de.py).
+
+* every text in the source (t("..."), N_("...")) has a German entry, and no entry is unused;
+* the German text keeps the English text's {placeholders}; t() is called with values that fit;
+* no function that translates also has a local variable called t or N_ (it would fail at run time);
+* no literal English text goes to a widget, a status line or a dialog without t();
+* the messages the lobby server, the lobby client, the build tool and the prerequisite check write in English are
+  known to translate_message() (so a new server message without a German entry fails here);
+* the launcher and the Online tab render in both languages, with no text missing from the catalog;
+* the lag sentences built from a lag_check event say what the server's own English sentences say.
+"""
+import ast
+import importlib.machinery
+import importlib.util
+import os
+import re
+import sys
+import tempfile
+import time
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for sub in ("tools", "lobby", "launcher"):
+    sys.path.insert(0, os.path.join(ROOT, sub))
+os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+
+import i18n_extract as x   # noqa: E402
+from t5lobby import i18n, i18n_de, i18n_known, lag   # noqa: E402
+
+try:
+    import tkinter as tk
+except ImportError:      # pragma: no cover
+    tk = None
+
+# Server messages written for programmers (a client of this launcher never sends the request that causes them):
+# they are not translated and show in English.
+DEV_ONLY = {
+    "login timeout", "idle timeout", "malformed message", "line too long", "hello first", "log in first",
+    "unknown message X", "bad field: X", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
+    "score is [P1 rounds, P2 rounds]", "fps is a number", "fps out of range", "unknown character X",
+    "mode is guest, account, register, session or resume",
+}
+
+
+def python_sample(node):
+    """A string with a literal text of an AST node (str, f-string, a + b); every {expression} becomes 'X'. None if
+    the node is something else (a variable, a conditional)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "X" for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        a, b = python_sample(node.left), python_sample(node.right)
+        return a + b if a is not None and b is not None else None
+    return None
+
+
+def calls_in(path, names, arg_index, keyword=None):
+    """[(line, sample)] for the argument `arg_index` (or dict key `keyword`) of calls to functions in `names`."""
+    out = []
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            f_ = n.func
+            name = f_.id if isinstance(f_, ast.Name) else f_.attr if isinstance(f_, ast.Attribute) else None
+            if name in names and len(n.args) > arg_index:
+                out.append((n.lineno, python_sample(n.args[arg_index]), ast.unparse(n.args[arg_index])))
+        if keyword and isinstance(n, ast.Dict):
+            for k, v in zip(n.keys, n.values):
+                if isinstance(k, ast.Constant) and k.value == keyword:
+                    out.append((n.lineno, python_sample(v), ast.unparse(v)))
+    return out
+
+
+class German:
+    """Context: the texts in German for the test, English again afterwards."""
+
+    def setUp(self):
+        i18n.set_language("de")
+        i18n.clear_missing()
+
+    def tearDown(self):
+        i18n.set_language("en")
+
+
+class CatalogTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.r = x.check()
+
+    def test_every_text_has_a_german_entry(self):
+        self.assertEqual(self.r["missing"], [], "texts without a German entry: python tools/i18n_extract.py --skeleton")
+
+    def test_every_entry_is_used(self):
+        self.assertEqual(self.r["unused"], [], "catalog entries no t() / N_() call uses")
+
+    def test_placeholders_match(self):
+        self.assertEqual(self.r["mismatched"], [], "the German text must have the English text's {placeholders}")
+
+    def test_texts_are_literals_and_values_fit(self):
+        self.assertEqual(self.r["problems"], [])
+
+    def test_no_function_hides_t(self):
+        self.assertEqual(self.r["shadowed"], [])
+
+    def test_no_forgotten_text(self):
+        self.assertEqual(x.unwrapped(), [], "English text for a widget / status / dialog that skips t()")
+
+    def test_german_formats_with_its_placeholders(self):
+        for en, de in i18n_de.MESSAGES.items():
+            values = {name: "X" for name in x.HOLE.findall(en)}
+            try:
+                de.format(**values)
+            except (KeyError, IndexError, ValueError) as e:
+                self.fail(f"{en[:50]!r}: the German text does not format: {e!r}")
+
+    def test_sentences_are_translated(self):
+        # a catalog still holding the English text of a sentence is an entry nobody translated
+        same = [en for en, de in i18n_de.MESSAGES.items()
+                if en == de and len(re.findall(r"[A-Za-z]{3,}", en)) >= 4 and "{" not in en[:1]]
+        self.assertEqual(same, [])
+
+    def test_no_trailing_or_doubled_space_added(self):
+        for en, de in i18n_de.MESSAGES.items():
+            self.assertEqual(en.endswith(" "), de.endswith(" "), en)
+            self.assertEqual(en.startswith(" "), de.startswith(" "), en)
+            self.assertEqual(en.count("\n"), de.count("\n"), en)
+
+    def test_the_dynamic_lookups_are_few(self):
+        # t(variable): the variable must hold a text marked with N_(); keep the list short and known
+        files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
+        self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py"})
+
+
+class EngineTests(German, unittest.TestCase):
+    def test_default_language_is_english(self):
+        i18n.set_language("en")
+        self.assertEqual(i18n.t("Quick match"), "Quick match")
+        self.assertEqual(i18n.t("Hello {name}", name="x"), "Hello x")
+
+    def test_german(self):
+        self.assertEqual(i18n.t("Quick match"), "Quick Match")
+        self.assertEqual(i18n.t("Log in"), "Anmelden")
+        self.assertEqual(i18n.t("Connecting to {server}...", server="s:1"), "Verbinde mit s:1...")
+
+    def test_unknown_text_is_english_and_remembered(self):
+        self.assertEqual(i18n.t("A text nobody translated {n}", n=3), "A text nobody translated 3")
+        self.assertIn("A text nobody translated {n}", i18n.missing())
+
+    def test_a_value_can_be_called_text(self):
+        self.assertEqual(i18n.t("Lag check: {text}", text="abc"), "Lag-Check: abc")
+
+    def test_texts_without_words_need_no_entry(self):
+        self.assertEqual(i18n.t("0"), "0")
+        self.assertEqual(i18n.t(""), "")
+        self.assertEqual(i18n.missing(), [])
+
+    def test_a_broken_translation_shows_english(self):
+        saved = dict(i18n._cat)
+        try:
+            i18n._cat["Hello {name}"] = "Hallo {nam}"
+            self.assertEqual(i18n.t("Hello {name}", name="Bob"), "Hello Bob")
+        finally:
+            i18n._cat.clear()
+            i18n._cat.update(saved)
+
+    def test_choices(self):
+        os.environ["T5_LANG"] = "de"
+        try:
+            self.assertEqual(i18n.resolve("auto"), "de")
+            self.assertEqual(i18n.resolve("en"), "en")
+            self.assertEqual(i18n.resolve("de"), "de")
+            self.assertEqual(i18n.resolve("nonsense"), "de")        # unknown counts as auto
+            self.assertEqual(i18n.resolve(None), "de")
+            os.environ["T5_LANG"] = "en"
+            self.assertEqual(i18n.resolve("auto"), "en")
+            self.assertEqual(i18n.resolve("de"), "de")
+        finally:
+            os.environ.pop("T5_LANG", None)
+
+    def test_init_sets_the_language(self):
+        self.assertEqual(i18n.init("en"), "en")
+        self.assertEqual(i18n.language(), "en")
+        self.assertEqual(i18n.init("de"), "de")
+        self.assertEqual(i18n.language(), "de")
+
+    def test_numbers_and_dates(self):
+        self.assertEqual(i18n.num(2.34, 1), "2,3")
+        ts = time.mktime((2026, 10, 18, 21, 5, 0, 0, 0, -1))
+        self.assertEqual(i18n.stamp(ts), "18.10. 21:05")
+        i18n.set_language("en")
+        self.assertEqual(i18n.num(2.34, 1), "2.3")
+        self.assertEqual(i18n.stamp(ts), "18 Oct 21:05")
+
+
+class MessageCoverageTests(German, unittest.TestCase):
+    """Messages written in English elsewhere must be known (or listed as for programmers)."""
+
+    def covered(self, sample):
+        return i18n.translate_message(sample) != sample
+
+    def check_all(self, found):
+        missing = []
+        for where, sample, source in found:
+            if sample is None:
+                continue
+            if sample in DEV_ONLY or any(sample.startswith(d) for d in DEV_ONLY if d.endswith("X")):
+                continue
+            if not self.covered(sample):
+                missing.append(f"{where}: {source[:110]}")
+        self.assertEqual(missing, [], "known messages are listed in lobby/t5lobby/i18n_known.py")
+
+    def test_server_messages(self):
+        path = os.path.join(ROOT, "lobby", "t5lobby", "server", "lobby.py")
+        found = [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"LobbyError"}, 1)]
+        found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"kick"}, 1)]
+        found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, set(), 0, keyword="msg")]
+        found = [f for f in found if not (f[1] is None)]
+        self.assertGreater(len(found), 80)
+        # (the "msg" of a reply that repeats a LobbyError's own msg is a variable: skipped above)
+        self.check_all([(w, s, src) for w, s, src in found if s and "banned" not in s])
+
+    def test_the_ban_messages(self):
+        for text in ("this account is banned for good", "this account is banned for good: cheating",
+                     "this account is banned until 2026-10-20 12:00 UTC",
+                     "this account is banned until 2026-10-20 12:00 UTC: spam"):
+            self.assertTrue(self.covered(text), text)
+        self.assertEqual(i18n.translate_message("this account is banned until 2026-10-20 12:00 UTC: spam"),
+                         "Dieses Konto ist bis 2026-10-20 12:00 UTC gesperrt: spam")
+
+    def test_client_messages(self):
+        path = os.path.join(ROOT, "lobby", "t5lobby", "client.py")
+        found = [(f"client.py:{ln}", s, src) for ln, s, src in calls_in(path, {"LobbyError"}, 1)]
+        found += [(f"client.py:{ln}", s, src) for ln, s, src in calls_in(path, set(), 0, keyword="msg")]
+        self.assertGreater(len(found), 5)
+        samples = [(w, s, src) for w, s, src in found if s and not s.startswith("X")]
+        self.check_all(samples)
+        for reason in ("connection closed", "message too long", "closed"):      # the reasons a connection ended
+            self.assertTrue(self.covered(reason), reason)
+
+    def test_build_tool_messages(self):
+        path = os.path.join(ROOT, "tools", "build_game.py")
+        found = [(f"build_game.py:{ln}", s, src) for ln, s, src in calls_in(path, {"fail"}, 0)]
+        self.assertGreater(len(found), 15)
+        self.check_all(found)
+        # the lines main() prints after "ERROR: "
+        for sample in ("step 'lift' failed: a tool exited with code 3 -- the lines above say why.", "cancelled",
+                       "step 'unpack' could not read or write a file: No space left (D:\\x). The folder path is too "
+                       "long for Windows: move the folder to a short path such as C:\\Games\\T5DR.",
+                       "step 'unpack' could not read or write a file: No space left (D:\\x). Is the disk full, or "
+                       "does another program (antivirus, OneDrive) hold the file?"):
+            self.assertTrue(self.covered(sample), sample)
+        src = open(path, encoding="utf-8").read()
+        for hint in ("The folder path is too long for Windows: move the folder to a short path such as",
+                     "Is the disk full, or does another program (antivirus, OneDrive) hold the file?"):
+            self.assertIn(hint, src)
+
+    def test_prerequisite_list(self):
+        path = os.path.join(ROOT, "tools", "prereqs.py")
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        check = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "check")
+        names, details = [], []
+        for n in ast.walk(check):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "add" and len(n.args) > 3:
+                names.append(python_sample(n.args[1]))
+                for c in ast.walk(n.args[3]):
+                    s = python_sample(c) if isinstance(c, (ast.Constant, ast.JoinedStr)) else None
+                    if s and re.search(r"[A-Za-z]{3,}", s) and s == s.strip():
+                        details.append(s)
+        self.assertEqual(len(names), 9)
+        for s in names + details:
+            self.assertTrue(self.covered(s) or s in i18n_de.MESSAGES and i18n_de.MESSAGES[s] != s
+                            or s in {"Python 3.10+", "pycryptodome (Python AES)", "clang-cl + lld-link",
+                                     "Windows SDK (Direct3D 12)", "clang-cl 16+ (LLVM)", "CMake + Ninja"}
+                            and s in i18n_de.MESSAGES, s)
+        self.assertEqual(i18n.translate_message("missing CMake and Ninja"), "fehlt: CMake and Ninja")
+        self.assertEqual(i18n.translate_message("3.12.10 at C:\\Python\\python.exe"), "3.12.10 in C:\\Python\\python.exe")
+
+    def test_translations_of_known_kinds(self):
+        tm = i18n.translate_message
+        self.assertEqual(tm("wrong name or password"), "Name oder Passwort falsch")
+        self.assertEqual(tm("you are queue"), "Das geht gerade nicht (Status: in der Suche)")
+        self.assertEqual(tm("Bob lost the lobby connection; waiting 20 s for them to return"),
+                         "Bob hat die Verbindung zur Lobby verloren; warte 20 s auf die Rückkehr")
+        self.assertEqual(
+            tm("your PC ran its last match at 41 fps; your opponent's PC ran its last match at 38 fps -- this match "
+               "runs at the slower PC's speed"),
+            "dein PC hat sein letztes Match mit 41 fps gespielt; der PC deines Gegners hat sein letztes Match mit "
+            "38 fps gespielt -- dieses Match läuft mit der Geschwindigkeit des langsameren PCs")
+        self.assertEqual(tm("Bob's PC ran its last match at 41 fps"), "der PC von Bob hat sein letztes Match mit 41 fps "
+                                                                      "gespielt")
+
+    def test_unknown_messages_stay_english(self):
+        for text in ("a message from a newer server", "[WinError 10054] connection reset by peer", "", None, 5):
+            self.assertEqual(i18n.translate_message(text), text)
+
+    def test_names_inside_messages_are_not_translated(self):
+        # a player called "Draw" or "idle" is still called that
+        self.assertEqual(i18n.translate_message("Draw is back in the lobby"), "Draw ist zurück in der Lobby")
+        self.assertEqual(i18n.translate_message("idle lost the lobby connection; waiting 5 s for them to return"),
+                         "idle hat die Verbindung zur Lobby verloren; warte 5 s auf die Rückkehr")
+
+    def test_english_stays_english(self):
+        i18n.set_language("en")
+        self.assertEqual(i18n.translate_message("wrong name or password"), "wrong name or password")
+
+    def test_lobby_error_text(self):
+        from t5lobby.proto import LobbyError
+        from t5lobby.tk_tab import lobby_error_text
+        self.assertEqual(lobby_error_text(LobbyError("auth_failed", "wrong name or password")),
+                         "Lobby: Name oder Passwort falsch")
+        self.assertEqual(lobby_error_text(LobbyError("x", "something new")), "Lobby: something new")
+        self.assertEqual(lobby_error_text(LobbyError("timeout")), "Lobby: timeout")
+        i18n.set_language("en")
+        self.assertEqual(lobby_error_text(LobbyError("auth_failed", "wrong name or password")),
+                         "Lobby: wrong name or password")
+
+
+class LagTextTests(German, unittest.TestCase):
+    CASES = (
+        (2, [None, None]),
+        (2, [{"frames": 600, "waited_ms": 10.0, "pc_fps": 60.0, "fps": 60.0},
+             {"frames": 600, "waited_ms": 5.0, "pc_fps": 60.0, "fps": 60.0}]),
+        (2, [{"frames": 600, "waited_ms": 90000.0, "pc_fps": 60.0, "fps": 60.0},
+             {"frames": 600, "waited_ms": 80000.0, "pc_fps": 61.0, "fps": 60.0}]),
+        (2, [{"frames": 600, "waited_ms": 90000.0, "pc_fps": 40.0, "fps": 40.0},
+             {"frames": 600, "waited_ms": 80000.0, "pc_fps": 60.0, "fps": 60.0}]),
+        (2, [{"frames": 600, "waited_ms": 90000.0, "pc_fps": 40.0, "fps": 40.0},
+             {"frames": 600, "waited_ms": 80000.0, "pc_fps": 41.0, "fps": 40.0}]),
+        (3, [{"frames": 600, "waited_ms": 90000.0, "pc_fps": None, "fps": None},
+             {"frames": 600, "waited_ms": 80000.0, "pc_fps": 41.0, "fps": 40.0}]),
+    )
+
+    def event(self, delay, reports, side, ping=37.4):
+        a = lag.assess(delay, reports)
+        cause = a["cause"]
+        if cause == "pc":
+            slow = a["slow"]
+            cause = "both_pcs" if len(slow) == 2 else "your_pc" if side in slow else "opponent_pc"
+        return a, {"t": "lag_check", "ping_ms": round(ping, 1), "expected_frames": a["expected"],
+                   "observed_frames": a["observed"], "verdict": a["verdict"], "cause": cause,
+                   "yours": {"extra_frames": a["extra"][side], "pc_fps": (reports[side] or {}).get("pc_fps")},
+                   "opponent": {"extra_frames": a["extra"][1 - side], "pc_fps": (reports[1 - side] or {}).get("pc_fps")},
+                   "text": lag.describe(ping, a, side, reports)}
+
+    def test_english_matches_the_servers_sentences(self):
+        i18n.set_language("en")
+        seen = set()
+        for delay, reports in self.CASES:
+            for side in (0, 1):
+                a, ev = self.event(delay, reports, side)
+                seen.add((a["verdict"], ev["cause"]))
+                self.assertEqual(lag.describe_event(ev), ev["text"])
+        self.assertGreaterEqual(len(seen), 5, seen)        # unknown, ok, more lag for each cause
+
+    def test_german_is_complete_and_differs(self):
+        for delay, reports in self.CASES:
+            for side in (0, 1):
+                _a, ev = self.event(delay, reports, side)
+                de = lag.describe_event(ev)
+                self.assertNotEqual(de, ev["text"])
+                self.assertTrue(de.startswith("Bei 37 ms Ping sind etwa"), de)
+        self.assertEqual(i18n.missing(), [])
+
+    def test_an_event_without_numbers_shows_the_servers_text(self):
+        self.assertEqual(lag.describe_event({"text": "Ping 12 ms ..."}), "Ping 12 ms ...")
+        self.assertEqual(lag.describe_event({}), "")
+
+
+class SettingsTests(unittest.TestCase):
+    def test_language_setting_is_saved(self):
+        import core
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "launcher.json")
+            st = core.Settings(path)
+            self.assertEqual(st["language"], "auto")
+            st["language"] = "de"
+            st.save()
+            self.assertEqual(core.Settings(path)["language"], "de")
+
+    def test_apply_language(self):
+        import core
+        try:
+            self.assertEqual(core.apply_language({"language": "de"}), "de")
+            self.assertEqual(i18n.language(), "de")
+            self.assertEqual(core.apply_language({"language": "en"}), "en")
+            self.assertEqual(i18n.language(), "en")
+            os.environ["T5_LANG"] = "de"
+            self.assertEqual(core.apply_language({"language": "auto"}), "de")
+        finally:
+            os.environ.pop("T5_LANG", None)
+            i18n.set_language("en")
+
+    def test_core_texts(self):
+        import core
+        with tempfile.TemporaryDirectory() as d:
+            en = core.game_state(d)["text"]
+            i18n.set_language("de")
+            try:
+                de = core.game_state(d)["text"]
+                self.assertNotEqual(en, de)
+                self.assertTrue(de.startswith("Das Spiel ist noch nicht gebaut"), de)
+                self.assertIn("kein PS3-Paket", core.describe_pkg(os.path.join(d, "x.pkg"))[2] + "kein PS3-Paket")
+                self.assertEqual(core.describe_pkg("")[2], "Kein Paket gewählt.")
+                self.assertIn("Absturz", core.explain_exit(-1, ["[CRASH] x"]))
+                self.assertEqual(i18n.missing(), [])
+            finally:
+                i18n.set_language("en")
+
+
+def load_launcher():
+    loader = importlib.machinery.SourceFileLoader("t5dr_launcher_under_test",
+                                                   os.path.join(ROOT, "launcher", "t5dr_launcher.pyw"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def all_texts(root):
+    """Every text a widget shows right now: labels, buttons, headings, rows, tab names, entries' variables."""
+    out = []
+
+    def walk(w):
+        for opt in ("text",):
+            try:
+                v = w.cget(opt)
+                if v:
+                    out.append(str(v))
+            except tk.TclError:
+                pass
+        try:
+            var = w.cget("textvariable")
+            if var:
+                out.append(str(w.getvar(str(var))))
+        except tk.TclError:
+            pass
+        cls = w.winfo_class()
+        if cls == "Treeview":
+            for c in ("#0",) + tuple(w["columns"]):
+                out.append(str(w.heading(c)["text"]))
+            for iid in w.get_children():
+                out.append(str(w.item(iid, "text")))
+                out.extend(str(v) for v in w.item(iid, "values"))
+        elif cls == "TNotebook":
+            for i in range(len(w.tabs())):
+                out.append(str(w.tab(i, "text")))
+        elif cls == "TCombobox":
+            out.extend(str(v) for v in w.cget("values"))
+        for c in w.winfo_children():
+            walk(c)
+    walk(root)
+    return [t.strip() for t in out if t and t.strip()]
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class RenderTests(unittest.TestCase):
+    """The launcher window, built for real (not shown), in each language."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.old_env = os.environ.get("T5_ONLINE_DIR")
+        os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")      # (the Online tab's settings: not the real ones)
+        self.mod = load_launcher()
+        import core
+        self.core = core
+
+    def tearDown(self):
+        if self.old_env is None:
+            os.environ.pop("T5_ONLINE_DIR", None)
+        else:
+            os.environ["T5_ONLINE_DIR"] = self.old_env
+        i18n.set_language("en")
+
+    def launcher(self, language):
+        st = self.core.Settings(os.path.join(self.dir, "launcher.json"))
+        st["language"] = language
+        st["out"] = os.path.join(self.dir, "native")
+        try:
+            app = self.mod.App(offscreen=False, settings=st)
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        app.withdraw()
+        self.addCleanup(lambda: (app.online.on_close(), app.destroy()))
+        i18n.clear_missing()
+        return app
+
+    def test_english(self):
+        app = self.launcher("en")
+        app.update()
+        texts = all_texts(app)
+        self.assertEqual(app.language, "en")
+        for expect in ("Build", "Play", "Settings", "Online", "BUILD GAME", "PLAY", "Quick match", "Ranked match",
+                       "Log in", "Language"):
+            self.assertTrue(any(expect in t for t in texts), expect)
+        self.assertNotIn("Bauen", " ".join(texts))
+
+    def test_german(self):
+        app = self.launcher("de")
+        app.update()
+        texts = all_texts(app)
+        self.assertEqual(app.language, "de")
+        self.assertEqual(i18n.missing(), [], "texts shown in German that the catalog does not have")
+        keys = set(i18n_de.MESSAGES)
+        english_left = sorted({t for t in texts if t in keys and i18n_de.MESSAGES[t] != t})
+        self.assertEqual(english_left, [], "English texts still on screen")
+        for expect in ("Bauen", "Spielen", "Einstellungen", "BUILD GAME", "PLAY", "Quick Match", "Ranked-Match",
+                       "Anmelden", "Als Gast spielen", "Sprache", "Rangliste"):
+            self.assertTrue(any(expect in t for t in texts), expect)
+        # most of the screen changed
+        i18n.set_language("en")
+        en_app = self.launcher("en")
+        en_app.update()
+        en = all_texts(en_app)
+        changed = sum(1 for a, b in zip(en, texts) if a != b)
+        self.assertGreater(changed, len(en) // 2)
+
+    def test_auto_follows_windows(self):
+        os.environ["T5_LANG"] = "de"
+        try:
+            app = self.launcher("auto")
+            self.assertEqual(app.language, "de")
+        finally:
+            os.environ.pop("T5_LANG", None)
+
+    def test_tab_names_are_found_by_position(self):
+        app = self.launcher("de")
+        app.update()
+        app.nb.select(3)                     # "Online": the handler used to compare the (English) label
+        app.update()
+        self.assertEqual(app.tab_keys[app.nb.index(app.nb.select())], "online")
+
+    def test_changing_the_language_asks_for_a_restart(self):
+        app = self.launcher("en")
+        app.update()
+        self.assertEqual(app.lang_note.get(), "")
+        app.language_var.set("de")
+        app.language_changed()
+        self.assertIn("starts again", app.lang_note.get())
+        self.assertEqual(self.core.Settings(os.path.join(self.dir, "launcher.json"))["language"], "de")
+        app.language_var.set("en")
+        app.language_changed()
+        self.assertEqual(app.lang_note.get(), "")
+
+    def test_dynamic_launcher_texts_in_german(self):
+        app = self.launcher("de")
+        app.update()
+        app._show_game_state(self.core.game_state(app.settings.out_dir))
+        self.assertTrue(app.state_var.get().startswith("⚠ Das Spiel ist noch nicht gebaut"), app.state_var.get())
+        app._show_prereqs([
+            {"id": "python", "name": "Python 3.10+", "ok": True, "detail": "3.12.10 at C:\\Py\\python.exe",
+             "needed_for": "", "install": None},
+            {"id": "msvc", "name": "C++ build tools (MSVC x64)", "ok": False, "detail": "not found",
+             "needed_for": "", "install": "Microsoft.VisualStudio.2022.BuildTools"}])
+        self.assertEqual(app.tools_sum.get(), "✖ Es fehlt: C++-Build-Tools (MSVC x64)")
+        self.assertEqual(app.status.get(), "1 Build-Tool(s) fehlen -- klicke auf „Fehlendes installieren…“.")
+        rows = [app.tools_tv.item(i, "values") for i in app.tools_tv.get_children()]
+        self.assertEqual(rows[1], ("✖ fehlt", "nicht gefunden"))
+        self.assertEqual(rows[0][1], "3.12.10 in C:\\Py\\python.exe")
+        app.step_state["lift"] = "running"
+        app.cur_step, app.step_t0, app.sub = "lift", time.time() - 75, 0.5
+        app.build = type("B", (), {"events": __import__("queue").Queue()})()
+        app._drain_build()
+        self.assertTrue(app.detail.get().startswith("Schritt 6 von 8: Code übersetzen  —  1:15"), app.detail.get())
+        app.build.events.put(("error", "Choose your license file (.rap) first."))
+        app._drain_build()
+        self.assertEqual(app.error.get(), "Wähle zuerst deine Lizenzdatei (.rap).")
+        app.build = None
+        self.assertEqual(i18n.missing(), [])
+
+
+class FakeClient:
+    """Enough of LobbyClient for the tab to show events."""
+    connected = True
+    tls = False
+    server_rtt = 20.0
+    session = None
+
+    class build:
+        build_id = "b1"
+
+    def __init__(self):
+        self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
+                   "main": "jin", "tier": 5, "rank": "2nd Dan", "provisional": False}
+        self.events = __import__("queue").Queue()
+
+    def active_notices(self):
+        return []
+
+    def close(self):
+        pass
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class OnlineTabGermanTests(German, unittest.TestCase):
+    """Events and answers of the lobby, shown by the Online tab in German."""
+
+    def setUp(self):
+        German.setUp(self)
+        self.dir = tempfile.mkdtemp()
+        self.old_env = os.environ.get("T5_ONLINE_DIR")
+        os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        self.root.withdraw()
+        from t5lobby.tk_tab import OnlineTab
+
+        class Settings(dict):
+            path = os.path.join(self.dir, "launcher.json")
+            out_dir = self.dir
+
+        class App:
+            settings = Settings(nickname="Me")
+            game = None
+            statuses = []
+
+            def game_state(self):
+                return {"ok": True}
+
+            def set_status(self, text):
+                self.statuses.append(text)
+        self.app = App()
+        self.tab = OnlineTab(self.root, self.app)
+        self.tab.client = FakeClient()
+        i18n.clear_missing()
+
+    def tearDown(self):
+        try:
+            self.tab.client = None
+            self.tab.on_close()
+            self.root.destroy()
+        finally:
+            if self.old_env is None:
+                os.environ.pop("T5_ONLINE_DIR", None)
+            else:
+                os.environ["T5_ONLINE_DIR"] = self.old_env
+            German.tearDown(self)
+
+    def status(self):
+        return self.tab.status_var.get()
+
+    def test_lists(self):
+        self.tab.on_event({"t": "lobby_state", "players": [
+            {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
+             "build": "b1", "rtt": 10.0, "rank": "2nd Dan", "provisional": False, "main": "jin"},
+            {"id": "p2", "name": "Gu", "guest": True, "record": [0, 1, 0], "status": "playing", "build": "other",
+             "rtt": None}],
+            "rooms": [{"id": "r1", "name": "R", "owner": {"name": "Me"}, "status": "open", "build": "b1",
+                       "ranked": True}], "queue": {"ranked": 1, "quick": 2}})
+        rows = [self.tab.tv_players.item(i, "values") for i in self.tab.tv_players.get_children()]
+        self.assertEqual(rows[0][0], "Me  (du)")
+        self.assertEqual(rows[0][5], "in der Lobby")
+        self.assertEqual(rows[1][1], "Gast")
+        self.assertEqual(rows[1][5], "im Spiel (andere Version)")
+        room = self.tab.tv_rooms.item("r1", "values")
+        self.assertEqual(room[2], "offen ranked")
+        self.assertIn("2nd Dan", " ".join(str(v) for v in rows[0]))
+        self.assertIn("Server-Ping 20 ms", self.tab.me_var.get())
+        self.assertEqual(i18n.missing(), [])
+
+    def test_profile_selection_finds_the_name_in_german(self):
+        self.tab.on_event({"t": "lobby_state", "players": [
+            {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
+             "build": "b1", "rtt": 10.0, "rank": "2nd Dan", "provisional": False}], "rooms": []})
+        names = []
+        self.tab.show_profile = names.append
+        self.tab.tv_players.selection_set("p1")
+        self.tab._profile_of_selected()
+        self.assertEqual(names, ["Me"])
+
+    def test_match_flow(self):
+        t = self.tab
+        t.on_event({"t": "match_found", "match": "m1", "ranked": True, "blind": True, "opponent": None,
+                    "ping": {"known": True, "ms": 42.0}, "ready_timeout": 15, "ready_check": True})
+        self.assertIn("Gegner gefunden -- RANKED -- Ping etwa 42 ms", t.bar_text.get())
+        self.assertRegex(t.bar_text.get(), r"innerhalb von \d+ s annehmen\?")
+        t.on_event({"t": "match_reveal", "opponent": {"name": "Rival", "guest": False, "rating": 1520,
+                                                       "rank": "3rd Dan", "provisional": False}})
+        self.assertEqual(t.bar_text.get(), "Gegner: Rival (3rd Dan, 1520) -- RANKED -- verbinde...")
+        t.on_event({"t": "match_start", "ranked": True, "opponent": {"name": "Rival"}, "rtt_ms": 41.6,
+                    "path": "relay", "delay": 2, "fight": {"p1": "jin", "p2": "random"}})
+        self.assertEqual(t.match_var.get(), "Ranked-Match gegen Rival -- Jin vs Zufall -- Ping 42 ms (über das Relay des "
+                                           "Lobby-Servers), Input-Delay 2 Frames (33 ms)")
+        t.on_event({"t": "match_found", "match": "m2", "ranked": False, "origin": "rematch", "ready_check": False,
+                    "opponent": {"name": "Rival", "guest": True}, "blind": False})
+        self.assertEqual(t.bar_text.get(), "Gegner: Rival (Gast, Gast) -- Rematch -- verbinde...")
+        for reason, expect in (("declined", "Match abgelehnt."), ("ready_timeout", "Niemand hat rechtzeitig angenommen."),
+                               ("relay_full", "Das Relay des Lobby-Servers ist voll; versuche es gleich noch einmal."),
+                               ("brand_new", "Match abgebrochen (brand_new).")):
+            t.on_event({"t": "match_cancel", "reason": reason})
+            self.assertEqual(self.status(), expect)
+        self.assertEqual(i18n.missing(), [])
+
+    def test_results(self):
+        t = self.tab
+        for status, reason, expect in (
+                ("confirmed", None, "Ergebnis bestätigt."),
+                ("void", "desync", "Kein Ergebnis (die beiden Spiele waren nicht mehr synchron)."),
+                ("forfeit", "quit", "Match durch Aufgabe entschieden (ein Spieler ist gegangen)."),
+                ("disputed", "disputed", "Du und dein Gegner habt verschiedene Ergebnisse gemeldet -- zählt nicht "
+                                          "(die Meldungen passten nicht zusammen).")):
+            t.on_event({"t": "match_result", "status": status, "reason": reason, "winner": None})
+            self.assertEqual(self.status(), expect)
+        t.on_event({"t": "match_result", "status": "confirmed", "winner": None,
+                    "rating": {"after": {"r": 1612.3}, "delta": 12.0, "event": "promoted",
+                               "rank_after": {"rank": "Lone Wolf"}}})
+        self.assertEqual(self.status(), "Ergebnis bestätigt; Wertung 1612 (+12) -- AUFGESTIEGEN zu Lone Wolf!.")
+        t.on_event({"t": "match_result", "status": "confirmed", "winner": None,
+                    "rating": {"after": {"r": 1500.0}, "delta": 0.0, "rank_after": {"placement": [1, 5]}}})
+        self.assertIn("Platzierung 1/5", self.status())
+        self.assertEqual(i18n.missing(), [])
+
+    def test_notices_and_connection(self):
+        t = self.tab
+        t.on_event({"t": "notice", "msg": "your opponent reported the result; please report yours"})
+        self.assertEqual(self.status(), "Dein Gegner hat das Ergebnis gemeldet; melde bitte auch deins")
+        t.on_event({"t": "notice", "msg": "an admin wrote this"})
+        self.assertEqual(self.status(), "an admin wrote this")
+        t.on_event({"t": "kicked", "reason": "logged in from another place"})
+        self.assertEqual(self.status(), "Aus der Lobby entfernt: an einem anderen Ort angemeldet")
+        t.on_event({"t": "nat_status", "text": "Measuring the connection..."})
+        t.on_event({"t": "reconnecting", "reason": "x"})
+        self.assertIn("verbinde neu", self.status())
+        t.on_event({"t": "challenge_update", "challenge": "c", "state": "declined"})
+        self.assertEqual(self.status(), "Herausforderung abgelehnt.")
+        t.on_event({"t": "disconnected", "reason": "connection closed"})
+        self.assertEqual(self.status(), "Verbindung zur Lobby verloren: Verbindung geschlossen")
+        self.assertEqual(t.me_var.get(), "Nicht verbunden.")
+        self.assertEqual(i18n.missing(), [])
+
+    def test_lag_check_and_set(self):
+        t = self.tab
+        t.on_event({"t": "lag_check", "ping_ms": 37.4, "expected_frames": 2, "observed_frames": None,
+                    "verdict": "unknown", "cause": None, "text": "Ping 37 ms ..."})
+        self.assertTrue(t.match_var.get().startswith("Lag-Check: Bei 37 ms Ping sind etwa 2 Frames"), t.match_var.get())
+        t.on_event({"t": "set_end", "reason": "lag", "by": "opponent"})
+        self.assertEqual(self.status(), "Dein Gegner ist nach dem Lag-Check gegangen. Für keinen von euch gibt es eine "
+                                       "Strafe.")
+        t.rematch_bar = ("Ergebnis", "Rival")
+        t._show_rematch_bar()
+        labels = [str(b.cget("text")) for b in t.bar_buttons.winfo_children()]
+        self.assertEqual(labels, ["Rematch mit Rival", "Verlassen", "Rival blockieren"])
+        self.assertEqual(i18n.missing(), [])
+
+    def test_driver_notes(self):
+        t = self.tab
+        t.on_driver({"kind": "ask_result", "opponent": "Rival"})
+        self.assertEqual(t.bar_text.get(), "Das Spiel wurde geschlossen. Wie ist das Match gegen Rival ausgegangen?")
+        labels = [str(b.cget("text")) for b in t.bar_buttons.winfo_children()]
+        self.assertEqual(labels, ["Ich habe gewonnen", "Ich habe verloren", "Unentschieden", "Ich habe aufgegeben"])
+        t.on_driver({"kind": "rematch_offer", "opponent": "Rival"})
+        self.assertEqual(t.bar_text.get(), "Rival will ein Rematch")
+        self.assertEqual(i18n.missing(), [])
+
+    def test_buttons_and_headings_are_german(self):
+        texts = all_texts(self.root)
+        for expect in ("Konto", "Anmelden", "Als Gast spielen", "Ranked-Match", "Quick Match", "Suche beenden",
+                       "Raum erstellen", "Herausfordern", "Rangliste", "Profil", "Spieler", "Bilanz", "Controller hier benutzen"):
+            self.assertIn(expect, texts)
+        self.assertEqual(i18n.missing(), [])
+
+
+class DriverTextTests(German, unittest.TestCase):
+    def test_reasons_and_states(self):
+        from t5lobby import match_driver
+        for key, text in match_driver.REASON_TEXT.items():
+            self.assertNotEqual(i18n.t(text), text, key)
+        for key, text in match_driver.MatchDriver.STATE_TEXT.items():
+            self.assertTrue(i18n.t(text), key)
+        self.assertEqual(i18n.missing(), [])
+
+    def test_ticket_summary(self):
+        from t5lobby.handover import MatchTicket
+        ticket = MatchTicket(match_id="m", role="host", slot=0, local_port=1, peer=("1.2.3.4", 5), path="relay",
+                             rtt_ms=40.2, jitter_ms=1.0, delay=2, rounds=3, ranked=False,
+                             opponent={"name": "Rival"}, build="b", seed=1)
+        self.assertEqual(ticket.summary(), "Rival -- über den Lobby-Server, Ping 40 ms, Input-Delay 2")
+
+    def test_rank_label(self):
+        from t5lobby import ranks
+        self.assertEqual(ranks.label({"rank": "Beginner", "placement": [2, 5]}), "Beginner (Platzierung 2/5)")
+
+
+if __name__ == "__main__":
+    unittest.main()

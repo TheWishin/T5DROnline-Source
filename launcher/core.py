@@ -36,7 +36,7 @@ except ImportError:     # lobby/ is missing from this copy: the launcher stays u
     def N_(text):
         return text
 
-    def t(text, **values):
+    def t(text, /, **values):
         return text.format(**values) if values else text
 
     def translate_message(msg):

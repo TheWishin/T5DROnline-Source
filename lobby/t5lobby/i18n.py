@@ -92,7 +92,7 @@ def _has_words(text):
     return any(c.isalpha() for c in text)       # "", "0", "-" and "1 / 2" need no translation
 
 
-def t(text, **values):
+def t(text, /, **values):
     """The text in the current language, with {name} placeholders filled from the keyword values."""
     out = text
     if _lang != "en" and _has_words(text):

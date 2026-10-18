@@ -828,6 +828,128 @@ class OnlineTabGermanTests(German, unittest.TestCase):
         self.assertEqual(i18n.missing(), [])
 
 
+@unittest.skipIf(tk is None, "no tkinter")
+class ReportAndUpdateTests(German, unittest.TestCase):
+    """The problem report window and the update offer (windows of launcher/problem_report_ui.py, updater.py)."""
+
+    def setUp(self):
+        German.setUp(self)
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        self.root.withdraw()
+        self.root.readonly = True
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.dir, True)
+
+    def tearDown(self):
+        try:
+            cancel_timers(self.root)
+            self.root.destroy()
+        finally:
+            German.tearDown(self)
+
+    def pump(self, cond, timeout=20.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            self.root.update()
+            if cond():
+                return True
+            time.sleep(0.02)
+        self.fail("timed out")
+
+    def test_the_report_window(self):
+        from test_problem_report import fake_context
+        import problem_report_ui as report_ui
+        ctx = fake_context(self.dir, build_exit=0)
+        dlg = report_ui.ReportDialog(self.root, lambda: ctx, os.path.join(self.dir, "Desktop"), reveal=lambda p: None,
+                                     issues_url="https://example.org/issues", log=lambda m: None, visible=False)
+        texts = all_texts(dlg.top)
+        self.assertEqual(dlg.top.title(), "Problem melden")
+        for expect in ("Problem melden", "Was ist passiert? (freiwillig)", "Was in die Zip-Datei kommt",
+                       "Bericht auf dem Desktop speichern", "Abbrechen"):
+            self.assertIn(expect, texts)
+        self.assertTrue(any(t.startswith("Launcher-Log  (") for t in texts), texts)
+        self.assertTrue(any(t.startswith("Spiel-Log (das neueste)  (") or t.startswith("Spiel-Log (die neuesten ")
+                            for t in texts), texts)
+        self.assertTrue(any(t.startswith("Etwa ") and "gepackt" in t for t in texts), texts)
+        self.assertTrue(any(t.startswith("Bevor die Zip-Datei entsteht") for t in texts))
+        dlg.save()
+        self.pump(lambda: dlg.result is not None or dlg.error)
+        self.assertIsNone(dlg.error)
+        texts = all_texts(dlg.top)
+        for expect in ("Bericht gespeichert", "Ordner öffnen", "Schließen"):
+            self.assertIn(expect, texts)
+        self.assertTrue(any(t.startswith("Schicke diese Zip-Datei") and t.endswith("https://example.org/issues.")
+                            for t in texts), texts)
+        box = [w for w in dlg.top.winfo_children()[0].winfo_children() if w.winfo_class() == "Text"][0]
+        self.assertIn("Aus den Textdateien entfernt:", box.get("1.0", "end"))
+        self.assertEqual(i18n.missing(), [])
+        dlg.close()
+
+    def test_a_report_that_failed(self):
+        from test_problem_report import fake_context
+        import problem_report_ui as report_ui
+        ctx = fake_context(self.dir, build_exit=0)
+        dest = os.path.join(self.dir, "file")
+        with open(dest, "w") as f:
+            f.write("a file, not a folder")
+        dlg = report_ui.ReportDialog(self.root, lambda: ctx, dest, visible=False)
+        dlg.save()
+        self.pump(lambda: dlg.error is not None)
+        self.assertTrue(dlg.status_var.get().startswith("Der Bericht konnte nicht erstellt werden:"))
+        dlg.close()
+
+    def test_the_sizes(self):
+        import problem_report_ui as report_ui
+        self.assertEqual(report_ui.human(5), "5 Bytes")
+        self.assertEqual(report_ui.human(2048), "2 KB")
+        self.assertEqual(report_ui.human(3 * (1 << 20) + (1 << 19)), "3,5 MB")
+        i18n.set_language("en")
+        self.assertEqual(report_ui.human(3 * (1 << 20) + (1 << 19)), "3.5 MB")
+
+    def test_the_update_offer(self):
+        from unittest import mock
+        import updater
+        up = updater.Updater(self.root)
+        cancel_timers(self.root)
+        up.release = {"version": "9.9.9", "zip": {"size": 92_300_000}, "page": "https://github.com/x/y",
+                      "notes": "- something", "published": "2026-10-20", "code_id": None}
+        with mock.patch.object(updater, "busy_reason", return_value="The game is running. Close it first, then update."):
+            up.offer()
+        texts = all_texts(up.win)
+        self.assertEqual(up.win.title(), "Update verfügbar")
+        for expect in ("T5DR Online 9.9.9 ist da", "Jetzt aktualisieren", "Später", "Release-Seite"):
+            self.assertIn(expect, texts)
+        self.assertTrue(any(t.startswith("Du hast ") and "Download: 92,3 MB, veröffentlicht 2026-10-20. Der Launcher lädt es"
+                            in t for t in texts), texts)
+        self.assertIn("Das Spiel läuft. Schließe es zuerst, dann aktualisiere.", texts)
+        self.assertIn("Ändert dieses Update den Spielcode, bittet dich der Reiter Spielen, das Spiel einmal zu bauen "
+                      "(etwa 2 Minuten).", texts)
+        up._failed("Not enough free disk space: the update needs about 300 MB next to the folder, 12 MB are free.")
+        self.assertEqual(up.err.get(), "Nicht genug freier Speicherplatz: Das Update braucht etwa 300 MB neben dem "
+                                       "Ordner, frei sind 12 MB.")
+        up._progress("download", 5_000_000, 92_300_000)
+        self.assertEqual(up.msg.get(), "Lade herunter… 5,0 MB von 92,3 MB")
+        self.assertEqual(i18n.missing(), [])
+        up.win.destroy()
+
+    def test_update_answers_in_boxes(self):
+        from unittest import mock
+        import updater
+        up = updater.Updater(self.root)
+        cancel_timers(self.root)
+        with mock.patch.object(updater, "_box") as box:
+            up._checked(None, "No connection to GitHub. Check the internet connection and try again.", True)
+            up._checked({"version": up.local, "zip": {}}, None, True)
+        self.assertEqual(box.call_args_list[0].args[:3], (
+            "show_info", "Updates", "Die Suche nach Updates hat nicht geklappt.\n\nKeine Verbindung zu GitHub. Prüfe "
+                                    "die Internetverbindung und versuche es noch einmal."))
+        self.assertEqual(box.call_args_list[1].args[2], "Du hast die neueste Version (%s)." % up.local)
+        self.assertEqual(i18n.missing(), [])
+
+
 class DriverTextTests(German, unittest.TestCase):
     def test_reasons_and_states(self):
         from t5lobby import match_driver

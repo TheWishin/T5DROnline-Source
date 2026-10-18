@@ -151,7 +151,14 @@ def write_atomic(path, text):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
-    os.replace(tmp, path)
+    for i in range(50):          # a game reading the old file this moment (older builds: no delete sharing)
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == 49:
+                raise
+            time.sleep(0.01)
 
 
 class Game:

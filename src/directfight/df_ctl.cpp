@@ -181,13 +181,21 @@ bool ctl_poll(CtlCmd& out, uint32_t f, uint32_t every)
     WIN32_FILE_ATTRIBUTE_DATA a;
     if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &a)) return false;
     if (!CompareFileTime(&a.ftLastWriteTime, &g_mtime) && g_seen) return false;
+    /* Opened with FILE_SHARE_DELETE: the launcher replaces cmd.json atomically
+     * (os.replace = MoveFileEx), and Windows refuses that while another process
+     * has the file open without delete sharing -- a command written while this
+     * poll read the old one failed on the launcher's side (rematch-fix: one of
+     * ~20 commands in a run, PermissionError in the test harness). */
     std::string text;
-    if (FILE* fp = fopen(path.c_str(), "rb")) {
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    {
         char buf[4096];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof buf, fp)) > 0) text.append(buf, n);
-        fclose(fp);
-    } else return false;
+        DWORD n = 0;
+        while (ReadFile(h, buf, sizeof buf, &n, nullptr) && n > 0) text.append(buf, n);
+        CloseHandle(h);
+    }
     CtlCmd c;
     if (!parse_cmd(text, c)) return false;   /* half written? the next poll reads it again */
     g_mtime = a.ftLastWriteTime;

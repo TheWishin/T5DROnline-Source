@@ -227,6 +227,21 @@ class GameLog:
                 "fps": round(frames / sum(t for _f, _p, _w, t in rows), 1)}
 
 
+def replace_retry(src, dst, tries=50, wait=0.01):
+    """os.replace that retries for a moment: on Windows the replace fails while another process has
+    the target open without delete sharing (an older game reading cmd.json at that moment -- the
+    command would be lost, and with it a rematch). The game opens it with delete sharing since
+    rematch-fix; older builds and other readers still get this."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(wait)
+
+
 class Control:
     """The game control channel (persistent mode): cmd.json written here, state.json read."""
 
@@ -247,7 +262,7 @@ class Control:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f)
-        os.replace(tmp, path)
+        replace_retry(tmp, path)
         return self.seq
 
     def state(self):
@@ -427,7 +442,7 @@ class MatchDriver:
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
             f.write(line + (f" match={mid}" if mid else "") + "\n")
-        os.replace(tmp, self.fight_path)
+        replace_retry(tmp, self.fight_path)
 
     def _discard_result(self, why):
         """A result file that must not be reported (left from a voided match, or naming another

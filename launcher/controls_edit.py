@@ -285,8 +285,8 @@ SLOT_GROUPS = (
 
 def _slots():
     rows = [
-        ("1", N_("1  Left Punch"), "attack"), ("2", N_("2  Right Punch"), "attack"),
-        ("3", N_("3  Left Kick"), "attack"), ("4", N_("4  Right Kick"), "attack"),
+        ("1", N_("1 (Left Punch)"), "attack"), ("2", N_("2 (Right Punch)"), "attack"),
+        ("3", N_("3 (Left Kick)"), "attack"), ("4", N_("4 (Right Kick)"), "attack"),
     ]
     rows += [(k, k, "macro") for k in (
         "1+2", "3+4", "1+3", "2+4", "1+4", "2+3", "1+2+3", "1+2+4", "1+3+4", "2+3+4", "1+2+3+4")]
@@ -598,6 +598,10 @@ class ControlsEditor:
                 return sc
         return SCOPE_MODEL if any(sc == SCOPE_MODEL for sc, _ in layers) else SCOPE_KIND
 
+    def own_masks(self, dev, scope):
+        """Masks of the buttons that have a line of their own in this scope's section."""
+        return {m for _i, m in self._target_lines(self.section_for(dev, scope))}
+
     def more_specific(self, dev, scope):
         names = [n for _sc, n in self.layers(dev)]
         return names[names.index(self.section_for(dev, scope)) + 1:]
@@ -616,8 +620,14 @@ class ControlsEditor:
     def detect_recipe(self, dev):
         """The id of the preset the controller's bindings equal right now, or None (own layout)."""
         have = frozenset((s, m) for s, m in self.table(dev).binds)
-        for r in recipes_for(dev.kind):
-            if recipe_pairs(dev.kind, r.specs[dev.kind]) == have:
+        same = [r for r in recipes_for(dev.kind) if recipe_pairs(dev.kind, r.specs[dev.kind]) == have]
+        for r in same:                  # a preset that also sets the port's options counts when they are set
+            port = r.specs[dev.kind].port
+            if port and dev.port >= 0 and port.get("stick") == self.stick_of(dev.port) \
+                    and port.get("socd") == self.socd_of(dev.port):
+                return r.id
+        for r in same:
+            if not r.specs[dev.kind].port:
                 return r.id
         return None
 
@@ -677,17 +687,52 @@ class ControlsEditor:
                                 sections=", ".join(f"[{n}]" for n in names), what=what))
 
     # ---------------------------------------------------------------- edits
+    def pairs(self, dev):
+        """The controller's bindings as the game computes them: [(source, mask)] in binding order."""
+        return [(s, m) for s, m in self.table(dev).binds]
+
+    def _write_line(self, kind, section, mask, key, srcs):
+        """The one line of this section for the button `mask`: `key = srcs` (changed in place when there is
+        one, else added). The sources are taken off the section's other button lines."""
+        self.doc.ensure_section(section)
+        self._strip_sources(section, set(srcs), kind, mask)
+        idx = [i for i, m in self._target_lines(section) if m == mask]
+        val = " ".join(srcs)
+        if idx:
+            self.doc.lines[idx[0]].set_val(val)
+            self.doc.remove_lines(idx[1:])
+        else:
+            self.doc.add_kv(section, key, val)
+
+    def _reconcile(self, dev, scope, expected):
+        """An edit means exactly one thing: this button gets these sources, they leave whatever had them, and
+        nothing else changes. Taking a line out of the file can give a button its old source back (a line
+        that took it from the preset). If the game's result differs from the meant one, the buttons that
+        differ get a line that says what they had -- in the section being edited, and if a more specific
+        section of the file still wins, in that one."""
+        layers = [n for _sc, n in self.layers(dev)]
+        first = layers.index(self.section_for(dev, scope))
+        for step in range(len(layers) - first + 1):
+            self._touch()
+            actual = self.pairs(dev)
+            if set(actual) == set(expected):
+                return True
+            sec = layers[min(first + step, len(layers) - 1)]
+            for mask in sorted({m for _s, m in set(actual) ^ set(expected)}):
+                self._write_line(dev.kind, sec, mask, mask_text(mask), [s for s, m in expected if m == mask])
+        self._touch()
+        ok = set(self.pairs(dev)) == set(expected)
+        if not ok:
+            self.notes.append(t("Lines of your file in other sections still change some buttons."))
+        return ok
+
     def bind(self, dev, scope, key, sources, add=False):
         """Make `sources` the buttons for Tekken button / macro `key` on this controller. A source that did
         something else loses that. Returns the sources now bound (as the game sees them)."""
-        self._prepare()
-        sec = self.section_for(dev, scope)
         mask = padmap.target_mask(key)
         if not mask:
             raise ValueError(f"unknown button {key!r}")
-        srcs = []
-        if add:
-            srcs += self.sources(dev, key)
+        srcs = list(self.sources(dev, key)) if add else []
         for s in sources:
             c = padmap.canon_source(dev.kind, s)
             if c is None:
@@ -695,38 +740,41 @@ class ControlsEditor:
             if c not in srcs:
                 srcs.append(c)
         srcs = srcs[:MAX_SOURCES]
-        self.doc.ensure_section(sec)
-        self._strip_sources(sec, set(srcs), dev.kind, mask)
-        idx = [i for i, m in self._target_lines(sec) if m == mask]
-        val = " ".join(srcs)
-        if idx:
-            self.doc.lines[idx[0]].set_val(val)
-            self.doc.remove_lines(idx[1:])
-        else:
-            self.doc.add_kv(sec, key, val)
+        self._prepare()
+        sec = self.section_for(dev, scope)
+        expected = [(s, m) for s, m in self.pairs(dev) if s not in srcs and m != mask] + [(s, mask) for s in srcs]
+        self._write_line(dev.kind, sec, mask, key, srcs)
         over = []
         for other in self.more_specific(dev, scope):
             n = self._drop_target(other, mask) + self._strip_sources(other, set(srcs), dev.kind, mask)
             if n:
                 over.append(other)
+                self.doc.prune_section(other)
         self._override_note(over, key)
-        self._touch()
+        self._reconcile(dev, scope, expected)
         return self.sources(dev, key)
 
     def clear(self, dev, scope, key):
         """No button for `key` on this controller (also where the preset had one)."""
-        self._prepare()
-        sec = self.section_for(dev, scope)
         mask = padmap.target_mask(key)
         if not mask:
             raise ValueError(f"unknown button {key!r}")
+        self._prepare()
+        sec = self.section_for(dev, scope)
+        expected = [(s, m) for s, m in self.pairs(dev) if m != mask]
         self._drop_target(sec, mask)
-        over = [o for o in self.more_specific(dev, scope) if self._drop_target(o, mask)]
+        over = []
+        for other in self.more_specific(dev, scope):
+            if self._drop_target(other, mask):
+                over.append(other)
+                self.doc.prune_section(other)
         self._override_note(over, key)
         self._touch()
-        if self.sources(dev, key):
+        if self.sources(dev, key):                  # the preset or a shared section has one: say "none"
             self.doc.add_kv(sec, key, "")
-            self._touch()
+        self._reconcile(dev, scope, expected)
+        if not self.doc.kv_indices(sec):
+            self.doc.prune_section(sec)
         return self.sources(dev, key)
 
     def apply_recipe(self, dev, scope, recipe_id):
@@ -779,8 +827,12 @@ class ControlsEditor:
             self.doc.prune_section(n)
         if dev.port >= 0:
             port = f"port{dev.port + 1}"
+            general = (self.doc.get("general", "socd") or "neutral").lower()
+            default = {"stick": "analog", "socd": "neutral" if general in ("", "neutral") else general}
             for k in ("stick", "socd", "macros"):
-                removed += self.doc.remove_key(port, k)
+                v = (self.doc.get(port, k) or "").lower()
+                if v and v != default.get(k):           # (a line that says what the default says can stay)
+                    removed += self.doc.remove_key(port, k)
         self._touch()
         self.notes.append(t("{n} lines removed.", n=removed))
         return removed

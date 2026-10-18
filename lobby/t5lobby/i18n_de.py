@@ -1231,6 +1231,7 @@ MESSAGES = {
         "Verbindung zur Lobby verloren -- verbinde neu (dein Match läuft weiter)...",
     "Reconnected to the lobby.": "Wieder mit der Lobby verbunden.",
     "Lost the lobby connection: {reason}": "Verbindung zur Lobby verloren: {reason}",
+    "Lost the connection to the lobby server.": "Verbindung zum Lobby-Server verloren.",
     "Removed from the lobby: {reason}": "Aus der Lobby entfernt: {reason}",
     "The game closed. How did the match against {opponent} end?":
         "Das Spiel wurde geschlossen. Wie ist das Match gegen {opponent} ausgegangen?",

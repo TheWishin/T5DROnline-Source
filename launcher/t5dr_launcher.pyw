@@ -175,6 +175,9 @@ class App(tk.Tk):
         COLORS.update({"ok": C["ok"], "warn": C["warn"], "error": C["bad"], "muted": C["muted"],
                        "accent": C["accent"], "accent_hover": C["accent_hi"], "log_bg": C["surface"],
                        "log_fg": C["muted"], "text": C["text"], "step": C["info"]})
+        if controls_ui is not None:          # the Controls window's colours on the dark background
+            controls_ui.COLORS.update({"ok": C["ok"], "muted": C["muted"], "warn": C["warn"], "error": C["bad"],
+                                       "live": self.theme.mix(C["ok"], C["surface"], 0.78)})
         st = th.style
         f = th.fonts
         px = th.px
@@ -187,9 +190,9 @@ class App(tk.Tk):
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
         if not self.readonly:
-            self.geometry(f"{min(px(1080), sw - 40)}x{min(px(780), sh - 80)}")
+            self.geometry(f"{min(px(1080), sw - 40)}x{min(px(840), sh - 80)}")
         else:
-            self.geometry(f"{px(1080)}x{px(780)}+60+60")
+            self.geometry(f"{px(1080)}x{px(840)}+60+60")
 
     def big_button(self, parent, text, cmd):
         if getattr(self, "theme", None) is not None:

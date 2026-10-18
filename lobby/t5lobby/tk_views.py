@@ -67,7 +67,8 @@ ERROR_HELP = (
      N_("Allow T5DR Online through the Windows firewall, then search again.")),
     (("not even through the relay", "auch nicht über das relay"),
      N_("Try again; if it keeps failing, check your firewall or router.")),
-    (("lost the lobby connection", "verbindung zur lobby verloren"),
+    (("lost the lobby connection", "verbindung zur lobby verloren", "lost the connection to the lobby server",
+      "verbindung zum lobby-server verloren"),
      N_("Log in again; your settings are kept.")),
     (("passwords differ", "passwörter sind verschieden"), N_("Type the same password twice.")),
     (("no longer available", "nicht mehr da"), N_("Find a new opponent.")),
@@ -278,11 +279,11 @@ class OnlineView:
 
         # account: log in / create
         pa = self.body(card)
-        pa.columnconfigure(0, weight=1)
+        pa.columnconfigure(0, weight=1, uniform="pw")
+        pa.columnconfigure(1, weight=1, uniform="pw")
         self.pane_account = pa
-        ttk.Label(pa, text=t("Password").upper(), style="Card.Caps.TLabel").grid(row=0, column=0, sticky="w")
+        self.pw_label = ttk.Label(pa, text=t("Password").upper(), style="Card.Caps.TLabel")
         self.pw_entry = ttk.Entry(pa, textvariable=tab.pw_var, show="•", style="Card.TEntry")
-        self.pw_entry.grid(row=1, column=0, sticky="we", pady=(px(4), px(8)))
         self.pw_entry.bind("<Return>", lambda _e: self._pw_return())
         self.pw2_label = ttk.Label(pa, text=t("Password again").upper(), style="Card.Caps.TLabel")
         self.pw2_entry = ttk.Entry(pa, textvariable=self.pw2_var, show="•", style="Card.TEntry")
@@ -300,7 +301,7 @@ class OnlineView:
         for var in (tab.name_var, tab.pw_var, self.pw2_var):
             var.trace_add("write", lambda *_: self._check_rules())
         act = self.body(pa)
-        act.grid(row=5, column=0, sticky="we", pady=(px(4), 0))
+        act.grid(row=5, column=0, columnspan=2, sticky="we", pady=(px(4), 0))
         act.columnconfigure(1, weight=1)
         ttk.Checkbutton(act, text=t("Remember me"), variable=tab.remember_var, style="Card.TCheckbutton").grid(
             row=0, column=0, sticky="w")
@@ -376,12 +377,17 @@ class OnlineView:
         else:
             self.pane_account.grid(row=5, column=0, sticky="we")
             reg = mode == "register"
-            for w in (self.pw2_label, self.pw2_entry, self.rules):
+            for w in (self.pw_label, self.pw_entry, self.pw2_label, self.pw2_entry, self.rules):
                 w.grid_forget()
-            if reg:
-                self.pw2_label.grid(row=2, column=0, sticky="w")
-                self.pw2_entry.grid(row=3, column=0, sticky="we", pady=(px(4), px(8)))
-                self.rules.grid(row=4, column=0, sticky="w", pady=(0, px(8)))
+            if reg:                         # the two password boxes side by side (the card stays short)
+                self.pw_label.grid(row=0, column=0, sticky="w")
+                self.pw_entry.grid(row=1, column=0, sticky="we", padx=(0, px(6)), pady=(px(4), px(8)))
+                self.pw2_label.grid(row=0, column=1, sticky="w", padx=(px(6), 0))
+                self.pw2_entry.grid(row=1, column=1, sticky="we", padx=(px(6), 0), pady=(px(4), px(8)))
+                self.rules.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, px(6)))
+            else:
+                self.pw_label.grid(row=0, column=0, columnspan=2, sticky="w")
+                self.pw_entry.grid(row=1, column=0, columnspan=2, sticky="we", pady=(px(4), px(8)))
             tab.b_login.grid_forget()
             tab.b_register.grid_forget()
             (tab.b_register if reg else tab.b_login).grid(row=0, column=2, sticky="e")
@@ -636,7 +642,7 @@ class OnlineView:
         page.columnconfigure(0, weight=3)
         page.columnconfigure(1, weight=2)
         page.rowconfigure(0, weight=3)
-        page.rowconfigure(1, weight=2)
+        page.rowconfigure(1, weight=1)
         pc = self.card(page, pad=12)
         pc.grid(row=0, column=0, sticky="nsew")
         pc.columnconfigure(0, weight=1)
@@ -669,7 +675,7 @@ class OnlineView:
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.actions[key], tab.action_text[key] = b, label
-        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 140, 70), height=3)
+        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 140, 70), height=2)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
@@ -770,7 +776,8 @@ class OnlineView:
         st.columnconfigure(0, weight=1)
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
-        self.status_label.grid(row=0, column=0, sticky="w")
+        if not isinstance(getattr(tab.app, "status", None), tk.StringVar):
+            self.status_label.grid(row=0, column=0, sticky="w")    # (the launcher shows it in its own status bar)
         rep = ttk.Frame(st)
         rep.grid(row=0, column=1, sticky="e", padx=(px(10), px(10)))
         # after a match: the launcher's "Report a problem" window (tk_tab packs it into this frame)
@@ -893,8 +900,9 @@ class OnlineView:
             self.result_dismissed = True
         elif kind in ("match_cancel", "disconnected"):
             self.revealed = None
-        if (kind == "match_cancel" and ev.get("reason") in ("udp_unreachable", "no_connection")) or kind in (
-                "disconnected", "kicked"):
+        if kind == "disconnected":                          # (the reason is technical: the status line has it)
+            self.show_error(t("Lost the connection to the lobby server."))
+        elif (kind == "match_cancel" and ev.get("reason") in ("udp_unreachable", "no_connection")) or kind == "kicked":
             self.show_error(tab.status_var.get())          # the tab has just said what happened
         self.refresh()
 

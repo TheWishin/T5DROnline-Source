@@ -154,6 +154,7 @@ class OnlineUiWalk(unittest.TestCase):
         self.tab.ask_string = lambda *a, **k: "secret-pw1"
         self.procs = []
         self.others = []
+        self.files = []
         self.s = util.ServerThread(blind_ready=True, ready_timeout=15.0, rematch_window=40.0, result_timeout=3.0,
                                    lag_wait=3.0, reconnect_grace=1.0).start()
         self.n_shot = 0
@@ -168,6 +169,9 @@ class OnlineUiWalk(unittest.TestCase):
         for p in self.procs:
             if p.poll() is None:
                 p.kill()
+            p.wait(10)
+        for f in self.files:
+            f.close()
         for g in self.games:
             g.stop()
         self.stop_server()
@@ -261,6 +265,7 @@ class OnlineUiWalk(unittest.TestCase):
     def cli(self, name, *args, env=None):
         b = self.util.BUILD
         lf = open(os.path.join(self.dir, f"cli-{name}.log"), "w")
+        self.files.append(lf)
         cmd = [sys.executable, "-m", "t5lobby.cli", "--server", self.s.addr, "--name", name, "--code-id", b.code_id,
                "--elf-sha1", b.elf_sha1] + list(args)
         p = subprocess.Popen(cmd, cwd=LOBBY, stdout=lf, stderr=lf, creationflags=NOWIN if os.name == "nt" else 0,

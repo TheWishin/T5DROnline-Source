@@ -79,6 +79,74 @@ uint8_t  g_phase_at[4096]; uint32_t g_phase_tag[4096];   /* phase word at the bo
 bool     g_intro_flag[4096];                             /* ... and whether that boundary was in the intro */
 bool intro_phase(uint32_t p, bool game_mode) { return p <= 12 && (p >= 7 || game_mode); }
 bool intro_at(uint32_t b) { return g_intro_rule && g_phase_tag[b % 4096] == b + 1 && g_intro_flag[b % 4096]; }
+/* The post-match rule (rematch-fix). From the boundary at which the game shows
+ * the match decided (game mode, fight phase 17, the decided byte 0x1008EBD5 set)
+ * until the game leaves for the select screen, both players' input is a
+ * function of the game state at the boundary that decides it, the same on
+ * both PCs: neutral, and a START press of 3 frames every 20 frames from 40
+ * frames after the decision until the game asks for the select mode -- what
+ * the direct-fight driver did by hand (hold + skip the replay and win pose,
+ * docs/DIRECTFIGHT.md "After the match"). This side sends it and predicts it
+ * for the peer, so the post-match frames have no mispredictions and no
+ * rollback re-simulates them. Before, the driver's START presses (and the
+ * last mashed input before the hold) were predicted as "the last input
+ * repeats": rollbacks all through the KO, the replay skip and the result
+ * screen, where the game loads (win pose, result, the select screen) on its
+ * file and draw request threads -- whose requests a restore rewound under
+ * them: the abort in NU::File::RequestManager at a match end under a choppy
+ * opponent (docs/ROLLBACK.md section 30, "what is left"), 2 in 6 match ends
+ * with fight_flow_test --stutter 60 --mash. T5_RB_NET_POSTMATCH=0: off. */
+constexpr uint32_t kDecidedByte = 0x1008EBD5u;
+constexpr uint16_t kStartBit = 0x0008u;          /* START in PadInput::buttons (DIGITAL1 low byte) */
+bool g_post_rule = true;
+uint32_t g_post_tag[4096], g_post_start[4096];   /* boundary f: post-match since g_post_start (0 = not) */
+np::PadInput g_post_in[4096];                     /* ... and the input the rule decides there */
+uint32_t g_post_frames = 0;
+extern "C" uint32_t t5_df_mode_next(void);
+extern "C" uint32_t t5_df_mode_cur(void);
+/* The select screen of a rematch runs in lockstep (rematch-fix): every frame
+ * there waits for the peer's input instead of predicting it. Both drivers
+ * press their own player's cursor there, the game loads the portraits and
+ * models those presses ask for on its request threads, and a rollback
+ * re-simulating such a press rewound requests under those threads (an fd
+ * left open per crossing -- archive opens at fd 6 and 7 -- then the same
+ * NU::File::RequestManager abort, at the next fight's loading). The select
+ * screen takes a few seconds at most; in lockstep it runs at the speed the
+ * round trip allows (full speed up to ~2 x the input delay in frames).
+ * T5_RB_NET_SELECT_LOCK=0: off. */
+bool g_select_lock = true;
+uint32_t g_select_lock_frames = 0;
+bool g_fighting[4096];                             /* boundary f: fighting, match not decided */
+void post_record(uint32_t f)
+{
+    const bool fight = g_intro_rule && g_post_rule && t5_df_game_mode() && rd32(kPhaseWord) == 17;
+    const bool decided = fight && vm_base[kDecidedByte] != 0;
+    /* it begins where the decided byte comes up during the fight -- not where a
+     * new fight starts with the last match's byte still set (a rematch: the
+     * byte is cleared some frames into it) */
+    const uint32_t p = f - 1;
+    const bool prev_ok = f > 0 && g_post_tag[p % 4096] == p + 1;
+    uint32_t start = 0;
+    if (decided && prev_ok) {
+        if (g_post_start[p % 4096]) start = g_post_start[p % 4096];
+        else if (g_fighting[p % 4096]) start = f;
+    }
+    np::PadInput in = np::kNeutral;
+    if (start) {
+        const uint32_t s = f - start;
+        if (s >= 40 && (s - 40) % 20 < 3 && t5_df_mode_next() != 6) in.buttons = kStartBit;
+    }
+    g_post_start[f % 4096] = start;
+    g_fighting[f % 4096] = fight && !decided;
+    g_post_in[f % 4096] = in;
+    g_post_tag[f % 4096] = f + 1;
+}
+bool post_at(uint32_t b, np::PadInput* in)
+{
+    if (g_post_tag[b % 4096] != b + 1 || !g_post_start[b % 4096]) return false;
+    *in = g_post_in[b % 4096];
+    return true;
+}
 uint32_t g_intro_frames = 0;
 double g_wait_acc_ms = 0;   /* time the next live frame waited for the peer (speed accounting) */
 /* time sync */
@@ -148,6 +216,7 @@ np::PadInput remote_for(uint32_t g, bool* predicted)
     if (np::rb_remote(g, &in)) { *predicted = false; g_last_remote = in; return in; }
     *predicted = true;
     if (g >= (uint32_t)g_delay && intro_at(g - (uint32_t)g_delay)) return np::kNeutral;   /* the peer sends neutral for it */
+    { np::PadInput pm; if (g >= (uint32_t)g_delay && post_at(g - (uint32_t)g_delay, &pm)) return pm; }   /* ... or the post-match rule's input */
     return g_last_remote;   /* prediction: the last confirmed input repeats */
 }
 
@@ -198,8 +267,8 @@ void report()
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
-    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, loads %u",
-         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_loads);
+    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u",
+         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads);
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
@@ -270,6 +339,8 @@ bool enabled()
             g_intro_rule = (getenv("T5_FIGHT") && *getenv("T5_FIGHT")) || (getenv("T5_FIGHT_FILE") && *getenv("T5_FIGHT_FILE")) ||
                            (getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR"));
             if (const char* s = getenv("T5_RB_NET_INTRO")) g_intro_rule = g_intro_rule && *s != '0';
+            if (const char* s = getenv("T5_RB_NET_POSTMATCH")) g_post_rule = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_SELECT_LOCK")) g_select_lock = *s != '0';
             if (g_intro_rule) g_warmup = 0;   /* the intro takes no input: nothing there to wait for */
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
@@ -406,7 +477,10 @@ static void live_tick_part(uint32_t f)
     }
     const bool intro = intro_at(f);
     if (intro) g_intro_frames++;
-    np::rb_sample_local(f, intro);
+    np::PadInput pm;
+    const bool post = !intro && post_at(f, &pm);
+    if (post) g_post_frames++;
+    np::rb_sample_local(f, intro, post ? &pm : nullptr);
 }
 
 /* The early boundary waits here for the frame's vblank tick (the frame
@@ -520,6 +594,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
+    post_record(f);
     double cms = 0;
     const uint32_t dirty = state_commit(f, nullptr, &cms);
     (void)dirty;
@@ -623,20 +698,22 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     uint32_t rc = np::rb_remote_contig();
     /* a scene change (or a prediction window exhausted) waits for the peer */
     const bool warm = f < g_started_at + g_warmup || f < g_lock_until;   /* lockstep until the fight has settled / past a phase change */
+    const bool select = g_intro_rule && g_select_lock && t5_df_mode_cur() == 6;   /* a rematch's select screen */
+    if (select) g_select_lock_frames++;
     /* lockstep means the frame about to run (f, inputs_for(f) below) has the
      * peer's input in hand, not just the frames before it: waiting for f - 1
      * only still ran f on a prediction, and the 1-frame rollbacks that
      * followed inside the round-end window re-issued the title's music
      * switch and its stream reader gave up (j50c, docs/ROLLBACK.md 18) */
-    const uint32_t need = (scene_flag || warm) ? f + 1 : (f > g_maxpred ? f - g_maxpred : 0);
+    const uint32_t need = (scene_flag || warm || select) ? f + 1 : (f > g_maxpred ? f - g_maxpred : 0);
     if (rc < need && !np::rb_peer_lost()) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
         rc = np::rb_wait_remote(need - 1, 2000);
         const double ms = ms_since(t0);
-        g_st.stalls++; g_st.stall_ms += ms; if (warm) g_st.stall_ms_lock += ms;
+        g_st.stalls++; g_st.stall_ms += ms; if (warm || select) g_st.stall_ms_lock += ms;
         g_wait_acc_ms += ms;
         if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
-                                        scene_flag ? "scene change" : warm ? "warm-up" : "prediction window");
+                                        scene_flag ? "scene change" : warm ? "warm-up" : select ? "select screen" : "prediction window");
     }
 
     /* mispredictions among the frames now confirmed */
@@ -676,6 +753,7 @@ bool early_check()
     const uint32_t f = g_next_f;
     if (g_early_f == f) return true;
     if (!f || f < g_lock_until || f < g_started_at + g_warmup) return false;
+    if (g_intro_rule && g_select_lock && t5_df_mode_cur() == 6) return false;   /* lockstep at the select screen */
     LARGE_INTEGER t; QueryPerformanceCounter(&t);
     if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 2000) return false;   /* every 0.5 ms */
     g_early_last_check = t;

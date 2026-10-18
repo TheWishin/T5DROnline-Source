@@ -281,7 +281,12 @@ def persistent(ctl_dir):
         path = os.path.join(ctl_dir, "state.json")
         with open(path + ".tmp", "w") as f:
             json.dump(dict(kw, state=st, seq=seq, ctl=1), f)
-        os.replace(path + ".tmp", path)
+        for i in range(50):      # the launcher may be reading it this moment (Windows refuses the replace then)
+            try:
+                os.replace(path + ".tmp", path)
+                break
+            except PermissionError:
+                time.sleep(0.01)
 
     seen = 0
     state("idle", 0)

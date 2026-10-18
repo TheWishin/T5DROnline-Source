@@ -522,6 +522,76 @@ walker's own recovery, also in ordinary fights on main): rollback 2 in S over th
 fight in between broke the game, as in the dry run. Also: `tests/` 143 OK,
 `lobby/tests` 296 OK, the smoke quick suite 81 checks PASS.
 
+## Rematches between two real PCs (rematch-fix, 2026-10-18)
+
+"Rematch has never worked" between two PCs (owner, 1.0.0, room "JinFury vs
+Wishin": a room match, Ready again, a room match, then Rematch: the control
+command came, no FIGHT START followed; then eight "queued flip never reached
+by the FIFO walker" lines and the picture gone; the friend quit). On one PC
+the dry runs rematched fine. What real players do differently, and what each
+did:
+
+- **The rematch keeps the characters, and the two commands come apart.** The
+  lobby's rematch is the same two picks; P1's cursor already sits on its
+  character, so P1's driver confirms within ~10 frames of its command. A
+  persistent game started a rematch only at a "live" select screen, tested as
+  *P1's record is still choosing* -- right for a fresh select screen, wrong in
+  a rematch, where the peer drives its own player through the exchanged
+  input. When P2's command came later than P1's confirm (any real lobby: two
+  launchers, two networks), P2's driver never started, P1 waited for P2's
+  pick, and both games stayed at the select screen for good. The test flow
+  changed the characters every match (the cursor had to travel) and handed
+  both commands over within a few frames, so it never got there. Reproduced
+  with `tools/fight_flow_test.py --flow persistent --pattern NR --same-chars
+  --skew 1.5 --rematch-wait 8` (run e2b: P2's command 85 frames after P1's,
+  no FIGHT START on either side for 150 s). **Fix:** the select screen is
+  live when the select mode takes input and every record *this PC drives* is
+  still choosing (`select_live()` in df_fight.cpp): in a rematch that is the
+  own player only; the peer's may be anywhere. Same run with the fix (f1):
+  every rematch at FIGHT START 2-3 s after its command on both sides.
+- **The frozen picture was a closed window.** "queued flip never reached by
+  the FIFO walker" with `get` stuck and `put` moving is what the runtime logs
+  when its window is gone: closing the window (Alt+F4, the X button, Esc)
+  stopped the FIFO walker and the presents but not the process -- a game
+  without a window at about one frame a second, still in its netplay
+  session, still "running" for its launcher (reproduced by posting WM_CLOSE:
+  the same eight lines). The 0.1.8 folder's log shows a game left running an
+  hour after its window was closed; 1.0.0's 19:43 log shows the friend's game
+  at one frame a second. Now a closed window ends the game (ps3recomp patch
+  0035, `ps3_set_window_closed_handler`); with a netplay session that is a
+  quit -- docs/NETPLAY.md "Connection problems".
+- **cmd.json could not always be replaced.** The game read cmd.json with a
+  plain `fopen`; Windows refuses the launcher's atomic replace while another
+  process has the file open without delete sharing, and the harness lost a
+  command that way (one in ~20). The game opens it with delete sharing now,
+  and the launcher retries the replace (`match_driver.replace_retry`).
+- **Under rollback the post-match frames and a rematch's select screen are no
+  longer predicted** (docs/ROLLBACK.md section 31): the input after the KO is
+  a rule of the game state on both PCs (the same hold and START skip the
+  driver did), and the select screen of a rematch runs in lockstep. Both are
+  places where the game loads (win pose, result, the select screen's
+  portraits and models) through its file request thread. **Not fixed:** a
+  rollback across such a load still leaks a file handle now and then, and
+  after enough of them the request thread aborts (`abort() is called from
+  ... 0x374150`, the game ends with exit code 1) -- with both sides mashing
+  buttons, about once in 8 matches of one session; never in lockstep.
+  docs/ROLLBACK.md section 31 has what is known.
+
+The driver's own START skip and pad hold stay as they were offline and in
+lockstep; under rollback the rule decides the post-match input and the
+driver's presses there are ignored.
+
+`tools/fight_flow_test.py` drives these flows: `--pattern NNR` (room match,
+Ready again = a new session, Rematch), `--same-chars`, `--skew S`
+(`--skew-first host|join|alt|random`), `--stutter MS`, `--hz2 240` (the
+joiner's display at 240 Hz: no display lock, the 59.94 Hz clock),
+`--close K:ROLE:S` (WM_CLOSE to that game S seconds into match K; the closed
+game must end with exit code 7 and "quit", its peer report "peer_quit", and
+the next match is a new session against a freshly started game), and it fails
+a run on any FIFO stall in the game logs.
+
+Results: see docs/ROLLBACK.md section 31 (the cycle runs).
+
 ## Known transient mismatches
 
 Two kinds of words differed between the two games in the runs of this work;

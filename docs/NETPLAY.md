@@ -278,6 +278,7 @@ How a session starts, survives trouble, and ends when it cannot go on
 | Peer alive but no input for `T5_NET_TIMEOUT` mid-match | `peer_stalled` |
 | Match start, peer alive but still loading | Waits up to `T5_NET_START_TIMEOUT` (default 120 s), then `start_timeout` |
 | Peer closed its game | BYE -> `peer_quit` at once |
+| This player closes the game window (Alt+F4, the X button, Esc) | The game ends (ps3recomp patch 0035; before it ran on without its window at about one frame a second, still in the session -- the opponent stalled and went out of sync, the match was voided as a desync). With a session set up: the result file gets `"reason": "quit"` (unless this match's result is out: a game closed after the KO keeps its result), BYE, exit code **7**; the launcher reports the match as this player's quit (a loss, docs/RANKED.md), the opponent's game sees `peer_quit`. Esc asks for a second press within 3 s while a session is set up (the window caption says so); Alt+F4 and X close at once |
 | Peer's game restarted | A HELLO from a new process of the peer: before any lockstep input was exchanged it simply takes the old one's place; mid-match the session cannot be resumed (the new game knows nothing of it): the old side ends with `peer_restarted`, the new one is refused (REJECT -> `rejected`) instead of hanging in the handshake |
 
 **When a session cannot go on** (`T5_NET_ON_LOST=exit`, the default) the match
@@ -292,6 +293,17 @@ told (BYE), and the game closes with exit code **3** (peer lost: `peer_quit`,
 somewhere else for 8 s, the network thread ends the session itself.
 `T5_NET_ON_LOST=idle` keeps the old behaviour (result file written, then the
 peer's player idles).
+
+**A closed game never comes back into its old session.** The launcher starts
+a game again only for the next match, with that match's session (new ports,
+key, match id); a persistent game that exits with code 7 (the player closed
+it) is not a control-channel failure, so the launcher's fallback (a new game
+process for the match whose command a persistent game never took) does not
+fire for it either (`lobby/t5lobby/match_driver.py` `_watch_ctl`). Tested with
+`tools/fight_flow_test.py --close 2:join:8`: the closed joiner ended 0.3 s
+after WM_CLOSE with exit code 7 and "quit", the host's result said
+`peer_quit`, the next match was a new session against a freshly started game,
+in sync.
 
 **Speed.** Every 600 lockstep frames the log has `speed: X fps, this PC Y fps
 without the waits for the peer` -- Y is this PC's own speed (the launcher

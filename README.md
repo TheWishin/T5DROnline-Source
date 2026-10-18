@@ -127,7 +127,9 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   resolution** -> **Lower** or **Lowest**: a softer picture, less work for the
   graphics card. It only changes the picture, so the other player online does
   not need the same setting. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
-- **Esc** closes the game. The **Stop game** button does too.
+- **Esc** closes the game. The **Stop game** button does too. In an online
+  match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
+  counts as a loss.
 - Two players on one PC: connect a second pad, then choose Versus.
 - Tips for now:
   - Go back to the title screen as little as you can (memory bug).

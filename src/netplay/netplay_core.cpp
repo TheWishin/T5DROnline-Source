@@ -1408,13 +1408,15 @@ void rb_begin(uint32_t f)
     note_fp_env();
 }
 
-void rb_sample_local(uint32_t f, bool neutral)
+void rb_sample_local(uint32_t f, bool neutral, const PadInput* forced)
 {
     State& s = S();
     if (s.mode == Mode::Off) return;
     /* neutral: the frame takes no input (the fight intro, rb_net.cpp); the
      * devices are not read, so a tap stays latched for the next real sample */
-    PadInput local = neutral ? kNeutral : sample_local_open(f + (uint32_t)s.delay);
+    /* forced: a frame whose input the rollback loop decides from the game state
+     * (the post-match rule, rb_net.cpp): the same input on both PCs */
+    PadInput local = forced ? *forced : neutral ? kNeutral : sample_local_open(f + (uint32_t)s.delay);
     std::lock_guard<std::mutex> lk(s.mu);
     const uint32_t t = f + (uint32_t)s.delay;
     for (uint32_t g = s.local_max; g <= t; g++) {   /* hold the sample over any gap; a decided input never changes */

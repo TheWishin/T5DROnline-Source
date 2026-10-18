@@ -93,9 +93,13 @@ REASON_TEXT = {
     "build_mismatch": "Your opponent's game is a different build.",
     "rejected": "Your opponent's game is in another match.",
     "bind_failed": "The game could not open its network port (another program uses it?).",
+    "quit": "You closed the game during the match: it counts as a loss.",
 }
 # Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp).
 EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch"}
+# The player closed the game window (Alt+F4, the X button, Esc) while a netplay session was set up:
+# the game told the opponent and ended itself; for the lobby that is this player's quit (a loss).
+EXIT_QUIT = 7
 
 
 class GameLog:
@@ -223,6 +227,21 @@ class GameLog:
                 "fps": round(frames / sum(t for _f, _p, _w, t in rows), 1)}
 
 
+def replace_retry(src, dst, tries=50, wait=0.01):
+    """os.replace that retries for a moment: on Windows the replace fails while another process has
+    the target open without delete sharing (an older game reading cmd.json at that moment -- the
+    command would be lost, and with it a rematch). The game opens it with delete sharing since
+    rematch-fix; older builds and other readers still get this."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(wait)
+
+
 class Control:
     """The game control channel (persistent mode): cmd.json written here, state.json read."""
 
@@ -243,7 +262,7 @@ class Control:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f)
-        os.replace(tmp, path)
+        replace_retry(tmp, path)
         return self.seq
 
     def state(self):
@@ -423,7 +442,7 @@ class MatchDriver:
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
             f.write(line + (f" match={mid}" if mid else "") + "\n")
-        os.replace(tmp, self.fight_path)
+        replace_retry(tmp, self.fight_path)
 
     def _discard_result(self, why):
         """A result file that must not be reported (left from a voided match, or naming another
@@ -568,6 +587,8 @@ class MatchDriver:
             self.ctl_failures = 2
         elif w is not None and self.game is not None and not self.game_running():
             self.ctl_wait = None
+            if getattr(getattr(self.game, "proc", None), "returncode", None) == EXIT_QUIT:
+                return       # the player closed it: not a control channel failure, and nothing is restarted
             self.ctl_failures += 1
         if self.ctl_failures < 2:
             return
@@ -695,6 +716,11 @@ class MatchDriver:
             desync = self._evidence() or 0
             desync = max(desync, int(extra.get("desync") or 0))
             reason = extra.get("reason")
+            if reason == "quit":
+                # This player closed the game window mid-match (exit code 7): a quit, i.e. a loss.
+                self._report(mid, None, res[1], "quit", desync=desync, reason="quit")
+                self.status(REASON_TEXT["quit"])
+                return
             if reason:
                 # The game could not play the match to its end (lost its opponent, no connection).
                 self._report(mid, None, res[1], "disconnect", desync=desync, reason=str(reason)[:32])
@@ -732,6 +758,13 @@ class MatchDriver:
         if running:
             return
         code = getattr(getattr(self.game, "proc", None), "returncode", None)
+        if code == EXIT_QUIT:
+            # The player closed the game (no result file: the window closed before the game had a
+            # match id, or the file could not be written): the same quit.
+            self.note("game_closed", code=code, crashed=False)
+            self._report(mid, None, None, "quit", desync=self._evidence() or 0, reason="quit")
+            self.status(REASON_TEXT["quit"])
+            return
         if code in EXIT_REASON:
             # The netplay session could not go on and the game closed itself (no result file?).
             reason = (g.fail_reason or g.lost_reason) if g is not None else None

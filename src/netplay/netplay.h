@@ -107,7 +107,7 @@ void     set_stuck_handler(void (*fn)(const char* reason));
  * The same transport, rings, redundancy and desync check as the lockstep,
  * without the per-frame block: the rollback loop decides when to wait. */
 void     rb_begin(uint32_t f);                   /* f == 0: handshake, neutral frames < delay (as begin_frame(0) does) */
-void     rb_sample_local(uint32_t f, bool neutral = false);   /* sample this PC's input for frame f + delay() and send it (neutral: send neutral input, devices not read) */
+void     rb_sample_local(uint32_t f, bool neutral = false, const PadInput* forced = nullptr);   /* sample this PC's input for frame f + delay() and send it (neutral: send neutral input, devices not read; forced: send that input, devices not read) */
 PadInput rb_local(uint32_t f);                   /* the local input decided for frame f (neutral if none yet) */
 bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f, if it has arrived */
 uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */

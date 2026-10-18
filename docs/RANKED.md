@@ -192,8 +192,16 @@ id, winner, score, desync count (from the match's sync point), the state hash of
 the deciding frame and the frames played (docs/NETPLAY.md); the game's log adds
 the desync count as a cross-check (`DESYNC at frame` / `sync check ... N
 mismatching`), a lost opponent (`peer lost (<reason>)`) and crashes (`[CRASH]`,
-or an exit code other than 0, 3, 4, 5); a game window closed without a result
+or an exit code other than 0, 3, 4, 5, 7); a game window closed without a result
 is a quit (the tab asks "How did it end?" when it cannot tell).
+
+**Closing the game mid-match is a quit** (rematch-fix): a game whose window is
+closed (Alt+F4, the X button, Esc twice) while a netplay session is set up
+writes `"reason": "quit"` into its result file, tells the opponent's game
+(BYE: `peer_quit` there at once) and exits with code 7; the launcher reports
+`quit` without asking, and the server's rule above makes it a forfeit -- not
+a desync void, which is what a closed game used to cause by running on
+without its window (0.1.9's first online test).
 
 **Stale results.** A result file is only ever reported for the match it names
 (`"match"`): the id comes from `T5_NET_MATCH` for the first match and from the

@@ -651,7 +651,7 @@ class Context:
         self.launcher_log = launcher_log
         self.settings_lines = list(settings_lines)
         self.release = release or {}
-        self.build_info = build_info or {}
+        self._build_info = build_info or {}       # a dict, or a function that makes it (hashing the game program takes a moment)
         self.online_dir = online_dir              # per-user folder with online.json (read for secrets only)
         self.online_info = online_info            # text the Online tab adds (lobby, last result)
         self.build_problem = build_problem
@@ -659,6 +659,12 @@ class Context:
         self.user_names = user_names
         self.pc_names = pc_names
         self.game_logs = game_logs
+
+    @property
+    def build_info(self):
+        if callable(self._build_info):
+            self._build_info = self._build_info() or {}
+        return self._build_info
 
     def secrets(self):
         """Exact secret values to keep out of every file: from the settings files and the control files."""

@@ -52,6 +52,22 @@ MENU = ["ARCADE", "GHOST", "VS", "ONLINE", "SURVIVAL", "PRACTICE", "GALLERY", "O
 # Mode manager ids (tcb_*mode_t classes, from the probe)
 M_INIT, M_TITLE, M_OPTION, M_GAME, M_LOGO, M_SELECT, M_END, M_RANKING, M_RESULT, M_ONLINE = 0, 1, 3, 4, 5, 6, 8, 10, 11, 13
 P2_HEALTH = 0x10090FBC          # i16, CPU's current health in arcade (build/au/GAPS.md "Endings")
+# What each main-menu entry leads to: the select mode with this game type (0x1008EBAC), or a mode
+GAME_TYPE_OF = {0: 0, 1: 1, 2: 4, 5: 10}                  # ARCADE, GHOST, VS, PRACTICE
+MODE_OF = {7: 3, 3: 13}                                    # OPTIONS, ONLINE
+
+
+def entered_entry(mode, game_type):
+    """The main-menu entry a mode change (and game type) shows, or None when unknown."""
+    if mode == M_SELECT and game_type is not None:
+        for e, t in GAME_TYPE_OF.items():
+            if t == game_type:
+                return e
+        return None
+    for e, md in MODE_OF.items():
+        if md == mode:
+            return e
+    return None
 
 
 class Driver:
@@ -145,17 +161,35 @@ class Driver:
         return False
 
     def pick(self, idx, wait=3.0):
-        """Main menu entry idx (the cursor position is tracked; it stays where it was left)."""
+        """Main menu entry idx (the cursor position is tracked; it stays where it was left).
+        What was entered is checked against the mode / game type the entry leads to; on a
+        mismatch (a press lost on a slow PC) the cursor is re-synced from what was entered,
+        the driver backs out to the title and tries once more."""
         g = self.g
-        n = (idx - self.cursor) % len(MENU)
-        for _ in range(n):
-            g.press("DOWN", gap=450)
-        gt0, n0 = g.game_type, len(g.mode_log)
-        g.press("CROSS", gap=300)
-        self.cursor = idx
-        m = self.wait_mode_change(timeout=15, start=n0)       # slow under load
-        g.event("menu", f"picked {MENU[idx]} ({n} down): mode {m} {g.mode_name}, game type {gt0} -> {g.game_type}")
-        g.wait(wait)
+        for attempt in range(2):
+            n = (idx - self.cursor) % len(MENU)
+            for _ in range(n):
+                g.press("DOWN", gap=450)
+            gt0, n0 = g.game_type, len(g.mode_log)
+            g.press("CROSS", gap=300)
+            m = self.wait_mode_change(timeout=15, start=n0)       # slow under load
+            got = entered_entry(m, g.game_type if g.game_type != gt0 or m == M_SELECT else None)
+            g.event("menu", f"picked {MENU[idx]} ({n} down): mode {m} {g.mode_name}, game type {gt0} -> {g.game_type}"
+                            f" = {MENU[got] if got is not None else '?'}")
+            if m in (M_GAME, M_RANKING, M_LOGO) and g.game_type == 2:
+                # the title ran into its attract demo instead: the press was lost
+                g.expect(f"pick-{MENU[idx].lower()}-{attempt}", False, "the attract demo started instead; retrying")
+                if not self.open_menu():
+                    return m
+                continue
+            if got is None or got == idx:
+                self.cursor = idx
+                g.wait(wait)
+                return m
+            self.cursor = got
+            g.expect(f"pick-{MENU[idx].lower()}-{attempt}", False, f"entered {MENU[got]} instead of {MENU[idx]}; retrying")
+            if not (self.back_to_title(taps=("CIRCLE", "CIRCLE@2"), timeout=60) and self.open_menu()):
+                return m
         return m
 
     def back_to_title(self, taps=("CIRCLE",), timeout=60.0):

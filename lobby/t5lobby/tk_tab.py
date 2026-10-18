@@ -1022,26 +1022,37 @@ class OnlineTab:
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events
+    def _opponent_text(self, opp, ranked, rematch=False):
+        """'Opponent: Name (rank, rating) -- RANKED -- rematch'."""
+        rating = opp["rating"] if not opp["guest"] else t("guest")
+        parts = [t("Opponent: {name} ({rank}, {rating})", name=opp["name"], rank=rank_text(opp), rating=rating)]
+        if ranked:
+            parts.append(t("RANKED"))
+        if rematch:
+            parts.append(t("rematch"))
+        return " -- ".join(parts)
+
     def on_event(self, ev):
-        t = ev["t"]
+        kind = ev["t"]
         c = self.client
-        if t == "lobby_state":
+        if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()
-        elif t == "chat":
+        elif kind == "chat":
             self.chat_line(f"{ev['from']['name']}: {ev['text']}")
-        elif t == "challenged":
+        elif kind == "challenged":
             self.challenge = ev["challenge"]
-            self.show_bar(f"{ev['from']['name']} ({rank_text(ev['from'])}) challenges you",
-                          [("Accept", lambda: self._answer(True), "cross"),
-                           ("Decline", lambda: self._answer(False), "circle")])
-        elif t == "challenge_update":
+            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"])),
+                          [(t("Accept"), lambda: self._answer(True), "cross"),
+                           (t("Decline"), lambda: self._answer(False), "circle")])
+        elif kind == "challenge_update":
             if ev["state"] != "accepted":
-                self.status(f"Challenge {ev['state']}.")
+                self.status(_word(CHALLENGE_TEXT, ev["state"]) if ev["state"] in CHALLENGE_TEXT
+                            else t("Challenge {state}.", state=ev["state"]))
             if ev["challenge"] == self.challenge:
                 self.challenge = None
                 self.hide_bar()
-        elif t == "match_found":
+        elif kind == "match_found":
             self.match = ev
             self.hide_bar()
             self.rematch_bar = None
@@ -1052,78 +1063,72 @@ class OnlineTab:
             if ev.get("blind"):
                 # a match from the queue: the ping and the rules now, the name after both accepted
                 self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                self.show_bar(self._ready_text(), [("Accept", lambda: self._ready(True), "cross"),
-                                                   ("Decline", lambda: self._ready(False), "circle")])
+                self.show_bar(self._ready_text(), [(t("Accept"), lambda: self._ready(True), "cross"),
+                                                   (t("Decline"), lambda: self._ready(False), "circle")])
             else:
-                opp = ev["opponent"]
-                text = (f"Opponent: {opp['name']} ({rank_text(opp)}, {opp['rating'] if not opp['guest'] else 'guest'})"
-                        f"{' -- RANKED' if ev['ranked'] else ''}"
-                        + (" -- rematch" if ev.get("origin") == "rematch" else ""))
+                text = self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")
                 if ev["ready_check"]:
                     self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                    self.show_bar(text, [("Accept", lambda: self._ready(True), "cross"),
-                                         ("Decline", lambda: self._ready(False), "circle")])
+                    self.show_bar(text, [(t("Accept"), lambda: self._ready(True), "cross"),
+                                         (t("Decline"), lambda: self._ready(False), "circle")])
                 else:
-                    self.show_bar(text + " -- connecting...", [])
-        elif t == "match_reveal":
+                    self.show_bar(text + " -- " + t("connecting..."), [])
+        elif kind == "match_reveal":
             self.ready_deadline = None
-            opp = ev["opponent"]
-            self.show_bar(f"Opponent: {opp['name']} ({rank_text(opp)}, "
-                          f"{opp['rating'] if not opp['guest'] else 'guest'})"
-                          f"{' -- RANKED' if (self.match or {}).get('ranked') else ''} -- connecting...", [])
-        elif t == "opponent_ready":
-            self.status("Your opponent accepted.")
-        elif t == "lag_check":
+            text = self._opponent_text(ev["opponent"], bool((self.match or {}).get("ranked")))
+            self.show_bar(text + " -- " + t("connecting..."), [])
+        elif kind == "opponent_ready":
+            self.status(t("Your opponent accepted."))
+        elif kind == "lag_check":
             self._show_lag(ev)
-        elif t == "set_end":
+        elif kind == "set_end":
             self._set_ended(ev)
-        elif t == "server_notice":
+        elif kind == "server_notice":
             self._show_notice()
-        elif t == "nat_status":
+        elif kind == "nat_status":
             self.status(ev["text"])
-        elif t == "match_cancel":
+        elif kind == "match_cancel":
             self.match = None
             self.ready_deadline = None
             self.hide_bar()
-            self.status({"declined": "Match declined.", "ready_timeout": "Nobody accepted in time.",
-                         "opponent_left": "Your opponent left.",
-                         "udp_unreachable": "No UDP connection to the lobby server (firewall?).",
-                         "no_connection": "Could not connect the two PCs, not even through the relay."
-                         }.get(ev["reason"], f"Match cancelled ({ev['reason']})."))
-        elif t == "match_start":
+            self.status(_word(CANCEL_TEXT, ev["reason"]) if ev["reason"] in CANCEL_TEXT
+                        else t("Match cancelled ({reason}).", reason=ev["reason"]))
+        elif kind == "match_start":
             self.hide_bar()
             self.ready_deadline = None
             self.rematch_bar = None
             self.lag = None
             f = ev.get("fight") or {}
-            how = {"direct": "direct", "lan": "local network", "relay": "via the lobby server's relay"}
-            self.match_var.set(
-                f"{'Ranked' if ev.get('ranked') else 'Casual'} match vs {ev['opponent']['name']} -- "
-                f"{self.table.fighter_name(f.get('p1'))} vs {self.table.fighter_name(f.get('p2'))} -- "
-                f"ping {ev.get('rtt_ms', 0):.0f} ms ({how.get(ev.get('path'), ev.get('path'))}), "
-                f"input delay {ev.get('delay')} frames ({ev.get('delay', 0) * 16.7:.0f} ms)")
-        elif t == "match_result":
+            delay = ev.get("delay") or 0
+            self.match_var.set(" -- ".join((
+                t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
+                else t("Casual match vs {name}", name=ev["opponent"]["name"]),
+                t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")), p2=self.table.fighter_name(f.get("p2"))),
+                t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
+                  ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")), frames=ev.get("delay"),
+                  delay_ms=f"{delay * 16.7:.0f}"))))
+        elif kind == "match_result":
             self._show_result(ev)
-        elif t == "rematch":
+        elif kind == "rematch":
             if ev.get("state") == "declined":
                 self.rematch_bar = None
                 self.hide_bar()
-        elif t == "notice":
-            self.status(ev.get("msg", ""))
-        elif t == "reconnecting":
-            self.status("Lost the lobby connection -- reconnecting (your match goes on)...")
-        elif t == "reconnected":
-            self.status("Reconnected to the lobby.")
-        elif t == "disconnected":
-            self.status(f"Lost the lobby connection: {ev.get('reason')}")
+        elif kind == "notice":
+            self.status(translate_message(ev.get("msg", "")))
+        elif kind == "reconnecting":
+            self.status(t("Lost the lobby connection -- reconnecting (your match goes on)..."))
+        elif kind == "reconnected":
+            self.status(t("Reconnected to the lobby."))
+        elif kind == "disconnected":
+            self.status(t("Lost the lobby connection: {reason}", reason=translate_message(ev.get("reason"))))
             self.client = None
             if self.driver is not None:
                 self.driver.ticket = None
             self._reset_lobby_view()
-            self.me_var.set("Not connected.")
+            self.me_var.set(t("Not connected."))
             self._set_account_view(False)
-        elif t == "kicked":
-            self.status(f"Removed from the lobby: {ev.get('reason')}")
+        elif kind == "kicked":
+            self.status(t("Removed from the lobby: {reason}", reason=translate_message(ev.get("reason"))))
         if c is not None:
             self._set_actions()
 
@@ -1135,29 +1140,29 @@ class OnlineTab:
         if k == "status":
             self.status(n["text"])
         elif k == "ask_result":
-            self.show_bar(f"The game closed. How did the match against {n['opponent']} end?", [
-                ("I won", lambda: self._answer_result("won")),
-                ("I lost", lambda: self._answer_result("lost")),
-                ("Draw", lambda: self._answer_result("draw")),
-                ("I quit", lambda: self._answer_result("quit")),
+            self.show_bar(t("The game closed. How did the match against {opponent} end?", opponent=n["opponent"]), [
+                (t("I won"), lambda: self._answer_result("won")),
+                (t("I lost"), lambda: self._answer_result("lost")),
+                (t("Draw"), lambda: self._answer_result("draw")),
+                (t("I quit"), lambda: self._answer_result("quit")),
             ])
         elif k == "rematch_offer":
-            self.show_bar(f"{n['opponent']} wants a rematch", [("Rematch", lambda: self._rematch(True), "cross"),
-                                                               ("No thanks", lambda: self._rematch(False),
-                                                                "circle")])
+            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]),
+                          [(t("Rematch"), lambda: self._rematch(True), "cross"),
+                           (t("No thanks"), lambda: self._rematch(False), "circle")])
 
     def _answer_result(self, what):
         self.hide_bar()
         if self.driver:
             self.driver.answer(what)
-        self.status("Result sent; waiting for your opponent's report...")
+        self.status(t("Result sent; waiting for your opponent's report..."))
 
     def _rematch(self, accept):
         self.hide_bar()
         if self.driver:
             self.driver.rematch(None, accept)
         if accept:
-            self.status("Rematch offered; waiting for your opponent...")
+            self.status(t("Rematch offered; waiting for your opponent..."))
 
     def _fill_lists(self, ev):
         me = self.client.me if self.client else None
@@ -1166,31 +1171,32 @@ class OnlineTab:
         keep = self.tv_players.selection()
         self.tv_players.delete(*self.tv_players.get_children())
         for p in ev.get("players", []):
-            status = STATUS_TEXT.get(p["status"], p["status"])
+            status = _word(STATUS_TEXT, p["status"])
             if p["build"] != mine:
-                status += " (other version)"
+                status += " " + t("(other version)")
             ping = "" if p["rtt"] is None or (me and p["id"] == me["id"]) else f"~{p['rtt'] + my_rtt:.0f} ms"
             rating = "" if p["guest"] else p["rating"]
             rec = p.get("record") or [0, 0, 0]
-            name = p["name"] + ("  (you)" if me and p["id"] == me["id"] else "")
+            name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
             self.tv_players.insert("", "end", iid=p["id"], values=(name, rank_text(p), rating,
-                                                                   f"{rec[0]}W {rec[1]}L", main, status, ping))
+                                                                   _record(rec), main, status, ping))
         for iid in keep:
             if self.tv_players.exists(iid):
                 self.tv_players.selection_set(iid)
         keep = self.tv_rooms.selection()
         self.tv_rooms.delete(*self.tv_rooms.get_children())
         for r in ev.get("rooms", []):
-            state = r["status"] + (" (other version)" if r["build"] != mine else "") + (" ranked" if r["ranked"]
-                                                                                        else "")
+            state = (_word(ROOM_STATE_TEXT, r["status"]) + (" " + t("(other version)") if r["build"] != mine else "")
+                     + (" " + t("ranked") if r["ranked"] else ""))
             self.tv_rooms.insert("", "end", iid=r["id"], values=(r["name"], r["owner"]["name"], state))
         for iid in keep:
             if self.tv_rooms.exists(iid):
                 self.tv_rooms.selection_set(iid)
         q = ev.get("queue", {})
         if self.client and self.client.me and self.client.me.get("status") == "queue":
-            self.status(f"Searching... ({q.get('ranked', 0)} in the ranked queue, {q.get('quick', 0)} quick)")
+            self.status(t("Searching... ({ranked} in the ranked queue, {quick} quick)", ranked=q.get("ranked", 0),
+                          quick=q.get("quick", 0)))
 
     def _answer(self, accept):
         cid, self.challenge = self.challenge, None
@@ -1203,11 +1209,14 @@ class OnlineTab:
         m = self.match or {}
         ping = m.get("ping") or {}
         if ping.get("known"):
-            where = f"ping about {ping.get('ms', 0):.0f} ms (through the server; measured directly once you both accept)"
+            where = t("ping about {ms} ms (through the server; measured directly once you both accept)",
+                      ms=f"{ping.get('ms', 0):.0f}")
         else:
-            where = "ping not known yet"
+            where = t("ping not known yet")
         left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
-        return (f"Opponent found{' -- RANKED' if m.get('ranked') else ''} -- {where} -- accept within {left} s?")
+        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + [
+            where, t("accept within {seconds} s?", seconds=left)]
+        return " -- ".join(parts)
 
     def _tick_ready(self):
         """Keep the countdown in the ready bar current."""
@@ -1220,14 +1229,15 @@ class OnlineTab:
         if not m:
             return
         self.ready_sent = bool(accept)
-        self.show_bar(self.bar_text.get() + (" -- waiting for the opponent..." if accept else ""), [])
+        self.show_bar(self.bar_text.get() + (" -- " + t("waiting for the opponent...") if accept else ""), [])
         self.call(self.client.ready, accept, m["match"])
 
     def _show_lag(self, ev):
         """After a match: ping X should mean Y frames behind, it was Z -- and a way out when it was worse."""
         self.lag = ev
-        self.match_var.set("Lag check: " + ev["text"])
-        self.status("Lag check: " + ev["text"])
+        text = lag.describe_event(ev)
+        self.match_var.set(t("Lag check: {text}", text=text))
+        self.status(t("Lag check: {text}", text=text))
         if self.rematch_bar is not None:
             self._show_rematch_bar()
 
@@ -1238,59 +1248,59 @@ class OnlineTab:
             self.hide_bar()
         reason, by = ev.get("reason"), ev.get("by")
         if reason == "lag":
-            self.status("You left after the lag check. No penalty, no rating change." if by == "you" else
-                        "Your opponent left after the lag check. No penalty for anyone.")
+            self.status(t("You left after the lag check. No penalty, no rating change.") if by == "you" else
+                        t("Your opponent left after the lag check. No penalty for anyone."))
         elif by == "opponent":
-            self.status("Your opponent left. The set is over.")
+            self.status(t("Your opponent left. The set is over."))
         if self.client:
             self._set_actions()
 
     def _show_rematch_bar(self):
         text, opp = self.rematch_bar
-        buttons = [(f"Rematch {opp}", lambda: self._rematch(True), "cross"),
-                   ("Leave", lambda: self._rematch(False), "circle"),
-                   (f"Block {opp}", lambda: self.block_opponent(opp))]
-        lag = self.lag
-        if lag and lag.get("verdict") == "more_lag" and lag.get("can_leave"):
-            buttons.insert(2, ("Leave: too laggy", self._leave_for_lag))
+        buttons = [(t("Rematch {name}", name=opp), lambda: self._rematch(True), "cross"),
+                   (t("Leave"), lambda: self._rematch(False), "circle"),
+                   (t("Block {name}", name=opp), lambda: self.block_opponent(opp))]
+        check = self.lag
+        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+            buttons.insert(2, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(text, buttons)
 
     def _leave_for_lag(self):
         self.hide_bar()
         self.rematch_bar = None
         self.call(self.client.leave_set, "lag", then=lambda _r: self.status(
-            "You left after the lag check. No penalty, no rating change."))
+            t("You left after the lag check. No penalty, no rating change.")))
 
     def _show_result(self, ev):
         self.match = None
         self.last_result = ev
         st = ev["status"]
-        text = RESULT_TEXT.get(st, st)
+        text = _word(RESULT_TEXT, st)
         if ev.get("reason") and ev["reason"] in REASON_TEXT:
-            text += f" ({REASON_TEXT[ev['reason']]})"
+            text += " (" + _word(REASON_TEXT, ev["reason"]) + ")"
         mine = None
         if ev.get("winner") is not None and self.driver is not None and self.driver.session_ticket is not None:
             mine = ev["winner"] == self.driver.session_ticket.slot
         if st in ("confirmed", "onesided", "forfeit", "resolved"):
-            text = ("You won. " if mine else "You lost. " if mine is False else "") + text
+            text = (t("You won.") + " " if mine else t("You lost.") + " " if mine is False else "") + text
         r = ev.get("rating")
         if r:
-            text += f"; rating {r['after']['r']:.0f} ({r['delta']:+.0f})"
+            text += "; " + t("rating {rating} ({delta})", rating=f"{r['after']['r']:.0f}", delta=f"{r['delta']:+.0f}")
             after = r.get("rank_after") or {}
             if r.get("event") == "promoted":
-                text += f" -- PROMOTED to {after.get('rank')}!"
+                text += " -- " + t("PROMOTED to {rank}!", rank=after.get("rank"))
             elif r.get("event") == "demoted":
-                text += f" -- demoted to {after.get('rank')}"
+                text += " -- " + t("demoted to {rank}", rank=after.get("rank"))
             elif r.get("event") == "placed":
-                text += f" -- placed at {after.get('rank')}"
+                text += " -- " + t("placed at {rank}", rank=after.get("rank"))
             elif after.get("placement"):
-                text += f" -- placement {after['placement'][0]}/{after['placement'][1]}"
+                text += " -- " + t("placement {done}/{total}", done=after["placement"][0], total=after["placement"][1])
         self.status(text + ".")
         self.hide_bar()
         if ev.get("rematch_window"):
             opp = (self.driver.session_ticket.opponent.get("name") if self.driver and self.driver.session_ticket
-                   else "your opponent")
-            self.rematch_bar = (text if len(text) < 60 else "Rematch?", opp)
+                   else t("your opponent"))
+            self.rematch_bar = (text if len(text) < 60 else t("Rematch?"), opp)
             self._show_rematch_bar()
         if self.client and self.client.me:
             self._show_me()
@@ -1393,13 +1403,13 @@ class OnlineTab:
     def _pad_info(self):
         p = self.pad
         if not self.pad_var.get():
-            text = "Controller off."
+            text = t("Controller off.")
         elif p is None or not p.stats["polls"]:
             text = ""
         elif not p.has_devices():
-            text = "No controller found."
+            text = t("No controller found.")
         else:
-            text = "Controller: " + p.summary
+            text = t("Controller: {summary}", summary=p.summary)
         if text != self.pad_info_var.get():
             self.pad_info_var.set(text)
 
@@ -1473,11 +1483,11 @@ class OnlineTab:
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except OSError as e:
-            self.status(f"Cannot start the lobby server: {e}")
+            self.status(t("Cannot start the lobby server: {error}", error=e))
             return
-        self.b_host.configure(text="Stop hosting")
-        self.status("Starting a lobby server on this PC" + (" and asking the router to forward its ports"
-                                                           if self.map_var.get() else "") + "...")
+        self.b_host.configure(text=t("Stop hosting"))
+        self.status(t("Starting a lobby server on this PC and asking the router to forward its ports...")
+                    if self.map_var.get() else t("Starting a lobby server on this PC..."))
         proc = self.host_proc
 
         def read():
@@ -1497,29 +1507,30 @@ class OnlineTab:
         if kind == "ready":
             self.host_info = ev
             self.server_var.set(ev["local"])
-            share = ev.get("internet") or f"<your public IP>:{ev['port']}" + (
+            share = ev.get("internet") or f"{t('<your public IP>')}:{ev['port']}" + (
                 f"#{ev['fingerprint']}" if ev.get("fingerprint") else "")
             try:
                 self.parent.clipboard_clear()
                 self.parent.clipboard_append(share)
             except tk.TclError:
                 pass
-            self.chat_line(f"Hosting. Friends paste this as their Server (copied to the clipboard):\n  {share}"
-                           + (f"\n  same network: {ev['lan']}" if ev.get("lan") else "")
-                           + ("" if ev.get("mapped") else "\n  Forward TCP+UDP 7781 and UDP 7782 on your router"
-                              " (or tick 'Open router ports')."))
-            self.status("Hosting a lobby on this PC. Log in to join it yourself.")
+            self.chat_line(t("Hosting. Friends paste this as their Server (copied to the clipboard):\n  {share}",
+                             share=share)
+                           + (t("\n  same network: {lan}", lan=ev["lan"]) if ev.get("lan") else "")
+                           + ("" if ev.get("mapped") else t("\n  Forward TCP+UDP 7781 and UDP 7782 on your router "
+                                                            "(or tick 'Open router ports').")))
+            self.status(t("Hosting a lobby on this PC. Log in to join it yourself."))
         elif kind == "error":
-            self.status(f"Hosting failed: {ev.get('message')}")
+            self.status(t("Hosting failed: {message}", message=translate_message(ev.get("message"))))
         elif kind in ("stopped", "exited"):
             self.host_proc = None
             self.host_info = None
-            self.b_host.configure(text="Host for friends")
+            self.b_host.configure(text=t("Host for friends"))
             if kind == "exited" and proc.poll() not in (0, None):
-                self.status(f"The lobby server stopped (exit code {proc.returncode}); see its log in "
-                            "%LOCALAPPDATA%\\T5DR Online\\lobby-host\\logs.")
+                self.status(t("The lobby server stopped (exit code {code}); see its log in {folder}.",
+                              code=proc.returncode, folder="%LOCALAPPDATA%\\T5DR Online\\lobby-host\\logs"))
             else:
-                self.status("Stopped hosting.")
+                self.status(t("Stopped hosting."))
 
     def stop_hosting(self, wait=0.0):
         proc = self.host_proc

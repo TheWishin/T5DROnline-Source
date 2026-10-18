@@ -1,0 +1,2 @@
+"""German texts."""
+MESSAGES = {}

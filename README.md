@@ -288,6 +288,7 @@ will use our own lobby.
 - The release zip also carries Python (PSF license) and LLVM clang-cl / lld-link
   (Apache-2.0 with LLVM exception). Their license texts are in `LICENSES\`.
 - The game itself is the work of Bandai Namco and the original Tekken team.
+- Developed with the help of Claude (Anthropic), an AI assistant.
 
 ## Legal
 
@@ -326,8 +327,8 @@ output under DIR.
 
 Where to read on:
 
-- `CLAUDE.md` — developer notes with the real state of the port, the pipeline
-  and the findings.
+- `docs/` — how each part works: rendering, netplay, rollback, the lobby, hosting,
+  releases.
 - `docs/RELEASE.md` — the launcher, the zip and how it is packaged
   (`tools/package_release.py`).
 - `docs/ONLINE.md` — the lobby: protocol, NAT traversal, self-hosting.

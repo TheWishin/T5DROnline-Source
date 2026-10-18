@@ -3,8 +3,8 @@
 Releases are built and published by GitHub Actions
 (`.github/workflows/release.yml`) when a version tag is pushed. Nobody needs a
 GitHub token on their PC: the workflow publishes with its own `GITHUB_TOKEN`.
-Only the owner's account can start it: the owner, or the main Claude session,
-which pushes with the owner's own git login.
+Only the owner's account can start it: the owner, or the owner's own release tooling,
+which pushes with the owner's git login.
 
 How the zip is put together, and why, is in [RELEASE.md](RELEASE.md). This page
 is the procedure.
@@ -28,7 +28,7 @@ commit).
 ## One-time setup (the owner, in the GitHub web UI)
 
 Only the owner's account (TheWishin) may publish releases: the owner, or the
-main Claude session, which pushes with the owner's own git login (the owner's
+owner's release tooling, which pushes with the owner's own git login (the owner's
 choice, 2026-10-17).
 
 **0. The token that lets the private workflow publish into the public repo.**
@@ -68,7 +68,7 @@ Settings -> Environments -> `release`:
 - **Deployment branches and tags**: choose **Selected branches and tags** ->
   **Add deployment branch or tag rule** -> Ref type **Tag** -> pattern `v*` ->
   **Add rule**.
-- **Required reviewers**: off, so the Claude session can finish a release
+- **Required reviewers**: off, so a release can finish without a click
   without a click. Tick it and add `TheWishin` if every publish should wait for
   the owner's approval (then leave **Prevent self-review** off).
 - No secrets, no variables, no wait timer. **Save protection rules**.

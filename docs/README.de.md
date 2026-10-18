@@ -283,6 +283,7 @@ Online-Spiel wird unsere eigene Lobby benutzen.
   (Apache-2.0 mit LLVM-Ausnahme). Die Lizenztexte liegen in `LICENSES\`.
 - Das Spiel selbst ist das Werk von Bandai Namco und dem ursprünglichen
   Tekken-Team.
+- Entwickelt mit Hilfe von Claude (Anthropic), einem KI-Assistenten.
 
 ## Rechtliches
 
@@ -323,8 +324,8 @@ schon da ist. `--out ORDNER` legt alle Ausgaben unter ORDNER ab.
 
 Zum Weiterlesen (alles auf Englisch):
 
-- [../CLAUDE.md](../CLAUDE.md) — Entwicklernotizen mit dem echten Stand, der
-  Pipeline und den Funden.
+- Der Ordner `docs/` — wie die einzelnen Teile funktionieren: Grafik, Netplay,
+  Rollback, Lobby, Hosting, Releases.
 - [RELEASE.md](RELEASE.md) — der Launcher, die Zip und wie sie gepackt wird
   (`tools/package_release.py`).
 - [ONLINE.md](ONLINE.md) — die Lobby: Protokoll, NAT, eigener Server.

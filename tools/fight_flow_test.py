@@ -329,10 +329,15 @@ def fight_line(a, k, prev=None):
     keeps the players' picks, the stage is drawn again)."""
     chars = a.chars.split(",")
     p1, p2 = chars[(2 * k) % len(chars)], chars[(2 * k + 1) % len(chars)]
+    colors = (a.colors or "").split(",") if getattr(a, "colors", "") else []
+    c1 = colors[(2 * k) % len(colors)] if colors else ""
+    c2 = colors[(2 * k + 1) % len(colors)] if colors else ""
     if prev:
         p1, p2 = prev.split(",")[:2]
+        if colors:
+            c1, c2 = prev.split(",")[4:6]
     stages = [int(s) for s in a.stages.split(",")]
-    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}"
+    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}" + (f",{c1},{c2}" if colors else "")
 
 
 def match_kind(a, k):
@@ -386,7 +391,11 @@ def main():
     ap.add_argument("--polite", action="store_true",
                     help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--fresh-at", type=int, default=0, help="persistent: restart the joiner's game before this match")
-    ap.add_argument("--fresh-role", choices=["host", "join"], default="join", help="--fresh-at restarts this side's game")
+    ap.add_argument("--fresh-role", choices=["host", "join", "alt"], default="join",
+                    help="--fresh-at/--fresh-every restart this side's game (alt: host and joiner in turn)")
+    ap.add_argument("--fresh-every", type=int, default=0,
+                    help="persistent: every K-th match after the first is an opponent switch against a fresh game")
+    ap.add_argument("--colors", default="", help="costumes 1|2 per character slot, cycled like --chars (T5_FIGHT p1color,p2color)")
     ap.add_argument("--rematch-wait", type=float, default=1.0,
                     help="seconds between a match's results and the next command (players clicking Rematch late: 20)")
     ap.add_argument("--port", type=int, default=7400)
@@ -486,7 +495,13 @@ def main():
                             time.sleep(random.uniform(0.2, 1.5))   # two launchers never write at the same moment
                         write_atomic(g.fight_path, f"{line} match={mid}\n")
                 else:
-                    if a.fresh_at == k and g.role == a.fresh_role and g.running():
+                    fresh_now = a.fresh_at == k and g.role == a.fresh_role
+                    if a.fresh_every and k > 1 and (k - 1) % a.fresh_every == 0:
+                        # an opponent switch: a new session against a freshly started game; the side
+                        # restarted alternates (--fresh-role alt), so each persistent game meets fresh ones
+                        role = a.fresh_role if a.fresh_role != "alt" else ("join" if ((k - 1) // a.fresh_every) % 2 else "host")
+                        fresh_now = g.role == role
+                    if fresh_now and g.running():
                         log(f"match {k}: restarting game {g.idx} (a new opponent's fresh game)")
                         g.stop()
                     if not g.running():

@@ -266,6 +266,7 @@ struct State : Session {
      * on one PC, with the same inputs every run. */
     uint32_t local_lag = 0;
     uint32_t local_live = 0;           /* the latest live boundary (rb_sample_local) */
+    uint32_t local_release = 0;        /* frames < this are known: the loop waited for them (rb_wait_remote) */
     void (*stuck_handler)(const char*) = nullptr;
     HANDLE rx_event = nullptr;
     bool net_up = false;               /* WSAStartup done, receive and tick threads running */
@@ -1465,7 +1466,8 @@ PadInput rb_local(uint32_t f)
 static uint32_t local_horizon_locked(const State& s)
 {
     const uint32_t h = s.local_live + (uint32_t)s.delay + 1;
-    return h > s.local_lag ? h - s.local_lag : 0;
+    const uint32_t lagged = h > s.local_lag ? h - s.local_lag : 0;
+    return lagged > s.local_release ? lagged : s.local_release;   /* a wait for the peer = its inputs came */
 }
 
 bool rb_remote(uint32_t f, PadInput* out)
@@ -1493,6 +1495,10 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
     for (;;) {
         {
             std::lock_guard<std::mutex> lk(s.mu);
+            if (s.mode == Mode::Local && s.local_lag) {   /* the loop waits for the peer's input up to f: here it comes */
+                if (f + 1 > s.local_release) s.local_release = f + 1;
+                return std::min(s.remote_contig, local_horizon_locked(s));
+            }
             if (s.remote_contig > f || s.peer_lost || s.mode == Mode::Local) return s.remote_contig;
             const ULONGLONG now = GetTickCount64();
             if (now - s.last_send_ms >= 15) send_inputs_locked();

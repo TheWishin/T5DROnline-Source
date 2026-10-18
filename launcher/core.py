@@ -305,8 +305,9 @@ def game_state(out):
         pass
     if info.get("code_id") != build_game.code_id():
         st["needs_rebuild"] = True
-        st["text"] = ("This version of the launcher changes the game code. Build again (your game data is kept; "
-                      "only the code is translated and compiled again).")
+        st["text"] = ("Build the game once (about 2 minutes): this version of the launcher changes the game code. "
+                      "Click BUILD GAME. Your unpacked game and saves are kept; only the code is translated and "
+                      "compiled again.")
         return st
     st["ok"] = True
     when = info.get("built", "?").replace("T", " ")

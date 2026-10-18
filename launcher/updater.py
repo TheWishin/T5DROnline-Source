@@ -1,4 +1,4 @@
-"""Updates: the launcher offers new releases and installs them itself, like Tekken 6 Native Online
+r"""Updates: the launcher offers new releases and installs them itself, like Tekken 6 Native Online
 ("The launcher offers the update; the game is then updated by itself in a few seconds").
 
     python launcher/updater.py --check            the public repository's latest release (diagnostics)
@@ -973,14 +973,15 @@ class Updater:
         self.worker = None
         self.cancel = threading.Event()
         self.readonly = bool(getattr(app, "readonly", False))
-        confirm_started()
+        if os.environ.get(CONFIRM_ENV):
+            app.after(300, confirm_started)       # runs once the main loop is up: the window is there
         self.button = None
         if header is not None:
             from tkinter import ttk
             self.button = ttk.Button(header, text="Check for updates", command=self.on_button)
             self.button.pack(side="right")
         if not self.readonly:
-            app.after(700, self.report_last_update)
+            app.after(1500, self.report_last_update)     # after the build-tools check wrote its status
             if is_release_install(root) and not os.environ.get(NO_CHECK_ENV):
                 app.after(4000, lambda: self.check(manual=False))
 

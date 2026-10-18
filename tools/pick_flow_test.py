@@ -28,7 +28,8 @@ characters the session's first match picked and no pick= (a ranked set's lock).
 Checks per match: both games log the same picks (character, button, model) at FIGHT
 START, scripted picks are what was asked for (a timeout is the line's character), no
 "PICK MISMATCH", both results the same winner and state hash with 0 mismatching frames.
-Exit code 0 = every match OK. Every game is killed at the end.
+Exit code 0 = every match OK. Every game is killed at the end; the games run minimized, muted
+(PS3_AUDIO_MUTE=1) and at below-normal priority.
 """
 import argparse
 import json
@@ -153,6 +154,7 @@ class Game:
         env.update({
             "PS3_VFS_ROOT": vfs.replace("\\", "/"), "PS3_HDD0_ROOT": os.path.join(vfs, "dev_hdd0").replace("\\", "/"),
             "PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
+            "PS3_AUDIO_MUTE": "1",      # silent (the mix is zeroed after AUDIO_WAV): tests run beside people
             "PAD_NO_KEYBOARD": "1", "T5_NET_LOCALPAD": "0", "PS3_PAD_FILE": self.pad_path, "T5_DF_TRACE": "1",
             "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": "20", "T5_NET_SCRIPT_FIGHT": "1",
         })
@@ -170,7 +172,8 @@ class Game:
         lf = open(self.log_path, "w")
         vfs = os.path.abspath(self.a.vfs)
         self.proc = subprocess.Popen([os.path.abspath(self.a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
-                                     cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT)
+                                     cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT,
+                                     creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
         log(f"game {self.idx} ({self.role}) started, pid {self.proc.pid}, log {self.log_path}")
 
     def stop(self):

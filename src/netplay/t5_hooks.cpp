@@ -1184,6 +1184,35 @@ void sem_trace_dump()
     TraceSc<141>::dump("sys_timer_usleep");
 }
 
+/* T5_TEST_HITCH=<ms>[:<min>:<max>] (tests, docs/NETPLAY.md "Desync hunt"): the
+ * main thread stalls <ms> at a live frame boundary every <min>..<max> frames
+ * (default 120..600) while the game's other threads -- the vblank ticker, the
+ * sound core, the loaders, the file thread -- run on: a shader compile or a busy
+ * PC on one side of a pair. (fight_flow_test --stutter suspends the whole
+ * process, which stops those threads as well.) */
+struct TestHitch {
+    uint32_t ms = 0, lo = 120, hi = 600, next = 0, n = 0;
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    TestHitch()
+    {
+        const char* e = getenv("T5_TEST_HITCH");
+        if (!e || !*e) return;
+        unsigned a = 0, b = 0, c = 0;
+        const int k = sscanf(e, "%u:%u:%u", &a, &b, &c);
+        ms = a;
+        if (k == 3 && b && c >= b) { lo = b; hi = c; }
+        next = pick();
+    }
+    uint32_t pick() { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return lo + (uint32_t)(rng % (hi - lo + 1)); }
+    void frame()
+    {
+        if (!ms || --next) return;
+        next = pick();
+        if (n++ < 3) np::note("T5_TEST_HITCH: the main thread stalls %u ms (every %u..%u frames)", ms, lo, hi);
+        Sleep(ms);
+    }
+} g_test_hitch;
+
 int64_t w_sem_wait(ppu_context* ctx)
 {
     if (g_trace) {
@@ -1217,7 +1246,10 @@ int64_t w_sem_wait(ppu_context* ctx)
         return 0;
     }
     int64_t r = g_orig_wait(ctx);
-    if (fs && id == fs && r == 0) on_frame_start(ctx);
+    if (fs && id == fs && r == 0) {
+        if (ctx->thread_id == g_main_tid) g_test_hitch.frame();
+        on_frame_start(ctx);
+    }
     return r;
 }
 

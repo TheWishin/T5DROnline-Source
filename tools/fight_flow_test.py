@@ -12,7 +12,7 @@ T5_FIGHT_FILE, written at slightly different times on the two sides (two launche
 every match as a control command (docs/DIRECTFIGHT.md "Persistent game"): "idle",
 then "fight" with a NEW session each time (new UDP ports, seed, key, match id), as
 for a new opponent. --rematch-every K makes every K-th match a rematch in the
-running session instead. --fresh-at N restarts the joiner's game before match N (a
+running session instead. --fresh-at N restarts the joiner's game (--fresh-role host: the host's) before match N (a
 new opponent whose game has just started meets a game that has played already).
 
 --exe2 runs the joiner's game from another build (tools/cross_build_test.py).
@@ -45,6 +45,21 @@ How real players differ from the scripted flow (rematch-fix, 2026-10-18):
                     next match, which must be a new session (never the old one)
   --hz2 HZ          the joiner's display runs at HZ (RSX_TEST_DISPLAY_HZ: 240 = no
                     display lock, the game on the 59.94 Hz clock, like the friend's PC)
+
+Two different PCs (desync hunt, 2026-10-18; docs/NETPLAY.md "Desync hunt"):
+
+  --cpus1/--cpus2 N|0xMASK   that game runs on N logical processors (0..N-1) or the mask,
+                    and PS3_CPUS says so (its thread pools size from it): a 4-, 6-, 8-
+                    or 16-core PC. The game starts suspended, gets the mask, resumes.
+  --hitch2 MS[:MIN:MAX]      the joiner's main thread stalls MS at a frame boundary every
+                    MIN..MAX frames (T5_TEST_HITCH) while its other threads run on (a
+                    shader compile or a busy PC; --stutter stops the whole process)
+  --gamedata1/--gamedata2 DIR   copy DIR (a gamedata tree: dev_hdd0/home/.../savedata)
+                    into that game's folder before it starts: a player's own save with
+                    its options and custom characters (a fresh folder has the defaults)
+  --clock2 SECONDS  the joiner's clock runs SECONDS away from the host's
+                    (PS3_FIXED_TIME=<now+S>+, a running clock; persistent games use the
+                    real clock, so two PCs never read the same time)
 
 Checks, per match: both games reach FIGHT START of that match, both write its
 result file (same winner and state hash, 0 mismatching frames). Prints the time
@@ -100,6 +115,13 @@ def read_json(path):
 _ntdll = ctypes.WinDLL("ntdll") if os.name == "nt" else None
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 _u32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
+
+
+def cpu_mask(spec):
+    """--cpus1/--cpus2: N = logical processors 0..N-1, or 0xMASK; 0 = no change."""
+    if not spec:
+        return 0
+    return int(spec, 16) if spec.lower().startswith("0x") else (1 << int(spec)) - 1
 
 
 def suspend_process(pid, on):
@@ -200,8 +222,23 @@ class Game:
         vfs = os.path.abspath(self.a.vfs)
         exe = self.a.exe2 if self.role == "join" and self.a.exe2 else self.a.exe
         flags = 0x00004000 if getattr(self.a, "below_normal", False) and os.name == "nt" else 0   # BELOW_NORMAL_PRIORITY_CLASS
+        gd = self.a.gamedata1 if self.role == "host" else self.a.gamedata2
+        if gd and self.starts == 1:      # a player's own save: copied once, the game keeps writing it
+            import shutil
+            dst = os.path.join(self.dir, "gamedata")
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(gd, dst)
+            log(f"game {self.idx}: save data from {gd}")
+        mask = cpu_mask(self.a.cpus1 if self.role == "host" else self.a.cpus2)
+        if mask:
+            env["PS3_CPUS"] = str(bin(mask).count("1"))
+            flags |= 0x00000004          # CREATE_SUSPENDED: the mask is in before the game sizes its pools
         self.proc = subprocess.Popen([os.path.abspath(exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
                                      cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT, creationflags=flags)
+        if mask:
+            ok = _k32.SetProcessAffinityMask(ctypes.c_void_p(int(self.proc._handle)), ctypes.c_size_t(mask))
+            suspend_process(self.proc.pid, False)
+            log(f"game {self.idx}: affinity {mask:#x} ({bin(mask).count('1')} logical processors){'' if ok else ' FAILED'}")
         log(f"game {self.idx} ({self.role}) started, pid {self.proc.pid}, log {self.log_path}")
 
     def stop(self):
@@ -307,6 +344,7 @@ def main():
     ap.add_argument("--polite", action="store_true",
                     help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--fresh-at", type=int, default=0, help="persistent: restart the joiner's game before this match")
+    ap.add_argument("--fresh-role", choices=["host", "join"], default="join", help="--fresh-at restarts this side's game")
     ap.add_argument("--rematch-wait", type=float, default=1.0,
                     help="seconds between a match's results and the next command (players clicking Rematch late: 20)")
     ap.add_argument("--port", type=int, default=7400)
@@ -317,6 +355,12 @@ def main():
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for the joiner's game only")
     ap.add_argument("--exe2", help="the joiner's t5dr.exe (another build, t5dr_game.dll beside it; "
                                    "tools/cross_build_test.py --flow persistent)")
+    ap.add_argument("--cpus1", default="", help="host's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
+    ap.add_argument("--cpus2", default="", help="joiner's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
+    ap.add_argument("--hitch2", default="", help="MS[:MIN:MAX] -- the joiner's main thread stalls (T5_TEST_HITCH)")
+    ap.add_argument("--gamedata1", default="", help="copy this gamedata tree (a player's save) for the host's game")
+    ap.add_argument("--gamedata2", default="", help="copy this gamedata tree (a player's save) for the joiner's game")
+    ap.add_argument("--clock2", type=float, default=0.0, help="the joiner's clock this many seconds off the host's")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     a.below_normal = a.polite
@@ -324,6 +368,13 @@ def main():
         a.env = a.env + ["PS3_AUDIO_MUTE=1"]
     if a.hz2:
         a.env2 = a.env2 + [f"RSX_TEST_DISPLAY_HZ={a.hz2:g}"]
+    if a.hitch2:
+        a.env2 = a.env2 + [f"T5_TEST_HITCH={a.hitch2}"]
+    if a.clock2:
+        a.env2 = a.env2 + [f"PS3_FIXED_TIME={int(time.time() + a.clock2)}+"]
+    for g, gd in (("1", a.gamedata1), ("2", a.gamedata2)):
+        if gd and not os.path.isdir(os.path.join(gd, "dev_hdd0")):
+            sys.exit(f"--gamedata{g}: {gd} has no dev_hdd0 folder")
     closes = {}
     for c in a.close:
         k, role, sec = c.split(":")
@@ -340,7 +391,8 @@ def main():
             except OSError:
                 pass
     report = {"flow": a.flow, "mash": a.mash, "pattern": a.pattern, "skew": a.skew, "stutter": a.stutter,
-              "hz2": a.hz2, "env": a.env, "matches": []}
+              "hz2": a.hz2, "env": a.env, "env1": a.env1, "env2": a.env2, "cpus": [a.cpus1, a.cpus2],
+              "gamedata": [a.gamedata1, a.gamedata2], "matches": []}
     ok_all = True
     stop = threading.Event()
     st_on = threading.Event()
@@ -392,7 +444,7 @@ def main():
                             time.sleep(random.uniform(0.2, 1.5))   # two launchers never write at the same moment
                         write_atomic(g.fight_path, f"{line} match={mid}\n")
                 else:
-                    if a.fresh_at == k and g.role == "join" and g.running():
+                    if a.fresh_at == k and g.role == a.fresh_role and g.running():
                         log(f"match {k}: restarting game {g.idx} (a new opponent's fresh game)")
                         g.stop()
                     if not g.running():

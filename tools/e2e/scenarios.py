@@ -712,8 +712,8 @@ def net_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, expect, mode="ro
     rh, rj = row[host.name], row[join.name]
     ctx.check(f"{label}: netcode {mode} on both", rh["mode"] == mode and rj["mode"] == mode, f"{rh['mode']}/{rj['mode']}")
     if mode == "rollback" and expect is not None:
-        ctx.check(f"{label}: rollback input delay {expect}", rh["pick"] == expect and rj["agreed"] == expect,
-                  f"host picked {rh['pick']} ({rh['pick_why']}), joiner agreed {rj['agreed']}")
+        ctx.check(f"{label}: rollback input delay {expect}", rh["pick"] == expect and rj["delay"] == expect,
+                  f"host picked {rh['pick']} ({rh['pick_why']}), joiner runs {rj['delay']}")
     if mode == "lockstep":
         want = proto.suggest_delay(rtt, jitter) if not relay else None
         got = [(r or {}).get("connected") for r in (parse_segment(host.log_segment(mid)), parse_segment(join.log_segment(mid)))]

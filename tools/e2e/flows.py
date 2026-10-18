@@ -17,6 +17,7 @@ RE_CONNECTED = re.compile(r"\[netplay\] connected \((\w+), (P\d)\), delay (\d+)"
 RE_SYNC = re.compile(r"sync check through frame (\d+): (\d+) mismatching")
 RE_SPEED = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps")
 RE_FIGHT = re.compile(r"\[df\] frame (\d+): FIGHT START match (\d+) id (\S+): (.*?), stage (\d+)")
+RE_LS_DELAY = re.compile(r"lockstep starts: frame \d+, delay (\d+)")
 RE_LOST = re.compile(r"\[netplay\] .*(peer lost|cannot connect) \((\w+)\)")
 
 
@@ -24,7 +25,8 @@ def parse_segment(lines):
     """The numbers of one match from its part of the game log."""
     out = {"pick": None, "pick_why": None, "agreed": None, "mode": None, "connected": None, "rollbacks": 0,
            "resim": 0, "stalls": 0, "stall_ms": 0.0, "rb_windows": [], "sync": None, "desync_lines": 0,
-           "crash": False, "fifo": {}, "fight_start": [], "speed": [], "lost": None, "build_mismatch": False}
+           "crash": False, "fifo": {}, "fight_start": [], "speed": [], "lost": None, "build_mismatch": False,
+           "ls_delay": None, "delay": None}
     for ln in lines:
         m = RE_PICK.search(ln)
         if m:
@@ -34,8 +36,12 @@ def parse_segment(lines):
             out["agreed"] = int(m.group(2))
         if "[netplay] rollback mode starts" in ln or "rollback loop takes over" in ln:
             out["mode"] = "rollback"
-        elif "[netplay] lockstep starts: frame" in ln and out["mode"] is None:
-            out["mode"] = "lockstep"
+        elif "[netplay] lockstep starts: frame" in ln:
+            if out["mode"] is None:
+                out["mode"] = "lockstep"
+            m = RE_LS_DELAY.search(ln)
+            if m:
+                out["ls_delay"] = int(m.group(1))
         m = RE_CONNECTED.search(ln)
         if m:
             out["connected"] = (m.group(1), m.group(2), int(m.group(3)))
@@ -69,6 +75,14 @@ def parse_segment(lines):
             out["lost"] = m.group(2)
         if "build_mismatch" in ln or "different build" in ln:
             out["build_mismatch"] = True
+    if out["mode"] is None and out["rb_windows"]:
+        out["mode"] = "rollback"           # a rematch in the session: the rollback loop simply goes on
+    elif out["mode"] is None and out["speed"]:
+        out["mode"] = "lockstep"
+    # the input delay this game ran with: the rollback pick (host) / the agreed change (joiner), else the
+    # session's lockstep delay (no "agreed" line when the pick equals it)
+    out["delay"] = out["agreed"] if out["agreed"] is not None else (
+        out["pick"] if out["pick"] is not None else out["ls_delay"])
     return out
 
 
@@ -177,7 +191,7 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
         rf = p.result_file(mid) or {}
         tf = (m.get("fight_at") - m.get("started")) if m.get("fight_at") and m.get("started") else None
         row[p.name] = {"result_file": rf, "to_fight_s": round(tf, 1) if tf else None, "pick": seg["pick"],
-                       "agreed": seg["agreed"], "mode": seg["mode"], "rollbacks": seg["rollbacks"],
+                       "agreed": seg["agreed"], "delay": seg["delay"], "mode": seg["mode"], "rollbacks": seg["rollbacks"],
                        "stalls": seg["stalls"], "sync": seg["sync"], "fps_windows": _med(seg["rb_windows"]),
                        "speed": seg["speed"][-1] if seg["speed"] else None, "fifo": seg["fifo"],
                        "crash": seg["crash"], "lost": seg["lost"], "pick_why": seg["pick_why"]}
@@ -212,7 +226,7 @@ def _med(v):
 
 def _brief(r):
     rf = r["result_file"]
-    return (f"to FIGHT {r['to_fight_s']} s, mode {r['mode']}, input delay {r['agreed'] if r['agreed'] is not None else r['pick']}"
+    return (f"to FIGHT {r['to_fight_s']} s, mode {r['mode']}, input delay {r['delay']}"
             f", {r['rollbacks']} rollbacks, {r['stalls']} stalls, winner {rf.get('winner')} score {rf.get('score')} "
             f"frames {rf.get('frames')} hash {rf.get('hash')}" + (f", reason {rf.get('reason')}" if rf.get("reason") else ""))
 

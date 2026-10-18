@@ -10,6 +10,8 @@
 import os
 import random
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -515,6 +517,158 @@ class RuntimeAgreementTest(unittest.TestCase):
             self.assertIsNotNone(padmap.canon_source(XINPUT, name), name)
         self.assertIsNone(padmap.canon_source(DINPUT, "B129"))
         self.assertIsNone(padmap.canon_source(DINPUT, "LT"))
+
+
+def find_ps3recomp():
+    """A ps3recomp tree that has the controls patch applied (PS3RECOMP_DIR, ./deps/ps3recomp, or the main
+    checkout's deps/ps3recomp when this is a git worktree)."""
+    cands = [os.environ.get("PS3RECOMP_DIR"), os.path.join(ROOT, "deps", "ps3recomp")]
+    try:
+        r = subprocess.run(["git", "-C", ROOT, "rev-parse", "--git-common-dir"], capture_output=True, text=True,
+                           timeout=20)
+        if r.returncode == 0:
+            common = os.path.normpath(os.path.join(ROOT, r.stdout.strip()))
+            cands.append(os.path.join(os.path.dirname(common), "deps", "ps3recomp"))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "libs", "input", "pad_host_win32.c")):
+            return c
+    return None
+
+
+def find_vcvars():
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    vswhere = os.path.join(pf86, "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if os.path.isfile(vswhere):
+        r = subprocess.run([vswhere, "-latest", "-products", "*", "-property", "installationPath"],
+                           capture_output=True, text=True, timeout=60)
+        for line in r.stdout.splitlines():
+            p = os.path.join(line.strip(), "VC", "Auxiliary", "Build", "vcvars64.bat")
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+class RuntimeDifferentialTest(unittest.TestCase):
+    """The runtime's own parser (libs/input/pad_host_win32.c, compiled into tests/c/pad_table_dump.c) against
+    padmap.py and the editor: for many files and controllers the same bindings and port options. Needs the
+    patched ps3recomp tree and a Windows C compiler (clang-cl or cl with the Windows SDK); skipped without."""
+
+    @classmethod
+    def setUpClass(cls):
+        if os.name != "nt":
+            raise unittest.SkipTest("the runtime's pad layer is Windows only")
+        cls.tree = find_ps3recomp()
+        if not cls.tree:
+            raise unittest.SkipTest("no patched ps3recomp tree (PS3RECOMP_DIR)")
+        vcvars = find_vcvars()
+        clang = shutil.which("clang-cl") or (r"C:\Program Files\LLVM\bin\clang-cl.exe"
+                                             if os.path.isfile(r"C:\Program Files\LLVM\bin\clang-cl.exe") else None)
+        if not vcvars or not (clang or shutil.which("cl")):
+            raise unittest.SkipTest("no Windows C compiler")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.tmp.cleanup)
+        exe = os.path.join(cls.tmp.name, "pad_table_dump.exe")
+        inc = [os.path.join(cls.tree, *p) for p in (("libs", "input"), ("libs",), ("runtime",), ("include",))]
+        src = os.path.join(ROOT, "tests", "c", "pad_table_dump.c")
+        cc = f'"{clang}"' if clang else "cl"
+        flags = " ".join(f'/I "{d}"' for d in inc)
+        cmd = (f'"{vcvars}" >nul 2>&1 && {cc} /nologo /O1 /W0 {flags} "{src}" /Fe:"{exe}" '
+               f'/Fo:"{os.path.join(cls.tmp.name, "pad_table_dump.obj")}"')
+        r = subprocess.run(f'cmd /s /c "{cmd}"', capture_output=True, text=True, timeout=600)
+        if not os.path.isfile(exe):
+            raise unittest.SkipTest("could not build tests/c/pad_table_dump.c: " + (r.stdout + r.stderr)[-400:])
+        cls.exe = exe
+        cls.n = 0
+
+    DEVICES = (
+        ("xinput:0", XINPUT, 0, 0, 0),
+        ("xinput:1", XINPUT, 1, 0, 0),
+        ("dinput:0:0F0D:00EE", DINPUT, 0, 0x0F0D, 0x00EE),
+        ("dinput:1:054C:09CC", DINPUT, 1, 0x054C, 0x09CC),
+        ("dinput:0:057E:2009", DINPUT, 0, 0x057E, 0x2009),
+        ("dinput:2:045E:0B13", DINPUT, 2, 0x045E, 0x0B13),
+        ("dinput:-1:0F0D:00EE", DINPUT, -1, 0x0F0D, 0x00EE),
+    )
+
+    def dump(self, text):
+        self.__class__.n += 1
+        path = os.path.join(self.tmp.name, f"c{self.n}.ini")
+        with open(path, "wb") as f:
+            f.write(text.encode("latin-1"))
+        r = subprocess.run([self.exe, f"ini={path}"] + [d[0] for d in self.DEVICES], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tables, ports, cur = {}, [], None
+        for line in r.stdout.splitlines():
+            if line.startswith("TABLE "):
+                cur = tables.setdefault(line[6:], [])
+            elif line.startswith("BIND ") and cur is not None:
+                _b, name, mask = line.split()
+                cur.append((re.sub(r"^HAT1_", "HAT_", name), int(mask, 16)))
+            elif line.startswith("PORT "):
+                ports.append(dict(kv.split("=", 1) for kv in line.split()[2:]))
+        return tables, ports
+
+    def compare(self, text, what=""):
+        tables, ports = self.dump(text)
+        ed = ControlsEditor(text)
+        for label, kind, port, vid, pid in self.DEVICES:
+            theirs = frozenset(tables[label])
+            ours = frozenset((s, m) for s, m in ed.controls().table(kind, port, vid, pid).binds)
+            self.assertEqual(ours, theirs, f"{what} {label}\n{text}")
+        socd = {"off": "0", "neutral": "1", "up": "2", "last": "3"}
+        c = ed.controls()
+        for p in range(padmap.MAX_PORTS):
+            self.assertEqual(ports[p]["stick"], "1" if ed.stick_of(p) == "dpad" else "0", f"{what} stick port {p + 1}")
+            self.assertEqual(ports[p]["socd"], socd[ed.socd_of(p)], f"{what} socd port {p + 1}\n{text}")
+            spec = c.ports[p]
+            self.assertEqual(int(ports[p]["spec"]), {"auto": 0, "none": 1, XINPUT: 2, DINPUT: 3}[spec["kind"]])
+            self.assertEqual(int(ports[p]["slot"]), -1 if spec["slot"] is None else spec["slot"])
+            self.assertEqual((int(ports[p]["vid"], 16), int(ports[p]["pid"], 16)), (spec["vid"], spec["pid"]))
+
+    def test_the_files_we_know(self):
+        for name, text in (("empty", ""), ("sample", sample_text()), ("hand made", HAND_MADE)):
+            self.compare(text, name)
+
+    def test_presets_and_edits(self):
+        rng = random.Random(11)
+        keys = [s.key for s in ce.SLOTS]
+        for base in ("", sample_text(), HAND_MADE):
+            for kind, dev in ((DINPUT, DI), (XINPUT, XI), (DINPUT, DI2)):
+                for r in ce.recipes_for(kind):
+                    for scope in ControlsEditor("").scopes(dev):
+                        ed = ControlsEditor(base)
+                        ed.apply_recipe(dev, scope, r.id)
+                        self.compare(ed.doc.render(), f"{r.id} {scope}")
+                for _round in range(6):
+                    ed = ControlsEditor(base)
+                    for _step in range(10):
+                        key, scope = rng.choice(keys), rng.choice(ed.scopes(dev))
+                        r = rng.random()
+                        if r < 0.55:
+                            ed.bind(dev, scope, key, rng.sample(SOURCES[kind], rng.choice((1, 2))))
+                        elif r < 0.8:
+                            ed.clear(dev, scope, key)
+                        elif r < 0.9:
+                            ed.set_port_option(dev.port, "socd", rng.choice(ce.SOCD_MODES))
+                            ed.set_port_option(dev.port, "stick", rng.choice(ce.STICK_MODES))
+                        else:
+                            ed.reset(dev, shared=rng.random() < 0.5)
+                    self.compare(ed.doc.render(), "random")
+
+    def test_port_options_and_pins(self):
+        ed = ControlsEditor(sample_text())
+        ed.set_port_option(0, "stick", "dpad")
+        for mode in ce.SOCD_MODES:
+            ed.set_port_option(1, "socd", mode)
+            self.compare(ed.doc.render(), mode)
+        ed.assign_port("dinput:0F0D:00EE", 1)
+        ed.assign_port("xinput:0", 0)
+        self.compare(ed.doc.render(), "pins")
+        ed.assign_port("dinput:Hori", 0)
+        self.compare(ed.doc.render(), "pin by name")
 
 
 if __name__ == "__main__":

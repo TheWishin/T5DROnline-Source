@@ -1039,6 +1039,13 @@ void pick_fight_start(uint32_t f)
     if (!g_pick.on) return;
     g_pick.on = false;
     const int me = g_pick.me, other = 1 - me;
+    /* a mirror match with the same costume: the game gives P2 the character's
+     * other costume (both PCs alike, probe dvj2 match 4) -- not a wrong pick */
+    if (g_cfg.chr[0] == g_cfg.chr[1] && g_models[0] != g_models[1] &&
+        ((me == 1 && g_pick.have && g_pick.model == g_models[0]) || (other == 1 && g_pick.peer && g_pick.peer_model == g_models[0]))) {
+        note("frame %u: in-game select: mirror match, P2 fights in the other costume (model 0x%X)", f, g_models[1]);
+        return;
+    }
     if (g_pick.have && g_models[me] != g_pick.model)
         note("frame %u: PICK MISMATCH: player %d's side has model 0x%X, picked 0x%X", f, me + 1, g_models[me], g_pick.model);
     if (g_pick.peer && g_models[other] != g_pick.peer_model)

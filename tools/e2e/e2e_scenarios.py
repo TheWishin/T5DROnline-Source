@@ -16,10 +16,10 @@ import time
 import urllib.error
 import zipfile
 
-from flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
+from e2e_flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
                    leave, login, match_row, parse_segment, profile, queue_match, rematch, started_both,
                    wait_fight, wait_results, STUB_MATCH_SECONDS)
-from harness import Abort, Skip
+from e2e_harness import Abort, Skip
 
 SCENARIOS = []
 

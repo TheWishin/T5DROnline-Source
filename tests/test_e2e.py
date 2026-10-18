@@ -11,10 +11,10 @@ import unittest
 
 from helpers import ROOT
 
-sys.path.insert(0, os.path.join(ROOT, "tools", "e2e"))
-import flows      # noqa: E402
-import harness    # noqa: E402
-import scenarios  # noqa: E402
+sys.path.append(os.path.join(ROOT, "tools", "e2e"))      # (appended: tools/e2e/run.py must not shadow tools/smoke/run.py)
+import e2e_flows as flows      # noqa: E402
+import e2e_harness as harness    # noqa: E402
+import e2e_scenarios as scenarios  # noqa: E402
 
 
 def udp():

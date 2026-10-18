@@ -3,7 +3,7 @@ import os
 import re
 import time
 
-from harness import Abort, log
+from e2e_harness import Abort, log
 
 import fight_flow_test            # tools/: the FIFO stall patterns, the window close (Alt+F4)
 import rollback_net_test          # tools/: the rollback summary line

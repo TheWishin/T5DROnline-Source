@@ -31,11 +31,12 @@ import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+if HERE not in sys.path:
+    sys.path.append(HERE)      # (appended: never in front of tools/smoke, whose run.py and scenarios.py the tests import)
 
-import harness  # noqa: E402
-from harness import Abort, Ctx, Run, Skip, log  # noqa: E402
-import scenarios  # noqa: E402
+import e2e_harness as harness  # noqa: E402
+from e2e_harness import Abort, Ctx, Run, Skip, log  # noqa: E402
+import e2e_scenarios as scenarios  # noqa: E402
 
 
 def default_exe():

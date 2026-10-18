@@ -41,6 +41,7 @@ Everything above the Tk part uses only the standard library: the swap step runs 
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -983,6 +984,8 @@ class Updater:
         self.worker = None
         self.cancel = threading.Event()
         self.readonly = bool(getattr(app, "readonly", False))
+        self.q = queue.Queue()              # callables from the worker threads, run on the Tk thread
+        app.after(100, self._pump)
         if os.environ.get(CONFIRM_ENV):
             app.after(300, confirm_started)       # runs once the main loop is up: the window is there
         self.button = None
@@ -994,6 +997,18 @@ class Updater:
             app.after(1500, self.report_last_update)     # after the build-tools check wrote its status
             if is_release_install(root) and not os.environ.get(NO_CHECK_ENV):
                 app.after(4000, lambda: self.check(manual=False))
+
+    def _pump(self):
+        while True:
+            try:
+                fn = self.q.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        try:
+            self.app.after(100, self._pump)
+        except Exception:      # noqa: BLE001 -- the window is gone
+            pass
 
     # -------------------------------------------------------------- results of an earlier update
     def report_last_update(self):
@@ -1052,7 +1067,7 @@ class Updater:
 
         def work():
             rel, problem = check_latest(self.cache_path, force=manual)
-            self.app.after(0, lambda: self._checked(rel, problem, manual))
+            self.q.put(lambda: self._checked(rel, problem, manual))
         threading.Thread(target=work, daemon=True).start()
 
     def _checked(self, rel, problem, manual):
@@ -1173,18 +1188,18 @@ class Updater:
         self.msg.set("Downloading…")
 
         def progress(stage, n, total):
-            self.app.after(0, lambda: self._progress(stage, n, total))
+            self.q.put(lambda: self._progress(stage, n, total))
 
         def work():
             try:
                 staged = prepare_update(rel, self.root, progress=progress, cancel=self.cancel)
             except UpdateError as e:
-                self.app.after(0, lambda e=e: self._failed(str(e), isinstance(e, Cancelled)))
+                self.q.put(lambda e=e: self._failed(str(e), isinstance(e, Cancelled)))
                 return
             except Exception as e:           # noqa: BLE001 -- a bug must not leave the window stuck
-                self.app.after(0, lambda e=e: self._failed(f"Unexpected error: {e}"))
+                self.q.put(lambda e=e: self._failed(f"Unexpected error: {e}"))
                 return
-            self.app.after(0, lambda: self._ready(staged))
+            self.q.put(lambda: self._ready(staged))
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
 

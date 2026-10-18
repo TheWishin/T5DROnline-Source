@@ -7,7 +7,8 @@
  *               netplay a stage derived from the shared seed (the game's pick happens
  *               on each PC on its own and would differ)
  *       rounds  rounds to win (default T5_NET_ROUNDS, else 3)
- *       colors  1 or 2 (costume; the second confirm's button)
+ *       colors  1 or 2 (kept for old lines: the second confirm is the handicap bar,
+ *               not a costume; the costume is the button that confirms the character)
  *       match=  the lobby's match id (any position, key=value): goes into the result
  *               file so the launcher can tell this match's result from an old one
  *       pick=N  in-game select (docs/DIRECTFIGHT.md "Character select in the game"):
@@ -84,7 +85,8 @@ constexpr uint32_t kRecordStride = 0x78;
 constexpr uint32_t kRecCell      = 0x00;         /* cursor cell */
 constexpr uint32_t kRecFace      = 0x08;         /* portrait id under the cursor */
 constexpr uint32_t kRecModel     = 0x0C;         /* the picked model id (character + costume; 0xFFFFFFFF until confirmed) */
-constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 handicap bar, then done (0x15 on P1; on P2 0x0C until P1 is done, then 0x0D) */
+constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 handicap bar, then done: 0x0C while the other side still
+                                                  * chooses (P2; P1 too after a match), then 0x0D (P2) / 0x15 (P1) */
 constexpr uint32_t kModeTitle = 1, kModeGame = 4, kModeSelect = 6;
 constexpr uint32_t kModeNone = 14;               /* the request's "next" when no mode change is pending */
 
@@ -811,6 +813,7 @@ struct Pick {
     ULONGLONG tw = 0;            /* PickWait since */
     int shown_s = -1;
     bool bad_noted = false;
+    uint8_t last_st = 0;
 };
 Pick g_pick;
 int g_models[2] = { -1, -1 };    /* the model ids both sides fight with (status file) */
@@ -866,6 +869,11 @@ void pick_frame(uint32_t f)
              cell < 35 && kGrid[cell] >= 0 ? kName[kGrid[cell]] : "?");
     }
     const ULONGLONG ms = GetTickCount64() - k.t0;
+    if (st != k.last_st) {   /* every state of this player's record (3 choosing, 9 handicap, done) */
+        note("frame %u: in-game select: player %d's record state %02X -> %02X (word %08X)", f, me + 1, k.last_st, st,
+             rd32(rec(me) + kRecState));
+        k.last_st = st;
+    }
     if (st == 3) {
         if (k.auto_chr < 0 && ms >= (ULONGLONG)k.secs * 1000) {
             k.auto_chr = g_cfg.chr[me];
@@ -956,8 +964,9 @@ void pick_frame(uint32_t f)
         if (press_idle(me) && f >= k.t9 + 10 && (f - k.t9) % 20 == 10) press(me, B_CROSS, f);
         return;
     }
-    /* done: P1 0x15; P2 0x0C until P1 is done too, then 0x0D (probe e10) */
-    if (st == 0x15 || st == 0x0D || (me == 1 && st == 0x0C)) {
+    /* done: 0x0C while the other side is still choosing (P2 always; P1 too on the
+     * select screen a match returns to: run rep1), then 0x0D / 0x15 (probe e10) */
+    if (st == 0x15 || st == 0x0D || st == 0x0C) {
         k.tw = GetTickCount64();
         plate_text(me, nullptr);
         set_phase(Ph::PickWait, "pick_wait", f);

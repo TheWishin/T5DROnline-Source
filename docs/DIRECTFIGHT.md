@@ -129,7 +129,8 @@ param)`; the factory is `func_0025E6AC`.
 2. Select mode: per player, the select record at 0x10093F58 + p*0x78: +0 the
    cursor cell, +8 the portrait id under it, +0x0C the picked model id
    (character + costume), +0x20 the state byte (3 choosing, 9 the handicap bar,
-   then 0x15 on P1; on P2 0x0C until P1 is done too, then 0x0D). The select
+   then done: 0x0C while the other side still chooses, then 0x15 on P1, 0x0D
+   on P2). The select
    state 0x1008F070 is 3 while the screen takes input. The cursor is moved by
    injected presses (closed loop: read the cell, step toward the target cell,
    re-read; one step per 8 frames), CROSS confirms the character (or the
@@ -191,8 +192,9 @@ What the select screen does (probes with scripted pads, build/cs/exp):
   cell gives Kuma with a punch button (model 0x1E) and Panda with a kick button
   (0x1F). The picked model id is at record +0x0C.
 - State 9 after the confirm is the **handicap bar** (100 %), not a costume
-  choice; the next confirm finishes the pick. P1 then reads 0x15; P2 reads
-  0x0C until P1 is done as well, then 0x0D.
+  choice; the next confirm finishes the pick. The record then reads 0x0C while
+  the other side still chooses (always on P2; on P1 at the select screen a
+  match returns to, not at a fresh one), then 0x15 on P1 and 0x0D on P2.
 - L1 loads customize data ("L1 BUTTON : LOAD CUSTOMIZE DATA"); Start, Select,
   R1, L2, R2, L3 and R3 do nothing here. There is no random cell (Jinpachi's
   cell 24 is skipped by the cursor).

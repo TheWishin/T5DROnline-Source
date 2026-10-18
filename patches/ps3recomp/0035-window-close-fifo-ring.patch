@@ -1,0 +1,240 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 0d08f3f..80b8e6f 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -555,7 +555,12 @@ u32 cellGcmSetupContext(u32 ctx_out_addr, u32 cmdSize, u32 ioSize, u32 ioAddress
+     u32 cdata  = galloc ? galloc(16, 16) : 0;
+     if (cdata && gwrite32) {
+         gwrite32(cdata + 0x0, cmdbuf);              /* begin   */
+-        gwrite32(cdata + 0x4, cmdbuf + cmdSize);    /* end     */
++        /* end: the ring's last word stays free for the JUMP back to begin
++         * (patch 0035; the SDK's ring keeps that slot too). A ring filled to
++         * the brim had the buffer-full callback write its JUMP at `end` --
++         * the first word past the ring, which in Tekken 5 DR is the title's
++         * own data in the same IO allocation (0x40500000). */
++        gwrite32(cdata + 0x4, cmdbuf + cmdSize - 4);    /* end     */
+         gwrite32(cdata + 0x8, cmdbuf);              /* current */
+         /* Command-buffer-full callback: a guest OPD {func, toc} routed to
+          * hle_gcm_callback -> cellGcm_fifo_recycle. Without a real callback the
+@@ -1459,14 +1464,62 @@ static void gcm_fifo_resync_why(const char* why, u32* getoff, u32 put)
+         if (rescued) { static int m = 0; if (__atomic_fetch_add(&m, 1, __ATOMIC_RELAXED) < 8)
+             fprintf(stderr, "[cellGcmSys] resync rescued %u fence(s) from"
+                     " 0x%08X..0x%08X\n", rescued, from, land); }
++        /* Patch 0035: the same for in-FIFO flips. A queued flip the resync
++         * steps over was never reached: the title waited ~1 s for it (the
++         * flip valve, "queued flip never reached by the FIFO walker") with
++         * its picture frozen, a peer stalling meanwhile. Every skipped flip
++         * completes as if walked; the last one is shown (the walker parks on
++         * it like on a reached one). */
++        unsigned flips = 0; u32 last_id = 0;
++        for (u32 io = from; io + 4 <= land; io += 4) {
++            u32 ea = gcm_io2ea(io); if (!ea) continue;
++            u32 w = vm_read32(ea);
++            if ((w & 0xFFFFFF00u) == GCM_FLIP_MARKER) { flips++; last_id = w & 7u; }
++        }
++        for (unsigned i = 0; i < flips; i++) {
++            InterlockedIncrement(&s_lat_walk_seq);
++            if (s_flip_call_tail != __atomic_load_n(&s_flip_call_head, __ATOMIC_RELAXED)) s_flip_call_tail++;
++            s_flip_request_count++;
++            if (i + 1 < flips) {
++                if (InterlockedDecrement(&s_fifo_flips_queued) < 0) InterlockedExchange(&s_fifo_flips_queued, 0);
++                continue;
++            }
++            s_current_display_buffer_id = last_id;
++            s_flip_pending = 1;
++            if (gcm_vsync_flip() && s_fifo_flips_queued > 0) s_flip_hold = 1;
++        }
++        if (flips) { static int m = 0; if (__atomic_fetch_add(&m, 1, __ATOMIC_RELAXED) < 8)
++            fprintf(stderr, "[cellGcmSys] resync rescued %u flip(s) from 0x%08X..0x%08X\n", flips, from, land); }
+     }
+     *getoff = land;
+ }
+ 
++/* Patch 0035: the last `put` values the walker saw, with the title's
++ * ctx->current at that moment and the walker's get -- a bad branch dumps
++ * them (PS3_GCM_FIFO_DIAG=0 turns the dump off; it is on for the first two). */
++#define GCM_PUTLOG_N 24
++static u32 s_putlog_put[GCM_PUTLOG_N], s_putlog_cur[GCM_PUTLOG_N], s_putlog_get[GCM_PUTLOG_N];
++static unsigned long long s_putlog_ms[GCM_PUTLOG_N];
++static u32 s_putlog_i = 0;
++static void gcm_putlog(u32 put, u32 get)
++{
++    const u32 k = s_putlog_i++ % GCM_PUTLOG_N;
++    s_putlog_put[k] = put; s_putlog_get[k] = get;
++    s_putlog_cur[k] = s_gcm_context_ea ? vm_read32(s_gcm_context_ea + 8) : 0;
++    s_putlog_ms[k] = (unsigned long long)GetTickCount64();
++}
+ static void gcm_fifo_dump_around(u32 getoff)
+ {
+     static int d = 0;
+-    if (!getenv("GCM_RECDBG") || d++ >= 3) return;
++    static int diag = -1;
++    if (diag < 0) { const char* e = getenv("PS3_GCM_FIFO_DIAG"); diag = !(e && *e == '0'); }
++    if (!(getenv("GCM_RECDBG") || diag) || d++ >= (getenv("GCM_RECDBG") ? 3 : 2)) return;
++    for (u32 t = 0; t < GCM_PUTLOG_N; t++) {
++        const u32 k = (s_putlog_i + t) % GCM_PUTLOG_N;
++        if (!s_putlog_ms[k]) continue;
++        fprintf(stderr, "[FIFOPUT] %llu ms: put=%08X cur=%08X get=%08X\n", s_putlog_ms[k], s_putlog_put[k],
++                s_putlog_cur[k], s_putlog_get[k]);
++    }
+     for (u32 t = 0; t < GCM_TRACE_N; t++) {
+         u32 k = (s_tr_i + t) % GCM_TRACE_N;
+         if (!s_tr_w[k]) continue;
+@@ -1673,6 +1726,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+     { static u32 pf_last_put;
+       if (put != pf_last_put) {
+           pf_last_put = put;
++          gcm_putlog(put, s_fifo_getoff);
+           rsx_pf_add(RSX_PF_PUT_ADV, 1);
+           rsx_pf_stamp(RSX_PF_PUT_LAST_QPC);
+           if (!g_rsx_pf[RSX_PF_PUT_FIRST_QPC]) rsx_pf_stamp(RSX_PF_PUT_FIRST_QPC);
+@@ -1885,7 +1939,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
+         }
+         if ((w & 3) == 2) {                    /* CALL: offset | 2 */
+             { u32 tgt = w & 0x1FFFFFFCu;
+-              if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
++              if (!gcm_io2ea(tgt)) { gcm_fifo_bad_branch("CALL", tgt, w); gcm_fifo_dump_around(s_fifo_getoff); gcm_fifo_resync_why("unmapped-CALL", &s_fifo_getoff, put); break; }
+               s_fifo_calloff = s_fifo_getoff + 4;
+               s_fifo_getoff  = tgt; }
+             continue;
+@@ -2320,7 +2374,17 @@ static void gcm_rsx_process_fifo_unlocked(void)
+          * overruns first, so the first overrun is recycled by the path above
+          * and near-end recycling is enabled from then on. */
+         static int s_title_overran = 0;
+-        if (begin && end > begin && cur >= end) { head_consumed = 1; s_title_overran = 1; }
++        /* Patch 0035: past `end`, not AT it. A ring filled exactly to `end`
++         * is a legal moment: the title's gcmReserve calls its callback (ours,
++         * cellGcm_fifo_recycle, on the guest thread) at its next reserve. Taken
++         * for an overrun, it switched this drain-thread recycle on for good,
++         * and from then on the drain thread rewound current/put/get to begin
++         * whenever `current` came near `end` -- under a title still writing
++         * there. The walker then parsed the previous lap's leftovers at
++         * begin: "FIFO JUMP to unmapped IO 0x1F7FFFD0 (word 0x3F7FFFD1)" a few
++         * dozen bytes into the ring, a resync, the frame's flip skipped, and
++         * a ~1 s freeze (Tekken 5 DR online, about once in 6 matches). */
++        if (begin && end > begin && cur > end) { head_consumed = 1; s_title_overran = 1; }
+         if (begin && end > begin && cur >= begin && cur + GCM_RECYCLE_SLACK >= end
+                 && head_consumed && s_title_overran) {
+             u32 io_begin = gcm_ea2io(begin);
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 7ea2eae..4b77e21 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -48,6 +48,14 @@ typedef struct {
+ 
+ static NullBackendState s_state;
+ 
++/* Patch 0035: Esc while the title says leaving now costs something (an online
++ * match: closing the game counts as a loss) needs a second press within 3 s;
++ * the first one only puts a warning into the caption. Alt+F4 and the X button
++ * close at once (deliberate). Without a guard Esc closes as before. */
++static int (*s_close_guard)(void) = 0;
++static ULONGLONG s_esc_armed = 0;     /* GetTickCount64() of the first Esc, 0 = none */
++void ps3_set_window_close_guard(int (*fn)(void)) { s_close_guard = fn; }
++
+ /* ---------------------------------------------------------------------------
+  * Win32 window procedure
+  * -----------------------------------------------------------------------*/
+@@ -225,9 +233,14 @@ static LRESULT CALLBACK null_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+     case WM_KEYDOWN:
+         if (wp == VK_F11) {
+             null_set_fullscreen(hwnd, !s_fullscreen);
+-        } else if (wp == VK_ESCAPE && !ps3_sysui_active()) {   /* in a system dialog Esc is "back" */
++        } else if (wp == VK_ESCAPE && !ps3_sysui_active() && !(lp & (1 << 30))) {   /* in a system dialog Esc is "back" */
+             if (s_fullscreen) {              /* Esc leaves fullscreen first */
+                 null_set_fullscreen(hwnd, 0);
++            } else if (s_close_guard && s_close_guard() &&
++                       (!s_esc_armed || GetTickCount64() - s_esc_armed > 3000)) {
++                s_esc_armed = GetTickCount64();   /* the caption says what a second Esc does */
++                s_state.title_time = 0;
++                fprintf(stderr, "[rsx] Esc: press it again within 3 s to close the game (online: counts as a loss)\n");
+             } else {
+                 s_state.window_closed = 1;
+                 DestroyWindow(hwnd);
+@@ -514,9 +527,14 @@ int rsx_null_backend_pump_messages(void)
+         extern float rsx_live_draw_get_res_scale(void);
+         const float rs = rsx_live_draw_get_res_scale();
+         char tb[256];
+-        snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %ux%u", s_state.title, fps,
+-                 rsx_live_draw_get_last_draws(), (u32)(s_state.width * rs + 0.5f),
+-                 (u32)(s_state.height * rs + 0.5f));
++        if (s_esc_armed && now - s_esc_armed > 3000) s_esc_armed = 0;
++        if (s_esc_armed)
++            snprintf(tb, sizeof(tb), "%s | Press Esc again to close the game -- an online match counts as a loss",
++                     s_state.title);
++        else
++            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %ux%u", s_state.title, fps,
++                     rsx_live_draw_get_last_draws(), (u32)(s_state.width * rs + 0.5f),
++                     (u32)(s_state.height * rs + 0.5f));
+         SetWindowTextA(s_state.hwnd, tb);
+         s_state.title_frames = s_state.frame_count;
+         s_state.title_time = now;
+@@ -922,6 +940,7 @@ void rsx_null_backend_shutdown(void)
+ 
+ /* Headless has no event queue and no window to close. */
+ int rsx_null_backend_pump_messages(void) { return 0; }
++void ps3_set_window_close_guard(int (*fn)(void)) { (void)fn; }
+ 
+ void rsx_null_backend_present(void) { nullsw_present(NULL, 0); }
+ void* rsx_null_backend_get_hwnd(void) { return 0; }
+diff --git a/libs/video/rsx_null_backend.h b/libs/video/rsx_null_backend.h
+index 85e1369..c2c364b 100644
+--- a/libs/video/rsx_null_backend.h
++++ b/libs/video/rsx_null_backend.h
+@@ -34,6 +34,11 @@ void rsx_null_backend_shutdown(void);
+  * return 0. */
+ int rsx_null_backend_pump_messages(void);
+ 
++/* Patch 0035: fn() != 0 (e.g. an online match runs) makes Esc ask for a second
++ * press within 3 s before it closes the window (the caption says so). Alt+F4
++ * and the X button still close at once. */
++void ps3_set_window_close_guard(int (*fn)(void));
++
+ #ifndef _WIN32
+ /* --- headless software build only ---------------------------------------
+  * Off Windows this backend has no window: it renders into a host-memory
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index ec250a3..6e75ef9 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -390,6 +390,31 @@ static void rsx_present_frame(void)
+ static int rsx_pump_messages(void)
+ { return s_rsx_live ? rsx_null_backend_pump_messages() : rsx_backend_pump(); }
+ 
++/* Patch 0035: the game window was closed (Alt+F4, the X button, Esc). The
++ * ticker used to drop its RSX work and carry on: no FIFO walk, no present, the
++ * flips completed only by cellGcmTickFlip's 1-second safety valve ("queued
++ * flip never reached by the FIFO walker" x8) -- a windowless game at ~1 frame
++ * a second that kept its netplay session (the opponent stalled, then went out
++ * of sync) and that its launcher still saw running (T5DR 1.0.0 / 0.1.9 online
++ * reports; 0.1.8: an offline game left running an hour after its window was
++ * closed). A closed window now ends the process: the title's handler (if one
++ * is registered) first -- netplay tells the peer and writes "quit" into its
++ * result file, and picks the exit code -- otherwise exit code 0. */
++static void (*s_window_closed_handler)(void) = nullptr;
++extern "C" void ps3_set_window_closed_handler(void (*fn)(void)) { s_window_closed_handler = fn; }
++static void on_window_closed(void)
++{
++    fprintf(stderr, "[rsx] the game window was closed: the game ends\n");
++    fflush(stdout); fflush(stderr);
++    if (s_window_closed_handler) s_window_closed_handler();   /* may end the process itself */
++    fflush(stdout); fflush(stderr);
++#ifdef _WIN32
++    TerminateProcess(GetCurrentProcess(), 0);
++#else
++    _exit(0);
++#endif
++}
++
+ /* Frames handed to the backend at a guest FLIP boundary -- one per frame the
+  * guest actually finished, which is the number a port means by "is anything
+  * reaching the screen". The presents the ticker makes before the guest's first
+@@ -755,7 +780,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+             if(++s_q3 % 8 == 0){ int r=sys_event_queue_inject(qid, 0x1234, 0, 0, 0);
+               static int _n=0; if(_n++<12) fprintf(stderr,"[INJQ3] injected q%u event rc=%d\n",qid,r); } }
+         if (rsx_ok) {
+-            if (rsx_pump_messages() != 0) { rsx_ok = 0; }
++            if (rsx_pump_messages() != 0) { rsx_ok = 0; on_window_closed(); }
+             if (getenv("YDKJ_PACETRACE")) {
+                 static ULONGLONG s_win=0; static int s_pf=0, s_pres=0; static ULONGLONG s_presms=0;
+                 s_pf += fired; s_pres++;

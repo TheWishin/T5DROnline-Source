@@ -133,7 +133,7 @@ def stamp(ts):
     if _lang == "de":
         return time.strftime("%d.%m. %H:%M", lt)
     months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-    return f"{lt.tm_mday} {months[lt.tm_mon - 1]} {time.strftime('%H:%M', lt)}"
+    return f"{lt.tm_mday:02d} {months[lt.tm_mon - 1]} {time.strftime('%H:%M', lt)}"
 
 
 # ---------------------------------------------------------------------------- texts from outside

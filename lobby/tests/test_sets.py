@@ -594,6 +594,75 @@ class SetDriverTest(Base):
         self.assertEqual(len(drivers[0].history), len(results[0]))
 
 
+class SetDriverSessionTest(unittest.TestCase):
+    """A set's next game over a new connection in a persistent game (after a desync): the other game goes
+    idle first, and this game logs the end of the LAST session ("peer lost (peer_quit)") only after the
+    driver handed it the new match. That line is not the new match's (e2e run e3: the replay was reported as
+    a disconnect, then voided as no_report with the innocent opponent blamed)."""
+
+    class Client:
+        def __init__(self):
+            self.reports = []
+
+        def game_started(self, mid):
+            pass
+
+        def report_result(self, winner, score=None, match_id=None, **kw):
+            self.reports.append((match_id, kw.get("source"), kw.get("reason")))
+
+    class Game:
+        def __init__(self, env, log_path):
+            self.env, self.log_path, self.proc = env, log_path, None
+
+        def running(self):
+            return True
+
+        def stop(self):
+            pass
+
+    def test_the_last_sessions_end_is_not_the_new_match(self):
+        from test_driver_persistent import start_event
+        d = tempfile.mkdtemp(prefix="drvset")
+        logp = os.path.join(d, "game.log")
+        open(logp, "w").close()
+        cl = self.Client()
+        drv = MatchDriver(cl, lambda env: self.Game(env, logp), d, mode="persistent")
+
+        def say(*lines):
+            with open(logp, "a") as f:
+                f.write("".join(ln + "\n" for ln in lines))
+
+        def ack(seq):
+            with open(os.path.join(d, "ctl", "state.json"), "w") as f:
+                f.write('{"ctl": 1, "seq": %d, "state": "fight"}' % seq)
+
+        drv.on_event(start_event("m1"))
+        ack(1)
+        say("[netplay] session 1 set up (handshake running)", "[netplay] connected (host, P1), delay 2")
+        drv.poll()
+        drv.on_event({"t": "match_result", "match": "m1", "status": "void", "reason": "desync", "set": {}})
+        drv.on_event({"t": "match_found", "match": "m2", "keep": False})        # idle: a new connection
+        drv.on_event(start_event("m2"))
+        ack(3)
+        say("[netplay] peer lost (peer_quit): the opponent left (its game was closed)")   # session 1's end
+        t_end = time.monotonic() + 4.0
+        while time.monotonic() < t_end:
+            drv.poll()
+            time.sleep(0.1)
+        self.assertEqual(cl.reports, [])
+        say("[netplay] session 2 set up (handshake running)", "[netplay] connected (host, P1), delay 2")
+        for _ in range(10):
+            drv.poll()
+            time.sleep(0.05)
+        self.assertEqual(cl.reports, [])
+        say("[netplay] peer lost (peer_timeout): no packets")                   # now the new match's opponent is gone
+        t_end = time.monotonic() + 5.0
+        while time.monotonic() < t_end and not cl.reports:
+            drv.poll()
+            time.sleep(0.1)
+        self.assertEqual(cl.reports, [("m2", "disconnect", "peer_timeout")])
+
+
 # ============================================================================== 8. the Online tab
 try:
     import tkinter as tk

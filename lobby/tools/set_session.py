@@ -210,6 +210,7 @@ class Player:
                     + (f" -- rating {r['before']['r']:.0f} -> {r['after']['r']:.0f}" if r else " -- no rating change"))
                 self.attacking = False
                 self.t_result = time.time() if s.get("next") else None
+                self.fight_base = max(self.fight_base, int((self.status() or {}).get("match") or 0))
             elif t == "set_end":
                 self.sets_done += 1
                 log(f"{self.name}: set_end {ev.get('reason')}: {setsmod.result_text(ev)}")

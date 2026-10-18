@@ -365,6 +365,8 @@ class MatchDriver:
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
         self.ctl_failures = 0        # persistent games that died or did not answer
+        self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
+                                     # in the log -- the last session's "peer lost" -- are not this match's)
 
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
@@ -504,6 +506,7 @@ class MatchDriver:
                 self._call(self.client.leave_match, mid)
                 return
             self.ticket = _Continued(mid, ev, self.session_ticket)
+            self.need_session = None
             self.match_ev = ev
             self._discard_result("stale")    # nothing the game wrote before this match belongs to it
             self.mark = self.glog.mark()
@@ -527,8 +530,13 @@ class MatchDriver:
         self.saw_fight = False
         self.t_over = None
         self.df_base = int((self.df_status or {}).get("match") or 0) if self.game_running() else 0
+        self.need_session = None
         if self.mode == "persistent" and self.game_running() and self.ctl is not None:
-            # a new opponent in the running game: a new netplay session (docs/DIRECTFIGHT.md)
+            # a new opponent in the running game: a new netplay session (docs/DIRECTFIGHT.md). The last session may
+            # still log its end ("peer lost (peer_quit)" when the other game went idle first): that is not this match.
+            if self.glog is not None:
+                self.glog.poll()
+                self.need_session = self.glog.sessions + 1
             self._send_fight(mid, self.match_env(ev, t))
         else:
             self.stop_game()
@@ -759,7 +767,9 @@ class MatchDriver:
                 winner = 0 if w1 > w2 else 1 if w2 > w1 else None
                 self._report(mid, winner, [w1, w2], "game", desync=self._evidence() or 0)
                 return
-            if g.peer_lost > self.mark[2] and (not running or self._grace("lost")):
+            lost = g.peer_lost > self.mark[2] and (self.need_session is None or (
+                g.sessions >= self.need_session and g.session_lost > 0))
+            if lost and (not running or self._grace("lost")):
                 # (a game that ends the match itself writes a result file with the reason first;
                 # give it a moment before reporting from the log)
                 reason = g.lost_reason or "peer_lost"

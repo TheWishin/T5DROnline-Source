@@ -142,7 +142,7 @@ class CatalogTests(Base):
         # t(variable): the variable must hold a text marked with N_(); keep the list short and known
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
-                                     "problem_report_ui.py"})
+                                     "problem_report_ui.py", "controls_ui.py"})
 
 
 class EngineTests(German):

@@ -96,6 +96,8 @@ def step(cell, target):
     if r != tr:
         if tr == 0 and c == 0:
             return "RIGHT"
+        if tr == 0 and c == 11:
+            return "LEFT"
         return "DOWN" if (tr - r + 3) % 3 == 1 else "UP"
     n = 10 if r == 0 else 12
     cc, tcc = (c - 1, tc - 1) if r == 0 else (c, tc)

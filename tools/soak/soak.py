@@ -213,7 +213,7 @@ class Driver:
 P1_HEALTH = 0x100906EC
 
 
-def hold_health(d, addr, value=1, every=1.0, until=None, timeout=300.0, attack=True, pad=1):
+def hold_health(d, addr, value=1, every=1.0, until=None, timeout=300.0, attack=True, pad=1, idle_taps=("CROSS", "START")):
     """While the fight HUD is up: write the fighter's health (debug console poke16) about
     every `every` s and attack with `pad`; between fights tap CROSS/START (intros, win
     poses, results). Stops when until() is true or after `timeout`. Returns fights seen."""
@@ -240,8 +240,10 @@ def hold_health(d, addr, value=1, every=1.0, until=None, timeout=300.0, attack=T
                 g.wait(0.5)
         else:
             in_fight = False
-            g.press("CROSS", gap=350)
-            g.press("START", gap=350)
+            if not idle_taps:
+                g.wait(0.5)
+            for b in idle_taps:
+                g.press(b, gap=350)
     return fights
 
 
@@ -262,7 +264,7 @@ def sc_arcade(d, char_moves=(), name="arcade", to_end=True, timeout=1500):
     if to_end:
         n = hold_health(d, P2_HEALTH, until=done, timeout=timeout)
     else:
-        n = hold_health(d, P1_HEALTH, until=done, timeout=timeout, attack=False)
+        n = hold_health(d, P1_HEALTH, until=done, timeout=timeout, attack=False, idle_taps=())
     g.expect(f"{name}-end", done(), f"{n} fight(s), then mode {g.mode} {g.mode_name}")
     g.shot(f"{name}-end", expect="any", settle=0.5, timeout=3)
     d.wait_mode(M_TITLE, timeout=200, taps=("START",), every=3.0)
@@ -286,7 +288,8 @@ def sc_ghost(d, wins=2, timeout=600):
         state["n"] += n
     g.shot("ghost-wins", expect="any", settle=0.5, timeout=3)
     g.phase("ghost-lose", "fight")
-    hold_health(d, P1_HEALTH, attack=False, timeout=400, until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE))
+    hold_health(d, P1_HEALTH, attack=False, timeout=400, until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE),
+                idle_taps=())
     g.expect("ghost-end", g.mode in (M_RANKING, M_LOGO, M_TITLE), f"mode {g.mode} {g.mode_name}")
     d.wait_mode(M_TITLE, timeout=200, taps=("START",), every=3.0)
 
@@ -344,7 +347,7 @@ def sc_survival(d, wins=4, timeout=600):
     g.shot("survival-wins", expect="any", settle=0.5, timeout=3)
     g.phase("survival-lose", "fight")
     hold_health(d, P1_HEALTH, attack=False, timeout=400,
-                until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT))
+                until=lambda: g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT), idle_taps=())
     g.expect("survival-end", g.mode in (M_RANKING, M_LOGO, M_TITLE, M_RESULT), f"mode {g.mode} {g.mode_name}")
     g.shot("survival-end", expect="any", settle=0.5, timeout=3)
     d.wait_mode(M_TITLE, timeout=200, taps=("CROSS", "START"), every=2.0)

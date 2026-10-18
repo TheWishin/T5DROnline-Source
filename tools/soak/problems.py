@@ -37,7 +37,7 @@ RX = [
                           r"D3DCompile.*fail|compile failed", re.I)),
     ("decode", re.compile(r"^\[(cellVdec|cellAdec|cellDmux|cellPamf|mf_h264|cellAtrac)\].*(error|fail|corrupt|invalid)|"
                           r"inflate failed", re.I)),
-    ("audio", re.compile(r"\[cellAudio\] (audio device lost|audio device waiting|could not|new default audio device could not)|"
+    ("audio", re.compile(r"\[cellAudio\] (audio device lost|audio device waiting|could not|new default audio device could not|sound glitches)|"
                          r"\[cellAudio\] port \d+ HAS DATA but never started")),
     ("fifo", re.compile(r"recycled the title's own ring|queued flip never reached|FIFO resync|walker circling|"
                         r"flip valve|unmapped IO|\[cellGcmSys\].*(stall|stuck)", re.I)),
@@ -53,6 +53,8 @@ RE_LD = re.compile(r"^\[live-draw\] frame (\d+) packets\[seen=(\d+) queued=(\d+)
 LD_KEYS = ("qfull", "drop_fetch", "drop_degen", "drop_prim", "drop_alloc", "drop_pso", "drop_ring", "drop_surface",
            "tex_full", "tex_decodefail", "vtex_unsupported", "vtex_missingTXL", "binds_white")
 RE_ATRAC_BAD = re.compile(r"\[cellAtrac\] DeleteDecoder .*?(\d+) bad frames")
+RE_TICK = re.compile(r"^\[spu-tick\] tid 0x[0-9A-F]+: (\d+) answers, mean ([0-9.]+) ms, .*?over 5\.33 ms: (\d+)"
+                     r"(?:; on the CPU ([0-9.]+) M cycles)?")
 RE_OTHER = re.compile(r"\b(error|failed|failure|fail|warning|warn|timeout|timed out|overrun|underrun|lost)\b", re.I)
 # Lines with those words that are routine on a healthy run (each explained in docs/SOAK.md).
 OTHER_OK = re.compile(
@@ -61,7 +63,7 @@ OTHER_OK = re.compile(
     r"^\[cellSaveData\] (funcStat|dispatching)|"
     r"^\[hle-trace\]|^\[tex-refresh\]|^\[surfsz\]|"
     r"sys_ppu_thread_set_priority.*ESRCH|"                          # lv2 does not treat -1 as self (GAPS.md #17)
-    r"^\[pacing\]|^\[sched\]|^\[gpu\]|^\[display\]|^\[pad\]")
+    r"^\[pacing\]|^\[sched\]|^\[gpu\]|^\[display\]|^\[pad\]|^\[pso-prewarm\] \d+ pipeline\(s\) created ahead, 0 failed")
 
 
 def shape(line):
@@ -76,6 +78,7 @@ def scan(text, fps_min=59.0, keep=8):
              "silent_max": 0.0, "silent": [], "queue_min_min": None, "waited": 0, "wait_max_ms": 0.0}
     ld_first, ld_last = None, None
     atrac_bad = 0
+    tick = {"windows": 0, "answers": 0, "over": 0, "wall_ms": [], "mcyc": []}
     for no, line in enumerate(text.splitlines(), 1):
         line = line.rstrip("\r")
         m = RE_FPS.match(line)
@@ -123,6 +126,15 @@ def scan(text, fps_min=59.0, keep=8):
             continue
         if line.startswith("[live-draw] frame") or line.startswith("[WATCHDOG]  "):
             continue
+        m = RE_TICK.match(line)
+        if m:
+            tick["windows"] += 1
+            tick["answers"] += int(m.group(1))
+            tick["over"] += int(m.group(3))
+            tick["wall_ms"].append(float(m.group(2)))
+            if m.group(4):
+                tick["mcyc"].append(float(m.group(4)))
+            continue
         m = RE_ATRAC_BAD.search(line)
         if m:
             atrac_bad += int(m.group(1))
@@ -151,6 +163,9 @@ def scan(text, fps_min=59.0, keep=8):
                   "median": sorted(v for _, v, _ in fps)[len(fps) // 2] if fps else None}
     out["audio_rate"] = audio
     out["atrac_bad_frames"] = atrac_bad
+    out["spu_tick"] = {"windows": tick["windows"], "answers": tick["answers"], "over_5_33ms": tick["over"],
+                       "wall_ms_median": sorted(tick["wall_ms"])[len(tick["wall_ms"]) // 2] if tick["wall_ms"] else None,
+                       "mcycles_median": sorted(tick["mcyc"])[len(tick["mcyc"]) // 2] if tick["mcyc"] else None}
     out["other"]["shapes"] = {k: v for k, v in sorted(out["other"]["shapes"].items(), key=lambda kv: kv[1][1])}
     return out
 
@@ -167,6 +182,10 @@ def summary(d):
                  f"no device {a['no_device']}, dropped in {a['dropped_windows']} windows, silent max {a['silent_max']}%, "
                  f"waited {a['waited']} (max {a['wait_max_ms']} ms), queue min {a['queue_min_min']}")
     lines.append(f"atrac     {d['atrac_bad_frames']} bad frames")
+    t = d.get("spu_tick") or {}
+    if t.get("windows"):
+        lines.append(f"spu-tick  {t['answers']} answers in {t['windows']} windows, {t['over_5_33ms']} over 5.33 ms, "
+                     f"median wall {t['wall_ms_median']} ms, median {t['mcycles_median']} M cycles on the CPU")
     t = d["render"].get("live_draw_totals") or {}
     if t:
         lines.append("live-draw totals: " + ", ".join(f"{k}={t[k]}" for k in LD_KEYS) + f" (frame {t['frame']})")

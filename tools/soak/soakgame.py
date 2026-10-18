@@ -27,7 +27,9 @@ sys.path.insert(1, TOOLS)
 
 import frames as framelib  # noqa: E402
 import procs  # noqa: E402
-from game import Abort, Game, find_game_root  # noqa: E402,F401
+from game import Abort, Game, find_game_root  # noqa: E402
+
+__all__ = ["Abort", "Game", "SoakGame", "find_game_root", "resources", "title_menu_check"]
 
 
 def title_menu_check(im):

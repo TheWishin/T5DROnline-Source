@@ -123,12 +123,12 @@ job asks for `contents: write` itself; the build job only reads.
 
    The tag must point at a commit on `main`.
 
-7. **The owner approves (if a reviewer is set).** The run (Actions -> Release) builds and checks the
-   zip (estimated 15-25 min), stores zip + `SHA256SUMS` + release notes as the
-   run's artifact, then the **publish** job waits. GitHub notifies the owner
-   ("deployment review"). Download the artifact from the run's summary page,
-   try it, then **Review deployments** -> tick `release` -> **Approve and
-   deploy**. **Reject** stops it; nothing is published.
+7. **The owner checks it on VirusTotal, then publishes.** The run (Actions -> Release) builds
+   and checks the zip (about 7 minutes) and creates the release in the public repository as a
+   **draft**: only the owner sees it. The owner downloads the zip from the draft (public
+   repository -> Releases -> the draft), uploads it to https://www.virustotal.com, and clicks
+   **Publish release** only when it is clean (owner's rule, 2026-10-18). If a scanner flags it:
+   leave the draft, report the detection names, fix, tag a new version.
 
 8. **Check the release page**: the zip and `SHA256SUMS` are attached, the notes
    are right, the pre-release badge is there for a suffixed version.

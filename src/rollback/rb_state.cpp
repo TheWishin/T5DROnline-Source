@@ -173,6 +173,8 @@ static const Range kGameSkip[] = {
      * lockstep too, more often under rollback); the fight unchanged
      * (t5_hooks.cpp kDefaultHashSkip) */
     { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
+    /* (the fighters' side flags 0x10090202/03 and 0x10090AD2/D3, decided from
+     * the camera words above, stay in: they are gameplay -- t5_hooks.cpp) */
 };
 /* T5_RB_HASH_FULL=1 (tests, desync hunt): the gameplay hash and the desync
  * dumps take the regions whole, without kGameSkip -- the words left out as

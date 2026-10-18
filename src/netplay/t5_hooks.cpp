@@ -328,6 +328,13 @@ const char* kDefaultHashSkip =
      * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
      * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
     "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
+/* The fighters' side flags stay IN the hash: +0x1C2/+0x1C3 of the blocks at
+ * 0x10090040 and 0x10090910 (bytes 0x10090202/03, 0x10090AD2/D3), written by
+ * 0x808D8 from the camera-projected screen x above (+0x6C8, left out): which
+ * fighter stands on the left, i.e. which way an up/down tap sidesteps. The
+ * camera words are left out as display state, but where the camera decides
+ * gameplay, these flags show it at once (desync hunt: the camera drew from the
+ * title's TLS generator, which went apart between PCs -- rb_rand.cpp). */
 
 /* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,
  * when the peer reports a different hash for one of them, write them to

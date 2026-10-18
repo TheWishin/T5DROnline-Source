@@ -22,6 +22,10 @@ import online  # noqa: E402
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
 import updater  # noqa: E402
+try:
+    import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
+except ImportError:
+    controls_ui = None
 
 APP_TITLE = "T5DR Online"
 COLORS = {"ok": "#1a7f37", "warn": "#9a6700", "error": "#cf222e", "muted": "#57606a",
@@ -362,6 +366,16 @@ class App(tk.Tk):
 
         ctl = ttk.LabelFrame(box, text="  Controls  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
+        # Set the buttons of pads, arcade sticks and hitboxes here instead of editing controls.ini (controls_ui.py)
+        cbar = ttk.Frame(ctl)
+        cbar.pack(fill="x", pady=(0, 6))
+        self.controls_btn = ttk.Button(cbar, text="Set up controllers…", command=self.open_controls,
+                                       state="normal" if controls_ui else "disabled")
+        self.controls_btn.pack(side="left")
+        ttk.Label(cbar, style="Muted.TLabel", text=(
+            "  Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
+            "or start from a layout." if controls_ui else "  (needs the lobby files, which are missing)")).pack(
+            side="left")
         tv = ttk.Treeview(ctl, columns=("ps3", "kb", "pad"), show="tree headings", height=len(CONTROLS),
                           selectmode="none")
         tv.heading("#0", text="Action (Tekken default)")
@@ -663,6 +677,11 @@ class App(tk.Tk):
         self.nb.select(self.tabs["build"])
         self.start_build()
 
+    def open_controls(self):
+        """Settings -> Set up controllers...: the Controls window (controls_ui.py)."""
+        if controls_ui and not self.readonly:
+            controls_ui.open_dialog(self)
+
     def save_settings(self):
         if self.readonly:
             return
@@ -788,6 +807,8 @@ class App(tk.Tk):
     def on_close(self):
         if self.build and not messagebox.askyesno(APP_TITLE, "A build is running. Stop it and quit?"):
             return
+        if controls_ui and not controls_ui.close_for_app(self):
+            return                              # unsaved button changes: the person chose to stay
         if self.build:
             self.build.cancel()
         self.save_settings()

@@ -2079,15 +2079,32 @@ fighters and stages; the inflate abort only showed there).
 F5 and F6 were stopped early (F5 when the owner started playing on the PC, F6
 by the control-file race above); F9 ran muted at below-normal priority.
 
-Pairs on the final build (`rollback_net_test.py`, section 29's command, a whole
-match each; the PC was fully loaded -- 11 game instances --, so the fps are
-low): RTT 150 default/default (RB150c) 556 rollbacks on the joiner, 0
-mismatching frames, the same result hash on both PCs; lockstep RTT 50
-(LS50b, both `T5_RB_MODE=off`) and the fallback (MIX50b, host default, joiner
-`T5_RB_MODE=off`) 0 mismatching frames, the same hash. Smoke quick: PASS
-(74 checks, 9 fps/audio WARN under load; offline the change is inert). tests/
-143 OK; lobby/tests 297 OK (two ranked driver tests had timed out once under the
-load before).
+Pairs (`rollback_net_test.py`, section 29's command, a whole match each). Before
+the rebase: RTT 150 default/default (RB150c) 556 rollbacks on the joiner, 0
+mismatching frames, the same result hash on both PCs; lockstep RTT 50 (LS50b,
+both `T5_RB_MODE=off`) and the fallback (MIX50b, host default, joiner
+`T5_RB_MODE=off`) 0 mismatching frames, the same hash. On the final build
+(fixes 1-4, rebased on main d7fc019): AUD_P (RTT 150 default/default, recorded)
+540 rollbacks on the joiner, 0 mismatching, the same hash; LS50c and MIX50c 0
+mismatching, the same hash. Smoke quick: boot_menu, arcade_fight, title_twice
+PASS; vs_two_pads and practice failed once with 13 other game instances and 7
+compilers on the PC (a black select-screen shot; the hang check firing during
+the test's own stop) and passed on the rerun (only fps/audio WARN under load;
+offline the change is inert). tests/ 358 OK; lobby/tests 302, one ranked driver
+test failed once under load and passed alone.
+
+**Sound with the pool** (the music stream and the sound library's blocks
+outside the rollback state; `--audio`, sound on, RTT 150, one match each,
+`tools/rollback_audio_check.py --match 1`):
+
+| run | rollbacks host / joiner | silent gaps >= 20 ms host / joiner | onsets per minute | re-triggers per minute | loudness | decode errors |
+|---|---|---|---|---|---|---|
+| AUD_P: pool (default) | 20 / 540 | 2 (0.04 s) / 0 | 51.1 / 55.4 | 2.8 / 1.8 | -22.5 / -22.0 dBFS | 0 |
+| AUD_N: `T5_RB_SNDHEAP=0` | 285 / 524 | 1 (0.02 s) / 0 | 47.2 / 54.4 | 2.8 / 3.7 | -21.9 / -21.7 dBFS | 0 |
+
+The same within the spread section 25 measured between two recordings of one
+reference: the music streams without hiccups through rollbacks with the pool,
+and nothing in the sound changes with it.
 
 **Not explained: a 3-frame transient after a deliberately desynced session.** In
 F5 (cycle 15) and the overloaded first try F2 (cycle 7), the match after the

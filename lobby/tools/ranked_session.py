@@ -295,6 +295,9 @@ def main():
     ap.add_argument("--chars", default="kazuya,heihachi")
     ap.add_argument("--input", action="store_true", help="real game: allow pads/keyboard")
     ap.add_argument("--ingame-pick", action="store_true", help="both clients offer the in-game select")
+    ap.add_argument("--queue", choices=["ranked", "quick", "room"], default="ranked",
+                    help="how the two find each other: the ranked or quick queue, or a lobby room (rematches in it)")
+    ap.add_argument("--room-ranked", action="store_true", help="--queue room: a ranked room")
     ap.add_argument("--pick1", default="timeout", help="real game, --ingame-pick: player 1's picks")
     ap.add_argument("--pick2", default="timeout", help="real game, --ingame-pick: player 2's picks")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
@@ -320,7 +323,13 @@ def main():
             print(f"{me['name']}: {ranks.label(me)}, rating {me['rating']} +/- {me['rd']}")
         for p in players:
             p.client.set_char(p.char)
-            p.client.ranked_match()
+        if a.queue == "room":
+            # a lobby room: the first player opens it, the second joins (two members: a ready check)
+            room = players[0].client.create_room("ranked_session", ranked=a.room_ranked)
+            players[1].client.join_room(room["id"])
+        else:
+            for p in players:
+                (p.client.quick_match if a.queue == "quick" else p.client.ranked_match)()
         t_end = time.time() + a.seconds
         while time.time() < t_end:
             for p in players:

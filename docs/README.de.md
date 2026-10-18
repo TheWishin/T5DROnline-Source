@@ -6,12 +6,13 @@ ist in Arbeit.
 
 English: [../README.md](../README.md)
 
-**Test-Release 0.1.9-preview (2026-10-18).** Lade
-`T5DR-Online-0.1.9-preview.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.0.0 (2026-10-18).** Lade
+`T5DR-Online-1.0.0.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
-**Online ist in der Testphase:** Es funktioniert auf einem PC und über den
-Lobby-Server; die ersten Matches zwischen den PCs von zwei Spielern laufen gerade.
+**Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das
+Internet (direkte Verbindung, 26 ms Ping, 60 fps). Beendet Matches bitte normal,
+nicht mit Alt+F4.
 
 **Test-Version. Rechne mit Fehlern.** Bitte melde sie (siehe "Fehler melden").
 
@@ -33,8 +34,8 @@ Lobby-Server; die ersten Matches zwischen den PCs von zwei Spielern laufen gerad
 ## Stand (2026-10-17)
 
 Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).
-Ein Lauf auf einem frischen PC und ein Match zwischen zwei echten PCs über das
-Internet stehen noch aus.
+Online wurde zwischen zwei echten PCs über das Internet getestet
+(AMD/60 Hz gegen Intel/240 Hz).
 
 | Bereich | Stand |
 |---|---|
@@ -47,7 +48,7 @@ Internet stehen noch aus.
 | Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Noch nicht zwischen zwei echten PCs über das Internet gespielt. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
 | Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. |
 
 ## Voraussetzungen

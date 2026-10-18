@@ -3,6 +3,46 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.0.0 (2026-10-18)
+
+**Tekken 5: Dark Resurrection Online 1.0.** Tekken 5: Dark Resurrection runs
+natively on Windows -- recompiled, not emulated -- built on your PC from your own
+copy (`.pkg` + `.rap`), with online play like Tekken 6 Native Online. First
+online matches between two real PCs over the internet were played on 2026-10-18:
+direct connection, 26 ms ping, 60 fps, rollback not noticeable.
+
+Same game as 0.1.9-preview. Both players need 1.0.0 (the lobby pairs equal
+versions). After the update press **BUILD GAME** once.
+
+### Play
+- All offline modes at 60 fps, music, sound effects and movies, saves.
+- Keyboard, Xbox pads, PlayStation pads, arcade sticks and hitboxes; short taps
+  are never lost (tried with an Xbox pad and an arcade stick).
+- Runs on weaker PCs (60 fps fights on 4 threads), 3D resolution setting,
+  any refresh rate, Windows 10/11 incl. N editions, any folder name.
+
+### Online
+- Launcher **Online** tab: account (username + password) or guest, quick and
+  ranked matches, lobby rooms, the public server preselected.
+- **Rollback netcode**, input delay by ping (launcher Settings: Auto/0/1/2;
+  ranked fixed), 60 fps at 150 ms ping, one frame less input lag than before.
+- The game starts **directly in the fight** and stays open for the next match
+  (about 4 seconds to the next fight).
+- Ranked: Glicko-2 rating with Tekken 5's rank names; names and ranks in the
+  fight; block players, strict matchmaking, post-game lag check.
+- Direct connection between the PCs, relay through the lobby server when routers
+  don't allow it. Any two x64 PCs compute the same game (Intel/AMD, with or
+  without AVX2).
+
+### Known issues (fixes planned for 1.0.1)
+- **Closing the game with Alt+F4 during a match** voids the match instead of
+  counting it as a loss, and the next one or two matches against the same
+  opponent can be voided as "desync". Please end matches normally.
+- With a very bad connection a rare crash can still happen after many matches;
+  the launcher then starts the game again.
+- The game's own **Online** menu entry and the Gallery need Sony's/Namco's old
+  servers and show an error; use the launcher's Online tab.
+
 ## v0.1.9-preview (2026-10-18)
 
 Same game as 0.1.8, with one file fewer in the zip.

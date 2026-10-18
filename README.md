@@ -4,15 +4,15 @@ Tekken 5: Dark Resurrection (PS3, PlayStation Network release) running natively
 on Windows. It is recompiled, not emulated. Online play between friends is
 being built.
 
-**Test release 0.1.9-preview (2026-10-18).** Download
-`T5DR-Online-0.1.9-preview.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Release 1.0.0 (2026-10-18).** Download
+`T5DR-Online-1.0.0.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
-**Online is in a test phase:** it works on one PC and through the lobby server;
-the first matches between two players' PCs are being played now.
+**Online works:** tested between two players' PCs over the internet (direct
+connection, 26 ms ping, 60 fps). Please end matches normally, not with Alt+F4.
 
 <!-- players:start -->
-**Test release. Expect bugs.** Please report them (see "Bug reports" below).
+Found a bug? Please report it (see "Bug reports" below).
 
 Deutsch: `docs\README.de.md` in this folder.
 
@@ -32,8 +32,8 @@ Deutsch: `docs\README.de.md` in this folder.
 
 ## Status (2026-10-17)
 
-Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). A run on a
-clean PC and a match between two real PCs over the internet are still to come.
+Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). Online play was
+tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 
 | Area | State |
 |---|---|
@@ -47,7 +47,7 @@ clean PC and a match between two real PCs over the internet are still to come.
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Not yet played between two real PCs over the internet. |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). |
 | Build from your copy | Works on the development PC. |
 
 ## Requirements

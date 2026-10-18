@@ -51,6 +51,8 @@ TESTS = [
      "SPU numeric semantics"),
     ("spu_fast_float", ["runtime/spu/tests/test_spu_fast_float.c"], ["runtime/spu"], ["-msse4.1", "/DSPU_FAST_FLOAT"],
      120, "SPU_FAST_FLOAT within 2-3 ulp of the exact path (patch 0027, render-only skinning jobs)"),
+    ("spu_near_float", ["runtime/spu/tests/test_spu_near_float.c"], ["runtime/spu"], ["-msse4.1", "/DSPU_NEAR_FLOAT"],
+     120, "SPU_NEAR_FLOAT: SPU zero/extended-range rules exact, 1-2 ulp otherwise (patch 0041, the sound core)"),
     ("spu_coherency", ["runtime/spu/tests/test_spu_coherency.c"], ["runtime/spu", SHIM], [], 120,
      "PPU/SPU lock-line coherence"),
     # Not here: test_spu_lifted_start.c (POSIX-only; with shims it links on

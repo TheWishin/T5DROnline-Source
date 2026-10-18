@@ -1,0 +1,97 @@
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 3cef8a6..967d13d 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2499,6 +2499,9 @@ static u64 spurs_event_data3_probe(void)
+  * the log of a title that kicks a chain every frame, that kicks and events
+  * balance. */
+ static volatile long s_jc_tot_jobs, s_jc_tot_listed, s_jc_tot_job_events, s_jc_tot_synth;
++/* jobs run so far (patch 0039: the rollback layer counts the ones its
++ * re-simulated frames kick) */
++long cellSpurs_jobs_run(void) { return s_jc_tot_jobs; }
+ static volatile long long s_jc_tot_walk_us, s_jc_tot_walks;   /* finished walks */
+ 
+ /* Mean walk time since the previous call: what a chain costs NOW, not
+diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
+index 7f3e678..bb58b77 100644
+--- a/runtime/spu/spu_dma.h
++++ b/runtime/spu/spu_dma.h
+@@ -166,9 +166,13 @@ static inline int mfc_is_fence(uint32_t cmd)
+  * Execute a single DMA transfer between local store and main memory.
+  * Returns 0 on success, -1 on error.
+  */
++extern volatile int g_spurs_put_track;                     /* spurs_job.c (patch 0039) */
++extern void spurs_job_put_note(uint32_t ea, uint32_t size);
+ static inline int mfc_do_transfer(spu_context* spu, uint32_t lsa, uint64_t ea,
+                                    uint32_t size, uint32_t cmd)
+ {
++    /* the rollback layer's record of pages SPURS jobs fill (spurs_job.c) */
++    if (g_spurs_put_track && mfc_is_put(cmd)) spurs_job_put_note((uint32_t)ea, size);
+     /* SPU_DMA_WATCH=<hex>: report any transfer whose destination RANGE covers
+      * this guest address. A DMA landing in the loaded ELF image is always a
+      * bug, and it is invisible to the sampling traces -- YDKJ had an SPU job
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index 09b5d2b..30832b6 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -47,6 +47,50 @@
+ extern uint8_t* vm_base;
+ extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
+ 
++/* ---- pages SPURS jobs fill (patch 0039, the rollback layer's state) ------
++ * A rollback layer saves and restores the title's main memory every frame.
++ * Tekken 5 DR's SPURS jobs are its vertex skinning: they DMA-PUT the skinned
++ * vertices into three ~0.7 MB buffers in the heap that only the RSX reads --
++ * ~480 pages a frame, 40 % of what a rollback restored. Pages a job has
++ * filled completely are render output, not game state; the layer leaves them
++ * out (src/rollback, docs/ROLLBACK.md section 32).
++ *   spurs_job_put_track(1)   start recording (off by default: no cost)
++ *   spurs_job_put_lines()    per heap page, the 64-byte lines job PUTs have
++ *                            covered (bit i = line i); ~0 = the whole page
++ *   spurs_job_put_reset()    forget them (the heap's use may change: a load)
++ * Only PUTs made while a SPURS job runs on this thread count (not the sound
++ * core's raw SPU thread, not taskset policies). */
++#define SJP_BASE  0x40000000u
++#define SJP_PAGES (0x06000000u >> 12)        /* the title heap, 96 MB */
++static uint64_t s_sjp_lines[SJP_PAGES];
++volatile int g_spurs_put_track = 0;
++static _Thread_local int s_sjp_in_job = 0;
++void spurs_job_put_track(int on) { g_spurs_put_track = on ? 1 : 0; }
++const uint64_t* spurs_job_put_lines(uint32_t* base, uint32_t* pages)
++{
++    if (base) *base = SJP_BASE;
++    if (pages) *pages = SJP_PAGES;
++    return s_sjp_lines;
++}
++void spurs_job_put_reset(void) { memset(s_sjp_lines, 0, sizeof s_sjp_lines); }
++void spurs_job_put_note(uint32_t ea, uint32_t size)
++{
++    if (!s_sjp_in_job || ea < SJP_BASE) return;
++    uint32_t a = (ea + 63u) & ~63u;              /* whole 64-byte lines only */
++    const uint64_t end = (uint64_t)ea + size;
++    const uint64_t lim = (uint64_t)SJP_BASE + ((uint64_t)SJP_PAGES << 12);
++    const uint32_t e = (uint32_t)((end < lim ? end : lim) & ~63ull);
++    while (a < e) {
++        const uint32_t pg = (a - SJP_BASE) >> 12;
++        const uint32_t pend = ((a >> 12) + 1u) << 12;
++        const uint32_t stop = e < pend ? e : pend;
++        const uint32_t l0 = (a >> 6) & 63u, n = (stop - a) >> 6;
++        const uint64_t m = n >= 64 ? ~0ull : (((1ull << n) - 1ull) << l0);
++        if ((s_sjp_lines[pg] & m) != m) __atomic_fetch_or(&s_sjp_lines[pg], m, __ATOMIC_RELAXED);
++        a = stop;
++    }
++}
++
+ /* ---- guest reads (big-endian) ------------------------------------------ */
+ static uint32_t g32(uint32_t ea)
+ {
+@@ -432,7 +476,9 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * and trips its parameter guard, which HALTS -- ending the run. So the
+      * HALT-ASSERT heqi 0x1650 seen once per jm2 job is NORMAL COMPLETION
+      * noise, not a failure: the job's real work finished before the jump. */
++    s_sjp_in_job = 1;
+     spu_run_with_halt(entry, &ctx);
++    s_sjp_in_job = 0;
+ 
+     /* Capture the job's outbound mailbox. These are LS POINTERS TO STRINGS for
+      * the SPU printf service, NOT query results -- value 0x83C0 from the sound

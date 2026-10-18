@@ -10,6 +10,8 @@ import json
 import os
 import random
 
+from .i18n import t
+
 RANDOM = "random"
 _DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fighters.json")
 
@@ -38,11 +40,11 @@ class Table:
 
     def fighter_name(self, key):
         x = self._f.get(key)
-        return x["name"] if x else ("Random" if key == RANDOM else (key or "?"))
+        return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))
 
     def stage_name(self, key):
         x = self._s.get(key)
-        return x["name"] if x else ("Random" if key == RANDOM else (key or "?"))
+        return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))
 
     def selectable(self):
         """Fighters a player can pick (bosses and unverified ones are left out)."""

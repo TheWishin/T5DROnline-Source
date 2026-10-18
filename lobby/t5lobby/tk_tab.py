@@ -36,32 +36,71 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, ttk
 
-from . import fighters, padmap, padnav, proto, ranks, servers
+from . import dialogs, fighters, lag, padmap, padnav, proto, ranks, servers
 from .buildid import BuildInfo
 from .client import LobbyClient
+from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs
 from .proto import DEFAULT_PORT, LobbyError
 
 AVAILABLE = True
 DEFAULT_SERVER = f"127.0.0.1:{DEFAULT_PORT}"
-STATUS_TEXT = {"idle": "in lobby", "room": "in a room", "queue": "searching", "match": "matching",
-               "playing": "playing"}
-RESULT_TEXT = {"confirmed": "Result confirmed", "onesided": "Result recorded (your opponent did not report)",
-               "forfeit": "Match decided by forfeit", "resolved": "Result decided by the games' state",
-               "disputed": "You and your opponent reported different results -- not counted",
-               "void": "No result"}
-REASON_TEXT = {"desync": "the two games went out of sync", "too_short": "too short to count",
-               "disputed": "the reports disagreed", "crash": "a game crashed", "early_quit": "left right away",
-               "quit": "a player left", "disconnect": "a player lost the connection",
-               "connection": "the connection between the games failed", "no_report": "a player did not report",
-               "both_left": "both players left", "timeout": "no result in time",
-               "crash_repeat": "repeated crashes count as losses", "early_quit_repeat": "repeated early quits",
-               "no_report_repeat": "repeated missing reports", "score_mismatch": "scores differed",
-               "no_result": "the fight ended without a winner"}
+# What the server's codes mean, in English; shown through _word() (t() on the text, the code itself if unknown).
+STATUS_TEXT = {"idle": N_("in lobby"), "room": N_("in a room"), "queue": N_("searching"), "match": N_("matching"),
+               "playing": N_("playing")}
+ROOM_STATE_TEXT = {"open": N_("open"), "full": N_("full"), "playing": N_("playing")}
+RESULT_TEXT = {"confirmed": N_("Result confirmed"), "onesided": N_("Result recorded (your opponent did not report)"),
+               "forfeit": N_("Match decided by forfeit"), "resolved": N_("Result decided by the games' state"),
+               "disputed": N_("You and your opponent reported different results -- not counted"),
+               "void": N_("No result")}
+RESULT_WORD = {"confirmed": N_("confirmed"), "onesided": N_("one-sided"), "forfeit": N_("forfeit"),
+               "resolved": N_("resolved"), "disputed": N_("disputed"), "void": N_("void")}
+OUTCOME_WORD = {"win": N_("win"), "loss": N_("loss"), "draw": N_("draw")}
+REASON_TEXT = {"desync": N_("the two games went out of sync"), "too_short": N_("too short to count"),
+               "disputed": N_("the reports disagreed"), "crash": N_("a game crashed"),
+               "early_quit": N_("left right away"),
+               "quit": N_("a player left"), "disconnect": N_("a player lost the connection"),
+               "connection": N_("the connection between the games failed"), "no_report": N_("a player did not report"),
+               "both_left": N_("both players left"), "timeout": N_("no result in time"),
+               "crash_repeat": N_("repeated crashes count as losses"), "early_quit_repeat": N_("repeated early quits"),
+               "no_report_repeat": N_("repeated missing reports"), "score_mismatch": N_("scores differed"),
+               "no_result": N_("the fight ended without a winner")}
+CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody accepted in time."),
+               "opponent_left": N_("Your opponent left."),
+               "udp_unreachable": N_("No UDP connection to the lobby server (firewall?)."),
+               "no_connection": N_("Could not connect the two PCs, not even through the relay."),
+               "relay_full": N_("The lobby server's relay is full; try again in a moment.")}
+CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
+                  "expired": N_("Challenge expired.")}
+PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
+# column headings of the lists, by column id
+HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), "record": N_("Record"),
+            "main": N_("Main"), "status": N_("Status"), "ping": N_("Ping"), "room": N_("Room"),
+            "owner": N_("Owner"), "state": N_("State"), "place": N_("Place"), "when": N_("When"),
+            "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
+
+
+def _word(table, key):
+    """The text for a code the server sent: translated when it is in `table`, else the code itself."""
+    return t(table[key]) if key in table else str(key)
+
+
+def _record(rec, draws=False):
+    """[wins, losses(, draws)] -> '5W 3L' (and ' 1D' when asked for and not zero)."""
+    out = t("{wins}W {losses}L", wins=rec[0], losses=rec[1])
+    if draws and len(rec) > 2 and rec[2]:
+        out += " " + t("{draws}D", draws=rec[2])
+    return out
+
+
+def lobby_error_text(e):
+    """What a player reads for a failed lobby request: the server's (or client's) English message in the
+    player's language when it is a known one, else as it came."""
+    return t("Lobby: {message}", message=translate_message(e.msg or e.code))
 
 
 def _work(results, key, fn, args):
@@ -69,9 +108,9 @@ def _work(results, key, fn, args):
     try:
         results.put((key, True, fn(*args)))
     except LobbyError as e:
-        results.put((key, False, f"Lobby: {e.msg or e.code}"))
+        results.put((key, False, lobby_error_text(e)))
     except Exception as e:   # noqa: BLE001 -- shown to the player, not swallowed
-        results.put((key, False, f"Lobby error: {e}"))
+        results.put((key, False, t("Lobby error: {error}", error=e)))
 
 
 def online_dir():
@@ -85,7 +124,7 @@ def online_dir():
 
 def rank_text(p):
     if p.get("guest"):
-        return "guest"
+        return t("guest")
     return ranks.label(p)
 
 
@@ -123,8 +162,8 @@ class OnlineTab:
         self.last_result = None
         self.profile_name = None
         self._auto_tried = False
-        self.ask_string = simpledialog.askstring     # dialogs (tests replace them)
-        self.ask_yes_no = messagebox.askyesno
+        self.ask_string = dialogs.ask_string         # dialogs (tests replace them)
+        self.ask_yes_no = dialogs.ask_yes_no
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -196,7 +235,7 @@ class OnlineTab:
         box.rowconfigure(4, weight=1)
 
         # --- account
-        acc = ttk.LabelFrame(box, text="  Account  ", padding=(10, 6))
+        acc = ttk.LabelFrame(box, text="  " + t("Account") + "  ", padding=(10, 6))
         acc.grid(row=0, column=0, sticky="we")
         self.acc = acc
         default = servers.default_entry(self.server_list)
@@ -207,9 +246,9 @@ class OnlineTab:
         self.fp_var = tk.StringVar(value=self.cfg.get("fingerprint", ""))
         self.login_row = ttk.Frame(acc)
         self.login_row.grid(row=0, column=0, sticky="we")
-        for col, (label, var, width, show) in enumerate((("Server", self.server_var, 22, None),
-                                                         ("Name", self.name_var, 16, None),
-                                                         ("Password", self.pw_var, 14, "*"))):
+        for col, (label, var, width, show) in enumerate(((t("Server"), self.server_var, 22, None),
+                                                         (t("Name"), self.name_var, 16, None),
+                                                         (t("Password"), self.pw_var, 14, "*"))):
             ttk.Label(self.login_row, text=label).grid(row=0, column=col * 2, sticky="w",
                                                        padx=(0 if col == 0 else 10, 4))
             if col == 0:      # the server: pick from servers.json or type an address
@@ -218,36 +257,36 @@ class OnlineTab:
             else:
                 e = ttk.Entry(self.login_row, textvariable=var, width=width, show=show or "")
             e.grid(row=0, column=col * 2 + 1, sticky="w")
-            if label == "Password":
+            if show:
                 e.bind("<Return>", lambda _e: self.do_login("account"))
-        ttk.Checkbutton(self.login_row, text="Remember me", variable=self.remember_var).grid(row=0, column=6,
-                                                                                         padx=(10, 0))
+        ttk.Checkbutton(self.login_row, text=t("Remember me"), variable=self.remember_var).grid(row=0, column=6,
+                                                                                            padx=(10, 0))
         btns = ttk.Frame(self.login_row)
         btns.grid(row=1, column=0, columnspan=7, sticky="w", pady=(6, 0))
-        self.b_login = ttk.Button(btns, text="Log in", command=lambda: self.do_login("account"))
-        self.b_register = ttk.Button(btns, text="Create account", command=lambda: self.do_login("register"))
-        self.b_guest = ttk.Button(btns, text="Play as guest", command=lambda: self.do_login("guest"))
-        self.b_forgot = ttk.Button(btns, text="Forgot password...", command=self.do_forgot)
-        self.b_tls = ttk.Button(btns, text="Server certificate...", command=self.do_fingerprint)
+        self.b_login = ttk.Button(btns, text=t("Log in"), command=lambda: self.do_login("account"))
+        self.b_register = ttk.Button(btns, text=t("Create account"), command=lambda: self.do_login("register"))
+        self.b_guest = ttk.Button(btns, text=t("Play as guest"), command=lambda: self.do_login("guest"))
+        self.b_forgot = ttk.Button(btns, text=t("Forgot password..."), command=self.do_forgot)
+        self.b_tls = ttk.Button(btns, text=t("Server certificate..."), command=self.do_fingerprint)
         for b in (self.b_login, self.b_register, self.b_guest, self.b_forgot, self.b_tls):
             b.pack(side="left", padx=(0, 6))
-        self.b_host = ttk.Button(btns, text="Host for friends", command=self.do_host)
+        self.b_host = ttk.Button(btns, text=t("Host for friends"), command=self.do_host)
         self.b_host.pack(side="left", padx=(12, 6))
         self.map_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(btns, text="Open router ports (UPnP)", variable=self.map_var).pack(side="left")
+        ttk.Checkbutton(btns, text=t("Open router ports (UPnP)"), variable=self.map_var).pack(side="left")
 
         self.me_row = ttk.Frame(acc)
-        self.me_var = tk.StringVar(value="Not connected. Ranked needs an account; guests play casual matches.")
+        self.me_var = tk.StringVar(value=t("Not connected. Ranked needs an account; guests play casual matches."))
         ttk.Label(self.me_row, textvariable=self.me_var, style="H2.TLabel").pack(side="left")
-        self.b_logout = ttk.Button(self.me_row, text="Log out", command=self.do_logout)
-        self.b_passwd = ttk.Button(self.me_row, text="Change password...", command=self.do_passwd)
-        self.b_codes = ttk.Button(self.me_row, text="New recovery codes...", command=self.do_new_codes)
-        self.b_myprofile = ttk.Button(self.me_row, text="My profile", command=lambda: self.show_profile(None))
-        self.b_blocked = ttk.Button(self.me_row, text="Blocked players...", command=self.do_blocked)
+        self.b_logout = ttk.Button(self.me_row, text=t("Log out"), command=self.do_logout)
+        self.b_passwd = ttk.Button(self.me_row, text=t("Change password..."), command=self.do_passwd)
+        self.b_codes = ttk.Button(self.me_row, text=t("New recovery codes..."), command=self.do_new_codes)
+        self.b_myprofile = ttk.Button(self.me_row, text=t("My profile"), command=lambda: self.show_profile(None))
+        self.b_blocked = ttk.Button(self.me_row, text=t("Blocked players..."), command=self.do_blocked)
         for b in (self.b_logout, self.b_passwd, self.b_codes, self.b_myprofile, self.b_blocked):
             b.pack(side="right", padx=(6, 0))
-        self.hint_var = tk.StringVar(value="Passwords are only sent to servers on this PC / your network, or "
-                                           "over an encrypted (TLS) connection.")
+        self.hint_var = tk.StringVar(value=t("Passwords are only sent to servers on this PC / your network, or "
+                                             "over an encrypted (TLS) connection."))
         ttk.Label(acc, textvariable=self.hint_var, style="Muted.TLabel").grid(row=2, column=0, sticky="w",
                                                                            pady=(4, 0))
 
@@ -258,26 +297,26 @@ class OnlineTab:
         top.pack(fill="x")                # button names make the row longer than the window)
         rooms = ttk.Frame(play)
         rooms.pack(fill="x", pady=(4, 0))
-        ttk.Label(top, text="Character").pack(side="left")
-        names = ["Random"] + [f["name"] for f in self.table.selectable()]
+        ttk.Label(top, text=t("Character")).pack(side="left")
+        names = [t("Random")] + [f["name"] for f in self.table.selectable()]
         self.char_var = tk.StringVar(value=self.table.fighter_name(self.cfg.get("char") or fighters.RANDOM))
         cb = ttk.Combobox(top, textvariable=self.char_var, values=names, state="readonly", width=14)
         cb.pack(side="left", padx=(4, 12))
         cb.bind("<<ComboboxSelected>>", lambda _e: self.on_char())
         self.char_cb = cb
         self.strict_var = tk.IntVar(value=1 if self.cfg.get("strict") else 0)
-        self.strict_check = ttk.Checkbutton(top, text="Strict (ranked: +-150 rating)", variable=self.strict_var,
+        self.strict_check = ttk.Checkbutton(top, text=t("Strict (ranked: +-150 rating)"), variable=self.strict_var,
                                             command=self._save_cfg)
         self.strict_check.pack(side="left", padx=(0, 12))
         self.actions = {}
         self.action_text = {}
-        for key, label, cmd in (("ranked", "Ranked match", lambda: self.do_queue("ranked")),
-                                ("quick", "Quick match", lambda: self.do_queue("quick")),
-                                ("cancel", "Stop searching", lambda: self.call(self.client.cancel_queue)),
-                                ("room", "Create room", lambda: self.call(self.client.create_room, None)),
-                                ("join", "Join room", self.do_join),
-                                ("leave", "Leave room", lambda: self.call(self.client.leave_room)),
-                                ("challenge", "Challenge", self.do_challenge)):
+        for key, label, cmd in (("ranked", t("Ranked match"), lambda: self.do_queue("ranked")),
+                                ("quick", t("Quick match"), lambda: self.do_queue("quick")),
+                                ("cancel", t("Stop searching"), lambda: self.call(self.client.cancel_queue)),
+                                ("room", t("Create room"), lambda: self.call(self.client.create_room, None)),
+                                ("join", t("Join room"), self.do_join),
+                                ("leave", t("Leave room"), lambda: self.call(self.client.leave_room)),
+                                ("challenge", t("Challenge"), self.do_challenge)):
             b = ttk.Button(top if key in ("ranked", "quick", "cancel") else rooms, text=label, command=cmd,
                            state="disabled")
             b.pack(side="left", padx=(0, 5))
@@ -296,7 +335,7 @@ class OnlineTab:
         info_row.grid(row=3, column=0, sticky="we")
         # After a match: one click makes the problem report (the launcher's window, launcher/problem_report.py).
         # Shown only when the launcher offers it and a match has been played (packed first: it keeps its room).
-        self.report_btn = ttk.Button(info_row, text="Report a problem...", command=self.do_report)
+        self.report_btn = ttk.Button(info_row, text=t("Report a problem..."), command=self.do_report)
         ttk.Label(info_row, textvariable=self.match_var, style="Muted.TLabel").pack(side="left")
 
         # --- notebook: lobby | leaderboard | profile
@@ -306,9 +345,9 @@ class OnlineTab:
         lobby = ttk.Frame(nb, padding=6)
         board = ttk.Frame(nb, padding=6)
         prof = ttk.Frame(nb, padding=6)
-        nb.add(lobby, text="  Lobby  ")
-        nb.add(board, text="  Leaderboard  ")
-        nb.add(prof, text="  Profile  ")
+        nb.add(lobby, text="  " + t("Lobby") + "  ")
+        nb.add(board, text="  " + t("Leaderboard") + "  ")
+        nb.add(prof, text="  " + t("Profile") + "  ")
         nb.bind("<<NotebookTabChanged>>", lambda _e: self._on_subtab())
 
         lobby.columnconfigure(0, weight=3)
@@ -318,17 +357,17 @@ class OnlineTab:
         cols = ("player", "rank", "rating", "record", "main", "status", "ping")
         self.tv_players = ttk.Treeview(lobby, columns=cols, show="headings", height=8, selectmode="browse")
         for c, w in zip(cols, (130, 120, 55, 70, 85, 95, 60)):
-            self.tv_players.heading(c, text=c.capitalize())
+            self.tv_players.heading(c, text=t(HEADINGS[c]))
             self.tv_players.column(c, width=w, anchor="w")
         self.tv_players.grid(row=0, column=0, sticky="nsew")
         self.tv_players.bind("<Double-1>", lambda _e: self._profile_of_selected())
         cols = ("room", "owner", "state")
         self.tv_rooms = ttk.Treeview(lobby, columns=cols, show="headings", height=3, selectmode="browse")
         for c, w in zip(cols, (180, 140, 120)):
-            self.tv_rooms.heading(c, text=c.capitalize())
+            self.tv_rooms.heading(c, text=t(HEADINGS[c]))
             self.tv_rooms.column(c, width=w, anchor="w")
         self.tv_rooms.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        chat = ttk.LabelFrame(lobby, text="  Chat  ", padding=6)
+        chat = ttk.LabelFrame(lobby, text="  " + t("Chat") + "  ", padding=6)
         chat.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(8, 0))
         chat.rowconfigure(0, weight=1)
         chat.columnconfigure(0, weight=1)
@@ -343,27 +382,28 @@ class OnlineTab:
         board.rowconfigure(1, weight=1)
         top = ttk.Frame(board)
         top.grid(row=0, column=0, sticky="we")
-        ttk.Button(top, text="Refresh", command=self.load_leaderboard).pack(side="left")
-        ttk.Label(top, style="Muted.TLabel", text="  Order: rating minus twice its uncertainty (a few matches are "
-                  "needed to climb). '?' = provisional.").pack(side="left")
+        ttk.Button(top, text=t("Refresh"), command=self.load_leaderboard).pack(side="left")
+        ttk.Label(top, style="Muted.TLabel", text="  " + t("Order: rating minus twice its uncertainty (a few "
+                                                         "matches are needed to climb). '?' = provisional.")).pack(
+            side="left")
         cols = ("place", "player", "rank", "rating", "record", "main")
         self.tv_board = ttk.Treeview(board, columns=cols, show="headings", height=12, selectmode="browse")
         for c, w in zip(cols, (50, 150, 130, 70, 90, 110)):
-            self.tv_board.heading(c, text=c.capitalize())
+            self.tv_board.heading(c, text=t(HEADINGS[c]))
             self.tv_board.column(c, width=w, anchor="w")
         self.tv_board.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.tv_board.bind("<Double-1>", lambda _e: self._profile_of(self.tv_board))
 
         prof.columnconfigure(0, weight=1)
         prof.rowconfigure(2, weight=1)
-        self.prof_title = tk.StringVar(value="Double-click a player in the lobby or the leaderboard.")
+        self.prof_title = tk.StringVar(value=t("Double-click a player in the lobby or the leaderboard."))
         ttk.Label(prof, textvariable=self.prof_title, style="H2.TLabel").grid(row=0, column=0, sticky="w")
         self.prof_text = tk.StringVar(value="")
         ttk.Label(prof, textvariable=self.prof_text, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 6))
         cols = ("when", "result", "opponent", "chars", "score", "rating", "status")
         self.tv_hist = ttk.Treeview(prof, columns=cols, show="headings", height=9, selectmode="none")
         for c, w in zip(cols, (110, 50, 110, 170, 55, 60, 160)):
-            self.tv_hist.heading(c, text=c.capitalize())
+            self.tv_hist.heading(c, text=t(HEADINGS[c]))
             self.tv_hist.column(c, width=w, anchor="w")
         self.tv_hist.grid(row=2, column=0, sticky="nsew")
 
@@ -377,7 +417,7 @@ class OnlineTab:
         padrow = ttk.Frame(box)
         padrow.grid(row=7, column=0, sticky="we", pady=(4, 0))
         self.pad_var = tk.IntVar(value=1 if self.cfg.get("pad", True) else 0)
-        self.pad_check = ttk.Checkbutton(padrow, text="Use a controller here", variable=self.pad_var,
+        self.pad_check = ttk.Checkbutton(padrow, text=t("Use a controller here"), variable=self.pad_var,
                                          command=self._pad_toggle)
         self.pad_check.pack(side="left")
         self.pad_info_var = tk.StringVar(value="")
@@ -424,14 +464,16 @@ class OnlineTab:
             return
         me = c.me
         if me["guest"]:
-            text = (f"{me['name']} (guest, casual matches only) -- {me['record'][0]}W {me['record'][1]}L "
-                    f"this session")
+            parts = [t("{name} (guest, casual matches only)", name=me["name"]),
+                     t("{record} this session", record=_record(me["record"]))]
         else:
-            text = (f"{me['name']} -- {rank_text(me)} -- rating {me['rating']} -- "
-                    f"{me['record'][0]}W {me['record'][1]}L" + (f" -- main {self.table.fighter_name(me['main'])}"
-                                                               if me.get("main") else ""))
-        text += f" -- server ping {c.server_rtt or 0:.0f} ms" + (" -- encrypted" if c.tls else "")
-        self.me_var.set(text)
+            parts = [me["name"], rank_text(me), t("rating {rating}", rating=me["rating"]), _record(me["record"])]
+            if me.get("main"):
+                parts.append(t("main {character}", character=self.table.fighter_name(me["main"])))
+        parts.append(t("server ping {ms} ms", ms=f"{c.server_rtt or 0:.0f}"))
+        if c.tls:
+            parts.append(t("encrypted"))
+        self.me_var.set(" -- ".join(parts))
 
     def status(self, text):
         text = proto.scrub_addresses(str(text))       # no IP address in anything the player reads
@@ -439,7 +481,8 @@ class OnlineTab:
         if hasattr(self.app, "set_status"):
             try:
                 # the server's notice stays in the launcher's status bar whatever else is said
-                self.app.set_status(text + (f"   [Server: {self.notice_var.get()}]" if self.notice_var.get() else ""))
+                self.app.set_status(text + ("   " + t("[Server: {notice}]", notice=self.notice_var.get())
+                                            if self.notice_var.get() else ""))
             except Exception:
                 pass
 
@@ -451,7 +494,7 @@ class OnlineTab:
             self.notice_var.set(line)
             if line and hasattr(self.app, "set_status"):
                 try:
-                    self.app.set_status(f"Server notice: {line}")
+                    self.app.set_status(t("Server notice: {notice}", notice=line))
                 except Exception:
                     pass
 
@@ -547,7 +590,7 @@ class OnlineTab:
     def _build_info(self):
         st = self.app.game_state()
         if not st.get("ok"):
-            return None, st.get("text") or "The game is not built."
+            return None, st.get("text") or t("The game is not built.")
         try:
             rel = "dev"
             try:
@@ -557,7 +600,7 @@ class OnlineTab:
                 pass
             return BuildInfo.from_out_dir(self.app.settings.out_dir, rel), None
         except (OSError, ValueError) as e:
-            return None, f"Cannot read the build's identity: {e}"
+            return None, t("Cannot read the build's identity: {error}", error=e)
 
     def _new_client(self, server, build):
         spec = server
@@ -595,13 +638,13 @@ class OnlineTab:
             self.status(err)
             return
         if mode in ("account", "register") and not pw:
-            self.status("Enter a password (6 characters or more), or play as a guest.")
+            self.status(t("Enter a password (6 characters or more), or play as a guest."))
             return
         if mode == "register" and not self._confirm_password(pw):
             return
         remember = bool(self.remember_var.get())
         self._save_cfg()
-        self.status(f"Connecting to {server}...")
+        self.status(t("Connecting to {server}...", server=server))
         client = self._new_client(server, build)
 
         def work():
@@ -626,11 +669,12 @@ class OnlineTab:
             self._make_driver()
             self._set_account_view(True)
             self._show_me()
-            hint = "Pick a character, then Ranked match (accounts) or Quick match."
+            hint = t("Pick a character, then Ranked match (accounts) or Quick match.")
             if w.get("motd"):
                 hint = w["motd"]
-            self.hint_var.set(("Encrypted connection (TLS). " if client.tls else "") + hint)
-            self.status("In the lobby." + (" (logged in with your saved login)" if mode == "session" else ""))
+            self.hint_var.set((t("Encrypted connection (TLS).") + " " if client.tls else "") + hint)
+            self.status(t("In the lobby.") + (" " + t("(logged in with your saved login)")
+                                              if mode == "session" else ""))
             self._set_actions()
             self.on_char()
             if client.recovery_codes:
@@ -639,7 +683,7 @@ class OnlineTab:
         def failed():
             if mode == "session":
                 self._remember_session(None, None)
-                self.status("Your saved login has expired; log in with your password.")
+                self.status(t("Your saved login has expired; log in with your password."))
 
         def work_guarded():
             try:
@@ -650,11 +694,11 @@ class OnlineTab:
         self.call(work_guarded, then=done, fail=failed)
 
     def _confirm_password(self, pw):
-        again = self.ask_string("Create account", "Type the password again:", show="*", parent=self.parent)
+        again = self.ask_string(t("Create account"), t("Type the password again:"), show="*", parent=self.parent)
         if again is None:
             return False
         if again != pw:
-            self.status("The two passwords differ.")
+            self.status(t("The two passwords differ."))
             return False
         return True
 
@@ -683,7 +727,7 @@ class OnlineTab:
         g = getattr(self.app, "game", None)
         if g is not None and g.running() and (self.driver is None or g is not self.driver.game):
             # An offline game is open: an online match needs its own.
-            self.status("Closing the running game for the online match...")
+            self.status(t("Closing the running game for the online match..."))
             g.stop()
             t_end = time.monotonic() + 5
             while g.running() and time.monotonic() < t_end:
@@ -693,8 +737,9 @@ class OnlineTab:
     def do_logout(self):
         forget = False
         if self.client and self.client.session:
-            forget = self.ask_yes_no("Log out", "Also forget the saved login on this PC?\n\n"
-                                         "(No = you are logged in automatically next time.)", parent=self.parent)
+            forget = self.ask_yes_no(t("Log out"), t("Also forget the saved login on this PC?\n\n"
+                                                      "(No = you are logged in automatically next time.)"),
+                                     parent=self.parent)
         c, self.client = self.client, None
         if forget:
             self._remember_session(None, None)
@@ -704,7 +749,7 @@ class OnlineTab:
         if c:
             threading.Thread(target=lambda: c.logout(forget=forget), daemon=True).start()
         self._reset_lobby_view()
-        self.me_var.set("Not connected.")
+        self.me_var.set(t("Not connected."))
         self._set_account_view(False)
         self._set_actions()
 
@@ -721,39 +766,39 @@ class OnlineTab:
         self.tv_rooms.delete(*self.tv_rooms.get_children())
 
     def do_passwd(self):
-        old = self.ask_string("Change password", "Current password:", show="*", parent=self.parent)
+        title = t("Change password")
+        old = self.ask_string(title, t("Current password:"), show="*", parent=self.parent)
         if not old:
             return
-        new = self.ask_string("Change password", "New password (6 characters or more):", show="*",
-                                     parent=self.parent)
+        new = self.ask_string(title, t("New password (6 characters or more):"), show="*", parent=self.parent)
         if not new:
             return
-        if self.ask_string("Change password", "New password again:", show="*", parent=self.parent) != new:
-            self.status("The two new passwords differ.")
+        if self.ask_string(title, t("New password again:"), show="*", parent=self.parent) != new:
+            self.status(t("The two new passwords differ."))
             return
         remember = bool(self._saved_session())
         c = self.client
 
         def done(_r):
             self._remember_session(c.me["name"], c.session if remember else None)
-            self.status("Password changed. Saved logins on other PCs have ended.")
+            self.status(t("Password changed. Saved logins on other PCs have ended."))
         self.call(c.change_password, old, new, remember, then=done)
 
     def do_new_codes(self):
-        pw = self.ask_string("Recovery codes", "Your password (the old codes stop working):", show="*",
-                                    parent=self.parent)
+        pw = self.ask_string(t("Recovery codes"), t("Your password (the old codes stop working):"), show="*",
+                             parent=self.parent)
         if pw:
             self.call(self.client.new_recovery_codes, pw, then=lambda codes: self.show_codes(codes))
 
     def show_codes(self, codes, first=False):
         w = tk.Toplevel(self.parent)
         self.codes_window = w
-        w.title("Recovery codes")
+        w.title(t("Recovery codes"))
         ttk.Label(w, padding=10, wraplength=420, justify="left", text=(
-            ("Your account is ready. " if first else "") +
-            "These codes are the only way back into your account if you forget the password (there is no "
-            "e-mail). Each code works once. Write them down or save them somewhere safe -- they are not shown "
-            "again.")).pack(anchor="w")
+            (t("Your account is ready.") + " " if first else "") +
+            t("These codes are the only way back into your account if you forget the password (there is no "
+              "e-mail). Each code works once. Write them down or save them somewhere safe -- they are not shown "
+              "again."))).pack(anchor="w")
         txt = tk.Text(w, height=len(codes) + 1, width=24, font=("Consolas", 12))
         txt.insert("1.0", "\n".join(codes))
         txt.configure(state="disabled")
@@ -762,30 +807,29 @@ class OnlineTab:
         bar.pack(fill="x")
 
         def save():
-            p = filedialog.asksaveasfilename(parent=w, title="Save recovery codes", defaultextension=".txt",
+            p = filedialog.asksaveasfilename(parent=w, title=t("Save recovery codes"), defaultextension=".txt",
                                              initialfile="t5dr-recovery-codes.txt")
             if p:
                 with open(p, "w", encoding="utf-8") as f:
-                    f.write(f"T5DR Online recovery codes for {self.client.me['name'] if self.client else ''} "
-                            f"on {self.server_var.get()}\n" + "\n".join(codes) + "\n")
-        ttk.Button(bar, text="Save to a file...", command=save).pack(side="left")
-        ttk.Button(bar, text="I have saved them", command=w.destroy).pack(side="right")
+                    f.write(t("T5DR Online recovery codes for {name} on {server}",
+                              name=self.client.me["name"] if self.client else "", server=self.server_var.get())
+                            + "\n" + "\n".join(codes) + "\n")
+        ttk.Button(bar, text=t("Save to a file..."), command=save).pack(side="left")
+        ttk.Button(bar, text=t("I have saved them"), command=w.destroy).pack(side="right")
 
     def do_forgot(self):
         build, err = self._build_info()
         if build is None:
             self.status(err)
             return
-        name = self.ask_string("Forgot password", "Account name:", initialvalue=self.name_var.get(),
-                                      parent=self.parent)
+        title = t("Forgot password")
+        name = self.ask_string(title, t("Account name:"), initialvalue=self.name_var.get(), parent=self.parent)
         if not name:
             return
-        code = self.ask_string("Forgot password", "One of your recovery codes (XXXX-XXXX-XXXX):",
-                                      parent=self.parent)
+        code = self.ask_string(title, t("One of your recovery codes (XXXX-XXXX-XXXX):"), parent=self.parent)
         if not code:
             return
-        new = self.ask_string("Forgot password", "New password (6 characters or more):", show="*",
-                                     parent=self.parent)
+        new = self.ask_string(title, t("New password (6 characters or more):"), show="*", parent=self.parent)
         if not new:
             return
         client = self._new_client(self.server_var.get().strip() or DEFAULT_SERVER, build)
@@ -799,14 +843,15 @@ class OnlineTab:
 
         def done(r):
             self.name_var.set(r["name"])
-            self.status(f"Password reset. {r['codes_left']} recovery code(s) left. Log in with the new password.")
+            self.status(t("Password reset. {count} recovery code(s) left. Log in with the new password.",
+                          count=r["codes_left"]))
         self.call(work, then=done)
 
     def do_fingerprint(self):
         fp = self.ask_string(
-            "Server certificate",
-            "For a server with its own (self-signed) certificate: its SHA-256 fingerprint, from whoever runs it.\n"
-            "Empty = no pinning (use tls://host:port for a server with a normal certificate).",
+            t("Server certificate"),
+            t("For a server with its own (self-signed) certificate: its SHA-256 fingerprint, from whoever runs "
+              "it.\nEmpty = no pinning (use tls://host:port for a server with a normal certificate)."),
             initialvalue=self.fp_var.get(), parent=self.parent)
         if fp is not None:
             self.fp_var.set(fp.strip())
@@ -825,24 +870,30 @@ class OnlineTab:
         strict = mode == "ranked" and bool(self.strict_var.get())
         args = (self._char_key(), True) if strict else (self._char_key(),)
         fn = c.ranked_match if mode == "ranked" else c.quick_match
-        self.call(fn, *args, then=lambda _r: self.status(
-            "Searching for an opponent" + (" (ranked: similar rank and a good connection"
-                                           + (", strict: within 150 rating points -- this can take a while" if strict
-                                              else "") + ")..." if mode == "ranked" else "...")))
+        self.call(fn, *args, then=lambda _r: self.status(self._searching_text(mode, strict)))
+
+    @staticmethod
+    def _searching_text(mode, strict):
+        if mode != "ranked":
+            return t("Searching for an opponent...")
+        if strict:
+            return t("Searching for an opponent (ranked: similar rank and a good connection, strict: within 150 "
+                     "rating points -- this can take a while)...")
+        return t("Searching for an opponent (ranked: similar rank and a good connection)...")
 
     def do_join(self):
         sel = self.tv_rooms.selection()
         if not sel:
-            self.status("Select a room first.")
+            self.status(t("Select a room first."))
             return
         self.call(self.client.join_room, sel[0])
 
     def do_challenge(self):
         sel = self.tv_players.selection()
         if not sel or (self.client.me and sel[0] == self.client.me["id"]):
-            self.status("Select an opponent in the list first.")
+            self.status(t("Select an opponent in the list first."))
             return
-        self.call(self.client.challenge, sel[0], then=lambda _r: self.status("Challenge sent."))
+        self.call(self.client.challenge, sel[0], then=lambda _r: self.status(t("Challenge sent.")))
 
     def do_blocked(self):
         """The block list, with Unblock."""
@@ -852,13 +903,14 @@ class OnlineTab:
 
     def _blocks_window(self, rows):
         w = tk.Toplevel(self.parent)
-        w.title("Blocked players")
-        ttk.Label(w, padding=10, wraplength=360, justify="left", text=(
+        w.title(t("Blocked players"))
+        ttk.Label(w, padding=10, wraplength=360, justify="left", text=t(
             "You are never matched with these players (ranked, quick matches, rooms, challenges, rematches). "
             "They are not told. Accounts stay blocked; a guest is blocked until you log out.")).pack(anchor="w")
         lb = tk.Listbox(w, height=max(4, min(12, len(rows))), width=32)
+        names = [r["name"] for r in rows]                 # (the list shows more than the name: index -> name)
         for r in rows:
-            lb.insert("end", r["name"] + ("  (guest)" if r.get("guest") else ""))
+            lb.insert("end", r["name"] + ("  (" + t("guest") + ")" if r.get("guest") else ""))
         lb.pack(padx=10)
         self.blocks_list = lb
         bar = ttk.Frame(w, padding=10)
@@ -868,24 +920,25 @@ class OnlineTab:
             sel = lb.curselection()
             if not sel:
                 return
-            name = lb.get(sel[0]).replace("  (guest)", "")
+            name = names.pop(sel[0])
             lb.delete(sel[0])
-            self.call(self.client.unblock, name, then=lambda _r: self.status(f"Unblocked {name}."))
-        ttk.Button(bar, text="Unblock", command=unblock).pack(side="left")
-        ttk.Button(bar, text="Close", command=w.destroy).pack(side="right")
+            self.call(self.client.unblock, name, then=lambda _r: self.status(t("Unblocked {name}.", name=name)))
+        ttk.Button(bar, text=t("Unblock"), command=unblock).pack(side="left")
+        ttk.Button(bar, text=t("Close"), command=w.destroy).pack(side="right")
         self.blocks_window = w
 
     def block_opponent(self, name):
         """After a game: never meet this player again. A running match would end like a quit (not offered here)."""
-        if not self.ask_yes_no("Block player", f"Block {name}?\n\nYou will not be matched with them again. "
-                                               "They are not told. You can unblock them under "
-                                               "\"Blocked players...\".", parent=self.parent):
+        if not self.ask_yes_no(t("Block player"),
+                               t("Block {name}?\n\nYou will not be matched with them again. They are not told. You "
+                                 "can unblock them under \"Blocked players...\".", name=name),
+                               parent=self.parent):
             return
         self.hide_bar()
         self.rematch_bar = None
 
         def done(_r):
-            self.status(f"Blocked {name}. You will not be matched again.")
+            self.status(t("Blocked {name}. You will not be matched again.", name=name))
         self.call(self.client.block, name, then=done)
 
     def do_chat(self):
@@ -896,10 +949,14 @@ class OnlineTab:
 
     # ------------------------------------------------------------------ leaderboard / profile
     def _on_subtab(self):
-        tab = self.nb.tab(self.nb.select(), "text").strip()
-        if tab == "Leaderboard":
+        try:
+            sel = self.nb.select()
+            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile
+        except tk.TclError:
+            return                                         # (the tabs are being destroyed)
+        if tab == 1:
             self.load_leaderboard()
-        elif tab == "Profile" and self.client and self.profile_name is None:
+        elif tab == 2 and self.client and self.profile_name is None:
             self.show_profile(None)
 
     def load_leaderboard(self):
@@ -912,14 +969,18 @@ class OnlineTab:
                 self.tv_board.insert("", "end", iid="lb:" + r["name"], values=(
                     r["place"], r["name"] + ("  *" if r.get("online") else ""),
                     r["rank"] + ("?" if r.get("provisional") else ""), r["rating"],
-                    f"{r['wins']}W {r['losses']}L", self.table.fighter_name(r["main"]) if r.get("main") else ""))
+                    _record((r["wins"], r["losses"])), self.table.fighter_name(r["main"]) if r.get("main") else ""))
         self.call(self.client.leaderboard, 50, then=done)
 
     def _profile_of_selected(self):
         sel = self.tv_players.selection()
         if sel:
-            name = self.tv_players.item(sel[0], "values")[0].replace("  (you)", "")
+            name = self.tv_players.item(sel[0], "values")[0].replace(self._you_suffix(), "")
             self.show_profile(name)
+
+    @staticmethod
+    def _you_suffix():
+        return "  (" + t("you") + ")"
 
     def _profile_of(self, tv):
         sel = tv.selection()
@@ -933,52 +994,74 @@ class OnlineTab:
         self.nb.select(2)
 
         def done(p):
-            self.prof_title.set(f"{p['name']} -- {rank_text(p)}" + ("" if p.get("account") else " (guest)"))
-            lines = [f"Rating {p['rating']} +/- {p['rd']}" + (" (provisional)" if p.get("provisional") else "")
-                     + (f", #{p['place']} on the leaderboard" if p.get("place") else "")]
+            self.prof_title.set(t("{name} -- {rank}", name=p["name"], rank=rank_text(p))
+                                + ("" if p.get("account") else " (" + t("guest") + ")"))
+            rating = t("Rating {rating} +/- {rd}", rating=p["rating"], rd=p["rd"])
+            if p.get("provisional"):
+                rating += " " + t("(provisional)")
+            if p.get("place"):
+                rating += ", " + t("#{place} on the leaderboard", place=p["place"])
+            lines = [rating]
             rec = p.get("record", [0, 0, 0])
-            lines.append(f"Record {rec[0]}W {rec[1]}L" + (f" {rec[2]}D" if rec[2] else "")
-                         + (f", ranked matches {p['ranked_games']}" if p.get("account") else "")
-                         + (f", highest rank {p['peak_rank']}" if p.get("peak_rank") else ""))
+            parts = [t("Record {record}", record=_record(rec, draws=True))]
+            if p.get("account"):
+                parts.append(t("ranked matches {count}", count=p["ranked_games"]))
+            if p.get("peak_rank"):
+                parts.append(t("highest rank {rank}", rank=p["peak_rank"]))
+            lines.append(", ".join(parts))
             if p.get("chars"):
-                lines.append("Characters: " + ", ".join(
-                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']}" for c in p["chars"]))
+                lines.append(t("Characters: {list}", list=", ".join(
+                    f"{self.table.fighter_name(c['char'])} {c['wins']}/{c['games']}" for c in p["chars"])))
             if p.get("voids_24h"):
-                lines.append(f"Matches without result caused in the last 24 h: {p['voids_24h']}")
+                lines.append(t("Matches without result caused in the last 24 h: {count}", count=p["voids_24h"]))
             if p.get("self") and p.get("recovery_codes_left") is not None:
-                lines.append(f"Recovery codes left: {p['recovery_codes_left']}")
+                lines.append(t("Recovery codes left: {count}", count=p["recovery_codes_left"]))
             self.prof_text.set("\n".join(lines))
             self.tv_hist.delete(*self.tv_hist.get_children())
             for h in p.get("history", []):
-                when = time.strftime("%d %b %H:%M", time.localtime(h["time"]))
-                chars = f"{self.table.fighter_name(h['you_char'])} vs {self.table.fighter_name(h['opp_char'])}"
+                when = stamp(h["time"])
+                chars = t("{you} vs {opponent}", you=self.table.fighter_name(h["you_char"]),
+                          opponent=self.table.fighter_name(h["opp_char"]))
                 score = f"{h['score'][0]}-{h['score'][1]}" if h.get("score") else ""
-                delta = f"{h['delta']:+.0f}" if h.get("delta") is not None else ("" if h["ranked"] else "casual")
-                st = h["status"] + (f" ({REASON_TEXT.get(h['reason'], h['reason'])})" if h.get("reason") else "")
-                self.tv_hist.insert("", "end", values=(when, h["result"], h["opponent"], chars, score, delta, st))
+                delta = f"{h['delta']:+.0f}" if h.get("delta") is not None else ("" if h["ranked"] else t("casual"))
+                st = _word(RESULT_WORD, h["status"]) + (" (" + _word(REASON_TEXT, h["reason"]) + ")"
+                                                        if h.get("reason") else "")
+                self.tv_hist.insert("", "end", values=(when, _word(OUTCOME_WORD, h["result"]), h["opponent"], chars,
+                                                       score, delta, st))
         self.call(self.client.profile, name, 20, then=done)
 
     # ------------------------------------------------------------------ server events
+    def _opponent_text(self, opp, ranked, rematch=False):
+        """'Opponent: Name (rank, rating) -- RANKED -- rematch'."""
+        rating = opp["rating"] if not opp["guest"] else t("guest")
+        parts = [t("Opponent: {name} ({rank}, {rating})", name=opp["name"], rank=rank_text(opp), rating=rating)]
+        if ranked:
+            parts.append(t("RANKED"))
+        if rematch:
+            parts.append(t("rematch"))
+        return " -- ".join(parts)
+
     def on_event(self, ev):
-        t = ev["t"]
+        kind = ev["t"]
         c = self.client
-        if t == "lobby_state":
+        if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()
-        elif t == "chat":
+        elif kind == "chat":
             self.chat_line(f"{ev['from']['name']}: {ev['text']}")
-        elif t == "challenged":
+        elif kind == "challenged":
             self.challenge = ev["challenge"]
-            self.show_bar(f"{ev['from']['name']} ({rank_text(ev['from'])}) challenges you",
-                          [("Accept", lambda: self._answer(True), "cross"),
-                           ("Decline", lambda: self._answer(False), "circle")])
-        elif t == "challenge_update":
+            self.show_bar(t("{name} ({rank}) challenges you", name=ev["from"]["name"], rank=rank_text(ev["from"])),
+                          [(t("Accept"), lambda: self._answer(True), "cross"),
+                           (t("Decline"), lambda: self._answer(False), "circle")])
+        elif kind == "challenge_update":
             if ev["state"] != "accepted":
-                self.status(f"Challenge {ev['state']}.")
+                self.status(_word(CHALLENGE_TEXT, ev["state"]) if ev["state"] in CHALLENGE_TEXT
+                            else t("Challenge {state}.", state=ev["state"]))
             if ev["challenge"] == self.challenge:
                 self.challenge = None
                 self.hide_bar()
-        elif t == "match_found":
+        elif kind == "match_found":
             self.match = ev
             self.hide_bar()
             self.rematch_bar = None
@@ -989,78 +1072,72 @@ class OnlineTab:
             if ev.get("blind"):
                 # a match from the queue: the ping and the rules now, the name after both accepted
                 self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                self.show_bar(self._ready_text(), [("Accept", lambda: self._ready(True), "cross"),
-                                                   ("Decline", lambda: self._ready(False), "circle")])
+                self.show_bar(self._ready_text(), [(t("Accept"), lambda: self._ready(True), "cross"),
+                                                   (t("Decline"), lambda: self._ready(False), "circle")])
             else:
-                opp = ev["opponent"]
-                text = (f"Opponent: {opp['name']} ({rank_text(opp)}, {opp['rating'] if not opp['guest'] else 'guest'})"
-                        f"{' -- RANKED' if ev['ranked'] else ''}"
-                        + (" -- rematch" if ev.get("origin") == "rematch" else ""))
+                text = self._opponent_text(ev["opponent"], ev["ranked"], ev.get("origin") == "rematch")
                 if ev["ready_check"]:
                     self.ready_deadline = time.monotonic() + float(ev.get("ready_timeout") or 15)
-                    self.show_bar(text, [("Accept", lambda: self._ready(True), "cross"),
-                                         ("Decline", lambda: self._ready(False), "circle")])
+                    self.show_bar(text, [(t("Accept"), lambda: self._ready(True), "cross"),
+                                         (t("Decline"), lambda: self._ready(False), "circle")])
                 else:
-                    self.show_bar(text + " -- connecting...", [])
-        elif t == "match_reveal":
+                    self.show_bar(text + " -- " + t("connecting..."), [])
+        elif kind == "match_reveal":
             self.ready_deadline = None
-            opp = ev["opponent"]
-            self.show_bar(f"Opponent: {opp['name']} ({rank_text(opp)}, "
-                          f"{opp['rating'] if not opp['guest'] else 'guest'})"
-                          f"{' -- RANKED' if (self.match or {}).get('ranked') else ''} -- connecting...", [])
-        elif t == "opponent_ready":
-            self.status("Your opponent accepted.")
-        elif t == "lag_check":
+            text = self._opponent_text(ev["opponent"], bool((self.match or {}).get("ranked")))
+            self.show_bar(text + " -- " + t("connecting..."), [])
+        elif kind == "opponent_ready":
+            self.status(t("Your opponent accepted."))
+        elif kind == "lag_check":
             self._show_lag(ev)
-        elif t == "set_end":
+        elif kind == "set_end":
             self._set_ended(ev)
-        elif t == "server_notice":
+        elif kind == "server_notice":
             self._show_notice()
-        elif t == "nat_status":
+        elif kind == "nat_status":
             self.status(ev["text"])
-        elif t == "match_cancel":
+        elif kind == "match_cancel":
             self.match = None
             self.ready_deadline = None
             self.hide_bar()
-            self.status({"declined": "Match declined.", "ready_timeout": "Nobody accepted in time.",
-                         "opponent_left": "Your opponent left.",
-                         "udp_unreachable": "No UDP connection to the lobby server (firewall?).",
-                         "no_connection": "Could not connect the two PCs, not even through the relay."
-                         }.get(ev["reason"], f"Match cancelled ({ev['reason']})."))
-        elif t == "match_start":
+            self.status(_word(CANCEL_TEXT, ev["reason"]) if ev["reason"] in CANCEL_TEXT
+                        else t("Match cancelled ({reason}).", reason=ev["reason"]))
+        elif kind == "match_start":
             self.hide_bar()
             self.ready_deadline = None
             self.rematch_bar = None
             self.lag = None
             f = ev.get("fight") or {}
-            how = {"direct": "direct", "lan": "local network", "relay": "via the lobby server's relay"}
-            self.match_var.set(
-                f"{'Ranked' if ev.get('ranked') else 'Casual'} match vs {ev['opponent']['name']} -- "
-                f"{self.table.fighter_name(f.get('p1'))} vs {self.table.fighter_name(f.get('p2'))} -- "
-                f"ping {ev.get('rtt_ms', 0):.0f} ms ({how.get(ev.get('path'), ev.get('path'))}), "
-                f"input delay {ev.get('delay')} frames ({ev.get('delay', 0) * 16.7:.0f} ms)")
-        elif t == "match_result":
+            delay = ev.get("delay") or 0
+            self.match_var.set(" -- ".join((
+                t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
+                else t("Casual match vs {name}", name=ev["opponent"]["name"]),
+                t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")), p2=self.table.fighter_name(f.get("p2"))),
+                t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
+                  ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")), frames=ev.get("delay"),
+                  delay_ms=f"{delay * 16.7:.0f}"))))
+        elif kind == "match_result":
             self._show_result(ev)
-        elif t == "rematch":
+        elif kind == "rematch":
             if ev.get("state") == "declined":
                 self.rematch_bar = None
                 self.hide_bar()
-        elif t == "notice":
-            self.status(ev.get("msg", ""))
-        elif t == "reconnecting":
-            self.status("Lost the lobby connection -- reconnecting (your match goes on)...")
-        elif t == "reconnected":
-            self.status("Reconnected to the lobby.")
-        elif t == "disconnected":
-            self.status(f"Lost the lobby connection: {ev.get('reason')}")
+        elif kind == "notice":
+            self.status(translate_message(ev.get("msg", "")))
+        elif kind == "reconnecting":
+            self.status(t("Lost the lobby connection -- reconnecting (your match goes on)..."))
+        elif kind == "reconnected":
+            self.status(t("Reconnected to the lobby."))
+        elif kind == "disconnected":
+            self.status(t("Lost the lobby connection: {reason}", reason=translate_message(ev.get("reason"))))
             self.client = None
             if self.driver is not None:
                 self.driver.ticket = None
             self._reset_lobby_view()
-            self.me_var.set("Not connected.")
+            self.me_var.set(t("Not connected."))
             self._set_account_view(False)
-        elif t == "kicked":
-            self.status(f"Removed from the lobby: {ev.get('reason')}")
+        elif kind == "kicked":
+            self.status(t("Removed from the lobby: {reason}", reason=translate_message(ev.get("reason"))))
         if c is not None:
             self._set_actions()
 
@@ -1072,29 +1149,29 @@ class OnlineTab:
         if k == "status":
             self.status(n["text"])
         elif k == "ask_result":
-            self.show_bar(f"The game closed. How did the match against {n['opponent']} end?", [
-                ("I won", lambda: self._answer_result("won")),
-                ("I lost", lambda: self._answer_result("lost")),
-                ("Draw", lambda: self._answer_result("draw")),
-                ("I quit", lambda: self._answer_result("quit")),
+            self.show_bar(t("The game closed. How did the match against {opponent} end?", opponent=n["opponent"]), [
+                (t("I won"), lambda: self._answer_result("won")),
+                (t("I lost"), lambda: self._answer_result("lost")),
+                (t("Draw"), lambda: self._answer_result("draw")),
+                (t("I quit"), lambda: self._answer_result("quit")),
             ])
         elif k == "rematch_offer":
-            self.show_bar(f"{n['opponent']} wants a rematch", [("Rematch", lambda: self._rematch(True), "cross"),
-                                                               ("No thanks", lambda: self._rematch(False),
-                                                                "circle")])
+            self.show_bar(t("{opponent} wants a rematch", opponent=n["opponent"]),
+                          [(t("Rematch"), lambda: self._rematch(True), "cross"),
+                           (t("No thanks"), lambda: self._rematch(False), "circle")])
 
     def _answer_result(self, what):
         self.hide_bar()
         if self.driver:
             self.driver.answer(what)
-        self.status("Result sent; waiting for your opponent's report...")
+        self.status(t("Result sent; waiting for your opponent's report..."))
 
     def _rematch(self, accept):
         self.hide_bar()
         if self.driver:
             self.driver.rematch(None, accept)
         if accept:
-            self.status("Rematch offered; waiting for your opponent...")
+            self.status(t("Rematch offered; waiting for your opponent..."))
 
     def _fill_lists(self, ev):
         me = self.client.me if self.client else None
@@ -1103,31 +1180,32 @@ class OnlineTab:
         keep = self.tv_players.selection()
         self.tv_players.delete(*self.tv_players.get_children())
         for p in ev.get("players", []):
-            status = STATUS_TEXT.get(p["status"], p["status"])
+            status = _word(STATUS_TEXT, p["status"])
             if p["build"] != mine:
-                status += " (other version)"
+                status += " " + t("(other version)")
             ping = "" if p["rtt"] is None or (me and p["id"] == me["id"]) else f"~{p['rtt'] + my_rtt:.0f} ms"
             rating = "" if p["guest"] else p["rating"]
             rec = p.get("record") or [0, 0, 0]
-            name = p["name"] + ("  (you)" if me and p["id"] == me["id"] else "")
+            name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
             self.tv_players.insert("", "end", iid=p["id"], values=(name, rank_text(p), rating,
-                                                                   f"{rec[0]}W {rec[1]}L", main, status, ping))
+                                                                   _record(rec), main, status, ping))
         for iid in keep:
             if self.tv_players.exists(iid):
                 self.tv_players.selection_set(iid)
         keep = self.tv_rooms.selection()
         self.tv_rooms.delete(*self.tv_rooms.get_children())
         for r in ev.get("rooms", []):
-            state = r["status"] + (" (other version)" if r["build"] != mine else "") + (" ranked" if r["ranked"]
-                                                                                        else "")
+            state = (_word(ROOM_STATE_TEXT, r["status"]) + (" " + t("(other version)") if r["build"] != mine else "")
+                     + (" " + t("ranked") if r["ranked"] else ""))
             self.tv_rooms.insert("", "end", iid=r["id"], values=(r["name"], r["owner"]["name"], state))
         for iid in keep:
             if self.tv_rooms.exists(iid):
                 self.tv_rooms.selection_set(iid)
         q = ev.get("queue", {})
         if self.client and self.client.me and self.client.me.get("status") == "queue":
-            self.status(f"Searching... ({q.get('ranked', 0)} in the ranked queue, {q.get('quick', 0)} quick)")
+            self.status(t("Searching... ({ranked} in the ranked queue, {quick} quick)", ranked=q.get("ranked", 0),
+                          quick=q.get("quick", 0)))
 
     def _answer(self, accept):
         cid, self.challenge = self.challenge, None
@@ -1140,11 +1218,14 @@ class OnlineTab:
         m = self.match or {}
         ping = m.get("ping") or {}
         if ping.get("known"):
-            where = f"ping about {ping.get('ms', 0):.0f} ms (through the server; measured directly once you both accept)"
+            where = t("ping about {ms} ms (through the server; measured directly once you both accept)",
+                      ms=f"{ping.get('ms', 0):.0f}")
         else:
-            where = "ping not known yet"
+            where = t("ping not known yet")
         left = max(0, int((self.ready_deadline or 0) - time.monotonic() + 0.99)) if self.ready_deadline else 0
-        return (f"Opponent found{' -- RANKED' if m.get('ranked') else ''} -- {where} -- accept within {left} s?")
+        parts = [t("Opponent found")] + ([t("RANKED")] if m.get("ranked") else []) + [
+            where, t("accept within {seconds} s?", seconds=left)]
+        return " -- ".join(parts)
 
     def _tick_ready(self):
         """Keep the countdown in the ready bar current."""
@@ -1157,14 +1238,15 @@ class OnlineTab:
         if not m:
             return
         self.ready_sent = bool(accept)
-        self.show_bar(self.bar_text.get() + (" -- waiting for the opponent..." if accept else ""), [])
+        self.show_bar(self.bar_text.get() + (" -- " + t("waiting for the opponent...") if accept else ""), [])
         self.call(self.client.ready, accept, m["match"])
 
     def _show_lag(self, ev):
         """After a match: ping X should mean Y frames behind, it was Z -- and a way out when it was worse."""
         self.lag = ev
-        self.match_var.set("Lag check: " + ev["text"])
-        self.status("Lag check: " + ev["text"])
+        text = lag.describe_event(ev)
+        self.match_var.set(t("Lag check: {text}", text=text))
+        self.status(t("Lag check: {text}", text=text))
         if self.rematch_bar is not None:
             self._show_rematch_bar()
 
@@ -1175,28 +1257,28 @@ class OnlineTab:
             self.hide_bar()
         reason, by = ev.get("reason"), ev.get("by")
         if reason == "lag":
-            self.status("You left after the lag check. No penalty, no rating change." if by == "you" else
-                        "Your opponent left after the lag check. No penalty for anyone.")
+            self.status(t("You left after the lag check. No penalty, no rating change.") if by == "you" else
+                        t("Your opponent left after the lag check. No penalty for anyone."))
         elif by == "opponent":
-            self.status("Your opponent left. The set is over.")
+            self.status(t("Your opponent left. The set is over."))
         if self.client:
             self._set_actions()
 
     def _show_rematch_bar(self):
         text, opp = self.rematch_bar
-        buttons = [(f"Rematch {opp}", lambda: self._rematch(True), "cross"),
-                   ("Leave", lambda: self._rematch(False), "circle"),
-                   (f"Block {opp}", lambda: self.block_opponent(opp))]
-        lag = self.lag
-        if lag and lag.get("verdict") == "more_lag" and lag.get("can_leave"):
-            buttons.insert(2, ("Leave: too laggy", self._leave_for_lag))
+        buttons = [(t("Rematch {name}", name=opp), lambda: self._rematch(True), "cross"),
+                   (t("Leave"), lambda: self._rematch(False), "circle"),
+                   (t("Block {name}", name=opp), lambda: self.block_opponent(opp))]
+        check = self.lag
+        if check and check.get("verdict") == "more_lag" and check.get("can_leave"):
+            buttons.insert(2, (t("Leave: too laggy"), self._leave_for_lag))
         self.show_bar(text, buttons)
 
     def _leave_for_lag(self):
         self.hide_bar()
         self.rematch_bar = None
         self.call(self.client.leave_set, "lag", then=lambda _r: self.status(
-            "You left after the lag check. No penalty, no rating change."))
+            t("You left after the lag check. No penalty, no rating change.")))
 
     def _show_result(self, ev):
         self.match = None
@@ -1204,32 +1286,32 @@ class OnlineTab:
         if hasattr(self.app, "report_problem") and not self.report_btn.winfo_ismapped():
             self.report_btn.pack(side="right")
         st = ev["status"]
-        text = RESULT_TEXT.get(st, st)
+        text = _word(RESULT_TEXT, st)
         if ev.get("reason") and ev["reason"] in REASON_TEXT:
-            text += f" ({REASON_TEXT[ev['reason']]})"
+            text += " (" + _word(REASON_TEXT, ev["reason"]) + ")"
         mine = None
         if ev.get("winner") is not None and self.driver is not None and self.driver.session_ticket is not None:
             mine = ev["winner"] == self.driver.session_ticket.slot
         if st in ("confirmed", "onesided", "forfeit", "resolved"):
-            text = ("You won. " if mine else "You lost. " if mine is False else "") + text
+            text = (t("You won.") + " " if mine else t("You lost.") + " " if mine is False else "") + text
         r = ev.get("rating")
         if r:
-            text += f"; rating {r['after']['r']:.0f} ({r['delta']:+.0f})"
+            text += "; " + t("rating {rating} ({delta})", rating=f"{r['after']['r']:.0f}", delta=f"{r['delta']:+.0f}")
             after = r.get("rank_after") or {}
             if r.get("event") == "promoted":
-                text += f" -- PROMOTED to {after.get('rank')}!"
+                text += " -- " + t("PROMOTED to {rank}!", rank=after.get("rank"))
             elif r.get("event") == "demoted":
-                text += f" -- demoted to {after.get('rank')}"
+                text += " -- " + t("demoted to {rank}", rank=after.get("rank"))
             elif r.get("event") == "placed":
-                text += f" -- placed at {after.get('rank')}"
+                text += " -- " + t("placed at {rank}", rank=after.get("rank"))
             elif after.get("placement"):
-                text += f" -- placement {after['placement'][0]}/{after['placement'][1]}"
+                text += " -- " + t("placement {done}/{total}", done=after["placement"][0], total=after["placement"][1])
         self.status(text + ".")
         self.hide_bar()
         if ev.get("rematch_window"):
             opp = (self.driver.session_ticket.opponent.get("name") if self.driver and self.driver.session_ticket
-                   else "your opponent")
-            self.rematch_bar = (text if len(text) < 60 else "Rematch?", opp)
+                   else t("your opponent"))
+            self.rematch_bar = (text if len(text) < 60 else t("Rematch?"), opp)
             self._show_rematch_bar()
         if self.client and self.client.me:
             self._show_me()
@@ -1332,13 +1414,13 @@ class OnlineTab:
     def _pad_info(self):
         p = self.pad
         if not self.pad_var.get():
-            text = "Controller off."
+            text = t("Controller off.")
         elif p is None or not p.stats["polls"]:
             text = ""
         elif not p.has_devices():
-            text = "No controller found."
+            text = t("No controller found.")
         else:
-            text = "Controller: " + p.summary
+            text = t("Controller: {summary}", summary=p.summary)
         if text != self.pad_info_var.get():
             self.pad_info_var.set(text)
 
@@ -1451,11 +1533,11 @@ class OnlineTab:
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                 encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except OSError as e:
-            self.status(f"Cannot start the lobby server: {e}")
+            self.status(t("Cannot start the lobby server: {error}", error=e))
             return
-        self.b_host.configure(text="Stop hosting")
-        self.status("Starting a lobby server on this PC" + (" and asking the router to forward its ports"
-                                                           if self.map_var.get() else "") + "...")
+        self.b_host.configure(text=t("Stop hosting"))
+        self.status(t("Starting a lobby server on this PC and asking the router to forward its ports...")
+                    if self.map_var.get() else t("Starting a lobby server on this PC..."))
         proc = self.host_proc
 
         def read():
@@ -1475,29 +1557,30 @@ class OnlineTab:
         if kind == "ready":
             self.host_info = ev
             self.server_var.set(ev["local"])
-            share = ev.get("internet") or f"<your public IP>:{ev['port']}" + (
+            share = ev.get("internet") or f"{t('<your public IP>')}:{ev['port']}" + (
                 f"#{ev['fingerprint']}" if ev.get("fingerprint") else "")
             try:
                 self.parent.clipboard_clear()
                 self.parent.clipboard_append(share)
             except tk.TclError:
                 pass
-            self.chat_line(f"Hosting. Friends paste this as their Server (copied to the clipboard):\n  {share}"
-                           + (f"\n  same network: {ev['lan']}" if ev.get("lan") else "")
-                           + ("" if ev.get("mapped") else "\n  Forward TCP+UDP 7781 and UDP 7782 on your router"
-                              " (or tick 'Open router ports')."))
-            self.status("Hosting a lobby on this PC. Log in to join it yourself.")
+            self.chat_line(t("Hosting. Friends paste this as their Server (copied to the clipboard):\n  {share}",
+                             share=share)
+                           + (t("\n  same network: {lan}", lan=ev["lan"]) if ev.get("lan") else "")
+                           + ("" if ev.get("mapped") else t("\n  Forward TCP+UDP 7781 and UDP 7782 on your router "
+                                                            "(or tick 'Open router ports').")))
+            self.status(t("Hosting a lobby on this PC. Log in to join it yourself."))
         elif kind == "error":
-            self.status(f"Hosting failed: {ev.get('message')}")
+            self.status(t("Hosting failed: {message}", message=translate_message(ev.get("message"))))
         elif kind in ("stopped", "exited"):
             self.host_proc = None
             self.host_info = None
-            self.b_host.configure(text="Host for friends")
+            self.b_host.configure(text=t("Host for friends"))
             if kind == "exited" and proc.poll() not in (0, None):
-                self.status(f"The lobby server stopped (exit code {proc.returncode}); see its log in "
-                            "%LOCALAPPDATA%\\T5DR Online\\lobby-host\\logs.")
+                self.status(t("The lobby server stopped (exit code {code}); see its log in {folder}.",
+                              code=proc.returncode, folder="%LOCALAPPDATA%\\T5DR Online\\lobby-host\\logs"))
             else:
-                self.status("Stopped hosting.")
+                self.status(t("Stopped hosting."))
 
     def stop_hosting(self, wait=0.0):
         proc = self.host_proc

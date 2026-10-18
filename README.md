@@ -120,6 +120,10 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 
 ## Playing
 
+- The launcher speaks English or German (Deutsch). **Settings** -> **Language**:
+  Auto follows the language of Windows. A change applies when the launcher
+  starts again (the **Restart now** button does that). The game itself stays
+  in English.
 - The game opens in its own window. It draws at 1280 x 720 and scales to the
   window. **Settings** has window sizes, maximized, borderless (experimental:
   not yet tested with the real game window) and mute.

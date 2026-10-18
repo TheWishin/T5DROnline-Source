@@ -103,6 +103,32 @@ Alles, was das Bauen erzeugt, bleibt im Ordner `native` neben dem Launcher. Das
 sind Spieldaten. Gib sie nicht weiter. Zum Deinstallieren löschst du den ganzen
 Ordner.
 
+## Sprache des Launchers
+
+Der Launcher spricht Deutsch oder Englisch. Unter **Einstellungen** -> **Sprache**
+stellst du ein: **Auto** nimmt die Sprache von Windows, dazu **Deutsch** und
+**English**. Eine Änderung gilt, wenn der Launcher neu startet (der Knopf **Jetzt
+neu starten** macht das). Das Spiel selbst bleibt englisch.
+
+Diese Anleitung nennt die Knöpfe oft englisch, so wie sie im englischen Launcher
+heißen. Im deutschen Launcher heißen sie:
+
+| Englisch | Deutsch |
+|---|---|
+| Build, Play, Settings (Reiter) | Bauen, Spielen, Einstellungen |
+| Cancel | Abbrechen |
+| Stop game | Spiel stoppen |
+| Open saves folder | Speicherordner öffnen |
+| Check for updates, Update now | Nach Updates suchen, Jetzt aktualisieren |
+| Report a problem | Problem melden |
+| Host for friends | Für Freunde hosten |
+| Online input delay | Online-Input-Delay |
+| Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
+| Mute sound | Ton aus |
+
+**BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
+Sprachen gleich.
+
 ## Spielen
 
 - Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf

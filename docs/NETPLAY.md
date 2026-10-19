@@ -659,14 +659,43 @@ fixed build unless marked):
 | the same, lockstep | fixed | 12 matches, 11 switches | 12 | -- | 12/12, 0 mismatching frames |
 | the same with the TLS isolation but no select pin | fixed (partial) | match 1 Mokujin vs Heihachi | 1 | -- | Mokujin's pick apart: failed (led to the select pin) |
 
-The hardware matrix (4/6/16 cores, 240 Hz, hitches, stutter, slow disk,
-launcher mute, clock skew, mixed delays, FMA against no FMA) follows on this
-branch.
+| pair, the e2e agent's voided matchups (2 rounds, KOs), rollback | fixed | Steve vs Hwoarang 34, Bruce vs Lee 25, Marduk vs Bryan 18, Kazuya vs Feng 32, Marduk vs King 22, Marduk vs Roger 21 (N R N R N R) | 6 | -- | 6/6, 0 mismatching frames |
+| rb_equiv `--lag 3`, release layout (`-DT5DR_GAME_DLL=ON` + t5dr_game.dll) | fixed | Heihachi vs Mokujin 29 | 1 | 2,691 | equal, the same final hash as the exe build |
+
+Two PCs that differ, stood in for on this PC (pairs, persistent game, both
+players mashing with motion inputs, 1 round unless noted; rollback delay 2
+unless noted):
+
+| run | the second PC | mode | matches | result |
+|---|---|---|---|---|
+| hz240_rb / hz240_ls | display at 240 Hz (no display lock, the 59.94 Hz clock) | rollback / lockstep | 4 / 3 | all in sync |
+| cpus4_rb | host 16, joiner 4 logical processors (affinity + PS3_CPUS), rollback delay 1 | rollback | 3 | 2 in sync; match 3 lost to a driver bug (below) |
+| cpus4_rb2 | the same, joiner also suspended 40 ms every 0.2-0.6 s, 2 rounds | rollback | 2 | match 1 in sync; match 2: the known NU::File::RequestManager abort (0x374150, the rollback-crash agent's) |
+| cpus6_ls | host 6, joiner 16 logical processors | lockstep | 3 | all in sync |
+| hitch_rb | joiner's main thread stalls 150 ms every 30-90 frames (T5_TEST_HITCH) | rollback | 3 | all in sync |
+| stutter_rb | joiner process suspended 60 ms every 0.2-0.6 s | rollback | 3 | all in sync |
+| fsdelay_rb | joiner's disk: 3 ms per open/read + 40 ms per MB (PS3_TEST_FS_DELAY) | rollback | 3 | all in sync |
+| noaudio_rb | joiner with the launcher's "Mute sound" (PS3_NO_AUDIO=1: no audio for the game) | rollback | 3 | all in sync |
+| clock_rb | joiner's clock 37,000 s off | rollback | 3 | all in sync |
+| throttle_rb | joiner minimized under Windows power throttling (PS3_SCHED_THROTTLE=0) | rollback | 3 | all in sync |
+| mixdelay / mixdelay_ls | rollback setting 1 vs 2 / lockstep delay 2 vs 5 | rollback / lockstep | 3 / 3 | all in sync |
+| fma_rb / fma_ls | joiner: baseline build (`-DT5DR_LIFTED_ARCH=none`), software fma (PS3_FP_SOFT_FMA=1), the C runtime's non-FMA3 paths; host x86-64-v3 | rollback / lockstep | 3 / 3 | all in sync |
+| rematch10b | a session of 10 matches: 1 new, 9 rematches with the same fighters, commands 1.5 s apart, P1/P2 first in turn | rollback | 10 | all in sync |
+
+One game visible against one minimized was not run (every test game stays
+minimized while the owner uses this PC); throttle_rb covers what a minimized
+window changes (Windows' timer and power throttling).
+
+**Also found: a match end that a rollback takes back** (cpus4_rb match 3):
+the KO seen on a predicted frame and undone, the direct-fight driver kept
+holding the local player and pressed START into the running fight; fixed in
+`df_fight.cpp`, docs/DIRECTFIGHT.md "A match end that a rollback takes back".
 
 **Left open.** Two PCs that differ in the CPU's make (Intel vs AMD) or a real
 display at 240/500 Hz were stood in for, not used. The private generator
 makes effect particles and stage emitters differ between the two PCs' screens
-(display only, as the camera may).
+(display only, as the camera may). The NU::File::RequestManager abort under
+heavy rollback (2 of ~110 matches here) is the rollback-crash agent's.
 
 ## Limits and next steps
 

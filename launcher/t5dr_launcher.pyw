@@ -393,8 +393,10 @@ class App(tk.Tk):
     def _settings_tab(self, tab):
         box = ttk.Frame(tab, padding=(24, 16))
         box.pack(fill="both", expand=True)
-        disp = ttk.LabelFrame(box, text="  " + t("Display") + "  ", padding=(12, 6))
-        disp.grid(row=0, column=0, sticky="nwe", padx=(0, 12))
+        left = ttk.Frame(box)
+        left.grid(row=0, column=0, sticky="nwe", padx=(0, 12))
+        disp = ttk.LabelFrame(left, text="  " + t("Display") + "  ", padding=(12, 6))
+        disp.pack(fill="x")
         self.display_var = tk.StringVar(value=self.settings["display"])
         for key, label in core.DISPLAY_MODES:
             ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var,
@@ -403,6 +405,18 @@ class App(tk.Tk):
             "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
             "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
             "in the game.")).pack(anchor="w", pady=(6, 0))
+
+        # VSync (PS3_VSYNC=0 when off, core.VSYNC_MODES): only how pictures reach the screen. No frame
+        # rate choice: the game's simulation is tied to 60 fps like on the PS3, with VSync on or off.
+        vs = ttk.LabelFrame(left, text="  " + t("VSync") + "  ", padding=(12, 6))
+        vs.pack(fill="x", pady=(6, 0))
+        self.vsync_var = tk.StringVar(value=self.settings["vsync"] if self.settings["vsync"] in core.VSYNC_MODES
+                                      else "on")
+        for key, label in core.VSYNC_MODES.items():
+            ttk.Radiobutton(vs, text=t(label), value=key, variable=self.vsync_var,
+                            command=self.save_settings).pack(anchor="w", pady=1)
+        ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
@@ -838,6 +852,7 @@ class App(tk.Tk):
             return
         self.settings["display"] = self.display_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
+        self.settings["vsync"] = self.vsync_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
@@ -917,7 +932,7 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

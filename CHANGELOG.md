@@ -17,6 +17,11 @@ part is in the README's status table.
   `hid = 0` in `controls.ini` goes back to DirectInput. Not tried with a real pad yet: tested
   with reports of every mode built from the published formats (ps3recomp patch 0042).
 
+### Launcher
+- **VSync on/off** (Settings -> VSync): Off shows each picture at once (lowest latency, the
+  picture may tear). The game still runs at 60 fps, like on the PS3; there is no frame rate
+  setting. Online, both players can choose differently.
+
 ## v1.1.0 (2026-10-19)
 
 **Online that holds up, a new launcher, ranked sets.** Both players need 1.1.0 (the lobby

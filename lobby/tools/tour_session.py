@@ -187,7 +187,12 @@ class Player:
                 s = ev.get("set") or {}
                 ts = s.get("tournament") or {}
                 self.role = "host" if ev["slot"] == 0 else "join"
-                # the better seed attacks (side 0 of a bracket set has the better seed in round 1; later: by seed)
+                # the better seed attacks; the seeds come with the bracket (asked now if the loop has not yet)
+                if not any(x.get("seed") for x in self.a.entrants) and getattr(self.a, "tid", None):
+                    try:
+                        self.a.entrants = self.client.tour_get(self.a.tid)["entrants"]
+                    except LobbyError:
+                        pass
                 seeds = {x["name"]: x["seed"] for x in self.a.entrants}
                 mine = seeds.get(self.name) or 99
                 opp = seeds.get((ev.get("opponent") or {}).get("name")) or 99
@@ -311,7 +316,7 @@ def main():
                             max_players=max(8, 1 << (max(1, a.players - 1)).bit_length()))
         for p in players:
             p.client.tour_join(t["id"])
-        tid = t["id"]
+        tid = a.tid = t["id"]
         a.entrants = []
         state, t_end, last = "signup", time.time() + a.seconds, 0.0
         while time.time() < t_end:

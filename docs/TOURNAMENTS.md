@@ -272,5 +272,22 @@ python ../../tests/ci_unittest.py test_tournaments test_tk_tour
 - Blocks between players do not keep them apart in a bracket (a bracket cannot choose); the organizer can
   disqualify a player who misbehaves.
 - No spectating of a set (the JSON endpoint shows the score as it happens).
-- Not tried with real games of several real players over the internet yet: the end-to-end runs use the lobby's
-  stub clients and stub games on one PC.
+- Not tried with several real players over the internet yet (below: real games, but all on one PC).
+
+## Measured with the real game
+
+`lobby/tools/tour_session.py --exe t5dr.exe --players 4 --format single --set-wins 2 --rounds 1 --quit W1-2:2`
+(2026-10-19, main's t5dr.exe, four persistent games minimized, muted and at below normal priority on one PC that ran
+other agents' games too; one round per game to save time; the better seed attacks, the other stands still), once
+with rollback and once with lockstep (`--env T5_RB_MODE=off`):
+
+| | rollback | lockstep |
+|---|---|---|
+| tournament | finished, 3 sets | finished, 3 sets |
+| games | 6: 5 confirmed, 1 forfeit (the planned quit) | the same |
+| every confirmed game | reported from both games' result files, equal state hashes on both sides, 0 mismatching frames | the same |
+| the quit (game 2 of W1-2 at 1-0: the losing player's game window closed 6 s into the fight) | the game: `forfeit (quit)` from the reports `quit` + `disconnect` (peer_quit); the set: `forfeit`, to the other player | the same |
+| call to the set's first FIGHT START | median 20.4 s (a new game's boot included) | 19.9 s |
+| whole tournament | 344 s | 303 s |
+
+Runs: build/tour/runs/real_rb, real_ls (local only).

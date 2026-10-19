@@ -552,6 +552,9 @@ def main():
     # The Python tools this starts print paths; into a pipe they would use the ANSI code page and
     # stop with UnicodeEncodeError on a folder or user name outside it ("Tekken Ł東京").
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    # And the files they write (the lifted C++, JSON) in UTF-8, whatever Windows' code page is: on a
+    # Korean Windows (cp949) the lifter stopped with UnicodeEncodeError on a "--" dash in a comment.
+    os.environ["PYTHONUTF8"] = "1"
     P = Paths(a.out, a.deps)
     os.makedirs(P.out, exist_ok=True)
     os.chdir(P.out)

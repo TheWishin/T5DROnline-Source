@@ -165,6 +165,21 @@ class BuildOutput(unittest.TestCase):
     def test_build_game_sets_utf8_for_its_tools(self):
         src = text("tools", "build_game.py")
         self.assertIn('os.environ.setdefault("PYTHONIOENCODING", "utf-8")', src)
+        # files too: the lifter's open(path, "w") failed on a Korean (cp949) Windows with a "--" dash
+        self.assertIn('os.environ["PYTHONUTF8"] = "1"', src)
+
+    def test_tools_write_files_in_utf8_on_any_code_page(self):
+        # A tool's open(path, "w") with no encoding, as the lifter writes the C++ files: in UTF-8 mode it is UTF-8,
+        # whatever Windows' ANSI code page is (cp949 has no "—").
+        launcher_env = text("launcher", "core.py")
+        self.assertIn('PYTHONUTF8="1"', launcher_env)
+        self.assertIn('os.environ["PYTHONUTF8"] = "1"', text("launcher", "t5dr_launcher.pyw"))
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "chunk.cpp")
+            code = f"open({out!r}, 'w').write('// a \\u2014 dash ' + {UNICODE!r})"
+            subprocess.run([sys.executable, "-c", code], check=True, env=dict(os.environ, PYTHONUTF8="1"))
+            with open(out, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "// a — dash " + UNICODE)
 
 
 class Binaries(unittest.TestCase):

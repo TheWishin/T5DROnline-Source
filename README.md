@@ -138,6 +138,10 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
+- **Settings** -> **Stage blur / glow**: some stages soften the whole picture
+  (the misty swamp, and three more) or let the sun glow (the scrapyard). On
+  (default) looks as on the PS3, at every internal resolution; Off shows those
+  stages sharp, without the glow. Online, each player can choose their own.
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.
@@ -244,6 +248,14 @@ Good to know:
   extra settings" -> `T5_RB_MODE=off`.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
+- **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
+  tab's **Friends** page. Once they accept, you see when they are online,
+  searching or in a match. **Invite to a match** (or to your room) asks them;
+  one click on **Accept** on their side starts it. Blocking a player ends the
+  friendship.
+- **Discord** (optional, off by default): Settings -> Discord shows "In lobby",
+  "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
+  with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 The game's own **Online** menu entry needs Sony's servers, which are gone: after

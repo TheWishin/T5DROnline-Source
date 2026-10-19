@@ -214,7 +214,11 @@ class UdpService:
                 return
             self.stats["dropped"] += 1
             return
-        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(key) or not self.ctl_global.take():
+        # The total (ctl_global) is for what is answered to anybody: the ping. Registrations and relay binds
+        # are answered only for a token the server handed out, so a spoofed flood that uses up the total
+        # must not stop the players' own NAT setup and relay binds with it (1.1.2; before, it did).
+        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(key) or \
+                (kind == proto.U_SPING and not self.ctl_global.take()):
             self.stats["dropped"] += 1
             return
         if kind == proto.U_SPING and len(data) == proto.PING.size:

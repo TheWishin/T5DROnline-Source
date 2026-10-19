@@ -90,9 +90,12 @@ DEFAULTS = {
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
+    "stage_blur": "on",        # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
+    "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
+    "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
@@ -134,6 +137,8 @@ class Settings(dict):
             self["vsync"] = "on"
         if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
             self["power_saving"] = "auto"
+        if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
+            self["stage_blur"] = "on"
 
     def save(self):
         try:
@@ -160,6 +165,8 @@ class Settings(dict):
             env["PS3_VSYNC"] = "0"
         if self["power_saving"] in ("on", "off"):       # auto: the game decides (PS3_LAPTOP unset)
             env["PS3_LAPTOP"] = "1" if self["power_saving"] == "on" else "0"
+        if self["stage_blur"] == "off":
+            env["PS3_STAGE_BLUR"] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
@@ -661,7 +668,7 @@ VSYNC_MODES = {          # English; t(label) where it is shown
     "off": N_("Off (lowest latency, may tear)"),
 }
 
-# Power saving (PS3_LAPTOP, ps3recomp patch 0047, docs/RENDER_PERF.md "Laptops and handhelds"): the
+# Power saving (PS3_LAPTOP, ps3recomp patch 0047, docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"): the
 # same game at the same 60 fps with less CPU around it -- no spinning waits, fewer worker threads --
 # so a laptop's or handheld's processor stays under its heat and power limit and keeps its clock
 # (on an APU the CPU and the graphics share one power budget). Auto: the game turns it on when the
@@ -738,6 +745,17 @@ def power_saving_auto(status=None, plan=None, cpu=None):
     if MOBILE_CPU.search(cpu if cpu is not None else cpu_name()):
         return True, N_("a mobile processor")
     return False, None
+
+
+# Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage
+# 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On (default): as the game draws
+# it, at every internal resolution like at Native. Off: PS3_STAGE_BLUR=0, those stages sharp and
+# without the glow; the HUD and every other stage stay as they are. Only the picture changes, so the
+# two players of an online match may choose differently. docs/RENDER_PERF.md "Stage blur and glow".
+STAGE_BLUR_MODES = {     # English; t(label) where it is shown
+    "on": N_("On (default)"),
+    "off": N_("Off"),
+}
 
 
 def internal_res_for_screen(width, height):

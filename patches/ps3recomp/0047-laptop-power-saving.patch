@@ -183,7 +183,7 @@ index 80b8e6f..ad0fa13 100644
  
  /* Store graphics handler callback */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e53cadc..3ab9e6f 100644
+index 8d11671..d90b555 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -54,6 +54,7 @@ void rsx_pf_stamp(int slot)
@@ -203,7 +203,7 @@ index e53cadc..3ab9e6f 100644
  #endif
  
  #if !defined(_WIN32)
-@@ -2187,6 +2190,7 @@ static void ld_lower(const char* s, char* out, size_t n)
+@@ -2197,6 +2200,7 @@ static void ld_lower(const char* s, char* out, size_t n)
      out[k] = 0;
  }
  
@@ -211,7 +211,7 @@ index e53cadc..3ab9e6f 100644
  static int ld_create_device(IDXGIFactory4* factory)
  {
      if (getenv("RSX_TEST_NO_D3D12")) return -1;   /* tests: behave like a PC without a D3D12 GPU */
-@@ -2285,13 +2289,79 @@ static int ld_create_device(IDXGIFactory4* factory)
+@@ -2295,13 +2299,79 @@ static int ld_create_device(IDXGIFactory4* factory)
      memset(&o, 0, sizeof o);
      g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof o);
      const unsigned flv = (unsigned)fl.MaxSupportedFeatureLevel;
@@ -293,7 +293,7 @@ index e53cadc..3ab9e6f 100644
  /* Present pacing. The game's clock is the vblank ticker (QPC, 59.94 Hz); a
   * flip completes on a tick, and the next frame starts only then. A vsync'd
   * Present on a display slower than that (50 Hz TVs, 30 Hz 4K-over-HDMI-1.4)
-@@ -2428,12 +2498,26 @@ static void ld_lat_after_present(u32 frame)
+@@ -2438,12 +2508,26 @@ static void ld_lat_after_present(u32 frame)
      LONGLONG vb = 0, per = 0;
      if (ld_dwm_vblank(&vb, &per)) lat_log('C', "%lld %lld", (long long)vb, (long long)per);
  }
@@ -321,7 +321,7 @@ index e53cadc..3ab9e6f 100644
      g_pf.latency_wait_ticks += ld_pf_qpc() - w0;
  }
  /* GPU timestamps (g_gt above). */
-@@ -7055,6 +7139,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
+@@ -7103,6 +7187,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
  static DWORD WINAPI ld_vworker_main(LPVOID arg)
  {
      ld_vscratch* s = (ld_vscratch*)arg;
@@ -329,7 +329,7 @@ index e53cadc..3ab9e6f 100644
      for (;;) {
          if (ld_vjob_try_run(s)) continue;
          /* idle: spin briefly (draws arrive every few microseconds while a
-@@ -7085,13 +7170,23 @@ static int ld_vjob_enabled(void)
+@@ -7133,13 +7218,23 @@ static int ld_vjob_enabled(void)
          getenv("LD_TRACE_PSO") || getenv("LD_FORCE_VA"))
          return 0;
      /* Workers by the processors this process may use (host_sched_cpus):
@@ -357,7 +357,7 @@ index e53cadc..3ab9e6f 100644
      if (n < 1) return 0;
      if (n > 16) n = 16;
      g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
-@@ -7103,8 +7198,9 @@ static int ld_vjob_enabled(void)
+@@ -7151,8 +7246,9 @@ static int ld_vjob_enabled(void)
          if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
      }
      g_vj_threads = started;
@@ -369,7 +369,7 @@ index e53cadc..3ab9e6f 100644
      return started > 0;
  }
  
-@@ -10757,6 +10853,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11152,6 +11248,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          g_ld_frame_wait = g.swap->lpVtbl->GetFrameLatencyWaitableObject(g.swap);
          fprintf(stderr, "[pacing] max frame latency %u (waitable swap chain)\n", latency);
      }

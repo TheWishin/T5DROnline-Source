@@ -24,7 +24,7 @@ Privacy -- applied to every text file before it goes into the zip (class Scrubbe
     (10.x, 172.16-31.x, 192.168.x), link-local and unique-local addresses are kept as they are
   * passwords, tokens, match keys, cookies and the like (by name, by URL, and the exact values
     found in launcher.json, online.json and the control files) become <removed>; so does any hex
-    string of 32+ digits
+    string of 32+ digits and anything shaped like a lobby recovery code (XXXX-XXXX-XXXX)
   * e-mail addresses become <email>; the Sony package file name <package>.pkg; the company name in
     "OneDrive - Company" becomes <org>
   * lobby player names -- this player's and every opponent's -- become <player>: where the files name
@@ -88,6 +88,9 @@ _ONEDRIVE_ORG = re.compile(r"(OneDrive - )([^\\/:*?\"<>|\r\n]+?)(?=[\\/\"<>|\r\n
 _EMAIL = re.compile(r"(?<![\w.+\-])[\w.+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 _PACKAGE = re.compile(r"[A-Za-z0-9_\-]{40,}\.pkg", re.I)
 _LONG_HEX = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{32,}(?![0-9A-Za-z])")
+# A lobby account's recovery code (XXXX-XXXX-XXXX, lobby/t5lobby/server/store.py): name + code resets the password
+_RC = "[A-HJKMNP-Z2-9]"
+_RECOVERY_CODE = re.compile(r"(?<![A-Za-z0-9-])" + _RC + "{4}-" + _RC + "{4}-" + _RC + r"{4}(?![A-Za-z0-9-])", re.I)
 
 _V4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w)(?!\.\d)")
 # a run of hex digits, colons and dots that holds at least two colons (the start rule keeps this linear)
@@ -261,6 +264,7 @@ class Scrubber:
         s = _SECRET_KV.sub(self._secret_kv, s)
         s = _SECRET_FLAG.sub(self._flag, s)
         s = _LONG_HEX.sub(self._hex, s)
+        s = _RECOVERY_CODE.sub(lambda m: (self._count("secret") or P_REMOVED), s)
         s = _USER_PATH.sub(self._user, s)
         s = _ONEDRIVE_ORG.sub(lambda m: (self._count("user") or m.group(1) + P_ORG), s)
         for rx, repl, key in self._name_res:
@@ -726,7 +730,7 @@ def _gb(n):
 
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
-                            r"(?:adapter|res_scale|window on|display|FATAL|CPU budget|built for|mode |lobby match|"
+                            r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
                             r"power saving|on AC|on battery|power source)")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
 # late frames); the last few of each kind go into system.txt.
@@ -820,13 +824,13 @@ def system_text(ctx, now=None, game_log=None):
     return "\n".join(L) + "\n"
 
 
-SETTING_KEYS = ("display", "internal_res", "vsync", "input_delay", "power_saving", "mute", "background",
+SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "power_saving", "input_delay", "mute", "background",
                 "low_priority")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     """The 'settings in use' lines of system.txt from the launcher's settings (a dict). `labels`:
-    {key: {value: text}} for display, internal_res, vsync and input_delay. File paths of the .pkg/.rap are
+    {key: {value: text}} for display, internal_res, vsync, stage_blur and input_delay. File paths of the .pkg/.rap are
     not listed (only whether they are set); a password could not be in here: only these keys are read."""
     labels = labels or {}
     st = settings or {}
@@ -839,6 +843,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     L = [f"Window and resolution: {lab('display')}",
          f"Internal resolution: {lab('internal_res')}",
          f"VSync: {lab('vsync')}",
+         f"Stage blur / glow: {lab('stage_blur')}",
          f"Power saving (laptops, handhelds): {lab('power_saving')}",
          f"Online input delay (netcode): {lab('input_delay')}",
          f"Mute sound: {yesno(st.get('mute'))}",

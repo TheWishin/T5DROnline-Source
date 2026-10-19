@@ -40,6 +40,7 @@ uint64_t gcall(uint32_t code, uint64_t a0 = 0, uint64_t a1 = 0, uint64_t a2 = 0)
 bool fight_configured();                 /* T5_FIGHT, T5_FIGHT_FILE or T5_CTL_DIR given */
 void fight_init();                       /* parse the environment (static init time) */
 void fight_on_frame(uint32_t f);         /* main thread, top of every frame */
+extern uint32_t g_fight_frame;           /* frame of the last FIGHT START (0: none yet) */
 
 /* in-game character select (df_pick.cpp; docs/DIRECTFIGHT.md "Character select in the game") */
 uint16_t    pick_read_local_pad();         /* the local pad for the select screen: directions, face buttons, Select */

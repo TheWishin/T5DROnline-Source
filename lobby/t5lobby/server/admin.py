@@ -240,6 +240,7 @@ def cmd_user(a):
           f"({r['wins']}-{r['losses']}-{r['draws']}), ranked {r['ranked_games']}, tier {r['tier']} "
           f"(peak {r['tier_peak']})")
     print(f"logins    {st.session_count(r['id'])} remembered, {st.recovery_left(r['id'])} recovery codes left")
+    print(f"friends   {st.friend_count(r['id'])}")
     print(f"banned    {_fmt_t(ban[0]) + ' ' + ban[1] if ban else 'no'}")
     _print_matches(st.recent_matches(10, r["name"]))
     return 0

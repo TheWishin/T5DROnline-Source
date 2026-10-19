@@ -455,9 +455,11 @@ modes, attract demo) and a direct fight on each of the 18 stages:
   1536 x 1024, 20/22/25/31/33 the whole target); menus and character select
   likewise;
 - on some stages a glow: the 3D target drawn into two 128 x 128 buffers,
-  blurred back and forth, added onto the 3D target;
+  blurred back and forth, added onto the 3D target (stage 20; see [Stage blur
+  and glow](#stage-blur-and-glow-patch-0043-branch-stage-blur));
 - one draw that filters the 3D target down into the 1280 x 720 display buffer
-  (0x0 / 0x3A0000, zeta 0x740000), then the HUD, text, menus and movie frames
+  (0x0 / 0x3A0000, zeta 0x740000) -- on stages 24, 26, 28 and 34 a soft focus
+  of four taps, elsewhere one tap -- then the HUD, text, menus and movie frames
   on top. Reflections (stages 27, 29, 30) are drawn in the 3D pass itself.
 
 What the usual internal-resolution problems would need, and what this game
@@ -589,6 +591,148 @@ Only host pixels change, so the two players may choose different steps:
   and a build, the pair at below-normal priority.)
 - Lockstep, host **1440p** vs joiner **Lower**, RTT 30 ms, 1 % loss: 0
   mismatching, the same result hash `93f6b16c9bdd829d` on both sides.
+
+## Stage blur and glow (patch 0043, branch `stage-blur`)
+
+Player report: "Some stages like Ominous Mist have a 'blur' effect on them
+which is especially bad when playing with a higher internal resolution. It'd
+be nice if we could disable this." Two things came of it: the blur now looks
+at every internal resolution as it does at Native (the fix), and **launcher
+-> Settings -> Stage blur / glow: On (default) / Off** turns the stages' blur
+and glow off (`PS3_STAGE_BLUR=0`).
+
+### What the effect is
+
+Found with draw CSVs, the dumped fragment programs and frame-exact surface
+dumps of every stage (ids 17-34; intro and fight). Five stages filter the
+picture after the 3D pass; the others, the HUD, the menus and the movies do not:
+
+| stage | effect | draws |
+|---|---|---|
+| 34 (the misty swamp with the willows; by its look the player's "Ominous Mist"), 24, 26, 28 | soft focus | the downsample of the 3D target (2048 x 1440) into the display buffer reads it four times: a centre tap and three taps 2 guest texels around it (a triangle; the offsets come from vertex constants, in guest texels), weighted 1/16 for the centre and 5/16 for each of the others on stage 34, then a colour curve. The stage scenes behind the title screen and practice mode use the same kind of program |
+| 20 (the scrapyard) | glow around the sun | the 3D target averaged with four taps into a 128 x 128 buffer, twelve passes back and forth between two 128 x 128 buffers with four diagonal taps each (a Kawase blur, offsets growing per pass), the result blended onto the 3D target |
+
+The runtime calls such a draw a **filter kernel**: a fragment program that
+samples a render-target surface two or more times on one texture unit
+(`rsx_fp_texture_tap_mask`). Every other read of a render target in this game
+is a single tap (the plain downsample of the other 13 stages, stage 33's heat
+haze, which reads the 3D target once at an offset taken from a normal map).
+
+### Why it looked worse above Native
+
+The kernels' offsets are guest texels, and they rely on the bilinear filter:
+at Native each tap averages a 2 x 2 texel footprint, so taps 2 texels apart
+blend into one soft picture. Patch 0038 scales the render targets, and the
+offsets stay where they are in texture space (normalised coordinates, as they
+should), but each tap's footprint shrinks with the host texel: at 4K a guest
+texel is 3 x 3 host texels, the footprint a third as wide, and the four taps
+no longer meet. The picture becomes three or four sharp copies of every edge,
+1.25 Native pixels apart -- 3.8 pixels on a 4K screen (1080p 1.9, 1440p 2.5):
+a doubled outline on branches, hair and every other edge of the 3D scene. The
+glow's Kawase passes, which put each tap on a texel corner, skip host texels
+at 1440p and 4K: its buffers came out banded and blotchy instead of smooth.
+Not a wrong size or a wrong offset -- the same kernel with too little filter
+under each tap.
+
+### The fix
+
+A filter kernel on a scaled surface (above Native) samples a **guest-size
+view** of it: the surface box-filtered to its guest size (each guest texel the
+area-weighted mean of the host texels it covers -- exact for 1.5x and 3x as
+well as 2x), made again only when the surface was written since
+(`ld_guest_view_srv`: one extra 3-vertex draw before the kernel's draw records
+its state, like the scaled copies of 0038). The taps then cover what they
+cover at Native, on a supersampled picture. Single-tap reads keep the full
+internal resolution, so every other stage (and the HUD of these five) stays as
+sharp as before; below Native nothing changes. The log names every kernel
+once: `[stage-blur] filter pso ...: unit 0 reads 0x17F0000 2048x1440 (x3) into
+0x0 1280x720: guest-size view`.
+
+### The switch
+
+`PS3_STAGE_BLUR=0` (also `off`, `false`, `no`; the launcher's Off): every tap
+of a filter kernel reads the kernel's centre -- the tap nearest the taps' mean
+when it is less than half the kernel's radius away (the soft-focus kernel's
+centre tap), else the mean (a symmetric kernel). This is an HLSL post-pass on
+the decompiled program (`rsx_fp_apply_single_tap`, part of the PSO identity),
+so the weights and the colour curve stay and the picture keeps its colours,
+only sharp. A draw that blends a **glow buffer** (a surface last drawn by a
+filter kernel and smaller than the canvas) onto a full-size target is not
+drawn: the sun has no glow. The log says `[display] stage blur/glow: off
+(PS3_STAGE_BLUR)` and names the first skipped glow composites. HUD, menus,
+movies and the other 13 stages draw exactly as with On.
+
+### Checked
+
+Frame-exact comparisons come from **lockstep pairs** (`tools/rollback_net_test.py
+--mode1 off --mode2 off --fight lil,ask,<stage>,1` with `T5_NET_SHOT=300,900,1500`
+and `LD_SURF_DUMP`): the two games run the same game frames, so the host at
+Native and the joiner at another step (or with Off) dump every surface of the
+same frame. Two single offline runs do not show the same picture at the same
+fight frame, even with `T5_DF_SHOT=+n` (n frames after FIGHT START): the
+camera angle comes from random numbers that depend on timing. Hit sparks and
+splashes can differ even within a pair (they are not part of the state the
+pair keeps equal), so the comparisons below use idle fighters or leave them out. Local evidence under `build/blur/`
+(git-ignored).
+
+"Detail" below is the mean gradient of the 3D picture under the HUD band at the
+step's own output size, relative to the Native picture of the same frame
+scaled up bilinearly: 1.0 = looks like Native; ghost copies of edges raise it.
+Three shots per pair (intro, fight), ranges over the shots:
+
+| stage | step | before (main) | after (0043) |
+|---|---|---|---|
+| 34 | 1080p | 1.16-1.31 | 1.01-1.06 |
+| 34 | 1440p | 1.24-1.45 | 1.07-1.15 |
+| 34 | 4K | 1.28-1.53 | 1.03-1.05 |
+| 24 | 1080p | 1.17-1.28 | 1.05-1.07 |
+| 24 | 1440p | 1.23-1.36 | 1.09-1.13 |
+| 24 | 4K | 1.26-1.47 | 1.04-1.06 |
+| 26 | 1440p | 1.17-1.29 | 1.10-1.17 |
+| 26 | 4K | 1.19-1.36 | 1.05-1.08 |
+| 28 | 1440p | 1.42-1.54 | 1.21-1.25 |
+| 28 | 4K | 1.42-1.57 | 1.11-1.15 |
+
+Stage 28 keeps more of its own detail through its kernel. Stage 20's glow
+buffers, scaled to 128 x 128 and compared with Native's of the same frame
+(fighters idle, so no hit sparks differ): 4K before a mean difference of
+0.27-0.35 levels, max 9-13, after 0.03-0.05, max 1-2; 1440p before 0.18, max 6,
+after 0.24-0.27, max 3 (3 % dimmer on average: the box view of a supersampled
+picture against Native's point samples, under a blend that multiplies colour by
+alpha); the roughness of the buffer before 1.2-2.1x Native's, after 1.0-1.1x.
+To the eye: the doubled branch and hair outlines on stage 34 at 4K are gone
+and the soft focus looks like Native's; the glow's banding is gone.
+
+Off: the five stages are sharp (detail Off/On on stage 34: 1.30-1.43 at
+Native, 1.65-2.07 at 4K), the colours unchanged, stage 20 without the sun's
+glow. Every stage was run On against Off (lockstep pairs, fighters idle, at
+Native and at 4K): all 18 render correctly with Off and the HUD is the same;
+on the 13 stages without a filter the runtime logs no kernel and draws
+exactly as with On (what still differs between the two pictures are the
+stages' own animated textures and particles -- waterfalls, fire, steam --
+which differ between any two games). Smoke suite: quick PASS at Native (On);
+at 4K boot, practice and arcade PASS with On and with Off. (A whole quick run
+at 4K with Off, next to 19 other games, missed five of its frame shots --
+33 MB readbacks timing out -- and failed on that; the frames it got were
+right, and the tests passed again on a quieter PC.)
+
+**Cost:** one box pass per filtered surface and frame (stage 34 at 4K:
+6144 x 4320 -> 2048 x 1440, nine loads per guest texel). GPU time per fight
+frame (frame log `gpu_us`, median of two runs each, the GPU shared with other
+agents' games): stage 34 at 4K 1.80 ms before, 1.43 after, 2.47 Off; stage 20
+at 4K 2.11 / 1.71 / 1.83; stage 34 at Native 0.67 / 0.43 -- within the spread
+of these runs, nothing measurable.
+
+**Online:** host pixels only -- the patch reads no guest memory and changes no
+command, so the two players may choose differently. Rollback pairs (the online
+default, `tools/rollback_net_test.py --mode1 default --mode2 default`) with one
+side Off, 7 matches of two rounds: stage 34 Native On vs Native Off at RTT 50 ms
+/ 3 % loss (2 matches, 850 / 498 rollbacks), stage 20 4K On vs 1440p Off at
+RTT 150 ms / 3 % (2 matches, 829 / 505), stages 24, 26 and 28 4K Off vs Native
+On at RTT 100 ms / 2 % (3 matches, 482 / 532): 0 mismatching frames and the
+same result hash on both sides in every match. All 70 lockstep pair runs above
+(Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
+PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)
 
 ## Laptops, handhelds and 8-core APUs (patch 0047, branch `laptop-perf`)
 

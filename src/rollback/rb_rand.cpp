@@ -162,6 +162,38 @@ void h_scene(ppu_context* ctx)
     t_scene--;
 }
 
+/* The scene's small LCG at 0x1008F0C4 (x -> 5x + 3; +0x64 of the battle
+ * object 0x1008F060): the fight logic steps it (0x15A40, the moves' events:
+ * which camera, which effect variant) and so did the ambient sound task
+ * 0xA9140 -> 0xA8DB8 beside the scene, which picks a random delay for its next
+ * sound from it -- but only when its last sound has stopped playing (0xAC814),
+ * which follows the audio clock and how long the PC's frames take. Two PCs then
+ * stepped the scene's LCG a different number of times, a later camera pick
+ * differed, and the camera's projected fighter positions decide the sidestep
+ * side (rb_rand.cpp header): the Steve vs Hwoarang desyncs of the e2e runs
+ * fin_b_rb and f1 (camera matrix 0x100996E0..0x1009971F and its copies at
+ * 0x100A0990 / 0x100A3B10 / 0x100A3B90 apart from ~1,000-2,000 frames into the
+ * fight, no rollback near). The task now steps a private copy: the scene's
+ * word is swapped out while it runs. */
+constexpr uint32_t kSoundTask = 0xA9140u, kSceneLcg = 0x1008F0C4u;
+GuestFn o_sound_task = nullptr;
+uint32_t g_sound_lcg = 0;
+bool g_sound_lcg_init = false;
+std::atomic<uint64_t> g_sound_task_runs{ 0 };
+inline uint32_t gr32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
+inline void gw32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); memcpy(vm_base + a, &v, 4); }
+void h_sound_task(ppu_context* ctx)
+{
+    if (!g_isolating || t_scene || ctx->thread_id != main_tid()) { o_sound_task(ctx); return; }
+    const uint32_t scene = gr32(kSceneLcg);
+    if (!g_sound_lcg_init) { g_sound_lcg = scene ^ 0x5A5A5A5Au; g_sound_lcg_init = true; }
+    gw32(kSceneLcg, g_sound_lcg);
+    o_sound_task(ctx);
+    g_sound_lcg = gr32(kSceneLcg);
+    gw32(kSceneLcg, scene);
+    g_sound_task_runs.fetch_add(1, std::memory_order_relaxed);
+}
+
 void h_tls_rand(ppu_context* ctx)
 {
     const bool priv = g_isolating && t_scene == 0 && ctx->thread_id == main_tid();
@@ -195,8 +227,10 @@ void rand_install()
     const bool scene = g_on && detour(kSceneTask, h_scene, &o_scene);
     const bool tls = detour(kTlsRand, h_tls_rand, &o_tls_rand);
     g_isolating = g_on && scene && tls;
-    note("TLS random generator: %s", g_isolating ? "the scene's own stream; effect and stage draws from a private one (T5_TLS_RAND=0: shared)"
-                                     : !g_on ? "shared (T5_TLS_RAND=0)" : "the detours could not be installed -- one shared stream (desyncs possible)");
+    const bool sound = g_isolating && detour(kSoundTask, h_sound_task, &o_sound_task);
+    note("TLS random generator: %s; the scene's LCG 0x%08X: %s", g_isolating ? "the scene's own stream; effect and stage draws from a private one (T5_TLS_RAND=0: shared)"
+                                     : !g_on ? "shared (T5_TLS_RAND=0)" : "the detours could not be installed -- one shared stream (desyncs possible)",
+         kSceneLcg, sound ? "the ambient sound task steps its own copy" : "shared with the ambient sound task");
 }
 
 /* Netplay's sync points (frame 0 of a session, every scene barrier): the TLS

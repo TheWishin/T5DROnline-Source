@@ -57,8 +57,8 @@ int         model_char(int model);         /* the character of a select-record m
 /* custom costumes online (df_costume.cpp; docs/DIRECTFIGHT.md "Custom costumes online") */
 void costume_session(uint32_t f, bool net);   /* this PC's table: once per netplay session (offline: once) */
 bool costume_ready(bool net);                 /* the opponent's table is here (offline: always) */
-void costume_apply(uint32_t f, bool net);     /* the game mode's first frame: both sides' blocks into the VS custom data */
-void costume_check(uint32_t f);               /* FIGHT START: still what was written */
+void costume_apply(uint32_t f, bool net);     /* FIGHT START: both sides' blocks into the VS custom data */
+void costume_check(uint32_t f);               /* the loading is over: still what was written (logged once) */
 
 /* game control channel of a persistent game (df_ctl.cpp, T5_CTL_DIR) */
 struct CtlCmd {

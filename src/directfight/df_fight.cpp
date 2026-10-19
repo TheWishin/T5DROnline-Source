@@ -1375,6 +1375,7 @@ void fight_on_frame(uint32_t f)
             /* only once lockstep runs: then inject() is this PC's exchanged input (before, it would be the
              * hooks' own override of the game's pad read, which the release below could not clear) */
             const bool intro = rd32(kSelectState) <= 12;
+            if (rd32(kSelectState) >= 11) costume_check(f);   /* once: the loading is over, the costumes the same */
             if (!g_held && session_netplay() && t5_netplay_lockstep_active() && intro != g_intro_hold) {
                 g_intro_hold = intro;
                 for (int p = 0; p < 2; p++) inject(p, intro, 0);

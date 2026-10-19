@@ -620,6 +620,19 @@ class SystemInfo(unittest.TestCase):
         self.assertNotIn(FAKE_PASSWORD, text)
         self.assertNotIn("Zed", text)
 
+    def test_settings_lines_show_vsync(self):
+        labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
+                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+        self.assertIn("vsync", report.SETTING_KEYS)
+        on = report.settings_lines(dict(core.DEFAULTS), labels, {}, None)
+        self.assertIn("VSync: On (smooth, default) [on]", on)
+        st = dict(core.DEFAULTS, vsync="off")
+        off = report.settings_lines(st, labels, {"PS3_VSYNC": "0"}, None)
+        self.assertIn("VSync: Off (lowest latency, may tear) [off]", off)
+        self.assertEqual(off.index("VSync: Off (lowest latency, may tear) [off]"),
+                         [i for i, ln in enumerate(off) if ln.startswith("Internal resolution:")][0] + 1)
+        self.assertIn("PS3_VSYNC=0", off[-1])
+
     def test_build_info_from_a_built_folder(self):
         with tempfile.TemporaryDirectory() as d:
             out = fake_native(d)

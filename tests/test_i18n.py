@@ -731,6 +731,33 @@ class RenderTests(Base):
         app.language_changed()
         self.assertEqual(app.lang_note.get(), "")
 
+    def test_vsync_box_in_german(self):
+        app = self.launcher("de")
+        app.update()
+        texts = all_texts(app)
+        for expect in ("VSync", "An (flüssig, Standard)", "Aus (geringste Verzögerung, Bild kann reißen)",
+                       "Das Spiel läuft immer mit 60 fps, wie auf der PS3."):
+            self.assertIn(expect, texts)
+        self.assertNotIn("On (smooth, default)", texts)
+        self.assertEqual(i18n.missing(), [])
+
+    def test_vsync_choice_is_saved_and_shown_again(self):
+        app = self.launcher("en")
+        app.update()
+        texts = all_texts(app)
+        for expect in ("VSync", "On (smooth, default)", "Off (lowest latency, may tear)",
+                       "The game always runs at 60 fps, like on the PS3."):
+            self.assertIn(expect, texts)
+        self.assertEqual(app.vsync_var.get(), "on")
+        self.assertNotIn("PS3_VSYNC", app.settings.env_overrides())
+        app.vsync_var.set("off")
+        app.save_settings()                       # what the radio button's command does
+        saved = self.core.Settings(os.path.join(self.dir, "launcher.json"))
+        self.assertEqual(saved["vsync"], "off")
+        self.assertEqual(saved.env_overrides()["PS3_VSYNC"], "0")
+        again = self.launcher("en")               # a new launcher shows the saved choice
+        self.assertEqual(again.vsync_var.get(), "off")
+
     def test_dynamic_launcher_texts_in_german(self):
         app = self.launcher("de")
         app.update()

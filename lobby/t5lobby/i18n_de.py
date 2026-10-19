@@ -492,6 +492,10 @@ MESSAGES = {
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",
     "Internal resolution": "Interne Auflösung",
+    "VSync": "VSync",
+    "On (smooth, default)": "An (flüssig, Standard)",
+    "Off (lowest latency, may tear)": "Aus (geringste Verzögerung, Bild kann reißen)",
+    "The game always runs at 60 fps, like on the PS3.": "Das Spiel läuft immer mit 60 fps, wie auf der PS3.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",

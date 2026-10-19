@@ -571,7 +571,7 @@ index 451d4bd..dba0afe 100644
          spu->rcv_evt[2] = (uint32_t)ev.data2;
          spu->rcv_evt[3] = (uint32_t)ev.data3;
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index 9eb022a..a3221d5 100644
+index 9eb022a..937a4aa 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
 @@ -81,6 +81,20 @@ static void table_unlock(void)
@@ -618,7 +618,50 @@ index 9eb022a..a3221d5 100644
      return 0;
  #else
      pthread_mutex_lock(&info->finish_mutex);
-@@ -621,14 +639,18 @@ int64_t sys_ppu_thread_exit(ppu_context* ctx)
+@@ -388,7 +406,7 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+     uint64_t arg          = LV2_ARG_U64(ctx, 2);
+     int32_t  priority     = LV2_ARG_S32(ctx, 3);
+     uint32_t stack_size   = LV2_ARG_U32(ctx, 4);
+-    /* uint64_t flags     = LV2_ARG_U64(ctx, 5); */
++    uint64_t flags        = LV2_ARG_U64(ctx, 5);   /* SYS_PPU_THREAD_CREATE_JOINABLE = 1, _INTERRUPT = 2 */
+     uint32_t name_addr    = LV2_ARG_PTR(ctx, 6);
+ 
+     if (stack_size == 0) stack_size = VM_PPU_STACK_SIZE;
+@@ -425,9 +443,19 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+     t->ctx.gpr[13]   = s_create_tls;
+     t->held          = s_create_held;
+ 
+-    t->state      = PPU_THREAD_STATE_RUNNING;
++    /* t5dr offline soak (patch 0041): a thread created without
++     * SYS_PPU_THREAD_CREATE_JOINABLE is detached from the start, as on lv2:
++     * nobody joins it, and its slot (one of PPU_THREAD_MAX = 64) and host
++     * handles are freed when it ends. Every thread used to be joinable, so
++     * those slots stayed FINISHED for good -- Tekken 5 DR's autosave and
++     * network-check threads took a new slot each time (~12 an hour of
++     * offline play), and the game would have run out of thread slots after
++     * a few hours. PS3_THREAD_ALL_JOINABLE=1 restores the old behaviour. */
++    { static int all_joinable = -1;
++      if (all_joinable < 0) all_joinable = getenv("PS3_THREAD_ALL_JOINABLE") ? 1 : 0;
++      t->joinable = all_joinable || (flags & 1) ? 1 : 0; }
++    t->state      = t->joinable ? PPU_THREAD_STATE_RUNNING : PPU_THREAD_STATE_DETACHED;
+     t->priority   = priority;
+-    t->joinable   = 1;
+     t->stack_addr = stack_addr;
+     t->stack_size = stack_size;
+     t->entry_addr = entry;
+@@ -466,9 +494,9 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+         *out = be_id;
+     }
+ 
+-    fprintf(stderr, "[SYS] sys_ppu_thread_create tid=%llu name=\"%s\" entry=0x%08llX arg=0x%llX stack=0x%X prio=%d\n",
++    fprintf(stderr, "[SYS] sys_ppu_thread_create tid=%llu name=\"%s\" entry=0x%08llX arg=0x%llX stack=0x%X prio=%d%s\n",
+             (unsigned long long)thread_id, t->name, (unsigned long long)entry, (unsigned long long)arg,
+-            stack_size, priority);
++            stack_size, priority, t->joinable ? "" : " detached");
+     /* YDKJ: dump the worker arg-object: func_000750A8 (thread body) does
+      * this=[arg+0x8], vtable=[arg+0xC], method=[vtable+0]. If this(+0x8) is null
+      * the worker dispatches its job on a null object -> construction never runs. */
+@@ -621,14 +649,18 @@ int64_t sys_ppu_thread_exit(ppu_context* ctx)
      ppu_thread_info* t = find_thread(tid);
      if (t) {
          t->exit_status = (int64_t)status;

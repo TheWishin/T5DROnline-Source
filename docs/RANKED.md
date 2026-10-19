@@ -191,9 +191,13 @@ before lockstep starts and would differ between the two PCs.
 The server offers it in `match_start`: `fight.pick` = seconds to pick
 (`T5L_INGAME_PICK`, default 30; 0 = off) when **both** clients announced the
 `ingame_pick` cap in their `hello` (the launcher does when its game build has the
-in-game select: it finds `T5_DF_PICK` in `t5dr.exe` / `t5dr_game.dll`), and not
-for the second and later games of a locked (ranked) set. `fight.p1`/`p2` stay
-the launchers' characters, resolved as before: the fallback.
+in-game select: it finds `T5_DF_PICK` in `t5dr.exe` / `t5dr_game.dll`), and in
+a locked (ranked) set only in the game that fixes its characters: game 1 of a
+ranked set of best of 3 (`set.number` 1 -- a replay of game 1 after a desync or
+draw too, nothing has counted yet), the first game of an older per-game ranked
+set. Casual games always pick (a rematch goes back to the select screen).
+`fight.p1`/`p2` stay the launchers' characters, resolved as before: the
+fallback.
 
 - The launcher puts `pick=N` on the game's fight line (`T5_FIGHT`, a
   `T5_FIGHT_FILE` line, the control channel's `T5_FIGHT`); the game does the
@@ -205,8 +209,13 @@ the launchers' characters, resolved as before: the fallback.
   fought with (from the direct-fight status file at FIGHT START). The server
   takes what both reports say (or the one report that says anything; two
   different answers count for nothing) for the match history, the profile's
-  character statistics and the "main" -- and, for the first game of a ranked
-  set, as the set's lock.
+  character statistics and the "main" -- and, for the picked game of a ranked
+  set, as the set's lock. With them `costumes: [P1, P2]`, the confirm buttons
+  (1-4 = LP, RP, LK, RK, 0 = the default; status file `b1`/`b2`): the set's
+  later games get them as `fight.buttons` and the launcher writes
+  `buttons=b1|b2` on the fight line, so games 2 and 3 fight the same costumes
+  even over a new connection (a replay after a desync) or in a restarted game --
+  the game's own memory of the last costume lasts one netplay session.
 - **Random**: the Select button on the select screen picks a random fighter and
   costume -- drawn on that player's PC, sent like any pick, so both games fight
   the same. The launcher's "Random" is resolved by the server as before (the
@@ -390,8 +399,9 @@ next one is a rematch vote. `T5L_RANKED_SET_WINS=1` turns sets off for everybody
 scripts and tests written before keep per-game rating); `MatchDriver` then answers `set_next` by itself.
 The Online tab turns it on; `"sets": false` in its online.json turns it off for that launcher.
 
-**In-game character select** (ingame-select branch): only game 1 of a set is picked; the lobby keeps the
-characters locked for games 2 and 3 (`match_start.set.number` > 1, `continue: true`).
+**In-game character select**: only game 1 of a set is picked (`fight.pick`); games 2 and 3 start by
+themselves after the countdown with no select screen, with game 1's fighters (`fight.p1`/`p2`) and costumes
+(`fight.buttons`), whether they continue in the running games or come over a new connection.
 
 **Measured (2026-10-19, `lobby/tools/set_session.py`, main's t5dr.exe, two persistent games on one PC
 loaded by other work, 1 round per game to save time).** A 2-0 set (run e5, Heihachi vs Kazuya) and a 2-1
@@ -816,7 +826,7 @@ in `hello.caps`, and an older client gets the old messages.
 | `recovery_codes` `password` | `recovery_codes {codes}` |
 | `set_char` `char`; `queue` + `char` | |
 | `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online) |
-| `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with) | `result_ack` |
+| `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with), `costumes` ([P1, P2] confirm buttons 0-4) | `result_ack` |
 | `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |
 | `hello` `caps`: `blind_ready` (blind ready check), `notices` (server notices), `ingame_pick` (this player's game picks on its own select screen) | `welcome.caps` echoes what the server accepted; `welcome` also has `strict_range`, `pair_cooldown` |
@@ -829,7 +839,8 @@ in `hello.caps`, and an older client gets the old messages.
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
-`keep`; `match_start` + `fight {p1, p2, stage, rounds, pick}` (`pick`: seconds, in-game select), `players [brief, brief]`,
+`keep`; `match_start` + `fight {p1, p2, stage, rounds, pick, buttons}` (`pick`: seconds, in-game select;
+`buttons`: a locked set's costumes), `players [brief, brief]`,
 `continue`, `rematch_of`, `min_seconds`, `start_time`, `key` (T5_NET_KEY); `brief()` + `fps`;
 `match_result` + `reason`, `blame`
 (you/opponent), `fight`, `rematch_window`, and `rating` + `rank_before`,

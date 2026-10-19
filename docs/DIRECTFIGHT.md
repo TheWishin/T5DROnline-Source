@@ -247,14 +247,18 @@ for different numbers of frames); the rollback loop starts again from there.
 The first match of a session needs none of this: its lockstep starts at FIGHT
 START anyway.
 
-**Ranked lock.** After the first game of a ranked set the lobby sends no
-`pick` (the set's characters are those the first game picked): the select
-screen is skipped and the driver picks both sides as in a lobby-picked fight,
-on each PC locally (the lockstep is paused there all the same). A fighter that
-is the same as in the session's last fight keeps its costume (the lock names
-characters only). Whether the set's next game was voted (Rematch) or started
-by the lobby on its own, the game gets the same "fight" command in the running
-session; one that comes while the win pose still runs waits for the select
+**Ranked lock.** A ranked set (best of 3, docs/RANKED.md "Ranked sets") is
+picked in its game 1 only; games 2 and 3 come with no `pick` (the set's
+characters are those game 1 picked): the select screen is skipped and the
+driver picks both sides as in a lobby-picked fight, on each PC locally (after a
+picked game the lockstep is paused there all the same). The costumes come
+along as `buttons=b1|b2` on the fight line (the lobby keeps the confirm buttons
+game 1 reported); without it a fighter that is the same as in the session's
+last fight keeps its costume -- only within one netplay session, so a set game
+over a new connection (a replay after a desync, a restarted game) needs the
+lobby's buttons. The set's next game starts by itself after the countdown (no
+vote): the game gets the same "fight" command in the running session (or a new
+session); one that comes while the win pose still runs waits for the select
 screen.
 
 Not done: no in-game text beyond the name plates (the launcher's status line

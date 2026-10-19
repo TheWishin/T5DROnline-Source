@@ -105,6 +105,50 @@ SERVER = (
     N_("opponent runs a different build"),
 )
 
+# lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)
+TOURNAMENTS = (
+    N_("tournaments need an account"),
+    N_("no such tournament"),
+    N_("only the server's organizers can create tournaments here"),
+    N_("a tournament name is 3-40 characters"),
+    N_("the format is single or double elimination"),
+    N_("a set is first to 2 or first to 3 games"),
+    N_("the player limit is 8, 16, 32 or 64"),
+    N_("the check-in window is 0, 5, 10, 15, 30 or 60 minutes"),
+    N_("seeding is random or by rating"),
+    N_("that start time has passed"),
+    N_("a tournament starts within {days} days"),
+    N_("this server has as many tournaments as it takes; try again later"),
+    N_("you already run {count} tournaments; finish or cancel one first"),
+    N_("update the launcher to play in tournaments"),
+    N_("sign-up for that tournament is closed"),
+    N_("that tournament is played with another build of the game"),
+    N_("that tournament is full"),
+    N_("you are not in that tournament"),
+    N_("that tournament is over"),
+    N_("check-in is not open"),
+    N_("that tournament is not running"),
+    N_("that set is not yours to play"),
+    N_("that set is not waiting for you"),
+    N_("only the organizer can do that"),
+    N_("that tournament has started already"),
+    N_("a tournament needs at least 2 players"),
+    N_("no such player in that tournament"),
+    N_("that player is out already"),
+    N_("no such set"),
+    N_("that set is decided; override it instead"),
+    N_("only a played set can be overridden"),
+    N_("that set has not been played"),
+    N_("that set was a walkover"),
+    N_("set {set} was already played from this result; reset it first"),
+    N_("finish your match first, then accept the tournament set"),
+    N_("finish your set first, then accept the tournament set"),
+    N_("you are in a tournament set; finish it first"),
+    N_("that player is playing a tournament set"),
+    N_("your tournament set is ready; accept it first"),
+    N_("that player has a tournament set to play"),
+)
+
 # lobby/t5lobby/client.py: LobbyError texts and the reasons a connection ended
 CLIENT = (
     N_("not connected to the lobby"),
@@ -271,7 +315,7 @@ WORDS = (
 )
 
 
-GROUPS = (SERVER, CLIENT, BUILD_TOOL, PREREQS, REPORT, UPDATER)
+GROUPS = (SERVER, TOURNAMENTS, CLIENT, BUILD_TOOL, PREREQS, REPORT, UPDATER)
 
 
 def templates():

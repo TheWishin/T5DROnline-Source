@@ -82,7 +82,8 @@ CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody ac
                "opponent_left": N_("Your opponent left."),
                "udp_unreachable": N_("No UDP connection to the lobby server (firewall?)."),
                "no_connection": N_("Could not connect the two PCs, not even through the relay."),
-               "relay_full": N_("The lobby server's relay is full; try again in a moment.")}
+               "relay_full": N_("The lobby server's relay is full; try again in a moment."),
+               "organizer": N_("The organizer decided the set.")}
 CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
                   "expired": N_("Challenge expired.")}
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}

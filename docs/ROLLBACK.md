@@ -2177,6 +2177,33 @@ back and start VS runs as before. A desync of this kind needs no rollback at
 all; it fits the "desync in match 2 with no rollback before it" reports
 (CLAUDE.md), not proven.
 
+**A predicted KO that a rollback took back (fix 5).** The e2e agent's
+net_rollback scenario at RTT 250 (run g2, match m23fd877921c5) ended without a
+result: both games voided it as "no_report". E2E Net1's game saw the KO on its
+live frame -- `MATCH OVER ... winner P1`, `pads held neutral (the match is
+decided)` -- and the next rollback took it back (`the match end seen at frame
+2285 was rolled back -- no result yet`): with the peer's real input the hit did
+not land. Net2 never saw a KO. The netplay result watch handled that
+(`watch_match` cancels its pending result), the direct-fight driver did not:
+it had gone to its "over" phase on the predicted KO for good, held its pads and,
+from 40 frames on, pressed START every 20 frames to skip the replay -- in a
+fight that went on. Under rollback the post-match rule decides the inputs only
+while the game state shows the match decided, so those START presses went into
+the input stream on both PCs and paused and unpaused the fight; 2 400 frames
+later the launcher gave up, and the next match's reset waited 60 s in the game
+mode and ended the game (exit 6). The driver's acts on a match end are
+irreversible, so under rollback it now acts only once the end is final
+(`t5_netplay_match_end_final`, `df_fight.cpp` Ph::Fight): this side's match
+watch has it and every frame up to it ran on confirmed input
+(`rb::net::state_final`) -- or its result is out already. The frames after the
+KO do not count (they cannot change it, and the post-match rule decides them);
+"the whole live state final" would never hold at RTT 250, where the last 10-15
+frames always rest on predictions (a first version of the fix waited for that
+and only got out of its "fight" phase when the game left the game mode). It
+costs a few frames between the KO and the driver's hold; the rule covers them.
+Lockstep: unchanged (final at once). The log says `the match end rests on
+predicted input -- acted on once confirmed` / `the match end is confirmed`.
+
 **Not explained: a select screen that never loads, under heavy load.** Twice on
 the rebased build with 9-13 game instances on the PC (F10 and F12, both in
 cycle 5, both right after a title visit), S's select mode stayed in its loading

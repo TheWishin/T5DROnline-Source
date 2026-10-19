@@ -10,9 +10,8 @@ French i18n_fr.py).
   known to translate_message() (so a new server message without a German entry fails here);
 * Auto picks the Windows language when the launcher has it, else English; the Settings box lists every language
   in its own name; Korean and Japanese get a font with their glyphs;
-* the launcher and the Online tab render in every language at 100 % and 150 % display scaling with withdrawn
-  windows: no text missing from the catalog, no English left, nothing cut off where English is not
-  (tests/i18n_layout.py);
+* the launcher and the Online tab render in every language at 100 %, 133 % and 150 % display scaling with
+  withdrawn windows: no text missing from the catalog, no English left, nothing cut off (tests/i18n_layout.py);
 * the lag sentences built from a lag_check event say what the server's own English sentences say.
 """
 import ast
@@ -998,8 +997,8 @@ class RenderTests(Base):
 @unittest.skipIf(tk is None, "no tkinter")
 class EveryLanguageRenderTests(Base):
     """The launcher, the Online tab's screens, the Controls, report and update windows, built (withdrawn) in each
-    language at 100 % and 150 % display scaling (tests/i18n_layout.py): no text missing from the catalog, no English
-    left on screen, nothing cut off (English included), no window on screen."""
+    language at 100 %, 133 % and 150 % display scaling (tests/i18n_layout.py): no text missing from the catalog, no
+    English left on screen, nothing cut off (English included), no window on screen."""
     english = {}
 
     @classmethod

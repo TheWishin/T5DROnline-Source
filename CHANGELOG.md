@@ -6,8 +6,8 @@ part is in the README's status table.
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1
-for the new connection features (with 1.1.0 the match connects as before). The launcher offers the
-update itself; after it, press **BUILD GAME** once.
+(the lobby pairs equal game builds, and 1.1.1 changes the game: patches 0039 and 0042). The launcher
+offers the update itself; after it, press **BUILD GAME** once.
 
 ### Online
 - **Direct connections are much more reliable.** Before, whether two homes connected directly was
@@ -44,8 +44,8 @@ update itself; after it, press **BUILD GAME** once.
   California (300-400 ms ping). The lobby can now use small relay-only servers in other regions:
   each launcher measures its ping to every one of them, and a match that needs a relay goes
   through the one with the smallest sum of both players' pings (the lobby server's own relay
-  included). Lobby, accounts and ranks stay on the one server. Both players need 1.1.1; with an
-  older launcher the match uses the lobby server's relay as before. A relayed match still
+  included). Lobby, accounts and ranks stay on the one server. Both players need 1.1.1 (a
+  future launcher-only update that pairs with older ones falls back to the lobby server's relay). A relayed match still
   switches to the direct connection when one opens up. For hosts: `install.sh --relay-only` now
   sets up such a relay server (docs/HOSTING.md "Adding a relay server"); the old option of that
   name, relaying every match, is `--force-relay`.

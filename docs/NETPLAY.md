@@ -368,8 +368,9 @@ that is when it is bad". On the relay every packet goes through the only lobby s
 - The game socket's port was never forwarded on the router (UPnP / NAT-PMP was only used for "Host
   for friends").
 
-**What 1.1.1 does.** Only lobby code; the game and its netplay are unchanged (same build id, so 1.1.0
-and 1.1.1 players still meet).
+**What 1.1.1 does.** In the lobby code; the netplay protocol is unchanged. (1.1.1 as a release also
+changes the game -- patches 0039 and 0042 -- so its build id differs and 1.1.0 and 1.1.1 players are
+not paired; the old/new client mixes below matter for a later launcher-only update.)
 
 - *A plan from the server* (`nat2` cap on both sides): the NAT type comes from what the server itself
   saw (the game socket's endpoint at UDP 7781 and at 7782 -- different ports = symmetric; a small

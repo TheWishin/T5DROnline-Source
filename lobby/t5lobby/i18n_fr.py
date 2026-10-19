@@ -370,6 +370,15 @@ MESSAGES = {
         "tokens ou clés, {email} adresses e-mail.",
     "Open folder": "Ouvrir le dossier",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)":
+        "Afficher ce que je joue dans mon statut Discord (Rich Presence)",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "« Dans le lobby », « Recherche Ranked » ou ton match (personnages, score du set Ranked) avec un chrono, via "
+        "l'appli Discord de ce PC. Sans Discord lancé, rien ne se passe.",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "Cette copie n'a pas encore d'ID d'application Discord, donc ça ne fait rien pour l'instant.",
     "A": "A",
     "Left punch (1)": "Poing gauche (1)",
     "Square": "Carré",
@@ -464,6 +473,13 @@ MESSAGES = {
     "On (smooth, default)": "Activée (fluide, par défaut)",
     "Off (lowest latency, may tear)": "Désactivée (latence minimale, déchirures possibles)",
     "The game always runs at 60 fps, like on the PS3.": "Le jeu tourne toujours à 60 fps, comme sur PS3.",
+    "Stage blur / glow": "Flou / halo des stages",
+    "On (default)": "Activé (par défaut)",
+    "Off": "Désactivé",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "Certains stages floutent l'image (le marais brumeux) ou font briller le soleil. Désactivé les montre nets, "
+        "sans le halo. Seule ton image change : en ligne, chaque joueur peut choisir différemment.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Ton écran : {width} x {height}. En plein écran, {step} lui correspond.",
     "Online input delay": "Input delay en ligne",
@@ -676,6 +692,8 @@ MESSAGES = {
     "this server has no guest logins": "ce serveur n'accepte pas les invités",
     "too many failed logins; wait a few minutes": "trop de connexions échouées ; attends quelques minutes",
     "too many failed attempts; wait a few minutes": "trop de tentatives échouées ; attends quelques minutes",
+    "too many password changes; wait a minute": "trop de changements de mot de passe ; attends une minute",
+    "too many requests for new codes; wait a minute": "trop de demandes de nouveaux codes ; attends une minute",
     "too many new accounts from this address": "trop de nouveaux comptes depuis cette adresse",
     "the saved login has expired; log in with your password":
         "la connexion enregistrée a expiré ; connecte-toi avec ton mot de passe",
@@ -745,6 +763,32 @@ MESSAGES = {
     "that player is not on your block list": "ce joueur n'est pas dans ta liste de blocage",
     "you are not in a set": "tu n'es pas dans un set",
     "no such finished match": "match terminé introuvable",
+    "guests cannot have friends; create an account (free)":
+        "les invités ne peuvent pas avoir d'amis ; crée un compte (gratuit)",
+    "there is no account with that name": "aucun compte ne porte ce nom",
+    "you cannot add yourself": "tu ne peux pas t'ajouter toi-même",
+    "you blocked that player; unblock them first": "tu as bloqué ce joueur ; débloque-le d'abord",
+    "your friends list is full ({max})": "ta liste d'amis est pleine ({max})",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "tu peux envoyer {count} demandes d'ami par jour ; réessaie demain",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "{count} de tes demandes d'ami attendent une réponse ; retire-en d'abord quelques-unes",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name} a refusé ta dernière demande ; tu pourras redemander dans {days} jour(s)",
+    "that player has too many friend requests waiting": "ce joueur a trop de demandes d'ami en attente",
+    "that player's friends list is full": "la liste d'amis de ce joueur est pleine",
+    "no friend request from that player": "aucune demande d'ami de ce joueur",
+    "no friend request to that player": "aucune demande d'ami à ce joueur",
+    "that player is not on your friends list": "ce joueur n'est pas dans ta liste d'amis",
+    "that friend is not online": "cet ami n'est pas en ligne",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "le launcher de cet ami est trop ancien pour les invitations (il faut la 1.1.2 ou plus récente)",
+    "create a room first, then invite": "crée d'abord un salon, puis invite",
+    "that friend is busy right now": "cet ami est occupé en ce moment",
+    "one invite at a time": "une invitation à la fois",
+    "that player has invites pending": "ce joueur a des invitations en attente",
+    "that invite is over": "cette invitation est terminée",
+    "the invite is no longer possible": "l'invitation n'est plus possible",
     "{name} is back in the lobby": "{name} est de retour dans le lobby",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name} a perdu la connexion au lobby ; attente de {seconds} s pour son retour",
@@ -774,6 +818,7 @@ MESSAGES = {
         "ce serveur n'a pas de chiffrement (TLS) : un mot de passe traverserait internet en clair. Joue en invité, "
         "ou demande à l'hébergeur du serveur de configurer TLS et de te donner son empreinte.",
     "connection closed": "connexion fermée",
+    "the server sent a malformed match id": "le serveur a envoyé un ID de match mal formé",
     "message too long": "message trop long",
     "closed": "fermée",
     "Choose your game package (.pkg) first.": "Choisis d'abord ton paquet du jeu (.pkg).",
@@ -978,11 +1023,31 @@ MESSAGES = {
     "'.', '..' or an empty part": "« . », « .. » ou une partie vide",
     "outside the folder {folder}": "hors du dossier {folder}",
     "named like the player's own files": "nommé comme les fichiers du joueur",
+    "a name Windows does not keep as written": "un nom que Windows ne garde pas tel quel",
+    "Release {version} is a test version; it is not installed automatically.":
+        "La release {version} est une version de test ; elle n'est pas installée automatiquement.",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "La release {version} n'est pas signée avec la clé de release du projet (pas de SHA256SUMS.sig). Elle ne "
+        "vient pas du processus de release du projet ; rien n'a été changé.",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "La release {version} n'a pas passé la vérification de signature ({error}). Elle ne vient pas du processus "
+        "de release du projet ; rien n'a été changé.",
     "idle": "libre",
     "room": "dans un salon",
     "queue": "en recherche",
     "match": "en match",
     "playing": "en jeu",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "Dans le lobby",
+    "Searching ranked": "Recherche Ranked",
+    "Searching quick match": "Recherche Quick Match",
+    "Ranked, Set {mine}-{theirs}": "Ranked, set {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "Amical",
+    "In match: {mine} vs {theirs} ({what})": "En match : {mine} vs {theirs} ({what})",
+    "In match ({what})": "En match ({what})",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "Avec {ping} ms de ping, environ {frames} frames de retard, c'est normal.",
@@ -1536,4 +1601,63 @@ MESSAGES = {
         "plus affichés.",
     "Save to a file...": "Enregistrer dans un fichier...",
     "I have saved them": "Je les ai enregistrés",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "Demande",
+    "Friends": "Amis",
+    "Invite to a match": "Inviter à un match",
+    "Invite to my room": "Inviter dans mon salon",
+    "Remove": "Supprimer",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "Invite un ami en ligne : un clic de son côté lance un match amical, ou le fait entrer dans ton salon.",
+    "Add a friend": "Ajouter un ami",
+    "Send request": "Envoyer la demande",
+    "Their account name. They become your friend when they accept.":
+        "Son nom de compte. Vous devenez amis dès qu'il accepte.",
+    "Requests": "Demandes",
+    "Take back": "Retirer",
+    "Invite from a friend": "Invitation d'un ami",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "t'invite dans le salon « {room} ». Accepte pour le rejoindre ; le match commence tout de suite.",
+    "invites you to a casual match. Accept to start it.": "t'invite à un match amical. Accepte pour le lancer.",
+    "Check the spelling: friends are added by their account name.":
+        "Vérifie l'orthographe : les amis s'ajoutent par leur nom de compte.",
+    "in a match": "en match",
+    "offline": "hors ligne",
+    "(older launcher: no invites)": "(ancien launcher : pas d'invitations)",
+    "Friends ({count})": "Amis ({count})",
+    "offline, last seen {when}": "hors ligne, vu pour la dernière fois {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "Les amis nécessitent un compte. Connecte-toi avec un compte pour ajouter des amis et les inviter.",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "Ce serveur de lobby n'a pas de liste d'amis (il faut la version 1.1.2 ou plus récente).",
+    "wants to be your friend": "veut être ton ami",
+    "asked: waiting for an answer": "demandé : en attente de réponse",
+    "{online} online · {count} of {max}": "{online} en ligne · {count} sur {max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "Tes amis voient quand tu es en ligne. Invite-en un qui est en ligne pour jouer.",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "Pas encore d'amis. Ajoute-en un par son nom de compte : vous devenez amis dès qu'il accepte.",
+    "Cancel the invite": "Annuler l'invitation",
+    "You and {name} are friends now.": "Toi et {name}, vous êtes amis maintenant.",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "Demande d'ami envoyée à {name}. Vous devenez amis dès qu'il accepte.",
+    "Request from {name} declined.": "Demande de {name} refusée.",
+    "Request to {name} taken back.": "Demande à {name} retirée.",
+    "Remove friend": "Supprimer l'ami",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "Retirer {name} de tes amis ?\n\nTu pourras redemander plus tard ; il devra accepter à nouveau.",
+    "{name} is no longer your friend.": "{name} n'est plus ton ami.",
+    "Select a friend in the list first.": "Choisis d'abord un ami dans la liste.",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "Invitation envoyée à {name} ; en attente de réponse ({seconds} s)...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name} ({rank}) t'invite dans le salon « {room} »",
+    "{name} ({rank}) invites you to a casual match": "{name} ({rank}) t'invite à un match amical",
+    "The invite from {name} ran out.": "L'invitation de {name} a expiré.",
+    "The invite from {name} ended.": "L'invitation de {name} est terminée.",
+    "{name} declined your invite.": "{name} a refusé ton invitation.",
+    "{name} did not answer your invite.": "{name} n'a pas répondu à ton invitation.",
+    "The invite to {name} ended.": "L'invitation à {name} est terminée.",
+    "{name} wants to be your friend: see the Friends tab.": "{name} veut être ton ami : regarde l'onglet Amis.",
+    "{name} accepted your friend request.": "{name} a accepté ta demande d'ami.",
+    "{name} declined your friend request.": "{name} a refusé ta demande d'ami.",
 }

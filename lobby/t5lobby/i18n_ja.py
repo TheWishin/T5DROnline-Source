@@ -358,6 +358,15 @@ MESSAGES = {
         "{secret} 件、メールアドレス {email} 件。",
     "Open folder": "フォルダーを開く",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)":
+        "Discord のステータスにプレイ中の内容を表示（Rich Presence）",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "「ロビーで待機中」「Ranked 検索中」、または対戦（キャラクター、Ranked セットのスコア）を経過時間つきで、この"
+        "PCの Discord アプリを通じて表示します。Discord が起動していなければ何も起きません。",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "このコピーにはまだ Discord のアプリケーションIDがないため、今は何も起きません。",
     "A": "A",
     "Left punch (1)": "左パンチ (1)",
     "Square": "□",
@@ -452,6 +461,13 @@ MESSAGES = {
     "On (smooth, default)": "オン（なめらか、標準）",
     "Off (lowest latency, may tear)": "オフ（最小遅延、ティアリングあり）",
     "The game always runs at 60 fps, like on the PS3.": "ゲームは PS3 と同じく常に 60fps で動作します。",
+    "Stage blur / glow": "ステージのぼかし / 光彩",
+    "On (default)": "オン（標準）",
+    "Off": "オフ",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "一部のステージは画面をぼかしたり（霧の沼）、太陽を光らせたりします。オフにすると光彩なしでくっきり表示します"
+        "。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "画面：{width} x {height}。全画面では {step} が合います。",
     "Online input delay": "オンライン入力遅延",
@@ -661,6 +677,8 @@ MESSAGES = {
     "this server has no guest logins": "このサーバーはゲストログインできません",
     "too many failed logins; wait a few minutes": "ログインの失敗が多すぎます。数分待ってください",
     "too many failed attempts; wait a few minutes": "失敗した試行が多すぎます。数分待ってください",
+    "too many password changes; wait a minute": "パスワードの変更が多すぎます。1分待ってください",
+    "too many requests for new codes; wait a minute": "新しいコードの要求が多すぎます。1分待ってください",
     "too many new accounts from this address": "このアドレスからの新規アカウントが多すぎます",
     "the saved login has expired; log in with your password":
         "保存されたログインの期限が切れました。パスワードでログインしてください",
@@ -726,6 +744,32 @@ MESSAGES = {
     "that player is not on your block list": "そのプレイヤーはブロックリストにいません",
     "you are not in a set": "セット中ではありません",
     "no such finished match": "その終了済みの対戦は存在しません",
+    "guests cannot have friends; create an account (free)":
+        "ゲストはフレンドを持てません。（無料の）アカウントを作成してください",
+    "there is no account with that name": "その名前のアカウントはありません",
+    "you cannot add yourself": "自分自身は追加できません",
+    "you blocked that player; unblock them first": "そのプレイヤーをブロックしています。先にブロックを解除してください",
+    "your friends list is full ({max})": "フレンドリストがいっぱいです（{max}）",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "フレンド申請は1日 {count} 件までです。明日もう一度試してください",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "送ったフレンド申請のうち {count} 件が返事待ちです。先にいくつか取り消してください",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name} さんが前回の申請を断りました。{days} 日後にもう一度申請できます",
+    "that player has too many friend requests waiting": "そのプレイヤーには返事待ちのフレンド申請が多すぎます",
+    "that player's friends list is full": "そのプレイヤーのフレンドリストはいっぱいです",
+    "no friend request from that player": "そのプレイヤーからのフレンド申請はありません",
+    "no friend request to that player": "そのプレイヤーへのフレンド申請はありません",
+    "that player is not on your friends list": "そのプレイヤーはフレンドリストにいません",
+    "that friend is not online": "そのフレンドはオンラインではありません",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "そのフレンドのランチャーは古すぎて招待を受けられません（1.1.2 以降が必要）",
+    "create a room first, then invite": "先にルームを作成してから招待してください",
+    "that friend is busy right now": "そのフレンドは今取り込み中です",
+    "one invite at a time": "招待は一度に1つだけです",
+    "that player has invites pending": "そのプレイヤーには保留中の招待があります",
+    "that invite is over": "その招待は終了しています",
+    "the invite is no longer possible": "この招待はもうできません",
     "{name} is back in the lobby": "{name} さんがロビーに戻りました",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name} さんのロビー接続が切れました。戻るまで {seconds} 秒待ちます",
@@ -751,6 +795,7 @@ MESSAGES = {
         "このサーバーには暗号化（TLS）がありません：パスワードが読める状態でインターネットを通ります。ゲストでプレイす"
         "るか、サーバーの運営者に TLS を設定してフィンガープリントを教えてもらってください。",
     "connection closed": "接続が閉じられました",
+    "the server sent a malformed match id": "サーバーから不正な対戦IDが届きました",
     "message too long": "メッセージが長すぎます",
     "closed": "閉じられました",
     "Choose your game package (.pkg) first.": "先にゲームパッケージ（.pkg）を選んでください。",
@@ -955,11 +1000,31 @@ MESSAGES = {
     "'.', '..' or an empty part": "「.」「..」または空の部分",
     "outside the folder {folder}": "{folder} フォルダーの外",
     "named like the player's own files": "プレイヤー自身のファイルと同じ名前",
+    "a name Windows does not keep as written": "Windows が書いたとおりに保存しない名前",
+    "Release {version} is a test version; it is not installed automatically.":
+        "リリース {version} はテスト版のため、自動ではインストールされません。",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "リリース {version} はプロジェクトのリリース鍵で署名されていません（SHA256SUMS.sig なし）。プロジェクトのリリ"
+        "ース手順で作られたものではありません。何も変更していません。",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "リリース {version} は署名の確認に失敗しました（{error}）。プロジェクトのリリース手順で作られたものではありま"
+        "せん。何も変更していません。",
     "idle": "待機中",
     "room": "ルーム内",
     "queue": "マッチング中",
     "match": "対戦中",
     "playing": "プレイ中",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "ロビーで待機中",
+    "Searching ranked": "Ranked 検索中",
+    "Searching quick match": "Quick Match 検索中",
+    "Ranked, Set {mine}-{theirs}": "Ranked、セット {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "カジュアル",
+    "In match: {mine} vs {theirs} ({what})": "対戦中：{mine} vs {theirs}（{what}）",
+    "In match ({what})": "対戦中（{what}）",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "Ping {ping}ms なら、約 {frames} フレームの遅れが普通です。",
@@ -1502,4 +1567,65 @@ MESSAGES = {
         "1回だけ使えます。書き留めるか安全な場所に保存してください -- 二度と表示されません。",
     "Save to a file...": "ファイルに保存...",
     "I have saved them": "保存しました",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "申請",
+    "Friends": "フレンド",
+    "Invite to a match": "対戦に招待",
+    "Invite to my room": "自分のルームに招待",
+    "Remove": "削除",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "オンラインのフレンドを招待しましょう：相手のワンクリックでカジュアル対戦が始まるか、あなたのルームに入ります"
+        "。",
+    "Add a friend": "フレンドを追加",
+    "Send request": "申請を送る",
+    "Their account name. They become your friend when they accept.":
+        "相手のアカウント名。相手が承認するとフレンドになります。",
+    "Requests": "申請",
+    "Take back": "取り消す",
+    "Invite from a friend": "フレンドからの招待",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "さんからルーム「{room}」への招待です。受けると入室し、対戦がすぐ始まります。",
+    "invites you to a casual match. Accept to start it.": "さんからカジュアル対戦への招待です。受けると始まります。",
+    "Check the spelling: friends are added by their account name.":
+        "つづりを確認してください：フレンドはアカウント名で追加します。",
+    "in a match": "対戦中",
+    "offline": "オフライン",
+    "(older launcher: no invites)": "（古いランチャー：招待不可）",
+    "Friends ({count})": "フレンド（{count}）",
+    "offline, last seen {when}": "オフライン、最終ログイン {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "フレンド機能にはアカウントが必要です。アカウントでログインすると、フレンドの追加や招待ができます。",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "このロビーサーバーにはフレンドリストがありません（バージョン 1.1.2 以降が必要）。",
+    "wants to be your friend": "フレンド申請が届いています",
+    "asked: waiting for an answer": "申請済み：返事待ち",
+    "{online} online · {count} of {max}": "オンライン {online} 人 · {count}/{max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "フレンドにはあなたがオンラインかどうかが見えます。オンラインのフレンドを招待して遊びましょう。",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "まだフレンドがいません。アカウント名で追加しましょう：相手が承認するとフレンドになります。",
+    "Cancel the invite": "招待を取り消す",
+    "You and {name} are friends now.": "{name} さんとフレンドになりました。",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "{name} さんにフレンド申請を送りました。相手が承認するとフレンドになります。",
+    "Request from {name} declined.": "{name} さんからの申請を断りました。",
+    "Request to {name} taken back.": "{name} さんへの申請を取り消しました。",
+    "Remove friend": "フレンドを削除",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "{name} さんをフレンドから削除しますか？\n\n後でまた申請できますが、相手がもう一度承認する必要があります。",
+    "{name} is no longer your friend.": "{name} さんはフレンドではなくなりました。",
+    "Select a friend in the list first.": "先にリストからフレンドを選んでください。",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "{name} さんに招待を送りました。返事を待っています（{seconds} 秒）...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name}（{rank}）さんからルーム「{room}」への招待",
+    "{name} ({rank}) invites you to a casual match": "{name}（{rank}）さんからカジュアル対戦への招待",
+    "The invite from {name} ran out.": "{name} さんからの招待の期限が切れました。",
+    "The invite from {name} ended.": "{name} さんからの招待は終了しました。",
+    "{name} declined your invite.": "{name} さんが招待を断りました。",
+    "{name} did not answer your invite.": "{name} さんから招待への返事がありませんでした。",
+    "The invite to {name} ended.": "{name} さんへの招待は終了しました。",
+    "{name} wants to be your friend: see the Friends tab.":
+        "{name} さんからフレンド申請が届きました：フレンドタブを見てください。",
+    "{name} accepted your friend request.": "{name} さんがフレンド申請を承認しました。",
+    "{name} declined your friend request.": "{name} さんがフレンド申請を断りました。",
 }

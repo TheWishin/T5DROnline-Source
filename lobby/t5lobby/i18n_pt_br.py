@@ -363,6 +363,15 @@ MESSAGES = {
         "tokens ou chaves, {email} endereços de e-mail.",
     "Open folder": "Abrir pasta",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)":
+        "Mostrar o que estou jogando no meu status do Discord (Rich Presence)",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "“No lobby”, “Procurando Ranked” ou sua partida (lutadores, placar do set Ranked) com um cronômetro, pelo "
+        "app do Discord neste PC. Sem o Discord aberto, nada acontece.",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "Esta cópia ainda não tem um ID de aplicativo do Discord, então por enquanto isto não faz nada.",
     "A": "A",
     "Left punch (1)": "Soco esquerdo (1)",
     "Square": "Quadrado",
@@ -457,6 +466,13 @@ MESSAGES = {
     "On (smooth, default)": "Ligado (suave, padrão)",
     "Off (lowest latency, may tear)": "Desligado (menor latência, pode ter tearing)",
     "The game always runs at 60 fps, like on the PS3.": "O jogo sempre roda a 60 fps, como no PS3.",
+    "Stage blur / glow": "Desfoque / brilho dos cenários",
+    "On (default)": "Ligado (padrão)",
+    "Off": "Desligado",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "Alguns cenários desfocam a imagem (o pântano com névoa) ou fazem o sol brilhar. Desligado mostra tudo "
+        "nítido, sem o brilho. Só a sua imagem muda: online, cada jogador pode escolher diferente.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Sua tela: {width} x {height}. Em tela cheia, {step} corresponde a ela.",
     "Online input delay": "Input delay online",
@@ -666,6 +682,8 @@ MESSAGES = {
     "this server has no guest logins": "este servidor não aceita convidados",
     "too many failed logins; wait a few minutes": "logins com falha demais; espere alguns minutos",
     "too many failed attempts; wait a few minutes": "tentativas com falha demais; espere alguns minutos",
+    "too many password changes; wait a minute": "mudanças de senha demais; espere um minuto",
+    "too many requests for new codes; wait a minute": "pedidos de códigos novos demais; espere um minuto",
     "too many new accounts from this address": "contas novas demais deste endereço",
     "the saved login has expired; log in with your password": "o login salvo expirou; entre com sua senha",
     "session expired; log in again": "sessão expirada; entre de novo",
@@ -732,6 +750,31 @@ MESSAGES = {
     "that player is not on your block list": "esse jogador não está na sua lista de bloqueio",
     "you are not in a set": "você não está em um set",
     "no such finished match": "partida encerrada não encontrada",
+    "guests cannot have friends; create an account (free)": "convidados não podem ter amigos; crie uma conta (grátis)",
+    "there is no account with that name": "não existe conta com esse nome",
+    "you cannot add yourself": "você não pode adicionar a si mesmo",
+    "you blocked that player; unblock them first": "você bloqueou esse jogador; desbloqueie primeiro",
+    "your friends list is full ({max})": "sua lista de amigos está cheia ({max})",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "você pode enviar {count} pedidos de amizade por dia; tente amanhã",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "{count} dos seus pedidos de amizade esperam resposta; cancele alguns primeiro",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name} recusou seu último pedido; você pode pedir de novo em {days} dia(s)",
+    "that player has too many friend requests waiting": "esse jogador tem pedidos de amizade pendentes demais",
+    "that player's friends list is full": "a lista de amigos desse jogador está cheia",
+    "no friend request from that player": "não há pedido de amizade desse jogador",
+    "no friend request to that player": "não há pedido de amizade para esse jogador",
+    "that player is not on your friends list": "esse jogador não está na sua lista de amigos",
+    "that friend is not online": "esse amigo não está online",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "o launcher desse amigo é antigo demais para convites (precisa da 1.1.2 ou mais nova)",
+    "create a room first, then invite": "primeiro crie uma sala, depois convide",
+    "that friend is busy right now": "esse amigo está ocupado agora",
+    "one invite at a time": "um convite por vez",
+    "that player has invites pending": "esse jogador tem convites pendentes",
+    "that invite is over": "esse convite acabou",
+    "the invite is no longer possible": "o convite não é mais possível",
     "{name} is back in the lobby": "{name} voltou ao lobby",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name} perdeu a conexão com o lobby; esperando {seconds} s pela volta",
@@ -758,6 +801,7 @@ MESSAGES = {
         "este servidor não tem criptografia (TLS): uma senha passaria legível pela internet. Jogue como convidado, "
         "ou peça a quem hospeda o servidor para configurar TLS e te passar a impressão digital.",
     "connection closed": "conexão fechada",
+    "the server sent a malformed match id": "o servidor enviou um ID de partida malformado",
     "message too long": "mensagem longa demais",
     "closed": "fechada",
     "Choose your game package (.pkg) first.": "Primeiro escolha o pacote do jogo (.pkg).",
@@ -958,11 +1002,31 @@ MESSAGES = {
     "'.', '..' or an empty part": "“.”, “..” ou uma parte vazia",
     "outside the folder {folder}": "fora da pasta {folder}",
     "named like the player's own files": "com o mesmo nome dos arquivos do jogador",
+    "a name Windows does not keep as written": "um nome que o Windows não guarda como está escrito",
+    "Release {version} is a test version; it is not installed automatically.":
+        "O release {version} é uma versão de teste; não é instalado automaticamente.",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "O release {version} não está assinado com a chave de release do projeto (sem SHA256SUMS.sig). Não foi feito "
+        "pelo processo de release do projeto; nada foi alterado.",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "O release {version} falhou na verificação de assinatura ({error}). Não foi feito pelo processo de release "
+        "do projeto; nada foi alterado.",
     "idle": "livre",
     "room": "na sala",
     "queue": "na fila",
     "match": "em partida",
     "playing": "jogando",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "No lobby",
+    "Searching ranked": "Procurando Ranked",
+    "Searching quick match": "Procurando Quick Match",
+    "Ranked, Set {mine}-{theirs}": "Ranked, set {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "Casual",
+    "In match: {mine} vs {theirs} ({what})": "Em partida: {mine} vs {theirs} ({what})",
+    "In match ({what})": "Em partida ({what})",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "Com {ping} ms de ping, o normal é ficar uns {frames} frames atrás.",
@@ -1502,4 +1566,64 @@ MESSAGES = {
         "vale uma vez. Anote ou salve em um lugar seguro -- eles não são mostrados de novo.",
     "Save to a file...": "Salvar em um arquivo...",
     "I have saved them": "Já salvei",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "Pedido",
+    "Friends": "Amigos",
+    "Invite to a match": "Convidar para uma partida",
+    "Invite to my room": "Convidar para minha sala",
+    "Remove": "Remover",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "Convide um amigo que está online: um clique do lado dele começa uma partida casual ou o traz para a sua "
+        "sala.",
+    "Add a friend": "Adicionar amigo",
+    "Send request": "Enviar pedido",
+    "Their account name. They become your friend when they accept.":
+        "O nome da conta da pessoa. Vocês viram amigos quando ela aceitar.",
+    "Requests": "Pedidos",
+    "Take back": "Retirar",
+    "Invite from a friend": "Convite de um amigo",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "te convida para a sala “{room}”. Aceite para entrar; a partida começa na hora.",
+    "invites you to a casual match. Accept to start it.": "te convida para uma partida casual. Aceite para começar.",
+    "Check the spelling: friends are added by their account name.":
+        "Confira a digitação: amigos são adicionados pelo nome da conta.",
+    "in a match": "em partida",
+    "offline": "offline",
+    "(older launcher: no invites)": "(launcher antigo: sem convites)",
+    "Friends ({count})": "Amigos ({count})",
+    "offline, last seen {when}": "offline, visto por último {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "Amigos precisam de uma conta. Entre com uma para adicionar amigos e convidá-los.",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "Este servidor de lobby não tem lista de amigos (precisa da versão 1.1.2 ou mais nova).",
+    "wants to be your friend": "quer ser seu amigo",
+    "asked: waiting for an answer": "pedido enviado: esperando resposta",
+    "{online} online · {count} of {max}": "{online} online · {count} de {max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "Seus amigos veem quando você está online. Convide um que esteja online para jogar.",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "Nenhum amigo ainda. Adicione pelo nome da conta: vocês viram amigos quando a pessoa aceitar.",
+    "Cancel the invite": "Cancelar o convite",
+    "You and {name} are friends now.": "Você e {name} agora são amigos.",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "Pedido de amizade enviado para {name}. Vocês viram amigos quando a pessoa aceitar.",
+    "Request from {name} declined.": "Pedido de {name} recusado.",
+    "Request to {name} taken back.": "Pedido para {name} retirado.",
+    "Remove friend": "Remover amigo",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "Remover {name} dos seus amigos?\n\nVocê pode pedir de novo depois; a pessoa terá que aceitar outra vez.",
+    "{name} is no longer your friend.": "{name} não é mais seu amigo.",
+    "Select a friend in the list first.": "Primeiro escolha um amigo na lista.",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "Convite enviado para {name}; esperando resposta ({seconds} s)...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name} ({rank}) te convida para a sala “{room}”",
+    "{name} ({rank}) invites you to a casual match": "{name} ({rank}) te convida para uma partida casual",
+    "The invite from {name} ran out.": "O convite de {name} expirou.",
+    "The invite from {name} ended.": "O convite de {name} terminou.",
+    "{name} declined your invite.": "{name} recusou seu convite.",
+    "{name} did not answer your invite.": "{name} não respondeu ao seu convite.",
+    "The invite to {name} ended.": "O convite para {name} terminou.",
+    "{name} wants to be your friend: see the Friends tab.": "{name} quer ser seu amigo: veja a aba Amigos.",
+    "{name} accepted your friend request.": "{name} aceitou seu pedido de amizade.",
+    "{name} declined your friend request.": "{name} recusou seu pedido de amizade.",
 }

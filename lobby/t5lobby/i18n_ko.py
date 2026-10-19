@@ -356,6 +356,14 @@ MESSAGES = {
         "주소 {email}개.",
     "Open folder": "폴더 열기",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)": "Discord 상태에 지금 하는 게임 표시 (Rich Presence)",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "'로비에서 대기 중', 'Ranked 검색 중' 또는 내 매치(캐릭터, Ranked 세트 점수)를 시간과 함께 이 PC의 Discord "
+        "앱으로 표시합니다. Discord가 실행 중이 아니면 아무 일도 일어나지 않습니다.",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "이 사본에는 아직 Discord 애플리케이션 ID가 없어 지금은 아무 효과가 없습니다.",
     "A": "A",
     "Left punch (1)": "왼손 (1)",
     "Square": "네모",
@@ -450,6 +458,13 @@ MESSAGES = {
     "On (smooth, default)": "켜기 (부드러움, 기본)",
     "Off (lowest latency, may tear)": "끄기 (최소 지연, 화면 찢김 가능)",
     "The game always runs at 60 fps, like on the PS3.": "게임은 PS3처럼 항상 60fps로 동작합니다.",
+    "Stage blur / glow": "스테이지 블러 / 빛 번짐",
+    "On (default)": "켜기 (기본)",
+    "Off": "끄기",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "일부 스테이지는 화면을 흐리게 하거나(안개 낀 늪) 햇빛을 번지게 합니다. 끄면 번짐 없이 선명하게 보입니다. 내 "
+        "화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 됩니다.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "내 화면: {width} x {height}. 전체 화면에서는 {step}이(가) 맞습니다.",
     "Online input delay": "온라인 입력 지연",
@@ -654,6 +669,8 @@ MESSAGES = {
     "this server has no guest logins": "이 서버는 게스트 로그인을 허용하지 않습니다",
     "too many failed logins; wait a few minutes": "로그인 실패가 너무 많습니다. 몇 분 기다리세요",
     "too many failed attempts; wait a few minutes": "실패한 시도가 너무 많습니다. 몇 분 기다리세요",
+    "too many password changes; wait a minute": "비밀번호 변경이 너무 많습니다. 1분 기다리세요",
+    "too many requests for new codes; wait a minute": "새 코드 요청이 너무 많습니다. 1분 기다리세요",
     "too many new accounts from this address": "이 주소에서 만든 새 계정이 너무 많습니다",
     "the saved login has expired; log in with your password": "저장된 로그인이 만료되었습니다. 비밀번호로 로그인하세요",
     "session expired; log in again": "세션이 만료되었습니다. 다시 로그인하세요",
@@ -717,6 +734,32 @@ MESSAGES = {
     "that player is not on your block list": "그 플레이어는 차단 목록에 없습니다",
     "you are not in a set": "세트 중이 아닙니다",
     "no such finished match": "그런 종료된 매치가 없습니다",
+    "guests cannot have friends; create an account (free)":
+        "게스트는 친구를 추가할 수 없습니다. (무료) 계정을 만드세요",
+    "there is no account with that name": "그 이름의 계정이 없습니다",
+    "you cannot add yourself": "자기 자신은 추가할 수 없습니다",
+    "you blocked that player; unblock them first": "그 플레이어를 차단했습니다. 먼저 차단을 해제하세요",
+    "your friends list is full ({max})": "친구 목록이 가득 찼습니다 ({max})",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "친구 요청은 하루에 {count}개까지 보낼 수 있습니다. 내일 다시 시도하세요",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "보낸 친구 요청 {count}개가 응답을 기다리고 있습니다. 먼저 몇 개를 취소하세요",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name}님이 지난 요청을 거절했습니다. {days}일 후 다시 요청할 수 있습니다",
+    "that player has too many friend requests waiting": "그 플레이어에게 대기 중인 친구 요청이 너무 많습니다",
+    "that player's friends list is full": "그 플레이어의 친구 목록이 가득 찼습니다",
+    "no friend request from that player": "그 플레이어의 친구 요청이 없습니다",
+    "no friend request to that player": "그 플레이어에게 보낸 친구 요청이 없습니다",
+    "that player is not on your friends list": "그 플레이어는 친구 목록에 없습니다",
+    "that friend is not online": "그 친구는 접속 중이 아닙니다",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "그 친구의 런처가 너무 오래되어 초대를 받을 수 없습니다 (1.1.2 이상 필요)",
+    "create a room first, then invite": "먼저 방을 만든 뒤 초대하세요",
+    "that friend is busy right now": "그 친구는 지금 바쁩니다",
+    "one invite at a time": "초대는 한 번에 하나만",
+    "that player has invites pending": "그 플레이어에게 대기 중인 초대가 있습니다",
+    "that invite is over": "그 초대는 끝났습니다",
+    "the invite is no longer possible": "더 이상 초대할 수 없습니다",
     "{name} is back in the lobby": "{name}님이 로비로 돌아왔습니다",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name}님의 로비 연결이 끊겼습니다. 돌아올 때까지 {seconds}초 기다립니다",
@@ -743,6 +786,7 @@ MESSAGES = {
         "이 서버는 암호화(TLS)가 없습니다: 비밀번호가 인터넷에서 그대로 보입니다. 게스트로 플레이하거나, 서버 운영자에"
         "게 TLS를 설정하고 지문(fingerprint)을 알려 달라고 하세요.",
     "connection closed": "연결이 닫혔습니다",
+    "the server sent a malformed match id": "서버가 잘못된 매치 ID를 보냈습니다",
     "message too long": "메시지가 너무 깁니다",
     "closed": "닫힘",
     "Choose your game package (.pkg) first.": "먼저 게임 패키지(.pkg)를 고르세요.",
@@ -939,11 +983,31 @@ MESSAGES = {
     "'.', '..' or an empty part": "'.', '..' 또는 빈 부분",
     "outside the folder {folder}": "{folder} 폴더 바깥",
     "named like the player's own files": "플레이어 파일과 같은 이름",
+    "a name Windows does not keep as written": "Windows가 쓴 그대로 저장하지 않는 이름",
+    "Release {version} is a test version; it is not installed automatically.":
+        "릴리스 {version}은(는) 테스트 버전이라 자동으로 설치되지 않습니다.",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "릴리스 {version}은(는) 프로젝트의 릴리스 키로 서명되지 않았습니다 (SHA256SUMS.sig 없음). 프로젝트의 릴리스 "
+        "과정에서 만들어진 것이 아닙니다. 아무것도 바뀌지 않았습니다.",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "릴리스 {version}이(가) 서명 확인을 통과하지 못했습니다 ({error}). 프로젝트의 릴리스 과정에서 만들어진 것이 "
+        "아닙니다. 아무것도 바뀌지 않았습니다.",
     "idle": "대기 중",
     "room": "방에 있음",
     "queue": "검색 중",
     "match": "매치 중",
     "playing": "플레이 중",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "로비에서 대기 중",
+    "Searching ranked": "Ranked 검색 중",
+    "Searching quick match": "Quick Match 검색 중",
+    "Ranked, Set {mine}-{theirs}": "Ranked, 세트 {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "일반",
+    "In match: {mine} vs {theirs} ({what})": "대전 중: {mine} vs {theirs} ({what})",
+    "In match ({what})": "대전 중 ({what})",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "핑 {ping}ms라면 약 {frames}프레임 뒤처지는 것이 정상입니다.",
@@ -1475,4 +1539,62 @@ MESSAGES = {
         "있습니다. 적어 두거나 안전한 곳에 저장하세요 -- 다시는 표시되지 않습니다.",
     "Save to a file...": "파일로 저장...",
     "I have saved them": "저장했습니다",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "요청",
+    "Friends": "친구",
+    "Invite to a match": "매치에 초대",
+    "Invite to my room": "내 방에 초대",
+    "Remove": "삭제",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "접속 중인 친구를 초대하세요: 상대가 한 번 클릭하면 일반 매치가 시작되거나 내 방으로 들어옵니다.",
+    "Add a friend": "친구 추가",
+    "Send request": "요청 보내기",
+    "Their account name. They become your friend when they accept.": "상대의 계정 이름. 상대가 수락하면 친구가 됩니다.",
+    "Requests": "요청",
+    "Take back": "취소",
+    "Invite from a friend": "친구의 초대",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "님이 방 '{room}'(으)로 초대했습니다. 수락하면 들어가고 매치가 바로 시작됩니다.",
+    "invites you to a casual match. Accept to start it.": "님이 일반 매치에 초대했습니다. 수락하면 시작됩니다.",
+    "Check the spelling: friends are added by their account name.":
+        "철자를 확인하세요: 친구는 계정 이름으로 추가합니다.",
+    "in a match": "매치 중",
+    "offline": "오프라인",
+    "(older launcher: no invites)": "(구버전 런처: 초대 불가)",
+    "Friends ({count})": "친구 ({count})",
+    "offline, last seen {when}": "오프라인, 마지막 접속 {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "친구 기능은 계정이 필요합니다. 계정으로 로그인하면 친구를 추가하고 초대할 수 있습니다.",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "이 로비 서버에는 친구 목록이 없습니다 (버전 1.1.2 이상 필요).",
+    "wants to be your friend": "친구 요청을 보냈습니다",
+    "asked: waiting for an answer": "요청함: 응답 대기 중",
+    "{online} online · {count} of {max}": "접속 {online}명 · {count}/{max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "친구들은 내가 접속 중인지 볼 수 있습니다. 접속 중인 친구를 초대해 함께 플레이하세요.",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "아직 친구가 없습니다. 계정 이름으로 추가하세요: 상대가 수락하면 친구가 됩니다.",
+    "Cancel the invite": "초대 취소",
+    "You and {name} are friends now.": "이제 {name}님과 친구입니다.",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "{name}님에게 친구 요청을 보냈습니다. 상대가 수락하면 친구가 됩니다.",
+    "Request from {name} declined.": "{name}님의 요청을 거절했습니다.",
+    "Request to {name} taken back.": "{name}님에게 보낸 요청을 취소했습니다.",
+    "Remove friend": "친구 삭제",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "{name}님을 친구에서 삭제할까요?\n\n나중에 다시 요청할 수 있지만, 상대가 다시 수락해야 합니다.",
+    "{name} is no longer your friend.": "{name}님은 더 이상 친구가 아닙니다.",
+    "Select a friend in the list first.": "먼저 목록에서 친구를 고르세요.",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "{name}님에게 초대를 보냈습니다. 응답 대기 중 ({seconds}초)...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name} ({rank})님이 방 '{room}'(으)로 초대했습니다",
+    "{name} ({rank}) invites you to a casual match": "{name} ({rank})님이 일반 매치에 초대했습니다",
+    "The invite from {name} ran out.": "{name}님의 초대가 만료되었습니다.",
+    "The invite from {name} ended.": "{name}님의 초대가 끝났습니다.",
+    "{name} declined your invite.": "{name}님이 초대를 거절했습니다.",
+    "{name} did not answer your invite.": "{name}님이 초대에 응답하지 않았습니다.",
+    "The invite to {name} ended.": "{name}님에게 보낸 초대가 끝났습니다.",
+    "{name} wants to be your friend: see the Friends tab.": "{name}님이 친구 요청을 보냈습니다: 친구 탭을 확인하세요.",
+    "{name} accepted your friend request.": "{name}님이 친구 요청을 수락했습니다.",
+    "{name} declined your friend request.": "{name}님이 친구 요청을 거절했습니다.",
 }

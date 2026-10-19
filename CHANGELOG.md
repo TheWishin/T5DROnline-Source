@@ -51,6 +51,22 @@ lobby features need the lobby server updated; older launchers keep working with 
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.
 
+### Controllers
+- **A pad that works offline now works online too.** Online, the game takes your input from the
+  controller you press, whatever player port it has. Before, online play read player port 1 only, so
+  a DualSense behind another controller -- a virtual Xbox pad from DS4Windows or DSX, a handheld's
+  built-in pad, a second pad -- got port 2 and did nothing online, while it still played offline
+  (player report: "my DualSense works only in offline mode"). A controller you don't press never
+  takes over. If you set player 1's controller in `controls.ini` (`[port1] device = ...`), that one
+  stays the only one. Both netcodes, in sync (docs/NETPLAY.md "Which controller plays online").
+- **The launcher sees DualShock 4, DualSense and DualSense Edge** -- also over Bluetooth after Steam
+  or DS4Windows used them, when it saw nothing from them before. The Online tab's A / B buttons work
+  with them, and **Settings -> Set up controllers...** lists them, so you can set their buttons and
+  which player they are. The launcher reads them like the game does, only while its window is in
+  front, never sends anything to the pad and never keeps it from the game.
+- **The game window comes forward when a match starts** after you clicked Accept or Rematch in the
+  launcher, so the keyboard works without clicking into the game first (pads always worked).
+
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the
   last move: startup (i10), then +/- frames on block, hit or counter hit, or the whole move on a whiff. On by

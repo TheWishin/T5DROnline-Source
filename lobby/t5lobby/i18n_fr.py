@@ -73,6 +73,7 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "Manette DirectInput",
     "Xbox pad (XInput)": "Manette Xbox (XInput)",
+    "PlayStation pad, read directly": "Manette PlayStation, lue directement",
     "Controls - T5DR Online": "Commandes - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":

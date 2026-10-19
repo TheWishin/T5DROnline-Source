@@ -50,7 +50,8 @@ lobby/
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
     theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
-    padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
+    padnav.py     controller buttons for the tab: XInput, PlayStation (HID) and WinMM readers, the polling
+                  thread and its rules
     padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
     cli.py        python -m t5lobby.cli: the same from a console
     servers.py    servers.json: the launcher's server list, typed addresses (host:port#fingerprint)
@@ -884,14 +885,27 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
   launcher and in the game. A button bound to two PS3 buttons at once (a macro such as `3+4 = B8`) is
   neither Cross nor Circle here. `tests/test_padmap_sync.py` fails when the game's presets change and
   `lobby/t5lobby/padmap.py` was not updated.
-- Xbox pads and XInput-mode sticks are read with XInput. Everything else (PS3/PS4-mode sticks and hitboxes,
-  DualShock 4, DualSense, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
-  numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through both
-  is read once, through XInput. (The game reads DualShock 4 / DualSense as HID devices since ps3recomp patch
-  0042; WinMM, like DirectInput, gets nothing from a Bluetooth pad that Steam or DS4Windows switched to its
-  extended report, so the launcher does not see such a pad until it is turned off and on.) Plain `ctypes`, one thread, 60 polls a second while the launcher is in front
-  (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while it is
-  not (0.01%).
+- Xbox pads and XInput-mode sticks are read with XInput. DualShock 4, DualSense and DualSense Edge (since
+  1.1.2) as HID devices, exactly as the game reads them (ps3recomp patch 0042): USB, Bluetooth short and full
+  ("extended") report -- the one Steam and DS4Windows switch a Bluetooth pad to, which the Windows joystick
+  API and DirectInput cannot read -- with the same parser rules (`tests/test_ps_hid.py` compares the two on
+  2,000 reports) and the names DirectInput gives these pads (B2 = Cross). Opened for reading only, shared (the
+  game and other programs read it at the same time), closed again whenever the launcher leaves the front;
+  nothing is ever sent to the pad (no output or feature report, which would switch its mode). A pad Steam
+  Input hands out as a virtual Xbox pad (Steam started the launcher, the pad is in Steam's list) is left to
+  that virtual pad while there is one, as in the game (`steam_input = 0` reads it anyway); `hid = 0` in
+  `controls.ini` leaves these pads to the joystick API, as the game then does. Everything else (PS3/PS4-mode
+  sticks and hitboxes, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
+  numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through
+  more than one is read once (XInput, else HID). Devices get the ports in the game's order (XInput, the
+  PlayStation pads, the rest), so `[portN.dinput]` layers match. Test hook: the game's `PS3_PAD_HID_FAKE`
+  (`lobby/tests/test_padnav_hid.py`). Plain `ctypes`, one thread, 60 polls a second while the launcher is in
+  front (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while
+  it is not (0.01%).
+- **The game's window comes forward when a match starts** in a game that is already running (a rematch, the
+  next opponent) if the launcher is the window in front at that moment -- you just clicked Accept or Rematch
+  there. The game reads the keyboard only while its own window has the focus (pads work either way). Never
+  while another program is in front, once per match.
 - Switch: **Use a controller here** at the bottom of the tab (saved as `pad` in `online.json`).
   `T5_PAD_NAV=0` in the environment turns the feature off.
 - With `background = 1` in `controls.ini` (the default) a running game reads the pad too, also while the

@@ -199,7 +199,9 @@ Keyboard (default) and Xbox controller:
 
 - The keyboard works only while the game window has the focus. Pads work even
   when it does not.
-- Keyboard and the first pad both drive player 1.
+- Keyboard and the first pad both drive player 1. Online, the controller you
+  press is your player, whichever port it has (a pinned `[port1] device` in
+  `controls.ini` stays the only one).
 - PlayStation pads (DualShock 4, DualSense) are read directly, over USB and
   Bluetooth, also after Steam or DS4Windows used them (no Steam needed; started
   through Steam with Steam Input on, the game uses Steam's virtual pad instead).
@@ -208,7 +210,8 @@ Keyboard (default) and Xbox controller:
 - Pads can be plugged in or out while the game runs.
 - In the launcher's Online tab a pad or stick runs the lobby without mouse or
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and
-  stops. Only while the launcher is in front. See "Controller in the launcher"
+  stops (DualShock 4 and DualSense too, also over Bluetooth after Steam or
+  DS4Windows used them). Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
 - **Pad, arcade stick or hitbox: set the buttons in the launcher.** Open
   **Settings** and click **Set up controllers...**. The window lists the

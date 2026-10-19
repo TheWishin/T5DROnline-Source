@@ -203,7 +203,9 @@ Tastatur (Standard) und Xbox-Controller:
 
 - Die Tastatur geht nur, solange das Spielfenster den Fokus hat. Pads gehen auch
   ohne Fokus.
-- Tastatur und das erste Pad steuern beide Spieler 1.
+- Tastatur und das erste Pad steuern beide Spieler 1. Online ist der Controller,
+  den du drückst, dein Spieler, egal an welchem Port (ein in der `controls.ini`
+  festgelegtes `[port1] device` bleibt der einzige).
 - PlayStation-Pads (DualShock 4, DualSense) liest das Spiel direkt, über USB und
   Bluetooth, auch nachdem Steam oder DS4Windows sie benutzt haben (Steam ist nicht
   nötig; startet Steam das Spiel mit Steam Input, nimmt das Spiel das virtuelle

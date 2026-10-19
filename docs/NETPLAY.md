@@ -196,6 +196,44 @@ stage 20, 2 rounds), 8 logical processors per game:
 | D0a | 0 / auto, RTT 0 | 3 ms | 1 (auto: the settings differ) | 0 | same |
 | K0, K50, K150 | lockstep (`T5_RB_MODE=off`), RTT 0/50/150 | -- | lockstep delay 6 | 0 | same |
 
+## Which controller plays online (1.1.2)
+
+Player report on 1.1.1: "my DualSense works only offline; the launcher doesn't see it at all". The runtime
+(patch 0009) gives every controller a port in the order it finds them -- XInput pads first, then the
+PlayStation pads it reads as HID devices (0042), then DirectInput -- and the keyboard joins port 1 while the
+game window has the focus. Offline the title reads every port, so a pad on port 2 plays (player 2, and the
+menus take either). Netplay took the local player from port 1 only (`sample_local` -> `device_input(0)`), so a
+DualSense behind any other controller -- a virtual Xbox pad (DS4Windows, DSX, ViGEm), a handheld's built-in
+pad, a second pad or a wheel -- did nothing online. The in-game select (`df_pick.cpp`) and the replay controls
+read port 1 too.
+
+Now (`src/netplay/local_pad.cpp`, `local_pad.h`): online the local player is **the controller pressed last**.
+Every local port with something on it is read at every live sample (`cellPad_sample_local`, each with its
+own tap latch); a port whose buttons, or a stick pushed past half way (with hysteresis), went down becomes the
+player at once, that press included. A port that never changes (an idle pad, a virtual pad nobody uses, a
+pedal resting at one end, a button held since it was plugged in) never takes over; while the player's port
+was pressed in the last 100 ms another port cannot take over, so one pad seen twice (DS4Windows' virtual pad
+and the real one) never makes the input jump. Port 1 only, as before: `[port1] device = ...` pinned in
+`controls.ini` (read once with the runtime's rules), local mode (two players at one PC), netplay off, or
+`T5_NET_PADPORT=N` (that port only; `1` = 1.1.1's behaviour). The log names the rule and every switch:
+`[netplay] local player: port 2 now (pressed there; ...)`.
+
+Why not merge all ports: a controller resting with something held (a pedal, a stick's drift past half, a
+stuck button on a cheap pad) would then hold that input for the player all match. Why not "the first port
+with a device": a virtual pad or a handheld's own pad is that port. Sync is untouched: only this PC's sample
+changes, and it is exchanged like any input; rollback re-simulation replays exchanged inputs and never reads
+devices (`sample_local` runs at live boundaries only). Reading the pads does not depend on the focus (XInput,
+the HID reader, DirectInput with `background = 1`); only the keyboard does, by design -- the launcher now
+brings the game window forward when a match starts while the launcher is in front (docs/ONLINE.md).
+
+Test: `tools/e2e/run.py --only net_dualsense [--netcode lockstep]` -- the launcher's own Online tab and game
+start (persistent game, window minimized and never in front), one player with a fake DualSense on Bluetooth in
+its extended mode (`PS3_PAD_HID_FAKE`, reports from `tools/ps_hid_reports.py`) that the runtime puts on port 2
+(port 1: the picker's pad file, plus the keyboard), mashing through the fake pad; two matches (two sessions,
+picks with the pad file in between). Checks: the presses are in the other PC's frame log, 0 mismatching
+frames, the same result hash. On 1.1.1's code: 695 presses sent, 0 frames with them on the other PC.
+`tests/test_local_pad.py` (tests/c/local_pad_test.cpp) checks the rule with fake ports.
+
 ## Design
 
 **Lockstep core** (`netplay_core.cpp`, game-independent). Frame f uses the

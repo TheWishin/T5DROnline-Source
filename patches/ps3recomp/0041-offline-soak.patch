@@ -101,6 +101,40 @@ index 9ae2a26..f34ce39 100644
  
          /* Notify event queues */
          audio_notify_event_queues();
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index eeaf244..bc176ff 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -607,6 +607,20 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+ static __declspec(thread) HANDLE t_timer;
+ static __declspec(thread) int    t_timer_tried;
+ 
++/* t5dr offline soak (patch 0041): the per-thread timer is closed when its thread
++ * ends (a fiber-local-storage destructor runs at thread exit). It was kept for
++ * good, so every short-lived guest thread that slept left one high-resolution
++ * timer handle behind (IRTimer: ~30 an hour of play). */
++static DWORD s_timer_fls = FLS_OUT_OF_INDEXES;
++static INIT_ONCE s_timer_fls_once = INIT_ONCE_STATIC_INIT;
++static void WINAPI hs_timer_fls_free(void* p) { if (p) CloseHandle((HANDLE)p); }
++static BOOL CALLBACK hs_timer_fls_init(PINIT_ONCE once, PVOID param, PVOID* ctx)
++{
++    (void)once; (void)param; (void)ctx;
++    s_timer_fls = FlsAlloc(hs_timer_fls_free);
++    return TRUE;
++}
++
+ static int hs_timer_wait(uint64_t usec)
+ {
+     if (!t_timer_tried) {
+@@ -617,6 +631,8 @@ static int hs_timer_wait(uint64_t usec)
+          * per usleep was two extra kernel objects per guest poll. */
+         t_timer = CreateWaitableTimerExW(NULL, NULL, 0x00000002, TIMER_ALL_ACCESS);
+         if (!t_timer) t_timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
++        InitOnceExecuteOnce(&s_timer_fls_once, hs_timer_fls_init, NULL, NULL);
++        if (t_timer && s_timer_fls != FLS_OUT_OF_INDEXES) FlsSetValue(s_timer_fls, t_timer);
+     }
+     if (!t_timer) return 0;
+     LARGE_INTEGER due;
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
 index 6e75ef9..a36e3ea 100644
 --- a/runtime/ppu/tests/boot_main.cpp
@@ -536,3 +570,72 @@ index 451d4bd..dba0afe 100644
          spu->rcv_evt[1] = (uint32_t)ev.data1;
          spu->rcv_evt[2] = (uint32_t)ev.data2;
          spu->rcv_evt[3] = (uint32_t)ev.data3;
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 9eb022a..a3221d5 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -81,6 +81,20 @@ static void table_unlock(void)
+ #endif
+ }
+ 
++#ifdef _WIN32
++/* t5dr offline soak (patch 0041): a detached thread frees its own slot when it
++ * ends, and its host thread handle and join event go with it. They were left
++ * open -- the POSIX half detaches, this half did nothing -- so every detached
++ * guest thread leaked a Thread and an Event handle (Tekken 5 DR: about 45
++ * handles an hour of play, for good once the slot is reused). Call with the
++ * table lock held; nobody joins a detached thread. */
++static void ppu_thread_close_host_handles(ppu_thread_info* t)
++{
++    if (t->host_thread)  { CloseHandle(t->host_thread);  t->host_thread = NULL; }
++    if (t->finish_event) { CloseHandle(t->finish_event); t->finish_event = NULL; }
++}
++#endif
++
+ /* A guest stack for a host thread that runs guest code outside any guest
+  * thread (callbacks into guest code: ppu_guest_call). Returns the usable top,
+  * or 0. Taken from the same region as thread stacks, under the same lock. */
+@@ -213,8 +227,12 @@ static void* ppu_host_thread_proc(void* param)
+     table_lock();
+     info->exit_status = (int64_t)info->ctx.gpr[3];
+ 
+-    if (info->state == PPU_THREAD_STATE_DETACHED) {
++    const int detached = info->state == PPU_THREAD_STATE_DETACHED;
++    if (detached) {
+         /* Detached threads self-clean */
++#ifdef _WIN32
++        ppu_thread_close_host_handles(info);
++#endif
+         info->state = PPU_THREAD_STATE_FREE;
+     } else {
+         info->state = PPU_THREAD_STATE_FINISHED;
+@@ -223,7 +241,7 @@ static void* ppu_host_thread_proc(void* param)
+ 
+     /* Signal anyone waiting for join */
+ #ifdef _WIN32
+-    SetEvent(info->finish_event);
++    if (!detached) SetEvent(info->finish_event);   /* a detached slot may already be reused */
+     return 0;
+ #else
+     pthread_mutex_lock(&info->finish_mutex);
+@@ -621,14 +639,18 @@ int64_t sys_ppu_thread_exit(ppu_context* ctx)
+     ppu_thread_info* t = find_thread(tid);
+     if (t) {
+         t->exit_status = (int64_t)status;
+-        if (t->state == PPU_THREAD_STATE_DETACHED) {
++        const int detached = t->state == PPU_THREAD_STATE_DETACHED;
++        if (detached) {
++#ifdef _WIN32
++            ppu_thread_close_host_handles(t);
++#endif
+             t->state = PPU_THREAD_STATE_FREE;
+         } else {
+             t->state = PPU_THREAD_STATE_FINISHED;
+         }
+ 
+ #ifdef _WIN32
+-        SetEvent(t->finish_event);
++        if (!detached) SetEvent(t->finish_event);
+ #else
+         pthread_mutex_lock(&t->finish_mutex);
+         t->finished = 1;

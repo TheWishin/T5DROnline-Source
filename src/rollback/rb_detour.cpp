@@ -53,6 +53,7 @@ size_t insn_len(const uint8_t* p)
     if ((p[0] & 0xF0) == 0x40) { rex = p[0]; n = 1; }
     const uint8_t op = p[n];
     if (op >= 0x50 && op <= 0x57) return n + 1;                                   /* push r */
+    if (op >= 0xB8 && op <= 0xBF) return n + ((rex & 8) ? 9 : 5);                /* mov r, imm32 / imm64 (import stubs: mov ecx, nid) */
     if (rex == 0x48 && op == 0x83 && p[n + 1] == 0xEC) return n + 3;              /* sub rsp, ib */
     if (rex == 0x48 && op == 0x81 && p[n + 1] == 0xEC) return n + 6;              /* sub rsp, id */
     if ((op == 0x89 || op == 0x8B) && (p[n + 1] & 0xC0) == 0xC0) return n + 2;    /* mov r, r */

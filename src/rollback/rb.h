@@ -51,6 +51,9 @@ void       sound_install();                        /* detours of the play entry 
 SoundMode  sound_mode();
 void       sound_begin_frame(uint32_t f, bool resim);   /* frame f is about to run (set_sim_frame calls it) */
 void       sound_reset();                          /* the session is over: no re-simulation, no frames logged */
+/* rb_sndheap.cpp: the sound library's blocks from a pool outside the rollback state */
+void       sndheap_install();
+void       sndheap_stats(char* out, size_t cap);
 SoundStats sound_stats(bool reset);
 void     set_bypass(bool on);                      /* re-simulating: no flip/semaphore waits, no GCM user command */
 bool     bypass_on();
@@ -98,6 +101,13 @@ bool     wft_enabled();
 void     wft_arm();
 void     wft_arm_pages(const uint32_t* pages, size_t n);   /* T5_RB_WFT=diff: trace these pages */
 void     wft_disarm(const char* tag);
+
+/* kernel-side state across rollbacks (rb_ktrace.cpp, T5_RB_KTRACE=1|2) */
+void     ktrace_install();
+bool     ktrace_on();
+void     ktrace_note(const char* fmt, ...);
+void     ktrace_boundary(uint32_t f, bool resim);   /* frame f has just run (live or re-simulated) */
+bool     ktrace_icall(ppu_context* ctx, uint32_t target);   /* the file manager's request calls (true: handled) */
 
 /* syscall timeline (rb_trace.cpp) */
 void     trace_install();

@@ -142,16 +142,51 @@ plays back), the same rule as for the logs.
 
 ## Cost
 
-Recording reads netplay's rings and the hashes it computes anyway; the main thread's part is a few
-vector appends per frame -- logged at the session's end ("recording cost the frame X us on average").
-The file is compressed and written by a worker thread at below-normal priority at each match's end
-and again once its after-match frames are in (2-4 ms for a session of two matches), and on the
-calling thread only when the session ends. Sync: every proof match below ran with recording on, with
-0 mismatching frames live.
+Recording reads netplay's rings and the hashes it computes anyway. The inputs go into 4096-frame
+chunks that never move: the main thread appends and publishes the frame count, one writer thread
+(below-normal priority) reads below that count without a lock; the rest (matches, sync points,
+hashes) is small and taken under a mutex. A write is a request to that thread (an event) at each
+match's end and again once its after-match frames are in; it compresses and writes the file in 2-8 ms.
+Only a session's end writes on the calling thread (the process may end right after). The main
+thread's time inside the recording is logged once a minute and at a session's end:
+
+```
+replay: recording cost the frame 0.57 us on average, 74.5 us at most, over 3600 frames
+```
+
+(final runs pX: 0.57-0.70 us on average, 8.6-172 us at most per frame, the most being a chunk
+allocation or the thread being preempted on a PC running 8 games. A first version copied the
+session and started a thread at each match's end on the main thread: up to 39 ms once, under load;
+that is why it is the writer thread now.) Sync: every match below ran with recording on, with 0
+mismatching frames live.
 
 ## Tested
 
-(see the results below; `tools/replay_play.py` prints this table)
+Two games on this PC (`tools/fight_flow_test.py`, `tools/pick_flow_test.py`: host and joiner, both
+recording into their own folder, muted, minimized, below-normal priority, both players mashing with
+motion inputs), then every file played back by `tools/replay_play.py` (the whole session, matches
+before the last one as fast as possible) and compared: every recorded hash (one per 60 frames), every
+sync point, each match's FIGHT START setup and result.
+
+| run | netcode | flow | matches (stage) | sessions | live | playback |
+|---|---|---|---|---|---|---|
+| t1 | rollback | process mode, rematch via `T5_FIGHT_FILE` | Jin vs Lili x2 (20) | 1 | 0 mismatching frames | 2/2 files identical |
+| pR | rollback | persistent, N R R N R N, 2 rounds | Jin vs Lili (27, 20, 33, 25, 31), Steve vs Hwoarang (27) | 3 | 6/6 OK, 0 mismatching | 6/6 files identical |
+| pL | lockstep | persistent, N R N R, 2 rounds, rematches change fighters through the select screen in lockstep | Marduk vs King (24), Devil Jin vs Mokujin (29), Asuka vs Law (17), Steve vs Hwoarang (27) | 2 | 4/4 OK | 4/4 identical |
+| pP | rollback | in-game select (picks, pause at the select screen and resume), 2 sessions of 2 | Jin vs Lili (22), Kazuya vs Xiaoyu (30), Steve vs Steve mirror (18), Bryan vs Law (27) | 2 | 4/4 OK | 4/4 identical |
+| pV | rollback | process mode, 3 matches | Asuka vs Law (27), Dragunov vs Lili (34), Kazuya vs Heihachi (29) | 1 | 3/3 OK | 2/2 identical |
+| pW | lockstep | persistent, N R | Steve vs Hwoarang (27, 30) | 1 | 2/2 OK | 2/2 identical |
+| pX | rollback | persistent, N R N, final binary | Kuma vs Panda (26, 27, 21) | 2 | 3/3 OK | see below |
+
+FINAL_TABLE
+
+Also checked: the viewer's controls (`replay_play.py --press 10:START,15:START,18:R1,30:R1`, the
+second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", "speed 2x",
+"normal speed" in the log, and the verdict still identical. A file whose names were taken out for a
+report plays the same (tests). Two bugs the proof runs found and fixed: a lockstep playback held a
+match's result for netplay's 3-second fallback and lost it when the recording ended sooner; a
+playback that ran past the recording's last frame counted a sync point the live game never reached
+before its session ended.
 
 ## Limits
 

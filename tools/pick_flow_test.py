@@ -206,7 +206,7 @@ class Game:
             "PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
             "PS3_AUDIO_MUTE": "1",      # silent (the mix is zeroed after AUDIO_WAV): tests run beside people
             "PAD_NO_KEYBOARD": "1", "T5_NET_LOCALPAD": "0", "PS3_PAD_FILE": self.pad_path, "T5_DF_TRACE": "1",
-            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": "20", "T5_NET_SCRIPT_FIGHT": "1",
+            "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": str(self.a.net_timeout), "T5_NET_SCRIPT_FIGHT": "1",
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
@@ -344,7 +344,7 @@ def session_env(a, k, match, game, port0):
         return {"T5_NET_ROUNDS": str(a.rounds), "T5_NET_RESULT_FILE": game.result_path, "T5_DF_STATUS_FILE": game.status_path,
                 "T5_HUD_NAMES": "Tester One|Tester Two", "T5_HUD_RANKS": f"{(k * 3) % 37},{(k * 5) % 37}"}
     env = {
-        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": "20", "T5_NET_MATCH": match,
+        "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": str(a.net_timeout), "T5_NET_MATCH": match,
         "T5_NET_ROUNDS": str(a.rounds), "T5_NET_PATH": "lan", "T5_NET_RTT_MS": "1", "T5_NET_SEED": str(seed),
         "T5_NET_BUILD": "pick-flow-test", "T5_NET_KEY": f"key-{k}-{seed}", "T5_NET_RESULT_FILE": game.result_path,
         "T5_NET_START": "external", "T5_DF_STATUS_FILE": game.status_path,
@@ -521,6 +521,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--delay", type=int, default=2)
     ap.add_argument("--mash", action="store_true")
+    ap.add_argument("--net-timeout", type=int, default=20, metavar="S",
+                    help="T5_NET_TIMEOUT for the games (the lobby passes 20); more on a PC busy with other games")
     ap.add_argument("--mash-start", type=int, default=0, metavar="N",
                     help="--mash: about every N-th input is START (pause mashing); the run fails if a pause menu opens")
     ap.add_argument("--rematch-wait", type=float, default=1.0)

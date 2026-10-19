@@ -6,10 +6,14 @@
  *
  * START opens the game's pause menu in a VS fight. Online it is an input like any other, so either
  * player's START paused the fight in both games. The rule: in a direct-fight session START is taken
- * out of BOTH players' inputs of every frame, except in the post-match window -- from kDelay frames
- * after the match was decided in this fight until the game asks for the select screen -- where START
- * skips the KO replay and the win pose (the direct-fight driver presses it in lockstep, the rollback
- * loop's post-match rule sends it; both from 40 frames after the decision).
+ * out of BOTH players' inputs of every frame, except where START does not pause but skips:
+ *   - the replay after a round's KO (round state kReplay): START skips it, as it always did online --
+ *     either player may, both games skip together. The KO's slow motion before it (state 8) and the
+ *     way to the next round (0xC, then the READY/FIGHT intro 4) keep START out too.
+ *   - the post-match window -- from kDelay frames after the match was decided in this fight until
+ *     the game asks for the select screen -- where START skips the last KO replay and the win pose
+ *     (the direct-fight driver presses it in lockstep, the rollback loop's post-match rule sends it;
+ *     both from 40 frames after the decision).
  *
  * What the rule does to frame f is a function of
  *   - the game state at the boundaries up to f's (record()), which is the same on both PCs while
@@ -40,6 +44,7 @@ struct NoPauseRule {
     static constexpr uint32_t kDelay = 40;          /* frames after the decision: the skip's first press */
     static constexpr uint32_t kHist = 4096;
     static constexpr uint32_t kModeSelect = 6;      /* the mode manager's select mode */
+    static constexpr uint32_t kReplay = 9;          /* round state: the replay after a round's KO */
 
     /* What the game shows at a frame's boundary. */
     struct State {
@@ -47,6 +52,8 @@ struct NoPauseRule {
         uint32_t phase;       /* fight phase word 0x1008F070 (17 = the fight, rounds and their KOs) */
         bool     decided;     /* 0x1008EBD5: the match is decided (stays set into the next fight's start) */
         uint32_t mode_next;   /* the mode the manager was asked for (6 = the select screen) */
+        uint32_t round;       /* round state u32 0x1009322C: 2 before round 1, 4 READY/FIGHT, 5 fighting, 6 the KO
+                               * frame, 8 KO slow motion, 9 the replay, 0xC on to the next round */
     };
 
     uint32_t tag[kHist];      /* boundary f recorded: f + 1 */
@@ -56,9 +63,10 @@ struct NoPauseRule {
     NoPauseRule() { reset(); }
     void reset() { memset(tag, 0, sizeof tag); memset(fought, 0, sizeof fought); memset(since, 0, sizeof since); }
 
-    /* Records frame f's boundary; true = START may reach the game in frame f (the post-match window).
-     * The window opens only where the decided byte rises after a boundary that was fought -- not on
-     * the last match's byte, which is still set when a rematch's fight begins. */
+    /* Records frame f's boundary; true = START may reach the game in frame f (a round's replay, or
+     * the post-match window). The window opens only where the decided byte rises after a boundary
+     * that was fought -- not on the last match's byte, which is still set when a rematch's fight
+     * begins. */
     bool record(uint32_t f, const State& st)
     {
         const bool fight = st.game_mode && st.phase == 17;
@@ -72,6 +80,7 @@ struct NoPauseRule {
         tag[i] = f + 1;
         fought[i] = fight && !dec;
         since[i] = s;
+        if (fight && st.round == kReplay && st.mode_next != kModeSelect) return true;   /* START skips the replay */
         return s != 0 && f - s >= kDelay && st.mode_next != kModeSelect;
     }
 

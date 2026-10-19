@@ -540,12 +540,17 @@ bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 &&
  * the replay of one) START is taken out of BOTH players' inputs of every frame
  * right where they go to the game -- live, re-simulated (rollback) and played
  * back (replay) frames alike, after the exchange and after any prediction --
- * except in the post-match window, where it skips the KO replay and win pose.
+ * except where START skips instead of pausing: the replay after a round's KO,
+ * and after the match (the KO replay and the win pose).
  * The rule and why both PCs end up with the same inputs: no_pause.h. Each
  * player's own START never even goes out (netplay_core.cpp device_input); the
  * test inputs (T5_NET_SCRIPT, T5_NET_PADFILE) are not filtered there, so tests
  * can play a modified client. */
 bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / replay: a direct-fight session */
+/* The round's state (u32; build/nopause probes p7, s1760, s1900: 2 before round 1, 4 READY/FIGHT, 5
+ * fighting, 6 the KO frame, 8 KO slow motion, 9 the replay -- START skips it --, 0xC to the next
+ * round, while the fight phase word stays 17) */
+constexpr uint32_t kRoundState = 0x1009322C;
 np::NoPauseRule g_np_rule;
 uint32_t g_np_cut[2], g_np_kept; /* this match: live frames whose START was taken out (per player), kept */
 bool     g_np_noted = false;
@@ -557,7 +562,8 @@ void no_pause_reset() { g_np_rule.reset(); }   /* frame 0: the frames are number
 void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
 {
     if (!g_directfight) return;   /* offline and menu-driven test sessions: START as ever */
-    const np::NoPauseRule::State st = { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next() };
+    const np::NoPauseRule::State st = { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(),
+                                        rd32(kRoundState) };
     const bool allowed = g_np_rule.record(f, st);
     const bool any = ((in[0].buttons | in[1].buttons) & np::NoPauseRule::kStart) != 0;
     const unsigned cut = np::NoPauseRule::apply(allowed, in);

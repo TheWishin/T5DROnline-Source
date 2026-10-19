@@ -360,6 +360,100 @@ class LoginAbuseTest(Base):
         self.assertGreaterEqual(self.s.call(lambda: self.s.srv.counters.get("pw_busy", 0)), 1)
 
 
+# ============================================================================== every message type, fuzzed
+class MessageFuzzTest(unittest.TestCase):
+    """Every handler (h_*) gets random fields of random types -- None, huge and negative numbers, NaN,
+    paths, 5000-character and broken Unicode strings, nested lists and objects, the ids of real matches --
+    from two logged-in players. Expected: each bad request is a polite error ("bad field" and the like),
+    never an exception the dispatcher did not foresee, and the server keeps serving. (A longer run during
+    the security audit, 100,000 messages: 10 matches formed on the way, no unforeseen exception.)"""
+
+    def test_random_messages(self):
+        import asyncio
+        import re
+        from t5lobby.server.ratelimit import TokenBucket
+        s = ServerThread(conn_rate=1000.0, conn_burst=1000, max_per_ip=100, max_prelogin=100).start()
+        clients = []
+        try:
+            src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "t5lobby",
+                                    "server", "lobby.py")
+            with open(src_path, encoding="utf-8") as f:
+                src = f.read()
+            handlers = sorted(set(re.findall(r"async def h_(\w+)\(", src)) - {"logout"})
+            fields = sorted(set(re.findall(r'msg(?:\.get\(|\[)"(\w+)"', src)))
+            rng = random.Random(20261019)
+
+            def value(depth=0):
+                k = rng.randrange(12)
+                if k == 0:
+                    return None
+                if k == 1:
+                    return rng.choice([0, 1, -1, 3, 2 ** 31, 2 ** 63, -2 ** 63, 10 ** 30])
+                if k == 2:
+                    return rng.choice([0.5, -1.0, 1e308, float("nan"), float("inf")])
+                if k == 3:
+                    return rng.choice(["", "x", "m1", "..\\..\\x", "a" * 5000, "\u202e\u0000\ud800", "random", "jin",
+                                       "s20", "ranked", "quick", "host", "relay", "Alice"])
+                if k == 4 and depth < 3:
+                    return [value(depth + 1) for _ in range(rng.randrange(5))]
+                if k == 5 and depth < 3:
+                    return {rng.choice(fields): value(depth + 1) for _ in range(rng.randrange(4))}
+                if k == 6:
+                    return [[rng.choice(["10.0.0.1", "127.0.0.1", "8.8.8.8", "x"]), rng.randrange(-5, 70000)]
+                            for _ in range(rng.randrange(12))]
+                if k == 7:
+                    return {"usw": rng.random() * 100, "main": -1, "x": "y"}
+                if k == 8:
+                    return rng.randrange(-3, 6)
+                if k == 9:
+                    return ["127.0.0.1", rng.randrange(-5, 70000)]
+                return rng.choice(["m", "p", "r", "c", "s"]) + os.urandom(6).hex()
+
+            def login_all():
+                for c in clients:
+                    c.close()
+                clients.clear()
+                for name in ("Alice", "Bob"):
+                    clients.append(client(s, name))
+
+            login_all()
+            unforeseen = []
+            sent = 0
+            for _ in range(3000):
+                live = s.call(lambda: {c.player.name: c for c in s.srv.conns if c.player is not None})
+                if len(live) < 2:
+                    login_all()
+                    continue
+                conn = live[rng.choice(sorted(live))]
+                msg = {"t": rng.choice(handlers)}
+                for _ in range(rng.randrange(6)):
+                    msg[rng.choice(fields)] = value()
+                if rng.random() < 0.3:
+                    mid = s.call(lambda: next(iter(s.srv.matches), None))
+                    if mid:
+                        msg["match"] = mid
+                line = proto.encode(msg)
+
+                async def go(conn=conn, line=line, msg=msg):
+                    conn.heavy = TokenBucket(1e9, 1e9)      # (the rate limits are tested elsewhere)
+                    conn.state = TokenBucket(1e9, 1e9)
+                    conn.errors = 0
+                    try:
+                        await s.srv._dispatch(conn, line)
+                    except Exception as e:                  # noqa: BLE001 -- what this test looks for
+                        unforeseen.append((msg["t"], repr(e)[:200]))
+                asyncio.run_coroutine_threadsafe(go(), s.loop).result(10)
+                sent += 1
+            self.assertEqual(unforeseen, [])
+            self.assertGreater(sent, 2500)
+            login_all()                                        # still serving
+            self.assertEqual(clients[0].me["name"], "Alice")
+        finally:
+            for c in clients:
+                c.close()
+            s.stop()
+
+
 # ============================================================================== UDP control packets
 class UdpTotalTest(unittest.TestCase):
     """The server-wide cap on UDP control packets (T5L_UDP_CTL_PPS) is there against reflection: only the

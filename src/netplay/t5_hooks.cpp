@@ -84,6 +84,7 @@ extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_S
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the mode manager's current mode (6 = select) */
+extern "C" uint32_t t5_df_mode_next(void); /* src/directfight/df_fight.cpp: the mode the manager was asked for (14 = none) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
@@ -530,6 +531,100 @@ bool intro_phase_now() { return rd32(0x1008F070u) <= 12; }
  * driver's presses), see rb_net.cpp intro_phase */
 bool intro_input_now() { const uint32_t p = rd32(0x1008F070u); return p <= 12 && (p >= 7 || t5_df_game_mode()); }
 
+/* ---- No pause online (docs/NETPLAY.md "No pause online") ---------------------
+ * START opens the game's pause menu in a VS fight (RETURN TO GAME PLAY, COMMAND
+ * LIST, ...), and online START is an input like any other: both games get both
+ * players' inputs, so either player's START paused the fight in both games
+ * (player report, 1.1.1: "the guy spammed pause" in the middle of a combo).
+ *
+ * The rule, in every direct-fight session (every online match, and the replay of
+ * one): START is taken out of BOTH players' inputs of a frame right where they go
+ * to the game -- live, re-simulated (rollback) and played back (replay) frames
+ * alike, after the exchange and after any prediction -- except in the post-match
+ * window: from 40 frames after the match was decided in this fight (game mode,
+ * fight phase 17, the decided byte rising after a frame that was fought) until
+ * the game asks for the select screen. There, and only there, START skips the KO
+ * replay and the win pose: the direct-fight driver presses it in lockstep
+ * (df_fight.cpp post_match_skip, from 40 frames after the decision) and the
+ * rollback loop's post-match rule sends it (rb_net.cpp post_record, the same 40).
+ *
+ * Why both games end up with the same inputs: what the rule does to frame f
+ * depends on the game state at f's boundary (and the boundaries before it --
+ * the window's start), which is the same on both PCs while they are in sync
+ * (the state hash compares it every frame), and on f's two inputs, which are
+ * the same on both PCs (lockstep: exchanged; rollback: the confirmed inputs the
+ * final re-simulation runs with). It does not look at which PC runs it, which
+ * slot is local, or where an input came from (device, script, the driver, the
+ * peer, a prediction, a replay file), and it treats P1 and P2 alike. So a
+ * modified client that sends START anyway pauses nothing, and the two games stay
+ * equal. Each player's own START never even goes out (netplay_core.cpp
+ * device_input); the test inputs (T5_NET_SCRIPT, T5_NET_PADFILE) are not
+ * filtered there, so tests can play the modified client.
+ *
+ * The window's start is kept per boundary (frame number mod 4096, tagged), so a
+ * rollback that re-simulates a boundary records it again from the state it
+ * restored: the record of boundary f always comes from the latest run of f,
+ * which a rollback to first_wrong <= f has re-made (boundaries before
+ * first_wrong ran on correct inputs). The records are cleared at every frame 0. */
+bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / replay: a direct-fight session */
+constexpr uint16_t kStartButton    = 0x0008;   /* START in PadInput::buttons (DIGITAL1 low byte) */
+constexpr uint32_t kNpWindowDelay  = 40;       /* frames after the decision (the driver's and the rule's first press) */
+constexpr uint32_t kNpHist         = 4096;
+uint32_t g_np_tag[kNpHist];      /* boundary f recorded: f + 1 */
+bool     g_np_fought[kNpHist];   /* boundary f: game mode, fight phase 17, match not decided */
+uint32_t g_np_since[kNpHist];    /* boundary f: the frame the match was decided at in this fight (0: not) */
+uint32_t g_np_cut[2], g_np_kept; /* this match: live frames whose START was taken out (per player), kept */
+bool     g_np_noted = false;
+
+void no_pause_reset()
+{
+    memset(g_np_tag, 0, sizeof g_np_tag);
+    g_np_cut[0] = g_np_cut[1] = g_np_kept = 0;
+    g_np_noted = false;
+}
+
+/* in[] = frame f's inputs, game memory = the state at f's boundary. live: the
+ * frame is played for the first time (counts for the log only). */
+void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
+{
+    if (!g_directfight) return;   /* offline and menu-driven test sessions: START as ever */
+    const bool fight = t5_df_game_mode() && rd32(0x1008F070u) == 17;
+    const bool decided = fight && rd8(kMatchOver) != 0;
+    uint32_t since = 0;
+    if (decided && f > 0 && g_np_tag[(f - 1) % kNpHist] == f) {
+        const uint32_t p = (f - 1) % kNpHist;
+        since = g_np_since[p] ? g_np_since[p] : g_np_fought[p] ? f : 0;
+    }
+    const uint32_t i = f % kNpHist;
+    g_np_tag[i] = f + 1;
+    g_np_fought[i] = fight && !decided;
+    g_np_since[i] = since;
+    const bool window = since && f - since >= kNpWindowDelay && t5_df_mode_next() != 6;
+    const bool start0 = (in[0].buttons & kStartButton) != 0, start1 = (in[1].buttons & kStartButton) != 0;
+    if (!start0 && !start1) return;
+    if (window) { if (live) g_np_kept++; return; }
+    in[0].buttons &= (uint16_t)~kStartButton;
+    in[1].buttons &= (uint16_t)~kStartButton;
+    if (!live) return;
+    if (start0) g_np_cut[0]++;
+    if (start1) g_np_cut[1]++;
+    if (!g_np_noted) {
+        g_np_noted = true;
+        np::note("frame %u: START taken out of %s input (no pause online; phase %u, mode %u)", f,
+                 start0 && start1 ? "both players'" : start0 ? "P1's" : "P2's", rd32(0x1008F070u), t5_df_mode_cur());
+    }
+}
+
+/* the match's tally, at its end */
+void no_pause_report(uint32_t f)
+{
+    if (!g_directfight) return;
+    np::note("frame %u: no pause online: START taken out on %u frame(s) of P1's input and %u of P2's, kept on %u "
+             "(the post-match skip)", f, g_np_cut[0], g_np_cut[1], g_np_kept);
+    g_np_cut[0] = g_np_cut[1] = g_np_kept = 0;
+    g_np_noted = false;
+}
+
 uint64_t gcall(uint32_t code, uint64_t a0 = 0)
 {
     return ppu_guest_call_ct(code, kTOC, a0, 0, 0, 0, 0, 0, 0, 0);
@@ -853,6 +948,7 @@ void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
     g_matches++;
     np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
              w1 == w2 ? "none (draw)" : (w1 > w2 ? "P1" : "P2"));
+    no_pause_report(f);
     g_pending = { true, f, w1, w2, hash, have_hash, GetTickCount64() };
     flush_result(false);
 }
@@ -961,7 +1057,7 @@ void check_session()
  * game copies it from each PC's own options when VS starts, so two saves with
  * different settings would play different matches. */
 int g_rounds = 0;
-bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE: the direct-fight code sets the rounds */
+/* (g_directfight: above, with the no-pause rule) */
 void apply_rounds()
 {
     if (g_rounds <= 0 || g_directfight || rd32(kConfig) != 4) return;
@@ -1368,6 +1464,7 @@ void on_frame_start(ppu_context* ctx)
         }
         g_frame = run + 1;
         if (np::replaying()) rp::play_inputs(run, in);   /* (a sync point may have renumbered the frames: the recorded frame's inputs) */
+        no_pause_rule(run, in, run >= f);   /* (memory: the state at run's boundary, restored if it is re-simulated) */
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();
@@ -1418,6 +1515,7 @@ void on_frame_start(ppu_context* ctx)
          * (0xAE6C8: sys_time_get_current_time -> init_by_array). Reseed it
          * with the seed both peers agreed on, before frame 0 runs. */
         np::connect();
+        no_pause_reset();
         g_await_load = g_directfight;   /* the end of the fight's loading is a sync point (fight_loaded_now()) */
         const uint32_t seed = np::match_seed();
         reseed(seed);
@@ -1454,6 +1552,7 @@ void on_frame_start(ppu_context* ctx)
      * then never finished). The rollback loop applies the same rule from its
      * first frame on; in lockstep it only matters for that first boundary. */
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
+    no_pause_rule(f, in, true);
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();
@@ -1678,6 +1777,7 @@ void read_session_env()
     LeaveCriticalSection(&g_result_cs);
     { const char* f1 = t5_env("T5_FIGHT"); const char* f2 = t5_env("T5_FIGHT_FILE");
       g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent || np::replaying(); }   /* (a replay is a direct fight) */
+    np::set_no_start(g_directfight);   /* no pause online: this PC's START stays home (no_pause_rule) */
     g_rounds = 0;
     if (const char* r = t5_env("T5_NET_ROUNDS")) {
         g_rounds = atoi(r);

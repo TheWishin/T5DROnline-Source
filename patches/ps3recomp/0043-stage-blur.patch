@@ -189,7 +189,7 @@ index f090b77..37462c0 100644
  #ifdef __cplusplus
  }
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e53cadc..abe0478 100644
+index e53cadc..8d11671 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -235,7 +235,9 @@ extern volatile unsigned long long g_yz_auto_start_tick;
@@ -605,7 +605,7 @@ index e53cadc..abe0478 100644
  static void sink_end_impl(void* user, const rsx_dispatch* r)
  {
      (void)user; (void)r;
-@@ -9110,6 +9458,30 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9110,6 +9458,32 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
      { static u64 skipk = 1;
        if (skipk == 1) { const char* e = getenv("LD_SKIP_PSO"); skipk = e ? _strtoui64(e, 0, 16) : 0; }
        if (skipk && live_legacy_pso_key() == skipk) return; }
@@ -615,7 +615,9 @@ index e53cadc..abe0478 100644
 +    if (!g_ld_stage_blur && (rsx_dsp_reg(&g.rsx, M_BLEND_ENABLE) & 1u) &&
 +        g.surfaces[target].w >= g.width && g.surfaces[target].h >= g.height) {
 +        u32 reads = 0;
-+        (void)ld_fp_unit_masks(&reads);
++        int any_glow = 0;                       /* a glow buffer at all? (most frames: no) */
++        for (u32 i = 0; i < g.n_surfaces; i++) any_glow |= g.surfaces[i].post_buffer;
++        if (any_glow) (void)ld_fp_unit_masks(&reads);
 +        for (u32 u = 0; u < SRV_TABLE_SIZE && reads; u++) {
 +            if (!((reads >> u) & 1u) || !(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
 +                continue;
@@ -636,7 +638,7 @@ index e53cadc..abe0478 100644
      /* MRT: colour targets B..D, resolved (and created) here, before any of
       * this draw's commands are recorded. They share A's format and clip. */
      u32 mrt[4] = { target, 0, 0, 0 };
-@@ -9184,6 +9556,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9184,6 +9558,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
                }
            }
        } }
@@ -645,7 +647,7 @@ index e53cadc..abe0478 100644
      for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
          if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
              continue;   /* disabled: nothing below applies */
-@@ -9219,19 +9593,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9219,19 +9595,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
           * Prefer the surface whose dimensions match what the texture
           * descriptor actually declares; failing that, the most recently drawn
           * one, which is the only other defensible answer. */
@@ -666,7 +668,7 @@ index e53cadc..abe0478 100644
          /* LD_UVDBG=1: the texture coordinates of the draw that samples the PS1
           * framebuffer. Placed here rather than in fetch_batches because that
           * function is not on this draw's path -- probing it printed nothing at
-@@ -9344,11 +9706,29 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9344,11 +9708,29 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
                              g.surfaces[sampled].offset,
                              g.surfaces[sampled].w, g.surfaces[sampled].h);
              }
@@ -700,7 +702,7 @@ index e53cadc..abe0478 100644
          } else {
              int sampled_depth = -1;
              const u32 texture_base_fmt =
-@@ -9408,6 +9788,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9408,6 +9790,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          }
      }
  
@@ -711,7 +713,7 @@ index e53cadc..abe0478 100644
      const u32 vtex_mask = vertex_texture_mask();
      u32 vtex_slots[SRV_TABLE_SIZE];
      for (u32 u = 0; u < SRV_TABLE_SIZE; u++)
-@@ -9809,6 +10193,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+@@ -9809,6 +10195,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
            if (ct) { col[0] = 1.0f; col[1] = 0.0f; col[2] = 1.0f; col[3] = 1.0f; } }
          g.list->lpVtbl->ClearRenderTargetView(g.list, rtv, col, 0, NULL);
          ld_surface_note_write(target, LD_SURFACE_WRITE_CLEAR);
@@ -719,7 +721,7 @@ index e53cadc..abe0478 100644
      }
      if ((mask & (RSX_CLEAR_DEPTH | RSX_CLEAR_STENCIL)) && g.depth) {
          rsx_dsp_surface sf;
-@@ -10163,6 +10548,14 @@ static void ld_display_config(void)
+@@ -10163,6 +10550,14 @@ static void ld_display_config(void)
      fprintf(stderr, "[display] res_scale=%.3g vsync=%d tearing=%d fullscreen=%s present filter=%s\n",
              (double)g_ld_res_scale, g_ldp.vsync, g_ldp.tearing,
              g_ldp.exclusive_cfg ? "exclusive" : "borderless", g_ldp.filter_point ? "point" : "linear");
@@ -734,7 +736,7 @@ index e53cadc..abe0478 100644
  }
  
  /* Initial swap-chain size: the window's client area (the window may already
-@@ -13048,6 +13441,11 @@ void rsx_live_draw_shutdown(void)
+@@ -13048,6 +13443,11 @@ void rsx_live_draw_shutdown(void)
      for (u32 i = 0; i < g.n_textures; i++) if (g.textures[i].tex) g.textures[i].tex->lpVtbl->Release(g.textures[i].tex);
      for (u32 i = 0; i < g.n_vtex; i++) if (g.vtex[i].tex) g.vtex[i].tex->lpVtbl->Release(g.vtex[i].tex);
      for (u32 i = 0; i < g.n_surfaces; i++) if (g.surfaces[i].tex) g.surfaces[i].tex->lpVtbl->Release(g.surfaces[i].tex);

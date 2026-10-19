@@ -475,8 +475,11 @@ class LobbyClient:
         if self._nat_task is not None:
             self._nat_task.cancel()
         local_port = gs.port
+        relay_name = ""
         if msg["path"] == "relay":
-            peer = self.relay_address(self._relay_of(msg, "relay_port"))
+            entry = self._relay_of(msg, "relay_port")
+            relay_name = (entry.get("name") or entry["id"]) if entry["id"] != "main" else ""
+            peer = self.relay_address(entry)
             if self.match.get("bridge") and self._bridge is None:
                 b = await self._open_bridge(msg["match"], peer, msg.get("start_time"))
                 if b is not None:
@@ -494,7 +497,8 @@ class LobbyClient:
                              jitter_ms=msg.get("jitter_ms", 0.0), delay=msg.get("delay", 3),
                              rounds=msg.get("rounds", 3), ranked=msg.get("ranked", False),
                              opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0),
-                             key=str(msg.get("key") or ""), input_delay=msg.get("input_delay"))
+                             key=str(msg.get("key") or ""), input_delay=msg.get("input_delay"),
+                             relay_name=relay_name)
         if self.handover == "share" and gs is not None and gs.dup is not None:
             ticket._dup_socket = gs.dup
             gs.dup = None

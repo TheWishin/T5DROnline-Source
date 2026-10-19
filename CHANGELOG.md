@@ -22,6 +22,18 @@ part is in the README's status table.
   picture may tear). The game still runs at 60 fps, like on the PS3; there is no frame rate
   setting. Online, both players can choose differently.
 
+### Servers
+- **Regional relays.** When two routers cannot connect directly, the match goes through a
+  relay, and with one lobby server in Germany that meant Germany even for two players in
+  California (300-400 ms ping). The lobby can now use small relay-only servers in other regions:
+  each launcher measures its ping to every one of them, and a match that needs a relay goes
+  through the one with the smallest sum of both players' pings (the lobby server's own relay
+  included). Lobby, accounts and ranks stay on the one server. Both players need 1.1.1; with an
+  older launcher the match uses the lobby server's relay as before. A relayed match still
+  switches to the direct connection when one opens up. For hosts: `install.sh --relay-only` now
+  sets up such a relay server (docs/HOSTING.md "Adding a relay server"); the old option of that
+  name, relaying every match, is `--force-relay`.
+
 ## v1.1.0 (2026-10-19)
 
 **Online that holds up, a new launcher, ranked sets.** Both players need 1.1.0 (the lobby

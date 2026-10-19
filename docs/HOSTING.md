@@ -16,6 +16,7 @@ packages. It needs one TCP port and two UDP ports, about 35 MB of RAM, and very 
 - [Docker](#docker)
 - [Windows: host for friends, or always on](#windows-host-for-friends-or-always-on)
 - [macOS: host on a Mac at home](#macos-host-on-a-mac-at-home)
+- [Adding a relay server](#adding-a-relay-server): relay-only nodes in other regions (Hetzner, Ubuntu 26.04)
 - [Operations](#operations): admin tool, status and metrics, logs, backups, updates
 - [Abuse protection: defaults for a public server](#abuse-protection-defaults-for-a-public-server)
 - [Firewall rules](#firewall-rules)
@@ -57,7 +58,7 @@ the providers' side.
 | **AWS / Azure free offers** | free for 6–12 months, then ~8–15 $/month | yes | Big providers. | Temporary (AWS moved new accounts to a credit-based free plan in 2025). Egress is billed per GB beyond small allowances, which is expensive for the relay. |
 | **PaaS** (Render, Railway, Heroku, Vercel, Cloudflare Workers, ...) | – | **no inbound UDP** | – | Doesn't work: the relay, NAT probe and punching need UDP. Fly.io has UDP, but with its own binding rules and a paid dedicated IPv4 (untested, not recommended). |
 | **A player's home PC** (Host for friends) | 0 € | yes, through port forwarding | Nothing to rent. One click in the launcher. Optional automatic port forwarding (UPnP/NAT-PMP). TLS by default. | Only up while that PC is on. Everyone learns the host's home IP (they would in direct matches anyway). Doesn't work behind carrier-grade NAT or DS-Lite: you need a public IPv4. The address changes unless you use DDNS. Relayed matches use the host's upload. |
-| **Relay-only mode** (`T5L_FORCE_RELAY=1`, any of the above) | +~170 kbit/s per match each way | – | Players never learn each other's IP address. | Every match goes through the server: more bandwidth, and the detour adds latency (server location matters). |
+| **Relay every match** (`T5L_FORCE_RELAY=1`, `install.sh --force-relay`, any of the above) | +~170 kbit/s per match each way | – | Players never learn each other's IP address. | Every match goes through the server: more bandwidth, and the detour adds latency (server location matters). |
 
 **Why not a free tier for the public server:** Oracle is the only free option with enough
 egress, and its reclamation policy is aimed at exactly this kind of mostly-idle service. A
@@ -106,7 +107,7 @@ Blink...). The SSH app can create a key for you.
    `host:7781#fingerprint` line the script printed.
 6. **Publish it** (2 min). Put the printed entry into `lobby/servers.json` in place of the
    placeholder, and commit. The next release then preselects it for every player.
-7. **Optional:** set `T5L_MOTD`, accounts or guests, and relay-only in `/etc/t5lobby/t5lobby.env`.
+7. **Optional:** set `T5L_MOTD`, accounts or guests, and relaying every match in `/etc/t5lobby/t5lobby.env`.
    Apply with `systemctl restart t5lobby`.
 
 **Updates:** `cd /opt/src/T5DROnline && git pull && lobby/deploy/linux/install.sh <same options>`.
@@ -376,6 +377,173 @@ python3 lobby/run.py admin --db "$HOME/Library/Application Support/T5DR Online/l
 launchctl print gui/$(id -u)/org.t5dronline.lobby-host      # what launchd thinks
 ```
 
+## Adding a relay server
+
+Two players whose routers cannot connect directly play through a relay. With only the central
+server in Nuremberg, two players in California go California → Germany → California: 300–400 ms
+instead of ~20. A **relay-only server** near them (for example Hetzner's Hillsboro, Oregon
+location) brings that down to roughly the sum of their round trips to it, typically 30–80 ms.
+The lobby, accounts and ranking stay on the one central server, so nobody's rating splits.
+
+How it fits together (protocol: [ONLINE.md](ONLINE.md#regional-relays)):
+
+- A **relay node** runs only the lobby's UDP relay (`python run.py relay`, installed by
+  `install.sh --relay-only`): no accounts, no database, no TCP port, one UDP port (7781).
+- The **central server** lists its nodes in `/etc/t5lobby/relays.json` (`T5L_RELAYS`). It checks
+  every node every 5 s (`T5L_RELAY_CHECK_SECONDS`) and stops giving new matches to a node that
+  has not answered for 20 s (`T5L_RELAY_DEAD_SECONDS`), or at once when a node does not answer a
+  session request -- that match then takes the next best relay. Edits of `relays.json` are picked
+  up within seconds; the players online get the new list at once.
+- **Launchers from 1.1.1 on** measure their UDP round trip to every node at login (and every
+  5 minutes between matches). When a match needs a relay, the central server takes the relay
+  with the **smallest sum of both players' round trips** -- its own relay included -- opens a
+  session there and gives each launcher a bind token for it that works for 60 s
+  (`T5L_RELAY_BIND_SECONDS`). Older launchers (and a pair with one older launcher) get the
+  central relay, as before. A relayed match between two 1.1.1 launchers still moves onto the
+  direct path when it starts to work during the match, from a regional relay too.
+- The **control channel** between the central server and a node: UDP datagrams on the node's
+  relay port, each signed with HMAC-SHA256 under a secret both machines hold
+  (`/etc/t5lobby/relay.secret` on the node, `/etc/t5lobby/relay-<id>.secret` on the central server),
+  with a timestamp and a one-time id: nobody without the secret can open a session, and a recorded
+  request cannot be played back. The two clocks must agree within 2 minutes (NTP; Ubuntu does it).
+- A node relays **only for sessions the central server opened**, with the central relay's limits:
+  the game's packets and the lobby's peer packets only, at most 2048 bytes each, 256 kbit/s and 240
+  packets/s per player (public profile), 100 sessions, 3 per internet address, 20 minutes a match
+  (renewed for a rematch in the running games), closed after 2 minutes without a packet. It answers
+  strangers' UDP pings (that is how launchers measure it; the answer is never larger than the ping)
+  and nothing else. It cannot be used as a free proxy.
+
+### Step by step: a relay node on Hetzner (Ubuntu 26.04), about 15 minutes
+
+The central server must run a lobby version with regional relays (1.1.1 or newer) with
+`T5L_RELAYS` set; step 5 does that once. Commands marked *node* run on the new server, *central*
+on the lobby server, *PC* on the PC that holds the repository (the way the lobby server is updated).
+
+1. **Create the server** (Hetzner Cloud console → Add Server). Location **Hillsboro, OR**, image
+   **Ubuntu 26.04**, the smallest shared plan offered there (a relayed match costs about 0.3 % of
+   a core: the smallest plan carries the default 100 sessions). IPv4 on. Paste your SSH public key.
+   Name it, for example, `t5relay-usw`. Note its IPv4 address (*NODE-IP*). Look at the plan's
+   included traffic: US locations include less than the EU ones, and a relayed match moves about
+   80 MB per hour each way (two players at ~85 kbit/s).
+2. **Cloud firewall** (Firewalls → Create Firewall), inbound rules only:
+
+   | Port | Proto | For |
+   |---|---|---|
+   | 22 | TCP | SSH |
+   | **7781** | **UDP** | the relay: players' pings, binds and game packets, and the central server's control requests |
+
+   Nothing else: a relay node has no TCP 7781, no UDP 7782 and no port 80. Apply it to the server.
+   The central server needs **no new inbound port**: it sends its requests from a random UDP port
+   and the node's answers come back as replies, which stateful firewalls (ufw, the nftables rules
+   below, Hetzner's cloud firewall) let in.
+3. **Install** (5 min):
+
+   ```sh
+   # node (as root): updates, Python, automatic security updates; the clock must be synchronized
+   apt update && apt -y full-upgrade && apt -y install python3 unattended-upgrades
+   timedatectl | grep synchronized        # "System clock synchronized: yes"
+   mkdir -p /opt/src/T5DROnline
+   # PC: copy the lobby folder of the repository (same version as the central server)
+   scp -r lobby root@NODE-IP:/opt/src/T5DROnline/
+   # node: install the relay node; --relay-id is its name in the central's relays.json,
+   # --central (optional) drops control packets that do not come from the central server
+   bash /opt/src/T5DROnline/lobby/deploy/linux/install.sh --relay-only --relay-id usw \
+        --central CENTRAL-IP --firewall ufw
+   ```
+
+   (Instead of `scp`: `apt -y install git && git clone --depth 1
+   https://github.com/TheWishin/T5DROnline-Source /opt/src/T5DROnline` -- the public source mirror.)
+
+   The script creates the `t5lobby` user, copies the code to `/opt/t5lobby`, writes
+   `/etc/t5lobby/t5lobby.env` with `T5L_RELAY_SECRET_FILE`, `T5L_RELAY_ID` (and
+   `T5L_RELAY_CENTRAL`), makes the secret `/etc/t5lobby/relay.secret` (mode 0640; an existing one is
+   kept), opens SSH and UDP 7781 in ufw, and installs, starts and health-checks the systemd service
+   `t5lobby` running `python3 -m t5lobby.server.relaynode`. At the end it prints the entry for the
+   central server's `relays.json`. `--dry-run` shows every step first.
+4. **Check the node**: `sudo t5lobby-admin status` shows `relay node usw`, `0/100 sessions` and
+   `central   last request never` (until step 6).
+5. **Central server, the first time only**: add the setting, then update the central server to
+   this version as usual and restart it once, after a drain:
+
+   ```sh
+   # central
+   echo 'T5L_RELAYS=/etc/t5lobby/relays.json' | sudo tee -a /etc/t5lobby/t5lobby.env
+   sudo t5lobby-admin drain --wait 600
+   # ... copy the new lobby/ code as for every update (install.sh with its usual options restarts
+   # the service itself), or else:
+   sudo systemctl restart t5lobby
+   ```
+
+   (A restart drops everybody for a few seconds and voids running matches -- hence the drain.
+   Until step 6 the log says once that `relays.json` is missing; that is expected. Adding,
+   changing or removing nodes later needs no restart.)
+6. **Give the central server the node's secret and entry.** From a PC with SSH access to both
+   (the secret never shows on screen and stays out of the shell history):
+
+   ```sh
+   # PC
+   ssh root@NODE-IP cat /etc/t5lobby/relay.secret | \
+     ssh root@CENTRAL-IP 'umask 027; cat > /etc/t5lobby/relay-usw.secret; chgrp t5lobby /etc/t5lobby/relay-usw.secret'
+   ```
+
+   From a phone: `sudo cat /etc/t5lobby/relay.secret` on the node, copy the line; on the central
+   server `sudo sh -c 'umask 027; cat > /etc/t5lobby/relay-usw.secret'`, paste, Enter, Ctrl+D, then
+   `sudo chgrp t5lobby /etc/t5lobby/relay-usw.secret`.
+
+   Then, on the central server, `sudo nano /etc/t5lobby/relays.json` (the entry install.sh printed;
+   `name` is what players see: "Relay (Oregon (US West))"):
+
+   ```json
+   {
+     "format": "t5dr-relays/1",
+     "relays": [
+       {"id": "usw", "name": "Oregon (US West)", "host": "NODE-IP", "port": 7781,
+        "secret_file": "relay-usw.secret"}
+     ]
+   }
+   ```
+
+   and `sudo chgrp t5lobby /etc/t5lobby/relays.json && sudo chmod 0640 /etc/t5lobby/relays.json`.
+   The central server reads it within 5 seconds. A broken file is refused with a line in the log and
+   in `status`; the last good list stays in use.
+7. **Check it**: on the central server `sudo t5lobby-admin status` shows
+
+   ```
+   relay usw   Oregon (US West): up, 0/100 sessions, 0 kbit/s, last seen 2 s ago (control round trip 150 ms)
+   ```
+
+   and on the node `central   last request 3 s ago`. The log (`journalctl -u t5lobby`) says why each
+   relayed match went where: `match m...: relay usw (punch failed; sum of round trips: usw 52 ms,
+   main 304 ms)`. A second node is the same steps with another `--relay-id`, another secret file and
+   another entry in `relays`.
+
+### Running relay nodes
+
+- **Status line per node** (`t5lobby-admin status` on the central server): up / DOWN (and why,
+  e.g. `clock`), sessions open of the node's maximum, relay kbit/s over the last minute, when it
+  last answered, the control channel's round trip, failed session requests. The same numbers are
+  in `/status` (`"relays"`) and `/metrics` (`t5lobby_relay_node_up{relay="usw"}`,
+  `t5lobby_relay_node_sessions`, `t5lobby_relay_node_kbit_per_second`,
+  `t5lobby_relay_node_last_seen_seconds`); the 15-minute status line in the log has one line per
+  node. On a node, `t5lobby-admin status` / `health` and `http://127.0.0.1:7780/` work as on the
+  central server (`t5relay_*` metrics).
+- **Maintenance**: set `"enabled": false` on the node's entry. New matches stop going there; running
+  ones finish. When its status shows 0 sessions, update it (`scp` the new `lobby/`, run
+  `install.sh --relay-only --relay-id usw ...` again: settings and secret are kept), then enable it
+  again. A node restart ends the matches relayed by it, like a central restart does for its own.
+- **A node that dies**: the central server marks it DOWN after 20 s without an answer (at once if a
+  session request goes unanswered) and logs `relay usw (...) is down`; matches take the next best
+  relay, at worst the central one. When it answers again: `is up`, and it is used again.
+- **Limits on a node** are the central relay's settings in its `/etc/t5lobby/t5lobby.env`:
+  `T5L_RELAY_KBPS`, `T5L_RELAY_PPS`, `T5L_MAX_RELAYS`, `T5L_MAX_RELAYS_PER_IP`,
+  `T5L_RELAY_MAX_BYTES`, `T5L_RELAY_MAX_SECONDS`; a full node refuses the session and the match
+  takes the next relay.
+- **A new secret** (a copy leaked): `sudo rm /etc/t5lobby/relay.secret` and run install.sh again on
+  the node (it makes a new one), copy it to the central server as in step 6. Until both have the
+  new one the node shows DOWN.
+- **The central server's own relay** stays a candidate. `T5L_RELAY=0` takes it out of the choice
+  (then only nodes relay, and a pair with an older launcher cannot be relayed).
+
 ## Operations
 
 ### Admin tool
@@ -388,7 +556,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 
 | Command | |
 |---|---|
-| `status [--json]` | players online (guests/accounts/playing/searching), rooms, queues, matches running and in the last 24 h by path, relay sessions and kbit/s, accounts, bans, certificate expiry, CPU/RSS |
+| `status [--json]` | players online (guests/accounts/playing/searching), rooms, queues, matches running and in the last 24 h by path, relay sessions and kbit/s, one line per regional relay node (up/down, sessions, kbit/s, last answer), accounts, bans, certificate expiry, CPU/RSS. On a relay node: its sessions, kbit/s and the central server's last request |
 | `health [-q]` | exit code 0 when the server answers (Docker health check, scripts) |
 | `users [TEXT] [--banned]`, `user NAME`, `matches [--player NAME]` | look things up |
 | `ban NAME [--days D \| --hours H] [--reason ...]`, `unban NAME` | accounts. Without a duration, the ban is permanent. The player is kicked and their remembered logins end. Later logins are refused with the reason, but only after the correct password, so a ban never reveals that an account exists |
@@ -547,6 +715,9 @@ apart from DNS, package updates and certbot.
   pre and post hooks open and close port 80 around renewals.
 - **nftables** (`--firewall nft`): `lobby/deploy/linux/nftables-t5lobby.conf`. Policy drop, with
   per-address rate limits on new SSH and lobby connections.
+- **A relay-only node** (`install.sh --relay-only`): only UDP 7781 (and SSH) inbound;
+  `--firewall nft` installs `lobby/deploy/linux/nftables-t5relay.conf`. The central server needs no
+  new inbound port for its nodes. See "Adding a relay server".
 - **Cloud firewall** (Hetzner, Oracle security list, ...): the same table. It applies before
   traffic reaches the VPS, so set it in both places.
 - **Windows** (home host): allow Python when asked, or use `install-task.ps1 -OpenFirewall`.
@@ -590,7 +761,7 @@ with the real game in ONLINE.md), and ~0.3% of a fast core per relayed player.
 
 **Per 100 concurrent players:**
 
-| | Typical (direct where possible: ~10–20% of matches need the relay) | Worst case (relay-only mode, everybody in a match) |
+| | Typical (direct where possible: ~10–20% of matches need the relay) | Worst case (every match relayed, everybody in a match) |
 |---|---|---|
 | CPU | ~0.1 vCPU | ~0.3 fast core ≈ 0.6–0.9 VPS vCPU |
 | RAM | ~35 MB | ~35 MB |
@@ -644,10 +815,13 @@ Every scrypt hash costs ~16 MB while it runs; before, nothing bounded how many r
    (`T5L_ACCOUNTS=0`) stores nothing about people except unranked match records, which
    `purge-guests` cleans. A privacy note for players should say what is stored and that the logs
    contain IP addresses for a short time.
-4. **Relay-only (privacy) or direct**: direct is faster and cheaper, but players see each other's
-   IP address. Relay-only hides it at ~170 kbit/s per match.
+4. **Relay every match (privacy) or direct**: direct is faster and cheaper, but players see each
+   other's IP address. Relaying every match hides it at ~170 kbit/s per match.
 5. **Who moderates**: who gets SSH and `t5lobby-admin`, and where players report cheaters (the MOTD).
 6. **Builds**: whether to pin accepted builds (`T5L_BUILDS`) per release, or pair any equal builds.
+7. **Regional relays**: where players live far from the lobby server, a small relay-only server
+   near them (see "Adding a relay server") cuts their relayed matches' ping to a fraction, for the
+   price of another VPS. Lobby and ranking stay on one server.
 
 ## What was verified, and what was not
 
@@ -663,8 +837,8 @@ Verified on the development PC (Windows 11), 2026-10-17:
   and UPnP/NAT-PMP against fake routers on 127.0.0.1. A new Tk test clicks Host for friends and
   logs in through it.
 - **`install.sh --dry-run`** with `--domain/--email/--agree-tos/--firewall ufw` and with
-  `--self-signed/--firewall nft/--relay-only` prints the expected steps. **`install.sh --root DIR
-  --self-signed --relay-only`** (a real staged install) produced the right layout, certificate,
+  `--self-signed/--firewall nft/--relay-only` (since 1.1.1: `--force-relay`) prints the expected
+  steps. **`install.sh --root DIR --self-signed --relay-only`** (now `--force-relay`; a real staged install) produced the right layout, certificate,
   settings and admin wrapper. The server was then run from that layout with TLS:
   - Pinned clients connect, and a wrong pin is refused.
   - A relay-only match passed the game's handshake through the relay, and the reports were
@@ -686,6 +860,19 @@ Verified on the development PC (Windows 11), 2026-10-17:
   task. Its task objects (S4U principal, restart policy) were constructed and checked without
   registering.
 - **Load measurements** above.
+
+Regional relays (branch regional-relays, 2026-10-19): `lobby/tests/test_relays.py` (control channel,
+relays.json, the node's limits, the choice, a dead / silent / full node, the list pushed to clients,
+the direct upgrade from a regional relay, a rematch in the running games renewing the node's lease,
+admin lines, the 1.1.0 client and server from git) and `lobby/tools/relay_e2e.py` (central server and
+two nodes as processes, players behind UDP delay proxies, stub games: the relay with the smallest
+sum carries the match, a killed node is skipped, a 1.1.0 client gets the central relay). With two real
+games (`--exe`, main's t5dr.exe) the match went through the node with the smallest sum (round trip
+136 ms for a simulated 120), both relay bridges carried it: 4,270 frames, 0 mismatching, 18,329
+packets through the node, result confirmed.
+`install.sh --root DIR --relay-only --relay-id usw` (a staged install) was then run with the settings
+it wrote and answered a control request signed with the secret it made. Not verified: a real node
+on Hetzner and real round trips across the Atlantic.
 
 The macOS setup (docs above, "macOS: host on a Mac at home") was only checked as far as Windows
 allows: the data-folder rule with `sys.platform` patched to darwin, the banner line, the

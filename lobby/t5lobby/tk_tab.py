@@ -969,8 +969,11 @@ class OnlineTab:
             delay = ev.get("delay") or 0
             self._match_head = (t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
                                 else t("Casual match vs {name}", name=ev["opponent"]["name"]))
+            regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
             self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
-                                 ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")),
+                                 ms=f"{ev.get('rtt_ms', 0):.0f}",
+                                 how=(t("via the relay server {name}", name=regional) if regional
+                                      else _word(PATH_TEXT, ev.get("path"))),
                                  frames=ev.get("delay"), delay_ms=f"{delay * 16.7:.0f}")
             if f.get("pick"):
                 # in-game select: the fighters are picked on the game's own select screen

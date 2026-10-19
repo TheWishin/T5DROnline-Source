@@ -3,6 +3,8 @@ python312._pth ignores PYTHONPATH and the current folder, so `-m t5lobby...` can
 
     python lobby/run.py server [--port N ...]     the lobby server        (= python -m t5lobby.server)
     python lobby/run.py host [--map-ports ...]    Host for friends        (= python -m t5lobby.server.host)
+    python lobby/run.py relay --secret-file F     a relay-only server for a central lobby elsewhere
+                                                  (= python -m t5lobby.server.relaynode; docs/HOSTING.md)
     python lobby/run.py admin COMMAND ...         administration          (= python -m t5lobby.server.admin)
 """
 import os
@@ -19,6 +21,8 @@ def main():
         from t5lobby.server.host import main as run
     elif cmd == "admin":
         from t5lobby.server.admin import main as run
+    elif cmd == "relay":
+        from t5lobby.server.relaynode import main as run
     else:
         print(__doc__)
         return 2

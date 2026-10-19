@@ -18,7 +18,7 @@ install for players or for whoever runs the server.
 - [Pieces](#pieces)
 - [What happens in a match](#what-happens-in-a-match)
 - [Handover to the game](#handover-to-the-game)
-- [NAT traversal and the relay](#nat-traversal-and-the-relay)
+- [NAT traversal and the relay](#nat-traversal-and-the-relay) (and [regional relays](#regional-relays))
 - [Ratings, queues, results](#ratings-queues-results)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
@@ -310,6 +310,60 @@ Not handled: UDP blocked entirely (the match is cancelled with
 netplay layer is IPv4-only too); two symmetric NATs with random ports and no
 router forward on either side (relay).
 
+### Regional relays
+
+(1.1.1; setting up a node: docs/HOSTING.md "Adding a relay server"; code: `server/relays.py`,
+`server/relaynode.py`, `relayctl.py`.) The relay above sits in the lobby server, wherever that is:
+two players far from it -- both in California, the server in Nuremberg -- get California -> Germany
+-> California, 300-400 ms. **Relay-only nodes** in other regions take that detour away; the lobby,
+accounts and ranking stay on the one central server.
+
+*Which relay.* The path through a relay is player A -> relay -> player B, so its round trip is the sum
+of both players' round trips to the relay. A client with the `relays` cap gets the list of nodes in
+`welcome` (`relays: [{id, name, host, port}]`), measures its UDP round trip to each (SPING, as to the
+server) in the background after login and every 5 minutes between matches, and reports it
+(`relay_rtt {rtts: {id: ms}}`); its round trip to the server itself is its `udp_rtt`. When a match
+needs a relay, the server takes the relay with the smallest sum -- its own one is a candidate like
+any other (a tie goes to it) -- among the nodes that are up and that both players reached. A pair
+with an older client gets the server's own relay, exactly as before (an older client binds to the
+lobby server's address and nowhere else).
+
+*Opening a session on a node.* The central server asks the node over the control channel (below) to
+open a session with two fresh 16-byte bind tokens and a lease (the match time limit + 2 minutes). A
+node that is full answers so, one that does not answer within 1.5 s is marked down; either way the
+next relay in the order is tried, down to the server's own. Then both clients get `nat_relay` with
+`relay {id, name, host, port}` and their `relay_token`; each binds its game socket to the node
+(`RELAY_BIND` with that token, the same packet as for the server's relay), measures the path through it
+and reports `nat_result` as usual; `match_start` carries `relay` too, and the game (or the relay bridge)
+talks to the node. A bind token works for `T5L_RELAY_BIND_SECONDS` (60) after the session opened.
+When the match ends, the server closes the session (after the rematch window, like its own); a
+rematch inside the running games keeps it and renews its lease. Between two `nat2` clients the relay
+bridge works the same with a node: the match moves onto the direct path when it starts to work.
+
+*Health.* The central server sends every node a `status` request every `T5L_RELAY_CHECK_SECONDS` (5);
+a node that has not answered for `T5L_RELAY_DEAD_SECONDS` (20) is down: no new sessions until it
+answers again. relays.json is read again when it changes; clients with the cap get the new list
+(`relays`) and measure it.
+
+*The control channel* (`relayctl.py`): UDP datagrams to the node's relay port,
+`"T5RC" | version 1 | kind (1 request, 2 reply) | JSON | HMAC-SHA256` over everything before the MAC,
+under a secret the two machines share (a file on each, never in the repository). A request carries
+`op` (`status`, `open {sid, tokens, lease}`, `renew {sid, lease}`, `info {sid}`, `close {sid}`), a
+random `id`, the sender's clock `ts` and the node's `node` id. The node takes it only with a valid MAC,
+a `ts` within 120 s of its own clock (an authentic request outside that window gets one `clock`
+answer, so the operator learns why), an `id` it has not seen and its own id; with
+`T5L_RELAY_CENTRAL` only from the central server's address. The answer carries `re` (the request's
+id) and is signed the same way; the central server takes only answers to its open requests, from the
+address it asked. Each retry is a new datagram with a new id; the operations are idempotent.
+
+*What a node relays*: the server relay's rules (server/udp.py, shared code) -- only between the two
+endpoints that bound with a session's tokens, only the game's packets and the lobby's peer packets, at
+most `T5L_RELAY_MAX_BYTES`, per-player packet and bandwidth caps, `T5L_MAX_RELAYS` sessions,
+`T5L_MAX_RELAYS_PER_IP` sessions per internet address (checked at the bind), the lease (never more
+than its own `T5L_RELAY_MAX_SECONDS` at a time), 120 s without a packet closes a session, and a
+closed session's id cannot be opened again. A stranger gets answers to UDP pings (never larger than
+the ping) and nothing else.
+
 ## Ratings, queues, results
 
 **Glicko-2** (Glickman 2012, τ = 0.5, start 1500 / RD 350 / σ 0.06), one
@@ -337,10 +391,11 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays) |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
+| `relay_rtt` | `rtts {id: ms}` (`relays` cap) | none: the client's UDP round trips to the regional relays; one it could not reach is left out (and never chosen for its matches) |
 | `lobby` | | `lobby_state` now |
 | `leaderboard` | `limit` | `leaderboard {rows}` |
 | `chat` | `text` (200 chars) | `chat` to everyone |
@@ -377,8 +432,9 @@ Server to client (pushed):
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
 | `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, wait_peer, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
 | `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
-| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works) |
-| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
+| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token) |
+| `relays` | `relays [{id, name, host, port}]`: the regional relays changed (clients with the `relays` cap measure them again) |
+| `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `relay {id, name, host, port}` (a regional relay), `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
 | `match_result` | `match`, `status`, `winner`, `score`, `ranked`, `rating {before, after, delta}`, `you` |
 | `set_end` | `set`, `reason: declined\|left\|lag\|expired\|cancelled`, `by: you\|opponent\|null` |
@@ -416,6 +472,9 @@ Big-endian, 6-byte header `"T5LB" type version(1)`:
 | 16 | `PUNCH` | peer | tag 8 B, side u8, flags u8 (1 = heard), seq u32 | 20 |
 | 17/18 | `PPING`/`PPONG` | peer | tag 8 B, side u8, seq u32, time f64 | 27 |
 
+A regional relay node (`server/relaynode.py`) answers `SPING` and `RELAY_BIND` the same way and nothing
+else of this table; the central server's control datagrams to it start with `T5RC` ("Regional relays").
+
 Answers are never larger than requests (no amplification). The game's packets
 (`T5NP...`) are never parsed, only relayed.
 
@@ -449,6 +508,10 @@ Answers are never larger than requests (no amplification). The game's packets
 - **Input validation**: lines over 8 KiB close the connection; malformed or
   deeply nested JSON is refused; names are 2-16 characters from a fixed set;
   chat is cut to 200 printable characters; scores and winners are checked.
+- **Regional relay nodes** take orders only from the central server: every control datagram is signed
+  (HMAC-SHA256, shared secret), fresh (timestamp, one-time id) and meant for that node; a session
+  exists only when the central server opened it, and its bind tokens work for a minute. Nobody can use
+  a node as a proxy (above, "Regional relays").
 - **UDP**: unknown tokens get no answer; the relay only forwards between two
   endpoints that proved they hold the match's secret tokens, never sends more
   than it receives, and caps each side's rate.
@@ -510,6 +573,9 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_TLS_CERT` / `T5L_TLS_KEY` | | PEM files: control channel over TLS |
 | `T5L_RELAY` / `T5L_FORCE_RELAY` | `1` / `0` | offer the relay / use only the relay |
 | `T5L_RELAY_KBPS` / `T5L_RELAY_PPS` / `T5L_MAX_RELAYS` | `512` / `400` / `100` | relay caps |
+| `T5L_RELAYS` / `T5L_RELAY_SECRET_FILE` | | regional relay nodes: relays.json (a file, re-read when it changes, or the JSON itself) / the secret for nodes without their own ("Regional relays") |
+| `T5L_RELAY_CHECK_SECONDS` / `T5L_RELAY_DEAD_SECONDS` | `5` / `20` | health check of every node, and the silence after which a node gets no new matches |
+| relay node: `T5L_RELAY_SECRET_FILE`, `T5L_RELAY_ID`, `T5L_RELAY_CENTRAL`, `T5L_RELAY_BIND_SECONDS` | `60` (the last) | `python run.py relay`: its secret, its id in relays.json, the central server's address(es) (optional), how long a session's bind tokens work |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
 | `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 6, 90 s | (the punch window was 3 s up to 1.1.0) |
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
@@ -568,6 +634,16 @@ online and scheduled backups and restore, upgrade of an old database, lobby delt
 server's view and for old clients, the pure-Python certificate checked with openssl, certificate
 reload, servers.json, Host for friends end to end, UPnP/NAT-PMP against fake routers; the Online
 tab's Host for friends button.
+
+**Regional relays** (`test_relays.py`, `lobby/tools/relay_e2e.py`): the control channel, the relay node's
+limits, the choice by the sum of both round trips, dead / silent / full nodes, relays.json changes, the
+direct upgrade from a regional relay, compatibility with the 1.1.0 client and server from git; the tool
+runs a central server and two nodes as processes with UDP delay proxies between each player and each
+relay, and plays stub games (or `--exe t5dr.exe`) through the chosen one:
+
+```sh
+python lobby/tools/relay_e2e.py                       # scenarios best, dead, old (~1 min)
+```
 
 **Two players on one PC** (`lobby/tools/two_players.py`): starts a local
 server, logs in two guests, quick match, then starts two games with the

@@ -40,6 +40,7 @@ from ..buildid import BuildInfo
 from ..proto import LobbyError
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
+from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
 from .udp import UdpService
 
@@ -47,12 +48,12 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2"]
+            "nat2", "relays"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -90,6 +91,7 @@ class Player:
         self.queue_since = 0.0
         self.match = None
         self.server_rtt = None          # ms, reported by the client (UDP ping)
+        self.relay_rtt = {}             # regional relay id -> ms, reported by a client with the "relays" cap
         self.fps = None                 # this PC's sustained game speed in its last match (client report)
         self.rtt_shown = None           # what the lobby list shows: only updated on a real change
         self.token = os.urandom(24).hex()   # session resume token
@@ -288,6 +290,10 @@ class Match:
         self.final = None
         self.relay_stats = None
         self.relay_id = None                 # key of the relay session (a continued rematch keeps the old one)
+        self.relay_node = None               # regional relay (relays.RelayNodeRef) the session is on; None = ours
+        self.relay_info = None               # ... what the players were told about it (id, name, host, port)
+        self.relay_choice = None             # the relays considered, best first: [(sum of both RTTs in ms, id)]
+        self.relay_asking = False            # a failed regional relay setup: asking the node what it saw
         self.picks = [host.char, join.char]  # characters as picked (may be "random")
         self.chars = None                    # resolved at match start (the games' own picks replace them, below)
         self.pick = 0                        # seconds to pick on the game's select screen (0: the launchers' characters)
@@ -446,6 +452,8 @@ class LobbyServer:
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
         self.udp = UdpService(self, self.cfg)
+        self.relays = RelayPool(self.cfg, on_change=self._relays_changed)   # regional relay nodes (T5L_RELAYS)
+        self._bg = set()           # background tasks that must not be garbage collected
         self.conns = set()
         self.players = {}          # id -> Player (online or resumable)
         self.by_name = {}          # lower name -> Player
@@ -479,7 +487,8 @@ class LobbyServer:
             "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
             "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
             "lag_more", "lag_leaves", "notices_sent", "sets_confirmed", "sets_forfeit", "sets_void",
-            "set_replays", "punch_retries", "punch_predicted", "relay_upgrades"), 0)
+            "set_replays", "punch_retries", "punch_predicted", "relay_upgrades", "relay_regional",
+            "relay_fallbacks"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
         self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
         self.name_block = self._load_blocklist(self.cfg.name_blocklist)
@@ -533,6 +542,7 @@ class LobbyServer:
                else {"ssl": sslctx, "ssl_handshake_timeout": self.cfg.tls_handshake_timeout}))
         self.port = self.tcp.sockets[0].getsockname()[1]
         await self.udp.start(loop)
+        await self.relays.start()
         if self.cfg.status_port:
             from .status import StatusHttp
             self.status_http = StatusHttp(self)
@@ -565,6 +575,9 @@ class LobbyServer:
                 pass
         if self.status_http:
             await self.status_http.stop()
+        await self.relays.stop()
+        for t in list(self._bg):
+            t.cancel()
         self.udp.close()
         self.store.close()
 
@@ -741,6 +754,7 @@ class LobbyServer:
     PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby"))
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "set_char", "udp_rtt", "perf",
+                       "relay_rtt",
                        "challenge", "challenge_cancel", "block", "unblock", "leave_set"))
 
     async def dispatch(self, conn, line):
@@ -826,7 +840,9 @@ class LobbyServer:
                 "ranked_guests": self.cfg.guest_ranked, "placement": self.cfg.placement,
                 "caps": sorted(conn.caps), "relay_only": self.cfg.force_relay,
                 "strict_range": self.cfg.strict_range, "pair_cooldown": self.cfg.pair_cooldown,
-                "set_wins": self.cfg.ranked_set_wins if "sets" in conn.caps else 1}
+                "set_wins": self.cfg.ranked_set_wins if "sets" in conn.caps else 1,
+                # regional relays: the client measures its UDP round trip to each and reports it (relay_rtt)
+                **({"relays": self.relays.public_list()} if "relays" in conn.caps else {})}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -1130,6 +1146,33 @@ class LobbyServer:
             if shown is None or abs(ms - shown) > max(5.0, 0.2 * shown):
                 p.rtt_shown = ms              # the lobby list only when it changed noticeably
                 self.dirty = True
+
+    async def h_relay_rtt(self, conn, msg):
+        """The client's UDP round trips (ms) to the regional relays the server listed: {"rtts": {id: ms}}. A relay
+        it could not reach is left out (and is then never chosen for its matches)."""
+        rtts = msg["rtts"]
+        if not isinstance(rtts, dict):
+            raise TypeError("rtts is {relay id: ms}")          # (-> "bad field", for programmers)
+        out = {}
+        for rid, ms in list(rtts.items())[:MAX_RELAYS]:
+            if rid in self.relays.nodes and isinstance(ms, (int, float)) and 0 <= ms < 10000:
+                out[rid] = float(ms)
+        conn.player.relay_rtt = out
+
+    def _relays_changed(self):
+        """relays.json changed: clients that know the regional relays get the new list (and measure it again)."""
+        lst = self.relays.public_list()
+        for c in list(self.conns):
+            if c.player is not None and "relays" in c.caps:
+                c.send({"t": "relays", "relays": lst})
+        for p in self.players.values():
+            p.relay_rtt = {k: v for k, v in p.relay_rtt.items() if k in self.relays.nodes}
+
+    def _spawn(self, coro):
+        t = asyncio.ensure_future(coro)
+        self._bg.add(t)
+        t.add_done_callback(self._bg.discard)
+        return t
 
     async def h_perf(self, conn, msg):
         """The client's measure of its PC: sustained frames per second of its last match."""
@@ -1719,7 +1762,10 @@ class LobbyServer:
             m.continued = True
             if rematch_of.relay is not None:
                 m.relay, m.relay_id = rematch_of.relay, rematch_of.relay_id
+                m.relay_node, m.relay_info = rematch_of.relay_node, rematch_of.relay_info
                 rematch_of.relay = None
+                if m.relay_node is not None:
+                    self.relays.renew(m.relay, self._relay_lease())    # the node's time limit starts again
             self._start_match(m, rematch_of.path)
         elif skip_ready:
             m.ready = [True, True]
@@ -1854,13 +1900,22 @@ class LobbyServer:
                 # running games takes it over, otherwise it closes after the rematch window.
                 asyncio.get_running_loop().call_later(self.cfg.rematch_window + 5.0, self._close_kept_relay, m)
                 return
-            m.relay_stats = self.udp.close_relay(m.relay_id or m.id)
-            m.relay = None
+            self._close_relay(m)
 
     def _close_kept_relay(self, m):
         if m.relay is not None:
+            self._close_relay(m)
+
+    def _close_relay(self, m):
+        """Close the match's relay session: ours at once, a regional node's over its control channel."""
+        s, m.relay = m.relay, None
+        if s is None:
+            return
+        if getattr(s, "remote", False):
+            self.relays.close(s)
+            m.relay_stats = s.stats()
+        else:
             m.relay_stats = self.udp.close_relay(m.relay_id or m.id)
-            m.relay = None
 
     # ------------------------------------------------------------------ matches: NAT traversal
     def _start_nat(self, m):
@@ -2033,28 +2088,122 @@ class LobbyServer:
         if m.state == "punch":
             self._start_relay(m, "punch timeout")
 
+    # Which relay (docs/ONLINE.md "Regional relays"): this server's own, or a relay-only node in another region
+    # (T5L_RELAYS). The path through a relay is player A -> relay -> player B, so its round trip is the sum of
+    # both players' round trips to that relay: each client with the "relays" cap measures its UDP round trip to
+    # every node the server listed and reports it (relay_rtt); its round trip to this server is the one it
+    # reports anyway (udp_rtt). The relay with the smallest sum wins (a tie: ours); a node that is down, or
+    # that a player could not reach, is not considered, and an older client gets ours, as before. When the
+    # chosen node refuses the session (full) or does not answer, the next one is tried, down to ours.
+    def _relay_options(self, m):
+        """-> [(sum of both players' round trips in ms, RelayNodeRef or None for ours)], best first."""
+        opts = []
+        if self.cfg.relay:
+            # (an unknown round trip to us counts as far, so that a measured regional relay can win)
+            opts.append((sum(p.server_rtt if p.server_rtt is not None else 500.0 for p in m.players), 0, None))
+        if all("relays" in getattr(p.conn, "caps", ()) for p in m.players):
+            for n in self.relays.usable():
+                ms = [p.relay_rtt.get(n.id) for p in m.players]
+                if None not in ms:
+                    opts.append((sum(ms), 1, n))
+        opts.sort(key=lambda o: (o[0], o[1]))
+        return [(score, n) for score, _k, n in opts]
+
+    def _relay_lease(self):
+        """How long a regional node keeps a session before the lease must be renewed: the match time limit with
+        some room for the setup (the node never gives more than its own T5L_RELAY_MAX_SECONDS at a time)."""
+        return self.cfg.relay_max_seconds + 120.0 if self.cfg.relay_max_seconds > 0 else self.cfg.match_timeout
+
     def _start_relay(self, m, why):
         self._cancel_timers(m)
-        if not self.cfg.relay:
+        m.results = [None, None]
+        opts = self._relay_options(m)
+        if not opts:
             self.cancel_match(m, "no_connection")
             return
-        m.results = [None, None]
         if self._relay_crowded(m):
             log.info("match %s: no relay (address limit)", m.id)
             self.cancel_match(m, "relay_full")
             return
+        m.state = "relay"
+        m.relay_choice = [(round(score), n.id if n is not None else RELAY_MAIN) for score, n in opts]
+        if opts[0][1] is None:
+            if self._open_own_relay(m):
+                self._relay_ready(m, why)             # (the usual case, and the only one without T5L_RELAYS)
+                return
+            opts = opts[1:]
+            if not opts:
+                self.cancel_match(m, "relay_full")
+                return
+        self._spawn(self._open_relay(m, opts, why))
+
+    def _open_own_relay(self, m):
         m.relay = self.udp.open_relay(m.id, m.tokens)
         m.relay_id = m.id
-        if m.relay is None:
-            self.cancel_match(m, "relay_full")
+        m.relay_node = m.relay_info = None
+        return m.relay is not None
+
+    async def _open_relay(self, m, opts, why):
+        """Try the relays in order; the first that opens a session carries the match."""
+        for _score, node in opts:
+            if m.state != "relay" or m.relay is not None:
+                return
+            if node is None:
+                if self._open_own_relay(m):
+                    self._relay_ready(m, why)
+                    return
+                continue
+            sid = os.urandom(8).hex()
+            rr, err = await self.relays.open(node, sid, [proto.new_token(), proto.new_token()], self._relay_lease())
+            if m.state != "relay" or m.relay is not None:      # cancelled (a player left) while we asked
+                if rr is not None:
+                    self.relays.close(rr)
+                return
+            if rr is None:
+                self._count("relay_fallbacks")
+                log.warning("match %s: relay %s refused the session (%s); trying the next", m.id, node.id, err)
+                continue
+            m.relay, m.relay_id, m.relay_node = rr, sid, node
+            m.relay_info = node.public()
+            self._relay_ready(m, why)
             return
-        m.state = "relay"
-        log.info("match %s: relay (%s)", m.id, why)
+        if m.state == "relay" and m.relay is None:
+            self.cancel_match(m, "relay_full")
+
+    def _relay_ready(self, m, why):
+        node = m.relay_node
+        log.info("match %s: relay %s (%s; sum of round trips: %s)", m.id, node.id if node else RELAY_MAIN, why,
+                 ", ".join(f"{rid} {ms} ms" for ms, rid in m.relay_choice or ()))
+        self.note("relay_choice", match=m.id, relay=node.id if node else RELAY_MAIN, options=m.relay_choice)
+        if node is not None:
+            self._count("relay_regional")
         # Two nat2 clients keep the game socket and look for the direct path while the match runs (RelayBridge).
         bridge = self.cfg.relay_upgrade and all("nat2" in getattr(p.conn, "caps", ()) for p in m.players)
         for side, p in enumerate(m.players):
-            p.send({"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why, "bridge": bridge})
+            msg = {"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why, "bridge": bridge}
+            if node is not None:
+                # (only clients with the "relays" cap get here: both measured the node)
+                msg.update(relay=m.relay_info, relay_token=m.relay.tokens[side].hex())
+            p.send(msg)
         self._timer(m, "relay", self.cfg.relay_timeout, self._relay_timeout, m)
+
+    def _fail_relay(self, m):
+        """The relay path did not come up: the match is cancelled (no_connection). In a ranked set the side to
+        blame comes from what the relay saw (_setup_culprit); a regional node is asked for that first."""
+        s = m.relay
+        if m.relay_asking:
+            return
+        if getattr(s, "remote", False) and m.set is not None and m.set.rated:
+            m.relay_asking = True
+
+            async def ask():
+                await self.relays.info(s)
+                m.relay_asking = False
+                if m.state == "relay":
+                    self.cancel_match(m, "no_connection")
+            self._spawn(ask())
+            return
+        self.cancel_match(m, "no_connection")
 
     def _relay_crowded(self, m):
         """T5L_MAX_RELAYS_PER_IP: relay sessions per internet address. Two accounts can always force the
@@ -2106,7 +2255,7 @@ class LobbyServer:
 
     def _relay_timeout(self, m):
         if m.state == "relay":
-            self.cancel_match(m, "no_connection")
+            self._fail_relay(m)
 
     @staticmethod
     def _peer(peer):
@@ -2194,7 +2343,7 @@ class LobbyServer:
             if all(r and r["ok"] for r in m.results):
                 self._start_match(m, "relay")
             elif all(r is not None for r in m.results):
-                self.cancel_match(m, "no_connection")
+                self._fail_relay(m)
             # else: one side reported (a failure, or success) and the other has not yet: its report or the
             # relay timeout decides -- by then the relay has seen what each side sent (_setup_culprit)
 
@@ -2231,7 +2380,9 @@ class LobbyServer:
         r = m.results[side] or {}
         p.send({"t": "match_start", "match": m.id, "role": "host" if side == 0 else "join", "slot": side,
                 "path": m.path, "peer": r.get("peer") if m.path != "relay" else None,
-                "relay_port": self.udp.port if m.path == "relay" else None,
+                "relay_port": (m.relay_info["port"] if m.relay_info else self.udp.port) if m.path == "relay" else None,
+                # a regional relay: where it is (only clients with the "relays" cap get one)
+                **({"relay": m.relay_info} if m.path == "relay" and m.relay_info else {}),
                 "rtt_ms": round(m.rtt, 2), "jitter_ms": round(m.jitter, 2), "delay": m.delay,
                 # rollback input delay: fixed for ranked (T5_RB_NET_DELAY on both PCs), else each player's setting
                 "input_delay": self.cfg.ranked_input_delay if m.ranked and self.cfg.ranked_input_delay >= 0 else None,
@@ -3315,8 +3466,7 @@ class LobbyServer:
             if m.relay is not None and m.state == "playing" and m.started and now - m.started > self.cfg.relay_max_seconds:
                 log.warning("match %s: relay closed after %.0f s", m.id, now - m.started)
                 self._count("relays_expired")
-                m.relay_stats = self.udp.close_relay(m.relay_id or m.id)
-                m.relay = None
+                self._close_relay(m)
 
     def _db_upkeep(self):
         """Hourly: expired remembered logins go, and the WAL file is folded back into the database."""
@@ -3376,6 +3526,9 @@ class LobbyServer:
                  "relay %.0f kbit/s, %s matches in 24 h", st["players"]["online"], st["players"]["guests"],
                  st["rooms"], sum(st["queue"].values()), st["matches"]["running"], st["relay"]["sessions"],
                  st["relay"]["kbit_s"], st["db"].get("matches_24h", "?"))
+        for r in st["relays"]:
+            log.info("status: relay %s %s, %s sessions, %s kbit/s, last answer %s s ago", r["id"],
+                     "up" if r["alive"] else "DOWN", r["sessions"], r["kbit_s"], r["last_seen_s"])
 
     def relay_kbit_s(self):
         """Relay throughput (bytes forwarded, both directions together) over the last minute."""
@@ -3414,6 +3567,8 @@ class LobbyServer:
                       "kbit_s": round(self.relay_kbit_s(), 1),
                       "bytes_total": self.udp.stats["relayed_bytes"], "packets_total": self.udp.stats["relayed"],
                       "dropped_total": self.udp.stats["dropped"], "force_relay": self.cfg.force_relay},
+            # regional relay nodes (T5L_RELAYS): up or down, sessions, kbit/s, last answer
+            "relays": self.relays.status(), "relays_error": self.relays.error,
             "counters": dict(self.counters),
             "db": db,
             "tls": cert_info(self.cfg.tls_cert) if self.sslctx else None,

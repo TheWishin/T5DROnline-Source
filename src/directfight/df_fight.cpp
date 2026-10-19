@@ -1249,7 +1249,12 @@ void fight_on_frame(uint32_t f)
                 press(p, g_cfg.color[p] == 2 ? B_TRIANGLE : B_CROSS, f);
             }
         }
-        if (all_done) set_phase(Ph::Stage, "stage", f);
+        if (all_done) {
+            note("frame %u: select done: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)", f, kName[g_cfg.chr[0]],
+                 btn_name(g_cfg.btn[0]), rd32(rec(0) + kRecModel), kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]),
+                 rd32(rec(1) + kRecModel));
+            set_phase(Ph::Stage, "stage", f);
+        }
         break; }
     case Ph::Stage:
         if (mode == kModeGame) { g_wait_setup = false; set_phase(Ph::WaitGame, "loading", f); break; }

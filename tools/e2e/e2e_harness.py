@@ -708,11 +708,7 @@ class Player:
         orig_event = tab.on_event
 
         def on_event(ev, *a, **kw):
-            stage = getattr(me.ctx.run, "stage", None)
-            if stage and me.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict):
-                # run.py --stage: both launchers hand their game this stage instead of the lobby's pick (the same
-                # rewrite on both sides, so both games load the same stage; the lobby never checks it)
-                ev = dict(ev, fight=dict(ev["fight"], stage=stage))
+            me._force_stage(ev)
             me._record(ev)
             orig_event(ev, *a, **kw)
         tab.on_event = on_event
@@ -735,6 +731,12 @@ class Player:
         def make_driver():
             orig_make()
             d = tab.driver
+            orig_d_event = d.on_event
+
+            def d_on_event(ev, *a, **kw):           # (the tab hands every event to its driver first)
+                me._force_stage(ev)
+                return orig_d_event(ev, *a, **kw)
+            d.on_event = d_on_event
             orig_env = d.match_env
 
             def match_env(ev, ticket):
@@ -750,6 +752,14 @@ class Player:
                 return me.ctx.shaper.rewrite(me, env)
             d.match_env = match_env
         tab._make_driver = make_driver
+
+    def _force_stage(self, ev):
+        """run.py --stage: this launcher hands its game that stage instead of the lobby's pick -- the same rewrite
+        on both sides (in place, before the driver sees the event), so both games load the same stage; the lobby
+        never checks it."""
+        stage = getattr(self.ctx.run, "stage", None)
+        if stage and self.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict)                 and ev["fight"].get("stage") != stage:
+            ev["fight"] = dict(ev["fight"], stage=stage, lobby_stage=ev["fight"].get("stage"))
 
     def client_made(self, c):
         if self.ctx.block_direct.get(self.name):

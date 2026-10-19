@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Find the texts the launcher and the Online tab translate, and check them against the German catalog.
+"""Find the texts the launcher and the Online tab translate, and check them against every catalog.
 
-    python tools/i18n_extract.py               # report: missing entries, unused entries, problems
-    python tools/i18n_extract.py --skeleton    # the missing entries as lines to paste into i18n_de.py
-    python tools/i18n_extract.py --keys        # every text in the source, one per line
+    python tools/i18n_extract.py                         # report: missing / unused entries, problems, per language
+    python tools/i18n_extract.py --skeleton [--lang ko]  # the missing entries as lines to paste into the catalogs
+    python tools/i18n_extract.py --keys                  # every text in the source, one per line
 
-A text is the first argument of t("...") or N_("...") (lobby/t5lobby/i18n.py). tests/test_i18n.py runs the
-same checks, so a new string without a German entry fails the tests. Exit code 1 on any problem.
+A text is the first argument of t("...") or N_("...") (lobby/t5lobby/i18n.py). The catalogs are
+lobby/t5lobby/i18n_<lang>.py (i18n.CATALOGS): German, Spanish, Korean, Japanese, Brazilian Portuguese, French.
+tests/test_i18n.py runs the same checks, so a new string without an entry in every catalog fails the tests.
+Exit code 1 on any problem.
 """
 import ast
 import glob
@@ -20,7 +22,8 @@ WRAP = ("t", "N_")                    # the names that translate / mark a text
 
 # Python files whose texts are translated (the lobby server and the tools stay English).
 SOURCE_GLOBS = ["launcher/*.py", "launcher/*.pyw", "lobby/t5lobby/*.py"]
-NOT_SOURCES = ("i18n_de.py", "i18n_known.py")      # the catalog itself; i18n_known.py is read for its N_() marks too
+CATALOG_FILE = re.compile(r"i18n_(?!known\.py)\w+\.py\Z")   # i18n_de.py, i18n_ko.py, ... (i18n_known.py is a source)
+LANGS = ("de", "es", "ko", "ja", "pt-BR", "fr")                # every catalog (i18n.CATALOGS; checked by the tests)
 
 HOLE = re.compile(r"\{(\w+)(?:![rsa])?(?::[^{}]*)?\}")
 PCT = re.compile(r"%[a-zA-Z]")
@@ -30,7 +33,7 @@ def source_files(root=ROOT):
     out = []
     for g in SOURCE_GLOBS:
         out += glob.glob(os.path.join(root, g))
-    return sorted(p for p in out if os.path.basename(p) not in ("i18n_de.py",))
+    return sorted(p for p in out if not CATALOG_FILE.match(os.path.basename(p)))
 
 
 def placeholders(text):
@@ -191,18 +194,19 @@ def unwrapped(paths=None, skip=()):
 
 # ---------------------------------------------------------------------------- the catalog
 
-def catalog():
+def catalog(lang="de"):
     sys.path.insert(0, LOBBY)
     try:
-        from t5lobby import i18n_de
-        return dict(i18n_de.MESSAGES)
+        from t5lobby import i18n
+        return dict(i18n.catalog(lang))
     finally:
         sys.path.remove(LOBBY)
 
 
-def check(cat=None, paths=None):
-    """-> dict(keys, missing, unused, mismatched, problems, shadowed). Everything empty = clean."""
-    cat = catalog() if cat is None else cat
+def check(cat=None, paths=None, lang="de"):
+    """-> dict(keys, missing, unused, mismatched, problems, shadowed) for one catalog (`lang`, or `cat` itself).
+    Everything empty = clean."""
+    cat = catalog(lang) if cat is None else cat
     sites, problems = scan(paths)
     keys = {}
     for s in sites:
@@ -226,28 +230,46 @@ def check(cat=None, paths=None):
 
 
 def main(argv=None):
-    ap_keys = "--keys" in (argv or sys.argv)
-    skeleton = "--skeleton" in (argv or sys.argv)
-    r = check()
-    if ap_keys:
-        for k in sorted(r["keys"]):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    langs = LANGS
+    if "--lang" in argv:
+        i = argv.index("--lang")
+        langs = tuple(argv[i + 1:i + 2]) or LANGS
+    if "--keys" in argv:
+        for k in sorted(check()["keys"]):
             print(k)
         return 0
-    if skeleton:
-        for k in r["missing"]:
-            print(f"    {k!r}: {k!r},")
-        return 1 if r["missing"] else 0
+    if "--skeleton" in argv:
+        missing = False
+        for lang in langs:
+            r = check(lang=lang)
+            if r["missing"]:
+                missing = True
+                print(f"# {lang}: lobby/t5lobby/i18n_{lang.lower().replace('-', '_')}.py")
+                for k in r["missing"]:
+                    print(f"    {k!r}: {k!r},")
+        return 1 if missing else 0
     bad = False
-    for title, items in (("Missing German entries", r["missing"]), ("Catalog entries nothing uses", r["unused"]),
-                         ("Placeholders differ", r["mismatched"]), ("Problems", r["problems"]),
-                         ("Local names that hide t / N_", r["shadowed"]),
+    first = None
+    for lang in langs:
+        r = check(lang=lang)
+        first = first or r
+        for title, items in ((f"Missing {lang} entries", r["missing"]), (f"{lang} entries nothing uses", r["unused"]),
+                             (f"{lang}: placeholders differ", r["mismatched"])):
+            if items:
+                bad = True
+                print(f"{title} ({len(items)}):")
+                for i in items:
+                    print("   ", repr(i))
+    r = first or check()
+    for title, items in (("Problems", r["problems"]), ("Local names that hide t / N_", r["shadowed"]),
                          ("Possibly forgotten texts (heuristic)", unwrapped())):
         if items:
             bad = bad or title != "Possibly forgotten texts (heuristic)"
             print(f"{title} ({len(items)}):")
             for i in items:
                 print("   ", i if isinstance(i, str) else repr(i))
-    print(f"{len(r['keys'])} texts in the source")
+    print(f"{len(r['keys'])} texts in the source, {len(langs)} catalogs ({', '.join(langs)})")
     return 1 if bad else 0
 
 

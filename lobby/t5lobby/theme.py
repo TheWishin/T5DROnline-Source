@@ -6,7 +6,8 @@
 
 Plain Tk 8.6, no image files and no game assets: rounded buttons, cards, check boxes, rank badges,
 icons are drawn here (anti-aliased PNGs made in memory, Tk's own canvas for the rest). Fonts are
-Windows' Segoe UI and Bahnschrift (Segoe UI when Bahnschrift is missing).
+Windows' Segoe UI and Bahnschrift (Segoe UI when Bahnschrift is missing); in Korean and Japanese a Windows
+font that has their glyphs (Malgun Gothic, Yu Gothic UI; i18n.FONTS) takes the place of both.
 
 Styles (the prefix names what the widget sits on, so rounded corners blend into it):
     page (no prefix)  the window's background          e.g. "TButton", "Muted.TLabel", "H1.TLabel"
@@ -30,6 +31,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
+from . import i18n
 from .i18n import t
 
 THEME = "t5dark"
@@ -347,12 +349,18 @@ class Theme:
         disp = "Bahnschrift SemiBold" if "Bahnschrift SemiBold" in fams else semi
         disp_reg = "Bahnschrift" if "Bahnschrift" in fams else ui
         mono = "Consolas" if "Consolas" in fams or not fams else "TkFixedFont"
+        heavy = "normal"                  # the weight of semi / disp (they are semibold families already)
+        cjk = i18n.ui_family(None, fams)  # Korean / Japanese: a font with their glyphs (i18n.FONTS)
+        if cjk:
+            ui = disp_reg = cjk
+            semi = disp = cjk + " Semibold" if cjk + " Semibold" in fams else cjk
+            heavy = "normal" if semi != cjk else "bold"
         spec = {
-            "body": (ui, 10, "normal"), "small": (ui, 9, "normal"), "bold": (semi, 10, "normal"),
-            "button": (semi, 10, "normal"), "tab": (semi, 10, "normal"),
-            "h1": (disp, 20, "normal"), "h2": (disp, 14, "normal"), "h3": (disp, 11, "normal"),
-            "caps": (disp, 9, "normal"), "hero": (disp, 14, "normal"), "big": (disp, 26, "normal"),
-            "huge": (disp_reg, 30, "bold"), "num": (disp, 12, "normal"), "mono": (mono, 10, "normal"),
+            "body": (ui, 10, "normal"), "small": (ui, 9, "normal"), "bold": (semi, 10, heavy),
+            "button": (semi, 10, heavy), "tab": (semi, 10, heavy),
+            "h1": (disp, 20, heavy), "h2": (disp, 14, heavy), "h3": (disp, 11, heavy),
+            "caps": (disp, 9, heavy), "hero": (disp, 14, heavy), "big": (disp, 26, heavy),
+            "huge": (disp_reg, 30, "bold"), "num": (disp, 12, heavy), "mono": (mono, 10, "normal"),
             "code": (mono, 14, "normal"),
         }
         existing = set(tkfont.names(self.root))
@@ -804,6 +812,22 @@ class Theme:
             x0 = 1 + i * (bw + gap)
             bh = h * (0.35 + 0.65 * (i + 1) / 4.0)
             layers.append((rrect(x0, h - bh, x0 + bw, h, 0.8), col if i < n else C["line_hi"], True))
+        return self.photo(key, w, h, layers)
+
+    def presence_icon(self, status):
+        """A friend's dot for list rows: green online, yellow in a match, a grey ring offline."""
+        col = {"online": C["ok"], "in_match": C["warn"]}.get(status)
+        key = f"presence_{status}_{col}"
+        if key in self.images:
+            return self.images[key]
+        px = self.px
+        w = h = px(14)
+        r = w * 0.32
+        if col:
+            layers = [(circle(w / 2.0, h / 2.0, r), col, True)]
+        else:
+            layers = [(ring(circle(w / 2.0, h / 2.0, r), circle(w / 2.0, h / 2.0, r - max(1.4, px(2)))),
+                       C["faint"], False)]
         return self.photo(key, w, h, layers)
 
     def lock_icon(self, col=None):

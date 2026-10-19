@@ -24,7 +24,7 @@ Privacy -- applied to every text file before it goes into the zip (class Scrubbe
     (10.x, 172.16-31.x, 192.168.x), link-local and unique-local addresses are kept as they are
   * passwords, tokens, match keys, cookies and the like (by name, by URL, and the exact values
     found in launcher.json, online.json and the control files) become <removed>; so does any hex
-    string of 32+ digits
+    string of 32+ digits and anything shaped like a lobby recovery code (XXXX-XXXX-XXXX)
   * e-mail addresses become <email>; the Sony package file name <package>.pkg; the company name in
     "OneDrive - Company" becomes <org>
   * lobby player names -- this player's and every opponent's -- become <player>: where the files name
@@ -88,6 +88,9 @@ _ONEDRIVE_ORG = re.compile(r"(OneDrive - )([^\\/:*?\"<>|\r\n]+?)(?=[\\/\"<>|\r\n
 _EMAIL = re.compile(r"(?<![\w.+\-])[\w.+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 _PACKAGE = re.compile(r"[A-Za-z0-9_\-]{40,}\.pkg", re.I)
 _LONG_HEX = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{32,}(?![0-9A-Za-z])")
+# A lobby account's recovery code (XXXX-XXXX-XXXX, lobby/t5lobby/server/store.py): name + code resets the password
+_RC = "[A-HJKMNP-Z2-9]"
+_RECOVERY_CODE = re.compile(r"(?<![A-Za-z0-9-])" + _RC + "{4}-" + _RC + "{4}-" + _RC + r"{4}(?![A-Za-z0-9-])", re.I)
 
 _V4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w)(?!\.\d)")
 # a run of hex digits, colons and dots that holds at least two colons (the start rule keeps this linear)
@@ -261,6 +264,7 @@ class Scrubber:
         s = _SECRET_KV.sub(self._secret_kv, s)
         s = _SECRET_FLAG.sub(self._flag, s)
         s = _LONG_HEX.sub(self._hex, s)
+        s = _RECOVERY_CODE.sub(lambda m: (self._count("secret") or P_REMOVED), s)
         s = _USER_PATH.sub(self._user, s)
         s = _ONEDRIVE_ORG.sub(lambda m: (self._count("user") or m.group(1) + P_ORG), s)
         for rx, repl, key in self._name_res:
@@ -554,12 +558,183 @@ def system_dpi():
         return None
 
 
+def display_adapters():
+    """{device name: adapter name} for every screen in the desktop (which graphics chip drives it: on a
+    laptop with two GPUs the screen hangs off the integrated one)."""
+    if os.name != "nt":
+        return {}
+
+    class DISPLAY_DEVICEW(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_ulong), ("DeviceName", ctypes.c_wchar * 32),
+                    ("DeviceString", ctypes.c_wchar * 128), ("StateFlags", ctypes.c_ulong),
+                    ("DeviceID", ctypes.c_wchar * 128), ("DeviceKey", ctypes.c_wchar * 128)]
+    out = {}
+    try:
+        for i in range(16):
+            dd = DISPLAY_DEVICEW()
+            dd.cb = ctypes.sizeof(dd)
+            if not ctypes.windll.user32.EnumDisplayDevicesW(None, i, ctypes.byref(dd), 0):
+                break
+            if dd.StateFlags & 0x1:
+                out[dd.DeviceName] = dd.DeviceString
+    except (OSError, AttributeError):
+        pass
+    return out
+
+
+# Windows' built-in power plans and the Windows 10/11 "power mode" slider (overlay schemes).
+POWER_PLANS = {"381b4222-f694-41f0-9685-ff5bb260df2e": "Balanced",
+               "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": "High performance",
+               "a1841308-3541-4fab-bc81-f71556f20b4a": "Power saver",
+               "e9a42b02-d5df-448d-aa00-03f14749eb61": "Ultimate Performance"}
+POWER_MODES = {"00000000-0000-0000-0000-000000000000": "Balanced",
+               "961cc777-2547-4f9d-8174-7d86181b8a7a": "Best power efficiency",
+               "3af9b8d9-7c97-431d-ad78-34a8bfea439f": "Better performance",
+               "ded574b5-45a0-4f42-8737-46345c09c238": "Best performance"}
+
+
+def power_plan_info():
+    """'Power plan: <name> (<guid>); power mode on AC / battery: ...' from the registry."""
+    key = r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes"
+    guid = str(_reg(key, "ActivePowerScheme") or "").lower()
+    if not guid:
+        return "?"
+    name = POWER_PLANS.get(guid)
+    if not name:
+        fn = _reg(key + "\\" + guid, "FriendlyName")
+        name = str(fn).rsplit(",", 1)[-1] if fn else "custom plan"
+    text = f"{name} ({guid})"
+    modes = []
+    for label, val in (("on AC", "ActiveOverlayAcPowerScheme"), ("on battery", "ActiveOverlayDcPowerScheme")):
+        g = str(_reg(key, val) or "").lower()
+        if g:
+            modes.append(f"{label} {POWER_MODES.get(g, g)}")
+    if modes:
+        text += "; power mode " + ", ".join(modes)
+    return text
+
+
+def power_source_info():
+    """AC or battery, the charge, battery saver; 'desktop' when there is no battery."""
+    if os.name != "nt":
+        return "?"
+
+    class SPS(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                    ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+    s = SPS()
+    try:
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+            return "?"
+    except (OSError, AttributeError):
+        return "?"
+    if s.BatteryFlag in (128, 255):
+        return "no battery (a desktop PC)" + (", on AC power" if s.ACLineStatus == 1 else "")
+    src = {0: "on battery", 1: "on AC power"}.get(s.ACLineStatus, "power source unknown")
+    pct = f", battery {s.BatteryLifePercent} %" if s.BatteryLifePercent <= 100 else ""
+    return src + pct + (", battery saver on" if s.SystemStatusFlag & 1 else "")
+
+
+def processor_clock_info():
+    """The processor's clock limit against its maximum (CallNtPowerInformation): a limit below the
+    maximum means the processor is held back right now -- heat, or the power plan."""
+    if os.name != "nt":
+        return "?"
+
+    class PPI(ctypes.Structure):
+        _fields_ = [("Number", ctypes.c_ulong), ("MaxMhz", ctypes.c_ulong), ("CurrentMhz", ctypes.c_ulong),
+                    ("MhzLimit", ctypes.c_ulong), ("MaxIdleState", ctypes.c_ulong), ("CurrentIdleState", ctypes.c_ulong)]
+    n = os.cpu_count() or 1
+    arr = (PPI * n)()
+    try:
+        if ctypes.windll.powrprof.CallNtPowerInformation(11, None, 0, ctypes.byref(arr), ctypes.sizeof(arr)) != 0:
+            return "?"
+    except (OSError, AttributeError):
+        return "?"
+    mx = max(p.MaxMhz for p in arr)
+    lim = min((p.MhzLimit for p in arr if p.MhzLimit), default=mx)
+    if not mx:
+        return "?"
+    text = f"clock limit {lim} of {mx} MHz"
+    if lim * 100 < mx * 97:
+        text += " (held back right now: heat or the power plan)"
+    return text
+
+
+def thermal_info(sample_s=0.25):
+    """Temperatures of the ACPI thermal zones and the processor's performance limit, from Windows'
+    performance counters (no administrator rights needed; many laptops report a zone, many desktops
+    none). '' when Windows has none."""
+    if os.name != "nt":
+        return ""
+    try:
+        pdh = ctypes.windll.pdh
+    except OSError:
+        return ""
+    q = ctypes.c_void_p()
+    if pdh.PdhOpenQueryW(None, None, ctypes.byref(q)) != 0:
+        return ""
+    parts = []
+    try:
+        counters = {}
+        for name, path in (("temp", r"\Thermal Zone Information(*)\Temperature"),
+                           ("limit", r"\Processor Information(_Total)\% Performance Limit"),
+                           ("perf", r"\Processor Information(_Total)\% Processor Performance")):
+            h = ctypes.c_void_p()
+            if pdh.PdhAddEnglishCounterW(q, ctypes.c_wchar_p(path), None, ctypes.byref(h)) == 0:
+                counters[name] = h
+        if not counters:
+            return ""
+        pdh.PdhCollectQueryData(q)
+        import time as _time
+        _time.sleep(sample_s)
+        pdh.PdhCollectQueryData(q)
+
+        class FMT(ctypes.Structure):
+            _fields_ = [("CStatus", ctypes.c_ulong), ("pad", ctypes.c_ulong), ("doubleValue", ctypes.c_double)]
+
+        class ITEM(ctypes.Structure):
+            _fields_ = [("szName", ctypes.c_wchar_p), ("FmtValue", FMT)]
+        if "temp" in counters:
+            size, count = ctypes.c_ulong(0), ctypes.c_ulong(0)
+            pdh.PdhGetFormattedCounterArrayW(counters["temp"], 0x200, ctypes.byref(size), ctypes.byref(count), None)
+            if size.value:
+                buf = ctypes.create_string_buffer(size.value)
+                if pdh.PdhGetFormattedCounterArrayW(counters["temp"], 0x200, ctypes.byref(size), ctypes.byref(count),
+                                                    buf) == 0:
+                    items = ctypes.cast(buf, ctypes.POINTER(ITEM))
+                    temps = []
+                    for i in range(count.value):
+                        k = items[i].FmtValue.doubleValue
+                        if items[i].FmtValue.CStatus in (0, 1) and 200 < k < 400:      # Kelvin
+                            temps.append(f"{k - 273.15:.0f} C")
+                    if temps:
+                        parts.append("thermal zones " + ", ".join(temps[:6]))
+        for name, label in (("perf", "processor performance %.0f %% of nominal"),
+                            ("limit", "performance limit %.0f %%")):
+            if name in counters:
+                v = FMT()
+                if pdh.PdhGetFormattedCounterValue(counters[name], 0x200, None, ctypes.byref(v)) == 0 and \
+                        v.CStatus in (0, 1):
+                    parts.append(label % v.doubleValue)
+    except (OSError, AttributeError, ValueError):
+        pass
+    finally:
+        pdh.PdhCloseQuery(q)
+    return ", ".join(parts)
+
+
 def _gb(n):
     return f"{n / 2**30:.0f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
 
 
-GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay)\] "
-                            r"(?:adapter|res_scale|window on|display|FATAL|CPU budget|built for|mode |lobby match)")
+GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
+                            r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
+                            r"power saving|on AC|on battery|power source)")
+# Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
+# late frames); the last few of each kind go into system.txt.
+GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches)")
 
 
 def facts_from_log(path, limit=12):
@@ -575,6 +750,25 @@ def facts_from_log(path, limit=12):
     except OSError:
         pass
     return out
+
+
+def run_lines_from_log(path, keep=4, limit=64 * 1024 * 1024):
+    """The last `keep` lines of each kind GAME_LOG_RUN matches (slow frames, display lock, sound)."""
+    last = collections.OrderedDict()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            read = 0
+            for line in f:
+                read += len(line)
+                if read > limit:
+                    break
+                m = GAME_LOG_RUN.match(line)
+                if m:
+                    q = last.setdefault(m.group(0), collections.deque(maxlen=keep))
+                    q.append(line.rstrip()[:600])
+    except OSError:
+        pass
+    return [ln for q in last.values() for ln in q]
 
 
 def system_text(ctx, now=None, game_log=None):
@@ -598,11 +792,23 @@ def system_text(ctx, now=None, game_log=None):
     for g in gpus or [("?", "?", "?", None)]:
         L.append(f"Graphics: {g[0]}, driver {g[1]} ({g[2]})" + (f", {_gb(g[3])} video memory" if g[3] else ""))
     sd = system_dpi()
+    adapters = display_adapters()
     for d in display_info() or []:
         scale = f", DPI {d['dpi']} ({round(d['dpi'] * 100 / 96)} %)" if d["dpi"] else (
             f", system DPI {sd} ({round(sd * 100 / 96)} %)" if sd else "")
+        on = adapters.get(d["device"])
         L.append(f"Screen {d['device'].lstrip(chr(92) + '.')}: {d['width']} x {d['height']} at {d['hz']} Hz{scale}"
-                 + (" (main screen)" if d["primary"] else ""))
+                 + (" (main screen)" if d["primary"] else "") + (f", driven by {on}" if on else ""))
+    L.append("")
+    # Laptops: "the game gets slower after a while" is mostly heat or the power plan (docs/TROUBLESHOOTING.md
+    # "Game speeds up or slows down on a laptop"). Read now, after the game: the game log's [power] and
+    # [slow-frames] lines below say how it was while playing.
+    L += ["== Power and heat (now) ==",
+          f"Power: {power_source_info()}",
+          f"Power plan: {power_plan_info()}",
+          f"Processor: {processor_clock_info()}"]
+    th = thermal_info()
+    L.append(f"Sensors: {th}" if th else "Sensors: (Windows reports no temperature here)")
     L.append("")
     L += ["== Settings in use ==", *(ctx.settings_lines or ["(none)"]), ""]
     env = sorted((k, v) for k, v in os.environ.items() if k.upper().startswith(_ENV_PREFIXES))
@@ -612,15 +818,19 @@ def system_text(ctx, now=None, game_log=None):
         facts = facts_from_log(game_log)
         if facts:
             L += ["", f"== From {os.path.basename(game_log)} ==", *facts]
+        run = run_lines_from_log(game_log)
+        if run:
+            L += ["", f"== How the game ran ({os.path.basename(game_log)}) ==", *run]
     return "\n".join(L) + "\n"
 
 
-SETTING_KEYS = ("display", "internal_res", "vsync", "input_delay", "mute", "background", "low_priority")
+SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "power_saving", "input_delay", "mute", "background",
+                "low_priority")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     """The 'settings in use' lines of system.txt from the launcher's settings (a dict). `labels`:
-    {key: {value: text}} for display, internal_res, vsync and input_delay. File paths of the .pkg/.rap are
+    {key: {value: text}} for display, internal_res, vsync, stage_blur and input_delay. File paths of the .pkg/.rap are
     not listed (only whether they are set); a password could not be in here: only these keys are read."""
     labels = labels or {}
     st = settings or {}
@@ -633,6 +843,8 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     L = [f"Window and resolution: {lab('display')}",
          f"Internal resolution: {lab('internal_res')}",
          f"VSync: {lab('vsync')}",
+         f"Stage blur / glow: {lab('stage_blur')}",
+         f"Power saving (laptops, handhelds): {lab('power_saving')}",
          f"Online input delay (netcode): {lab('input_delay')}",
          f"Mute sound: {yesno(st.get('mute'))}",
          f"Start minimized without focus: {yesno(st.get('background'))}",

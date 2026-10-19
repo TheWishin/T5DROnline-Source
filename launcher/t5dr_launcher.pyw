@@ -197,6 +197,18 @@ class App(tk.Tk):
         else:
             self.geometry(f"{px(1080)}x{px(840)}+60+60")
 
+    def px(self, v):
+        """A size in pixels at this DPI (the dark theme's scale; 1:1 without it)."""
+        theme = getattr(self, "theme", None)
+        return theme.apply(self).px(v) if theme is not None else int(v)
+
+    def wrap_style(self, cls, width):
+        """A ttk style for check / radio buttons whose text wraps at `width` (pixels at 100 %): a long label in
+        another language takes two lines instead of pushing the window wider."""
+        name = f"W{width}.{cls}"
+        ttk.Style(self).configure(name, wraplength=self.px(width))
+        return name
+
     def big_button(self, parent, text, cmd):
         if getattr(self, "theme", None) is not None:
             return ttk.Button(parent, text=text, command=cmd, style="Hero.TButton", cursor="hand2")
@@ -282,9 +294,9 @@ class App(tk.Tk):
         self.tools_tv.heading("#0", text=t("Needed"))
         self.tools_tv.heading("state", text="")
         self.tools_tv.heading("detail", text=t("Found"))
-        self.tools_tv.column("#0", width=230, stretch=False)
-        self.tools_tv.column("state", width=70, stretch=False, anchor="center")
-        self.tools_tv.column("detail", width=520)
+        self.tools_tv.column("#0", width=self.px(310), stretch=False)        # (wide enough for every language)
+        self.tools_tv.column("state", width=self.px(110), stretch=False, anchor="center")
+        self.tools_tv.column("detail", width=self.px(470))
         self.tools_tv.tag_configure("bad", foreground=COLORS["error"])
         self.tools_tv.tag_configure("good", foreground=COLORS.get("text", "#24292f"))
         self.tools_sum = tk.StringVar(value=t("Checking…"))
@@ -313,7 +325,8 @@ class App(tk.Tk):
         self.progress = ttk.Progressbar(b, maximum=1000)
         self.progress.grid(row=1, column=0, columnspan=3, sticky="we", pady=(6, 2))
         self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
-        ttk.Label(b, textvariable=self.detail, style="Muted.TLabel").grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Label(b, textvariable=self.detail, style="Muted.TLabel", wraplength=860,
+                  justify="left").grid(row=2, column=0, columnspan=3, sticky="w")
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
         self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
@@ -321,16 +334,18 @@ class App(tk.Tk):
         self.cancel_btn = ttk.Button(row, text=t("Cancel"), command=self.cancel_build, state="disabled")
         self.cancel_btn.pack(side="left", padx=8)
         self.force_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row, text=t("Redo every step"), variable=self.force_var).pack(side="left", padx=8)
+        checks = ttk.Frame(row)             # (one above the other: the row stays narrow enough in every language)
+        checks.pack(side="left", padx=8)
+        ttk.Checkbutton(checks, text=t("Redo every step"), variable=self.force_var).pack(anchor="w")
         self.lowprio_var = tk.BooleanVar(value=self.settings["low_priority"])
-        ttk.Checkbutton(row, text=t("Keep the PC responsive (slower)"), variable=self.lowprio_var,
-                        command=self.save_settings).pack(side="left", padx=8)
+        ttk.Checkbutton(checks, text=t("Keep the PC responsive (slower)"), variable=self.lowprio_var,
+                        command=self.save_settings).pack(anchor="w")
         ttk.Button(row, text=t("Open build.log"),
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "build.log"))).pack(side="right")
         ttk.Button(row, text=t("Report a problem..."), command=self.report_problem).pack(side="right", padx=8)
         self.error = tk.StringVar()
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
-                                  font=("Segoe UI", 10, "bold"))
+                                  font=(core.ui_family(), 10, "bold"))
         self.error_lbl.grid(row=4, column=0, columnspan=3, sticky="w")
 
         # log
@@ -399,8 +414,8 @@ class App(tk.Tk):
         disp.pack(fill="x")
         self.display_var = tk.StringVar(value=self.settings["display"])
         for key, label in core.DISPLAY_MODES:
-            ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var,
-                            command=self.save_settings).pack(anchor="w", pady=1)
+            ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var, style=self.wrap_style(
+                "TRadiobutton", 400), command=self.save_settings).pack(anchor="w", pady=1)
         ttk.Label(disp, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
             "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
@@ -413,23 +428,76 @@ class App(tk.Tk):
         self.vsync_var = tk.StringVar(value=self.settings["vsync"] if self.settings["vsync"] in core.VSYNC_MODES
                                       else "on")
         for key, label in core.VSYNC_MODES.items():
-            ttk.Radiobutton(vs, text=t(label), value=key, variable=self.vsync_var,
-                            command=self.save_settings).pack(anchor="w", pady=1)
+            ttk.Radiobutton(vs, text=t(label), value=key, variable=self.vsync_var, style=self.wrap_style(
+                "TRadiobutton", 400), command=self.save_settings).pack(anchor="w", pady=1)
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
+        if core.I18N:
+            self._language_box(left)        # (the left column has the room; the right one is the taller)
+
+        # Stage blur / glow (PS3_STAGE_BLUR=0 when off, core.STAGE_BLUR_MODES): the soft focus some
+        # stages put on the picture and the sun's glow. Picture only, like VSync.
+        sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
+        sb.pack(fill="x", pady=(6, 0))
+        self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+        row = ttk.Frame(sb)
+        row.pack(anchor="w")
+        for key, label in core.STAGE_BLUR_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.stage_blur_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(sb, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+            "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
+            anchor="w", pady=(4, 0))
+
+        # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
+        # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
+        ps = ttk.LabelFrame(left, text="  " + t("Power saving (laptops, handhelds)") + "  ", padding=(12, 6))
+        ps.pack(fill="x", pady=(6, 0))
+        self.power_var = tk.StringVar(value=self.settings["power_saving"]
+                                      if self.settings["power_saving"] in core.POWER_SAVING else "auto")
+        for key, label in core.POWER_SAVING.items():
+            ttk.Radiobutton(ps, text=t(label), value=key, variable=self.power_var,
+                            command=self._power_saving_changed).pack(anchor="w", pady=1)
+        self.power_hint = ttk.Label(ps, style="Muted.TLabel", wraplength=300, justify="left")
+        self.power_hint.pack(anchor="w", pady=(4, 0))
+        self._power_saving_changed(save=False)
+
+        # Training overlay (T5_TRAINING*, core.TRAINING_MODES, docs/TRAINING.md): inputs and frame data
+        # drawn over the picture in Practice; it only reads the game, so it never changes a match.
+        tr = ttk.LabelFrame(left, text="  " + t("Training overlay") + "  ", padding=(12, 6))
+        tr.pack(fill="x", pady=(6, 0))
+        self.training_var = tk.StringVar(value=self.settings["training"] if self.settings["training"] in
+                                         core.TRAINING_MODES else "frames")
+        row = ttk.Frame(tr)
+        row.pack(anchor="w")
+        for key, label in core.TRAINING_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.training_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        self.training_all_var = tk.BooleanVar(value=bool(self.settings.get("training_all")))
+        self.training_online_var = tk.BooleanVar(value=bool(self.settings.get("training_online")))
+        ttk.Checkbutton(tr, text=t("Also in the other offline modes (Arcade, Versus, ...)"),
+                        variable=self.training_all_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(tr, text=t("Also online (only your own inputs, no frame data)"),
+                        variable=self.training_online_var, command=self.save_settings).pack(anchor="w")
+        ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+            "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
+            anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
-        if core.I18N:
-            self._language_box(right)
         other = ttk.LabelFrame(right, text="  " + t("Sound and start") + "  ", padding=(12, 6))
         other.pack(fill="x")
         self.mute_var = tk.BooleanVar(value=self.settings["mute"])
         self.bg_var = tk.BooleanVar(value=self.settings["background"])
         ttk.Checkbutton(other, text=t("Mute sound"), variable=self.mute_var, command=self.save_settings).pack(anchor="w")
         ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
-                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
-        ttk.Label(other, text=t("Advanced: extra settings, one NAME=VALUE per line")).pack(anchor="w", pady=(10, 2))
+                        style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
+                                                                                                    pady=(4, 0))
+        ttk.Label(other, text=t("Advanced: extra settings, one NAME=VALUE per line"), wraplength=self.px(440),
+                  justify="left").pack(anchor="w", pady=(10, 2))
         self.env_text = tk.Text(other, height=3, width=44, font=("Consolas", 9))
         self.env_text.insert("1.0", self.settings["extra_env"])
         self.env_text.pack(anchor="w", fill="x")
@@ -469,10 +537,20 @@ class App(tk.Tk):
         # docs/NETPLAY.md "Getting a direct connection": a forwarded game port lets the opponent's punches in
         self.router_ports_var = tk.BooleanVar(value=bool(self.settings.get("router_ports", True)))
         ttk.Checkbutton(net, text=t("Open the game's port on my router during online matches (UPnP / NAT-PMP / PCP)"),
-                        variable=self.router_ports_var, command=self.save_settings).pack(anchor="w", pady=(8, 0))
+                        variable=self.router_ports_var, style=self.wrap_style("TCheckbutton", 500),
+                        command=self.save_settings).pack(anchor="w", pady=(8, 0))
         ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Helps the direct connection when your opponent's router is strict. The port is open only while "
             "you play and is closed again afterwards.")).pack(anchor="w", pady=(2, 0))
+
+        # Discord Rich Presence (lobby/t5lobby/discord_rpc.py, docs/ONLINE.md): off unless the player turns it on
+        dc = ttk.LabelFrame(right, text="  " + t("Discord") + "  ", padding=(12, 6))
+        dc.pack(fill="x", pady=(6, 0))
+        self.discord_var = tk.BooleanVar(value=bool(self.settings.get("discord_presence", False)))
+        ttk.Checkbutton(dc, text=t("Show what I play in my Discord status (Rich Presence)"), variable=self.discord_var,
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
+            anchor="w", pady=(2, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -482,7 +560,7 @@ class App(tk.Tk):
         self.controls_btn = ttk.Button(cbar, text=t("Set up controllers…"), command=self.open_controls,
                                        state="normal" if controls_ui else "disabled")
         self.controls_btn.pack(side="left")
-        ttk.Label(cbar, style="Muted.TLabel", text="  " + (
+        ttk.Label(cbar, style="Muted.TLabel", wraplength=self.px(640), justify="left", text="  " + (
             t("Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
               "or start from a layout.") if controls_ui else t("(needs the lobby files, which are missing)"))).pack(
             side="left")
@@ -492,9 +570,9 @@ class App(tk.Tk):
         tv.heading("ps3", text=t("PS3 button"))
         tv.heading("kb", text=t("Keyboard"))
         tv.heading("pad", text=t("Xbox controller"))
-        tv.column("#0", width=210, stretch=False)
+        tv.column("#0", width=self.px(260), stretch=False)        # (wide enough for every language)
         for c in ("ps3", "kb", "pad"):
-            tv.column(c, width=190)
+            tv.column(c, width=self.px(190))
         for a, p, k, x in CONTROLS:
             tv.insert("", "end", text=t(a), values=(t(p), t(k), t(x)))
         tv.pack(fill="x")
@@ -510,17 +588,30 @@ class App(tk.Tk):
         box.columnconfigure(0, weight=1)
         box.columnconfigure(1, weight=1)
 
-    def _language_box(self, right):
-        """Auto / Deutsch / English. The texts are built once, so a change applies after a restart."""
-        lang = ttk.LabelFrame(right, text="  " + t("Language") + "  ", padding=(12, 6))
-        lang.pack(fill="x", pady=(0, 6))
-        self.language_choice = self.settings["language"]         # what this run was started with
+    def _language_box(self, parent):
+        """Auto, then every language in its own name (English, Deutsch, Español, 한국어, ...): someone who cannot
+        read the current language still finds theirs. The texts are built once, so a change applies after a
+        restart."""
+        lang = ttk.LabelFrame(parent, text="  " + t("Language") + "  ", padding=(12, 6))
+        lang.pack(fill="x", pady=(6, 0))
+        self.language_choice = core.i18n.canonical(self.settings["language"]) or "auto"   # what this run started with
         self.language_var = tk.StringVar(value=self.language_choice)
-        row = ttk.Frame(lang)
-        row.pack(anchor="w")
-        for key, label in core.LANGUAGE_CHOICES:
-            ttk.Radiobutton(row, text=t(label), value=key, variable=self.language_var,
-                            command=self.language_changed).pack(side="left", padx=(0, 14))
+        grid = ttk.Frame(lang)
+        grid.pack(anchor="w")
+        per_row = 4
+        for i, (key, label) in enumerate(core.LANGUAGE_CHOICES):
+            text = t(label) if key == "auto" else label          # (a language's own name stays as it is)
+            style = "TRadiobutton"
+            family = core.i18n.font_of(key)                     # 한국어 / 日本語 in a font made for them
+            if family:
+                style = f"Lang{key}.TRadiobutton"
+                ttk.Style(self).configure(style, font=(family, 10))
+            rb = ttk.Radiobutton(grid, text=text, value=key, variable=self.language_var, style=style,
+                                 command=self.language_changed)
+            if key == "auto":
+                rb.grid(row=0, column=0, columnspan=per_row, sticky="w")
+            else:
+                rb.grid(row=1 + (i - 1) // per_row, column=(i - 1) % per_row, sticky="w", padx=(0, 14))
         self.lang_note = tk.StringVar(value="")
         note = ttk.Frame(lang)
         note.pack(anchor="w", fill="x")
@@ -763,9 +854,11 @@ class App(tk.Tk):
         if self.cur_step and self.step_state.get(self.cur_step) == "running":
             n = core.build_game.STEPS.index(self.cur_step) + 1
             el = int(time.time() - self.step_t0)
+            # a translation step that printed nothing for minutes gets a second line saying so (and what to do)
+            hint = b.quiet_hint()
             self.detail.set(t("Step {n} of {total}: {title}  —  {elapsed}", n=n, total=len(core.build_game.STEPS),
                               title=t(core.STEP_TITLES[self.cur_step]), elapsed=core.clock(el))
-                            + (f"  ({int(self.sub * 100)}%)" if self.sub else ""))
+                            + (f"  ({int(self.sub * 100)}%)" if self.sub else "") + ("\n" + hint if hint else ""))
         self.progress["value"] = int(self._overall() * 1000)
         if ended is not None:
             self._build_finished(ended)
@@ -847,15 +940,58 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _discord_hint(self):
+        text = t("\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through "
+                 "the Discord app on this PC. Without Discord running nothing happens.")
+        try:
+            from t5lobby import discord_rpc
+            ready = bool(discord_rpc.load_config(self.settings).get("application_id"))
+        except ImportError:
+            ready = False
+        if not ready:
+            text += "\n" + t("This copy has no Discord application id yet, so this does nothing for now.")
+        return text
+
+    def power_saving_text(self):
+        """What power saving does on this PC with the chosen setting (Settings hint, status line)."""
+        key = self.power_var.get() if hasattr(self, "power_var") else self.settings["power_saving"]
+        if key == "on":
+            return True, t("On for this PC.")
+        if key == "off":
+            return False, t("Off.")
+        on, why = core.power_saving_auto()
+        if on:
+            return True, t("Auto: on for this PC -- {reason}.", reason=t(why))
+        return False, t("Auto: off for this PC (no battery, no mobile processor); the game turns it on "
+                        "by itself if it runs on integrated graphics.")
+
+    def _power_saving_changed(self, save=True):
+        _on, text = self.power_saving_text()
+        self.power_hint.configure(text=t(
+            "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, "
+            "so the game holds 60 fps longer. The game itself is the same, online too.") + "\n" + text)
+        if save:
+            self.save_settings()
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
+        if hasattr(self, "power_var"):
+            self.settings["power_saving"] = self.power_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
+        if hasattr(self, "stage_blur_var"):
+            self.settings["stage_blur"] = self.stage_blur_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
+        if hasattr(self, "training_var"):
+            self.settings["training"] = self.training_var.get()
+            self.settings["training_all"] = bool(self.training_all_var.get())
+            self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
+        if hasattr(self, "discord_var"):
+            self.settings["discord_presence"] = bool(self.discord_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
@@ -883,8 +1019,14 @@ class App(tk.Tk):
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
-        self.status.set(t("Game started (process {pid}). Log: {log}", pid=pid,
-                          log="native\\logs\\" + os.path.basename(g.log_path)))
+        status = t("Game started (process {pid}). Log: {log}", pid=pid,
+                   log="native\\logs\\" + os.path.basename(g.log_path))
+        try:
+            if self.power_saving_text()[0]:
+                status += "  " + t("Power saving is on.")
+        except Exception:       # noqa: BLE001 -- a status hint must never stop a game start
+            pass
+        self.status.set(status)
         self._update_play_buttons()
         return g
 
@@ -932,7 +1074,8 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
+                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

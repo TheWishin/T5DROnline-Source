@@ -455,9 +455,11 @@ modes, attract demo) and a direct fight on each of the 18 stages:
   1536 x 1024, 20/22/25/31/33 the whole target); menus and character select
   likewise;
 - on some stages a glow: the 3D target drawn into two 128 x 128 buffers,
-  blurred back and forth, added onto the 3D target;
+  blurred back and forth, added onto the 3D target (stage 20; see [Stage blur
+  and glow](#stage-blur-and-glow-patch-0043-branch-stage-blur));
 - one draw that filters the 3D target down into the 1280 x 720 display buffer
-  (0x0 / 0x3A0000, zeta 0x740000), then the HUD, text, menus and movie frames
+  (0x0 / 0x3A0000, zeta 0x740000) -- on stages 24, 26, 28 and 34 a soft focus
+  of four taps, elsewhere one tap -- then the HUD, text, menus and movie frames
   on top. Reflections (stages 27, 29, 30) are drawn in the 3D pass itself.
 
 What the usual internal-resolution problems would need, and what this game
@@ -589,3 +591,307 @@ Only host pixels change, so the two players may choose different steps:
   and a build, the pair at below-normal priority.)
 - Lockstep, host **1440p** vs joiner **Lower**, RTT 30 ms, 1 % loss: 0
   mismatching, the same result hash `93f6b16c9bdd829d` on both sides.
+
+## Stage blur and glow (patch 0043, branch `stage-blur`)
+
+Player report: "Some stages like Ominous Mist have a 'blur' effect on them
+which is especially bad when playing with a higher internal resolution. It'd
+be nice if we could disable this." Two things came of it: the blur now looks
+at every internal resolution as it does at Native (the fix), and **launcher
+-> Settings -> Stage blur / glow: On (default) / Off** turns the stages' blur
+and glow off (`PS3_STAGE_BLUR=0`).
+
+### What the effect is
+
+Found with draw CSVs, the dumped fragment programs and frame-exact surface
+dumps of every stage (ids 17-34; intro and fight). Five stages filter the
+picture after the 3D pass; the others, the HUD, the menus and the movies do not:
+
+| stage | effect | draws |
+|---|---|---|
+| 34 (the misty swamp with the willows; by its look the player's "Ominous Mist"), 24, 26, 28 | soft focus | the downsample of the 3D target (2048 x 1440) into the display buffer reads it four times: a centre tap and three taps 2 guest texels around it (a triangle; the offsets come from vertex constants, in guest texels), weighted 1/16 for the centre and 5/16 for each of the others on stage 34, then a colour curve. The stage scenes behind the title screen and practice mode use the same kind of program |
+| 20 (the scrapyard) | glow around the sun | the 3D target averaged with four taps into a 128 x 128 buffer, twelve passes back and forth between two 128 x 128 buffers with four diagonal taps each (a Kawase blur, offsets growing per pass), the result blended onto the 3D target |
+
+The runtime calls such a draw a **filter kernel**: a fragment program that
+samples a render-target surface two or more times on one texture unit
+(`rsx_fp_texture_tap_mask`). Every other read of a render target in this game
+is a single tap (the plain downsample of the other 13 stages, stage 33's heat
+haze, which reads the 3D target once at an offset taken from a normal map).
+
+### Why it looked worse above Native
+
+The kernels' offsets are guest texels, and they rely on the bilinear filter:
+at Native each tap averages a 2 x 2 texel footprint, so taps 2 texels apart
+blend into one soft picture. Patch 0038 scales the render targets, and the
+offsets stay where they are in texture space (normalised coordinates, as they
+should), but each tap's footprint shrinks with the host texel: at 4K a guest
+texel is 3 x 3 host texels, the footprint a third as wide, and the four taps
+no longer meet. The picture becomes three or four sharp copies of every edge,
+1.25 Native pixels apart -- 3.8 pixels on a 4K screen (1080p 1.9, 1440p 2.5):
+a doubled outline on branches, hair and every other edge of the 3D scene. The
+glow's Kawase passes, which put each tap on a texel corner, skip host texels
+at 1440p and 4K: its buffers came out banded and blotchy instead of smooth.
+Not a wrong size or a wrong offset -- the same kernel with too little filter
+under each tap.
+
+### The fix
+
+A filter kernel on a scaled surface (above Native) samples a **guest-size
+view** of it: the surface box-filtered to its guest size (each guest texel the
+area-weighted mean of the host texels it covers -- exact for 1.5x and 3x as
+well as 2x), made again only when the surface was written since
+(`ld_guest_view_srv`: one extra 3-vertex draw before the kernel's draw records
+its state, like the scaled copies of 0038). The taps then cover what they
+cover at Native, on a supersampled picture. Single-tap reads keep the full
+internal resolution, so every other stage (and the HUD of these five) stays as
+sharp as before; below Native nothing changes. The log names every kernel
+once: `[stage-blur] filter pso ...: unit 0 reads 0x17F0000 2048x1440 (x3) into
+0x0 1280x720: guest-size view`.
+
+### The switch
+
+`PS3_STAGE_BLUR=0` (also `off`, `false`, `no`; the launcher's Off): every tap
+of a filter kernel reads the kernel's centre -- the tap nearest the taps' mean
+when it is less than half the kernel's radius away (the soft-focus kernel's
+centre tap), else the mean (a symmetric kernel). This is an HLSL post-pass on
+the decompiled program (`rsx_fp_apply_single_tap`, part of the PSO identity),
+so the weights and the colour curve stay and the picture keeps its colours,
+only sharp. A draw that blends a **glow buffer** (a surface last drawn by a
+filter kernel and smaller than the canvas) onto a full-size target is not
+drawn: the sun has no glow. The log says `[display] stage blur/glow: off
+(PS3_STAGE_BLUR)` and names the first skipped glow composites. HUD, menus,
+movies and the other 13 stages draw exactly as with On.
+
+### Checked
+
+Frame-exact comparisons come from **lockstep pairs** (`tools/rollback_net_test.py
+--mode1 off --mode2 off --fight lil,ask,<stage>,1` with `T5_NET_SHOT=300,900,1500`
+and `LD_SURF_DUMP`): the two games run the same game frames, so the host at
+Native and the joiner at another step (or with Off) dump every surface of the
+same frame. Two single offline runs do not show the same picture at the same
+fight frame, even with `T5_DF_SHOT=+n` (n frames after FIGHT START): the
+camera angle comes from random numbers that depend on timing. Hit sparks and
+splashes can differ even within a pair (they are not part of the state the
+pair keeps equal), so the comparisons below use idle fighters or leave them out. Local evidence under `build/blur/`
+(git-ignored).
+
+"Detail" below is the mean gradient of the 3D picture under the HUD band at the
+step's own output size, relative to the Native picture of the same frame
+scaled up bilinearly: 1.0 = looks like Native; ghost copies of edges raise it.
+Three shots per pair (intro, fight), ranges over the shots:
+
+| stage | step | before (main) | after (0043) |
+|---|---|---|---|
+| 34 | 1080p | 1.16-1.31 | 1.01-1.06 |
+| 34 | 1440p | 1.24-1.45 | 1.07-1.15 |
+| 34 | 4K | 1.28-1.53 | 1.03-1.05 |
+| 24 | 1080p | 1.17-1.28 | 1.05-1.07 |
+| 24 | 1440p | 1.23-1.36 | 1.09-1.13 |
+| 24 | 4K | 1.26-1.47 | 1.04-1.06 |
+| 26 | 1440p | 1.17-1.29 | 1.10-1.17 |
+| 26 | 4K | 1.19-1.36 | 1.05-1.08 |
+| 28 | 1440p | 1.42-1.54 | 1.21-1.25 |
+| 28 | 4K | 1.42-1.57 | 1.11-1.15 |
+
+Stage 28 keeps more of its own detail through its kernel. Stage 20's glow
+buffers, scaled to 128 x 128 and compared with Native's of the same frame
+(fighters idle, so no hit sparks differ): 4K before a mean difference of
+0.27-0.35 levels, max 9-13, after 0.03-0.05, max 1-2; 1440p before 0.18, max 6,
+after 0.24-0.27, max 3 (3 % dimmer on average: the box view of a supersampled
+picture against Native's point samples, under a blend that multiplies colour by
+alpha); the roughness of the buffer before 1.2-2.1x Native's, after 1.0-1.1x.
+To the eye: the doubled branch and hair outlines on stage 34 at 4K are gone
+and the soft focus looks like Native's; the glow's banding is gone.
+
+Off: the five stages are sharp (detail Off/On on stage 34: 1.30-1.43 at
+Native, 1.65-2.07 at 4K), the colours unchanged, stage 20 without the sun's
+glow. Every stage was run On against Off (lockstep pairs, fighters idle, at
+Native and at 4K): all 18 render correctly with Off and the HUD is the same;
+on the 13 stages without a filter the runtime logs no kernel and draws
+exactly as with On (what still differs between the two pictures are the
+stages' own animated textures and particles -- waterfalls, fire, steam --
+which differ between any two games). Smoke suite: quick PASS at Native (On);
+at 4K boot, practice and arcade PASS with On and with Off. (A whole quick run
+at 4K with Off, next to 19 other games, missed five of its frame shots --
+33 MB readbacks timing out -- and failed on that; the frames it got were
+right, and the tests passed again on a quieter PC.)
+
+**Cost:** one box pass per filtered surface and frame (stage 34 at 4K:
+6144 x 4320 -> 2048 x 1440, nine loads per guest texel). GPU time per fight
+frame (frame log `gpu_us`, median of two runs each, the GPU shared with other
+agents' games): stage 34 at 4K 1.80 ms before, 1.43 after, 2.47 Off; stage 20
+at 4K 2.11 / 1.71 / 1.83; stage 34 at Native 0.67 / 0.43 -- within the spread
+of these runs, nothing measurable.
+
+**Online:** host pixels only -- the patch reads no guest memory and changes no
+command, so the two players may choose differently. Rollback pairs (the online
+default, `tools/rollback_net_test.py --mode1 default --mode2 default`) with one
+side Off, 7 matches of two rounds: stage 34 Native On vs Native Off at RTT 50 ms
+/ 3 % loss (2 matches, 850 / 498 rollbacks), stage 20 4K On vs 1440p Off at
+RTT 150 ms / 3 % (2 matches, 829 / 505), stages 24, 26 and 28 4K Off vs Native
+On at RTT 100 ms / 2 % (3 matches, 482 / 532): 0 mismatching frames and the
+same result hash on both sides in every match. All 70 lockstep pair runs above
+(Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
+PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)
+
+## Laptops, handhelds and 8-core APUs (patch 0047, branch `laptop-perf`)
+
+Two player reports: an HP Omen 15 (2017, i7-7700HQ, GTX 1050/1060 with
+Optimus) where "the game goes faster but then goes slow", and a Zen 4 APU
+(8 cores / 16 threads, Radeon 780M; first thought a handheld, then a mini PC
+at 65 W) at 40-52 fps in fights at 720p, 1080p and 4K alike, menus at 60.
+The game's speed is its frame rate (one game frame per vblank, like the
+PS3), so both are frames that miss their vblank: the CPU side of a frame
+(the game, then the render translation) took longer than 16.7 ms. On a
+laptop that happens when heat or the power limit lowers the clock after a
+few minutes; on an APU the CPU and the graphics share one power budget; on
+8 cores with SMT a busy-waiting thread on the sibling of the main thread or
+the walker slows the frame's critical path. In every case the waste around
+the game is what to cut: the game's own work stays what it is.
+
+### Where the CPU went
+
+`tools/fight_bench.py` now prints, per thread, the share of one processor,
+the CPU time per frame and the context switches per second (a thread that
+wakes thousands of times a second keeps its core out of its sleep states;
+`--json` has every number, `--polite` mutes the game and starts it at
+below-normal priority; a kill-on-close job ends the game if the bench is
+killed). Fight Lili vs Asuka on stage 20, P1 pressing buttons. Before patch
+0047, all 32 logical processors (spin mode for sub-ms sleeps), 3.1
+processors for the game:
+
+| thread | share of one processor | context switches/s | what it was doing |
+|---|---|---|---|
+| main | 75 % | 11,300 | the game's frame (~5-8 ms), then polling the flip: `while (cellGcmGetFlipStatus()) usleep(100)` (0x34BA30), each usleep a SwitchToThread spin from 12 processors up |
+| sound core (`spu`) | 58-66 % | 1,300-2,300 | the SPU sound DSP, 187.5 ticks a second: real work |
+| SPURS job threads (11) | 57 % | 3,500 | skinning: ~8 ms of work a frame, ~10 ms with 11 threads |
+| vertex-fetch workers (3) | 54 % (with driver threads) | 3,600 | ~2 ms of work a frame, the rest 2,000 `PAUSE`s after every job |
+| ticker | 27 % | 850 | vblank clock + render translation (~3-4 ms a frame) + present, and a poll through the last millisecond before every tick |
+| pad sampler | 7-9 % | 1,100-1,500 | the 1 ms sampler (with a scripted pad file: a file open per sample; a real pad costs 1-3 %) |
+| audio mixer | 1 % | 1,850 | a 250 us timer poll between blocks (20 wake-ups per 5.33 ms block) |
+
+The D3D12 driver is not where it goes: the walker's own CPU time per frame
+(frame log `fifo_cpu_us`, thread cycles) was 4.0-4.2 ms rendering on this
+PC's integrated Radeon (RDNA2, the 780M's driver family) and 4.0-4.05 ms on
+the RTX 3090 (paired runs on the two CCDs, halves swapped); the iGPU's GPU
+time was 2.8 ms a frame at Native. Nor the GPU: the same fps at 720p and 4K,
+and `[slow-frames]` (below) names the GPU only when the CPU waits for its
+fences.
+
+### What changed
+
+| change | for whom | switch |
+|---|---|---|
+| **The flip wait without the poll**: a usleep under 1 ms right after `cellGcmGetFlipStatus` said WAITING waits for the status to change (WaitOnAddress, woken by the vblank's flip completion), at most 20 ms -- one wake-up a frame instead of 50-100 timer wake-ups, or instead of a processor spinning all frame; the frame starts a few microseconds after its flip instead of up to one poll later. The rollback netcode keeps the plain poll on the main thread (its early rollback looks at the network between two polls: `cellGcm_flip_poll_plain`) | everyone | `PS3_FLIP_WAIT=0` |
+| Vblank ticker: a high-resolution waitable timer to the microsecond next to the FIFO kick event; it used to wait whole milliseconds (up to 1 ms late) and then poll the last millisecond (FIFO walk + GCM pump + message pump per round); now it polls the last 250 us, none with power saving. Two `getenv` per loop round went too | everyone | `PS3_TICKER_SPIN_US=n` |
+| Audio mixer sleeps until its next block is due; it polls every 250 us only while it waits for a block the game writes late (as before) | everyone | -- |
+| Sub-ms sleeps spin (SwitchToThread) only from **24** logical processors up (was 12); 3 vertex workers with 2,000 `PAUSE`s also only from 24, one worker with 300 below (was 3 from 12, 2 from 8: on 16 logical processors two workers cost 0.33-0.37 of a processor and 4,400 wake-ups a second, one 0.19, the walk took the same 3.0-3.6 ms). 8 cores with SMT -- the common gaming CPU -- no longer spin on the siblings of the walker and the main thread | 8-23 logical processors | `PS3_SCHED_SUBMS`, `RSX_VERTEX_THREADS`, `RSX_VERTEX_SPIN` |
+| The frame-latency wait before a vsync'd present never runs past the game's next vblank tick (was: up to 20 ms on the ticker, i.e. on the game's clock) | displays that are not 59/60 Hz, VSync on | -- |
+| **Power saving** (`PS3_LAPTOP`, launcher **Settings -> Power saving: Auto / On / Off**): sub-ms sleeps on the timer, no ticker poll, one vertex worker with the short spin, at most 6 SPURS job threads, background threads (audio device, PSO writer ...) on EcoQoS. The game, its 60 fps, the 1 ms pad sampling and the tap latch are unchanged | Auto: a battery (laptop, handheld), battery saver or the Power saver plan on, a mobile processor by name (Ryzen ...U/H/HS/HX, Ryzen Z1/Z2/AI, Core ...U/H/HQ/HX/P/Y/G7, Core Ultra, N100 ...), or the renderer on integrated graphics (D3D12 UMA: an APU, whose CPU and GPU share one power budget) | `PS3_LAPTOP=1/0/auto` |
+| Display lock (patch 0034): every DWM sample is checked, not only the once-a-second one; a period outside 59.3-60.7 Hz or no clock three samples in a row turns the lock off at once (it used to follow a bad period for up to a second); three such drops in 30 s keep it off for a minute; the tick period is never shorter than 1/60 s | 59/60 Hz displays | `PS3_DISPLAY_LOCK=0` |
+| Diagnostics: `[sched] power saving on/off (why)`, `[power]` (AC/battery, plan, processor clock limit), `[gpu] adapter: ... integrated/dedicated`, `[gpu] display: ...` (which adapter drives the window's screen: a laptop with two GPUs copies every frame across, "hybrid present"), every 30 s with slow frames a `[slow-frames]` line (below); the window title says "power saving" | everyone | `PS3_SLOW_FRAMES=0` |
+
+The game never runs faster than 60: its clock is the ticker's (59.94 Hz, or
+a 59/60 Hz display's own with the display lock); after a stall the ticker
+fires each missed vblank once, which can only lose game time, and the
+`[slow-frames]` line reports the clock's rate over the window (`vblank clock
+59.94 Hz`, flagged above 60.05). "Faster, then slow" on a laptop is a game
+that ran at 60 and then lost frames to heat or the power limit.
+
+On a "59 Hz" display with the display lock, `N of M frames late for their
+vblank` counts frames whose release-to-present took longer than the lock's
+lead; with the lead at its maximum (16.48 ms) every frame over 16.5 ms is
+"late", even one that still makes the next vblank tick. Nearly all frames
+late (2,485 of 2,495 in the APU log) is the symptom of a CPU-bound frame,
+not a cause: the lock costs no throughput (the guest's flip completes on the
+first tick after its translation, with or without it).
+
+### `[slow-frames]`
+
+    [slow-frames] last 30 s: 1381 frames, 495 slow (over 20.9 ms): CPU 479 (game 401, render
+    translation 25, vblank thread late 53), GPU 0, present 16; median per frame: game 7.4 ms,
+    translation 0.3, GPU wait 0.0, present 0.4; worst 250.1 ms (CPU, game); vblank clock 59.95 Hz |
+    on AC power (no battery: a desktop PC), power plan "Ausbalanciert", processor clock limit 4501 of 4501 MHz
+
+A frame is slow when it was shown more than 1.25 vblanks after the one
+before. Its reason is what took its time: **CPU, game** (the game's frame
+from its release by the vblank to its flip request: game logic, skinning,
+command building), **CPU, render translation** (flip request -> the walker
+reached the flip), **CPU, vblank thread late** (the tick that released the
+frame came more than 2 ms late: the ticker got no processor), **GPU** (the
+CPU waited for GPU fences for 30 % of the frame or more) or **present**
+(the present call, including the frame-latency wait, took 4 ms or more: a
+display path through another GPU, a compositor). The power part is read
+each time, so heat or a battery that lowers the clock limit shows up next
+to the slow frames. Every 5 minutes without slow frames there is a quiet
+line. "Report a problem" puts the last few of these lines, the power
+source, plan and power mode, the processor clock limit and Windows' thermal
+zone temperatures (where the PC has a sensor Windows reads) into
+`system.txt`.
+
+### Two GPUs
+
+Checked on this PC, whose screen hangs off the RTX 3090 and which also has
+the 7950X's integrated Radeon: `RSX_ADAPTER=radeon` renders on the iGPU and
+every frame is copied to the other GPU for the screen, the hybrid present of
+an Optimus laptop the other way round. The log says `[gpu] adapter: AMD
+Radeon(TM) Graphics (... integrated) -- RSX_ADAPTER`, `[sched] power saving
+on (integrated graphics (AMD Radeon(TM) Graphics) share the processor's
+power budget)`, `[gpu] display: the window's screen is driven by NVIDIA
+GeForce RTX 3090, the game renders on AMD Radeon(TM) Graphics -- every frame
+is copied between the two GPUs`; the display lock stayed on (the DWM clock
+is the screen's), present median 0.4 ms, no slow frame classed GPU or
+present beyond the load's. The exports `NvOptimusEnablement` /
+`AmdPowerXpressRequestHighPerformance` and the high-performance adapter
+choice are unchanged; the per-app choice in Windows' Graphics settings still
+wins over both.
+
+### Results
+
+Paired runs: two games at the same time on the two CCDs of this PC (logical
+processors 0-15 and 16-31, 8 cores with SMT each -- the APU's layout), the
+halves swapped for the second round, `tools/fight_bench.py --polite`
+(muted, below-normal priority), window fight start +24..42 s. Other agents'
+games kept 20-30 of the 32 processors busy all the time, so fps below 60 is
+the load's; CPU time and wake-ups per frame are the comparison that holds.
+"Before" is the series to 0042 (main 932b1c9), "default" this patch with
+power saving off (what a desktop gets), "power saving" with it on.
+
+| logical processors | build | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU (processors) | CPU ms per frame | context switches/s | other load |
+|---|---|---|---|---|---|---|---|---|
+| 16 (8c/16t) | before | 59.93 | 197 | 19.1 | 3.14 | 52.4 | 13,187 | 19.7 |
+| 16 | **default** | 59.96 | 198 | 19.1 | **2.21** | **36.8** | 8,260 | 20.5 |
+| 16 | before | 59.37 | 275 | 25.3 | 3.17 | 53.5 | 17,172 | 22.4 |
+| 16 | **power saving** | 59.64 | 258 | 20.5 | **2.30** | **38.7** | 8,302 | 23.2 |
+| 16, more load | before / default (an earlier build with 2 vertex workers) | 54.1 / **59.3** | 451 / 303 | 28.5 / 26.8 | 2.91 / 2.53 | 53.7 / 42.7 | 19,071 / 11,581 | 25 |
+| 4 (2c/4t) | before / power saving | 26.3 / 29.6 | 999 / 996 | 67.4 / 54.0 | 1.58 / 1.64 | 60.2 / 55.8 | 11,260 / 8,029 | 29.7 |
+| 4 (2c/4t) | default / power saving | 28.9 / 29.0 | 979 / 981 | 74 / 100 | **1.59 / 1.57** | 55.7 / 54.0 | 8,388 / 8,160 | 29.5 |
+
+On 16 logical processors the game needs 30 % less CPU for the same 60 fps:
+the main thread 94 % of a processor (3,700 wake-ups a second) -> 42 % (530),
+the vertex workers 60 % (three) -> 18 % (one), the walk the same 3.2-3.7 ms
+(`fifo_cpu_us`). On 4 threads -- the "4-core laptop" stand-in -- the game
+used 1.57-1.64 of its 4 processors (39-41 %) with power saving off or on,
+the frame rate set by the 30 other busy processors; below 8 logical
+processors the defaults of patch 0027 already avoided spinning, so there
+power saving only saves wake-ups (8,400 -> 8,200 a second) and the patch's
+general part the rest (11,300 -> 8,400).
+
+**Input latency** (`tools/latency_test.py --polite`, 30 jab presses each,
+before and default side by side on the two halves, swapped): median press ->
+display vblank 47.9 -> 43.3 ms (29.5 processors busy) and 38.9 -> 38.4 ms (22
+busy); refreshes without a new frame 274 -> 177 and 9 -> 9 of ~1,680. The
+flip now releases the main thread a few microseconds after the vblank
+instead of after the next poll.
+
+**Online.** Power saving is timing only, so the two PCs of a match may
+differ: rollback (default settings, RTT 50 +-5 ms, 3 % loss, host with power
+saving, joiner without, 8 logical processors each), one match of two rounds:
+sync through frame 4199 0 mismatching on both sides, the same result hash
+`02f57cf40b7058e3`, 56 / 525 rollbacks (84 / 2,359 frames re-simulated),
+no decode error or abort. Lockstep (RTT 30 ms, 1 % loss, host without,
+joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
+
+Not tried: a real laptop, handheld or APU (this PC has none), the game's
+fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
+none here; `system.txt` then says so).

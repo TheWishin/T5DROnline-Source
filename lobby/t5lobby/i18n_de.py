@@ -109,12 +109,12 @@ MESSAGES = {
     "8-way d-pad": "8-Wege-Steuerkreuz",
     "Analog stick": "Analogstick",
     "Both cancel (neutral)": "Beide heben sich auf (neutral)",
-    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter ist Hoch)",
+    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter = Hoch)",
     "Last direction wins": "Die letzte Richtung gewinnt",
     "Pass both through": "Beide durchlassen",
     "This controller is": "Dieser Controller ist",
     "Left stick": "Linker Stick",
-    "Opposite directions": "Gegenüberliegende Richtungen",
+    "Opposite directions": "Gegenrichtungen",
     "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction "
     "as a stick; the game then reads it as d-pad presses. Left+Right (or Up+Down) at "
     "once happens on keyboards and hitboxes; the game cannot take both. Stick and "
@@ -197,9 +197,15 @@ MESSAGES = {
     "Controls": "Steuerung",
     "Save the changes to controls.ini?": "Die Änderungen in controls.ini speichern?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (Laptops, Handhelds, integrierte Grafik)",
+    "On": "An",
+    "a mobile processor": "ein Laptop-Prozessor",
+    "battery saver is on": "der Stromsparmodus von Windows ist an",
+    "the Power saver power plan is on": "der Energiesparplan \"Energiesparmodus\" ist aktiv",
+    "this PC has a battery (laptop or handheld)": "dieser PC hat einen Akku (Laptop oder Handheld)",
+    "Inputs": "Eingaben",
+    "Inputs + frame data": "Eingaben + Framedaten",
     "Auto (Windows language)": "Auto (Sprache von Windows)",
-    "Deutsch": "Deutsch",
-    "English": "English",
     "No package chosen.": "Kein Paket gewählt.",
     "File not found.": "Datei nicht gefunden.",
     "Cannot read the file: {error}": "Die Datei lässt sich nicht lesen: {error}",
@@ -272,6 +278,12 @@ MESSAGES = {
     "Game files": "Spieldateien",
     "Sound core": "Soundkern",
     "Translate code": "Code übersetzen",
+    "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+    "has the details.":
+        "Der Schritt „Code übersetzen“ hat seit {minutes} Minuten nichts ausgegeben. Auf einem langsamen oder "
+        "ausgelasteten PC kann er noch arbeiten. Wenn sich nichts tut, schließe andere Programme, klicke auf "
+        "Abbrechen und dann wieder auf BUILD GAME; build.log hat die Details.",
     "The graphics card stopped working for the game (the driver crashed, was reset or "
     "updated). Start the game again. If it happens again, update the graphics driver.":
         "Die Grafikkarte hat für das Spiel nicht mehr funktioniert (der Treiber ist "
@@ -396,6 +408,28 @@ MESSAGES = {
         "{secret} Passwörter, Tokens oder Schlüssel, {email} E-Mail-Adressen.",
     "Open folder": "Ordner öffnen",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)":
+        "In meinem Discord-Status zeigen, was ich spiele (Rich Presence)",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "„In der Lobby“, „Sucht ein Ranked-Match“ oder dein Match (Kämpfer, Stand im Ranked-Set) mit Zeit, über die "
+        "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
+    "Power saving (laptops, handhelds)": "Stromsparen (Laptops, Handhelds)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Kein aktives Warten und weniger Arbeits-Threads: Der Prozessor bleibt kühler und behält seinen Takt, "
+        "so hält das Spiel die 60 fps länger. Das Spiel selbst bleibt gleich, auch online.",
+    "On for this PC.": "An für diesen PC.",
+    "Off.": "Aus.",
+    "Auto: on for this PC -- {reason}.": "Auto: an für diesen PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto: aus für diesen PC (kein Akku, kein Laptop-Prozessor); läuft das Spiel auf integrierter Grafik, "
+        "schaltet es das Stromsparen selbst ein.",
+    "Power saving is on.": "Stromsparen ist an.",
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
     "Square": "Quadrat",
@@ -496,6 +530,22 @@ MESSAGES = {
     "On (smooth, default)": "An (flüssig, Standard)",
     "Off (lowest latency, may tear)": "Aus (geringste Verzögerung, Bild kann reißen)",
     "The game always runs at 60 fps, like on the PS3.": "Das Spiel läuft immer mit 60 fps, wie auf der PS3.",
+    "Stage blur / glow": "Stage-Unschärfe / Leuchten",
+    "On (default)": "An (Standard)",
+    "Off": "Aus",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "Manche Stages machen das Bild unscharf (der neblige Sumpf) oder lassen die Sonne leuchten. "
+        "Aus zeigt sie scharf, ohne das Leuchten. Nur dein Bild ändert sich: Online können beide "
+        "Spieler verschieden wählen.",
+    "Training overlay": "Trainings-Anzeige",
+    "Also in the other offline modes (Arcade, Versus, ...)": "Auch in den anderen Offline-Modi (Arcade, Versus, ...)",
+    "Also online (only your own inputs, no frame data)": "Auch online (nur deine eigenen Eingaben, keine Framedaten)",
+    "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+    "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
+        "Im Practice-Modus: deine letzten Eingaben, jede mit der Zahl der Frames, die sie gehalten wurde, "
+        "und nach jedem Schlagabtausch der Startup des Moves und wer zuerst wieder handeln kann (+3, -12). "
+        "F2 im Spiel schaltet sie um.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",
@@ -719,6 +769,8 @@ MESSAGES = {
     "this server has no guest logins": "Dieser Server erlaubt keine Gäste",
     "too many failed logins; wait a few minutes": "zu viele fehlgeschlagene Anmeldungen; warte ein paar Minuten",
     "too many failed attempts; wait a few minutes": "zu viele fehlgeschlagene Versuche; warte ein paar Minuten",
+    "too many password changes; wait a minute": "zu viele Passwortänderungen; warte eine Minute",
+    "too many requests for new codes; wait a minute": "zu viele Anfragen nach neuen Codes; warte eine Minute",
     "too many new accounts from this address": "zu viele neue Konten von dieser Adresse",
     "the saved login has expired; log in with your password":
         "Die gespeicherte Anmeldung ist abgelaufen; melde dich mit deinem Passwort an",
@@ -789,6 +841,33 @@ MESSAGES = {
     "that player is not on your block list": "Dieser Spieler steht nicht auf deiner Blockliste",
     "you are not in a set": "Du bist in keinem Set",
     "no such finished match": "Dieses beendete Match gibt es nicht",
+    "guests cannot have friends; create an account (free)":
+        "Gäste können keine Freunde haben; erstelle ein (kostenloses) Konto",
+    "there is no account with that name": "Es gibt kein Konto mit diesem Namen",
+    "you cannot add yourself": "Du kannst dich nicht selbst hinzufügen",
+    "you blocked that player; unblock them first":
+        "Du hast diesen Spieler blockiert; hebe die Blockierung zuerst auf",
+    "your friends list is full ({max})": "Deine Freundesliste ist voll ({max})",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "Du kannst {count} Freundschaftsanfragen am Tag senden; versuche es morgen wieder",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "{count} deiner Freundschaftsanfragen warten auf eine Antwort; ziehe zuerst ein paar zurück",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name} hat deine letzte Anfrage abgelehnt; du kannst in {days} Tag(en) wieder anfragen",
+    "that player has too many friend requests waiting": "Bei diesem Spieler warten zu viele Freundschaftsanfragen",
+    "that player's friends list is full": "Die Freundesliste dieses Spielers ist voll",
+    "no friend request from that player": "Keine Freundschaftsanfrage von diesem Spieler",
+    "no friend request to that player": "Keine Freundschaftsanfrage an diesen Spieler",
+    "that player is not on your friends list": "Dieser Spieler ist nicht in deiner Freundesliste",
+    "that friend is not online": "Dieser Freund ist nicht online",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "Der Launcher dieses Freundes ist zu alt für Einladungen (er braucht 1.1.2 oder neuer)",
+    "create a room first, then invite": "Erstelle zuerst einen Raum, dann lade ein",
+    "that friend is busy right now": "Dieser Freund ist gerade beschäftigt",
+    "one invite at a time": "Immer nur eine Einladung",
+    "that player has invites pending": "Dieser Spieler hat noch offene Einladungen",
+    "that invite is over": "Diese Einladung ist vorbei",
+    "the invite is no longer possible": "Die Einladung ist nicht mehr möglich",
     "{name} is back in the lobby": "{name} ist zurück in der Lobby",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name} hat die Verbindung zur Lobby verloren; warte {seconds} s auf die Rückkehr",
@@ -820,6 +899,7 @@ MESSAGES = {
         "Internet gehen. Spiele als Gast, oder bitte den Betreiber des Servers, TLS "
         "einzurichten und dir den Fingerabdruck zu geben.",
     "connection closed": "Verbindung geschlossen",
+    "the server sent a malformed match id": "Der Server hat eine ungültige Match-ID geschickt",
     "message too long": "Nachricht zu lang",
     "closed": "geschlossen",
     "Choose your game package (.pkg) first.": "Wähle zuerst dein Spielpaket (.pkg).",
@@ -1043,11 +1123,31 @@ MESSAGES = {
     "'.', '..' or an empty part": "„.“, „..“ oder ein leerer Teil",
     "outside the folder {folder}": "außerhalb des Ordners {folder}",
     "named like the player's own files": "heißt wie die eigenen Dateien des Spielers",
+    "a name Windows does not keep as written": "ein Name, den Windows nicht so speichert, wie er geschrieben ist",
+    "Release {version} is a test version; it is not installed automatically.":
+        "Release {version} ist eine Testversion; sie wird nicht automatisch installiert.",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "Release {version} ist nicht mit dem Release-Schlüssel des Projekts signiert (keine SHA256SUMS.sig). Es "
+        "stammt nicht aus dem Release-Ablauf des Projekts; es wurde nichts geändert.",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "Release {version} hat die Signaturprüfung nicht bestanden ({error}). Es stammt nicht aus dem "
+        "Release-Ablauf des Projekts; es wurde nichts geändert.",
     "idle": "frei",
     "room": "im Raum",
     "queue": "in der Suche",
     "match": "im Match",
     "playing": "im Spiel",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "In der Lobby",
+    "Searching ranked": "Sucht ein Ranked-Match",
+    "Searching quick match": "Sucht ein Quick Match",
+    "Ranked, Set {mine}-{theirs}": "Ranked-Set {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "Casual",
+    "In match: {mine} vs {theirs} ({what})": "Im Match: {mine} vs {theirs} ({what})",
+    "In match ({what})": "Im Match ({what})",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "Bei {ping} ms Ping sind etwa {frames} Frames Rückstand normal.",
@@ -1349,8 +1449,8 @@ MESSAGES = {
     "ranked": "ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Suche... ({ranked} in der Ranked-Suche, {quick} bei Quick Match)",
-    "ping about {ms} ms (through the server; measured directly once you both accept)":
-        "Ping etwa {ms} ms (über den Server; direkt gemessen, sobald ihr beide annehmt)",
+    "ping about {ms} ms (estimated; measured directly once you both accept)":
+        "Ping etwa {ms} ms (geschätzt; direkt gemessen, sobald ihr beide annehmt)",
     "ping not known yet": "Ping noch nicht bekannt",
     "Opponent found": "Gegner gefunden",
     "accept within {seconds} s?": "innerhalb von {seconds} s annehmen?",
@@ -1579,7 +1679,7 @@ MESSAGES = {
     "SET · GAME {game}": "SET · SPIEL {game}",
     "Opponent hidden": "Gegner verborgen",
     "Name and side are shown once you both accept.": "Name und Seite werden gezeigt, sobald ihr beide annehmt.",
-    "(estimate through the server)": "(Schätzung über den Server)",
+    "(estimated before you connect)": "(geschätzt, bevor ihr verbunden seid)",
     "Accepted. Waiting for your opponent...": "Angenommen. Warte auf deinen Gegner...",
     "Match ready": "Match bereit",
     "Connecting the two games...": "Verbinde die beiden Spiele...",
@@ -1621,4 +1721,67 @@ MESSAGES = {
         "speichere sie an einem sicheren Ort -- sie werden nicht noch einmal angezeigt.",
     "Save to a file...": "In Datei speichern...",
     "I have saved them": "Ich habe sie gespeichert",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "Anfrage",
+    "Friends": "Freunde",
+    "Invite to a match": "Zu einem Match einladen",
+    "Invite to my room": "In meinen Raum einladen",
+    "Remove": "Entfernen",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "Lade einen Freund ein, der online ist: Ein Klick auf seiner Seite startet ein Casual-Match oder holt ihn "
+        "in deinen Raum.",
+    "Add a friend": "Freund hinzufügen",
+    "Send request": "Anfrage senden",
+    "Their account name. They become your friend when they accept.":
+        "Sein Kontoname. Ihr seid Freunde, sobald er annimmt.",
+    "Requests": "Anfragen",
+    "Take back": "Zurückziehen",
+    "Invite from a friend": "Einladung von einem Freund",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "lädt dich in den Raum „{room}“ ein. Nimm an, um beizutreten; das Match startet sofort.",
+    "invites you to a casual match. Accept to start it.":
+        "lädt dich zu einem Casual-Match ein. Nimm an, um es zu starten.",
+    "Check the spelling: friends are added by their account name.":
+        "Prüfe die Schreibweise: Freunde werden mit ihrem Kontonamen hinzugefügt.",
+    "in a match": "im Match",
+    "offline": "offline",
+    "(older launcher: no invites)": "(älterer Launcher: keine Einladungen)",
+    "Friends ({count})": "Freunde ({count})",
+    "offline, last seen {when}": "offline, zuletzt gesehen {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "Freunde brauchen ein Konto. Melde dich mit einem an, um Freunde hinzuzufügen und einzuladen.",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "Dieser Lobby-Server hat keine Freundesliste (dafür braucht er Version 1.1.2 oder neuer).",
+    "wants to be your friend": "möchte dein Freund sein",
+    "asked: waiting for an answer": "angefragt: wartet auf eine Antwort",
+    "{online} online · {count} of {max}": "{online} online · {count} von {max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "Deine Freunde sehen, wann du online bist. Lade einen ein, der online ist, um zu spielen.",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "Noch keine Freunde. Füge einen mit seinem Kontonamen hinzu: Ihr seid Freunde, sobald er annimmt.",
+    "Cancel the invite": "Einladung zurückziehen",
+    "You and {name} are friends now.": "Du und {name} seid jetzt Freunde.",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "Freundschaftsanfrage an {name} gesendet. Ihr seid Freunde, sobald sie angenommen ist.",
+    "Request from {name} declined.": "Anfrage von {name} abgelehnt.",
+    "Request to {name} taken back.": "Anfrage an {name} zurückgezogen.",
+    "Remove friend": "Freund entfernen",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "{name} aus deinen Freunden entfernen?\n\nDu kannst später wieder anfragen; die Anfrage muss dann wieder "
+        "angenommen werden.",
+    "{name} is no longer your friend.": "{name} ist nicht mehr dein Freund.",
+    "Select a friend in the list first.": "Wähle zuerst einen Freund in der Liste.",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "Einladung an {name} gesendet; warte auf eine Antwort ({seconds} s)...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name} ({rank}) lädt dich in den Raum „{room}“ ein",
+    "{name} ({rank}) invites you to a casual match": "{name} ({rank}) lädt dich zu einem Casual-Match ein",
+    "The invite from {name} ran out.": "Die Einladung von {name} ist abgelaufen.",
+    "The invite from {name} ended.": "Die Einladung von {name} ist beendet.",
+    "{name} declined your invite.": "{name} hat deine Einladung abgelehnt.",
+    "{name} did not answer your invite.": "{name} hat auf deine Einladung nicht geantwortet.",
+    "The invite to {name} ended.": "Die Einladung an {name} ist beendet.",
+    "{name} wants to be your friend: see the Friends tab.":
+        "{name} möchte dein Freund sein: siehe den Reiter Freunde.",
+    "{name} accepted your friend request.": "{name} hat deine Freundschaftsanfrage angenommen.",
+    "{name} declined your friend request.": "{name} hat deine Freundschaftsanfrage abgelehnt.",
 }

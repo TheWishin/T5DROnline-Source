@@ -708,6 +708,11 @@ class Player:
         orig_event = tab.on_event
 
         def on_event(ev, *a, **kw):
+            stage = getattr(me.ctx.run, "stage", None)
+            if stage and me.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict):
+                # run.py --stage: both launchers hand their game this stage instead of the lobby's pick (the same
+                # rewrite on both sides, so both games load the same stage; the lobby never checks it)
+                ev = dict(ev, fight=dict(ev["fight"], stage=stage))
             me._record(ev)
             orig_event(ev, *a, **kw)
         tab.on_event = on_event
@@ -1035,7 +1040,8 @@ class Abort(Exception):
 class Run:
     current = None
 
-    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback"):
+    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback", stage=None):
+        self.stage = stage           # run.py --stage: every real match fought on this stage (both launchers)
         self.out = os.path.abspath(out)
         os.makedirs(self.out, exist_ok=True)
         self.exe = exe

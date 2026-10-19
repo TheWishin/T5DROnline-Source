@@ -310,9 +310,6 @@ def activity_for(kind, mode=None, ranked=False, fighters=None, set_score=None, s
 
 
 # ----------------------------------------------------------------------------- the presence thread
-_UNSET = object()
-
-
 class DiscordPresence:
     RETRY = 20.0          # seconds between attempts to reach Discord while it is not there
     LOST_RETRY = 5.0      # ... after a working connection broke (Discord restarted)
@@ -329,7 +326,7 @@ class DiscordPresence:
         self.attempts = 0           # connection attempts (tests)
         self.last_error = None
         self._want = None
-        self._shown = _UNSET        # what Discord shows now (_UNSET: unknown, e.g. after connecting)
+        self._shown = None          # what Discord shows now (None: nothing, as on a new connection)
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
@@ -378,7 +375,7 @@ class DiscordPresence:
                 try:
                     self.conn = Connection.open(self.app_id, self.paths)
                     self.user = self.conn.user
-                    self._shown = _UNSET
+                    self._shown = None              # a new connection shows nothing until we say what
                     self._logged_missing = False
                     self._note("Discord Rich Presence: connected")
                 except (OSError, TimeoutError, ValueError) as e:

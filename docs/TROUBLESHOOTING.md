@@ -439,9 +439,9 @@ mode, 48 kHz; Windows converts other rates).
    late from the game's sound engine (or the device ran dry), and counts them.
    The game's sound engine needs one processor core for itself all the time;
    if other programs keep the processor busy (a game, a browser with video, a
-   virus scan, a build), close them. Since version 1.0.1 (patch 0041) the sound
-   engine needs about 40 % less of that core, so 6-core PCs from 2018-2019 keep
-   up. A low frame rate makes it worse too: see [Low frame
+   virus scan, a build), close them. Builds with patch 0041 need about 40 % less
+   of that core for the sound, so 6-core PCs from 2018-2019 keep up. A low
+   frame rate makes it worse too: see [Low frame
    rate](#low-frame-rate).
 
 ## Controllers and keyboard

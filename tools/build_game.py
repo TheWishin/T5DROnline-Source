@@ -186,7 +186,7 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 2   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS
+CODE_VERSION = 3   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT
 
 
 def code_id():

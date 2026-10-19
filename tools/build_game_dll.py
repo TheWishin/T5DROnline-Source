@@ -152,6 +152,8 @@ def main():
             cmd += ppu_opts     # same target CPU as the PPU code: the sound core ~7% cheaper with x86-64-v3 (CMakeLists.txt)
             if os.path.basename(os.path.dirname(src)).startswith("skin"):
                 cmd += ["/DSPU_FAST_FLOAT"]     # render-only skinning jobs: IEEE float ops (CMakeLists.txt)
+            elif os.path.basename(os.path.dirname(src)) == "bnuscore":
+                cmd += ["/DSPU_NEAR_FLOAT"]     # the sound core: near-exact IEEE float ops (CMakeLists.txt)
         else:
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
         if os.path.basename(src) == "t5dr_game_dll.c":

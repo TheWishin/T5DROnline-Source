@@ -418,6 +418,19 @@ class App(tk.Tk):
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
+        # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops and handhelds"):
+        # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
+        ps = ttk.LabelFrame(left, text="  " + t("Power saving (laptops, handhelds)") + "  ", padding=(12, 6))
+        ps.pack(fill="x", pady=(6, 0))
+        self.power_var = tk.StringVar(value=self.settings["power_saving"]
+                                      if self.settings["power_saving"] in core.POWER_SAVING else "auto")
+        for key, label in core.POWER_SAVING.items():
+            ttk.Radiobutton(ps, text=t(label), value=key, variable=self.power_var,
+                            command=self._power_saving_changed).pack(anchor="w", pady=1)
+        self.power_hint = ttk.Label(ps, style="Muted.TLabel", wraplength=300, justify="left")
+        self.power_hint.pack(anchor="w", pady=(4, 0))
+        self._power_saving_changed(save=False)
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         if core.I18N:
@@ -847,10 +860,33 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def power_saving_text(self):
+        """What power saving does on this PC with the chosen setting (Settings hint, status line)."""
+        key = self.power_var.get() if hasattr(self, "power_var") else self.settings["power_saving"]
+        if key == "on":
+            return True, t("On for this PC.")
+        if key == "off":
+            return False, t("Off.")
+        on, why = core.power_saving_auto()
+        if on:
+            return True, t("Auto: on for this PC -- {reason}.", reason=t(why))
+        return False, t("Auto: off for this PC (no battery, no mobile processor); the game turns it on "
+                        "by itself if it runs on integrated graphics.")
+
+    def _power_saving_changed(self, save=True):
+        _on, text = self.power_saving_text()
+        self.power_hint.configure(text=t(
+            "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, "
+            "so the game holds 60 fps longer. The game itself is the same, online too.") + "\n" + text)
+        if save:
+            self.save_settings()
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
+        if hasattr(self, "power_var"):
+            self.settings["power_saving"] = self.power_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
@@ -883,8 +919,14 @@ class App(tk.Tk):
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
-        self.status.set(t("Game started (process {pid}). Log: {log}", pid=pid,
-                          log="native\\logs\\" + os.path.basename(g.log_path)))
+        status = t("Game started (process {pid}). Log: {log}", pid=pid,
+                   log="native\\logs\\" + os.path.basename(g.log_path))
+        try:
+            if self.power_saving_text()[0]:
+                status += "  " + t("Power saving is on.")
+        except Exception:       # noqa: BLE001 -- a status hint must never stop a game start
+            pass
+        self.status.set(status)
         self._update_play_buttons()
         return g
 
@@ -932,7 +974,7 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

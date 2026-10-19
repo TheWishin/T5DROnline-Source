@@ -3,7 +3,7 @@
 
     python tools/latency_test.py [--exe build/cmake/t5dr.exe] [--out DIR]
                                  [--presses 40] [--fight lil,ask,20,3] [--cpus N]
-                                 [--frames] [--analyze-only] [NAME=VALUE ...]
+                                 [--frames] [--analyze-only] [--polite] [NAME=VALUE ...]
 
 Boots straight into a fight (direct fight, docs/DIRECTFIGHT.md) with the window
 minimised and P2 idle, and taps P1's jab (SQUARE, Tekken's 1 = left punch) at a
@@ -372,6 +372,8 @@ def main():
     ap.add_argument("--jitter", type=float, default=0.0)
     ap.add_argument("--port", type=int, default=7400)
     ap.add_argument("--cpus2", default="", help="--pair: the joiner's CPU mask")
+    ap.add_argument("--polite", action="store_true",
+                    help="someone uses this PC: the games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("env", nargs="*")
     a = ap.parse_args()
     move_ea = int(a.move_ea, 16) if a.move_ea else KMOVE_DEFAULT
@@ -409,10 +411,13 @@ def main():
         env["LD_FRAME_DUMP"] = os.path.join(out, "frames")
         env["LD_FRAME_DUMP_EVERY"] = "1"
         env["LD_FRAME_DUMP_GATE"] = gate
+    if a.polite:
+        env["PS3_AUDIO_MUTE"] = "1"
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
     open(env["PS3_PAD_FILE"], "w").close()
+    flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (IS_WIN and a.polite) else 0
     mask = None
     if a.cpus:
         mask = int(a.cpus, 16) if a.cpus.lower().startswith("0x") else (1 << int(a.cpus)) - 1
@@ -444,13 +449,13 @@ def main():
     log = open(os.path.join(out, "game.log"), "w")
     try:
         p = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
-                             env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT)
+                             env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
         if a.pair:
             if a.cpus2 and IS_WIN:
                 k32.SetProcessAffinityMask(ctypes.c_void_p(me or k32.GetCurrentProcess()), ctypes.c_size_t(int(a.cpus2, 16)))
             jlog = open(os.path.join(jd, "game.log"), "w")
             peer = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
-                                    env=penv, cwd=jd, stdout=jlog, stderr=subprocess.STDOUT)
+                                    env=penv, cwd=jd, stdout=jlog, stderr=subprocess.STDOUT, creationflags=flags)
     finally:
         if old:
             k32.SetProcessAffinityMask(ctypes.c_void_p(me), ctypes.c_size_t(old))

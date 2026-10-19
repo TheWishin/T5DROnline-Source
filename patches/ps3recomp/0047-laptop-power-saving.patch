@@ -1,0 +1,994 @@
+diff --git a/libs/audio/cellAudio.c b/libs/audio/cellAudio.c
+index f34ce39..1e21630 100644
+--- a/libs/audio/cellAudio.c
++++ b/libs/audio/cellAudio.c
+@@ -1169,9 +1169,17 @@ static unsigned __stdcall audio_mix_thread_func(void* arg)
+                 (long long)(blocks * CELL_AUDIO_BLOCK_SAMPLES * qf.QuadPart / CELL_AUDIO_SAMPLE_RATE);
+             const int written = now.QuadPart >= due && wait_ticks ? audio_ports_written() : 1;
+             if (now.QuadPart < due || (now.QuadPart - due < wait_ticks && !written)) {
++                /* Before the block is due: sleep until it is (patch 0047; the
++                 * 250 us steps woke this thread ~20 times a block, 3,700
++                 * times a second). Waiting for the title's late block: poll
++                 * every 250 us as before. */
+                 LARGE_INTEGER d; d.QuadPart = -2500;   /* 250 us, relative */
++                if (now.QuadPart < due) {
++                    const long long left = (due - now.QuadPart) * 10000000LL / qf.QuadPart;   /* 100 ns */
++                    d.QuadPart = -(left < 10 ? 10 : left > 60000 ? 60000 : left);
++                }
+                 if (hr_timer && SetWaitableTimer(hr_timer, &d, 0, NULL, NULL, FALSE))
+-                    WaitForSingleObject(hr_timer, 2);
++                    WaitForSingleObject(hr_timer, 8);
+                 else if (now.QuadPart < due) Sleep(1);
+                 else SwitchToThread();
+                 continue;
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 967d13d..aae1d81 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -2805,7 +2805,14 @@ static int jl_workers(void)
+          * mask, PS3_CPUS), not the machine's: under a 4-CPU mask the machine
+          * count started 11 workers on 4 processors. */
+         const int cores = host_sched_cpus();
+-        int total = e && *e ? atoi(e) : cores / 2;
++        int total = cores / 2;
++        /* Power saving (patch 0047, host_sched_laptop): at most 6 at a time.
++         * The work is the same, but every extra worker adds wake-ups and
++         * cache traffic -- 11 workers spent ~25 % more CPU on the same
++         * skinning than 2 (measured at 32 and 4 processors) -- and on a
++         * laptop or an APU that energy comes out of the clock speed. */
++        if (host_sched_laptop() && total > 6) total = 6;
++        if (e && *e) total = atoi(e);
+         if (total > cores - 1) total = cores - 1;      /* leave the PPU a core */
+         if (total > JC_POOL_MAX + 1) total = JC_POOL_MAX + 1;
+         int started = 0;
+@@ -2816,7 +2823,7 @@ static int jl_workers(void)
+             started++;
+         }
+         printf("[cellSpurs] job lists run %d job(s) at a time (%d worker thread(s); "
+-               "SPURS_JOB_THREADS)\n", started + 1, started);
++               "SPURS_JOB_THREADS%s)\n", started + 1, started, host_sched_laptop() ? "; power saving" : "");
+         __atomic_store_n(&s_jl.nworkers, started, __ATOMIC_RELEASE);
+     }
+     ReleaseSRWLockExclusive(&s_jl.lock);
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 80b8e6f..a79c6bc 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -689,9 +689,59 @@ void cellGcmResetFlipStatus(void)
+     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+ }
+ 
++/* ---- the flip wait without the poll (patch 0047) ---------------------------
++ * Tekken 5 DR's main thread waits for its flip in a loop
++ *     while (cellGcmGetFlipStatus() != DONE) usleep(100);
++ * (0x34BA30) for the rest of every frame: 50-100 wake-ups a frame on the
++ * high-resolution timer, or one processor busy all frame with sub-ms sleeps
++ * on the SwitchToThread spin (12+ logical processors before patch 0047). The
++ * flip completes only on a vblank tick (ppu_gcm_pump), so a usleep that
++ * follows a WAITING answer on the same thread now waits for the status to
++ * change (WaitOnAddress, woken by gcm_flip_wake) -- one wake-up, and it comes
++ * a few microseconds after the flip instead of up to one poll period later.
++ * Bounded by 20 ms per usleep (the title polls again and comes back), and only
++ * for a usleep under 1 ms right after the WAITING answer. PS3_FLIP_WAIT=0: the
++ * plain usleep. The rollback netcode keeps the plain poll on the main thread
++ * (cellGcm_flip_poll_plain): its early rollback looks at the network between
++ * two polls. */
++static volatile LONG s_flip_waiters = 0;
++static _Thread_local int t_flip_polled = 0;     /* this thread's last GetFlipStatus said WAITING */
++static void gcm_flip_wake(void)
++{
++    if (s_flip_waiters) WakeByAddressAll((PVOID)&s_flip_status);
++}
++void cellGcm_flip_poll_plain(void) { t_flip_polled = 0; }
++static int gcm_usleep_flip_wait(uint64_t usec)
++{
++    if (!t_flip_polled) return 0;
++    t_flip_polled = 0;
++    if (usec >= 1000) return 0;
++    u32 waiting = CELL_GCM_FLIP_STATUS_WAITING;
++    if (s_flip_status != waiting) return 1;            /* done meanwhile: the poll sees it now */
++    const ULONGLONG t_end = GetTickCount64() + 20;
++    InterlockedIncrement(&s_flip_waiters);
++    while (s_flip_status == waiting) {
++        const ULONGLONG now = GetTickCount64();
++        if (now >= t_end) break;
++        WaitOnAddress((volatile VOID*)&s_flip_status, &waiting, sizeof waiting, (DWORD)(t_end - now));
++    }
++    InterlockedDecrement(&s_flip_waiters);
++    return 1;
++}
++static int gcm_flip_wait_on(void)
++{
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("PS3_FLIP_WAIT"); on = !(e && *e == '0'); }
++    return on;
++}
++
+ /* NID: 0xE315A0B2 */
+ u32 cellGcmGetFlipStatus(void)
+ {
++    if (gcm_flip_wait_on()) {
++        if (!g_host_sched_usleep_hook) g_host_sched_usleep_hook = gcm_usleep_flip_wait;
++        t_flip_polled = s_flip_status == CELL_GCM_FLIP_STATUS_WAITING;
++    }
+     /* Avoid host-calling the guest OPDs directly (they're not valid host
+      * function pointers). Use cellGcmTickVBlank() / TickFlip() instead,
+      * which dispatch via g_ps3_guest_caller — see below. */
+@@ -789,6 +839,7 @@ void ppu_gcm_pump(void)
+     }
+     if (p & 2) {
+         s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
++        gcm_flip_wake();
+         rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
+         lat_log('K', "%u %ld", s_vblank_count, (long)s_lat_walk_seq);   /* the guest's next frame is released */
+         SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
+@@ -1626,6 +1677,39 @@ void cellGcm_fifo_kick_wait(unsigned ms)
+     else    Sleep(ms);
+ }
+ 
++/* The same wait to the microsecond (patch 0047): a high-resolution waitable
++ * timer (Windows 10 1803+) next to the kick event. The ticker used to wait
++ * whole milliseconds (WaitForSingleObject, 1-2 ms with timeBeginPeriod(1))
++ * and then spin -- cellGcm_fifo_kick_wait(0) in a loop, each round a FIFO
++ * walk, a GCM pump and a message pump -- through the last millisecond before
++ * every vblank tick. Returns at once for 0. Called by the ticker only. */
++void cellGcm_fifo_kick_wait_us(unsigned us)
++{
++    static HANDLE tmr = NULL;
++    static int tried = 0;
++    static int on = -1;
++    if (on < 0) { const char* e = getenv("GCM_FIFO_KICK"); on = (e && *e == '0') ? 0 : 1; }
++    HANDLE ev = on ? (HANDLE)cellGcm_fifo_kick_event() : NULL;
++    if (!us) { if (ev) WaitForSingleObject(ev, 0); return; }
++    if (!tried) {
++        tried = 1;
++#ifdef _WIN32
++        tmr = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++#else
++        tmr = CreateWaitableTimerW(NULL, FALSE, NULL);
++#endif
++    }
++    LARGE_INTEGER due;
++    due.QuadPart = -(LONGLONG)us * 10;
++    if (tmr && SetWaitableTimer(tmr, &due, 0, NULL, NULL, FALSE)) {
++        HANDLE hs[2] = { tmr, ev };
++        WaitForMultipleObjects(ev ? 2 : 1, hs, FALSE, us / 1000 + 20);
++        if (ev) CancelWaitableTimer(tmr);
++        return;
++    }
++    cellGcm_fifo_kick_wait(us >= 1000 ? us / 1000 : 0);   /* no high-resolution timer: the old wait */
++}
++
+ 
+ /* Serializes fence publication between the present ticker and every guest
+  * thread poll-reading the ref register (REFPOLL default-on made this path
+@@ -2729,6 +2813,7 @@ s32 cellGcmSetPrepareFlip(void* ctx, u32 bufferId)
+ 
+     s_current_display_buffer_id = bufferId;
+     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
++    gcm_flip_wake();
+     s_flip_request_count++;
+     s_last_flip_time = get_timestamp_ns();
+ 
+@@ -3645,6 +3730,7 @@ s32 cellGcmSetFlipImmediate(u32 bufferId)
+ void cellGcmSetFlipStatus(u32 status)
+ {
+     s_flip_status = status;
++    gcm_flip_wake();
+ }
+ 
+ /* Store graphics handler callback */
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index e53cadc..e222c3e 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -54,6 +54,7 @@ void rsx_pf_stamp(int slot)
+ }
+ void rsx_pf_guest_flip(void)
+ {
++    rsx_pf_stamp(RSX_PF_GUEST_FLIP_QPC);
+     static int state = -1;
+     static FILE* f;
+     if (state < 0) {
+@@ -86,6 +87,8 @@ void rsx_pf_guest_flip(void)
+ #else
+ void rsx_pf_stamp(int slot) { (void)slot; }
+ void rsx_pf_guest_flip(void) {}
++void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
++int  rsx_live_draw_display_hybrid(void) { return -1; }
+ #endif
+ 
+ #if !defined(_WIN32)
+@@ -2187,6 +2190,7 @@ static void ld_lower(const char* s, char* out, size_t n)
+     out[k] = 0;
+ }
+ 
++static char g_ld_gpu_name[128];   /* the render adapter's name (patch 0047 log lines) */
+ static int ld_create_device(IDXGIFactory4* factory)
+ {
+     if (getenv("RSX_TEST_NO_D3D12")) return -1;   /* tests: behave like a PC without a D3D12 GPU */
+@@ -2285,13 +2289,79 @@ static int ld_create_device(IDXGIFactory4* factory)
+     memset(&o, 0, sizeof o);
+     g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof o);
+     const unsigned flv = (unsigned)fl.MaxSupportedFeatureLevel;
++    /* Integrated graphics (UMA: the GPU uses the system memory) share the
++     * processor's power budget: power saving in auto mode (patch 0047). */
++    D3D12_FEATURE_DATA_ARCHITECTURE arch;
++    memset(&arch, 0, sizeof arch);
++    const int uma = SUCCEEDED(g.dev->lpVtbl->CheckFeatureSupport(g.dev, D3D12_FEATURE_ARCHITECTURE, &arch, sizeof arch))
++                    && arch.UMA && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE);
++    snprintf(g_ld_gpu_name, sizeof g_ld_gpu_name, "%s", name);
+     fprintf(stderr, "[gpu] adapter: %s (vendor %04X, %llu MB, feature level %u_%u, resource binding tier %u, "
+-                    "heap tier %u) -- %s\n",
++                    "heap tier %u, %s) -- %s\n",
+             name, (unsigned)d.VendorId, (unsigned long long)(d.DedicatedVideoMemory >> 20),
+-            flv >> 12, (flv >> 8) & 0xF, (unsigned)o.ResourceBindingTier, (unsigned)o.ResourceHeapTier, why);
++            flv >> 12, (flv >> 8) & 0xF, (unsigned)o.ResourceBindingTier, (unsigned)o.ResourceHeapTier,
++            uma ? "integrated" : "dedicated", why);
++    host_sched_note_gpu(uma, name);
+     return 0;
+ }
+ 
++/* Which adapter drives the window's screen (patch 0047). On a laptop with two
++ * GPUs (NVIDIA Optimus, AMD switchable graphics) the screen hangs off the
++ * integrated GPU and every frame rendered on the discrete one is copied
++ * across to be shown: the present then has its own timing (a copy on the
++ * other GPU, a second queue), which is why the slow-frame summary counts the
++ * present separately. Logged once at start; RSX_TEST_HYBRID=1 reports a
++ * hybrid display on any PC (tests). */
++static char g_ld_display_adapter[128];
++static int  g_ld_display_hybrid = -1;    /* -1 unknown, 0 same adapter, 1 another */
++static void ld_check_display_adapter(HWND hwnd)
++{
++    IDXGIFactory1* f = NULL;
++    if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void**)&f)) || !f) return;
++    const HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
++    LUID mine;
++    memset(&mine, 0, sizeof mine);
++    g.dev->lpVtbl->GetAdapterLuid(g.dev, &mine);
++    for (UINT i = 0; i < 16 && g_ld_display_hybrid < 0; i++) {
++        IDXGIAdapter1* ad = NULL;
++        if (f->lpVtbl->EnumAdapters1(f, i, &ad) == DXGI_ERROR_NOT_FOUND) break;
++        if (!ad) continue;
++        DXGI_ADAPTER_DESC1 d;
++        memset(&d, 0, sizeof d);
++        ad->lpVtbl->GetDesc1(ad, &d);
++        for (UINT k = 0; k < 16; k++) {
++            IDXGIOutput* out = NULL;
++            if (ad->lpVtbl->EnumOutputs(ad, k, &out) == DXGI_ERROR_NOT_FOUND) break;
++            if (!out) continue;
++            DXGI_OUTPUT_DESC od;
++            memset(&od, 0, sizeof od);
++            const int hit = SUCCEEDED(out->lpVtbl->GetDesc(out, &od)) && od.Monitor == mon;
++            out->lpVtbl->Release(out);
++            if (!hit) continue;
++            ld_utf8(d.Description, g_ld_display_adapter, sizeof g_ld_display_adapter);
++            g_ld_display_hybrid = d.AdapterLuid.LowPart != mine.LowPart || d.AdapterLuid.HighPart != mine.HighPart;
++            break;
++        }
++        ad->lpVtbl->Release(ad);
++    }
++    f->lpVtbl->Release(f);
++    if (getenv("RSX_TEST_HYBRID")) { g_ld_display_hybrid = 1; snprintf(g_ld_display_adapter, sizeof g_ld_display_adapter, "(test)"); }
++    if (g_ld_display_hybrid == 1)
++        fprintf(stderr, "[gpu] display: the window's screen is driven by %s, the game renders on %s -- every frame is "
++                        "copied between the two GPUs (a laptop with two GPUs: hybrid present)\n",
++                g_ld_display_adapter, g_ld_gpu_name);
++    else if (g_ld_display_hybrid == 0)
++        fprintf(stderr, "[gpu] display: the window's screen is driven by the same GPU (%s)\n", g_ld_display_adapter);
++    else
++        fprintf(stderr, "[gpu] display: no adapter output found for the window's screen (a remote or virtual display?)\n");
++}
++int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
++void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
++{
++    *gpu_wait_ticks = (long long)(g_pf.flush_wait_ticks + g_pf.latency_wait_ticks);
++    *present_ticks = (long long)(g_pf.present_flush_ticks + g_pf.present_call_ticks);
++}
++
+ /* Present pacing. The game's clock is the vblank ticker (QPC, 59.94 Hz); a
+  * flip completes on a tick, and the next frame starts only then. A vsync'd
+  * Present on a display slower than that (50 Hz TVs, 30 Hz 4K-over-HDMI-1.4)
+@@ -7055,6 +7125,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
+ static DWORD WINAPI ld_vworker_main(LPVOID arg)
+ {
+     ld_vscratch* s = (ld_vscratch*)arg;
++    host_sched_thread_name("rsx-vertex");
+     for (;;) {
+         if (ld_vjob_try_run(s)) continue;
+         /* idle: spin briefly (draws arrive every few microseconds while a
+@@ -7090,8 +7161,14 @@ static int ld_vjob_enabled(void)
+      * the walker they serve. */
+     const int cpus = host_sched_cpus();
+     int n = cpus >= 12 ? 3 : cpus >= 8 ? 2 : 1;
+-    { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
+     g_vj_spin = cpus >= 12 ? 2000 : 300;
++    /* Power saving (patch 0047, host_sched_laptop): one worker, and the short
++     * spin that only bridges the gaps between two draws of a walk -- the 2,000
++     * PAUSEs of 12+ processors kept three workers busy past the end of every
++     * walk (0.25 of a processor at 32, measured). */
++    if (host_sched_laptop()) { n = 1; g_vj_spin = 300; }
++    { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
++    { const char* t = getenv("RSX_VERTEX_SPIN"); if (t) g_vj_spin = atoi(t) < 0 ? 0 : atoi(t); }
+     if (n < 1) return 0;
+     if (n > 16) n = 16;
+     g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
+@@ -7103,8 +7180,9 @@ static int ld_vjob_enabled(void)
+         if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
+     }
+     g_vj_threads = started;
+-    fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors; "
+-                    "RSX_VERTEX_THREADS)\n", started, cpus);
++    fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors%s; "
++                    "RSX_VERTEX_THREADS), idle spin %d (RSX_VERTEX_SPIN)\n", started, cpus,
++            host_sched_laptop() ? ", power saving" : "", g_vj_spin);
+     return started > 0;
+ }
+ 
+@@ -10757,6 +10835,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+         g_ld_frame_wait = g.swap->lpVtbl->GetFrameLatencyWaitableObject(g.swap);
+         fprintf(stderr, "[pacing] max frame latency %u (waitable swap chain)\n", latency);
+     }
++    ld_check_display_adapter((HWND)hwnd);
+     {
+         HMONITOR mon = MonitorFromWindow((HWND)hwnd, MONITOR_DEFAULTTOPRIMARY);
+         MONITORINFOEXA mi;
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 8a78538..fc63492 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -205,6 +205,8 @@ enum {
+                                 the translation the guest waits for        */
+     RSX_PF_FIFO_CYC,         /* thread cycles (TSC units) inside the walker:
+                                 the walk's CPU cost, immune to preemption     */
++    RSX_PF_GUEST_FLIP_QPC,   /* QPC when the guest asked for its last flip:
++                                the end of its frame's CPU work (patch 0047)  */
+     RSX_PF_COUNT
+ };
+ extern volatile long long g_rsx_pf[RSX_PF_COUNT];
+@@ -213,6 +215,12 @@ void rsx_pf_max(int slot, long long value);
+ void rsx_pf_stamp(int slot);          /* g_rsx_pf[slot] = QPC now */
+ /* One row per guest flip into <PS3_FRAMELOG>.guest.csv (guest thread). */
+ void rsx_pf_guest_flip(void);
++/* Patch 0047 (slow-frame summary): QPC ticks spent so far waiting for the GPU
++ * (fence and frame-latency waits) and presenting (the present's submit and
++ * DXGI Present), cumulative; and whether the window's screen is driven by
++ * another adapter than the one rendering (1), the same (0), unknown (-1). */
++void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
++int  rsx_live_draw_display_hybrid(void);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libs/video/rsx_null_backend.c b/libs/video/rsx_null_backend.c
+index 409182a..d833f08 100644
+--- a/libs/video/rsx_null_backend.c
++++ b/libs/video/rsx_null_backend.c
+@@ -519,9 +519,12 @@ int rsx_null_backend_pump_messages(void)
+         if (s_esc_armed)
+             snprintf(tb, sizeof(tb), "%s | Press Esc again to close the game -- an online match counts as a loss",
+                      s_state.title);
+-        else
+-            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %s", s_state.title, fps,
+-                     rsx_live_draw_get_last_draws(), rsx_internal_res_label());
++        else {
++            extern int host_sched_laptop(void);   /* patch 0047: power saving shows in the caption */
++            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %s%s", s_state.title, fps,
++                     rsx_live_draw_get_last_draws(), rsx_internal_res_label(),
++                     host_sched_laptop() ? " | power saving" : "");
++        }
+         SetWindowTextA(s_state.hwnd, tb);
+         s_state.title_frames = s_state.frame_count;
+         s_state.title_time = now;
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index bc176ff..47466ee 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -92,13 +92,60 @@
+  */
+ #include "host_sched.h"
+ #include "../ppu/ppu_fp_det.h"   /* ppu_fp_thread_init: the guest threads' MXCSR (fp_env.c) */
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
+ 
+ int g_host_sched_trace_on = 0;
++int (*volatile g_host_sched_usleep_hook)(uint64_t usec) = 0;
++
++/* ---- power saving / laptop mode (patch 0047) ----------------------------------
++ * PS3_LAPTOP=1 on, 0 off, auto (or unset): on when this PC looks power-limited
++ * -- it has a battery (laptop, handheld), battery saver or the "Power saver"
++ * plan is on, the processor is a mobile one by its name (Ryzen ...U/H/HS/HX,
++ * Ryzen Z1/Z2/AI, Core ...U/H/HQ/HX/P/Y/G7, Core Ultra, N100 ...), or the
++ * renderer finds integrated graphics (host_sched_note_gpu: an APU shares one
++ * power budget between CPU and GPU, so every spinning thread lowers both
++ * clocks). The first three are known at start; the GPU a little later, before
++ * the first fight sizes its pools. */
++static volatile int s_lap = -1;          /* effective: 0 / 1 */
++static int  s_lap_cfg = -1;              /* 0 off, 1 on, 2 auto */
++static char s_lap_why[192];
++
++static int hs_lap_detect(char* why, unsigned n);   /* platform part below */
++
++static void hs_lap_init(void)
++{
++    if (s_lap >= 0) return;
++    const char* e = getenv("PS3_LAPTOP");
++    s_lap_cfg = !e || !*e || !strcmp(e, "auto") ? 2 : (*e == '0' ? 0 : 1);
++    int on = 0;
++    if (s_lap_cfg == 1) { on = 1; snprintf(s_lap_why, sizeof s_lap_why, "PS3_LAPTOP=1 (the launcher setting)"); }
++    else if (s_lap_cfg == 2) on = hs_lap_detect(s_lap_why, sizeof s_lap_why);
++    else snprintf(s_lap_why, sizeof s_lap_why, "PS3_LAPTOP=0");
++    s_lap = on;
++}
++
++int host_sched_laptop(void)
++{
++    if (s_lap < 0) hs_lap_init();
++    return s_lap;
++}
++
++const char* host_sched_laptop_why(void)
++{
++    if (s_lap < 0) hs_lap_init();
++    return s_lap_why;
++}
+ 
+ #ifndef _WIN32
+-#include <stdlib.h>
++static int hs_lap_detect(char* why, unsigned n) { if (n) why[0] = 0; return 0; }
++void host_sched_note_gpu(int integrated, const char* name) { (void)integrated; (void)name; }
+ #include <unistd.h>
+ 
++void    host_sched_thread_name(const char* name) { (void)name; }
++int     host_sched_power_text(char* out, unsigned n, int* throttled)
++        { if (n) out[0] = 0; if (throttled) *throttled = 0; return 0; }
+ void    host_sched_process_init(void) {}
+ void    host_sched_thread_start(int role, int guest_prio, const char* name)
+         { (void)role; (void)guest_prio; ppu_fp_thread_init(name); }
+@@ -144,7 +191,8 @@ static int  s_log = 0;
+ static int  s_timer = 1;
+ static int  s_ppu_lo = 1002;
+ static int  s_ideal = 0;
+-static int  s_subms = 0;           /* PS3_SCHED_SUBMS: 0 spin, 1 pause, 2 timer */
++static volatile int s_subms = 0;   /* PS3_SCHED_SUBMS: 0 spin, 1 pause, 2 timer */
++static int  s_subms_env = 0;       /* ... set by the environment (power saving leaves it alone) */
+ static int64_t s_spin_ticks = 0;
+ static LARGE_INTEGER s_qpf;
+ 
+@@ -432,8 +480,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+      * runnable all that time -- free with 32 processors, a whole one taken
+      * from the skinning jobs and the FIFO walker with 4. Below 12 processors
+      * it sleeps on the high-resolution timer instead. */
++    /* Laptop mode (patch 0047): the timer whatever the processor count -- a
++     * 16-thread laptop otherwise spins the main thread through every flip
++     * wait (0.4-0.7 of a core in a fight, measured on 32). */
++    s_subms_env = getenv("PS3_SCHED_SUBMS") != NULL;
+     { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm,
+-                           host_sched_cpus() >= 12 ? "spin" : "timer");
++                           host_sched_cpus() >= 12 && !host_sched_laptop() ? "spin" : "timer");
+       s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
+     s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
+     if (s_spin_ticks < 0) s_spin_ticks = 0;
+@@ -514,6 +566,15 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+     fprintf(stderr, "[sched] CPU budget: %d logical processors, %d cores (affinity mask; PS3_CPUS); "
+             "sub-ms sleeps: %s\n", host_sched_cpus(), host_sched_cores(),
+             s_subms == 2 ? "timer" : s_subms == 1 ? "pause" : "spin");
++    if (host_sched_laptop())
++        fprintf(stderr, "[sched] power saving on (%s): fewer worker threads, no spinning waits, "
++                        "background threads on EcoQoS -- the game logic and its 60 fps are unchanged\n",
++                host_sched_laptop_why());
++    else
++        fprintf(stderr, "[sched] power saving off (%s)\n",
++                s_lap_cfg == 0 ? "PS3_LAPTOP=0" : "no battery, no mobile processor; integrated graphics are checked when the renderer starts");
++    { char pw[256]; int thr = 0;
++      if (host_sched_power_text(pw, sizeof pw, &thr)) fprintf(stderr, "[power] %s\n", pw); }
+     fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
+             s_ncpu, (unsigned)s_fast_llc);
+     for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
+@@ -595,6 +656,19 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+         }
+     }
+ 
++    /* Laptop mode: threads that never wait on the frame (the audio device
++     * thread, the PSO writer, ...) run on EcoQoS -- Windows may give them
++     * efficient cores and low clocks. Never the frame's own threads. */
++    if (role == HS_ROLE_BACKGROUND && host_sched_laptop()) {
++        typedef BOOL (WINAPI *pfn_SetThreadInformation)(HANDLE, int, LPVOID, DWORD);
++        static pfn_SetThreadInformation sti = (pfn_SetThreadInformation)(intptr_t)-1;
++        if (sti == (pfn_SetThreadInformation)(intptr_t)-1)
++            sti = (pfn_SetThreadInformation)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"),
++                                                                 "SetThreadInformation");
++        struct { ULONG Version, ControlMask, StateMask; } tp = { 1, 0x1u, 0x1u };   /* EXECUTION_SPEED on */
++        if (sti) sti(GetCurrentThread(), 3 /* ThreadPowerThrottling */, &tp, sizeof tp);
++    }
++
+     if (s_log)
+         fprintf(stderr, "[sched] thread '%s' role=%s guest_prio=%d -> host prio %d%s%s%s cpus=%s%s ideal=%d\n",
+                 name ? name : "?", k_role_name[role], guest_prio, GetThreadPriority(GetCurrentThread()),
+@@ -669,4 +743,183 @@ int host_sched_sleep_subms(uint64_t usec)
+     return 1;
+ }
+ 
++void host_sched_thread_name(const char* name)
++{
++    static pfn_SetThreadDescription sd = (pfn_SetThreadDescription)(intptr_t)-1;
++    if (sd == (pfn_SetThreadDescription)(intptr_t)-1)
++        sd = (pfn_SetThreadDescription)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"),
++                                                             "SetThreadDescription");
++    if (!sd || !name || !*name) return;
++    wchar_t w[64];
++    if (MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64) <= 0) return;
++    w[63] = 0;
++    sd(GetCurrentThread(), w);
++}
++
++/* ---- power state (patch 0047) ------------------------------------------------- */
++typedef struct { ULONG Number, MaxMhz, CurrentMhz, MhzLimit, MaxIdleState, CurrentIdleState; } hs_ppi;
++typedef LONG (WINAPI *pfn_CallNtPowerInformation)(int, PVOID, ULONG, PVOID, ULONG);
++typedef DWORD (WINAPI *pfn_PowerGetActiveScheme)(HKEY, GUID**);
++typedef DWORD (WINAPI *pfn_PowerReadFriendlyName)(HKEY, const GUID*, const GUID*, const GUID*, PUCHAR, LPDWORD);
++
++int host_sched_power_text(char* out, unsigned n, int* throttled)
++{
++    if (!out || !n) return 0;
++    out[0] = 0;
++    if (throttled) *throttled = 0;
++    static HMODULE pp = (HMODULE)(intptr_t)-1;
++    static pfn_CallNtPowerInformation cnpi;
++    static pfn_PowerGetActiveScheme gas;
++    static pfn_PowerReadFriendlyName rfn;
++    if (pp == (HMODULE)(intptr_t)-1) {
++        pp = LoadLibraryA("powrprof.dll");
++        if (pp) {
++            cnpi = (pfn_CallNtPowerInformation)(void*)GetProcAddress(pp, "CallNtPowerInformation");
++            gas = (pfn_PowerGetActiveScheme)(void*)GetProcAddress(pp, "PowerGetActiveScheme");
++            rfn = (pfn_PowerReadFriendlyName)(void*)GetProcAddress(pp, "PowerReadFriendlyName");
++        }
++    }
++    size_t len = 0;
++#define HS_PUT(...) do { if (len < n) { int k_ = snprintf(out + len, n - len, __VA_ARGS__); \
++                         if (k_ > 0) len += (size_t)k_; if (len >= n) len = n - 1; } } while (0)
++    SYSTEM_POWER_STATUS ps;
++    if (GetSystemPowerStatus(&ps)) {
++        if (ps.ACLineStatus == 0)
++            HS_PUT("on battery");
++        else if (ps.ACLineStatus == 1)
++            HS_PUT("on AC power");
++        else
++            HS_PUT("power source unknown");
++        if (ps.BatteryFlag != 128 && ps.BatteryFlag != 255 && ps.BatteryLifePercent <= 100)
++            HS_PUT(" (battery %u %%%s)", (unsigned)ps.BatteryLifePercent, ps.SystemStatusFlag & 1 ? ", battery saver on" : "");
++        else if (ps.BatteryFlag == 128)
++            HS_PUT(" (no battery: a desktop PC)");
++    }
++    if (gas && rfn) {
++        GUID* g = NULL;
++        if (gas(NULL, &g) == ERROR_SUCCESS && g) {
++            wchar_t wname[128];
++            DWORD sz = sizeof wname;
++            if (rfn(NULL, g, NULL, NULL, (PUCHAR)wname, &sz) == ERROR_SUCCESS) {
++                char name[160];
++                wname[127] = 0;
++                if (WideCharToMultiByte(CP_UTF8, 0, wname, -1, name, sizeof name, NULL, NULL) > 0)
++                    HS_PUT(", power plan \"%s\"", name);
++            }
++            LocalFree(g);
++        }
++    }
++    if (cnpi) {
++        hs_ppi ppi[256];
++        DWORD nproc = GetActiveProcessorCount(0xFFFF /* ALL_PROCESSOR_GROUPS */);
++        if (nproc > 256) nproc = 256;
++        if (nproc && cnpi(11 /* ProcessorInformation */, NULL, 0, ppi, (ULONG)(nproc * sizeof(hs_ppi))) == 0) {
++            ULONG maxm = 0, lim = ~0u, cur = 0;
++            for (DWORD i = 0; i < nproc; i++) {
++                if (ppi[i].MaxMhz > maxm) maxm = ppi[i].MaxMhz;
++                if (ppi[i].MhzLimit && ppi[i].MhzLimit < lim) lim = ppi[i].MhzLimit;
++                if (ppi[i].CurrentMhz > cur) cur = ppi[i].CurrentMhz;
++            }
++            if (maxm) {
++                if (lim == ~0u) lim = maxm;
++                HS_PUT(", processor clock limit %lu of %lu MHz", (unsigned long)lim, (unsigned long)maxm);
++                /* 3 % slack: some firmware reports the limit a step under the
++                 * maximum all the time */
++                if (lim * 100 < maxm * 97) {
++                    HS_PUT(" (held back: heat or the power plan)");
++                    if (throttled) *throttled = 1;
++                }
++            }
++        }
++    }
++#undef HS_PUT
++    return len > 0;
++}
++
++/* A mobile processor by its marketing name: a model number with a mobile
++ * suffix (7840U, 6800H, 8845HS, 7945HX, 7700HQ, 1165G7, 1260P, 8100Y, Core
++ * Ultra 155H/258V), Ryzen Z1/Z2 (handhelds) and Ryzen AI, Intel N100-style
++ * parts. Desktop suffixes (K, F, X, X3D, G, T, none) are not. */
++static int hs_mobile_cpu_name(const char* s)
++{
++    char tok[32];
++    int ryzen = strstr(s, "Ryzen") != NULL;
++    if (ryzen && (strstr(s, "Ryzen Z") || strstr(s, "Ryzen AI"))) return 1;
++    for (const char* p = s; *p; ) {
++        while (*p == ' ' || *p == '-' || *p == '(' || *p == ')') p++;
++        int k = 0;
++        while (*p && *p != ' ' && *p != '-' && *p != '(' && *p != ')' && k < 31) tok[k++] = *p++;
++        tok[k] = 0;
++        while (*p && *p != ' ' && *p != '-') p++;
++        if (!k) continue;
++        int d = 0;
++        while (tok[d] >= '0' && tok[d] <= '9') d++;
++        if (tok[0] == 'N' && k >= 4 && k <= 5) {            /* N100, N200, N4020, N5105 */
++            int nd = 1;
++            while (tok[nd] >= '0' && tok[nd] <= '9') nd++;
++            if (nd == k) return 1;
++        }
++        if (d < 3 || d > 5) continue;
++        const char* suf = tok + d;
++        static const char* const mob[] = { "U", "H", "HS", "HX", "HQ", "HK", "HL", "Y", "P", "V",
++                                           "G1", "G4", "G7" };
++        for (unsigned i = 0; i < sizeof mob / sizeof mob[0]; i++)
++            if (!strcmp(suf, mob[i])) return 1;
++    }
++    return 0;
++}
++
++static int hs_lap_detect(char* why, unsigned n)
++{
++    if (n) why[0] = 0;
++    SYSTEM_POWER_STATUS ps;
++    if (GetSystemPowerStatus(&ps)) {
++        if (ps.BatteryFlag != 128 && ps.BatteryFlag != 255) {
++            snprintf(why, n, "this PC has a battery: laptop or handheld%s",
++                     ps.ACLineStatus == 0 ? ", running on it now" : "");
++            return 1;
++        }
++        if (ps.SystemStatusFlag & 1) { snprintf(why, n, "battery saver is on"); return 1; }
++    }
++    {   /* the "Power saver" plan */
++        static const GUID power_saver = { 0xa1841308, 0x3541, 0x4fab, { 0xbc, 0x81, 0xf7, 0x15, 0x56, 0xf2, 0x0b, 0x4a } };
++        typedef DWORD (WINAPI *gas_fn)(HKEY, GUID**);
++        HMODULE pp = LoadLibraryA("powrprof.dll");
++        gas_fn gas = pp ? (gas_fn)(void*)GetProcAddress(pp, "PowerGetActiveScheme") : NULL;
++        GUID* g = NULL;
++        if (gas && gas(NULL, &g) == ERROR_SUCCESS && g) {
++            const int saver = !memcmp(g, &power_saver, sizeof(GUID));
++            LocalFree(g);
++            if (saver) { snprintf(why, n, "the \"Power saver\" power plan is active"); return 1; }
++        }
++    }
++    char name[128] = "";
++    DWORD sz = sizeof name;
++    if (RegGetValueA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
++                     "ProcessorNameString", RRF_RT_REG_SZ, NULL, name, &sz) == ERROR_SUCCESS) {
++        name[sizeof name - 1] = 0;
++        if (hs_mobile_cpu_name(name)) {
++            char* t = name; while (*t == ' ') t++;
++            snprintf(why, n, "a mobile processor: %s", t);
++            return 1;
++        }
++    }
++    return 0;
++}
++
++/* The renderer's adapter (rsx_live_draw.c, after the device exists): integrated
++ * graphics turn power saving on in auto mode -- an APU shares one power budget
++ * between its CPU and GPU cores. */
++void host_sched_note_gpu(int integrated, const char* name)
++{
++    if (s_lap < 0) hs_lap_init();
++    if (!integrated || s_lap || s_lap_cfg != 2) return;
++    snprintf(s_lap_why, sizeof s_lap_why, "integrated graphics (%s) share the processor's power budget",
++             name && *name ? name : "?");
++    s_lap = 1;
++    if (!s_subms_env && s_subms == 0) s_subms = 2;
++    fprintf(stderr, "[sched] power saving on (%s): fewer worker threads, no spinning waits -- "
++                    "the game logic and its 60 fps are unchanged\n", s_lap_why);
++}
++
+ #endif /* _WIN32 */
+diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
+index aa37717..5f134a1 100644
+--- a/runtime/platform/host_sched.h
++++ b/runtime/platform/host_sched.h
+@@ -68,6 +68,38 @@ int64_t host_sched_spin_ticks(void);
+ int host_sched_cpus(void);
+ int host_sched_cores(void);
+ 
++/* ---- power saving / laptop mode (patch 0047) ------------------------------------
++ * The same game at the same 60 fps with less CPU around it, so a laptop's or
++ * a handheld's processor stays below its thermal and power limit. PS3_LAPTOP=1
++ * on, 0 off, auto/unset: on when the PC has a battery, battery saver or the
++ * Power saver plan is on, the processor is a mobile one, or the renderer runs
++ * on integrated graphics (host_sched_note_gpu). Every pool and wait reads
++ * host_sched_laptop() for its own default (its own override still wins):
++ * sub-ms sleeps on the timer instead of a spin whatever the processor count,
++ * at most 6 SPURS job threads, one vertex-fetch worker that barely spins,
++ * background threads on EcoQoS. Valid before host_sched_process_init. */
++int host_sched_laptop(void);
++const char* host_sched_laptop_why(void);
++/* The renderer's adapter: integrated (UMA) graphics turn power saving on in
++ * auto mode. */
++void host_sched_note_gpu(int integrated, const char* name);
++
++/* A sub-millisecond usleep another module may take over (cellGcmSys.c: the
++ * guest polls the flip status with usleep(100) for the rest of its frame;
++ * the hook waits for the flip itself). Returns 1 when it slept. */
++extern int (*volatile g_host_sched_usleep_hook)(uint64_t usec);
++
++/* Name the calling thread (debuggers, profilers, tools/fight_bench.py) for
++ * threads that do not go through host_sched_thread_start. */
++void host_sched_thread_name(const char* name);
++
++/* Power and clock state, cheap enough to read every few seconds: AC or
++ * battery (and its charge), the active power plan's name, the processor's
++ * clock limit against its maximum (a limit below the maximum = the processor
++ * is held back: heat or the power plan). Written as one line into out;
++ * *throttled = 1 when the limit is below the maximum. Returns 0 off Windows. */
++int host_sched_power_text(char* out, unsigned n, int* throttled);
++
+ /* ---- event trace (PS3_SCHED_TRACE=<file>) ---------------------------------- */
+ enum host_sched_ev {
+     HS_EV_SEM_WAIT0 = 1,  /* arg = sem id: about to block / poll               */
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index a36e3ea..0ad8f14 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -313,6 +313,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
+ extern "C" void cellGcm_rsx_process_fifo(void);   /* cellGcmSys.c: drain get->put */
+ extern "C" void ppu_gcm_pump(void);               /* cellGcmSys.c: deliver vblank/flip/user handlers */
+ extern "C" void cellGcm_fifo_kick_wait(unsigned ms); /* idle wait, woken by a kick */
++extern "C" void cellGcm_fifo_kick_wait_us(unsigned us); /* the same, to the microsecond (patch 0047) */
+ extern "C" unsigned cellGcm_flip_request_count(void);
+ extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
+ extern "C" int sys_event_queue_inject(unsigned int, unsigned long long, unsigned long long, unsigned long long, unsigned long long);
+@@ -422,9 +423,105 @@ static void on_window_closed(void)
+  * deliberately not counted: they carry no guest frame. */
+ static volatile LONG g_frames_presented = 0;
+ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_presented; }
++
++/* ---- Slow-frame summary (patch 0047) ------------------------------------------
++ * The game's speed is its frame rate (one game frame per vblank, like the
++ * PS3), so a frame that misses its vblank slows the game. Every 30 s with slow
++ * frames (and every 5 minutes without) the log gets one line:
++ *
++ *   [slow-frames] last 30 s: 1702 frames, 214 slow (over 20.8 ms): CPU 201
++ *   (game 187, render translation 9, vblank thread late 5), GPU 9, present 4;
++ *   median per frame: game 9.8 ms, translation 3.1, GPU wait 0.1, present 0.3;
++ *   worst 41.0 ms (CPU, game); vblank clock 59.94 Hz | on battery, power plan
++ *   "Balanced", processor clock limit 2100 of 3800 MHz (held back: ...)
++ *
++ * A slow frame's reason is what took its time: the CPU (the game's own frame
++ * from its release to its flip request, or the render translation of its
++ * commands, or the vblank thread getting no processor), the GPU (the CPU
++ * waiting for GPU fences or the frame-latency queue), or the present (the
++ * present call itself: a display path through another GPU, a compositor).
++ * The vblank clock's rate is in the line too: above 60 Hz the game would run
++ * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines. */
++extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
++extern "C" volatile long long g_rsx_pf[];
++enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
++struct SlowFrames {
++    enum { CAP = 4096 };
++    int cfg = -1;
++    double qpf = 1, period = 0;
++    double t_release = 0, late_release = 0, t_prev = 0;
++    long long gpu0 = 0, pres0 = 0;
++    unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
++    double worst = 0; const char* worst_why = "";
++    float c_game[CAP], c_xlat[CAP], c_gpu[CAP], c_pres[CAP];
++    double t_window = 0;
++    void init(double f) {
++        qpf = f;
++        const char* e = getenv("PS3_SLOW_FRAMES");
++        cfg = !(e && *e == '0');
++    }
++    void on_tick(void) { ticks++; }
++    void on_release(double t, double late) { t_release = t; late_release = late; }
++    static double median(float* a, unsigned n) {
++        if (!n) return 0.0;
++        std::nth_element(a, a + n / 2, a + n);
++        return a[n / 2];
++    }
++    void on_present(double t0, double t1) {
++        if (cfg <= 0 || period <= 0) return;
++        long long g = 0, p = 0;
++        rsx_live_draw_wait_totals(&g, &p);
++        const double ms = 1000.0 / qpf;
++        const double gpu = (double)(g - gpu0) * ms, pres = (t1 - t0) * ms;
++        gpu0 = g; pres0 = p;
++        const double flip = (double)g_rsx_pf[PF_GUEST_FLIP_QPC];
++        const double game = flip > t_release && t_release > 0 ? (flip - t_release) * ms : 0.0;
++        const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
++        const double iv = t_prev > 0 ? (t1 - t_prev) * ms : 0.0;
++        t_prev = t1;
++        if (t_window <= 0) t_window = t1;
++        if (frames < CAP) {
++            c_game[frames] = (float)game; c_xlat[frames] = (float)xlat;
++            c_gpu[frames] = (float)gpu; c_pres[frames] = (float)pres;
++        }
++        frames++;
++        const double per_ms = period * ms;
++        if (iv > 1.25 * per_ms && iv < 1000.0) {
++            slow++;
++            const char* why;
++            if (gpu >= 0.3 * iv)                    { n_gpu++;  why = "GPU"; }
++            else if (pres >= 4.0)                   { n_pres++; why = "present"; }
++            else if (late_release * ms > 2.0)       { n_tick++; why = "CPU, vblank thread late"; }
++            else if (game >= xlat)                  { n_game++; why = "CPU, game"; }
++            else                                    { n_xlat++; why = "CPU, render translation"; }
++            if (iv > worst) { worst = iv; worst_why = why; }
++        }
++        const double span = (t1 - t_window) / qpf;
++        const double every = slow * 100 >= frames && slow >= 10 ? 30.0 : 300.0;
++        if (span < every) return;
++        const unsigned n = frames < CAP ? frames : CAP;
++        char pw[256] = ""; int thr = 0;
++        host_sched_power_text(pw, sizeof pw, &thr);
++        fprintf(stderr, "[slow-frames] last %.0f s: %u frames, %u slow (over %.1f ms): CPU %u (game %u, render "
++                        "translation %u, vblank thread late %u), GPU %u, present %u; median per frame: game %.1f ms, "
++                        "translation %.1f, GPU wait %.1f, present %.1f; worst %.1f ms (%s); vblank clock %.2f Hz%s | %s\n",
++                span, frames, slow, 1.25 * per_ms, n_game + n_xlat + n_tick, n_game, n_xlat, n_tick, n_gpu, n_pres,
++                median(c_game, n), median(c_xlat, n), median(c_gpu, n), median(c_pres, n), worst,
++                slow ? worst_why : "-", (double)ticks / span, (double)ticks / span > 60.05 ? " (FASTER than 60)" : "",
++                pw[0] ? pw : "power state unknown");
++        frames = slow = n_game = n_xlat = n_tick = n_gpu = n_pres = ticks = 0;
++        worst = 0; worst_why = ""; t_window = t1;
++    }
++};
++static SlowFrames s_slow;
++
+ static void present_guest_frame(void)
+ {
++    LARGE_INTEGER t0, t1;
++    QueryPerformanceCounter(&t0);
+     rsx_present_frame();
++    QueryPerformanceCounter(&t1);
++    s_slow.on_present((double)t0.QuadPart, (double)t1.QuadPart);
+     /* The ticker increments, a guest thread reads: interlocked rather than a
+      * volatile ++, which is neither atomic nor a fence on arm64. */
+     InterlockedIncrement(&g_frames_presented);
+@@ -538,7 +635,7 @@ struct DisplayLock {
+         long long v = 0, p = 0;
+         const int dwm = rsx_live_draw_dwm_vblank(&v, &p);
+         const double hz = dwm && p > 0 ? qpf / (double)p : 0.0;
+-        const int want = dwm && rsx_live_draw_display_lockable() && hz > 59.3 && hz < 60.7;
++        const int want = dwm && rsx_live_draw_display_lockable() && hz > 59.3 && hz < 60.7 && now_ms >= hold_until;
+         if (want != on) {
+             on = want;
+             if (on && lead <= 0) lead = lead_fixed > 0 ? lead_fixed : (double)p - 0.2 * qpf / 1000.0;
+@@ -548,18 +645,46 @@ struct DisplayLock {
+                        : "");
+         }
+     }
++    /* Patch 0047: every DWM sample is checked, not only the once-a-second one.
++     * The period must stay a 59.3-60.7 Hz display's; a sample outside that
++     * (a laptop's display path through the other GPU, a panel switching its
++     * rate, a stale or zero clock) is not used, and three in a row turn the
++     * lock off at once -- it used to follow such a period for up to a second,
++     * and a short period runs the game fast. */
++    unsigned bad = 0, drops = 0;
++    ULONGLONG hold_until = 0, first_drop = 0;
+     void refresh()
+     {
+         long long v = 0, p = 0;
+-        if (rsx_live_draw_dwm_vblank(&v, &p) && p > 0) { vb = v; per = p; }
++        if (!rsx_live_draw_dwm_vblank(&v, &p) || p <= 0) { note_bad("no DWM clock"); return; }
++        const double hz = qpf / (double)p;
++        if (hz < 59.3 || hz > 60.7) { note_bad("display period out of range"); return; }
++        bad = 0;
++        vb = v; per = p;
++    }
++    void note_bad(const char* why)
++    {
++        if (++bad < 3 || !on) return;
++        on = 0;
++        last_check = GetTickCount64();      /* the next check() in a second may turn it on again */
++        /* a clock that keeps going bad (3 drops in 30 s): the lock stays off for a minute */
++        if (!drops || last_check - first_drop > 30000) { drops = 0; first_drop = last_check; }
++        if (++drops >= 3) { hold_until = last_check + 60000; drops = 0; }
++        rsx_live_draw_set_display_lock(0);
++        static unsigned n = 0;
++        if (n++ < 20)
++            fprintf(stderr, "[pacing] display lock off (%s, 3 samples in a row): the game's own 59.94 Hz clock\n", why);
+     }
+     /* after a tick: the next tick's time, on the display's grid minus lead */
+     void adjust(double* next_tick, double* vb_period, double nominal)
+     {
+         if (!on) { *vb_period = nominal; return; }
+         refresh();
++        if (!on) { *vb_period = nominal; return; }
+         if (!per) return;
+-        *vb_period = (double)per;
++        /* never faster than 60.00 Hz on average, whatever the display says;
++         * a 60.0x Hz display's phase is kept by the slew below */
++        *vb_period = (double)per > qpf / 60.0 ? (double)per : qpf / 60.0;
+         const double x = *next_tick + lead;                    /* the display vblank this tick precedes */
+         const double k = floor((x - (double)vb) / (double)per + 0.5);
+         double err = ((double)vb + k * (double)per) - x;       /* within half a period */
+@@ -668,6 +793,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+     double vb_period = vb_nominal;
+     static DisplayLock lock;
+     lock.init((double)vb_freq.QuadPart);
++    s_slow.init((double)vb_freq.QuadPart);
+     int present_at_xlat;
+     { const char* e = getenv("PS3_PRESENT_AT_XLAT"); present_at_xlat = !(e && *e == '0'); }
+     /* a flip the walker has reached is presented now (PS3_PRESENT_AT_XLAT) */
+@@ -684,6 +810,16 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+     timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
+     QueryPerformanceCounter(&vb_now);
+     double next_tick = (double)vb_now.QuadPart;
++    /* PS3_TICKER_SPIN_US (patch 0047): how long before a tick the ticker stops
++     * sleeping and polls (default 250 us; 0 with power saving). It used to
++     * sleep whole milliseconds and poll through the last one before every
++     * tick -- each round a FIFO walk, a GCM pump and a message pump: ~6 % of
++     * a processor. The wait before that is now a high-resolution timer to the
++     * microsecond (cellGcm_fifo_kick_wait_us), still woken by a FIFO kick. */
++    int spin_cfg = -1;
++    { const char* e = getenv("PS3_TICKER_SPIN_US"); if (e && *e) spin_cfg = atoi(e) < 0 ? 0 : atoi(e); }
++    const int inject_q3 = getenv("YDKJ_INJECT_Q3") != nullptr;   /* read once, not every round */
++    const int pacetrace = getenv("YDKJ_PACETRACE") != nullptr;
+     for (;;) {
+         /* Was Sleep(4). The FIFO kick event existed, was signalled on a dry
+          * fence queue, and had no waiter -- so a guest starved for `get` or a
+@@ -691,8 +827,9 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+         QueryPerformanceCounter(&vb_now);
+-        { double ms = (next_tick - (double)vb_now.QuadPart) * 1000.0 / (double)vb_freq.QuadPart;
+-          cellGcm_fifo_kick_wait(ms <= 1.0 ? 0 : (ms >= 4.0 ? 4 : (unsigned)ms)); }
++        { const double us = (next_tick - (double)vb_now.QuadPart) * 1e6 / (double)vb_freq.QuadPart;
++          const double spin_us = spin_cfg >= 0 ? (double)spin_cfg : host_sched_laptop() ? 0.0 : 250.0;
++          cellGcm_fifo_kick_wait_us(us <= spin_us ? 0u : us - spin_us >= 4000.0 ? 4000u : (unsigned)(us - spin_us)); }
+         QueryPerformanceCounter(&vb_now);
+         const double now = (double)vb_now.QuadPart;
+         int fired = 0;
+@@ -708,6 +845,8 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
+         while (now >= next_tick && fired < 240) {
+             cellGcmTickVBlank();
++            s_slow.on_tick();
++            s_slow.period = vb_period;
+             lat_log('V', "%lld", (long long)next_tick);   /* the vblank as scheduled; the line's stamp is when it ran */
+             /* Present a pending flip BEFORE draining further: the flip fires
+              * at a get==put frame boundary (guest thread), so the batch held
+@@ -733,7 +872,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                              ppu_gcm_pump();
+                              QueryPerformanceCounter(&p1);
+                              rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
+-                if (completes) lock.on_release(now);
++                if (completes) { lock.on_release(now); s_slow.on_release(now, now - next_tick); }
+                 if (present_due) present_guest_frame();
+             }
+             /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
+@@ -775,13 +914,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * it's never posted (producer signals a condvar, never enqueues). Inject a q3
+          * event periodically to test whether delivering the completion advances the
+          * game's state machine to instantiate + display the (force-parsed) menu movie. */
+-        if (getenv("YDKJ_INJECT_Q3")) {
++        if (inject_q3) {
+             static int s_q3=0; const char* qe=getenv("YDKJ_INJECT_Q3"); uint32_t qid=(uint32_t)strtoul(qe,0,0); if(qid==0||qid==1) qid=3;
+             if(++s_q3 % 8 == 0){ int r=sys_event_queue_inject(qid, 0x1234, 0, 0, 0);
+               static int _n=0; if(_n++<12) fprintf(stderr,"[INJQ3] injected q%u event rc=%d\n",qid,r); } }
+         if (rsx_ok) {
+             if (rsx_pump_messages() != 0) { rsx_ok = 0; on_window_closed(); }
+-            if (getenv("YDKJ_PACETRACE")) {
++            if (pacetrace) {
+                 static ULONGLONG s_win=0; static int s_pf=0, s_pres=0; static ULONGLONG s_presms=0;
+                 s_pf += fired; s_pres++;
+                 ULONGLONG t0=GetTickCount64(); rsx_present_frame(); ULONGLONG t1=GetTickCount64();
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index e5108bf..e9ffc11 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -231,6 +231,8 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+         } else {
+             Sleep((DWORD)(usec / 1000));
+         }
++    } else if (usec > 0 && g_host_sched_usleep_hook && g_host_sched_usleep_hook(usec)) {
++        /* taken over: the guest polls the flip status (cellGcmSys.c, patch 0047) */
+     } else if (usec > 0) {
+         /* Sub-millisecond sleep. Sleep()/waitable timers round up to the
+          * ~0.5-1 ms scheduler quantum, far too coarse for a guest that relies

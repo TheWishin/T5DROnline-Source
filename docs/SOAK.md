@@ -115,7 +115,7 @@ which a busy PC's preemption does not inflate):
 | `[audio-rate]` silent share taken before `PS3_AUDIO_MUTE` | every muted test game read 100 % silent |
 | the 8 s / 15 s `[WATCHDOG]` thread dumps only when no frame was presented in the last 0.5 s (`WATCHDOG_ALWAYS=1` forces them) | ~1 300 lines in every player's log, every thread suspended in turn during the intro movie, module names resolved under the loader lock while a thread is suspended |
 | debug console `poke16` | the soak holds a fighter's health (an i16) |
-| a detached PPU thread's host handles, each thread's sleep timer: closed when the thread ends | ~70 handles an hour leaked (below) |
+| a detached PPU thread's host handles, each thread's sleep timer: closed when the thread ends; threads created without JOINABLE are detached | ~70 handles an hour leaked, thread slots ran out after a few hours (below) |
 | `tests/run_ps3recomp_tests.py`: `spu_near_float`; `tests/test_soak.py` | |
 
 ## Results (2026-10-19, patch 0041 on the series to 0035)
@@ -273,6 +273,21 @@ decoders, particles, demuxers, autosaves); two kinds of handle stayed behind:
   event of a slot that may already belong to a new thread;
 - each thread's high-resolution sleep timer (`host_sched.c`) was kept for
   good -- now closed at thread exit (a fiber-local-storage destructor).
+- **thread slots**: the runtime ignored `sys_ppu_thread_create`'s flags and
+  made every thread joinable. The title creates its autosave and network-check
+  threads without `SYS_PPU_THREAD_CREATE_JOINABLE` and never joins them, so
+  each one kept its slot (`FINISHED`) for good: thread ids climbed to 40 of
+  `PPU_THREAD_MAX` = 64 in the 60-minute soak (7 autosaves, 3 online checks,
+  2 boot loads leaked; the reused slots are the joined particle, sound decoder
+  and demuxer threads), so a few hours of play would have exhausted them and
+  thread creation would have failed (`CELL_EAGAIN`) -- an autosave, a
+  particle or a sound decoder thread that never starts. Such threads are now
+  detached from the start, as on lv2 (`PS3_THREAD_ALL_JOINABLE=1` restores
+  the old behaviour), and the create line says `detached`.
+- not fixed, for the record: guest thread stacks come from a bump allocator
+  over the 256 MB stack region that never frees (`vm_stack_allocate`); the
+  title's ~380 threads an hour take ~10 MB, so it lasts ~25 hours of play in
+  one process.
 
 ### Open: NULL resource lookups in the draw thread (seen once)
 

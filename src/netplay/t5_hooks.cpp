@@ -314,7 +314,11 @@ const char* kDefaultHashSkip =
      * addresses, not match state (docs/ROLLBACK.md section 20) */
     "100911D0:4,10091AA0:4,10091AB8:50,"
     "100A0A00:80,"                    /* an effect record set at a match intro: a unit vector at +0x10 (m0c), a scale at +0x30 (n0c: 1,1,1 vs 0,0,0), the fight unchanged */
-    "1008F0C4:4,1008F0D0:4,"          /* timestamps */
+    "1008F0D0:4,"                     /* a counter of the battle object that the intro's timing moves (Devil Jin, run dvjf: 0x379 vs 0x378 for frames 190-223) */
+    /* (0x1008F0C4, skipped here before as a "timestamp", is the scene's LCG
+     * x -> 5x + 3: gameplay -- camera picks, effect variants. In the hash since
+     * desync hunt 2; the ambient sound task steps a private copy (rb_rand.cpp)
+     * and netplay reseeds it at every sync point (reseed()).) */
     "1008FF00:C,1008FFB0:C,"          /* two xyz points (0xB0 apart) a few units off: secondary motion */
     "1008FFF0:C,"                     /* a third one, 0.1 units off for 13-33 frames under rollback (Christie vs Feng, stage 17; identical builds too: cross-cpu runs inv_v3_vs_v3, inv_native_vs_native) */
     /* Five fields of each fighter block (P2 = P1 + 0x8D0) that drift apart
@@ -994,6 +998,7 @@ void reseed(uint32_t seed)
     gcall(kFnMtSeed, seed);
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
     rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu);
+    wr32(0x1008F0C4u, seed ^ 0x00003039u);   /* the scene's LCG (x -> 5x + 3, rb_rand.cpp) */
 }
 
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */

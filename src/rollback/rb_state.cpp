@@ -254,7 +254,8 @@ static const Range kGameSkip[] = {
      * pointers at 0x10091AB8: pool addresses the animation update takes at a
      * match intro; they differ in plain lockstep too (rollback10 e1lock) */
     { 0x100911D0u, 4 }, { 0x10091AA0u, 4 }, { 0x10091AB8u, 0x50 },
-    { 0x1008F0C4u, 4 }, { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC }, { 0x1008FFF0u, 0xC },
+    /* (0x1008F0C4, the scene's LCG, is hashed since desync hunt 2 -- t5_hooks.cpp) */
+    { 0x1008F0D0u, 4 }, { 0x1008FF00u, 0xC }, { 0x1008FFB0u, 0xC }, { 0x1008FFF0u, 0xC },
     { 0x100901B4u, 4 }, { 0x100901E0u, 4 }, { 0x10090314u, 4 }, { 0x10090870u, 8 },
     { 0x10090A84u, 4 }, { 0x10090AB0u, 4 }, { 0x10090BE4u, 4 }, { 0x10091140u, 8 },
     /* camera state, different between two PCs for 100 frames about 20 s into a

@@ -1132,7 +1132,8 @@ class OnlineTab:
         m = self.match or {}
         ping = m.get("ping") or {}
         if ping.get("known"):
-            where = t("ping about {ms} ms (through the server; measured directly once you both accept)",
+            # (the server's estimate: the best relay path for the two; the real ping is measured after both accept)
+            where = t("ping about {ms} ms (estimated; measured directly once you both accept)",
                       ms=f"{ping.get('ms', 0):.0f}")
         else:
             where = t("ping not known yet")

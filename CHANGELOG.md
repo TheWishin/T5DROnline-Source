@@ -3,6 +3,16 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.2 (not released yet)
+
+### Online
+- **Opponents nearby first.** The ping shown when a match is found is now the best path the
+  two of you can get, through the nearest relay server: two players in California see about
+  50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents
+  with a low ping first and widen the search while you wait (any opponent after 30 s in quick,
+  60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
+  before.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

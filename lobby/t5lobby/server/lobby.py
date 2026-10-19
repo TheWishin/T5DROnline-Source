@@ -30,6 +30,7 @@ Around the matches (docs/RANKED.md, "Tekken 6 style options"):
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import ssl
 import sys
@@ -1413,14 +1414,24 @@ class LobbyServer:
                 p.status = "idle"
             self.dirty = True
 
-    @staticmethod
-    def _est_ping(a, b):
-        """Ping between two players as the server can tell before they are connected: each one's
-        UDP round trip to the server, added (the relay path; a direct path is usually shorter).
-        The real peer-to-peer ping is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
+    def _est_ping(self, a, b):
+        """Ping between two players as the server can tell before they are connected -> (ms, known, via).
+
+        The worst the pair can get: the relay path through the best relay, the sum of both players' UDP round
+        trips to it -- this server (`udp_rtt`) or a regional relay both of them measured (`relay_rtt`, clients
+        with the "relays" cap that is up), whichever sum is smaller (via: "main" or the relay's id). A direct
+        path is usually shorter. Two Californians whose round trips to Nuremberg are 150 ms each but 25 ms to
+        a relay in Oregon: about 50 ms, not 300. A pair with a 1.1.0 / 1.1.1 client measured no regional relay:
+        the sum through this server, as before. An unknown round trip to this server counts as 50 ms and makes
+        the estimate `known: false` -- unless a measured regional relay gives one. The real peer-to-peer ping
+        is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
         ra = a.server_rtt if a.server_rtt is not None else 50.0
         rb = b.server_rtt if b.server_rtt is not None else 50.0
-        return ra + rb
+        est, known, via = ra + rb, a.server_rtt is not None and b.server_rtt is not None, RELAY_MAIN
+        regional = self._pair_relays(a, b, own=False)
+        if regional and (regional[0][0] < est or not known):
+            est, known, via = regional[0][0], True, regional[0][1].id
+        return est, known, via
 
     @staticmethod
     def _pair_id(p):
@@ -1448,23 +1459,26 @@ class LobbyServer:
                 for b in q[i + 1:]:
                     if b in taken or b.build_id != a.build_id or self._is_blocked(a, b):
                         continue
-                    ping = self._est_ping(a, b)
+                    ping = self._est_ping(a, b)[0]
+                    wb = now - b.queue_since
+                    # region first: the estimated ping must fit the window of both, which grows while they wait
+                    limit = min(self._ping_limit(wa, mode), self._ping_limit(wb, mode))
+                    if ping > limit:
+                        continue
                     if mode == "ranked":
                         if not self.cfg.ranked_same_ip and self._same_address(a, b):
                             continue                     # one household / one PC: never a ranked pair (alt farming)
                         if self._cooling(a, b, time.monotonic()):
                             continue                     # just played each other: not again within T5L_PAIR_COOLDOWN
-                        wb = now - b.queue_since
                         window = min(self._rating_window(wa), self._rating_window(wb))
-                        limit = min(self._ping_limit(wa), self._ping_limit(wb))
                         dr = abs(a.rating.r - b.rating.r)
-                        if dr > window or ping > limit:
+                        if dr > window:
                             continue
                         if (a.strict or b.strict) and dr > self.cfg.strict_range:
                             continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
-                        score = dr / window + ping / limit
+                        score = dr / window + (ping / limit if limit < math.inf else ping / 1000.0)
                     else:
-                        score = ping
+                        score = ping                     # quick: the closest one within the window
                     if best_score is None or score < best_score:
                         best, best_score = b, score
                 if best is not None:
@@ -1487,9 +1501,16 @@ class LobbyServer:
     def _rating_window(waited):
         return min(800.0, 100.0 + 25.0 * waited)
 
-    @staticmethod
-    def _ping_limit(waited):
-        return min(400.0, 80.0 + 10.0 * waited)
+    def _ping_limit(self, waited, mode="ranked"):
+        """The highest estimated ping a queue pair may have after `waited` seconds (docs/RANKED.md "Matchmaking"):
+        T5L_PING_START ms at first, growing while the player waits, and any ping at all once it has waited
+        T5L_PING_ANY_SECONDS (quick: faster and sooner) -- nobody waits for ever because nobody is near."""
+        c = self.cfg
+        widen, any_s = (c.ping_widen, c.ping_any_seconds) if mode == "ranked" else \
+            (c.quick_ping_widen, c.quick_ping_any_seconds)
+        if any_s > 0 and waited >= any_s:
+            return math.inf
+        return c.ping_start + widen * max(0.0, waited)
 
     async def _tick_queue(self):
         while True:
@@ -1731,8 +1752,9 @@ class LobbyServer:
         self.matches[m.id] = m
         self._join_set(m, rematch_of, game_set)
         skip_ready = origin in ("challenge", "rematch", "set")
-        est = self._est_ping(host, join)
-        ping = {"ms": round(est), "kind": "estimate", "known": host.server_rtt is not None and join.server_rtt is not None}
+        est, known, via = self._est_ping(host, join)
+        # (`via` stays on this server: which relay the estimate went through would hint where a blind opponent lives)
+        ping = {"ms": round(est), "kind": "estimate", "known": known}
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
@@ -1753,7 +1775,7 @@ class LobbyServer:
         self._speed_notice(m)
         self.dirty = True
         self.counters["matches_found"] += 1
-        self.note("match_found", match=m.id, origin=origin)
+        self.note("match_found", match=m.id, origin=origin, ping=round(est), via=via)
         log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
         if keep:
             # Both games still run and are connected: same path, same ports, no NAT work.
@@ -2097,13 +2119,19 @@ class LobbyServer:
     # chosen node refuses the session (full) or does not answer, the next one is tried, down to ours.
     def _relay_options(self, m):
         """-> [(sum of both players' round trips in ms, RelayNodeRef or None for ours)], best first."""
+        return self._pair_relays(*m.players, own=self.cfg.relay)
+
+    def _pair_relays(self, a, b, own=True):
+        """The relays two players could be relayed through, best first: [(sum of both round trips in ms, RelayNodeRef
+        or None for this server's own)]. Regional ones only when both clients measured them (the "relays" cap) and
+        the node is up. The relay choice (_relay_options) and the ping estimate (_est_ping) use it."""
         opts = []
-        if self.cfg.relay:
+        if own:
             # (an unknown round trip to us counts as far, so that a measured regional relay can win)
-            opts.append((sum(p.server_rtt if p.server_rtt is not None else 500.0 for p in m.players), 0, None))
-        if all("relays" in getattr(p.conn, "caps", ()) for p in m.players):
+            opts.append((sum(p.server_rtt if p.server_rtt is not None else 500.0 for p in (a, b)), 0, None))
+        if all("relays" in getattr(p.conn, "caps", ()) for p in (a, b)):
             for n in self.relays.usable():
-                ms = [p.relay_rtt.get(n.id) for p in m.players]
+                ms = [p.relay_rtt.get(n.id) for p in (a, b)]
                 if None not in ms:
                     opts.append((sum(ms), 1, n))
         opts.sort(key=lambda o: (o[0], o[1]))

@@ -1271,7 +1271,7 @@ class OnlineTabGermanTests(German):
                     "ping": {"known": True, "ms": 42.0}, "ready_timeout": 15, "ready_check": True})
         texts, english = self.shown()
         for expect in ("GEGNER GEFUNDEN", "Gegner verborgen", "Gute Verbindung",
-                       "Name und Seite werden gezeigt, sobald ihr beide annehmt.", "(Schätzung über den Server)"):
+                       "Name und Seite werden gezeigt, sobald ihr beide annehmt.", "(geschätzt, bevor ihr verbunden seid)"):
             self.assertTrue(any(expect in x for x in texts), expect)
         self.assertEqual(english, [])
         t.ready_sent = True

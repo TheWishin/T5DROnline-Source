@@ -1013,7 +1013,15 @@ binary as it was):
   6 matches each, the same winner and result hash on both PCs, 0 mismatching
   frames; also without the slow disk (prb1 rollback, pls1 lockstep on 4
   processors each): 6 of 6 each, in sync.
-- Smoke quick on the final exe: PASS (81 checks; one earlier run failed
+- After the merge with main bdabaea (replays, 0044 unlock; exe built from
+  d4c3a66): rollback pair (ZRB, power saving on) and lockstep pair (ZLS, off),
+  slow-disk joiner, fresh joiner before match 4: 6 of 6 each, same hashes, 0
+  mismatching frames; offline Z0 (off) 15 of 15, Z1 (on) 9 of 10 -- its cycle 2
+  was a select loading at 1-10 fps with the decoder working (13-21 other games
+  and 26 compilers on the PC) when the harness's 180 s no-progress limit ran out;
+  no STUCK. Smoke on that exe still to rerun on a quieter PC (two runs under
+  that load: no-hang gaps / "could not write pad file").
+- Smoke quick on the pre-merge final exe: PASS (81 checks; one earlier run failed
   vs_two_pads' end shot -- its mashed fight ended in a KO before the shot, no
   HUD; that test alone and the whole suite again passed).
 

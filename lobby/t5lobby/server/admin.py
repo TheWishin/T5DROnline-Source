@@ -139,6 +139,11 @@ def cmd_status(a):
           f"{r['bytes_total'] / 1e6:.1f} MB since start{'  (relay only)' if r['force_relay'] else ''}")
     for line in relay_lines(st):
         print(line)
+    tr = st.get("tournaments")
+    if tr:          # (docs/TOURNAMENTS.md)
+        by = tr.get("by_state") or {}
+        print(f"tournaments {by.get('running', 0)} running, {by.get('signup', 0) + by.get('checkin', 0)} open for "
+              f"sign-up, {tr.get('sets_playing', 0)} sets being played")
     print(f"accounts  {db.get('accounts', '?')} ({db.get('accounts_seen_24h', '?')} seen in 24 h), "
           f"banned {db.get('accounts_banned', 0)}, address bans {db.get('ip_bans', 0)}")
     tls = st.get("tls")

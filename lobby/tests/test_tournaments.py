@@ -833,6 +833,73 @@ class OldClientTest(TourBase):
             old.close()
 
 
+# ============================================================================== 7b. the launchers' glue with stub games
+class TourDriverTest(TourBase):
+    """Four launchers' match drivers with stub games (lobby/tools/stub_game.py, persistent mode): the calls are
+    accepted, the games run, their result files are reported -- the bracket fills from what the games say."""
+
+    def launch_stub(self, d):
+        import subprocess
+        import sys
+
+        stub = os.path.join(os.path.dirname(util.HERE), "tools", "stub_game.py")
+
+        class G:
+            def __init__(self, env):
+                self.log_path = os.path.join(d, f"game-{time.monotonic_ns()}.log")
+                full = dict(os.environ, T5_STUB_SECONDS="0.5")
+                full.update(env)
+                with open(self.log_path, "w") as lf:
+                    self.proc = subprocess.Popen([sys.executable, stub], env=full, stdout=lf, stderr=lf)
+
+            def running(self):
+                return self.proc.poll() is None
+
+            def stop(self):
+                if self.running():
+                    self.proc.kill()
+                    self.proc.wait(5)
+        return G
+
+    def test_a_bracket_played_by_the_match_driver(self):
+        from t5lobby.match_driver import MatchDriver
+        drivers = {}
+        for n in self.names:
+            d = tempfile.mkdtemp(prefix=f"tour{n}")
+            drivers[n] = MatchDriver(self.f.c[n], self.launch_stub(d), d, mode="persistent", ask_manual=False)
+        tid = self.create(fmt="single")
+        try:
+            t_end = time.monotonic() + 120
+            while time.monotonic() < t_end and self.tour(tid).state != "finished":
+                for n, c in self.f.c.items():
+                    while True:
+                        ev = c.next_event(0)
+                        if ev is None:
+                            break
+                        self.f.log[n].append(ev)
+                        if ev["t"] == "tour_call" and not ev["accepted"][0]:
+                            try:
+                                c.tour_accept(ev["tournament"]["id"], ev["set"]["id"])
+                            except LobbyError:
+                                pass
+                        drivers[n].on_event(ev)
+                    drivers[n].poll()
+                time.sleep(0.05)
+        finally:
+            for drv in drivers.values():
+                drv.close()
+        self.assertEqual(self.tour(tid).state, "finished")
+        rows = self.s.call(lambda: [dict(r) for r in self.s.srv.store._x(
+            "SELECT status, reports FROM matches WHERE set_id IS NOT NULL").fetchall()])
+        self.assertGreaterEqual(len(rows), 6)                    # three sets, two games or more each
+        for r in rows:
+            self.assertEqual(r["status"], "confirmed")
+            self.assertEqual({rep["source"] for rep in json.loads(r["reports"])}, {"game"})   # the games' results
+        full = self.org.tour_get(tid)
+        self.assertTrue(all(s["reason"] is None and max(s["score"]) == 2 for s in full["bracket"]["sets"]))
+        self.assertEqual(full["standings"][0]["name"], full["champion"])
+
+
 # ============================================================================== 8. end to end: 8 players
 class EndToEndTest(TourBase):
     names = ("Ann", "Ben", "Cat", "Dan", "Eve", "Fay", "Gus", "Hal")

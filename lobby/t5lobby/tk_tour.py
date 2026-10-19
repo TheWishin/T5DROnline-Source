@@ -57,8 +57,8 @@ def parse_clock(text, now=None):
 class TourController:
     """The tab's tournaments: what is shown and what the buttons do."""
 
-    LIST_EVERY = 3.0                # at most one list refresh per this many seconds while the page shows
-    DETAIL_EVERY = 0.7
+    LIST_EVERY = 4.0                # at most one list refresh per this many seconds while the page shows
+    DETAIL_EVERY = 1.0              # ... and one of the tournament on the page (the server's rate limits)
 
     def __init__(self, tab):
         self.tab = tab

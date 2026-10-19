@@ -83,6 +83,8 @@ def prometheus(st):
     g("password_checks_waiting", st.get("password_checks_waiting"), "password hashes waiting for a worker")
     g("draining", int(bool(st.get("draining"))), "1 while admin drain holds back new matches")
     g("rooms", st["rooms"], "open rooms")
+    tours = (st.get("tournaments") or {}).get("by_state") or {}
+    g("tournaments_running", tours.get("running", 0), "tournaments being played (docs/TOURNAMENTS.md)")
     g("matches_running", st["matches"]["running"], "matches being set up or played")
     g("relay_sessions", st["relay"]["sessions"], "relayed matches")
     g("relay_kbit_per_second", st["relay"]["kbit_s"], "relay throughput over the last minute, both directions")

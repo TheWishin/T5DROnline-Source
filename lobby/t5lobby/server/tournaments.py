@@ -55,8 +55,9 @@ SET_WINS = (2, 3)
 CHECKIN_MINUTES = (0, 5, 10, 15, 30, 60)
 SEEDING = ("random", "rating")
 ADMIN_OPS = ("start", "cancel", "report", "override", "reset", "dq")
-# rate-limit buckets of the lobby (lobby.py dispatch): reading the list / a bracket, and changes
-HEAVY = frozenset(("tour_list", "tour_get"))
+# rate-limit buckets of the lobby (lobby.py dispatch): reading the list, and changes (a bracket, tour_get, is built
+# once per change and second and costs a lookup after that: TourManager.full)
+HEAVY = frozenset(("tour_list",))
 STATE = frozenset(("tour_create", "tour_join", "tour_leave", "tour_checkin", "tour_accept", "tour_admin"))
 CAP = "tournaments"
 
@@ -228,6 +229,7 @@ class TourManager:
         self.live = {}                  # TourSet id -> TourSet (sets being played)
         self.dirty = set()              # tournament ids whose change is not announced yet (tour_changed)
         self.http_cache = {}
+        self.view_cache = {}            # tournament id -> (rev, time, the part of full() every viewer gets)
         self._task = None
         self.handlers = {"tour_list": self.h_list, "tour_get": self.h_get, "tour_create": self.h_create,
                          "tour_join": self.h_join, "tour_leave": self.h_leave, "tour_checkin": self.h_checkin,
@@ -418,13 +420,23 @@ class TourManager:
         return d
 
     def full(self, t, viewer=None):
-        d = self.summary(t, viewer)
+        """The tournament with its entrants, bracket and standings (tour_get, the status port). The bracket part is
+        the same for every viewer: built once per change (and at most once a second while sets run), then reused."""
+        now = self._now()
+        hit = self.view_cache.get(t.id)
+        if hit is None or hit[0] != t.rev or now - hit[1] >= 1.0:
+            hit = self.view_cache[t.id] = (t.rev, now, self._shared_view(t, now))
+        d = dict(hit[2])
+        d.update(self.summary(t, viewer))
+        return d
+
+    def _shared_view(self, t, now):
+        d = {}
         ents = sorted(t.entrants.values(), key=lambda e: (e.seed is None, e.seed or 0, e.signed_up))
         d["entrants"] = [{"name": e.name, "seed": e.seed, "checked_in": bool(e.checked_in), "dq": e.dq,
                           "place": e.place} for e in ents]
         b = t.bracket
         if b is not None:
-            now = self._now()
             sets = []
             for s in b.sets.values():
                 dd = s.data

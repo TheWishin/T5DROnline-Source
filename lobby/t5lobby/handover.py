@@ -94,7 +94,8 @@ class MatchTicket:
     # ---------------------------------------------------------------- socket handover (optional)
     def socket_file_path(self):
         import tempfile
-        return os.path.join(tempfile.gettempdir(), f"t5net-{self.match_id}.sock")
+        from .proto import file_safe
+        return os.path.join(tempfile.gettempdir(), f"t5net-{file_safe(self.match_id)}.sock")
 
     def share_socket(self, pid, path=None):
         """Duplicate the punched socket into process `pid` (Windows) and write the blob for the

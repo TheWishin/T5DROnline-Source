@@ -2619,6 +2619,7 @@ def friends_invite(ctx):
     # an invite accepted: one click starts the casual match
     ctx.wait(lambda: (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok" and a.tab.outgoing_invite is None, 15,
              f"{a.name} can invite again")
+    ctx.sleep(2.5)                  # (the lobby takes one invite per 2 s from a player: "one invite at a time")
     t = time.time()
     a.tab.tv_friends.selection_set(fid)
     a.tab.do_invite("casual")
@@ -2658,7 +2659,7 @@ def region_matchmaking(ctx):
     ctx.sleep(2.0)
     w2.press("quick")
     mid = found_both(ctx, w1, w2, t0, 20)
-    ping = (latest(w1, "match_found", t0) or {}).get("ping")
+    ping = ((latest(w1, "match_found", t0) or {}).get("ping") or {}).get("ms")     # {"ms", "kind": "estimate", "known"}
     ctx.check("West1 is paired with West2 (near), not with Far who searched first", not latest(far, "match_found", t0),
               f"estimated ping {ping}")
     ctx.check("the near pair's estimate is the best relay path (~50 ms)", ping is not None and 30 <= float(ping) <= 100,
@@ -2676,7 +2677,7 @@ def region_matchmaking(ctx):
     w1.press("quick")
     mid2 = found_both(ctx, w1, far, t1, 45)
     waited = (min(ts for ts, e in w1.events if e.get("t") == "match_found" and ts >= t1) - t1)
-    ping2 = (latest(w1, "match_found", t1) or {}).get("ping")
+    ping2 = ((latest(w1, "match_found", t1) or {}).get("ping") or {}).get("ms")
     ctx.check("Far gets West1 once the window has grown to its ~220 ms (about 7 s, not at once, not never)",
               4.0 <= waited <= 20.0, f"after {waited:.1f} s, estimated ping {ping2}")
     ctx.check("the far pair's estimate is ~220 ms", ping2 is not None and 160 <= float(ping2) <= 300, ping2)

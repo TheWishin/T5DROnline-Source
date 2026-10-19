@@ -465,9 +465,14 @@ bool navigate(int p, int target, uint32_t f)
     uint16_t b;
     if (r != tr) {
         /* rows cycle top(0) -> middle(1) -> bottom(2) -> top with DOWN; a row
-         * without a cell in this column is skipped, so column 0 cannot reach
-         * the top row: step sideways first */
+         * without a cell in this column is skipped, so columns 0 and 11 cannot
+         * reach the top row (its cells are columns 1..10): step sideways first.
+         * Column 11 was missed: a cursor left on Bruce or Kuma/Panda went
+         * DOWN, DOWN, ... between the middle and bottom rows for a top-row
+         * fighter until the driver gave up ("cannot reach cell 30 from 23",
+         * RTT 250 batch R250a, the 6th match's select in the same session). */
         if (tr == 0 && c == 0) b = B_RIGHT;
+        else if (tr == 0 && c == 11) b = B_LEFT;
         else b = ((tr - r + 3) % 3 == 1) ? B_DOWN : B_UP;
     } else {
         /* the top row cycles its 10 cells (columns 1..10), the others 12 */

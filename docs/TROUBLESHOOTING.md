@@ -455,12 +455,15 @@ not focused. The keyboard works only while the game window has the focus.
   the lowest free automatic port.
 - Does Windows see it? Open `joy.cpl` ("Set up USB game controllers") and press a
   button.
-- Xbox pads and XInput-mode sticks use XInput. Other controllers (DualShock 4,
-  DualSense, Switch Pro, generic USB pads, PS3/PS4-mode arcade sticks and
-  hitboxes) use DirectInput. Both are on by default.
+- Xbox pads and XInput-mode sticks use XInput. DualShock 4 and DualSense are
+  read directly (see [PlayStation controllers and
+  Steam](#playstation-controllers-dualshock-4-dualsense-and-steam)). Other
+  controllers (Switch Pro, generic USB pads, PS3/PS4-mode arcade sticks and
+  hitboxes) use DirectInput. All are on by default.
 - Look in the newest game log for the lines starting with `[pad]`. For example:
-  `[pad] port 1 (player 1): XInput #0 (gamepad), layout standard`, or
-  `[pad] found DInput 'name' VVVV:PPPP`. No `[pad]` line for your device means
+  `[pad] port 1 (player 1): XInput #0 (gamepad), layout standard`,
+  `[pad] found HID 'DualSense Wireless Controller' 054C:0CE6 (DualSense, Bluetooth), read directly`,
+  or `[pad] found DInput 'name' VVVV:PPPP`. No `[pad]` line for your device means
   the game did not see it. The line `[pad] controls: ...` tells which
   `controls.ini` was loaded (or that the built-in defaults are used).
 - Support for PlayStation pads and arcade sticks has **not been tried on real
@@ -486,7 +489,70 @@ PS3_PAD_LOG=2
 The log then prints each press, for example `[pad] port 2 Wireless Controller: B6
 pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
 a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
-`[pad] found DInput` log lines).
+`[pad] found DInput` and `[pad] found HID` log lines). A DualShock 4 or DualSense
+has the same names as before: B1 Square, B2 Cross, B3 Circle, B4 Triangle, B5 L1,
+B6 R1, B7 L2, B8 R2, B9 Share/Create, B10 Options, B11 L3, B12 R3, B13 PS, B14
+touchpad click, B15 mute (DualSense), B16-B19 the DualSense Edge's Fn buttons and
+back paddles.
+
+### PlayStation controllers (DualShock 4, DualSense) and Steam
+
+Since 1.1.1 the game reads DualShock 4, DualSense and DualSense Edge itself, over
+USB and Bluetooth. **Steam is not needed**, and it does not matter whether Steam
+or DS4Windows used the pad before. The log shows it:
+
+```
+[pad] found HID 'DualSense Wireless Controller' 054C:0CE6 (DualSense, Bluetooth), read directly
+[pad] port 1 (player 1): HID 'DualSense Wireless Controller' 054C:0CE6 (DualSense, Bluetooth), layout ps
+[pad] HID 'DualSense Wireless Controller': Bluetooth extended reports (0x31)
+```
+
+- **Why it "only worked through Steam" before.** Over Bluetooth these pads first
+  send a short report that DirectInput understands. Steam ("PlayStation
+  Controller Support"), DS4Windows and many games switch the pad to its full
+  report, and the pad keeps sending that until it is turned off. DirectInput (and
+  every program that reads pads through it, also the game before 1.1.1) gets no
+  input from the full report. The game now reads both. It never sends anything to
+  the pad, so the pad stays as it is for your other programs. (With 1.1.0 or
+  older: turn the pad off -- hold PS for 10 seconds -- and on again without Steam
+  running, or use a USB cable.)
+- **Started through Steam with Steam Input on.** Steam then gives the game a
+  virtual Xbox pad for your controller. The game uses that one and leaves the
+  real pad alone, so one pad is one player. The log says `[pad] started by Steam
+  with Steam Input ...` and `Steam Input handles this pad`. The buttons are then
+  Steam's (Steam's controller settings for the game), not `controls.ini`'s
+  `[dinput]` ones. To have the game read the pad itself, turn Steam Input off
+  for the game in Steam (Properties > Controller), or put this in
+  `native\controls.ini`:
+
+  ```
+  [general]
+  steam_input = 0
+  ```
+
+  If the pad still acts as player 1 *and* player 2, see the next section.
+- **`cannot open it (error 5, another program holds it) -- read through
+  DirectInput`.** Another program opened the pad for itself (DS4Windows with
+  "Hide DS4 Controller", or its exclusive mode). The game then reads DS4Windows'
+  virtual Xbox pad. Nothing to do.
+- **No vibration and no light bar** for these pads (the game never sends anything
+  to them; through DirectInput there was none either).
+- **The launcher's Controls screen does not see a Bluetooth pad** that Steam or
+  DS4Windows switched over: the screen reads pads through the Windows joystick
+  API, which has the same blind spot as DirectInput. The game itself reads it.
+  Turn the pad off and on again (hold PS for 10 seconds, then press PS) while
+  Steam is closed, set the buttons, and save. The B-numbers it writes are the
+  ones the game uses.
+- **Back to the old way:** `hid = 0` under `[general]` in `native\controls.ini`
+  (or `PS3_PAD_HID=0` under "extra settings") reads these pads through DirectInput
+  again, as up to 1.1.0.
+- Tested without a real pad: reports of every kind (USB, Bluetooth short and full
+  report) were built from the published formats and fed into the game, which
+  turned every button, direction, stick and trigger and every short tap into the
+  right input. If yours does something
+  odd, send the log (Report a problem) and say which pad and how it is
+  connected. A different PlayStation-compatible pad (other vendor, or the
+  DualShock 4 USB wireless adaptor) is read through DirectInput as before.
 
 ### The Controls screen (Settings -> Set up controllers...)
 
@@ -502,7 +568,11 @@ controller it is.
   button. Xbox pads and XInput-mode sticks show as "Xbox pad (XInput)", everything
   else as "DirectInput controller". The screen reads DirectInput controllers
   through the Windows joystick API, which knows buttons B1 to B32 and one hat;
-  a button above B32 has to be written by hand (`1 = B40`).
+  a button above B32 has to be written by hand (`1 = B40`). A DualShock 4 or
+  DualSense on Bluetooth that Steam or DS4Windows used since it was turned on
+  is not seen here (the game reads it): turn the pad off and on with Steam
+  closed (see [PlayStation controllers and
+  Steam](#playstation-controllers-dualshock-4-dualsense-and-steam)).
 - **"That was several buttons at once".** Two buttons (or a stick moved
   diagonally) went down together. Press one button, or move the stick in one
   direction only. Macros like 1+2 are set by pressing the one button that should
@@ -550,14 +620,17 @@ controller it is.
 ### Two pads, or my pad acts as player 1 *and* player 2 (DS4Windows, Steam Input)
 
 DS4Windows and Steam Input add a **virtual Xbox pad** for your real controller.
-The real controller is still visible as a DirectInput device, so the game sees
-two pads. Pick one of these:
+If the real controller is still visible to the game, it sees two pads. (When
+Steam starts the game with Steam Input on, the game leaves a DualShock 4 or
+DualSense that Steam names to Steam's virtual pad by itself -- see [PlayStation
+controllers and Steam](#playstation-controllers-dualshock-4-dualsense-and-steam).)
+Pick one of these:
 
-1. In DS4Windows, turn on "Hide DS4 Controller". Or close DS4Windows and use the
-   DualShock/DualSense directly (DirectInput, layout "ps"). Nothing has to be
-   installed. **(untested with this game)**
-2. Turn off Steam Input for the launcher if you started it from Steam.
-   **(untested)**
+1. Close DS4Windows and use the DualShock/DualSense directly (read directly,
+   layout "ps", also over Bluetooth). Nothing has to be installed. Or in
+   DS4Windows turn on "Hide DS4 Controller". **(untested with this game)**
+2. Turn off Steam Input for the launcher if you started it from Steam: Steam is
+   not needed for PlayStation pads since 1.1.1. **(untested)**
 3. Pin the ports in `native\controls.ini`:
 
    ```

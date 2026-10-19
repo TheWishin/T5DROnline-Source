@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.1 (not released yet)
+
+### Controllers
+- **DualShock 4 and DualSense work without Steam**, over USB and Bluetooth (DualSense Edge
+  too). Over Bluetooth these pads switch to a fuller report once Steam ("PlayStation
+  Controller Support"), DS4Windows or another game has used them, and keep it until they are
+  turned off; Windows' DirectInput, which the game used, gets no input from that report, so
+  the pad "only worked through Steam". The game now reads these pads itself in every report
+  mode, with the same buttons and layouts as before, short taps included. It sends nothing to
+  the pad, so other programs see it as before. Started through Steam with Steam Input on, the
+  game uses Steam's virtual pad and leaves the real one alone (one pad, one player).
+  `hid = 0` in `controls.ini` goes back to DirectInput. Not tried with a real pad yet: tested
+  with reports of every mode built from the published formats (ps3recomp patch 0042).
+
 ## v1.1.0 (2026-10-19)
 
 **Online that holds up, a new launcher, ranked sets.** Both players need 1.1.0 (the lobby

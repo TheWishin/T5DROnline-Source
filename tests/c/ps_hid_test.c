@@ -457,6 +457,21 @@ static void test_steam_lists(void)
     CHECK(l.n == 1 && vidpid_listed(&l, 0x054C, 0x0DF2), "@file list");
     remove(path);
 
+    /* SteamVirtualGamepadInfo: the real pad behind each of Steam's virtual pads, per slot */
+    strcpy_s(path + strlen(path) - 4, 5, ".vgi");
+    fopen_s(&f, path, "wb");
+    if (f) {
+        fputs("[slot 0]\r\nname=PS5 Controller\r\nVID=0x054c\r\nPID=0x0ce6\r\ntype=ps5\r\nhandle=12345\r\n"
+              "[slot 1]\r\nVID=0x045e\r\nPID=0x09cc\r\n[slot 2]\r\nVID=1356\r\nPID=2508\r\n", f);
+        fclose(f);
+    }
+    _putenv_s("SteamVirtualGamepadInfo", path);
+    CHECK(steam_virtual_for(0x054C, 0x0CE6) && steam_virtual_for(0x045E, 0x09CC) && steam_virtual_for(0x054C, 0x09CC) &&
+          !steam_virtual_for(0x054C, 0x0DF2) && !steam_virtual_for(0x045E, 0x0CE6), "SteamVirtualGamepadInfo slots");
+    remove(path);
+    CHECK(!steam_virtual_for(0x054C, 0x0CE6), "SteamVirtualGamepadInfo gone");
+    _putenv_s("SteamVirtualGamepadInfo", "");
+
     memset(&g_cfg.steam_ignore, 0, sizeof g_cfg.steam_ignore);
     memset(&g_cfg.steam_except, 0, sizeof g_cfg.steam_except);
     CHECK(!steam_lists(0x054C, 0x0CE6), "no Steam: nothing skipped");

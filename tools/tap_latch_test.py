@@ -34,7 +34,9 @@ are ignored.
   --hid MODEL,MODE: the taps come as input reports of a DualShock 4 / DualSense
            (ps3recomp patch 0042: PS3_PAD_HID_FAKE feeds the runtime's own HID
            reader from a file; MODEL ds4|dualsense|edge, MODE usb|bt-simple|
-           bt-ext, see tools/ps_hid_reports.py), on port 1 through the "ps"
+           bt-ext, or bt-steam: simple reports, half way through the extended
+           ones, as when Steam starts during the game; see
+           tools/ps_hid_reports.py), on port 1 through the "ps"
            layout like a real pad -- XInput, DirectInput and the keyboard off.
            Every second tap is a press and its release in one write: two
            reports between two samples, which only the reader's tap memory can
@@ -62,14 +64,19 @@ HID_PIDS = {"ds4": "09CC", "dualsense": "0CE6", "edge": "0DF2"}
 class HidWriter:
     """Writes the taps as input reports of a PlayStation pad into the PS3_PAD_HID_FAKE file."""
 
-    def __init__(self, model, mode):
-        self.model, self.mode, self.n = model, mode, 0
+    def __init__(self, model, mode, switch_at=None):
+        """mode bt-steam: Bluetooth simple reports, then from report `switch_at` on the extended ones -- the
+        pad switched over by Steam while the game runs."""
+        self.model, self.mode, self.n, self.switch_at = model, mode, 0, switch_at
 
     def report(self, name):
         self.n += 1
         s = phr.PadState(buttons=() if name in (None, "DOWN") else (name.lower(),),
                          hat=4 if name == "DOWN" else None)
-        return phr.padded(self.model, self.mode, phr.report(self.model, self.mode, s, counter=self.n)).hex() + "\n"
+        mode = self.mode
+        if mode == "bt-steam":
+            mode = "bt-ext" if self.switch_at is not None and self.n >= self.switch_at else "bt-simple"
+        return phr.padded(self.model, mode, phr.report(self.model, mode, s, counter=self.n)).hex() + "\n"
 
     def write(self, path, name, kind, new=False):
         """Append the reports (the file is the pad's report queue, PS3_PAD_HID_FAKE); new: start the file.
@@ -338,7 +345,7 @@ def launch_and_tap(a, out, base, roles, vfs):
         time.sleep(a.after)
         t0 = now_ns() + 50_000_000
         plans = [(x["pad"], schedule(a.taps, a.seed * 100 + k, t0)) for k, x in enumerate(procs)]
-        done = run_taps(plans, HidWriter(*a.hid) if a.hid else None)
+        done = run_taps(plans, HidWriter(*a.hid, switch_at=a.taps + 1) if a.hid else None)
         with open(os.path.join(out, "taps.json"), "w") as f:
             json.dump({x["pad"]: done[x["pad"]] for x in procs}, f)
         time.sleep(3.0 + a.hold)      # the frame log is flushed every 60 frames
@@ -375,12 +382,13 @@ def main():
     ap.add_argument("--analyze", action="store_true", help="only analyze an earlier run in --out")
     ap.add_argument("--hid", metavar="MODEL,MODE",
                     help="taps as reports of a PlayStation pad through the runtime's HID reader (patch 0042):"
-                         " MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext")
+                         " MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext|bt-steam (simple reports, then"
+                         " half way the extended ones, as when Steam starts while the game runs)")
     a = ap.parse_args()
     if a.hid:
         model, _, mode = a.hid.partition(",")
-        if model not in HID_PIDS or mode not in ("usb", "bt-simple", "bt-ext"):
-            ap.error("--hid MODEL,MODE: MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext")
+        if model not in HID_PIDS or mode not in ("usb", "bt-simple", "bt-ext", "bt-steam"):
+            ap.error("--hid MODEL,MODE: MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext|bt-steam")
         if a.pair:
             ap.error("--hid is for one instance")
         a.hid = (model, mode)

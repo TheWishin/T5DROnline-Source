@@ -45,7 +45,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
 | Musik, Soundeffekte, Videos | Funktionieren. |
-| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
@@ -163,9 +163,12 @@ Tastatur (Standard) und Xbox-Controller:
 - Die Tastatur geht nur, solange das Spielfenster den Fokus hat. Pads gehen auch
   ohne Fokus.
 - Tastatur und das erste Pad steuern beide Spieler 1.
-- PlayStation-Pads (DualShock 4, DualSense), Arcade-Sticks und Hitboxen werden
-  über DirectInput gelesen. Du musst nichts installieren. Ein Arcade-Stick wurde
-  mit echter Hardware getestet: alle Eingaben kamen an.
+- PlayStation-Pads (DualShock 4, DualSense) liest das Spiel direkt, über USB und
+  Bluetooth, auch nachdem Steam oder DS4Windows sie benutzt haben (Steam ist nicht
+  nötig; startet Steam das Spiel mit Steam Input, nimmt das Spiel das virtuelle
+  Pad von Steam). Arcade-Sticks und Hitboxen werden über DirectInput gelesen. Du
+  musst nichts installieren. Ein Arcade-Stick wurde mit echter Hardware getestet:
+  alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
 - **Pad, Arcade-Stick oder Hitbox: die Knöpfe stellst du im Launcher ein.**
   Öffne **Settings** und klicke **Set up controllers...** (Controller
@@ -322,6 +325,10 @@ wichtigsten Fälle in Kürze:
   starte das Spiel neu. Prüfe, dass "Mute sound" in den Settings aus ist.
 - **Controller doppelt oder gar nicht erkannt**: DS4Windows oder Steam Input
   erzeugen ein zweites, virtuelles Pad. Verstecke eines von beiden.
+- **DualShock 4 / DualSense geht nur über Steam**: Ab 1.1.1 liest das Spiel diese
+  Pads selbst, auch über Bluetooth, nachdem Steam sie umgeschaltet hat. Bei 1.1.0
+  und älter: Pad ausschalten (PS-Taste 10 Sekunden halten) und ohne laufendes
+  Steam wieder einschalten, oder ein USB-Kabel nehmen.
 - **Weißer Bildschirm nach etwa 3 Minuten**: Bekannter Speicherfehler. Neu starten.
 
 ## Häufige Fragen

@@ -245,9 +245,9 @@ other games' load, not the processor count.
 
 ### 60 minutes of everything (`soak.py mixed --minutes 60`, all processors)
 
-61 min, 44 milestones (arcade to the end with 7 characters, VS 2 matches at a
-time, survival, practice, ghost, options, gallery, online, attract idle), two
-menu presses lost and recovered. The PC 90 % busy (up to 10 other games).
+61 min, 29 segments: 4 each of arcade to the end (4 characters), VS (2
+matches each), survival, practice, ghost; options, gallery/online, attract
+idle; two menu presses lost and recovered. The PC 90 % busy (up to 10 other games).
 
 | | 0-10 min | 20-30 min | 40-50 min | 60-70 min |
 |---|---|---|---|---|

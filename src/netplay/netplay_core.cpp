@@ -1322,14 +1322,18 @@ uint32_t scene_barrier(uint32_t f)
     init();
     State& s = S();
     uint32_t k;
+    bool replay;
     {
         std::lock_guard<std::mutex> lk(s.mu);
         k = s.nbar++;
         s.local_bar[k % kBarriers] = f + 1;
-        if (s.replay) return rp::play_barrier(k, f);   /* where the recorded session went on */
-        if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
-        send_inputs_locked();
+        replay = s.replay;
+        if (!replay) {
+            if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
+            send_inputs_locked();
+        }
     }
+    if (replay) return rp::play_barrier(k, f);   /* where the recorded session went on (live: it may wait for it, unlocked) */
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
     uint32_t peer_f = f;
     for (;;) {

@@ -92,4 +92,16 @@ void play_fail(const char* path, const char* why);  /* the file could not be pla
 uint32_t play_target();                             /* the match being watched (1-based) */
 uint32_t play_match_index();                        /* matches begun so far in the playback */
 
+/* ---- spectating (docs/SPECTATE.md) ----------------------------------------
+ * Players: T5_REPLAY_LIVE=<file> (the session's environment) appends the session
+ * to that file while it is played -- the same data as the replay, as records
+ * (replay.cpp "the live stream"); the writer thread does it, the frame never waits.
+ * Spectators: T5_REPLAY_FILE=<that file, growing> plays it like a replay; the
+ * frame waits for the data (a buffer of T5_REPLAY_LIVE_BUFFER frames, default 120),
+ * hashes and results are compared when the recorded ones come. */
+bool play_live();                                   /* the playback reads a live stream */
+/* every playback frame boundary (main thread), after play_frame(): 0 = the viewer
+ * quit while it waited (quit() polled), 1 = go on, 2 = go on after a wait */
+int  play_live_wait(uint32_t p, bool (*quit)());
+
 } // namespace rp

@@ -45,6 +45,8 @@ Select restarts (docs/DIRECTFIGHT.md "Select restarts"; persistent flow only):
                     restarted" in each log, no NULL access / bad guest call / crash /
                     stuck line. Then the matches run as usual (fights, rematches, sync).
   --abort-plan K:N,...  N aborts after match K as well (0 = before match 1, like --aborts)
+  --fresh-after-aborts host|join  that game is started again after the aborts: match 1 is
+                    a game with N restarts against a fresh one (they must stay in sync)
   --offline         one game, no netplay: the aborts and matches offline (P1 picks with
                     the pad script, P2 keeps the line's character; the result file must
                     name a winner). With --env T5_DF_SELECT_RESTART=inplace the driver
@@ -518,6 +520,9 @@ def main():
     ap.add_argument("--abort-plan", default="", help="K:N,... -- N aborted sessions after match K (0 = before match 1)")
     ap.add_argument("--abort-how", choices=["mix", "both", "host", "join"], default="mix")
     ap.add_argument("--offline", action="store_true", help="one game without netplay (persistent flow)")
+    ap.add_argument("--fresh-after-aborts", choices=["host", "join"], default=None,
+                    help="restart that game after the aborts before match 1: a game whose select screen was "
+                         "restarted many times meets a freshly started one")
     ap.add_argument("--seed", type=int, default=1, help="the aborts' random choices")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -555,6 +560,10 @@ def main():
                 ok_all = False
                 raise StopIteration
             n_aborts += plan[0]
+            if a.fresh_after_aborts and not a.offline:
+                g = games[0] if a.fresh_after_aborts == "host" else games[1]
+                log(f"game {g.idx} ({g.role}) stopped: match 1 meets a freshly started game")
+                g.stop()
         for k in range(a.first, a.first + a.matches):
             mid = f"p{k:02d}"
             new_session = a.flow == "persistent" and (k == a.first or (k - 1) % a.rematch_every == 0)

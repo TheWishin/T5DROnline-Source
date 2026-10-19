@@ -53,8 +53,8 @@ MENU = ["ARCADE", "GHOST", "VS", "ONLINE", "SURVIVAL", "PRACTICE", "GALLERY", "O
 M_INIT, M_TITLE, M_OPTION, M_GAME, M_LOGO, M_SELECT, M_END, M_RANKING, M_RESULT, M_ONLINE = 0, 1, 3, 4, 5, 6, 8, 10, 11, 13
 P2_HEALTH = 0x10090FBC          # i16, CPU's current health in arcade (build/au/GAPS.md "Endings")
 # What each main-menu entry leads to: the select mode with this game type (0x1008EBAC), or a mode
-GAME_TYPE_OF = {0: 0, 1: 1, 2: 4, 5: 10}                  # ARCADE, GHOST, VS, PRACTICE
-MODE_OF = {7: 3, 3: 13}                                    # OPTIONS, ONLINE
+GAME_TYPE_OF = {0: 0, 1: 1, 2: 4, 4: 9, 5: 10}            # ARCADE, GHOST, VS, SURVIVAL, PRACTICE
+MODE_OF = {7: 3, 3: 13, 6: 12}                             # OPTIONS, ONLINE, GALLERY
 
 
 def entered_entry(mode, game_type):

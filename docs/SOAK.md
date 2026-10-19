@@ -72,8 +72,18 @@ arcade, 1 ghost, 2 attract demo, 4 VS, 10 practice), 5 Namco logo, 6 select,
   the game's online check (sceNp init, the "net ranking" thread, cellHttp),
   then "A network error occurred. Returning to the title screen."
 - GALLERY: "Unable to update content list. Retry?" NO, then YES to return.
-- OPTIONS is mode 3 (tcb_optionmode_t); EXIT leaves it.
-- VS returns to the select screen after a match; CIRCLE backs out to the title.
+- OPTIONS is mode 3 (tcb_optionmode_t); EXIT leaves it. GALLERY is mode 12.
+- After the fighter is picked (ARCADE, GHOST, SURVIVAL) a small menu offers
+  ITEM SHOP & EQUIP / GAME START / NAME ENTRY: CROSS takes GAME START.
+- At the select screen all four attack buttons confirm (with different
+  costumes); CIRCLE does not cancel. VS loops between the select screen and
+  the fight; the way out is the soft reset **START+SELECT**, which returns to
+  the title from the select screens (the driver's general "back to the title").
+- SURVIVAL: a lost fight ends at the result mode (11), then the title.
+- Game types for the menu check: 0 arcade, 1 ghost, 4 VS, 9 survival, 10
+  practice. A pick is verified against the mode / game type it leads to; a
+  press lost on a slow PC (or the title running into its demo) re-syncs the
+  tracked cursor and retries.
 
 ## Audio measurements
 

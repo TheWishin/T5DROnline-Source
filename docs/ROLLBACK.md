@@ -2124,7 +2124,7 @@ intros -- and agreed from 228 on, with the same final hash; both runs had the
 sound heap. It did not come back in four replays of the same schedule (D1, D3,
 D4, and F6's cycle 7) nor in fx1's four such matches without the pool; the
 dumps of those runs were used up by the desynced session before (fixed now).
-It is the "two games with different histories" kind (CLAUDE.md's open item b);
+It is the "two games with different histories" kind (open item b in the dev notes);
 a dump of the next occurrence will name the words.
 
 **The present hang (fix 3).** On the rebased build the rematch agent's scenario
@@ -2187,7 +2187,7 @@ creation) it does not. Fix (`df_fight.cpp` Ph::Title): start VS waits until no
 `savedata_autosave` thread is alive (at most 10 s), then the boot state goes
 back and start VS runs as before. A desync of this kind needs no rollback at
 all; it fits the "desync in match 2 with no rollback before it" reports
-(CLAUDE.md), not proven.
+(the dev notes), not proven.
 
 **A predicted KO that a rollback took back (fix 5).** The e2e agent's
 net_rollback scenario at RTT 250 (run g2, match m23fd877921c5) ended without a

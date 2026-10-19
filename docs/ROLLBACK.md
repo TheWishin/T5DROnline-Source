@@ -2207,6 +2207,20 @@ costs a few frames between the KO and the driver's hold; the rule covers them.
 Lockstep: unchanged (final at once). The log says `the match end rests on
 predicted input -- acted on once confirmed` / `the match end is confirmed`.
 
+**A rematch stuck at the select screen (fix 6, direct fight, not rollback).**
+Found by the RTT 250 batch R250a (one session, the next match's fighters
+through `--next`): `player 1: cannot reach cell 30 from 23, giving up`, and the
+select screen stayed for good. P1 had played Bruce (middle row, column 11) and
+was to pick Asuka (top row). The rows cycle with DOWN and a row without a cell
+in the cursor's column is skipped; the top row's cells are columns 1..10, so
+from column 11 the cursor went middle -> bottom -> middle for ever. The driver
+stepped sideways first only from column 0. Now from column 11 too (LEFT).
+Any same-session pick from Bruce or Kuma/Panda to a top-row fighter (Eddy,
+Baek, Mokujin, Devil Jin, Raven, Asuka, Feng, Ganryu, Wang, Armor King) hit it:
+a rematch with another fighter, the next game of a ranked set. A new session
+starts on a fresh select screen (cursors at their defaults) and was not
+affected.
+
 **Not explained: a select screen that never loads, under heavy load.** Twice on
 the rebased build with 9-13 game instances on the PC (F10 and F12, both in
 cycle 5, both right after a title visit), S's select mode stayed in its loading

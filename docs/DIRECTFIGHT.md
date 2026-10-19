@@ -831,7 +831,7 @@ mode change: it waits until no task of the select scene is busy (loads in
 flight), ends the select mode with its whole scene -- the heap goes back -- and
 builds a new `tcb_selectmode_t` (prev = 6), which runs its set-up once, like
 the one the title's start VS makes. The switch takes 1-2 frames; the select
-screen is live again 37-60 frames after the restart, median 43 (in place: 36-37). The trace with the fix:
+screen is live again 37-60 frames after the restart, median 44 (in place: 36-37). The trace with the fix:
 each restart's models stop being updated at the switch and the next set reuses
 their addresses; the mode objects come from the manager's own ring
 (0x10629900, 0x1062C780, ... 0x10682880, then back to 0x1062A200). The reset

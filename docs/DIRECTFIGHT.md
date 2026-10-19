@@ -979,8 +979,9 @@ stall (reader, pool and threads dumped through PS3_DEBUG).
     python tools/select_stall_test.py --exe <t5dr.exe> --out <dir> [--cycles 30] [--fs-delay MS]
         [--cpus N --cpu-first K --hog H] [--env K=V] [--keep-going]
 
-**Results** (this PC, 2026-10-19, build/selstall/runs; main dfb6ee4 + d88c206
-merged, so with 0047's power saving):
+**Results** (this PC, 2026-10-19, build/selstall/runs; main merged up to
+7486b0c, so with 0047's power saving; 0048 and later main changes leave the game
+binary as it was):
 - The old way (`T5_DF_READER_GUARD=0`), a slow disk: with 150 ms per read the
   copy caught the title's read every time and the first select after a fight
   stayed at phase 1 (d1: 220 s, then the run gave up; dA2: ended by the backstop
@@ -997,8 +998,13 @@ merged, so with 0047's power saving):
 - The fix, CPU hog only, power saving on / off (F1 / F0, `PS3_LAPTOP=1/0`): 30 of
   30 cycles each. CPU hog plus a 40 ms disk (S1 / S0): 30 of 30 each, select
   set-up 606-1,144 frames; the boot copy waited for the title's read in each.
-  Final exe, the same load at 0.1-50 fps (the PC at 97 %, other agents' games
-  too) (P1 / P0): P_RESULTS.
+  Final exe, the same load with the PC at up to 97 % (other agents' games too,
+  the game at 0.1-50 fps): power saving on (P1, R1) 28 of 28 cycles that reached
+  their select, power saving off (P0, R0) 35 of 35; two runs counted a cycle as
+  failed that was only starved -- P1 cycle 10 (its select done at 1-4 fps as the
+  old harness gave up; the harness now waits while anything moves) and R1's
+  first boot (0.2-7 fps for 4 minutes, never at the title) -- no stall, no
+  STUCK exit in any of them.
 - Pairs, every match a new session (title visit and restore before each one),
   mashing, the joiner restarted before match 4 (a game that has played meets a
   fresh one), the joiner's disk at 40 ms per read (its boot copy waited for the
@@ -1007,7 +1013,9 @@ merged, so with 0047's power saving):
   6 matches each, the same winner and result hash on both PCs, 0 mismatching
   frames; also without the slow disk (prb1 rollback, pls1 lockstep on 4
   processors each): 6 of 6 each, in sync.
-- Smoke quick on the final exe: PASS (81 checks).
+- Smoke quick on the final exe: PASS (81 checks; one earlier run failed
+  vs_two_pads' end shot -- its mashed fight ended in a KO before the shot, no
+  HUD; that test alone and the whole suite again passed).
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

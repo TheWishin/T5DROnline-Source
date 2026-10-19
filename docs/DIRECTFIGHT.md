@@ -293,6 +293,25 @@ priority, other agents' games beside them -- 22-55 fps):
   | e2e_sets_rb | rollback | ranked set of 2, then the next opponent (a new pairing, a new session) against a **freshly started game** (P2's game closed in between), P1 changes Jin -> Steve, set of 2 again |
   | e2e_sets_ls | lockstep | quick: 2 pairings of 2, rematches where only P1 changes (Kazuya -> Julia, Asuka -> Law), a fresh game in the second pairing |
 
+- **After the merge with main (2026-10-19: ranked sets of best of 3, the TLS
+  generator fix, rollback-crash, lobby hardening)**, `lobby/tools/ranked_session.py
+  --exe ... --persistent --ingame-pick --rounds 1 --plan ...` (the planned
+  winner's game attacks through T5_NET_PADFILE), table by `tools/pick_report.py`:
+  **28 of 28 matches started on both PCs with the same fighters and costumes,
+  0 mismatching frames, the same state hash, confirmed.**
+
+  | Run | Mode | What |
+  |---|---|---|
+  | m_quick_rb / m_quick_ls | rollback / lockstep | quick match + 3 rematches; every rematch changes both fighters across column 11 and the top row (Bruce/Kuma/Panda <-> Raven/Eddy/Devil Jin/Armor King) and costumes (Devil Jin Cross -> Circle, Armor King Square -> Circle) |
+  | m_room_rb / m_room_ls | rollback / lockstep | room match + 2 rematches with new picks; Select = random and timeouts on either side |
+  | m_set_rb / m_set_ls | rollback / lockstep | ranked set 2-1 / 1-2: game 1 picked (Kuma Triangle vs Xiaoyu Circle = her 4th costume; Lili vs Panda), games 2 and 3 started by themselves after 6 s with `buttons=2\|4`, the same models |
+  | m_switch_rb / m_switch_ls | rollback / lockstep | quick pairing of 2, P2's game closed, a new pairing of 2 against a freshly started game |
+
+  Also launcher-picked rematches (no in-game select, the owner's "rematch with
+  a character change" report on 1.0.x) across column 11 and the top row in both
+  directions, with `buttons=` on new sessions and rematches:
+  `pick_flow_test.py --no-pick --mash --rematch-every 2`, 4/4 rollback (m_np_rb)
+  and 4/4 lockstep (m_np_ls), 0 mismatching frames.
 - **`tools/pick_flow_test.py`** (no lobby; persistent unless noted): 20 of 25
   matches OK across the runs t1, rep1, big_ls, final_rb, proc_rb. The 5 others:
   Devil Jin (big_ls match 6; the TLS generator, fixed since, see "Known

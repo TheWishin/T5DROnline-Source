@@ -57,6 +57,12 @@ lobby features need the lobby server updated; older launchers keep working with 
   numbers are measured in this game, not copied from tables (docs/TRAINING.md, ps3recomp patch 0045).
 
 ### Launcher
+- **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français,
+  besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
+  Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
+  a font made for them. The new translations were made with machine help: corrections from players
+  are welcome. The Settings tab and the Controls window got room for the longer texts (at 100 % and
+  150 % display scaling).
 - **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
   "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
   Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
@@ -91,6 +97,33 @@ lobby features need the lobby server updated; older launchers keep working with 
 ### Servers
 - The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
   back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
+
+### Laptops, handhelds and 8-core APUs (laptop-perf, ps3recomp patch 0047)
+- **Less CPU around the same game.** The main thread no longer polls for the end of its frame (it
+  waited in a busy loop or woke up 50-100 times a frame), the vblank thread no longer polls the
+  last millisecond before every frame, the sound mixer wakes once per audio block instead of 20
+  times, and on processors with 8-23 threads (8 cores with SMT, the common gaming CPU) nothing
+  spins next to the game's main thread any more. On 8 cores / 16 threads a fight needs 30 % less
+  CPU for the same 60 fps (on a busy test PC it went from 54 to 59 fps).
+- **Power saving** (Settings, default Auto): on laptops, handhelds (ROG Ally, Legion Go and
+  similar), mobile processors and integrated graphics the game also uses fewer helper threads and
+  never busy-waits, so the processor stays cooler and keeps its clock. The game itself is the
+  same, online too; the window title says "power saving" when it is on.
+- **The log says why frames are slow.** Every 30 s with slow frames: how many, and whether the
+  processor (the game, the render translation), the graphics or showing the picture took the time,
+  next to the power source, power plan and the processor's clock limit. "Report a problem" adds
+  the power plan, power mode, clock limit and temperature sensors to system.txt, and which
+  graphics chip drives each screen (laptops with two GPUs).
+- The game's clock follows a 59/60 Hz display only while that display's timing makes sense, and
+  never faster than 60 Hz.
+
+### Building the game
+- **The build no longer stops at "Translate code".** A player's build sat at 68% for good: when one of the
+  helper processes that translate the code side by side stopped (an antivirus or too little free memory can do
+  that), the build waited for it forever. Now it notices, translates that part itself and goes on, with the same
+  result. It also writes a line about every 30 seconds while it works and starts fewer helpers when little memory
+  is free. Should the step still print nothing for 3 minutes, the Build tab says so and what to do (ps3recomp patch
+  0048, docs/TROUBLESHOOTING.md "The build stops at "Translate code"").
 
 ## v1.1.1 (2026-10-19)
 

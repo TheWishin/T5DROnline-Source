@@ -30,8 +30,8 @@ CHECKIN_CHOICES = ((N_("No check-in"), 0), (N_("Check-in 5 minutes before"), 5),
                    (N_("Check-in 15 minutes before"), 15), (N_("Check-in 30 minutes before"), 30),
                    (N_("Check-in 60 minutes before"), 60))
 SEED_CHOICES = ((N_("Random seeding"), "random"), (N_("Seeded by rating"), "rating"))
-LIST_COLUMNS = (("tour", N_("Tournament"), 170), ("tstate", N_("State"), 80), ("players", N_("Players"), 64),
-                ("when", N_("When"), 120))
+LIST_COLUMNS = (("tour", N_("Tournament"), 150), ("tstate", N_("State"), 104), ("players", N_("Players"), 92),
+                ("when", N_("When"), 168))
 
 
 def parse_clock(text, now=None):
@@ -507,8 +507,8 @@ def build_page(view, page):
     tab, px = view.tab, view.px
     ctl = tab.tours
     ctl.count_var = tk.StringVar(page, value="")
-    page.columnconfigure(0, weight=2, uniform="tour")
-    page.columnconfigure(1, weight=3, uniform="tour")
+    page.columnconfigure(0, weight=2)
+    page.columnconfigure(1, weight=3)
     page.rowconfigure(1, weight=1)
     pg = {}
     lc = view.card(page, pad=12)

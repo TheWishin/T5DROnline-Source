@@ -109,12 +109,12 @@ MESSAGES = {
     "8-way d-pad": "8-Wege-Steuerkreuz",
     "Analog stick": "Analogstick",
     "Both cancel (neutral)": "Beide heben sich auf (neutral)",
-    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter ist Hoch)",
+    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter = Hoch)",
     "Last direction wins": "Die letzte Richtung gewinnt",
     "Pass both through": "Beide durchlassen",
     "This controller is": "Dieser Controller ist",
     "Left stick": "Linker Stick",
-    "Opposite directions": "Gegenüberliegende Richtungen",
+    "Opposite directions": "Gegenrichtungen",
     "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction "
     "as a stick; the game then reads it as d-pad presses. Left+Right (or Up+Down) at "
     "once happens on keyboards and hitboxes; the game cannot take both. Stick and "
@@ -197,11 +197,15 @@ MESSAGES = {
     "Controls": "Steuerung",
     "Save the changes to controls.ini?": "Die Änderungen in controls.ini speichern?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (Laptops, Handhelds, integrierte Grafik)",
+    "On": "An",
+    "a mobile processor": "ein Laptop-Prozessor",
+    "battery saver is on": "der Stromsparmodus von Windows ist an",
+    "the Power saver power plan is on": "der Energiesparplan \"Energiesparmodus\" ist aktiv",
+    "this PC has a battery (laptop or handheld)": "dieser PC hat einen Akku (Laptop oder Handheld)",
     "Inputs": "Eingaben",
     "Inputs + frame data": "Eingaben + Framedaten",
     "Auto (Windows language)": "Auto (Sprache von Windows)",
-    "Deutsch": "Deutsch",
-    "English": "English",
     "No package chosen.": "Kein Paket gewählt.",
     "File not found.": "Datei nicht gefunden.",
     "Cannot read the file: {error}": "Die Datei lässt sich nicht lesen: {error}",
@@ -274,6 +278,12 @@ MESSAGES = {
     "Game files": "Spieldateien",
     "Sound core": "Soundkern",
     "Translate code": "Code übersetzen",
+    "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+    "has the details.":
+        "Der Schritt „Code übersetzen“ hat seit {minutes} Minuten nichts ausgegeben. Auf einem langsamen oder "
+        "ausgelasteten PC kann er noch arbeiten. Wenn sich nichts tut, schließe andere Programme, klicke auf "
+        "Abbrechen und dann wieder auf BUILD GAME; build.log hat die Details.",
     "The graphics card stopped working for the game (the driver crashed, was reset or "
     "updated). Start the game again. If it happens again, update the graphics driver.":
         "Die Grafikkarte hat für das Spiel nicht mehr funktioniert (der Treiber ist "
@@ -407,6 +417,19 @@ MESSAGES = {
         "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
+    "Power saving (laptops, handhelds)": "Stromsparen (Laptops, Handhelds)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Kein aktives Warten und weniger Arbeits-Threads: Der Prozessor bleibt kühler und behält seinen Takt, "
+        "so hält das Spiel die 60 fps länger. Das Spiel selbst bleibt gleich, auch online.",
+    "On for this PC.": "An für diesen PC.",
+    "Off.": "Aus.",
+    "Auto: on for this PC -- {reason}.": "Auto: an für diesen PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto: aus für diesen PC (kein Akku, kein Laptop-Prozessor); läuft das Spiel auf integrierter Grafik, "
+        "schaltet es das Stromsparen selbst ein.",
+    "Power saving is on.": "Stromsparen ist an.",
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
     "Square": "Quadrat",

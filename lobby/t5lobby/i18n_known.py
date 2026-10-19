@@ -1,9 +1,11 @@
-"""English texts that reach a player from outside the launcher, so the launcher can put them into German.
+"""English texts that reach a player from outside the launcher, so the launcher can put them into the
+player's language.
 
 The lobby server, the lobby client library and the build tools write their messages in English. The texts
 here are the ones the launcher knows: i18n.translate_message(text) finds a message in this list (a text with
-{placeholders} is a pattern: the values in the message go into the German text) and shows the German one;
-a message that is not in the list is shown as it came. The German texts are in i18n_de.py, like all others.
+{placeholders} is a pattern: the values in the message go into the translated text) and shows the translated
+one; a message that is not in the list is shown as it came. The translations are in the catalogs (i18n_de.py,
+i18n_es.py, ...), like all others.
 
 Adding a message to the server, the client or the build tool means adding it here: tests/test_i18n.py reads
 their source and fails for a message that no entry covers (messages for programmers, not players, are listed

@@ -369,12 +369,14 @@ class OnlineTab:
             w.destroy()
         self.bar_spec = []
         self.bar_pad = {}
-        for item in buttons:
+        per_row = 3                 # (a rematch bar has up to five buttons with the opponent's name: two rows)
+        for i, item in enumerate(buttons):
             label, cmd = item[0], item[1]
             pad = item[2] if len(item) > 2 else None
             b = ttk.Button(self.bar_buttons, text=self._pad_label(label, pad), command=cmd,
                            style=self.view.bar_button_style(label, pad))
-            b.pack(side="left", padx=(0, self.view.px(8)))
+            b.grid(row=i // per_row, column=i % per_row, sticky="w", padx=(0, self.view.px(8)),
+                   pady=(self.view.px(6) if i >= per_row else 0, 0))
             self.bar_spec.append((b, label, pad))
             if pad:
                 self.bar_pad[pad] = cmd

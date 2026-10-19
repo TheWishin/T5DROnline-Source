@@ -28,7 +28,7 @@ if _LOBBY not in sys.path:
 from t5lobby import padmap  # noqa: E402
 from t5lobby.padmap import DINPUT, XINPUT  # noqa: E402
 
-try:    # the launcher's two languages (lobby/t5lobby/i18n.py), when this copy has them
+try:    # the launcher's languages (lobby/t5lobby/i18n.py), when this copy has them
     from t5lobby.i18n import N_, t  # noqa: E402,F401
 except ImportError:
     def N_(text):

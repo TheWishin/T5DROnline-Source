@@ -136,10 +136,10 @@ index eeaf244..bc176ff 100644
      if (!t_timer) return 0;
      LARGE_INTEGER due;
 diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
-index 007ad85..d6c62e1 100644
+index 007ad85..b70c640 100644
 --- a/runtime/ppu/ppu_loader.cpp
 +++ b/runtime/ppu/ppu_loader.cpp
-@@ -4051,33 +4051,103 @@ extern "C" void (*g_ppu_thread_entry_trampoline)(ppu_context*);
+@@ -4051,33 +4051,106 @@ extern "C" void (*g_ppu_thread_entry_trampoline)(ppu_context*);
   * The PRX path (sys_initialize_tls in ppu_sysprx.cpp) has always done this per
   * block; this is the same thing for the static path.
   *
@@ -162,7 +162,10 @@ index 007ad85..d6c62e1 100644
 + * is full a new block comes from the guest stack region instead. Blocks are
 + * reused, so the most ever made is the most threads alive at once, and the
 + * shared fallback is only left for a full table -- logged, with a running
-+ * count, so a soak can check it never happens. */
++ * count, so a soak can check it never happens. The window's blocks are
++ * carved in the same order as before, so the first threads keep their
++ * addresses; a port that snapshots the window (rollback) does not see the
++ * stack-region blocks of later threads, which used to share the image. */
 +#include <mutex>
 +enum { PPU_TLS_POOL_MAX = 128 };                /* > PPU_THREAD_MAX (64) */
 +static struct { uint32_t base; uint8_t used; } s_tls_pool[PPU_TLS_POOL_MAX];
@@ -255,30 +258,6 @@ index 007ad85..d6c62e1 100644
      ppu_fn fn = ppu_lookup(code);
      if (!fn) {
          fprintf(stderr, "[ppu] thread entry 0x%08X (cia=0x%08X) not registered\n",
-@@ -4168,7 +4238,10 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
-     ctx.gpr[2]  = toc;
-     ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
-     ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
--    ctx.gpr[13] = PPU_TLS_TP;
-+    /* The calling guest thread's own TLS when there is one: on hardware the
-+     * callback runs on that thread. It got the loader's first image, shared by
-+     * every callback (t5dr 0041). Host-only threads (ticker, decoders) keep it. */
-+    ctx.gpr[13] = (g_active_ctx && g_active_ctx->gpr[13]) ? g_active_ctx->gpr[13] : PPU_TLS_TP;
-     ctx.cia     = code;
-     /* Save/restore g_active_ctx: this scratch ctx lives on the stack, so leaving
-      * g_active_ctx pointing at it after we return leaves a DANGLING pointer once the
-@@ -4217,7 +4290,10 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
-     ctx.gpr[2]  = toc;
-     ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
-     ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
--    ctx.gpr[13] = PPU_TLS_TP;
-+    /* The calling guest thread's own TLS when there is one: on hardware the
-+     * callback runs on that thread. It got the loader's first image, shared by
-+     * every callback (t5dr 0041). Host-only threads (ticker, decoders) keep it. */
-+    ctx.gpr[13] = (g_active_ctx && g_active_ctx->gpr[13]) ? g_active_ctx->gpr[13] : PPU_TLS_TP;
-     ctx.cia     = code;
-     /* Save/restore g_active_ctx (see ppu_guest_call): the scratch ctx is stack-local,
-      * so a dangling g_active_ctx after return corrupts the crash handler / diagnostics. */
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
 index 6e75ef9..a36e3ea 100644
 --- a/runtime/ppu/tests/boot_main.cpp

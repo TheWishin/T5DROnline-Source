@@ -116,9 +116,10 @@ which a busy PC's preemption does not inflate):
 | the 8 s / 15 s `[WATCHDOG]` thread dumps only when no frame was presented in the last 0.5 s (`WATCHDOG_ALWAYS=1` forces them) | ~1 300 lines in every player's log, every thread suspended in turn during the intro movie, module names resolved under the loader lock while a thread is suspended |
 | debug console `poke16` | the soak holds a fighter's health (an i16) |
 | a detached PPU thread's host handles, each thread's sleep timer: closed when the thread ends; threads created without JOINABLE are detached | ~70 handles an hour leaked, thread slots ran out after a few hours (below) |
+| guest thread TLS blocks go back on a free list when the thread ends; when the 1 MB TLS window is full a block comes from the stack region; a thread left without one logs `[ppu] TLS: no free block ... (shared TLS fallback #n)` (`ppu_loader.cpp`, `sys_ppu_thread.c`); `problems.py` counts it (`tls`) | from the 10th thread on, every thread shared one TLS block (below) |
 | `tests/run_ps3recomp_tests.py`: `spu_near_float`; `tests/test_soak.py` | |
 
-## Results (2026-10-19, patch 0041 on the series to 0035)
+## Results (2026-10-19, patch 0041 on the series to 0035; 0038/0040 since)
 
 The PC (Ryzen 9 7950X, 32 logical processors) was shared with other agents'
 games and builds the whole time: 8-18 other `t5dr.exe`, the system 90-100 %
@@ -284,10 +285,66 @@ decoders, particles, demuxers, autosaves); two kinds of handle stayed behind:
   particle or a sound decoder thread that never starts. Such threads are now
   detached from the start, as on lv2 (`PS3_THREAD_ALL_JOINABLE=1` restores
   the old behaviour), and the create line says `detached`.
+- **40 minutes with these fixes** (`mixed --minutes 40`, 19 segments, the
+  PC 41 % busy): handles 793-805 from minute 5 to the end (+6 an hour over
+  the second half, was +78), threads 68-74, the highest thread id 16 (was
+  40), private 1 281 MB at 5 min, 1 306 MB at 35 min, 1 371 MB after the last
+  arcade run loaded new stages. No problem lines; fps median 58.0.
 - not fixed, for the record: guest thread stacks come from a bump allocator
   over the 256 MB stack region that never frees (`vm_stack_allocate`); the
   title's ~380 threads an hour take ~10 MB, so it lasts ~25 hours of play in
   one process.
+
+### Thread TLS: from the 10th thread on, all threads shared one block (fixed in 0041)
+
+Found by the rollback-crash work (454 threads in one long session), checked
+here. A thread made by `sys_ppu_thread_create` gets its TLS block from
+`ppu_tls_new_block` (`ppu_loader.cpp`): a bump allocator over the 1 MB window
+at 0x10F00000 that never freed. Tekken 5 DR's TLS segment is 64 KB (memsz
+0x101C0), 0x18000 per block, so the window holds the loader's first image
+and **9 blocks**. The title starts 11-12 threads at boot (the sound core's
+decoder server, the SPU printf server and update thread are the 10th-12th)
+and then one per sound stream, movie, particle job, autosave and network
+check: 157 in the 40-minute soak, 148 of them past the 9th. Every one of those
+ran with r13 = 0x10F07000, the loader's first image -- not the main thread's
+block (the CRT's `sys_initialize_tls` moved main to 0x0E000000), but one
+block shared by all of them at once: errno, the allocator's per-thread
+context and anything else the title keeps in `__thread` storage, between a
+sound decoder, a demuxer and a particle thread running side by side. (The
+runtime's own comment on the allocator: Guitar Hero III could not allocate
+at all with one shared block.) Nothing logged it.
+
+Now a block goes back on a free list when its thread ends (the thread
+procedure, after the entry returned or unwound out of `sys_ppu_thread_exit`)
+and is re-initialised from the template for the next thread; when the window
+is full a block is taken from the guest stack region once and reused after
+that. The shared fallback is left only for a full 128-entry table and logs
+`[ppu] TLS: no free block -- thread N shares 0x10F07000 ... (shared TLS
+fallback #n)`; `problems.py` counts those lines (`tls`) and the blocks made
+(`[ppu] TLS: block N at ... (TLS window | stack region)`).
+
+| run | threads created | blocks made (window / stack region) | shared fallbacks |
+|---|---|---|---|
+| before (om8, 40 min mixed) | 157 | 9 / 0 | 148 (by the allocator: every thread after the 9th) |
+| every mode (om9: boot, intro, demo, VS, online, survival, practice, gallery, options; then the reload boot) | 59; 15 | 9 / 5; 9 / 3 | 0; 0 |
+| 40 min mixed (om10) | see below | | |
+
+The first nine blocks are carved in the same order as before, so the boot
+threads (file, draw and geometry request managers, ASync, keyread, ZsAread,
+decoder) keep their addresses. For the rollback (`src/rollback/rb_state.cpp`
+saves 0x10F00000+0xF0000 as "TLS blocks of created threads"): the later
+threads' blocks now live in the stack region, outside that range, where
+before they all shared the image at 0x10F00000 inside it -- side threads
+(sound, decoders, demuxer, autosave), whose memory the rollback leaves out
+anyway.
+
+Not changed, for the netplay owners: callbacks the runtime runs into guest
+code (`ppu_guest_call`: sysutil, GCM handlers) still get r13 = 0x10F07000,
+the loader's image, also when they run on a guest thread -- on hardware they
+would see that thread's TLS. Giving them the caller's TLS would move any
+draws such a callback makes from the title's TLS random generator (0x3AFC3C)
+onto the main thread's generator, which 0040's desync work reseeds; so that
+is a netplay decision, not a soak fix.
 
 ### Open: NULL resource lookups in the draw thread (seen once)
 

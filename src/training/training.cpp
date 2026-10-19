@@ -19,8 +19,10 @@
  *   T5_TRAINING_ROWS     input rows per player (4..24, default 14)
  *   T5_TRAINING_LOG      file: one line per frame-data result and per new input
  *                        row (tests)
+ *   T5_TRAINING_STATS=1  every 600 fight frames: the main thread's time in this
+ *                        hook (mean / max microseconds)
  *   T5_TRAINING_TRACE    file: the fight block (0x1008E000, 16 KB) and the input
- *                        ring of every live frame (research; tools/ none)
+ *                        ring of every live frame (research)
  * F2 (while the game window has the focus) cycles off / inputs / inputs and
  * frame data for this session.
  */
@@ -72,6 +74,9 @@ struct Config {
     int  mode = kOff;
     bool all = false, online = false, de = false;
     int  rows = 14;
+    bool stats = false;
+    bool online_game = false;   /* started for online play (T5_NET_MODE / T5_CTL_DIR): online rules all the time */
+    bool local_net = false;     /* T5_NET_MODE=local: both players on this PC (tests): offline rules */
     FILE* log = nullptr;
     FILE* trace = nullptr;
 } g_cfg;
@@ -101,6 +106,10 @@ void init()
         if (n >= 4 && n <= 24) g_cfg.rows = n;
     }
     if (const char* f = getenv("T5_TRAINING_LOG"); f && *f) g_cfg.log = fopen(f, "w");
+    { const char* st = getenv("T5_TRAINING_STATS"); g_cfg.stats = st && *st == '1'; }
+    { const char* nm = getenv("T5_NET_MODE"); const char* ctl = getenv("T5_CTL_DIR");
+      g_cfg.local_net = nm && !_stricmp(nm, "local");
+      g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl); }
     if (const char* f = getenv("T5_TRAINING_TRACE"); f && *f) g_cfg.trace = fopen(f, "wb");
     if (g_cfg.mode != kOff) {
         rsx_overlay_prepare();
@@ -260,17 +269,40 @@ void trace_frame()
 
 /* One live frame boundary on the main thread (t5_hooks.cpp on_frame_start, not
  * called in re-simulated frames): the frame that just ran is complete. */
+static bool frame_body();
+
 extern "C" void t5_training_frame(ppu_context* ctx)
 {
     (void)ctx;
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
     if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace) return;
+    LARGE_INTEGER t0, t1;
+    if (g_cfg.stats) QueryPerformanceCounter(&t0);
+    const bool in_fight = frame_body();
+    if (g_cfg.stats && in_fight) {
+        static LARGE_INTEGER fq;
+        static double sum = 0, mx = 0;
+        static unsigned n = 0;
+        QueryPerformanceCounter(&t1);
+        if (!fq.QuadPart) QueryPerformanceFrequency(&fq);
+        const double us = 1e6 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
+        sum += us; if (us > mx) mx = us;
+        if (++n == 600) {
+            fprintf(stderr, "[training] 600 fight frames: hook %.1f us mean, %.1f us max\n", sum / 600.0, mx);
+            n = 0; sum = 0; mx = 0;
+        }
+    }
+}
+
+/* true in a fight */
+static bool frame_body()
+{
     poll_hotkey();
     const int mode = g_f2_mode >= 0 ? g_f2_mode : g_cfg.mode;
 
     const uint32_t phase = rd32(kPhase), gt = rd32(kGameType);
-    const bool online = t5_netplay_enabled() != 0;
+    const bool online = !g_cfg.local_net && (g_cfg.online_game || t5_netplay_enabled() != 0);
     const bool fight = phase == 17 && gt != kGtDemo;
     if (!fight) {
         if (g_in_fight) {
@@ -280,7 +312,7 @@ extern "C" void t5_training_frame(ppu_context* ctx)
             g_in_fight = false;
         }
         hide();
-        return;
+        return false;
     }
     if (!g_in_fight) { g_in_fight = true; g_live = 0; }
     g_live++;
@@ -317,4 +349,5 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     }
     if (show) publish(mode, p1, p2, frames);
     else hide();
+    return true;
 }

@@ -30,7 +30,9 @@
  * the setting count online too, the old behaviour.
  *
  * T5_UNLOCK_TRACE=1 logs every distinct (caller, mask, game's answer, answer)
- * once, with the mode manager's mode.
+ * once, with the mode manager's mode; =2 offline also installs the call tracer
+ * (T5_RB_CALLTRACE=addr,..., rb_calls.log), which otherwise runs only with the
+ * rollback loop.
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -46,6 +48,8 @@
 #include "../rollback/rb_detour.h"
 #include "df.h"
 
+namespace rb { void calltrace_install(); }   /* rb_detour.cpp: T5_RB_CALLTRACE (diagnostics) */
+
 namespace unlock {
 namespace {
 
@@ -53,13 +57,31 @@ constexpr uint32_t kFnCheck      = 0x002A732C;   /* (unlock byte & r3) != 0 */
 constexpr uint32_t kFlagStages   = 0x10;         /* the Tekken 5 stages offered */
 constexpr uint32_t kFlagJinpachi = 0x20;
 constexpr uint32_t kUnlockByte   = 0x106849AA;   /* SYS-DATA +0x4A in the save image at 0x10684960 */
+/* The customization data of each side (VS custom data, 0x106C9934 + side * 0x1F4) starts with
+ * the fighter's three costumes, 0x58 bytes each: +0x00 32 u16 parts bought (item id in the low
+ * byte, in the order bought), +0x40 4 u16 the parts worn (HEAD, FACE, BODY up, BODY down; -1
+ * none), +0x48 3 u32 bought colours (one bit per colour of COLOR1..3), +0x54 3 u8 the colours
+ * worn. Checked by buying with Fight Money poked in (runs shop6/shop9). */
+constexpr uint32_t kFnPartOwned  = 0x0029E754;   /* (side, costume, item id): a part bought */
+constexpr uint32_t kFnColorOwned = 0x0029E7F4;   /* (side, costume, colour category, colour): a colour bought */
+/* The price of an item, (character, costume, category, index) -> Fight Money: 0x152A18 picks one
+ * of two by category and tail-calls it (the lifted code runs a tail call after the return), so
+ * the two are hooked: parts (HEAD..BODY down) from the per-character table *(0x10076724)[c] of
+ * {item id, price}, colours (COLOR1..3). */
+constexpr uint32_t kFnPricePart  = 0x00152918;   /* body of 0x1528F0 (the lifter split it after the prologue) */
+constexpr uint32_t kFnPriceColor = 0x001522C8;
 
 enum class Mode { Save, Fixed };
 Mode g_mode = Mode::Save;
 bool g_stages = false;
+bool g_items = false;
 bool g_trace = false;
 bool g_installed = false;
 rb::GuestFn o_check = nullptr;
+rb::GuestFn o_part = nullptr;
+rb::GuestFn o_color = nullptr;
+rb::GuestFn o_price_part = nullptr;
+rb::GuestFn o_price_color = nullptr;
 std::mutex g_mu;
 std::set<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> g_seen;
 
@@ -93,6 +115,51 @@ void h_check(ppu_context* ctx)
     }
 }
 
+/* The item shop asks these for the part or colour under its cursor: bought -> EQUIP,
+ * else the price and BUY&EQUIP. */
+void owned_note(const char* what, uint32_t side, uint32_t slot, uint32_t a, uint32_t b, uint32_t lr, uint32_t game, uint32_t r)
+{
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_seen.insert({ lr, (side << 4) | slot, (a << 8) | b, (game << 1) | r }).second)
+        df::note("unlock: %s bought? side %u costume %u %u:%u from 0x%06X: game %u -> %u", what, side, slot, a, b, lr, game, r);
+}
+
+void h_part(ppu_context* ctx)
+{
+    const uint32_t side = (uint32_t)ctx->gpr[3], slot = (uint32_t)ctx->gpr[4], item = (uint32_t)ctx->gpr[5] & 0xFF;
+    const uint32_t lr = (uint32_t)ctx->lr;
+    o_part(ctx);
+    const uint32_t game = (uint32_t)ctx->gpr[3];
+    if (g_trace) owned_note("part", side, slot, 0, item, lr, game, game);
+}
+
+void h_color(ppu_context* ctx)
+{
+    const uint32_t side = (uint32_t)ctx->gpr[3], slot = (uint32_t)ctx->gpr[4], cat = (uint32_t)ctx->gpr[5], bit = (uint32_t)ctx->gpr[6] & 0xFF;
+    const uint32_t lr = (uint32_t)ctx->lr;
+    o_color(ctx);
+    const uint32_t game = (uint32_t)ctx->gpr[3];
+    if (g_trace) owned_note("colour", side, slot, cat, bit, lr, game, game);
+}
+
+/* The price the shop shows, checks against the Fight Money and takes: 0 with T5_UNLOCK_ITEMS. */
+void price_hook(ppu_context* ctx, rb::GuestFn orig, const char* what)
+{
+    const uint32_t chr = (uint32_t)ctx->gpr[3], slot = (uint32_t)ctx->gpr[4], cat = (uint32_t)ctx->gpr[5], idx = (uint32_t)ctx->gpr[6];
+    const uint32_t lr = (uint32_t)ctx->lr;
+    orig(ctx);
+    const uint32_t game = (uint32_t)ctx->gpr[3];
+    const uint32_t r = g_items ? 0 : game;
+    ctx->gpr[3] = r;
+    if (g_trace) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_seen.insert({ lr, 0x10000u | (chr << 8) | slot, (cat << 8) | idx, game }).second)
+            df::note("unlock: %s price, character %u costume %u item %u:%u from 0x%06X: game %u -> %u", what, chr, slot, cat, idx, lr, game, r);
+    }
+}
+void h_price_part(ppu_context* ctx) { price_hook(ctx, o_price_part, "part"); }
+void h_price_color(ppu_context* ctx) { price_hook(ctx, o_price_color, "colour"); }
+
 } // namespace
 } // namespace unlock
 
@@ -110,20 +177,29 @@ void t5_unlock_install(void)
     const char* keep = getenv("T5_UNLOCK_ONLINE");
     const bool save_online = keep && !strcmp(keep, "save");
     g_stages = env_on("T5_UNLOCK_STAGES");
+    g_items = env_on("T5_UNLOCK_ITEMS");
     g_trace = env_on("T5_UNLOCK_TRACE");
     g_mode = online && !save_online ? Mode::Fixed : Mode::Save;
-    if (g_mode == Mode::Save && !g_stages && !g_trace) return;   /* nothing to change: no detour */
-    g_installed = rb::detour(kFnCheck, h_check, &o_check);
-    if (!g_installed) {
-        df::note("unlock: 0x%06X not detourable -- unlocks as the save has them%s", kFnCheck,
-                 g_mode == Mode::Fixed ? " (online: the two PCs may differ)" : "");
-        return;
+    if (g_trace && g_mode == Mode::Save && getenv("T5_UNLOCK_TRACE")[0] == '2') rb::calltrace_install();   /* T5_RB_CALLTRACE too */
+    if (g_mode == Mode::Save && !g_stages && !g_items && !g_trace) return;   /* nothing to change: no detour */
+    if (g_mode == Mode::Fixed || g_stages || g_trace) {
+        g_installed = rb::detour(kFnCheck, h_check, &o_check);
+        if (!g_installed)
+            df::note("unlock: 0x%06X not detourable -- unlocks as the save has them%s", kFnCheck,
+                     g_mode == Mode::Fixed ? " (online: the two PCs may differ)" : "");
+        else if (g_mode == Mode::Fixed)
+            df::note("unlock: online game -- unlocks as on a fresh save (Tekken 5 stages and Jinpachi off), whatever the save%s",
+                     g_stages || g_items ? " and the unlock settings" : "");
+        else
+            df::note("unlock: Tekken 5 stages %s", g_stages ? "unlocked (T5_UNLOCK_STAGES=1; the save is not changed)" : "as the save has them");
     }
-    if (g_mode == Mode::Fixed)
-        df::note("unlock: online game -- unlocks as on a fresh save (Tekken 5 stages and Jinpachi off), whatever the save%s",
-                 g_stages ? " and T5_UNLOCK_STAGES" : "");
-    else
-        df::note("unlock: Tekken 5 stages %s", g_stages ? "unlocked (T5_UNLOCK_STAGES=1; the save is not changed)" : "as the save has them");
+    /* Items: offline only. Online the VS custom data stays the game's own (no customization in a direct fight). */
+    if (g_mode == Mode::Save && (g_items || g_trace)) {
+        const bool ok = rb::detour(kFnPricePart, h_price_part, &o_price_part) & rb::detour(kFnPriceColor, h_price_color, &o_price_color);
+        if (g_trace) { rb::detour(kFnPartOwned, h_part, &o_part); rb::detour(kFnColorOwned, h_color, &o_color); }
+        df::note("unlock: customization items %s", !ok ? "-- 0x152918/0x1522C8 not detourable, at their prices"
+                 : g_items ? "free (T5_UNLOCK_ITEMS=1: every price 0; the Fight Money stays as it is)" : "at their prices");
+    }
 }
 
 int t5_unlock_fixed(void) { return unlock::g_installed && unlock::g_mode == unlock::Mode::Fixed; }

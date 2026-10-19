@@ -602,6 +602,21 @@ def explain_exit(code, lines):
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
 
 
+COSTUME_ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE")
+
+
+def costume_env(out_dir, env_over):
+    """Custom costumes online (docs/DIRECTFIGHT.md "Custom costumes online"): a game started for netplay sends
+    its player's customization to the opponent -- the blocks of the player's own save (the system save the
+    game loads offline, <out>/gamedata/.../NPUB30009-SYSNET/SYS-DATA), read by the game itself. An online game
+    plays on a save of its own, so it is named here. T5_COSTUME_SAVE=0 in the extra environment sends none
+    (the opponent then sees the default costumes, as before 1.1.3)."""
+    if not any(env_over.get(k) for k in COSTUME_ONLINE_ENV) or "T5_COSTUME_SAVE" in env_over:
+        return
+    env_over["T5_COSTUME_SAVE"] = os.path.join(out_dir, "gamedata", "dev_hdd0", "home", "00000001", "savedata",
+                                               "NPUB30009-SYSNET", "SYS-DATA")
+
+
 class GameRun:
     """The running game: its process, log file and the last fps line."""
 
@@ -619,6 +634,7 @@ class GameRun:
         if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
+        costume_env(self.out, env_over)
         cmd, env, cwd = run_game.game_command(self.out, env_over)
         if not os.path.exists(cmd[0]):
             raise FileNotFoundError(t("t5dr.exe is not built yet"))

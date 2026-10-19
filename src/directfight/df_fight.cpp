@@ -1331,7 +1331,6 @@ void fight_on_frame(uint32_t f)
             wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
             if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
             write_hud(g_cfg, f);
-            costume_apply(f, session_netplay());
         }
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         /* FIGHT START (lockstep frame 0 is the next frame) at the first frame the
@@ -1349,7 +1348,7 @@ void fight_on_frame(uint32_t f)
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
         pick_fight_start(f);
-        costume_check(f);
+        costume_apply(f, session_netplay());
         for (int p = 0; p < 2; p++) { g_last_chr[p] = g_cfg.chr[p]; g_last_btn[p] = g_cfg.btn[p]; }
         g_session_matches++;
         g_match++;

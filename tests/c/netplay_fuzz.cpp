@@ -15,6 +15,10 @@
  *     there (it used to: "the peer's address changed ... following it"), while a real NAT
  *     rebinding (new packets, or the old address gone quiet) is still followed;
  *   - a joiner never takes an input delay above 30 from the host's HELLO;
+ *   - custom costume tables (COSTUME): a 9,283-byte table in shuffled, repeated pieces is put together
+ *     exactly; pieces that do not add up to their hash, malformed pieces (size, offset, length, more
+ *     than the packet holds) and a table larger than the bound are never taken; the peer's
+ *     acknowledgement with our table's hash stops our resends; a restarted peer starts both over;
  *   - random and mutated packets -- also correctly tagged ones, i.e. a hostile opponent -- in every
  *     mode and phase: no crash, no out-of-bounds access (ASan), the receive state only moves forward.
  *
@@ -202,6 +206,89 @@ static void check_join_delay_is_clamped()
     CHECK(s.delay == 2, "the host's delay 2 was taken as %d", s.delay);
 }
 
+static std::vector<uint8_t> costume_piece(const std::vector<uint8_t>& table, uint32_t hash, uint32_t k, bool keyed,
+                                          uint16_t ack_mask = 0, uint32_t ack_hash = 0)
+{
+    const uint32_t off = k * kCostumeChunk, len = std::min<uint32_t>(kCostumeChunk, (uint32_t)table.size() - off);
+    std::vector<uint8_t> b(sizeof(CostumeExt) + len);
+    CostumeExt x = { hash, (uint16_t)table.size(), (uint16_t)off, (uint16_t)len, ack_mask, ack_hash };
+    memcpy(b.data(), &x, sizeof x);
+    memcpy(b.data() + sizeof x, table.data() + off, len);
+    return packet(PKT_COSTUME, b.data(), b.size(), keyed);
+}
+
+static void check_costume_tables()
+{
+    State& s = S();
+    std::vector<uint8_t> table(9283);
+    for (size_t i = 0; i < table.size(); i++) table[i] = (uint8_t)(i * 7 + 3);
+    const uint32_t h = cos_hash(table.data(), table.size());
+    const uint32_t pieces = cos_pieces((uint32_t)table.size());
+    CHECK(pieces == 10, "a full table in %u pieces", pieces);
+    for (int keyed = 0; keyed < 2; keyed++) {
+        reset(Mode::Host, keyed != 0, keyed == 0);
+        HelloExt x = { 0, 0, 0 };
+        feed(packet(PKT_HELLO, &x, sizeof x, keyed != 0), A);
+        CHECK(s.connected, "handshake (keyed %d)", keyed);
+        const uint32_t order[] = { 9, 3, 3, 0, 7, 1, 1, 2, 8, 5, 4, 6, 6 };
+        uint32_t seen = 0;
+        for (uint32_t k : order) {
+            if (seen != (1u << pieces) - 1) CHECK(!s.cos_peer_done, "taken before all pieces were here");
+            feed(costume_piece(table, h, k, keyed != 0), A);
+            seen |= 1u << k;
+        }
+        CHECK(s.cos_peer_done && s.cos_peer == table, "the shuffled table was not put together (keyed %d)", keyed);
+        CHECK(s.cos_acks_owed > 0, "no acknowledgement owed");
+        /* nothing replaces a table once taken (the peer's game would have to restart) */
+        std::vector<uint8_t> other(table); other[5] ^= 1;
+        feed(costume_piece(other, cos_hash(other.data(), other.size()), 0, keyed != 0), A);
+        CHECK(s.cos_peer == table, "a taken table was changed");
+
+        /* our own table: acknowledged by its hash only */
+        const std::vector<uint8_t> mine(300, 0x5A);
+        costume_set(mine.data(), mine.size());
+        CHECK(s.cos_local_set && !s.cos_peer_has_ours, "our table set");
+        CostumeExt ack = { h, (uint16_t)table.size(), 0, 0, 1, s.cos_local_hash ^ 1 };
+        feed(packet(PKT_COSTUME, &ack, sizeof ack, keyed != 0), A);
+        CHECK(!s.cos_peer_has_ours && s.cos_acked == 1, "a wrong acknowledgement hash was taken");
+        ack.ack_hash = s.cos_local_hash;
+        feed(packet(PKT_COSTUME, &ack, sizeof ack, keyed != 0), A);
+        CHECK(s.cos_peer_has_ours, "the peer's acknowledgement of our table");
+        costume_set(table.data(), table.size());
+        CHECK(s.cos_local.size() == 300, "our table changed within the session");
+
+        /* the peer's game restarts: both tables start over */
+        forget_peer_locked();
+        CHECK(!s.cos_peer_done && s.cos_peer.empty() && !s.cos_peer_has_ours && s.cos_acked == 0, "restart reset");
+    }
+
+    reset(Mode::Join, true);
+    { HelloExt x = { 0, 0, 0 }; feed(packet(PKT_HELLO, &x, sizeof x, true), A); }
+    CHECK(s.connected, "join handshake");
+    /* pieces of a table that do not match its hash: never taken, asked for again */
+    std::vector<uint8_t> bad(table); bad[100] ^= 0xFF;
+    for (uint32_t k = 0; k < pieces; k++) feed(costume_piece(k == 0 ? bad : table, h, k, true), A);
+    CHECK(!s.cos_peer_done && s.cos_peer_mask == 0, "a table that does not match its hash was taken");
+    for (uint32_t k = 0; k < pieces; k++) feed(costume_piece(table, h, k, true), A);
+    CHECK(s.cos_peer_done && s.cos_peer == table, "the table sent again was not taken");
+
+    reset(Mode::Join, true);
+    { HelloExt x = { 0, 0, 0 }; feed(packet(PKT_HELLO, &x, sizeof x, true), A); }
+    auto malformed = [&](CostumeExt x, size_t data, const char* what) {
+        std::vector<uint8_t> b(sizeof x + data, 0x11);
+        memcpy(b.data(), &x, sizeof x);
+        feed(packet(PKT_COSTUME, b.data(), b.size(), true), A);
+        CHECK(s.cos_peer_mask == 0 && !s.cos_peer_done && s.cos_peer.size() <= kCostumeMax, "taken: %s", what);
+    };
+    malformed({ 1, 20000, 0, 1024, 0, 0 }, 1024, "a table above the bound");
+    malformed({ 1, 3000, 100, 1024, 0, 0 }, 1024, "an offset between pieces");
+    malformed({ 1, 3000, 1024, 500, 0, 0 }, 500, "a piece shorter than its place");
+    malformed({ 1, 3000, 2048, 1024, 0, 0 }, 1024, "the last piece too long");
+    malformed({ 1, 3000, 0, 1024, 0, 0 }, 1000, "a piece longer than the packet");
+    malformed({ 1, 3000, 4096, 1024, 0, 0 }, 1024, "a piece after the end");
+    malformed({ 1, 0, 0, 0, 0, 0 }, 0, "an empty acknowledgement");
+}
+
 /* ------------------------------------------------------------------ fuzz */
 
 static uint64_t g_rng = 0x9E3779B97F4A7C15ull;
@@ -212,7 +299,7 @@ static std::vector<uint8_t> random_packet(bool keyed)
     State& s = S();
     const uint32_t kind = rnd() % 10;
     std::vector<uint8_t> body;
-    uint8_t type = (uint8_t)(1 + rnd() % 7);
+    uint8_t type = (uint8_t)(1 + rnd() % 8);
     switch (type) {
     case PKT_HELLO: { HelloExt x = { rnd() % 3 ? 0u : rnd(), rnd(), rnd() }; body.assign((uint8_t*)&x, (uint8_t*)&x + sizeof x); break; }
     case PKT_PING: { PingExt x = { (uint8_t)rnd(), rnd(), rnd(), rnd() % 2 ? 0u : rnd(), rnd(), (uint8_t)rnd() }; body.assign((uint8_t*)&x, (uint8_t*)&x + sizeof x); break; }
@@ -227,6 +314,15 @@ static std::vector<uint8_t> random_packet(bool keyed)
         for (uint32_t k = 0; k < count; k++) { WireIn w = { (uint16_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd() }; body.insert(body.end(), (uint8_t*)&w, (uint8_t*)&w + sizeof w); }
         for (uint32_t k = 0; k < nh; k++) { WireHash w = { rnd() % 3 ? s.remote_contig + rnd() % 64 : rnd(), ((uint64_t)rnd() << 32) | rnd() }; body.insert(body.end(), (uint8_t*)&w, (uint8_t*)&w + sizeof w); }
         for (uint32_t k = 0; k < nb; k++) { WireBar w = { rnd() % 3 ? rnd() % 8 : rnd(), rnd() % 3 ? s.remote_contig + rnd() % 64 : rnd() }; body.insert(body.end(), (uint8_t*)&w, (uint8_t*)&w + sizeof w); }
+        break;
+    }
+    case PKT_COSTUME: {
+        const uint16_t total = (uint16_t)(rnd() % 3 ? rnd() % 4096 : rnd());
+        const uint16_t off = (uint16_t)(rnd() % 3 ? (rnd() % 5) * kCostumeChunk : rnd());
+        const uint16_t len = (uint16_t)(rnd() % 3 ? std::min<uint32_t>(kCostumeChunk, total > off ? total - off : 0) : rnd() % 1500);
+        CostumeExt x = { rnd() % 4, total, off, len, (uint16_t)rnd(), rnd() % 4 };
+        body.assign((uint8_t*)&x, (uint8_t*)&x + sizeof x);
+        body.resize(body.size() + std::min<uint32_t>(len, 1500), (uint8_t)rnd());
         break;
     }
     default: type = (uint8_t)rnd(); break;                          /* BYE or an unknown type */
@@ -261,6 +357,8 @@ static void fuzz(uint32_t iterations)
             CHECK(s.remote_contig >= contig, "remote_contig went back %u -> %u", contig, s.remote_contig);
             /* (peer_ack may start again: a restarted peer process before any input was exchanged) */
             CHECK(s.delay >= 0 && s.delay <= kMaxDelay, "delay %d", s.delay);
+            CHECK(s.cos_peer.size() <= kCostumeMax && (!s.cos_peer_done || cos_hash(s.cos_peer.data(), s.cos_peer.size()) == s.cos_peer_hash),
+                  "costume table %zu bytes, done %d", s.cos_peer.size(), (int)s.cos_peer_done);
             contig = s.remote_contig;
             if (g_fail > 20) return;
         }
@@ -291,6 +389,7 @@ int main(int argc, char** argv)
     check_wrong_tags_change_nothing();
     check_replays_do_not_move_the_session();
     check_join_delay_is_clamped();
+    check_costume_tables();
     const int unit = g_checks;
     fuzz(iterations);
     printf("unit checks %d, fuzz iterations %u\n", unit, iterations);

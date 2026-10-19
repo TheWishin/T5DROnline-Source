@@ -32,6 +32,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 #include "df.h"
@@ -42,6 +43,8 @@ extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_costume_set(const unsigned char* p, unsigned n);
 extern "C" int  t5_netplay_costume_local_set(void);
 extern "C" int  t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n);
+extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
+                                      uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 
 namespace df {
 
@@ -113,6 +116,8 @@ int item_char_of(int side, uint32_t* objp)
 }
 
 } // namespace
+
+void costume_enum(uint32_t f);
 
 /* Start of a session (or an offline fight): this PC's table, handed to netplay once per session. */
 void costume_session(uint32_t f, bool net)
@@ -189,7 +194,28 @@ void costume_apply(uint32_t f, bool net)
     }
     g_written_hash = h;
     g_written = true;
+    costume_enum(f);
     note("frame %u: costumes written: %s; blocks hash %016llX", f, line.c_str(), (unsigned long long)h);
+}
+
+/* T5_COSTUME_ENUM=c[,c...] (exploration): the shop's item ids per costume and category
+ * (0x152470(character, costume, category, index)), logged at FIGHT START. */
+void costume_enum(uint32_t f)
+{
+    const char* e = t5_env("T5_COSTUME_ENUM");
+    if (!e || !*e) return;
+    for (const char* p = e; *p;) {
+        char* z; const long c = strtol(p, &z, 0); if (z == p) break; p = z; while (*p == ',') p++;
+        for (int k = 0; k < 3; k++) for (int cat = 0; cat < 4; cat++) {
+            std::string ids;
+            for (int i = 0; i < 24; i++) {
+                const int64_t id = (int32_t)ppu_guest_call_ct(0x152470, 0x470540, (uint64_t)c, (uint64_t)k, (uint64_t)cat, (uint64_t)i, 0, 0, 0, 0);
+                if (id < 0) break;
+                char b[16]; snprintf(b, sizeof b, " %llX", (long long)id); ids += b;
+            }
+            note("frame %u: items of char %ld costume %d category %d:%s", f, c, k, cat, ids.c_str());
+        }
+    }
 }
 
 /* FIGHT START: the blocks are still what was written (nothing in the game mode's set-up rebuilt them). */

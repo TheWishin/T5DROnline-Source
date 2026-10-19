@@ -297,7 +297,8 @@ class OnlineView:
                 ("length", t("Password: 6 to 128 characters")),
                 ("same", t("Both passwords the same")),
                 ("codes", t("You get recovery codes once: the only way back in if you forget the password")))):
-            lab = ttk.Label(self.rules, text="•  " + text, style="Card.Small.TLabel")
+            lab = self.wrap(ttk.Label(self.rules, text="•  " + text, style="Card.Small.TLabel", justify="left"),
+                            card, 50)
             lab.grid(row=i, column=0, sticky="w")
             self.rule_labels[key] = (lab, text)
         for var in (tab.name_var, tab.pw_var, self.pw2_var):
@@ -660,7 +661,7 @@ class OnlineView:
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 120, 60, 72, 86, 104, 68), height=6)
+                                       (130, 150, 76, 72, 86, 110, 68), height=6)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -761,7 +762,7 @@ class OnlineView:
                                                                          "bold"))
         icon.grid(row=0, column=0, sticky="nw", padx=(0, px(10)))
         self.err_label = self.wrap(ttk.Label(err, textvariable=self.err_var, style="Err.TLabel", justify="left"),
-                                   box, 140)
+                                   box, 230)
         self.err_label.grid(row=0, column=1, sticky="w")
         ttk.Button(err, text=t("Dismiss"), style="Err.Ghost.TButton", command=self.clear_error).grid(
             row=0, column=2, sticky="e")
@@ -1216,7 +1217,7 @@ class OnlineView:
         else "SET, GAME n" from the server's set info from the second game on."""
         own = self.tab.set_var.get().strip()
         if own:
-            return own.upper()
+            return own.replace(" -- ", " · ").upper()
         st = (ev or {}).get("set") or {}
         if st.get("ranked") and int(st.get("game") or 0) > 1:
             return t("SET · GAME {game}", game=st["game"])
@@ -1362,8 +1363,11 @@ class OnlineView:
         if set_text:
             sub += "  \u00b7  " + set_text[:1].upper() + set_text[1:]
         ttk.Label(banner, text=sub, style=pre + "Bold.TLabel").grid(row=0, column=1, sticky="sw", padx=(px(16), 0))
-        ttk.Label(banner, text=info.get("text", ""), style=pre + "Small.TLabel").grid(row=1, column=1, sticky="nw",
-                                                                                        padx=(px(16), 0))
+        line = info.get("text", "")
+        if se and (se.get("rating") or {}) and ";" in line:
+            line = line.split(";")[0]                     # (the rating change has its own row below)
+        self.wrap(ttk.Label(banner, text=line, style=pre + "Small.TLabel", justify="left"), banner, 330).grid(
+            row=1, column=1, sticky="nw", padx=(px(16), 0))
         score = ev.get("score")
         if se and isinstance(se.get("wins"), (list, tuple)) and len(se["wins"]) == 2:
             sc = self.body(banner, pre.rstrip(".") + "Body.TFrame")         # a set: the games, from this side

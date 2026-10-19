@@ -341,6 +341,12 @@ class SyntheticLift(unittest.TestCase):
         log = self.check(self.lift("auto", []))
         self.assertRegex(log, r"(?m)^  jobs: \d+( \(serial lift\))? -- \d+ processors?")
 
+    def test_low_memory_means_serial(self):
+        log = self.check(self.lift("lowmem", [], T5DR_LIFT_TEST_FREE_MB="1100"))
+        self.assertRegex(log, r"(?m)^  jobs: 1 [(]serial lift[)] -- [0-9]+ processors?, (at most 8 by default, )?"
+                              r"only 1[.]1 GB free memory: room for 0 worker[(]s[)] of ~128 MB next to ~1024 MB")
+        self.assertNotIn("parallel lift", log)
+
     def test_dead_worker(self):
         log = self.check(self.lift("kill", ["--jobs", "2"], T5DR_LIFT_TEST_KILL="3"),
                          ["stopped (exit code 1) while it lifted chunk 3",

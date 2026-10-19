@@ -126,11 +126,32 @@ Try "Redo every step" once if you suspect a damaged earlier result.
 
 ### The build is slow, or the PC is unresponsive
 
-The translate step uses all CPU cores. Tick **Keep the PC responsive (slower)**
-before you start. Close other programs. Disk space: you need about 1.5 GB free.
+The translate step uses up to 8 CPU cores (fewer when little memory is free).
+Tick **Keep the PC responsive (slower)** before you start. Close other programs. Disk space: you need about 1.5 GB free.
 The build takes about 90 seconds on a fast 16-core PC. On slower PCs we expect
 minutes (an estimate). It runs once. **Cancel** is safe: BUILD GAME continues
 where it stopped.
+
+### The build stops at "Translate code"
+
+"Translate code" runs several helper processes side by side. Up to 1.1.1, an
+antivirus or a lack of free memory could stop one of them, and the build then
+waited for it for ever (a player's build sat at 68 %). Since 1.1.2 the build
+notices and does that part itself; the result is the same. What the log shows:
+
+- `jobs: 6 -- 8 processors, only 1.8 GB free memory: ...`: how many helpers it
+  starts and why. With little free memory it starts fewer, or none
+  (`serial lift`: one process does everything, a bit slower).
+- `... still lifting: 3 chunks left, elapsed 1.5m`: about every 30 seconds while
+  it works. Wait.
+- `parallel lift: worker process 2 stopped ...` or `no chunk finished for ...`:
+  a helper stopped or got stuck. The build goes on by itself.
+
+If the log prints nothing at all for 3 minutes, the Build tab says so. Close
+other programs (browser, games) to free memory and wait a little. If nothing
+changes, press **Cancel**, then **BUILD GAME** again. If it happens again,
+send `native\build.log` (**Report a problem...**) and look at
+[SmartScreen and antivirus](#smartscreen-and-antivirus).
 
 ### Which folder? (a warning in the Build tab)
 

@@ -1,8 +1,8 @@
 diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
-index a5e0d95..020fba6 100644
+index a5e0d95..7606dbd 100644
 --- a/tools/ppu_lifter.py
 +++ b/tools/ppu_lifter.py
-@@ -4547,6 +4547,23 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+@@ -4547,6 +4547,27 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
  # process pool. Workers re-disassemble just their own byte ranges from the
  # raw segment blobs, so the big instruction list never crosses the process
  # boundary. Discovery and emission stay serial in the parent.
@@ -23,17 +23,22 @@ index a5e0d95..020fba6 100644
 +#    joining a worker after all results were drained (main blocked for minutes
 +#    at 100%, one idle worker left alive).
 +# The default worker count also fits the free memory (_auto_jobs).
++# Test hooks (environment): T5DR_LIFT_TEST_KILL / T5DR_LIFT_TEST_HANG = chunk
++# numbers at which a worker dies / stops working, T5DR_LIFT_TEST_FREE_MB = the
++# free memory the default worker count sees, T5DR_LIFT_STALL_SECONDS and
++# T5DR_LIFT_HEARTBEAT_SECONDS replace the two intervals.
  # ---------------------------------------------------------------------------
  
  _WORKER_STATE: dict = {}
-@@ -4598,43 +4615,382 @@ def _worker_lift(task):
+@@ -4598,43 +4619,383 @@ def _worker_lift(task):
      return idx0, results, lifter.call_targets, lifter.branch_targets
  
  
 +# Measured on the real lift of Tekken 5 DR (22,550 functions, Windows, 2026-10-19):
-+# a worker's working set peaks at 33-55 MB (bigger chunks, i.e. fewer workers,
-+# need more) and this process at ~585 MB (it ends up holding every lifted body,
-+# then writes the C++). The plan keeps a wide margin over both.
++# a worker's working set peaks at 33-67 MB (bigger chunks, i.e. fewer workers,
++# need more: 8 workers 43 MB, 2 workers 67 MB) and this process at ~585 MB (it
++# ends up holding every lifted body, then writes the C++). The plan keeps a wide
++# margin over both.
 +LIFT_WORKER_MB = 128
 +LIFT_MAIN_MB = 1024
 +# More workers start slower than they save: the whole lift took 20 s with 32
@@ -437,7 +442,7 @@ index a5e0d95..020fba6 100644
  
      for idx0 in sorted(results_by_idx):
          for name, s, e, body, calls, ft in results_by_idx[idx0]:
-@@ -4664,10 +5020,10 @@ def main() -> None:
+@@ -4664,10 +5025,10 @@ def main() -> None:
      parser.add_argument("--names", metavar="FILE", default=None,
                          help="JSON name map from ghidra_names.py "
                               "({\"0xADDR\": {\"label\": ...}}); emitted as comments")
@@ -452,14 +457,19 @@ index a5e0d95..020fba6 100644
      parser.add_argument("--code-end", type=lambda x: int(x, 0), default=None,
                          help="Highest valid executable address (exclusive). "
                               "Branch/call/jump-table targets at or above this are "
-@@ -5170,8 +5526,13 @@ def main() -> None:
+@@ -5170,8 +5531,18 @@ def main() -> None:
                  loaded += 1
          print(f"  Loaded {loaded} recovered names from {args.names}")
  
 -    if args.jobs > 1:
 -        _parallel_lift(lifter, func_bounds, seg_blobs, big_endian, args.jobs)
 +    if args.jobs is None:
-+        jobs, why = _auto_jobs(os.cpu_count(), _free_memory_bytes())
++        free = _free_memory_bytes()
++        try:                        # test only: pretend this many MB are free
++            free = int(os.environ["T5DR_LIFT_TEST_FREE_MB"]) << 20
++        except (KeyError, ValueError):
++            pass
++        jobs, why = _auto_jobs(os.cpu_count(), free)
 +    else:
 +        jobs, why = max(1, args.jobs), "from --jobs"
 +    print(f"  jobs: {jobs}{' (serial lift)' if jobs == 1 else ''} -- {why}", flush=True)
@@ -468,7 +478,7 @@ index a5e0d95..020fba6 100644
      else:
          _t0 = time.time()
          _n_funcs = len(func_bounds)
-@@ -5232,6 +5593,9 @@ def main() -> None:
+@@ -5232,6 +5603,9 @@ def main() -> None:
                f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
      print(f"  {len(lifter.functions)} functions lifted")
      print(f"  {len(lifter.call_targets)} unique call targets")

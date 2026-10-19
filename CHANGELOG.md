@@ -61,6 +61,14 @@ new lobby features need the lobby server updated; older launchers keep working w
   shows those stages sharp and without the glow. It only changes your picture; online, both
   players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
 
+### Building the game
+- **The build no longer stops at "Translate code".** A player's build sat at 68% for good: when one of the
+  helper processes that translate the code side by side stopped (an antivirus or too little free memory can do
+  that), the build waited for it forever. Now it notices, translates that part itself and goes on, with the same
+  result. It also writes a line about every 30 seconds while it works and starts fewer helpers when little memory
+  is free. Should the step still print nothing for 3 minutes, the Build tab says so and what to do (ps3recomp patch
+  0048, docs/TROUBLESHOOTING.md "The build stops at "Translate code"").
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

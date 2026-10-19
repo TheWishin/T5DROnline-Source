@@ -436,6 +436,8 @@ class _PickPad:
         self.p = p
         self.pad_path = os.path.join(p.dir, "pad.txt")
         self.active = True               # a picker of an earlier match must not press into this one
+
+    @property
     def log_path(self):
         g = self.p.game()
         return g.log_path if g is not None else None

@@ -101,7 +101,8 @@ T5_DF_PICK=<seconds>                                 pick=<seconds> for fight li
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
-  `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends").
+  `T5_DF_STUCK_SECONDS` (persistent game, "After a session ends"),
+  `T5_DF_SELECT_STUCK_SECONDS`, `T5_DF_READER_GUARD=0` ("Select stall after a fight").
 
 Timeline on this PC (60 fps, frames counted from the first frame after boot):
 title mode at ~890, start-VS call at +30, select mode at ~925, both characters
@@ -713,7 +714,9 @@ min-vblanks word it zeroed at its start (0x106D4D98), and the sound hooks
 forget the session (a session that ended inside a re-simulation left them
 "re-simulating": every later play call matched against stale entries, the
 library tick skipped). A reset or leave that gets nowhere for 60 s
-(`T5_DF_STUCK_SECONDS`, 0 = never) writes `state.json` `error`/`stuck` and ends
+(`T5_DF_STUCK_SECONDS`, 0 = never; since 1.1.2 also at least 20 frames per
+second of it, so a game its PC starves is not taken for stuck: "Select stall
+after a fight") writes `state.json` `error`/`stuck` and ends
 the process with exit code 6; the launcher starts a fresh game for the next
 match and says so on the Play tab.
 
@@ -891,6 +894,90 @@ restart: a select screen entered from the title after a fight that stayed at
 select phase 1 for good (offline, a heavily loaded PC, pf_off2); the same wait
 is in a main-build log without any restart (build/bo3/runs/e3/p2, 42 s) --
 the boot-state copy and the game's file reader, fixed in the next section.
+
+## Select stall after a fight (select-stall, 1.1.2)
+
+**The bug.** A select screen that a persistent game opens from the title after a
+fight -- a new opponent, a room's Ready again, a set game played again --
+sometimes stayed at select phase 1 (the phase word 0x1008F070) for good: offline
+on a heavily loaded PC (build/selrestart pf_off2: 4,400+ frames until the run
+ended) and in a lobby match of the main build (build/bo3/runs/e3/p2: 46 s until
+the next command, then the reset waited in mode 6). The players saw a frozen
+character select ("Rematch / character select hangs").
+
+**What phase 1 waits for.** The select mode's exec (0x5AF04, phase table at
+0x5B090): phase 0 waits for the scene's resource manager and asks for three
+loads (0x275CBC: the portrait/preview resources 61/62, 0x119FF4's, 44); phase 1
+waits until those resources are loaded (0x2739F4 -> the resource object's state
++0x48 = 7) and goes to phase 2. Every scene load goes through the game's async
+reader (ZsAread): the main thread's reader service (0x9A784, once per frame)
+starts the request at the head of its queue (service object 0x1009FE28: +8
+busy = 1, posts the reader thread's request semaphore, id at +0), and while busy
+takes the reader thread's completion token with a trywait (semaphore id at +4);
+requests come from a pool of 64 x 0x28 bytes at 0x1009FF68 (+0 status, +4
+next). In both stalls the select had asked for its loads, but no file was ever
+opened again: the reader service said "busy" with 5 requests queued, the
+reader thread sat parked on its request semaphore, and no completion token
+would ever come.
+
+**Cause.** All of the reader's data (0x1009FE20..0x100A0988: thread id, service
+object, path buffer, quit flag, request pool, config copy) lies inside the
+fight-state block the boot-state copy takes and puts back ("Persistent game":
+0x1008E000..0x100A5000). The copy is taken 30 frames into the boot title,
+right before the first start VS. The title starts a read there (T55DATA1
+entry 0x105, 1.2 MB): on a quiet PC it is done after 30 frames, on a loaded PC
+or a slow disk it is not, and the copy then says "busy, the title's request
+queued". At the first title visit after a fight the copy goes back while the
+reader is idle: the service waits for the completion of a read the reader
+thread never got, every later request queues behind it, and the select's
+set-up never ends. The reverse (copy idle, put back during a read) drops the
+read in flight from the queue and leaves its token to complete the next
+request before that one's data is read. Reproduced every time with
+`PS3_TEST_FS_DELAY=150` (150 ms per file open/read): the copy logs `reader busy
+1, queue 0x1009FF68 (1 request(s))`, the first restore puts that back, the next
+select stays at phase 1 with 5 requests queued and 0 tokens (220 s until the run
+gave up). A CPU hog alone (3 busy processes on the game's 4 processors) never
+caught the read in flight at the copy point; a slow disk does.
+
+**Fix** (`df_fight.cpp`, no runtime patch, no game logic changed):
+- The boot-state copy never covers the reader's data (`kReaderData`): the
+  default area is split around it (an area from `T5_DF_FRESH_RANGES` too). At an
+  idle reader those bytes equal the boot copy's anyway (`T5_DF_FRESH_SCAN` over
+  them: no difference after fights), so nothing else the restore does changes.
+- The title waits for the reader before the copy is taken or put back and
+  before start VS: no request queued or in flight (`reader_idle`), at most 10 s
+  from the title's start (then it goes on; safe, the reader is not copied).
+  Logged as "waiting for the title's loads before start VS".
+- Backstop (`select_load_check`): a select screen still loading (Select, or the
+  in-game select's Pick before the screen takes input) whose reader is wedged --
+  busy, no completion token, the reader thread parked on its request semaphore
+  -- for `T5_DF_SELECT_STUCK_SECONDS` (10), or that has nothing to load (reader
+  idle, empty queue, phase word and modes unchanged) for `T5_DF_STUCK_SECONDS`
+  (60), logs what it waits on and ends the game with exit code 6, as a stuck
+  reset does (the launcher starts a fresh game for the match; match_driver
+  reports `game_stuck`, no strike). A slow read never trips it: the reader
+  thread is then waiting for its data, not for a request.
+- Stuck exits need frames too (`kStuckMinFps` = 20 frames per second of the
+  wait): the checks run at frame boundaries, so a game really stuck in a mode
+  change keeps its frame rate, while one its PC starves keeps going slowly
+  (select_stall_test O1, the old way under a CPU hog: 0.8-2.7 fps for a minute,
+  and the reset's 60 s ended the game in the frame its select screen had loaded).
+- `T5_DF_READER_GUARD=0` = the old way (reader copied, no wait), for comparisons;
+  the reader's state is in the copy/restore lines and the select's wait lines.
+
+**Test:** `tools/select_stall_test.py` -- one persistent game, offline; every
+cycle is a "fight" command for a new session 0.5-4 s after the last FIGHT START,
+so the old fight is left in its loading, intros or fight, the game goes to the
+title, puts the boot state back and drives a new select screen into the next
+fight. A cycle passes at FIGHT START with no fault line; a cycle without one is a
+stall (reader, pool and threads dumped through PS3_DEBUG).
+
+    python tools/select_stall_test.py --exe <t5dr.exe> --out <dir> [--cycles 30] [--fs-delay MS]
+        [--cpus N --cpu-first K --hog H] [--env K=V] [--keep-going]
+
+**Results** (this PC, 2026-10-19, build/selstall/runs; main dfb6ee4 + d88c206
+merged, so with 0047's power saving):
+RESULTS_PLACEHOLDER
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

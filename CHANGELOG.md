@@ -5,10 +5,16 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
-**Friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The friends list needs the
-lobby server updated; older launchers keep working with it and see nothing new.
+**Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The
+new lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
 
 ### Online
+- **Opponents nearby first.** The ping shown when a match is found is now the best path the
+  two of you can get, through the nearest relay server: two players in California see about
+  50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents
+  with a low ping first and widen the search while you wait (any opponent after 30 s in quick,
+  60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
+  before.
 - **Friends** (accounts): add a friend by account name on the Online tab's new **Friends** page; they accept or
   decline. The list shows who is online, searching, in a match or offline, and changes by itself. Remove a friend
   there too. Blocking a player ends the friendship.

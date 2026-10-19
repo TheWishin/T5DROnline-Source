@@ -79,6 +79,14 @@ class Config:
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
+    # The queues pair players whose estimated ping (the best relay path: docs/RANKED.md "Matchmaking") fits a window
+    # that starts at T5L_PING_START ms and grows by T5L_PING_WIDEN ms (quick: T5L_QUICK_PING_WIDEN) per second the
+    # two have waited; after T5L_PING_ANY_SECONDS (quick: T5L_QUICK_PING_ANY_SECONDS) any ping goes (0 = never)
+    ping_start: float = 80.0        # T5L_PING_START
+    ping_widen: float = 10.0        # T5L_PING_WIDEN (ranked queue)
+    ping_any_seconds: float = 60.0  # T5L_PING_ANY_SECONDS (ranked queue)
+    quick_ping_widen: float = 20.0  # T5L_QUICK_PING_WIDEN
+    quick_ping_any_seconds: float = 30.0  # T5L_QUICK_PING_ANY_SECONDS
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
     max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
     # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only

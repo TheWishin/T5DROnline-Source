@@ -1353,7 +1353,7 @@ class OnlineView:
                   foreground=theme.ping_color(ms)).pack(side="left")
         ttk.Label(prow, text="  " + theme.ping_word(ms), style="Card.Bold.TLabel").pack(side="left")
         if ms is not None:
-            ttk.Label(prow, text="  " + t("(estimate through the server)"), style="Card.Faint.TLabel").pack(
+            ttk.Label(prow, text="  " + t("(estimated before you connect)"), style="Card.Faint.TLabel").pack(
                 side="left")
         if tab.ready_sent:
             ttk.Label(left, text=t("Accepted. Waiting for your opponent..."), style="Card.Accent.TLabel").grid(

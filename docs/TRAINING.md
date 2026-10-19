@@ -45,14 +45,16 @@ without it the Windows display language): German labels are `GEBLOCKT`,
 
 Other variables: `T5_TRAINING_ROWS=4..24` (input rows, default 14),
 `T5_TRAINING_LOG=<file>` (one line per new input row and per frame-data
-result; the tests read it), `T5_TRAINING_STATS=1` (the hook's CPU time every
-600 fight frames), `T5_TRAINING_TRACE=<file>` (research: the fight block of
-every live frame, see below).
+result, and when it is shown or hidden; the tests read it),
+`T5_TRAINING_STATS=1` (the hook's CPU time every 600 fight frames),
+`T5_TRAINING_AB=<n>` (cost measurement: everything off in every other block of
+n fight frames, see "Cost"), `T5_TRAINING_TRACE=<file>` (research: the fight
+block of every live frame, see below).
 
 Button numbers are the game's default button setting (1 = Square, 2 =
-Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). If the button layout is
-changed in the game's own Options menu, the display still names the
-PlayStation buttons by their default meaning.
+Triangle, 3 = Cross, 4 = Circle; keyboard A S Z X). The display shows the
+pad buttons that were pressed: if the button layout was changed in the game's
+own Options menu, Square still shows as 1 even if it is a kick there.
 
 ## It never changes the game
 
@@ -95,6 +97,7 @@ overlay reads:
 | Offset | Meaning |
 |---|---|
 | +0x15C | attack class of the current move: 0 when not attacking; block and hit reactions have 0 or >= 0x10000 |
+| +0x168 | the current move (animation): 0x8001xxxx standing; 0x8002xxxx..0x80FFxxxx the defaults of other stances, among them lying on the ground after a sweep or a throw (0x8004..0x8007 seen) |
 | +0x1D2 | 1 = the fighter stands on the right side (forward is LEFT) |
 | +0x20C | bit 24: a new move (animation) started this frame |
 | +0x214 | bits 16-17: the move's attack is active this frame |
@@ -120,7 +123,9 @@ test drives it) does:
    its can-act window up to 5 frames early to keep the press, and starts the
    move at the end of the stun; the frame before that move counts (a press
    that started nothing: the window counts after 20 frames);
-5. a defender that cannot act 90 frames after the attacker could: **knockdown**;
+5. a defender that lies on the ground during the exchange (a sweep, a throw),
+   or cannot act 90 frames after the attacker could: **knockdown**, without a
+   number (it could act again lying down, which says little);
 6. an attack whose active frames touched nothing: **whiff**, with the frames
    until its user could act again.
 
@@ -130,8 +135,9 @@ jab came out at the first frame its fighter was able to. The difference of the
 two jab starts is the true frame advantage; it matched the overlay's number in
 every case: Jin's jab (1) is i10, **+3 on block, +9 on hit** (P1 or P2
 attacking, defender idle or pressing), whiffs 25 frames. Other values the
-traces gave: Jin d+4 i16, -15 on block, -4 on hit; a throw i12. In Practice
-Lili's jab against the dummy: i10, +4 on hit.
+traces gave: Jin d+4 i16, -15 on block, -4 on hit; a throw i12 (knockdown).
+In Practice Lili's jab against the dummy: i10, +4 on hit; her d+4 i16,
+knockdown.
 
 These are the game's own mechanics (who can start a move first). Published
 frame data for other Tekken games often says "+1 / +8" for a jab; the numbers
@@ -185,7 +191,8 @@ own resolution and stays sharp at any Internal resolution and window size.
   sequences shaped like the traced exchanges (jab +3 on block, +9 on hit, P2
   attacking, a slow low -15, a defender pressing in its stun, a press that
   starts nothing, whiff 25, walking and backdashes give nothing, a string, a
-  jab mashed after recovery, a knockdown, a counter hit); the font (every
+  jab mashed after recovery, a sweep that leaves the defender lying, a
+  defender that cannot act for long, a counter hit); the font (every
   character used has its own glyph, no two letters, digits or arrows alike) and
   the layout (whole pixels, whole font pixels at 1366x768 ... 3840x2160, the
   letterbox of a 16:10 window, alignment, shadows, UTF-8, unpublished lists);
@@ -195,11 +202,22 @@ own resolution and stays sharp at any Internal resolution and window size.
 - checks the launcher setting (default, every choice, the two options, a
   broken saved value) and that every choice has a German text.
 
-In the game: Practice through the smoke harness's menu driver with the overlay
-on, scripted attacks and backbuffer read-backs (`RSX_TEST_BB_SHOT`): the panels
-in place, the input rows and the frame-data lines as listed in the log; the
-test card at 1920 x 1080 (`RSX_OVERLAY_TEST=1`). The smoke suite (quick) runs
-without the overlay as before.
+In the game:
+
+- `python tools/training_check.py [--exe ...]`: one game in local lockstep
+  (both players scripted frame by frame) with the overlay on: P1's and P2's jab
+  on block and on hit, with the attacker or the defender pressing the jab again
+  as early as possible, and a whiff. PASS = every result is i10 +3 on block,
+  i10 +9 on hit, 25 frames for the whiff (on the final build: 25 results, all
+  as expected).
+- Practice through the smoke harness's menu driver with the overlay on,
+  scripted attacks and backbuffer read-backs (`RSX_TEST_BB_SHOT`): the panels
+  in place, the input rows (the dummy's CPU inputs included) and the
+  frame-data lines as in the log, German texts with a German Windows; back to
+  the title: hidden (`hide phase 0` in the log, nothing on the title screen);
+  the test card at 1920 x 1080 (`RSX_OVERLAY_TEST=1`).
+- The smoke suite (quick) runs without the overlay, as players with the
+  setting Off and every existing test do.
 
 ## Limits
 
@@ -209,6 +227,7 @@ without the overlay as before.
   from the frame that just ran, and the present of that next frame shows it.
   The numbers themselves are exact.
 - Two attacks hitting in the same frame (a trade) give one of the two results.
-- Throws, knockdowns and juggles: the startup is right; the advantage of a
-  throw is measured until the thrown fighter gets up, a knockdown shows
-  `KNOCKDOWN` without a number.
+- Throws, sweeps and juggles: the startup is right; when the defender ends
+  up on the ground the result is `KNOCKDOWN` without a number. Juggles are one
+  exchange (the last hit counts); a juggle that ends without a knockdown shows
+  the advantage after the last hit.

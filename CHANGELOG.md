@@ -3,6 +3,18 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased (for 1.1.2)
+
+### Replays
+- **Every online match is saved as a replay** (a few KB each, in `native\replays`): both players'
+  inputs frame by frame, the random seeds and sync points of the netcode, each match's fighters,
+  costumes, stage and result. The new **Replays** tab lists them (date, fighters, result,
+  opponent); **Watch** plays the match again in the game exactly as it happened and checks it
+  against the live match while it plays (the tab says "identical to the live match" at the end).
+  START pauses, R1 switches to double speed, SELECT ends the replay. A rematch is shown after the
+  matches before it, which run fast. Recording can be switched off, and the players' names can be
+  left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

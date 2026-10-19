@@ -418,6 +418,21 @@ class App(tk.Tk):
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
+        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        unl = ttk.LabelFrame(left, text="  " + t("Unlocks") + "  ", padding=(12, 6))
+        unl.pack(fill="x", pady=(6, 0))
+        self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
+        self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
+                        variable=self.unlock_stages_var, command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
+                        variable=self.unlock_items_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+            "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         if core.I18N:
@@ -861,6 +876,9 @@ class App(tk.Tk):
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()
         self.settings["low_priority"] = bool(self.lowprio_var.get())
+        if hasattr(self, "unlock_stages_var"):
+            self.settings["unlock_stages"] = bool(self.unlock_stages_var.get())
+            self.settings["unlock_items"] = bool(self.unlock_items_var.get())
         if hasattr(self, "language_var"):
             self.settings["language"] = self.language_var.get()
         self.settings.save()

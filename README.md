@@ -138,6 +138,19 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
+- **Settings** -> **Unlocks** (offline play; both Off by default):
+  - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
+    after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
+    and the rest, without clearing Arcade. Your save is not changed: switched off, the
+    game is as before.
+  - **Unlock all customization items**: everything in **ITEM SHOP & EQUIP**
+    (after picking a fighter in Arcade, Ghost or Survival) costs 0 Fight Money.
+    What you take stays in your save like a bought item, also after switching
+    it off; the launcher backs up your save once before the first game with it
+    (in `save-backups` in the game's folder; copy it back to undo).
+  - Online play does not use either: there both players always have the same
+    stages to pick from and the default costumes, whatever their saves and
+    settings (the lobby picks the stage).
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.

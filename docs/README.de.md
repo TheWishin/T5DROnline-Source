@@ -125,6 +125,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Online input delay | Online-Input-Delay |
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
+| Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
 
 **BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -138,6 +139,21 @@ Sprachen gleich.
   Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
   auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
   jeder Spieler selbst wählen.
+- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; beides
+  ist anfangs aus):
+  - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach
+    etwa 50 Kämpfen verdient, ein paar Arcade-Durchgängen) gibt es in Arcade,
+    VS, Practice und den anderen Modi, ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird
+    nicht verändert: Ausgeschaltet ist das Spiel wie vorher.
+  - **Alle Customize-Items freischalten**: Alles im **ITEM SHOP & EQUIP** (nach
+    der Kämpferwahl in Arcade, Ghost oder Survival) kostet 0 Fight Money. Was du
+    dir nimmst, bleibt in deinem Spielstand wie ein gekauftes Item, auch nach
+    dem Ausschalten; der Launcher sichert deinen Spielstand vor dem ersten Spiel
+    damit einmal (im Ordner `save-backups` im Spielordner; zum Rückgängigmachen
+    zurückkopieren).
+  - Online wird beides nicht benutzt: Dort haben beide Spieler immer dieselben
+    Stages zur Wahl und die Standard-Kostüme, egal was in ihren Spielständen
+    und Einstellungen steht (die Stage wählt die Lobby).
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.

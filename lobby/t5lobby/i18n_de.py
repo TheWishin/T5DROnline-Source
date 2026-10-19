@@ -486,6 +486,17 @@ MESSAGES = {
         "Das Bild wird auf das Fenster skaliert; wie scharf es ist, hängt von der internen "
         "Auflösung ab. Du kannst auch an den Rändern des Fensters ziehen. Alt+Enter oder F11 "
         "schaltet im Spiel auf randloses Vollbild um.",
+    "Unlocks": "Freischaltungen",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Alle Stages freischalten (die Tekken-5-Stages, ohne den Arcade-Modus durchzuspielen)",
+    "Unlock all customization items (free in the item shop)":
+        "Alle Customize-Items freischalten (gratis im Item-Shop)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Nur offline (Arcade, VS, Practice und der Rest). Dein Spielstand wird nicht verändert; Items, die du dir "
+        "gratis nimmst, bleiben dir (der Spielstand wird vorher gesichert, in save-backups). Online bekommen beide "
+        "Spieler immer dieselben Stages und die Standard-Kostüme.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",

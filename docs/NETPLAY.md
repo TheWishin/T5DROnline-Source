@@ -906,10 +906,107 @@ holding the local player and pressed START into the running fight; fixed in
 `df_fight.cpp`, docs/DIRECTFIGHT.md "A match end that a rollback takes back".
 
 **Left open.** Two PCs that differ in the CPU's make (Intel vs AMD) or a real
-display at 240/500 Hz were stood in for, not used. The private generator
-makes effect particles and stage emitters differ between the two PCs' screens
+display at 240/500 Hz were stood in for, not used. The private generators
+make effect particles and stage emitters differ between the two PCs' screens
 (display only, as the camera may). The NU::File::RequestManager abort under
 heavy rollback (2 of ~110 matches here) is the rollback-crash agent's.
+
+## Desync hunt 2: stage 27 (branch desync-hunt-2, 2026-10-19)
+
+After the first hunt about 1 in 240 real matches still went apart: in the
+e2e gate on 1c4cd05 (and fd9ed5e) Steve vs Hwoarang on stage 27, in a
+rematch chain, ~900 frames into the fight, in rollback and in lockstep, the
+same winner, the camera words 0x10099710, 0x100A09C0, 0x100A3B40 and
+0x100A3BB4..CC apart to the end; the lobby voided the games.
+
+**Reproduced** with one game (`rb_equiv_test.py --fight ste,hwo,27,3 --full`,
+a reference run and a run with T5_TEST_HITCH): about half the runs on main
+part from the reference -- and two reference runs side by side part from each
+other too, no hitch needed -- with different winners (3-0 against 0-3) or
+the same one. The first words apart are always the same: 0x1008F0D0, then
++0x174 of the fighter blocks (0x10090A84, 0x100901B4: a move's random
+number), +0x1A0, +0x2D4, +0x830, the secondary-motion points, and ~1,200
+frames later the camera matrix 0x100996E0.. and its copies -- the e2e words
+(all but the camera on the hashes' skip lists). Pairs reproduce it too: a
+rematch chain of Steve vs Hwoarang on stage 27 (`fight_flow_test.py
+--pattern NRRRRR --same-chars --stages 27 --rounds 3 --mash --moves`) on
+main went apart in match 2 in lockstep (1,563 mismatching frames, the same
+winner, exactly the e2e words) and in rollback (different winners). Two
+causes:
+
+1. **The ambient sound task stepped the scene's LCG.** 0x1008F0C4 (x -> 5x+3,
+   +0x64 of the battle object 0x1008F060) is drawn from by the fight logic
+   (0x15A40: which camera, which effect variant). The ambient sound task
+   0xA9140 -> 0xA8DB8 beside the scene steps it too, for the delay of its next
+   sound, but only when its last sound has stopped (0xAC814, the audio clock):
+   two PCs stepped it a different number of times. It was left out of the
+   hashes as a "timestamp". Now the task steps a private copy (the word is
+   swapped while it runs), netplay reseeds it at every sync point, and it is
+   hashed.
+2. **Stage 27's crowd timers came from a timing-dependent stream.** Stage 27
+   has 42 background fighters (0x8D0-byte fighter blocks in the heap from
+   0x425CE770), driven by 21 controllers (0xB90-byte objects from 0x425C0000).
+   The stage's set-up (the stage task 0x271ABC -> 0x274338 -> 0x2726B4 ->
+   0x272020 -> 0x76E6C -> 0x75ABC -> 0xC6884 -> 0xCB9A0, during the loading)
+   gives each controller a timer of rand() % 2000 + 1000 from the TLS
+   generator. Those draws are outside the scene task: before the first hunt
+   they came from the shared generator between the emitters' and effects'
+   draws, since then from the private one -- either way from a position that
+   depended on how many stage-emitter draws the PC had made before the session
+   (six a frame, thousands at frame 0: 6,794 in one run, 6,788 in another, as
+   many as the frames each PC waited).
+   When a timer runs out its two crowd fighters fight: the fight's own actor
+   loop (0x15498 -> 0x17768 -> 0xF1A74, for the two players and all 42)
+   starts a move for a crowd fighter, and the move draws from 0x1008F0D0 --
+   the generator 0xE859C (x * 0xDEECE66D + 0xB) the two players' moves draw
+   from as well (+0x176 of a fighter block). One crowd fighter starting a move
+   on one PC and not on the other ~600 frames into the fight shifted every
+   later draw of the players: gameplay. Proof, two runs of one scripted match:
+   the crowd blocks equal from frame 200 to 844 except the 21 timers; frame
+   846 a crowd fighter started a move in one run only (`T5_RAND_TRACE=4`, the
+   draws with their actors); from 848 the players' numbers differ.
+
+**The fix** (`src/rollback/rb_rand.cpp`): the private draws (everything on
+the main thread outside the scene task) come from one stream per call site
+(the guest return address), and every stream starts over from the match seed
+at each sync point (netplay's `reseed()`, with the TLS generator). A call
+site's numbers then depend on its own calls only: the stage set-up's are the
+same on every PC; the emitters' and effects' (their count follows the PC's
+timing) stay among themselves. The crowd lives in the heap, which the
+rollback state saves, so a rollback puts it back with the frame.
+
+0x1008F0D0 stays out of the hashes: before FIGHT START it is a counter the
+intro's timing moves (frames 190-222), and at FIGHT START the game sets it.
+The crowd blocks are not hashed either (heap addresses).
+
+**Diagnostics.** `T5_RAND_TRACE=4`: every draw of the generator 0xE859C
+with the frame, the state word, the state before, the actor each enclosing
+fight function was called for and the caller chain, every TLS-generator draw
+(P = private, S = scene) with its return address and chain, and the fight's
+actor loop (0x17744: its flag and counter; 0xF1A28: each actor) -- rb_lcg.log.
+`T5_NET_DUMP=frames` with `T5_NET_DUMP_RANGES=425C0000:30000` dumps the
+crowd.
+
+**What was tested** (this PC, other agents' games running; stage 27 unless
+noted):
+
+| test | build | what | runs / matches | result |
+|---|---|---|---|---|
+| rb_equiv `--full`, Steve vs Hwoarang, 1 and 3 rounds, a reference and runs with T5_TEST_HITCH (or a second reference beside it) | before (1c4cd05 + the sound-task fix) | one scripted match, one process | 13 comparisons | 6 apart (first word 0x1008F0D0 at frame 757 or 848); four different final states, winners 3-0 or 0-3 |
+| the same | fixed | 1 round / 3 rounds | 8 + 8 comparisons, 20 runs | all equal; every run the same final hash; the crowd's 21 timers equal in all 20 (dump at frame 200) |
+| pair, lockstep, `--pattern NRRRRR --same-chars --rounds 3`, Steve vs Hwoarang | before (main 1c4cd05) | a rematch chain | 2 matches | match 2 apart: 1,563 mismatching frames, same winner, the e2e words |
+| pair, rollback, the same | before (main 1c4cd05) | a rematch chain | 2 matches | match 2 apart, different winners |
+| the same two pairs | fixed | | 6 + 6 | all in sync |
+| pair, rollback, Jin vs Lili, `NRRRRR` | fixed | | 6 | all in sync |
+| pair, rollback, opponent switches (`NNNN`, a fresh game every 2nd match, host and joiner in turn), 2 rounds | fixed | | 4 | all in sync; the crowd's set-up runs again at every new session (41 draws) |
+| rb_equiv `--full --lag 3`, Steve vs Hwoarang 2 rounds / Heihachi vs Mokujin 29 | fixed, on main 2c7ed8a | 1,047 / 533 rollbacks | 2 | equal on every frame |
+| pairs, lockstep / rollback, 6 matches each (N R N N R N), 12 stages: 29 24 31 20 34 17 / 25 30 33 18 32 22, 12 fighters, 2 rounds | fixed, on main 2c7ed8a | the per-call-site streams elsewhere | 6 + 6 | all in sync |
+| pairs, lockstep / rollback, stage 27, 6 matches each (N R R N R R: Jin vs Lili, Steve vs Hwoarang), 3 rounds | fixed, on main 2c7ed8a | | 6 + 6 | all in sync |
+| rb_equiv `--full`, Jin vs Lili 3 rounds, T5_TEST_HITCH=100:20:60 | fixed, on main 2c7ed8a | | 1 | equal on all 6,299 frames |
+
+Also run on main 2c7ed8a: tests/ (473, OK), the lobby's suite (15 modules, 455
+tests, OK), smoke quick (5/5 PASS), the game-data guard (`--keys` and
+`--history HEAD`: exit 0).
 
 ## Limits and next steps
 

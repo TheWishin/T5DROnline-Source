@@ -1129,6 +1129,8 @@ class TourManager:
                         self._maybe_start(t, s)
             if t.state in ("finished", "cancelled") and (t.ended or 0) < now - self.cfg.tour_keep_days * DAY:
                 del self.tours[t.id]
+                self.created_from.pop(t.id, None)
+                self.view_cache.pop(t.id, None)
         self._announce()
 
     def _no_show(self, t, s, now):

@@ -83,6 +83,26 @@ class FileDbBase(unittest.TestCase):
         return run_admin("--db", self.db, "--status-url", self.status, *args)
 
 
+class DbFileModeTest(unittest.TestCase):
+    """The database holds password hashes: a store on POSIX takes other users' access away (the systemd unit's
+    UMask did that for a service install only; "Host for friends" on Linux/macOS inherited umask 022)."""
+
+    def test_others_lose_access(self):
+        from t5lobby.server import store as st
+        modes = {"db": 0o100644, "db-wal": 0o100644, "db-shm": 0o100660}
+        changed = {}
+
+        def fake_stat(p):
+            k = os.path.basename(p)
+            if k not in modes:
+                raise FileNotFoundError(p)
+            return os.stat_result((modes[k],) + (0,) * 9)
+        with unittest.mock.patch.object(st.os, "name", "posix"),                 unittest.mock.patch.object(st.os, "stat", fake_stat),                 unittest.mock.patch.object(st.os, "chmod", lambda p, m: changed.__setitem__(os.path.basename(p), m)):
+            st._private("db")
+            st._private(":memory:")
+        self.assertEqual(changed, {"db": 0o640, "db-wal": 0o640})           # group kept, others removed
+
+
 # ============================================================================ admin tool + bans
 class AdminTest(FileDbBase):
     def test_users_ban_kick_unban(self):

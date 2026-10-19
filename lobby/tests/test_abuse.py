@@ -335,6 +335,22 @@ class LoginAbuseTest(Base):
         self.s.call(lambda: self.s.srv.good_logins.setdefault("victim", {}).update({"127.0.0.1": time.monotonic()}))
         self.c("Victim", password="pw-Victim")                             # the owner's own address still works
 
+    def test_password_changes_are_rate_limited(self):
+        """A logged-in account with its own (right) password used to be able to keep the server's password
+        hashing busy for everybody (two scrypt runs per change, nothing counted a success)."""
+        v = self.acc("Victim")
+        pw = ["pw-Victim", "pw-Second", "pw-Third", "pw-Fourth"]
+        for i in range(3):
+            v.change_password(pw[i], pw[i + 1])
+        hashed = self.s.call(lambda: self.s.srv.pw_waiting)
+        with self.assertRaises(LobbyError) as cm:
+            v.change_password(pw[3], "pw-Fifth")
+        self.assertEqual(cm.exception.code, proto.E_RATE)
+        with self.assertRaises(LobbyError) as cm:
+            v.new_recovery_codes(pw[3])                              # the same budget
+        self.assertEqual(cm.exception.code, proto.E_RATE)
+        self.assertEqual(self.s.call(lambda: self.s.srv.pw_waiting), hashed)
+
     def test_password_work_is_queued_with_a_bound(self):
         self.acc("Victim")
         self.cfg(pw_concurrency=1, pw_queue=2, scrypt_n=1 << 15)
@@ -342,6 +358,148 @@ class LoginAbuseTest(Base):
         codes = self.wrong_logins(5)
         self.assertIn(proto.E_RATE, codes)
         self.assertGreaterEqual(self.s.call(lambda: self.s.srv.counters.get("pw_busy", 0)), 1)
+
+
+# ============================================================================== every message type, fuzzed
+class MessageFuzzTest(unittest.TestCase):
+    """Every handler (h_*) gets random fields of random types -- None, huge and negative numbers, NaN,
+    paths, 5000-character and broken Unicode strings, nested lists and objects, the ids of real matches --
+    from two logged-in players. Expected: each bad request is a polite error ("bad field" and the like),
+    never an exception the dispatcher did not foresee, and the server keeps serving. (A longer run during
+    the security audit, 100,000 messages: 10 matches formed on the way, no unforeseen exception.)"""
+
+    def test_random_messages(self):
+        import asyncio
+        import re
+        from t5lobby.server.ratelimit import TokenBucket
+        s = ServerThread(conn_rate=1000.0, conn_burst=1000, max_per_ip=100, max_prelogin=100).start()
+        clients = []
+        try:
+            src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "t5lobby",
+                                    "server", "lobby.py")
+            with open(src_path, encoding="utf-8") as f:
+                src = f.read()
+            handlers = sorted(set(re.findall(r"async def h_(\w+)\(", src)) - {"logout"})
+            fields = sorted(set(re.findall(r'msg(?:\.get\(|\[)"(\w+)"', src)))
+            rng = random.Random(20261019)
+
+            def value(depth=0):
+                k = rng.randrange(12)
+                if k == 0:
+                    return None
+                if k == 1:
+                    return rng.choice([0, 1, -1, 3, 2 ** 31, 2 ** 63, -2 ** 63, 10 ** 30])
+                if k == 2:
+                    return rng.choice([0.5, -1.0, 1e308, float("nan"), float("inf")])
+                if k == 3:
+                    return rng.choice(["", "x", "m1", "..\\..\\x", "a" * 5000, "\u202e\u0000\ud800", "random", "jin",
+                                       "s20", "ranked", "quick", "host", "relay", "Alice"])
+                if k == 4 and depth < 3:
+                    return [value(depth + 1) for _ in range(rng.randrange(5))]
+                if k == 5 and depth < 3:
+                    return {rng.choice(fields): value(depth + 1) for _ in range(rng.randrange(4))}
+                if k == 6:
+                    return [[rng.choice(["10.0.0.1", "127.0.0.1", "8.8.8.8", "x"]), rng.randrange(-5, 70000)]
+                            for _ in range(rng.randrange(12))]
+                if k == 7:
+                    return {"usw": rng.random() * 100, "main": -1, "x": "y"}
+                if k == 8:
+                    return rng.randrange(-3, 6)
+                if k == 9:
+                    return ["127.0.0.1", rng.randrange(-5, 70000)]
+                return rng.choice(["m", "p", "r", "c", "s"]) + os.urandom(6).hex()
+
+            def login_all():
+                for c in clients:
+                    c.close()
+                clients.clear()
+                for name in ("Alice", "Bob"):
+                    clients.append(client(s, name))
+
+            login_all()
+            unforeseen = []
+            sent = 0
+            for _ in range(3000):
+                live = s.call(lambda: {c.player.name: c for c in s.srv.conns if c.player is not None})
+                if len(live) < 2:
+                    login_all()
+                    continue
+                conn = live[rng.choice(sorted(live))]
+                msg = {"t": rng.choice(handlers)}
+                for _ in range(rng.randrange(6)):
+                    msg[rng.choice(fields)] = value()
+                if rng.random() < 0.3:
+                    mid = s.call(lambda: next(iter(s.srv.matches), None))
+                    if mid:
+                        msg["match"] = mid
+                line = proto.encode(msg)
+
+                async def go(conn=conn, line=line, msg=msg):
+                    conn.heavy = TokenBucket(1e9, 1e9)      # (the rate limits are tested elsewhere)
+                    conn.state = TokenBucket(1e9, 1e9)
+                    conn.errors = 0
+                    try:
+                        await s.srv._dispatch(conn, line)
+                    except Exception as e:                  # noqa: BLE001 -- what this test looks for
+                        unforeseen.append((msg["t"], repr(e)[:200]))
+                asyncio.run_coroutine_threadsafe(go(), s.loop).result(10)
+                sent += 1
+            self.assertEqual(unforeseen, [])
+            self.assertGreater(sent, 2500)
+            login_all()                                        # still serving
+            self.assertEqual(clients[0].me["name"], "Alice")
+        finally:
+            for c in clients:
+                c.close()
+            s.stop()
+
+
+# ============================================================================== UDP control packets
+class UdpTotalTest(unittest.TestCase):
+    """The server-wide cap on UDP control packets (T5L_UDP_CTL_PPS) is there against reflection: only the
+    ping is answered to anybody. A spoofed flood that uses it up must not stop registrations and relay binds,
+    which are answered only for a token the server handed out."""
+
+    class Lobby:
+        def __init__(self, token):
+            self.token = token
+            self.bound = []
+
+        def udp_register(self, token, addr, probe):
+            return token == self.token
+
+        def udp_relay_bound(self, sid, side, addr):
+            self.bound.append((sid, side, addr))
+
+    class Transport:
+        def __init__(self):
+            self.sent = []
+
+        def sendto(self, data, addr):
+            self.sent.append((data, addr))
+
+    def test_flood_of_pings_does_not_block_registration_and_binds(self):
+        from t5lobby.server import Config
+        from t5lobby.server.ratelimit import TokenBucket
+        from t5lobby.server.udp import UdpService
+        tok = proto.new_token()
+        lobby = self.Lobby(tok)
+        svc = UdpService(lobby, Config(db=":memory:"))
+        svc.ctl_global = TokenBucket(0.001, 1)
+        svc.ctl_global.take()                                        # the total is used up (a spoofed flood)
+        tr = self.Transport()
+        svc.on_datagram(0, tr, proto.pk_ping(proto.U_SPING, 1, 1.0), ("198.51.100.7", 4000))
+        self.assertEqual(tr.sent, [])                                # pings: not answered now
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_REGISTER, tok), ("198.51.100.8", 4001))
+        self.assertEqual(proto.un_token_ack(tr.sent[-1][0])[0], proto.U_REG_ACK)
+        rtok = [proto.new_token(), proto.new_token()]
+        svc.open_relay("m1", rtok)
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_RELAY_BIND, rtok[0]), ("198.51.100.9", 4002))
+        self.assertEqual(proto.un_token_ack(tr.sent[-1][0])[0], proto.U_RELAY_ACK)
+        self.assertEqual(lobby.bound, [("m1", 0, ("198.51.100.9", 4002))])
+        n = len(tr.sent)
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_REGISTER, proto.new_token()), ("198.51.100.10", 4003))
+        self.assertEqual(len(tr.sent), n)                            # an unknown token gets nothing
 
 
 # ============================================================================== connection floods

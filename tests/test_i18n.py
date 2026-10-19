@@ -1,15 +1,22 @@
-"""German and English texts of the launcher and the Online tab (lobby/t5lobby/i18n.py, i18n_de.py).
+"""The texts of the launcher and the Online tab in every language (lobby/t5lobby/i18n.py and its catalogs:
+German i18n_de.py, Spanish i18n_es.py, Korean i18n_ko.py, Japanese i18n_ja.py, Brazilian Portuguese i18n_pt_br.py,
+French i18n_fr.py).
 
-* every text in the source (t("..."), N_("...")) has a German entry, and no entry is unused;
-* the German text keeps the English text's {placeholders}; t() is called with values that fit;
+* every text in the source (t("..."), N_("...")) has an entry in every catalog, and no entry is unused;
+* every translation keeps the English text's {placeholders}; t() is called with values that fit;
 * no function that translates also has a local variable called t or N_ (it would fail at run time);
 * no literal English text goes to a widget, a status line or a dialog without t();
 * the messages the lobby server, the lobby client, the build tool and the prerequisite check write in English are
   known to translate_message() (so a new server message without a German entry fails here);
-* the launcher and the Online tab render in both languages, with no text missing from the catalog;
+* Auto picks the Windows language when the launcher has it, else English; the Settings box lists every language
+  in its own name; Korean and Japanese get a font with their glyphs;
+* the launcher and the Online tab render in every language at 100 % and 150 % display scaling with withdrawn
+  windows: no text missing from the catalog, no English left, nothing cut off where English is not
+  (tests/i18n_layout.py);
 * the lag sentences built from a lag_check event say what the server's own English sentences say.
 """
 import ast
+import gc
 import importlib.machinery
 import importlib.util
 import os
@@ -54,7 +61,7 @@ DEV_ONLY = {
     "unknown message X", "bad field: X", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
-    "unknown character X",
+    "unknown character X", "kind is casual or room",
     "mode is guest, account, register, session or resume",
 }
 
@@ -180,6 +187,61 @@ class CatalogTests(Base):
             self.assertEqual(en.startswith(" "), de.startswith(" "), en)
             self.assertEqual(en.count("\n"), de.count("\n"), en)
 
+    def test_every_language_has_every_text(self):
+        for lang in x.LANGS:
+            with self.subTest(lang=lang):
+                r = x.check(lang=lang)
+                self.assertEqual(r["missing"], [], f"texts without a {lang} entry: python tools/i18n_extract.py "
+                                                   f"--skeleton --lang {lang}")
+                self.assertEqual(r["unused"], [], f"{lang} entries no t() / N_() call uses")
+                self.assertEqual(r["mismatched"], [], f"{lang}: the translation must have the English {{placeholders}}")
+
+    def test_every_catalog_has_the_keys_of_the_german_one(self):
+        self.assertEqual(set(x.LANGS), set(i18n.CATALOGS), "tools/i18n_extract.py LANGS must name every catalog")
+        for lang in x.LANGS:
+            with self.subTest(lang=lang):
+                self.assertEqual(list(i18n.catalog(lang)), list(i18n_de.MESSAGES), "same keys, same order")
+
+    def test_every_translation_formats_and_keeps_its_shape(self):
+        for lang in x.LANGS:
+            for en, tr in i18n.catalog(lang).items():
+                with self.subTest(lang=lang, text=en[:40]):
+                    self.assertTrue(tr.strip(), "empty translation")
+                    tr.format(**{name: "X" for name in x.HOLE.findall(en)})
+                    self.assertEqual(en.endswith(" "), tr.endswith(" "))
+                    self.assertEqual(en.startswith(" "), tr.startswith(" "))
+                    self.assertEqual(en.count("\n"), tr.count("\n"))
+
+    def test_every_language_translates_its_sentences(self):
+        # a catalog still holding the English text of a sentence is an entry nobody translated
+        for lang in x.LANGS:
+            same = [en for en, tr in i18n.catalog(lang).items()
+                    if en == tr and len(re.findall(r"[A-Za-z]{3,}", en)) >= 4 and "{" not in en[:1]]
+            self.assertEqual(same, [], lang)
+
+    def test_scripts_fit_the_language(self):
+        hangul, kana = re.compile(r"[가-힯]"), re.compile(r"[぀-ヿ]")
+        latin_only = re.compile(r"[ᄀ-ᇿ　-鿿가-힯]")
+        for lang in x.LANGS:
+            for en, tr in i18n.catalog(lang).items():
+                if lang == "ko":
+                    self.assertIsNone(kana.search(tr), tr)
+                elif lang == "ja":
+                    self.assertIsNone(hangul.search(tr), tr)
+                else:
+                    self.assertIsNone(latin_only.search(tr), (lang, tr))
+
+    def test_the_game_and_community_terms_stay(self):
+        # Quick Match, Ranked, BUILD GAME and Rematch are what players call them, in every language
+        for lang in x.LANGS:
+            cat = i18n.catalog(lang)
+            self.assertEqual(cat["Quick match"], "Quick Match", lang)
+            self.assertEqual(cat["BUILD GAME"], "BUILD GAME", lang)
+            self.assertEqual(cat["Rematch"], "Rematch", lang)
+            self.assertIn("Ranked", cat["Ranked match"], lang)
+            self.assertIn("BUILD GAME", cat["Press BUILD GAME. It takes a few minutes; the game data stays in this "
+                                            "folder."], lang)
+
     def test_the_dynamic_lookups_are_few(self):
         # t(variable): the variable must hold a text marked with N_(); keep the list short and known
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
@@ -247,6 +309,70 @@ class EngineTests(German):
         i18n.set_language("en")
         self.assertEqual(i18n.num(2.34, 1), "2.3")
         self.assertEqual(i18n.stamp(ts), "18 Oct 21:05")
+        for lang, number, date in (("es", "2.3", "18/10 21:05"), ("pt-BR", "2,3", "18/10 21:05"),
+                                   ("fr", "2,3", "18/10 21:05"), ("ko", "2.3", "10월 18일 21:05"),
+                                   ("ja", "2.3", "10月18日 21:05")):
+            i18n.set_language(lang)
+            self.assertEqual((i18n.num(2.34, 1), i18n.stamp(ts)), (number, date), lang)
+
+    def test_the_languages_in_their_own_names(self):
+        self.assertEqual(list(i18n.LANGUAGES.values()),
+                         ["English", "Deutsch", "Español", "한국어", "日本語", "Português (Brasil)", "Français"])
+        self.assertEqual(i18n.CHOICES, ("auto", "en", "de", "es", "ko", "ja", "pt-BR", "fr"))
+        labels = [label for key, label in core.LANGUAGE_CHOICES]
+        self.assertEqual(labels[1:], list(i18n.LANGUAGES.values()))
+        for key, label in core.LANGUAGE_CHOICES[1:]:
+            self.assertNotIn(label, i18n_de.MESSAGES, "a language's own name is not translated")
+
+    def test_codes_in_any_spelling(self):
+        for given, lang in (("pt-BR", "pt-BR"), ("pt-br", "pt-BR"), ("PT_BR", "pt-BR"), ("pt", "pt-BR"),
+                            ("pt_PT.UTF-8", "pt-BR"), ("es-MX", "es"), ("es_AR", "es"), ("fr-CA", "fr"), ("ko_KR", "ko"),
+                            ("ja-JP", "ja"), ("de-AT", "de"), ("EN", "en"), ("zh-CN", None), ("", None), (None, None)):
+            self.assertEqual(i18n.canonical(given), lang, given)
+        with mock.patch.dict(os.environ, {"T5_LANG": "en"}):
+            for lang in i18n.LANGUAGES:
+                self.assertEqual(i18n.resolve(lang), lang)
+                self.assertEqual(i18n.resolve(lang.lower()), lang)
+            self.assertEqual(i18n.resolve("auto"), "en")
+            self.assertEqual(i18n.resolve("klingon"), "en")        # unknown counts as auto
+        with mock.patch.dict(os.environ, {"T5_LANG": "pt-br"}):
+            self.assertEqual(i18n.resolve("auto"), "pt-BR")
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_auto_follows_the_windows_ui_language(self):
+        import ctypes
+        cases = {0x0407: "de", 0x0807: "de", 0x0C0A: "es", 0x080A: "es", 0x2C0A: "es", 0x0412: "ko", 0x0411: "ja",
+                 0x0416: "pt-BR", 0x0816: "pt-BR", 0x040C: "fr", 0x0C0C: "fr", 0x0409: "en", 0x0809: "en",
+                 0x0410: "en", 0x0804: "en", 0x0419: "en"}
+        env = {k: v for k, v in os.environ.items() if k != "T5_LANG"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            for langid, lang in cases.items():
+                with mock.patch.object(ctypes.windll.kernel32, "GetUserDefaultUILanguage", return_value=langid):
+                    self.assertEqual(i18n.system_language(), lang, hex(langid))
+                    self.assertEqual(i18n.resolve("auto"), lang)
+
+    def test_every_language_switches_on(self):
+        for lang in i18n.LANGUAGES:
+            self.assertEqual(i18n.set_language(lang), lang)
+            self.assertEqual(i18n.language(), lang)
+            if lang != "en":
+                self.assertNotEqual(i18n.t("Log in"), "Log in", lang)
+                self.assertEqual(i18n.t("Connecting to {server}...", server="s:1").count("s:1"), 1)
+        i18n.set_language("en")
+        self.assertEqual(i18n.t("Log in"), "Log in")
+
+    def test_korean_and_japanese_get_their_fonts(self):
+        installed = {"Segoe UI", "Malgun Gothic", "Yu Gothic UI", "Meiryo", "Bahnschrift"}
+        self.assertEqual(i18n.font_of("ko", installed), "Malgun Gothic")
+        self.assertEqual(i18n.font_of("ja", installed), "Yu Gothic UI")
+        self.assertEqual(i18n.font_of("ja", {"Meiryo"}), "Meiryo")
+        self.assertIsNone(i18n.font_of("ja", {"Segoe UI"}))          # (none installed: Tk's own fallback)
+        for lang in ("en", "de", "es", "pt-BR", "fr", "auto"):
+            self.assertIsNone(i18n.font_of(lang, installed), lang)
+        i18n.set_language("ko")
+        self.assertEqual(i18n.ui_family("Segoe UI", installed), "Malgun Gothic")
+        i18n.set_language("es")
+        self.assertEqual(i18n.ui_family("Segoe UI", installed), "Segoe UI")
 
 
 class MessageCoverageTests(German):
@@ -421,6 +547,76 @@ class MessageCoverageTests(German):
         i18n.set_language("en")
         self.assertEqual(lobby_error_text(LobbyError("auth_failed", "wrong name or password")),
                          "Lobby: wrong name or password")
+
+
+class EveryLanguageMessageTests(Base):
+    """Server texts, lag sentences and error tips in each language."""
+
+    def tearDown(self):
+        i18n.set_language("en")
+
+    def test_known_messages(self):
+        for lang in x.LANGS:
+            i18n.set_language(lang)
+            tm = i18n.translate_message
+            with self.subTest(lang=lang):
+                self.assertNotEqual(tm("wrong name or password"), "wrong name or password")
+                queue = tm("you are queue")
+                self.assertIn(i18n.t("queue"), queue)
+                self.assertNotIn("queue", queue)
+                ban = tm("this account is banned until 2026-10-20 12:00 UTC: spam")
+                self.assertIn("2026-10-20 12:00 UTC", ban)
+                self.assertIn("spam", ban)
+                self.assertNotIn("banned", ban)
+                self.assertIn("Draw", tm("Draw is back in the lobby"))       # a name stays a name
+                fps = tm("your PC ran its last match at 41 fps; your opponent's PC ran its last match at 38 fps -- "
+                         "this match runs at the slower PC's speed")
+                self.assertIn("41", fps)
+                self.assertIn("38", fps)
+                self.assertNotIn("slower", fps)
+                self.assertEqual(tm("a message from a newer server"), "a message from a newer server")
+
+    def test_lag_sentences(self):
+        for lang in x.LANGS:
+            i18n.set_language(lang)
+            i18n.clear_missing()
+            for delay, reports in LagTextTests.CASES:
+                for side in (0, 1):
+                    _a, ev = LagTextTests.event(None, delay, reports, side)
+                    text = lag.describe_event(ev)
+                    self.assertNotEqual(text, ev["text"], lang)
+                    self.assertIn("37", text, lang)
+            self.assertEqual(i18n.missing(), [], lang)
+
+    def test_error_tips(self):
+        """Each ERROR_HELP entry gives its tip in every language: for every catalog text that holds the entry's
+        English words, the translated message gets the tip the English message gets."""
+        from t5lobby import tk_views
+        keys = list(i18n_de.MESSAGES)
+        for words, _tip in tk_views.ERROR_HELP:
+            hits = [k for k in keys if any(w in k.lower() for w in words)]
+            self.assertTrue(hits, words)
+            for key in hits:
+                values = {name: "X" for name in x.HOLE.findall(key)}
+                i18n.set_language("en")
+                en = tk_views.friendly_error("Lobby: " + key.format(**values))
+                tip_en = next(tip for w, tip in tk_views.ERROR_HELP if tip in en) if any(
+                    tip in en for w, tip in tk_views.ERROR_HELP) else None
+                for lang in x.LANGS:
+                    i18n.set_language(lang)
+                    msg = i18n.t("Lobby: {message}", message=i18n.t(key, **values) if values else i18n.t(key))
+                    shown = tk_views.friendly_error(msg)
+                    if tip_en:
+                        self.assertIn(i18n.t(tip_en), shown, (lang, key[:50]))
+
+    def test_dialog_buttons(self):
+        from t5lobby import dialogs as dlg
+        for lang in x.LANGS:
+            i18n.set_language(lang)
+            names = [i18n.t(n) for n in ("Yes", "No", "Cancel")]
+            self.assertEqual(len(set(names)), 3, lang)
+            self.assertNotIn("Yes", names, lang)
+            self.assertTrue(callable(dlg.ask_yes_no))
 
 
 class LagTextTests(German):
@@ -618,6 +814,12 @@ class RenderTests(Base):
             self.skipTest(f"no display: {e}")
         app.withdraw()
         cancel_timers(app)            # nothing may run later: not the check of the tools, not the game state thread
+        # Cleanups run last-in first-out: after the window is closed and the cleanup holding it is
+        # dropped, its reference cycles are collected here, on the main thread. Collected later by
+        # another thread (a subprocess reader of the next module), the last reference to the Tcl
+        # interpreter aborts the process ("Tcl_AsyncDelete: async handler deleted by the wrong
+        # thread", seen during test_lift_spu_jobs). test_online_ui_walk does the same.
+        self.addCleanup(gc.collect)
         self.addCleanup(lambda: self.close_launcher(app))
         i18n.clear_missing()
         return app
@@ -781,14 +983,89 @@ class RenderTests(Base):
         self.assertEqual(rows[0][1], "3.12.10 in C:\\Py\\python.exe")
         app.step_state["lift"] = "running"
         app.cur_step, app.step_t0, app.sub = "lift", time.time() - 75, 0.5
-        app.build = type("B", (), {"events": __import__("queue").Queue()})()
+        quiet = []                         # the build's quiet hint (core.lift_quiet_hint), none at first
+        app.build = type("B", (), {"events": __import__("queue").Queue(),
+                                   "quiet_hint": lambda _self: quiet[-1] if quiet else None})()
         app._drain_build()
         self.assertTrue(app.detail.get().startswith("Schritt 6 von 8: Code übersetzen  —  1:15"), app.detail.get())
+        self.assertNotIn("\n", app.detail.get())
+        quiet.append(self.core.lift_quiet_hint("lift", 200))
+        app._drain_build()
+        first, second = app.detail.get().split("\n")
+        self.assertTrue(first.startswith("Schritt 6 von 8: Code übersetzen"), first)
+        self.assertTrue(second.startswith("Der Schritt „Code übersetzen“ hat seit 3 Minuten nichts ausgegeben."), second)
         app.build.events.put(("error", "Choose your license file (.rap) first."))
         app._drain_build()
         self.assertEqual(app.error.get(), "Wähle zuerst deine Lizenzdatei (.rap).")
         app.build = None
         self.assertEqual(i18n.missing(), [])
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class EveryLanguageRenderTests(Base):
+    """The launcher, the Online tab's screens, the Controls, report and update windows, built (withdrawn) in each
+    language at 100 % and 150 % display scaling (tests/i18n_layout.py): no text missing from the catalog, no English
+    left on screen, nothing cut off where English is not, no window on screen."""
+    # Cut off in German as in English (the column is narrow for "playing (other version)" in both): not new.
+    # German on the Friends page (texts the German tests of the friends feature require): longer than English there.
+    KNOWN = {"de": (re.escape("im Spiel (andere Version)"), re.escape("angefragt: wartet auf eine Antwort"),
+                    r"online friend(s|'s invite): \d+ px wide")}
+    english = {}
+
+    @classmethod
+    def baseline(cls, scale):
+        import i18n_layout
+        if scale not in cls.english:
+            cls.english[scale] = i18n_layout.Walk("en", scale).run()
+        return cls.english[scale]
+
+    def check_language(self, lang):
+        import i18n_layout
+        for scale in i18n_layout.SCALES:
+            try:
+                base = self.baseline(scale)
+                walk = i18n_layout.Walk(lang, scale).run()
+            except tk.TclError as e:
+                self.skipTest(f"no display: {e}")
+            with self.subTest(scale=scale):
+                self.assertEqual(walk.shown, [], "a window was on screen")
+                self.assertEqual(walk.missing, [], "texts shown that the catalog does not have")
+                self.assertEqual({s: e for s, e in walk.english.items() if e}, {}, "English texts still on screen")
+                self.assertGreaterEqual(len(walk.screens), 20)
+                cut = [c for c in i18n_layout.compare(walk, base)
+                       if not any(re.search(k, c) for k in self.KNOWN.get(lang, ()))]
+                self.assertEqual(cut, [], f"cut off in {lang} at {scale} % (python tests/i18n_layout.py {lang})")
+
+    def test_english_shows_no_window(self):
+        base = self.baseline(100)
+        self.assertEqual(base.shown, [])
+        self.assertEqual(base.missing, [])
+
+    def test_the_language_box(self):
+        import i18n_layout
+        walk = i18n_layout.Walk("es", 100)
+        names = []
+
+        def look(w=walk):
+            from tkinter import ttk
+            texts = i18n_layout.all_texts(w.app.tabs["settings"])
+            names.extend(n for n in i18n.LANGUAGES.values() if n in texts)
+            names.append("Auto (idioma de Windows)" in texts)
+            for key in ("ko", "ja"):
+                family = i18n.font_of(key)
+                if family:
+                    style = f"Lang{key}.TRadiobutton"
+                    names.append(family in str(ttk.Style(w.app).lookup(style, "font")))
+        with mock.patch.object(i18n_layout.Walk, "_online", lambda self: look()), \
+                mock.patch.object(i18n_layout.Walk, "_windows", lambda self, d: None):
+            walk.run()
+        self.assertEqual(names[:7], list(i18n.LANGUAGES.values()))
+        self.assertTrue(all(names[7:]), names)
+
+
+for _lang in tuple(i18n.LANGUAGES)[1:]:
+    setattr(EveryLanguageRenderTests, "test_" + _lang.lower().replace("-", "_"),
+            lambda self, _l=_lang: self.check_language(_l))
 
 
 class FakeClient:
@@ -1017,7 +1294,7 @@ class OnlineTabGermanTests(German):
                     "ping": {"known": True, "ms": 42.0}, "ready_timeout": 15, "ready_check": True})
         texts, english = self.shown()
         for expect in ("GEGNER GEFUNDEN", "Gegner verborgen", "Gute Verbindung",
-                       "Name und Seite werden gezeigt, sobald ihr beide annehmt.", "(Schätzung über den Server)"):
+                       "Name und Seite werden gezeigt, sobald ihr beide annehmt.", "(geschätzt, bevor ihr verbunden seid)"):
             self.assertTrue(any(expect in x for x in texts), expect)
         self.assertEqual(english, [])
         t.ready_sent = True
@@ -1061,6 +1338,57 @@ class OnlineTabGermanTests(German):
                        "RUNDEN  (P1 – P2)", "Nächstes Spiel", "Zurück zur Lobby"):
             self.assertTrue(any(expect in x for x in texts), (expect, texts[-40:]))
         self.assertEqual(english, [])
+        self.assertEqual(i18n.missing(), [])
+
+    def test_friends_page_and_invites(self):
+        """The Friends page, a friend's invite in the bar and the friends' messages: German, nothing missing."""
+        t = self.tab
+        c = t.client
+        c.has_friends = lambda: True
+        c.rooms = []
+        base = {"rank": "3rd Dan", "tier": 12, "provisional": False, "rating": 1600, "guest": False}
+        c.friend_list = {"friends": [
+            dict(base, name="Rival", status="online", activity="queue", invite="ok"),
+            dict(base, name="Busy", status="in_match", activity="playing", invite="busy"),
+            dict(base, name="Gone", status="offline", activity=None, invite="offline", last_seen=1792000000.0),
+            dict(base, name="Old", status="online", activity="idle", invite="update")],
+            "incoming": [{"name": "Neu", "time": 1.0}], "outgoing": [{"name": "Frage", "time": 2.0}], "max": 100,
+            "requests_left": 20}
+        t._set_account_view(True)
+        t.on_event({"t": "friends"})
+        t.nb.select(3)
+        texts, english = self.shown()
+        for expect in ("FREUNDE", "Zu einem Match einladen", "In meinen Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
+                       "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "angefragt: wartet auf eine Antwort",
+                       i18n.t("searching"), "im Match", "Freunde (1)", "3 online · 4 von 100",
+                       i18n.t("in lobby") + " (älterer Launcher: keine Einladungen)"):
+            self.assertIn(expect, texts)
+        self.assertTrue(any(x.startswith("offline, zuletzt gesehen ") for x in texts), texts)
+        self.assertEqual(english, [])
+        t.on_event({"t": "invited", "invite": "i1", "kind": "room", "room": {"name": "Dojo"},
+                    "from": dict(base, name="Rival")})
+        texts, english = self.shown()
+        self.assertEqual(t.bar_text.get(), "Rival (3rd Dan) lädt dich in den Raum „Dojo“ ein")
+        for expect in ("EINLADUNG VON EINEM FREUND", "Annehmen", "Ablehnen",
+                       "lädt dich in den Raum „Dojo“ ein. Nimm an, um beizutreten; das Match startet sofort."):
+            self.assertIn(expect, texts)
+        self.assertEqual(english, [])
+        t.on_event({"t": "invite_update", "invite": "i1", "state": "expired", "name": "Rival"})
+        self.assertEqual(self.status(), "Die Einladung von Rival ist abgelaufen.")
+        t.on_event({"t": "invited", "invite": "i2", "kind": "casual", "from": dict(base, name="Rival")})
+        self.assertEqual(t.bar_text.get(), "Rival (3rd Dan) lädt dich zu einem Casual-Match ein")
+        t.on_event({"t": "friend_request", "name": "Neu"})
+        self.assertEqual(self.status(), "Neu möchte dein Freund sein: siehe den Reiter Freunde.")
+        t.on_event({"t": "friend_update", "name": "Frage", "state": "accepted"})
+        self.assertEqual(self.status(), "Frage hat deine Freundschaftsanfrage angenommen.")
+        t.outgoing_invite = {"invite": "i3", "name": "Rival"}
+        t.on_event({"t": "invite_update", "invite": "i3", "state": "declined", "name": "Rival"})
+        self.assertEqual(self.status(), "Rival hat deine Einladung abgelehnt.")
+        c.me["guest"] = True
+        t._fill_friends()
+        self.assertTrue(t.friends_note_var.get().startswith("Freunde brauchen ein Konto"))
+        self.assertEqual(i18n.translate_message("you can send 20 friend requests a day; try again tomorrow"),
+                         "Du kannst 20 Freundschaftsanfragen am Tag senden; versuche es morgen wieder")
         self.assertEqual(i18n.missing(), [])
 
     def test_errors_get_a_tip_in_german(self):

@@ -144,6 +144,17 @@ class ControlChannelTest(unittest.TestCase):
         lst = relayctl.pack(SECRET, relayctl.REQUEST, [1, 2])
         self.assertIsNone(relayctl.unpack(SECRET, lst))                          # not an object
 
+    def test_sealed_bind_tokens(self):
+        toks = [proto.new_token(), proto.new_token()]
+        sealed = relayctl.seal_tokens(SECRET, "abcdef0123456789", toks)
+        self.assertEqual(relayctl.open_tokens(SECRET, "abcdef0123456789", sealed), toks)
+        for t in toks:
+            self.assertNotIn(t.hex(), sealed)                                   # nothing readable
+        self.assertNotEqual(relayctl.seal_tokens(SECRET, "abcdef012345678a", toks), sealed)   # per request id
+        self.assertNotEqual(relayctl.open_tokens(b"z" * 48, "abcdef0123456789", sealed), toks)
+        with self.assertRaises(ValueError):
+            relayctl.open_tokens(SECRET, "abcdef0123456789", sealed[:-2])
+
     def test_secret_files(self):
         tmp = tempfile.mkdtemp()
         try:
@@ -283,6 +294,34 @@ class NodeTest(_Node):
         # a closed session's id cannot come back (its tokens are spent)
         r = ctl(self.n.addr, "open", sid="00112233aabbccdd", tokens=[proto.new_token().hex(), proto.new_token().hex()])
         self.assertEqual(r["error"], "closed")
+
+    def test_sealed_open(self):
+        self.assertIn("etokens", ctl(self.n.addr, "status")["caps"])
+        toks = [proto.new_token(), proto.new_token()]
+        msg = relayctl.request("open", "usw", sid="ab00ab00ab00ab00", lease=60)
+        msg["etokens"] = relayctl.seal_tokens(SECRET, msg["id"], toks)
+        self.assertTrue(ctl(self.n.addr, "open", raw=relayctl.pack(SECRET, relayctl.REQUEST, msg))["ok"])
+        a = self.sock()
+        self.assertEqual(bind(a, self.n.addr, toks[0]), a.getsockname())
+        # sealed under another request's id: other tokens, nothing a stranger could bind with
+        toks2 = [proto.new_token(), proto.new_token()]
+        msg = relayctl.request("open", "usw", sid="cd00cd00cd00cd00", lease=60)
+        msg["etokens"] = relayctl.seal_tokens(SECRET, "0000000000000000", toks2)
+        self.assertTrue(ctl(self.n.addr, "open", raw=relayctl.pack(SECRET, relayctl.REQUEST, msg))["ok"])
+        self.assertIsNone(bind(self.sock(), self.n.addr, toks2[0], 0.3))
+        self.assertEqual(self.sessions(), 2)
+
+    def test_requests_from_before_a_restart_are_refused(self):
+        """The ids a node has seen are in memory only: a request recorded shortly before a restart (still
+        inside the 2-minute clock window) must not work after it."""
+        started = self.n.call(lambda: self.n.node.started)
+        old = relayctl.request("open", "usw", sid="ee00ee00ee00ee00", tokens=["00" * 16, "11" * 16], lease=60)
+        old["ts"] = started - 30
+        self.assertLess(abs(old["ts"] - time.time()), relayctl.CLOCK_SKEW)
+        r = ctl(self.n.addr, "open", raw=relayctl.pack(SECRET, relayctl.REQUEST, old))
+        self.assertEqual(r["error"], "clock")                              # refused, nothing opened
+        self.assertEqual(self.sessions(), 0)
+        self.assertTrue(ctl(self.n.addr, "status")["ok"])                 # a fresh one is fine
 
     def test_open_is_idempotent(self):
         toks = [proto.new_token().hex(), proto.new_token().hex()]
@@ -643,6 +682,67 @@ class ChoiceTest(Regional):
         prom = prometheus(self.s.call(self.s.srv.status))
         self.assertIn('t5lobby_relay_node_up{relay="usw"} 1', prom)
         self.assertIn("t5relay_sessions 0", node.call(node.node.metrics))
+
+
+class SealedTokensTest(Regional):
+    """The central server's `open` requests: the bind tokens never cross the control channel readable to a
+    node that can take them sealed; an older node (no "caps" in its status) still gets them as before."""
+
+    def capture(self):
+        sent = []
+
+        def install():
+            tr = self.s.srv.relays.transport
+            real = tr.sendto
+
+            def sendto(data, addr=None):
+                sent.append(bytes(data))
+                return real(data, addr)
+            tr.sendto = sendto
+        self.s.call(install)
+        return sent
+
+    def opens(self, sent):
+        out = []
+        for d in sent:
+            got = relayctl.unpack(SECRET, d)
+            if got and got[1].get("op") == "open":
+                out.append((d, got[1]))
+        return out
+
+    def play_through(self, rid):
+        a, b = self.player("Alice", 0), self.player("Bob", 1)
+        for c in (a, b):
+            self.measured(c, ["usw", "usc"])
+        ea, eb = self.pair(a, b)
+        self.assertEqual((ea["relay"]["id"], eb["relay"]["id"]), (rid, rid))
+        ta, tb = ea["ticket"], eb["ticket"]
+        game_link(*((ta, tb) if ta.role == "host" else (tb, ta)))
+        return self.nodes[rid].call(lambda: [list(x.tokens) for x in self.nodes[rid].node.udp.relays.values()])
+
+    def test_tokens_are_sealed(self):
+        sent = self.capture()
+        (toks,) = self.play_through("usc")
+        opens = self.opens(sent)
+        self.assertTrue(opens)
+        for raw, msg in opens:
+            self.assertIn("etokens", msg)
+            self.assertNotIn("tokens", msg)
+            for t in toks:
+                self.assertNotIn(t.hex().encode(), raw)
+                self.assertNotIn(t, raw)
+
+    def test_an_older_node_gets_them_readable(self):
+        node = self.nodes["usc"].node
+        real = node.op_status
+        node.op_status = lambda msg: {k: v for k, v in real(msg).items() if k != "caps"}     # a 1.1.1 node
+        self.assertTrue(self.s.wait_for(lambda: "caps" not in self.s.srv.relays.nodes["usc"].stats, 10))
+        sent = self.capture()
+        with self.assertLogs("t5lobby.relays", "WARNING") as logs:
+            (toks,) = self.play_through("usc")
+        self.assertTrue(any("older version" in m for m in logs.output), logs.output)
+        (raw, msg), *_ = self.opens(sent)
+        self.assertEqual(msg["tokens"], [t.hex() for t in toks])
 
 
 class FullNodeTest(Regional):

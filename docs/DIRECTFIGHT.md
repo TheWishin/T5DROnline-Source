@@ -96,7 +96,8 @@ T5_DF_PICK=<seconds>                                 pick=<seconds> for fight li
   press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames`,
   `T5_DF_DUMP_RANGES`, `T5_DF_DUMP_MODES=1`, `T5_DF_WATCH=addr,...`,
   `T5_DF_POKE=frame:addr:width:value`, `T5_DF_SHOT=frames` (needs
-  `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`), `T5_DF_SCRIPT[2]` (frame scripts, tests),
+  `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`; `+n` = n frames after the first FIGHT
+  START, whatever the loading took), `T5_DF_SCRIPT[2]` (frame scripts, tests),
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,
@@ -538,7 +539,8 @@ How a new opponent is played:
    has settled, and calls the start-VS routine again. **Without a fight since
    the title** it never visits the title a second time (that corrupts the game,
    see "After a session ends"): an untouched select screen stays as it is, a
-   used one is restarted in place by the same start-VS routine. This happens
+   used one is restarted -- the start-VS routine, and the select mode ended and
+   built again by the game's mode manager (see "Select restarts"). This happens
    while the players accept and the lobby punches.
 2. **"fight"** for a new session: its `env` goes to the session environment
    overlay (`t5_env_overlay_*`, src/netplay/netplay_core.cpp) -- not to the
@@ -637,9 +639,11 @@ in the cycle test):
   session-end reset was the title visit, the launcher's "idle" the second one.
   **Fix:** the driver goes to the title only when the game mode ran since its
   last title visit. Otherwise it keeps an untouched select screen, and restarts
-  a used one in place: the start-VS routine called at a live select screen
-  makes the select mode set itself up again (phase 3 -> 0 -> 3, VS config
-  refilled, its music restarted; checked 3 times in a row and before a fight).
+  a used one: the start-VS routine at the select screen refills the VS config,
+  and since 1.1.3 the mode manager ends the select mode and builds a new one
+  (the restart "in place" of this fix -- the running select mode setting itself
+  up again, phase 3 -> 0 -> 3 -- broke the game after 4-11 restarts: "Select
+  restarts" below).
 - **A reset during a mode change.** An "idle" a few frames after start VS
   found the title with the select mode requested, and the boot state went
   back under the select mode's set-up: NULL reads from then on (offline repro;
@@ -777,20 +781,116 @@ walker's own recovery, also in ordinary fights on main): rollback 2 in S over th
 fight in between broke the game, as in the dry run. Also: `tests/` 143 OK,
 `lobby/tests` 296 OK, the smoke quick suite 81 checks PASS.
 
-**Open (found 2026-10-19 by the mirror costume probe, not fixed):** the
-select screen restarted in place (`func_0004E9DC(4, 3)` at the select screen,
-"no fight since the title") several times in a row without a fight between
-breaks the game: after the 4th to 11th such restart in one process the vblank
-OPD 0x4635A8 reads zero and the main thread writes into the null page (the
-same picture as the title's second visit above). The probe left every session
-at the stage panel, right after both picks ("idle" there), one game, offline;
-one restart per process never failed (136 of 136). Online this is a run of
-sessions that end at the select screen without a fight (an opponent who
-leaves during the pick, again and again); in the probe the broken game kept
-running in "connecting" for minutes (whether the stuck check ends it online
-was not tested). Next step: what the start-VS routine
-allocates at the select screen and does not free (the restart could visit the
-title once instead after a few restarts).
+**Found 2026-10-19 by the mirror costume probe, fixed in 1.1.3:** the select
+screen restarted in place several times in a row without a fight between broke
+the game -- see the next section.
+
+## Select restarts (select-restart, 1.1.3)
+
+**The bug.** A persistent game whose sessions end at the select screen without a
+fight -- an opponent who leaves during the pick, again and again; matches the
+lobby cancels -- broke after the 4th to 11th such session: the main thread wrote
+into the null page, the vblank handler's descriptor (OPD 0x4635A8) read zero
+(`guest_call: OPD 0x004635A8 -> code 0 not registered` every vblank), NULL calls
+in the sound threads; the broken game sat in "connecting" for good. One restart
+per process never failed (136 of 136 in the mirror probe).
+
+**Reproduced** with `tools/pick_flow_test.py --offline --aborts 15 --env
+T5_DF_SELECT_RESTART=inplace` (the old restart) and with a one-game probe
+(fight command, both picks, "idle" at the stage panel): the 4th restart failed
+in all 4 runs (the same function and addresses each time), never an earlier
+one.
+
+**Cause.** Each "idle" after a used select screen restarted it "in place": the
+driver called the start-VS routine `func_0004E9DC(4, 3)` at the select screen.
+Its own request for the select mode is dropped by the mode manager while the
+select mode is the current one (`0x25D978` returns when cur == the mode asked
+for: the probe's mode log shows no mode change and the same `tcb_selectmode_t`
+object 0x10629900 before and after). What it did do was make the running
+select mode start its set-up again (phase word 0x1008F070 3 -> 0 -> 3): the
+set-up (phase 0 of the select's exec 0x5AF04, which creates the scene's tasks)
+builds the select scene a second time -- the two fighters' preview models with
+their animation and resource managers, portraits, the rest -- and nothing ever
+ended the first scene: a call trace of the model code
+(`T5_RB_CALLTRACE=2B1F40,...`) showed every earlier restart's models
+(0x1042CA10/0x1042D890, then 0x10451150/0x10451FD0, 0x10475890/..., each set
+0x24740 above the last) still updated every frame. The scene heap filled up;
+in the 4th restart's set-up the model code's allocation (`0x2B1F40` through the
+select's update `0x1159AC -> 0x109320 -> 0x2B81E0 -> 0x2ADAB8 -> 0x2B29A0 ->
+0x2B1900 -> 0x2B1808`, its node allocator at object +0x10, vtable slot 0x18)
+returned NULL, the node was written into the null page (dropped), and
+`0x2DBBEC` took a count from it and memset 138 MB from NULL (`0x3AF974`) --
+the OPD page and the code image below 0x08481084 cleared, as in the title's
+second visit above.
+
+**Fix** (`src/directfight/df_fight.cpp` `select_restart()`, no runtime patch):
+the restart is a mode change. After the start-VS routine (VS config, players,
+VS counters filled as before) the driver writes the request the manager
+dropped into the manager itself, as `0x25D978` would for another mode: next
+(+0x5C) = 6, param (+0x64) = 0. The manager then does what it does for every
+mode change: it waits until no task of the select scene is busy (loads in
+flight), ends the select mode with its whole scene -- the heap goes back -- and
+builds a new `tcb_selectmode_t` (prev = 6), which runs its set-up once, like
+the one the title's start VS makes. The switch takes 1-2 frames; the select
+screen is live again 37-60 frames after the restart, median 44 (in place: 36-37). The trace with the fix:
+each restart's models stop being updated at the switch and the next set reuses
+their addresses; the mode objects come from the manager's own ring
+(0x10629900, 0x1062C780, ... 0x10682880, then back to 0x1062A200). The reset
+counts the restart done only once the select mode object changed and went
+through phases 0..3 (`g_restart_obj`); when the manager is busy with another
+change (never seen) the old in-place restart is the fallback and is logged.
+`T5_DF_SELECT_RESTART=inplace` keeps the old way for comparisons.
+
+**Test:** `tools/pick_flow_test.py` (persistent flow; `--offline` for one game
+without netplay):
+
+    python tools/pick_flow_test.py --exe <t5dr.exe> --out <dir> --aborts 50 --matches 4 --rematch-every 2 --mash
+        [--abort-plan K:N,...]          # N more aborted sessions after match K
+        [--abort-how mix|both|host|join] # who leaves (default: in turn)
+        [--fresh-after-aborts join]     # match 1 against a freshly started game
+        [--offline] [--env T5_RB_MODE=off] [--env T5_DF_SELECT_RESTART=inplace]
+
+Each aborted session is a "fight" command with a new session (new ports, seed,
+key; in-game pick) to both games; once the select screen is live the scripted
+players move the cursor a few cells (the preview models load), one of them
+maybe confirms its pick (never both: the fight must not start), or nothing;
+after 0.4-4 s the session ends -- both launchers send "idle", or one game's
+does (the other one's session ends with the peer's BYE, its launcher's
+"idle" comes 1-2.5 s later). Checked per abort: both games back at neutral,
+one more "select screen restarted" in each log, no NULL access, bad guest
+call, crash or stuck line. Then the matches as usual: both games fight what was
+picked, same winner and state hash, 0 mismatching frames.
+`tests/test_select_restart.py` covers the harness's checks and that the
+restart stays a mode change.
+
+**Results** (this PC, 2026-10-19, runs in build/selrestart/runs):
+- The old restart (`T5_DF_SELECT_RESTART=inplace`, or main): the 4th restart
+  broke the game in every run -- the one-game probe 3 of 3, `--offline` (run
+  pf_inplace), and a rollback pair (inplace_rb: both games at the same abort,
+  `bad_guest_call` + `null_write`).
+- The fix, one game, the driver picking both sides and "idle" at the stage
+  panel (the mirror probe's way): 60 restarts in a row, no fault (run f1).
+- `--offline --aborts 60 --abort-plan 2:10 --matches 4 --rematch-every 2
+  --mash` (final_off): 70 of 70 aborted sessions (60 in a row, then a match and
+  a rematch, 10 more, a match and a rematch), every select screen restarted,
+  4 of 4 matches with a result, no fault line.
+- Rollback pair, the same plan, the joiner started again after the first 60
+  (`--fresh-after-aborts join`: a game with 60 restarts against a fresh one)
+  (final_rb): 70 of 70 aborted sessions in both games, 4 of 4 matches (two of
+  them rematches) on both PCs with the same fighters, winner and state hash,
+  0 mismatching frames in 28 sync checks, 672 rollbacks (mashing).
+- Lockstep pair (`T5_RB_MODE=off`, the host started again after the first 60)
+  (final_ls): the same, 70 of 70, 4 of 4, 0 mismatching frames.
+- Before the merge with main 1.1.2: rollback pairs pr_rb1 (50 + 4 matches) and
+  pr_rb2 (50, fresh joiner, mashing), lockstep pr_ls1 (50 + 4, mashing),
+  offline pf_off8 (20 aborts between 6 matches): all OK, 0 mismatching frames.
+
+An aborted session takes 2.2-9 s in the harness (its own random waits
+included); the restart itself 37-60 frames. Seen once in these runs and not a
+restart: a select screen entered from the title after a fight that stayed at
+select phase 1 for good (offline, a heavily loaded PC, pf_off2); the same wait
+is in a main-build log without any restart (build/bo3/runs/e3/p2, 42 s) --
+left for its own investigation.
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 
@@ -984,7 +1084,8 @@ host/join pair started with `T5_NET_START=external`.
   state in one struct), the session environment overlay `t5_env*`.
 - `src/rollback/rb_net.cpp`, `rb_state.cpp`: `session_reset`, `state_reset`.
 - Tests: `tools/pick_flow_test.py` (the in-game select, two games, scripted
-  picks), `tools/fight_flow_test.py` (pairs, many matches, rematch or
+  picks; `--aborts`/`--offline`: sessions that end at the select screen, "Select
+  restarts"), `tools/fight_flow_test.py` (pairs, many matches, rematch or
   persistent flow, `--mash`, `--fresh-at`), `tools/reset_cycle_test.py` (one
   persistent game through every way a session ends), `tools/dryrun_online.py
   --mode persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),

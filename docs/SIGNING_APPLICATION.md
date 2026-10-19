@@ -191,10 +191,10 @@ https://github.com/TheWishin/T5DROnline (and into the release notes template):
 >   GitHub account TheWishin. Every
 >   release is approved by hand.
 > - Every team member uses two-factor login on GitHub and SignPath.
-> - Privacy: T5DR Online makes network connections only for online play: to the lobby server you pick
+> - Privacy: T5DR Online makes network connections for online play: to the lobby server you pick
 >   in the Online tab (your name, rating, match results and your IP address) and to the other
->   player's PC during a match. It sends no analytics and does not check for updates. Nothing is sent
->   unless you start online play.
+>   player's PC during a match. The launcher also asks GitHub for the newest release at most once an
+>   hour (an update check: GitHub sees your IP address, nothing else is sent). It sends no analytics.
 
 (Not the standard "no transfer" sentence: it would be false for a game with an online mode.)
 

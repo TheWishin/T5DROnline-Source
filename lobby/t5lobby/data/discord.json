@@ -1,0 +1,6 @@
+{
+ "_comment": "Discord Rich Presence (docs/ONLINE.md). application_id: the id of the Discord application that names the game in Discord ('Playing T5DR Online'), made once by whoever ships the launcher in the Discord Developer Portal. Empty: no Rich Presence. large_image: the key of an art asset uploaded to that application (optional; never game art).",
+ "application_id": "",
+ "large_image": "",
+ "large_text": "T5DR Online"
+}

@@ -180,6 +180,13 @@ class Secrets(unittest.TestCase):
                   "reader tokens given back 0"):
             self.assertEqual(sc.text(t), t)
 
+    def test_lobby_recovery_codes(self):
+        sc = scrubber()
+        for code in ("ABCD-EFGH-JKMN", "abcd-efgh-jkmn", "Z2Z3-Y4Y5-XWVU"):
+            self.assertEqual(sc.text(f"my code {code} does not work"), "my code <removed> does not work")
+        for t in ("frame 1100-2200-3300 x", "build 2026-10-19-1200 ok", "LOOKLIKE-ABCD-EFGH-JKMN-X"):
+            self.assertEqual(sc.text(t), t)
+
     def test_exact_values_are_removed_wherever_they_are(self):
         sc = scrubber(secrets=[FAKE_TOKEN, "x"])           # a value shorter than 6 characters is ignored
         self.assertEqual(sc.text(f"resume {FAKE_TOKEN}!"), "resume <removed>!")
@@ -292,7 +299,10 @@ def fake_native(d, user=FAKE_USER, logs=3, build_exit=None):
     home = f"C:\\Users\\{user}\\Desktop\\T5DR"
     for i in range(logs):
         body = [f"[boot] VFS root: {home}\\native\\game\\vfs\n", f"[gpu] adapter: Fake GPU 9000 (vendor 10DE, 8192 MB)\n",
-                f"[netplay] joining {PUBLIC_V4}:5{i}000\n", f"[netplay] mode join marker-{i}\n"]
+                f"[netplay] joining {PUBLIC_V4}:5{i}000\n", f"[netplay] mode join marker-{i}\n",
+                "[sched] power saving on (this PC has a battery: laptop or handheld): fewer worker threads\n",
+                "[gpu] display: the window's screen is driven by Fake iGPU, the game renders on Fake GPU 9000\n",
+                f"[slow-frames] last 30 s: 1700 frames, {i} slow (over 20.9 ms): CPU {i} | on battery\n"]
         p = put(os.path.join(out, "logs", f"game-20261018-1{i}0000.log"), "".join(body) * 40)
         t = time.time() - (logs - i) * 100
         os.utime(p, (t, t))
@@ -425,8 +435,13 @@ class Whole(unittest.TestCase):
         for want in ("Release: 1.2.3 (T5DR Online)", "Build id: 0123456789abcdef", "Code id: aab9cb523c06a67b",
                      "Game program SHA-1: be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "Windows:", "Processor:", "Memory:",
                      "Graphics:", "== Settings in use ==", "Window, 1920 x 1080", "Online input delay (netcode): 2",
-                     "PS3_PAD_LOG=1", "[gpu] adapter: Fake GPU 9000", "Source commit: " + hashlib.sha1(b"c").hexdigest()):
+                     "PS3_PAD_LOG=1", "[gpu] adapter: Fake GPU 9000", "Source commit: " + hashlib.sha1(b"c").hexdigest(),
+                     # laptops (patch 0047): power and heat now, the game's power saving, the hybrid display, slow frames
+                     "== Power and heat (now) ==", "Power: ", "Power plan: ", "Sensors: ", "[sched] power saving on",
+                     "[gpu] display: the window's screen is driven by Fake iGPU", "== How the game ran",
+                     "[slow-frames] last 30 s: 1700 frames"):
             self.assertIn(want, t)
+        self.assertLessEqual(t.count("[slow-frames]"), 4)        # the last few, not all 40 copies
 
     def test_contents_lists_everything_and_what_was_removed(self):
         self.build()

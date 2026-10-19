@@ -480,7 +480,7 @@ class MatchDriver:
             line += " ranks=" + "|".join(str(t) for t in hud[1])
         tmp = self.fight_path + ".tmp"
         with open(tmp, "w", encoding="ascii") as f:
-            f.write(line + (f" match={mid}" if mid else "") + "\n")
+            f.write(line + (f" match={proto.file_safe(mid)}" if mid else "") + "\n")
         replace_retry(tmp, self.fight_path)
 
     def _discard_result(self, why):
@@ -580,9 +580,10 @@ class MatchDriver:
             self.stop_game()
             self.session = mid
             self.df_status, self.df_base = None, 0           # a new game counts its fights from 1
-            self.result_path = os.path.join(self.workdir, f"result-{mid}.json")
-            self.fight_path = os.path.join(self.workdir, f"fight-{mid}.txt")
-            self.status_path = os.path.join(self.workdir, f"status-{mid}.json")
+            fmid = proto.file_safe(mid)               # (the client already refuses other ids; a file name stays one)
+            self.result_path = os.path.join(self.workdir, f"result-{fmid}.json")
+            self.fight_path = os.path.join(self.workdir, f"fight-{fmid}.txt")
+            self.status_path = os.path.join(self.workdir, f"status-{fmid}.json")
             self.game_state = None
             for p in (self.result_path, self.result_path + ".tmp", self.fight_path, self.fight_path + ".done",
                       self.status_path):
@@ -938,7 +939,7 @@ class MatchDriver:
         d = os.path.join(self.workdir, "results")
         os.makedirs(d, exist_ok=True)
         try:
-            os.replace(self.result_path, os.path.join(d, f"{mid}.json"))
+            os.replace(self.result_path, os.path.join(d, f"{proto.file_safe(mid)}.json"))
         except OSError:
             pass
 

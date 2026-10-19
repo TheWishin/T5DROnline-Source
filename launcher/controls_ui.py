@@ -31,7 +31,7 @@ from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
 from t5lobby import dialogs, padmap, padnav, theme
 from t5lobby.i18n import ui_family
-from t5lobby.padmap import DINPUT, XINPUT
+from t5lobby.padmap import XINPUT
 
 POLL_HZ = 60
 SCAN_S = 1.0

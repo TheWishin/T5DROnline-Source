@@ -152,6 +152,7 @@ class OnlineUiWalk(unittest.TestCase):
         self.tab = self.app.online
         self.tab._build_info = lambda: (util.BUILD, None)
         self.tab.new_window = self.window
+        self.tab.bring_forward = lambda w: None       # (the window never comes forward in a test)
         self.asked = []
         self.tab.ask_yes_no = lambda *a, **k: self.asked.append(a) or True
         self.tab.ask_string = lambda *a, **k: "secret-pw1"

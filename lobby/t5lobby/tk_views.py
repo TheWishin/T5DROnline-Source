@@ -1412,6 +1412,19 @@ class OnlineView:
                 n, k = rank_after["placement"]
                 ttk.Label(rr, text="   " + t("Placement match {done} of {total}", done=n, total=k),
                           style="Card.Muted.TLabel").pack(side="left")
+        if self.game_waits():
+            wr = self.body(v)                       # what the game is doing now (players took it for a hang)
+            wr.grid(row=8, column=0, sticky="we", pady=(px(8), 0))
+            wr.columnconfigure(1, weight=1)
+            d = px(16)
+            dot = tk.Canvas(wr, width=d, height=d, bg=C["surface"], highlightthickness=0, takefocus=0)
+            dot.create_oval(1, 1, d - 1, d - 1, fill=C["info"], outline="")
+            dot.create_text(d / 2.0, d / 2.0, text="i", fill="#06121f",
+                            font=(self.th.fonts["h3"].actual("family"), 8, "bold"))
+            dot.grid(row=0, column=0, sticky="nw", padx=(0, px(8)), pady=(px(1), 0))
+            self.wrap(ttk.Label(wr, text=t("The game waits here for your next match: Rematch, Next game or Leave."),
+                                style="Card.TLabel", justify="left"), self.stage_card, 70).grid(row=0, column=1,
+                                                                                               sticky="w")
         lag = tab.lag
         if lag and lag.get("text"):
             bad = lag.get("verdict") == "more_lag"
@@ -1469,6 +1482,15 @@ class OnlineView:
             self.set_ring.set(max(0.0, sb[2] - time.monotonic()), self.set_ring_total)
         except tk.TclError:
             self.set_ring = None
+
+    def game_waits(self):
+        """After a match: the game is still open and waits for the next command (not when a ranked set's
+        next game starts by itself)."""
+        drv = self.tab.driver
+        try:
+            return bool(drv is not None and drv.ticket is None and drv.game_running() and self.tab.set_bar is None)
+        except Exception:                           # noqa: BLE001 -- (a driver without a game)
+            return False
 
     def _render_result_card(self):
         tab, px = self.tab, self.px

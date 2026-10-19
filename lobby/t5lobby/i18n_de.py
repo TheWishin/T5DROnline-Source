@@ -1557,6 +1557,8 @@ MESSAGES = {
     "ROUNDS  (YOU – THEM)": "RUNDEN  (DU – GEGNER)",
     "GAMES  (YOU – THEM)": "SPIELE  (DU – GEGNER)",
     "SET WON": "SET GEWONNEN",
+    "The game waits here for your next match: Rematch, Next game or Leave.":
+        "Das Spiel wartet hier auf dein nächstes Match: Rematch, Nächstes Spiel oder Verlassen.",
     "SET LOST": "SET VERLOREN",
     "Ranked set": "Ranked-Set",
     "Ranked set vs {name}": "Ranked-Set gegen {name}",

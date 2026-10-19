@@ -178,6 +178,26 @@ class Steps(unittest.TestCase):
             put(stamp, '{"commit": "%s", "patches": "stale"}' % self.bg.PS3RECOMP_COMMIT)
             self.assertBuildError(lambda: self.bg.step_deps(self.args()), "does not match this version")
 
+    def test_redo_every_step_keeps_the_bundled_ps3recomp(self):
+        # "Redo every step" (--force) used to delete the release's ps3recomp copy and git-clone it again, which
+        # failed on its read-only .git pack files ("Access is denied").
+        os.makedirs(self.deps)
+        put(os.path.join(self.deps, ".t5dr-vendored.json"),
+            '{"commit": "%s", "patches": "%s"}' % (self.bg.PS3RECOMP_COMMIT, self.bg.patch_digest()))
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not fetch")), \
+             mock.patch.object(self.bg.prereqs, "python_crypto", lambda: True):
+            self.bg.step_deps(self.args(force=True))
+        self.assertTrue(os.path.exists(os.path.join(self.deps, ".t5dr-vendored.json")))
+
+    def test_rmtree_removes_read_only_files(self):
+        d = os.path.join(self.tmp.name, "checkout", ".git", "objects", "pack")
+        os.makedirs(d)
+        f = os.path.join(d, "pack-1.idx")
+        put(f, b"x")
+        os.chmod(f, 0o444)
+        self.bg.rmtree(os.path.join(self.tmp.name, "checkout"))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "checkout")))
+
     def test_decrypt_needs_a_16_byte_rap(self):
         self.assertBuildError(lambda: self.bg.step_decrypt(self.args()), "license file (.rap)")
         rap = os.path.join(self.tmp.name, "x.rap")

@@ -18,6 +18,9 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Every Python program the launcher starts (build tools, match driver, lobby helpers) reads and writes its
+# files in UTF-8, not in Windows' code page: a Korean (cp949) Windows broke the build on a non-ASCII character.
+os.environ["PYTHONUTF8"] = "1"
 import core    # noqa: E402
 import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)

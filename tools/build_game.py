@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -220,9 +221,19 @@ def prebuilt_host():
 
 # --------------------------------------------------------------------------- steps
 
+def rmtree(path):
+    """shutil.rmtree that also removes read-only files (git's object packs are read-only on Windows)."""
+    def onerror(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=onerror)
+
+
 def step_deps(a):
     vend = deps_stamp_ok()
-    if vend is True and not a.force:
+    if vend is True:
+        # Also with "Redo every step": the copy is part of the release, there is nothing to fetch again (1.0.0
+        # deleted it and tried a git clone, which failed on its read-only .git files: "Access is denied").
         print("  ps3recomp included in this package (patched) -- nothing to fetch")
     elif vend is False:
         fail("The ps3recomp copy in this folder does not match this version of the port. "
@@ -234,7 +245,7 @@ def step_deps(a):
             fail("Git is needed to download ps3recomp (the recompiler). Install Git, or use a release "
                  "zip, which already contains it.")
         if os.path.isdir(P.deps):
-            shutil.rmtree(P.deps)
+            rmtree(P.deps)
         run(["git", "-c", "core.longpaths=true", "clone", "-b", PS3RECOMP_BRANCH, PS3RECOMP_URL, P.deps])
         run(["git", "-C", P.deps, "checkout", "-q", PS3RECOMP_COMMIT])
         # Our fixes on top of the pinned commit (Windows build gaps and the like).
@@ -404,7 +415,7 @@ def step_lift(a):
          "--seed-json", os.path.join(P.analysis, "EBOOT.functions.json"),
          "-o", os.path.join(P.analysis, "functions.json")])
     if os.path.isdir(P.recomp):
-        shutil.rmtree(P.recomp)
+        rmtree(P.recomp)
     os.makedirs(P.recomp)
     run([PY, os.path.join(P.tools, "ppu_lifter.py"), P.elf,
          "--functions", os.path.join(P.analysis, "functions.json"),
@@ -446,7 +457,7 @@ def step_spu(a):
             f.write(SPU_CORE_EXTRA_FUNCS + "\n")
     if a.force or not core_done:
         if os.path.isdir(P.spu):
-            shutil.rmtree(P.spu)
+            rmtree(P.spu)
         images = os.path.join(P.spu, "images")
         os.makedirs(images)
         run([PY, os.path.join(P.tools, "extract_spu_images.py"), P.elf, "--output", images])
@@ -552,6 +563,9 @@ def main():
     # The Python tools this starts print paths; into a pipe they would use the ANSI code page and
     # stop with UnicodeEncodeError on a folder or user name outside it ("Tekken Ł東京").
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    # And the files they write (the lifted C++, JSON) in UTF-8, whatever Windows' code page is: on a
+    # Korean Windows (cp949) the lifter stopped with UnicodeEncodeError on a "--" dash in a comment.
+    os.environ["PYTHONUTF8"] = "1"
     P = Paths(a.out, a.deps)
     os.makedirs(P.out, exist_ok=True)
     os.chdir(P.out)

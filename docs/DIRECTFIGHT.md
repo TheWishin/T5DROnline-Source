@@ -952,11 +952,15 @@ caught the read in flight at the copy point; a slow disk does.
   in-game select's Pick before the screen takes input) whose reader is wedged --
   busy, no completion token, the reader thread parked on its request semaphore
   -- for `T5_DF_SELECT_STUCK_SECONDS` (10), or that has nothing to load (reader
-  idle, empty queue, phase word and modes unchanged) for `T5_DF_STUCK_SECONDS`
-  (60), logs what it waits on and ends the game with exit code 6, as a stuck
+  idle with an empty queue, the reader thread, the "decoder" that inflates what
+  was read and TNUD::ASync all parked on their semaphores, phase word and modes
+  unchanged) for `T5_DF_STUCK_SECONDS` (60), logs what it waits on and ends the
+  game with exit code 6, as a stuck
   reset does (the launcher starts a fresh game for the match; match_driver
-  reports `game_stuck`, no strike). A slow read never trips it: the reader
-  thread is then waiting for its data, not for a request.
+  reports `game_stuck`, no strike). A slow load never trips it: the reader
+  thread then waits for its data, not for a request, or a loader works (under
+  a CPU hog the decoder alone held one select at phase 1 for 30 s with the
+  reader idle: S1 cycle 30, before the decoder was part of the rule).
 - Stuck exits need frames too (`kStuckMinFps` = 20 frames per second of the
   wait): the checks run at frame boundaries, so a game really stuck in a mode
   change keeps its frame rate, while one its PC starves keeps going slowly

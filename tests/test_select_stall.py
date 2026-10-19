@@ -94,7 +94,9 @@ class DriverSourceTest(unittest.TestCase):
         body = re.search(r"void select_load_check\(uint32_t f\)\s*\{(.*?)\n\}", self.src, re.S).group(1)
         # wedged: busy, no token and the reader thread parked on its request semaphore -- not merely "slow"
         self.assertIn("busy == 1 && tokens == 0 && sem_parked(rd32(kReader))", body)
-        self.assertIn("busy == 0 && q == 0", body)
+        # nothing to load: the reader idle and every loader thread parked (a starved decoder is still working)
+        self.assertIn("busy == 0 && q == 0 && sem_parked(rd32(kReader)) && sem_parked(rd32(kDecoderSemPtr))", body)
+        self.assertIn("sem_parked(rd32(kAsyncSemPtr))", body)
         self.assertIn("TerminateProcess(GetCurrentProcess(), 6)", body)
         self.assertIn("f - g_sl_frame < limit * kStuckMinFps", body)
         self.assertRegex(self.src, r"void stuck_check\(uint32_t f\)\s*\{\s*select_load_check\(f\);")

@@ -700,6 +700,7 @@ void start_rematch(uint32_t f)
  * start VS from a title whose loads are done. */
 constexpr uint32_t kReader = 0x1009FE28u, kReaderPool = 0x1009FF68u, kReaderPoolEnd = 0x100A0968u;
 constexpr uint32_t kReaderData = 0x1009FE20u, kReaderDataEnd = 0x100A0988u;
+constexpr uint32_t kDecoderSemPtr = 0x1054AD58u, kAsyncSemPtr = 0x106CD858u;   /* the other loader threads' semaphore ids */
 extern "C" int32_t t5_sem_count(uint32_t id);   /* src/netplay/t5_hooks.cpp: a kernel semaphore's count, -1 none */
 bool reader_idle() { return rd32(kReader + 8) == 0 && rd32(kReader + 0x14) == 0; }
 bool g_reader_guard = true;      /* T5_DF_READER_GUARD=0: the reader's data copied like the rest, no wait for it (old) */
@@ -909,9 +910,13 @@ bool pick_screen_wait();        /* the in-game select waits for its select scree
  *     parked on its request semaphore -- nobody will post the token the service
  *     waits for (what the bad copy did); a slow read has the thread waiting for
  *     its data instead, or a token pending: T5_DF_SELECT_STUCK_SECONDS (10);
- *   - nothing to load: the reader idle with an empty queue while the select's
- *     phase word, the mode manager and the queue stay as they are: the stuck
- *     seconds of a reset (T5_DF_STUCK_SECONDS, 60).
+ *   - nothing to load: the reader idle with an empty queue, and the other
+ *     loader threads parked too -- the "decoder" (inflates what was read,
+ *     semaphore id at 0x1054AD58) and TNUD::ASync (0x106CD858) -- while the
+ *     select's phase word and the mode manager stay as they are: the stuck
+ *     seconds of a reset (T5_DF_STUCK_SECONDS, 60). (Under a CPU hog the
+ *     decoder alone took 30 s of one select's set-up, the reader idle:
+ *     select_stall_test S1 cycle 30.)
  * Either one held without a break for that long: the game says what it waits
  * on and ends as a stuck reset does (exit code 6: the launcher starts a fresh
  * game for the match, which match_driver reports as game_stuck, no strike).
@@ -932,7 +937,8 @@ void select_load_check(uint32_t f)
     int kind = 0;
     if (loading) {
         if (busy == 1 && tokens == 0 && sem_parked(rd32(kReader))) kind = 1;
-        else if (busy == 0 && q == 0) kind = 2;
+        else if (busy == 0 && q == 0 && sem_parked(rd32(kReader)) && sem_parked(rd32(kDecoderSemPtr)) &&
+                 sem_parked(rd32(kAsyncSemPtr))) kind = 2;
     }
     const uint32_t limit = kind == 1 ? g_select_stuck_s : kind == 2 ? g_stuck_s : 0;
     const uint64_t sig = (uint64_t)rd32(kSelectState) | ((uint64_t)mode_cur() << 8) | ((uint64_t)mode_next() << 16) |
@@ -944,7 +950,7 @@ void select_load_check(uint32_t f)
         return;
     }
     const ULONGLONG ms = now - g_sl_ms;
-    const char* what = kind == 1 ? "the async reader waits for a read nobody does" : "nothing loads";
+    const char* what = kind == 1 ? "the async reader waits for a read nobody does" : "nothing loads (every loader parked)";
     if (ms >= (ULONGLONG)limit * 500 && !g_sl_dumped) {
         g_sl_dumped = true;
         note("frame %u: the select screen's loading is stuck for %u s, %s (mode %u, next %u, phase word %u; %s):", f,

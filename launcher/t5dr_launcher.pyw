@@ -559,9 +559,11 @@ class App(tk.Tk):
         self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
         self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
         ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
-                        variable=self.unlock_stages_var, command=self.save_settings).pack(anchor="w")
+                        variable=self.unlock_stages_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
         ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
-                        variable=self.unlock_items_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+                        variable=self.unlock_items_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
             "stay yours (the save is backed up first, in save-backups). Online, both players always get the "

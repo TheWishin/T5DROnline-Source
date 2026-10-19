@@ -418,6 +418,22 @@ class App(tk.Tk):
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
+        # Stage blur / glow (PS3_STAGE_BLUR=0 when off, core.STAGE_BLUR_MODES): the soft focus some
+        # stages put on the picture and the sun's glow. Picture only, like VSync.
+        sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
+        sb.pack(fill="x", pady=(6, 0))
+        self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+        row = ttk.Frame(sb)
+        row.pack(anchor="w")
+        for key, label in core.STAGE_BLUR_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.stage_blur_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(sb, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+            "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
+            anchor="w", pady=(4, 0))
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         if core.I18N:
@@ -853,6 +869,8 @@ class App(tk.Tk):
         self.settings["display"] = self.display_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
+        if hasattr(self, "stage_blur_var"):
+            self.settings["stage_blur"] = self.stage_blur_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
@@ -932,7 +950,8 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
+                  "input_delay": core.INPUT_DELAYS}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

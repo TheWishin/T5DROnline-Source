@@ -559,7 +559,7 @@ def _gb(n):
 
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay)\] "
-                            r"(?:adapter|res_scale|window on|display|FATAL|CPU budget|built for|mode |lobby match)")
+                            r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match)")
 
 
 def facts_from_log(path, limit=12):
@@ -615,12 +615,13 @@ def system_text(ctx, now=None, game_log=None):
     return "\n".join(L) + "\n"
 
 
-SETTING_KEYS = ("display", "internal_res", "vsync", "input_delay", "mute", "background", "low_priority")
+SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "input_delay", "mute", "background",
+                "low_priority")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     """The 'settings in use' lines of system.txt from the launcher's settings (a dict). `labels`:
-    {key: {value: text}} for display, internal_res, vsync and input_delay. File paths of the .pkg/.rap are
+    {key: {value: text}} for display, internal_res, vsync, stage_blur and input_delay. File paths of the .pkg/.rap are
     not listed (only whether they are set); a password could not be in here: only these keys are read."""
     labels = labels or {}
     st = settings or {}
@@ -633,6 +634,7 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
     L = [f"Window and resolution: {lab('display')}",
          f"Internal resolution: {lab('internal_res')}",
          f"VSync: {lab('vsync')}",
+         f"Stage blur / glow: {lab('stage_blur')}",
          f"Online input delay (netcode): {lab('input_delay')}",
          f"Mute sound: {yesno(st.get('mute'))}",
          f"Start minimized without focus: {yesno(st.get('background'))}",

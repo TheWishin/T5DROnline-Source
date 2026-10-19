@@ -2078,10 +2078,15 @@ fighters and stages; the inflate abort only showed there).
 | fx1 | fix 1 | 1, 32 | 33 | 10 447 | 0 / 0 | 0 | 29 pass, 3 "no_peer" (a fresh O took 25-30 s to boot under load, past the 20 s connect timeout) |
 | fx3, i1 | fix 1 | 5, 8 + 15 | 9 + 13 | 2 396 + 3 920 | inflate + free(): 2 + 1 / 0 + 1 | 0 | S died twice in fx3, once in i1; O once |
 | F5 + F6 | fixes 1 + 2 | 1 + 5, 22 + 15 | 24 + 17 | 6 351 + 5 407 | 0 / 0 | 0 | 36 pass; 1 cycle with a 3-frame transient (below) |
-| F9 | final | 5, 21 (stopped at cycle 26 for a pause; to finish) | 24 | 7228 | 0 / 0 | 0 | 21 pass |
+| F9 | fixes 1 + 2 | 5, 21 (stopped at cycle 26 for a pause) | 24 | 7 228 | 0 / 0 | 0 | 21 pass |
+| F10-F12 | rebased, fixes 1-3 (+ 4) | 5, 1-3 | -- | -- | 0 / 0 | 0 | cycle 5 failed: the select screen that never loads (F10, F12) and the autosave heap race (F11) -- fixes 4 and the stuck exit, below |
+| F13 | fixes 1-4, main d7fc019 | 5, 23 (stopped at cycle 28 for a pause) | 26 | 7 015 | 0 / 0 | 0 | 23 pass, 0 of 46 next-match results with a mismatching frame |
+| F14 | fixes 1-6, main 53f775d | 5, **32** | 36 | 11 123 | 0 / 0 | 0 | **32 pass**, 0 of 64 next-match results with a mismatching frame |
 
 F5 and F6 were stopped early (F5 when the owner started playing on the PC, F6
-by the control-file race above); F9 ran muted at below-normal priority.
+by the control-file race above); F9 and F13 were stopped for usage pauses; F9,
+F13 and F14 ran muted at below-normal priority. The 3-frame transient below
+did not come back in F13 and F14 (their desync cycles included).
 
 Pairs (`rollback_net_test.py`, section 29's command, a whole match each). Before
 the rebase: RTT 150 default/default (RB150c) 556 rollbacks on the joiner, 0

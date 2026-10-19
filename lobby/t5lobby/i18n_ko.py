@@ -1308,6 +1308,14 @@ MESSAGES = {
     "that set is not yours to play": "내 세트가 아닙니다",
     "that set is not waiting for you": "그 세트는 나를 기다리고 있지 않습니다",
     "only the organizer can do that": "주최자만 할 수 있습니다",
+    "that tournament name is not allowed here":
+        "그 대회 이름은 여기서 사용할 수 없습니다",
+    "this internet address runs as many tournaments as one organizer may; finish or cancel one first":
+        "이 인터넷 주소에서 이미 주최자 한 명이 열 수 있는 만큼의 대회가 열려 있습니다. 먼저 하나를 끝내거나 취소하세요",
+    "the organizer took you off this tournament":
+        "주최자가 당신을 이 대회에서 제외했습니다",
+    "you play in that set yourself: a server tournament admin decides it (or cancel the tournament)":
+        "이 세트는 당신이 직접 경기합니다. 서버의 대회 관리자가 결정합니다(또는 대회를 취소하세요)",
     "that tournament has started already": "그 토너먼트는 이미 시작되었습니다",
     "a tournament needs at least 2 players": "토너먼트에는 최소 2명이 필요합니다",
     "no such player in that tournament": "그 토너먼트에 그런 플레이어가 없습니다",

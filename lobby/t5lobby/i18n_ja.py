@@ -1326,6 +1326,14 @@ MESSAGES = {
     "that set is not yours to play": "そのセットはあなたの試合ではありません",
     "that set is not waiting for you": "そのセットはあなたを待っていません",
     "only the organizer can do that": "それができるのは主催者だけです",
+    "that tournament name is not allowed here":
+        "その大会名はここでは使えません",
+    "this internet address runs as many tournaments as one organizer may; finish or cancel one first":
+        "このインターネットアドレスからは、主催者1人が開ける数の大会がすでに開かれています。先に1つ終えるか中止してください",
+    "the organizer took you off this tournament":
+        "主催者があなたをこの大会から外しました",
+    "you play in that set yourself: a server tournament admin decides it (or cancel the tournament)":
+        "このセットはあなた自身が対戦します。サーバーの大会管理者が決めます（または大会を中止してください）",
     "that tournament has started already": "そのトーナメントはすでに始まっています",
     "a tournament needs at least 2 players": "トーナメントには 2 人以上必要です",
     "no such player in that tournament": "そのトーナメントにそのプレイヤーはいません",

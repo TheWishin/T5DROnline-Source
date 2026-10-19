@@ -38,6 +38,7 @@ The status port serves the brackets read-only for streamers: GET /tournaments an
 """
 import json
 import logging
+import math
 import random
 import time
 
@@ -45,6 +46,7 @@ from .. import proto
 from ..proto import LobbyError
 from .bracket import EMPTY, FORMATS, NOT_PLAYED, Bracket, BSet
 from .lobby import GameSet
+from .ratelimit import TokenBucket
 
 log = logging.getLogger("t5lobby.tour")
 
@@ -230,6 +232,8 @@ class TourManager:
         self.dirty = set()              # tournament ids whose change is not announced yet (tour_changed)
         self.http_cache = {}
         self.view_cache = {}            # tournament id -> (rev, time, the part of full() every viewer gets)
+        self.created_from = {}          # tournament id -> address key it was created from (memory only: the limit per
+                                        # internet address; never written to the database)
         self._task = None
         self.handlers = {"tour_list": self.h_list, "tour_get": self.h_get, "tour_create": self.h_create,
                          "tour_join": self.h_join, "tour_leave": self.h_leave, "tour_checkin": self.h_checkin,
@@ -506,6 +510,13 @@ class TourManager:
                 "can_create": self.may_organize(p), "rated": self.cfg.tour_rated}
 
     async def h_get(self, conn, msg):
+        # (security review 2) a whole bracket is ~60 KB of JSON at 64 players: without a limit of its own one connection
+        # could ask for it 20 times a second (the launcher asks at most once a second)
+        b = getattr(conn, "tour_reads", None)
+        if b is None:
+            b = conn.tour_reads = TokenBucket(self.cfg.tour_get_rate, self.cfg.tour_get_burst)
+        if not b.take():
+            raise LobbyError(proto.E_RATE, "slow down")
         return {"t": "tour", "tournament": self.full(self._get(msg), conn.player)}
 
     async def h_create(self, conn, msg):
@@ -516,6 +527,10 @@ class TourManager:
         name = proto.clean_text(msg.get("name") or "", 40).strip()
         if len(name) < 3:
             raise LobbyError(proto.E_BAD_REQUEST, "a tournament name is 3-40 characters")
+        admin = self._is_admin(p)
+        if not admin and (proto.reserved_name(name) or self.srv.name_blocked(name)):
+            # (security review 2) "Official ...", "Admin cup", the server's blocklist: only T5L_TOUR_ADMINS
+            raise LobbyError(proto.E_BAD_NAME, "that tournament name is not allowed here")
         fmt = msg.get("format")
         if fmt not in FORMATS:
             raise LobbyError(proto.E_BAD_REQUEST, "the format is single or double elimination")
@@ -525,6 +540,10 @@ class TourManager:
             checkin = int(msg.get("checkin_minutes", 0) or 0)
             start = float(msg["start"])
         except (KeyError, TypeError, ValueError):
+            raise LobbyError(proto.E_BAD_REQUEST, "set length, player limit, check-in and start time are numbers")
+        if not math.isfinite(start):
+            # (security review 2) NaN passed both checks below; SQLite stores it as NULL, so the row could never be
+            # saved: a tournament that never started, could not be cancelled for good and held a slot until a restart
             raise LobbyError(proto.E_BAD_REQUEST, "set length, player limit, check-in and start time are numbers")
         if set_wins not in SET_WINS:
             raise LobbyError(proto.E_BAD_REQUEST, "a set is first to 2 or first to 3 games")
@@ -542,11 +561,19 @@ class TourManager:
             raise LobbyError(proto.E_BAD_REQUEST, f"a tournament starts within {self.cfg.tour_max_days:g} days")
         start = max(start, now)
         open_ = [t for t in self.tours.values() if t.state in OPEN_STATES]
-        if len(open_) >= self.cfg.tour_max_open:
+        # (security review 2) T5L_TOUR_ADMINS are not held back by the server-wide limit: a few throw-away accounts
+        # (T5L_TOUR_ORGANIZERS=any) could fill it with tournaments 14 days ahead and block every real organizer
+        if len(open_) >= self.cfg.tour_max_open and not admin:
             raise LobbyError(proto.E_BUSY, "this server has as many tournaments as it takes; try again later")
         mine = sum(1 for t in open_ if t.organizer_id == p.account_id)
-        if mine >= self.cfg.tour_per_organizer and not self._is_admin(p):
+        if mine >= self.cfg.tour_per_organizer and not admin:
             raise LobbyError(proto.E_BUSY, f"you already run {mine} tournaments; finish or cancel one first")
+        akey = getattr(conn, "akey", None)
+        if akey is not None and not admin and \
+                sum(1 for t in open_ if self.created_from.get(t.id) == akey) >= self.cfg.tour_per_organizer:
+            # ... and T5L_TOUR_PER_ORGANIZER counts per internet address too, all its accounts together
+            raise LobbyError(proto.E_BUSY, "this internet address runs as many tournaments as one organizer may; "
+                                           "finish or cancel one first")
         t = Tournament(id=_rid(), name=name, organizer_id=p.account_id, organizer_name=p.name, build=p.build_id,
                        format=fmt, set_wins=set_wins, max_players=max_players, start_time=start,
                        checkin_minutes=checkin, seeding=seeding, rated=self.cfg.tour_rated, state="signup",
@@ -554,6 +581,8 @@ class TourManager:
         if checkin and now >= t.checkin_opens():
             t.state = "checkin"
         self.tours[t.id] = t
+        if akey is not None:
+            self.created_from[t.id] = akey
         self._save(t)
         log.info("tournament %s %r created by %s: %s, first to %d, %d players, start %s", t.id, name, p.name, fmt,
                  set_wins, max_players, time.strftime("%Y-%m-%d %H:%M", time.gmtime(start)))
@@ -589,6 +618,9 @@ class TourManager:
         if e is None:
             raise LobbyError(proto.E_STATE, "you are not in that tournament")
         if t.state in ("signup", "checkin"):
+            if e.dq:
+                # (security review 2) leaving and signing up again used to clear the organizer's disqualification
+                raise LobbyError(proto.E_NOT_ALLOWED, "the organizer took you off this tournament")
             del t.entrants[p.account_id]
             self._drop_entrant_row(t, p.account_id)
             self._save(t, [])
@@ -662,6 +694,11 @@ class TourManager:
             e = next((x for x in t.entrants.values() if x.name.lower() == str(msg.get("player") or "").lower()), None)
             if e is None:
                 raise LobbyError(proto.E_NOT_FOUND, "no such player in that tournament")
+            if t.state == "running" and e.aid != p.account_id and not self._is_admin(p):
+                s = t.bracket.set_of(e.aid) if t.bracket is not None else None
+                if s is not None and p.account_id in s.p:
+                    raise LobbyError(proto.E_NOT_ALLOWED, "you play in that set yourself: a server tournament admin "
+                                                          "decides it (or cancel the tournament)")
             if t.state in ("signup", "checkin"):
                 e.dq = "organizer"
                 self._save(t, [e])
@@ -672,15 +709,22 @@ class TourManager:
             else:
                 raise LobbyError(proto.E_STATE, "that tournament is over")
         else:
-            self._set_op(t, op, msg)
+            self._set_op(t, op, msg, p)
         return {"t": "tour", "tournament": self.full(t, p)}
 
-    def _set_op(self, t, op, msg):
+    # (security review 2) With T5L_TOUR_ORGANIZERS=any every account may organize -- and sign up for its own
+    # tournament. An organizer does not decide a set they play themselves (report, override, reset), nor disqualify
+    # the opponent of their open set: a T5L_TOUR_ADMINS account does, or the organizer cancels the tournament.
+
+    def _set_op(self, t, op, msg, p=None):
         if t.state != "running" or t.bracket is None:
             raise LobbyError(proto.E_STATE, "that tournament is not running")
         s = t.bracket.sets.get(str(msg.get("set") or ""))
         if s is None:
             raise LobbyError(proto.E_NOT_FOUND, "no such set")
+        if p is not None and p.account_id in s.p and not self._is_admin(p):
+            raise LobbyError(proto.E_NOT_ALLOWED, "you play in that set yourself: a server tournament admin decides it "
+                                                  "(or cancel the tournament)")
         winner, score = None, None
         if op in ("report", "override"):
             winner = msg.get("winner")
@@ -993,6 +1037,19 @@ class TourManager:
             self._decide(t, s, side, gs.score(), None if o["status"] == "confirmed" else "forfeit")
             return
         reason = o.get("reason") or o.get("status") or "void"
+        blame = o.get("blame")
+        if blame is not None and getattr(blame, "account_id", None) in s.p:
+            # (security review 2) a game voided by one player's own doing (a crash: the game killed while losing) was
+            # simply called again with the score so far -- a free do-over of a lost game, T5L_TOUR_RETRIES times a set.
+            # T5L_TOUR_BLAMED_VOIDS of them a set are forgiven (real crashes happen); the next one loses the set.
+            side = s.p.index(blame.account_id)
+            blamed = d.setdefault("blamed", [0, 0])
+            blamed[side] += 1
+            if blamed[side] > self.cfg.tour_blamed_voids:
+                log.info("tournament %s: set %s: %s ended %d games without a result (%s): the set goes to %s", t.id,
+                         s.id, t.name_of(s.p[side]), blamed[side], reason, t.name_of(s.p[1 - side]))
+                self._decide(t, s, 1 - side, gs.score(), "forfeit")
+                return
         d["voids"] = int(d.get("voids") or 0) + 1
         if reason in ("disputed", "hash_mismatch") or d["voids"] > self.cfg.tour_retries:
             self._attention(t, s, reason)

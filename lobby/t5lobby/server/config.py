@@ -90,6 +90,10 @@ class Config:
     tour_max_days: float = 14.0     # T5L_TOUR_MAX_DAYS: a tournament starts at most this far ahead
     tour_keep_days: float = 7.0     # T5L_TOUR_KEEP_DAYS: finished tournaments stay in the list this long
     tour_tick: float = 0.5          # T5L_TOUR_TICK: seconds between looks at start times and no-shows
+    tour_blamed_voids: int = 1      # T5L_TOUR_BLAMED_VOIDS: games of one set a player may end without a result by their
+                                    # own doing (a crash) and still have the set called again; the next one loses it
+    tour_get_rate: float = 2.0      # T5L_TOUR_GET_RATE / _BURST: tour_get requests per second per connection (a 64-player
+    tour_get_burst: int = 10        # bracket is ~60 KB), after a burst of this many
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     # The queues pair players whose estimated ping (the best relay path: docs/RANKED.md "Matchmaking") fits a window

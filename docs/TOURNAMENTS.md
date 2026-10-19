@@ -57,7 +57,7 @@ page: **Create...**, then
 
 | Field | Choices |
 |---|---|
-| Name | 3-40 characters |
+| Name | 3-40 characters; not one that passes for the server ("Official ...", "Admin ...", the server's name blocklist) unless you are one of its `T5L_TOUR_ADMINS` |
 | Format | single or double elimination |
 | Sets | first to 2 games (best of 3), first to 3 (best of 5) |
 | Starts | in 5 minutes ... in 24 hours, or at a time of day (HH:MM, today or tomorrow); at most 14 days ahead |
@@ -66,7 +66,8 @@ page: **Create...**, then
 | Seeding | random, or by rating (the lobby's Glicko-2 rating) |
 
 The tournament is played with the game build of the organizer's launcher; players with another build cannot sign up
-(the lobby pairs equal builds only). An organizer runs at most 2 tournaments at once, the server 20.
+(the lobby pairs equal builds only). An organizer runs at most 2 tournaments at once -- also counted per internet
+address, all its accounts together -- and the server 20 (`T5L_TOUR_ADMINS` are held back by neither).
 
 On the tournament's page the organizer has:
 
@@ -84,6 +85,11 @@ A set **needs the organizer** (the bracket shows "NEEDS THE ORGANIZER", the orga
 when the two launchers reported different winners (a dispute), or when it ended without a result three times
 (below). Report the winner, or reset it.
 
+**An organizer who plays in their own tournament does not decide their own sets**: report, override and reset of a
+set they play, and disqualifying the opponent of their open set, are refused ("you play in that set yourself"). A
+`T5L_TOUR_ADMINS` account decides those -- or the organizer cancels the tournament. A player the organizer
+disqualified before the start cannot leave and sign up again.
+
 The server's owner can name accounts that may run every tournament (`T5L_TOUR_ADMINS`): the same buttons on every
 tournament, and no limit on how many they run.
 
@@ -100,6 +106,7 @@ lost connections are told apart. On top, for the set:
 | a player loses the lobby connection and is not back within 60 s (`T5L_RECONNECT_GRACE`) | lost by that player |
 | a game is void by a desync, a draw, too short | that game is played again (at most 2 times per set, `T5L_SET_REPLAYS`) |
 | the set ends without a result: a crash, a broken connection nobody is blamed for, a third replay, "Leave: too laggy" | the set is **called again** with the score it had (both accept again) -- at most 2 times (`T5L_TOUR_RETRIES`), then it waits for the organizer |
+| a player's own game ended a game without a result (a crash) a second time in the set | lost by that player (`forfeit`; one per set is forgiven, `T5L_TOUR_BLAMED_VOIDS`): killing the game while losing is no do-over |
 | the two launchers report different winners (a dispute) | it waits for the organizer |
 | a player has not accepted when the no-show time (5 min, `T5L_TOUR_NOSHOW`) is over, or is offline then | a **no-show**: the set is lost and the player is out of the tournament |
 | neither accepted | both are out; their next opponents get walkovers |
@@ -187,6 +194,8 @@ All `T5L_*` (server/config.py):
 | `T5L_TOUR_MAX_DAYS` | `14` | how far ahead a tournament may start |
 | `T5L_TOUR_KEEP_DAYS` | `7` | finished tournaments stay in the list this long (the database keeps them) |
 | `T5L_TOUR_TICK` | `0.5` | seconds between the server's looks at start times and no-show times |
+| `T5L_TOUR_BLAMED_VOIDS` | `1` | games of one set a player may end without a result by their own doing (a crash) and still have the set called again; the next one loses the set |
+| `T5L_TOUR_GET_RATE` / `T5L_TOUR_GET_BURST` | `2` / `10` | `tour_get` requests per second per connection (a 64-player bracket is ~60 KB), after a burst |
 
 The sets also use the lobby's `T5L_SET_NEXT_SECONDS` (countdown between games), `T5L_SET_REPLAYS`,
 `T5L_RECONNECT_GRACE`, `T5L_INGAME_PICK` and the result rules of RANKED.md.

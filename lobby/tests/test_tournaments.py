@@ -522,8 +522,8 @@ class CallTest(TourBase):
     server_cfg = {"tour_noshow": 4.0}
 
     def test_call_accept_and_play(self):
+        self.f.accept = {n: False for n in self.names}          # (before create(): its wait pumps the calls already)
         tid = self.create()
-        self.f.accept = {n: False for n in self.names}
         self.f.run(lambda: self.f.last("Ann", "tour_call") is not None)
         call = self.f.last("Ann", "tour_call")
         self.assertEqual((call["set"]["id"], call["best_of"], call["opponent"]["name"], call["side"]),
@@ -732,6 +732,101 @@ class OrganizerTest(TourBase):
         self.assertEqual(self.tour(tid).state, "cancelled")
         self.f.run(lambda: any(e["code"] == "cancelled" for e in self.f.events("Ben", "tour_notice")))
         self.f.run(lambda: self.f.last("Ben", "set_end") is not None)
+
+
+# ============================================================================== 5b. abuse (security review 2)
+class AbuseCreateTest(TourBase):
+    server_cfg = {"tour_admins": ["dan"], "tour_max_open": 3, "tour_get_rate": 0.2, "tour_get_burst": 3}
+
+    def test_a_start_time_that_is_no_number(self):
+        # NaN passed "has passed" and "within 14 days" alike; SQLite cannot keep it (NULL in a NOT NULL column): the
+        # tournament stayed in memory, unsaved, never started, and held a slot until the next restart
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(LobbyError):
+                self.org.tour_create("Cup", start=bad)
+        self.assertEqual(self.srv(lambda: len(self.s.srv.tours.tours)), 0)
+
+    def test_the_limits_count_per_address_and_spare_the_admins(self):
+        # throw-away accounts (T5L_TOUR_ORGANIZERS=any) filled the server-wide limit (T5L_TOUR_MAX_OPEN) with
+        # tournaments 14 days ahead: nobody else could make one. T5L_TOUR_PER_ORGANIZER now counts per internet address
+        # too (the test players all come from 127.0.0.1), and T5L_TOUR_ADMINS are not held back by either.
+        self.org.tour_create("One", start=time.time() + 600)
+        self.org.tour_create("Two", start=time.time() + 600)
+        with self.assertRaises(LobbyError) as cm:
+            self.f.c["Ben"].tour_create("Ben's", start=time.time() + 600)       # another account, the same address
+        self.assertIn("internet address", cm.exception.msg)
+        self.s.call(lambda: setattr(self.s.srv.cfg, "tour_per_organizer", 5))
+        self.f.c["Ben"].tour_create("Ben's", start=time.time() + 600)
+        with self.assertRaises(LobbyError) as cm:
+            self.f.c["Cat"].tour_create("Cat's", start=time.time() + 600)       # the server is full (3)
+        self.assertIn("as many tournaments as it takes", cm.exception.msg)
+        t = self.f.c["Dan"].tour_create("Admin's", start=time.time() + 600)   # an admin always may
+        self.assertEqual(t["state"], "signup")
+
+    def test_names_that_pass_for_the_server(self):
+        for name in ("Official T5DR Cup", "Admin Weekly", "Moderator night"):
+            with self.assertRaises(LobbyError) as cm:
+                self.org.tour_create(name, start=time.time() + 600)
+            self.assertEqual(cm.exception.code, "bad_name")
+        self.org.tour_create("Friday Night Cup", start=time.time() + 600)
+        self.assertEqual(self.f.c["Dan"].tour_create("Official Weekly", start=time.time() + 600)["name"],
+                         "Official Weekly")                                     # the server's own admins may
+
+    def test_tour_get_has_a_rate_limit(self):
+        # a 64-player bracket is ~60 KB of JSON; tour_get was in no rate-limit bucket (20 a second per connection)
+        t = self.org.tour_create("Cup", start=time.time() + 600)
+        for _ in range(3):
+            self.org.tour_get(t["id"])
+        with self.assertRaises(LobbyError) as cm:
+            self.org.tour_get(t["id"])
+        self.assertEqual(cm.exception.code, "rate_limited")
+
+    def test_a_disqualified_player_cannot_sign_up_again(self):
+        # leaving and signing up again cleared the organizer's disqualification before the start
+        t = self.org.tour_create("Cup", start=time.time() + 600)
+        ben = self.f.c["Ben"]
+        ben.tour_join(t["id"])
+        self.org.tour_admin(t["id"], "dq", player="Ben")
+        with self.assertRaises(LobbyError) as cm:
+            ben.tour_leave(t["id"])
+        self.assertIn("took you off", cm.exception.msg)
+        self.assertEqual(ben.tour_join(t["id"])["you"]["dq"], "organizer")
+
+
+class OwnSetTest(TourBase):
+    server_cfg = {"tour_admins": ["dan"]}
+
+    def test_an_organizer_does_not_decide_a_set_they_play(self):
+        # with T5L_TOUR_ORGANIZERS=any anybody organizes -- and may play in their own tournament: Ann (organizer, in
+        # W1-1 against Ben) could report her own set as won, reset a lost one or disqualify her opponent
+        self.f.accept = {n: False for n in self.names}
+        tid = self.create()                                     # W1-1 Ann v Ben, W1-2 Cat v Dan
+        self.f.run(lambda: self.bset(tid, "W1-1").data.get("live") == "called")
+        for op, kw in (("report", dict(set="W1-1", winner=0)), ("override", dict(set="W1-1", winner=0)),
+                       ("reset", dict(set="W1-1")), ("dq", dict(player="Ben"))):
+            with self.assertRaises(LobbyError) as cm:
+                self.org.tour_admin(tid, op, **kw)
+            self.assertEqual(cm.exception.code, "not_allowed", op)
+        self.assertEqual(self.bset(tid, "W1-1").state, "open")
+        self.org.tour_admin(tid, "report", set="W1-2", winner=0)   # a set she does not play: hers to decide
+        self.assertEqual(self.winner_name(tid, "W1-2"), "Cat")
+        self.f.c["Dan"].tour_admin(tid, "report", set="W1-1", winner=1)    # a server tournament admin decides hers
+        self.assertEqual(self.winner_name(tid, "W1-1"), "Ben")
+
+
+class BlamedVoidTest(TourBase):
+    def test_crashing_twice_loses_the_set(self):
+        # a game ended by one player's own doing (a crash) called the set again with its score: a losing player could
+        # kill the game for a do-over, T5L_TOUR_RETRIES times a set. One is forgiven (T5L_TOUR_BLAMED_VOIDS), not two.
+        tid = self.create()
+        self.f.special[("W1-1", 2)] = "crash"                    # 1-0, then Ben's game "dies" in game 2 ...
+        self.f.run(lambda: int(self.bset(tid, "W1-1").data.get("voids") or 0) == 1)
+        self.f.special[("W1-1", 2)] = "crash"                    # ... and again in the replay
+        self.f.run(lambda: self.bset(tid, "W1-1").state == "done")
+        s = self.bset(tid, "W1-1")
+        self.assertEqual((self.winner_name(tid, "W1-1"), s.reason), ("Ann", "forfeit"))
+        self.assertEqual(s.data["blamed"], [0, 2])
+        self.assertEqual(s.score, [1, 0])
 
 
 # ============================================================================== 6. a server restart

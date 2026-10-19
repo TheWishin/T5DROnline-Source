@@ -21,6 +21,10 @@ part is in the README's status table.
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
   brackets on the status port (`/tournaments`, `/tournaments/<id>`) for streamers' overlays (docs/TOURNAMENTS.md).
   The tournament tables are created at the first start (their own schema version). Older launchers see nothing new.
+- Against abuse (security review 2): an organizer who plays does not decide their own sets (a `T5L_TOUR_ADMINS`
+  account does); a second crash of one player's game in a set loses the set (`T5L_TOUR_BLAMED_VOIDS`); the
+  organizer limit counts per internet address too and spares the admins; tournament names cannot pass for the
+  server; a player disqualified before the start stays out; `tour_get` has its own rate limit.
 
 ## v1.1.2 (not released yet)
 

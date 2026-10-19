@@ -1345,6 +1345,14 @@ MESSAGES = {
     "that set is not yours to play": "ese set no es tuyo",
     "that set is not waiting for you": "ese set no te está esperando",
     "only the organizer can do that": "solo el organizador puede hacer eso",
+    "that tournament name is not allowed here":
+        "ese nombre de torneo no está permitido aquí",
+    "this internet address runs as many tournaments as one organizer may; finish or cancel one first":
+        "desde esta dirección de internet ya hay tantos torneos como puede tener un organizador; termina o cancela uno primero",
+    "the organizer took you off this tournament":
+        "el organizador te quitó de este torneo",
+    "you play in that set yourself: a server tournament admin decides it (or cancel the tournament)":
+        "tú juegas ese set: lo decide un administrador de torneos del servidor (o cancela el torneo)",
     "that tournament has started already": "ese torneo ya empezó",
     "a tournament needs at least 2 players": "un torneo necesita al menos 2 jugadores",
     "no such player in that tournament": "ese jugador no está en el torneo",

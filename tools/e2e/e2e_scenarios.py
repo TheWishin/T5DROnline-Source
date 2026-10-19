@@ -224,8 +224,9 @@ def server_restart(ctx):
                "away for good it is a forfeit for the one who dropped")
 def lobby_drop(ctx):
     stub_server(ctx, T5L_RECONNECT_GRACE=8, T5L_PLACEMENT=1)
-    a = ctx.player("E2E Ida", kind="stub", password="ida-pass-1", env={"T5_STUB_SECONDS": 12})
-    b = ctx.player("E2E Jan", kind="stub", password="jan-pass-1", env={"T5_STUB_SECONDS": 12})
+    # (the old per-game protocol: this is about the lobby connection, not about sets -- bo3_* cover those)
+    a = ctx.player("E2E Ida", kind="stub", password="ida-pass-1", env={"T5_STUB_SECONDS": 12}, sets=False)
+    b = ctx.player("E2E Jan", kind="stub", password="jan-pass-1", env={"T5_STUB_SECONDS": 12}, sets=False)
     login(ctx, a, "register")
     login(ctx, b, "register")
     mid = queue_match(ctx, a, b, "ranked")
@@ -350,88 +351,154 @@ def quick_timeout(ctx):
 
 
 # ============================================================================== 3. ranked
+# Ranked is a best-of-3 set since ranked-sets (docs/RANKED.md "Ranked sets"): the next game starts by itself after
+# a countdown (no rematch vote), the characters stay locked, the rating changes once at the end of the set, and
+# leaving mid-set loses it. The real-game set scenarios use planned winners: the planned winner's player presses
+# attacks live while the fight runs, the other one stands still (ctx.plan, bot players; lobby/tools/set_session.py).
+SET_NEXT = 6.0
+
+
+def _set_of(p, mid):
+    return (p.matches.get(mid) or {}).get("set") or {}
+
+
+def _set_game(ctx, a, b, mid, label, timeout=240):
+    """Play one game of a ranked set to its result; no game of a set changes a rating on its own."""
+    wait_fight(ctx, mid, (a, b), timeout=150)
+    wait_results(ctx, mid, (a, b), timeout)
+    return match_row(ctx, mid, (a, b), "confirmed", label)
+
+
+def _rated_once(ctx, a, b, mids, ends, label):
+    """No game but the deciding one carries a rating change; the deciding game's change is the set's (set_end)."""
+    for p, e in zip((a, b), ends):
+        early = [(p.matches.get(m) or {}).get("rating") for m in mids[:-1]]
+        ctx.check(f"{label}: {p.name}: no rating change after the games before the last", all(r is None for r in early),
+                  early)
+        last = ((p.matches.get(mids[-1]) or {}).get("rating") or {}).get("delta")
+        whole = (e.get("rating") or {}).get("delta")
+        ctx.check(f"{label}: {p.name}: the one change comes with the deciding game and is the set's",
+                  last is not None and whole is not None and abs(last - whole) < 0.01, f"game {last}, set {whole}")
+
+
+def _next_set_game(ctx, a, b, mid, label):
+    """Between two games: a countdown and "Leave set", no rematch vote; the next game starts by itself."""
+    t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
+    ctx.wait(lambda: a.bar_button("Leave set") is not None and b.bar_button("Leave set") is not None, 10,
+             f"{label}: the set bar counts down and offers Leave set")
+    ctx.check(f"{label}: no rematch vote between two games of a set",
+              a.bar_button("Rematch") is None and b.bar_button("Rematch") is None, [a.bar_labels(), b.bar_labels()])
+    ctx.check(f"{label}: the countdown is shown", "starts in" in a.tab.bar_text.get() or "s" in a.tab.bar_text.get(),
+              a.tab.bar_text.get())
+    since = t_res - 0.5
+    ok = ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 40,
+                  f"{label}: the next game starts by itself")
+    if not ok:
+        raise Abort("the set's next game did not start")
+    nxt = latest(a, "match_start", since)["match"]
+    dt = a.matches[nxt]["started"] - t_res
+    ctx.check(f"{label}: started {dt:.1f} s after the result (countdown {SET_NEXT:g} s)", SET_NEXT - 1.0 <= dt <= SET_NEXT + 12,
+              f"{dt:.1f} s")
+    ctx.check(f"{label}: continues in the running games", a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
+    ctx.check(f"{label}: the same characters and sides", _picks(a, b, nxt) == _picks(a, b, mid),
+              f"{_picks(a, b, mid)} -> {_picks(a, b, nxt)}")
+    return nxt
+
+
+def _play_set(ctx, a, b, mid, plan, label):
+    """Play a ranked set to its end following plan ("AA", "ABA", ...). Returns (set_end of a, of b, game ids)."""
+    t0 = time.time() - 1
+    mids = [mid]
+    for k in range(3):
+        _set_game(ctx, a, b, mid, f"{label} game {k + 1}")
+        s = _set_of(a, mid)
+        ctx.note(f"{label} game {k + 1}: set {s.get('wins')} state {s.get('state')}")
+        if a.events_of("set_end", t0) or s.get("state") == "ended" or not s.get("next"):
+            break
+        mid = _next_set_game(ctx, a, b, mid, f"{label} game {k + 2}")
+        mids.append(mid)
+    ctx.wait(lambda: a.events_of("set_end", t0) and b.events_of("set_end", t0), 20, f"{label}: the set ends")
+    ea, eb = (latest(p, "set_end", t0) or {} for p in (a, b))
+    _rated_once(ctx, a, b, mids, (ea, eb), label)
+    want = [plan.count("A"), plan.count("B")]
+    ctx.check(f"{label}: set decided as planned ({want[0]}-{want[1]}) after {len(plan)} games",
+              ea.get("wins") == want and ea.get("games") == len(plan) and ea.get("result") == ("win" if want[0] > want[1]
+                                                                                              else "loss"),
+              f"{a.name}: {ea.get('result')} {ea.get('wins')} in {ea.get('games')} game(s), status {ea.get('status')}")
+    for p, e in ((a, ea), (b, eb)):
+        r = e.get("rating") or {}
+        ctx.check(f"{label}: {p.name}'s rating changed once, at the end of the set",
+                  e.get("rated") and r.get("delta") not in (None, 0), f"{r.get('before', {}).get('r')} -> "
+                  f"{r.get('after', {}).get('r')} ({r.get('delta')}), rank {(r.get('rank_after') or {}).get('rank')} "
+                  f"{r.get('event') or ''}")
+    return ea, eb, mids
+
+
 @scenario("ranked_set", "3 ranked", game=True, suites=("game",),
-          desc="ranked set: match, rematch, rematch (characters locked, rating and rank after every game), leave, "
-               "pair cooldown, the next set")
+          desc="ranked best-of-3 set (2-1): game 1, the next games after a 6 s countdown (no vote), characters locked, "
+               "one rating change at the end; Rematch = a new set (2-0); pair cooldown; leaving mid-set loses the set")
 def ranked_set(ctx):
     game_server(ctx, T5L_PLACEMENT=1, T5L_PAIR_COOLDOWN=25)
-    a = ctx.player("E2E Rin", password="rin-pass-1", char="jin")
-    b = ctx.player("E2E Kai", password="kai-pass-1", char="lili")
+    a = ctx.player("E2E Rin", password="rin-pass-1", char="jin", bot=True)
+    b = ctx.player("E2E Kai", password="kai-pass-1", char="lili", bot=True)
     login(ctx, a, "register")
     login(ctx, b, "register")
     a.set_char("jin")
     b.set_char("lili")
+    ctx.plan = (a, b, ["ABA", "AA", "A"])
     ctx.sleep(1)
-    rating = {a.name: (a.me or {}).get("rating"), b.name: (b.me or {}).get("rating")}
-    mids = []
     mid = queue_match(ctx, a, b, "ranked")
-    mids.append(mid)
-    ma = a.matches[mid]
-    ctx.check("ranked queue match is ranked and its set locked", ma.get("ranked") and (ma.get("set") or {}).get("locked"),
-              f"ranked {ma.get('ranked')}, set {ma.get('set')}")
-    picks = _picks(a, b, mid)
-    ctx.check("match 1 fighters are the picks", picks == {"E2E Rin": "jin", "E2E Kai": "lili"}, picks)
+    s = _set_of(a, mid)
+    ctx.check("a ranked queue match is a rated best-of-3 set, characters locked",
+              s.get("rated") and s.get("best_of") == 3 and s.get("locked"), s)
+    ctx.check("set 1 fighters are the picks", _picks(a, b, mid) == {"E2E Rin": "jin", "E2E Kai": "lili"}, _picks(a, b, mid))
     ctx.wait(lambda: str(a.tab.char_cb.cget("state")) == "disabled", 10, "character box greyed out in the set")
     t = time.time()
     a.call(a.client.set_char, "king")
     ctx.wait(lambda: a.saw_status("locked", t), 10, "changing the character mid-set is refused by the server")
-    for k in range(3):
-        wait_fight(ctx, mid, (a, b))
-        wait_results(ctx, mid, (a, b))
-        row = match_row(ctx, mid, (a, b), "confirmed", f"ranked game {k + 1}")
-        fps_check(ctx, row, (a, b))
-        for p in (a, b):
-            r = p.matches[mid].get("rating") or {}
-            before, after = (r.get("before") or {}).get("r"), (r.get("after") or {}).get("r")
-            ctx.check(f"game {k + 1}: {p.name}'s rating moved and follows on from the last game",
-                      before is not None and after is not None and abs(after - before) > 0.01
-                      and (rating[p.name] is None or abs(before - rating[p.name]) < 1.0),
-                      f"{before} -> {after} (last {rating[p.name]}), rank {(r.get('rank_before') or {}).get('rank')} -> "
-                      f"{(r.get('rank_after') or {}).get('rank')} {r.get('event') or ''}")
-            rating[p.name] = after
-        if k == 0:
-            evs = [(p.matches[mid].get("rating") or {}).get("event") for p in (a, b)]
-            ctx.check("placement 1: both placed after game 1", evs == ["placed", "placed"], evs)
-        if k < 2:
-            mid = rematch(ctx, a, b)
-            mids.append(mid)
-            ctx.check(f"game {k + 2}: rematch continues in the running games", a.matches[mid].get("cont"),
-                      a.matches[mid].get("cont"))
-            ctx.check(f"game {k + 2}: same characters (locked)", _picks(a, b, mid) == picks, _picks(a, b, mid))
+    ea, _eb, mids = _play_set(ctx, a, b, mid, "ABA", "set 1")
+    prof = profile(ctx, a) or {}
+    ctx.check("profile: one ranked set counted (not three games)", prof.get("ranked_games") == 1,
+              f"ranked_games {prof.get('ranked_games')}, record {prof.get('record')}, rank {prof.get('rank')}")
+    # Rematch after a set = a new set
+    t = time.time()
+    ctx.wait(lambda: a.bar_button("Rematch") is not None and b.bar_button("Rematch") is not None, 20,
+             "after the set: Rematch (a new set)")
+    mid2 = rematch(ctx, a, b)
+    ctx.check("the rematch is a new set", _set_of(a, mid2).get("id") != _set_of(a, mids[0]).get("id"),
+              f"{_set_of(a, mids[0]).get('id')} -> {_set_of(a, mid2).get('id')}")
+    _play_set(ctx, a, b, mid2, "AA", "set 2 (rematch)")
+    prof = profile(ctx, a) or {}
+    ctx.check("profile: two ranked sets", prof.get("ranked_games") == 2, f"ranked_games {prof.get('ranked_games')}")
     t_last = time.time()
     leave(ctx, a)
-    ctx.wait(lambda: a.events_of("set_end", t_last) and b.events_of("set_end", t_last), 15, "Leave ends the set")
-    ctx.wait(lambda: str(a.tab.char_cb.cget("state")) == "readonly", 10, "character unlocked after the set")
-    t = time.time()
+    ctx.wait(lambda: str(a.tab.char_cb.cget("state")) == "readonly", 15, "character unlocked after the set")
     a.set_char("king")
-    ctx.sleep(2)
-    ctx.check("new character accepted after the set", not a.saw_status("locked", t), a.status_text())
     ctx.wait(lambda: a.action_on("ranked") and b.action_on("ranked"), 15, "Ranked match available again")
     t = time.time()
     a.press("ranked")
     ctx.sleep(0.3)
     b.press("ranked")
-    early = ctx.wait(lambda: latest(a, "match_found", t), 15, fail=False)
-    ctx.check("pair cooldown: not matched again right away", not early or time.time() - t_last >= 24,
-              f"found after {time.time() - t_last:.1f} s")
-    mid = found_both(ctx, a, b, t, timeout=60)
-    ctx.check("pair cooldown: matched once 25 s have passed", time.time() - t_last >= 23, f"{time.time() - t_last:.1f} s")
-    accept(ctx, a, mid)
-    accept(ctx, b, mid)
-    started_both(ctx, a, b, mid)
-    mids.append(mid)
-    ctx.check("next set: a new set id", (a.matches[mid].get("set") or {}).get("id") != (a.matches[mids[0]].get("set") or {}).get("id"))
-    ctx.check("next set: the new character", _picks(a, b, mid).get("E2E Rin") == "king", _picks(a, b, mid))
-    wait_fight(ctx, mid, (a, b))
-    wait_results(ctx, mid, (a, b))
-    match_row(ctx, mid, (a, b), "confirmed", "ranked game 4 (next set)")
+    mid3 = found_both(ctx, a, b, t, timeout=60)
+    ctx.check("pair cooldown: matched again only after 25 s", time.time() - t_last >= 23, f"{time.time() - t_last:.1f} s")
+    accept(ctx, a, mid3)
+    accept(ctx, b, mid3)
+    started_both(ctx, a, b, mid3)
+    ctx.check("set 3: the new character", _picks(a, b, mid3).get("E2E Rin") == "king", _picks(a, b, mid3))
+    _set_game(ctx, a, b, mid3, "set 3 game 1")
+    # leaving between two games loses the set
+    ctx.wait(lambda: b.bar_button("Leave set") is not None, 10, "set 3: Leave set offered between the games")
+    t = time.time()
+    b.answer_yes_no = True
+    b.click("Leave set")
+    ctx.wait(lambda: a.events_of("set_end", t) and b.events_of("set_end", t), 20, "set 3: Leave set ends the set")
+    eb = latest(b, "set_end", t) or {}
+    ctx.check("leaving mid-set loses the set (rating changes once)", eb.get("result") == "loss" and eb.get("status") == "forfeit"
+              and (eb.get("rating") or {}).get("delta", 0) < 0, f"{eb.get('result')} {eb.get('status')} {eb.get('wins')}")
+    ctx.check("no next game after leaving", not latest(a, "match_start", t), "")
     prof = profile(ctx, a) or {}
-    ctx.check("profile: 4 ranked games in the history", prof.get("ranked_games") == 4 and len(prof.get("history", [])) == 4,
-              f"ranked_games {prof.get('ranked_games')}, history {len(prof.get('history', []))}, rank {prof.get('rank')}")
-    ctx.check("profile rating = the last result's rating", abs((prof.get("rating") or 0) - round(rating[a.name] or 0)) <= 1 or
-              True, f"profile {prof.get('rating')}")
-    ctx.note(f"ranks after the set: {a.name} {prof.get('rank')} {prof.get('rating')}; history "
-             + "; ".join(f"{h['result']} {h['you_char']} vs {h['opp_char']} {h['status']} {h.get('delta')}" for h in prof.get("history", [])))
+    ctx.note(f"after three sets: {a.name} {prof.get('rank')} {prof.get('rating')}, record {prof.get('record')}, "
+             f"sets {len(prof.get('sets') or [])}")
 
 
 def _picks(a, b, mid):
@@ -444,15 +511,49 @@ def _picks(a, b, mid):
     return {a.name: mine, b.name: theirs}
 
 
+@scenario("ranked_per_game", "3 ranked", game=True, suites=("game",),
+          desc='the old protocol ("sets": false in online.json, a 1.0.0 launcher): every ranked game rated, a rematch '
+               "vote between games, characters locked")
+def ranked_per_game(ctx):
+    game_server(ctx, T5L_PLACEMENT=1)
+    a = ctx.player("E2E Old1", password="old1-pass-1", char="paul", sets=False)
+    b = ctx.player("E2E Old2", password="old2-pass-1", char="nina", sets=False)
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    a.set_char("paul")
+    b.set_char("nina")
+    mid = queue_match(ctx, a, b, "ranked")
+    ctx.check("not a rated set (old protocol)", not _set_of(a, mid).get("rated"), _set_of(a, mid))
+    rating = {}
+    for k in range(2):
+        wait_fight(ctx, mid, (a, b))
+        wait_results(ctx, mid, (a, b))
+        match_row(ctx, mid, (a, b), "confirmed", f"ranked game {k + 1} (per game)")
+        for p in (a, b):
+            r = p.matches[mid].get("rating") or {}
+            before = (r.get("before") or {}).get("r")
+            ctx.check(f"game {k + 1}: {p.name}'s rating moved after this game", r.get("delta") not in (None, 0) and
+                      (p.name not in rating or abs(before - rating[p.name]) < 1.0), f"{before} -> {(r.get('after') or {}).get('r')}")
+            rating[p.name] = (r.get("after") or {}).get("r")
+        if k == 0:
+            ctx.check("a rematch vote, not a countdown", ctx.wait(lambda: a.bar_button("Rematch") is not None, 15) and
+                      a.bar_button("Leave set") is None, a.bar_labels())
+            mid = rematch(ctx, a, b)
+            ctx.check("rematch: same characters (locked)", _picks(a, b, mid) == {"E2E Old1": "paul", "E2E Old2": "nina"},
+                      _picks(a, b, mid))
+
+
 @scenario("ranked_pair_cap", "3 ranked", suites=("quick", "lobby"),
-          desc="anti win-trading cap: the 3rd ranked game of a pair within 24 h (cap 2 here) is casual, both told")
+          desc="anti win-trading cap (old protocol, per game): the 3rd ranked game of a pair within 24 h (cap 2) is "
+               "casual, both told")
 def ranked_pair_cap(ctx):
     stub_server(ctx, T5L_PAIR_CAP=2, T5L_PLACEMENT=1)
-    a = ctx.player("E2E Jon", kind="stub", password="jon-pass-1")
-    b = ctx.player("E2E Liv", kind="stub", password="liv-pass-1")
+    a = ctx.player("E2E Jon", kind="stub", password="jon-pass-1", sets=False)
+    b = ctx.player("E2E Liv", kind="stub", password="liv-pass-1", sets=False)
     login(ctx, a, "register")
     login(ctx, b, "register")
     mid = queue_match(ctx, a, b, "ranked")
+    t = time.time()
     for k in range(3):
         wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
         m = a.matches[mid]
@@ -468,57 +569,53 @@ def ranked_pair_cap(ctx):
 
 
 @scenario("ranked_quit_mid_set", "3 ranked", game=True, suites=("game",),
-          desc="ranked set: game 1, rematch, the window of one game is closed mid-match -> forfeit, rating moves")
+          desc="ranked set: game 1 won by A, in game 2 B closes the game window (Alt+F4) -> B loses the set at once "
+               "(forfeit), the rating changes once")
 def ranked_quit_mid_set(ctx):
     game_server(ctx, T5L_PLACEMENT=1)
-    a = ctx.player("E2E Max", password="max-pass-1", char="paul")
-    b = ctx.player("E2E Noa", password="noa-pass-1", char="nina")
+    a = ctx.player("E2E Max", password="max-pass-1", char="paul", bot=True)
+    b = ctx.player("E2E Noa", password="noa-pass-1", char="nina", bot=True)
     login(ctx, a, "register")
     login(ctx, b, "register")
     a.set_char("paul")
     b.set_char("nina")
+    ctx.plan = (a, b, ["AB"])
+    t0 = time.time()
     mid = queue_match(ctx, a, b, "ranked")
+    _set_game(ctx, a, b, mid, "game 1")
+    mid = _next_set_game(ctx, a, b, mid, "game 2")
     wait_fight(ctx, mid, (a, b))
-    wait_results(ctx, mid, (a, b))
-    match_row(ctx, mid, (a, b), "confirmed", "ranked game 1")
-    rb = (b.matches[mid].get("rating") or {}).get("after", {}).get("r")
-    mid = rematch(ctx, a, b)
-    wait_fight(ctx, mid, (a, b))
-    ctx.sleep(12)
-    t = time.time()
+    ctx.sleep(10)
     n = close_window(b)
     ctx.note(f"game 2: WM_CLOSE to {b.name}'s game window ({n} window(s)), Alt+F4")
-    code = None
     ctx.wait(lambda: not b.game_running(), 20, "the closed game ends itself")
-    code = game_exit_code(b)
-    ctx.check("closed game: exit code 7 (quit)", code == 7, f"exit code {code}")
-    wait_results(ctx, mid, (a, b), 90)
-    mb, ma = b.matches.get(mid, {}), a.matches.get(mid, {})
-    ctx.check("lobby: forfeit, the quitter blamed", mb.get("status") == "forfeit" and mb.get("blame") == "you"
-              and ma.get("blame") == "opponent", f"{mb.get('status')} {mb.get('reason')} blame {mb.get('blame')}/{ma.get('blame')}")
-    ctx.check("the quitter lost", mb.get("winner") == 1 - (mb.get("slot") or 0),
-              f"winner {mb.get('winner')}, quitter slot {mb.get('slot')}")
-    r = mb.get("rating") or {}
-    ctx.check("ranked forfeit moves the quitter's rating down", (r.get("after") or {}).get("r", 1e9) < (rb or 0) + 0.01,
-              f"{rb} -> {(r.get('after') or {}).get('r')}")
+    ctx.check("closed game: exit code 7 (quit)", game_exit_code(b) == 7, f"exit code {game_exit_code(b)}")
+    ctx.wait(lambda: a.events_of("set_end", t0) and b.events_of("set_end", t0), 60, "the set ends at once")
+    eb, ea = latest(b, "set_end", t0) or {}, latest(a, "set_end", t0) or {}
+    ctx.check("the quitter lost the set (forfeit), whatever the score", eb.get("result") == "loss" and
+              ea.get("result") == "win" and eb.get("status") == "forfeit",
+              f"{b.name}: {eb.get('result')} {eb.get('status')} {eb.get('wins')}; {a.name}: {ea.get('result')}")
+    for p, e, sign in ((a, ea, 1), (b, eb, -1)):
+        d = (e.get("rating") or {}).get("delta")
+        ctx.check(f"{p.name}: one rating change for the set", d is not None and d * sign > 0, d)
+    ctx.check("game 2 itself is a forfeit with the quitter blamed", b.matches.get(mid, {}).get("blame") == "you",
+              f"{b.matches.get(mid, {}).get('status')} {b.matches.get(mid, {}).get('reason')} blame {b.matches.get(mid, {}).get('blame')}")
     hist = [h for m_, h in b.tab.driver.history if m_ == mid]
     ctx.check("the quitter's launcher reported 'quit' without asking", hist and hist[-1].get("source") == "quit" and
               not any(n_.get("kind") == "ask_result" for _t, n_ in b.notes), hist)
-    ctx.check("the quitter is told it counts as a loss", b.saw_status("counts as a loss", t), b.status_text())
-    rf_a = a.result_file(mid) or {}
-    ctx.check("the opponent's game saw the quit at once (peer_quit)", rf_a.get("reason") == "peer_quit", rf_a)
 
 
 @scenario("ranked_room", "3 ranked", game=True, suites=("game",),
-          desc="a ranked room: create, join, ready, match, rematch -- rated, characters locked")
+          desc="a ranked room plays best-of-3 sets: create, join, ready, a 2-0 set, rated once")
 def ranked_room(ctx):
     game_server(ctx, T5L_PLACEMENT=1)
-    a = ctx.player("E2E Ola", password="ola-pass-1", char="asuka")
-    b = ctx.player("E2E Pim", password="pim-pass-1", char="law")
+    a = ctx.player("E2E Ola", password="ola-pass-1", char="asuka", bot=True)
+    b = ctx.player("E2E Pim", password="pim-pass-1", char="law", bot=True)
     login(ctx, a, "register")
     login(ctx, b, "register")
     a.set_char("asuka")
     b.set_char("law")
+    ctx.plan = (a, b, ["BB"])
     box = a.call(a.client.create_room, "E2E ranked room", True)
     ctx.wait(lambda: box, 10, "ranked room created")
     rid = (box.get("ok") or {}).get("id")
@@ -528,19 +625,12 @@ def ranked_room(ctx):
     b.tab.tv_rooms.selection_set(rid)
     b.press("join")
     mid = found_both(ctx, a, b, t)
-    ctx.check("room match: ranked, not blind", a.matches[mid].get("ranked") and not a.matches[mid].get("blind"))
+    ctx.check("room match: ranked, a rated set, not blind", a.matches[mid].get("ranked") and
+              _set_of(a, mid).get("rated") and not a.matches[mid].get("blind"), _set_of(a, mid))
     accept(ctx, a, mid)
     accept(ctx, b, mid)
     started_both(ctx, a, b, mid)
-    for k in range(2):
-        wait_fight(ctx, mid, (a, b))
-        wait_results(ctx, mid, (a, b))
-        match_row(ctx, mid, (a, b), "confirmed", f"ranked room game {k + 1}")
-        ctx.check(f"room game {k + 1}: rated", all((p.matches[mid].get("rating") or {}).get("delta") for p in (a, b)))
-        if k == 0:
-            picks = _picks(a, b, mid)
-            mid = rematch(ctx, a, b)
-            ctx.check("room rematch: same characters", _picks(a, b, mid) == picks, _picks(a, b, mid))
+    _play_set(ctx, a, b, mid, "BB", "room set")
 
 
 # ============================================================================== 4. rooms
@@ -1568,11 +1658,14 @@ def _cs_player(ctx, name, **kw):
     return ctx.player(name, env=env, **kw)
 
 
-def _cs_match(ctx, pf, a, b, specs, label, mode="quick", again=False, expect_pick=True):
+def _cs_match(ctx, pf, a, b, specs, label, mode="quick", again=False, expect_pick=True, prev=None):
     """One match picked on the select screen: specs = {player name: pick_flow_test scenario}
     (<char>:<lp|rp|lk|rk>, random, timeout). Checks both games fought the same fighters, what was
     asked for, no PICK MISMATCH, and the usual result evidence. Returns (match id, fighters line)."""
-    mid = rematch(ctx, a, b) if again else queue_match(ctx, a, b, mode)
+    if prev is not None:
+        mid = _next_set_game(ctx, a, b, prev, label)          # a ranked set's next game comes by itself
+    else:
+        mid = rematch(ctx, a, b) if again else queue_match(ctx, a, b, mode)
     fight = a.matches[mid].get("fight") or {}
     ctx.check(f"{label}: the lobby {'offers' if expect_pick else 'does not offer'} the in-game select",
               bool(fight.get("pick")) == expect_pick, f"fight.pick {fight.get('pick')}")
@@ -1665,7 +1758,8 @@ def cs_rematch_select(ctx):
 def cs_ranked_lock(ctx):
     pf, a, b = _cs_two(ctx, "E2E Lock1", "E2E Lock2", ranked=True)
     mid, f1 = _cs_match(ctx, pf, a, b, {a.name: "bryan:lk", b.name: "julia:rp"}, "ranked game 1", mode="ranked")
-    _mid, f2 = _cs_match(ctx, pf, a, b, {}, "ranked game 2 (locked)", again=True, expect_pick=False)
+    _mid, f2 = _cs_match(ctx, pf, a, b, {}, "ranked game 2 (locked)", again=True, expect_pick=False,
+                         prev=mid if _set_of(a, mid).get("rated") else None)
     ctx.check("game 2 kept game 1's fighters (the lock)", f1 is not None and f1 == f2, [f1, f2])
     prof = profile(ctx, a) or {}
     ctx.check("the history records the fighters the game fought with",
@@ -1673,26 +1767,240 @@ def cs_ranked_lock(ctx):
 
 
 # ============================================================================== 10. ranked sets (best of 3)
+# The set rules with the stub game (seconds per game): planned winners (T5_STUB_WINNERS, by side: 0 = P1),
+# a window closed in game k (T5_STUB_FAIL=close, T5_STUB_FAIL_AT=k), desyncs (T5_STUB_DESYNC_AT).
 def _need_bo3():
-    f = features()
-    if not ({"ranked_sets", "bo3", "set_bo3", "best_of"} & f):
-        raise Skip("best-of-3 ranked sets are not on this branch yet (branch ranked-sets, build/bo3)")
+    if "ranked_sets" not in features():
+        raise Skip("best-of-3 ranked sets are not on this branch yet (branch ranked-sets)")
 
 
-for _name, _desc in (
-        ("bo3_2_0", "ranked set best of 3 won 2-0: two games, the set ends by itself, rated once"),
-        ("bo3_2_1", "ranked set won 2-1: three games, the next game starts by itself, rated once"),
-        ("bo3_quit_g1", "a quit in game 1 of a set"),
-        ("bo3_quit_g2", "a quit in game 2 of a set"),
-        ("bo3_quit_g3", "a quit in game 3 of a set"),
-        ("bo3_desync_replay", "a desynced game is replayed inside the set"),
-        ("bo3_rating_once", "the rating changes only once per set, at its end"),
-        ("bo3_ranked_room", "a ranked room plays best-of-3 sets"),
-        ("bo3_old_client", "an old (1.0.0-protocol) client falls back to single ranked games")):
-    def _mk2(name, desc):
-        @scenario(name, "10 ranked sets (bo3)", game=True, suites=("game",), desc=desc, needs="bo3")
-        def _bo3(ctx):
-            _need_bo3()
-            raise Skip("ranked-sets merged: scenario body to be finished against the merged rules")
-        return _bo3
-    _mk2(_name, _desc)
+def _bo3_pair(ctx, n1, n2, env1=None, env2=None, sets=(None, None), **srv):
+    _need_bo3()
+    stub_server(ctx, T5L_PLACEMENT=1, **srv)
+    a = ctx.player(n1, kind="stub", password=f"{n1.split()[-1].lower()}-pass-1", env=env1, sets=sets[0])
+    b = ctx.player(n2, kind="stub", password=f"{n2.split()[-1].lower()}-pass-1", env=env2, sets=sets[1])
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    return a, b
+
+
+def _stub_set(ctx, a, b, mid, label, games_max=6, timeout=150):
+    """Follow a stub set until set_end: every game's result (no rating on its own), the next game started by itself.
+    Returns (set_end of a, set_end of b, [(match id, status, set number, continued)])."""
+    t0 = time.time() - 1
+    seen = []
+    for _ in range(games_max):
+        wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
+        m = a.matches.get(mid, {})
+        seen.append((mid, m.get("status"), (m.get("set_start") or {}).get("number"), m.get("cont")))
+        if ctx.wait(lambda: a.events_of("set_end", t0), 2.0):
+            break
+        since = max(p.matches[mid].get("result") or 0 for p in (a, b)) - 0.5
+        if not ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 30):
+            break
+        mid = latest(a, "match_start", since)["match"]
+    ctx.wait(lambda: a.events_of("set_end", t0) and b.events_of("set_end", t0), timeout, f"{label}: the set ends")
+    ctx.note(f"{label}: games {seen}")
+    ea, eb = latest(a, "set_end", t0) or {}, latest(b, "set_end", t0) or {}
+    if ea.get("rated") and (ea.get("rating") or {}).get("delta"):
+        _rated_once(ctx, a, b, [x[0] for x in seen], (ea, eb), label)
+    return ea, eb, seen
+
+
+def _rating_once(ctx, a, b, ea, eb, label):
+    for p, e in ((a, ea), (b, eb)):
+        d = (e.get("rating") or {}).get("delta")
+        ctx.check(f"{label}: {p.name}'s rating changed once, at the end", e.get("rated") and d not in (None, 0), d)
+
+
+@scenario("bo3_2_0", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="ranked set won 2-0: two games, the second by itself after the countdown, the set ends, rated once")
+def bo3_2_0(ctx):
+    w = {"T5_STUB_WINNERS": "0,0,0"}
+    a, b = _bo3_pair(ctx, "E2E Ann0", "E2E Bea0", w, w)
+    mid = queue_match(ctx, a, b, "ranked")
+    ea, eb, seen = _stub_set(ctx, a, b, mid, "2-0 set")
+    p1 = a if a.matches[mid].get("slot") == 0 else b
+    e1 = ea if p1 is a else eb
+    ctx.check("2-0 for P1 in two games, status confirmed", e1.get("wins") == [2, 0] and e1.get("games") == 2 and
+              e1.get("result") == "win" and e1.get("status") == "confirmed", e1)
+    ctx.check("game 2 continued in the running games", len(seen) == 2 and seen[1][3] and seen[1][2] == 2, seen)
+    _rating_once(ctx, a, b, ea, eb, "2-0 set")
+    prof = profile(ctx, a) or {}
+    ctx.check("profile: one ranked set, its two games in the history", prof.get("ranked_games") == 1 and
+              len([h for h in prof.get("history", []) if h.get("set")]) == 2, f"ranked_games {prof.get('ranked_games')}, "
+              f"history {len(prof.get('history', []))}, sets {len(prof.get('sets') or [])}")
+
+
+@scenario("bo3_2_1", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="ranked set won 2-1: P1, P2, P1 -- three games, rated once")
+def bo3_2_1(ctx):
+    w = {"T5_STUB_WINNERS": "0,1,0"}
+    a, b = _bo3_pair(ctx, "E2E Ann1", "E2E Bea1", w, w)
+    mid = queue_match(ctx, a, b, "ranked")
+    ea, eb, seen = _stub_set(ctx, a, b, mid, "2-1 set")
+    p1 = a if a.matches[mid].get("slot") == 0 else b
+    e1 = ea if p1 is a else eb
+    ctx.check("2-1 for P1 in three games", e1.get("wins") == [2, 1] and e1.get("games") == 3 and e1.get("result") == "win",
+              e1)
+    _rating_once(ctx, a, b, ea, eb, "2-1 set")
+
+
+def _bo3_quit(ctx, k):
+    w = {"T5_STUB_WINNERS": "0,1,0"}
+    a, b = _bo3_pair(ctx, f"E2E Qa{k}", f"E2E Qb{k}", w, dict(w, T5_STUB_FAIL="close", T5_STUB_FAIL_AT=str(k)))
+    mid = queue_match(ctx, a, b, "ranked")
+    ea, eb, seen = _stub_set(ctx, a, b, mid, f"quit in game {k}")
+    ctx.check(f"a quit in game {k}: the quitter loses the set at once (forfeit), whatever the score",
+              eb.get("result") == "loss" and ea.get("result") == "win" and eb.get("status") == "forfeit",
+              f"{b.name}: {eb.get('result')} {eb.get('status')} {eb.get('wins')}")
+    ctx.check(f"the set ended in game {k}", len(seen) == k, seen)
+    hist = [h for _m, h in b.tab.driver.history]
+    ctx.check("the quitter's launcher reported 'quit'", hist and hist[-1].get("source") == "quit", hist[-1:] if hist else hist)
+    _rating_once(ctx, a, b, ea, eb, f"quit in game {k}")
+
+
+@scenario("bo3_quit_g1", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="the window closed in game 1 of a ranked set: the set is lost at once")
+def bo3_quit_g1(ctx):
+    _bo3_quit(ctx, 1)
+
+
+@scenario("bo3_quit_g2", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="the window closed in game 2 of a ranked set (1-0): the set is lost at once")
+def bo3_quit_g2(ctx):
+    _bo3_quit(ctx, 2)
+
+
+@scenario("bo3_quit_g3", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="the window closed in game 3 of a ranked set (1-1): the set is lost at once")
+def bo3_quit_g3(ctx):
+    _bo3_quit(ctx, 3)
+
+
+@scenario("bo3_leave_set", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="Leave set between two games (after game 1 counted) loses the set; queueing mid-set is refused")
+def bo3_leave_set(ctx):
+    w = {"T5_STUB_WINNERS": "0,1,0"}
+    a, b = _bo3_pair(ctx, "E2E Lea1", "E2E Lea2", w, w, T5L_SET_NEXT_SECONDS=12)
+    t0 = time.time()
+    mid = queue_match(ctx, a, b, "ranked")
+    wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
+    ctx.wait(lambda: b.bar_button("Leave set") is not None, 10, "Leave set offered during the countdown")
+    box = b.call(b.client.ranked_match)
+    ctx.wait(lambda: box, 10)
+    ctx.check("queueing between two games of a set is refused", "err" in box or b.saw_status("set", t0), b.status_text())
+    t = time.time()
+    b.answer_yes_no = True
+    b.click("Leave set")
+    ctx.wait(lambda: a.events_of("set_end", t) and b.events_of("set_end", t), 15, "Leave set ends the set")
+    eb, ea = latest(b, "set_end", t) or {}, latest(a, "set_end", t) or {}
+    ctx.check("leaving after a counted game loses the set", eb.get("result") == "loss" and ea.get("result") == "win"
+              and eb.get("status") == "forfeit", f"{eb.get('result')} {eb.get('status')} {eb.get('wins')}")
+    ctx.check("no next game starts", not ctx.wait(lambda: latest(a, "match_start", t), 14, fail=False))
+    _rating_once(ctx, a, b, ea, eb, "left set")
+
+
+@scenario("bo3_desync_replay", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="a desynced game is played again (same number, a new connection); three desyncs void the set")
+def bo3_desync_replay(ctx):
+    w = {"T5_STUB_WINNERS": "0,0,0,0"}
+    a, b = _bo3_pair(ctx, "E2E Dsa", "E2E Dsb", w, dict(w, T5_STUB_DESYNC_AT="1"))
+    mid = queue_match(ctx, a, b, "ranked")
+    ea, eb, seen = _stub_set(ctx, a, b, mid, "one desync")
+    ctx.check("game 1 voided as a desync, replayed as game 1 over a new connection, then 2-0",
+              len(seen) == 3 and seen[0][1] == "void" and seen[1][2] == 1 and not seen[1][3] and seen[2][2] == 2, seen)
+    ctx.check("the set is decided and rated", ea.get("rated") and ea.get("status") == "confirmed" and
+              (ea.get("rating") or {}).get("delta"), ea)
+    # every game desyncs: after the third, the set is void
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("ranked") and b.action_on("ranked"), 30, "free for the next set")
+    b.app.settings["extra_env"] += "\nT5_STUB_DESYNC=1"
+    if b.game_running():
+        b.game().stop()                    # the next game of B starts with the new setting
+    ctx.wait(lambda: not b.game_running(), 10)
+    ctx.server.env["T5L_PAIR_COOLDOWN"] = 0
+    mid = queue_match(ctx, a, b, "ranked")
+    ea, eb, seen = _stub_set(ctx, a, b, mid, "three desyncs", games_max=5)
+    ctx.check("three desyncs in one set: the set is void, no rating change",
+              ea.get("status") == "void" and not (ea.get("rating") or {}).get("delta"),
+              f"{ea.get('status')} {ea.get('outcome_reason')} games {seen}")
+
+
+@scenario("bo3_rating_once", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="the rating changes only once per set: the profile's rating stays after games 1 and 2 and moves at the end")
+def bo3_rating_once(ctx):
+    w = {"T5_STUB_WINNERS": "0,1,0", "T5_STUB_SECONDS": "6"}
+    a, b = _bo3_pair(ctx, "E2E Ro1", "E2E Ro2", w, w)
+    r0 = (profile(ctx, a) or {}).get("rating")
+    mid = queue_match(ctx, a, b, "ranked")
+    t0 = time.time()
+    seen = []
+    for _ in range(3):
+        wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
+        if a.events_of("set_end", t0):
+            break
+        seen.append((profile(ctx, a) or {}).get("rating"))
+        since = a.matches[mid]["result"] - 0.5
+        if not ctx.wait(lambda: latest(a, "match_start", since), 30):
+            break
+        mid = latest(a, "match_start", since)["match"]
+    ctx.wait(lambda: a.events_of("set_end", t0), 30, "the set ends")
+    r1 = (profile(ctx, a) or {}).get("rating")
+    ctx.check("the profile rating did not move during the set", all(r == r0 for r in seen), f"{r0} -> {seen}")
+    ctx.check("... and moved once at its end", r1 != r0, f"{r0} -> {r1}")
+
+
+@scenario("bo3_ranked_room", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="a ranked room plays a best-of-3 set (2-0 for P2)")
+def bo3_ranked_room(ctx):
+    w = {"T5_STUB_WINNERS": "1,1"}
+    a, b = _bo3_pair(ctx, "E2E Rr1", "E2E Rr2", w, w)
+    box = a.call(a.client.create_room, "E2E ranked set room", True)
+    ctx.wait(lambda: box, 10, "ranked room created")
+    rid = (box.get("ok") or {}).get("id")
+    ctx.wait(lambda: b.tab.tv_rooms.exists(rid), 10, "room listed")
+    t = time.time()
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    ea, eb, seen = _stub_set(ctx, a, b, mid, "room set")
+    p2 = a if a.matches[mid].get("slot") == 1 else b
+    e2 = ea if p2 is a else eb
+    ctx.check("2-0 for P2, rated", e2.get("result") == "win" and e2.get("wins") == [2, 0] and e2.get("rated"), e2)
+    _rating_once(ctx, a, b, ea, eb, "room set")
+
+
+@scenario("bo3_old_client", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc='an old (1.0.0-protocol, "sets": false) client: its ranked matches are rated per game, with a rematch vote')
+def bo3_old_client(ctx):
+    a, b = _bo3_pair(ctx, "E2E New", "E2E Legacy", None, None, sets=(None, False))
+    mid = queue_match(ctx, a, b, "ranked")
+    ctx.check("no rated set with an old client", not _set_of(a, mid).get("rated"), _set_of(a, mid))
+    wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)
+    ctx.check("the game is rated on its own", all((p.matches[mid].get("rating") or {}).get("delta") for p in (a, b)),
+              [p.matches[mid].get("rating") for p in (a, b)])
+    ctx.wait(lambda: a.bar_button("Rematch") is not None and b.bar_button("Rematch") is not None, 15,
+             "a rematch vote (no countdown)")
+    mid2 = rematch(ctx, a, b)
+    wait_results(ctx, mid2, (a, b), STUB_MATCH_SECONDS)
+    ctx.check("the rematch is rated on its own too", all((p.matches[mid2].get("rating") or {}).get("delta") for p in (a, b)))
+
+
+@scenario("bo3_pair_cap", "10 ranked sets (bo3)", suites=("quick", "lobby"), needs="bo3",
+          desc="the anti win-trading cap counts sets: with cap 1, the rematch after a set is casual and both are told")
+def bo3_pair_cap(ctx):
+    w = {"T5_STUB_WINNERS": "0,0"}
+    a, b = _bo3_pair(ctx, "E2E Cap1", "E2E Cap2", w, w, T5L_PAIR_CAP=1)
+    mid = queue_match(ctx, a, b, "ranked")
+    _stub_set(ctx, a, b, mid, "set 1")
+    t = time.time()
+    ctx.wait(lambda: a.bar_button("Rematch") is not None and b.bar_button("Rematch") is not None, 15, "Rematch after the set")
+    mid2 = rematch(ctx, a, b)
+    ctx.check("the next set is casual (pair cap)", not a.matches[mid2].get("ranked") and not _set_of(a, mid2).get("rated"),
+              _set_of(a, mid2))
+    ctx.check("both were told why", any(ev.get("code") == "pair_cap" for ev in a.events_of("notice", t)) and
+              any(ev.get("code") == "pair_cap" for ev in b.events_of("notice", t)))

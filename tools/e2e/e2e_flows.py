@@ -161,12 +161,20 @@ def rematch(ctx, a, b, timeout=40):
 
 def leave(ctx, p):
     """Leave after a result (the rematch bar's Leave, or No thanks on an offer)."""
-    for label in ("Leave", "No thanks"):
-        b = p.bar_button(label)
-        if b is not None and ":" not in b.cget("text"):        # not "Leave: too laggy"
+    wanted = {"Leave", _tr("Leave"), "No thanks", _tr("No thanks")}      # not "Leave: too laggy", not "Leave set"
+    for b, text, _pad in p.tab.bar_spec:
+        if text in wanted:
             b.invoke()
             return True
     return False
+
+
+def _tr(text):
+    try:
+        from t5lobby import i18n
+        return i18n.t(text)
+    except ImportError:
+        return text
 
 
 def strip(m):

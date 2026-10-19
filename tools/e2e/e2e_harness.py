@@ -431,7 +431,10 @@ class Player:
     settings and output folder, and the games it started."""
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
-                 mash_gap=20, game_mode=None, user_dir=None, tag=""):
+                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False):
+        """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
+        this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
+        sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes)."""
         import tkinter as tk
         from tkinter import ttk
         self.ctx, self.name, self.kind, self.password = ctx, name, kind, password
@@ -454,7 +457,14 @@ class Player:
         st["input_delay"] = input_delay
         lines = ["PS3_AUDIO_MUTE=1", "PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0", "T5_NET_DESYNC_DUMP=1",
                  f"RSX_SHADER_CACHE_DIR={ctx.run.shader_cache}", f"PS3_TITLE=T5DR e2e {name}"]
-        if kind == "real":
+        self.bot = bool(bot) and kind == "real"
+        self.attacking = False
+        self.padfile = os.path.join(self.dir, "pad.txt")
+        self.rnd = random.Random(sum(map(ord, name)) + ctx.run.seed)
+        if self.bot:
+            open(self.padfile, "w").close()
+            lines.append(f"T5_NET_PADFILE={self.padfile}")
+        elif kind == "real":
             import fight_flow_test
             mash = fight_flow_test.mash_script(os.path.join(self.dir, "mash.txt"),
                                                1000 + sum(map(ord, name)) + ctx.run.seed, gap=mash_gap)
@@ -469,6 +479,7 @@ class Player:
         self.user_dir = user_dir or os.path.join(self.dir, "user")
         os.environ["T5_ONLINE_DIR"] = self.user_dir      # read once, by the tab's constructor
         from t5lobby.tk_tab import OnlineTab
+        self._sets = sets
         self.tab = OnlineTab(self.frame, self.app)
         if kind == "stub":
             game_mode = game_mode or "persistent"       # stub_game.py speaks the control channel too
@@ -488,8 +499,8 @@ class Player:
         tab.ask_string = lambda *a, **k: me.password
         self.answer_yes_no = False
         self.codes = []
-        tab.show_codes = lambda codes, first=False: me.codes.append(list(codes))
-        tab._blocks_window = lambda rows: me.notes.append((time.time(), {"kind": "blocks_window", "rows": rows}))
+        tab.show_codes = lambda codes, *a, **kw: me.codes.append(list(codes))
+        tab._blocks_window = lambda rows, *a, **kw: me.notes.append((time.time(), {"kind": "blocks_window", "rows": rows}))
         tab.pad_visible = lambda: False
         tab.server_var.set(self.ctx.server.addr if self.ctx.server else "127.0.0.1:1")
         tab.name_var.set(self.name)
@@ -497,6 +508,8 @@ class Player:
             self.set_char(char, send=False)
         if game_mode:
             tab.cfg["game_mode"] = game_mode
+        if self._sets is not None:
+            tab.cfg["sets"] = bool(self._sets)          # online.json "sets" (read when the tab makes its client)
         orig_new_client = tab._new_client
 
         def new_client(server, build):
@@ -509,23 +522,23 @@ class Player:
         tab._new_client = new_client
         orig_event = tab.on_event
 
-        def on_event(ev):
+        def on_event(ev, *a, **kw):
             me._record(ev)
-            orig_event(ev)
+            orig_event(ev, *a, **kw)
         tab.on_event = on_event
         orig_driver = tab.on_driver
 
-        def on_driver(n):
+        def on_driver(n, *a, **kw):
             me.notes.append((time.time(), n))
             if n.get("kind") == "game_state":
                 me._game_state(n)
-            orig_driver(n)
+            orig_driver(n, *a, **kw)
         tab.on_driver = on_driver
         orig_status = tab.status
 
-        def status(text):
+        def status(text, *a, **kw):              # (the new tab: status(text, error=False))
             me.statuses.append((time.time(), str(text)))
-            orig_status(text)
+            orig_status(text, *a, **kw)
         tab.status = status
         orig_make = tab._make_driver
 
@@ -536,7 +549,8 @@ class Player:
 
             def match_env(ev, ticket):
                 env = orig_env(ev, ticket)
-                if me.kind == "real" and not ev.get("continue") and "T5_NET_SCRIPT" not in (me.extra_env or {}):
+                if me.kind == "real" and not me.bot and not ev.get("continue") and \
+                        "T5_NET_SCRIPT" not in (me.extra_env or {}):
                     # every session its own presses (a session reads T5_NET_SCRIPT when it starts; the same
                     # file every time would play the same match over and over)
                     import fight_flow_test
@@ -574,11 +588,14 @@ class Player:
                         mark = (g.log_path, os.path.getsize(g.log_path))
                     except OSError:
                         mark = (g.log_path, 0)
+                self.attacking = self._plan_attacks(ev)
+                m["set_start"] = ev.get("set")                 # (match_result's `set` already points at the next game)
                 m.update(started=now, path=ev.get("path"), rtt=ev.get("rtt_ms"), delay=ev.get("delay"),
                          input_delay=ev.get("input_delay"), fight=ev.get("fight"), cont=bool(ev.get("continue")),
                          role=ev.get("role"), slot=ev.get("slot"), ranked=ev.get("ranked"),
                          opponent=(ev.get("opponent") or {}).get("name"), log_mark=mark, set=ev.get("set"))
             elif t == "match_result":
+                self.attacking = False
                 m.update(result=now, status=ev.get("status"), reason=ev.get("reason"), winner=ev.get("winner"),
                          score=ev.get("score"), rating=ev.get("rating"), blame=ev.get("blame"), set=ev.get("set"),
                          rematch_window=ev.get("rematch_window"), you=ev.get("you"))
@@ -586,6 +603,46 @@ class Player:
                 m.update(cancelled=now, cancel_reason=ev.get("reason"))
             elif t == "lag_check":
                 m.update(lag=ev)
+
+    def _plan_attacks(self, ev):
+        """ctx.plan = (A, B, ["ABA", "AA", ...]): per set (counted by this player's set_end events) the winner
+        of each game; True when this player is that game's winner."""
+        plan = getattr(self.ctx, "plan", None)
+        if not plan or not self.bot:
+            return False
+        pa, pb, seqs = plan
+        if self is not pa and self is not pb:
+            return False
+        k = len(self.events_of("set_end"))
+        seq = seqs[min(k, len(seqs) - 1)]
+        n = int((ev.get("set") or {}).get("number") or 1)
+        who = seq[min(n, len(seq)) - 1]
+        return (who == "A" and self is pa) or (who == "B" and self is pb)
+
+    def bot_tick(self):
+        """The planned winner presses attacks while its game is in the fight; the other one stands still."""
+        if not self.bot or not self.attacking or not self.game_running():
+            return
+        d = self.tab.driver
+        st = (d.df_status or {}) if d is not None else {}
+        if st.get("state") != "fight":
+            return
+        try:
+            if os.path.getsize(self.padfile):
+                return
+        except OSError:
+            return
+        mid = getattr(getattr(d, "ticket", None), "match_id", None)
+        slot = (self.matches.get(mid) or {}).get("slot") or 0
+        fwd = 0x20 if slot == 0 else 0x80
+        down = 0x40
+        btn = self.rnd.choice([0x8000, 0x1000, 0x4000, 0x2000, 0x8000 | 0x4000, 0x1000 | 0x2000,
+                               down | 0x4000, down | 0x2000, fwd | 0x1000, fwd, fwd])
+        try:
+            with open(self.padfile, "w") as fp:
+                fp.write(f"{btn:#x} {self.rnd.randint(3, 6)}")
+        except OSError:
+            pass
 
     def _game_state(self, n):
         if n.get("state") == "fight":
@@ -918,6 +975,7 @@ class Ctx:
         self.t0 = time.time()
         self.game = game
         self.matches = []           # match evidence rows
+        self.plan = None            # (A, B, ["ABA", ...]): planned game winners per ranked set (bot players)
         # the launcher's own log for this scenario (core.log writes "error in the launcher" lines here)
         self.launcher_log = os.path.join(d, "launcher.log")
         core.LAUNCHER_LOG = self.launcher_log
@@ -946,6 +1004,8 @@ class Ctx:
                 root.update()
             except Exception as e:     # noqa: BLE001 -- a Tk error must not stop the run
                 log(f"tk: {e}")
+            for p in self.players:
+                p.bot_tick()
             if time.monotonic() >= t_end:
                 return
             time.sleep(0.02)

@@ -47,8 +47,11 @@ T5REPLAY 1                       first line
 <zlib stream>                     the binary below (Python's zlib reads it)
 ```
 
-The binary (little-endian): `T5RP`, version 1, flags (rollback), side, delay, rollback delay,
-session seed, match seed, frames, hash interval; the matches (setup, result, names); the sync
+The binary (little-endian): `T5RP`, version 2, flags (rollback), side, delay, rollback delay,
+session seed, match seed, frames, hash interval, the last frame the recording game ran (its inputs
+reach the input delay further: decided ahead, never run -- the playback ends at the last frame; a
+format-1 file from development has no such field and plays to frames minus the delay); the matches
+(setup, result, names); the sync
 points; the hashes (frame, 64-bit hash); then the inputs as 12 columns (P1 buttons low, high, lx,
 ly, rx, ry, then P2) of one byte per frame, each XORed with the frame before, so a held input is a
 run of zeros. The JSON line is a view of the binary; the game reads only the binary.
@@ -185,8 +188,9 @@ second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", 
 "normal speed" in the log, and the verdict still identical. A file whose names were taken out for a
 report plays the same (tests). Two bugs the proof runs found and fixed: a lockstep playback held a
 match's result for netplay's 3-second fallback and lost it when the recording ended sooner; a
-playback that ran past the recording's last frame counted a sync point the live game never reached
-before its session ended.
+playback that ran to the last recorded input -- the inputs are decided the input delay ahead -- went
+past the last frame the live game ran and met a sync point the recording could not have (pW, host's
+file: the file now holds that last frame, format 2).
 
 ## Limits
 

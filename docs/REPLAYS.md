@@ -173,24 +173,34 @@ sync point, each match's FIGHT START setup and result.
 
 | run | netcode | flow | matches (stage) | sessions | live | playback |
 |---|---|---|---|---|---|---|
-| t1 | rollback | process mode, rematch via `T5_FIGHT_FILE` | Jin vs Lili x2 (20) | 1 | 0 mismatching frames | 2/2 files identical |
-| pR | rollback | persistent, N R R N R N, 2 rounds | Jin vs Lili (27, 20, 33, 25, 31), Steve vs Hwoarang (27) | 3 | 6/6 OK, 0 mismatching | 6/6 files identical |
-| pL | lockstep | persistent, N R N R, 2 rounds, rematches change fighters through the select screen in lockstep | Marduk vs King (24), Devil Jin vs Mokujin (29), Asuka vs Law (17), Steve vs Hwoarang (27) | 2 | 4/4 OK | 4/4 identical |
-| pP | rollback | in-game select (picks, pause at the select screen and resume), 2 sessions of 2 | Jin vs Lili (22), Kazuya vs Xiaoyu (30), Steve vs Steve mirror (18), Bryan vs Law (27) | 2 | 4/4 OK | 4/4 identical |
-| pV | rollback | process mode, 3 matches | Asuka vs Law (27), Dragunov vs Lili (34), Kazuya vs Heihachi (29) | 1 | 3/3 OK | 2/2 identical |
-| pW | lockstep | persistent, N R | Steve vs Hwoarang (27, 30) | 1 | 2/2 OK | 2/2 identical |
-| pX | rollback | persistent, N R N, final binary | Kuma vs Panda (26, 27, 21) | 2 | 3/3 OK | see below |
+| run | netcode | flow | matches (stage) | files |
+|---|---|---|---|---|
+| t1 | rollback | process mode, a rematch through `T5_FIGHT_FILE` | Jin vs Lili x2 (20) | 2 |
+| pR | rollback | persistent, N R R N R N, 2 rounds | Jin vs Lili (27, 20, 33, 25, 31), Steve vs Hwoarang (27) | 6 |
+| pL | lockstep | persistent, N R N R, 2 rounds, rematches change fighters through the select screen in lockstep | Marduk vs King (24), Devil Jin vs Mokujin (29), Asuka vs Law (17), Steve vs Hwoarang (27) | 4 |
+| pP | rollback | in-game select (picks, the pause at the select screen and the resume), 2 sessions of 2 | Jin vs Lili (22), Kazuya vs Xiaoyu (30), Steve vs Steve mirror (18), Bryan vs Law (27) | 4 |
+| pV | rollback | process mode, 3 matches | Asuka vs Law (27), Dragunov vs Lili (34), Kazuya vs Heihachi (29) | 2 |
+| pW | lockstep | persistent, N R | Steve vs Hwoarang (27, 30) | 2 |
+| pX | rollback | persistent, N R N | Kuma vs Panda (26, 27, 21) | 4 |
+| pY | rollback | persistent, N R, 2 rounds | Raven vs Feng (27), Baek vs Armor King (32) | 2 |
+| pZ | lockstep | process mode, 2 rounds | Yoshimitsu vs Nina (19), Lee vs Julia (27) | 2 |
+| pQ | lockstep | process mode | Wang vs Ganryu (27), Roger Jr. vs Anna (23) | 2 |
 
-FINAL_TABLE
+Live: 30 matches, every one confirmed by both games with 0 mismatching frames. Recorded: 30 files
+(host and joiner each), 4.4-4.7 KB per minute of play with both players mashing (5 KB for a match of
+two rounds; 2.8-7 KB per match). Played back with the final build: FINAL_TABLE
 
 Also checked: the viewer's controls (`replay_play.py --press 10:START,15:START,18:R1,30:R1`, the
 second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", "speed 2x",
 "normal speed" in the log, and the verdict still identical. A file whose names were taken out for a
-report plays the same (tests). Two bugs the proof runs found and fixed: a lockstep playback held a
-match's result for netplay's 3-second fallback and lost it when the recording ended sooner; a
-playback that ran to the last recorded input -- the inputs are decided the input delay ahead -- went
-past the last frame the live game ran and met a sync point the recording could not have (pW, host's
-file: the file now holds that last frame, format 2).
+report plays the same (tests). Bugs the proof runs found and fixed (none of them in the game's
+determinism -- the hashes were equal every time): a lockstep playback held a match's result for
+netplay's 3-second fallback and lost it when the recording ended sooner; a playback that ran to the
+last recorded input -- the inputs are decided the input delay ahead -- went past the last frame the
+live game ran and met a sync point the recording could not have (pW, host's file: the file now holds
+that last frame, format 2); a lockstep game that wrote its file at the very frame of a result had
+not counted that frame yet (pZ, joiner's file: counted before the match watch now, and a playback
+never stops before a recorded match's end).
 
 ## Limits
 

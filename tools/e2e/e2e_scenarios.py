@@ -144,7 +144,9 @@ def accounts_login(ctx):
 @scenario("accounts_same_account", "1 accounts", suites=("quick", "lobby"),
           desc="the same account logged in on two PCs: idle and during a running match (stub games)")
 def accounts_same_account(ctx):
-    stub_server(ctx)
+    # (a lone report that favours its sender waits until T5L_MAX_MATCH_SECONDS after the start -- lobby-hardening;
+    # 40 s here instead of 420 so the take-over's outcome comes within the scenario)
+    stub_server(ctx, T5L_MAX_MATCH_SECONDS=40)
     pw = "dana-pass-1"
     d1 = ctx.player("E2E Dana", kind="stub", password=pw, tag="pc1")
     login(ctx, d1, "register")

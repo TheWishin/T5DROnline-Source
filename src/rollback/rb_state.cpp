@@ -503,6 +503,14 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     return n;
 }
 
+bool state_reachable(uint32_t to)
+{
+    if (!g_newest || to >= g_newest) return false;
+    for (uint32_t f = g_newest - 1; ; f--) {
+        if (g_log[f % kLogFrames].tag != f + 1) return false;
+        if (f == to) return true;
+    }
+}
 uint32_t state_oldest_frame()
 {
     uint32_t oldest = g_newest;   /* frame + 1 */

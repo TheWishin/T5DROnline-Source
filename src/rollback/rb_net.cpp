@@ -895,7 +895,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         bool ok = true;
         for (uint32_t g = f - g_force_depth; g <= f && ok; g++)
             ok = g_post_tag[g % 4096] == g + 1 && g_fighting[g % 4096] && (g == f || g_used_tag[g % kHist] == g + 1);
-        if (ok && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
+        /* a lazy re-simulation (T5_RB_NET_LAZY) kept no undo log for the confirmed
+         * frames it re-ran: those boundaries are out of reach, as they are for any
+         * real misprediction */
+        if (ok && state_reachable(f - g_force_depth) && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
     }
 
     /* final hashes: every input before g is confirmed and no rollback is pending */

@@ -82,6 +82,10 @@ void     state_refresh(double* ms);
 /* "N restores: pages each (draw lists, render scratch, the rest)"; reset clears the sums. */
 void     state_restore_stats(char* out, size_t cap, bool reset);
 uint32_t state_oldest_frame();       /* the oldest boundary a rollback can reach */
+/* every undo log from the newest down to boundary `to` is there (a rollback to
+ * `to` would succeed); after a lazy re-simulation the boundaries before its
+ * refresh are not (state_rollback_lazy) */
+bool     state_reachable(uint32_t to);
 void     state_drop_logs();          /* forget every undo log (a barrier: no rollback past now) */
 void     state_reset();              /* a new netplay session (persistent game): no logs, frame numbers from 0, shadow brought up to date */
 uint32_t state_log_pages(uint32_t f); /* pages in frame f's undo log (0 when gone) */

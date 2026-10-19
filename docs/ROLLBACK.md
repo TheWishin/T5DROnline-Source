@@ -2130,7 +2130,7 @@ a dump of the next occurrence will name the words.
 **The present hang (fix 3).** On the rebased build the rematch agent's scenario
 (`fight_flow_test.py --flow persistent --pattern NNRR --mash --stutter 60 --skew
 2.0`) hung the host twice: FF1 in match 15, FF2 in match 1. The window stays, its
-log stops, the peer waits for input. `build/cr/hangwatch.py` asks a quiet game's
+log stops, the peer waits for input. `tools/hang_watch.py` asks a quiet game's
 debug console (`PS3_DEBUG=dbg.cmd`) for `threads` and the managers' memory: the
 main thread spins at 0x35C014, the geometry manager's thread is parked in its
 semaphore wait, the draw manager waits for its wake counter. The present
@@ -2273,7 +2273,7 @@ ended the game after 60 s (exit 6: the launcher starts a fresh one); in F10 the
 it waited there for good. Mitigation (`df_fight.cpp stuck_check`): a "fight"
 pending in neutral counts too, from the moment the command came. Not seen in
 F9 (21 cycles, pre-rebase) nor in F13 on the final build; what the select mode
-waits for in phase 1 is not known yet -- `build/cr/stuckwatch.py` dumps the
+waits for in phase 1 is not known yet -- `tools/stuck_watch.py` dumps the
 threads of a game whose "fight" command is followed by no state change (with
 `PS3_DEBUG`).
 

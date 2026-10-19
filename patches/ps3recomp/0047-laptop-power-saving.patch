@@ -51,10 +51,10 @@ index 967d13d..aae1d81 100644
      }
      ReleaseSRWLockExclusive(&s_jl.lock);
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index 80b8e6f..a79c6bc 100644
+index 80b8e6f..ad0fa13 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
-@@ -689,9 +689,59 @@ void cellGcmResetFlipStatus(void)
+@@ -689,9 +689,63 @@ void cellGcmResetFlipStatus(void)
      s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
  }
  
@@ -77,6 +77,10 @@ index 80b8e6f..a79c6bc 100644
 +static _Thread_local int t_flip_polled = 0;     /* this thread's last GetFlipStatus said WAITING */
 +static void gcm_flip_wake(void)
 +{
++    /* the status store must be visible before the waiter count is read (a
++     * waiter counts itself, then reads the status): a full fence, or x86 may
++     * read the count ahead of the store and leave a waiter to its timeout */
++    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 +    if (s_flip_waiters) WakeByAddressAll((PVOID)&s_flip_status);
 +}
 +void cellGcm_flip_poll_plain(void) { t_flip_polled = 0; }
@@ -114,7 +118,7 @@ index 80b8e6f..a79c6bc 100644
      /* Avoid host-calling the guest OPDs directly (they're not valid host
       * function pointers). Use cellGcmTickVBlank() / TickFlip() instead,
       * which dispatch via g_ps3_guest_caller — see below. */
-@@ -789,6 +839,7 @@ void ppu_gcm_pump(void)
+@@ -789,6 +843,7 @@ void ppu_gcm_pump(void)
      }
      if (p & 2) {
          s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
@@ -122,7 +126,7 @@ index 80b8e6f..a79c6bc 100644
          rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
          lat_log('K', "%u %ld", s_vblank_count, (long)s_lat_walk_seq);   /* the guest's next frame is released */
          SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
-@@ -1626,6 +1677,39 @@ void cellGcm_fifo_kick_wait(unsigned ms)
+@@ -1626,6 +1681,39 @@ void cellGcm_fifo_kick_wait(unsigned ms)
      else    Sleep(ms);
  }
  
@@ -162,7 +166,7 @@ index 80b8e6f..a79c6bc 100644
  
  /* Serializes fence publication between the present ticker and every guest
   * thread poll-reading the ref register (REFPOLL default-on made this path
-@@ -2729,6 +2813,7 @@ s32 cellGcmSetPrepareFlip(void* ctx, u32 bufferId)
+@@ -2729,6 +2817,7 @@ s32 cellGcmSetPrepareFlip(void* ctx, u32 bufferId)
  
      s_current_display_buffer_id = bufferId;
      s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
@@ -170,7 +174,7 @@ index 80b8e6f..a79c6bc 100644
      s_flip_request_count++;
      s_last_flip_time = get_timestamp_ns();
  
-@@ -3645,6 +3730,7 @@ s32 cellGcmSetFlipImmediate(u32 bufferId)
+@@ -3645,6 +3734,7 @@ s32 cellGcmSetFlipImmediate(u32 bufferId)
  void cellGcmSetFlipStatus(u32 status)
  {
      s_flip_status = status;
@@ -179,7 +183,7 @@ index 80b8e6f..a79c6bc 100644
  
  /* Store graphics handler callback */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e53cadc..e222c3e 100644
+index e53cadc..acf0eba 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -54,6 +54,7 @@ void rsx_pf_stamp(int slot)
@@ -282,14 +286,42 @@ index e53cadc..e222c3e 100644
 +int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
 +void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
 +{
-+    *gpu_wait_ticks = (long long)(g_pf.flush_wait_ticks + g_pf.latency_wait_ticks);
-+    *present_ticks = (long long)(g_pf.present_flush_ticks + g_pf.present_call_ticks);
++    *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
++    *present_ticks = (long long)(g_pf.present_flush_ticks + g_pf.present_call_ticks + g_pf.latency_wait_ticks);
 +}
 +
  /* Present pacing. The game's clock is the vblank ticker (QPC, 59.94 Hz); a
   * flip completes on a tick, and the next frame starts only then. A vsync'd
   * Present on a display slower than that (50 Hz TVs, 30 Hz 4K-over-HDMI-1.4)
-@@ -7055,6 +7125,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
+@@ -2428,12 +2498,26 @@ static void ld_lat_after_present(u32 frame)
+     LONGLONG vb = 0, per = 0;
+     if (ld_dwm_vblank(&vb, &per)) lat_log('C', "%lld %lld", (long long)vb, (long long)per);
+ }
++/* The vblank ticker's next tick (QPC), written by the ticker (boot_main.cpp,
++ * patch 0047); 0 = unknown. */
++volatile long long g_rsx_next_tick_qpc = 0;
+ static void ld_wait_frame_latency(void)
+ {
+     /* Bounded: a minimized/occluded window may not retire frames. */
+     if (!g_ld_frame_wait) return;
+     const LONGLONG w0 = ld_pf_qpc();
+-    WaitForSingleObjectEx(g_ld_frame_wait, 20, FALSE);
++    /* Patch 0047: never past the game's next vblank tick (less 1 ms). The
++     * present runs on the ticker, so a display path that is slow to give a
++     * buffer back -- a laptop whose screen hangs off the other GPU, a busy
++     * compositor -- used to hold the game's clock for up to 20 ms; now the
++     * frame is presented a little early instead and the tick stays on time. */
++    DWORD ms = 20;
++    const long long next = g_rsx_next_tick_qpc;
++    if (next > w0 && g_ld_qpc_frequency > 0) {
++        const long long left = (next - w0) * 1000 / g_ld_qpc_frequency - 1;
++        ms = left < 1 ? 1 : left < 20 ? (DWORD)left : 20;
++    }
++    WaitForSingleObjectEx(g_ld_frame_wait, ms, FALSE);
+     g_pf.latency_wait_ticks += ld_pf_qpc() - w0;
+ }
+ /* GPU timestamps (g_gt above). */
+@@ -7055,6 +7139,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
  static DWORD WINAPI ld_vworker_main(LPVOID arg)
  {
      ld_vscratch* s = (ld_vscratch*)arg;
@@ -297,23 +329,33 @@ index e53cadc..e222c3e 100644
      for (;;) {
          if (ld_vjob_try_run(s)) continue;
          /* idle: spin briefly (draws arrive every few microseconds while a
-@@ -7090,8 +7161,14 @@ static int ld_vjob_enabled(void)
-      * the walker they serve. */
+@@ -7085,13 +7170,21 @@ static int ld_vjob_enabled(void)
+         getenv("LD_TRACE_PSO") || getenv("LD_FORCE_VA"))
+         return 0;
+     /* Workers by the processors this process may use (host_sched_cpus):
+-     * 3 from 12 up (as measured for 0023), fewer below -- on 4 logical
++     * 3 from 24 up (as measured for 0023 at 32), fewer below -- on 4 logical
+      * processors three spinning workers took CPU from the skinning jobs and
+-     * the walker they serve. */
++     * the walker they serve, and on 8 cores with SMT (16) three workers
++     * spinning 2,000 PAUSEs past every walk took 0.27 of a processor, on the
++     * walker's own cores' siblings (patch 0047; was: 3 and 2,000 from 12). */
      const int cpus = host_sched_cpus();
-     int n = cpus >= 12 ? 3 : cpus >= 8 ? 2 : 1;
--    { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
-     g_vj_spin = cpus >= 12 ? 2000 : 300;
+-    int n = cpus >= 12 ? 3 : cpus >= 8 ? 2 : 1;
++    int n = cpus >= 24 ? 3 : cpus >= 8 ? 2 : 1;
++    g_vj_spin = cpus >= 24 ? 2000 : 300;
 +    /* Power saving (patch 0047, host_sched_laptop): one worker, and the short
 +     * spin that only bridges the gaps between two draws of a walk -- the 2,000
 +     * PAUSEs of 12+ processors kept three workers busy past the end of every
 +     * walk (0.25 of a processor at 32, measured). */
 +    if (host_sched_laptop()) { n = 1; g_vj_spin = 300; }
-+    { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
+     { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
+-    g_vj_spin = cpus >= 12 ? 2000 : 300;
 +    { const char* t = getenv("RSX_VERTEX_SPIN"); if (t) g_vj_spin = atoi(t) < 0 ? 0 : atoi(t); }
      if (n < 1) return 0;
      if (n > 16) n = 16;
      g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
-@@ -7103,8 +7180,9 @@ static int ld_vjob_enabled(void)
+@@ -7103,8 +7196,9 @@ static int ld_vjob_enabled(void)
          if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
      }
      g_vj_threads = started;
@@ -325,7 +367,7 @@ index e53cadc..e222c3e 100644
      return started > 0;
  }
  
-@@ -10757,6 +10835,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -10757,6 +10851,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          g_ld_frame_wait = g.swap->lpVtbl->GetFrameLatencyWaitableObject(g.swap);
          fprintf(stderr, "[pacing] max frame latency %u (waitable swap chain)\n", latency);
      }
@@ -334,7 +376,7 @@ index e53cadc..e222c3e 100644
          HMONITOR mon = MonitorFromWindow((HWND)hwnd, MONITOR_DEFAULTTOPRIMARY);
          MONITORINFOEXA mi;
 diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
-index 8a78538..fc63492 100644
+index 8a78538..5560090 100644
 --- a/libs/video/rsx_live_draw.h
 +++ b/libs/video/rsx_live_draw.h
 @@ -205,6 +205,8 @@ enum {
@@ -351,8 +393,8 @@ index 8a78538..fc63492 100644
  /* One row per guest flip into <PS3_FRAMELOG>.guest.csv (guest thread). */
  void rsx_pf_guest_flip(void);
 +/* Patch 0047 (slow-frame summary): QPC ticks spent so far waiting for the GPU
-+ * (fence and frame-latency waits) and presenting (the present's submit and
-+ * DXGI Present), cumulative; and whether the window's screen is driven by
++ * (fence waits) and presenting (the frame-latency wait, the present's submit
++ * and DXGI Present), cumulative; and whether the window's screen is driven by
 + * another adapter than the one rendering (1), the same (0), unknown (-1). */
 +void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
 +int  rsx_live_draw_display_hybrid(void);
@@ -380,10 +422,39 @@ index 409182a..d833f08 100644
          s_state.title_frames = s_state.frame_count;
          s_state.title_time = now;
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index bc176ff..47466ee 100644
+index bc176ff..5f7be79 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
-@@ -92,13 +92,60 @@
+@@ -39,12 +39,24 @@
+  *   PS3_SCHED_SPIN_US=n       lv2 semaphore waits poll n us before parking [0]
+  *   PS3_SCHED_SUBMS=m         usleep < 1 ms: spin (SwitchToThread, as before) |
+  *                             pause (PAUSE, yield every 50 us) | timer [spin
+- *                             with 12+ logical processors, else timer]
++ *                             with 24+ logical processors (12+ before patch
++ *                             0047), else timer; timer with power saving]
+  *   PS3_CPUS=n                pretend the process may use n logical
+  *                             processors (the pools below size from the
+- *                             affinity mask: SPURS_JOB_THREADS [n/2, max 12],
+- *                             RSX_VERTEX_THREADS [3 from 12, 2 from 8, else
+- *                             1], PS3_SCHED_SUBMS) -- see host_sched_cpus()
++ *                             affinity mask: SPURS_JOB_THREADS [n/2, max 12;
++ *                             power saving max 6], RSX_VERTEX_THREADS [3 from
++ *                             24, 2 from 8, else 1; power saving 1],
++ *                             PS3_SCHED_SUBMS) -- see host_sched_cpus()
++ *   PS3_LAPTOP=1|0|auto       power saving (patch 0047, host_sched.h) [auto:
++ *                             on with a battery, battery saver, the Power
++ *                             saver plan, a mobile processor or integrated
++ *                             graphics]
++ *   PS3_TICKER_SPIN_US=n      (boot_main.cpp) the vblank ticker polls the last
++ *                             n us before a tick [250; 0 with power saving]
++ *   PS3_FLIP_WAIT=0           (cellGcmSys.c) the guest's usleep after a WAITING
++ *                             flip status sleeps as asked instead of waiting
++ *                             for the flip [waits for the flip]
++ *   PS3_SLOW_FRAMES=0         (boot_main.cpp) no [slow-frames] summary lines
+  *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
+  *                             when cellGcmSetUserCommand advances put [wake]
+  *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
+@@ -92,13 +104,60 @@
   */
  #include "host_sched.h"
  #include "../ppu/ppu_fp_det.h"   /* ppu_fp_thread_init: the guest threads' MXCSR (fp_env.c) */
@@ -445,7 +516,7 @@ index bc176ff..47466ee 100644
  void    host_sched_process_init(void) {}
  void    host_sched_thread_start(int role, int guest_prio, const char* name)
          { (void)role; (void)guest_prio; ppu_fp_thread_init(name); }
-@@ -144,7 +191,8 @@ static int  s_log = 0;
+@@ -144,7 +203,8 @@ static int  s_log = 0;
  static int  s_timer = 1;
  static int  s_ppu_lo = 1002;
  static int  s_ideal = 0;
@@ -455,21 +526,25 @@ index bc176ff..47466ee 100644
  static int64_t s_spin_ticks = 0;
  static LARGE_INTEGER s_qpf;
  
-@@ -432,8 +480,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -432,8 +492,16 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
       * runnable all that time -- free with 32 processors, a whole one taken
       * from the skinning jobs and the FIFO walker with 4. Below 12 processors
       * it sleeps on the high-resolution timer instead. */
-+    /* Laptop mode (patch 0047): the timer whatever the processor count -- a
-+     * 16-thread laptop otherwise spins the main thread through every flip
-+     * wait (0.4-0.7 of a core in a fight, measured on 32). */
++    /* Patch 0047: the flip poll no longer sleeps here at all (cellGcmSys.c
++     * waits for the flip itself), and on 8 cores with SMT -- 16 logical
++     * processors, the common gaming CPU, laptop or desktop -- a spinning
++     * thread sits on the sibling of the walker or the main thread and slows
++     * the frame's critical path. The spin stays from 24 logical processors
++     * up, where it is free (the 0027 measurements at 32); power saving never
++     * spins. */
 +    s_subms_env = getenv("PS3_SCHED_SUBMS") != NULL;
      { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm,
 -                           host_sched_cpus() >= 12 ? "spin" : "timer");
-+                           host_sched_cpus() >= 12 && !host_sched_laptop() ? "spin" : "timer");
++                           host_sched_cpus() >= 24 && !host_sched_laptop() ? "spin" : "timer");
        s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
      s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
      if (s_spin_ticks < 0) s_spin_ticks = 0;
-@@ -514,6 +566,15 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -514,6 +582,15 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
      fprintf(stderr, "[sched] CPU budget: %d logical processors, %d cores (affinity mask; PS3_CPUS); "
              "sub-ms sleeps: %s\n", host_sched_cpus(), host_sched_cores(),
              s_subms == 2 ? "timer" : s_subms == 1 ? "pause" : "spin");
@@ -485,7 +560,7 @@ index bc176ff..47466ee 100644
      fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
              s_ncpu, (unsigned)s_fast_llc);
      for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
-@@ -595,6 +656,19 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -595,6 +672,19 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
          }
      }
  
@@ -505,7 +580,7 @@ index bc176ff..47466ee 100644
      if (s_log)
          fprintf(stderr, "[sched] thread '%s' role=%s guest_prio=%d -> host prio %d%s%s%s cpus=%s%s ideal=%d\n",
                  name ? name : "?", k_role_name[role], guest_prio, GetThreadPriority(GetCurrentThread()),
-@@ -669,4 +743,183 @@ int host_sched_sleep_subms(uint64_t usec)
+@@ -669,4 +759,184 @@ int host_sched_sleep_subms(uint64_t usec)
      return 1;
  }
  
@@ -684,8 +759,9 @@ index bc176ff..47466ee 100644
 +             name && *name ? name : "?");
 +    s_lap = 1;
 +    if (!s_subms_env && s_subms == 0) s_subms = 2;
-+    fprintf(stderr, "[sched] power saving on (%s): fewer worker threads, no spinning waits -- "
-+                    "the game logic and its 60 fps are unchanged\n", s_lap_why);
++    fprintf(stderr, "[sched] power saving on (%s): fewer worker threads, no spinning waits (sub-ms sleeps: %s) -- "
++                    "the game logic and its 60 fps are unchanged\n", s_lap_why,
++            s_subms == 2 ? "timer" : s_subms == 1 ? "pause" : "spin");
 +}
 +
  #endif /* _WIN32 */
@@ -733,7 +809,7 @@ index aa37717..5f134a1 100644
  enum host_sched_ev {
      HS_EV_SEM_WAIT0 = 1,  /* arg = sem id: about to block / poll               */
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index a36e3ea..0ad8f14 100644
+index a36e3ea..97f1601 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
 @@ -313,6 +313,7 @@ extern "C" int  rsx_null_backend_pump_messages(void);
@@ -744,7 +820,7 @@ index a36e3ea..0ad8f14 100644
  extern "C" unsigned cellGcm_flip_request_count(void);
  extern "C" unsigned cellGcmGetCurrentDisplayBufferId(void);
  extern "C" int sys_event_queue_inject(unsigned int, unsigned long long, unsigned long long, unsigned long long, unsigned long long);
-@@ -422,9 +423,105 @@ static void on_window_closed(void)
+@@ -422,9 +423,106 @@ static void on_window_closed(void)
   * deliberately not counted: they carry no guest frame. */
  static volatile LONG g_frames_presented = 0;
  extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_presented; }
@@ -769,6 +845,7 @@ index a36e3ea..0ad8f14 100644
 + * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines. */
 +extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
 +extern "C" volatile long long g_rsx_pf[];
++extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
 +enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
 +struct SlowFrames {
 +    enum { CAP = 4096 };
@@ -804,7 +881,7 @@ index a36e3ea..0ad8f14 100644
 +        const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
 +        const double iv = t_prev > 0 ? (t1 - t_prev) * ms : 0.0;
 +        t_prev = t1;
-+        if (t_window <= 0) t_window = t1;
++        if (t_window <= 0) { t_window = t1; ticks = 0; }   /* the boot's ticks are not this window's */
 +        if (frames < CAP) {
 +            c_game[frames] = (float)game; c_xlat[frames] = (float)xlat;
 +            c_gpu[frames] = (float)gpu; c_pres[frames] = (float)pres;
@@ -850,7 +927,7 @@ index a36e3ea..0ad8f14 100644
      /* The ticker increments, a guest thread reads: interlocked rather than a
       * volatile ++, which is neither atomic nor a fence on arm64. */
      InterlockedIncrement(&g_frames_presented);
-@@ -538,7 +635,7 @@ struct DisplayLock {
+@@ -538,7 +636,7 @@ struct DisplayLock {
          long long v = 0, p = 0;
          const int dwm = rsx_live_draw_dwm_vblank(&v, &p);
          const double hz = dwm && p > 0 ? qpf / (double)p : 0.0;
@@ -859,7 +936,7 @@ index a36e3ea..0ad8f14 100644
          if (want != on) {
              on = want;
              if (on && lead <= 0) lead = lead_fixed > 0 ? lead_fixed : (double)p - 0.2 * qpf / 1000.0;
-@@ -548,18 +645,46 @@ struct DisplayLock {
+@@ -548,18 +646,46 @@ struct DisplayLock {
                         : "");
          }
      }
@@ -908,7 +985,7 @@ index a36e3ea..0ad8f14 100644
          const double x = *next_tick + lead;                    /* the display vblank this tick precedes */
          const double k = floor((x - (double)vb) / (double)per + 0.5);
          double err = ((double)vb + k * (double)per) - x;       /* within half a period */
-@@ -668,6 +793,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -668,6 +794,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
      double vb_period = vb_nominal;
      static DisplayLock lock;
      lock.init((double)vb_freq.QuadPart);
@@ -916,7 +993,7 @@ index a36e3ea..0ad8f14 100644
      int present_at_xlat;
      { const char* e = getenv("PS3_PRESENT_AT_XLAT"); present_at_xlat = !(e && *e == '0'); }
      /* a flip the walker has reached is presented now (PS3_PRESENT_AT_XLAT) */
-@@ -684,6 +810,16 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -684,15 +811,27 @@ static DWORD WINAPI vblank_ticker(LPVOID)
      timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
      QueryPerformanceCounter(&vb_now);
      double next_tick = (double)vb_now.QuadPart;
@@ -933,9 +1010,10 @@ index a36e3ea..0ad8f14 100644
      for (;;) {
          /* Was Sleep(4). The FIFO kick event existed, was signalled on a dry
           * fence queue, and had no waiter -- so a guest starved for `get` or a
-@@ -691,8 +827,9 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * fence still paid the whole tick. Waiting on it keeps the same 4 ms
           * ceiling when nothing kicks, and drains on demand when something
           * does. */
++        g_rsx_next_tick_qpc = (long long)next_tick;
          QueryPerformanceCounter(&vb_now);
 -        { double ms = (next_tick - (double)vb_now.QuadPart) * 1000.0 / (double)vb_freq.QuadPart;
 -          cellGcm_fifo_kick_wait(ms <= 1.0 ? 0 : (ms >= 4.0 ? 4 : (unsigned)ms)); }
@@ -945,16 +1023,18 @@ index a36e3ea..0ad8f14 100644
          QueryPerformanceCounter(&vb_now);
          const double now = (double)vb_now.QuadPart;
          int fired = 0;
-@@ -708,6 +845,8 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -707,7 +846,10 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         static int late_present = -1;
          if (late_present < 0) { const char* e = getenv("PS3_PRESENT_LATE"); late_present = !(e && *e == '0'); }
          while (now >= next_tick && fired < 240) {
++            g_rsx_next_tick_qpc = (long long)(next_tick + vb_period);   /* presents in here: the tick after this one */
              cellGcmTickVBlank();
 +            s_slow.on_tick();
 +            s_slow.period = vb_period;
              lat_log('V', "%lld", (long long)next_tick);   /* the vblank as scheduled; the line's stamp is when it ran */
              /* Present a pending flip BEFORE draining further: the flip fires
               * at a get==put frame boundary (guest thread), so the batch held
-@@ -733,7 +872,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -733,7 +875,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
                               ppu_gcm_pump();
                               QueryPerformanceCounter(&p1);
                               rsx_pf_add(PF_PUMP_TICKS, p1.QuadPart - p0.QuadPart); } }
@@ -963,7 +1043,15 @@ index a36e3ea..0ad8f14 100644
                  if (present_due) present_guest_frame();
              }
              /* Drain the game's GCM FIFO every tick -- this writes the RSX sync-fence
-@@ -775,13 +914,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+@@ -747,6 +889,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+         }
+         lock.check(GetTickCount64());
+         if (fired >= 240) next_tick = now;   /* fell too far behind -> resync */
++        g_rsx_next_tick_qpc = (long long)next_tick;
+         if (fired) { rsx_pf_add(PF_VBLANKS, fired); rsx_pf_max(PF_VBLANK_BURST_MAX, fired); }
+         /* Drain at the outer ~4ms cadence too (not just the 16ms tick):
+          * titles fence EVERY render pass on an RSX label the drain writes;
+@@ -775,13 +918,13 @@ static DWORD WINAPI vblank_ticker(LPVOID)
           * it's never posted (producer signals a condvar, never enqueues). Inject a q3
           * event periodically to test whether delivering the completion advances the
           * game's state machine to instantiate + display the (force-parsed) menu movie. */

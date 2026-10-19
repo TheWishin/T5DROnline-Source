@@ -253,6 +253,14 @@ def main():
     finally:
         if old:
             k32.SetProcessAffinityMask(me, old)
+    # if this script dies (killed by a driver's timeout), Windows ends the game with it
+    job = None
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "tools", "smoke"))
+        import procs as _procs
+        job = _procs.kill_on_close_job(p.pid)
+    except Exception:       # noqa: BLE001 -- the bench still stops the game itself below
+        job = None
 
     def setpad(s):
         tmp = env["PS3_PAD_FILE"] + ".tmp"

@@ -667,13 +667,42 @@ void start_rematch(uint32_t f)
  * (Reset): from there both games run the same title -> start VS -> select ->
  * fight path from the same bytes. T5_DF_FRESH=0: off; T5_DF_FRESH_RANGES:
  * "addr:len,..." (hex), default the netplay hash's game areas. */
-/* The game's async reader (ZsAread): its service object 0x1009FE28 -- +0 the
- * request semaphore's id, +4 the completion semaphore's id, +8 busy (0 idle,
- * 1 a read in flight), +0x14 the queue of requests (the one being read
- * first); the request pool (64 x 0x28 bytes) at 0x1009FF68..0x100A0968, +0 a
- * request's status (1 queued / being read, then its result), +4 the next. */
+/* The game's async reader (ZsAread), which every scene load goes through: its
+ * service object 0x1009FE28 -- +0 the request semaphore's id, +4 the
+ * completion semaphore's id, +8 busy (0 idle, 1 a read in flight), +0x14 the
+ * queue of requests (the one being read first), +0x20.. the read in flight;
+ * the request pool (64 x 0x28 bytes) at 0x1009FF68..0x100A0968, +0 a
+ * request's status (1 queued / being read, then its result), +4 the next; a
+ * config copy at 0x100A0968 (0x20). The main thread's service (0x9A784, once
+ * per frame) starts the head request (posts +0, busy = 1) and, while busy,
+ * takes the reader thread's completion token with a trywait.
+ *
+ * Select stall (docs/DIRECTFIGHT.md "Select stall after a fight"): all of this
+ * lies inside the fight-state block the boot state copies (0x1008E000..
+ * 0x100A5000). Taken while a read was in flight -- 30 frames into the boot
+ * title the title's own load (T55DATA1 entry 0x105, 1.2 MB) is usually done,
+ * on a loaded PC not -- the copy said "busy, the title's request queued"; put
+ * back at the first title visit after a fight with the reader idle, the
+ * service waited for a completion token no read would ever post, every later
+ * request queued behind it, and the select mode's set-up (phase 1 of 0x5AF04
+ * waits for its portraits/models, 0x2739F4 -> state 7) never ended: the select
+ * screen at phase 1 for good (offline pf_off2, main e3/p2; reproduced every
+ * time with PS3_TEST_FS_DELAY=150: copy "busy 1, 1 request", restore -> phase 1
+ * for 220 s, 5 requests queued, 0 tokens). The reverse (copy idle, put back
+ * during a read) dropped the read in flight from the queue and left its token
+ * to complete the next request before its data was read. So the reader's own
+ * data (0x1009FE20..0x100A0988: thread id, service object, path buffer, quit
+ * flag, pool, config) is never copied: it is live I/O state, not match state
+ * (and at an idle reader its bytes equal the boot copy's: T5_DF_FRESH_SCAN over
+ * it found no difference after fights). Also, the copy is taken and put back
+ * only once the reader has nothing queued (reader_idle), so both games run
+ * start VS from a title whose loads are done. */
 constexpr uint32_t kReader = 0x1009FE28u, kReaderPool = 0x1009FF68u, kReaderPoolEnd = 0x100A0968u;
+constexpr uint32_t kReaderData = 0x1009FE20u, kReaderDataEnd = 0x100A0988u;
 extern "C" int32_t t5_sem_count(uint32_t id);   /* src/netplay/t5_hooks.cpp: a kernel semaphore's count, -1 none */
+bool reader_idle() { return rd32(kReader + 8) == 0 && rd32(kReader + 0x14) == 0; }
+bool g_reader_guard = true;      /* T5_DF_READER_GUARD=0: the reader's data copied like the rest, no wait for it (old) */
+bool g_reader_wait = false;      /* the title waits for the reader before the copy / start VS (logged once) */
 std::string reader_desc()
 {
     char b[160];
@@ -860,8 +889,53 @@ void reset_done(uint32_t f)
  * match (match_driver: a persistent game that is not running is started again). */
 uint32_t g_leave_phase = 10;    /* T5_DF_LEAVE_PHASE (diagnostics): a fight is left once its phase word is past this */
 ULONGLONG g_stuck_dumped = 0;   /* g_ph_ms of the phase whose wait was dumped */
+bool pick_screen_wait();        /* the in-game select waits for its select screen (below) */
+
+/* A select screen that never gets past its loading (Select, or the in-game
+ * select's Pick, before the screen takes input). Its cause is gone (the
+ * reader, kReaderData), this is the backstop: the select's set-up, the mode
+ * manager and the async reader are watched, and when none of them has moved
+ * for T5_DF_SELECT_STUCK_SECONDS (default 30; 0 = never) -- a slow disk or a
+ * loaded PC keeps the reader's queue moving, a wedged load does not -- the game
+ * says what it waits on and ends as a stuck reset does (exit code 6: the
+ * launcher starts a fresh game for the match, docs/DIRECTFIGHT.md). Before,
+ * such a screen sat at phase 1 until the next command (e3/p2: 46 s) or for
+ * good (pf_off2). */
+uint32_t g_select_stuck_s = 30;
+uint64_t g_sl_sig = 0;          /* what moved last: phase word, modes, reader state */
+ULONGLONG g_sl_ms = 0;          /* when it last moved */
+bool g_sl_dumped = false;
+void select_load_check(uint32_t f)
+{
+    const bool loading = g_ctl && g_select_stuck_s &&
+        ((g_ph == Ph::Select && !(mode_cur() == kModeSelect && rd32(kSelectState) >= 3)) || pick_screen_wait());
+    if (!loading) { g_sl_ms = 0; return; }
+    const uint32_t q = rd32(kReader + 0x14);
+    uint32_t queued = 0;
+    for (uint32_t r = q; r >= kReaderPool && r < kReaderPoolEnd && queued < 70; r = rd32(r + 4)) queued++;
+    const uint64_t sig = (uint64_t)rd32(kSelectState) ^ ((uint64_t)mode_cur() << 8) ^ ((uint64_t)mode_next() << 16) ^
+                         ((uint64_t)rd32(kReader + 8) << 24) ^ ((uint64_t)q << 28) ^ ((uint64_t)queued << 58) ^
+                         ((uint64_t)(uint32_t)t5_sem_count(rd32(kReader + 4)) << 40);
+    const ULONGLONG now = GetTickCount64();
+    if (!g_sl_ms || sig != g_sl_sig) { g_sl_sig = sig; g_sl_ms = now; g_sl_dumped = false; return; }
+    const ULONGLONG ms = now - g_sl_ms;
+    if (ms >= (ULONGLONG)g_select_stuck_s * 500 && !g_sl_dumped) {
+        g_sl_dumped = true;
+        note("frame %u: the select screen's loading has not moved for %u s (mode %u, next %u, phase word %u; %s):", f,
+             (unsigned)(ms / 1000), mode_cur(), mode_next(), rd32(kSelectState), reader_desc().c_str());
+        stuck_dump(f);
+    }
+    if (ms < (ULONGLONG)g_select_stuck_s * 1000) return;
+    note("frame %u: STUCK: the select screen's loading has not moved for %u s (mode %u, phase word %u; %s) -- the game ends, "
+         "the launcher starts a fresh one", f, g_select_stuck_s, mode_cur(), rd32(kSelectState), reader_desc().c_str());
+    ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
+    fflush(stdout); fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 6);
+}
+
 void stuck_check(uint32_t f)
 {
+    select_load_check(f);
     /* Neutral with a "fight" pending waits for the select screen to take input
      * (select_live); a select mode that never gets past its loading (phase word
      * 1, every loader parked: reset_cycle_test F10, F12 under heavy load) held
@@ -969,6 +1043,8 @@ bool pick_begin(uint32_t f)
     set_phase(Ph::Pick, "pick", f);
     return true;
 }
+
+bool pick_screen_wait() { return g_ph == Ph::Pick && !g_pick.live; }
 
 void pick_frame(uint32_t f)
 {
@@ -1254,6 +1330,23 @@ void fight_on_frame(uint32_t f)
             autosave_running() && GetTickCount64() - g_ph_ms < 10000) {
             if (!g_autosave_wait) { g_autosave_wait = true; note("frame %u: waiting for the title's autosave before start VS", f); }
             break;
+        }
+        /* Nor while the async reader still has a request queued or in flight
+         * (the title's own loads; on a loaded PC they outlast the 30 frames): the
+         * boot state is taken and put back, and start VS called, only from a
+         * title whose loads are done -- the same point in every game (see
+         * kReaderData: a copy taken during a read once wedged the reader and
+         * the next select screen with it). At most 10 s since the title began
+         * (the reader's data is never copied, so going on is safe). */
+        if (g_reader_guard && (f >= g_title_seen + 30 || (g_restore_due && f >= g_title_seen + g_fresh_at)) &&
+            !reader_idle() && GetTickCount64() - g_ph_ms < 10000) {
+            if (!g_reader_wait) { g_reader_wait = true; note("frame %u: waiting for the title's loads before start VS (%s)", f, reader_desc().c_str()); }
+            break;
+        }
+        if (g_reader_wait) {
+            g_reader_wait = false;
+            note("frame %u: %s (%s)", f, reader_idle() ? "the title's loads are done" : "the title still loads after 10 s: going on",
+                 reader_desc().c_str());
         }
         if (g_restore_due && f >= g_title_seen + g_fresh_at) { g_restore_due = false; fresh_restore(f); }
         if (f >= g_title_seen + 30) {
@@ -1613,15 +1706,25 @@ void fight_init()
     { const char* r = getenv("T5_DF_FRESH_LOG"); g_fresh_log = r && *r == '1'; }
     if (const char* r = getenv("T5_DF_FRESH_AT")) g_fresh_at = (uint32_t)atoi(r);
     if (const char* r = getenv("T5_DF_STUCK_SECONDS")) g_stuck_s = (uint32_t)atoi(r);
+    if (const char* r = getenv("T5_DF_SELECT_STUCK_SECONDS")) g_select_stuck_s = (uint32_t)atoi(r);
     if (const char* r = getenv("T5_DF_LEAVE_PHASE")) g_leave_phase = (uint32_t)atoi(r);
     {
+        if (const char* r = getenv("T5_DF_READER_GUARD")) g_reader_guard = *r != '0';
         const char* spec = getenv("T5_DF_FRESH_RANGES");
         if (!spec || !*spec) spec = "1008E000:17000";   /* the fight-state block 0x1008E000..0x100A5000 (reset-fix: leftovers beyond the four hashed areas) */
         for (const char* p = spec; *p;) {
             char* e;
             const uint32_t a = (uint32_t)strtoul(p, &e, 16); if (e == p || *e != ':') break; p = e + 1;
             const uint32_t l = (uint32_t)strtoul(p, &e, 16); if (e == p) break; p = e;
-            g_fresh_areas.push_back({ a, l, {} });
+            /* never the async reader's own data (live I/O state, see kReaderData): an area over it is split
+             * (T5_DF_READER_GUARD=0: the old way, for comparisons) */
+            const uint32_t end = a + l;
+            if (g_reader_guard && a < kReaderDataEnd && end > kReaderData) {
+                if (a < kReaderData) g_fresh_areas.push_back({ a, kReaderData - a, {} });
+                if (end > kReaderDataEnd) g_fresh_areas.push_back({ kReaderDataEnd, end - kReaderDataEnd, {} });
+            } else if (l) {
+                g_fresh_areas.push_back({ a, l, {} });
+            }
             while (*p == ',' || *p == ' ') p++;
         }
     }

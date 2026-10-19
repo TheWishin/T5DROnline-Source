@@ -299,6 +299,134 @@ class Proxy:
                 pass
 
 
+_RELAY_TOOL = None
+
+
+def relay_tool():
+    """lobby/tools/relay_e2e.py as a module (its UdpDelay proxy, http_json); the sys.path entries it adds are
+    taken back (lobby/tools first on the path would shadow modules of this runner)."""
+    global _RELAY_TOOL
+    if _RELAY_TOOL is None:
+        saved, env = list(sys.path), os.environ.get("T5_PORTMAP")
+        _RELAY_TOOL = _load("e2e_relay_tool", os.path.join(LOBBY, "tools", "relay_e2e.py"))
+        sys.path[:] = saved
+        if env is None:
+            os.environ.pop("T5_PORTMAP", None)
+        else:
+            os.environ["T5_PORTMAP"] = env
+    return _RELAY_TOOL
+
+
+class RelayNodes:
+    """Regional relay-only nodes for the scenario's lobby server (`python run.py relay`, docs/HOSTING.md "Adding a
+    relay server"), each its own process with its own secret, and per player a UDP delay proxy to every relay --
+    the lobby server's own one ("main") included -- like lobby/tools/relay_e2e.py: the client's relay_address()
+    is pointed at the player's proxies, so each relay sees each player as its own endpoint and the round trips
+    are the simulated ones. Default round trips (ms, player A / B): main 150/150, usw 20/140, usc 60/60 -- usc
+    has the smallest sum and must be chosen."""
+
+    RTT = {"main": (150, 150), "usw": (20, 140), "usc": (60, 60)}
+    NAMES = {"usw": "Oregon (US West)", "usc": "Texas (US Central)"}
+
+    def __init__(self, ctx, rtt=None):
+        from t5lobby import relayctl
+        self.ctx = ctx
+        self.rtt = dict(rtt or self.RTT)
+        self.dir = os.path.join(ctx.dir, "relays")
+        os.makedirs(self.dir, exist_ok=True)
+        self.nodes, self.procs, self.proxies = {}, {}, []
+        relays = []
+        for rid in [r for r in self.rtt if r != "main"]:
+            sf = os.path.join(self.dir, f"relay-{rid}.secret")
+            relayctl.write_secret(sf)
+            self.nodes[rid] = {"udp": free_port(socket.SOCK_DGRAM), "status": free_port(), "secret": sf}
+            relays.append({"id": rid, "name": self.NAMES.get(rid, rid), "host": "127.0.0.1",
+                           "port": self.nodes[rid]["udp"], "secret_file": os.path.basename(sf)})
+        self.json = os.path.join(self.dir, "relays.json")
+        with open(self.json, "w", encoding="utf-8") as f:
+            json.dump({"format": "t5dr-relays/1", "relays": relays}, f, indent=1)
+        self.status_port = free_port()
+        for rid in self.nodes:
+            self.start(rid)
+
+    def server_env(self):
+        """For ctx.start_server: this relays.json, quick health checks, the status page (for the checks)."""
+        return {"T5L_RELAYS": self.json, "T5L_RELAY_CHECK_SECONDS": 0.5, "T5L_RELAY_DEAD_SECONDS": 4,
+                "T5L_STATUS_PORT": self.status_port}
+
+    def start(self, rid):
+        n = self.nodes[rid]
+        lf = open(os.path.join(self.dir, f"{rid}.log"), "a", encoding="utf-8")
+        env = dict(os.environ, PYTHONPATH=LOBBY, T5L_LOG_LEVEL="INFO", T5_PORTMAP="0")
+        env.pop("T5L_RELAYS", None)
+        pr = subprocess.Popen([sys.executable, "run.py", "relay", "--secret-file", n["secret"], "--id", rid,
+                               "--host", "127.0.0.1", "--udp-port", str(n["udp"]), "--status-port", str(n["status"]),
+                               "--central", "127.0.0.1"], cwd=LOBBY, env=env, stdout=lf, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL, creationflags=core.CREATE_NO_WINDOW if IS_WIN else 0)
+        lf.close()
+        Run.current.own(pr)
+        self.procs[rid] = pr
+        return pr
+
+    def stop(self, rid):
+        pr = self.procs.get(rid)
+        if pr is not None and pr.poll() is None:
+            pr.kill()
+            try:
+                pr.wait(10)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def routes(self, index):
+        """Delay proxies for player `index` (0 = A, 1 = B): {relay id: proxy address}."""
+        relay_e2e = relay_tool()
+        targets = {"main": ("127.0.0.1", self.ctx.server.udp),
+                   **{rid: ("127.0.0.1", n["udp"]) for rid, n in self.nodes.items()}}
+        out = {}
+        for rid, target in targets.items():
+            px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'AB'[index]}")
+            px.start()
+            self.proxies.append(px)
+            out[rid] = tuple(px.addr)
+        return out
+
+    def central(self):
+        """The lobby server's status page (relays: alive, sessions, kbit/s)."""
+        return relay_tool().http_json(self.status_port)
+
+    def node(self, rid):
+        return relay_tool().http_json(self.nodes[rid]["status"])
+
+    def alive(self):
+        try:
+            return {r["id"]: bool(r.get("alive")) for r in self.central().get("relays") or ()}
+        except (OSError, ValueError):
+            return {}
+
+    def packets(self):
+        """Packets each node relayed so far (None for a node that does not answer)."""
+        out = {}
+        for rid in self.nodes:
+            try:
+                out[rid] = self.node(rid)["relay"]["packets_total"]
+            except (OSError, ValueError, KeyError, TypeError):
+                out[rid] = None
+        try:
+            out["main"] = self.central()["relay"]["packets_total"]       # the lobby server's own relay
+        except (OSError, ValueError, KeyError, TypeError):
+            out["main"] = None
+        return out
+
+    def close(self):
+        for px in self.proxies:
+            try:
+                px.close()
+            except Exception:      # noqa: BLE001
+                pass
+        for rid in list(self.procs):
+            self.stop(rid)
+
+
 class Shaper:
     """The network between the two games. Off: the games talk directly. On: every new session is
     routed through a Proxy with the current rtt/jitter/loss; `cut` drops everything (a pulled cable).
@@ -473,7 +601,7 @@ class Player:
     settings and output folder, and the games it started."""
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
-                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False):
+                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None):
         """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
         this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
         sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes)."""
@@ -527,7 +655,13 @@ class Player:
         self.frame = ttk.Frame(ctx.run.tk_root())
         self.user_dir = user_dir or os.path.join(self.dir, "user")
         os.environ["T5_ONLINE_DIR"] = self.user_dir      # read once, by the tab's constructor
-        from t5lobby.tk_tab import OnlineTab
+        if lobby:
+            # an older release's Online tab with its own client and match driver (git tag `lobby`, e.g. v1.1.0)
+            import importlib
+            OnlineTab = importlib.import_module(ctx.run.old_lobby(lobby) + ".tk_tab").OnlineTab
+        else:
+            from t5lobby.tk_tab import OnlineTab
+        self.lobby = lobby
         self._sets = sets
         self.tab = OnlineTab(self.frame, self.app)
         if kind == "stub":
@@ -551,6 +685,8 @@ class Player:
         tab.show_codes = lambda codes, *a, **kw: me.codes.append(list(codes))
         tab._blocks_window = lambda rows, *a, **kw: me.notes.append((time.time(), {"kind": "blocks_window", "rows": rows}))
         tab.pad_visible = lambda: False
+        if hasattr(tab, "bring_forward"):
+            tab.bring_forward = lambda *a, **kw: None     # the (withdrawn) launcher window never goes to the front
         tab.server_var.set(self.ctx.server.addr if self.ctx.server else "127.0.0.1:1")
         tab.name_var.set(self.name)
         if char:
@@ -613,6 +749,16 @@ class Player:
     def client_made(self, c):
         if self.ctx.block_direct.get(self.name):
             c.block_direct = True
+        routes = self.ctx.relay_routes.get(self.name)
+        if routes and hasattr(c, "relay_address"):
+            orig = c.relay_address
+
+            def relay_address(relay, _orig=orig, _routes=routes):
+                r = _routes.get((relay or {}).get("id"))
+                return r if r is not None else _orig(relay)
+            c.relay_address = relay_address        # the relays through this player's delay proxies
+        if self.name in self.ctx.no_nat2 and hasattr(c, "nat2"):
+            c.nat2 = False           # a 1.1.0-style client: no planned punch, no relay bridge
 
     def _record(self, ev):
         now = time.time()
@@ -909,6 +1055,39 @@ class Run:
         self.real_logs = []          # real game logs of this run (the problem report scenario reuses one)
         Run.current = self
 
+    def old_lobby(self, ref):
+        """lobby/t5lobby of the git tag `ref` (git archive into the run folder), imported as its own package
+        (t5lobby uses relative imports only: lobby/tools/natsim.load_pkg). -> the package's module name."""
+        name = "t5lobby_" + re.sub(r"[^A-Za-z0-9]", "", ref)
+        if name in sys.modules:
+            return name
+        import io
+        import tarfile
+        r = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", ref, "lobby/t5lobby"], capture_output=True,
+                           timeout=60)
+        if r.returncode != 0:
+            raise Skip(f"git archive {ref}: {r.stderr.decode(errors='replace').strip()}")
+        base = os.path.join(self.out, f"_lobby_{re.sub(r'[^A-Za-z0-9.]', '', ref)}")
+        tarfile.open(fileobj=io.BytesIO(r.stdout)).extractall(base, filter="data")
+        import importlib.util
+        pkg_dir = os.path.join(base, "lobby", "t5lobby")
+        spec = importlib.util.spec_from_file_location(name, os.path.join(pkg_dir, "__init__.py"),
+                                                      submodule_search_locations=[pkg_dir])
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod             # (as lobby/tools/natsim.load_pkg)
+        spec.loader.exec_module(mod)
+        try:        # its own dialog module: answered like this tree's (tk_root)
+            import importlib
+            dialogs = importlib.import_module(name + ".dialogs")
+            for n, v in (("ask_yes_no", False), ("ask_yes_no_cancel", None), ("show_info", None),
+                         ("show_error", None), ("ask_string", None)):
+                if hasattr(dialogs, n):
+                    setattr(dialogs, n, lambda *a, _n=n, _v=v, **kw: (log(f"dialog stubbed: {name}.{_n} {a[:2]}"), _v)[1])
+        except ImportError:
+            pass
+        log(f"lobby package {ref} loaded as {name} (from {base})")
+        return name
+
     def tk_root(self):
         """The one Tk root of the run: withdrawn and fully transparent. Every Toplevel is withdrawn and
         transparent the moment it is made, every message box and file dialog is answered here (and
@@ -1048,6 +1227,9 @@ class Ctx:
         self.players = []
         self.shaper = Shaper()
         self.block_direct = {}
+        self.no_nat2 = set()        # player names whose client behaves like 1.1.0 (no "nat2" cap)
+        self.relays = None          # RelayNodes (regional relay scenarios)
+        self.relay_routes = {}      # player name -> {relay id: delay proxy address}
         self.checks = []            # (name, ok, detail, level)
         self.evidence = []
         self.t0 = time.time()
@@ -1147,6 +1329,8 @@ class Ctx:
         if dlg:
             self.note(f"dialogs the code tried to show (answered by the runner): {[(k, a) for _t, k, a, _kw in dlg]}")
         self.shaper.close()
+        if self.relays is not None:
+            self.relays.close()
         if self.server is not None:
             self.server.stop()
         gc.collect()

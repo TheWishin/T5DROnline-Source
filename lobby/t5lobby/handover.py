@@ -63,6 +63,7 @@ class MatchTicket:
     timeout: int = 20
     key: str = field(default="", repr=False)
     input_delay: object = None   # ranked: the server's fixed rollback input delay (frames); None = the player's setting
+    relay_name: str = ""         # path relay through a regional relay node: its name (the lobby server's own relay: "")
     _dup_socket: object = field(default=None, repr=False)
 
     def game_env(self, result_file=None):
@@ -118,8 +119,12 @@ class MatchTicket:
 
     def summary(self):
         how = {"direct": N_("direct connection"), "lan": N_("local network"), "relay": N_("through the lobby server")}
+        if self.path == "relay" and self.relay_name:
+            way = t("through the relay server {name}", name=self.relay_name)
+        else:
+            way = t(how[self.path]) if self.path in how else self.path
         return t("{name} -- {how}, ping {ms} ms, input delay {delay}", name=self.opponent.get("name", "?"),
-                 how=t(how[self.path]) if self.path in how else self.path, ms=f"{self.rtt_ms:.0f}", delay=self.delay)
+                 how=way, ms=f"{self.rtt_ms:.0f}", delay=self.delay)
 
 
 def read_result_file(path):

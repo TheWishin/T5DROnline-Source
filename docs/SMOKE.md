@@ -287,12 +287,23 @@ character lock, the pair cooldown and cap, a quit mid-set, ranked rooms),
 rooms (Ready again = a new session, then a rematch: the 1.0.0 hang), rematch
 (decline, window timeout, five in a row), netcode (rollback and lockstep, input
 delay Auto/0/1/2, RTT 20-250 ms, 2/10 % loss, jitter, the relay path, a
-mixed pair), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
+mixed pair, and 1.1.1's relay bridge: a match that starts on the relay because
+the punch was blocked moves onto the direct path at the match's start + 35 s
+while the fight runs, `net_relay_upgrade` with real games and
+`relay_upgrade_stub` with stub games plus a 1.1.0-style client that stays on
+the relay; regional relays: two relay-only nodes (`run.py relay`) next to the
+lobby server and a UDP delay proxy per player and relay, the lobby must pick
+the node with the smallest round-trip sum and fall back to the next one when
+it stops -- `relay_regional` with real games, `relay_regional_stub`, and
+`relay_e2e_tool` / `relay_e2e_tool_game` run `lobby/tools/relay_e2e.py` as
+it is; `relay_old_client` plays the real 1.1.0 Online tab, client and match
+driver from the git tag `v1.1.0` against 1.1.1 on the lobby server's own
+relay; `net_vsync_off`: VSync off in one game of the match, in sync), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
 = disconnect, a game restarted between matches, another build refused),
 launcher extras (Report a problem without names/IPs/tokens, the update check
-against mocked GitHub answers, settings that survive a restart), and the
-in-game character select and best-of-3 ranked sets, which are SKIP until
-their branches are merged. Every scenario also fails when `launcher.log` gets
+against mocked GitHub answers, settings that survive a restart), the in-game
+character select (picks, costumes, mirrors, Random, the pick timeout, ranked
+lock) and best-of-3 ranked sets. Every scenario also fails when `launcher.log` gets
 an "error in the launcher" line (a Tk callback that raised).
 
 Like the smoke suite: windows minimized, games muted (`PS3_AUDIO_MUTE=1`) and

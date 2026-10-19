@@ -486,6 +486,10 @@ class ChoiceTest(Regional):
         self.assertEqual([rid for _ms, rid in ch["options"]], ["usc", "usw", "main"])
         self.assertGreater(ea["rtt_ms"], 40)                          # the path's round trip: through usc
         ta, tb = ea["ticket"], eb["ticket"]
+        # the status line while the match runs names the relay node, not the lobby server (e2e relay_regional)
+        self.assertEqual((ta.relay_name, tb.relay_name), (ea["relay"]["name"], eb["relay"]["name"]))
+        self.assertIn(f"through the relay server {ea['relay']['name']}", ta.summary())
+        self.assertNotIn("lobby server", ta.summary())
         host, join = (ta, tb) if ta.role == "host" else (tb, ta)
         game_link(host, join)
         info = self.nodes["usc"].call(lambda: [s.stats() for s in self.nodes["usc"].node.udp.relays.values()])
@@ -547,6 +551,8 @@ class ChoiceTest(Regional):
         self.assertEqual(eb["relay_port"], self.s.srv.udp.port)
         self.assertEqual(self.choice()["relay"], "main")
         ta, tb = ea["ticket"], eb["ticket"]
+        self.assertEqual(ta.relay_name, "")                   # the lobby server's own relay
+        self.assertIn("through the lobby server", ta.summary())
         game_link(*((ta, tb) if ta.role == "host" else (tb, ta)))
 
     def test_dead_node_is_skipped(self):

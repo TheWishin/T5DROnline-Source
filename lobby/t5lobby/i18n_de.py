@@ -693,6 +693,7 @@ MESSAGES = {
     "direct connection": "direkte Verbindung",
     "local network": "lokales Netzwerk",
     "through the lobby server": "über den Lobby-Server",
+    "through the relay server {name}": "über den Relay-Server {name}",
     "{name} -- {how}, ping {ms} ms, input delay {delay}": "{name} -- {how}, Ping {ms} ms, Input-Delay {delay}",
     # ---- lobby/t5lobby/i18n_known.py
     "login timeout": "Zeitlimit beim Anmelden",

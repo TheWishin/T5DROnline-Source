@@ -12,13 +12,16 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import zipfile
 
 from e2e_flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
-                   leave, login, match_row, parse_segment, profile, queue_match, rematch, started_both,
-                   wait_fight, wait_results, STUB_MATCH_SECONDS)
+                   leave, log_has, login, match_row, parse_segment, profile, queue_match, rematch,
+                   server_says, started_both, wait_fight, wait_results, STUB_MATCH_SECONDS)
+import core                                  # launcher/core.py (on the path through e2e_harness)
 from e2e_harness import Abort, Skip
 
 SCENARIOS = []
@@ -994,6 +997,409 @@ def net_mixed_fallback(ctx):
     login(ctx, a)
     login(ctx, b)
     net_case(ctx, a, b, "mixed: one side lockstep only, RTT 40", 40, 0, 0, "auto", False, None, mode="lockstep")
+
+
+# ------------------------------------------------------------------ relay -> direct while the match runs (1.1.1)
+def _relay_bridge():
+    """nat.RelayBridge in this tree (nat-robust, 1.1.1), or None."""
+    try:
+        from t5lobby.nat import RelayBridge
+        return RelayBridge
+    except ImportError:
+        return None
+
+
+def _upgrades(p, mid, path="direct"):
+    return [ts for ts, e in p.events if e.get("t") == "nat_upgrade" and e.get("match") == mid and e.get("path") == path]
+
+
+def relay_upgrade_case(ctx, a, b, label, expect=True, real=True):
+    """The punch phase fails (both launchers ignore the opponent's direct packets: block_direct), so the match
+    starts on the lobby server's relay; then the direct path is opened again. Between two 1.1.1 launchers the
+    relay bridge finds it in its first burst (the match's start + 35 s, the same server time on both) and both
+    move the game's packets onto it while the match runs; the games keep talking to 127.0.0.1 and must not
+    notice. expect=False: one side is a 1.1.0-style client (no nat2), so no bridge and the match stays on the
+    relay to its end."""
+    rb = _relay_bridge()
+    ctx.shaper.set(0, 0, 0, on=False)
+    for p in (a, b):
+        p.client.block_direct = True
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    started = max(a.matches[mid]["started"], b.matches[mid]["started"])
+    for p in (a, b):
+        p.client.block_direct = False                 # (the next match punches normally)
+    paths = [p.matches[mid].get("path") for p in (a, b)]
+    ctx.check(f"{label}: the match starts on the relay", paths == ["relay", "relay"], paths)
+    bridges = [p.client._bridge for p in (a, b)]
+    if expect:
+        ctx.check(f"{label}: a relay bridge in both launchers", all(bridges), [type(x).__name__ for x in bridges])
+        if not all(bridges):
+            raise Abort("no relay bridge")
+        peers = [tuple(getattr(getattr(p.tab.driver, "ticket", None), "peer", ()) or ()) for p in (a, b)]
+        ctx.check(f"{label}: both games talk to their own launcher (127.0.0.1:<bridge port>)",
+                  all(len(pr) == 2 and pr[0] == "127.0.0.1" and int(pr[1]) == br.port for pr, br in zip(peers, bridges)),
+                  f"game peers {peers}, bridge ports {[br.port for br in bridges]}")
+        for br in bridges:
+            br.gs.block_direct = False                # the direct path opens: only the punch phase was blocked
+        ctx.note(f"{label}: punch phase blocked -> relay; direct path opened {time.time() - started:.1f} s after "
+                 f"match_start; first burst due at +{rb.FIRST_BURST:.0f} s")
+    else:
+        ctx.check(f"{label}: no relay bridge (a 1.1.0 client on one side)", not any(bridges),
+                  [type(x).__name__ for x in bridges])
+    if real and not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    up = None
+    if expect:
+        deadline = started + rb.FIRST_BURST + rb.BURST + 15.0
+        ok = ctx.wait(lambda: _upgrades(a, mid) and _upgrades(b, mid), max(5.0, deadline - time.time()),
+                      f"{label}: both launchers moved the match onto the direct path (nat_upgrade)")
+        if ok:
+            up = [_upgrades(p, mid)[0] for p in (a, b)]
+            ctx.note(f"{label}: switched {up[0] - started:.1f} s / {up[1] - started:.1f} s after match_start")
+            s0 = [dict(br.stats) for br in bridges]
+            ctx.sleep(5.0)
+            s1 = [dict(br.stats) for br in bridges]
+            for p, br, x0, x1 in zip((a, b), bridges, s0, s1):
+                d_in, r_in = x1["direct_in"] - x0["direct_in"], x1["relay_in"] - x0["relay_in"]
+                ctx.check(f"{label}: {p.name}: the opponent's packets now come straight from its PC",
+                          br.path == "direct" and d_in >= 20 and r_in <= d_in // 10,
+                          f"in the 5 s after the switch: {d_in} direct, {r_in} through the relay, "
+                          f"{x1['from_game'] - x0['from_game']} sent by this game; bridge path {br.path}")
+            ctx.check(f"{label}: the Online tab says so on both PCs",
+                      a.saw_status("Direct connection found", since) and b.saw_status("Direct connection found", since),
+                      f"{a.status_text()!r} / {b.status_text()!r}")
+            ctx.check(f"{label}: the lobby server logged both switches",
+                      server_says(ctx, rf"match {mid}: side 0 left the relay for the direct path") and
+                      server_says(ctx, rf"match {mid}: side 1 left the relay for the direct path"))
+    wait_results(ctx, mid, (a, b))
+    t_res = min(p.matches[mid].get("result") or 1e18 for p in (a, b))
+    if expect and up:
+        if real:
+            fight = max(p.matches[mid].get("fight_at") or 0 for p in (a, b))
+            ctx.check(f"{label}: the switch came while the fight ran", fight < min(up) and max(up) < t_res,
+                      f"FIGHT START +{fight - started:.1f} s, switch +{min(up) - started:.1f}/{max(up) - started:.1f} s,"
+                      f" result +{t_res - started:.1f} s")
+        else:
+            ctx.check(f"{label}: the switch came while the match ran", max(up) < t_res,
+                      f"switch +{max(up) - started:.1f} s, result +{t_res - started:.1f} s")
+        back = [ts for p in (a, b) for ts in _upgrades(p, mid, "relay") if ts < t_res]
+        ctx.check(f"{label}: on the direct path to the end (no fall back to the relay)", not back,
+                  f"{len(back)} switches back")
+        ctx.note(f"{label}: bridge counters {[dict(br.stats) for br in bridges]}")
+    elif not expect:
+        ctx.check(f"{label}: no switch: the match stays on the relay", not _upgrades(a, mid) and not _upgrades(b, mid))
+    if real:
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b))
+        mode = ctx.run.netcode
+        ctx.check(f"{label}: netcode {mode} on both", row[a.name]["mode"] == mode and row[b.name]["mode"] == mode,
+                  f"{row[a.name]['mode']}/{row[b.name]['mode']}")
+        for p in (a, b):
+            ctx.check(f"{label}: {p.name}'s game kept one peer address (it never had to follow one)",
+                      not log_has(p, r"the peer's address changed", mid))
+    else:
+        st = [p.matches[mid].get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        rf = [p.result_file(mid) or {} for p in (a, b)]
+        ctx.check(f"{label}: both stub games: same winner, 0 mismatching frames",
+                  rf[0].get("winner") == rf[1].get("winner") and not rf[0].get("desync") and not rf[1].get("desync"),
+                  f"winner {rf[0].get('winner')}/{rf[1].get('winner')}, desync {rf[0].get('desync')}/{rf[1].get('desync')}")
+        for p in (a, b):
+            ctx.check(f"{label}: {p.name}'s stub game never lost its peer",
+                      not log_has(p, r"no input from the peer|peer lost|DESYNC", mid))
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
+    ctx.sleep(1.0)
+    return mid
+
+
+@scenario("net_relay_upgrade", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.1 relay bridge: the punch fails, the match starts on the relay, the direct path opens; both "
+               "launchers move the fight onto it at the match's start + 35 s, the games stay in sync")
+def net_relay_upgrade(ctx):
+    if _relay_bridge() is None:
+        raise Skip("no relay bridge in this tree (nat-robust, 1.1.1)")
+    game_server(ctx, T5L_ROUNDS=max(2, ctx.run.rounds))     # a fight still running 35-40 s after match_start
+    a = ctx.player("E2E Up1")
+    b = ctx.player("E2E Up2")
+    login(ctx, a)
+    login(ctx, b)
+    relay_upgrade_case(ctx, a, b, "relay -> direct")
+
+
+@scenario("relay_upgrade_stub", "6 netcode", suites=("lobby", "net"),
+          desc="1.1.1 relay bridge with stub games: relay -> direct during a ~65 s match; against a 1.1.0-style "
+               "client (no nat2) no bridge and the match stays on the relay")
+def relay_upgrade_stub(ctx):
+    if _relay_bridge() is None:
+        raise Skip("no relay bridge in this tree (nat-robust, 1.1.1)")
+    stub_server(ctx)
+    # T5_STUB_SECONDS counts frames (60 a second), but a stub frame waits for the peer's packet: ~17 frames a
+    # second, so 18 "seconds" are about 65 s -- the first burst (+35 s) falls into the match
+    a = ctx.player("E2E Ups1", kind="stub", env={"T5_STUB_SECONDS": 18})
+    b = ctx.player("E2E Ups2", kind="stub", env={"T5_STUB_SECONDS": 18})
+    login(ctx, a)
+    login(ctx, b)
+    relay_upgrade_case(ctx, a, b, "stub: relay -> direct", real=False)
+    c = ctx.player("E2E Old110", kind="stub", env={"T5_STUB_SECONDS": 18})
+    ctx.no_nat2.add(c.name)
+    login(ctx, c)
+    ctx.check("the 1.1.0-style client logged in without nat2", c.client is not None and not c.client.nat2)
+    relay_upgrade_case(ctx, c, b, "stub: 1.1.0 client on the relay", expect=False, real=False)
+
+
+# ------------------------------------------------------------------ regional relays (1.1.1)
+def _regional_world(ctx, real, rtt=None):
+    """Lobby server with two regional relay nodes (RelayNodes: usw, usc) behind simulated round trips."""
+    from e2e_harness import RelayNodes
+    try:
+        import t5lobby.relayctl  # noqa: F401
+    except ImportError:
+        raise Skip("no regional relays in this tree (regional-relays, 1.1.1)")
+    ctx.relays = RelayNodes(ctx, rtt)
+    (game_server if real else stub_server)(ctx, **ctx.relays.server_env())
+    if not ctx.wait(lambda: all(ctx.relays.alive().get(r) for r in ctx.relays.nodes), 25,
+                    f"relay nodes {sorted(ctx.relays.nodes)} up at the lobby server"):
+        raise Abort("relay nodes not up")
+    ctx.note(f"relays: {ctx.relays.json}; simulated round trips (ms, A/B) {ctx.relays.rtt}")
+
+
+def _routed(ctx, p, index):
+    ctx.relay_routes[p.name] = ctx.relays.routes(index)
+
+
+def _start_ev(p, mid):
+    for _ts, e in p.events:
+        if e.get("t") == "match_start" and e.get("match") == mid:
+            return e
+    return {}
+
+
+def regional_case(ctx, a, b, label, expect, expect_rtt, real=True):
+    """The punch fails (block_direct, kept on: the relay bridge's bursts fail too, the match stays relayed), so the
+    lobby needs a relay: the regional one with the smallest sum of both players' measured round trips (expect:
+    its id; "main" = the lobby server's own relay, e.g. against a 1.1.0 client)."""
+    names = ctx.relays.NAMES
+    for p in (a, b):
+        p.client.block_direct = True
+    rtts = {p.name: dict(getattr(p.client, "relay_rtts", None) or {}) for p in (a, b)}
+    ctx.note(f"{label}: measured relay round trips {rtts}")
+    before = ctx.relays.packets()
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    evs = [_start_ev(p, mid) for p in (a, b)]
+    chosen = [(e.get("relay") or {}).get("id") or ("main" if e.get("path") == "relay" else e.get("path")) for e in evs]
+    ctx.check(f"{label}: relayed through {expect} on both PCs", chosen == [expect, expect] and
+              all(e.get("path") == "relay" for e in evs), f"{chosen}, paths {[e.get('path') for e in evs]}")
+    rtt = evs[0].get("rtt_ms")
+    ctx.check(f"{label}: the lobby's round trip of the path ~{expect_rtt} ms",
+              rtt is not None and expect_rtt * 0.8 - 5 < rtt < expect_rtt * 1.35 + 15, f"{rtt} ms")
+    want = (f"using the relay server {names[expect]}" if expect in names else "using the lobby server's relay")
+    ctx.check(f"{label}: the Online tab names the relay", a.saw_status(re.escape(want), since) or
+              (b.saw_status(re.escape(want), since)), f"wanted '{want}': {a.status_text()!r} / {b.status_text()!r}")
+    if real:
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+    wait_results(ctx, mid, (a, b))
+    after = ctx.relays.packets()
+    moved = {k: (after[k] - before[k]) if after.get(k) is not None and before.get(k) is not None else None
+             for k in after}
+    others = {k: v for k, v in moved.items() if k != expect}
+    # (a few packets elsewhere are the 1.1.1 client's round-trip pings to the other relays, not the games')
+    ctx.check(f"{label}: {expect} carried the match alone",
+              (moved.get(expect) or 0) >= 100 and all((v or 0) <= max(20, (moved.get(expect) or 0) // 50)
+                                                      for v in others.values()),
+              f"packets relayed during the match: {moved}")
+    ups = [e for p in (a, b) for e in p.events_of("nat_upgrade", since) if e.get("match") == mid]
+    ctx.check(f"{label}: stayed on the relay (no direct path: blocked)", not ups, f"{len(ups)} switches")
+    if real:
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b))
+        mode = ctx.run.netcode
+        ctx.check(f"{label}: netcode {mode} on both", row[a.name]["mode"] == mode and row[b.name]["mode"] == mode,
+                  f"{row[a.name]['mode']}/{row[b.name]['mode']}")
+        if mode == "rollback":
+            host, join = (a, b) if a.matches[mid].get("slot") == 0 else (b, a)
+            ctx.note(f"{label}: rollback input delay host {row[host.name]['pick']} ({row[host.name]['pick_why']}), "
+                     f"joiner {row[join.name]['delay']}")
+    else:
+        st = [p.matches[mid].get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        rf = [p.result_file(mid) or {} for p in (a, b)]
+        ctx.check(f"{label}: both stub games: same winner, 0 mismatching frames",
+                  rf[0].get("winner") == rf[1].get("winner") and not rf[0].get("desync") and not rf[1].get("desync"),
+                  f"winner {rf[0].get('winner')}/{rf[1].get('winner')}, desync {rf[0].get('desync')}/{rf[1].get('desync')}")
+    for p in (a, b):
+        p.client.block_direct = False
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
+    ctx.sleep(1.0)
+    return mid
+
+
+def _relay_dead(ctx, rid):
+    t0 = time.time()
+    ctx.relays.stop(rid)
+    ctx.wait(lambda: ctx.relays.alive().get(rid) is False, 30, f"the lobby server marks {rid} down (node stopped)")
+    ctx.note(f"{rid} stopped: marked down after {time.time() - t0:.1f} s")
+
+
+@scenario("relay_regional", "6 netcode", game=True, suites=("game", "net"),
+          desc="regional relays (1.1.1): the punch fails, the lobby picks the relay node with the smallest RTT sum "
+               "(usc 60+60 over usw 20+140 and its own 150+150), real games play through it in sync; usc stopped: "
+               "the next match takes usw")
+def relay_regional(ctx):
+    _regional_world(ctx, real=True)
+    a = ctx.player("E2E Reg1")
+    b = ctx.player("E2E Reg2")
+    _routed(ctx, a, 0)
+    _routed(ctx, b, 1)
+    login(ctx, a)
+    login(ctx, b)
+    ctx.wait(lambda: all(len(p.client.relay_rtts or {}) >= 2 for p in (a, b)), 20, "both measured both relays")
+    regional_case(ctx, a, b, "regional relay usc", "usc", 120)
+    _relay_dead(ctx, "usc")
+    regional_case(ctx, a, b, "usc down: usw", "usw", 160)
+
+
+@scenario("relay_old_client", "6 netcode", game=True, suites=("game", "net"),
+          desc="the real 1.1.0 Online tab, client and match driver (git tag v1.1.0) against 1.1.1, the same game "
+               "build, regional relays up: the 1.1.0 side cannot use them, the match takes the lobby's own relay")
+def relay_old_client(ctx):
+    _regional_world(ctx, real=True)
+    a = ctx.player("E2E New111")
+    b = ctx.player("E2E Old110", lobby="v1.1.0")
+    _routed(ctx, a, 0)
+    login(ctx, a)
+    login(ctx, b)
+    ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(b.client).__module__.startswith("t5lobby_v110"),
+              type(b.client).__module__)
+    ctx.wait(lambda: len(a.client.relay_rtts or {}) >= 2, 20, "the 1.1.1 player measured both relays")
+    regional_case(ctx, a, b, "1.1.0 + 1.1.1: the lobby's own relay", "main", 150)
+
+
+@scenario("relay_regional_stub", "6 netcode", suites=("lobby", "net"),
+          desc="regional relays with stub games: usc by RTT sum, usw once usc is down, the lobby's own relay "
+               "against the real 1.1.0 lobby code (git tag v1.1.0)")
+def relay_regional_stub(ctx):
+    _regional_world(ctx, real=False)
+    a = ctx.player("E2E RegS1", kind="stub", env={"T5_STUB_SECONDS": 4})
+    b = ctx.player("E2E RegS2", kind="stub", env={"T5_STUB_SECONDS": 4})
+    _routed(ctx, a, 0)
+    _routed(ctx, b, 1)
+    login(ctx, a)
+    login(ctx, b)
+    ctx.wait(lambda: all(len(p.client.relay_rtts or {}) >= 2 for p in (a, b)), 20, "both measured both relays")
+    regional_case(ctx, a, b, "stub: regional relay usc", "usc", 120, real=False)
+    c = ctx.player("E2E OldS110", kind="stub", env={"T5_STUB_SECONDS": 4}, lobby="v1.1.0")
+    login(ctx, c)
+    ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(c.client).__module__.startswith("t5lobby_v110"),
+              type(c.client).__module__)
+    regional_case(ctx, a, c, "stub: 1.1.0 + 1.1.1: the lobby's own relay", "main", 150, real=False)
+    _relay_dead(ctx, "usc")
+    regional_case(ctx, a, b, "stub: usc down: usw", "usw", 160, real=False)
+
+
+def _relay_tool_run(ctx, real):
+    """lobby/tools/relay_e2e.py as it is (its own central lobby, two relay nodes, delay proxies, the 1.1.0 client
+    from the git tag), in a process of this run (stopped with it)."""
+    tool = os.path.join(harness_root(), "lobby", "tools", "relay_e2e.py")
+    if not os.path.isfile(tool):
+        raise Skip("no lobby/tools/relay_e2e.py in this tree (regional-relays, 1.1.1)")
+    cmd = [sys.executable, tool, "--scenarios", "best,dead,old"]
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+    if real:
+        cmd += ["--exe", ctx.run.exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs")]
+        if ctx.run.netcode == "lockstep":
+            env["T5_RB_MODE"] = "off"
+    logf = os.path.join(ctx.dir, "relay_e2e.log")
+    with open(logf, "w", encoding="utf-8") as lf:
+        pr = subprocess.Popen(cmd, cwd=harness_root(), env=env, stdout=lf, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0)
+        ctx.run.own(pr)
+        t_end = time.time() + (900 if real else 300)
+        while pr.poll() is None and time.time() < t_end:
+            ctx.sleep(1.0)
+        if pr.poll() is None:
+            pr.kill()
+    text = open(logf, encoding="utf-8", errors="replace").read()
+    ctx.check("relay_e2e.py finished in time", pr.returncode is not None and time.time() < t_end, f"exit {pr.returncode}")
+    for name in ("best", "dead", "old"):
+        m = re.search(rf"== {name}\n(.*?)\n   (PASS|FAIL)([^\n]*)", text, re.S)
+        ctx.check(f"relay_e2e {name}", bool(m) and m.group(2) == "PASS",
+                  (m.group(2) + m.group(3)) if m else "no result line")
+        if m:
+            for ln in m.group(1).splitlines():
+                if ln.strip().startswith(("match ", "packets", "lobby verdict", "usc stopped", "P1 game", "P2 game")):
+                    ctx.note(f"relay_e2e {name}: {ln.strip()[:240]}")
+    ctx.check("relay_e2e.py: RELAY E2E OK, exit 0", "RELAY E2E OK" in text and pr.returncode == 0,
+              text.strip().splitlines()[-1] if text.strip() else "no output")
+
+
+def harness_root():
+    import e2e_harness
+    return e2e_harness.ROOT
+
+
+@scenario("relay_e2e_tool", "6 netcode", suites=("lobby", "net"),
+          desc="lobby/tools/relay_e2e.py with stub games: best (usc), dead (usw), old (1.1.0 client: the lobby's relay)")
+def relay_e2e_tool(ctx):
+    _relay_tool_run(ctx, real=False)
+
+
+@scenario("relay_e2e_tool_game", "6 netcode", game=True, suites=("game", "net"),
+          desc="lobby/tools/relay_e2e.py --exe: the same three cases with real games (no launcher; idle fighters)")
+def relay_e2e_tool_game(ctx):
+    _relay_tool_run(ctx, real=True)
+
+
+# ------------------------------------------------------------------ VSync off in one game (1.1.1)
+@scenario("net_vsync_off", "6 netcode", game=True, suites=("game", "net"),
+          desc="launcher Settings VSync off (PS3_VSYNC=0) in one game of the match: both still 60 fps, in sync, "
+               "a new session and two rematches")
+def net_vsync_off(ctx):
+    if "vsync" not in core.DEFAULTS:
+        raise Skip("no VSync setting in this launcher (vsync-toggle, 1.1.1)")
+    game_server(ctx)
+    a = ctx.player("E2E VsOff")
+    b = ctx.player("E2E VsOn")
+    a.app.settings["vsync"] = "off"
+    a.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    rx = re.compile(r"\[display\] res_scale=\S+ vsync=(\d)")
+    for k in range(3):
+        if k:
+            mid = rematch(ctx, a, b)
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+        if k == 0:
+            got = {}
+            for p in (a, b):
+                ms = [m.group(1) for ln in log_lines(p) for m in [rx.search(ln)] if m]
+                got[p.name] = ms[-1] if ms else None
+            ctx.check("the game of the player with VSync off runs vsync=0, the other vsync=1",
+                      got == {a.name: "0", b.name: "1"}, got)
+        wait_results(ctx, mid, (a, b))
+        label = "VSync off/on" + (f", rematch {k}" if k else "")
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b))
+        fa = row[a.name]["result_file"].get("fps")
+        ctx.check(f"{label}: VSync off does not make the game faster than 60", fa is None or fa <= 61.0, f"fps {fa}")
+
+
+def log_lines(p):
+    out = []
+    for g in p.games:
+        try:
+            with open(g.log_path, encoding="utf-8", errors="replace") as f:
+                out += f.read().splitlines()
+        except (OSError, TypeError):
+            pass
+    return out
 
 
 # ============================================================================== 7. failures

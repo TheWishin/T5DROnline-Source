@@ -90,9 +90,12 @@ DEFAULTS = {
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
+    "stage_blur": "on",        # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
+    "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
+    "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
@@ -131,6 +134,8 @@ class Settings(dict):
             self["internal_res"] = "native"
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
+        if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
+            self["stage_blur"] = "on"
 
     def save(self):
         try:
@@ -155,6 +160,8 @@ class Settings(dict):
             env["PS3_INTERNAL_RES"] = self["internal_res"]
         if self["vsync"] == "off":
             env["PS3_VSYNC"] = "0"
+        if self["stage_blur"] == "off":
+            env["PS3_STAGE_BLUR"] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
@@ -654,6 +661,17 @@ INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
 VSYNC_MODES = {          # English; t(label) where it is shown
     "on": N_("On (smooth, default)"),
     "off": N_("Off (lowest latency, may tear)"),
+}
+
+
+# Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage
+# 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On (default): as the game draws
+# it, at every internal resolution like at Native. Off: PS3_STAGE_BLUR=0, those stages sharp and
+# without the glow; the HUD and every other stage stay as they are. Only the picture changes, so the
+# two players of an online match may choose differently. docs/RENDER_PERF.md "Stage blur and glow".
+STAGE_BLUR_MODES = {     # English; t(label) where it is shown
+    "on": N_("On (default)"),
+    "off": N_("Off"),
 }
 
 

@@ -33,6 +33,8 @@ SERVER = (
     N_("this server has no guest logins"),
     N_("too many failed logins; wait a few minutes"),
     N_("too many failed attempts; wait a few minutes"),
+    N_("too many password changes; wait a minute"),
+    N_("too many requests for new codes; wait a minute"),
     N_("too many new accounts from this address"),
     N_("the saved login has expired; log in with your password"),
     N_("session expired; log in again"),
@@ -92,6 +94,28 @@ SERVER = (
     N_("that player is not on your block list"),
     N_("you are not in a set"),
     N_("no such finished match"),
+    # friends and invites
+    N_("guests cannot have friends; create an account (free)"),
+    N_("there is no account with that name"),
+    N_("you cannot add yourself"),
+    N_("you blocked that player; unblock them first"),
+    N_("your friends list is full ({max})"),
+    N_("you can send {count} friend requests a day; try again tomorrow"),
+    N_("{count} of your friend requests are waiting for an answer; cancel some first"),
+    N_("{name} declined your last request; you can ask again in {days} day(s)"),
+    N_("that player has too many friend requests waiting"),
+    N_("that player's friends list is full"),
+    N_("no friend request from that player"),
+    N_("no friend request to that player"),
+    N_("that player is not on your friends list"),
+    N_("that friend is not online"),
+    N_("that friend's launcher is too old for invites (it needs 1.1.2 or newer)"),
+    N_("create a room first, then invite"),
+    N_("that friend is busy right now"),
+    N_("one invite at a time"),
+    N_("that player has invites pending"),
+    N_("that invite is over"),
+    N_("the invite is no longer possible"),
     # notices during a match
     N_("{name} is back in the lobby"),
     N_("{name} lost the lobby connection; waiting {seconds} s for them to return"),
@@ -161,6 +185,7 @@ CLIENT = (
     N_("connection closed"),
     N_("message too long"),
     N_("closed"),
+    N_("the server sent a malformed match id"),
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab
@@ -303,6 +328,12 @@ UPDATER = (
     N_("'.', '..' or an empty part"),
     N_("outside the folder {folder}"),
     N_("named like the player's own files"),
+    N_("a name Windows does not keep as written"),
+    N_("Release {version} is a test version; it is not installed automatically."),
+    N_("Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+       "the project's release process; nothing was changed."),
+    N_("Release {version} failed the signature check ({error}). It was not made by the project's release "
+       "process; nothing was changed."),
 )
 
 # Words that are part of a message ("you are {status}": the server's player states), translated on their own.

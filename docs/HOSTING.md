@@ -405,7 +405,11 @@ How it fits together (protocol: [ONLINE.md](ONLINE.md#regional-relays)):
   relay port, each signed with HMAC-SHA256 under a secret both machines hold
   (`/etc/t5lobby/relay.secret` on the node, `/etc/t5lobby/relay-<id>.secret` on the central server),
   with a timestamp and a one-time id: nobody without the secret can open a session, and a recorded
-  request cannot be played back. The two clocks must agree within 2 minutes (NTP; Ubuntu does it).
+  request cannot be played back (also not after a node restart: a node takes no request stamped before
+  it started). The players' bind tokens in a session request are sealed under the secret (1.1.2 nodes
+  and central servers; an older node still gets them readable, and the central server's log says so once:
+  update it). The two clocks must agree within 2 minutes (NTP; Ubuntu does it), and within a few seconds
+  right after a node restart.
 - A node relays **only for sessions the central server opened**, with the central relay's limits:
   the game's packets and the lobby's peer packets only, at most 2048 bytes each, 256 kbit/s and 240
   packets/s per player (public profile), 100 sessions, 3 per internet address, 20 minutes a match
@@ -640,6 +644,12 @@ no blame for anybody. To restart without voiding matches:
 `drain` stops new matches at once (players get a notice), `--wait` returns when the last running
 match has its result (a first-to-3 match takes 2-7 minutes). The restart ends the drain.
 
+**Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
+schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with
+its version number, so a crash in the middle leaves the old version and the step runs again. Take a backup before
+an update all the same (`t5lobby-admin backup`). Going back to the previous release after an upgrade works: an older
+server leaves the tables it does not know alone.
+
 What a crash (or `kill -9`, or a power cut) can and cannot do to the data:
 
 - **Database**: everything the server writes while handling one message or timer -- for a ranked
@@ -673,11 +683,11 @@ a public server.
 | Expensive requests per connection | leaderboard, profile, history, whole lobby list: 1/s, burst 10 (`T5L_HEAVY_RATE`, `_BURST`). Queue, rooms, character, ping and other changes everybody's lobby list shows: 2/s, burst 20 (`T5L_STATE_RATE`, `_BURST`) | same | Each costs the server (database scans, an update to every player) far more than the client |
 | Unread output per connection | 1 MB (`T5L_MAX_PENDING_KB`) | same | A client that stops reading is dropped at once (the connection is aborted; a graceful close waited for the peer to read, for ever) |
 | Login | 15 s to finish. 5 wrong passwords per address and per name, then 1/min; attempts count before the check, so parallel guesses on many connections cannot get past it. An address the account logged in from before is not held back by the name's limit (someone else guessing cannot lock the owner out). 3 new accounts per address, then 1 per 10 min | same | |
-| Password hashing | 2 at once, 64 waiting (`T5L_PW_CONCURRENCY`, `T5L_PW_QUEUE`); more: "the server is busy, try again" | same | scrypt costs ~16 MB and tens of ms each: a login flood from many addresses cannot pile up memory and CPU |
+| Password hashing | 2 at once, 64 waiting (`T5L_PW_CONCURRENCY`, `T5L_PW_QUEUE`); more: "the server is busy, try again". Password changes and new recovery codes: 3 per account, then one per 20 s, right or wrong (1.1.2) | same | scrypt costs ~16 MB and tens of ms each: a login flood from many addresses cannot pile up memory and CPU, and one logged-in account cannot keep the hashing busy for everybody |
 | Names | 2–16 safe characters. Reserved names refused (`admin…`, `moderator…`, `official…`, `t5lobby…`, `system`, `server`, `p1`, ... ignoring case, punctuation, look-alike letters and digits for letters: `Adm1n`, `M0derat0r`, `5ystem`; see RANKED.md), plus any name containing a word from `T5L_NAME_BLOCKLIST`. A new name (guest or account) must not look like an account or a player online: `W1shin`, `WIshin`, `Wish.in` next to `Wishin` are refused | add a word file | Impersonation, offensive names |
 | Text from clients | printable characters only (no control or direction-changing characters), at most 2 combining marks in a row; a character that cannot be sent becomes `?` | same | One unsendable character in a client's build name used to stop the lobby list for everybody |
 | Chat | 1 line/s per player (burst 5), 2/s per address, **20/s for the whole lobby** (`T5L_CHAT_TOTAL_RATE`), 200 characters | same | Every line goes to every player |
-| UDP control packets | 100/s per address **and 5000/s in total** (`T5L_UDP_CTL_PPS`) | same | The total stops spoofed-source ping floods from being reflected at many victims. Answers are never larger than requests |
+| UDP control packets | 100/s per address **and 5000/s in total for pings** (`T5L_UDP_CTL_PPS`) | same | The total stops spoofed-source ping floods from being reflected at many victims. Answers are never larger than requests. Registrations and relay binds are answered only for a token the server handed out, so they do not count against the total: a flood that uses it up cannot stop the players' NAT setup (1.1.2) |
 | Relay per player | 512 kbit/s, 400 packets/s | **256 kbit/s, 240 packets/s** | The game needs ~85 kbit/s at ~60 packets/s. 3–4× headroom, and the relay can't be used as a traffic cannon |
 | What the relay carries | the game's own packets (`T5NP`) and the lobby's peer packets, at most 2048 bytes (`T5L_RELAY_MAX_BYTES`); everything else is dropped | same | Two accounts can always force the relay: it must not be a free tunnel or proxy |
 | Relay sessions | 100 (`T5L_MAX_RELAYS`), 3 per address (`T5L_MAX_RELAYS_PER_IP`), closed when their match has run 20 min (`T5L_RELAY_MAX_SECONDS`; no match takes that long) | 100 | ~17 Mbit/s each way at the game's rate. A 2-vCPU VPS handles that. Without the per-address and time limits a few addresses could hold every slot for hours |

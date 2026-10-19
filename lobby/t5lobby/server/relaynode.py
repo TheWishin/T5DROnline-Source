@@ -164,7 +164,9 @@ class RelayNode:
             self.counters["ctl_refused"] += 1        # played back
             return
         now = time.time()
-        if abs(ts - now) > relayctl.CLOCK_SKEW:
+        # Stamped before this process started: the ids seen before a restart are gone, so it could be a
+        # recording played back -- refused like a request from a clock that is off (nothing is done).
+        if abs(ts - now) > relayctl.CLOCK_SKEW or ts < self.started - relayctl.RESTART_MARGIN:
             # (authentic and new, so worth one answer: the central server logs the clock difference)
             self.counters["ctl_clock"] += 1
             reply = {"ok": False, "error": "clock"}
@@ -198,6 +200,7 @@ class RelayNode:
     def op_status(self, msg):
         st = self.status()
         return {"ok": True, "server": SERVER_NAME, "version": __version__, "id": self.cfg.relay_id,
+                "caps": list(relayctl.NODE_CAPS),
                 "sessions": st["relay"]["sessions"], "bound": st["relay"]["bound"], "max": st["relay"]["max"],
                 "kbit_s": st["relay"]["kbit_s"], "bytes_total": st["relay"]["bytes_total"],
                 "packets_total": st["relay"]["packets_total"], "dropped_total": st["relay"]["dropped_total"],
@@ -205,10 +208,13 @@ class RelayNode:
 
     def op_open(self, msg):
         sid = self._sid(msg)
-        toks = msg["tokens"]
-        if not (isinstance(toks, list) and len(toks) == 2):
-            raise ValueError("tokens")
-        tokens = [bytes.fromhex(str(t)) for t in toks]
+        if "etokens" in msg:                          # sealed (a central server of 1.1.2 or newer)
+            tokens = relayctl.open_tokens(self.secret, msg["id"], msg["etokens"], 2, proto.TOKEN_LEN)
+        else:                                         # readable (an older central server)
+            toks = msg["tokens"]
+            if not (isinstance(toks, list) and len(toks) == 2):
+                raise ValueError("tokens")
+            tokens = [bytes.fromhex(str(t)) for t in toks]
         if any(len(t) != proto.TOKEN_LEN for t in tokens) or tokens[0] == tokens[1]:
             raise ValueError("tokens")
         s = self.udp.relays.get(sid)

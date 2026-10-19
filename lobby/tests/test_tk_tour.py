@@ -55,7 +55,7 @@ class TkTourBase(tkt.TkBase if tk is not None else unittest.TestCase):
 
     def show_page(self):
         tab = self.tab
-        tab.nb.select(3)
+        tab.nb.select(tab.tours_page)
         self.root.update()
         tab._on_subtab()
         self.pump(lambda: tab.tours.page_shown)
@@ -264,7 +264,7 @@ class TkTourGermanTest(TkTourBase):
                 tab2.client = None
             root2.update()
             self.assertEqual(i18n.missing(), [])
-            self.assertEqual(tab2.nb.tab(3, "text"), "Turniere")
+            self.assertEqual(tab2.nb.tab(tab2.tours_page, "text"), "Turniere")
             labels = " ".join(tab2.tours.bracket.texts)
             self.assertIn("GRAND FINAL", labels)
             self.assertIn("LOSERS-FINALE", labels)

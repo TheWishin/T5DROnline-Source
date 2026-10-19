@@ -125,6 +125,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Online input delay | Online-Input-Delay |
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
+| Stage blur / glow | Stage-Unschärfe / Leuchten |
 
 **BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -138,6 +139,11 @@ Sprachen gleich.
   Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
   auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
   jeder Spieler selbst wählen.
+- **Settings** -> **Stage blur / glow** (Stage-Unschärfe / Leuchten): Manche
+  Stages machen das ganze Bild weich (der neblige Sumpf und drei weitere) oder
+  lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
+  der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
+  das Leuchten. Online kann jeder Spieler selbst wählen.
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.
@@ -248,6 +254,16 @@ Gut zu wissen:
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.
+- **Freunde** (mit Konto, ab 1.1.2): Füge auf der Seite **Freunde** im
+  Online-Reiter einen Freund mit seinem Kontonamen hinzu. Hat er angenommen,
+  siehst du, wann er online ist, sucht oder im Match ist. **Zu einem Match
+  einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
+  seiner Seite startet es. Wer einen Spieler blockiert, beendet die
+  Freundschaft.
+- **Discord** (freiwillig, standardmäßig aus): Settings -> Discord zeigt „In der
+  Lobby“, „Sucht ein Ranked-Match“ oder dein Match („Im Match: Jin vs Kazuya
+  (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf
+  deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr

@@ -54,11 +54,11 @@ DEV_ONLY = {
     "unknown message X", "bad field: X", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
+    "unknown character X", "kind is casual or room",
     # tournaments (lobby/t5lobby/server/tournaments.py): fields the launcher always sends right
     "set length, player limit, check-in and start time are numbers",
     "op is start, cancel, report, override, reset or dq", "the winner is side 0 or 1",
     "the score is [games side 0, games side 1]",
-    "unknown character X",
     "mode is guest, account, register, session or resume",
 }
 
@@ -1062,6 +1062,57 @@ class OnlineTabGermanTests(German):
                        "RUNDEN  (P1 – P2)", "Nächstes Spiel", "Zurück zur Lobby"):
             self.assertTrue(any(expect in x for x in texts), (expect, texts[-40:]))
         self.assertEqual(english, [])
+        self.assertEqual(i18n.missing(), [])
+
+    def test_friends_page_and_invites(self):
+        """The Friends page, a friend's invite in the bar and the friends' messages: German, nothing missing."""
+        t = self.tab
+        c = t.client
+        c.has_friends = lambda: True
+        c.rooms = []
+        base = {"rank": "3rd Dan", "tier": 12, "provisional": False, "rating": 1600, "guest": False}
+        c.friend_list = {"friends": [
+            dict(base, name="Rival", status="online", activity="queue", invite="ok"),
+            dict(base, name="Busy", status="in_match", activity="playing", invite="busy"),
+            dict(base, name="Gone", status="offline", activity=None, invite="offline", last_seen=1792000000.0),
+            dict(base, name="Old", status="online", activity="idle", invite="update")],
+            "incoming": [{"name": "Neu", "time": 1.0}], "outgoing": [{"name": "Frage", "time": 2.0}], "max": 100,
+            "requests_left": 20}
+        t._set_account_view(True)
+        t.on_event({"t": "friends"})
+        t.nb.select(3)
+        texts, english = self.shown()
+        for expect in ("FREUNDE", "Zu einem Match einladen", "In meinen Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
+                       "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "angefragt: wartet auf eine Antwort",
+                       i18n.t("searching"), "im Match", "Freunde (1)", "3 online · 4 von 100",
+                       i18n.t("in lobby") + " (älterer Launcher: keine Einladungen)"):
+            self.assertIn(expect, texts)
+        self.assertTrue(any(x.startswith("offline, zuletzt gesehen ") for x in texts), texts)
+        self.assertEqual(english, [])
+        t.on_event({"t": "invited", "invite": "i1", "kind": "room", "room": {"name": "Dojo"},
+                    "from": dict(base, name="Rival")})
+        texts, english = self.shown()
+        self.assertEqual(t.bar_text.get(), "Rival (3rd Dan) lädt dich in den Raum „Dojo“ ein")
+        for expect in ("EINLADUNG VON EINEM FREUND", "Annehmen", "Ablehnen",
+                       "lädt dich in den Raum „Dojo“ ein. Nimm an, um beizutreten; das Match startet sofort."):
+            self.assertIn(expect, texts)
+        self.assertEqual(english, [])
+        t.on_event({"t": "invite_update", "invite": "i1", "state": "expired", "name": "Rival"})
+        self.assertEqual(self.status(), "Die Einladung von Rival ist abgelaufen.")
+        t.on_event({"t": "invited", "invite": "i2", "kind": "casual", "from": dict(base, name="Rival")})
+        self.assertEqual(t.bar_text.get(), "Rival (3rd Dan) lädt dich zu einem Casual-Match ein")
+        t.on_event({"t": "friend_request", "name": "Neu"})
+        self.assertEqual(self.status(), "Neu möchte dein Freund sein: siehe den Reiter Freunde.")
+        t.on_event({"t": "friend_update", "name": "Frage", "state": "accepted"})
+        self.assertEqual(self.status(), "Frage hat deine Freundschaftsanfrage angenommen.")
+        t.outgoing_invite = {"invite": "i3", "name": "Rival"}
+        t.on_event({"t": "invite_update", "invite": "i3", "state": "declined", "name": "Rival"})
+        self.assertEqual(self.status(), "Rival hat deine Einladung abgelehnt.")
+        c.me["guest"] = True
+        t._fill_friends()
+        self.assertTrue(t.friends_note_var.get().startswith("Freunde brauchen ein Konto"))
+        self.assertEqual(i18n.translate_message("you can send 20 friend requests a day; try again tomorrow"),
+                         "Du kannst 20 Freundschaftsanfragen am Tag senden; versuche es morgen wieder")
         self.assertEqual(i18n.missing(), [])
 
     def test_errors_get_a_tip_in_german(self):

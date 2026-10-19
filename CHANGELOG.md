@@ -3,7 +3,23 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.1 (not released yet)
+## v1.1.1 (2026-10-19)
+
+**Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1
+for the new connection features (with 1.1.0 the match connects as before). The launcher offers the
+update itself; after it, press **BUILD GAME** once.
+
+### Online
+- **Direct connections are much more reliable.** Before, whether two homes connected directly was
+  partly luck (who started sending first); then the match fell back to the relay in Germany. Both
+  sides now start at the same moment, try every address at once for longer, predict the ports of
+  routers that change them, and open the game's port on the router (UPnP / NAT-PMP / PCP). In a
+  network simulator, direct connections went from 926 to 1,130 of 1,400 router pairs, and a match
+  that had to start on a relay switches to direct as soon as that works.
+- **A relay server in the USA** (Oregon): players in America no longer detour through Germany when
+  their routers can't connect directly (see Servers).
+- **Smoother rollback at high ping:** a rollback costs 15% less; at 150 ms ping the slowest frames
+  went from 23.1 to 21.4 ms and visible stutters per match from 56 to 37 (at 250 ms: 389 to 221).
 
 ### Controllers
 - **DualShock 4 and DualSense work without Steam**, over USB and Bluetooth (DualSense Edge

@@ -6,8 +6,8 @@ ist in Arbeit.
 
 English: [../README.md](../README.md)
 
-**Release 1.1.0 (2026-10-19).** Lade
-`T5DR-Online-1.1.0.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.1 (2026-10-19).** Lade
+`T5DR-Online-1.1.1.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das

@@ -32,7 +32,7 @@ from t5lobby.client import LobbyClient
 from t5lobby.nat import RelayBridge
 from t5lobby.server import Config
 from t5lobby.server.relaynode import RelayNode
-from t5lobby.server.relays import RelayPool, parse
+from t5lobby.server.relays import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOBBY = os.path.dirname(HERE)
@@ -502,6 +502,31 @@ class ChoiceTest(Regional):
         m = self.s.call(lambda: self.s.srv.recent[mid])
         self.s.call(lambda: self.s.srv._close_kept_relay(m))
         self.assertTrue(self._wait_node_empty("usc"))
+
+    def test_rematch_in_the_running_games_keeps_the_regional_relay(self):
+        a, b = self.player("Alice", 0), self.player("Bob", 1)
+        for c in (a, b):
+            self.measured(c, ["usw", "usc"])
+        ea, _eb = self.pair(a, b)
+        self.assertEqual(ea["relay"]["id"], "usc")
+        usc = self.nodes["usc"]
+        sid = self.s.call(lambda: self.s.srv.by_name["alice"].match.relay_id)
+        first = usc.call(lambda: usc.node.meta[sid]["deadline"])
+        for c in (a, b):
+            c.report_result(0, [3, 1], match_id=ea["match"])
+        ra = expect(a, "match_result")
+        expect(b, "match_result")
+        time.sleep(0.3)
+        a.rematch(ra["match"], True, keep=True)
+        b.rematch(ra["match"], True, keep=True)
+        s2 = expect(a, "match_start")
+        self.assertTrue(s2["continue"])
+        self.assertEqual(s2["relay"]["id"], "usc")                    # the same session, the games never left it
+        t_end = time.monotonic() + 5
+        while time.monotonic() < t_end and usc.call(lambda: usc.node.meta[sid]["deadline"]) <= first:
+            time.sleep(0.05)
+        self.assertGreater(usc.call(lambda: usc.node.meta[sid]["deadline"]), first)   # the lease starts again
+        self.assertEqual(usc.call(lambda: len(usc.node.udp.relays)), 1)
 
     def _wait_node_empty(self, rid, timeout=5):
         t_end = time.monotonic() + timeout

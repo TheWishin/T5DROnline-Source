@@ -14,7 +14,7 @@
 #   --self-signed      a 10-year self-signed certificate; players pin its fingerprint (the default
 #                      when no --domain is given)
 #   --no-tls           plain TCP; accounts are then switched off (guests only)
-#   --force-relay      relay every match (players never see each other's IP address; before 1.1.2 this
+#   --force-relay      relay every match (players never see each other's IP address; before 1.1.1 this
 #                      option was called --relay-only)
 #   --relay-only       a relay-only node for a central lobby elsewhere (docs/HOSTING.md "Adding a relay
 #                      server"): only the UDP relay (port 7781), no accounts, no database, no TLS. Makes

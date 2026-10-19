@@ -385,7 +385,7 @@ def scenario_best(world, a, tmp):
         if moved["usc"] < 100 or moved["usw"] != 0:
             raise AssertionError(f"usc should carry the match alone: {moved}")
         st = {r["id"]: r for r in world.central_status()["relays"]}
-        print(f"    admin view: " + "; ".join(f"{r['id']} {'up' if r['alive'] else 'DOWN'}, {r['sessions']} sessions, "
+        print("    admin view: " + "; ".join(f"{r['id']} {'up' if r['alive'] else 'DOWN'}, {r['sessions']} sessions, "
                                              f"{r['kbit_s']} kbit/s, last seen {r['last_seen_s']} s ago"
                                              for r in st.values()))
     finally:

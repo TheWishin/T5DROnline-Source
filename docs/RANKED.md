@@ -657,6 +657,8 @@ block list is under **Blocked players...** in the tab. It lists them and has **U
 - Blocking between two games ends the set and changes no rating -- except between two games of a ranked
   set: that is leaving it, a loss once a game has counted.
 - At most 200 blocks (`T5L_MAX_BLOCKS`).
+- **A block ends a friendship** (1.1.2, docs/ONLINE.md "Friends and invites"): the two are no longer friends, their
+  requests and invites end, and a later request from the blocked player is never shown to the blocker.
 
 ### Strict matchmaking
 
@@ -826,6 +828,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |
 | `T5L_PAIR_COOLDOWN` | 30 | seconds before the ranked queue matches the same two players again (0 = off) |
 | `T5L_MAX_BLOCKS` | 200 | blocked players per account or guest session |
+| `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS` | 100, 20, 30, 14, 7, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
 | `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
@@ -840,7 +843,7 @@ The database upgrades itself (new columns and tables are added on start).
 
 Additive (protocol 1; `welcome.features` lists them: ranks, sessions, recovery,
 passwd, profile, history, chars, integrity, rematch, blind_ready, blocks, strict, set_lock,
-lag_check, notices, ranked_sets). The protocol version did not change: a client announces what it understands
+lag_check, notices, ranked_sets; 1.1.2: friends). The protocol version did not change: a client announces what it understands
 in `hello.caps`, and an older client gets the old messages.
 
 | Client -> server | Reply |
@@ -863,6 +866,7 @@ in `hello.caps`, and an older client gets the old messages.
 | `lag` `match`, `frames`, `waited_ms`, `pc_fps`, `fps` (after a match) | -- (`lag_check` follows for both players) |
 | `hello` `caps`: `sets` (ranked sets) | `welcome.set_wins` (games to win a set; 1 = no sets for this client) |
 | `set_next` `match`, `keep` (between two games of a ranked set: this game still runs, connected) | `set_next {set, state: waiting\|started, in}` |
+| `hello` `caps`: `friends`; `friends`, `friend_add`, `friend_answer`, `friend_cancel`, `friend_remove`, `invite`, `invite_answer`, `invite_cancel` (accounts) | the friends list and invites: docs/ONLINE.md "Friends and invites" (messages, limits, blocks); `profile` of another account then has `friend: friends\|asked\|asks\|null` |
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
@@ -907,6 +911,8 @@ python -m unittest test_tk_tab      # the Online tab: register, saved login, TLS
                                     # blind accept, strict, block list, lag check, server notice
 python -m unittest test_t6          # Tekken 6 style options: blind ready, blocks, strict, cooldown, character
                                     # lock, lag check, notices, no IP addresses in messages
+python -m unittest test_friends     # friends and invites: requests, presence, limits, blocks, migration, old clients
+python -m unittest test_tk_friends  # the Friends page, invites and Discord Rich Presence in the Online tab
 python -m unittest test_sets        # ranked sets: 2-0, 2-1, quits in game 1/2/3, leaving, desync replays and the
                                     # void after 2, pair cap and cooldown, older clients, server restart, rooms,
                                     # the driver with stub games, texts and HUD names

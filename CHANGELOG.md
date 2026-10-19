@@ -5,6 +5,9 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
+**Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The
+new lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
+
 ### Online
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
   two of you can get, through the nearest relay server: two players in California see about
@@ -12,6 +15,23 @@ part is in the README's status table.
   with a low ping first and widen the search while you wait (any opponent after 30 s in quick,
   60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
   before.
+- **Friends** (accounts): add a friend by account name on the Online tab's new **Friends** page; they accept or
+  decline. The list shows who is online, searching, in a match or offline, and changes by itself. Remove a friend
+  there too. Blocking a player ends the friendship.
+- **Invites**: invite a friend who is online to a casual match, or into your room. They get the question like a
+  challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
+- Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
+  can be repeated after a week.
+
+### Launcher
+- **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
+  "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
+  Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
+  (docs/ONLINE.md "Discord Rich Presence").
+
+### Servers
+- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
+  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
 
 ## v1.1.2 (unreleased)
 

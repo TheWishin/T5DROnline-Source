@@ -2,7 +2,8 @@
 sessions ("remember me" tokens, stored hashed), recovery codes (stored hashed) and match
 history. SQLite from the standard library; one connection used from the event loop thread.
 
-Older databases are upgraded in place (missing columns and tables are added)."""
+Older databases are upgraded in place: missing columns and tables are added, and the numbered schema
+MIGRATIONS (PRAGMA user_version) run once each, in order (friends since 1.1.2)."""
 import base64
 import hashlib
 import hmac
@@ -135,6 +136,33 @@ CREATE INDEX IF NOT EXISTS matches_created ON matches (created);
 CREATE INDEX IF NOT EXISTS sets_p1 ON sets (p1_account, ended);
 CREATE INDEX IF NOT EXISTS sets_p2 ON sets (p2_account, ended);
 """
+# Schema migrations (SQLite's PRAGMA user_version): each step runs once, in order, in one transaction with the
+# new version number, so a crash in the middle leaves the old version (and the step runs again at the next start).
+# Up to 1.1.1 the database had no version (0): the tables and columns above are created "if missing" on every
+# start, and they stay that way. A database from a newer server (a higher version) is used as it is: an older
+# server never undoes a step, and the tables it does not know are left alone.
+MIGRATIONS = [
+    (1, "friends and friend requests (docs/ONLINE.md \"Friends and invites\")", """
+CREATE TABLE IF NOT EXISTS friends (
+    account_id INTEGER NOT NULL,       -- one row per direction: (a, b) and (b, a)
+    friend_id INTEGER NOT NULL,
+    created REAL NOT NULL,
+    PRIMARY KEY (account_id, friend_id)
+);
+CREATE INDEX IF NOT EXISTS friends_friend ON friends (friend_id);
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id INTEGER NOT NULL,
+    to_id INTEGER NOT NULL,
+    created REAL NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',   -- pending | accepted | declined | cancelled | expired
+    answered REAL
+);
+CREATE INDEX IF NOT EXISTS friend_requests_from ON friend_requests (from_id, created);
+CREATE INDEX IF NOT EXISTS friend_requests_to ON friend_requests (to_id, state);
+"""),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
 PERMANENT = 32503680000.0     # 3000-01-01: "banned for ever"
 
 SESSION_DAYS = 30.0
@@ -204,9 +232,38 @@ class Store:
         self._add_columns()
         self.db.executescript(RANKED_INDEXES)
         self._backfill_skeletons()
+        self.migrated = self._migrate()
         self._schedule = None
         self.commit_errors = 0
         self.writes = 0
+
+    def schema_version(self):
+        return self.db.execute("PRAGMA user_version").fetchone()[0]
+
+    def _migrate(self, steps=None):
+        """Run the MIGRATIONS this database has not had yet. -> the versions applied now."""
+        have = self.schema_version()
+        done = []
+        steps = MIGRATIONS if steps is None else steps
+        newest = steps[-1][0] if steps else 0
+        if have > newest:
+            log.warning("database schema %d is newer than this server's (%d): using it as it is", have, newest)
+            return done
+        for version, what, sql in steps:
+            if version <= have:
+                continue
+            try:
+                # one transaction: the step and its version number commit together, or neither does
+                self.db.executescript(f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version = {int(version)};\nCOMMIT;")
+            except sqlite3.Error:
+                if self.db.in_transaction:
+                    self.db.execute("ROLLBACK")
+                log.error("database migration %d (%s) failed; the database stays at version %d", version, what,
+                          self.schema_version())
+                raise
+            log.info("database upgraded to schema %d: %s", version, what)
+            done.append(version)
+        return done
 
     def _add_columns(self):
         for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS + NAME_COLUMNS:
@@ -636,11 +693,16 @@ class Store:
         return True
 
     def _drop_orphans(self):
-        """Remembered logins, recovery codes and blocks of accounts that no longer exist."""
+        """Remembered logins, recovery codes, blocks, friends and friend requests of accounts that no longer
+        exist."""
         for table in ("sessions", "recovery"):
             self._x(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
         self._x("DELETE FROM blocks WHERE account_id NOT IN (SELECT id FROM accounts) "
                         "OR blocked_id NOT IN (SELECT id FROM accounts)")
+        self._x("DELETE FROM friends WHERE account_id NOT IN (SELECT id FROM accounts) "
+                "OR friend_id NOT IN (SELECT id FROM accounts)")
+        self._x("DELETE FROM friend_requests WHERE from_id NOT IN (SELECT id FROM accounts) "
+                "OR to_id NOT IN (SELECT id FROM accounts)")
 
     def list_accounts(self, pattern=None, limit=50, banned_only=False):
         sql, args = "SELECT * FROM accounts WHERE 1 = 1", []
@@ -695,6 +757,99 @@ class Store:
         return [dict(r) for r in self._x(
             "SELECT blocked_id, blocked_name, created FROM blocks WHERE account_id = ? ORDER BY created", (aid,))]
 
+    def is_blocked_by(self, aid, other):
+        """Has account `aid` blocked account `other`?"""
+        return self._x("SELECT 1 FROM blocks WHERE account_id = ? AND blocked_id = ?", (aid, other)).fetchone() \
+            is not None
+
+    # ----------------------------------------------------------------- friends (docs/ONLINE.md "Friends and invites")
+    # A friendship is two rows, one per direction, made when a request is accepted. Requests are kept with their
+    # state after they are answered: the daily limit counts the requests sent, and a declined one may only be
+    # repeated after a while. A request to someone who blocked the sender is stored like any other but never
+    # shown to them (it looks like a request nobody answers, and runs out). Accounts only: guests have no friends.
+    def friends_of(self, aid):
+        """[account row + `since`] of every friend of `aid`, by name."""
+        return [dict(r) for r in self._x(
+            "SELECT a.*, f.created AS since FROM friends f JOIN accounts a ON a.id = f.friend_id "
+            "WHERE f.account_id = ? ORDER BY a.name COLLATE NOCASE", (aid,))]
+
+    def friend_ids(self, aid):
+        return {r[0] for r in self._x("SELECT friend_id FROM friends WHERE account_id = ?", (aid,))}
+
+    def friend_count(self, aid):
+        return self._x("SELECT COUNT(*) FROM friends WHERE account_id = ?", (aid,)).fetchone()[0]
+
+    def are_friends(self, a, b):
+        return self._x("SELECT 1 FROM friends WHERE account_id = ? AND friend_id = ?", (a, b)).fetchone() is not None
+
+    def add_friendship(self, a, b, now=None):
+        """-> True when the two were not friends yet. Their requests to each other count as accepted."""
+        now = now or time.time()
+        new = self._x("INSERT OR IGNORE INTO friends (account_id, friend_id, created) VALUES (?, ?, ?)",
+                      (a, b, now)).rowcount == 1
+        self._x("INSERT OR IGNORE INTO friends (account_id, friend_id, created) VALUES (?, ?, ?)", (b, a, now))
+        self._x("UPDATE friend_requests SET state = 'accepted', answered = ? WHERE state = 'pending' AND "
+                "((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))", (now, a, b, b, a))
+        return new
+
+    def remove_friendship(self, a, b):
+        """-> True when they were friends."""
+        n = self._x("DELETE FROM friends WHERE (account_id = ? AND friend_id = ?) OR (account_id = ? AND "
+                    "friend_id = ?)", (a, b, b, a)).rowcount
+        return n > 0
+
+    def add_friend_request(self, from_id, to_id, now=None):
+        return self._x("INSERT INTO friend_requests (from_id, to_id, created) VALUES (?, ?, ?)",
+                       (from_id, to_id, now or time.time())).lastrowid
+
+    def pending_request(self, from_id, to_id, since=0.0):
+        """The pending request from -> to (made after `since`: older ones have run out), or None."""
+        r = self._x("SELECT * FROM friend_requests WHERE from_id = ? AND to_id = ? AND state = 'pending' AND "
+                    "created >= ? ORDER BY id DESC LIMIT 1", (from_id, to_id, since)).fetchone()
+        return dict(r) if r else None
+
+    def answer_requests(self, from_id, to_id, state, now=None):
+        """Every pending request from -> to gets `state` (declined, cancelled). -> how many."""
+        return self._x("UPDATE friend_requests SET state = ?, answered = ? WHERE from_id = ? AND to_id = ? AND "
+                       "state = 'pending'", (state, now or time.time(), from_id, to_id)).rowcount
+
+    def requests_sent_since(self, from_id, since):
+        """Friend requests `from_id` made since `since`, answered or not (the daily limit)."""
+        return self._x("SELECT COUNT(*) FROM friend_requests WHERE from_id = ? AND created >= ?",
+                       (from_id, since)).fetchone()[0]
+
+    def last_declined(self, from_id, to_id):
+        """When `to_id` last declined a request of `from_id` (unix time), or None."""
+        r = self._x("SELECT MAX(answered) FROM friend_requests WHERE from_id = ? AND to_id = ? AND "
+                    "state = 'declined'", (from_id, to_id)).fetchone()
+        return r[0] if r and r[0] is not None else None
+
+    def incoming_requests(self, aid, since=0.0):
+        """[{id, name, time}] of the pending requests to `aid` it may see (not from an account it blocked)."""
+        return [{"id": r["from_id"], "name": r["name"], "time": r["created"]} for r in self._x(
+            "SELECT r.from_id, MIN(r.created) AS created, a.name FROM friend_requests r "
+            "JOIN accounts a ON a.id = r.from_id "
+            "WHERE r.to_id = ? AND r.state = 'pending' AND r.created >= ? AND NOT EXISTS ("
+            "  SELECT 1 FROM blocks b WHERE b.account_id = r.to_id AND b.blocked_id = r.from_id) "
+            "GROUP BY r.from_id ORDER BY created", (aid, since))]
+
+    def outgoing_requests(self, aid, since=0.0):
+        """[{id, name, time}] of the requests `aid` made that wait for an answer."""
+        return [{"id": r["to_id"], "name": r["name"], "time": r["created"]} for r in self._x(
+            "SELECT r.to_id, MAX(r.created) AS created, a.name FROM friend_requests r "
+            "JOIN accounts a ON a.id = r.to_id WHERE r.from_id = ? AND r.state = 'pending' AND r.created >= ? "
+            "GROUP BY r.to_id ORDER BY created", (aid, since))]
+
+    def expire_friend_requests(self, before, keep_days=60.0, now=None):
+        """Requests nobody answered before `before` run out; answered ones older than `keep_days` (the limits
+        no longer look at them) are deleted. -> (expired, deleted)."""
+        now = now or time.time()
+        n = self._x("UPDATE friend_requests SET state = 'expired', answered = ? WHERE state = 'pending' AND "
+                    "created < ?", (now, before)).rowcount
+        d = self._x("DELETE FROM friend_requests WHERE state != 'pending' AND created < ?",
+                    (now - keep_days * 86400.0,)).rowcount
+        return n, d
+
     # ----------------------------------------------------------------- server notices (admin tool -> server)
     def add_notice(self, text, expires, now=None):
         cur = self._x("INSERT INTO notices (created, expires, text) VALUES (?, ?, ?)",
@@ -737,6 +892,8 @@ class Store:
             "matches_24h_by_status": by_status,
             "matches_24h_by_path": by_path,
             "matches_total": one("SELECT COUNT(*) FROM matches"),
+            "friendships": one("SELECT COUNT(*) FROM friends") // 2,
+            "friend_requests_pending": one("SELECT COUNT(*) FROM friend_requests WHERE state = 'pending'"),
         }
 
 

@@ -26,6 +26,16 @@ Requests (central -> node):
 The players never see this channel: they bind to the node with the bind token the central server gave
 them over its TLS control connection (RELAY_BIND, exactly as with the central relay), and the node then
 forwards their game packets with the central relay's limits.
+
+The MAC makes the channel authentic, not secret: the bind tokens in an `open` request would cross the
+internet readable, and anybody on the path between the two servers could bind before (or after) the
+player and take the session. So a node of 1.1.2 or newer says `"caps": ["etokens"]` in its status answer,
+and the central server then sends the tokens sealed (`etokens`: XOR with HMAC-SHA256(secret,
+"T5RC-tokens|" + request id) -- a fresh id per datagram, so no keystream is used twice). An older node gets
+them as before (`tokens`), and the central server logs once that it should be updated.
+
+A node also refuses requests stamped before it started (RESTART_MARGIN): the ids it has seen are kept in
+memory only, so without this a request recorded just before a node restart could be played back after it.
 """
 import hashlib
 import hmac
@@ -44,6 +54,9 @@ MAX_PACKET = 1400          # stays below a typical path MTU: no fragments
 CLOCK_SKEW = 120.0         # seconds a request's timestamp may differ from the node's clock
 MIN_SECRET = 32            # characters in a secret file (secret_hex() writes 64)
 OPS = ("status", "open", "renew", "info", "close")
+NODE_CAPS = ("etokens",)   # what a node of this version understands (its status answer lists them)
+RESTART_MARGIN = 5.0       # seconds: a node takes no request stamped earlier than its start minus this
+_TOKENS_LABEL = b"T5RC-tokens|"
 
 
 def pack(secret, kind, obj):
@@ -72,6 +85,30 @@ def unpack(secret, data):
 
 def is_control(data):
     return data[:4] == MAGIC
+
+
+def _token_keystream(secret, rid, n):
+    out = b""
+    i = 0
+    while len(out) < n:
+        out += hmac.new(secret, _TOKENS_LABEL + str(rid).encode("ascii") + bytes((i,)), hashlib.sha256).digest()
+        i += 1
+    return out[:n]
+
+
+def seal_tokens(secret, rid, tokens):
+    """Bind tokens (bytes each) for the request `rid` -> the hex string of `etokens`."""
+    raw = b"".join(tokens)
+    return bytes(a ^ b for a, b in zip(raw, _token_keystream(secret, rid, len(raw)))).hex()
+
+
+def open_tokens(secret, rid, sealed_hex, n=2, size=16):
+    """`etokens` of the request `rid` -> [n tokens of `size` bytes]. Raises ValueError."""
+    raw = bytes.fromhex(str(sealed_hex))
+    if len(raw) != n * size:
+        raise ValueError("etokens")
+    plain = bytes(a ^ b for a, b in zip(raw, _token_keystream(secret, rid, len(raw))))
+    return [plain[i * size:(i + 1) * size] for i in range(n)]
 
 
 def request(op, node_id, **fields):

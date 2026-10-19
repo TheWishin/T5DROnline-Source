@@ -26,6 +26,14 @@ within 15 s; the opponent's name comes after both accepted), "Strict" limits ran
 lag check ("ping X ms should mean about Y frames behind, it was Z") appears after a match with a
 way to leave without penalty, and a message from the server's admin shows in the status bar.
 
+Friends (docs/ONLINE.md "Friends and invites", accounts on a server that has them): the Friends page lists them with who is
+online / in a match / offline, sends and answers requests, removes, and invites a friend to a casual match or to
+this player's room; an invite from a friend comes up like a challenge, Accept (A) starts it with one click.
+
+Discord Rich Presence (optional, launcher Settings, off by default): t5lobby.discord_rpc shows "In lobby",
+"Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer in the player's Discord status,
+through the Discord app on this PC; without Discord running it does nothing.
+
 Ranked sets (docs/RANKED.md "Ranked sets"): a ranked set is best of 3 and rated once at its end. One label
 shows where it stands ("Set 1-0 -- game 2 of 3", t5lobby.sets.status_text); between two games the bar
 counts down to the next game (it starts by itself) and offers "Leave set" (a loss); the set's result and
@@ -43,7 +51,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import fighters, lag, padmap, padnav, proto, ranks, servers, sets
+from . import discord_rpc, fighters, lag, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
@@ -81,6 +89,9 @@ CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody ac
                "relay_full": N_("The lobby server's relay is full; try again in a moment.")}
 CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
                   "expired": N_("Challenge expired.")}
+# A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.
+FRIEND_STATE_TEXT = {"in_match": N_("in a match"), "offline": N_("offline")}
+FRIEND_INVITE_TEXT = {"update": N_("(older launcher: no invites)"), "version": N_("(other version)")}
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
@@ -172,6 +183,15 @@ class OnlineTab:
         self.blocks_list = None
         self.pad = None                  # padnav.PadNav once the tab has been shown (controller buttons)
         self.pad_visible = self._tab_viewable      # tests replace it (their window is withdrawn)
+        self.invite = None               # an invite from a friend waiting for this player's answer (the `invited` event)
+        self.outgoing_invite = None      # this player's own invite waiting for the friend's answer
+        self.friend_rows = {}            # Friends page row id -> friend / request
+        self.presence = None             # discord_rpc.DiscordPresence while Rich Presence is on
+        self.discord_paths = None        # where the Discord app listens (None: its usual pipes; tests: a fake one)
+        self._presence_last = None
+        self._presence_key = None
+        self._presence_t0 = None
+        self._match_info = None          # the running match for Rich Presence: ranked, slot, fighters, set
         self.bar_pad = {}                # controller button -> command of the bar button it presses
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
@@ -253,6 +273,11 @@ class OnlineTab:
         # controller: A / Cross accepts, B / Circle declines (padnav.py, docs/ONLINE.md)
         self.pad_var = tk.IntVar(value=1 if self.cfg.get("pad", True) else 0)
         self.pad_info_var = tk.StringVar(value="")
+        # friends (the Friends page of tk_views)
+        self.friend_name_var = tk.StringVar(value="")
+        self.friends_note_var = tk.StringVar(value="")
+        self.friends_count_var = tk.StringVar(value="")
+        self.requests_count_var = tk.StringVar(value="")
         self.view = tk_views.OnlineView(self)
         self._set_account_view(False)
 
@@ -284,6 +309,7 @@ class OnlineTab:
             b.configure(state="normal" if me and not guest else "disabled")
         self.char_cb.configure(state="disabled" if self.set_locked else "readonly")
         self.strict_check.configure(state="normal" if me and not guest else "disabled")
+        self._set_friend_actions()
         self._pad_relabel()
         self.view.refresh()
 
@@ -419,6 +445,7 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._tick_set()
+        self._presence_tick()
         self._show_notice()
         self._pad_tick()
         self.view.tick()
@@ -611,6 +638,15 @@ class OnlineTab:
 
     def _reset_lobby_view(self):
         self.match = None
+        self.invite = None
+        self.outgoing_invite = None
+        self._match_info = None
+        self.friend_rows = {}
+        for tv in (self.tv_friends, self.tv_requests):
+            tv.delete(*tv.get_children())
+        self.friends_count_var.set("")
+        self.requests_count_var.set("")
+        self._friends_tab_label(0)
         self.ready_deadline = None
         self.set_locked = False
         self.rematch_bar = None
@@ -797,6 +833,289 @@ class OnlineTab:
             self.chat_var.set("")
             self.call(self.client.chat, text)
 
+    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends and invites")
+    def _friends_ok(self):
+        """Logged in with an account on a server that keeps friends."""
+        c = self.client
+        has = getattr(c, "has_friends", None)
+        return bool(c is not None and c.me and not c.me.get("guest") and callable(has) and has())
+
+    def _friends_tab_label(self, waiting):
+        try:
+            self.nb.tab(self.friends_page, text=t("Friends ({count})", count=waiting) if waiting else t("Friends"))
+        except tk.TclError:
+            pass
+
+    def _friend_state_text(self, f):
+        st = f.get("status")
+        text = _word(STATUS_TEXT, f.get("activity") or "idle") if st == "online" else _word(FRIEND_STATE_TEXT, st)
+        if st == "offline" and f.get("last_seen"):
+            text = t("offline, last seen {when}", when=stamp(f["last_seen"]))
+        if f.get("invite") in FRIEND_INVITE_TEXT:
+            text += " " + _word(FRIEND_INVITE_TEXT, f["invite"])
+        return text
+
+    def _fill_friends(self):
+        """The Friends page from the client's list: friends (online first), then the requests both ways."""
+        c = self.client
+        if not self._friends_ok():
+            if c is not None and c.me and c.me.get("guest"):
+                self.friends_note_var.set(t("Friends need an account. Log in with one to add friends and invite them."))
+            elif c is not None and c.me:
+                self.friends_note_var.set(t("This lobby server has no friends list (it needs version 1.1.2 or newer)."))
+            self._set_friend_actions()
+            return
+        fl = getattr(c, "friend_list", None) or {}
+        friends = fl.get("friends") or []
+        incoming, outgoing = fl.get("incoming") or [], fl.get("outgoing") or []
+        order = {"online": 0, "in_match": 1}
+        keep = (self.tv_friends.selection(), self.tv_requests.selection())
+        self.friend_rows = {}
+        self.tv_friends.delete(*self.tv_friends.get_children())
+        for f in sorted(friends, key=lambda f: (order.get(f.get("status"), 2), f["name"].lower())):
+            iid = "f:" + f["name"]
+            self.friend_rows[iid] = f
+            self.tv_friends.insert("", "end", iid=iid, values=(f["name"], rank_text(f), self._friend_state_text(f)),
+                                   image=self.view.friend_image(f.get("status")),
+                                   tags=() if f.get("status") != "offline" else ("closed",))
+        self.tv_requests.delete(*self.tv_requests.get_children())
+        for r in incoming:
+            iid = "in:" + r["name"]
+            self.friend_rows[iid] = r
+            self.tv_requests.insert("", "end", iid=iid, values=(r["name"], t("wants to be your friend")))
+        for r in outgoing:
+            iid = "out:" + r["name"]
+            self.friend_rows[iid] = r
+            self.tv_requests.insert("", "end", iid=iid, values=(r["name"], t("asked: waiting for an answer")),
+                                    tags=("closed",))
+        for tv, sel in zip((self.tv_friends, self.tv_requests), keep):
+            for iid in sel:
+                if tv.exists(iid):
+                    tv.selection_set(iid)
+        online = sum(1 for f in friends if f.get("status") != "offline")
+        self.friends_count_var.set(t("{online} online · {count} of {max}", online=online, count=len(friends),
+                                     max=fl.get("max") or 100) if friends else "")
+        self.requests_count_var.set(str(len(incoming)) if incoming else "")
+        self._friends_tab_label(len(incoming))
+        if friends or incoming or outgoing:
+            self.friends_note_var.set(t("Your friends see when you are online. Invite one who is online to play."))
+        else:
+            self.friends_note_var.set(t("No friends yet. Add one by account name: they become your friend when they "
+                                        "accept."))
+        self._set_friend_actions()
+
+    def _selected_friend(self):
+        sel = self.tv_friends.selection() if hasattr(self, "tv_friends") else ()
+        return self.friend_rows.get(sel[0]) if sel and sel[0].startswith("f:") else None
+
+    def _selected_request(self):
+        """('in' | 'out', name) of the selected request, or (None, None)."""
+        sel = self.tv_requests.selection() if hasattr(self, "tv_requests") else ()
+        if not sel:
+            return None, None
+        kind, _x, name = sel[0].partition(":")
+        return kind, name
+
+    def _set_friend_actions(self):
+        acts = getattr(self, "friend_actions", None)
+        if not acts:
+            return
+        ok = self._friends_ok()
+        me = (self.client.me or {}) if self.client else {}
+        busy = self.match is not None or (self.driver is not None and self.driver.ticket is not None) or             self.set_bar is not None
+        f = self._selected_friend() if ok else None
+        free = f is not None and f.get("invite") == "ok" and not busy
+        my_room = next((r for r in getattr(self.client, "rooms", None) or [] if me.get("id") in (r.get("members") or [])),
+                       None)
+        pending = self.outgoing_invite is not None
+        kind, _name = self._selected_request() if ok else (None, None)
+        on = {"add": ok, "remove": f is not None,
+              "invite": ok and (pending or (free and me.get("status") in ("idle", "queue"))),
+              "invite_room": free and not pending and me.get("status") == "room" and my_room is not None
+              and len(my_room.get("members") or []) < 2,
+              "accept": kind == "in", "decline": kind == "in", "cancel_request": kind == "out"}
+        for key, b in acts.items():
+            try:
+                b.configure(state="normal" if on.get(key) else "disabled")
+            except tk.TclError:
+                pass
+        text = t("Cancel the invite") if pending else t("Invite to a match")
+        try:
+            if str(acts["invite"].cget("text")) != text:
+                acts["invite"].configure(text=text)
+        except tk.TclError:
+            pass
+
+    def do_add_friend(self):
+        name = self.friend_name_var.get().strip()
+        if not name or not self._friends_ok():
+            return
+
+        def done(r):
+            self.friend_name_var.set("")
+            if r.get("state") == "friends":
+                self.status(t("You and {name} are friends now.", name=r.get("name")))
+            else:
+                self.status(t("Friend request sent to {name}. They become your friend when they accept.",
+                              name=r.get("name")))
+        self.call(self.client.add_friend, name, then=done)
+
+    def do_friend_answer(self, accept):
+        kind, name = self._selected_request()
+        if kind != "in":
+            return
+        self.call(self.client.answer_friend, name, bool(accept), then=lambda _r: self.status(
+            t("You and {name} are friends now.", name=name) if accept else t("Request from {name} declined.",
+                                                                            name=name)))
+
+    def do_cancel_request(self):
+        kind, name = self._selected_request()
+        if kind == "out":
+            self.call(self.client.cancel_friend_request, name,
+                      then=lambda _r: self.status(t("Request to {name} taken back.", name=name)))
+
+    def do_remove_friend(self):
+        f = self._selected_friend()
+        if f is None:
+            return
+        name = f["name"]
+        if not self.ask_yes_no(t("Remove friend"), t("Remove {name} from your friends?\n\nYou can ask again later; "
+                                                     "they have to accept again.", name=name), parent=self.parent):
+            return
+        self.call(self.client.remove_friend, name, then=lambda _r: self.status(t("{name} is no longer your friend.",
+                                                                                 name=name)))
+
+    def do_invite(self, kind):
+        if self.outgoing_invite is not None:
+            inv = self.outgoing_invite
+            self.call(self.client.cancel_invite, inv["invite"])
+            return
+        f = self._selected_friend()
+        if f is None:
+            self.status(t("Select a friend in the list first."))
+            return
+
+        def done(r):
+            self.outgoing_invite = r
+            self.status(t("Invite sent to {name}; waiting for an answer ({seconds} s)...", name=r.get("name"),
+                          seconds=f"{float(r.get('expires') or 60):.0f}"))
+            self._set_friend_actions()
+        self.call(self.client.invite, f["name"], kind, then=done)
+
+    def _profile_of_friend(self):
+        f = self._selected_friend()
+        if f is not None:
+            self.show_profile(f["name"])
+
+    def _show_invite(self, ev):
+        """A friend invites this player: the question in the bar, Accept (A) starts it with one click."""
+        frm = ev.get("from") or {}
+        self.invite = ev
+        if ev.get("kind") == "room":
+            text = t("{name} ({rank}) invites you to the room “{room}”", name=frm.get("name"), rank=rank_text(frm),
+                     room=(ev.get("room") or {}).get("name") or "?")
+        else:
+            text = t("{name} ({rank}) invites you to a casual match", name=frm.get("name"), rank=rank_text(frm))
+        self.show_bar(text, [(t("Accept"), lambda: self._answer_invite(True), "cross"),
+                             (t("Decline"), lambda: self._answer_invite(False), "circle")])
+        self.status(text + ".")
+
+    def _answer_invite(self, accept):
+        inv, self.invite = self.invite, None
+        self.hide_bar()
+        if inv:
+            self.call(self.client.answer_invite, inv["invite"], bool(accept))
+
+    def _invite_ended(self, ev):
+        name, state = ev.get("name"), ev.get("state")
+        if self.invite is not None and ev.get("invite") == self.invite.get("invite"):
+            self.invite = None
+            if self.challenge is None and self.match is None:
+                self.hide_bar()
+            if state == "expired":
+                self.status(t("The invite from {name} ran out.", name=name))
+            elif state == "cancelled":
+                self.status(t("The invite from {name} ended.", name=name))
+        elif self.outgoing_invite is not None and ev.get("invite") == self.outgoing_invite.get("invite"):
+            self.outgoing_invite = None
+            if state == "declined":
+                self.status(t("{name} declined your invite.", name=name))
+            elif state == "expired":
+                self.status(t("{name} did not answer your invite.", name=name))
+            elif state == "cancelled":
+                self.status(t("The invite to {name} ended.", name=name))
+        self._set_friend_actions()
+
+    # ------------------------------------------------------------------ Discord Rich Presence (discord_rpc.py)
+    def _presence_wanted(self):
+        """What Discord should show now (an activity dict) or None."""
+        c = self.client
+        if c is None or not c.connected or not c.me:
+            return None
+        drv = self.driver
+        info = self._match_info
+        if drv is not None and drv.ticket is not None and info is not None:
+            key = ("match", info.get("match"))
+            slot = info.get("slot") or 0
+            fight = info.get("fight")
+            fighters = None
+            if fight and all(x and x != fighters_random() for x in fight):
+                names = [self.table.fighter_name(x) for x in fight]
+                fighters = (names[0], names[1]) if slot == 0 else (names[1], names[0])
+            st = info.get("set") or {}
+            score = None
+            if st.get("rated"):
+                w = st.get("wins") or [0, 0]
+                score = (w[0], w[1]) if slot == 0 else (w[1], w[0])
+            spec = dict(kind="match", ranked=info.get("ranked"), fighters=fighters, set_score=score)
+        elif c.me.get("status") == "queue":
+            mode = self.cfg.get("last_search") or "quick"
+            key, spec = ("search", mode), dict(kind="search", mode=mode)
+        else:
+            key, spec = ("lobby",), dict(kind="lobby")
+        if key != self._presence_key:
+            self._presence_key, self._presence_t0 = key, time.time()
+        cfg = getattr(self, "_presence_cfg", None) or {}
+        return discord_rpc.activity_for(start=self._presence_t0, large_image=cfg.get("large_image", ""),
+                                        large_text=cfg.get("large_text", "T5DR Online"), **spec)
+
+    def _presence_tick(self):
+        """Every poll: start / stop Rich Presence with the setting, hand it what to show now."""
+        settings = getattr(self.app, "settings", None) or {}
+        try:
+            on = bool(settings.get("discord_presence"))
+        except AttributeError:
+            on = False
+        if not on:
+            self._presence_noid = False
+            if self.presence is not None:
+                self._stop_presence()
+            return
+        if self.presence is None:
+            if getattr(self, "_presence_noid", False):
+                return                       # (no application id in this copy: Settings says so; looked once)
+            self._presence_cfg = discord_rpc.load_config(settings)
+            app_id = self._presence_cfg.get("application_id")
+            if not app_id:
+                self._presence_noid = True
+                return
+            self.presence = discord_rpc.DiscordPresence(app_id, paths=self.discord_paths, log=_launcher_log).start()
+            self._presence_last = None
+        want = self._presence_wanted()
+        if want != self._presence_last:
+            self._presence_last = want
+            self.presence.update(want)
+
+    def _stop_presence(self, wait=False):
+        p, self.presence = self.presence, None
+        self._presence_last = None
+        if p is None:
+            return
+        if wait:
+            p.close(1.5)
+        else:
+            threading.Thread(target=p.close, daemon=True).start()       # (it takes the activity down first)
+
     # ------------------------------------------------------------------ leaderboard / profile
     def _on_subtab(self):
         try:
@@ -808,6 +1127,8 @@ class OnlineTab:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:
             self.show_profile(None)
+        elif tab == 3:
+            self._fill_friends()
 
     def load_leaderboard(self):
         if not self.client:
@@ -915,8 +1236,23 @@ class OnlineTab:
             if ev["challenge"] == self.challenge:
                 self.challenge = None
                 self.hide_bar()
+        elif kind in ("friends", "friend_status"):
+            self._fill_friends()
+        elif kind == "friend_request":
+            self.status(t("{name} wants to be your friend: see the Friends tab.", name=ev.get("name")))
+        elif kind == "friend_update":
+            if ev.get("state") == "accepted":
+                self.status(t("{name} accepted your friend request.", name=ev.get("name")))
+            elif ev.get("state") == "declined":
+                self.status(t("{name} declined your friend request.", name=ev.get("name")))
+        elif kind == "invited":
+            self._show_invite(ev)
+        elif kind == "invite_update":
+            self._invite_ended(ev)
         elif kind == "match_found":
             self.match = ev
+            self.invite = None
+            self.outgoing_invite = None
             self.hide_bar()
             self.rematch_bar = None
             self.set_bar = None
@@ -984,6 +1320,8 @@ class OnlineTab:
                 if (ev.get("set") or {}).get("locked") and (ev.get("set") or {}).get("game", 1) > 1:
                     fighters_text += " " + t("(locked for this ranked set)")
             self.match_var.set(" -- ".join((self._match_head, fighters_text, self._match_tail)))
+            self._match_info = {"match": ev.get("match"), "ranked": bool(ev.get("ranked")), "slot": ev.get("slot") or 0,
+                                "fight": None if f.get("pick") else (f.get("p1"), f.get("p2")), "set": ev.get("set")}
         elif kind == "match_result":
             self._show_result(ev)
         elif kind == "rematch":
@@ -1019,6 +1357,8 @@ class OnlineTab:
             self.status(n["text"])
         elif k == "game_state":
             # the fight started: show who fights (with the in-game select, what the players picked)
+            if n.get("state") == "fight" and n.get("chars") and self._match_info is not None:
+                self._match_info["fight"] = tuple(n["chars"])
             if n.get("state") == "fight" and n.get("chars") and getattr(self, "_match_head", None):
                 p1, p2 = n["chars"]
                 self.match_var.set(" -- ".join((self._match_head, t("{p1} vs {p2}", p1=self.table.fighter_name(p1),
@@ -1130,7 +1470,8 @@ class OnlineTab:
         m = self.match or {}
         ping = m.get("ping") or {}
         if ping.get("known"):
-            where = t("ping about {ms} ms (through the server; measured directly once you both accept)",
+            # (the server's estimate: the best relay path for the two; the real ping is measured after both accept)
+            where = t("ping about {ms} ms (estimated; measured directly once you both accept)",
                       ms=f"{ping.get('ms', 0):.0f}")
         else:
             where = t("ping not known yet")
@@ -1494,6 +1835,7 @@ class OnlineTab:
             self.parent.after_cancel(self._after)
         except (tk.TclError, ValueError):
             pass
+        self._stop_presence(wait=True)
         self.view.close()
         if self.pad is not None:
             self.pad.stop()
@@ -1586,6 +1928,20 @@ class OnlineTab:
                 proc.wait(wait)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+def fighters_random():
+    return fighters.RANDOM
+
+
+def _launcher_log(text):
+    """A line in launcher.log when the launcher runs this tab (Rich Presence notes); nothing otherwise."""
+    core = sys.modules.get("core")              # (the launcher's module, imported by the launcher itself)
+    if core is not None and hasattr(core, "log"):
+        try:
+            core.log(text)
+        except Exception:       # noqa: BLE001 -- the log is best effort
+            pass
 
 
 # ---------------------------------------------------------------------- standalone (testing)

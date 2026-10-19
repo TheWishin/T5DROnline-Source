@@ -418,6 +418,22 @@ class App(tk.Tk):
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
+        # Stage blur / glow (PS3_STAGE_BLUR=0 when off, core.STAGE_BLUR_MODES): the soft focus some
+        # stages put on the picture and the sun's glow. Picture only, like VSync.
+        sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
+        sb.pack(fill="x", pady=(6, 0))
+        self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+        row = ttk.Frame(sb)
+        row.pack(anchor="w")
+        for key, label in core.STAGE_BLUR_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.stage_blur_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(sb, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+            "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
+            anchor="w", pady=(4, 0))
+
         # Training overlay (T5_TRAINING*, core.TRAINING_MODES, docs/TRAINING.md): inputs and frame data
         # drawn over the picture in Practice; it only reads the game, so it never changes a match.
         tr = ttk.LabelFrame(left, text="  " + t("Training overlay") + "  ", padding=(12, 6))
@@ -495,6 +511,15 @@ class App(tk.Tk):
         ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Helps the direct connection when your opponent's router is strict. The port is open only while "
             "you play and is closed again afterwards.")).pack(anchor="w", pady=(2, 0))
+
+        # Discord Rich Presence (lobby/t5lobby/discord_rpc.py, docs/ONLINE.md): off unless the player turns it on
+        dc = ttk.LabelFrame(right, text="  " + t("Discord") + "  ", padding=(12, 6))
+        dc.pack(fill="x", pady=(6, 0))
+        self.discord_var = tk.BooleanVar(value=bool(self.settings.get("discord_presence", False)))
+        ttk.Checkbutton(dc, text=t("Show what I play in my Discord status (Rich Presence)"), variable=self.discord_var,
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
+            anchor="w", pady=(2, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -869,12 +894,26 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _discord_hint(self):
+        text = t("\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through "
+                 "the Discord app on this PC. Without Discord running nothing happens.")
+        try:
+            from t5lobby import discord_rpc
+            ready = bool(discord_rpc.load_config(self.settings).get("application_id"))
+        except ImportError:
+            ready = False
+        if not ready:
+            text += "\n" + t("This copy has no Discord application id yet, so this does nothing for now.")
+        return text
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
+        if hasattr(self, "stage_blur_var"):
+            self.settings["stage_blur"] = self.stage_blur_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         if hasattr(self, "training_var"):
             self.settings["training"] = self.training_var.get()
@@ -882,6 +921,8 @@ class App(tk.Tk):
             self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
+        if hasattr(self, "discord_var"):
+            self.settings["discord_presence"] = bool(self.discord_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
@@ -958,7 +999,8 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
+                  "input_delay": core.INPUT_DELAYS}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

@@ -72,6 +72,7 @@ constexpr uint32_t kBarriers = 4096;          /* scene changes kept */
 constexpr uint32_t kBarSend  = 4;             /* recent scene changes per packet */
 constexpr int      kTag      = 8;             /* SipHash-2-4 tag at the end of every packet when keyed */
 constexpr ULONGLONG kPingMs  = 200;           /* keepalive while nothing else is sent */
+constexpr int      kMaxDelay = 30;            /* input delay frames, at most (T5_NET_DELAY, and what a joiner takes from the host) */
 
 /* HELLO: handshake (session, delay, build, seed). INPUT: inputs + hashes +
  * scene changes. BYE: leaving. PING: keepalive with the sender's progress.
@@ -236,7 +237,7 @@ struct Session {
     uint32_t peer_frame = 0;
     std::string fail_reason, lost_reason;
     ULONGLONG init_ms = 0, last_hello_ms = 0, last_wait_note = 0;
-    uint32_t relatches = 0, bad_tags = 0, strangers = 0;
+    uint32_t relatches = 0, bad_tags = 0, strangers = 0, stale = 0;   /* stale: old copies of the peer's packets from elsewhere */
     ULONGLONG trouble_ms = 0;          /* when failure/loss was first seen (stuck-handler grace) */
     bool stuck_called = false;
     /* per match (match_begin) */
@@ -702,6 +703,56 @@ void forget_peer_locked()
     s.rb_peer = false;
 }
 
+/* A HELLO in another netplay protocol version ends the handshake (build_mismatch) only when it
+ * proves it is the opponent's: with a match key its tag must be right (v2 and later append it the
+ * same way), without one it must come from the address the lobby named. Before 1.1.2 any 6-byte
+ * packet from anybody who guessed the port ended the session before it began. */
+bool foreign_hello_trusted_locked(const uint8_t* p, int n, const sockaddr_in& from)
+{
+    State& s = S();
+    if (s.keyed) {
+        if (n < 6 + kTag) return false;
+        uint64_t t;
+        memcpy(&t, p + n - kTag, kTag);
+        return t == siphash24(s.key, p, (size_t)(n - kTag));
+    }
+    return !s.env_peer || from.sin_addr.s_addr == s.env_peer_ip.s_addr;
+}
+
+/* Does this packet of the peer's process carry anything not seen yet: a newer PING clock, an input,
+ * hash or scene change not known, a newer acknowledgement? A copy of an old packet does not -- and
+ * replayed by somebody else from another address it must not make this game follow the peer there
+ * (the tag proves who made a packet, not that it is new). n excludes the tag. */
+bool fresh_locked(const Hdr* h, int n)
+{
+    State& s = S();
+    if (h->type == PKT_BYE) return true;               /* sent only at the very end: never an old copy */
+    if (h->type == PKT_PING) {
+        if (n < (int)(sizeof(Hdr) + sizeof(PingExt))) return false;
+        PingExt x; memcpy(&x, h + 1, sizeof x);
+        return s.peer_ping_us == 0 || (int32_t)(x.t_us - s.peer_ping_us) > 0;
+    }
+    if (h->type != PKT_INPUT || n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return false;
+    const InputHdr* ih = (const InputHdr*)(h + 1);
+    if (n < (int)(sizeof(Hdr) + sizeof(InputHdr) + ih->count * sizeof(WireIn) + ih->nhash * sizeof(WireHash)
+                  + ih->nbar * sizeof(WireBar)))
+        return false;
+    if (ih->ack > s.peer_ack) return true;
+    for (uint32_t k = 0; k < ih->count; k++) {
+        const uint32_t f = ih->first + k;
+        if (f >= s.remote_contig && f < s.remote_contig + kRing / 2 && s.remote.in_tag[f % kRing] != f + 1) return true;
+    }
+    const WireHash* wh = (const WireHash*)((const WireIn*)(ih + 1) + ih->count);
+    for (uint32_t k = 0; k < ih->nhash; k++)
+        if (wh[k].frame + 1 > s.remote_hash_max) return true;
+    const WireBar* wb = (const WireBar*)(wh + ih->nhash);
+    for (uint32_t k = 0; k < ih->nbar; k++)
+        if (!s.remote_bar[wb[k].index % kBarriers]) return true;
+    return false;
+}
+
+constexpr ULONGLONG kRelatchSilenceMs = 1000;   /* the peer's address silent this long: follow even an old packet */
+
 void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
 {
     State& s = S();
@@ -710,11 +761,13 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     if (h->magic != kMagic) return;
     if (h->ver != kVersion) {
         /* Another netplay protocol: a different build. Only before the
-         * handshake (afterwards it can only be a stranger). */
+         * handshake (afterwards it can only be a stranger), and only from the opponent. */
         std::lock_guard<std::mutex> lk(s.mu);
-        if (!s.connected && h->type == PKT_HELLO)
+        if (!s.connected && h->type == PKT_HELLO && foreign_hello_trusted_locked(p, n, from))
             fail_locked("build_mismatch", "%s speaks netplay protocol v%u, this game v%u (a different build)",
                         addr_str(from).c_str(), h->ver, kVersion);
+        else if (s.strangers++ < 5)
+            note("packet of netplay protocol v%u from %s ignored (not the opponent's)", h->ver, addr_str(from).c_str());
         return;
     }
     if (n < (int)sizeof(Hdr)) return;
@@ -768,8 +821,12 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             }
         }
         if (s.connected) {
-            /* the same peer process */
-            if (!from_peer) relatch_locked(from);
+            /* the same peer process; a HELLO carries nothing new, so from another address it is
+             * followed only once the known one has gone quiet (see fresh_locked) */
+            if (!from_peer) {
+                if (GetTickCount64() - s.last_rx_ms < kRelatchSilenceMs) { s.stale++; return; }
+                relatch_locked(from);
+            }
             s.last_rx_ms = GetTickCount64();
             if (s.mode == Mode::Host) send_hello_locked();   /* it may have missed ours */
             return;
@@ -786,8 +843,9 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
             if (h->session == s.session) connect_locked();
         } else if (s.mode == Mode::Join) {
             s.session = h->session;
-            if (h->delay != s.delay) note("using the host's input delay %d (was %d)", h->delay, s.delay);
-            s.delay = h->delay;
+            const int hd = std::min<int>(h->delay, kMaxDelay);   /* a host never sends more (configure) */
+            if (hd != s.delay) note("using the host's input delay %d (was %d)", hd, s.delay);
+            s.delay = hd;
             s.seed = x.seed;   /* the host's seed (none: both use the session id) */
             s.peer = from; s.peer_known = true; s.peer_nonce = h->nonce;
             connect_locked();
@@ -819,7 +877,16 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         connect_locked();
     }
     if (h->nonce != s.peer_nonce) return;     /* an old process of the peer, or a stranger */
-    if (!from_peer) relatch_locked(from);
+    if (!same_addr(from, s.peer)) {
+        /* NAT rebinding or a new relay mapping -- or a recorded packet of the peer played back from
+         * somewhere else. Follow only what is new, or anything once the known address went quiet. */
+        if (!fresh_locked(h, n) && GetTickCount64() - s.last_rx_ms < kRelatchSilenceMs) {
+            if (s.stale++ < 5)
+                note("old packet of the opponent's from %s dropped (a copy, not a new address)", addr_str(from).c_str());
+            return;
+        }
+        relatch_locked(from);
+    }
     s.packets_in++;
     s.last_rx_ms = GetTickCount64();
     if (h->type == PKT_BYE) {
@@ -1022,7 +1089,7 @@ void configure()
         s.rb_delay = (!_stricmp(v, "auto") || !_stricmp(v, "a")) ? kRbAuto : std::max(0, std::min(30, atoi(v)));
     if (const char* v = env("T5_RB_NET_DELAY_AUTO")) s.rb_auto_ms = std::max(0, std::min(1000, atoi(v)));
     if (s.delay < 0) s.delay = 0;
-    if (s.delay > 30) s.delay = 30;
+    if (s.delay > kMaxDelay) s.delay = kMaxDelay;
     if (const char* v = env("T5_NET_TIMEOUT")) s.timeout_s = atoi(v);
     s.connect_timeout_s = std::max(60, 2 * s.timeout_s);
     if (const char* v = env("T5_NET_CONNECT_TIMEOUT")) s.connect_timeout_s = atoi(v);

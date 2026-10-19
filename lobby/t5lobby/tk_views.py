@@ -11,6 +11,7 @@ tab.actions, tab.bar, tab.bar_buttons, tab.tv_players ...) and draws the state a
                 Decline (B), the opponent shown after both accepted), a challenge, the result with the
                 rematch buttons, "How did the match end?"
     match       in a match: the opponent, ping, input delay, connection, "Your game is running"
+    friends     the Friends page: who is online / in a match / offline, invites, requests, add by name
     result      the result (win / loss banner, score, rating change, rank up / down, lag check)
     errors      one line on a red banner: what went wrong and what to do
 
@@ -31,7 +32,8 @@ from .theme import C
 HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), "record": N_("Record"),
             "main": N_("Main"), "status": N_("Status"), "ping": N_("Ping"), "room": N_("Room"),
             "owner": N_("Owner"), "state": N_("State"), "place": N_("Place"), "when": N_("When"),
-            "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score")}
+            "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score"),
+            "request": N_("Request")}
 
 # What the player can do about an error: words to look for in the message (lower case; the English words of the
 # server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The same
@@ -74,6 +76,8 @@ ERROR_HELP = (
     (("no longer available", "nicht mehr da"), N_("Find a new opponent.")),
     (("that match is over", "match ist vorbei"), N_("Find a new opponent.")),
     (("could not start", "nicht gestartet werden", "nicht starten"), N_("Check the Play offline tab: does the game start there?")),
+    (("no account with that name", "kein konto mit diesem namen"),
+     N_("Check the spelling: friends are added by their account name.")),
 )
 
 
@@ -448,13 +452,17 @@ class OnlineView:
         lobby = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         board = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
         nb.add(prof, text=t("Profile"))
+        nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
+        tab.friends_page = friends
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)
         self._build_profile_page(prof)
+        self._build_friends_page(friends)
         return scr
 
     def _build_profile(self, scr):
@@ -751,6 +759,78 @@ class OnlineView:
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])
+
+    def _build_friends_page(self, page):
+        """Friends (accounts): the list with who is online, invites, requests both ways, add by name."""
+        tab, px = self.tab, self.px
+        page.columnconfigure(0, weight=3)
+        page.columnconfigure(1, weight=2)
+        page.rowconfigure(1, weight=1)
+        self.friends_note = self.wrap(ttk.Label(page, textvariable=tab.friends_note_var, style="Muted.TLabel",
+                                                justify="left"), page, 20)
+        self.friends_note.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
+        fc = self.card(page, pad=12)
+        fc.grid(row=1, column=0, sticky="nsew")
+        fc.columnconfigure(0, weight=1)
+        fc.rowconfigure(1, weight=1)
+        head, tools = self.section_head(fc, t("Friends").upper(), tab.friends_count_var)
+        head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
+        tab.friend_actions = {}
+        for key, label, cmd in (("invite", t("Invite to a match"), lambda: tab.do_invite("casual")),
+                                ("invite_room", t("Invite to my room"), lambda: tab.do_invite("room")),
+                                ("remove", t("Remove"), tab.do_remove_friend)):
+            b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
+            b.pack(side="left", padx=(px(6), 0))
+            tab.friend_actions[key] = b
+        fr, tab.tv_friends = self.tree(fc, ("player", "rank", "status"), (150, 150, 200), height=8)
+        fr.grid(row=1, column=0, sticky="nsew")
+        tab.tv_friends.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
+        tab.tv_friends.bind("<Double-1>", lambda _e: tab._profile_of_friend())
+        self.wrap(ttk.Label(fc, style="Card.Faint.TLabel", justify="left", text=t(
+            "Invite a friend who is online: one click on their side starts a casual match, or brings them into "
+            "your room.")), fc, 30).grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+
+        side = ttk.Frame(page)
+        side.grid(row=1, column=1, sticky="nsew", padx=(px(10), 0))
+        side.columnconfigure(0, weight=1)
+        side.rowconfigure(1, weight=1)
+        ac = self.card(side, pad=12)
+        ac.grid(row=0, column=0, sticky="we")
+        ac.columnconfigure(0, weight=1)
+        ttk.Label(ac, text=t("Add a friend").upper(), style="Card.Caps.TLabel").grid(row=0, column=0, columnspan=2,
+                                                                                    sticky="w")
+        e = ttk.Entry(ac, textvariable=tab.friend_name_var, style="Card.TEntry")
+        e.grid(row=1, column=0, sticky="we", pady=(px(6), 0))
+        e.bind("<Return>", lambda _e: tab.do_add_friend())
+        b = ttk.Button(ac, text=t("Send request"), style="Card.Accent.TButton", state="disabled",
+                       command=tab.do_add_friend)
+        b.grid(row=1, column=1, sticky="e", padx=(px(6), 0), pady=(px(6), 0))
+        tab.friend_actions["add"] = b
+        self.wrap(ttk.Label(ac, style="Card.Faint.TLabel", justify="left", text=t(
+            "Their account name. They become your friend when they accept.")), ac, 30).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(px(4), 0))
+
+        rc = self.card(side, pad=12)
+        rc.grid(row=1, column=0, sticky="nsew", pady=(px(10), 0))
+        rc.columnconfigure(0, weight=1)
+        rc.rowconfigure(1, weight=1)
+        head, tools = self.section_head(rc, t("Requests").upper(), tab.requests_count_var)
+        head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
+        fr, tab.tv_requests = self.tree(rc, ("player", "request"), (120, 170), height=5, image_col=False)
+        fr.grid(row=1, column=0, sticky="nsew")
+        tab.tv_requests.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
+        row = self.body(rc)
+        row.grid(row=2, column=0, sticky="w", pady=(px(8), 0))
+        for key, label, cmd, style in (
+                ("accept", t("Accept"), lambda: tab.do_friend_answer(True), "Card.Accent.TButton"),
+                ("decline", t("Decline"), lambda: tab.do_friend_answer(False), "Card.TButton"),
+                ("cancel_request", t("Take back"), tab.do_cancel_request, "Card.TButton")):
+            b = ttk.Button(row, text=label, style=style, state="disabled", command=cmd)
+            b.pack(side="left", padx=(0, px(6)))
+            tab.friend_actions[key] = b
+
+    def friend_image(self, status):
+        return self.th.presence_icon(status)
 
     def _build_footer(self, box):
         tab, px = self.tab, self.px
@@ -1163,6 +1243,8 @@ class OnlineView:
             return "result"                 # (a ranked set between two games: the result, the countdown, Leave set)
         if tab.challenge is not None:
             return "challenge"
+        if getattr(tab, "invite", None) is not None:
+            return "invite"
         drv = tab.driver
         if drv is not None and drv.ticket is not None:
             return "question"
@@ -1175,6 +1257,7 @@ class OnlineView:
         kind = self._bar_kind_now()
         lag = (tab.lag or {}).get("text")
         sig = (kind, id(tab.match), (self.revealed or {}).get("name"), tab.ready_sent, tab.challenge,
+               (getattr(tab, "invite", None) or {}).get("invite"),
                tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None,
                tab.set_var.get(), id(tab.set_bar))
         if sig == self._bar_sig:
@@ -1193,6 +1276,8 @@ class OnlineView:
             self._visual_connecting(self.bar_visual)
         elif kind == "challenge":
             self._visual_challenge(self.bar_visual)
+        elif kind == "invite":
+            self._visual_invite(self.bar_visual)
         elif kind == "result":
             self._visual_result(self.bar_visual)
             # (a ranked set's countdown to its next game is the strip on the card; bar_text keeps the same line)
@@ -1268,7 +1353,7 @@ class OnlineView:
                   foreground=theme.ping_color(ms)).pack(side="left")
         ttk.Label(prow, text="  " + theme.ping_word(ms), style="Card.Bold.TLabel").pack(side="left")
         if ms is not None:
-            ttk.Label(prow, text="  " + t("(estimate through the server)"), style="Card.Faint.TLabel").pack(
+            ttk.Label(prow, text="  " + t("(estimated before you connect)"), style="Card.Faint.TLabel").pack(
                 side="left")
         if tab.ready_sent:
             ttk.Label(left, text=t("Accepted. Waiting for your opponent..."), style="Card.Accent.TLabel").grid(
@@ -1317,6 +1402,24 @@ class OnlineView:
             self._opponent_row(left, ch, 1)
         ttk.Label(left, text=t("wants to play you. Accept to start the match."), style="Card.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(px(10), 0))
+
+    def _visual_invite(self, v):
+        """A friend invites this player: their badge and name, and to what (a casual match, or their room)."""
+        px = self.px
+        inv = self.tab.invite or {}
+        left = self.body(v)
+        left.grid(row=0, column=0, sticky="nw")
+        ttk.Label(left, text=t("Invite from a friend").upper(), style="Card.Caps.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
+        if inv.get("from"):
+            self._opponent_row(left, inv["from"], 1)
+        if inv.get("kind") == "room":
+            text = t("invites you to the room “{room}”. Accept to join it; the match starts at once.",
+                     room=(inv.get("room") or {}).get("name") or "?")
+        else:
+            text = t("invites you to a casual match. Accept to start it.")
+        ttk.Label(left, text=text, style="Card.TLabel").grid(row=3, column=0, columnspan=2, sticky="w",
+                                                              pady=(px(10), 0))
 
     # --- the result
     def _outcome(self):

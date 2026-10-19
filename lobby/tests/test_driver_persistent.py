@@ -77,6 +77,69 @@ class HudTest(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class MatchIdTest(unittest.TestCase):
+    """A match id comes from the lobby server -- any server a player adds -- and goes into file names and the
+    fight line. A server that sends a path must not make the launcher delete, write or move files elsewhere."""
+
+    EVIL = ["..\\..\\..\\evil", "../../evil", "C:\\Windows\\x", "m1 pick=99 names=x", "m1\n", "",
+            "x" * 41, "m1/../..", "con", "m:1"]
+
+    def test_proto_refuses_them(self):
+        from t5lobby import proto
+        self.assertTrue(proto.valid_match_id("m752f00f03e2f"))
+        for bad in self.EVIL[:-2] + [None, 7, ["m1"]]:
+            if bad == "con":
+                continue
+            self.assertFalse(proto.valid_match_id(bad), bad)
+        for bad in self.EVIL:
+            safe = proto.file_safe(bad)
+            self.assertRegex(safe, r"^[A-Za-z0-9_-]{1,40}$")
+
+    def test_the_client_drops_a_message_with_such_an_id(self):
+        import asyncio
+        from t5lobby import proto
+        from t5lobby.client import LobbyClient
+        c = LobbyClient("127.0.0.1:1", util.BUILD)
+        seen = []
+        c._emit = seen.append
+        loop = asyncio.new_event_loop()
+        try:
+            fut = loop.create_future()
+            c._pending[5] = fut
+            loop.run_until_complete(c._dispatch({"t": "match_found", "match": "..\\..\\evil", "re": 5}))
+            loop.run_until_complete(c._dispatch({"t": "match_start", "match": "a b", "path": "lan"}))
+            loop.run_until_complete(c._dispatch({"t": "notice", "match": "m1", "msg": "fine"}))
+            self.assertIsInstance(fut.exception(), proto.LobbyError)
+        finally:
+            loop.close()
+        self.assertEqual([e["t"] for e in seen], ["notice"])
+        self.assertIsNone(c.match)
+
+    def test_the_driver_keeps_its_files_in_its_folder(self):
+        d = tempfile.mkdtemp(prefix="drvmid")
+        outside = os.path.join(os.path.dirname(d), os.path.basename(d) + "-outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "victim.json")
+        with open(victim, "w") as f:
+            f.write("{}")
+        try:
+            launched = []
+            drv = MatchDriver(FakeClient(), lambda env: launched.append(FakeGame(env)) or launched[-1], d,
+                              mode="process")
+            rel = os.path.relpath(os.path.join(outside, "victim"), d)
+            evil = os.sep.join(["x", "..", rel])         # result-x\..\..\<outside>\victim.json before the fix
+            ev = start_event(evil)
+            ev["ticket"] = ticket("m1")
+            drv.on_event(ev)
+            for path in (drv.result_path, drv.fight_path, drv.status_path):
+                self.assertEqual(os.path.dirname(os.path.abspath(path)), os.path.abspath(d), path)
+            self.assertTrue(os.path.exists(victim))
+            self.assertNotIn("..", launched[0].env.get("T5_FIGHT_FILE", ""))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(outside, ignore_errors=True)
+
+
 class SessionLogTest(unittest.TestCase):
     def test_a_new_session_forgets_the_last_peer(self):
         g = GameLog(None)

@@ -705,7 +705,16 @@ and the soft focus looks like Native's; the glow's banding is gone.
 
 Off: the five stages are sharp (detail Off/On on stage 34: 1.30-1.43 at
 Native, 1.65-2.07 at 4K), the colours unchanged, stage 20 without the sun's
-glow.
+glow. Every stage was run On against Off (lockstep pairs, fighters idle, at
+Native and at 4K): all 18 render correctly with Off and the HUD is the same;
+on the 13 stages without a filter the runtime logs no kernel and draws
+exactly as with On (what still differs between the two pictures are the
+stages' own animated textures and particles -- waterfalls, fire, steam --
+which differ between any two games). Smoke suite: quick PASS at Native (On);
+at 4K boot, practice and arcade PASS with On and with Off. (A whole quick run
+at 4K with Off, next to 19 other games, missed five of its frame shots --
+33 MB readbacks timing out -- and failed on that; the frames it got were
+right, and the tests passed again on a quieter PC.)
 
 **Cost:** one box pass per filtered surface and frame (stage 34 at 4K:
 6144 x 4320 -> 2048 x 1440, nine loads per guest texel). GPU time per fight
@@ -715,4 +724,12 @@ at 4K 2.11 / 1.71 / 1.83; stage 34 at Native 0.67 / 0.43 -- within the spread
 of these runs, nothing measurable.
 
 **Online:** host pixels only -- the patch reads no guest memory and changes no
-command, so the two players may choose differently.
+command, so the two players may choose differently. Rollback pairs (the online
+default, `tools/rollback_net_test.py --mode1 default --mode2 default`) with one
+side Off, 7 matches of two rounds: stage 34 Native On vs Native Off at RTT 50 ms
+/ 3 % loss (2 matches, 850 / 498 rollbacks), stage 20 4K On vs 1440p Off at
+RTT 150 ms / 3 % (2 matches, 829 / 505), stages 24, 26 and 28 4K Off vs Native
+On at RTT 100 ms / 2 % (3 matches, 482 / 532): 0 mismatching frames and the
+same result hash on both sides in every match. All 70 lockstep pair runs above
+(Native against 1080p / 1440p / 4K, On against Off): 0 mismatching frames. (The
+PC ran 10-19 other games during these runs, at 16-23 fps for the pairs.)

@@ -106,10 +106,16 @@ Ordner.
 
 ## Sprache des Launchers
 
-Der Launcher spricht Deutsch oder Englisch. Unter **Einstellungen** -> **Sprache**
-stellst du ein: **Auto** nimmt die Sprache von Windows, dazu **Deutsch** und
-**English**. Eine Änderung gilt, wenn der Launcher neu startet (der Knopf **Jetzt
-neu starten** macht das). Das Spiel selbst bleibt englisch.
+Der Launcher spricht Deutsch, Englisch, Spanisch, Koreanisch, Japanisch,
+brasilianisches Portugiesisch und Französisch. Unter **Einstellungen** ->
+**Sprache** stellst du ein: **Auto** nimmt die Sprache von Windows (Englisch, wenn
+Windows eine andere Sprache hat), dazu jede Sprache unter ihrem eigenen Namen:
+**English**, **Deutsch**, **Español**, **한국어**, **日本語**, **Português (Brasil)**,
+**Français**. Eine Änderung gilt, wenn der Launcher neu startet (der Knopf **Jetzt
+neu starten** macht das). Das Spiel selbst bleibt englisch. Die spanischen,
+koreanischen, japanischen, portugiesischen und französischen Texte sind mit
+maschineller Hilfe übersetzt: Klingt etwas falsch, sag uns Bescheid --
+Korrekturen sind willkommen.
 
 Diese Anleitung nennt die Knöpfe oft englisch, so wie sie im englischen Launcher
 heißen. Im deutschen Launcher heißen sie:

@@ -109,12 +109,12 @@ MESSAGES = {
     "8-way d-pad": "8-Wege-Steuerkreuz",
     "Analog stick": "Analogstick",
     "Both cancel (neutral)": "Beide heben sich auf (neutral)",
-    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter ist Hoch)",
+    "Up wins (Up+Down is Up)": "Hoch gewinnt (Hoch+Runter = Hoch)",
     "Last direction wins": "Die letzte Richtung gewinnt",
     "Pass both through": "Beide durchlassen",
     "This controller is": "Dieser Controller ist",
     "Left stick": "Linker Stick",
-    "Opposite directions": "Gegenüberliegende Richtungen",
+    "Opposite directions": "Gegenrichtungen",
     "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction "
     "as a stick; the game then reads it as d-pad presses. Left+Right (or Up+Down) at "
     "once happens on keyboards and hitboxes; the game cannot take both. Stick and "
@@ -206,8 +206,6 @@ MESSAGES = {
     "Inputs": "Eingaben",
     "Inputs + frame data": "Eingaben + Framedaten",
     "Auto (Windows language)": "Auto (Sprache von Windows)",
-    "Deutsch": "Deutsch",
-    "English": "English",
     "No package chosen.": "Kein Paket gewählt.",
     "File not found.": "Datei nicht gefunden.",
     "Cannot read the file: {error}": "Die Datei lässt sich nicht lesen: {error}",

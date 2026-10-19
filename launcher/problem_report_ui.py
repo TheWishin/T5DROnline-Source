@@ -19,7 +19,8 @@ from tkinter import ttk
 
 import problem_report as report
 
-# English or German (lobby/t5lobby/i18n.py). The zip's own files stay English: they are for whoever reads the report.
+# The player's language (lobby/t5lobby/i18n.py). The zip's own files stay English: they are for whoever reads the
+# report.
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lobby"))
 try:
     from t5lobby import i18n
@@ -100,7 +101,8 @@ class ReportDialog:
             row=1, column=0, sticky="w", pady=(4, 10))
 
         ttk.Label(b, text=t("What happened? (optional)"), style="H2.TLabel").grid(row=2, column=0, sticky="w")
-        self.note = tk.Text(b, height=4, width=70, wrap="word", font=("Segoe UI", 10))
+        self.note = tk.Text(b, height=4, width=70, wrap="word",
+                            font=(i18n.ui_family() if i18n else "Segoe UI", 10))
         self.note.grid(row=3, column=0, sticky="we", pady=(2, 10))
 
         box = ttk.LabelFrame(b, text="  " + t("What goes into the zip") + "  ", padding=(10, 6))

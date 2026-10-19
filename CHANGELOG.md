@@ -49,6 +49,12 @@ lobby features need the lobby server updated; older launchers keep working with 
   numbers are measured in this game, not copied from tables (docs/TRAINING.md, ps3recomp patch 0045).
 
 ### Launcher
+- **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français,
+  besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
+  Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
+  a font made for them. The new translations were made with machine help: corrections from players
+  are welcome. The Settings tab and the Controls window got room for the longer texts (at 100 % and
+  150 % display scaling).
 - **Unlock all stages** (player request): launcher **Settings -> Unlocks**. The Tekken 5 stages,
   normally earned after about 50 fights, are there in Arcade, VS, Practice and the rest from the
   start. Your save is not changed; switched off, the game is as before.

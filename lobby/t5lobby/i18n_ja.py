@@ -1592,13 +1592,13 @@ MESSAGES = {
     "offline": "オフライン",
     "(older launcher: no invites)": "（古いランチャー：招待不可）",
     "Friends ({count})": "フレンド（{count}）",
-    "offline, last seen {when}": "オフライン、最終ログイン {when}",
+    "offline, last seen {when}": "オフライン（{when}）",
     "Friends need an account. Log in with one to add friends and invite them.":
         "フレンド機能にはアカウントが必要です。アカウントでログインすると、フレンドの追加や招待ができます。",
     "This lobby server has no friends list (it needs version 1.1.2 or newer).":
         "このロビーサーバーにはフレンドリストがありません（バージョン 1.1.2 以降が必要）。",
     "wants to be your friend": "フレンド申請が届いています",
-    "asked: waiting for an answer": "申請済み：返事待ち",
+    "asked: waiting for an answer": "返事待ち",
     "{online} online · {count} of {max}": "オンライン {online} 人 · {count}/{max}",
     "Your friends see when you are online. Invite one who is online to play.":
         "フレンドにはあなたがオンラインかどうかが見えます。オンラインのフレンドを招待して遊びましょう。",

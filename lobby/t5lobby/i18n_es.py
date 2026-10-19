@@ -1604,15 +1604,15 @@ MESSAGES = {
         "Revisa cómo lo escribiste: los amigos se agregan por su nombre de cuenta.",
     "in a match": "en partida",
     "offline": "desconectado",
-    "(older launcher: no invites)": "(launcher viejo: sin invitaciones)",
+    "(older launcher: no invites)": "(launcher viejo: sin invitar)",
     "Friends ({count})": "Amigos ({count})",
-    "offline, last seen {when}": "desconectado, visto por última vez {when}",
+    "offline, last seen {when}": "desconectado desde {when}",
     "Friends need an account. Log in with one to add friends and invite them.":
         "Los amigos necesitan una cuenta. Inicia sesión con una para agregar amigos e invitarlos.",
     "This lobby server has no friends list (it needs version 1.1.2 or newer).":
         "Este servidor de lobby no tiene lista de amigos (necesita la versión 1.1.2 o más nueva).",
     "wants to be your friend": "quiere ser tu amigo",
-    "asked: waiting for an answer": "solicitado: esperando respuesta",
+    "asked: waiting for an answer": "esperando respuesta",
     "{online} online · {count} of {max}": "{online} conectados · {count} de {max}",
     "Your friends see when you are online. Invite one who is online to play.":
         "Tus amigos ven cuándo estás conectado. Invita a uno que esté conectado para jugar.",

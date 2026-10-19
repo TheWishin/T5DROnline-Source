@@ -1562,13 +1562,13 @@ MESSAGES = {
     "offline": "오프라인",
     "(older launcher: no invites)": "(구버전 런처: 초대 불가)",
     "Friends ({count})": "친구 ({count})",
-    "offline, last seen {when}": "오프라인, 마지막 접속 {when}",
+    "offline, last seen {when}": "오프라인 ({when})",
     "Friends need an account. Log in with one to add friends and invite them.":
         "친구 기능은 계정이 필요합니다. 계정으로 로그인하면 친구를 추가하고 초대할 수 있습니다.",
     "This lobby server has no friends list (it needs version 1.1.2 or newer).":
         "이 로비 서버에는 친구 목록이 없습니다 (버전 1.1.2 이상 필요).",
     "wants to be your friend": "친구 요청을 보냈습니다",
-    "asked: waiting for an answer": "요청함: 응답 대기 중",
+    "asked: waiting for an answer": "응답 대기 중",
     "{online} online · {count} of {max}": "접속 {online}명 · {count}/{max}",
     "Your friends see when you are online. Invite one who is online to play.":
         "친구들은 내가 접속 중인지 볼 수 있습니다. 접속 중인 친구를 초대해 함께 플레이하세요.",

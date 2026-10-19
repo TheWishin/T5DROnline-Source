@@ -198,8 +198,21 @@ class Client:
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}
         self.events = __import__("queue").Queue()
 
+    friend_list = {
+        "max": 100,
+        "friends": [
+            {"name": "Rival_Long_Name", "status": "online", "activity": "queue", "rank": "Lord of War", "tier": 31},
+            {"name": "Bob", "status": "in_match", "rank": "2nd Dan", "tier": 11, "invite": "update"},
+            {"name": "Old", "status": "online", "activity": "idle", "invite": "version", "rank": "1st Dan", "tier": 10},
+            {"name": "Zed", "status": "offline", "last_seen": 1792350300, "rank": "Beginner", "tier": 0}],
+        "incoming": [{"name": "NewFriend_123"}],
+        "outgoing": [{"name": "Somebody_Else"}]}
+
     def active_notices(self):
         return []
+
+    def has_friends(self):
+        return True
 
     def close(self):
         pass
@@ -386,6 +399,12 @@ class Walk:
         self.screen("online leaderboard")
         tab.show_profile("Me")
         self.screen("online profile")
+        tab.nb.select(tab.friends_page)
+        tab.on_event({"t": "friends"})
+        self.screen("online friends")
+        tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
+        self.screen("online friend's invite")
+        tab.hide_bar()
 
     def _windows(self, d):
         """The Controls window (fake controllers), the problem report and the update offer: windows of their own,

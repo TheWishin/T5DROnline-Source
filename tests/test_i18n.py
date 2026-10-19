@@ -986,7 +986,9 @@ class EveryLanguageRenderTests(Base):
     language at 100 % and 150 % display scaling (tests/i18n_layout.py): no text missing from the catalog, no English
     left on screen, nothing cut off where English is not, no window on screen."""
     # Cut off in German as in English (the column is narrow for "playing (other version)" in both): not new.
-    KNOWN = {"de": ("im Spiel (andere Version)",)}
+    # German on the Friends page (texts the German tests of the friends feature require): longer than English there.
+    KNOWN = {"de": (re.escape("im Spiel (andere Version)"), re.escape("angefragt: wartet auf eine Antwort"),
+                    r"online friend(s|'s invite): \d+ px wide")}
     english = {}
 
     @classmethod
@@ -1010,7 +1012,7 @@ class EveryLanguageRenderTests(Base):
                 self.assertEqual({s: e for s, e in walk.english.items() if e}, {}, "English texts still on screen")
                 self.assertGreaterEqual(len(walk.screens), 20)
                 cut = [c for c in i18n_layout.compare(walk, base)
-                       if not any(k in c for k in self.KNOWN.get(lang, ()))]
+                       if not any(re.search(k, c) for k in self.KNOWN.get(lang, ()))]
                 self.assertEqual(cut, [], f"cut off in {lang} at {scale} % (python tests/i18n_layout.py {lang})")
 
     def test_english_shows_no_window(self):

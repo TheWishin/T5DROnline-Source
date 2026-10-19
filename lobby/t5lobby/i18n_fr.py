@@ -1623,15 +1623,15 @@ MESSAGES = {
         "Vérifie l'orthographe : les amis s'ajoutent par leur nom de compte.",
     "in a match": "en match",
     "offline": "hors ligne",
-    "(older launcher: no invites)": "(ancien launcher : pas d'invitations)",
+    "(older launcher: no invites)": "(vieux launcher : pas d'invit.)",
     "Friends ({count})": "Amis ({count})",
-    "offline, last seen {when}": "hors ligne, vu pour la dernière fois {when}",
+    "offline, last seen {when}": "hors ligne depuis {when}",
     "Friends need an account. Log in with one to add friends and invite them.":
         "Les amis nécessitent un compte. Connecte-toi avec un compte pour ajouter des amis et les inviter.",
     "This lobby server has no friends list (it needs version 1.1.2 or newer).":
         "Ce serveur de lobby n'a pas de liste d'amis (il faut la version 1.1.2 ou plus récente).",
     "wants to be your friend": "veut être ton ami",
-    "asked: waiting for an answer": "demandé : en attente de réponse",
+    "asked: waiting for an answer": "en attente de réponse",
     "{online} online · {count} of {max}": "{online} en ligne · {count} sur {max}",
     "Your friends see when you are online. Invite one who is online to play.":
         "Tes amis voient quand tu es en ligne. Invite-en un qui est en ligne pour jouer.",

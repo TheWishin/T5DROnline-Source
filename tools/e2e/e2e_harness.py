@@ -691,6 +691,9 @@ class Player:
         """A button of the play row: ranked, quick, cancel, room, join, leave, challenge."""
         b = self.tab.actions[key]
         if str(b.cget("state")) != "normal":
+            # a person waits for the button: the client may know the new lobby state a moment before the tab shows it
+            self.ctx.wait(lambda: str(b.cget("state")) == "normal", 5)
+        if str(b.cget("state")) != "normal":
             raise RuntimeError(f"{self.name}: button {key!r} is disabled")
         b.invoke()
 

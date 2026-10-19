@@ -492,6 +492,10 @@ MESSAGES = {
     "Advanced: extra settings, one NAME=VALUE per line":
         "Erweitert: zusätzliche Einstellungen, eine pro Zeile als NAME=WERT",
     "Internal resolution": "Interne Auflösung",
+    "VSync": "VSync",
+    "On (smooth, default)": "An (flüssig, Standard)",
+    "Off (lowest latency, may tear)": "Aus (geringste Verzögerung, Bild kann reißen)",
+    "The game always runs at 60 fps, like on the PS3.": "Das Spiel läuft immer mit 60 fps, wie auf der PS3.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",
@@ -673,6 +677,12 @@ MESSAGES = {
         "Direkte Verbindung gefunden: Das Match läuft nicht mehr über den Lobby-Server.",
     "The direct connection was lost; back on the lobby server's relay.":
         "Die direkte Verbindung ist abgerissen; es geht wieder über das Relay des Lobby-Servers.",
+    "Direct connection not possible; using the relay server {name}...":
+        "Direkte Verbindung nicht möglich; nutze den Relay-Server {name}...",
+    "Direct connection found: the match no longer goes through the relay server {name}.":
+        "Direkte Verbindung gefunden: Das Match läuft nicht mehr über den Relay-Server {name}.",
+    "The direct connection was lost; back on the relay server {name}.":
+        "Die direkte Verbindung ist abgerissen; es geht wieder über den Relay-Server {name}.",
     # ---- lobby/t5lobby/dialogs.py
     "No": "Nein",
     "Yes": "Ja",
@@ -1197,6 +1207,7 @@ MESSAGES = {
     "Challenge expired.": "Herausforderung abgelaufen.",
     "direct": "direkt",
     "via the lobby server's relay": "über das Relay des Lobby-Servers",
+    "via the relay server {name}": "über den Relay-Server {name}",
     "Lobby error: {error}": "Lobby-Fehler: {error}",
     "guest": "Gast",
     "Not connected. Ranked needs an account; guests play casual matches.":
@@ -1561,6 +1572,7 @@ MESSAGES = {
     "Direct": "Direkt",
     "Local network": "Lokales Netzwerk",
     "Relay (lobby server)": "Relay (Lobby-Server)",
+    "Relay ({name})": "Relay ({name})",
     "Guest": "Gast",
     "{rank}  ·  rating {rating}": "{rank}  ·  Wertung {rating}",
     "SET · GAME {game}": "SET · SPIEL {game}",

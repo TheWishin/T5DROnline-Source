@@ -10,6 +10,8 @@ notice, ...) plus the client's own:
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
     {"t": "nat_upgrade", "match": id, "path": "direct"|"relay", "text": ...}   a relayed match moved onto
                                            the direct path (or back to the relay); see RelayBridge
+    {"t": "relay_rtts", "rtts": {id: ms}}  round trips to the server's regional relays were measured
+                                           (relays=True; the server picks a relay per match from them)
     {"t": "reconnecting", "reason": str}   the connection broke; resuming the session in the background
     {"t": "reconnected"}                   ... and it worked (a running match carries on)
     {"t": "disconnected", "reason": str}   gone for good (log in again)
@@ -59,7 +61,7 @@ class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -85,7 +87,9 @@ class LobbyClient:
         nat2: speak the planned hole punching with a server that offers it (all at once, steady, port
         prediction); False behaves exactly like a 1.1.0 client (tests). relay_bridge: on the relay path
         against another nat2 client, keep the game socket here and move the match onto the direct path
-        when it starts to work (RelayBridge)."""
+        when it starts to work (RelayBridge). relays: measure the UDP round trip to the regional relays a
+        server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
+        behaves like a 1.1.0 client there (only the lobby server's own relay)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -135,6 +139,8 @@ class LobbyClient:
         self.port_mapping = port_mapping
         self.nat2 = nat2
         self.relay_bridge = relay_bridge
+        self.relays = relays
+        self.relay_rtts = {}         # regional relay id -> ms, as last measured and reported
         self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
         self._bridge = None          # RelayBridge of the running relayed match
@@ -229,7 +235,8 @@ class LobbyClient:
                                                 "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])
                                                 + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])
-                                                + (["nat2"] if self.nat2 else [])})
+                                                + (["nat2"] if self.nat2 else [])
+                                                + (["relays"] if self.relays else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -408,6 +415,13 @@ class LobbyClient:
         return [n["text"] for _i, n in sorted(self.notices.items())
                 if not n["expires"] or n["expires"] > now]
 
+    async def _on_relays(self, msg):
+        """The server's list of regional relays changed: measure the new list."""
+        if self.welcome is not None and isinstance(msg.get("relays"), list):
+            self.welcome["relays"] = msg["relays"]
+            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
+        return False
+
     async def _on_match_cancel(self, msg):
         if self.match and self.match["match"] == msg["match"]:
             self.match = None
@@ -462,7 +476,7 @@ class LobbyClient:
             self._nat_task.cancel()
         local_port = gs.port
         if msg["path"] == "relay":
-            peer = (self.server_ip, int(msg["relay_port"]))
+            peer = self.relay_address(self._relay_of(msg, "relay_port"))
             if self.match.get("bridge") and self._bridge is None:
                 b = await self._open_bridge(msg["match"], peer, msg.get("start_time"))
                 if b is not None:
@@ -620,15 +634,34 @@ class LobbyClient:
                           "rtt_ms": round(rtt, 3), "jitter_ms": round(jitter, 3)})
         # Keep answering the peer's pings until match_start arrives.
 
+    def relay_address(self, relay):
+        """(ip, port) to send to for a relay entry {id, host, port} (the lobby server's own relay is id "main").
+        One place for it, so that a test can put a simulated network in between (lobby/tools/relay_e2e.py)."""
+        return relay["host"], int(relay["port"])
+
+    def _relay_of(self, msg, port_key):
+        """The relay a nat_relay / match_start names: a regional one ("relay") or the lobby server's own."""
+        r = msg.get("relay") if self.relays else None
+        if isinstance(r, dict) and r.get("host") and r.get("port"):
+            return r
+        return {"id": "main", "name": "", "host": self.server_ip, "port": int(msg[port_key])}
+
     async def _nat_relay(self, msg):
         mid, phase = msg["match"], "relay"
         gs = self._gs
-        relay = (self.server_ip, int(msg["udp_port"]))
+        entry = self._relay_of(msg, "udp_port")
+        relay = self.relay_address(entry)
+        token = bytes.fromhex(msg["relay_token"]) if entry["id"] != "main" and msg.get("relay_token") else None
         if self.match is not None:
             self.match["bridge"] = bool(msg.get("bridge")) and self.nat2 and self.relay_bridge and \
                 self.handover == "port"
-        self._status(mid, "relay", t("Direct connection not possible; using the lobby server's relay..."))
-        if not await gs.relay_bind(relay):
+            self.match["relay_name"] = entry.get("name") if entry["id"] != "main" else None
+        if entry["id"] != "main":
+            self._status(mid, "relay", t("Direct connection not possible; using the relay server {name}...",
+                                         name=entry.get("name") or entry["id"]))
+        else:
+            self._status(mid, "relay", t("Direct connection not possible; using the lobby server's relay..."))
+        if not await gs.relay_bind(relay, token=token):
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
             return
         m = await gs.measure(relay, timeout=4.0)
@@ -644,10 +677,17 @@ class LobbyClient:
         peer; the punched socket stays here, on the relay until the direct path works."""
         gs, self._gs = self._gs, None
 
+        name = (self.match or {}).get("relay_name")
+
         def switched(path, addr, mid=mid):
             self.upgrades.append((mid, path))
-            text = t("Direct connection found: the match no longer goes through the lobby server.") \
-                if path == "direct" else t("The direct connection was lost; back on the lobby server's relay.")
+            if name:
+                text = t("Direct connection found: the match no longer goes through the relay server {name}.",
+                         name=name) if path == "direct" else \
+                    t("The direct connection was lost; back on the relay server {name}.", name=name)
+            else:
+                text = t("Direct connection found: the match no longer goes through the lobby server.") \
+                    if path == "direct" else t("The direct connection was lost; back on the lobby server's relay.")
             self._emit({"t": "nat_upgrade", "match": mid, "path": path, "text": text})
             if self._server_nat2():
                 self._tasks.append(asyncio.ensure_future(self._report_upgrade(mid, path, addr)))
@@ -708,8 +748,11 @@ class LobbyClient:
                 if not self.connected:
                     return
             await self._safe(self._send({"t": "ping"}))
+            self._keep_n = getattr(self, "_keep_n", 0) + 1
             if self._gs is None and self._bridge is None:
                 await self._measure_server()
+                if self._keep_n % 10 == 0:          # every 5 minutes, between matches
+                    await self._measure_relays()
             if self._mapper is not None and self._mapper.current is not None:
                 # renewed while a match (or its relay bridge) is on; two minutes without one: closed
                 busy = self.match is not None or self._bridge is not None
@@ -721,12 +764,37 @@ class LobbyClient:
         if not self.welcome:
             return
         try:
-            rtt = await server_rtt((self.server_ip, int(self.welcome["udp_port"])))
+            rtt = await server_rtt(self.relay_address({"id": "main", "host": self.server_ip,
+                                                       "port": int(self.welcome["udp_port"])}))
         except OSError:
             rtt = None
         if rtt is not None:
             self.server_rtt = rtt
             await self._safe(self._send({"t": "udp_rtt", "ms": round(rtt, 2)}))
+
+    def _server_relays(self):
+        return bool(self.relays and self.welcome and "relays" in (self.welcome.get("caps") or ()))
+
+    async def _measure_relays(self):
+        """UDP round trip to each regional relay the server listed (all at once, in the background), reported
+        to the server as `relay_rtt`: it picks the relay with the smallest sum of both players' round trips
+        when a match needs one. A relay that does not answer is left out (never chosen for this player)."""
+        if not self._server_relays():
+            return
+        lst = [r for r in self.welcome.get("relays") or () if isinstance(r, dict) and r.get("id") and r.get("host")]
+        if not lst and not self.relay_rtts:
+            return                                  # (no regional relays on this server: nothing to say)
+
+        async def one(r):
+            try:
+                return r["id"], await server_rtt(self.relay_address(r))
+            except (OSError, ValueError, TypeError, KeyError):
+                return r.get("id"), None
+        got = await asyncio.gather(*(one(r) for r in lst[:32]))
+        rtts = {rid: round(ms, 2) for rid, ms in got if ms is not None}
+        self.relay_rtts = rtts
+        await self._safe(self._send({"t": "relay_rtt", "rtts": rtts}))
+        self._emit({"t": "relay_rtts", "rtts": dict(rtts)})
 
     # ================================================================ public API (any thread)
     def _call(self, msg, timeout=None):
@@ -752,6 +820,8 @@ class LobbyClient:
         if self.perf_fps:
             await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
         await self._measure_server()
+        if self._server_relays():
+            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
         self._start_keepalive()
         self._start_port_mapper()
         if self.nat2:

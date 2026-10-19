@@ -1151,8 +1151,10 @@ class OnlineView:
                                      if delay == 1 else t("{count} frames  ({ms} ms)", count=delay,
                                                           ms=f"{delay * 16.7:.0f}"))
                                if isinstance(delay, int) else "?")
-        self.m_path.configure(text={"direct": t("Direct"), "lan": t("Local network"),
-                                    "relay": t("Relay (lobby server)")}.get(ev.get("path"), ev.get("path") or "?"))
+        regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
+        self.m_path.configure(text=t("Relay ({name})", name=regional) if regional else
+                              {"direct": t("Direct"), "lan": t("Local network"),
+                               "relay": t("Relay (lobby server)")}.get(ev.get("path"), ev.get("path") or "?"))
 
     # --- the bar: questions, found match, result + rematch
     def _bar_kind_now(self):

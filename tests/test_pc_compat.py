@@ -304,5 +304,67 @@ class InternalResolution(unittest.TestCase):
             self.assertIn('getenv("%s")' % alias, patch)
 
 
+class VSync(unittest.TestCase):
+    """Launcher Settings -> VSync: On (default, nothing set) or Off (PS3_VSYNC=0). No frame rate choice."""
+
+    def path(self, saved=None):
+        d = tempfile.mkdtemp(prefix="t5dr-vsync")
+        p = os.path.join(d, "launcher.json")
+        if saved is not None:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+        return p
+
+    def test_on_by_default_sets_nothing(self):
+        s = core.Settings(self.path())
+        self.assertEqual(s["vsync"], "on")
+        self.assertNotIn("PS3_VSYNC", s.env_overrides())
+        # a launcher.json of an older version (no "vsync" in it) keeps the old behaviour
+        old = core.Settings(self.path({"display": "window1080", "internal_res": "1080p"}))
+        self.assertEqual(old["vsync"], "on")
+        self.assertNotIn("PS3_VSYNC", old.env_overrides())
+
+    def test_saved_and_loaded(self):
+        p = self.path()
+        s = core.Settings(p)
+        s["vsync"] = "off"
+        s.save()
+        with open(p, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["vsync"], "off")
+        self.assertEqual(core.Settings(p)["vsync"], "off")
+        s["vsync"] = "on"
+        s.save()
+        self.assertEqual(core.Settings(p)["vsync"], "on")
+
+    def test_off_goes_to_the_game(self):
+        env = core.Settings(self.path({"vsync": "off"})).env_overrides()
+        self.assertEqual(env["PS3_VSYNC"], "0")
+        # the game gets it through GameRun.start (Play offline and every online match alike)
+        cmd, game_env, _cwd = core.run_game.game_command(tempfile.mkdtemp(), env)
+        self.assertEqual(game_env["PS3_VSYNC"], "0")
+
+    def test_unknown_value_is_on(self):
+        for bad in ("maybe", "", None, True, 0, "OFF", [], {"off": 1}):
+            s = core.Settings(self.path({"vsync": bad}))
+            self.assertEqual(s["vsync"], "on", bad)
+            self.assertNotIn("PS3_VSYNC", s.env_overrides())
+
+    def test_extra_settings_still_win(self):
+        s = core.Settings(self.path({"vsync": "off", "extra_env": "PS3_VSYNC=1"}))
+        self.assertEqual(s.env_overrides()["PS3_VSYNC"], "1")
+
+    def test_two_choices_and_no_frame_rate(self):
+        self.assertEqual(list(core.VSYNC_MODES), ["on", "off"])
+        self.assertEqual(core.VSYNC_MODES["on"], "On (smooth, default)")
+        self.assertEqual(core.VSYNC_MODES["off"], "Off (lowest latency, may tear)")
+        self.assertFalse([k for k in core.DEFAULTS if "fps" in k or "frame_rate" in k or "framerate" in k])
+
+    def test_runtime_reads_ps3_vsync(self):
+        # rsx_live_draw.c "PC display": PS3_VSYNC=0 = present without waiting for vblank; any other value = vsync
+        patch = text("patches", "ps3recomp", "0010-render-quality.patch")
+        self.assertIn('getenv("PS3_VSYNC");', patch)
+        self.assertIn("g_ldp.vsync = !(e && e[0] == '0');", patch)
+
+
 if __name__ == "__main__":
     unittest.main()

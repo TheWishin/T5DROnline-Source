@@ -89,6 +89,7 @@ DEFAULTS = {
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
+    "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
@@ -128,6 +129,8 @@ class Settings(dict):
             pass
         if self["internal_res"] not in INTERNAL_RES:
             self["internal_res"] = "native"
+        if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
+            self["vsync"] = "on"
 
     def save(self):
         try:
@@ -150,6 +153,8 @@ class Settings(dict):
             env["PS3_WINDOW_BACKGROUND"] = "1"
         if self["internal_res"] in INTERNAL_RES and self["internal_res"] != "native":
             env["PS3_INTERNAL_RES"] = self["internal_res"]
+        if self["vsync"] == "off":
+            env["PS3_VSYNC"] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
@@ -635,6 +640,20 @@ INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
                 "If fights drop below 60 fps, go one step down."),
     "4k": N_("3840 x 2160: 9x the pixels of Native. For very strong graphics cards "
              "(an RTX 3090 needs 1-2 ms of a 16.7 ms frame). If fights drop below 60 fps, go one step down."),
+}
+
+
+# VSync: how a finished picture reaches the screen. On (default): at the monitor's next refresh,
+# no tearing (on a 59/60 Hz monitor the game follows the monitor's refresh: the display lock).
+# Off: PS3_VSYNC=0, shown at once (tearing allowed): the lowest latency. The game's speed never
+# changes: its frames are started by the runtime's own 59.94 Hz vblank clock (QPC), never by the
+# present, so Off cannot make it run faster than 60. There is no frame rate choice: the game's
+# simulation is tied to 60 frames per second, like on the PS3. Only the picture changes, so the
+# two players of an online match may choose differently. The game's clock: docs/TROUBLESHOOTING.md
+# "High refresh rate"; the runtime's switch: rsx_live_draw.c "PC display" (PS3_VSYNC=0).
+VSYNC_MODES = {          # English; t(label) where it is shown
+    "on": N_("On (smooth, default)"),
+    "off": N_("Off (lowest latency, may tear)"),
 }
 
 

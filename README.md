@@ -135,6 +135,9 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   HUD stays sharp. It only changes the picture, so the other player online
   does not need the same setting. If fights drop below 60 fps, go one step
   down. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
+- **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
+  picture may tear). The game always runs at 60 fps, like on the PS3, so there
+  is no frame rate setting. Online, each player can choose their own.
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.

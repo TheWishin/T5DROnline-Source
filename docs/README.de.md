@@ -134,6 +134,10 @@ Sprachen gleich.
 - Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf
   das Fenster. Unter **Settings** gibt es Fenstergrößen, maximiert, randlos
   (experimentell: noch nicht mit dem echten Spielfenster getestet) und Stumm.
+- **Settings** -> **VSync**: An (flüssig, Standard) oder Aus (geringste
+  Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
+  auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
+  jeder Spieler selbst wählen.
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.

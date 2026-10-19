@@ -1777,6 +1777,7 @@ def _cs_match(ctx, pf, a, b, specs, label, mode="quick", again=False, expect_pic
 
 def _cs_two(ctx, n1, n2, ranked=False, pick=30, **srv):
     pf = _need_ingame_pick()
+    ctx.manual_pick = True                       # these scenarios press their own picks
     game_server(ctx, T5L_INGAME_PICK=pick, T5L_PLACEMENT=1, **srv)
     a = _cs_player(ctx, n1, password=f"{n1.split()[-1].lower()}-pass-1" if ranked else None, char="king")
     b = _cs_player(ctx, n2, password=f"{n2.split()[-1].lower()}-pass-1" if ranked else None, char="lili")

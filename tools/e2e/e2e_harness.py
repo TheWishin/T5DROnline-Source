@@ -429,6 +429,42 @@ class E2EApp:
 
 
 # ======================================================================================= players
+class _PickPad:
+    """What pick_flow_test.Picker needs from a game: its log and its pad file (PS3_PAD_FILE)."""
+
+    def __init__(self, p):
+        self.p = p
+        self.pad_path = os.path.join(p.dir, "pad.txt")
+
+    @property
+    def log_path(self):
+        g = self.p.game()
+        return g.log_path if g is not None else None
+
+    def log_since(self, pos):
+        try:
+            with open(self.log_path, "rb") as f:
+                f.seek(pos)
+                return f.read().decode("utf-8", "replace")
+        except (OSError, TypeError):
+            return ""
+
+    def pad(self, text):
+        for _ in range(100):
+            try:
+                with open(self.pad_path, "w") as f:
+                    f.write(text)
+                return
+            except PermissionError:
+                time.sleep(0.002)
+
+    def press(self, buttons, hold=0.08, gap=0.17):
+        self.pad(buttons)
+        time.sleep(hold)
+        self.pad("")
+        time.sleep(gap)
+
+
 class Player:
     """One person at one PC: the launcher's Online tab (a frame in the shared withdrawn root), its
     settings and output folder, and the games it started."""
@@ -460,6 +496,11 @@ class Player:
         st["input_delay"] = input_delay
         lines = ["PS3_AUDIO_MUTE=1", "PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0", "T5_NET_DESYNC_DUMP=1",
                  f"RSX_SHADER_CACHE_DIR={ctx.run.shader_cache}", f"PS3_TITLE=T5DR e2e {name}"]
+        if kind == "real":
+            # the in-game select (ingame-select): this player's pad file, the cursor cell in the log
+            lines += [f"PS3_PAD_FILE={os.path.join(self.dir, 'pad.txt')}", "T5_DF_TRACE=1"]
+            open(os.path.join(self.dir, "pad.txt"), "a").close()
+        self.pickers = []
         self.bot = bool(bot) and kind == "real"
         self.attacking = False
         self.padfile = os.path.join(self.dir, "pad.txt")
@@ -594,11 +635,13 @@ class Player:
                     except OSError:
                         mark = (g.log_path, 0)
                 self.attacking = self._plan_attacks(ev)
-                m["set_start"] = ev.get("set")                 # (match_result's `set` already points at the next game)
+                m["set_start"] = ev.get("set")
+                # (match_result's `set` already points at the next game)
                 m.update(started=now, path=ev.get("path"), rtt=ev.get("rtt_ms"), delay=ev.get("delay"),
                          input_delay=ev.get("input_delay"), fight=ev.get("fight"), cont=bool(ev.get("continue")),
                          role=ev.get("role"), slot=ev.get("slot"), ranked=ev.get("ranked"),
                          opponent=(ev.get("opponent") or {}).get("name"), log_mark=mark, set=ev.get("set"))
+                self._auto_pick(ev, mark)
             elif t == "match_result":
                 self.attacking = False
                 m.update(result=now, status=ev.get("status"), reason=ev.get("reason"), winner=ev.get("winner"),
@@ -623,6 +666,27 @@ class Player:
         n = int((ev.get("set") or {}).get("number") or 1)
         who = seq[min(n, len(seq)) - 1]
         return (who == "A" and self is pa) or (who == "B" and self is pb)
+
+    def _auto_pick(self, ev, mark):
+        """In-game select (fight.pick): pick this player's launcher character on the game's own select screen,
+        the way a player confirms the fighter the launcher shows (tools/pick_flow_test.Picker presses through
+        PS3_PAD_FILE, closed loop on the cursor cell T5_DF_TRACE logs). ctx.manual_pick: the scenario picks."""
+        f = ev.get("fight") or {}
+        if self.kind != "real" or not f.get("pick") or getattr(self.ctx, "manual_pick", False):
+            return
+        try:
+            import pick_flow_test
+        except ImportError:
+            return
+        key = f.get("p1") if ev.get("slot") == 0 else f.get("p2")
+        fi = self.tab.table.fighter(key) or {}
+        if fi.get("id") is None:
+            return
+        g = _PickPad(self)
+        pk = pick_flow_test.Picker(g, f"{fi['id']}:lp", mark[1] if mark else 0, time.time() + 150)
+        pk.start()
+        self.pickers.append((ev.get("match"), key, pk))
+        log(f"{self.name}: picks {fi.get('name')} on the select screen (match {ev.get('match')})")
 
     def bot_tick(self):
         """The planned winner presses attacks while its game is in the fight; the other one stands still."""

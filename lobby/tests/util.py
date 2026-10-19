@@ -24,7 +24,9 @@ FAST = dict(host="127.0.0.1", port=0, udp_port=0, udp_port2=-1, db=":memory:", s
             ready_timeout=5.0, register_timeout=4.0, punch_timeout=1.5, relay_timeout=5.0,
             result_timeout=2.0, log_level="WARNING", min_match_seconds=0.0, reconnect_grace=2.0,
             status_port=0, pair_cooldown=0.0,       # (the tests of the same-opponent cooldown and of the blind ready check
-            blind_ready=False)              # switch these two on; everything older runs the way it always did)
+            blind_ready=False,              # switch these two on; everything older runs the way it always did)
+            ranked_same_ip=True,            # every test player is on 127.0.0.1 (test_abuse switches it off)
+            max_match_seconds=0.0)          # lone reports are settled after result_timeout (test_abuse: the wait)
 
 
 class ServerThread:

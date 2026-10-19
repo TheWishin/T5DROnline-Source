@@ -223,16 +223,28 @@ def pretty(fp):
 def write_pair(directory, common_name="t5lobby", days=3650, force=False):
     """Create directory/cert.pem and directory/key.pem (key readable by the owner only).
     -> (cert path, key path, fingerprint hex)."""
+    from .fileutil import atomic_write
     os.makedirs(directory, exist_ok=True)
     cert_p, key_p = os.path.join(directory, "cert.pem"), os.path.join(directory, "key.pem")
     if not force and (os.path.exists(cert_p) or os.path.exists(key_p)):
-        raise FileExistsError(f"{cert_p} or {key_p} exists (keep it: clients pinned its fingerprint)")
+        if usable_pair(cert_p, key_p):
+            raise FileExistsError(f"{cert_p} or {key_p} exists (keep it: clients pinned its fingerprint)")
+        # Half a pair, or a broken one: what an interrupted first run leaves. Nobody can have pinned a
+        # certificate that never worked, so it is made again.
     cert_pem, key_pem, _ = make_certificate(common_name, days)
-    tmp = key_p + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="ascii") as f:
-        f.write(key_pem)
-    os.replace(tmp, key_p)
-    with open(cert_p, "w", encoding="ascii") as f:
-        f.write(cert_pem)
+    # Each file is written crash-safe (old or new, never truncated); the key goes first, so a crash
+    # between the two leaves a mismatched pair -- usable_pair() says so and the next run starts over.
+    atomic_write(key_p, key_pem, 0o600)
+    atomic_write(cert_p, cert_pem, 0o644)
     return cert_p, key_p, fingerprint(cert_pem)
+
+
+def usable_pair(cert_p, key_p):
+    """Do these files exist and load as one certificate + key?"""
+    if not (os.path.isfile(cert_p) and os.path.isfile(key_p)):
+        return False
+    try:
+        ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert_p, key_p)
+        return True
+    except (OSError, ssl.SSLError, ValueError):
+        return False

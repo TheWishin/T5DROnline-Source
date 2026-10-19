@@ -664,6 +664,41 @@ class DriverTest(Base):
         self.assertEqual((results[0][0]["status"], results[0][0]["reason"]), ("void", "desync"))
 
 
+class StubWriteRaceTest(unittest.TestCase):
+    """The stub game rewrites its status and result files while the launcher reads them. On Windows
+    a replace fails while another process has the file open (Python opens without delete sharing):
+    the stub used to die there (exit 1 = "crash" -> the lobby voided the match), which made
+    DriverTest.test_process_mode_with_rematch_in_the_same_game fail now and then in the full suite.
+    The real game retries (df_fight.cpp write_text); so does the stub now."""
+
+    def test_replace_waits_for_a_reader(self):
+        import importlib.util
+        import threading
+        spec = importlib.util.spec_from_file_location("stub_game_mod", STUB)
+        stub = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stub)
+        d = tempfile.mkdtemp(prefix="stubrace")
+        path = os.path.join(d, "status.json")
+        with open(path, "w") as f:
+            f.write('{"state": "fight"}')
+        with open(path + ".tmp", "w") as f:
+            f.write('{"state": "over"}')
+        opened, release = threading.Event(), threading.Event()
+
+        def reader():
+            with open(path, encoding="utf-8"):       # like MatchDriver._watch_state, held for a while
+                opened.set()
+                release.wait(5)
+        th = threading.Thread(target=reader)
+        th.start()
+        opened.wait(5)
+        threading.Timer(0.3, release.set).start()
+        stub.replace(path + ".tmp", path)               # used to raise PermissionError on Windows
+        th.join(5)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["state"], "over")
+
+
 class SpeedAndKeyTest(Base):
     """Slow PCs (lockstep plays at the slower PC's speed) and the per-match netplay key."""
 

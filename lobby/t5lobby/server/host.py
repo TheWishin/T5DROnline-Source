@@ -85,7 +85,7 @@ class Host:
         from . import selfsigned
         d = os.path.join(self.data, "tls")
         cert, key = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
-        if not (os.path.isfile(cert) and os.path.isfile(key)):
+        if not selfsigned.usable_pair(cert, key):        # (also half a pair left by an interrupted first run)
             self.say("Making this server's TLS certificate (once; a few seconds)...")
             cert, key, _ = selfsigned.write_pair(d, "t5lobby-host")
         self.fp = selfsigned.fingerprint(cert)
@@ -121,8 +121,8 @@ class Host:
         info = {"port": port, "fingerprint": self.fp, "lan_ip": self.lan_ip, "public_ip": self.public_ip,
                 "mapped": self.mapped, "local": f"127.0.0.1{suffix}", "lan": f"{self.lan_ip}{suffix}",
                 "internet": f"{self.public_ip}{suffix}" if self.public_ip else None, "data": self.data}
-        with open(os.path.join(self.data, "host.json"), "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=1)
+        from .fileutil import atomic_write
+        atomic_write(os.path.join(self.data, "host.json"), json.dumps(info, indent=1))
         return info
 
     # ----------------------------------------------------------------- run

@@ -20,7 +20,7 @@ log = logging.getLogger("t5lobby.udp")
 
 class RelaySession:
     __slots__ = ("match_id", "tokens", "ep", "last_rx", "buckets", "bytes", "pkts", "dropped", "created",
-                 "closed")
+                 "closed", "pings", "pongs")
 
     def __init__(self, match_id, tokens, pps, kbps):
         self.match_id = match_id
@@ -33,6 +33,10 @@ class RelaySession:
         self.bytes = [0, 0]
         self.pkts = [0, 0]
         self.dropped = [0, 0]
+        # The lobby's peer pings through the relay, per sending side: the server's own evidence of which
+        # side does not answer when a relayed connection cannot be set up (LobbyServer._setup_culprit).
+        self.pings = [0, 0]
+        self.pongs = [0, 0]
         self.created = time.monotonic()
         self.closed = False
 
@@ -78,7 +82,7 @@ class UdpService:
         self.ctl_buckets = KeyedBuckets(rate=100, burst=200)   # control packets per source IP
         # ... and from everybody together: spoofed sources cannot turn the pings into a flood
         self.ctl_global = TokenBucket(cfg.udp_ctl_pps, cfg.udp_ctl_pps * 2)
-        self.stats = {"rx": 0, "relayed": 0, "relayed_bytes": 0, "dropped": 0}
+        self.stats = {"rx": 0, "relayed": 0, "relayed_bytes": 0, "dropped": 0, "relay_refused": 0}
         self.port = self.port2 = 0
 
     async def start(self, loop):
@@ -132,8 +136,12 @@ class UdpService:
         s.last_rx[side] = time.monotonic()
         self.relay_eps[addr] = (s, side)
 
-    def _forward(self, transport, s, side, data):
+    def _forward(self, transport, s, side, data, kind=None):
         now = time.monotonic()
+        if kind == proto.U_PPING:
+            s.pings[side] += 1
+        elif kind == proto.U_PPONG:
+            s.pongs[side] += 1
         s.last_rx[side] = now
         dst = s.ep[1 - side]
         pk, by = s.buckets[side]
@@ -146,6 +154,15 @@ class UdpService:
         self.stats["relayed"] += 1
         self.stats["relayed_bytes"] += len(data)
         transport.sendto(data, dst)
+
+    def _relayable(self, data, kind):
+        """The relay carries the two games' traffic and nothing else: netplay packets (T5NP), the
+        lobby's peer packets (punch, peer ping) of the match, nothing larger than netplay's biggest
+        packet. Anything else from a bound endpoint -- someone using the session as a free tunnel or
+        proxy -- is dropped."""
+        if len(data) > self.cfg.relay_max_bytes:
+            return False
+        return data[:4] == proto.GAME_MAGIC or kind in proto.PEER_TYPES
 
     def _try_relatch(self, transport, data, addr):
         """Game traffic from an unknown endpoint: a NAT that re-mapped the game's socket between the
@@ -171,15 +188,22 @@ class UdpService:
         if which == 0:
             hit = self.relay_eps.get(addr)
             if hit is not None and kind not in proto.SERVER_TYPES:
-                self._forward(transport, hit[0], hit[1], data)
+                if self._relayable(data, kind):
+                    self._forward(transport, hit[0], hit[1], data, kind)
+                else:
+                    hit[0].dropped[hit[1]] += 1
+                    self.stats["dropped"] += 1
+                    self.stats["relay_refused"] += 1
                 return
+        key = proto.address_key(addr[0], self.cfg.ipv6_prefix)
         if kind is None:
-            relatch_ok = which == 0 and self.relays and self.ctl_buckets.take(addr[0])
+            relatch_ok = (which == 0 and self.relays and self._relayable(data, kind)
+                          and self.ctl_buckets.take(key) and self.ctl_global.take())
             if relatch_ok and self._try_relatch(transport, data, addr):
                 return
             self.stats["dropped"] += 1
             return
-        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(addr[0]) or not self.ctl_global.take():
+        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(key) or not self.ctl_global.take():
             self.stats["dropped"] += 1
             return
         if kind == proto.U_SPING and len(data) == proto.PING.size:

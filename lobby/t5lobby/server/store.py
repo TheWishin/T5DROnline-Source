@@ -7,13 +7,22 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
 import time
 
 from .. import rating as glicko
+from ..proto import name_skeleton
 from ..ranks import RankState
+
+log = logging.getLogger("t5lobby.store")
+
+
+def _is_read(sql):
+    head = sql.lstrip()[:7].upper()
+    return head.startswith("SELECT") or head.startswith("PRAGMA") or head.startswith("WITH")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -81,6 +90,11 @@ CREATE TABLE IF NOT EXISTS sets (
     rating TEXT,                       -- JSON [P1 change, P2 change]: the one rating update of the set
     reason TEXT, blame INTEGER
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,              -- e.g. "drain": the admin tool asked for a quiet restart
+    value TEXT,
+    updated REAL
+);
 CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
 CREATE INDEX IF NOT EXISTS recovery_account ON recovery (account_id);
 """
@@ -109,6 +123,10 @@ RANKED_COLUMNS = [
 MODERATION_COLUMNS = [
     ("accounts", "banned_until", "REAL"),          # unix time; PERMANENT = for ever; NULL = not banned
     ("accounts", "ban_reason", "TEXT"),
+]
+# What a name looks like (proto.name_skeleton): a new name may not look like an existing account's.
+NAME_COLUMNS = [
+    ("accounts", "name_skel", "TEXT"),
 ]
 RANKED_INDEXES = """
 CREATE INDEX IF NOT EXISTS matches_p1 ON matches (p1_account, ended);
@@ -164,41 +182,125 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL" if path != ":memory:" else "PRAGMA journal_mode=MEMORY")
         self.db.execute("PRAGMA busy_timeout=5000")    # the admin tool may hold the write lock briefly
+        self.db.execute("PRAGMA synchronous=FULL")     # a committed result survives a power cut, not only a crash
         self.db.executescript(SCHEMA)
         self._add_columns()
         self.db.executescript(RANKED_INDEXES)
+        self._backfill_skeletons()
+        self._schedule = None
+        self.commit_errors = 0
+        self.writes = 0
 
     def _add_columns(self):
-        for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS:
+        for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS + NAME_COLUMNS:
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
             if col not in have:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        self.db.execute("CREATE INDEX IF NOT EXISTS accounts_skel ON accounts (name_skel)")
+
+    def _backfill_skeletons(self):
+        rows = self.db.execute("SELECT id, name FROM accounts WHERE name_skel IS NULL").fetchall()
+        if rows:
+            self.db.execute("BEGIN")
+            self.db.executemany("UPDATE accounts SET name_skel = ? WHERE id = ?",
+                                [(name_skeleton(r["name"]), r["id"]) for r in rows])
+            self.db.execute("COMMIT")
+
+    # ----------------------------------------------------------------- writes and transactions
+    # Alone (admin tool, tests) every statement commits by itself. The server calls defer_commits():
+    # then everything one event-loop callback writes is one transaction, committed right after that
+    # callback (loop.call_soon) -- before the messages it queued reach any socket. A crash loses at
+    # most that callback's writes and never applies half of them: a ranked result updates both
+    # accounts and the match row together, or not at all (before, a crash between the statements left
+    # one player's rating changed and the match "playing" for ever).
+    def defer_commits(self, schedule):
+        self._schedule = schedule
+
+    def _x(self, sql, args=()):
+        if not _is_read(sql):
+            self.writes += 1                  # (anything cached from the database is stale now)
+            if self._schedule is not None and not self.db.in_transaction:
+                self.db.execute("BEGIN IMMEDIATE")
+                self._schedule(self.flush)
+        return self.db.execute(sql, args)
+
+    def _xmany(self, sql, rows):
+        self.writes += 1
+        if self._schedule is not None and not self.db.in_transaction:
+            self.db.execute("BEGIN IMMEDIATE")
+            self._schedule(self.flush)
+        return self.db.executemany(sql, rows)
+
+    def flush(self):
+        """Commit what the server wrote since the last commit (also called before a backup and at stop)."""
+        if not self.db.in_transaction:
+            return
+        try:
+            self.db.execute("COMMIT")
+        except sqlite3.Error as e:
+            self.commit_errors += 1
+            log.error("database commit failed, the last changes are lost: %s", e)
+            try:
+                self.db.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
 
     def close(self):
+        self.flush()
         self.db.close()
+
+    # ----------------------------------------------------------------- after a crash or restart
+    def void_interrupted(self, now=None):
+        """Matches the database still shows as running: the server stopped (crash, restart, update)
+        while they were played, and nobody can report them now. Void them: no rating change, no
+        blame. -> how many."""
+        now = now or time.time()
+        n = self._x("UPDATE matches SET status = 'void', reason = 'server_restart', ended = ?, "
+                    "duration = CASE WHEN started IS NOT NULL THEN ROUND(? - started, 1) END "
+                    "WHERE status = 'playing'", (now, now)).rowcount
+        self.flush()
+        return n
+
+    # ----------------------------------------------------------------- flags (admin tool -> server)
+    def get_flag(self, key):
+        r = self._x("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def set_flag(self, key, value):
+        if value is None:
+            self._x("DELETE FROM kv WHERE key = ?", (key,))
+        else:
+            self._x("INSERT OR REPLACE INTO kv (key, value, updated) VALUES (?, ?, ?)", (key, str(value), time.time()))
 
     # ----------------------------------------------------------------- accounts
     def account(self, name):
-        return self.db.execute("SELECT * FROM accounts WHERE name = ?", (name,)).fetchone()
+        return self._x("SELECT * FROM accounts WHERE name = ?", (name,)).fetchone()
 
     def account_by_id(self, aid):
-        return self.db.execute("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
+        return self._x("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
 
     def create_account(self, name, pw_hash):
         """-> row, or None when the name exists (any case)."""
         try:
-            self.db.execute(
-                "INSERT INTO accounts (name, pw, created, rating, rd, vol) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, pw_hash, time.time(), glicko.DEFAULT_R, glicko.DEFAULT_RD, glicko.DEFAULT_VOL))
+            self._x(
+                "INSERT INTO accounts (name, pw, created, rating, rd, vol, name_skel) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, pw_hash, time.time(), glicko.DEFAULT_R, glicko.DEFAULT_RD, glicko.DEFAULT_VOL,
+                 name_skeleton(name)))
         except sqlite3.IntegrityError:
             return None
         return self.account(name)
 
+    def similar_account(self, name):
+        """The name of another account that looks like `name` (same proto.name_skeleton), or None."""
+        r = self._x("SELECT name FROM accounts WHERE name_skel = ? AND name != ? LIMIT 1",
+                    (name_skeleton(name), name)).fetchone()
+        return r[0] if r else None
+
     def touch(self, aid):
-        self.db.execute("UPDATE accounts SET last_seen = ? WHERE id = ?", (time.time(), aid))
+        self._x("UPDATE accounts SET last_seen = ? WHERE id = ?", (time.time(), aid))
 
     def set_password(self, aid, pw_hash):
-        self.db.execute("UPDATE accounts SET pw = ?, pw_changed = ? WHERE id = ?", (pw_hash, time.time(), aid))
+        self._x("UPDATE accounts SET pw = ?, pw_changed = ? WHERE id = ?", (pw_hash, time.time(), aid))
 
     def rating(self, aid):
         """Current Rating with inactivity RD growth applied."""
@@ -214,20 +316,20 @@ class Store:
 
     def set_rating(self, aid, rt, outcome, rank=None):
         col = {"win": "wins", "loss": "losses", "draw": "draws"}[outcome]
-        self.db.execute(
+        self._x(
             f"UPDATE accounts SET rating = ?, rd = ?, vol = ?, last_ranked = ?, games = games + 1, "
             f"ranked_games = ranked_games + 1, {col} = {col} + 1 WHERE id = ?",
             (rt.r, rt.rd, rt.vol, time.time(), aid))
         if rank is not None:
-            self.db.execute("UPDATE accounts SET tier = ?, tier_since = ?, tier_peak = ?, tier_floor = ? WHERE id = ?",
+            self._x("UPDATE accounts SET tier = ?, tier_since = ?, tier_peak = ?, tier_floor = ? WHERE id = ?",
                             (rank.tier, rank.since_change, rank.peak, rank.floor, aid))
 
     def add_unranked_game(self, aid, outcome):
         col = {"win": "wins", "loss": "losses", "draw": "draws"}[outcome]
-        self.db.execute(f"UPDATE accounts SET games = games + 1, {col} = {col} + 1 WHERE id = ?", (aid,))
+        self._x(f"UPDATE accounts SET games = games + 1, {col} = {col} + 1 WHERE id = ?", (aid,))
 
     def leaderboard(self, limit=20, offset=0):
-        rows = [dict(r) for r in self.db.execute(
+        rows = [dict(r) for r in self._x(
             "SELECT id, name, rating, rd, games, ranked_games, wins, losses, draws, tier, tier_peak FROM accounts "
             "WHERE ranked_games > 0 ORDER BY rating - 2 * rd DESC, rating DESC LIMIT ? OFFSET ?", (limit, offset))]
         for i, r in enumerate(rows):
@@ -240,7 +342,7 @@ class Store:
         """New login token for `aid`; only its hash is stored. -> the token (hex)."""
         token = secrets.token_hex(32)
         now = time.time()
-        self.db.execute("INSERT INTO sessions (token_hash, account_id, created, last_used, expires) "
+        self._x("INSERT INTO sessions (token_hash, account_id, created, last_used, expires) "
                         "VALUES (?, ?, ?, ?, ?)", (_sha(token), aid, now, now, now + days * 86400.0))
         return token
 
@@ -249,58 +351,58 @@ class Store:
         if not isinstance(token, str) or len(token) != 64:
             return None
         h = _sha(token)
-        row = self.db.execute("SELECT * FROM sessions WHERE token_hash = ?", (h,)).fetchone()
+        row = self._x("SELECT * FROM sessions WHERE token_hash = ?", (h,)).fetchone()
         now = time.time()
         if row is None:
             return None
         if row["expires"] < now:
-            self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (h,))
+            self._x("DELETE FROM sessions WHERE token_hash = ?", (h,))
             return None
-        self.db.execute("UPDATE sessions SET last_used = ?, expires = ? WHERE token_hash = ?",
+        self._x("UPDATE sessions SET last_used = ?, expires = ? WHERE token_hash = ?",
                         (now, now + days * 86400.0, h))
         return self.account_by_id(row["account_id"])
 
     def revoke_session(self, token):
         if isinstance(token, str):
-            self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (_sha(token),))
+            self._x("DELETE FROM sessions WHERE token_hash = ?", (_sha(token),))
 
     def revoke_sessions(self, aid, keep=None):
         """Log out every remembered login of `aid` (except the token `keep`)."""
         if keep:
-            self.db.execute("DELETE FROM sessions WHERE account_id = ? AND token_hash != ?", (aid, _sha(keep)))
+            self._x("DELETE FROM sessions WHERE account_id = ? AND token_hash != ?", (aid, _sha(keep)))
         else:
-            self.db.execute("DELETE FROM sessions WHERE account_id = ?", (aid,))
+            self._x("DELETE FROM sessions WHERE account_id = ?", (aid,))
 
     def session_count(self, aid):
-        return self.db.execute("SELECT COUNT(*) FROM sessions WHERE account_id = ?", (aid,)).fetchone()[0]
+        return self._x("SELECT COUNT(*) FROM sessions WHERE account_id = ?", (aid,)).fetchone()[0]
 
     def prune_sessions(self):
-        self.db.execute("DELETE FROM sessions WHERE expires < ?", (time.time(),))
+        self._x("DELETE FROM sessions WHERE expires < ?", (time.time(),))
 
     # ----------------------------------------------------------------- recovery codes
     def issue_recovery_codes(self, aid, n=RECOVERY_CODES):
         """A fresh set of one-time codes (the old set stops working). -> the codes, shown once."""
         codes = [new_recovery_code() for _ in range(n)]
         now = time.time()
-        self.db.execute("DELETE FROM recovery WHERE account_id = ?", (aid,))
-        self.db.executemany("INSERT INTO recovery (account_id, code_hash, created) VALUES (?, ?, ?)",
+        self._x("DELETE FROM recovery WHERE account_id = ?", (aid,))
+        self._xmany("INSERT INTO recovery (account_id, code_hash, created) VALUES (?, ?, ?)",
                             [(aid, _sha(normalize_code(c)), now) for c in codes])
         return codes
 
     def use_recovery_code(self, aid, code):
         """Consume one code of `aid`. -> True when it was valid and unused."""
         h = _sha(normalize_code(code))
-        cur = self.db.execute("UPDATE recovery SET used = ? WHERE account_id = ? AND code_hash = ? AND used IS NULL",
+        cur = self._x("UPDATE recovery SET used = ? WHERE account_id = ? AND code_hash = ? AND used IS NULL",
                               (time.time(), aid, h))
         return cur.rowcount == 1
 
     def recovery_left(self, aid):
-        return self.db.execute("SELECT COUNT(*) FROM recovery WHERE account_id = ? AND used IS NULL",
+        return self._x("SELECT COUNT(*) FROM recovery WHERE account_id = ? AND used IS NULL",
                                (aid,)).fetchone()[0]
 
     # ----------------------------------------------------------------- matches
     def save_match(self, m):
-        self.db.execute(
+        self._x(
             "INSERT OR REPLACE INTO matches (id, created, ended, ranked, p1_name, p2_name, p1_account, "
             "p2_account, build, path, rtt_ms, delay, status, winner, score, reports, rating, origin, started, "
             "duration, p1_char, p2_char, stage, reason, blame, set_id, set_game) "
@@ -313,7 +415,7 @@ class Store:
              m.get("blame"), m.get("set_id"), m.get("set_game")))
 
     def match_row(self, mid):
-        r = self.db.execute("SELECT * FROM matches WHERE id = ?", (mid,)).fetchone()
+        r = self._x("SELECT * FROM matches WHERE id = ?", (mid,)).fetchone()
         return dict(r) if r else None
 
     def history(self, aid, limit=20, offset=0):
@@ -323,7 +425,7 @@ class Store:
          set {id, game, status, result: win|loss|-, score [you, opp], delta}: the set's outcome; the
          rating change of the set shows as `delta` on its deciding game only."""
         out = []
-        for r in self.db.execute(
+        for r in self._x(
                 "SELECT m.*, s.status AS s_status, s.winner AS s_winner, s.score AS s_score, s.rating AS s_rating, "
                 "s.games AS s_games FROM matches m LEFT JOIN sets s ON s.id = m.set_id "
                 "WHERE (m.p1_account = ? OR m.p2_account = ?) AND m.status != 'playing' "
@@ -360,7 +462,7 @@ class Store:
 
     # ----------------------------------------------------------------- ranked sets
     def save_set(self, s):
-        self.db.execute(
+        self._x(
             "INSERT OR REPLACE INTO sets (id, created, ended, ranked, p1_name, p2_name, p1_account, p2_account, "
             "wins_needed, status, winner, score, games, rating, reason, blame) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -369,7 +471,7 @@ class Store:
              json.dumps(s.get("games") or []), json.dumps(s.get("rating")), s.get("reason"), s.get("blame")))
 
     def set_row(self, sid):
-        r = self.db.execute("SELECT * FROM sets WHERE id = ?", (sid,)).fetchone()
+        r = self._x("SELECT * FROM sets WHERE id = ?", (sid,)).fetchone()
         if r is None:
             return None
         d = dict(r)
@@ -382,7 +484,7 @@ class Store:
         reason, opponent, result: win|loss|-, score [you, opp], delta, games [{match, number, status, reason,
         result, score [you, opp], you_char, opp_char, stage}]}."""
         out = []
-        for r in self.db.execute(
+        for r in self._x(
                 "SELECT * FROM sets WHERE (p1_account = ? OR p2_account = ?) AND status != 'playing' "
                 "ORDER BY COALESCE(ended, created) DESC LIMIT ? OFFSET ?", (aid, aid, limit, offset)):
             r = dict(r)
@@ -391,7 +493,7 @@ class Store:
             d.pop("game")
             games = []
             for g in json.loads(r["games"]) if r["games"] else []:
-                row = self.db.execute("SELECT p1_char, p2_char, stage FROM matches WHERE id = ?",
+                row = self._x("SELECT p1_char, p2_char, stage FROM matches WHERE id = ?",
                                       (g.get("match"),)).fetchone()
                 sc = g.get("score")
                 games.append({"match": g.get("match"), "number": g.get("number"), "status": g.get("status"),
@@ -411,16 +513,16 @@ class Store:
         server's memory only. Each becomes void -- no rating changes during a set, so there is nothing to
         undo -- and so does any game of it still 'playing'. -> how many sets."""
         now = now or time.time()
-        ids = [r[0] for r in self.db.execute("SELECT id FROM sets WHERE status = 'playing'")]
+        ids = [r[0] for r in self._x("SELECT id FROM sets WHERE status = 'playing'")]
         for sid in ids:
-            self.db.execute("UPDATE sets SET status = 'void', reason = ?, ended = ? WHERE id = ?", (reason, now, sid))
-            self.db.execute("UPDATE matches SET status = 'void', reason = ?, ended = ? WHERE set_id = ? AND "
+            self._x("UPDATE sets SET status = 'void', reason = ?, ended = ? WHERE id = ?", (reason, now, sid))
+            self._x("UPDATE matches SET status = 'void', reason = ?, ended = ? WHERE set_id = ? AND "
                             "status = 'playing'", (reason, now, sid))
         return len(ids)
 
     def char_usage(self, aid, limit=5):
         """[{char, games, wins}] over counted matches, most played first."""
-        rows = self.db.execute(
+        rows = self._x(
             "SELECT ch, COUNT(*) AS games, SUM(won) AS wins FROM ("
             "  SELECT p1_char AS ch, CASE WHEN winner = 0 THEN 1 ELSE 0 END AS won FROM matches "
             "   WHERE p1_account = ? AND p1_char IS NOT NULL AND status IN ('confirmed','onesided','forfeit','resolved')"
@@ -437,24 +539,24 @@ class Store:
     def strikes(self, aid, since):
         """Matches since `since` that ended without a result because of this account
         (crash, quit before the minimum length, no report)."""
-        return self.db.execute(
+        return self._x(
             "SELECT COUNT(*) FROM matches WHERE ended >= ? AND status = 'void' AND "
             "((p1_account = ? AND blame = 0) OR (p2_account = ? AND blame = 1))", (since, aid, aid)).fetchone()[0]
 
     def disputes(self, aid, since):
-        return self.db.execute(
+        return self._x(
             "SELECT COUNT(*) FROM matches WHERE ended >= ? AND status = 'disputed' AND (p1_account = ? OR p2_account = ?)",
             (since, aid, aid)).fetchone()[0]
 
     def pair_ranked(self, a, b, since):
         """Rated results between accounts a and b since `since` (anti win-trading cap): ranked sets that
         counted, plus ranked games rated on their own (the games of a set are not counted one by one)."""
-        games = self.db.execute(
+        games = self._x(
             "SELECT COUNT(*) FROM matches WHERE ranked = 1 AND ended >= ? AND set_id IS NULL AND status IN "
             "('confirmed','onesided','forfeit','resolved') AND "
             "((p1_account = ? AND p2_account = ?) OR (p1_account = ? AND p2_account = ?))",
             (since, a, b, b, a)).fetchone()[0]
-        sets = self.db.execute(
+        sets = self._x(
             "SELECT COUNT(*) FROM sets WHERE ranked = 1 AND ended >= ? AND status IN ('confirmed','forfeit') AND "
             "((p1_account = ? AND p2_account = ?) OR (p1_account = ? AND p2_account = ?))",
             (since, a, b, b, a)).fetchone()[0]
@@ -466,7 +568,7 @@ class Store:
         if row is None or not row["ranked_games"]:
             return None
         key = row["rating"] - 2 * row["rd"]
-        return 1 + self.db.execute("SELECT COUNT(*) FROM accounts WHERE ranked_games > 0 AND rating - 2 * rd > ?",
+        return 1 + self._x("SELECT COUNT(*) FROM accounts WHERE ranked_games > 0 AND rating - 2 * rd > ?",
                                    (key,)).fetchone()[0]
 
     # ----------------------------------------------------------------- moderation (admin tool + server)
@@ -479,31 +581,31 @@ class Store:
         return None
 
     def ban_account(self, name, until, reason=""):
-        return self.db.execute("UPDATE accounts SET banned_until = ?, ban_reason = ? WHERE name = ?",
+        return self._x("UPDATE accounts SET banned_until = ?, ban_reason = ? WHERE name = ?",
                                (until, reason, name)).rowcount > 0
 
     def unban_account(self, name):
-        return self.db.execute("UPDATE accounts SET banned_until = NULL, ban_reason = NULL WHERE name = ?",
+        return self._x("UPDATE accounts SET banned_until = NULL, ban_reason = NULL WHERE name = ?",
                                (name,)).rowcount > 0
 
     def banned_account_ids(self, now=None):
-        return {r[0] for r in self.db.execute("SELECT id FROM accounts WHERE banned_until > ?",
+        return {r[0] for r in self._x("SELECT id FROM accounts WHERE banned_until > ?",
                                                (now or time.time(),))}
 
     def ban_ip(self, net, until, reason=""):
-        self.db.execute("INSERT OR REPLACE INTO ip_bans (net, until, reason, created) VALUES (?, ?, ?, ?)",
+        self._x("INSERT OR REPLACE INTO ip_bans (net, until, reason, created) VALUES (?, ?, ?, ?)",
                         (net, until, reason, time.time()))
 
     def unban_ip(self, net):
-        return self.db.execute("DELETE FROM ip_bans WHERE net = ?", (net,)).rowcount > 0
+        return self._x("DELETE FROM ip_bans WHERE net = ?", (net,)).rowcount > 0
 
     def ip_bans(self, now=None):
-        return [dict(r) for r in self.db.execute("SELECT * FROM ip_bans WHERE until > ? ORDER BY created",
+        return [dict(r) for r in self._x("SELECT * FROM ip_bans WHERE until > ? ORDER BY created",
                                                   (now or time.time(),))]
 
     def reset_rating(self, name):
         """Back to 1500 / RD 350 and unranked (placement again); the win/loss record stays."""
-        return self.db.execute(
+        return self._x(
             "UPDATE accounts SET rating = ?, rd = ?, vol = ?, last_ranked = NULL, ranked_games = 0, tier = 0, "
             "tier_since = 0, tier_peak = 0, tier_floor = 0 WHERE name = ?",
             (glicko.DEFAULT_R, glicko.DEFAULT_RD, glicko.DEFAULT_VOL, name)).rowcount > 0
@@ -512,15 +614,15 @@ class Store:
         row = self.account(name)
         if row is None:
             return False
-        self.db.execute("DELETE FROM accounts WHERE id = ?", (row["id"],))
+        self._x("DELETE FROM accounts WHERE id = ?", (row["id"],))
         self._drop_orphans()
         return True
 
     def _drop_orphans(self):
         """Remembered logins, recovery codes and blocks of accounts that no longer exist."""
         for table in ("sessions", "recovery"):
-            self.db.execute(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
-        self.db.execute("DELETE FROM blocks WHERE account_id NOT IN (SELECT id FROM accounts) "
+            self._x(f"DELETE FROM {table} WHERE account_id NOT IN (SELECT id FROM accounts)")
+        self._x("DELETE FROM blocks WHERE account_id NOT IN (SELECT id FROM accounts) "
                         "OR blocked_id NOT IN (SELECT id FROM accounts)")
 
     def list_accounts(self, pattern=None, limit=50, banned_only=False):
@@ -534,7 +636,7 @@ class Store:
             args.append(time.time())
         sql += " ORDER BY COALESCE(last_seen, created) DESC LIMIT ?"
         args.append(limit)
-        return [dict(r) for r in self.db.execute(sql, args)]
+        return [dict(r) for r in self._x(sql, args)]
 
     def recent_matches(self, limit=20, name=None):
         sql, args = "SELECT * FROM matches", []
@@ -543,12 +645,12 @@ class Store:
             args += [name, name]
         sql += " ORDER BY created DESC LIMIT ?"
         args.append(limit)
-        return [dict(r) for r in self.db.execute(sql, args)]
+        return [dict(r) for r in self._x(sql, args)]
 
     def purge_guest_matches(self, older_than_days):
         """Match records in which no account took part (guests only), older than the given age."""
         cut = time.time() - older_than_days * 86400.0
-        return self.db.execute("DELETE FROM matches WHERE p1_account IS NULL AND p2_account IS NULL "
+        return self._x("DELETE FROM matches WHERE p1_account IS NULL AND p2_account IS NULL "
                                "AND created < ?", (cut,)).rowcount
 
     def purge_inactive_accounts(self, days, include_played=False):
@@ -557,56 +659,56 @@ class Store:
         sql = "DELETE FROM accounts WHERE COALESCE(last_seen, created) < ? AND (banned_until IS NULL OR banned_until < ?)"
         if not include_played:
             sql += " AND games = 0"
-        n = self.db.execute(sql, (cut, time.time())).rowcount
+        n = self._x(sql, (cut, time.time())).rowcount
         self._drop_orphans()
         return n
 
     # ----------------------------------------------------------------- blocked players (per account)
     def add_block(self, aid, target_id, name):
         """-> True when the block is new."""
-        cur = self.db.execute("INSERT OR IGNORE INTO blocks (account_id, blocked_id, blocked_name, created) "
+        cur = self._x("INSERT OR IGNORE INTO blocks (account_id, blocked_id, blocked_name, created) "
                               "VALUES (?, ?, ?, ?)", (aid, target_id, name, time.time()))
         return cur.rowcount == 1
 
     def remove_block(self, aid, target_id):
-        return self.db.execute("DELETE FROM blocks WHERE account_id = ? AND blocked_id = ?",
+        return self._x("DELETE FROM blocks WHERE account_id = ? AND blocked_id = ?",
                                (aid, target_id)).rowcount > 0
 
     def blocks_of(self, aid):
-        return [dict(r) for r in self.db.execute(
+        return [dict(r) for r in self._x(
             "SELECT blocked_id, blocked_name, created FROM blocks WHERE account_id = ? ORDER BY created", (aid,))]
 
     # ----------------------------------------------------------------- server notices (admin tool -> server)
     def add_notice(self, text, expires, now=None):
-        cur = self.db.execute("INSERT INTO notices (created, expires, text) VALUES (?, ?, ?)",
+        cur = self._x("INSERT INTO notices (created, expires, text) VALUES (?, ?, ?)",
                               (now or time.time(), expires, text))
         return cur.lastrowid
 
     def clear_notices(self, now=None):
         """End every notice that is still showing. -> how many."""
         now = now or time.time()
-        return self.db.execute("UPDATE notices SET cleared = ? WHERE cleared IS NULL AND expires > ?",
+        return self._x("UPDATE notices SET cleared = ? WHERE cleared IS NULL AND expires > ?",
                                (now, now)).rowcount
 
     def active_notices(self, now=None):
-        return [dict(r) for r in self.db.execute(
+        return [dict(r) for r in self._x(
             "SELECT id, created, expires, text FROM notices WHERE cleared IS NULL AND expires > ? ORDER BY id",
             (now or time.time(),))]
 
     def recent_notices(self, limit=10):
-        return [dict(r) for r in self.db.execute("SELECT * FROM notices ORDER BY id DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in self._x("SELECT * FROM notices ORDER BY id DESC LIMIT ?", (limit,))]
 
     def set_match_lag(self, mid, data):
-        self.db.execute("UPDATE matches SET lag = ? WHERE id = ?", (json.dumps(data), mid))
+        self._x("UPDATE matches SET lag = ? WHERE id = ?", (json.dumps(data), mid))
 
     def stats(self, now=None):
         """Numbers for the status page: accounts and the last 24 hours of matches."""
         now = now or time.time()
         day = now - 86400.0
-        one = lambda sql, *a: self.db.execute(sql, a).fetchone()[0]   # noqa: E731
-        by_status = {r[0]: r[1] for r in self.db.execute(
+        one = lambda sql, *a: self._x(sql, a).fetchone()[0]   # noqa: E731
+        by_status = {r[0]: r[1] for r in self._x(
             "SELECT status, COUNT(*) FROM matches WHERE created >= ? GROUP BY status", (day,))}
-        by_path = {r[0] or "none": r[1] for r in self.db.execute(
+        by_path = {r[0] or "none": r[1] for r in self._x(
             "SELECT path, COUNT(*) FROM matches WHERE created >= ? GROUP BY path", (day,))}
         return {
             "accounts": one("SELECT COUNT(*) FROM accounts"),

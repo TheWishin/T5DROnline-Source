@@ -681,6 +681,11 @@ MESSAGES = {
     "too many connections": "zu viele Verbindungen",
     "server full": "Server voll",
     "slow down": "Nicht so schnell",
+    "bad request": "Ungültige Anfrage",
+    "the server is busy; try again in a few seconds": "Der Server ist gerade ausgelastet; versuch es in ein paar Sekunden noch einmal",
+    "the chat is busy; try again in a moment": "Der Chat ist gerade ausgelastet; versuch es gleich noch einmal",
+    "that name looks too much like the account {other}": "Der Name ist dem Konto {other} zu ähnlich",
+    "that name looks too much like {name}, who is online": "Der Name ist zu ähnlich wie {name} (gerade online)",
     "flooding: disconnected": "zu viele Nachrichten: Verbindung getrennt",
     "this server speaks lobby protocol {version}; update the launcher":
         "Dieser Server nutzt das Lobby-Protokoll {version}; aktualisiere den Launcher",

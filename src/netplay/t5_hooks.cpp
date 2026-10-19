@@ -87,6 +87,7 @@ extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: st
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
+namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -644,6 +645,70 @@ double drain_wait(uint32_t f)
     return us / 1000.0;
 }
 
+/* The draw side's request managers, drained before every rollback boundary
+ * (docs/ROLLBACK.md section 32). NU::Draw::Geometry::RequestManager (thread 5,
+ * object 0x10742880, loop 0x35B888) is woken by a post of its semaphore (id at
+ * +0x50) for each request queued (0x35BE6C), counts itself busy in +8 while it
+ * works through its queue and parks again. The present (0x383C9C -> 0x35BF6C)
+ * queues one request and spins until +8 is 0 -- but only until then: the
+ * thread may not have woken yet, or the draw manager's sync after it
+ * (0x357714) hands it more, so at the boundary it can still be working. A
+ * snapshot taken then holds +8 = 1 (and a queue half way through); a rollback
+ * to that frame puts the 1 back after the thread has parked, nothing takes it
+ * away again (every later wake adds and removes its own 1), and the next
+ * present spins on it for good: the host hang of runs FF1/FF2 (main at
+ * 0x35C014, the geometry thread parked, the draw manager idle).
+ * NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at the
+ * boundary by construction (0x357714 waits for it); it is only counted. */
+constexpr uint32_t kGeomMgr = 0x10742880u;   /* +8 busy count, +0x50 wake semaphore id */
+constexpr uint32_t kDrawMgr = 0x1074BE80u;   /* +0x98 wake counter (value u64 at +0xA8): 1 = working through its list */
+bool g_side_drain = true;                    /* T5_RB_SIDE_DRAIN=0: count only, do not wait */
+std::atomic<uint32_t> g_geom_sem{ 0 };
+uint64_t g_sd_geom = 0, g_sd_draw = 0, g_sd_us = 0, g_sd_max_us = 0, g_sd_frames = 0;
+uint32_t g_sd_timeouts = 0;
+
+bool geom_idle()
+{
+    const uint32_t id = rd32(kGeomMgr + 0x50);
+    if (!id || id > 256) return true;   /* not created yet */
+    g_geom_sem = id;
+    const np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return true;
+    return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
+}
+/* (its request list may hold the next frame's first requests: queued, not taken) */
+bool draw_idle() { return rd64(kDrawMgr + 0xA8) == 0; }
+
+void side_drain(uint32_t f)
+{
+    if (f && f % 600 == 0 && g_sd_frames) {
+        np::note("side drain: geometry manager busy at %llu of %llu boundaries (waited %.1f ms, longest %.2f ms), draw manager running at %llu",
+                 (unsigned long long)g_sd_geom, (unsigned long long)g_sd_frames, g_sd_us / 1000.0, g_sd_max_us / 1000.0,
+                 (unsigned long long)g_sd_draw);
+        g_sd_geom = g_sd_draw = g_sd_us = g_sd_max_us = g_sd_frames = 0;
+    }
+    g_sd_frames++;
+    if (!draw_idle()) g_sd_draw++;
+    if (geom_idle()) return;
+    g_sd_geom++;
+    if (!g_side_drain) return;
+    LARGE_INTEGER q0, q1, qf;
+    QueryPerformanceCounter(&q0);
+    const ULONGLONG t0 = GetTickCount64();
+    while (!geom_idle()) {
+        if (g_drain_event) WaitForSingleObject(g_drain_event, 1); else Sleep(1);
+        if (GetTickCount64() - t0 > 2000) {
+            if (g_sd_timeouts++ < 10)
+                np::note("frame %u: geometry manager still busy after 2 s, going on (count %d, semaphore %u)",
+                         f, (int32_t)rd32(kGeomMgr + 8), rd32(kGeomMgr + 0x50));
+            break;
+        }
+    }
+    QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+    const uint64_t us = (uint64_t)((q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart);
+    g_sd_us += us; if (us > g_sd_max_us) g_sd_max_us = us;
+}
+
 /* lockstep: drain at the top of the frame; the rollback loop is told about the
  * load (it keeps re-simulations clear of loads) */
 void drain_workers(uint32_t f)
@@ -1066,6 +1131,7 @@ void on_frame_start(ppu_context* ctx)
          * a taken token back hung the game mode at the match's end,
          * docs/ROLLBACK.md section 30). */
         const double load_ms = drain_wait(f);
+        side_drain(f);   /* the geometry manager parked too (a snapshot or restore beside it hung the present) */
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
@@ -1261,6 +1327,7 @@ int64_t w_sem_wait(ppu_context* ctx)
         return r;
     }
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
+    if (id && id == g_geom_sem.load(std::memory_order_relaxed) && g_drain_event) SetEvent(g_drain_event);
     const uint32_t fs = rd32(kFrameSemPtr);
     if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
@@ -1394,6 +1461,12 @@ void h_cellPadInit(ppu_context* ctx)
     if (g_offline) { install_syscall_hooks(); return; }
     np::init();
     if (!np::enabled() && !g_persistent) return;
+    /* The sound library's heap (rb_sndheap.cpp): in every online session,
+     * rollback or lockstep (T5_RB_MODE=off too), before the library's first
+     * allocation. Where its blocks live changes the layout of the C library
+     * heap, which reaches the hashed state: a PC with it and one without
+     * desynced in lockstep (rollback-crash run MIX50: 4 233 frames). */
+    rb::sndheap_install();
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
@@ -1445,6 +1518,7 @@ void h_cellPadInit(ppu_context* ctx)
         }
         g_drain_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         np::note("draining loader semaphores at each frame: %s", *spec ? spec : "(none)");
+        if (const char* s = getenv("T5_RB_SIDE_DRAIN")) g_side_drain = *s != '0';
     }
     if (g_passive) { np::note("passive reference mode: %d pad(s), keyread left alone", g_pads); return; }
     install_syscall_hooks();
@@ -1609,6 +1683,25 @@ extern "C" int t5_netplay_enabled(void)
 extern "C" int t5_netplay_lockstep_active(void)
 {
     return g_active.load() && !g_idle ? 1 : 0;
+}
+
+/* The direct-fight driver (df_fight.cpp) acts on a match end only once this
+ * says it is final: under rollback the live frame rests on predicted peer
+ * input for up to the prediction window, and a KO seen there can be undone by
+ * the next rollback (e2e g2, RTT 250: the driver held its pads and pressed
+ * START to skip a replay in a fight that went on -- the peer never saw a KO,
+ * the match never ended). Final = this side's match watch has the end
+ * (watch_match: g_result_done, taken back by a rollback that undoes it) and
+ * every input of the frames up to it is confirmed as simulated -- the frames
+ * after the KO do not matter (the post-match rule decides them, and they
+ * cannot change the KO); or its result is out already. Not "the whole live
+ * state is final": at RTT 250 the last 10-15 frames always rest on
+ * predictions. Without rollback: at once. */
+extern "C" int t5_netplay_match_end_final(void)
+{
+    if (!rb::net::active()) return 1;
+    if (!g_result_done) return 0;
+    return !g_pending.on || rb::net::state_final(g_pending.f) ? 1 : 0;
 }
 
 extern "C" int t5_netplay_local_slot(void)

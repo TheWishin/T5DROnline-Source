@@ -82,6 +82,10 @@ void     load_seen(uint32_t f, double ms);
  * confirmed and handed to the desync check); false before that. */
 bool     final_hash(uint32_t f, uint64_t* h);
 
+/* No frame before upto rests on a predicted remote input that is not
+ * confirmed yet (true when the loop is not running). */
+bool     state_final(uint32_t upto);
+
 /* Take over at lockstep frame f (state shadow taken now). */
 void     start(uint32_t f);
 

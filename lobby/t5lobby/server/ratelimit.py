@@ -38,6 +38,15 @@ class KeyedBuckets:
             bucket = self.b[key] = TokenBucket(self.rate, self.burst)
         return bucket.take(n, now)
 
+    def give(self, key, n=1.0):
+        """Hand back what take() took (an attempt that turned out fine)."""
+        bucket = self.b.get(key)
+        if bucket is not None:
+            bucket.tokens = min(bucket.burst, bucket.tokens + n)
+
+    def __len__(self):
+        return len(self.b)
+
     def peek_ok(self, key, n=1.0):
         """Would take() succeed? (does not consume)"""
         bucket = self.b.get(key)
@@ -61,6 +70,14 @@ class BanList:
 
     def ban(self, key, seconds):
         self.until[key] = max(self.until.get(key, 0.0), time.monotonic() + seconds)
+
+    def prune(self):
+        now = time.monotonic()
+        for k in [k for k, t in self.until.items() if now >= t]:
+            del self.until[k]
+
+    def __len__(self):
+        return len(self.until)
 
     def banned(self, key):
         t = self.until.get(key)

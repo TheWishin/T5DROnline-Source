@@ -59,16 +59,19 @@ def log(msg):
     print(f"[netplay] {msg}", flush=True)
 
 
-def replace(src, dst):
-    """os.replace that retries for a moment: Windows refuses it while the launcher reads the target."""
-    for i in range(50):
+def replace(tmp, path):
+    """os.replace that waits out a reader: the launcher may be reading `path` this very moment,
+    and Windows refuses to replace a file another process has open without delete sharing. The
+    real game retries the same way (src/directfight/df_fight.cpp write_text); a stub that did not
+    died with PermissionError instead, which the launcher saw as a crash (exit 1) and the lobby
+    voided the match -- the flaky DriverTest.test_process_mode_with_rematch_in_the_same_game."""
+    for _ in range(400):                 # up to ~2 s; a launcher read takes microseconds
         try:
-            os.replace(src, dst)
+            os.replace(tmp, path)
             return
         except PermissionError:
-            if i == 49:
-                raise
-            time.sleep(0.01)
+            time.sleep(0.005)
+    os.replace(tmp, path)
 
 
 class Session:
@@ -334,12 +337,7 @@ def persistent(ctl_dir):
         path = os.path.join(ctl_dir, "state.json")
         with open(path + ".tmp", "w") as f:
             json.dump(dict(kw, state=st, seq=seq, ctl=1), f)
-        for i in range(50):      # the launcher may be reading it this moment (Windows refuses the replace then)
-            try:
-                os.replace(path + ".tmp", path)
-                break
-            except PermissionError:
-                time.sleep(0.01)
+        replace(path + ".tmp", path)     # the launcher may be reading it this moment
 
     seen = 0
     games = 0

@@ -981,7 +981,33 @@ stall (reader, pool and threads dumped through PS3_DEBUG).
 
 **Results** (this PC, 2026-10-19, build/selstall/runs; main dfb6ee4 + d88c206
 merged, so with 0047's power saving):
-RESULTS_PLACEHOLDER
+- The old way (`T5_DF_READER_GUARD=0`), a slow disk: with 150 ms per read the
+  copy caught the title's read every time and the first select after a fight
+  stayed at phase 1 (d1: 220 s, then the run gave up; dA2: ended by the backstop
+  after 10 s); with 40 ms per read (OLD40 + OLDF, 7 boots, the last on the
+  final exe) every boot copy said "busy 1" and every first select after a fight
+  wedged -- 7 of 7, each ended by the backstop after 10 s ("the async reader
+  waits for a read nobody does", reader busy 1, 5 requests, 0 tokens).
+- The old way under a CPU hog only (O1: 3 busy processes on the game's 4
+  processors, 30 cycles): no wedge -- the copy and all 27 restores found the
+  reader idle; the one failure was the reset's 60 s exit at 0.8-2.7 fps, which
+  the frame rule now prevents.
+- The fix, 150 ms per read (dB2): 4 of 4 cycles (the title waits for its read
+  before the copy; select set-up 2,235-2,263 frames, slow and moving).
+- The fix, CPU hog only, power saving on / off (F1 / F0, `PS3_LAPTOP=1/0`): 30 of
+  30 cycles each. CPU hog plus a 40 ms disk (S1 / S0): 30 of 30 each, select
+  set-up 606-1,144 frames; the boot copy waited for the title's read in each.
+  Final exe, the same load at 0.1-50 fps (the PC at 97 %, other agents' games
+  too) (P1 / P0): P_RESULTS.
+- Pairs, every match a new session (title visit and restore before each one),
+  mashing, the joiner restarted before match 4 (a game that has played meets a
+  fresh one), the joiner's disk at 40 ms per read (its boot copy waited for the
+  title's read in both of its starts): rollback with power saving on (FRB) and
+  off (QRB, final exe), lockstep with it off (FLS) and on (QLS, final exe): 6 of
+  6 matches each, the same winner and result hash on both PCs, 0 mismatching
+  frames; also without the slow disk (prb1 rollback, pls1 lockstep on 4
+  processors each): 6 of 6 each, in sync.
+- Smoke quick on the final exe: PASS (81 checks).
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

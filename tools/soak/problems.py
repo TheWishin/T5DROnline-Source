@@ -18,6 +18,9 @@ Categories (each: count, first lines with their log line numbers):
   fifo        GCM ring recycles, flips the FIFO walker never reached, walker resyncs
   fps         [fps] windows below --fps-min (with the frame range)
   watchdog    the runtime's [WATCHDOG] thread samples
+  tls         guest threads left without a TLS block of their own, sharing one ("shared TLS
+              fallback", patch 0041); tls_blocks: the blocks made and where (the most threads
+              alive at once, since blocks are reused)
   other       anything else that says error/fail/warn (shape-deduplicated), for a human to read
 
 scan(text) returns a dict; summary(d) a few lines of text.
@@ -42,6 +45,7 @@ RX = [
     ("fifo", re.compile(r"recycled the title's own ring|queued flip never reached|FIFO resync|walker circling|"
                         r"flip valve|unmapped IO|\[cellGcmSys\].*(stall|stuck)", re.I)),
     ("watchdog", re.compile(r"^\[WATCHDOG\] \S+ sample")),
+    ("tls", re.compile(r"\[ppu\] TLS: no free block")),      # (may arrive glued to another line)
 ]
 RE_FPS = re.compile(r"^\[fps\] ([0-9.]+)(?: \(frames (\d+)\.\.(\d+) over ([0-9.]+)s\))?")
 RE_AUDIO = re.compile(r"^\[audio-rate\] ([0-9.]+) blocks/s.*?silent ([0-9.]+)%, dropped ([0-9.]+) frames/s, device buf (\d+), "
@@ -55,6 +59,7 @@ LD_KEYS = ("qfull", "drop_fetch", "drop_degen", "drop_prim", "drop_alloc", "drop
 RE_ATRAC_BAD = re.compile(r"\[cellAtrac\] DeleteDecoder .*?(\d+) bad frames")
 RE_TICK = re.compile(r"^\[spu-tick\] tid 0x[0-9A-F]+: (\d+) answers, mean ([0-9.]+) ms, .*?over 5\.33 ms: (\d+)"
                      r"(?:; on the CPU ([0-9.]+) M cycles)?")
+RE_TLS_BLOCK = re.compile(r"\[ppu\] TLS: block (\d+) at 0x([0-9A-Fa-f]+) \(([^)]*)\)")
 RE_OTHER = re.compile(r"\b(error|failed|failure|fail|warning|warn|timeout|timed out|overrun|underrun|lost)\b", re.I)
 # Lines with those words that are routine on a healthy run (each explained in docs/SOAK.md).
 OTHER_OK = re.compile(
@@ -79,6 +84,7 @@ def scan(text, fps_min=59.0, keep=8):
     ld_first, ld_last = None, None
     atrac_bad = 0
     tick = {"windows": 0, "answers": 0, "over": 0, "wall_ms": [], "mcyc": []}
+    tls_blocks = {"made": 0, "where": {}}
     for no, line in enumerate(text.splitlines(), 1):
         line = line.rstrip("\r")
         m = RE_FPS.match(line)
@@ -137,6 +143,11 @@ def scan(text, fps_min=59.0, keep=8):
             if m.group(4):
                 tick["mcyc"].append(float(m.group(4)))
             continue
+        m = RE_TLS_BLOCK.search(line)
+        if m:
+            tls_blocks["made"] += 1
+            tls_blocks["where"][m.group(3)] = tls_blocks["where"].get(m.group(3), 0) + 1
+            continue
         m = RE_ATRAC_BAD.search(line)
         if m:
             atrac_bad += int(m.group(1))
@@ -165,6 +176,7 @@ def scan(text, fps_min=59.0, keep=8):
                   "median": sorted(v for _, v, _ in fps)[len(fps) // 2] if fps else None}
     out["audio_rate"] = audio
     out["atrac_bad_frames"] = atrac_bad
+    out["tls_blocks"] = tls_blocks
     out["spu_tick"] = {"windows": tick["windows"], "answers": tick["answers"], "over_5_33ms": tick["over"],
                        "wall_ms_median": sorted(tick["wall_ms"])[len(tick["wall_ms"]) // 2] if tick["wall_ms"] else None,
                        "mcycles_median": sorted(tick["mcyc"])[len(tick["mcyc"]) // 2] if tick["mcyc"] else None}
@@ -174,7 +186,7 @@ def scan(text, fps_min=59.0, keep=8):
 
 def summary(d):
     lines = []
-    for cat in ("crash", "nid", "syscall", "guest", "render", "shader", "decode", "audio", "fifo", "watchdog"):
+    for cat in ("crash", "nid", "syscall", "guest", "render", "shader", "decode", "audio", "fifo", "watchdog", "tls"):
         c = d.get(cat, {})
         lines.append(f"{cat:9s} {c.get('count', 0)}" + (f"   e.g. {c['first'][0][:160]}" if c.get("first") else ""))
     f = d["fps"]
@@ -184,6 +196,11 @@ def summary(d):
                  f"no device {a['no_device']}, dropped in {a['dropped_windows']} windows, silent max {a['silent_max']}%, "
                  f"waited {a['waited']} (max {a['wait_max_ms']} ms), queue min {a['queue_min_min']}")
     lines.append(f"atrac     {d['atrac_bad_frames']} bad frames")
+    tb = d.get("tls_blocks") or {}
+    if tb.get("made"):
+        lines.append(f"tls       {tb['made']} thread TLS block(s) made ("
+                     + ", ".join(f"{n} in the {w}" for w, n in tb["where"].items())
+                     + f"), {d['tls']['count']} shared fallback(s)")
     t = d.get("spu_tick") or {}
     if t.get("windows"):
         lines.append(f"spu-tick  {t['answers']} answers in {t['windows']} windows, {t['over_5_33ms']} over 5.33 ms, "

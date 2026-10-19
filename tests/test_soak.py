@@ -25,6 +25,9 @@ LOG = """\
 [spu-tick] tid 0x2000: 937 answers, mean 3.10 ms, p95 3.75, p99 4.50, max 6.20, over 5.33 ms: 2; on the CPU 14.30 M cycles per answer
 [cellAtrac] DeleteDecoder handle=0x1: 57272 bytes streamed in, 3 bad frames, read from its archive
 [mf_h264] decode failed: 0x8000FFFF
+[ppu] TLS: block 0 at 0x10F18000 (TLS window), 98304 bytes
+ODUL[ppu] TLS: block 9 at 0xD1234000 (stack region), 98304 bytes
+[ppu] TLS: no free block -- thread 13 shares 0x10F07000 with every other such thread (shared TLS fallback #1)
 something else failed here
 """
 
@@ -40,6 +43,7 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(d["fifo"]["count"], 2)
         self.assertEqual(d["watchdog"]["count"], 1)
         self.assertEqual(d["decode"]["count"], 1)
+        self.assertEqual(d["tls"]["count"], 1)                # the shared-TLS fallback
         # the [audio-rate] window with holes and the glitch line
         self.assertEqual(d["audio"]["count"], 2)
 
@@ -55,6 +59,8 @@ class ScanTest(unittest.TestCase):
         self.assertAlmostEqual(d["spu_tick"]["mcycles_median"], 14.30)
         self.assertEqual(d["render"]["count"], 1)            # drop/decodefail counters grew once
         self.assertEqual(d["render"]["live_draw_totals"]["drop_fetch"], 2)
+        self.assertEqual(d["tls_blocks"]["made"], 2)
+        self.assertEqual(d["tls_blocks"]["where"], {"TLS window": 1, "stack region": 1})
 
     def test_other_lines(self):
         shapes = self.d["other"]["shapes"]
@@ -65,6 +71,7 @@ class ScanTest(unittest.TestCase):
         s = problems.summary(self.d)
         self.assertIn("spu-tick", s)
         self.assertIn("fifo", s)
+        self.assertIn("2 thread TLS block(s) made", s)
 
 
 class MenuCheckTest(unittest.TestCase):

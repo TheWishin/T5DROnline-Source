@@ -150,10 +150,28 @@ change, status and reason).
 ## Matchmaking
 
 Ranked queue as in ONLINE.md: pairs by rating (window 100 points + 25/s, up to
-800) and ping (80 ms + 10/s, up to 400), equal builds only, accounts only. It never pairs
+800) and estimated ping, equal builds only, accounts only. It never pairs
 players who blocked each other, and not the same two again within 30 s of their last ranked
 game. With the **Strict** option the window stays at 150 points. Details: [Tekken 6 style
 options](#tekken-6-style-options).
+
+**Region first (1.1.2).** Both queues prefer opponents nearby. The ping a pair would have is the
+server's estimate (below, "Found match"): the best relay path between the two, so two players in
+California who both have a relay in Oregon count as ~50 ms, not as the ~300 ms through the lobby
+server in Nuremberg. A pair is made only when that estimate fits a window that grows while both
+wait, like the rating window:
+
+| | starts at | grows | any ping after |
+|---|---|---|---|
+| Ranked | 80 ms (`T5L_PING_START`) | +10 ms per second (`T5L_PING_WIDEN`) | 60 s (`T5L_PING_ANY_SECONDS`) |
+| Quick | 80 ms | +20 ms per second (`T5L_QUICK_PING_WIDEN`) | 30 s (`T5L_QUICK_PING_ANY_SECONDS`) |
+
+The window of a pair is the smaller of the two players' windows, so a player who just started
+searching is first offered the near ones. Within the window, ranked weighs the rating gap and the
+ping as before, and quick takes the nearest opponent. Nobody waits for ever because nobody is
+near: once the "any ping" time has passed, any opponent goes (before 1.1.2 ranked stopped at 400 ms
+and never paired two players further apart; quick paired anybody at once). The strict range, the
+block list and the cooldown are unchanged and still apply however long the search takes.
 Rooms may be ranked (`T5L_RANKED_ROOMS=0` turns that off: then only the queue
 gives ranked matches). Challenges are always casual.
 
@@ -599,12 +617,21 @@ and never learned who it was.
 
 Where the ping comes from. The two PCs are not connected yet when the question is asked. They
 connect only after both accepted, because that needs each other's address. So the number is the
-**server's estimate**: each player's UDP round trip to the server, added together. That is exactly
-the path a relayed match takes. A direct connection is usually shorter. The real ping between the
-two PCs is measured after both accepted (`nat.py`, the `measure` step). It is the `rtt_ms` in
-`match_start`, and the tab shows it as before ("ping 23 ms (direct), input delay 3 frames"). If
-one of the two has no server ping yet, the estimate uses 50 ms for that side and says
-`known: false`.
+**server's estimate**: the worst the pair can get, the relayed path through the best relay. For each
+relay -- the lobby server's own and every regional relay both launchers measured (ONLINE.md
+"Regional relays") -- the two players' UDP round trips to it are added, and the smallest sum is the
+estimate. That is exactly the path a relayed match takes (the server picks the same relay if the
+direct connection fails). A direct connection is usually shorter. The real ping between the two PCs is
+measured after both accepted (`nat.py`, the `measure` step). It is the `rtt_ms` in `match_start`, and
+the tab shows it as before ("ping 23 ms (direct), input delay 3 frames").
+
+Launchers before regional relays (1.1.0, and 1.1.1 against a server without relays) have no relay
+round trips: for them, and for a pair with one of them, the estimate is the sum of both round trips
+to the lobby server, as before. A relay that is down, or that only one of the two reached, does not
+count. If one of the two has no server ping yet, the estimate uses 50 ms for that side and says
+`known: false` -- unless both measured a regional relay, which then gives a known estimate. Which relay
+the estimate went through is not sent: in a blind check it would hint where the hidden opponent
+lives. The tab says "ping about N ms (estimated; measured directly once you both accept)".
 
 Rooms, challenges and rematches are not blind. You picked the room or the player, so you know who
 it is. They still get the ping in `match_found`. The slow-PC warning at match found says "your

@@ -43,9 +43,9 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Schwächere PCs sind noch nicht gemessen. |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
 | Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
-| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11), höhere Auflösungen (`PS3_RES_SCALE`). |
+| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
 | Musik, Soundeffekte, Videos | Funktionieren. |
-| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, `controls.ini` zum Umbelegen. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
+| Steuerung | Tastatur, Xbox-Controller (XInput), PlayStation-Pads, Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
@@ -103,6 +103,32 @@ Alles, was das Bauen erzeugt, bleibt im Ordner `native` neben dem Launcher. Das
 sind Spieldaten. Gib sie nicht weiter. Zum Deinstallieren löschst du den ganzen
 Ordner.
 
+## Sprache des Launchers
+
+Der Launcher spricht Deutsch oder Englisch. Unter **Einstellungen** -> **Sprache**
+stellst du ein: **Auto** nimmt die Sprache von Windows, dazu **Deutsch** und
+**English**. Eine Änderung gilt, wenn der Launcher neu startet (der Knopf **Jetzt
+neu starten** macht das). Das Spiel selbst bleibt englisch.
+
+Diese Anleitung nennt die Knöpfe oft englisch, so wie sie im englischen Launcher
+heißen. Im deutschen Launcher heißen sie:
+
+| Englisch | Deutsch |
+|---|---|
+| Build, Play, Settings (Reiter) | Bauen, Spielen, Einstellungen |
+| Cancel | Abbrechen |
+| Stop game | Spiel stoppen |
+| Open saves folder | Speicherordner öffnen |
+| Check for updates, Update now | Nach Updates suchen, Jetzt aktualisieren |
+| Report a problem | Problem melden |
+| Host for friends | Für Freunde hosten |
+| Online input delay | Online-Input-Delay |
+| Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
+| Mute sound | Ton aus |
+
+**BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
+Sprachen gleich.
+
 ## Spielen
 
 - Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf
@@ -141,7 +167,32 @@ Tastatur (Standard) und Xbox-Controller:
   über DirectInput gelesen. Du musst nichts installieren. Ein Arcade-Stick wurde
   mit echter Hardware getestet: alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
-- Um Tasten oder Knöpfe zu ändern, lege eine `controls.ini` an. Die
+- **Pad, Arcade-Stick oder Hitbox: die Knöpfe stellst du im Launcher ein.**
+  Öffne **Settings** und klicke **Set up controllers...** (Controller
+  einrichten). Das Fenster zeigt die Controller, die Windows sieht, eine Zeile
+  pro Spieler, und die Zeile leuchtet, wenn du einen Knopf drückst (sie nennt
+  auch den Spielknopf dazu). Wähle einen Controller (oder drücke einfach einen
+  Knopf darauf) und klicke **Set up all buttons** (alle Knöpfe einrichten): Es
+  fragt "Press the button for 1 (Left Punch)..." (Drücke den Knopf für ...) und
+  macht weiter mit 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, Start und Select.
+  **Skip** (Überspringen) lässt einen Knopf, wie er ist, **Clear** (Löschen)
+  gibt ihm keinen Knopf. **Set selected** (Ausgewählten setzen) stellt eine
+  Zeile ein, auch die anderen Makros (1+4, 2+3, 1+2+3 usw.), **Set up
+  directions** (Richtungen einrichten) ist für Sticks, die ihre Richtungen als
+  Knöpfe senden. **Layout** (Belegung) startet mit einer fertigen Belegung:
+  Xbox, PlayStation, Switch, Arcade-Stick mit 8 Knöpfen (Vewlix), 6 Knöpfen
+  (Noir / Sega Astro) oder Hitbox. Bei einer Hitbox wählst du auch, was
+  passiert, wenn links und rechts zugleich gedrückt werden (SOCD), und ob der
+  linke Stick als Steuerkreuz zählt. **Save** (Speichern) schreibt
+  `native\controls.ini`; das Spiel liest sie beim Start. **Reset to defaults**
+  (auf Standard zurücksetzen) stellt den Controller auf die Standardknöpfe
+  zurück. Deine Kommentare und übrigen Einstellungen in der Datei bleiben
+  erhalten. Mit dem Controller selbst: Oben / Unten wählen einen Knopf, Kreuz
+  setzt ihn, Dreieck löscht ihn, Start speichert, Kreis schließt (die Knöpfe
+  des Controllers, wie deine `controls.ini` sie hat). Das geht nur, solange
+  dieses Fenster vorne ist; nimm das Häkchen bei "Move through this window with
+  the controller" weg, wenn du Knöpfe nur testen willst.
+- Die Tastatur und alles andere stellst du in der `controls.ini` ein. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).
   Lege deine Datei als `native\controls.ini` ab und starte das Spiel neu.
   Beispiele (aus der Vorlage):
@@ -194,6 +245,26 @@ Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
 
 ## Aktualisieren
 
+Der Launcher bietet neue Versionen an; klicke auf **Update**.
+
+- Beim Start (höchstens einmal pro Stunde) und mit **Check for updates** oben
+  fragt der Launcher GitHub nach dem neuesten veröffentlichten Release. Er zeigt
+  die Version, was neu ist und die Downloadgröße.
+- **Update now** lädt das Zip (etwa 90 MB), prüft es gegen die veröffentlichte
+  SHA-256-Prüfsumme, ersetzt die Programmdateien und startet den Launcher neu.
+  Das dauert ein paar Sekunden plus den Download.
+- Dein Ordner `native` (entpacktes Spiel, Speicherstände, Logs) und deine
+  Einstellungen bleiben, wie sie sind.
+- Wenn die neue Version den Spielcode ändert, steht im Reiter Play **Build the
+  game once (about 2 minutes)**. Klicke auf **BUILD GAME**. Nur der Code wird neu
+  gebaut.
+- Der Launcher aktualisiert nie, solange das Spiel, ein Build oder ein
+  Online-Match (oder eine Suche) läuft. Geht etwas schief, legt er die alten
+  Dateien zurück und sagt, warum.
+
+Von Hand (Versionen 1.0.0 und älter, die sich noch nicht selbst aktualisieren,
+oder wenn das Update immer wieder scheitert):
+
 1. Entpacke das neue Release in einen **neuen** Ordner.
 2. Kopiere deinen alten Ordner `native` hinein. So bleiben das entpackte Spiel
    und deine Speicherstände erhalten.
@@ -203,21 +274,32 @@ Docker, auf einem Mac oder mit **Host for friends** im Launcher. Siehe
 
 ## Fehler melden
 
-Bitte schicke:
+**Probleme? Klicke auf "Report a problem"** (Reiter Play; auch im Reiter Build und
+im Reiter Online nach einem Match). Der Launcher macht EINE Zip-Datei auf deinem
+Desktop und öffnet den Ordner. Schicke das Zip der Person, die dir das Spiel
+gegeben hat, oder hänge es an ein Issue unter
+https://github.com/TheWishin/T5DROnline/issues. Im Fenster kannst du ein paar
+Worte dazu schreiben, was passiert ist.
 
-- Probleme beim Bauen: `native\build.log` (Reiter Build, **Open build.log**). Die
-  Datei wird bei jedem Bauen überschrieben. Kopiere sie, bevor du neu baust.
-- Probleme im Spiel: die neueste Datei in `native\logs\` (Reiter Play, **Open
-  newest game log**). Die letzten 10 Logs bleiben erhalten.
-- Deine Windows-Version, Grafikkarte samt Treiber und was du kurz vorher getan
-  hast.
+Im Zip sind die neuesten Spiel-Logs, `build.log` wenn das Bauen das Problem war,
+das Log des Launchers, die Dateien deines letzten Online-Matches, deine
+`controls.ini`, Desync-Dumps (falls es welche gibt) und `system.txt`:
+Windows-Version, Prozessor, Grafikkarte samt Treiber, Arbeitsspeicher, Bildschirme
+(Bildwiederholrate, Skalierung), Release-Version und Build-ID und deine
+Einstellungen. Das Fenster zeigt alles an, bevor es speichert. Es wird nichts
+hochgeladen: du schickst das Zip selbst.
 
-Eröffne ein Issue unter https://github.com/TheWishin/T5DROnline/issues und hänge
-die Dateien an.
+Bevor das Zip entsteht, wird dein Windows-Benutzername in Dateipfaden zu `<user>`,
+IP-Adressen aus dem Internet werden zu `<ip>` (Adressen deines eigenen Netzes
+bleiben), und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Das Zip
+ist höchstens 20 MB groß; ein größeres Log behält seinen Anfang und sein Ende.
+Deine Spieldateien, Schlüssel, `.pkg` und `.rap` sind nie darin.
 
-Die Logs enthalten keine Spieldaten und keine Schlüssel. Sie enthalten aber
-Ordnerpfade, und die können deinen Windows-Benutzernamen enthalten. Schau vorher
-hinein, bevor du sie öffentlich postest.
+Wenn der Launcher selbst nicht startet, schicke von Hand `native\build.log`
+(Probleme beim Bauen) oder die neueste Datei in `native\logs\` (Probleme im Spiel),
+dazu deine Windows-Version, Grafikkarte und was du kurz vorher getan hast. Diese
+Dateien enthalten Ordnerpfade mit deinem Windows-Benutzernamen. Schau vorher hinein,
+bevor du sie öffentlich postest.
 
 Mehr Hilfe: [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (auf Englisch). Die
 wichtigsten Fälle in Kürze:

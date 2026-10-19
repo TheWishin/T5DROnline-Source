@@ -5,13 +5,20 @@ This is a test release. It was tested on one development PC only (Windows 11,
 not tried on this project. Everything else comes from the code, the launcher or
 our QA run on 2026-10-16.
 
+**Problems? Click "Report a problem"** (launcher, Play offline tab; also in the Build tab
+and in the Online tab after a match). It makes one zip on your Desktop. Send the
+zip to the person who gave you the game, or attach it to an issue at
+https://github.com/TheWishin/T5DROnline/issues. Details:
+[How to collect logs](#how-to-collect-logs).
+
 Contents:
 
 - [Where things are](#where-things-are)
 - [Building the game](#building-the-game)
 - [The launcher does not start](#the-launcher-does-not-start)
+- [Updates](#updates)
 - [SmartScreen and antivirus](#smartscreen-and-antivirus)
-- [The Play tab](#the-play-tab)
+- [The Play offline tab](#the-play-offline-tab)
 - [The game starts, but...](#the-game-starts-but)
 - [No sound](#no-sound)
 - [Controllers and keyboard](#controllers-and-keyboard)
@@ -31,12 +38,17 @@ In the folder where you extracted the release (say `C:\T5DR`):
 |---|---|
 | `T5DR Online.exe` | The launcher's starter. |
 | `launcher.json` | The launcher's settings (made on first use). |
+| `launcher.log` | What the launcher did and saw (builds, game starts and exits, errors, status messages). The last two runs' worth; `launcher.log.1` is the older part. |
+| `T5DR-report-<date>-<time>.zip` | A problem report, on your Desktop (see [How to collect logs](#how-to-collect-logs)). |
 | `native\` | Everything built from your copy. Game data. Do not share it. |
 | `native\build.log` | The log of the last build. Overwritten by every build. |
 | `native\logs\game-<date>-<time>.log` | One log per game start. The last 10 are kept. |
 | `native\gamedata\` | Your saves. |
-| `native\controls.ini` | Your own control settings (optional, you make it). |
+| `native\controls.ini` | Your own control settings (optional). The launcher's Settings -> Set up controllers... writes it; you can edit it by hand too. |
 | `native\game\`, `native\build\`, `native\keys\` | Unpacked game, build output, key file. Game data. |
+| `native\logs\update-<date>-<time>.log` | What the last self-update did (one per update). |
+| `update-check.json` | When the launcher last asked GitHub for a new version. |
+| `C:\T5DR.update\` | Only while an update is installed, next to your folder. Removed afterwards. |
 
 To start over completely, delete `native\` (you lose your saves: copy
 `native\gamedata` first).
@@ -160,6 +172,55 @@ whole zip again."
 - Did antivirus remove `python\` files? Restore them, or extract again.
 - Is the folder in Program Files? Use another folder.
 
+## Updates
+
+The launcher looks for a new version at start (at most once an hour) and when
+you click **Check for updates**. It only offers releases that are published on
+https://github.com/TheWishin/T5DROnline/releases. How it works: README,
+"Updating".
+
+**"Could not check for updates."** No connection to GitHub (offline, a
+firewall, a proxy), or GitHub limits checks for a while ("Try again later";
+GitHub allows 60 checks an hour per internet connection). Nothing is wrong
+with your install. Try again later, or look at the releases page yourself.
+
+**The update window says the game, a build or an online match is running.**
+The launcher never updates while the game, a build, an online match or a
+search, or **Host for friends** runs. Finish or stop it, then click the update
+button at the top again. "Other programs from this folder are still running"
+means a second launcher window, a game or a lobby server started from this
+folder: close it (or end it in the Task Manager).
+
+**"The download is damaged or not the published file" / "SHA256SUMS ..."**
+The downloaded zip did not match the published checksum. Nothing was changed.
+Try again; if it keeps happening, download the zip from the releases page and
+update by hand (README, "Updating").
+
+**"Not enough free disk space."** The update needs about 600 MB free on the
+drive of the launcher's folder for a moment (download, unpacked copy). Free
+some space and try again.
+
+**"The launcher cannot write next to its folder or into it."** The folder is
+read-only for your Windows user (for example in Program Files). Move the whole
+folder to one of your own, for example `C:\Games\T5DR`, then update.
+
+**"The update to ... did not work" after the launcher restarted.** The
+launcher put the old files back and starts as the old version; the message says
+why (a file held by antivirus, the new launcher did not start, ...). Your
+`native` folder was never touched. `native\logs\update-<date>-<time>.log` has
+the details; please attach it to a bug report.
+
+**The launcher does not come back after an update** (rare: the PC was switched
+off in the middle of it). An update never touches your `native` folder. If a
+folder named like yours plus `.update` (for example `C:\T5DR.update`) exists
+next to it, its `backup` folder holds the old program files. Easiest fix:
+extract the newest release zip over your folder (say yes to replacing files);
+`native` and your settings stay. Then delete the `.update` folder.
+
+**The game asks to be built again after an update.** The new version changed
+the game code: the Play offline tab says "Build the game once (about 2 minutes)". Click
+**BUILD GAME**. The unpacked game and your saves are kept.
+
 ## SmartScreen and antivirus
 
 **"Windows protected your PC" when you start `T5DR Online.exe`.** The file is a
@@ -184,15 +245,15 @@ If you do not trust the zip, do not run it. All source is public: this
 repository holds our code and our patches, and ps3recomp is on GitHub too. You
 can build everything yourself (see "Building from source" in the README).
 
-## The Play tab
+## The Play offline tab
 
 | Message | What to do |
 |---|---|
 | "The game is not built yet." | Open the Build tab, choose `.pkg` and `.rap`, click BUILD GAME. |
 | "t5dr.exe is there but the game data is missing." | Build again. |
 | "The decrypted program has SHA-1 ..., not the supported version." | Build again from the supported package. |
-| "This version of the launcher changes the game code." | Click BUILD GAME. Your game data is kept. Only the code is rebuilt. |
-| PLAY is grey | The build is not finished or the check above failed. Read the text on the Play tab. |
+| "Build the game once (about 2 minutes)" (after an update) | Click BUILD GAME on the Play offline tab. Your game data and saves are kept. Only the code is rebuilt. |
+| PLAY OFFLINE is grey | The build is not finished or the check above failed. Read the text on the Play offline tab. |
 | "Close the game first." (when you click BUILD GAME) | A game is still running. Click Stop game, or end `t5dr.exe` in the Task Manager. |
 
 ## The game starts, but...
@@ -201,7 +262,7 @@ can build everything yourself (see "Building from source" in the README).
 
 The first seconds can be black while the game loads. If it stays black:
 
-- **Start the game with PLAY in the launcher.** The launcher sets
+- **Start the game with PLAY OFFLINE in the launcher.** The launcher sets
   `RSX_LIVE_DRAW=1`. Without it the default renderer shows only black. If you
   start `t5dr.exe` by hand, it also lacks the other settings it needs.
 - Open **Settings**, "extra settings". There must be no line `RSX_LIVE_DRAW=0`.
@@ -247,8 +308,12 @@ machines cannot run the game.
 ### The window is not where I want it, or too big
 
 Settings > Display. The window size options never exceed your screen's work
-area. "Borderless fullscreen" is experimental and was not tested with the real
-game window. The game draws at 1280 x 720 and scales up.
+area. "Borderless fullscreen" starts the game in its own borderless
+fullscreen (the same as Alt+Enter or F11 in the game: Esc or Alt+Enter goes
+back to a window). The picture is scaled to the window with its 16:9 shape
+kept (black bars on 16:10 or ultra-wide screens); how sharp it is depends on
+Settings > Internal resolution, not on the window size (see [The picture is
+blurry](#the-picture-is-blurry-on-a-big-screen)).
 
 - **Display scaling (125 %, 150 %, 200 %)**: the window opens at 1280 x 720
   times the scaling (1920 x 1080 pixels at 150 %), as far as the screen
@@ -261,6 +326,28 @@ game window. The game draws at 1280 x 720 and scales up.
 - **Alt+Tab**: borderless fullscreen (the default) switches like any window.
   With `PS3_FULLSCREEN=exclusive`, Alt+Tab leaves exclusive mode; Alt+Enter
   goes back. Not tested.
+
+### The picture is blurry on a big screen
+
+The game draws at the PS3's 1280 x 720 (Settings > Internal resolution:
+Native) and scales that up to the window. On a 1920 x 1080 or larger screen,
+in fullscreen or a big window, that looks soft. Choose the step that matches
+your screen (the launcher names it under Internal resolution): **1080p** for
+1920 x 1080, **1440p** for 2560 x 1440, **4K** for 3840 x 2160. Higher steps
+need a stronger graphics card (2.25, 4 and 9 times the pixels of Native; an
+RTX 3090 needs 1-2 ms of a 16.7 ms frame at 4K); if fights drop below 60 fps,
+go one step down. A step larger than the window is
+fine too: the picture is then scaled down with a filter, which smooths edges
+(like anti-aliasing). The other player online may use any step; the game
+itself is the same.
+
+- **Lower** and **Lowest** only draw the 3D scene smaller; the health bars,
+  names and menus stay at full sharpness.
+- The log names the step: `[display] internal resolution 1440p (2x) ...`, and
+  the window title shows it.
+- Old settings `PS3_RES_SCALE` and `PS3_RENDER_SCALE` (extra settings) still
+  work and mean the same; `PS3_INTERNAL_RES` (what the launcher sets) wins
+  when both are there.
 
 ### High refresh rate (120/144/165 Hz), G-Sync/FreeSync, 50 Hz TVs
 
@@ -289,8 +376,8 @@ PC's clock -- except on a 60 Hz monitor, where it follows the monitor.
 
 ### The game closes by itself
 
-The Play tab says "The game stopped (exit code N)..." and adds "after a crash"
-when the log has a `[CRASH]` line. Open the newest game log (Play tab) and look
+The Play offline tab says "The game stopped (exit code N)..." and adds "after a crash"
+when the log has a `[CRASH]` line. Open the newest game log (Play offline tab) and look
 at the last lines. Then see [How to collect logs](#how-to-collect-logs).
 
 Known causes:
@@ -302,7 +389,7 @@ Known causes:
 
 ### The movies do not play
 
-Intro and title movies are decoded with Windows Media Foundation. The Play tab
+Intro and title movies are decoded with Windows Media Foundation. The Play offline tab
 still says "Intro movies are skipped in this version". That text is out of date.
 Movies play. Movies slow down when the game runs under 60 fps.
 
@@ -377,6 +464,10 @@ not focused. The keyboard works only while the game window has the focus.
 
 ### The buttons are wrong, or I want other buttons
 
+Use the launcher: **Settings** -> **Set up controllers...** (see the README,
+"Controls"). It writes `native\controls.ini` for you and keeps what is already in
+that file. The rest of this section is for editing the file by hand.
+
 Make `native\controls.ini` (the sample with every default and all key names is
 [controls.ini](controls.ini)) and restart the game. To see the raw button names
 of an unknown pad, add this line under "extra settings" in the launcher's Settings
@@ -390,6 +481,65 @@ The log then prints each press, for example `[pad] port 2 Wireless Controller: B
 pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
 a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
 `[pad] found DInput` log lines).
+
+### The Controls screen (Settings -> Set up controllers...)
+
+Not tried with a real arcade stick by a person yet: it was checked with simulated
+controllers and against the game's own reading of `controls.ini`. If it does
+something odd with yours, send the report (Report a problem) and say which
+controller it is.
+
+- **It shows no controller, or the row does not light up when I press a button.**
+  The window reads controllers only while it is the window in front (nothing is
+  read while the game or another program has the focus). Click into it and
+  press again. Does Windows see the controller? Open `joy.cpl` and press a
+  button. Xbox pads and XInput-mode sticks show as "Xbox pad (XInput)", everything
+  else as "DirectInput controller". The screen reads DirectInput controllers
+  through the Windows joystick API, which knows buttons B1 to B32 and one hat;
+  a button above B32 has to be written by hand (`1 = B40`).
+- **"That was several buttons at once".** Two buttons (or a stick moved
+  diagonally) went down together. Press one button, or move the stick in one
+  direction only. Macros like 1+2 are set by pressing the one button that should
+  do both.
+- **Pressing buttons to test them starts a question or clears a button.** With
+  "Move through this window with the controller" ticked, Cross sets the chosen
+  row, Triangle clears it, Start saves and Circle closes the window. Untick it to
+  only watch the lamps.
+- **A game button shows "-".** It has no controller button. Pressing a button
+  that another game button used takes it from that one ("B2 was 3 (Left Kick);
+  that one has no button now"): a controller button can only be one game button.
+  Set the other one again, or press Revert.
+- **A trigger or stick direction (for example RX-) seems pressed all the time.**
+  Some controllers rest their triggers at the end of the range. The screen
+  ignores such an axis until it has moved once.
+- **I saved, but the game plays as before.** The game reads the file when it
+  starts: close it and start it again (a game that is already running says so
+  in the status line). The line `[pad] controls: ...` in the game log shows which
+  file the game loaded. If there is a `controls.ini` next to `t5dr.exe`
+  (`native\build\cmake`), it wins over `native\controls.ini`, and `PS3_CONTROLS=`
+  under "extra settings" wins over both; the screen writes to the one the game
+  reads.
+- **"controls.ini changed".** The file was edited by you or another program
+  while the window was open. Say Yes to overwrite it with the screen's version;
+  the file as it was is kept as `controls.ini.bak`. (The first save of each
+  session keeps the old file there as well.)
+- **Reset to defaults** removes the button lines, the layout and the player
+  options of the chosen controller, and asks before it also removes the lines
+  that are for all controllers of that kind. Comments, `[general]` and which
+  controller is which player stay.
+- **Two pads of the same model have to have different buttons.** The buttons
+  are kept per model (one section `[dinput.VVVV:PPPP]` in the file), so two
+  identical pads share them. Choose "Only the controller on player N's port"
+  under "Your changes apply to" to set one of them on its own.
+- **The game seems to ignore the layout of one controller.** The screen keeps
+  buttons per model by the USB IDs it shows in brackets (for example 0F0D:00EE). The
+  game names the same IDs in its log line `[pad] found DInput 'name' VVVV:PPPP`.
+  If the two differ, choose "All DirectInput controllers" under "Your changes apply
+  to" and set the buttons again (or put the IDs from the game log in the section
+  name by hand).
+- **Hitbox: both directions at once.** Pick what you want under "Opposite
+  directions" (both cancel is the default). For a hitbox set to left-stick mode
+  choose "8-way d-pad presses" under "Left stick".
 
 ### Two pads, or my pad acts as player 1 *and* player 2 (DS4Windows, Steam Input)
 
@@ -492,7 +642,7 @@ friend's server (README, "Online"). **(untested)**
 
 You are only matched with players who have the same build: the same release
 **and** a build made from it. After you update to a new release, click BUILD
-GAME again (the Play tab tells you). Ask your opponent to do the same.
+GAME again (the Play offline tab tells you). Ask your opponent to do the same.
 
 ### Lag during an online match
 
@@ -527,9 +677,11 @@ Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 said 30-45 fps; that was fixed by later work. On a weaker PC:
 
 - **Weak graphics card** (laptop, integrated graphics): in the launcher,
-  **Settings** -> **3D resolution** -> **Lower**, or **Lowest** if that is not
-  enough. The picture gets softer; the game itself does not change, so you can
-  play online against someone who uses Original.
+  **Settings** -> **Internal resolution** -> **Lower**, or **Lowest** if that
+  is not enough. The 3D scene gets softer, the HUD stays sharp; the game
+  itself does not change, so you can play online against someone who uses
+  another step. If you chose 1080p, 1440p or 4K, go back to **Native** first:
+  those need a strong graphics card.
 - **Few CPU cores**: the game sets its number of helper threads to the cores
   it may use; there is nothing to set. In our tests (fast desktop cores held to
   4-8 threads) fights ran at 60 fps from 4 threads up. Online against a far-away
@@ -608,10 +760,54 @@ the failing first save.
 
 ## How to collect logs
 
+**The easy way: Report a problem.** Click **Report a problem...** in the launcher:
+the Play offline tab, the Build tab, or the Play online tab after a match. A window lists what
+would go into the zip, with a box "What happened?". Click **Save report on the
+Desktop**. The launcher makes ONE file, `T5DR-report-<date>-<time>.zip`, and opens
+its folder with the file selected. Nothing is uploaded: you send it yourself, to
+the person who gave you the game, or by attaching it to an issue at
+https://github.com/TheWishin/T5DROnline/issues.
+
+What is in the zip (each part only when it exists; you can untick a part):
+
+| In the zip | What it is |
+|---|---|
+| `system.txt` | Windows version, processor (name, cores), graphics card (name, driver, video memory), RAM, every screen (size, refresh rate, scaling), the release version and build id, and the settings you use: window, internal resolution, online input delay (netcode), extra settings. |
+| `report.txt` | What you wrote in "What happened?". |
+| `logs\game-*.log` | The newest two game logs, and `rb_frames.log` / `df_frames.log`. |
+| `build.log` | The last build. Ticked by itself when the last build failed or was cancelled. |
+| `launcher.log` | The launcher's own log. |
+| `online\` | The files of your last online match: result, status, the game's control files, and a short summary of the lobby and the match (server, ping, input delay). |
+| `controls.ini` | Your button settings, if you made one. |
+| `desync\*.bin` | Game state numbers of a desync (only if the game was started with `T5_NET_DESYNC_DUMP=1`). Binary. |
+| `contents.txt` | The list of files and what was removed. |
+
+Before a text file goes into the zip it is cleaned:
+
+- Your Windows user name in a path (`C:\Users\Name\...` and `C:/Users/Name/...`)
+  becomes `<user>`, and your user and PC name anywhere else too.
+- Internet IP addresses (IPv4 and IPv6) become `<ip>`; a port after it stays.
+  Addresses of your own network (`127.0.0.1`, `192.168.x.x`, `10.x.x.x`,
+  `172.16-31.x.x`, link-local, `::1`) are kept.
+- Passwords, tokens, match keys and cookies are left out (`<removed>`), also a long
+  hex string. Your lobby login (`online.json`) and `launcher.json` are never put
+  in the zip; their secret values are removed from every file.
+- E-mail addresses become `<email>`, the file name of your `.pkg` becomes
+  `<package>.pkg`, the company name in `OneDrive - Company` becomes `<org>`.
+
+You can open the zip and read it before you send it. Your game data, keys, `.pkg`
+and `.rap` are never in it. The desync dumps are the only binary files.
+
+**Size limit: 20 MB** of content (the zip is much smaller). The newest files come
+first. A log that does not fit keeps its start and its end; the middle is
+replaced by one line saying how many bytes were removed.
+
+**By hand** (when the launcher does not start):
+
 1. Close the game. (The launcher keeps the log of each start.)
 2. Build problem: open `native\build.log` (Build tab, **Open build.log**). It is
    overwritten by the next build: copy it first.
-3. Game problem: open the newest `native\logs\game-<date>-<time>.log` (Play tab,
+3. Game problem: open the newest `native\logs\game-<date>-<time>.log` (Play offline tab,
    **Open newest game log**).
 4. In the game log, these lines matter:
    - `[CRASH]` — the game crashed. The lines after it say where.
@@ -621,11 +817,11 @@ the failing first save.
    - `[cellAudio]` — sound device problems.
 5. Write down: your Windows version, graphics card and driver version, what you
    were doing, and how long the game had been running.
-6. Open an issue at https://github.com/TheWishin/T5DROnline/issues and attach the
-   files (zip a large log first).
+6. Send the files as above (zip a large log first).
 
-The logs contain no game data and no keys. They contain folder paths, which can
-include your Windows user name. Look before you post them in public.
+Files you send by hand are not cleaned. They contain folder paths, which can
+include your Windows user name, and (online) the other player's IP address. Look
+before you post them in public.
 
 **Do not send** anything from `native\game\`, `native\build\` or `native\keys\`,
 or your `.pkg` / `.rap`. Those are game data and keys.

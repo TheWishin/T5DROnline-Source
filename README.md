@@ -41,9 +41,9 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Menus, fights | 60 fps, also with other programs busy on the PC. Weaker PCs are not measured yet. |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11), higher render resolutions (`PS3_RES_SCALE`). |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
-| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, `controls.ini` for remapping. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -68,7 +68,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop
   cores); online against a far-away player (rollback, 150 ms) about 50 fps.
   See [Low frame rate](docs/TROUBLESHOOTING.md#low-frame-rate). Weak graphics:
-  **3D resolution** under [Playing](#playing).
+  **Internal resolution** under [Playing](#playing).
 - Any monitor: 60, 120, 144 Hz and more, also slower TVs (50 Hz). The game
   always runs at the PS3's 59.94 frames per second. Any Windows display
   scaling (100-200 %), several monitors.
@@ -113,20 +113,28 @@ precompiled. Your PC only translates and compiles the code from your copy.
    Time: about 90 seconds on the development PC (16 cores). On a typical PC we
    expect a few minutes (estimate, not measured). **Cancel** is safe: BUILD GAME
    continues where it stopped.
-6. **Play** tab: type a name (optional) and click **PLAY**.
+6. **Play offline** tab: type a name (optional) and click **PLAY OFFLINE** (Arcade, Versus,
+   Practice ... on this PC). For matches over the internet use the **Play online** tab.
 
 Everything the build makes stays in the `native` folder next to the launcher.
 It is game data. Do not share it. To uninstall, delete the whole folder.
 
 ## Playing
 
-- The game opens in its own window. It draws at 1280 x 720 and scales to the
-  window. **Settings** has window sizes, maximized, borderless (experimental:
-  not yet tested with the real game window) and mute.
-- Weak graphics card (laptop, integrated graphics)? **Settings** -> **3D
-  resolution** -> **Lower** or **Lowest**: a softer picture, less work for the
-  graphics card. It only changes the picture, so the other player online does
-  not need the same setting. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
+- The launcher speaks English or German (Deutsch). **Settings** -> **Language**:
+  Auto follows the language of Windows. A change applies when the launcher
+  starts again (the **Restart now** button does that). The game itself stays
+  in English.
+- The game opens in its own window and scales its picture to the window.
+  **Settings** has window sizes, maximized, borderless fullscreen and mute.
+- **Settings** -> **Internal resolution** sets how sharp the picture is, like
+  in an emulator: Native is the PS3's 1280 x 720; 1080p, 1440p and 4K draw the
+  game larger (sharp on big screens, more work for the graphics card: the
+  launcher names the step that matches your screen); Lower and Lowest draw the
+  3D scene smaller for weak graphics cards (laptops, integrated graphics), the
+  HUD stays sharp. It only changes the picture, so the other player online
+  does not need the same setting. If fights drop below 60 fps, go one step
+  down. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.
@@ -164,8 +172,28 @@ Keyboard (default) and Xbox controller:
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and
   stops. Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
-- To change keys or buttons, make a `controls.ini`. The documented sample with
-  every default is `docs\controls.ini` in this folder.
+- **Pad, arcade stick or hitbox: set the buttons in the launcher.** Open
+  **Settings** and click **Set up controllers...**. The window lists the
+  controllers Windows sees, one row per player, and lights the row when you
+  press a button (the row also names the game button it is). Pick a controller
+  (or just press a button on it), then click **Set up all buttons**: it asks
+  "Press the button for 1 (Left Punch)..." and goes on with 2, 3, 4, 1+2, 3+4,
+  1+3, 2+4, 1+2+3+4, Start and Select. **Skip** keeps a button as it is,
+  **Clear** gives it no button. **Set selected** sets one row (also the other
+  macros: 1+4, 2+3, 1+2+3 and so on), **Set up directions** is for sticks that
+  send their directions as buttons. **Layout** starts from a ready layout: Xbox,
+  PlayStation, Switch, arcade stick with 8 buttons (Vewlix), 6 buttons
+  (Noir / Sega Astro) or hitbox. For a hitbox you also choose what happens when
+  left and right are pressed together (SOCD) and whether the left stick counts as
+  a d-pad. **Save** writes `native\controls.ini`; the game reads it when it
+  starts. **Reset to defaults** takes the controller back to the default buttons.
+  Your comments and other settings in the file are kept.
+  With the controller itself: Up / Down choose a button, Cross sets it,
+  Triangle clears it, Start saves, Circle closes (the controller's buttons as
+  your `controls.ini` has them). This works only while that window is in front;
+  untick "Move through this window with the controller" to only test buttons.
+- The keyboard and everything else is set in `controls.ini`. The documented
+  sample with every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.
   Examples (from the sample):
   - `[keys1]` / `preset = tekken` -- WASD to move, U I J K for the buttons.
@@ -213,27 +241,56 @@ with **Host for friends** in the launcher. See [docs/HOSTING.md](docs/HOSTING.md
 
 ## Updating
 
+The launcher offers new versions; click **Update**.
+
+- At start (at most once an hour) and with **Check for updates** at the top,
+  the launcher asks GitHub for the newest published release. It shows the
+  version, what is new and the download size.
+- **Update now** downloads the zip (about 90 MB), checks it against the
+  published SHA-256 checksum, replaces the program files and starts the
+  launcher again. That takes a few seconds plus the download.
+- Your `native` folder (unpacked game, saves, logs) and your settings stay as
+  they are.
+- If the new version changes the game code, the Play offline tab says **Build the game
+  once (about 2 minutes)**. Click **BUILD GAME**. Only the code is rebuilt.
+- The launcher never updates while the game, a build or an online match (or a
+  search) is running. If anything goes wrong, it puts the old files back and
+  says why.
+
+By hand (versions 1.0.0 and older, which cannot update themselves, or if the
+update keeps failing):
+
 1. Extract the new release into a **new** folder.
 2. Copy your old `native` folder into it. This keeps the unpacked game and your
    saves.
-3. Start the launcher. If the new version changes the game code, the Play tab
-   says so. Click **BUILD GAME** again. Only the code is rebuilt.
+3. Start the launcher. If the new version changes the game code, the Play offline
+   tab says so. Click **BUILD GAME** again. Only the code is rebuilt.
 
 ## Bug reports
 
-Please send:
+**Problems? Click "Report a problem"** (Play offline tab; also in the Build tab,
+and in the Play online tab after a match). The launcher makes ONE zip on your Desktop and
+opens its folder. Send the zip to the person who gave you the game, or attach it
+to an issue at https://github.com/TheWishin/T5DROnline/issues. You can add a few
+words about what happened in the window.
 
-- Build problems: `native\build.log` (Build tab, **Open build.log**). It is
-  overwritten by each build, so copy it before you build again.
-- Game problems: the newest file in `native\logs\` (Play tab, **Open newest game
-  log**). The last 10 logs are kept.
-- Your Windows version, graphics card and driver, and what you did just before.
+The zip holds the newest game logs, `build.log` when the build was the problem,
+the launcher's log, the files of your last online match, your `controls.ini`,
+desync dumps if there are any, and `system.txt`: Windows version, processor,
+graphics card and driver, memory, screens (refresh rate, scaling), the release
+version and build id, and the settings you use. The window lists everything
+before it saves. Nothing is uploaded: you send the zip yourself.
 
-Open an issue at https://github.com/TheWishin/T5DROnline/issues and attach the
-files.
+Before the zip is made, your Windows user name in file paths becomes `<user>`,
+internet IP addresses become `<ip>` (addresses of your own network stay), and
+passwords, tokens and match keys are left out. The zip is at most 20 MB; a
+bigger log keeps its start and its end. Your game files, keys, `.pkg` and `.rap`
+are never in it.
 
-The logs contain no game data and no keys. They do contain folder paths, which
-can include your Windows user name. Look before you post them in public.
+If the launcher itself does not start, send by hand `native\build.log` (build
+problems) or the newest file in `native\logs\` (game problems), plus your Windows
+version, graphics card and what you did just before. Those files contain folder
+paths with your Windows user name, so look at them before you post them in public.
 
 More help: `docs\TROUBLESHOOTING.md` in this folder.
 
@@ -261,8 +318,8 @@ key data from github.com (see Credits).
 **Why is Windows warning me about the launcher?** `T5DR Online.exe` is a tiny
 unsigned starter. Code signing is not set up yet.
 
-**Where are my saves?** In `native\gamedata`. The Play tab has an **Open saves
-folder** button. Back it up before you experiment.
+**Where are my saves?** In `native\gamedata`. The Play offline tab has an **Open
+saves folder** button. Back it up before you experiment.
 
 **Is the PSN "Online" mode coming back?** No. The servers are gone. Online play
 will use our own lobby.

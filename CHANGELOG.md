@@ -3,6 +3,47 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased
+
+### Ranked sets: best of 3, rated once
+- A ranked match is now a set: the first player to win 2 games wins it (each game is still first to 3
+  rounds). The rank moves once, at the end of the set. Between two games the next one starts by itself
+  after a short countdown, with the same characters; the Online tab shows "Set 1-0 -- game 2 of 3", and
+  the names in the fight show the games won ("Alice [1]").
+- Leaving or quitting in the middle of a set loses it. A game that went out of sync is played again (at
+  most twice per set). The daily limit of ranked results between the same two players counts sets.
+- Needs the new launcher on both sides; against an older one every ranked game counts on its own, as
+  before. docs/RANKED.md "Ranked sets".
+
+### Controls screen
+- New in the launcher: **Settings -> Set up controllers...**. Pads, arcade sticks and
+  hitboxes get their buttons there instead of by editing `controls.ini`. It lists
+  the controllers per player with a live "press a button" test, asks "Press the
+  button for 1 (Left Punch)..." one button at a time (1 2 3 4, the macros 1+2, 3+4,
+  1+2+3+4 and the others, Start, Select, directions) with Skip and Clear, and starts
+  from a layout if you like: Xbox, PlayStation, Switch, arcade stick with 8 buttons
+  (Vewlix), 6 buttons (Noir / Sega Astro), hitbox. It also sets which player a
+  controller is, the left stick mode and the SOCD mode (left+right at once).
+- Save writes the `controls.ini` the game reads, in the same format; your comments and
+  other keys stay (the old file is kept once as `controls.ini.bak`). **Reset to
+  defaults** takes a controller back. The controller itself works the screen once it
+  is chosen (Up / Down, Cross, Triangle, Start, Circle).
+- Checked against the game's own `controls.ini` parser (a test compiles the runtime's
+  file reader and compares hundreds of generated files) and with simulated controllers;
+  not yet tried with a real arcade stick by a person.
+
+### Report a problem
+- New launcher button **Report a problem...** (Play tab, Build tab, and the Online
+  tab after a match). It makes one zip on the Desktop and opens its folder: the
+  newest game logs, `build.log` when the build failed, the launcher's own log
+  (`launcher.log`, new), the files of the last online match, `controls.ini`, desync
+  dumps and `system.txt` (Windows, processor, graphics card and driver, memory,
+  screens with refresh rate and scaling, release version and build id, the
+  settings in use). A box "What happened?" is saved as `report.txt`.
+- Private data is removed first: the Windows user name in paths (`<user>`), internet
+  IP addresses (`<ip>`, local network addresses stay), passwords, tokens and match
+  keys. The zip holds at most 20 MB; a huge log keeps its start and its end.
+
 ## v1.0.0 (2026-10-18)
 
 **Tekken 5: Dark Resurrection Online 1.0.** Tekken 5: Dark Resurrection runs

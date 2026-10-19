@@ -26,6 +26,7 @@ install for players or for whoever runs the server.
 - [Tests, demo, measurements](#tests-demo-measurements)
 - [Plugging in: launcher and netplay](#plugging-in-launcher-and-netplay)
 - [Controller in the launcher](#controller-in-the-launcher)
+- [Languages](#languages)
 - [What is left](#what-is-left)
 
 ## Pieces
@@ -43,7 +44,9 @@ lobby/
     lag.py        the post-game lag check: ping X should mean Y frames behind, it was Z
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
-    tk_tab.py     the launcher's Online tab (tkinter); launcher/online.py imports it
+    tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
+    tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
+    theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
     padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
     padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
     cli.py        python -m t5lobby.cli: the same from a console
@@ -572,6 +575,28 @@ zip carries `lobby/t5lobby/` (tools/package_release.py).
 `T5_NET_KEY` are done. Left: optionally adopt the socket from
 `T5_NET_SOCKET_FILE` (snippet above).
 
+## How the Online tab looks
+
+One dark theme for the whole launcher (`lobby/t5lobby/theme.py`, plain Tk 8.6: no image files, no game
+assets; Segoe UI and Bahnschrift). The Online tab (`tk_views.py`, driven by the state in `tk_tab.py`)
+shows one card at a time next to the player's profile card (name, rank badge drawn in the tier's
+colour, rating, W-L):
+
+| State | The card |
+|---|---|
+| Not logged in | Server, name, then Log in / Create account (password rules checked as you type) / Guest; Host for friends |
+| In the lobby | Ranked match and Quick match, the character, Strict; the players, rooms (a lock = cannot be joined now) and chat below |
+| Searching | A turning ring, the time searching, the queues, Stop searching (B) |
+| Match found | Ping bars (green up to 60 ms, yellow up to 120, red above), a 15 s countdown ring, Accept (A) / Decline (B); the opponent is shown once both accepted |
+| In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
+| Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
+| Errors | One line on a red banner: what went wrong and what to do |
+
+A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a
+tag. Tests: `tests/test_online_ui_walk.py` walks the launcher through every state (local server, two
+CLI clients, scripted players) and fails on any error in launcher.log; with `T5_UI_SHOTS=<dir>` it also
+saves a picture of each state (run that on a desktop nobody looks at: the window is mapped, transparent).
+
 ## Controller in the launcher
 
 The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed once you are logged in
@@ -617,10 +642,26 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
   character select. Set `background = 0` if that gets in the way.
 - Test hook: `T5_PAD_FILE=<file>` makes a virtual pad of the buttons named in the file (`A`, or
   `dinput:054C:09CC B2`); with it the real pads are ignored (`T5_PAD_DEVICES=1`: both).
+- Setting the buttons: Settings -> **Set up controllers...** (`launcher/controls_ui.py`, `launcher/controls_edit.py`)
+  writes the same `controls.ini` the game and this tab read; it uses padnav's device readers and the same foreground
+  rule (nothing is read unless its window is in front). The tab picks up a saved change by itself (it reads the file
+  again when it changes).
 - Code: `lobby/t5lobby/padmap.py` (controls.ini), `lobby/t5lobby/padnav.py` (devices, polling rules, thread),
   `lobby/t5lobby/tk_tab.py` (what each button does). Tests: `lobby/tests/test_padnav.py`,
   `lobby/tests/test_tk_pad.py`, `tests/test_padmap_sync.py`; they use a fake pad and a fake clock.
   Not tried with a real stick yet (the XInput pad on the development PC was only read, not pressed).
+
+## Languages
+
+The launcher and the Online tab speak English and German (Settings -> Language; Auto follows Windows).
+`lobby/t5lobby/i18n.py` has the lookup: `t("English text", name=value)`; the English text is the key, the German
+catalog is `i18n_de.py`. The lobby server stays English and sends English: its error texts, notices and kick
+reasons carry a `code` or a fixed sentence, and the client puts the sentences it knows into German
+(`i18n.translate_message`, the list is `i18n_known.py`; an unknown sentence is shown as it came). The lag
+check is built on the client from the numbers in the `lag_check` event (`lag.describe_event`), not from its
+`text`. A new server message, client error or build-tool error needs an entry in `i18n_known.py` and a
+German text; `python tools/i18n_extract.py` lists what is missing and `tests/test_i18n.py` fails until it
+is there.
 
 ## What is left
 

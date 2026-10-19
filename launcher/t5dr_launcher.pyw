@@ -9,6 +9,7 @@ progress and log), Play, Settings, Online (placeholder; see online.py).
 import argparse
 import ctypes
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -19,6 +20,22 @@ from tkinter.scrolledtext import ScrolledText
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core    # noqa: E402
 import online  # noqa: E402
+from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
+import problem_report as report  # noqa: E402
+import problem_report_ui as report_ui  # noqa: E402
+import updater  # noqa: E402
+try:
+    import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
+except ImportError:
+    controls_ui = None
+
+if core.I18N:
+    from t5lobby import dialogs  # noqa: E402  (message boxes whose buttons follow the chosen language)
+else:
+    class dialogs:  # noqa: N801 -- lobby/ is missing from this copy: the system's own boxes, in English
+        show_info = staticmethod(lambda title, msg, parent=None: messagebox.showinfo(title, msg, parent=parent))
+        show_error = staticmethod(lambda title, msg, parent=None: messagebox.showerror(title, msg, parent=parent))
+        ask_yes_no = staticmethod(lambda title, msg, parent=None: messagebox.askyesno(title, msg, parent=parent))
 
 APP_TITLE = "T5DR Online"
 COLORS = {"ok": "#1a7f37", "warn": "#9a6700", "error": "#cf222e", "muted": "#57606a",
@@ -26,24 +43,37 @@ COLORS = {"ok": "#1a7f37", "warn": "#9a6700", "error": "#cf222e", "muted": "#576
 GLYPH = {"pending": "○", "running": "◔", "done": "✔", "skip": "✔", "failed": "✖"}
 
 CONTROLS = [
-    # action, PS3, keyboard, Xbox controller
-    ("Left punch (1)", "Square", "A", "X"),
-    ("Right punch (2)", "Triangle", "S", "Y"),
-    ("Left kick (3)", "Cross", "Z", "A"),
-    ("Right kick (4)", "Circle", "X", "B"),
-    ("Move / menus", "D-pad, left stick", "Arrow keys", "D-pad, left stick"),
-    ("L1 / R1", "L1 / R1", "Q / W", "LB / RB"),
-    ("L2 / R2", "L2 / R2", "1 / 2", "LT / RT"),
-    ("Start / pause", "START", "Enter", "Start"),
-    ("Select", "SELECT", "Tab", "Back"),
-    ("Quit the game", "", "Esc", ""),
-    ("Online tab: accept / decline", "Cross / Circle", "Mouse", "A / B"),
+    # action, PS3, keyboard, Xbox controller (English; t() where the table is shown)
+    (N_("Left punch (1)"), N_("Square"), N_("A"), N_("X")),
+    (N_("Right punch (2)"), N_("Triangle"), N_("S"), N_("Y")),
+    (N_("Left kick (3)"), N_("Cross"), N_("Z"), N_("A")),
+    (N_("Right kick (4)"), N_("Circle"), N_("X"), N_("B")),
+    (N_("Move / menus"), N_("D-pad, left stick"), N_("Arrow keys"), N_("D-pad, left stick")),
+    (N_("L1 / R1"), N_("L1 / R1"), N_("Q / W"), N_("LB / RB")),
+    (N_("L2 / R2"), N_("L2 / R2"), N_("1 / 2"), N_("LT / RT")),
+    (N_("Start / pause"), N_("START"), N_("Enter"), N_("Start")),
+    (N_("Select"), N_("SELECT"), N_("Tab"), N_("Back")),
+    (N_("Quit the game"), "", N_("Esc"), ""),
+    (N_("Online tab: accept / decline"), N_("Cross / Circle"), N_("Mouse"), N_("A / B")),
 ]
 
 
 def set_big_state(btn, enabled):
+    if isinstance(btn, ttk.Button):          # the dark theme's big button (theme.py draws its states)
+        btn.configure(state="normal" if enabled else "disabled", cursor="hand2" if enabled else "arrow")
+        return
     btn.configure(state="normal" if enabled else "disabled",
                   bg=COLORS["accent"] if enabled else "#aab4c0", cursor="hand2" if enabled else "arrow")
+
+
+def load_theme():
+    """The dark theme shared with the Online tab (lobby/t5lobby/theme.py; online.py put lobby/ on the
+    path). None in a copy without lobby/: the launcher then keeps the plain Windows look."""
+    try:
+        from t5lobby import theme
+        return theme
+    except ImportError:
+        return None
 
 
 def enable_dpi_awareness():
@@ -54,17 +84,24 @@ def enable_dpi_awareness():
 
 
 class App(tk.Tk):
-    def __init__(self, offscreen=False):
+    def __init__(self, offscreen=False, settings=None):
         super().__init__()
         self.readonly = offscreen
-        self.settings = core.Settings()
+        self.settings = settings if settings is not None else core.Settings()
+        self.language = core.apply_language(self.settings)      # before the first text is built
         self.info = core.release_info()
         self.build = None
         self.game = None
+        self.restart_requested = False
         self.step_state = {s: "pending" for s in core.build_game.STEPS}
         self.step_t0 = None
         self.cur_step = None
+        self._run_shown = False        # the Play tab shows "Running ..." (the game's end is explained once)
         self.sub = 0.0
+        self._last_status = None
+        if not offscreen:
+            core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
+                     f"output {self.settings.out_dir}")
         self.title(f"{APP_TITLE} {self.info.get('version', '')}".strip())
         self.minsize(900, 680)
         self.geometry("1000x780" + ("+60+60" if offscreen else ""))
@@ -80,6 +117,14 @@ class App(tk.Tk):
         self.after(200, self.refresh_inputs)
         self.after(300, self.refresh_prereqs)
         self.after(400, self.refresh_game_state)
+
+    def report_callback_exception(self, exc, val, tb):
+        """An error inside a button or timer: Tk would only print it (nowhere, under pythonw). It goes
+        into launcher.log, so a problem report shows it."""
+        import traceback
+        if not self.readonly:
+            core.log("error in the launcher:\n" + "".join(traceback.format_exception(exc, val, tb)))
+        super().report_callback_exception(exc, val, tb)
 
     def _click_through(self):
         """WS_EX_TRANSPARENT on the (layered) frame: mouse clicks go to the windows below."""
@@ -102,6 +147,10 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ look
     def _style(self):
+        self.theme = load_theme()
+        if self.theme is not None:
+            self._dark_style()
+            return
         st = ttk.Style(self)
         if "vista" in st.theme_names():
             st.theme_use("vista")
@@ -119,7 +168,35 @@ class App(tk.Tk):
         st.configure("StepFail.TLabel", foreground=COLORS["error"], font=("Segoe UI", 10, "bold"), padding=(6, 2))
         st.configure("TNotebook.Tab", padding=(16, 6))
 
+    def _dark_style(self):
+        th = self.theme.apply(self)
+        self.theme.bind_return_on_buttons(self)
+        C = self.theme.C
+        COLORS.update({"ok": C["ok"], "warn": C["warn"], "error": C["bad"], "muted": C["muted"],
+                       "accent": C["accent"], "accent_hover": C["accent_hi"], "log_bg": C["surface"],
+                       "log_fg": C["muted"], "text": C["text"], "step": C["info"]})
+        if controls_ui is not None:          # the Controls window's colours on the dark background
+            controls_ui.COLORS.update({"ok": C["ok"], "muted": C["muted"], "warn": C["warn"], "error": C["bad"],
+                                       "live": self.theme.mix(C["ok"], C["surface"], 0.78)})
+        st = th.style
+        f = th.fonts
+        px = th.px
+        self.option_add("*Text.Font", f["mono"])
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # the same window at any DPI (fonts grow with it), never larger than the screen
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
+        if not self.readonly:
+            self.geometry(f"{min(px(1080), sw - 40)}x{min(px(840), sh - 80)}")
+        else:
+            self.geometry(f"{px(1080)}x{px(840)}+60+60")
+
     def big_button(self, parent, text, cmd):
+        if getattr(self, "theme", None) is not None:
+            return ttk.Button(parent, text=text, command=cmd, style="Hero.TButton", cursor="hand2")
         b = tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 13, "bold"), fg="white",
                       bg=COLORS["accent"], activebackground=COLORS["accent_hover"], activeforeground="white",
                       relief="flat", padx=28, pady=8, cursor="hand2", disabledforeground="#c8d1dc")
@@ -129,33 +206,39 @@ class App(tk.Tk):
     def _layout(self):
         head = ttk.Frame(self, padding=(16, 12, 16, 4))
         head.pack(fill="x")
+        if getattr(self, "theme", None) is not None:
+            self.theme.Mark(head, size=30).pack(side="left", padx=(0, 10))
         ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
         ttk.Label(head, style="Muted.TLabel",
-                  text=f"   native Windows build  ·  launcher {self.info.get('version', '?')}").pack(side="left")
+                  text="   " + t("native Windows build  ·  launcher {version}",
+                                 version=self.info.get("version", "?"))).pack(side="left")
+        self.updater = updater.attach(self, head)     # "Check for updates", the offer, the update itself
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
-        for key, label in (("build", "  Build  "), ("play", "  Play  "), ("settings", "  Settings  "),
-                           ("online", "  Online  ")):
+        for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
+                           ("online", t("Play online"))):
             f = ttk.Frame(self.nb)
-            self.nb.add(f, text=label)
+            self.nb.add(f, text=f"  {label}  ")
             self.tabs[key] = f
+        self.tab_keys = list(self.tabs)
         self._build_tab(self.tabs["build"])
         self._play_tab(self.tabs["play"])
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
+        self.status.trace_add("write", self._log_status)
         bar = ttk.Frame(self, padding=(16, 4))
-        bar.pack(fill="x")
+        bar.pack(fill="x", side="bottom", before=self.nb)     # (stays visible when a tab is too tall)
         ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="left")
         ttk.Label(bar, style="Muted.TLabel",
-                  text=f"Output: {self.settings.out_dir}").pack(side="right")
+                  text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right")
 
     def _build_tab(self, tab):
         tab.columnconfigure(0, weight=1)
         # your files
-        files = ttk.LabelFrame(tab, text="  Your game  ", padding=(12, 6))
+        files = ttk.LabelFrame(tab, text="  " + t("Your game") + "  ", padding=(12, 6))
         files.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 4))
         files.columnconfigure(1, weight=1)
         self.pkg_var = tk.StringVar(value=self.settings["pkg"])
@@ -163,13 +246,13 @@ class App(tk.Tk):
         self.pkg_info, self.rap_info = tk.StringVar(), tk.StringVar()
         self.pkg_lbl = self.rap_lbl = None
         for row, (label, var, info, kind) in enumerate((
-                ("Package (.pkg)", self.pkg_var, self.pkg_info, "pkg"),
-                ("License (.rap)", self.rap_var, self.rap_info, "rap"))):
+                (t("Package (.pkg)"), self.pkg_var, self.pkg_info, "pkg"),
+                (t("License (.rap)"), self.rap_var, self.rap_info, "rap"))):
             ttk.Label(files, text=label).grid(row=row * 2, column=0, sticky="w", padx=(0, 8))
             e = ttk.Entry(files, textvariable=var)
             e.grid(row=row * 2, column=1, sticky="we")
             e.bind("<FocusOut>", lambda _e: self.refresh_inputs())
-            ttk.Button(files, text="Browse…", command=lambda k=kind: self.browse(k)).grid(
+            ttk.Button(files, text=t("Browse…"), command=lambda k=kind: self.browse(k)).grid(
                 row=row * 2, column=2, padx=(8, 0))
             lbl = ttk.Label(files, textvariable=info, style="Muted.TLabel")
             lbl.grid(row=row * 2 + 1, column=1, columnspan=2, sticky="w", pady=(0, 4))
@@ -177,7 +260,7 @@ class App(tk.Tk):
                 self.pkg_lbl = lbl
             else:
                 self.rap_lbl = lbl
-        ttk.Label(files, style="Muted.TLabel", wraplength=820, justify="left", text=(
+        ttk.Label(files, style="Muted.TLabel", wraplength=820, justify="left", text=t(
             "Supported: Tekken 5: Dark Resurrection Online, PS3 PSN (US), NPUB30009 version 01.00 -- the package "
             "file and the license (.rap) from your own account. Nothing leaves this PC.")).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(2, 0))
@@ -188,59 +271,60 @@ class App(tk.Tk):
                                                                     pady=(4, 0))
 
         # build tools
-        tools = ttk.LabelFrame(tab, text="  Build tools on this PC  ", padding=(12, 6))
+        tools = ttk.LabelFrame(tab, text="  " + t("Build tools on this PC") + "  ", padding=(12, 6))
         tools.grid(row=1, column=0, sticky="we", padx=8, pady=4)
         tools.columnconfigure(0, weight=1)
         self.tools_tv = ttk.Treeview(tools, columns=("state", "detail"), show="tree headings", height=7,
                                      selectmode="none")
-        self.tools_tv.heading("#0", text="Needed")
+        self.tools_tv.heading("#0", text=t("Needed"))
         self.tools_tv.heading("state", text="")
-        self.tools_tv.heading("detail", text="Found")
+        self.tools_tv.heading("detail", text=t("Found"))
         self.tools_tv.column("#0", width=230, stretch=False)
         self.tools_tv.column("state", width=70, stretch=False, anchor="center")
         self.tools_tv.column("detail", width=520)
         self.tools_tv.tag_configure("bad", foreground=COLORS["error"])
-        self.tools_tv.tag_configure("good", foreground="#24292f")
-        self.tools_sum = tk.StringVar(value="Checking…")
+        self.tools_tv.tag_configure("good", foreground=COLORS.get("text", "#24292f"))
+        self.tools_sum = tk.StringVar(value=t("Checking…"))
         self.tools_sum_lbl = ttk.Label(tools, textvariable=self.tools_sum)
         self.tools_sum_lbl.grid(row=0, column=0, sticky="w")
         btns = ttk.Frame(tools)
         btns.grid(row=0, column=1, sticky="e")
-        self.details_btn = ttk.Button(btns, text="Details", command=self.toggle_tools)
+        self.details_btn = ttk.Button(btns, text=t("Details"), command=self.toggle_tools)
         self.details_btn.pack(side="left")
-        ttk.Button(btns, text="Check again", command=self.refresh_prereqs).pack(side="left", padx=(8, 0))
-        self.install_btn = ttk.Button(btns, text="Install missing…", command=self.install_missing)
+        ttk.Button(btns, text=t("Check again"), command=self.refresh_prereqs).pack(side="left", padx=(8, 0))
+        self.install_btn = ttk.Button(btns, text=t("Install missing…"), command=self.install_missing)
         self.install_btn.pack(side="left", padx=(8, 0))
         self.tools_shown = False
 
         # build
-        b = ttk.LabelFrame(tab, text="  Build  ", padding=(12, 6))
+        b = ttk.LabelFrame(tab, text="  " + t("Build") + "  ", padding=(12, 6))
         b.grid(row=2, column=0, sticky="we", padx=8, pady=4)
         b.columnconfigure(0, weight=1)
         strip = ttk.Frame(b)
         strip.grid(row=0, column=0, columnspan=3, sticky="w")
         self.step_lbls = {}
         for i, s in enumerate(core.build_game.STEPS):
-            lbl = ttk.Label(strip, text=f"{GLYPH['pending']} {core.STEP_TITLES[s]}", style="Step.TLabel")
+            lbl = ttk.Label(strip, text=f"{GLYPH['pending']} {t(core.STEP_TITLES[s])}", style="Step.TLabel")
             lbl.grid(row=0, column=i)
             self.step_lbls[s] = lbl
         self.progress = ttk.Progressbar(b, maximum=1000)
         self.progress.grid(row=1, column=0, columnspan=3, sticky="we", pady=(6, 2))
-        self.detail = tk.StringVar(value="Press BUILD GAME. It takes a few minutes; the game data stays in this folder.")
+        self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
         ttk.Label(b, textvariable=self.detail, style="Muted.TLabel").grid(row=2, column=0, columnspan=3, sticky="w")
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
-        self.build_btn = self.big_button(row, "BUILD GAME", self.start_build)
+        self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
         self.build_btn.pack(side="left")
-        self.cancel_btn = ttk.Button(row, text="Cancel", command=self.cancel_build, state="disabled")
+        self.cancel_btn = ttk.Button(row, text=t("Cancel"), command=self.cancel_build, state="disabled")
         self.cancel_btn.pack(side="left", padx=8)
         self.force_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row, text="Redo every step", variable=self.force_var).pack(side="left", padx=8)
+        ttk.Checkbutton(row, text=t("Redo every step"), variable=self.force_var).pack(side="left", padx=8)
         self.lowprio_var = tk.BooleanVar(value=self.settings["low_priority"])
-        ttk.Checkbutton(row, text="Keep the PC responsive (slower)", variable=self.lowprio_var,
+        ttk.Checkbutton(row, text=t("Keep the PC responsive (slower)"), variable=self.lowprio_var,
                         command=self.save_settings).pack(side="left", padx=8)
-        ttk.Button(row, text="Open build.log",
+        ttk.Button(row, text=t("Open build.log"),
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "build.log"))).pack(side="right")
+        ttk.Button(row, text=t("Report a problem..."), command=self.report_problem).pack(side="right", padx=8)
         self.error = tk.StringVar()
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
                                   font=("Segoe UI", 10, "bold"))
@@ -251,36 +335,54 @@ class App(tk.Tk):
         self.log = ScrolledText(tab, height=8, font=("Consolas", 9), bg=COLORS["log_bg"], fg=COLORS["log_fg"],
                                 insertbackground=COLORS["log_fg"], relief="flat", state="disabled", wrap="none")
         self.log.grid(row=3, column=0, sticky="nsew", padx=8, pady=(4, 8))
-        self.log.tag_configure("step", foreground="#58a6ff")
+        self.log.tag_configure("step", foreground=COLORS.get("step", "#58a6ff"))
         self.log.tag_configure("err", foreground="#ff7b72")
+        if getattr(self, "theme", None) is not None:
+            # the dark theme's thin scroll bar instead of the light Windows one
+            self.log.configure(padx=8, pady=6, highlightthickness=0)
+            self.log.vbar.pack_forget()
+            sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
+            sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
+            self.log.configure(yscrollcommand=sb.set)
+            self.log.frame.configure(bg=COLORS["log_bg"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Play", style="H1.TLabel").pack(anchor="w")
-        self.state_var = tk.StringVar(value="Checking the build…")
+        ttk.Label(box, text=t("Play offline"), style="H1.TLabel").pack(anchor="w")
+        # what "offline" means, and the way to the Online tab (internet play)
+        what = ttk.Frame(box)
+        what.pack(anchor="w", pady=(2, 0))
+        ttk.Label(what, style="Muted.TLabel", text=t(
+            "Arcade, Versus, Practice and the other modes on this PC. To play against people over the "
+            "internet, use the")).pack(side="left")
+        self.to_online_btn = ttk.Button(what, text=t("Online tab"), style="Link.TButton", cursor="hand2",
+                                        command=lambda: self.nb.select(self.tabs["online"]))
+        self.to_online_btn.pack(side="left")
+        self.state_var = tk.StringVar(value=t("Checking the build…"))
         self.state_lbl = ttk.Label(box, textvariable=self.state_var, wraplength=820, justify="left")
         self.state_lbl.pack(anchor="w", pady=(6, 14))
         nick = ttk.Frame(box)
         nick.pack(anchor="w", pady=(0, 14))
-        ttk.Label(nick, text="Your name (shown in the game)").pack(side="left")
+        ttk.Label(nick, text=t("Your name (shown in the game)")).pack(side="left")
         self.nick_var = tk.StringVar(value=self.settings["nickname"])
         ttk.Entry(nick, textvariable=self.nick_var, width=20).pack(side="left", padx=8)
         row = ttk.Frame(box)
         row.pack(anchor="w")
-        self.play_btn = self.big_button(row, "PLAY", self.play)
+        self.play_btn = self.big_button(row, t("PLAY OFFLINE"), self.play)
         self.play_btn.pack(side="left")
-        self.stop_btn = ttk.Button(row, text="Stop game", command=self.stop_game, state="disabled")
+        self.stop_btn = ttk.Button(row, text=t("Stop game"), command=self.stop_game, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
         self.run_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.run_var, style="H2.TLabel").pack(anchor="w", pady=(14, 4))
         links = ttk.Frame(box)
         links.pack(anchor="w", pady=(4, 0))
-        ttk.Button(links, text="Open newest game log", command=self.open_game_log).pack(side="left")
-        ttk.Button(links, text="Open saves folder",
+        ttk.Button(links, text=t("Open newest game log"), command=self.open_game_log).pack(side="left")
+        ttk.Button(links, text=t("Open saves folder"),
                    command=lambda: core.open_path(os.path.join(self.settings.out_dir, "gamedata"))).pack(
             side="left", padx=8)
-        ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=(
+        ttk.Button(links, text=t("Report a problem..."), command=self.report_problem).pack(side="left")
+        ttk.Label(box, style="Muted.TLabel", wraplength=820, justify="left", text=t(
             "The game opens in its own window (DirectX 12). Keyboard and Xbox-style controllers both work; "
             "see Settings for the keys. Esc closes the game. START skips the intro movie.")).pack(
             anchor="w", pady=(22, 0))
@@ -288,78 +390,95 @@ class App(tk.Tk):
     def _settings_tab(self, tab):
         box = ttk.Frame(tab, padding=(24, 16))
         box.pack(fill="both", expand=True)
-        disp = ttk.LabelFrame(box, text="  Display  ", padding=(12, 6))
+        disp = ttk.LabelFrame(box, text="  " + t("Display") + "  ", padding=(12, 6))
         disp.grid(row=0, column=0, sticky="nwe", padx=(0, 12))
         self.display_var = tk.StringVar(value=self.settings["display"])
         for key, label in core.DISPLAY_MODES:
-            ttk.Radiobutton(disp, text=label, value=key, variable=self.display_var,
+            ttk.Radiobutton(disp, text=t(label), value=key, variable=self.display_var,
                             command=self.save_settings).pack(anchor="w", pady=1)
-        ttk.Label(disp, style="Muted.TLabel", wraplength=300, justify="left", text=(
-            "The game renders at 1280 x 720 and is scaled to the window. You can also drag the window's "
-            "edges. The runtime has no exclusive fullscreen yet.")).pack(anchor="w", pady=(6, 0))
+        ttk.Label(disp, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "The picture is scaled to the window; how sharp it is depends on Internal resolution. "
+            "You can also drag the window's edges. Alt+Enter or F11 switches borderless fullscreen "
+            "in the game.")).pack(anchor="w", pady=(6, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
-        other = ttk.LabelFrame(right, text="  Sound and start  ", padding=(12, 6))
+        if core.I18N:
+            self._language_box(right)
+        other = ttk.LabelFrame(right, text="  " + t("Sound and start") + "  ", padding=(12, 6))
         other.pack(fill="x")
         self.mute_var = tk.BooleanVar(value=self.settings["mute"])
         self.bg_var = tk.BooleanVar(value=self.settings["background"])
-        ttk.Checkbutton(other, text="Mute sound", variable=self.mute_var, command=self.save_settings).pack(anchor="w")
-        ttk.Checkbutton(other, text="Start minimized, without taking focus (for testing)", variable=self.bg_var,
+        ttk.Checkbutton(other, text=t("Mute sound"), variable=self.mute_var, command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(other, text=t("Start minimized, without taking focus (for testing)"), variable=self.bg_var,
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
-        ttk.Label(other, text="Advanced: extra settings, one NAME=VALUE per line").pack(anchor="w", pady=(10, 2))
+        ttk.Label(other, text=t("Advanced: extra settings, one NAME=VALUE per line")).pack(anchor="w", pady=(10, 2))
         self.env_text = tk.Text(other, height=3, width=44, font=("Consolas", 9))
         self.env_text.insert("1.0", self.settings["extra_env"])
         self.env_text.pack(anchor="w", fill="x")
         self.env_text.bind("<FocusOut>", lambda _e: self.save_settings())
 
-        # Like Tekken 6 Native Online's "3D resolution": for weaker graphics cards
-        # (PS3_RENDER_SCALE, docs/RENDER_PERF.md "Weaker PCs").
-        gfx = ttk.LabelFrame(right, text="  3D resolution  ", padding=(12, 6))
+        # One "Internal resolution" like an emulator's (PS3_INTERNAL_RES, docs/RENDER_PERF.md
+        # "Internal resolution"): below Native for weak graphics cards, above for big screens.
+        gfx = ttk.LabelFrame(right, text="  " + t("Internal resolution") + "  ", padding=(12, 6))
         gfx.pack(fill="x", pady=(6, 0))
-        self.render_scale_var = tk.StringVar(value=self.settings["render_scale"]
-                                             if self.settings["render_scale"] in core.RENDER_SCALES else "1")
-        row = ttk.Frame(gfx)
-        row.pack(anchor="w")
-        for key, label in core.RENDER_SCALES.items():
-            ttk.Radiobutton(row, text=label, value=key, variable=self.render_scale_var,
-                            command=self.save_settings).pack(side="left", padx=(0, 14))
-        ttk.Label(row, style="Muted.TLabel", text="for weak graphics cards").pack(side="left")
+        self.internal_res_var = tk.StringVar(value=self.settings["internal_res"]
+                                             if self.settings["internal_res"] in core.INTERNAL_RES else "native")
+        keys = list(core.INTERNAL_RES)
+        for part in (keys[:3], keys[3:]):
+            row = ttk.Frame(gfx)
+            row.pack(anchor="w")
+            for key in part:
+                ttk.Radiobutton(row, text=t(core.INTERNAL_RES[key][0]), value=key, variable=self.internal_res_var,
+                                command=self._internal_res_changed).pack(side="left", padx=(0, 14))
+        self.internal_res_hint = ttk.Label(gfx, style="Muted.TLabel", wraplength=390, justify="left")
+        self.internal_res_hint.pack(anchor="w", pady=(4, 0))
+        self._internal_res_changed(save=False)
 
         # Like Tekken 6 Native Online's input delay option (T5_RB_NET_DELAY, docs/NETPLAY.md
         # "Input delay"): Auto follows the ping; a fixed value counts when both players chose it.
-        net = ttk.LabelFrame(right, text="  Online input delay  ", padding=(12, 6))
+        net = ttk.LabelFrame(right, text="  " + t("Online input delay") + "  ", padding=(12, 6))
         net.pack(fill="x", pady=(6, 0))
         self.input_delay_var = tk.StringVar(value=self.settings["input_delay"]
                                             if self.settings["input_delay"] in core.INPUT_DELAYS else "auto")
         row = ttk.Frame(net)
         row.pack(anchor="w")
         for key, label in core.INPUT_DELAYS.items():
-            ttk.Radiobutton(row, text=label, value=key, variable=self.input_delay_var,
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.input_delay_var,
                             command=self.save_settings).pack(side="left", padx=(0, 14))
-        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=(
+        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Frames. Auto: 1 up to about 60 ms ping, 2 above. 0/1/2 count only when your opponent "
             "picked the same, otherwise Auto. Ranked matches always use 2.")).pack(anchor="w", pady=(4, 0))
 
-        ctl = ttk.LabelFrame(box, text="  Controls  ", padding=(12, 6))
+        ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
+        # Set the buttons of pads, arcade sticks and hitboxes here instead of editing controls.ini (controls_ui.py)
+        cbar = ttk.Frame(ctl)
+        cbar.pack(fill="x", pady=(0, 6))
+        self.controls_btn = ttk.Button(cbar, text=t("Set up controllers…"), command=self.open_controls,
+                                       state="normal" if controls_ui else "disabled")
+        self.controls_btn.pack(side="left")
+        ttk.Label(cbar, style="Muted.TLabel", text="  " + (
+            t("Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
+              "or start from a layout.") if controls_ui else t("(needs the lobby files, which are missing)"))).pack(
+            side="left")
         tv = ttk.Treeview(ctl, columns=("ps3", "kb", "pad"), show="tree headings", height=len(CONTROLS),
                           selectmode="none")
-        tv.heading("#0", text="Action (Tekken default)")
-        tv.heading("ps3", text="PS3 button")
-        tv.heading("kb", text="Keyboard")
-        tv.heading("pad", text="Xbox controller")
+        tv.heading("#0", text=t("Action (Tekken default)"))
+        tv.heading("ps3", text=t("PS3 button"))
+        tv.heading("kb", text=t("Keyboard"))
+        tv.heading("pad", text=t("Xbox controller"))
         tv.column("#0", width=210, stretch=False)
         for c in ("ps3", "kb", "pad"):
             tv.column(c, width=190)
         for a, p, k, x in CONTROLS:
-            tv.insert("", "end", text=a, values=(p, k, x))
+            tv.insert("", "end", text=t(a), values=(t(p), t(k), t(x)))
         tv.pack(fill="x")
-        ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=(
+        ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "Keyboard and the first XInput controller both drive player 1 (they are combined). The keyboard "
             "only counts while the game window has focus. Button layout inside the game can be changed in its "
             "own Options menu.")).pack(anchor="w", pady=(6, 0))
-        ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=(
+        ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "In this window, on the Online tab, a controller or arcade stick works without mouse or keyboard: "
             "Cross / A accepts a match or rematch and starts a search, Circle / B declines, leaves or stops the "
             "search. It only counts while this window is in front, and only after the button was let go for a "
@@ -367,11 +486,52 @@ class App(tk.Tk):
         box.columnconfigure(0, weight=1)
         box.columnconfigure(1, weight=1)
 
+    def _language_box(self, right):
+        """Auto / Deutsch / English. The texts are built once, so a change applies after a restart."""
+        lang = ttk.LabelFrame(right, text="  " + t("Language") + "  ", padding=(12, 6))
+        lang.pack(fill="x", pady=(0, 6))
+        self.language_choice = self.settings["language"]         # what this run was started with
+        self.language_var = tk.StringVar(value=self.language_choice)
+        row = ttk.Frame(lang)
+        row.pack(anchor="w")
+        for key, label in core.LANGUAGE_CHOICES:
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.language_var,
+                            command=self.language_changed).pack(side="left", padx=(0, 14))
+        self.lang_note = tk.StringVar(value="")
+        note = ttk.Frame(lang)
+        note.pack(anchor="w", fill="x")
+        ttk.Label(note, textvariable=self.lang_note, style="Muted.TLabel", wraplength=300, justify="left").pack(
+            side="left")
+        self.restart_btn = ttk.Button(note, text=t("Restart now"), command=self.restart_launcher)
+
+    def language_changed(self):
+        self.save_settings()
+        if self.language_var.get() == self.language_choice:
+            self.lang_note.set("")
+            self.restart_btn.pack_forget()
+        else:
+            self.lang_note.set(t("The language changes when the launcher starts again."))
+            self.restart_btn.pack(side="left", padx=(8, 0))
+
+    def restart_launcher(self):
+        """Close this launcher and start a new one (the new language applies from the first window on)."""
+        if self.readonly:
+            return
+        if self.build:
+            dialogs.show_info(APP_TITLE, t("A build is running. Stop it first, or restart the launcher by hand "
+                                           "when it is done."), parent=self)
+            return
+        if self.game and self.game.running():
+            dialogs.show_info(APP_TITLE, t("Close the game first."), parent=self)
+            return
+        self.restart_requested = True
+        self.on_close()
+
     # ------------------------------------------------------------------ inputs
     def browse(self, kind):
         if kind == "pkg":
-            p = filedialog.askopenfilename(title="Choose your Tekken 5 DR Online package",
-                                           filetypes=[("PS3 package", "*.pkg"), ("All files", "*.*")])
+            p = filedialog.askopenfilename(title=t("Choose your Tekken 5 DR Online package"),
+                                           filetypes=[(t("PS3 package"), "*.pkg"), (t("All files"), "*.*")])
             if p:
                 self.pkg_var.set(os.path.normpath(p))
                 # the .rap usually sits next to the package
@@ -382,8 +542,8 @@ class App(tk.Tk):
                     if match:
                         self.rap_var.set(os.path.join(os.path.normpath(d), match[0]))
         else:
-            p = filedialog.askopenfilename(title="Choose your license (.rap)",
-                                           filetypes=[("PS3 license", "*.rap"), ("All files", "*.*")])
+            p = filedialog.askopenfilename(title=t("Choose your license (.rap)"),
+                                           filetypes=[(t("PS3 license"), "*.rap"), (t("All files"), "*.*")])
             if p:
                 self.rap_var.set(os.path.normpath(p))
         self.refresh_inputs()
@@ -411,7 +571,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ prerequisites
     def refresh_prereqs(self):
-        self.status.set("Checking build tools…")
+        self.status.set(t("Checking build tools…"))
 
         def work():
             items = core.prereqs.check()
@@ -422,29 +582,31 @@ class App(tk.Tk):
         self.prereq_items = items
         self.tools_tv.delete(*self.tools_tv.get_children())
         for it in items:
-            self.tools_tv.insert("", "end", text=it["name"],
-                                 values=("✔ ok" if it["ok"] else "✖ missing", it["detail"]),
+            self.tools_tv.insert("", "end", text=core.translate_message(it["name"]),
+                                 values=("✔ " + t("ok") if it["ok"] else "✖ " + t("missing"),
+                                         core.translate_message(it["detail"])),
                                  tags=("good" if it["ok"] else "bad",))
         missing = [it for it in items if not it["ok"]]
         self.install_btn.configure(state="normal" if any(it["install"] for it in missing) else "disabled")
         if missing:
-            self.tools_sum.set("✖ Missing: " + ", ".join(it["name"] for it in missing))
+            self.tools_sum.set("✖ " + t("Missing: {names}", names=", ".join(
+                core.translate_message(it["name"]) for it in missing)))
             self.tools_sum_lbl.configure(style="error.TLabel")
             self.toggle_tools(True)
         else:
-            self.tools_sum.set("✔ Everything the build needs is installed.")
+            self.tools_sum.set("✔ " + t("Everything the build needs is installed."))
             self.tools_sum_lbl.configure(style="ok.TLabel")
-        self.status.set("All build tools found." if not missing else
-                        f"{len(missing)} build tool(s) missing -- click 'Install missing…'.")
+        self.status.set(t("All build tools found.") if not missing else
+                        t("{count} build tool(s) missing -- click 'Install missing…'.", count=len(missing)))
 
     def toggle_tools(self, show=None):
         self.tools_shown = (not self.tools_shown) if show is None else show
         if self.tools_shown:
             self.tools_tv.grid(row=1, column=0, columnspan=2, sticky="we", pady=(6, 0))
-            self.details_btn.configure(text="Hide details")
+            self.details_btn.configure(text=t("Hide details"))
         else:
             self.tools_tv.grid_remove()
-            self.details_btn.configure(text="Details")
+            self.details_btn.configure(text=t("Details"))
 
     def install_missing(self):
         if self.readonly:
@@ -458,20 +620,19 @@ class App(tk.Tk):
         lines = []
         for i in ids:
             if i == "Microsoft.VisualStudio.2022.BuildTools":
-                lines.append("• Microsoft Visual Studio 2022 Build Tools: the C++ compiler parts only "
-                             "(MSVC x64, Windows SDK, CMake, Clang). Download about 2.5 GB, about 7 GB on disk, "
-                             "10-20 minutes. You accept Microsoft's license terms for the Build Tools "
-                             "(visualstudio.microsoft.com/license-terms).")
+                lines.append("• " + t("Microsoft Visual Studio 2022 Build Tools: the C++ compiler parts only "
+                                         "(MSVC x64, Windows SDK, CMake, Clang). Download about 2.5 GB, about 7 GB "
+                                         "on disk, 10-20 minutes. You accept Microsoft's license terms for the Build "
+                                         "Tools (visualstudio.microsoft.com/license-terms)."))
             elif i == "Git.Git":
-                lines.append("• Git for Windows (about 70 MB download).")
+                lines.append("• " + t("Git for Windows (about 70 MB download)."))
             else:
                 lines.append(f"• {i}")
-        if not messagebox.askyesno(
-                "Install build tools",
-                "The build needs these free tools from their makers, installed with Windows' own installer "
-                "(winget):\n\n" + "\n\n".join(lines) +
-                "\n\nWindows will ask for administrator permission. A console window shows the progress.\n\n"
-                "Install now?", icon="question"):
+        if not dialogs.ask_yes_no(
+                t("Install build tools"),
+                t("The build needs these free tools from their makers, installed with Windows' own installer "
+                  "(winget):\n\n{tools}\n\nWindows will ask for administrator permission. A console window shows "
+                  "the progress.\n\nInstall now?", tools="\n\n".join(lines)), parent=self):
             return
         cmds = [core.prereqs.install_command(i) for i in ids]
 
@@ -481,20 +642,21 @@ class App(tk.Tk):
                     import subprocess
                     subprocess.run(c, creationflags=0x00000010)   # CREATE_NEW_CONSOLE: the player sees it
                 except OSError as e:
-                    self.after(0, lambda e=e: messagebox.showerror(
-                        "Install failed", f"Could not start the installer:\n{e}\n\nIs winget (App Installer) "
-                        "available? On Windows 10 install 'App Installer' from the Microsoft Store."))
+                    self.after(0, lambda e=e: dialogs.show_error(
+                        t("Install failed"), t("Could not start the installer:\n{error}\n\nIs winget (App "
+                                               "Installer) available? On Windows 10 install 'App Installer' from "
+                                               "the Microsoft Store.", error=e), parent=self))
                     return
             self.after(0, self.refresh_prereqs)
         threading.Thread(target=work, daemon=True).start()
-        self.status.set("Installer running in its own window…")
+        self.status.set(t("Installer running in its own window…"))
 
     # ------------------------------------------------------------------ build
     def start_build(self, steps=None, force_allowed=False):
         if self.build or (self.readonly and not force_allowed):
             return
         if self.game and self.game.running():
-            messagebox.showinfo(APP_TITLE, "Close the game first.")
+            dialogs.show_info(APP_TITLE, t("Close the game first."), parent=self)
             return
         self.refresh_inputs()
         self.error.set("")
@@ -511,12 +673,14 @@ class App(tk.Tk):
             self.build.start()
         except OSError as e:
             self.build = None
-            self.error.set(f"Could not start the build: {e}")
+            self.error.set(t("Could not start the build: {error}", error=e))
             return
         self.build_t0 = time.time()
+        core.log(f"build started: steps {' '.join(steps) if steps else 'all'}, redo {self.force_var.get()}, "
+                 f"low priority {self.lowprio_var.get()}, output {self.settings.out_dir}")
         set_big_state(self.build_btn, False)
         self.cancel_btn.configure(state="normal")
-        self.status.set("Building…")
+        self.status.set(t("Building…"))
 
     def cancel_build(self):
         if self.build:
@@ -526,7 +690,7 @@ class App(tk.Tk):
         st = self.step_state[s]
         style = {"running": "StepRun.TLabel", "done": "StepDone.TLabel", "skip": "StepDone.TLabel",
                  "failed": "StepFail.TLabel"}.get(st, "Step.TLabel")
-        self.step_lbls[s].configure(text=f"{GLYPH[st]} {core.STEP_TITLES[s]}", style=style)
+        self.step_lbls[s].configure(text=f"{GLYPH[st]} {t(core.STEP_TITLES[s])}", style=style)
 
     def _overall(self):
         total = sum(core.STEP_WEIGHT.values())
@@ -568,14 +732,15 @@ class App(tk.Tk):
             elif ev == "sub":
                 self.sub = val
             elif ev == "error":
-                self.error.set(val)
+                self.error.set(core.translate_message(val))
+                core.log(f"build error: {val}")
             elif ev == "end":
                 ended = val
         if self.cur_step and self.step_state.get(self.cur_step) == "running":
             n = core.build_game.STEPS.index(self.cur_step) + 1
             el = int(time.time() - self.step_t0)
-            self.detail.set(f"Step {n} of {len(core.build_game.STEPS)}: {core.STEP_TITLES[self.cur_step]}"
-                            f"  —  {el // 60}:{el % 60:02d}"
+            self.detail.set(t("Step {n} of {total}: {title}  —  {elapsed}", n=n, total=len(core.build_game.STEPS),
+                              title=t(core.STEP_TITLES[self.cur_step]), elapsed=core.clock(el))
                             + (f"  ({int(self.sub * 100)}%)" if self.sub else ""))
         self.progress["value"] = int(self._overall() * 1000)
         if ended is not None:
@@ -583,26 +748,27 @@ class App(tk.Tk):
 
     def _build_finished(self, code):
         el = int(time.time() - self.build_t0)
+        core.log(f"build ended: exit code {code} after {el} s" + (f", {self.error.get()}" if self.error.get() else ""))
         if code == 0:
             for s, st in self.step_state.items():
                 if st == "running":
                     self.step_state[s] = "done"
                 self._paint_step(s)
             self.progress["value"] = 1000
-            self.detail.set(f"Done in {el // 60}:{el % 60:02d}. Open the Play tab.")
-            self.status.set("Build finished.")
+            self.detail.set(t("Done in {elapsed}. Open the Play tab.", elapsed=core.clock(el)))
+            self.status.set(t("Build finished."))
         else:
             if self.cur_step and self.step_state.get(self.cur_step) == "running":
                 self.step_state[self.cur_step] = "failed"
                 self._paint_step(self.cur_step)
             if code == -1:
-                self.detail.set("Cancelled. BUILD GAME continues where it stopped.")
+                self.detail.set(t("Cancelled. BUILD GAME continues where it stopped."))
                 self.error.set("")
             else:
-                self.detail.set("The build stopped. The message below says why; build.log has the details.")
+                self.detail.set(t("The build stopped. The message below says why; build.log has the details."))
                 if not self.error.get():
-                    self.error.set("The build failed. See the log above and build.log.")
-            self.status.set("Build stopped.")
+                    self.error.set(t("The build failed. See the log above and build.log."))
+            self.status.set(t("Build stopped."))
         self.build = None
         self.cur_step = None
         set_big_state(self.build_btn, True)
@@ -627,20 +793,49 @@ class App(tk.Tk):
 
     def _update_play_buttons(self):
         running = bool(self.game and self.game.running())
-        set_big_state(self.play_btn, self.game_state().get("ok") and not running)
+        if self.game_state().get("needs_rebuild"):
+            # after an update that changes the game code: "Build the game once" (core.game_state)
+            self.play_btn.configure(text=t("BUILD GAME"), command=self.build_from_play)
+            set_big_state(self.play_btn, not running and not self.build)
+        else:
+            self.play_btn.configure(text=t("PLAY OFFLINE"), command=self.play)
+            set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
+
+    def build_from_play(self):
+        self.nb.select(self.tabs["build"])
+        self.start_build()
+
+    def open_controls(self):
+        """Settings -> Set up controllers...: the Controls window (controls_ui.py)."""
+        if controls_ui and not self.readonly:
+            controls_ui.open_dialog(self)
+
+    def _internal_res_changed(self, save=True):
+        key = self.internal_res_var.get()
+        text = t(core.INTERNAL_RES_HINTS.get(key, ""))
+        size = core.screen_size(core.window_center(self._hwnd()))
+        if size:
+            match = core.internal_res_for_screen(*size)
+            text += "\n" + t("Your screen: {width} x {height}. In fullscreen, {step} matches it.",
+                             width=size[0], height=size[1], step=t(core.INTERNAL_RES[match][0]))
+        self.internal_res_hint.configure(text=text)
+        if save:
+            self.save_settings()
 
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
-        self.settings["render_scale"] = self.render_scale_var.get()
+        self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()
         self.settings["low_priority"] = bool(self.lowprio_var.get())
+        if hasattr(self, "language_var"):
+            self.settings["language"] = self.language_var.get()
         self.settings.save()
 
     def start_game(self, env=None):
@@ -655,10 +850,14 @@ class App(tk.Tk):
         try:
             pid = g.start(env, monitor_point=core.window_center(self._hwnd()))
         except OSError as e:
-            messagebox.showerror(APP_TITLE, f"Could not start the game:\n{e}")
+            dialogs.show_error(APP_TITLE, t("Could not start the game:\n{error}", error=e), parent=self)
             return None
         self.game = g
-        self.status.set(f"Game started (process {pid}). Log: native\\logs\\{os.path.basename(g.log_path)}")
+        core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
+                 f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
+                 f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
+        self.status.set(t("Game started (process {pid}). Log: {log}", pid=pid,
+                          log="native\\logs\\" + os.path.basename(g.log_path)))
         self._update_play_buttons()
         return g
 
@@ -684,6 +883,47 @@ class App(tk.Tk):
     def set_status(self, text):
         self.status.set(text)
 
+    def _log_status(self, *_):
+        t = self.status.get()
+        if t and t != self._last_status and not self.readonly:
+            self._last_status = t
+            core.log("status: " + t)
+
+    # ------------------------------------------------------------------ report a problem
+    def report_problem(self):
+        """Open the 'Report a problem' window (Build and Play tab, and the Online tab after a match).
+        Everything the zip needs from the launcher is read here, on the Tk thread; the window's worker
+        thread only gets plain values."""
+        if self.readonly:
+            return None
+        dlg = getattr(self, "_report_dlg", None)
+        try:
+            if dlg is not None and dlg.top.winfo_exists():
+                dlg.top.lift()
+                return dlg
+        except tk.TclError:
+            pass
+        out = self.settings.out_dir
+        labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
+                  "input_delay": core.INPUT_DELAYS}
+        lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
+        info = self.info
+        build_problem = True if self.error.get() else None
+        try:
+            online_info = self.online.report_info()
+        except Exception as e:      # noqa: BLE001 -- the report goes on without the lobby part
+            online_info = f"(the Online tab could not say: {e})"
+        online_dir = getattr(self.online, "user_dir", None)
+
+        def make_context():
+            return report.Context(out, root=core.ROOT, launcher_log=core.LAUNCHER_LOG, settings_lines=lines,
+                                  release=info, build_info=lambda: report.build_info_for(out, info, core.ROOT),
+                                  online_dir=online_dir, online_info=online_info, build_problem=build_problem)
+        core.log("report window opened")
+        self._report_dlg = report_ui.ReportDialog(self, make_context, core.desktop_dir(), reveal=core.reveal_file,
+                                                  issues_url=core.ISSUES_URL, log=core.log)
+        return self._report_dlg
+
     # ------------------------------------------------------------------ loop
     def _tick(self):
         if self.build:
@@ -691,28 +931,46 @@ class App(tk.Tk):
         if self.game:
             if self.game.running():
                 el = int(time.time() - self.game.started)
-                fps = f"{self.game.fps:.0f} fps" if self.game.fps else "starting…"
-                self.run_var.set(f"Running — {el // 60}:{el % 60:02d} — {fps}")
-            elif self.run_var.get().startswith("Running"):
+                fps = f"{self.game.fps:.0f} fps" if self.game.fps else t("starting…")
+                self.run_var.set(t("Running — {elapsed} — {fps}", elapsed=core.clock(el), fps=fps))
+                self._run_shown = True
+            elif self._run_shown:
+                self._run_shown = False
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
-                self.run_var.set(why or "The game closed.")
+                core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
+                                                                               if why else ""))
+                self.run_var.set((why + " " + t("Click Report a problem.")) if why else t("The game closed."))
                 self._update_play_buttons()
         self.after(150, self._tick)
 
+    def _selected_tab(self):
+        """Key of the selected tab ('build', 'play', 'settings', 'online'), or None when no tab is selected: Tk
+        sends <<NotebookTabChanged>> again while the window is taken apart, with nothing selected."""
+        try:
+            sel = self.nb.select()
+            return self.tab_keys[self.nb.index(sel)] if sel else None
+        except (tk.TclError, IndexError):
+            return None
+
     def _on_tab(self, _e=None):
-        tab = self.nb.tab(self.nb.select(), "text").strip()
-        if tab == "Play":
+        tab = self._selected_tab()
+        if tab is None:
+            return
+        if tab == "play":
             self.refresh_game_state()
-        elif tab == "Online":
+        elif tab == "online":
             self.online.on_show()
         self.save_settings()
 
     def on_close(self):
-        if self.build and not messagebox.askyesno(APP_TITLE, "A build is running. Stop it and quit?"):
+        if self.build and not dialogs.ask_yes_no(APP_TITLE, t("A build is running. Stop it and quit?"), parent=self):
             return
+        if controls_ui and not controls_ui.close_for_app(self):
+            return                              # unsaved button changes: the person chose to stay
         if self.build:
             self.build.cancel()
         self.save_settings()
+        self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
         self.destroy()
 
@@ -848,6 +1106,8 @@ def main():
     elif a.build_steps:
         app.after(800, lambda: app.start_build(a.build_steps))
     app.mainloop()
+    if app.restart_requested:
+        subprocess.Popen([sys.executable] + sys.argv, cwd=os.getcwd())
 
 
 if __name__ == "__main__":

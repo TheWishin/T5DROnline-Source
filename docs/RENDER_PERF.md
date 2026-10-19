@@ -112,8 +112,10 @@ Fights hold 60 fps on the development PC (Ryzen 9 7950X, 32 logical
 processors, RTX 3090). Friends will play on 4-8 core PCs with mid-range or
 integrated graphics, and online both games run at the slower PC's speed.
 Patch 0027 makes the runtime size itself to the processors it may use and
-cuts the per-frame CPU work; the launcher's **3D resolution** setting
-(`PS3_RENDER_SCALE`) is for weak graphics.
+cuts the per-frame CPU work; for weak graphics the launcher had a **3D
+resolution** setting (`PS3_RENDER_SCALE`), since patch 0038 the Lower and
+Lowest steps of **Internal resolution** (see [Internal
+resolution](#internal-resolution-patch-0038-branch-internal-res)).
 
 ### What limited a fight at 4-6 logical processors
 
@@ -161,7 +163,7 @@ thread (7-8 ms busy), the GPU (below).
 | Sub-ms `usleep` on the high-resolution timer below 12 processors | `PS3_SCHED_SUBMS=spin\|pause\|timer` | ~0.45 core less; fps the same within the noise |
 | Job local store: only the job's own regions and the context block are cleared (the real job manager clears nothing) | `SPURS_JOB_ZERO_LS=1` | ~1 ms CPU a frame |
 | Per-job debug `getenv`s read once | -- | |
-| `PS3_RENDER_SCALE=0.25..1` (or 540/360): every live render target below the guest size; multiplies `PS3_RES_SCALE` | launcher **3D resolution** | GPU, below |
+| `PS3_RENDER_SCALE=0.25..1` (or 540/360): every live render target below the guest size; multiplies `PS3_RES_SCALE` (patch 0038: an alias of `PS3_INTERNAL_RES`, and below native only the 3D target shrinks) | launcher **3D resolution** (now Internal resolution) | GPU, below |
 | GPU time per frame from D3D12 timestamp queries: frame log column `gpu_us`; `RSX_GPU_TIME=1` prints `[gpu-time]` every 600 frames | `RSX_GPU_TIME` | |
 
 From 12 logical processors up every pool default is what it was; the
@@ -233,6 +235,11 @@ cheaper re-simulation, not more threads. (The latency branch got there: 60.0 fps
 median on 8 processors per game -- docs/ROLLBACK.md section 29.)
 
 ### GPU: 3D resolution
+
+(Patch 0027's measurements. Patch 0038 replaced the setting by Internal
+resolution, where Lower and Lowest keep the 1280 x 720 display buffers and
+the small targets at full size; its own numbers are in [Internal
+resolution](#internal-resolution-patch-0038-branch-internal-res).)
 
 A fight frame draws its 3D pass into a 2048 x 1440 target (2.9 M pixels,
 3.2 times the 1280 x 720 output) with a 2048 x 1440 depth buffer, a
@@ -396,3 +403,189 @@ lower latency; `lead` keeps that near 0.3 %.
 Offline fight speed is unchanged: `tools/fight_bench.py` 59.94 fps with the
 simulated 50 Hz and 144 Hz displays of patch 0031 (`RSX_TEST_DISPLAY_HZ`, no
 lock), the smoke suite's fps checks at 59.8-59.9 with the lock on.
+
+## Internal resolution (patch 0038, branch `internal-res`)
+
+One setting, like an emulator's: **launcher -> Settings -> Internal
+resolution**, `PS3_INTERNAL_RES` for the runtime. It replaces the two knobs
+of before: `PS3_RES_SCALE` (patch 0010, higher resolutions, environment only)
+and `PS3_RENDER_SCALE` (patch 0027, the launcher's "3D resolution: Original /
+Lower / Lowest"). Both names still work: they are read as the same setting
+(a factor 0.25-4 or an output height), both set multiply, and
+`PS3_INTERNAL_RES` wins over them. The launcher turns a saved "3D
+resolution" into the new setting (0.75 -> Lower, 0.5 -> Lowest).
+
+| step | `PS3_INTERNAL_RES` | factor | display buffers (HUD, 2D, movies: the picture) | 3D target (guest 2048 x 1440) | shadow map / glow buffers |
+|---|---|---|---|---|---|
+| Lowest | `lowest` | 0.5 | 1280 x 720 | 1024 x 720 | 512 / 128 |
+| Lower | `lower` | 0.75 | 1280 x 720 | 1536 x 1080 | 512 / 128 |
+| **Native** (default) | `native` | 1 | 1280 x 720 | 2048 x 1440 | 512 / 128 |
+| 1080p | `1080p` | 1.5 | 1920 x 1080 | 3072 x 2160 | 768 / 192 |
+| 1440p | `1440p` | 2 | 2560 x 1440 | 4096 x 2880 | 1024 / 256 |
+| 4K | `4k` | 3 | 3840 x 2160 | 6144 x 4320 | 1536 / 384 |
+
+`PS3_INTERNAL_RES` also takes a factor or a height (`900` = 1.25x). The log
+names the step (`[display] internal resolution 1440p (2x) from
+PS3_INTERNAL_RES: display buffers 2560x1440`), so does the window title.
+Render targets take about 80 MB of video memory at Native and 0.7 GB at 4K.
+
+**Default: Native.** The GPU's speed is not known before the game draws, and
+the window or monitor size alone would pick 1080p-4K on most screens -- 2.3
+to 9 times the 3D pixels. That is nothing for the RTX 3090 (below) but a
+frame-rate loss on integrated or older graphics, and online both games run at
+the slower PC's speed (the lobby also keeps a PC whose last match ran below
+40 fps out of ranked). Native is what every player had before and what
+emulators default to; the launcher names the step that matches the player's
+screen ("Your screen: 2560 x 1440. In fullscreen, 1440p matches it."), so it
+is one click.
+
+### How Tekken 5 DR draws a frame
+
+From the draw CSV (`RSX_DRAW_CSV`), surface dumps (`LD_SURF_DUMP`) and the
+dumped fragment programs (`LD_HLSL_DUMP`) of the whole smoke suite (boot,
+movies, title, menus, options, gallery, save/delete, character select, all
+modes, attract demo) and a direct fight on each of the 18 stages:
+
+- a 512 x 512 shadow map (colour 0x0, zeta 0xAF0000, scissor 1,1-511,511),
+  sampled with a depth compare (2x2 PCF in the runtime, texel size from the
+  texture itself);
+- the 3D pass into a 2048 x 1440 target (0x17F0000, zeta 0x2330000): the game
+  supersamples. Each stage uses part of it -- 1536 x 1024 up to 2048 x 1440,
+  scissor = viewport (stage 17 1792 x 1440, 18 1536 x 1280, 24 and 27
+  1536 x 1024, 20/22/25/31/33 the whole target); menus and character select
+  likewise;
+- on some stages a glow: the 3D target drawn into two 128 x 128 buffers,
+  blurred back and forth, added onto the 3D target;
+- one draw that filters the 3D target down into the 1280 x 720 display buffer
+  (0x0 / 0x3A0000, zeta 0x740000), then the HUD, text, menus and movie frames
+  on top. Reflections (stages 27, 29, 30) are drawn in the 3D pass itself.
+
+What the usual internal-resolution problems would need, and what this game
+does: no surface is multisampled (surface AA mode 0 everywhere -- the
+supersampling replaces it) and nothing resolves; no 2D blit copies a live
+surface (`[res] 2D blit` never appears: its 2D blits are texture uploads);
+no fragment program reads the pixel position (WPOS; 343 programs) or uses
+derivatives; all primitives are triangle strips and quads (no lines or
+points with a pixel width); every surface the game samples is sampled with
+normalized coordinates (rectangle textures are normalized by the guest size);
+no zeta is shared between passes of different size. (A CPU read of a render
+target would see the same at every step: the live renderer never writes
+surfaces back to guest memory.)
+
+### What changed
+
+| change | why |
+|---|---|
+| One parser for the setting (`rsx_internal_res_scale()`: names, factors, heights, the two aliases), used by the renderer, the window title and the log | one runtime path |
+| Every surface and zeta carries its own factor. Above native everything scales. **Below native only targets at least as large as the canvas that are not display buffers shrink** (the 3D target); the display buffers, the shadow map and the glow buffers keep the guest size | at Lower/Lowest the HUD, text and menus stay sharp (the old 0.5 drew them at 640 x 360), shadows look the same, and the game's own downsample still filters the smaller 3D pass; the work that costs GPU time still shrinks |
+| A zeta takes the factor of the colour target it is bound with (recreated if a pass of another factor binds it -- never happens here, `outgrown` would say so) | depth and colour of a pass must match |
+| Viewport = the target's exact host size; scissor scaled with the target's factor | no sub-pixel rounding at 0.75/1.5 |
+| **Fix:** below native the scissor gets one host pixel more to the right and below | the game's downsample samples up to the edge of a 1536 x 1280 viewport; at Lowest a host texel is two guest texels wide and the last bilinear tap reached the cleared black next to it: the right column of the picture was 20 % darker, the bottom row 6 % (stage 18: last column 69 vs 86 -> 84.4 vs 86.2 at Native). The extra pixel gets the scene's own continuation |
+| Copies between surfaces (NV3089 1:1 and resolve blits) at each surface's factor; different factors use a filtered draw | stays right if a copy goes from a scaled 3D target into a display buffer (unused by Tekken 5 DR) |
+| **Present:** a picture larger than the window is filtered down with n x n bilinear taps (an exact box for 2x and 3x) instead of one tap | 4K in a 1280 x 720 window, or 1440p on a 1080p monitor, is supersampling instead of shimmering |
+| The window no longer opens at the `PS3_RES_SCALE` size; Display setting and Windows display scaling decide it | internal resolution and window size are separate, as in an emulator |
+| Launcher: "Internal resolution" (6 steps, a cost hint each, the step that matches the screen); Display "Borderless fullscreen" now starts the game's own borderless fullscreen (`PS3_FULLSCREEN=1`) instead of restyling the window from outside | with the outside restyle (by the code) Esc closed the game at once and Alt+Enter twice left a framed window as large as the monitor |
+| Test hooks `RSX_TEST_CLIENT_SIZE=WxH` (swap chain as if the client area had that size, while the window stays minimised) and `RSX_TEST_BB_SHOT=<file>` (read back what the window shows, after letterbox and scaling) | fullscreen on 1440p/4K/16:10/21:9 monitors checked without taking the screen |
+
+### Checked at every step
+
+Local evidence under `build/res/` (git-ignored; frame dumps of the game stay
+local):
+
+- **Fights, all 18 stages (ids 17-34), every step**: a direct fight (Lili vs
+  Asuka, 1 round, `PS3_FIXED_TIME`), five consecutive presented frames in the
+  intro close-up (+6 s), with the HUD (+24 s) and while P1 attacks (+30 s),
+  every live surface at +31 s (`runs/tour/<step>/s<id>/`, overview sheets
+  `runs/tour/all_<step>.png`). Looked at: fighters, faces and self-shadows,
+  floor shadows, the reflecting floors of 27/29/30, snow (25), fog (34), the
+  sun and glow (20, 33), hit sparks, "READY/FIGHT/FINAL ROUND" overlays, the
+  VS splash, subtitles. No step showed anything Native does not.
+- **HUD and 2D alignment**: the HUD band of each step's frame scaled to
+  1280 x 720 against Native's, by phase correlation: 0.00-0.10 px offset at
+  every step (stages whose HUD burst caught the same moment: 9-13 per step).
+- **Edges**: the last column/row of the picture against Native per stage:
+  within +-5.5 % at every step after the fix (Lowest before: -20 %).
+- **Movies, logos, notices**: a boot without input for 75 s at every step
+  (`runs/tour/<step>/boot/`): notices, logos, the intro movie with its "PRESS
+  START" overlay, the title logo.
+- **Menus, character select, stage select, practice, attract demo**: the
+  smoke suite's quick tests at every step (`smoke/quick_<step>/`), all PASS
+  (fps/audio warnings only, from other games on the PC).
+- **Logs** of all 108 stage runs + 6 boots: 0 `[surface-fail]`, 0 D3D
+  failures, 0 crashes, 0 zeta re-creations, 0 surface re-sizes.
+- **Displays** (`runs/disp/`, `RSX_TEST_CLIENT_SIZE` + `RSX_TEST_BB_SHOT`):
+  2560 x 1440 at Native (bilinear 2x up), 1440p (1:1, the plain copy), 4K (2x2
+  taps down), Lowest; 3840 x 2160 at Native and 4K (1:1); 1920 x 1080 at 1080p
+  (1:1) and 1440p (2x2 taps down); 2560 x 1600 at 1440p: 80-pixel bars top and
+  bottom; 3440 x 1440: 440-pixel bars left and right. Windows display scaling
+  (`PS3_TEST_DPI`): 120 dpi -> 1600 x 900 client, 144 -> 1920 x 1080 (1:1 with
+  1080p), 192 and 288 -> 2227 x 1252 (the 95 % / 90 % work-area limit of this
+  2560 x 1440 monitor).
+
+### Speed and GPU time
+
+`tools/fight_bench.py` (direct fight Lili vs Asuka on stage 20 -- the whole
+2048 x 1440 target and the glow, the heaviest stage per pixel -- P1 pressing
+buttons, window fight start +24..42 s), RTX 3090 / Ryzen 9 7950X, window
+minimised. Back to back: for each step the base build (main without 0038,
+with the old switch that gave that step) and then the new build with
+`PS3_INTERNAL_RES`, 4 rounds interleaved, 47 of 48 runs used. The PC was
+shared with other agents' games and builds (16-31 of 32 processors busy,
+median 29) and the runs went at below-normal priority, muted, partly while
+the owner played Tekken 8: **the fps numbers say nothing about the
+resolution** (the base build swung 15-60 fps at the same step; the same
+load made a 1080p boot crawl at 1-16 fps with the base build as well as the
+new one). GPU time per frame (D3D12 timestamps, frame log `gpu_us`) is the
+comparison that holds:
+
+| step | base build (main, no 0038) with | GPU ms per frame, p10: base / new | GPU ms, median: base / new | new: GPU time vs Native (p10 / median) | fps, median of 4: base / new (load-bound, see above) |
+|---|---|---|---|---|---|
+| Lowest | `PS3_RENDER_SCALE=0.5` | 0.28 / 0.31 | 0.31 / 0.34 | 0.82x / 0.72x | 54.1 / 44.9 |
+| Lower | `PS3_RENDER_SCALE=0.75` | 0.33 / 0.34 | 0.35 / 0.36 | 0.91x / 0.76x | 40.2 / 44.2 |
+| **Native** | -- | 0.36 / 0.38 | 0.39 / 0.48 | 1.00x / 1.00x | 55.4 / 35.4 |
+| 1080p | `PS3_RES_SCALE=1.5` | 0.46 / 0.48 | 0.76 / 0.80 | 1.28x / 1.66x | 32.5 / 41.7 |
+| 1440p | `PS3_RES_SCALE=2` | 0.62 / 0.65 | 0.92 / 0.95 | 1.73x / 1.99x | 43.3 / 45.0 |
+| 4K | `PS3_RES_SCALE=3` | 1.18 / 1.13 | 1.84 / 1.80 | 3.00x / 3.74x | 53.4 / 41.4 |
+
+- **Cost of each step on this GPU**: 4K takes about 3x Native's GPU time,
+  1.1-1.8 ms of a 16.7 ms frame; 1440p ~1.7x, 1080p ~1.3x. A frame is a fixed
+  part (840 draws, vertex work, the shadow pass) plus a part that grows with
+  the pixels, which is why 9x the pixels cost 3x here; on a GPU 20-50 times
+  slower (integrated graphics, a GTX 1050) the pixel part dominates and the
+  steps cost close to their pixel ratio (2.25x / 4x / 9x) -- an estimate, not
+  measured on such a GPU.
+- **Cost of the change**: at the same step the new build needs the same GPU
+  time as the old switches within the run-to-run spread (+0.01-0.03 ms at
+  Native and below, where the HUD/display buffers now stay at 1280 x 720;
+  above native both draw the same pixels).
+- **Lowest / Lower** cut the 3D pass to 25 % / 56 % of its pixels. On the
+  3090 that is 0.82x / 0.91x of Native's GPU time (the fixed part dominates);
+  the old 0.5 drew the HUD at 640 x 360 as well and saved 0.03 ms more.
+- One run of the 48 (1080p, new build, during the owner's game) crawled at
+  0.4 fps from the logos on and never reached the fight. The same load and
+  priority gave 1-16 fps boots with the base build too (two base / new boot
+  pairs back to back: base 0.9-16 fps, new 8.9-52 fps); the other three
+  1080p bench runs and all 18 tour runs at 1080p completed.
+- Earlier, quieter tour runs (normal priority, GPU busy with other games):
+  Native 0.3-0.5 ms, Lowest 0.25-0.35 ms, 4K 1.0-2.3 ms per fight frame across
+  the 18 stages.
+- The smoke suite reads back one frame per second for its checks; at 4K that
+  is a 33 MB readback and costs about 10 fps in its menus (title 49 fps at 4K,
+  57-58 at Native/Lowest under similar load), which is why its menu fps
+  warnings rise with the step. A real session does no readbacks.
+
+### Online with different settings on the two PCs
+
+Only host pixels change, so the two players may choose different steps:
+
+- Rollback (default), host **4K** vs joiner **Lowest**, RTT 50 ms +-5, 3 %
+  loss, one match of two rounds (`tools/rollback_net_test.py --fight
+  26,33,20,2 --env1 PS3_INTERNAL_RES=4k --env2 PS3_INTERNAL_RES=lowest`):
+  `sync through frame 4199: 0 mismatching` on both sides, the same result
+  hash `23f0ad06f479ba2f`, 112 / 423 rollbacks (203 / 887 frames
+  re-simulated). Again on the build rebased onto main with patch 0035: 0
+  mismatching, hash `dcf764875296aa5f` on both sides, 148 / 385 rollbacks
+  (361 / 1,428 frames re-simulated). (28-35 fps: the PC ran 12 other games
+  and a build, the pair at below-normal priority.)
+- Lockstep, host **1440p** vs joiner **Lower**, RTT 30 ms, 1 % loss: 0
+  mismatching, the same result hash `93f6b16c9bdd829d` on both sides.

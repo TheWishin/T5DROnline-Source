@@ -346,7 +346,8 @@ class RelayNode:
         g("kbit_per_second", r["kbit_s"], "relay throughput over the last minute, both directions")
         g("bytes_total", r["bytes_total"], "bytes forwarded")
         g("dropped_total", r["dropped_total"], "UDP packets dropped (caps, strangers)")
-        g("central_last_request_seconds", st["central"]["last_request_s"], "seconds since the central server's last request")
+        g("central_last_request_seconds", st["central"]["last_request_s"],
+          "seconds since the central server's last request")
         for k, v in st["counters"].items():
             g(f"{k}_total", v, k.replace("_", " "))
         p = st["process"]

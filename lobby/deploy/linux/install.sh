@@ -4,6 +4,7 @@
 #
 #   sudo lobby/deploy/linux/install.sh --domain lobby.example.org --email you@example.org --agree-tos --firewall ufw
 #   sudo lobby/deploy/linux/install.sh --self-signed --firewall ufw        (no domain: pinned certificate)
+#   sudo lobby/deploy/linux/install.sh --relay-only --relay-id usw --firewall ufw   (a relay node, below)
 #
 # Options
 #   --domain NAME      Let's Encrypt certificate via certbot (standalone: needs TCP 80 reachable
@@ -13,7 +14,14 @@
 #   --self-signed      a 10-year self-signed certificate; players pin its fingerprint (the default
 #                      when no --domain is given)
 #   --no-tls           plain TCP; accounts are then switched off (guests only)
-#   --relay-only       relay every match (players never see each other's IP address)
+#   --force-relay      relay every match (players never see each other's IP address; before 1.1.2 this
+#                      option was called --relay-only)
+#   --relay-only       a relay-only node for a central lobby elsewhere (docs/HOSTING.md "Adding a relay
+#                      server"): only the UDP relay (port 7781), no accounts, no database, no TLS. Makes
+#                      /etc/t5lobby/relay.secret (keep it; the central server needs the same file)
+#   --relay-id ID      with --relay-only: the node's id in the central's relays.json (e.g. usw)
+#   --central ADDR     with --relay-only: the central server's address(es), comma separated; control
+#                      packets from anywhere else are dropped (optional: the secret is checked anyway)
 #   --firewall ufw|nft|none   open the lobby ports (and SSH) in the host firewall; default none
 #   --prefix DIR       where the code goes (default /opt/t5lobby)
 #   --dry-run          print what would be done, change nothing
@@ -26,7 +34,7 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"          # the lobby/ folder of the checkout
 PREFIX=/opt/t5lobby
-DOMAIN="" EMAIL="" AGREE=0 TLS=auto FIREWALL=none RELAY_ONLY=0 DRY=0 ROOT="" UNINSTALL=0
+DOMAIN="" EMAIL="" AGREE=0 TLS=auto FIREWALL=none FORCE_RELAY=0 RELAY_ONLY=0 RELAY_ID="" CENTRAL="" DRY=0 ROOT="" UNINSTALL=0
 PY="${PYTHON:-python3}"
 SVC_USER=t5lobby
 
@@ -38,19 +46,27 @@ while [ $# -gt 0 ]; do
         --agree-tos) AGREE=1 ;;
         --self-signed) TLS=selfsigned ;;
         --no-tls) TLS=none ;;
+        --force-relay) FORCE_RELAY=1 ;;
         --relay-only) RELAY_ONLY=1 ;;
+        --relay-id) RELAY_ID="${2:?}"; shift ;;
+        --central) CENTRAL="${2:?}"; shift ;;
         --firewall) FIREWALL="${2:?}"; shift ;;
         --prefix) PREFIX="${2:?}"; shift ;;
         --dry-run) DRY=1 ;;
         --root) ROOT="${2:?}"; shift ;;
         --uninstall) UNINSTALL=1 ;;
-        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
     shift
 done
 [ "$TLS" = auto ] && TLS=selfsigned
+[ "$RELAY_ONLY" = 1 ] && TLS=none-relay       # a relay node has no TCP port: nothing to encrypt there
 case "$FIREWALL" in ufw|nft|none) ;; *) die "--firewall is ufw, nft or none" ;; esac
+if [ -n "$RELAY_ID" ] && ! printf '%s' "$RELAY_ID" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,15}$'; then
+    die "--relay-id: a-z, 0-9, - and _, at most 16 characters"
+fi
+{ [ -n "$RELAY_ID" ] || [ -n "$CENTRAL" ]; } && [ "$RELAY_ONLY" = 0 ] && die "--relay-id and --central go with --relay-only"
 # (pwd -W: Git Bash on Windows, so that a staged layout can be tried with Windows' Python)
 [ -n "$ROOT" ] && { ROOT="$(mkdir -p "$ROOT" && cd "$ROOT" && (pwd -W 2>/dev/null || pwd))"; FIREWALL=none; }
 SYSTEM=1; [ -n "$ROOT" ] && SYSTEM=0
@@ -120,7 +136,11 @@ for f in "$SRC"/t5lobby/data/*.json; do run install -m 0644 "$f" "$CODE/t5lobby/
 run install -m 0644 "$SRC/servers.json" "$SRC/run.py" "$CODE/"
 own -R root:root "$CODE"
 # import and construct the server once (catches a missing module or data file before systemd does)
-run "$PYBIN" -c "import sys; sys.path.insert(0, '$CODE'); import t5lobby.server.admin; from t5lobby.server import Config, LobbyServer; LobbyServer(Config(db=':memory:')).store.close(); print('code ok')"
+if [ "$RELAY_ONLY" = 1 ]; then
+    run "$PYBIN" -c "import sys; sys.path.insert(0, '$CODE'); import t5lobby.server.admin; from t5lobby.server import Config; from t5lobby.server.relaynode import RelayNode; RelayNode(Config(), b'x' * 32); print('code ok')"
+else
+    run "$PYBIN" -c "import sys; sys.path.insert(0, '$CODE'); import t5lobby.server.admin; from t5lobby.server import Config, LobbyServer; LobbyServer(Config(db=':memory:')).store.close(); print('code ok')"
+fi
 
 # ---------------------------------------------------------------------------- settings
 step "settings -> $ETC/t5lobby.env"
@@ -146,7 +166,22 @@ setenv() {   # set KEY=value in the env file (replaces a commented or existing l
         printf '%s=%s\n' "$key" "$val" >> "$f"
     fi
 }
-[ "$RELAY_ONLY" = 1 ] && setenv T5L_FORCE_RELAY 1
+[ "$FORCE_RELAY" = 1 ] && setenv T5L_FORCE_RELAY 1
+if [ "$RELAY_ONLY" = 1 ]; then
+    step "relay node: secret -> $ETC/relay.secret"
+    # The central server needs the same file (docs/HOSTING.md "Adding a relay server"); an existing one is kept.
+    if [ -f "$ETC/relay.secret" ] && [ "$DRY" = 0 ]; then
+        echo "keeping the existing $ETC/relay.secret (the central server has a copy of it)"
+    else
+        run "$PYBIN" -c "import sys; sys.path.insert(0, '$CODE'); from t5lobby import relayctl; relayctl.write_secret('$ETC/relay.secret')"
+    fi
+    own root:"$SVC_USER" "$ETC/relay.secret"
+    run chmod 0640 "$ETC/relay.secret"
+    setenv T5L_RELAY_SECRET_FILE /etc/t5lobby/relay.secret
+    setenv T5L_UDP_PORT2 0
+    [ -n "$RELAY_ID" ] && setenv T5L_RELAY_ID "$RELAY_ID"
+    [ -n "$CENTRAL" ] && setenv T5L_RELAY_CENTRAL "$CENTRAL"
+fi
 
 # ---------------------------------------------------------------------------- firewall
 step "firewall: $FIREWALL"
@@ -154,12 +189,18 @@ case "$FIREWALL" in
     ufw)
         command -v ufw >/dev/null || run apt-get install -y ufw
         run ufw allow 22/tcp comment ssh
-        run ufw allow 7781/tcp comment t5lobby
-        run ufw allow 7781:7782/udp comment t5lobby
+        if [ "$RELAY_ONLY" = 1 ]; then
+            run ufw allow 7781/udp comment t5relay
+        else
+            run ufw allow 7781/tcp comment t5lobby
+            run ufw allow 7781:7782/udp comment t5lobby
+        fi
         run ufw --force enable
         ;;
     nft)
-        write "$ROOT/etc/nftables.d/t5lobby.nft" 0644 < "$SRC/deploy/linux/nftables-t5lobby.conf"
+        NFT_RULES="$SRC/deploy/linux/nftables-t5lobby.conf"
+        [ "$RELAY_ONLY" = 1 ] && NFT_RULES="$SRC/deploy/linux/nftables-t5relay.conf"
+        write "$ROOT/etc/nftables.d/t5lobby.nft" 0644 < "$NFT_RULES"
         if ! grep -q 'nftables.d/t5lobby.nft' "$ROOT/etc/nftables.conf" 2>/dev/null; then
             if [ "$DRY" = 1 ]; then echo "+ append include \"/etc/nftables.d/t5lobby.nft\" to /etc/nftables.conf"
             else echo 'include "/etc/nftables.d/t5lobby.nft"' >> "$ROOT/etc/nftables.conf"; fi
@@ -169,7 +210,11 @@ case "$FIREWALL" in
         ;;
     none)
         echo "Open these inbound ports in your firewall / the provider's cloud firewall:"
-        echo "  TCP 7781, UDP 7781, UDP 7782   (and TCP 80 if you use --domain: Let's Encrypt renewals)"
+        if [ "$RELAY_ONLY" = 1 ]; then
+            echo "  UDP 7781   (players and the central server; nothing else -- a relay node has no TCP port)"
+        else
+            echo "  TCP 7781, UDP 7781, UDP 7782   (and TCP 80 if you use --domain: Let's Encrypt renewals)"
+        fi
         ;;
 esac
 
@@ -225,6 +270,9 @@ case "$TLS" in
         echo "WARNING: no TLS. Accounts are switched off (guests only); passwords would be readable."
         setenv T5L_ACCOUNTS 0
         ;;
+    none-relay)
+        echo "(relay node: no TCP port, no TLS; the control channel is authenticated with relay.secret)"
+        ;;
 esac
 if [ -n "$ROOT" ]; then      # staging: point the settings at the staged paths
     sed -i.bak -e "s#=/etc/t5lobby/#=$ETC/#" "$ETC/t5lobby.env" 2>/dev/null && rm -f "$ETC/t5lobby.env.bak" || true
@@ -245,8 +293,12 @@ cd "$CODE" || exit 1
 if [ "$SYSTEM" = 1 ]; then exec runuser -u $SVC_USER -- "$PYBIN" -m t5lobby.server.admin "\$@"; fi
 exec "$PYBIN" -m t5lobby.server.admin "\$@"
 EOF
-sed -e "s#^WorkingDirectory=.*#WorkingDirectory=$PREFIX#" -e "s#^ExecStart=/usr/bin/python3 #ExecStart=$PYBIN #" \
-    "$SRC/deploy/linux/t5lobby.service" | write "$UNIT" 0644
+UNIT_EDIT=(-e "s#^WorkingDirectory=.*#WorkingDirectory=$PREFIX#" -e "s#^ExecStart=/usr/bin/python3 #ExecStart=$PYBIN #")
+if [ "$RELAY_ONLY" = 1 ]; then
+    UNIT_EDIT+=(-e "s#^Description=.*#Description=T5DR Online relay node#"
+                -e "s#-m t5lobby.server\$#-m t5lobby.server.relaynode#")
+fi
+sed "${UNIT_EDIT[@]}" "$SRC/deploy/linux/t5lobby.service" | write "$UNIT" 0644
 
 # ---------------------------------------------------------------------------- start
 if [ "$SYSTEM" = 1 ]; then
@@ -263,6 +315,18 @@ fi
 # ---------------------------------------------------------------------------- summary
 step "done"
 IP_GUESS="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+if [ "$RELAY_ONLY" = 1 ]; then
+    [ -n "$IP_GUESS" ] || IP_GUESS="NODE-ADDRESS"
+    echo "Relay node: UDP $IP_GUESS:7781  (id: ${RELAY_ID:-none -- pass --relay-id})"
+    echo "On the CENTRAL server (docs/HOSTING.md \"Adding a relay server\"):"
+    echo "  1. copy this node's secret there:  /etc/t5lobby/relay-${RELAY_ID:-ID}.secret  (owner root, group t5lobby, mode 0640)"
+    echo "     it is the one line in $ETC/relay.secret on this machine"
+    echo "  2. add this entry to /etc/t5lobby/relays.json (\"relays\": [...]):"
+    echo "     {\"id\": \"${RELAY_ID:-ID}\", \"name\": \"REGION NAME\", \"host\": \"$IP_GUESS\", \"port\": 7781, \"secret_file\": \"relay-${RELAY_ID:-ID}.secret\"}"
+    echo "  3. sudo t5lobby-admin status there: \"relay ${RELAY_ID:-ID} ...: up\" within seconds"
+    echo "Admin: sudo t5lobby-admin status | health     Logs: journalctl -u t5lobby -f"
+    exit 0
+fi
 HOSTNAME_GUESS="${DOMAIN:-$IP_GUESS}"
 [ -n "$HOSTNAME_GUESS" ] || HOSTNAME_GUESS="SERVER-ADDRESS"
 echo "Server: $HOSTNAME_GUESS:7781  (TLS: $TLS)"

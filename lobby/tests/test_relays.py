@@ -574,7 +574,8 @@ class ChoiceTest(Regional):
     def test_admin_status_lines(self):
         from t5lobby.server import admin
         out = io.StringIO()
-        with mock.patch.object(admin, "_fetch", lambda url, timeout=3.0: (200, json.dumps(self.s.call(self.s.srv.status)))), \
+        central = json.dumps(self.s.call(self.s.srv.status))
+        with mock.patch.object(admin, "_fetch", lambda url, timeout=3.0: (200, central)), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(admin.main(["status"]), 0)
         text = out.getvalue()
@@ -583,7 +584,8 @@ class ChoiceTest(Regional):
         self.assertIn("up,", text)
         out = io.StringIO()
         node = self.nodes["usw"]
-        with mock.patch.object(admin, "_fetch", lambda url, timeout=3.0: (200, json.dumps(node.call(node.node.status)))), \
+        own = json.dumps(node.call(node.node.status))
+        with mock.patch.object(admin, "_fetch", lambda url, timeout=3.0: (200, own)), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(admin.main(["status"]), 0)
         self.assertIn("relay node usw", out.getvalue())
@@ -646,7 +648,8 @@ class UpgradeFromRegionalTest(Regional):
                         except (socket.timeout, OSError):
                             pass
                     if relayed_before is None and not (a.upgrades or b.upgrades):
-                        n = self.nodes["usc"].call(lambda: sum(sum(s.pkts) for s in self.nodes["usc"].node.udp.relays.values()))
+                        usc = self.nodes["usc"]
+                        n = usc.call(lambda: sum(sum(s.pkts) for s in usc.node.udp.relays.values()))
                         if n > 10:
                             relayed_before = n
             finally:
@@ -748,6 +751,73 @@ class OldServerTest(unittest.TestCase):
             loop.call_soon_threadsafe(loop.stop)
             th.join(10)
             loop.close()
+
+
+# ============================================================================== install.sh --relay-only
+def _git_bash():
+    from test_hosting import git_bash
+    return git_bash()
+
+
+class InstallTest(unittest.TestCase):
+    """install.sh --relay-only into a staging folder (--root: no user, systemd, firewall), then the staged node
+    runs with the settings the script wrote and answers a control request signed with the secret it made."""
+
+    @unittest.skipUnless(_git_bash(), "needs bash")
+    def test_relay_only_install_runs(self):
+        bash = _git_bash()
+        posix = lambda p: p.replace("\\", "/")      # noqa: E731 -- Git Bash takes forward slashes
+        script = posix(os.path.join(LOBBY, "deploy", "linux", "install.sh"))
+        tmp = tempfile.mkdtemp(prefix="t5relay-inst-")
+        env = dict(os.environ, PYTHON=posix(sys.executable))
+        proc = None
+        try:
+            r = subprocess.run([bash, script, "--root", posix(os.path.join(tmp, "root")), "--relay-only",
+                                "--relay-id", "usw"], capture_output=True, text=True, timeout=180, env=env)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('"id": "usw"', r.stdout)                         # the entry for the central relays.json
+            etc = os.path.join(tmp, "root", "etc", "t5lobby")
+            secret = relayctl.load_secret(os.path.join(etc, "relay.secret"))
+            self.assertEqual(len(secret), 64)
+            with open(os.path.join(tmp, "root", "etc", "systemd", "system", "t5lobby.service")) as f:
+                unit = f.read()
+            self.assertRegex(unit, r"ExecStart=\S+ -m t5lobby\.server\.relaynode\n")
+            settings = {}
+            with open(os.path.join(etc, "t5lobby.env"), encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("T5L_") and "=" in line:
+                        k, v = line.rstrip("\n").split("=", 1)
+                        settings[k] = v
+            self.assertEqual((settings["T5L_RELAY_ID"], settings["T5L_UDP_PORT2"]), ("usw", "0"))
+            run_env = dict(os.environ)
+            run_env.update(settings, T5L_HOST="127.0.0.1", T5L_UDP_PORT="0", T5L_STATUS_PORT="0")
+            proc = subprocess.Popen([sys.executable, "-m", "t5lobby.server.relaynode"],
+                                    cwd=os.path.join(tmp, "root", "opt", "t5lobby"), env=run_env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                                    text=True)
+            line = proc.stdout.readline()
+            self.assertIn("t5relay: UDP", line)
+            port = int(line.split("UDP", 1)[1].split(",")[0])
+            r = ctl(("127.0.0.1", port), "status", secret=secret, node="usw", timeout=3)
+            self.assertTrue(r and r["ok"], r)
+            self.assertIsNone(ctl(("127.0.0.1", port), "status", secret=SECRET, node="usw", timeout=0.3))
+            # the old meaning of --relay-only is --force-relay now; node options need --relay-only
+            r = subprocess.run([bash, script, "--dry-run", "--self-signed", "--force-relay"], capture_output=True,
+                               text=True, timeout=120, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("set T5L_FORCE_RELAY=1", r.stdout)
+            r = subprocess.run([bash, script, "--dry-run", "--relay-id", "usw"], capture_output=True, text=True,
+                               timeout=60, env=env)
+            self.assertNotEqual(r.returncode, 0)
+        finally:
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                proc.stdout.close()
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ============================================================================== the e2e tool (processes)

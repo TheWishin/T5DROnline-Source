@@ -197,6 +197,8 @@ MESSAGES = {
     "Controls": "Steuerung",
     "Save the changes to controls.ini?": "Die Änderungen in controls.ini speichern?",
     # ---- launcher/core.py
+    "Inputs": "Eingaben",
+    "Inputs + frame data": "Eingaben + Framedaten",
     "Auto (Windows language)": "Auto (Sprache von Windows)",
     "Deutsch": "Deutsch",
     "English": "English",
@@ -513,6 +515,14 @@ MESSAGES = {
         "Manche Stages machen das Bild unscharf (der neblige Sumpf) oder lassen die Sonne leuchten. "
         "Aus zeigt sie scharf, ohne das Leuchten. Nur dein Bild ändert sich: Online können beide "
         "Spieler verschieden wählen.",
+    "Training overlay": "Trainings-Anzeige",
+    "Also in the other offline modes (Arcade, Versus, ...)": "Auch in den anderen Offline-Modi (Arcade, Versus, ...)",
+    "Also online (only your own inputs, no frame data)": "Auch online (nur deine eigenen Eingaben, keine Framedaten)",
+    "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+    "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
+        "Im Practice-Modus: deine letzten Eingaben, jede mit der Zahl der Frames, die sie gehalten wurde, "
+        "und nach jedem Schlagabtausch der Startup des Moves und wer zuerst wieder handeln kann (+3, -12). "
+        "F2 im Spiel schaltet sie um.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",

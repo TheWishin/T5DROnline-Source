@@ -10,6 +10,7 @@
 * the lag sentences built from a lag_check event say what the server's own English sentences say.
 """
 import ast
+import gc
 import importlib.machinery
 import importlib.util
 import os
@@ -619,6 +620,12 @@ class RenderTests(Base):
             self.skipTest(f"no display: {e}")
         app.withdraw()
         cancel_timers(app)            # nothing may run later: not the check of the tools, not the game state thread
+        # Cleanups run last-in first-out: after the window is closed and the cleanup holding it is
+        # dropped, its reference cycles are collected here, on the main thread. Collected later by
+        # another thread (a subprocess reader of the next module), the last reference to the Tcl
+        # interpreter aborts the process ("Tcl_AsyncDelete: async handler deleted by the wrong
+        # thread", seen during test_lift_spu_jobs). test_online_ui_walk does the same.
+        self.addCleanup(gc.collect)
         self.addCleanup(lambda: self.close_launcher(app))
         i18n.clear_missing()
         return app

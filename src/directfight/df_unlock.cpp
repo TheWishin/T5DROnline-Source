@@ -29,8 +29,15 @@
  * or without the unlock. T5_UNLOCK_ONLINE=save (tests only) lets the save and
  * the setting count online too, the old behaviour.
  *
+ * T5_UNLOCK_ITEMS=1 (launcher Settings -> "Unlock all customization items")
+ * makes every item in the item shop cost 0 Fight Money (detours of the two
+ * price functions, below); the shop's own buy path then adds it to the save
+ * like a bought item. Offline only: online games build no customization
+ * (docs/DIRECTFIGHT.md "Unlocks", and the plan for costumes online there).
+ *
  * T5_UNLOCK_TRACE=1 logs every distinct (caller, mask, game's answer, answer)
- * once, with the mode manager's mode; =2 offline also installs the call tracer
+ * once, with the mode manager's mode, and the shop's item checks and prices
+ * offline; =2 offline also installs the call tracer
  * (T5_RB_CALLTRACE=addr,..., rb_calls.log), which otherwise runs only with the
  * rollback loop.
  */
@@ -57,7 +64,9 @@ constexpr uint32_t kFnCheck      = 0x002A732C;   /* (unlock byte & r3) != 0 */
 constexpr uint32_t kFlagStages   = 0x10;         /* the Tekken 5 stages offered */
 constexpr uint32_t kFlagJinpachi = 0x20;
 constexpr uint32_t kUnlockByte   = 0x106849AA;   /* SYS-DATA +0x4A in the save image at 0x10684960 */
-/* The customization data of each side (VS custom data, 0x106C9934 + side * 0x1F4) starts with
+/* Tracing only (T5_UNLOCK_TRACE): answering "bought" here makes the shop show EQUIPPED and equip
+ * nothing (its equip path searches the list itself), so the setting changes the prices instead.
+ * The customization data of each side (VS custom data, 0x106C9934 + side * 0x1F4) starts with
  * the fighter's three costumes, 0x58 bytes each: +0x00 32 u16 parts bought (item id in the low
  * byte, in the order bought), +0x40 4 u16 the parts worn (HEAD, FACE, BODY up, BODY down; -1
  * none), +0x48 3 u32 bought colours (one bit per colour of COLOR1..3), +0x54 3 u8 the colours
@@ -65,8 +74,8 @@ constexpr uint32_t kUnlockByte   = 0x106849AA;   /* SYS-DATA +0x4A in the save i
 constexpr uint32_t kFnPartOwned  = 0x0029E754;   /* (side, costume, item id): a part bought */
 constexpr uint32_t kFnColorOwned = 0x0029E7F4;   /* (side, costume, colour category, colour): a colour bought */
 /* The price of an item, (character, costume, category, index) -> Fight Money: 0x152A18 picks one
- * of two by category and tail-calls it (the lifted code runs a tail call after the return), so
- * the two are hooked: parts (HEAD..BODY down) from the per-character table *(0x10076724)[c] of
+ * of two by category and tail-calls it (the lifted code runs a tail call only after the function
+ * returned, from its caller's trampoline), so the two are hooked: parts (HEAD..BODY down) from the per-character table *(0x10076724)[c] of
  * {item id, price}, colours (COLOR1..3). */
 constexpr uint32_t kFnPricePart  = 0x00152918;   /* body of 0x1528F0 (the lifter split it after the prologue) */
 constexpr uint32_t kFnPriceColor = 0x001522C8;

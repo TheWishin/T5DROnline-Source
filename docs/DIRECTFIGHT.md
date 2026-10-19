@@ -999,6 +999,13 @@ settings on; the joiner fresh, both off): 5/5 matches in rollback and 5/5 in
 lockstep, 0 mismatching frames, the same hash. `T5_UNLOCK_ONLINE=save` keeps
 the old behaviour (tests only).
 
+The Tekken 5 stages themselves in netplay (for the lobby's `T5L_OLD_STAGES`):
+every one of them, ids 0-13 and 15, in one persistent session of 15 matches (a
+new session, then 14 rematches; 30 different fighters; both players mashing
+with motion inputs, 1 round): runs old_rb (rollback) 15/15 and old_ls
+(lockstep) 15/15, 28,919 and 29,852 frames, 0 mismatching frames, the same
+hash and winner on both PCs.
+
 **The game's own options online (found by the same pair tests).** A
 player's save reaches the match through the game's own OPTIONS too: the
 start-game routine copies Difficulty (SYS-DATA +4, 0x1008F094), Round Time

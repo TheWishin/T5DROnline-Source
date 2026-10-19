@@ -209,7 +209,8 @@ def match_row(ctx, mid, players, expect="confirmed", label="", same_result=True,
                   f"crash {seg['crash']}, fifo {seg['fifo']}")
         fought = fighters_of(seg, mid)
         row[p.name]["fought"] = fought
-        want = lobby_fighters(p, ma.get("fight"))
+        # (a scenario that presses its own in-game picks checks those; the lobby's fighters are only the fallback)
+        want = None if (getattr(ctx, "manual_pick", False) and (ma.get("fight") or {}).get("pick")) else             lobby_fighters(p, ma.get("fight"))
         if want and fought:
             ctx.check(f"{label or mid}: {p.name}'s game fought the fighters the lobby sent", same_fighters(fought, want),
                       f"game {fought[0]} vs {fought[1]}, lobby {want[0]} vs {want[1]}")

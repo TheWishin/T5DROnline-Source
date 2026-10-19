@@ -400,8 +400,11 @@ def _next_set_game(ctx, a, b, mid, label):
     ctx.check(f"{label}: started {dt:.1f} s after the result (countdown {SET_NEXT:g} s)", SET_NEXT - 1.0 <= dt <= SET_NEXT + 12,
               f"{dt:.1f} s")
     ctx.check(f"{label}: continues in the running games", a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
-    ctx.check(f"{label}: the same characters and sides", _picks(a, b, nxt) == _picks(a, b, mid),
-              f"{_picks(a, b, mid)} -> {_picks(a, b, nxt)}")
+    if not ((a.matches[mid].get("fight") or {}).get("pick") and getattr(ctx, "manual_pick", False)):
+        # (game 1 picked in the game by the scenario: the lock is what it picked, not the lobby's fallback --
+        # cs_ranked_lock checks that from both games' logs)
+        ctx.check(f"{label}: the same characters and sides", _picks(a, b, nxt) == _picks(a, b, mid),
+                  f"{_picks(a, b, mid)} -> {_picks(a, b, nxt)}")
     return nxt
 
 

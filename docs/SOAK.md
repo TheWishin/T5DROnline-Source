@@ -292,6 +292,12 @@ decoders, particles, demuxers, autosaves); two kinds of handle stayed behind:
   the second half, was +78), threads 68-74, the highest thread id 16 (was
   40), private 1 281 MB at 5 min, 1 306 MB at 35 min, 1 371 MB after the last
   arcade run loaded new stages. No problem lines; fps median 58.0.
+  The same on the final build (om10, with the TLS fix; the PC 77 % busy, up
+  to 10 other games): handles 793-802 from minute 5 (+2 an hour), threads
+  68-73, the highest thread id 16, private 1 285 -> 1 317 MB from minute 5
+  to 40 (+18 MB an hour over the second half), 247 threads created, 15 TLS
+  blocks, 0 shared; no problem lines, 97 of ~480 000 audio blocks not
+  written, fps median 56.2.
 - not fixed, for the record: guest thread stacks come from a bump allocator
   over the 256 MB stack region that never frees (`vm_stack_allocate`); the
   title's ~380 threads an hour take ~10 MB, so it lasts ~25 hours of play in
@@ -329,7 +335,7 @@ fallback #n)`; `problems.py` counts those lines (`tls`) and the blocks made
 |---|---|---|---|
 | before (om8, 40 min mixed) | 157 | 9 / 0 | 148 (by the allocator: every thread after the 9th) |
 | every mode (om9: boot, intro, demo, VS, online, survival, practice, gallery, options; then the reload boot) | 59; 15 | 9 / 5; 9 / 3 | 0; 0 |
-| 40 min mixed (om10) | see below | | |
+| 40 min mixed (om10: + 0040, main 59f2cdf) | 247 | 9 / 6 | 0 |
 
 Rollback sync check on that build (om10: the series to 0040 + 0041, main
 59f2cdf), because the later threads' blocks left the rollback's saved range

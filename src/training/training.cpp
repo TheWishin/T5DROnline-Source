@@ -21,6 +21,9 @@
  *                        row (tests)
  *   T5_TRAINING_STATS=1  every 600 fight frames: the main thread's time in this
  *                        hook (mean / max microseconds)
+ *   T5_TRAINING_AB=<n>   cost measurement: in every other block of n fight frames
+ *                        the hook does nothing and nothing is drawn; each switch
+ *                        is logged with its QPC time (match it with PS3_FRAMELOG)
  *   T5_TRAINING_TRACE    file: the fight block (0x1008E000, 16 KB) and the input
  *                        ring of every live frame (research)
  * F2 (while the game window has the focus) cycles off / inputs / inputs and
@@ -32,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <intrin.h>      /* __rdtsc: T5_TRAINING_STATS */
 
 #include "ppu_recomp.h"     /* ppu_context, vm_base */
 #include "rsx_overlay.h"    /* ps3recomp patch 0045 */
@@ -65,6 +69,8 @@ Sample read_fighter(uint32_t b)
     s.active   = (rd32(b + 0x214) & 0x30000u) != 0;
     s.cls      = rd32(b + 0x15C);
     s.hp       = (int16_t)rd16(b + 0x6BC);
+    const uint32_t mv = rd32(b + 0x168) >> 16;
+    s.down     = (mv & 0xFF00) == 0x8000 && mv != 0x8001 && mv != 0x8000;
     return s;
 }
 
@@ -75,6 +81,7 @@ struct Config {
     bool all = false, online = false, de = false;
     int  rows = 14;
     bool stats = false;
+    int  ab = 0;                /* T5_TRAINING_AB=<frames>: cost measurement, on and off in turns */
     bool online_game = false;   /* started for online play (T5_NET_MODE / T5_CTL_DIR): online rules all the time */
     bool local_net = false;     /* T5_NET_MODE=local: both players on this PC (tests): offline rules */
     FILE* log = nullptr;
@@ -107,6 +114,7 @@ void init()
     }
     if (const char* f = getenv("T5_TRAINING_LOG"); f && *f) g_cfg.log = fopen(f, "w");
     { const char* st = getenv("T5_TRAINING_STATS"); g_cfg.stats = st && *st == '1'; }
+    if (const char* ab = getenv("T5_TRAINING_AB")) g_cfg.ab = atoi(ab) > 0 ? atoi(ab) : 0;
     { const char* nm = getenv("T5_NET_MODE"); const char* ctl = getenv("T5_CTL_DIR");
       g_cfg.local_net = nm && !_stricmp(nm, "local");
       g_cfg.online_game = (nm && *nm && !g_cfg.local_net) || (ctl && *ctl); }
@@ -230,6 +238,11 @@ void draw_results(float cx, float y)
 
 void publish(int mode, bool show_p1, bool show_p2, bool frames)
 {
+    if (!g_shown && g_cfg.log) {
+        fprintf(g_cfg.log, "%llu show game type %u%s%s%s\n", (unsigned long long)g_live, rd32(kGameType),
+                show_p1 ? " P1" : "", show_p2 ? " P2" : "", frames && mode == kFrames ? " frames" : "");
+        fflush(g_cfg.log);
+    }
     rsx_overlay_begin();
     if (show_p1) draw_history(0, 16.0f, 190.0f);
     if (show_p2) draw_history(1, 1280.0f - 16.0f - 156.0f, 190.0f);
@@ -240,7 +253,10 @@ void publish(int mode, bool show_p1, bool show_p2, bool frames)
 
 void hide()
 {
-    if (g_shown) rsx_overlay_clear();
+    if (g_shown) {
+        rsx_overlay_clear();
+        if (g_cfg.log) { fprintf(g_cfg.log, "%llu hide phase %u\n", (unsigned long long)g_live, rd32(kPhase)); fflush(g_cfg.log); }
+    }
     g_shown = false;
 }
 
@@ -277,20 +293,34 @@ extern "C" void t5_training_frame(ppu_context* ctx)
     if (!g_init) init();
     if (g_cfg.trace) trace_frame();
     if (g_cfg.mode == kOff && g_f2_mode < 0 && !g_cfg.trace) return;
+    /* T5_TRAINING_STATS: wall time and this thread's own CPU time (cycles, so a
+     * busy PC preempting the thread does not count) */
     LARGE_INTEGER t0, t1;
-    if (g_cfg.stats) QueryPerformanceCounter(&t0);
+    ULONG64 c0 = 0, c1 = 0;
+    if (g_cfg.stats) { QueryPerformanceCounter(&t0); QueryThreadCycleTime(GetCurrentThread(), &c0); }
     const bool in_fight = frame_body();
     if (g_cfg.stats && in_fight) {
         static LARGE_INTEGER fq;
-        static double sum = 0, mx = 0;
+        static double sum = 0, mx = 0, csum = 0, cmx = 0, cyc_per_us = 0;
         static unsigned n = 0;
+        QueryThreadCycleTime(GetCurrentThread(), &c1);
         QueryPerformanceCounter(&t1);
-        if (!fq.QuadPart) QueryPerformanceFrequency(&fq);
+        if (!fq.QuadPart) {
+            QueryPerformanceFrequency(&fq);
+            LARGE_INTEGER a, b;   /* the cycle counter's rate, once */
+            QueryPerformanceCounter(&a);
+            const unsigned long long r0 = __rdtsc();
+            do QueryPerformanceCounter(&b); while (b.QuadPart - a.QuadPart < fq.QuadPart / 50);
+            cyc_per_us = (double)(__rdtsc() - r0) / (1e6 * (double)(b.QuadPart - a.QuadPart) / (double)fq.QuadPart);
+        }
         const double us = 1e6 * (double)(t1.QuadPart - t0.QuadPart) / (double)fq.QuadPart;
+        const double cus = cyc_per_us > 0 ? (double)(c1 - c0) / cyc_per_us : 0;
         sum += us; if (us > mx) mx = us;
+        csum += cus; if (cus > cmx) cmx = cus;
         if (++n == 600) {
-            fprintf(stderr, "[training] 600 fight frames: hook %.1f us mean, %.1f us max\n", sum / 600.0, mx);
-            n = 0; sum = 0; mx = 0;
+            fprintf(stderr, "[training] 600 fight frames: hook CPU %.1f us mean, %.1f us max (wall %.1f / %.1f us)\n",
+                    csum / 600.0, cmx, sum / 600.0, mx);
+            n = 0; sum = 0; mx = 0; csum = 0; cmx = 0;
         }
     }
 }
@@ -316,10 +346,25 @@ static bool frame_body()
     }
     if (!g_in_fight) { g_in_fight = true; g_live = 0; }
     g_live++;
+    if (g_cfg.ab) {
+        /* cost measurement (docs/TRAINING.md "Cost"): the whole hook and the drawing are off in every
+         * other block of ab fight frames; the switches go to stderr with the QPC time, to be matched
+         * with the frame log (PS3_FRAMELOG) */
+        const bool off = ((g_live - 1) / (uint64_t)g_cfg.ab) & 1;
+        if ((g_live - 1) % (uint64_t)g_cfg.ab == 0) {
+            LARGE_INTEGER q;
+            QueryPerformanceCounter(&q);
+            fprintf(stderr, "[training] ab %s qpc %lld\n", off ? "off" : "on", (long long)q.QuadPart);
+        }
+        if (off) { hide(); return true; }
+    }
 
     Sample s[2] = { read_fighter(kFighter[0]), read_fighter(kFighter[1]) };
-    /* the history and the tracker always run in a fight, so F2 shows a full list */
+    /* the history and the tracker always run in a fight, so F2 shows a full list;
+     * online only this PC's own player is followed at all */
+    const int me = online ? t5_netplay_local_slot() : -1;
     for (int p = 0; p < 2; p++) {
+        if (online && p != me) continue;
         const Notation n = notation(s[p].input, s[p].right);
         g_hist[p].push(n);
         if (g_cfg.log && g_hist[p].rows[0].frames == 1) {   /* a new row */
@@ -340,7 +385,6 @@ static bool frame_body()
     bool p1 = true, p2 = true, frames = true;
     if (online) {
         show = show && g_cfg.online;
-        const int me = t5_netplay_local_slot();
         p1 = me == 0;
         p2 = me == 1;
         frames = false;

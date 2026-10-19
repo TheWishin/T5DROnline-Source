@@ -259,6 +259,16 @@ static void test_down_and_counter()
         CHECK_EQ(r.results[0].startup, 15);
         CHECK_EQ(r.at[0], 50 + (int)Tracker::kDownAfter + 1);
     }
+    /* a sweep or a throw: the defender lies on the ground (+0x168 0x8004..) and can
+     * act again soon after, still lying: a knockdown, no number */
+    Timeline k(150), l(150);
+    k.move(10, 0x7, 50); k.active(25, 26);
+    l.damage(25, 30); l.move(26, 0x10000, 40);
+    for (int t = 40; t < 70; t++) l.f[(size_t)t].down = true;
+    l.move(40, 0, 55);
+    const Run r3 = run(k, l);
+    CHECK_EQ(r3.results.size(), 1);
+    if (r3.results.size() == 1) { CHECK(r3.results[0].kind == Kind::Down); CHECK_EQ(r3.results[0].startup, 16); CHECK_EQ(r3.at[0], 55); }
     /* a counter hit: the defender was in its own attack when hit */
     Timeline c(100), e(100);
     c.move(10, 7, 35); c.active(19, 19);

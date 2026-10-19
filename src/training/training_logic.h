@@ -9,6 +9,9 @@
  * (docs/TRAINING.md "How the frame data is measured"):
  *   +0x15C  u32  attack class of the current move: 0 = none (idle, walk,
  *                block/hit reactions have 0 or >= 0x10000)
+ *   +0x168  u32  the current move/animation; 0x8001xxxx = standing, 0x8002..
+ *                0x80FF = the defaults of other stances, among them lying on
+ *                the ground after a knockdown or a throw (0x8004..0x8007 seen)
  *   +0x1D2  u8   1 = this fighter stands on the right side (faces left)
  *   +0x20C  u32  bit 24: a new move (animation) started this frame
  *   +0x214  u32  bits 16-17: the move's attack is active this frame
@@ -46,6 +49,7 @@ struct Sample {
     bool     can_act = true; /* +0x220 / +0x21C, see above */
     bool     new_move = false;
     bool     active = false; /* +0x214 bits 16-17 */
+    bool     down = false;   /* +0x168 in the 0x8002..0x80FF family: lying on the ground */
     uint32_t cls = 0;        /* +0x15C */
     int      hp = 0;         /* +0x6BC */
 };
@@ -164,7 +168,7 @@ public:
         for (int p = 0; p < 2; p++) {
             const int o = 1 - p;
             const bool reaction = prev_[o].active && is_reaction_cls(s[p].cls);
-            if (s[p].new_move && !s[p].can_act && !reaction) {
+            if (s[p].new_move && !s[p].can_act && !reaction && !s[p].down) {   /* lying down is no move of its own */
                 started[p] = true;
                 mv_[p] = Move{};
                 mv_[p].start = t;
@@ -173,6 +177,7 @@ public:
         }
         /* 4. damage decides hit or block */
         if (ex_.open && !ex_.settled && s[ex_.def()].hp < prev_[ex_.def()].hp) ex_.hit = true;
+        if (ex_.open && !ex_.settled && s[ex_.def()].down) ex_.down = true;   /* knocked down or thrown */
         /* 5. recoveries. The attacker can act from its can-act frame (a
          *    string's next move before it keeps the exchange going). The
          *    defender likewise -- unless it has pressed an attack button since
@@ -195,8 +200,8 @@ public:
                 last_ = Result{};
                 last_.attacker = a;
                 last_.startup = ex_.startup;
-                last_.kind = ex_.hit ? (ex_.counter ? Kind::Counter : Kind::Hit) : Kind::Block;
-                last_.adv = (int)((int64_t)ex_.def_act - (int64_t)ex_.att_act);
+                last_.kind = ex_.down ? Kind::Down : ex_.hit ? (ex_.counter ? Kind::Counter : Kind::Hit) : Kind::Block;
+                last_.adv = ex_.down ? 0 : (int)((int64_t)ex_.def_act - (int64_t)ex_.att_act);
                 last_.frame = t;
                 ex_.settled = true;
                 out = true;
@@ -238,7 +243,7 @@ private:
     static bool is_attack_cls(uint32_t c) { return c != 0 && c < 0x10000; }
     struct Move { uint64_t start = 0, first_active = 0; bool live = false, contacted = false; };
     struct Exchange {
-        bool open = false, settled = false, hit = false, counter = false, def_btn = false;
+        bool open = false, settled = false, hit = false, counter = false, def_btn = false, down = false;
         int att = 0, startup = 0;
         uint64_t contact = 0, att_act = 0, def_act = 0, def_flag = 0;
         int def() const { return 1 - att; }

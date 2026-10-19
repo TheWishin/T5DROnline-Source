@@ -3,7 +3,8 @@
  * pad sampling, UDP transport, delay-based lockstep and the desync check.
  *
  * Environment:
- *   T5_NET_MODE     host | join | local   (unset = netplay off)
+ *   T5_NET_MODE     host | join | local | replay   (unset = netplay off; replay: T5_REPLAY_FILE played
+ *                   back -- local mode with the file as the peer, src/netplay/replay.cpp)
  *   T5_NET_PORT     local UDP port (host default 7000, join default 0 = any)
  *   T5_NET_PEER     ip:port of the host (join). A host given one calls it while waiting (lobby
  *                   punch / relay); either way it takes the first authenticated HELLO as its peer
@@ -50,6 +51,7 @@
 #include <vector>
 
 #include "netplay.h"
+#include "replay.h"
 
 /* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian. */
 struct HostPadData { int32_t len; uint16_t button[64]; };
@@ -202,6 +204,8 @@ struct Session {
     int  slot = 0;
     int  timeout_s = 30;
     bool localpad = true;              /* T5_NET_LOCALPAD=0: this PC's devices are ignored */
+    bool replay = false;               /* T5_NET_MODE=replay: local mode fed by the replay file (replay.h) */
+    uint32_t rec_next = 0;             /* recording: frames < this are in the replay (confirmed inputs) */
     uint32_t build = 0;                /* FNV-1a of T5_NET_BUILD, 0 = not given */
     uint32_t seed = 0;                 /* T5_NET_SEED (the host's wins), 0 = use the session id */
     bool rb_peer = false;              /* the peer's HELLO offered rollback */
@@ -1208,7 +1212,8 @@ void configure()
     if (!_stricmp(m, "host")) s.mode = Mode::Host;
     else if (!_stricmp(m, "join")) s.mode = Mode::Join;
     else if (!_stricmp(m, "local")) s.mode = Mode::Local;
-    else { fprintf(stderr, "[netplay] T5_NET_MODE=%s: expected host, join or local -- netplay off\n", m); return; }
+    else if (!_stricmp(m, "replay")) { s.mode = Mode::Local; s.replay = true; }
+    else { fprintf(stderr, "[netplay] T5_NET_MODE=%s: expected host, join, local or replay -- netplay off\n", m); return; }
     s.slot = s.mode == Mode::Join ? 1 : 0;
     if (const char* v = env("T5_NET_DELAY")) s.delay = atoi(v);
     if (const char* v = env("T5_RB_NET_DELAY"))
@@ -1261,7 +1266,26 @@ void configure()
          m, s.slot + 1, s.delay, s.localpad ? "on" : "off", s.script.size(),
          s.sessions > 1 ? " (a new session in the running game)" : "");
 
+    if (s.replay) {
+        /* Playback: no socket, no devices; the side, delay and seeds the
+         * recorded session had (replay.cpp). A file that cannot be played ends
+         * the game at once -- a "Watch" must never turn into another fight. */
+        const char* file = env("T5_REPLAY_FILE");
+        if (!rp::play_load(file)) {
+            rp::play_fail(file, rp::play_error());
+            note("replay: cannot play %s: %s -- the game closes", file ? file : "(T5_REPLAY_FILE not set)", rp::play_error());
+            fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 8);
+        }
+        s.slot = rp::play_slot();
+        s.delay = rp::play_delay();
+        s.seed = rp::play_session_seed();
+        s.session = rp::play_match_seed();
+        s.localpad = false;
+        note("replay: playing back as P%d, delay %d, %s", s.slot + 1, s.delay, rp::play_rollback() ? "rollback" : "lockstep");
+    }
     if (s.mode == Mode::Local) { s.connected = true; return; }
+    rp::rec_session_begin(s.slot, env("T5_NET_BUILD"), s.seed);
 
     static bool wsa_ok = false;
     if (!wsa_ok) {
@@ -1374,6 +1398,23 @@ void account_frame(uint64_t wait_us)
     }
 }
 
+/* Recording (replay.h): the frames whose two inputs are final -- this PC's
+ * decided (they never change) and the peer's arrived in order -- go to the
+ * replay, in frame order. Caller holds mu. */
+void rec_pump_locked()
+{
+    State& s = S();
+    if (!rp::recording() || s.mode == Mode::Local) return;
+    const uint32_t upto = std::min(s.local_max, s.remote_contig);
+    while (s.rec_next < upto) {
+        const uint32_t f = s.rec_next, i = f % kRing;
+        const PadInput l = s.local.in_tag[i] == f + 1 ? s.local.in[i] : kNeutral;
+        const PadInput r = s.remote.in_tag[i] == f + 1 ? s.remote.in[i] : kNeutral;
+        rp::rec_input(f, s.slot == 0 ? l : r, s.slot == 0 ? r : l);
+        s.rec_next++;
+    }
+}
+
 } // namespace
 
 /* ---- public API --------------------------------------------------------- */
@@ -1411,6 +1452,7 @@ uint32_t scene_barrier(uint32_t f)
         std::lock_guard<std::mutex> lk(s.mu);
         k = s.nbar++;
         s.local_bar[k % kBarriers] = f + 1;
+        if (s.replay) return rp::play_barrier(k, f);   /* where the recorded session went on */
         if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
         send_inputs_locked();
     }
@@ -1560,6 +1602,28 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
         note_fp_env();
     }
 
+    if (s.replay) {
+        /* playback: both inputs from the file, the hash compared with the recorded one */
+        rp::play_inputs(f, out);
+        rp::play_hash(f, state_hash);
+        {   /* as local mode: the hash is "compared" at once, so a match's result is out at once too (t5_hooks
+             * flush_result waits for the deciding frame's check -- else 3 s, and a recording may end sooner) */
+            std::lock_guard<std::mutex> lk(s.mu);
+            const uint32_t i = f % kRing;
+            s.local.hash[i] = state_hash; s.local.hash_tag[i] = f + 1;
+            s.remote.hash[i] = state_hash; s.remote.hash_tag[i] = f + 1;
+            if (f + 1 > s.local_hash_max) s.local_hash_max = f + 1;
+            if (f + 1 > s.remote_hash_max) s.remote_hash_max = f + 1;
+            compare_hashes_locked();
+        }
+        if (s.log) {
+            std::lock_guard<std::mutex> lk(s.log_mu);
+            fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx\n", f,
+                    out[0].buttons, out[0].lx, out[0].ly, out[0].rx, out[0].ry,
+                    out[1].buttons, out[1].lx, out[1].ly, out[1].rx, out[1].ry, (unsigned long long)state_hash);
+        }
+        return;
+    }
     PadInput local = neutral_local ? kNeutral : sample_local_open(f + (uint32_t)s.delay);
     {
         std::lock_guard<std::mutex> lk(s.mu);
@@ -1627,7 +1691,9 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
     {
         std::lock_guard<std::mutex> lk(s.mu);
         compare_hashes_locked();
+        rec_pump_locked();
     }
+    rp::rec_hash(f, state_hash);
     if (s.log) {
         std::lock_guard<std::mutex> lk(s.log_mu);
         fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx\n", f,
@@ -1663,7 +1729,7 @@ void rb_begin(uint32_t f)
 void rb_sample_local(uint32_t f, bool neutral, const PadInput* forced)
 {
     State& s = S();
-    if (s.mode == Mode::Off) return;
+    if (s.mode == Mode::Off || s.replay) return;   /* (playback: the inputs come from the file) */
     /* neutral: the frame takes no input (the fight intro, rb_net.cpp); the
      * devices are not read, so a tap stays latched for the next real sample */
     /* forced: a frame whose input the rollback loop decides from the game state
@@ -1693,11 +1759,13 @@ void rb_sample_local(uint32_t f, bool neutral, const PadInput* forced)
         return;
     }
     send_inputs_locked();
+    rec_pump_locked();
 }
 
 PadInput rb_local(uint32_t f)
 {
     State& s = S();
+    if (s.replay) { PadInput in[2]; rp::play_inputs(f, in); return in[s.slot]; }
     std::lock_guard<std::mutex> lk(s.mu);
     return s.local.in_tag[f % kRing] == f + 1 ? s.local.in[f % kRing] : kNeutral;
 }
@@ -1713,6 +1781,7 @@ static uint32_t local_horizon_locked(const State& s)
 bool rb_remote(uint32_t f, PadInput* out)
 {
     State& s = S();
+    if (s.replay) { PadInput in[2]; rp::play_inputs(f, in); *out = in[1 - s.slot]; return true; }
     std::lock_guard<std::mutex> lk(s.mu);
     if (s.remote.in_tag[f % kRing] != f + 1) return false;
     if (s.mode == Mode::Local && s.local_lag && f >= local_horizon_locked(s)) return false;
@@ -1723,6 +1792,7 @@ bool rb_remote(uint32_t f, PadInput* out)
 uint32_t rb_remote_contig()
 {
     State& s = S();
+    if (s.replay) return 0x7FFFFFFFu;   /* every input is known */
     std::lock_guard<std::mutex> lk(s.mu);
     if (s.mode == Mode::Local && s.local_lag) return std::min(s.remote_contig, local_horizon_locked(s));
     return s.remote_contig;
@@ -1731,6 +1801,7 @@ uint32_t rb_remote_contig()
 uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
 {
     State& s = S();
+    if (s.replay) return 0x7FFFFFFFu;
     const ULONGLONG t0 = GetTickCount64();
     for (;;) {
         {
@@ -1755,6 +1826,8 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
 void rb_push_hash(uint32_t f, uint64_t h)
 {
     State& s = S();
+    if (s.replay) rp::play_hash(f, h);
+    else rp::rec_hash(f, h);
     std::lock_guard<std::mutex> lk(s.mu);
     const uint32_t i = f % kRing;
     if (s.log) {   /* "f F <hash>": the final hash, what the peers compare (tools/cross_build_test.py) */
@@ -1895,6 +1968,8 @@ void session_end(const char* why)
         Hdr h = make_hdr(PKT_BYE);
         for (int i = 0; i < 3; i++) send_raw(&h, sizeof h);
     }
+    rec_pump_locked();
+    rp::rec_session_end(why);
     note("session %u ends (%s): %llu packets in, %llu out, %u mismatching frame(s)", s.sessions, why ? why : "",
          (unsigned long long)s.packets_in, (unsigned long long)s.packets_out, s.mismatches);
     const SOCKET sk = s.sock.exchange(INVALID_SOCKET);
@@ -1919,6 +1994,10 @@ bool session_begin()
 }
 
 uint32_t sessions() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.sessions; }
+
+bool replaying() { return S().replay; }
+uint32_t barriers() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.nbar; }
+void rec_pump() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); rec_pump_locked(); }
 
 } // namespace np
 

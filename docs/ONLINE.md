@@ -937,9 +937,9 @@ the messages one in `i18n_known.py`): `python tools/i18n_extract.py` lists what 
 --lang ko` prints the lines to paste) and `tests/test_i18n.py` fails until it is there.
 
 Long texts: `tests/test_i18n.py` builds the launcher, every screen of the Online tab and the Controls, report
-and update windows in each language at 100 % and 150 % display scaling (windows withdrawn, nothing on
-screen) and fails for a text cut off where English is not (`python tests/i18n_layout.py [lang]` prints the
-list). Labels that can be long in other languages wrap or get room for every language.
+and update windows in each language at 100 %, 133 % and 150 % display scaling (windows withdrawn, nothing on
+screen) and fails for a text cut off (`python tests/i18n_layout.py [lang]` prints the list); the walk also
+scrolls to the bottom of the Settings tab and checks that all of it can be scrolled to. Labels that can be long in other languages wrap or get room for every language.
 
 ## What is left
 

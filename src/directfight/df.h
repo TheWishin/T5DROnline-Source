@@ -55,9 +55,11 @@ const char* btn_name(int btn);
 int         model_char(int model);         /* the character of a select-record model id, -1 unknown */
 
 /* custom costumes online (df_costume.cpp; docs/DIRECTFIGHT.md "Custom costumes online") */
-void costume_session(uint32_t f, bool net);   /* this PC's table: once per netplay session (offline: once) */
-bool costume_ready(bool net);                 /* the opponent's table is here (offline: always) */
-void costume_apply(uint32_t f, bool net);     /* FIGHT START: both sides' blocks into the VS custom data */
+enum class CostumeMode { Offline, Net, Replay };
+void costume_session(uint32_t f, CostumeMode m);   /* this PC's table: once per netplay session (offline: once) */
+bool costume_ready(CostumeMode m);                 /* the opponent's table is here (offline, replay: always) */
+void costume_apply(uint32_t f, CostumeMode m, uint32_t match);   /* FIGHT START: both sides' blocks into the VS custom data */
+const unsigned char* costume_written();            /* what costume_apply wrote (2 x 0x108 bytes), or null */
 void costume_check(uint32_t f);               /* the loading is over: still what was written (logged once) */
 
 /* game control channel of a persistent game (df_ctl.cpp, T5_CTL_DIR) */

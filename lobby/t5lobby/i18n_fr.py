@@ -973,6 +973,8 @@ MESSAGES = {
     "Online: the files of the last match": "En ligne : les fichiers du dernier match",
     "controls.ini (your button settings)": "controls.ini (tes réglages de boutons)",
     "Desync dumps (game state numbers, binary)": "Dumps de désynchro (valeurs de l'état du jeu, binaire)",
+    "The last replay (the inputs of the last online session, without names)":
+        "Le dernier replay (les entrées de la dernière session en ligne, sans noms)",
     "could not be cleaned of private data": "impossible d'en retirer les données privées",
     "no room left in the size limit": "plus de place dans la limite de taille",
     "could not be read": "illisible",
@@ -1708,4 +1710,70 @@ MESSAGES = {
     "{name} wants to be your friend: see the Friends tab.": "{name} veut être ton ami : regarde l'onglet Amis.",
     "{name} accepted your friend request.": "{name} a accepté ta demande d'ami.",
     "{name} declined your friend request.": "{name} a refusé ta demande d'ami.",
+
+    # ---- launcher/replays_ui.py, launcher/t5dr_launcher.pyw (Replays tab), problem_report.py
+    "Replays":
+        "Replays",
+    "Every online match is saved here. Watch plays it back in the game exactly as it was played: the same inputs frame by frame, checked against the live match while it plays.":
+        "Chaque match en ligne est enregistré ici. Regarder le rejoue dans le jeu exactement comme il a été joué : les mêmes entrées image par image, comparées au match en direct pendant la lecture.",
+    "Date":
+        "Date",
+    "Fighters":
+        "Combattants",
+    "Netcode":
+        "Netcode",
+    "WATCH":
+        "REGARDER",
+    "Stop replay":
+        "Arrêter le replay",
+    "Delete":
+        "Supprimer",
+    "Open replays folder":
+        "Ouvrir le dossier des replays",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "Pendant un replay : START (Entrée) met en pause et reprend, SELECT (Tab) termine le replay. Une "
+        "revanche est jouée après les matchs précédents de la même session : elle part de l'état qu'ils "
+        "ont laissé.",
+    "Save online matches as replays":
+        "Enregistrer les matchs en ligne comme replays",
+    "Keep the players' names in replays":
+        "Garder les noms des joueurs dans les replays",
+    "Rollback":
+        "Rollback",
+    "Lockstep":
+        "Lockstep",
+    "(name not saved)":
+        "(nom non enregistré)",
+    "{matches} match(es) in {files} file(s) in {folder}":
+        "{matches} match(s) dans {files} fichier(s) dans {folder}",
+    "No replays yet. Play an online match: it is saved here.":
+        "Pas encore de replays. Joue un match en ligne : il est enregistré ici.",
+    "not finished":
+        "pas terminé",
+    "won {mine}-{theirs}":
+        "gagné {mine}-{theirs}",
+    "lost {mine}-{theirs}":
+        "perdu {mine}-{theirs}",
+    "Close the running game first (Stop game on the Play tab).":
+        "Ferme d'abord le jeu ouvert (Arrêter le jeu dans l'onglet Jouer hors ligne).",
+    "Build the game first (Build tab).":
+        "Compile d'abord le jeu (onglet Compiler).",
+    "This replay cannot be played: {why}":
+        "Ce replay ne peut pas être lu : {why}",
+    "Recorded with another version of the game: it may not play back the same.":
+        "Enregistré avec une autre version du jeu : il peut ne pas se rejouer à l'identique.",
+    "Playing {fighters} ({when})...":
+        "Lecture de {fighters} ({when})...",
+    "The replay ended before the end of the match.":
+        "Le replay s'est arrêté avant la fin du match.",
+    "Replay over: identical to the live match ({checks} checks, same result).":
+        "Replay terminé : identique au match en direct ({checks} vérifications, même résultat).",
+    "Replay over, but it went a different way from frame {frame} on (the game or its version differs from the one that played it).":
+        "Replay terminé, mais à partir de l'image {frame} il s'est passé autre chose (le jeu ou sa version n'est pas celui qui l'a joué).",
+    "Replay over.":
+        "Replay terminé.",
+    "Delete this replay file? It holds {n} match(es) against the same opponent.":
+        "Supprimer ce fichier de replay ? Il contient {n} match(s) contre le même adversaire.",
 }

@@ -305,6 +305,19 @@ Gut zu wissen:
   deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
+### Replays
+
+Jedes Online-Match wird als Replay gespeichert (ein paar KB, in
+`native\replays`). Der Reiter **Replays** zeigt sie mit Datum, Kämpfern,
+Ergebnis und Gegner; **Ansehen** spielt das Match im Spiel noch einmal ab,
+genau so, wie es war: dieselben Eingaben Bild für Bild, während des Abspielens
+mit dem Live-Match verglichen (am Ende steht im Reiter "identisch mit dem
+Live-Match"). Während es läuft, pausiert **START** (Enter), **SELECT** (Tab)
+beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
+gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
+weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
+Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
+
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error
 occurred" und kehrt zum Titel zurück.
@@ -352,7 +365,8 @@ https://github.com/TheWishin/T5DROnline/issues. Im Fenster kannst du ein paar
 Worte dazu schreiben, was passiert ist.
 
 Im Zip sind die neuesten Spiel-Logs, `build.log` wenn das Bauen das Problem war,
-das Log des Launchers, die Dateien deines letzten Online-Matches, deine
+das Log des Launchers, die Dateien deines letzten Online-Matches, dein neuestes
+Replay (nur Eingaben, ohne die Namen der Spieler), deine
 `controls.ini`, Desync-Dumps (falls es welche gibt) und `system.txt`:
 Windows-Version, Prozessor, Grafikkarte samt Treiber, Arbeitsspeicher, Bildschirme
 (Bildwiederholrate, Skalierung), Release-Version und Build-ID und deine

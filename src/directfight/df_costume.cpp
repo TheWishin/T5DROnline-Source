@@ -16,15 +16,16 @@
  *   2. The stage panel is not confirmed before the opponent's table is here
  *      (the select may go on meanwhile), so neither game starts a fight
  *      without both tables.
- *   3. On the first frame of the game mode (with the stage and rounds, before
- *      the fight's loading reads them) each side's VS custom data gets the
- *      0x108-byte block of the character it fights with -- the item character
- *      index the game itself uses (fighter object +0x40, as 0x2A77B0 reads
- *      it) -- when that player's table has one and it passes the check both
- *      PCs make (costume::block_valid); otherwise the zero block the game has
- *      there online today (the default costumes). Both PCs write the same
- *      bytes for both sides; the bytes' hash is logged and read back at FIGHT
- *      START.
+ *   3. At FIGHT START (the game mode's phase 7: the fighter objects know
+ *      their item character now, the models are not loaded yet; before
+ *      t5_netplay_start()) each side's VS custom data gets the 0x108-byte
+ *      block of the character it fights with -- the item character index the
+ *      game itself uses (fighter object +0x40, as 0x2A77B0 reads it) -- when
+ *      that player's table has one and it passes the check both PCs make
+ *      (costume::block_valid); otherwise the zero block the game has there
+ *      online today (the default costumes). Both PCs write the same bytes for
+ *      both sides; the bytes' hash is logged, read back once the loading is
+ *      over, and the blocks go into the replay (a replay writes them again).
  *
  * Offline (direct fight without netplay; tests): T5_COSTUME_SAVE for P1 and
  * T5_COSTUME_SAVE2 for P2.
@@ -43,6 +44,7 @@ extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_costume_set(const unsigned char* p, unsigned n);
 extern "C" int  t5_netplay_costume_local_set(void);
 extern "C" int  t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n);
+extern "C" int  t5_replay_costumes(unsigned match, unsigned char* out);   /* src/netplay/replay.cpp */
 
 namespace df {
 
@@ -73,8 +75,12 @@ costume::Items items_of(int c)
 std::vector<uint8_t> g_local_wire;   /* this PC's table as sent (the bytes its own player's blocks come from) */
 bool g_local_loaded = false;
 std::string g_local_note;
-uint64_t g_written_hash = 0;         /* both sides' blocks as written at the game mode's start */
-bool g_written = false;
+uint64_t g_written_hash = 0;         /* both sides' blocks as written at FIGHT START */
+bool g_written = false, g_checked = false;
+uint8_t g_written_blocks[2 * costume::kBlock];   /* ... the bytes (for the replay) */
+
+/* a block with any byte set (a replay's zero block: nothing was written for that side) */
+bool block_any(const uint8_t* b) { for (uint32_t i = 0; i < costume::kBlock; i++) if (b[i]) return true; return false; }
 
 /* The player's own table from T5_COSTUME_SAVE (or `var`). */
 std::vector<uint8_t> load_wire(const char* var, std::string& why)
@@ -115,10 +121,12 @@ int item_char_of(int side, uint32_t* objp)
 
 } // namespace
 
-/* Start of a session (or an offline fight): this PC's table, handed to netplay once per session. */
-void costume_session(uint32_t f, bool net)
+/* Start of a session (or an offline fight): this PC's table, handed to netplay once per session. A replay
+ * has no table of its own: its blocks come from the file. */
+void costume_session(uint32_t f, CostumeMode m)
 {
-    if (net) {
+    if (m == CostumeMode::Replay) return;
+    if (m == CostumeMode::Net) {
         if (t5_netplay_costume_local_set()) return;
         g_local_wire = load_wire("T5_COSTUME_SAVE", g_local_note);
         t5_netplay_costume_set(g_local_wire.data(), (unsigned)g_local_wire.size());
@@ -132,35 +140,38 @@ void costume_session(uint32_t f, bool net)
     note("frame %u: costumes (offline): P1's table %zu bytes (%s)", f, g_local_wire.size(), g_local_note.c_str());
 }
 
-/* The opponent's table is here (always true offline). */
-bool costume_ready(bool net)
+/* The opponent's table is here (offline and in a replay: nothing to wait for). */
+bool costume_ready(CostumeMode m)
 {
-    if (!net) return true;
+    if (m != CostumeMode::Net) return true;
     unsigned n = 0;
     return t5_netplay_costume_peer(nullptr, 0, &n) != 0;
 }
 
-/* The game mode's first frame: both sides' blocks into the VS custom data. */
-void costume_apply(uint32_t f, bool net)
+/* FIGHT START: both sides' blocks into the VS custom data. */
+void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
 {
     g_written = false;
+    g_checked = false;
     const uint32_t base = rd32(kTocCustomData);
     if (!in_data(base, 2 * kCustomStride)) { note("frame %u: costumes: VS custom data pointer 0x%08X unexpected, left alone", f, base); return; }
     std::vector<uint8_t> wires[2];
-    if (net) {
+    uint8_t recorded[2 * costume::kBlock];
+    const bool replay = m == CostumeMode::Replay && t5_replay_costumes(match, recorded);
+    if (m == CostumeMode::Net) {
         const int me = t5_netplay_local_slot() == 1 ? 1 : 0;
         std::vector<uint8_t> peer(costume::kWireMax);
         unsigned n = 0;
+        wires[me] = g_local_wire;
         if (!t5_netplay_costume_peer(peer.data(), (unsigned)peer.size(), &n)) {
             /* never: the stage confirm waits for it (costume_ready); both sides then default, logged */
             note("frame %u: costumes: the opponent's table is missing -- default costumes for both", f);
             n = 0;
-            g_local_wire.clear();
+            wires[me].clear();
         }
         peer.resize(n);
-        wires[me] = g_local_wire;
         wires[1 - me] = peer;
-    } else {
+    } else if (m == CostumeMode::Offline) {
         std::string why2;
         wires[0] = g_local_wire;
         wires[1] = load_wire("T5_COSTUME_SAVE2", why2);
@@ -169,20 +180,25 @@ void costume_apply(uint32_t f, bool net)
     uint64_t h = costume::fnv64(nullptr, 0);
     std::string line;
     for (int s = 0; s < 2; s++) {
-        costume::Table t;
-        const bool table_ok = costume::from_wire(wires[s].data(), wires[s].size(), t);
         uint32_t obj = 0;
         const int c = item_char_of(s, &obj);
         const uint8_t* src = kZero;
         const char* why = "nothing customized";
-        if (!table_ok) why = "no table (not a valid one)";
+        costume::Table t;
+        if (m == CostumeMode::Replay) {
+            /* the blocks the live match fought in, checked again (a file can be edited) */
+            if (!replay) why = "not in the replay";
+            else if (block_any(recorded + s * costume::kBlock) && c >= 0) {
+                if (costume::block_valid(recorded + s * costume::kBlock, items_of(c), &why)) { src = recorded + s * costume::kBlock; why = "custom (replay)"; }
+            }
+        } else if (!costume::from_wire(wires[s].data(), wires[s].size(), t)) why = "no table (not a valid one)";
         else if (c < 0) why = "item character unknown";
         else if (t.have[c]) {
-            const costume::Items it = items_of(c);
-            if (costume::block_valid(t.blk[c], it, &why)) { src = t.blk[c]; why = "custom"; }
+            if (costume::block_valid(t.blk[c], items_of(c), &why)) { src = t.blk[c]; why = "custom"; }
         }
         const uint32_t dst = base + (uint32_t)s * kCustomStride;
         memcpy(vm_base + dst, src, costume::kBlock);     /* big-endian bytes, as in the save */
+        memcpy(g_written_blocks + s * costume::kBlock, src, costume::kBlock);
         h = costume::fnv64(src, costume::kBlock, h);
         char b[160];
         snprintf(b, sizeof b, "%sP%d item char %d (fighter 0x%08X): %s", s ? ", " : "", s + 1, c, obj, why);
@@ -193,10 +209,13 @@ void costume_apply(uint32_t f, bool net)
     note("frame %u: costumes written: %s; blocks hash %016llX", f, line.c_str(), (unsigned long long)h);
 }
 
+const unsigned char* costume_written() { return g_written ? g_written_blocks : nullptr; }
+
 /* The loading is over (the intros' first frame): the blocks are still what was written. */
 void costume_check(uint32_t f)
 {
-    if (!g_written) return;
+    if (!g_written || g_checked) return;
+    g_checked = true;
     const uint32_t base = rd32(kTocCustomData);
     if (!in_data(base, 2 * kCustomStride)) return;
     uint64_t h = costume::fnv64(nullptr, 0);
@@ -206,9 +225,6 @@ void costume_check(uint32_t f)
              (unsigned long long)h, (unsigned long long)g_written_hash);
     else
         note("frame %u: costumes: blocks hash %016llX after the loading", f, (unsigned long long)h);
-    g_written = false;
 }
-
-void costume_reset_offline() { g_local_loaded = false; }
 
 } // namespace df

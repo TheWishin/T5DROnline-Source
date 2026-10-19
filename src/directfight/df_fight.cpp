@@ -64,6 +64,12 @@ extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick);
 extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick);
 extern "C" int  t5_netplay_connected(void);
 extern "C" void t5_netplay_pause(void);
+/* replays (src/netplay/replay.cpp, docs/REPLAYS.md): this match's setup goes into the recording at FIGHT
+ * START; a playback takes every match's line from the file and checks the setup against it */
+extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
+                                      int rounds, int pick, const char* name1, const char* name2,
+                                      const unsigned char* costumes);
+extern "C" int  t5_replay_fight_line(unsigned match, char* buf, int size);
 
 namespace df {
 
@@ -138,6 +144,7 @@ struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int colo
 std::string g_fight_file, g_status_file, g_result_file;
 Fight g_cfg;            /* the fight being set up / fought */
 bool g_configured = false;
+bool g_replay = false;  /* T5_NET_MODE=replay: the fights come from the replay file, nobody picks on the select screen */
 uint16_t g_alt_button = B_CIRCLE;   /* T5_DF_ALT_BUTTON (hex): the confirm button that picks the shared-cell character (Panda) */
 
 /* The session's environment: in a persistent game the control channel's
@@ -298,6 +305,10 @@ bool g_pending_cmd = false;      /* a "fight" waiting to be set up (persistent g
  * game only while a session is set up. */
 bool session_netplay() { return netplay_on() && (!g_ctl || g_session); }
 
+/* custom costumes (df_costume.cpp): exchanged with the opponent in a netplay session, read from the file in a
+ * replay (nothing to exchange), from T5_COSTUME_SAVE(2) offline */
+CostumeMode costume_mode() { return g_replay ? CostumeMode::Replay : session_netplay() ? CostumeMode::Net : CostumeMode::Offline; }
+
 void write_text(const std::string& path, const std::string& text)
 {
     if (path.empty()) return;
@@ -360,6 +371,12 @@ void write_result(int winner, int w1, int w2)
 
 bool read_fight_file(Fight& out)
 {
+    if (g_replay) {   /* a replay: the next match of the recorded session (the same lines the live games had) */
+        char line[512];
+        if (!t5_replay_fight_line(g_match + 1, line, (int)sizeof line)) return false;
+        note("next fight from the replay (match %u): %s", g_match + 1, line);
+        return parse_fight(line, out);
+    }
     if (g_fight_file.empty() || g_ctl) return false;   /* a persistent game takes its fights from the control channel */
     FILE* fp = fopen(g_fight_file.c_str(), "rb");
     if (!fp) return false;
@@ -563,8 +580,9 @@ void begin_select(uint32_t f)
         note("player %d: %s (id %d) -> cell %d, color %d", p + 1, kName[g_cfg.chr[p]], g_cfg.chr[p], c, g_cfg.color[p]);
     }
     note("stage %d, rounds %d", g_cfg.stage, g_cfg.rounds);
-    costume_session(f, session_netplay());
-    if (g_cfg.pick > 0 && pick_begin(f)) return;
+    costume_session(f, costume_mode());
+    /* (a replay: the recorded picks are driven like a lobby's; pick= stays for the pause between matches) */
+    if (g_cfg.pick > 0 && !g_replay && pick_begin(f)) return;
     /* the same fighter as in the session's last fight keeps its costume (a
      * ranked set's later games: the lock names the characters only); the same
      * on both PCs, which played the same fights */
@@ -1314,8 +1332,8 @@ void fight_on_frame(uint32_t f)
         if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
         /* custom costumes: no fight before the opponent's table is here (both PCs
          * write both tables at the game mode's start; df_costume.cpp) */
-        if (!costume_ready(session_netplay())) {
-            costume_session(f, session_netplay());          /* (set already, or netplay was not up at the select) */
+        if (!costume_ready(costume_mode())) {
+            costume_session(f, costume_mode());             /* (set already, or netplay was not up at the select) */
             if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: waiting for the opponent's costume table", f);
             break;
         }
@@ -1348,7 +1366,6 @@ void fight_on_frame(uint32_t f)
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
         pick_fight_start(f);
-        costume_apply(f, session_netplay());
         for (int p = 0; p < 2; p++) { g_last_chr[p] = g_cfg.chr[p]; g_last_btn[p] = g_cfg.btn[p]; }
         g_session_matches++;
         g_match++;
@@ -1359,6 +1376,11 @@ void fight_on_frame(uint32_t f)
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
              g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
+        /* each player's custom costume, both sides, the same on both PCs (df_costume.cpp); a replay's from its file */
+        costume_apply(f, costume_mode(), g_match);
+        /* the replay: what this match is (recording), or the check that it is the recorded one (playback) */
+        t5_replay_fight_start(g_match, g_cfg.chr, g_cfg.btn, g_models, g_cfg.stage, g_cfg.rounds, g_cfg.pick,
+                              g_cfg.names[0].c_str(), g_cfg.names[1].c_str(), costume_written());
         if (session_netplay()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
         set_phase(Ph::Fight, "fight", f);
         break;
@@ -1593,7 +1615,8 @@ void fight_init()
     const char* fight = getenv("T5_FIGHT");
     const char* file = getenv("T5_FIGHT_FILE");
     g_ctl = ctl_enabled();
-    if (!(fight && *fight) && !(file && *file) && !g_ctl) return;
+    { const char* nm = getenv("T5_NET_MODE"); g_replay = nm && !_stricmp(nm, "replay") && !g_ctl; }
+    if (!(fight && *fight) && !(file && *file) && !g_ctl && !g_replay) return;
     g_configured = true;
     { const char* r = getenv("T5_DF_RESET"); g_reset_titles = !(r && *r == '0'); }
     { const char* r = getenv("T5_DF_SELECT_RESTART"); g_restart_inplace = r && !strcmp(r, "inplace"); }
@@ -1633,8 +1656,9 @@ void fight_init()
     if (const char* a = getenv("T5_DF_ALT_BUTTON")) g_alt_button = (uint16_t)strtoul(a, nullptr, 16);
     if (const char* pk = getenv("T5_DF_PICK")) { const int n = atoi(pk); g_pick_default = n < 0 ? 0 : n > 120 ? 120 : n; }
     { const char* t = getenv("T5_DF_TRACE"); g_trace_presses = t && *t == '1'; }
-    if (fight && *fight && !g_ctl) parse_fight(fight, g_cfg);
+    if (fight && *fight && !g_ctl && !g_replay) parse_fight(fight, g_cfg);   /* (a replay reads its lines at the title) */
     note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : g_ctl ? "(persistent game: fights from the control channel)"
+                                                                 : g_replay ? "(a replay: the fights come from the file)"
                                                                  : "(waiting for T5_FIGHT_FILE)",
          g_fight_file.empty() || g_ctl ? "" : ", next fights from ", g_fight_file.c_str());
     ctl_report(0);

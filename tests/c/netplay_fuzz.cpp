@@ -32,6 +32,10 @@ static FILE* g_np_log = nullptr;
 #undef stderr
 #define stderr (g_np_log ? g_np_log : __acrt_iob_func(2))
 #include "../../src/netplay/netplay_core.cpp"
+/* the replay recorder netplay_core.cpp calls (docs/REPLAYS.md): off here (no T5_REPLAY_DIR), no zlib */
+#include "../../src/netplay/replay.cpp"
+unsigned char* rp_zlib_compress(const unsigned char*, int, int* n) { *n = 0; return nullptr; }
+unsigned char* rp_zlib_decompress(const unsigned char*, int, int* n) { *n = 0; return nullptr; }
 #undef stderr
 #define stderr (__acrt_iob_func(2))
 

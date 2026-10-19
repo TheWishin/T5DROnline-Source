@@ -294,6 +294,19 @@ Good to know:
   with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
+### Replays
+
+Every online match is saved as a replay (a few KB, in `native\replays`). The
+**Replays** tab lists them with date, fighters, result and opponent; **Watch**
+plays the match again in the game, exactly as it happened: the same inputs
+frame by frame, checked against the live match while it plays (the tab says
+"identical to the live match" at the end). While it plays, **START** (Enter)
+pauses, **SELECT** (Tab) ends it. A rematch is shown after the matches before
+it in the same session (a rematch starts from what the match before it left).
+The tab can switch recording off or leave the players' names out. A
+replay plays only with the game version that recorded it. Details:
+[docs/REPLAYS.md](docs/REPLAYS.md).
+
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
 the terms screen it says "A network error occurred" and goes back to the title.
 
@@ -336,7 +349,8 @@ to an issue at https://github.com/TheWishin/T5DROnline/issues. You can add a few
 words about what happened in the window.
 
 The zip holds the newest game logs, `build.log` when the build was the problem,
-the launcher's log, the files of your last online match, your `controls.ini`,
+the launcher's log, the files of your last online match, your newest replay
+(inputs only, the players' names taken out), your `controls.ini`,
 desync dumps if there are any, and `system.txt`: Windows version, processor,
 graphics card and driver, memory, screens (refresh rate, scaling), the release
 version and build id, and the settings you use. The window lists everything

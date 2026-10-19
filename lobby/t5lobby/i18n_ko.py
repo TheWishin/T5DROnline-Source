@@ -933,6 +933,8 @@ MESSAGES = {
     "Online: the files of the last match": "온라인: 지난 매치의 파일",
     "controls.ini (your button settings)": "controls.ini (버튼 설정)",
     "Desync dumps (game state numbers, binary)": "디싱크 덤프 (게임 상태 수치, 바이너리)",
+    "The last replay (the inputs of the last online session, without names)":
+        "최신 리플레이(마지막 온라인 세션의 입력, 이름 없음)",
     "could not be cleaned of private data": "개인 정보를 지울 수 없음",
     "no room left in the size limit": "크기 한도에 남은 공간 없음",
     "could not be read": "읽을 수 없음",
@@ -1643,4 +1645,70 @@ MESSAGES = {
     "{name} wants to be your friend: see the Friends tab.": "{name}님이 친구 요청을 보냈습니다: 친구 탭을 확인하세요.",
     "{name} accepted your friend request.": "{name}님이 친구 요청을 수락했습니다.",
     "{name} declined your friend request.": "{name}님이 친구 요청을 거절했습니다.",
+
+    # ---- launcher/replays_ui.py, launcher/t5dr_launcher.pyw (Replays tab), problem_report.py
+    "Replays":
+        "리플레이",
+    "Every online match is saved here. Watch plays it back in the game exactly as it was played: the same inputs frame by frame, checked against the live match while it plays.":
+        "모든 온라인 대전이 여기에 저장됩니다. 보기를 누르면 플레이했던 그대로 게임에서 재생합니다: 같은 입력을 프레임 단위로 재현하고, 재생하는 동안 실제 대전과 대조합니다.",
+    "Date":
+        "날짜",
+    "Fighters":
+        "캐릭터",
+    "Netcode":
+        "넷코드",
+    "WATCH":
+        "보기",
+    "Stop replay":
+        "리플레이 중지",
+    "Delete":
+        "삭제",
+    "Open replays folder":
+        "리플레이 폴더 열기",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "리플레이 재생 중: START(Enter)로 일시정지/계속, SELECT(Tab)로 리플레이를 끝냅니다. "
+        "재대전은 같은 세션의 앞선 대전 다음에 재생됩니다: 앞선 대전이 남긴 "
+        "상태에서 시작하기 때문입니다.",
+    "Save online matches as replays":
+        "온라인 대전을 리플레이로 저장",
+    "Keep the players' names in replays":
+        "리플레이에 플레이어 이름 남기기",
+    "Rollback":
+        "Rollback",
+    "Lockstep":
+        "Lockstep",
+    "(name not saved)":
+        "(이름 저장 안 됨)",
+    "{matches} match(es) in {files} file(s) in {folder}":
+        "{folder}에 파일 {files}개, 대전 {matches}개",
+    "No replays yet. Play an online match: it is saved here.":
+        "아직 리플레이가 없습니다. 온라인 대전을 하면 여기에 저장됩니다.",
+    "not finished":
+        "끝나지 않음",
+    "won {mine}-{theirs}":
+        "승리 {mine}-{theirs}",
+    "lost {mine}-{theirs}":
+        "패배 {mine}-{theirs}",
+    "Close the running game first (Stop game on the Play tab).":
+        "먼저 실행 중인 게임을 닫으세요(오프라인 플레이 탭의 게임 중지).",
+    "Build the game first (Build tab).":
+        "먼저 게임을 빌드하세요(빌드 탭).",
+    "This replay cannot be played: {why}":
+        "이 리플레이는 재생할 수 없습니다: {why}",
+    "Recorded with another version of the game: it may not play back the same.":
+        "다른 버전의 게임으로 녹화되었습니다: 똑같이 재생되지 않을 수 있습니다.",
+    "Playing {fighters} ({when})...":
+        "{fighters} 재생 중({when})...",
+    "The replay ended before the end of the match.":
+        "대전이 끝나기 전에 리플레이가 끝났습니다.",
+    "Replay over: identical to the live match ({checks} checks, same result).":
+        "리플레이 종료: 실제 대전과 똑같습니다(대조 {checks}회, 같은 결과).",
+    "Replay over, but it went a different way from frame {frame} on (the game or its version differs from the one that played it).":
+        "리플레이 종료, 하지만 {frame} 프레임부터 다르게 진행되었습니다(게임 또는 그 버전이 대전한 것과 다릅니다).",
+    "Replay over.":
+        "리플레이 종료.",
+    "Delete this replay file? It holds {n} match(es) against the same opponent.":
+        "이 리플레이 파일을 삭제할까요? 같은 상대와의 대전 {n}개가 들어 있습니다.",
 }

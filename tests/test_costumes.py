@@ -71,9 +71,11 @@ class DriverAndProtocol(unittest.TestCase):
 
     def test_written_at_fight_start_before_the_lockstep(self):
         src = read("src/directfight/df_fight.cpp")
-        m = re.search(r"pick_fight_start\(f\);\s*costume_apply\(f, session_netplay\(\)\);(.*?)t5_netplay_start\(\)",
-                      src, re.S)
-        self.assertIsNotNone(m, "costume_apply must follow pick_fight_start and come before t5_netplay_start()")
+        fs = src[src.index("pick_fight_start(f);"):]
+        fs = fs[:fs.index("set_phase(Ph::Fight")]
+        a, r, n = fs.index("costume_apply(f, costume_mode(), g_match)"), fs.index("costume_written()"), fs.index("t5_netplay_start()")
+        self.assertLess(a, r, "the blocks go into the replay after they are written")
+        self.assertLess(r, n, "both before lockstep frame 0")
 
     def test_stage_confirm_waits_for_the_table(self):
         src = read("src/directfight/df_fight.cpp")

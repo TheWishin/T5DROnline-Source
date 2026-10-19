@@ -814,6 +814,22 @@ class Theme:
             layers.append((rrect(x0, h - bh, x0 + bw, h, 0.8), col if i < n else C["line_hi"], True))
         return self.photo(key, w, h, layers)
 
+    def presence_icon(self, status):
+        """A friend's dot for list rows: green online, yellow in a match, a grey ring offline."""
+        col = {"online": C["ok"], "in_match": C["warn"]}.get(status)
+        key = f"presence_{status}_{col}"
+        if key in self.images:
+            return self.images[key]
+        px = self.px
+        w = h = px(14)
+        r = w * 0.32
+        if col:
+            layers = [(circle(w / 2.0, h / 2.0, r), col, True)]
+        else:
+            layers = [(ring(circle(w / 2.0, h / 2.0, r), circle(w / 2.0, h / 2.0, r - max(1.4, px(2)))),
+                       C["faint"], False)]
+        return self.photo(key, w, h, layers)
+
     def lock_icon(self, col=None):
         col = col or C["muted"]
         key = f"lock_{col}"

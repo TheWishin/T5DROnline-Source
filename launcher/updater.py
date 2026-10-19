@@ -17,6 +17,11 @@ r"""Updates: the launcher offers new releases and installs them itself, like Tek
    repository's ID (objects.githubusercontent.com, and release-assets.githubusercontent.com where
    GitHub has sent release downloads since 2025); every redirect is checked. The zip's SHA-256 must
    match SHA256SUMS and the digest GitHub's API reports. Anything else is refused; nothing changes.
+   Release signature (release_sig.py): once RELEASE_PUBLIC_KEYS below holds the project's key,
+   SHA256SUMS must also carry a valid Ed25519 signature by it (asset SHA256SUMS.sig, made by the
+   release workflow with a key only the owner's `release` environment has). SHA256SUMS and the
+   GitHub digest come from the same place as the zip, so they alone cannot tell a release the
+   owner made from one somebody else put there (a stolen release token, a hijacked login).
 4. Stage: unpacked next to the install (<folder>.update\new -- the same drive, so the swap is a
    rename), every path in the archive checked (one top folder, no absolute or ".." paths, nothing
    named like the player's files); its release.json must name the offered version.
@@ -88,10 +93,20 @@ RELEASES_PAGE = f"https://github.com/{REPO}/releases"
 ASSET_HOSTS = ("objects.githubusercontent.com", "release-assets.githubusercontent.com")
 RE_ASSET_PATH = re.compile(r"^/github-production-release-asset(?:-[0-9a-z]+)?/(\d+)/[^/]+$")
 
+# Ed25519 public keys (64 hex digits each) of the release signature (docs/RELEASING.md "Release
+# signature"; tools/release_sign.py add-public-key). Empty: updates are checked against SHA256SUMS and
+# GitHub's digest only, as up to 1.1.1. With a key: an update without a valid signature by one of these
+# keys is refused. Two keys while the owner moves to a new one; never a private key here.
+RELEASE_PUBLIC_KEYS = (
+)
+SIG_ASSET = "SHA256SUMS.sig"
+
 CHECK_INTERVAL = 3600            # seconds between two checks at start
 CACHE_FILE = "update-check.json"
+CACHE_FORMAT = 2                 # 2: releases carry "sig" (1.1.2); an older cache is asked again
 TIMEOUT = 15
 MAX_SUMS = 64 * 1024
+MAX_SIG = 4096
 MAX_ZIP = 1_000_000_000          # the zip is ~90 MB
 MAX_UNPACKED = 3_000_000_000     # ~250 MB unpacked
 CONFIRM_ENV = "T5DR_UPDATE_CONFIRM"
@@ -109,6 +124,8 @@ PROTECTED = ("native", "launcher.json", "launcher.log", "launcher.log.1", CACHE_
 _PROGRAM = {n.lower() for n in PROGRAM_ITEMS}
 _PROTECTED = {n.lower() for n in PROTECTED}
 RE_BAD_CHARS = re.compile(r'[<>:"|?*\x00-\x1f\\]')
+_WIN_DEVICES = frozenset(["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"] + [f"COM{i}" for i in range(10)]
+                         + [f"LPT{i}" for i in range(10)] + ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"])
 
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -282,14 +299,18 @@ def parse_release(data):
         raise UpdateError("GitHub did not return a published release.")
     tag = str(data.get("tag_name") or "")
     version = tag[1:] if tag[:1] in ("v", "V") else tag
-    if version_key(version) is None:
+    m = RE_VERSION.match(version)
+    if m is None:
         raise UpdateError(f"The latest release has an unexpected version ({tag!r}).")
+    if data.get("prerelease") or m.group(4) is not None or "+" in version:
+        # /releases/latest never returns these; a test build must never reach players by itself
+        raise UpdateError(f"Release {version} is a test version; it is not installed automatically.")
     zip_name = f"T5DR-Online-{version}.zip"
     assets = {a.get("name"): a for a in (data.get("assets") or []) if isinstance(a, dict)}
-    z, s = assets.get(zip_name), assets.get("SHA256SUMS")
+    z, s, g = assets.get(zip_name), assets.get("SHA256SUMS"), assets.get(SIG_ASSET)
     if not z or not s:
         raise UpdateError(f"Release {version} has no {zip_name} with SHA256SUMS yet.")
-    for a in (z, s):
+    for a in (z, s) + ((g,) if g else ()):
         if not url_allowed(a.get("browser_download_url"), "download"):
             raise UpdateError(f"Release {version}: {a.get('name')} is not on this project's GitHub releases.")
         if a.get("state", "uploaded") != "uploaded":
@@ -305,6 +326,7 @@ def parse_release(data):
         "zip": {"name": zip_name, "url": z["browser_download_url"], "size": int(z.get("size") or 0),
                 "sha256": m.group(1).lower() if m else None},
         "sums": {"url": s["browser_download_url"], "size": int(s.get("size") or 0)},
+        "sig": {"url": g["browser_download_url"], "size": int(g.get("size") or 0)} if g else None,
     }
 
 
@@ -333,6 +355,9 @@ def check_latest(cache_path, force=False, opener=None, now=None):
     now = time.time() if now is None else now
     opener = opener or open_url
     cache = _read_json(cache_path) or {}
+    if cache.get("fmt") != CACHE_FORMAT:
+        # an answer parsed by an older launcher (no signature asset): ask again, keep only a rate limit
+        cache = {"rate_reset": cache["rate_reset"]} if isinstance(cache.get("rate_reset"), (int, float)) else {}
     if cache.get("rate_reset", 0) > now:
         when = time.strftime("%H:%M", time.localtime(cache["rate_reset"]))
         return cache.get("release"), (f"GitHub asks to wait with update checks until {when}." if force else None)
@@ -346,20 +371,21 @@ def check_latest(cache_path, force=False, opener=None, now=None):
             data = json.loads(r.read(4_000_000).decode("utf-8"))
             etag = r.headers.get("ETag")
         rel = parse_release(data)
-        cache = {"checked": now, "etag": etag, "release": rel}
+        cache = {"fmt": CACHE_FORMAT, "checked": now, "etag": etag, "release": rel}
     except urllib.error.HTTPError as e:
         hdr = e.headers or {}
         if e.code == 304:
             cache["checked"] = now
             rel = cache.get("release")
         elif e.code == 404:                      # no published release (yet)
-            cache, rel = {"checked": now, "release": None}, None
+            cache, rel = {"fmt": CACHE_FORMAT, "checked": now, "release": None}, None
         elif e.code in (403, 429):
             try:
                 reset = float(hdr.get("X-RateLimit-Reset") or 0) or now + float(hdr.get("Retry-After") or 3600)
             except ValueError:
                 reset = now + 3600
             cache["rate_reset"] = min(reset, now + 3 * 3600)
+            cache["fmt"] = CACHE_FORMAT
             _write_json(cache_path, cache)
             return None, "GitHub limits update checks right now. Try again later."
         else:
@@ -419,12 +445,43 @@ def parse_sums(text, name):
     return None
 
 
+def check_signature(release, sums_bytes, dl_dir, opener=None, cancel=None, keys=None):
+    """With RELEASE_PUBLIC_KEYS (or `keys`): download SHA256SUMS.sig and verify it against sums_bytes
+    for the release's version. Returns the signing key's id, or None when no key is configured.
+    Raises UpdateError: a launcher that knows the project's key never installs an unsigned update."""
+    keys = RELEASE_PUBLIC_KEYS if keys is None else keys
+    if not keys:
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.append(here)
+    import release_sig            # launcher/ (only the launcher checks: the swap step never needs it)
+    sig = release.get("sig")
+    if not sig:
+        raise UpdateError(f"Release {release['version']} is not signed with the project's release key "
+                          "(no SHA256SUMS.sig). It was not made by the project's release process; nothing "
+                          "was changed.")
+    path = os.path.join(dl_dir, SIG_ASSET)
+    download(sig["url"], path, opener, max_bytes=MAX_SIG, cancel=cancel)
+    with open(path, "rb") as f:
+        sig_bytes = f.read()
+    try:
+        return release_sig.check_sig_file(sig_bytes, release["version"], sums_bytes, keys)
+    except (release_sig.SignatureError, ValueError) as e:
+        raise UpdateError(f"Release {release['version']} failed the signature check ({e}). It was not made "
+                          "by the project's release process; nothing was changed.") from None
+
+
 def _member_problem(name, top):
     if not name or "\\" in name or name.startswith("/") or RE_BAD_CHARS.search(name.replace("/", "")):
         return "not a plain relative path"
     parts = name.rstrip("/").split("/")
     if any(p in ("", ".", "..") for p in parts):
         return "'.', '..' or an empty part"
+    for p in parts:
+        # Windows drops trailing dots and spaces ("native." is "native") and opens devices for these names
+        if p != p.rstrip(". ") or p.split(".", 1)[0].rstrip(" ").upper() in _WIN_DEVICES:
+            return "a name Windows does not keep as written"
     if parts[0] != top:
         return f"outside the folder {top}"
     if len(parts) > 1 and parts[1].lower() in _PROTECTED:
@@ -532,8 +589,10 @@ def prepare_update(release, root=ROOT, opener=None, progress=None, cancel=None, 
         os.makedirs(dl)
         sums_path = os.path.join(dl, "SHA256SUMS")
         download(release["sums"]["url"], sums_path, opener, max_bytes=MAX_SUMS, cancel=cancel)
-        with open(sums_path, encoding="utf-8", errors="replace") as f:
-            want = parse_sums(f.read(), z["name"])
+        with open(sums_path, "rb") as f:
+            sums_bytes = f.read()
+        check_signature(release, sums_bytes, dl, opener=opener, cancel=cancel)
+        want = parse_sums(sums_bytes.decode("utf-8", "replace"), z["name"])
         if not want:
             raise UpdateError(f"SHA256SUMS of release {release['version']} has no line for {z['name']}. "
                               "Nothing was changed.")
@@ -583,7 +642,9 @@ def start_swap(staged, version_from, version_to, out_dir=None, root=ROOT, wait_p
     exe = python or os.path.join(sroot, "runner", "python", "pythonw.exe")
     if not os.path.exists(script):
         script = os.path.abspath(__file__)
-    return _spawn([exe, "-B", script, "--apply", plan_path], cwd=sroot)
+    # -I: isolated -- no PYTHON* environment variables, no user site-packages, and the script's folder is
+    # not put on sys.path (nothing next to t5dr_update.py is ever imported); -B: no .pyc files.
+    return _spawn([exe, "-I", "-B", script, "--apply", plan_path], cwd=sroot)
 
 
 def _spawn(cmd, cwd, env=None):

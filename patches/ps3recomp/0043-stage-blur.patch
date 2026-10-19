@@ -1,0 +1,750 @@
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 5e47a49..ade876d 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -130,6 +130,33 @@ u32 rsx_fp_texture_mask(const u8* ucode, u32 max_bytes)
+     return mask;
+ }
+ 
++u32 rsx_fp_texture_tap_mask(const u8* ucode, u32 max_bytes)
++{
++    if (!ucode) return 0;
++    u32 off = 0, once = 0, twice = 0;
++    while (off + 16 <= max_bytes) {
++        u32 w0 = rsx_fp_read_word(ucode + off + 0);
++        u32 w1 = rsx_fp_read_word(ucode + off + 4);
++        u32 w2 = rsx_fp_read_word(ucode + off + 8);
++        u32 w3 = rsx_fp_read_word(ucode + off + 12);
++        off += 16;
++        const u32 op = (w0 & FP_OPCODE_MASK) >> FP_OPCODE_SHIFT;
++        if (!(w2 & FP_BRANCH) &&
++            (op == OP_TEX || op == OP_TXP || op == OP_TXD || op == OP_TXL || op == OP_TXB)) {
++            const u32 bit = 1u << ((w0 & FP_TEX_UNIT_MASK) >> FP_TEX_UNIT_SHIFT);
++            twice |= once & bit;
++            once |= bit;
++        }
++        if (((w1 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST ||
++            ((w2 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST ||
++            ((w3 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST) {
++            if (off + 16 <= max_bytes) off += 16;
++        }
++        if (w0 & FP_END) break;
++    }
++    return twice;
++}
++
+ u32 rsx_fp_program_size(const u8* ucode, u32 max_bytes)
+ {
+     if (!ucode) return 0;
+@@ -1427,3 +1454,129 @@ int rsx_fp_apply_shadow_compare(char* hlsl, u32 hlsl_size, u32 shadow_mask,
+     memcpy(main_at, helper, hl);
+     return patched;
+ }
++
++/* Single-tap sampling for filter kernels (PS3_STAGE_BLUR=0, rsx_live_draw.c).
++ *
++ * Tekken 5 DR's stage post effects are fragment programs that read one render
++ * target several times at offsets: the soft-focus downsample of the 3D pass
++ * (a centre tap and three taps two texels away, then a colour curve) and the
++ * glow's blur passes (four diagonal taps). Pointing every tap of such a unit at
++ * one coordinate leaves the rest of the program as it is (the colour curve,
++ * the weights, which sum to one): the picture without the blur.
++ *
++ * Which coordinate: the centre tap when the kernel has one -- the tap nearest
++ * the mean of all taps and less than half the kernel's radius from it (the
++ * soft-focus kernel's mean is 0.37 texel from its centre tap, its radius 2.4)
++ * -- else the mean itself (a symmetric kernel without a centre: the mean is
++ * the pixel's own position). Taps that are not plain interpolated inputs
++ * (a coordinate computed in the program, a dependent read) leave the unit
++ * unchanged: the coordinate is evaluated once at the top of main. */
++static int fp_tap_arg_is_input(const char* a, u32 n)
++{
++    /* "((input.tcN).xyzw).xy" and other swizzles of interpolants, or a
++     * projective "(A).xy / (A).w" of one: input.* names only, no temporaries,
++     * condition registers or constants */
++    int input = 0;
++    for (u32 i = 0; i < n; i++) {
++        if (i + 1 < n && (a[i] == 'r' || a[i] == 'h') && a[i + 1] == '[') return 0;
++        if (i + 2 < n && a[i] == 'c' && a[i + 1] == 'c' && (a[i + 2] == '0' || a[i + 2] == '1')) return 0;
++        if (i + 3 <= n && !strncmp(a + i, "fp_", 3)) return 0;
++        if (i + 6 <= n && !strncmp(a + i, "input.", 6)) input = 1;
++    }
++    return input;
++}
++
++int rsx_fp_apply_single_tap(char* hlsl, u32 hlsl_size, u32 unit_mask, u32 cube_mask)
++{
++    if (!hlsl || !unit_mask) return 0;
++    int units = 0;
++    for (u32 u = 0; u < 16; u++) {
++        if (!((unit_mask >> u) & 1u) || ((cube_mask >> u) & 1u)) continue;
++        char needle[48];
++        snprintf(needle, sizeof needle, "rsx_tex[%u].Sample(rsx_samp[%u], ", u, u);
++        const u32 nlen = (u32)strlen(needle);
++        /* pass 1: the distinct coordinate texts; all must be interpolants */
++        enum { MAX_TAPS = 16 };
++        const char* arg[MAX_TAPS];
++        u32 alen[MAX_TAPS];
++        u32 n = 0, sites = 0;
++        int ok = 1;
++        for (const char* at = strstr(hlsl, needle); at; at = strstr(at + nlen, needle)) {
++            const char* a = at + nlen;
++            int depth = 1;
++            const char* e = a;
++            for (; *e; e++) {
++                if (*e == '(') depth++;
++                else if (*e == ')' && !--depth) break;
++            }
++            if (*e != ')') return -1;
++            const u32 len = (u32)(e - a);
++            sites++;
++            if (!fp_tap_arg_is_input(a, len)) { ok = 0; break; }
++            u32 k = 0;
++            while (k < n && !(alen[k] == len && !strncmp(arg[k], a, len))) k++;
++            if (k == n) {
++                if (n == MAX_TAPS) { ok = 0; break; }
++                arg[n] = a; alen[n] = len; n++;
++            }
++        }
++        if (!ok || n < 2) continue;
++        /* the coordinate, computed at the top of main */
++        u32 cap = 512;
++        for (u32 k = 0; k < n; k++) cap += 4 * alen[k] + 192;
++        char* code = (char*)malloc(cap);
++        if (!code) return -1;
++        u32 m = 0;
++#define FP_EMIT(...) do { const int w_ = snprintf(code + m, cap - m, __VA_ARGS__);              \
++                          if (w_ < 0 || (u32)w_ >= cap - m) { free(code); return -1; }          \
++                          m += (u32)w_; } while (0)
++        FP_EMIT("\n    float2 rsx_tap%u = (", u);
++        for (u32 k = 0; k < n; k++) FP_EMIT("%s(%.*s)", k ? " + " : "", (int)alen[k], arg[k]);
++        FP_EMIT(") / %u.0;\n    { float2 _b = rsx_tap%u; float _dmin = 3.4e38, _dmax = 0.0, _d;\n", n, u);
++        for (u32 k = 0; k < n; k++)
++            FP_EMIT("      _d = dot((%.*s) - rsx_tap%u, (%.*s) - rsx_tap%u);"
++                    " if (_d < _dmin) { _dmin = _d; _b = (%.*s); } _dmax = max(_dmax, _d);\n",
++                    (int)alen[k], arg[k], u, (int)alen[k], arg[k], u, (int)alen[k], arg[k]);
++        FP_EMIT("      if (_dmin < 0.25 * _dmax) rsx_tap%u = _b; }\n", u);
++#undef FP_EMIT
++        /* pass 2: every call site of the unit reads rsx_tapU (the texts were
++         * copied into `code` above, so rewriting them is safe now) */
++        char repl[16];
++        snprintf(repl, sizeof repl, "rsx_tap%u", u);
++        const u32 rlen = (u32)strlen(repl);
++        if ((u32)strlen(hlsl) + m + sites * rlen + 1 > hlsl_size) {   /* room for all of it, before any change */
++            free(code);
++            return -1;
++        }
++        for (;;) {
++            char* at = strstr(hlsl, needle);
++            if (!at) break;
++            char* a = at + nlen;
++            int depth = 1;
++            char* e = a;
++            for (; *e; e++) {
++                if (*e == '(') depth++;
++                else if (*e == ')' && !--depth) break;
++            }
++            const u32 used = (u32)strlen(hlsl);
++            const u32 old_len = (u32)(e - a);
++            if (used - old_len + rlen + 1 > hlsl_size) { free(code); return -1; }
++            memmove(a + rlen, e, used - (u32)(e - hlsl) + 1);
++            memcpy(a, repl, rlen);
++            memcpy(at, "rsx_TEX", 7);        /* done; restored below */
++        }
++        for (char* q = hlsl; (q = strstr(q, "rsx_TEX")) != NULL; ) memcpy(q, "rsx_tex", 7);
++        /* insert after the opening brace of main */
++        char* mb = strstr(hlsl, " main(PSInput input)");
++        mb = mb ? strchr(mb, '{') : NULL;
++        if (!mb) { free(code); return -1; }
++        mb++;
++        const u32 used = (u32)strlen(hlsl);
++        if (used + m + 1 > hlsl_size) { free(code); return -1; }
++        memmove(mb + m, mb, used - (u32)(mb - hlsl) + 1);
++        memcpy(mb, code, m);
++        free(code);
++        units++;
++    }
++    return units;
++}
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+index f090b77..37462c0 100644
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -172,6 +172,17 @@ const char* rsx_fp_opcode_name(u32 opcode);
+ u32 rsx_fp_program_size(const u8* ucode, u32 max_bytes);
+ /* Bit u set when the program samples texture unit u (TEX/TXP/TXD/TXL/TXB). */
+ u32 rsx_fp_texture_mask(const u8* ucode, u32 max_bytes);
++/* Bit u set when the program samples texture unit u two or more times: a
++ * filter kernel (blur, glow, soft downsample) when unit u is a render target. */
++u32 rsx_fp_texture_tap_mask(const u8* ucode, u32 max_bytes);
++/* Make every Sample() of the units in `unit_mask` read one coordinate: the
++ * kernel's own centre tap when it has one (the tap nearest the taps' mean,
++ * less than half the kernel's radius from it), else the mean of the taps (a
++ * symmetric kernel). Only units whose taps all read interpolated inputs are
++ * changed (the coordinate is computed at the top of main). Returns the number
++ * of units changed (0: none qualified, the text is unchanged), -1 when the
++ * text does not fit. Used by PS3_STAGE_BLUR=0 (rsx_live_draw.c). */
++int rsx_fp_apply_single_tap(char* hlsl, u32 hlsl_size, u32 unit_mask, u32 cube_mask);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index e53cadc..8d11671 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -235,7 +235,9 @@ extern volatile unsigned long long g_yz_auto_start_tick;
+ #define UAV_ZDEPTH_BASE   (SRV_DEPTH_SOURCE_BASE + MAX_SURFACES)
+ /* Per-surface copy a draw samples when it reads its own render target. */
+ #define SRV_FEEDBACK_BASE (UAV_ZDEPTH_BASE + MAX_SURFACES)
+-#define SRV_CPU_HEAP_SLOTS (SRV_FEEDBACK_BASE + MAX_SURFACES)
++/* Per-surface guest-size view a filter kernel samples (patch 0043). */
++#define SRV_GUESTVIEW_BASE (SRV_FEEDBACK_BASE + MAX_SURFACES)
++#define SRV_CPU_HEAP_SLOTS (SRV_GUESTVIEW_BASE + MAX_SURFACES)
+ #define SRV_TABLE_SIZE   16
+ #define SRV_RING_TABLES  4096
+ 
+@@ -283,6 +285,11 @@ typedef struct {
+     u32 scale_gen;            /* g_ld_scale_gen it was sized for */
+     DXGI_FORMAT fmt;
+     ID3D12Resource* fb_tex;   /* feedback copy, see surface_feedback_srv */
++    /* stage post effects (patch 0043, ld_guest_view_srv) */
++    ID3D12Resource* gv_tex;   /* this surface box-filtered to its guest size */
++    ID3D12Resource* gv_src;   /* the tex it was made from */
++    u32 gv_gen;               /* the write generation it shows */
++    int post_buffer;          /* last drawn by a filter kernel, smaller than the canvas: a glow buffer */
+ #if !defined(YZ_PERF_CLEAN)
+     u32 resource_serial;
+     u32 last_write_generation;
+@@ -484,6 +491,9 @@ static ld_state g;
+  * shows) and the small offscreen targets (shadow map, glow) keep the guest
+  * size -- see ld_surface_scale(). */
+ static float g_ld_res_scale = 1.0f;
++/* PS3_STAGE_BLUR (patch 0043): 1 = the stages' blur and glow as the game
++ * draws them (default), 0 = off. See ld_guest_view_srv. */
++static int g_ld_stage_blur = 1;
+ static u32 ld_pxs(u32 v, float scale)
+ {
+     if (scale == 1.0f) return v;
+@@ -4025,6 +4035,12 @@ static u32 surface_get(u32 location, u32 offset, u32 want_w, u32 want_h,
+         retire_texture(s->fb_tex);
+         s->fb_tex = NULL;
+     }
++    if (s->gv_tex) {                 /* likewise (patch 0043) */
++        retire_texture(s->gv_tex);
++        s->gv_tex = NULL;
++        s->gv_src = NULL;
++    }
++    s->post_buffer = 0;
+     s->tex = replacement;
+     s->location = location; s->offset = offset; s->w = want_w; s->h = want_h;
+     s->pw = (u32)rd.Width; s->ph = rd.Height;
+@@ -6046,6 +6062,27 @@ static ID3D12PipelineState* get_pso(
+             }
+         }
+     }
++    /* PS3_STAGE_BLUR=0 (patch 0043): every tap of a filter kernel on a
++     * render-target surface reads the kernel's centre. Baked into the HLSL
++     * (rsx_fp_apply_single_tap), so PSO identity. */
++    u32 single_mask = 0;
++    if (!g_ld_stage_blur) {
++        u32 rt_units = 0;
++        for (u32 unit = 0; unit < RSX_DSP_NUM_TEXTURES; unit++) {
++            if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + unit * 0x20) >> 31))
++                continue;
++            rsx_dsp_texture ut;
++            rsx_dsp_get_texture(&g.rsx, unit, &ut);
++            for (u32 i = 0; i < g.n_surfaces; i++)
++                if (g.surfaces[i].tex && g.surfaces[i].location == ut.location &&
++                    g.surfaces[i].offset == ut.offset) {
++                    rt_units |= 1u << unit;
++                    break;
++                }
++        }
++        if (rt_units)
++            single_mask = rt_units & ~cube_mask & rsx_fp_texture_tap_mask(fp_uc, fp_size);
++    }
+     const u32 vtex_mask = vertex_texture_mask();
+     const u32 txl_mask = vpm->txl_mask;
+     if (txl_mask && !(txl_mask & vtex_mask)) {
+@@ -6123,6 +6160,11 @@ static ID3D12PipelineState* get_pso(
+         key = fnv1a(&shadow_linear, sizeof(shadow_linear), key);
+         key = fnv1a(shadow_func, sizeof(shadow_func), key);
+     }
++    if (single_mask) {
++        static const u32 single_tag = 0x31505453u; /* "STP1" */
++        key = fnv1a(&single_tag, sizeof(single_tag), key);
++        key = fnv1a(&single_mask, sizeof(single_mask), key);
++    }
+     if (masked_layout) {
+         static const u32 masked_layout_tag = 0x314B534Du; /* "MSK1" */
+         const u32 payload_stride =
+@@ -6236,6 +6278,9 @@ static ID3D12PipelineState* get_pso(
+                 ps_hlsl, sizeof(ps_hlsl), shadow_mask, shadow_func,
+                 shadow_linear, cube_mask) < 0)
+             fi = -1;
++        if (fi > 0 && single_mask &&
++            rsx_fp_apply_single_tap(ps_hlsl, sizeof(ps_hlsl), single_mask, cube_mask) < 0)
++            fi = -1;
+     } else {
+         fi = rsx_fp_decompile_ex(
+             fp_uc, fp_size, fp_ctrl, cube_mask,
+@@ -6253,6 +6298,9 @@ static ID3D12PipelineState* get_pso(
+                 ps_hlsl, sizeof(ps_hlsl), shadow_mask, shadow_func,
+                 shadow_linear, cube_mask) < 0)
+             fi = -1;
++        if (fi > 0 && single_mask &&
++            rsx_fp_apply_single_tap(ps_hlsl, sizeof(ps_hlsl), single_mask, cube_mask) < 0)
++            fi = -1;
+     }
+ #if defined(YZ_PERF_PROFILE)
+     g_ld_profile.total.decompile_qpc +=
+@@ -8817,6 +8865,306 @@ static void write_topology_indices(u32 prim, u32* indices)
+     }
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Stage blur and glow at every internal resolution (patch 0043, PS3_STAGE_BLUR).
++ *
++ * Some Tekken 5 DR stages filter the picture: a soft-focus downsample of the
++ * 3D pass into the display buffer (stage 34, the misty swamp, and 24, 26 ...:
++ * a centre tap and three taps two guest texels away, then a colour curve) and
++ * a glow (stage 20's sun: the 3D pass averaged into two 128x128 buffers,
++ * blurred back and forth with four diagonal taps, added back). The offsets are
++ * guest texels. On a scaled surface a guest texel is 1.5-4 host texels, so the
++ * taps' bilinear footprints no longer meet: instead of a soft picture the
++ * kernel shows three sharp copies of every edge (4K: 3.8 output pixels apart),
++ * and the glow's blur turns blotchy.
++ *
++ * So a filter kernel -- a fragment program that samples a render-target
++ * surface two or more times on one unit (rsx_fp_texture_tap_mask) -- samples
++ * a guest-size view of a scaled surface: the surface box-filtered (area
++ * weights, exact for any factor) to its guest size, made again only after the
++ * surface was written. The taps then cover what they cover at Native.
++ * Single-tap reads (the plain downsample of the other stages, the heat haze)
++ * keep the full internal resolution; below Native nothing changes.
++ *
++ * PS3_STAGE_BLUR=0 (launcher Settings -> Stage blur / glow: Off) turns the
++ * effects off instead: every tap of a filter kernel reads the kernel's centre
++ * (get_pso, rsx_fp_apply_single_tap; the colour curve stays) and a draw that
++ * blends a glow buffer -- a surface last drawn by a filter kernel, smaller than
++ * the canvas -- onto a full-size target is skipped. Host pixels only: the
++ * game's memory and commands are the same either way, so the two players of a
++ * match may choose differently.
++ * -----------------------------------------------------------------------*/
++static struct {
++    int tried;
++    ID3D12RootSignature* rootsig;
++    ID3D12PipelineState* pso_rgba8;
++    ID3D12PipelineState* pso_rgba16f;
++    ID3D12DescriptorHeap* rtv_heap;
++    u32 rtv_step;
++} g_ld_gview;
++static u64 g_ld_gview_passes, g_ld_glow_skips;
++
++static int ld_gview_pipeline(void)
++{
++    if (g_ld_gview.tried) return g_ld_gview.pso_rgba8 != NULL;
++    g_ld_gview.tried = 1;
++    static const char vs_src[] =
++        "float4 main(uint id : SV_VertexID) : SV_Position {\n"
++        "    float2 uv = float2((id << 1) & 2, id & 2);\n"
++        "    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);\n"
++        "}\n";
++    /* Guest texel (x, y) = the area-weighted mean of the host texels under
++     * [x, x+1) * ratio: exact for 1.5x and 3x as well as 2x and 4x. */
++    static const char ps_src[] =
++        "Texture2D src : register(t0);\n"
++        "cbuffer C : register(b0) { float2 ratio; float2 host; };\n"
++        "float4 main(float4 pos : SV_Position) : SV_Target {\n"
++        "    float2 lo = floor(pos.xy) * ratio, hi = lo + ratio;\n"
++        "    int2 a = (int2)floor(lo), b = min((int2)ceil(hi) - 1, (int2)host - 1);\n"
++        "    float4 acc = 0; float ws = 0;\n"
++        "    [loop] for (int y = a.y; y <= b.y; y++) {\n"
++        "        float wy = min(hi.y, y + 1.0) - max(lo.y, (float)y);\n"
++        "        [loop] for (int x = a.x; x <= b.x; x++) {\n"
++        "            float w = wy * (min(hi.x, x + 1.0) - max(lo.x, (float)x));\n"
++        "            acc += src.Load(int3(x, y, 0)) * w; ws += w;\n"
++        "        }\n"
++        "    }\n"
++        "    return ws > 0 ? acc / ws : (float4)0;\n"
++        "}\n";
++    ID3DBlob *vs = NULL, *ps = NULL, *err = NULL, *sig = NULL;
++    HRESULT hr = D3DCompile(vs_src, sizeof(vs_src) - 1, "gview_vs", NULL, NULL, "main",
++                            "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err);
++    if (SUCCEEDED(hr))
++        hr = D3DCompile(ps_src, sizeof(ps_src) - 1, "gview_ps", NULL, NULL, "main",
++                        "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err);
++    if (SUCCEEDED(hr)) {
++        D3D12_DESCRIPTOR_RANGE range = {0};
++        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++        range.NumDescriptors = 1;
++        D3D12_ROOT_PARAMETER param[2] = {0};
++        param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++        param[0].DescriptorTable.NumDescriptorRanges = 1;
++        param[0].DescriptorTable.pDescriptorRanges = &range;
++        param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++        param[1].Constants.Num32BitValues = 4;
++        param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++        rsd.NumParameters = 2; rsd.pParameters = param;
++        hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++        if (SUCCEEDED(hr))
++            hr = g.dev->lpVtbl->CreateRootSignature(g.dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                                                    sig->lpVtbl->GetBufferSize(sig),
++                                                    &IID_ID3D12RootSignature, (void**)&g_ld_gview.rootsig);
++    }
++    for (int f = 0; f < 2 && SUCCEEDED(hr); f++) {
++        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_ld_gview.rootsig;
++        pd.VS.pShaderBytecode = vs->lpVtbl->GetBufferPointer(vs);
++        pd.VS.BytecodeLength = vs->lpVtbl->GetBufferSize(vs);
++        pd.PS.pShaderBytecode = ps->lpVtbl->GetBufferPointer(ps);
++        pd.PS.BytecodeLength = ps->lpVtbl->GetBufferSize(ps);
++        pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++        pd.SampleMask = 0xFFFFFFFFu;
++        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++        pd.RasterizerState.DepthClipEnable = TRUE;
++        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++        pd.NumRenderTargets = 1;
++        pd.RTVFormats[0] = f ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
++        pd.SampleDesc.Count = 1;
++        hr = g.dev->lpVtbl->CreateGraphicsPipelineState(
++            g.dev, &pd, &IID_ID3D12PipelineState,
++            (void**)(f ? &g_ld_gview.pso_rgba16f : &g_ld_gview.pso_rgba8));
++    }
++    if (SUCCEEDED(hr)) {
++        D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
++        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
++        hd.NumDescriptors = MAX_SURFACES;
++        hr = g.dev->lpVtbl->CreateDescriptorHeap(g.dev, &hd, &IID_ID3D12DescriptorHeap,
++                                                 (void**)&g_ld_gview.rtv_heap);
++        if (SUCCEEDED(hr))
++            g_ld_gview.rtv_step = g.dev->lpVtbl->GetDescriptorHandleIncrementSize(
++                g.dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
++    }
++    if (FAILED(hr))
++        fprintf(stderr, "[stage-blur] guest-view pipeline failed hr=0x%08lX %s -- filters sample the "
++                        "scaled targets directly\n", (unsigned long)hr,
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "");
++    if (vs) vs->lpVtbl->Release(vs);
++    if (ps) ps->lpVtbl->Release(ps);
++    if (sig) sig->lpVtbl->Release(sig);
++    if (err) err->lpVtbl->Release(err);
++    if (FAILED(hr) && g_ld_gview.pso_rgba8) {
++        g_ld_gview.pso_rgba8->lpVtbl->Release(g_ld_gview.pso_rgba8);
++        g_ld_gview.pso_rgba8 = NULL;
++    }
++    return g_ld_gview.pso_rgba8 != NULL;
++}
++
++static void ld_gview_release(void)
++{
++    if (g_ld_gview.pso_rgba8) g_ld_gview.pso_rgba8->lpVtbl->Release(g_ld_gview.pso_rgba8);
++    if (g_ld_gview.pso_rgba16f) g_ld_gview.pso_rgba16f->lpVtbl->Release(g_ld_gview.pso_rgba16f);
++    if (g_ld_gview.rootsig) g_ld_gview.rootsig->lpVtbl->Release(g_ld_gview.rootsig);
++    if (g_ld_gview.rtv_heap) g_ld_gview.rtv_heap->lpVtbl->Release(g_ld_gview.rtv_heap);
++    memset(&g_ld_gview, 0, sizeof(g_ld_gview));
++}
++
++/* The guest-size view of surface `slot` (scaled above native), made again
++ * when the surface was written since. Records a draw -- call it only before a
++ * draw records its own state (the binding loop of sink_end_impl), like
++ * ld_surface_copy. The view stays in PIXEL_SHADER_RESOURCE state, the
++ * surface in RENDER_TARGET. Returns its SRV slot, SRV_WHITE when there is
++ * none (the caller samples the surface itself). */
++static u32 ld_guest_view_srv(u32 slot)
++{
++    surface_t* s = &g.surfaces[slot];
++    if (!s->tex || s->scale <= 1.0f || !s->w || !s->h || !s->pw || !s->ph) return SRV_WHITE;
++    if (s->fmt != DXGI_FORMAT_R8G8B8A8_UNORM && s->fmt != DXGI_FORMAT_R16G16B16A16_FLOAT) return SRV_WHITE;
++    if (!ld_gview_pipeline()) return SRV_WHITE;
++    if (s->gv_tex && s->gv_src != s->tex) {
++        retire_texture(s->gv_tex);
++        s->gv_tex = NULL;
++    }
++    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
++    g_ld_gview.rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g_ld_gview.rtv_heap, &rtv);
++    rtv.ptr += (size_t)slot * g_ld_gview.rtv_step;
++    int fresh = 0;
++    if (!s->gv_tex) {
++        D3D12_HEAP_PROPERTIES hp = {0};
++        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++        D3D12_RESOURCE_DESC rd = {0};
++        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++        rd.Width = s->w; rd.Height = s->h;
++        rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++        rd.Format = s->fmt; rd.SampleDesc.Count = 1;
++        rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
++        D3D12_CLEAR_VALUE cv = {0};
++        cv.Format = s->fmt;
++        if (FAILED(g.dev->lpVtbl->CreateCommittedResource(
++                g.dev, &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
++                &cv, &IID_ID3D12Resource, (void**)&s->gv_tex))) {
++            s->gv_tex = NULL;
++            static u32 fails = 0;
++            if (fails++ < 4)
++                fprintf(stderr, "[stage-blur] guest view %ux%u of surface %u could not be created\n",
++                        s->w, s->h, slot);
++            return SRV_WHITE;
++        }
++        g.dev->lpVtbl->CreateRenderTargetView(g.dev, s->gv_tex, NULL, rtv);
++        srv_write(SRV_GUESTVIEW_BASE + slot, s->gv_tex);
++        s->gv_src = s->tex;
++        fresh = 1;
++    }
++#if !defined(YZ_PERF_CLEAN)
++    if (!fresh && s->gv_gen == s->last_write_generation)
++        return SRV_GUESTVIEW_BASE + slot;
++#endif
++    if (g.srv_ring_used + 1u > SRV_RING_TABLES) {
++        ld_flush(LD_FLUSH_DESCRIPTOR_RING);
++        if (!g.ready) return SRV_WHITE;
++        g.srv_ring_used = 0;
++        g.smp_ring_used = 0;
++    }
++    const u32 base = g.srv_ring_used++ * SRV_TABLE_SIZE;
++    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
++    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
++    g.srv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g.srv_heap, &cpu);
++    g.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(g.srv_heap, &gpu);
++    cpu.ptr += (size_t)base * g.srv_step;
++    gpu.ptr += (u64)base * g.srv_step;
++    g.dev->lpVtbl->CopyDescriptorsSimple(g.dev, 1, cpu, srv_cpu(SRV_SURFACE_BASE + slot),
++                                         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++    D3D12_RESOURCE_BARRIER b[2] = {0};
++    for (int k = 0; k < 2; k++) {
++        b[k].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++        b[k].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    }
++    b[0].Transition.pResource = s->tex;
++    b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[1].Transition.pResource = s->gv_tex;
++    b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++    b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    const float k[4] = { (float)s->pw / (float)s->w, (float)s->ph / (float)s->h, (float)s->pw, (float)s->ph };
++    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)s->w, (float)s->h, 0.0f, 1.0f };
++    const D3D12_RECT sc = { 0, 0, (LONG)s->w, (LONG)s->h };
++    ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
++    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
++    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
++    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ld_gview.rootsig);
++    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
++    g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 1, 4, k, 0);
++    g.list->lpVtbl->SetPipelineState(g.list, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
++                                                 ? g_ld_gview.pso_rgba16f : g_ld_gview.pso_rgba8);
++    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
++    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    for (int i = 0; i < 2; i++) {
++        const D3D12_RESOURCE_STATES before = b[i].Transition.StateBefore;
++        b[i].Transition.StateBefore = b[i].Transition.StateAfter;
++        b[i].Transition.StateAfter = before;
++    }
++    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++#if !defined(YZ_PERF_CLEAN)
++    s->gv_gen = s->last_write_generation;
++#endif
++    g_ld_gview_passes++;
++    return SRV_GUESTVIEW_BASE + slot;
++}
++
++/* Which surface a texture unit reads: the one whose size matches what the
++ * descriptor declares, else the most recently drawn at that address (never
++ * the draw's own target). -1: none. */
++static int ld_sampled_surface(const rsx_dsp_texture* t, u32 target)
++{
++    int sampled = -1;
++    u32 best_gen = 0;
++    for (u32 i = 0; i < g.n_surfaces; i++) {
++        const surface_t* sf_i = &g.surfaces[i];
++        if (sf_i->location != t->location || sf_i->offset != t->offset ||
++            i == target)
++            continue;
++        if (sf_i->w == t->width && sf_i->h == t->height) return (int)i;
++        if (sampled < 0 || sf_i->last_draw_generation > best_gen) {
++            sampled = (int)i;
++            best_gen = sf_i->last_draw_generation;
++        }
++    }
++    return sampled;
++}
++
++/* The current fragment program's units read two or more times / at all. */
++static u32 ld_fp_unit_masks(u32* any)
++{
++    *any = 0;
++    if (!g_ld_current_pso.valid || !g_ld_current_pso.fp_size) return 0;
++    const u8* fp = guest_ptr(g_ld_current_pso.fp_location, g_ld_current_pso.fp_offset,
++                             g_ld_current_pso.fp_size);
++    if (!fp) return 0;
++    *any = rsx_fp_texture_mask(fp, g_ld_current_pso.fp_size);
++    return rsx_fp_texture_tap_mask(fp, g_ld_current_pso.fp_size);
++}
++
++/* One log line per filter kernel seen (program, source, target). */
++static void ld_post_note(u32 unit, u32 src, u32 target, const char* how)
++{
++    static struct { u64 key; u32 src, dst; } seen[32];
++    static u32 n_seen;
++    const u64 key = g_ld_current_pso.key;
++    const u32 so = g.surfaces[src].offset, d = g.surfaces[target].offset;
++    for (u32 i = 0; i < n_seen; i++)
++        if (seen[i].key == key && seen[i].src == so && seen[i].dst == d) return;
++    if (n_seen >= 32) return;
++    seen[n_seen].key = key; seen[n_seen].src = so; seen[n_seen].dst = d; n_seen++;
++    fprintf(stderr, "[stage-blur] filter pso %016llx: unit %u reads 0x%X %ux%u (x%.3g) into 0x%X %ux%u: %s\n",
++            (unsigned long long)key, unit, so, g.surfaces[src].w, g.surfaces[src].h,
++            (double)g.surfaces[src].scale, d, g.surfaces[target].w, g.surfaces[target].h, how);
++}
++
+ static void sink_end_impl(void* user, const rsx_dispatch* r)
+ {
+     (void)user; (void)r;
+@@ -9110,6 +9458,32 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     { static u64 skipk = 1;
+       if (skipk == 1) { const char* e = getenv("LD_SKIP_PSO"); skipk = e ? _strtoui64(e, 0, 16) : 0; }
+       if (skipk && live_legacy_pso_key() == skipk) return; }
++    /* PS3_STAGE_BLUR=0 (patch 0043): a glow composite -- a draw that blends a
++     * glow buffer (last drawn by a filter kernel, smaller than the canvas)
++     * onto a full-size target -- is not drawn. */
++    if (!g_ld_stage_blur && (rsx_dsp_reg(&g.rsx, M_BLEND_ENABLE) & 1u) &&
++        g.surfaces[target].w >= g.width && g.surfaces[target].h >= g.height) {
++        u32 reads = 0;
++        int any_glow = 0;                       /* a glow buffer at all? (most frames: no) */
++        for (u32 i = 0; i < g.n_surfaces; i++) any_glow |= g.surfaces[i].post_buffer;
++        if (any_glow) (void)ld_fp_unit_masks(&reads);
++        for (u32 u = 0; u < SRV_TABLE_SIZE && reads; u++) {
++            if (!((reads >> u) & 1u) || !(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
++                continue;
++            rsx_dsp_texture st;
++            rsx_dsp_get_texture(&g.rsx, u, &st);
++            const int si = ld_sampled_surface(&st, target);
++            if (si >= 0 && g.surfaces[si].post_buffer) {
++                if (g_ld_glow_skips++ < 4)
++                    fprintf(stderr, "[stage-blur] off: glow composite pso %016llx (0x%X %ux%u onto 0x%X) "
++                                    "not drawn\n", (unsigned long long)g_ld_current_pso.key,
++                            g.surfaces[si].offset, g.surfaces[si].w, g.surfaces[si].h,
++                            g.surfaces[target].offset);
++                live_draw_csv_emit(prim, n_tri, "skip_glow");
++                return;
++            }
++        }
++    }
+     /* MRT: colour targets B..D, resolved (and created) here, before any of
+      * this draw's commands are recorded. They share A's format and clip. */
+     u32 mrt[4] = { target, 0, 0, 0 };
+@@ -9184,6 +9558,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+               }
+           }
+       } }
++    u32 post_taps = ~0u, post_reads = 0;   /* patch 0043: this draw's filter kernel units */
++    int post_kernel = 0;
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++) {
+         if (!(rsx_dsp_reg(&g.rsx, 0x1A0C + u * 0x20) >> 31))
+             continue;   /* disabled: nothing below applies */
+@@ -9219,19 +9595,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+          * Prefer the surface whose dimensions match what the texture
+          * descriptor actually declares; failing that, the most recently drawn
+          * one, which is the only other defensible answer. */
+-        int sampled = -1;
+-        { u32 best_gen = 0;
+-          for (u32 i = 0; i < g.n_surfaces; i++) {
+-              const surface_t* sf_i = &g.surfaces[i];
+-              if (sf_i->location != t.location || sf_i->offset != t.offset ||
+-                  i == target)
+-                  continue;
+-              if (sf_i->w == t.width && sf_i->h == t.height) { sampled = (int)i; break; }
+-              if (sampled < 0 || sf_i->last_draw_generation > best_gen) {
+-                  sampled = (int)i;
+-                  best_gen = sf_i->last_draw_generation;
+-              }
+-          } }
++        int sampled = ld_sampled_surface(&t, target);
+         /* LD_UVDBG=1: the texture coordinates of the draw that samples the PS1
+          * framebuffer. Placed here rather than in fetch_batches because that
+          * function is not on this draw's path -- probing it printed nothing at
+@@ -9344,11 +9708,29 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+                             g.surfaces[sampled].offset,
+                             g.surfaces[sampled].w, g.surfaces[sampled].h);
+             }
+-            slots[u] = SRV_SURFACE_BASE + sampled;
+             g_ld_bind_surf++;
+-            int seen = 0;
+-            for (u32 k = 0; k < n_surf_used; k++) if (surf_used[k] == (u32)sampled) seen = 1;
+-            if (!seen && n_surf_used < SRV_TABLE_SIZE) surf_used[n_surf_used++] = (u32)sampled;
++            /* A filter kernel (patch 0043): a scaled surface is read through
++             * its guest-size view, so the taps cover what they cover at
++             * Native (with PS3_STAGE_BLUR=0 the taps are one: full size). */
++            if (post_taps == ~0u) post_taps = ld_fp_unit_masks(&post_reads);
++            u32 view = SRV_WHITE;
++            if ((post_taps >> u) & 1u) {
++                post_kernel = 1;
++                if (g_ld_stage_blur && g.surfaces[sampled].scale > 1.0f)
++                    view = ld_guest_view_srv((u32)sampled);
++                ld_post_note(u, (u32)sampled, target,
++                             !g_ld_stage_blur ? "one tap (stage blur off)"
++                             : view != SRV_WHITE ? "guest-size view"
++                             : g.surfaces[sampled].scale > 1.0f ? "scaled target (no view)" : "as is");
++            }
++            if (view != SRV_WHITE) {
++                slots[u] = view;
++            } else {
++                slots[u] = SRV_SURFACE_BASE + sampled;
++                int seen = 0;
++                for (u32 k = 0; k < n_surf_used; k++) if (surf_used[k] == (u32)sampled) seen = 1;
++                if (!seen && n_surf_used < SRV_TABLE_SIZE) surf_used[n_surf_used++] = (u32)sampled;
++            }
+         } else {
+             int sampled_depth = -1;
+             const u32 texture_base_fmt =
+@@ -9408,6 +9790,10 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         }
+     }
+ 
++    /* a glow buffer: last drawn by a filter kernel, smaller than the canvas */
++    (void)post_reads;
++    g.surfaces[target].post_buffer =
++        post_kernel && (g.surfaces[target].w < g.width || g.surfaces[target].h < g.height);
+     const u32 vtex_mask = vertex_texture_mask();
+     u32 vtex_slots[SRV_TABLE_SIZE];
+     for (u32 u = 0; u < SRV_TABLE_SIZE; u++)
+@@ -9809,6 +10195,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+           if (ct) { col[0] = 1.0f; col[1] = 0.0f; col[2] = 1.0f; col[3] = 1.0f; } }
+         g.list->lpVtbl->ClearRenderTargetView(g.list, rtv, col, 0, NULL);
+         ld_surface_note_write(target, LD_SURFACE_WRITE_CLEAR);
++        g.surfaces[target].post_buffer = 0;
+     }
+     if ((mask & (RSX_CLEAR_DEPTH | RSX_CLEAR_STENCIL)) && g.depth) {
+         rsx_dsp_surface sf;
+@@ -10163,6 +10550,14 @@ static void ld_display_config(void)
+     fprintf(stderr, "[display] res_scale=%.3g vsync=%d tearing=%d fullscreen=%s present filter=%s\n",
+             (double)g_ld_res_scale, g_ldp.vsync, g_ldp.tearing,
+             g_ldp.exclusive_cfg ? "exclusive" : "borderless", g_ldp.filter_point ? "point" : "linear");
++    /* PS3_STAGE_BLUR=0|off|false|no: the stages' blur and glow off (patch 0043) */
++    e = getenv("PS3_STAGE_BLUR");
++    g_ld_stage_blur = !(e && (e[0] == '0' || _stricmp(e, "off") == 0 || _stricmp(e, "false") == 0 ||
++                              _stricmp(e, "no") == 0));
++    fprintf(stderr, "[display] stage blur/glow: %s\n",
++            g_ld_stage_blur ? (g_ld_res_scale > 1.0f ? "on (filters read guest-size views of scaled targets)"
++                                                     : "on")
++                            : "off (PS3_STAGE_BLUR): filters read one tap, glow composites skipped");
+ }
+ 
+ /* Initial swap-chain size: the window's client area (the window may already
+@@ -13048,6 +13443,11 @@ void rsx_live_draw_shutdown(void)
+     for (u32 i = 0; i < g.n_textures; i++) if (g.textures[i].tex) g.textures[i].tex->lpVtbl->Release(g.textures[i].tex);
+     for (u32 i = 0; i < g.n_vtex; i++) if (g.vtex[i].tex) g.vtex[i].tex->lpVtbl->Release(g.vtex[i].tex);
+     for (u32 i = 0; i < g.n_surfaces; i++) if (g.surfaces[i].tex) g.surfaces[i].tex->lpVtbl->Release(g.surfaces[i].tex);
++    for (u32 i = 0; i < g.n_surfaces; i++) if (g.surfaces[i].gv_tex) g.surfaces[i].gv_tex->lpVtbl->Release(g.surfaces[i].gv_tex);
++    if (g_ld_gview_passes || g_ld_glow_skips)
++        fprintf(stderr, "[stage-blur] %llu guest-view passes, %llu glow composites skipped\n",
++                (unsigned long long)g_ld_gview_passes, (unsigned long long)g_ld_glow_skips);
++    ld_gview_release();
+     for (u32 i = 0; i < g.n_zdepths; i++) {
+         if (g.zdepths[i].tex)
+             g.zdepths[i].tex->lpVtbl->Release(g.zdepths[i].tex);

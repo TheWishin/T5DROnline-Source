@@ -611,6 +611,102 @@ class RelayAbuseTest(Base):
         self.assertEqual(self.s.call(lambda: len(self.s.srv.udp.relays)), 0)
 
 
+# ============================================================================== ranked sets (best of 3)
+class SetAbuseTest(Base):
+    """A player behind in a ranked set must not be able to end it without a loss by making the next
+    game's connection setup fail: the server's own evidence (UDP registration, the relay's view of
+    who pings and who answers) names the side that failed, and that side loses the set. A void only
+    when it cannot be told."""
+    server_cfg = {"set_next_seconds": 0.3, "register_timeout": 2.0, "relay_timeout": 5.0}
+
+    def acc(self, name, **kw):
+        return self.c(name, password="pw-" + name, register=True, auto_ready=True, sets=True, **kw)
+
+    def lead(self, a, b):
+        """Alice wins game 1 of a ranked set against Bob: 1-0."""
+        ea, eb = self.ranked(a, b)
+        self.assertTrue(ea["set"]["rated"])
+        w = ea["slot"]
+        for c, e in ((a, ea), (b, eb)):
+            c.report_result(w, self.full(w), match_id=e["match"], source="game", desync=0)
+        expect(a, "match_result")
+        expect(b, "match_result")
+        return ea, eb
+
+    @staticmethod
+    def block_udp(c):
+        async def ignore(msg):
+            return False                   # the game socket never contacts the server (firewall, on purpose)
+        c._on_nat_begin = ignore
+
+    @staticmethod
+    def mute_on_relay(c):
+        async def stall(msg):
+            gs = c._gs
+            await gs.relay_bind((c.server_ip, int(msg["udp_port"])))
+            gs.datagram_received = lambda data, addr: None   # bound, but answers nothing and reports nothing
+        c._nat_relay = stall
+
+    def test_blocked_udp_in_the_next_game_loses_the_set(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.lead(a, b)
+        self.block_udp(b)                      # Bob is behind: game 2 can never connect
+        sb = expect(b, "set_end", 15)
+        self.assertEqual((sb["reason"], sb["status"], sb["result"], sb["by"]), ("no_connection", "forfeit", "loss", "you"))
+        sa = expect(a, "set_end", 5)
+        self.assertEqual((sa["status"], sa["result"]), ("forfeit", "win"))
+        self.assertGreater(sa["rating"]["delta"], 0)
+        self.assertEqual(self.account("Bob")["losses"], 1)
+
+    def test_not_answering_through_the_relay_loses_the_set(self):
+        self.cfg(force_relay=True)
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.lead(a, b)
+        self.mute_on_relay(b)
+        sb = expect(b, "set_end", 20)
+        self.assertEqual((sb["reason"], sb["status"], sb["result"]), ("no_connection", "forfeit", "loss"))
+        self.assertEqual(expect(a, "set_end", 5)["result"], "win")
+
+    def test_a_failed_setup_nobody_can_be_blamed_for_is_void(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.lead(a, b)
+        self.block_udp(a)
+        self.block_udp(b)                      # neither side reaches the server: cannot be told
+        sb = expect(b, "set_end", 15)
+        self.assertEqual((sb["status"], sb["result"], sb["rating"]), ("void", None, None))
+        self.assertEqual(self.account("Alice")["rating"], 1500)
+
+    def test_a_contradicted_desync_claim_in_a_later_game_loses_the_set(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.lead(a, b)
+        ea, eb = expect(a, "match_start", 20), expect(b, "match_start", 20)
+        b.report_result(eb["slot"], None, match_id=eb["match"], source="game", desync=9)   # Bob, behind: "desync"
+        a.report_result(ea["slot"], self.full(ea["slot"]), match_id=ea["match"], source="game", desync=0)
+        sb = expect(b, "set_end", 10)
+        self.assertEqual((sb["status"], sb["result"], sb["outcome_reason"]), ("forfeit", "loss", "desync_claim"))
+
+    def test_relay_evidence(self):
+        from types import SimpleNamespace
+        from t5lobby.server.udp import RelaySession
+        srv = self.s.srv
+        p0, p1 = SimpleNamespace(name="P0"), SimpleNamespace(name="P1")
+
+        def culprit(ep, pings=(0, 0), pongs=(0, 0), pkts=(0, 0), reason="no_connection", by=None, state="relay"):
+            s = RelaySession("m1", [b"a" * 16, b"b" * 16], 100, 100)
+            s.ep, s.pings, s.pongs, s.pkts = list(ep), list(pings), list(pongs), list(pkts)
+            m = SimpleNamespace(relay=s, state=state, players=[p0, p1])
+            return srv._setup_culprit(m, reason, by)
+        e = ("127.0.0.1", 5000)
+        self.assertIs(culprit([e, None]), p1)                                        # never bound
+        self.assertIsNone(culprit([None, None]))
+        self.assertIs(culprit([e, e], pings=(5, 0), pongs=(0, 0), pkts=(5, 0)), p1)  # got pings, answered none
+        self.assertIs(culprit([e, e], pings=(5, 5), pongs=(5, 0), pkts=(10, 5)), p1)  # pings, but no answers
+        self.assertIsNone(culprit([e, e], pings=(5, 5), pongs=(5, 5), pkts=(10, 10)))  # both fine: cannot tell
+        self.assertIs(culprit([e, e], pkts=(3, 0)), p1)                              # sent nothing at all
+        self.assertIs(culprit([None, None], reason="udp_unreachable", by=p0, state="nat"), p0)
+        self.assertIsNone(culprit([e, e], reason="relay_full"))
+
+
 # ============================================================================== durability
 CRASH_CHILD = textwrap.dedent('''
     import sys, time

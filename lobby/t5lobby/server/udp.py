@@ -20,7 +20,7 @@ log = logging.getLogger("t5lobby.udp")
 
 class RelaySession:
     __slots__ = ("match_id", "tokens", "ep", "last_rx", "buckets", "bytes", "pkts", "dropped", "created",
-                 "closed")
+                 "closed", "pings", "pongs")
 
     def __init__(self, match_id, tokens, pps, kbps):
         self.match_id = match_id
@@ -33,6 +33,10 @@ class RelaySession:
         self.bytes = [0, 0]
         self.pkts = [0, 0]
         self.dropped = [0, 0]
+        # The lobby's peer pings through the relay, per sending side: the server's own evidence of which
+        # side does not answer when a relayed connection cannot be set up (LobbyServer._setup_culprit).
+        self.pings = [0, 0]
+        self.pongs = [0, 0]
         self.created = time.monotonic()
         self.closed = False
 
@@ -132,8 +136,12 @@ class UdpService:
         s.last_rx[side] = time.monotonic()
         self.relay_eps[addr] = (s, side)
 
-    def _forward(self, transport, s, side, data):
+    def _forward(self, transport, s, side, data, kind=None):
         now = time.monotonic()
+        if kind == proto.U_PPING:
+            s.pings[side] += 1
+        elif kind == proto.U_PPONG:
+            s.pongs[side] += 1
         s.last_rx[side] = now
         dst = s.ep[1 - side]
         pk, by = s.buckets[side]
@@ -181,7 +189,7 @@ class UdpService:
             hit = self.relay_eps.get(addr)
             if hit is not None and kind not in proto.SERVER_TYPES:
                 if self._relayable(data, kind):
-                    self._forward(transport, hit[0], hit[1], data)
+                    self._forward(transport, hit[0], hit[1], data, kind)
                 else:
                     hit[0].dropped[hit[1]] += 1
                     self.stats["dropped"] += 1

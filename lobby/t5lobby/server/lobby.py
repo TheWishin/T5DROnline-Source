@@ -1792,6 +1792,7 @@ class LobbyServer:
         """Abort a match that has not started. Players who did nothing wrong go back where they were."""
         if m.state in ("done", "cancelled"):
             return
+        culprit = self._setup_culprit(m, reason, by) if m.set is not None and m.set.rated else None
         m.state = "cancelled"
         self._cancel_timers(m)
         self._release(m)
@@ -1819,6 +1820,16 @@ class LobbyServer:
                         self._end_set(gs, "left", by=by)     # the next game of a ranked set: leaving it
                     # else: `by` lost the lobby while the game was set up -- player_dropped gives the set its
                     # grace period (or ends it for a logout)
+                elif culprit is not None:
+                    # The next game's connection could not be set up, and the server's evidence names the
+                    # side that failed: like leaving the set (a loss once a game has counted). Before, any
+                    # failed setup voided the set -- a player behind could block UDP, or not answer the
+                    # relay, and walk away from a lost set with no loss.
+                    self._count("set_setup_failures")
+                    log.info("match %s: %s's side failed the connection setup (%s)", m.id, culprit.name, reason)
+                    if culprit.online:
+                        self._end_set(gs, "no_connection", by=culprit)
+                    # (offline: player_dropped's grace decides, as for leaving)
                 else:
                     self._end_set(gs, "cancelled")
         self.counters["matches_cancelled"] += 1
@@ -1971,6 +1982,32 @@ class LobbyServer:
                     n[k] += 1
         return any(v >= cap for v in n.values())
 
+    def _setup_culprit(self, m, reason, by):
+        """Whose side made a game's connection setup fail, by the server's own evidence -- None when it
+        cannot be told (both sides, a full server, two NATs that cannot punch with the relay off ...).
+
+        Registration: _nat_timeout names the one side whose game socket never reached the server over UDP
+        (`udp_unreachable`) or whose launcher never sent its addresses (`no_connection`). Relay: the server
+        relays the peer pings it measures with, so it sees which side never bound to the relay, which side
+        got the other's pings and never answered one, and which side sent nothing at all."""
+        if by is not None and reason in ("udp_unreachable", "no_connection"):
+            return by
+        s = m.relay if m.state == "relay" else None
+        if s is None or reason != "no_connection":
+            return None
+        bound = [s.ep[i] is not None for i in (0, 1)]
+        if bound.count(False) == 1:
+            return m.players[bound.index(False)]
+        if not all(bound):
+            return None
+        mute = [s.pings[1 - i] > 0 and s.pongs[i] == 0 for i in (0, 1)]
+        if mute.count(True) == 1:
+            return m.players[mute.index(True)]
+        silent = [s.pkts[i] + s.dropped[i] == 0 for i in (0, 1)]
+        if silent.count(True) == 1:
+            return m.players[silent.index(True)]
+        return None
+
     def _relay_timeout(self, m):
         if m.state == "relay":
             self.cancel_match(m, "no_connection")
@@ -2010,10 +2047,12 @@ class LobbyServer:
                 kinds = {r["kind"] for r in m.results}
                 self._start_match(m, "lan" if kinds == {"local"} else "direct")
         elif m.state == "relay":
-            if not ok:
-                self.cancel_match(m, "no_connection")
-            elif all(r and r["ok"] for r in m.results):
+            if all(r and r["ok"] for r in m.results):
                 self._start_match(m, "relay")
+            elif all(r is not None for r in m.results):
+                self.cancel_match(m, "no_connection")
+            # else: one side reported (a failure, or success) and the other has not yet: its report or the
+            # relay timeout decides -- by then the relay has seen what each side sent (_setup_culprit)
 
     # ------------------------------------------------------------------ matches: play and results
     def _start_match(self, m, path):
@@ -2603,6 +2642,10 @@ class LobbyServer:
     # broken connection follows the integrity rules (void, blame); a game without a winner (desync, draw, too
     # short) is played again, at most T5L_SET_REPLAYS times per set, then the set is void.
     SET_REPLAY = ("desync", "too_short", "no_result")
+    # A later game of a rated set voided with one of these blames is that player leaving the set (a loss):
+    # quitting or vanishing at its start, a desync claim the other game contradicts, no report while
+    # online, the only lobby connection that dropped. A crash stays a void (the game has rare real ones).
+    SET_LEAVE_REASONS = ("early_quit", "disconnect", "desync_claim", "no_report", "connection")
 
     def _between_set_games(self, p):
         gs = p.set
@@ -2637,7 +2680,7 @@ class LobbyServer:
             self._set_schedule_next(gs)
         else:
             culprit = m.players[blame] if blame is not None else None
-            if culprit is not None and reason in ("early_quit", "disconnect") and any(gs.wins.values()):
+            if culprit is not None and reason in self.SET_LEAVE_REASONS and any(gs.wins.values()):
                 # quitting (or vanishing) right at the start of a later game is still leaving the set
                 self._set_conclude(gs, "forfeit", winner=gs.other(culprit), reason=reason, blame=culprit)
             else:
@@ -2650,7 +2693,7 @@ class LobbyServer:
         a lag check that found more lag than the ping explains lets a player out for free (h_leave_set)."""
         if reason == "lag" and by is not None:
             self._set_conclude(gs, "void", reason="lag")
-        elif by is not None and reason in ("left", "declined", "disconnect") and any(gs.wins.values()):
+        elif by is not None and reason in ("left", "declined", "disconnect", "no_connection") and any(gs.wins.values()):
             self._set_conclude(gs, "forfeit", winner=gs.other(by), reason=reason, blame=by)
         else:
             self._set_conclude(gs, "void", reason=reason)

@@ -320,7 +320,10 @@ matches" on the profile count sets.
 | a game voided by a **desync** | the game is played again (the same number, "game 2 of 3 again"), over a **new connection** so both games reset first |
 | a game without a winner: a draw, too short, no result | played again as well |
 | more than 2 such replays in one set (`T5L_SET_REPLAYS`) | the set is void, no rating change |
-| a game voided by a **crash** (blame), a dispute, a broken connection, no reports | the set is void, no rating change; the crash is still a strike for the crasher (and a loss from the third strike on, which loses the set) |
+| the **next game cannot be connected**, and the server's evidence names the side that failed: its game socket never reached the server over UDP, its launcher never sent its addresses, or on the relay it never bound, never answered the other side's pings, or sent nothing at all | lost by that player (`forfeit`, reason `no_connection`) once a game has counted -- like leaving. Before, any failed setup voided the set: a player behind could block UDP or go mute on the relay and walk away without a loss |
+| ... and the evidence names nobody (both sides failed, the server's relay is full, two NATs that cannot punch with the relay off) | the set is void, no rating change |
+| a later game voided with blame for a **desync claim** the other game contradicts, **no report** while online, or the only **lobby connection that dropped** (RANKED.md "Results") | leaving: the set is lost by that player |
+| a game voided by a **crash** (blame), a dispute, a broken connection nobody is blamed for, no reports | the set is void, no rating change; the crash is still a strike for the crasher (and a loss from the third strike on, which loses the set) |
 | an early quit (within `T5L_MIN_MATCH_SECONDS`) | in game 1: void with a strike, as for a single game; in a later game: leaving, the set is lost |
 | "Leave: too laggy" after a lag check that found more lag than the ping explains | the set is void, no penalty for anyone |
 | the lobby server restarts in the middle of a set | the set is void (below) |

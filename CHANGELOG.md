@@ -38,7 +38,9 @@ part is in the README's status table.
   a match that may still be running (`T5L_MAX_MATCH_SECONDS`); a winner who reported and then
   logged out no longer loses; "disconnect" against a finished game counts the finished result;
   repeat disputers lose disputes (`T5L_DISPUTE_LIMIT`); two accounts on one address never play
-  ranked against each other (`T5L_RANKED_SAME_IP`).
+  ranked against each other (`T5L_RANKED_SAME_IP`); a player behind in a ranked set who makes the next
+  game's connection setup fail (blocked UDP, mute on the relay) loses the set (the server's evidence names
+  the side; void only when it cannot tell).
 - Abuse limits: TLS handshake only after the address checks (10 s), a cap on connections that
   have not logged in, rate limits for expensive and lobby-changing requests and for lobby-wide
   chat, at most 2 password hashes at once, parallel password guesses counted, look-alike and

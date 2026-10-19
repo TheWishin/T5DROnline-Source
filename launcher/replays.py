@@ -166,7 +166,7 @@ def _local_time(iso):
     try:
         dt = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         return dt.astimezone()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, OSError):     # (Windows: OSError before 1970)
         return None
 
 
@@ -210,10 +210,14 @@ def list_replays(folder):
     for path in glob.glob(os.path.join(folder, "*" + EXT)):
         try:
             h = read_header(path)
-        except ReplayError:
+            # a header line that is JSON but not what the game writes (a damaged or hand-made file: a side other
+            # than 0/1, a match that is not an object, ...) skips this file, not the whole list
+            rows = [Entry(path, h, k) for k in range(1, len(h["matches"]) + 1)]
+            for e in rows:
+                e.key()
+        except (ReplayError, LookupError, TypeError, ValueError, AttributeError, OverflowError, OSError):
             continue
-        for k in range(1, len(h["matches"]) + 1):
-            out.append(Entry(path, h, k))
+        out += rows
     out.sort(key=lambda e: e.key(), reverse=True)
     return out
 

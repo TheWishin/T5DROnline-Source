@@ -146,6 +146,26 @@ class PythonSideTest(unittest.TestCase):
         self.assertEqual((first.fighters, first.won, first.score, first.opponent), ("Lili vs Jin", True, (2, 1), "Host"))
         self.assertEqual(replays.newest(self.tmp) is not None, True)
 
+    def test_a_strange_header_skips_that_file_not_the_list(self):
+        """review-112: list_replays() promised to skip files it cannot read, but a header line that is JSON and
+        not what the game writes raised out of it (IndexError for a side of 2, AttributeError for a match that
+        is no object, ValueError for a side that is no number, OSError on Windows for a date before 1970) -- and
+        the Replays tab then showed nothing at all."""
+        make_file(os.path.join(self.tmp, "good" + replays.EXT), sample_inputs(20),
+                  [{"start": 0, "end": 10, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])
+        for name, header in (("side", {"slot": 2, "matches": [{"names": ["a", "b"], "score": [1, 2]}]}),
+                             ("matchobj", {"slot": 0, "matches": [5]}),
+                             ("sidetext", {"slot": "x", "matches": [{}]}),
+                             ("names", {"slot": 0, "matches": [{"names": 7}]})):
+            with open(os.path.join(self.tmp, name + replays.EXT), "wb") as f:
+                f.write(replays.MAGIC + json.dumps(header).encode() + b"\n" + zlib.compress(b"x"))
+        with open(os.path.join(self.tmp, "old" + replays.EXT), "wb") as f:     # listed, with an unknown date
+            f.write(replays.MAGIC + json.dumps({"slot": 0, "matches": [{"started": "0001-01-01T00:00:00Z"}]}).encode()
+                    + b"\n")
+        rows = replays.list_replays(self.tmp)
+        self.assertEqual(sorted(os.path.basename(e.path) for e in rows), ["good" + replays.EXT, "old" + replays.EXT])
+        self.assertIsNone([e for e in rows if e.path.endswith("old" + replays.EXT)][0].when)
+
     def test_playback_env(self):
         p = os.path.join(self.tmp, "a" + replays.EXT)
         make_file(p, sample_inputs(10), [{"start": 0, "end": 5, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])

@@ -667,6 +667,24 @@ void start_rematch(uint32_t f)
  * (Reset): from there both games run the same title -> start VS -> select ->
  * fight path from the same bytes. T5_DF_FRESH=0: off; T5_DF_FRESH_RANGES:
  * "addr:len,..." (hex), default the netplay hash's game areas. */
+/* The game's async reader (ZsAread): its service object 0x1009FE28 -- +0 the
+ * request semaphore's id, +4 the completion semaphore's id, +8 busy (0 idle,
+ * 1 a read in flight), +0x14 the queue of requests (the one being read
+ * first); the request pool (64 x 0x28 bytes) at 0x1009FF68..0x100A0968, +0 a
+ * request's status (1 queued / being read, then its result), +4 the next. */
+constexpr uint32_t kReader = 0x1009FE28u, kReaderPool = 0x1009FF68u, kReaderPoolEnd = 0x100A0968u;
+extern "C" int32_t t5_sem_count(uint32_t id);   /* src/netplay/t5_hooks.cpp: a kernel semaphore's count, -1 none */
+std::string reader_desc()
+{
+    char b[160];
+    const uint32_t q = rd32(kReader + 0x14);
+    int queued = 0;
+    for (uint32_t r = q; r >= kReaderPool && r < kReaderPoolEnd && queued < 70; r = rd32(r + 4)) queued++;
+    snprintf(b, sizeof b, "reader busy %u, queue 0x%08X (%d request(s)%s), completion tokens %d", rd32(kReader + 8), q, queued,
+             q && (q < kReaderPool || q >= kReaderPoolEnd) ? ", not a pool slot" : "", t5_sem_count(rd32(kReader + 4)));
+    return b;
+}
+
 struct Area { uint32_t addr, len; std::vector<uint8_t> boot; };
 std::vector<Area> g_fresh_areas;
 std::vector<Area> g_scan_areas;  /* T5_DF_FRESH_SCAN=addr:len,...: compared with boot at every restore, not restored (diagnostics) */
@@ -682,12 +700,14 @@ void fresh_take(uint32_t f)
     size_t n = 0;
     for (Area& a : g_fresh_areas) { a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len); n += a.len; }
     for (Area& a : g_scan_areas) a.boot.assign(vm_base + a.addr, vm_base + a.addr + a.len);
-    note("frame %u: boot state of %zu area(s), %zu bytes, kept for later opponents", f, g_fresh_areas.size(), n);
+    note("frame %u: boot state of %zu area(s), %zu bytes, kept for later opponents (%s)", f, g_fresh_areas.size(), n,
+         reader_desc().c_str());
 }
 bool g_fresh_log = false;        /* T5_DF_FRESH_LOG=1: list the words the restore changes */
 void fresh_restore(uint32_t f)
 {
     if (!g_fresh_taken) return;
+    note("frame %u: before the restore: %s", f, reader_desc().c_str());
     size_t changed = 0, listed = 0;
     for (const Area& a : g_fresh_areas) {
         for (uint32_t i = 0; i < a.len; i++) if (vm_base[a.addr + i] != a.boot[i]) changed++;
@@ -714,7 +734,7 @@ void fresh_restore(uint32_t f)
             i = e;
         }
     }
-    note("frame %u: the match state areas are back as at boot (%zu bytes differed)", f, changed);
+    note("frame %u: the match state areas are back as at boot (%zu bytes differed; %s)", f, changed, reader_desc().c_str());
 }
 
 /* Out of whatever runs now, towards a fresh select screen: a fight is left
@@ -958,8 +978,8 @@ void pick_frame(uint32_t f)
     if (!k.live) {
         if (mode_cur() != kModeSelect || rd32(kSelectState) < 3 || st != 3) {
             if ((f - g_ph_frame) % 120 == 0 && f > g_ph_frame)
-                note("frame %u: in-game select: waiting for the select screen (mode %u, select state %u, record %02X)", f, mode_cur(),
-                     rd32(kSelectState), st);
+                note("frame %u: in-game select: waiting for the select screen (mode %u, select state %u, record %02X; %s)", f,
+                     mode_cur(), rd32(kSelectState), st, reader_desc().c_str());
             return;
         }
         k.live = true;
@@ -1258,8 +1278,8 @@ void fight_on_frame(uint32_t f)
     case Ph::Select: {
         if (mode != kModeSelect || rd32(kSelectState) < 3) {          /* loading / fading in */
             if ((f - g_ph_frame) % 120 == 0 && f > g_ph_frame)
-                note("frame %u: waiting for the select screen (mode %u, select state %u, records %02X/%02X)", f, mode,
-                     rd32(kSelectState), rd8(rec(0) + kRecState), rd8(rec(1) + kRecState));
+                note("frame %u: waiting for the select screen (mode %u, select state %u, records %02X/%02X; %s)", f, mode,
+                     rd32(kSelectState), rd8(rec(0) + kRecState), rd8(rec(1) + kRecState), reader_desc().c_str());
             break;
         }
         if ((f - g_ph_frame) % 120 == 0 && g_trace_presses)

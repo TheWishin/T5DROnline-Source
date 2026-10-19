@@ -411,6 +411,41 @@ STEP_WEIGHT = {"deps": 1, "keys": 1, "decrypt": 2, "unpack": 12, "vfs": 1, "lift
 RE_STEP = re.compile(r"^\[(\w+)\]\s*$")
 RE_NINJA = re.compile(r"^\[(\d+)/(\d+)\]")
 RE_FUNCS = re.compile(r"(\d+)/(\d+) functions")
+# The lift step printed nothing for this long: the Build tab says so. The lifter itself prints at least every ~30 s
+# while it works (ps3recomp patch 0048: "... still lifting: 3 chunks left, elapsed 1.5m").
+LIFT_QUIET_S = 180
+
+
+def build_line_events(step, line):
+    """What one line of build_game.py's output means for the Build tab: (the step it belongs to, [events])."""
+    events = [("line", line)]
+    m = RE_STEP.match(line)
+    if m and m.group(1) in STEP_TITLES:
+        step = m.group(1)
+        events.append(("step", step))
+    elif line.strip().startswith("already done") or "nothing to fetch" in line:
+        events.append(("skip", step))
+    elif line.startswith("ERROR:"):
+        events.append(("error", line[6:].strip()))
+    elif step == "compile" and RE_NINJA.match(line):
+        n, d = map(int, RE_NINJA.match(line).groups())
+        events.append(("sub", n / max(d, 1)))
+    elif step == "lift" and RE_FUNCS.search(line):
+        n, d = map(int, RE_FUNCS.search(line).groups())
+        # the lifter reports twice (translate, then write): weight 70/30. Its other lines (the heartbeat, notices
+        # about a stopped worker) never contain "<n>/<m> functions", so they leave the percentage alone.
+        frac = n / max(d, 1)
+        events.append(("sub", 0.7 * frac if "lifted" in line else 0.7 + 0.3 * frac))
+    return step, events
+
+
+def lift_quiet_hint(step, quiet_s):
+    """The Build tab's hint once the translation step has printed nothing for LIFT_QUIET_S seconds, else None."""
+    if step != "lift" or quiet_s < LIFT_QUIET_S:
+        return None
+    return t("The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+             "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+             "has the details.", minutes=int(quiet_s // 60))
 
 
 class BuildRun:
@@ -435,6 +470,11 @@ class BuildRun:
         if steps:
             cmd += ["--steps"] + list(steps)
         self.cmd = cmd
+        self.step = None                        # the step build_game.py is in
+        self.last_output = time.monotonic()     # when it last printed a line
+        self._quiet_noted = False               # the quiet hint went to the log view in this quiet stretch
+        self._log = None                        # build.log while the build runs
+        self._log_lock = threading.Lock()
 
     def start(self):
         # PYTHONUTF8: the build's tools write their files in UTF-8 on any Windows code page (cp949 broke the lift)
@@ -448,37 +488,48 @@ class BuildRun:
                                      creationflags=(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
                                                     (BELOW_NORMAL_PRIORITY_CLASS if self.low_priority else 0))
                                      if IS_WIN else 0)
+        self.last_output = time.monotonic()
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
-        step = None
         with open(self.log_path, "w", encoding="utf-8", errors="replace") as log:
-            log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
-                      f"launcher {release_info().get('version')}\n# {' '.join(self.cmd)}\n")
+            with self._log_lock:
+                log.write(f"# T5DR Online build log, {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, "
+                          f"launcher {release_info().get('version')}\n# {' '.join(self.cmd)}\n")
+                self._log = log
             for raw in iter(self.proc.stdout.readline, b""):
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
-                log.write(line + "\n")
-                log.flush()
-                self.events.put(("line", line))
-                m = RE_STEP.match(line)
-                if m and m.group(1) in STEP_TITLES:
-                    step = m.group(1)
-                    self.events.put(("step", step))
-                elif line.strip().startswith("already done") or "nothing to fetch" in line:
-                    self.events.put(("skip", step))
-                elif line.startswith("ERROR:"):
-                    self.events.put(("error", line[6:].strip()))
-                elif step == "compile" and RE_NINJA.match(line):
-                    n, d = map(int, RE_NINJA.match(line).groups())
-                    self.events.put(("sub", n / max(d, 1)))
-                elif step == "lift" and RE_FUNCS.search(line):
-                    n, d = map(int, RE_FUNCS.search(line).groups())
-                    # the lifter reports twice (translate, then write): weight 70/30
-                    frac = n / max(d, 1)
-                    self.events.put(("sub", 0.7 * frac if "lifted" in line else 0.7 + 0.3 * frac))
+                with self._log_lock:
+                    log.write(line + "\n")
+                    log.flush()
+                    self.last_output = time.monotonic()
+                    self._quiet_noted = False
+                    self.step, events = build_line_events(self.step, line)
+                for ev in events:
+                    self.events.put(ev)
             code = self.proc.wait()
-            log.write(f"# exit code {code}\n")
+            with self._log_lock:
+                log.write(f"# exit code {code}\n")
+                self._log = None
         self.events.put(("end", -1 if self.cancelled else code))
+
+    def quiet_hint(self, now=None):
+        """lift_quiet_hint() for this build (the Build tab asks on every tick). The first time in a quiet stretch
+        it also goes to the log view and build.log as a "[launcher] ..." line."""
+        now = time.monotonic() if now is None else now
+        with self._log_lock:
+            hint = lift_quiet_hint(self.step, now - self.last_output)
+            if hint and not self._quiet_noted:
+                self._quiet_noted = True
+                line = "[launcher] " + hint
+                self.events.put(("line", line))
+                if self._log is not None:
+                    try:
+                        self._log.write(line + "\n")
+                        self._log.flush()
+                    except (OSError, ValueError):
+                        pass
+        return hint
 
     def cancel(self):
         if self.proc and self.proc.poll() is None:

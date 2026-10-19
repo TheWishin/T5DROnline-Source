@@ -1,0 +1,480 @@
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index a5e0d95..020fba6 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -4547,6 +4547,23 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi, func_starts
+ # process pool. Workers re-disassemble just their own byte ranges from the
+ # raw segment blobs, so the big instruction list never crosses the process
+ # boundary. Discovery and emission stay serial in the parent.
++#
++# The pool must never hang silently. multiprocessing.Pool loses the task of a
++# worker that dies (killed for memory or by an antivirus, a crash in the
++# initializer) and imap then waits for ever with no output -- a player's build
++# sat at "Translate code 68%", one chunk short. So each worker has its own pipe
++# and the parent knows which chunk every worker holds:
++#  - a worker that dies (pipe broken / process gone) or raises: one line, the
++#    pool takes no new chunks, and the chunks still missing are lifted in this
++#    process by the same _worker_lift (same input, same code: same output);
++#  - no chunk finished for a while: a heartbeat line about every 30 s, and after
++#    _stall_limit() the busy workers are stopped and the rest is lifted here;
++#  - shutdown never waits without a limit: None to every worker, join with a
++#    timeout, and only a worker still alive after that is killed, alone (all
++#    results are in by then). No Pool.terminate(): on Windows it could hang
++#    joining a worker after all results were drained (main blocked for minutes
++#    at 100%, one idle worker left alive).
++# The default worker count also fits the free memory (_auto_jobs).
+ # ---------------------------------------------------------------------------
+ 
+ _WORKER_STATE: dict = {}
+@@ -4598,43 +4615,382 @@ def _worker_lift(task):
+     return idx0, results, lifter.call_targets, lifter.branch_targets
+ 
+ 
++# Measured on the real lift of Tekken 5 DR (22,550 functions, Windows, 2026-10-19):
++# a worker's working set peaks at 33-55 MB (bigger chunks, i.e. fewer workers,
++# need more) and this process at ~585 MB (it ends up holding every lifted body,
++# then writes the C++). The plan keeps a wide margin over both.
++LIFT_WORKER_MB = 128
++LIFT_MAIN_MB = 1024
++# More workers start slower than they save: the whole lift took 20 s with 32
++# workers, 11-13 s with 2-16 and 17 s serial (32 processors).
++LIFT_MAX_AUTO_JOBS = 8
++LIFT_HEARTBEAT_S = 30.0         # a line at least this often while no chunk finishes
++LIFT_STALL_FACTOR = 10.0        # no chunk finished for 10x the slowest chunk so far,
++LIFT_STALL_MIN_S = 120.0        # but at least 2 and at most 10 minutes (10 before the
++LIFT_STALL_MAX_S = 600.0        # first chunk): the rest is lifted in this process
++LIFT_JOIN_S = 30.0              # a worker told to exit gets this long, then it is killed
++# The launcher reads "<n>/<m> functions" as progress: the heartbeat and the
++# notices must never contain that pattern.
++LIFT_HEARTBEAT = "  ... still lifting: {left} chunks left, elapsed {minutes:.1f}m"
++
++
++def _free_memory_bytes():
++    """Memory this process could still use without paging, or None when unknown."""
++    if os.name == "nt":
++        try:
++            import ctypes
++
++            class MEMORYSTATUSEX(ctypes.Structure):
++                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
++                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
++                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
++                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
++                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
++
++            st = MEMORYSTATUSEX()
++            st.dwLength = ctypes.sizeof(st)
++            if not ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(st)):
++                return None
++            # free physical memory, and what the commit limit (RAM + page file) still allows
++            return min(st.ullAvailPhys, st.ullAvailPageFile)
++        except (OSError, AttributeError, ValueError):
++            return None
++    try:                                  # Linux: free + reclaimable cache
++        with open("/proc/meminfo") as f:
++            for line in f:
++                if line.startswith("MemAvailable:"):
++                    return int(line.split()[1]) * 1024
++    except (OSError, ValueError, IndexError):
++        pass
++    try:
++        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
++    except (ValueError, OSError, AttributeError):
++        return None
++
++
++def _peak_memory_bytes():
++    """Peak working set (Windows) / maximum resident size (POSIX) of this process, 0 when unknown."""
++    if os.name == "nt":
++        try:
++            import ctypes
++            from ctypes import wintypes
++
++            class PMC(ctypes.Structure):
++                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
++                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
++                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
++                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
++                            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
++                            ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
++
++            get = ctypes.WinDLL("psapi").GetProcessMemoryInfo
++            get.argtypes = [wintypes.HANDLE, ctypes.POINTER(PMC), wintypes.DWORD]
++            pmc = PMC()
++            pmc.cb = ctypes.sizeof(pmc)
++            if get(wintypes.HANDLE(-1), ctypes.byref(pmc), pmc.cb):    # -1 = this process
++                return int(pmc.PeakWorkingSetSize)
++        except (OSError, AttributeError, ValueError):
++            pass
++        return 0
++    try:
++        import resource
++        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
++        return int(rss) if sys.platform == "darwin" else int(rss) * 1024
++    except (ImportError, OSError, ValueError):
++        return 0
++
++
++def _auto_jobs(cpus, free_bytes, worker_mb=LIFT_WORKER_MB, main_mb=LIFT_MAIN_MB,
++               max_jobs=LIFT_MAX_AUTO_JOBS):
++    """The default worker count and why, as (jobs, reason). One per processor, at
++    most max_jobs, and only as many as fit in the free memory next to this
++    process, which ends up holding every lifted body. 1 = the serial lift."""
++    cpus = max(1, int(cpus or 1))
++    jobs = min(cpus, max(1, int(max_jobs)))
++    why = [f"{cpus} processor" + ("s" if cpus != 1 else "")]
++    if cpus > jobs:
++        why.append(f"at most {jobs} by default")
++    if free_bytes is None:
++        why.append("free memory unknown")
++        return jobs, ", ".join(why)
++    free_mb = max(0, int(free_bytes)) >> 20
++    fit = max(0, (free_mb - main_mb) // worker_mb)
++    if fit < jobs:
++        jobs = max(1, fit)
++        why.append(f"only {free_mb / 1024:.1f} GB free memory: room for {fit} worker(s) of "
++                   f"~{worker_mb} MB next to ~{main_mb} MB for the lifter itself")
++    else:
++        why.append(f"{free_mb / 1024:.1f} GB free memory")
++    return jobs, ", ".join(why)
++
++
++def _stall_limit(slowest_chunk_s):
++    """Seconds without any finished chunk before the pool is given up."""
++    env = os.environ.get("T5DR_LIFT_STALL_SECONDS")       # tests
++    if env:
++        try:
++            return max(1.0, float(env))
++        except ValueError:
++            pass
++    if slowest_chunk_s is None:
++        return LIFT_STALL_MAX_S
++    return min(LIFT_STALL_MAX_S, max(LIFT_STALL_MIN_S, LIFT_STALL_FACTOR * slowest_chunk_s))
++
++
++def _duration(s):
++    return f"{s:.0f} seconds" if s < 120 else f"{s / 60:.1f} minutes"
++
++
++def _heartbeat_s():
++    try:
++        return max(0.5, float(os.environ.get("T5DR_LIFT_HEARTBEAT_SECONDS") or LIFT_HEARTBEAT_S))
++    except ValueError:
++        return LIFT_HEARTBEAT_S
++
++
++def _test_hook(name, k):
++    """Test only: T5DR_LIFT_TEST_KILL / T5DR_LIFT_TEST_HANG = chunk numbers (0-based,
++    comma-separated) at which a worker process dies (os._exit) / stops working."""
++    v = os.environ.get(name, "")
++    return bool(v) and str(k) in {s.strip() for s in v.split(",")}
++
++
++def _worker_main(conn, initargs, tasks):
++    """A lift worker: a chunk number in, ("ok", chunk, result, seconds, peak
++    memory) out; None = exit. An exception goes back as ("error", chunk, text)."""
++    k = None
++    try:
++        _worker_init(*initargs)
++        while True:
++            k = conn.recv()
++            if k is None:
++                break
++            if _test_hook("T5DR_LIFT_TEST_KILL", k):
++                os._exit(1)                   # as if killed (memory, antivirus, crash)
++            if _test_hook("T5DR_LIFT_TEST_HANG", k):
++                while True:
++                    time.sleep(60)
++            t = time.time()
++            res = _worker_lift(tasks[k])
++            conn.send(("ok", k, res, time.time() - t, _peak_memory_bytes()))
++    except (EOFError, OSError, KeyboardInterrupt):
++        pass                                  # the parent is gone or stops us
++    except BaseException:                     # noqa: B036 -- report anything, the parent decides
++        import traceback
++        try:
++            conn.send(("error", k, traceback.format_exc()))
++        except Exception:
++            pass
++    finally:
++        try:
++            conn.close()
++        except OSError:
++            pass
++
++
++class _LiftWorker:
++    def __init__(self, num, proc, conn):
++        self.num, self.proc, self.conn = num, proc, conn
++        self.k = None           # the chunk it is lifting
++        self.gone = False       # dead, failed or stopped: never sent anything again
++
++
++def _stop_workers(workers):
++    """Every worker exits, within LIFT_JOIN_S: a busy one is killed at once (its
++    chunk is lifted elsewhere), an idle one gets None and is killed only if it
++    has not exited in time. Never Pool.terminate() (see above)."""
++    for w in workers:
++        if w.k is not None or w.gone:
++            if w.proc.is_alive():
++                w.proc.kill()
++            w.k = None
++        else:
++            try:
++                w.conn.send(None)
++            except (OSError, ValueError):
++                pass
++    deadline = time.time() + LIFT_JOIN_S
++    for w in workers:
++        w.proc.join(max(0.0, deadline - time.time()))
++        if w.proc.is_alive():
++            print(f"  parallel lift: worker process {w.num} did not exit, stopping it", flush=True)
++            w.proc.kill()
++            w.proc.join(10)
++        try:
++            w.conn.close()
++        except OSError:
++            pass
++
++
+ def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
+     import multiprocessing as mp
++    import pickle
++    from collections import deque
++    from multiprocessing.connection import wait as mp_wait
+ 
+     n = len(func_bounds)
+     chunk = max(50, n // (jobs * 8))
+     tasks = [(i, func_bounds[i:i + chunk]) for i in range(0, n, chunk)]
+-    print(f"  parallel lift: {jobs} workers, {len(tasks)} chunks of ~{chunk}", flush=True)
+-
++    # one pipe per worker; Windows waits on at most 63 handles at once
++    nproc = max(1, min(jobs, len(tasks), 60 if os.name == "nt" else jobs))
++    print(f"  parallel lift: {nproc} workers, {len(tasks)} chunks of ~{chunk}", flush=True)
++
++    initargs = (segs, big_endian, lifter.name_map, lifter.prefix,
++                lifter.hle_stub_nids, lifter.function_entries,
++                lifter.code_lo, lifter.code_hi, lifter.jump_tables,
++                getattr(lifter, "toc_base", 0))
+     results_by_idx = {}
+-    done = 0
++    todo = deque(range(len(tasks)))      # chunks no worker holds and none finished
++    workers = []
++    st = {"done": 0, "slowest": None, "peak": 0, "trouble": None}
++    heartbeat = _heartbeat_s()
+     t0 = time.time()
+-    # NB: use explicit close()+join() rather than `with mp.Pool() as pool`. The
+-    # context manager's __exit__ calls terminate(), which on Windows can hang
+-    # indefinitely joining a worker after all results are drained (observed: main
+-    # blocked at ~11 CPU-s for minutes post-100%, one idle worker left alive).
+-    # close() (no new tasks) + join() (graceful worker exit) avoids the deadlock.
+-    pool = mp.Pool(processes=jobs, initializer=_worker_init,
+-                   initargs=(segs, big_endian, lifter.name_map, lifter.prefix,
+-                             lifter.hle_stub_nids, lifter.function_entries,
+-                             lifter.code_lo, lifter.code_hi, lifter.jump_tables,
+-                             getattr(lifter, "toc_base", 0)))
++    last_line = [t0]
++
++    def finished(res):
++        idx0, results, ct, bt = res
++        results_by_idx[idx0] = results
++        lifter.call_targets |= ct
++        lifter.branch_targets |= bt
++        st["done"] += len(results)
++        done = st["done"]
++        elapsed = time.time() - t0
++        eta = elapsed / done * (n - done) if done else 0
++        print(f"  ... lifted {done}/{n} functions ({100 * done // n}%) "
++              f"elapsed {elapsed / 60:.1f}m eta {eta / 60:.1f}m", flush=True)
++        last_line[0] = time.time()
++
++    def give_up(why):
++        # one plain line; the pool takes no new chunks; what is missing is lifted below
++        if st["trouble"] is None:
++            st["trouble"] = why
++            print(f"  parallel lift: {why}. The chunks still missing are lifted in this "
++                  f"process instead (same result).", flush=True)
++            last_line[0] = time.time()
++
++    def lost(w, why):
++        if w.k is not None:
++            todo.appendleft(w.k)
++            w.k = None
++        w.gone = True
++        give_up(why)
++
++    def dispatch(w):
++        if st["trouble"] is None and todo and not w.gone:
++            k = todo.popleft()
++            try:
++                w.conn.send(k)               # a few bytes: never blocks on the pipe
++            except (OSError, ValueError) as e:
++                todo.appendleft(k)
++                lost(w, f"worker process {w.num} stopped ({type(e).__name__})")
++                return
++            w.k = k
++
++    def receive(w):
++        """The worker's message, "gone" when it died, None when it has sent nothing yet."""
++        try:
++            # poll first: recv() would wait for ever on a worker that died before
++            # it took its end of the pipe (the pipe stays open, and empty)
++            if not w.conn.poll(0):
++                return None if w.proc.is_alive() else "gone"
++            return w.conn.recv()
++        except (EOFError, OSError, ValueError, AssertionError, pickle.UnpicklingError):
++            return "gone"
++
++    def start_worker(num):
++        parent, child = ctx.Pipe()
++        p = ctx.Process(target=_worker_main, args=(child, initargs, tasks),
++                        name=f"lift-worker-{num}", daemon=True)
++        try:
++            p.start()
++        except Exception as e:               # out of memory, blocked by an antivirus, ...
++            parent.close()
++            child.close()
++            give_up(f"worker process {num} could not start ({type(e).__name__}: {e})")
++            return
++        child.close()
++        w = _LiftWorker(num, p, parent)
++        workers.append(w)
++        dispatch(w)
++
++    ctx = mp.get_context()
+     try:
+-        for idx0, results, ct, bt in pool.imap_unordered(_worker_lift, tasks):
+-            results_by_idx[idx0] = results
+-            lifter.call_targets |= ct
+-            lifter.branch_targets |= bt
+-            done += len(results)
+-            elapsed = time.time() - t0
+-            eta = elapsed / done * (n - done) if done else 0
+-            print(f"  ... lifted {done}/{n} functions ({100 * done // n}%) "
+-                  f"elapsed {elapsed / 60:.1f}m eta {eta / 60:.1f}m", flush=True)
+-        pool.close()
+-        pool.join()
+-    except BaseException:
+-        pool.terminate()
+-        pool.join()
+-        raise
++        last_done = time.time()
++        while True:
++            # start the workers one by one, serving the ones already running in between
++            starting = len(workers) < nproc and st["trouble"] is None and bool(todo)
++            if starting:
++                start_worker(len(workers) + 1)
++            busy = [w for w in workers if w.k is not None]
++            if not busy:
++                if starting:
++                    continue
++                break
++            try:
++                mp_wait([w.conn for w in busy], timeout=0 if starting else 1.0)
++            except (OSError, ValueError):
++                time.sleep(0.2)
++            for w in busy:
++                msg = receive(w)
++                if msg is None:
++                    continue
++                if msg == "gone":
++                    w.proc.join(2)
++                    code = w.proc.exitcode
++                    lost(w, f"worker process {w.num} stopped (exit code "
++                            f"{'?' if code is None else code}) while it lifted chunk {w.k}; "
++                            f"an antivirus or too little free memory can do that")
++                elif msg[0] == "ok" and msg[1] == w.k:
++                    _, _k, res, secs, peak = msg
++                    w.k = None
++                    finished(res)
++                    st["slowest"] = max(st["slowest"] or 0.0, secs)
++                    st["peak"] = max(st["peak"], peak)
++                    last_done = time.time()
++                    dispatch(w)
++                else:
++                    text = (str(msg[2]).rstrip() if msg[0] == "error" and len(msg) > 2
++                            else f"unexpected message {str(msg[:2])[:200]}")
++                    for ln in text.splitlines():
++                        print("    " + ln, flush=True)
++                    last = text.splitlines()[-1] if text else "?"
++                    lost(w, f"worker process {w.num} failed on chunk {w.k} ({last})")
++            now = time.time()
++            busy = [w for w in workers if w.k is not None]
++            if not busy:
++                continue
++            limit = _stall_limit(st["slowest"])
++            quiet = now - last_done
++            if quiet >= limit:
++                give_up(f"no chunk finished for {_duration(quiet)} "
++                        f"({len(busy)} worker(s) still busy)")
++                for w in busy:
++                    w.proc.kill()
++                    todo.appendleft(w.k)
++                    w.k = None
++                    w.gone = True
++            elif now - last_line[0] >= heartbeat:
++                line = LIFT_HEARTBEAT.format(left=len(todo) + len(busy), minutes=(now - t0) / 60)
++                if quiet >= 60:
++                    line += (f", none finished for {quiet / 60:.1f}m (the rest is lifted in "
++                             f"this process after {limit / 60:.1f}m)")
++                print(line, flush=True)
++                last_line[0] = now
++    finally:
++        _stop_workers(workers)
++
++    here = len(todo)
++    if todo:
++        # This process lifts like a worker: the same function on the same input a
++        # worker unpickles, so the output is byte for byte the pool's.
++        _worker_init(*pickle.loads(pickle.dumps(initargs, protocol=pickle.HIGHEST_PROTOCOL)))
++        for k in sorted(todo):
++            finished(_worker_lift(tasks[k]))
++        todo.clear()
++
++    print(f"  parallel lift: {len(tasks)} chunks in {time.time() - t0:.1f} s"
++          + (f", {here} of them in this process" if here else "")
++          + (f"; peak memory per worker {st['peak'] >> 20} MB" if st["peak"] else ""), flush=True)
+ 
+     for idx0 in sorted(results_by_idx):
+         for name, s, e, body, calls, ft in results_by_idx[idx0]:
+@@ -4664,10 +5020,10 @@ def main() -> None:
+     parser.add_argument("--names", metavar="FILE", default=None,
+                         help="JSON name map from ghidra_names.py "
+                              "({\"0xADDR\": {\"label\": ...}}); emitted as comments")
+-    parser.add_argument("--jobs", "-j", type=int,
+-                        default=max(1, os.cpu_count() or 1),
+-                        help="Worker processes for the main lift "
+-                             "(default: CPU count; 1 = serial)")
++    parser.add_argument("--jobs", "-j", type=int, default=None,
++                        help="Worker processes for the main lift (default: one "
++                             f"per processor, at most {LIFT_MAX_AUTO_JOBS}, and only as "
++                             "many as fit in the free memory; 1 = serial)")
+     parser.add_argument("--code-end", type=lambda x: int(x, 0), default=None,
+                         help="Highest valid executable address (exclusive). "
+                              "Branch/call/jump-table targets at or above this are "
+@@ -5170,8 +5526,13 @@ def main() -> None:
+                 loaded += 1
+         print(f"  Loaded {loaded} recovered names from {args.names}")
+ 
+-    if args.jobs > 1:
+-        _parallel_lift(lifter, func_bounds, seg_blobs, big_endian, args.jobs)
++    if args.jobs is None:
++        jobs, why = _auto_jobs(os.cpu_count(), _free_memory_bytes())
++    else:
++        jobs, why = max(1, args.jobs), "from --jobs"
++    print(f"  jobs: {jobs}{' (serial lift)' if jobs == 1 else ''} -- {why}", flush=True)
++    if jobs > 1:
++        _parallel_lift(lifter, func_bounds, seg_blobs, big_endian, jobs)
+     else:
+         _t0 = time.time()
+         _n_funcs = len(func_bounds)
+@@ -5232,6 +5593,9 @@ def main() -> None:
+               f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
+     print(f"  {len(lifter.functions)} functions lifted")
+     print(f"  {len(lifter.call_targets)} unique call targets")
++    peak = _peak_memory_bytes()
++    if peak:
++        print(f"  peak memory of the lifter process: {peak >> 20} MB")
+ 
+ 
+ if __name__ == "__main__":

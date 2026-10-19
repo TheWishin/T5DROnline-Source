@@ -272,6 +272,12 @@ MESSAGES = {
     "Game files": "Spieldateien",
     "Sound core": "Soundkern",
     "Translate code": "Code übersetzen",
+    "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+    "has the details.":
+        "Der Schritt „Code übersetzen“ hat seit {minutes} Minuten nichts ausgegeben. Auf einem langsamen oder "
+        "ausgelasteten PC kann er noch arbeiten. Wenn sich nichts tut, schließe andere Programme, klicke auf "
+        "Abbrechen und dann wieder auf BUILD GAME; build.log hat die Details.",
     "The graphics card stopped working for the game (the driver crashed, was reset or "
     "updated). Start the game again. If it happens again, update the graphics driver.":
         "Die Grafikkarte hat für das Spiel nicht mehr funktioniert (der Treiber ist "

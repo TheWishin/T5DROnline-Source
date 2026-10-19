@@ -710,6 +710,8 @@ uint32_t play_barrier(uint32_t k, uint32_t f)
     Play& p = P();
     p.bar_seen = k + 1;
     if (k >= p.d.bars.size()) {
+        /* at the recording's last frame the live game may simply not have got there before the session ended */
+        if ((int64_t)f - p.offset + 1 >= (int64_t)p.d.in[0].size()) return f;
         if (p.bar_bad++ < 5) note("sync point %u at playback frame %u: the recording has only %zu -- not the same game any more", k, f, p.d.bars.size());
         return f;
     }
@@ -837,7 +839,7 @@ bool play_frame(uint32_t pf)
     p.last_p = pf;
     const int64_t r = (int64_t)pf - p.offset;
     if (pf >= p.end_at) { p.end_why = "the watched match is over"; return false; }
-    if (r >= (int64_t)p.d.in[0].size() + 2) { p.end_why = "end of the recording"; return false; }
+    if (r >= (int64_t)p.d.in[0].size()) { p.end_why = "end of the recording"; return false; }
     return true;
 }
 

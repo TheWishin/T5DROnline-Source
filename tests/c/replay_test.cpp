@@ -114,7 +114,7 @@ static int do_read(const char* file, int argc, char** argv, bool map)
         return 0;
     }
     uint64_t dg = 1469598103934665603ull;
-    /* every frame the playback runs: the recorded ones, then two neutral ones (play_frame's end) */
+    /* every frame the playback runs: the recorded ones (play_frame ends it there) */
     for (uint32_t f = 0; f < 10000000; f++) {
         if (!rp::play_frame(f)) break;
         np::PadInput in[2];

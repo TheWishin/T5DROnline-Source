@@ -396,10 +396,10 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual((m2["winner"], m2["score"], m2["desync"], m2["start"]), (0, [2, 1], 3, 1500))
         self.assertEqual(m1["names"], ["Alpha One", "B\u00e9ta"])
         self.assertEqual(h["build"], "test-build-id")
-        # the game reads it back: every frame's inputs (+ the two neutral ones after the end), the lines, the sync points
+        # the game reads it back: every frame's inputs, the lines, the sync points
         code, out = self.run_exe("read", path)
         self.assertEqual(code, 0, out)
-        frames = list(zip(p["inputs"][0], p["inputs"][1])) + [(NEUTRAL, NEUTRAL)] * 2
+        frames = list(zip(p["inputs"][0], p["inputs"][1]))
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(frames))
         self.assertEqual(self.lines(out, "LINE"), ["1 9,33,27,2 buttons=2|4 pick=30 names=Alpha%20One|B%C3%A9ta",
                                                    "2 9,33,27,2 buttons=2|1 names=Alpha%20One|B%C3%A9ta"])
@@ -422,7 +422,7 @@ class GameCodeTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("SLOT 1 DELAY 2 ROLLBACK 1", out)
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16),
-                         fnv_digest(list(zip(ins[0], ins[1])) + [(NEUTRAL, NEUTRAL)] * 2))
+                         fnv_digest(list(zip(ins[0], ins[1]))))
 
     def test_damaged_files_are_refused_with_a_reason(self):
         good = os.path.join(self.tmp, "g" + replays.EXT)

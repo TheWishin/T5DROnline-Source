@@ -117,7 +117,8 @@ def write_report(run, results, a, t0):
         by.setdefault(r["name"], []).append(r)
     order = [s.name for s in scenarios.SCENARIOS if s.name in by]
     L = [f"# End-to-end report ({datetime.datetime.now():%Y-%m-%d %H:%M})", "",
-         f"- tree: `{harness.ROOT}` ({_git_head()}), game: `{run.exe or 'none'}`, rounds per match {run.rounds}",
+         f"- tree: `{harness.ROOT}` ({_git_head()}), game: `{run.exe or 'none'}`, rounds per match {run.rounds}, "
+         f"netcode {getattr(run, 'netcode', 'rollback')}",
          f"- suite `{a.suite}`" + (f", only `{a.only}`" if a.only else "") + f", repeat {a.repeat}, "
          f"{(time.time() - t0) / 60:.0f} min",
          f"- other load while running: {results[-1]['contention'] if results else '-'} (fps checks only warn then)", "",
@@ -180,6 +181,9 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--short", action="store_true", help="fewer netcode cases")
+    ap.add_argument("--netcode", choices=["rollback", "lockstep"], default="rollback",
+                    help="lockstep: every real game runs with T5_RB_MODE=off (the scenarios that pick their own netcode "
+                         "skip or keep theirs)")
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
     if a.list:
@@ -196,7 +200,7 @@ def main():
     out = a.out or os.path.join(harness.ROOT, "build", "e2e", "runs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     harness.below_normal_priority()
     run = Run(out, exe if any(s.game for s in sel) or exe else None, harness.find_game_root(), seed=a.seed,
-              rounds=a.rounds, short=a.short)
+              rounds=a.rounds, short=a.short, netcode=a.netcode)
     run.stage_bin()
     run.tk_root()
     log(f"e2e run {out}: {len(sel)} scenario(s) x {a.repeat}, exe {run.exe}, game root {run.game_root}")

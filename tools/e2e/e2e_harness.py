@@ -471,6 +471,8 @@ class Player:
             lines.append(f"T5_NET_SCRIPT={mash}")
         else:
             lines += ["T5_STUB_SECONDS=2", "T5_STUB_IDLE_EXIT=900"]
+        if kind == "real" and ctx.run.netcode == "lockstep" and "T5_RB_MODE" not in (env or {}):
+            lines.append("T5_RB_MODE=off")             # run.py --netcode lockstep: the delay-based lockstep everywhere
         for k, v in (env or {}).items():
             lines.append(f"{k}={v}")
         st["extra_env"] = "\n".join(lines)
@@ -812,7 +814,7 @@ class Abort(Exception):
 class Run:
     current = None
 
-    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False):
+    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback"):
         self.out = os.path.abspath(out)
         os.makedirs(self.out, exist_ok=True)
         self.exe = exe
@@ -820,6 +822,7 @@ class Run:
         self.seed = seed
         self.rounds = rounds
         self.short = short
+        self.netcode = netcode
         self.logf = open(os.path.join(self.out, "run.log"), "a", encoding="utf-8")
         self.owned = []              # Popen objects started here
         self.jobs = []

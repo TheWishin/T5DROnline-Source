@@ -895,6 +895,8 @@ def net_case(ctx, a, b, label, rtt, jitter, loss, delay, relay, expect, mode="ro
 @scenario("net_rollback", "6 netcode", game=True, suites=("game", "net"),
           desc="rollback: RTT 20/80/150/250 ms, input delay Auto/0/1/2, 2% and 10% loss, jitter, the relay path")
 def net_rollback(ctx):
+    if ctx.run.netcode == "lockstep":
+        raise Skip("the rollback cases (this run is --netcode lockstep; net_lockstep covers it)")
     game_server(ctx)
     a = ctx.player("E2E Net1")
     b = ctx.player("E2E Net2")
@@ -979,6 +981,8 @@ def log_line(p, pattern):
 @scenario("net_mixed_fallback", "6 netcode", game=True, suites=("game", "net"),
           desc="one game without rollback (T5_RB_MODE=off): both fall back to lockstep, in sync")
 def net_mixed_fallback(ctx):
+    if ctx.run.netcode == "lockstep":
+        raise Skip("needs one rollback game (this run is --netcode lockstep)")
     game_server(ctx)
     a = ctx.player("E2E Mix1")
     b = ctx.player("E2E Mix2", env={"T5_RB_MODE": "off"})

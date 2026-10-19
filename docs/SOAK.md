@@ -105,6 +105,18 @@ which a busy PC's preemption does not inflate):
 
     [spu-tick] tid 0x2000: 937 answers, mean 3.10 ms, p95 3.75, p99 4.50, max 6.20, over 5.33 ms: 2; on the CPU 14.30 M cycles per answer
 
+## Patch 0041 (ps3recomp) and repo changes
+
+| change | why |
+|---|---|
+| sound core (bnuscore) built with `SPU_NEAR_FLOAT` (`spu_helpers.h`; CMake `T5DR_SPU_NEAR_SOUND`, `build_game_dll.py`; `CODE_VERSION` 3) | the exact float path costs 70-100 % of the 5.33 ms audio tick on a fast core; slower CPUs drop audio (below) |
+| `[spu-tick]` per lv2 SPU thread: wall time and own CPU cycles per answered request (`SPU_TICK_STATS=1` or `AUDIO_RATE=1`) | measure the sound core against its tick |
+| `[cellAudio] sound glitches` line in every log (5+ late/missing blocks in 5 s) | the friend's log had nothing to say about broken sound |
+| `[audio-rate]` silent share taken before `PS3_AUDIO_MUTE` | every muted test game read 100 % silent |
+| the 8 s / 15 s `[WATCHDOG]` thread dumps only when no frame was presented in the last 0.5 s (`WATCHDOG_ALWAYS=1` forces them) | ~1 300 lines in every player's log, every thread suspended in turn during the intro movie, module names resolved under the loader lock while a thread is suspended |
+| debug console `poke16` | the soak holds a fighter's health (an i16) |
+| `tests/run_ps3recomp_tests.py`: `spu_near_float`; `tests/test_soak.py` | |
+
 ## Results (2026-10-19, patch 0041 on the series to 0035)
 
 The PC (Ryzen 9 7950X, 32 logical processors) was shared with other agents'
@@ -175,3 +187,70 @@ sound core only makes audio samples, both PCs of a match run the same code
 Private bytes grow in the first 15-20 min (caches filling: textures, PSOs,
 movie buffers) and then stay flat. No crash, NID, syscall, render drop,
 decode failure or FIFO line; 12 texture-cache LRU evictions (normal).
+
+Fights on 6 processors (`tools/fight_bench.py`, the two builds side by side
+on their own 6-processor sets, swapped for a second round; the PC was also
+running other games, 27-30 processors busy):
+
+| round | sound core | sound core cycles per tick | ticks over 5.33 ms per 5 s | audio blocks not written (last 40 s) | fps |
+|---|---|---|---|---|---|
+| 1 | exact, CPUs 2-7 | 21.1-23.3 M | 432-569 | 1 332 | 41.5 |
+| 1 | near, CPUs 8-13 | 12.2-12.6 M | 0-12 | 14 | 50.6 |
+| 2 | exact, CPUs 8-13 | 20.0-20.4 M | 225-359 | 623 | 35.9 |
+| 2 | near, CPUs 2-7 | 14.0-14.4 M | 5-15 | 597 | 29.8 |
+
+Fight fps moved with the CPU set (others' load), not with the build. The
+sound core misses its tick about 30x less often with the near path; in round
+2 the near build's CPU set was so busy that the title's own audio thread came
+late too.
+
+### Every mode (scripted, `soak.py modes` / `arcade`)
+
+| mode | what ran | result |
+|---|---|---|
+| boot | Namco logo, intro movie to its end (2 094 pictures), title movie, attract demo, rankings | ok |
+| ARCADE | 3 characters (EASY, 1 round, CPU held at 1 HP) through every stage, the FINAL STAGE boss Jinpachi, GAME OVER; Jinpachi and the random cell unlocked on the next select screen. Also a lost run: continue countdown, rankings, title | ok |
+| GHOST | 2 ghosts beaten, then lost: rankings, title | ok |
+| VS | two pads, full matches (P2 at 1 HP), back to the select screen, START+SELECT to the title | ok |
+| ONLINE | terms of use, CANCEL; and accepted: the online check, "A network error occurred", title | ok |
+| SURVIVAL | 3-4 opponents beaten, then lost: result mode, title | ok |
+| PRACTICE | 25-30 s of attacks, practice menu, RETURN TO TITLE SCREEN, YES | ok |
+| GALLERY | offline: retry NO, return YES | ok |
+| OPTIONS | game, sound (BGM changed), controller pages, EXIT: the profile is saved | ok |
+| save / load | second boot on the same gamedata: the save loads (`LOAD ... new=0`) | ok |
+
+No `[CRASH]`, unresolved NID, unimplemented syscall, render drop, texture
+decode failure, white fallback bind, shader TODO, movie/ATRAC decode error,
+FIFO recycle/stall/resync or watchdog sample in any of these runs.
+
+### 4 and 6 processors (`soak.py mixed --cpus N`, 20 min each)
+
+Everything in turn (arcade to the end, VS matches, survival, practice, ghost,
+options, gallery/online, idle with the attract demo); the PC 92 % busy:
+
+| | 4 (2 cores/4 threads) | 6 (3 cores/6 threads) |
+|---|---|---|
+| segments | 11, all ok | 10, all ok |
+| fps (5-s windows) | median 51.2, min 28.5 | median 53.6, min 32.7 |
+| sound core | 12.5 M cycles/tick, 651 of 242 948 ticks over 5.33 ms | 12.0 M, 1 353 of 280 462 |
+| audio blocks not written | 436 of ~243 000 (0.18 %) | 257 of ~280 000 (0.09 %) |
+| handles / threads | 727-750 / 44-50 | 739-760 / 46-53 |
+| private MB | 1 266-1 329, flat after 10 min | 1 275-1 326, flat |
+| problems | none | none |
+
+Below 12 processors the pools are smaller (44-53 threads instead of 65-71).
+fps below 59 here is the busy PC: the same runs' frame rates follow the
+other games' load, not the processor count.
+
+### Open: NULL resource lookups in the draw thread (seen once)
+
+One 4-processor run (2 cores / 4 threads, the PC 100 % busy, the
+near-float build) logged 100 `[ppu] bctr to NULL` and NULL reads in the
+title's draw request thread (guest tid 4, `func_00392670`) during the stage
+4 load of an arcade run: a draw entry's resource id was not found
+(`func_00351F9C` -> map lookup `0x3845C8` returned 0) and the title
+called a method through the NULL object; the runtime skips such calls. The
+game went on (frames around it show the stage and both fighters normally) and
+it did not come back in the later 4- and 6-processor runs or any other run.
+Likely a race between the draw thread and the stage load's resource
+(un)registration that a starved 4-processor PC exposes; not root-caused.

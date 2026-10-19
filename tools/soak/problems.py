@@ -125,7 +125,8 @@ def scan(text, fps_min=59.0, keep=8):
                     r["first"].append(f"{no}: frame {vals['frame']}: +{grew}")
             ld_last = vals
             continue
-        if line.startswith("[live-draw] frame") or line.startswith("[WATCHDOG]  "):
+        # (a [live-draw] frame line can arrive glued to another line: its counters say "decodefail=0")
+        if "[live-draw] frame" in line or line.startswith("[WATCHDOG]  "):
             continue
         m = RE_TICK.match(line)
         if m:

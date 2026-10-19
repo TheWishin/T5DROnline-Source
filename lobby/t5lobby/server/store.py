@@ -233,6 +233,7 @@ class Store:
         self.db.executescript(RANKED_INDEXES)
         self._backfill_skeletons()
         self.migrated = self._migrate()
+        self._drop_stale_friends()
         self._schedule = None
         self.commit_errors = 0
         self.writes = 0
@@ -264,6 +265,26 @@ class Store:
             log.info("database upgraded to schema %d: %s", version, what)
             done.append(version)
         return done
+
+    def _drop_stale_friends(self):
+        """Friends rows and friend requests whose account is gone, or is younger than the row. A server older
+        than the friends tables (a rollback to 1.1.1, docs/HOSTING.md) deletes accounts (delete-user,
+        purge-inactive) without touching these rows, and SQLite may then give the next new account the deleted
+        one's id: that account must not inherit the deleted one's friends and requests. A row older than its
+        account cannot be real (both accounts existed when it was made). -> rows deleted."""
+        if self.schema_version() < 1:
+            return 0
+        have = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        n = 0
+        for table, cols in (("friends", ("account_id", "friend_id")), ("friend_requests", ("from_id", "to_id"))):
+            if table not in have:
+                continue                                # (a database of a newer server may have changed them)
+            stale = " OR ".join(f"NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = {table}.{c} AND "
+                                f"a.created <= {table}.created)" for c in cols)
+            n += self.db.execute(f"DELETE FROM {table} WHERE {stale}").rowcount
+        if n:
+            log.warning("dropped %d friends row(s) of deleted accounts (an older server deleted them)", n)
+        return n
 
     def _add_columns(self):
         for table, col, decl in RANKED_COLUMNS + MODERATION_COLUMNS + NAME_COLUMNS:
@@ -581,6 +602,11 @@ class Store:
                       "opponent": r["p2_name"] if side == 0 else r["p1_name"], "games": games})
             out.append(d)
         return out
+
+    def open_set_count(self):
+        """Ranked sets being played: saved as 'playing' from the countdown after their first game on (between two
+        games no match runs, but a restart then would void the set -- admin drain waits for these too)."""
+        return self._x("SELECT COUNT(*) FROM sets WHERE status = 'playing'").fetchone()[0]
 
     def void_open_sets(self, reason="server_restart", now=None):
         """Sets still 'playing' in the database belong to a server that stopped: a running set lives in the

@@ -183,6 +183,10 @@ sender's setting (0xFF = auto). A v2 peer is refused like any other build
 (`build_mismatch`); the lobby's build id includes the version
 (`lobby/t5lobby/buildid.py` NETPLAY_VERSION 3).
 
+**Protocol v4** (costumes-online, 1.1.3): the COSTUME packet below. A v3 game
+never sends one and the stage confirm waits for it, so a v3 peer is a
+different build (`build_mismatch`, NETPLAY_VERSION 4).
+
 Tested (two games on this PC through `tools/rollback_net_test.py`'s proxy,
 direct fight, 3 % loss, +-5 ms jitter; `build/lat/netruns/`), one match each (Asuka vs Lili,
 stage 20, 2 rounds), 8 logical processors per game:
@@ -275,6 +279,19 @@ session's own socket and key:
   acknowledges it, and acknowledges a received pick three times (never at
   once: two sides answering each other would not stop). `t5_netplay_pick_send()`
   / `t5_netplay_pick_peer()`.
+- **COSTUME packets** (type 7, docs/DIRECTFIGHT.md "Custom costumes online"):
+  `{hash, total, offset, len, ack_mask, ack_hash}` + up to 1,024 bytes -- a
+  piece of the sender's custom costume table (at most 9,283 bytes, so at most
+  10 pieces; len 0 = an acknowledgement only), which pieces of the receiver's
+  table the sender holds, and that table's FNV-1a hash once the sender has all
+  of it and the hash matched. Sent by the network thread from the moment both
+  are connected: up to three missing pieces every 100 ms until the peer
+  acknowledges the whole table by its hash; each received piece is
+  acknowledged three times. A table is taken once, when its pieces add up to
+  its hash; malformed pieces (above the bound, between pieces, of the wrong
+  length or longer than the packet) are dropped; a restarted peer process
+  starts both tables over. `t5_netplay_costume_set()` /
+  `t5_netplay_costume_peer()`; tests/c/netplay_fuzz.cpp checks all of it.
 - **A paused lockstep** between two matches of a session: `t5_netplay_pause()`
   makes the next frame a sync point (a scene barrier; under rollback every
   input before it is confirmed first), then the lockstep (or the rollback loop,

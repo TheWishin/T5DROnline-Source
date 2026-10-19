@@ -183,9 +183,13 @@ constexpr uint32_t kFnStartGame = 0x0004E9DC;
 /* T5_DF_SHOT=f1,f2,...: frame-exact screenshots through the live renderer's LD_SURF_DUMP_GATE.
  * An entry "+n" is n frames after FIGHT START of the first match (the frame
  * numbers from boot differ with loading times; counted from the fight start
- * they name the same moment of the fight in every run). */
+ * they name the same moment of the fight in every run); "++n" n frames after
+ * every FIGHT START (each match of a session, e.g. both PCs' pictures of the
+ * custom costumes, docs/DIRECTFIGHT.md "Custom costumes online"). */
 std::vector<uint32_t> g_shot_frames;
 std::vector<uint32_t> g_shot_rel;
+std::vector<uint32_t> g_shot_every;
+uint32_t g_shot_every_fight = 0;
 std::string g_shot_gate;
 uint32_t g_shot_armed = UINT32_MAX;
 uint64_t g_main_tid = 1;
@@ -379,6 +383,10 @@ void shot(uint32_t f)
     if (g_shot_armed != UINT32_MAX && f >= g_shot_armed + 30) {
         remove(g_shot_gate.c_str());   /* re-arms the renderer for the next one */
         g_shot_armed = UINT32_MAX;
+    }
+    if (!g_shot_every.empty() && g_fight_frame && g_fight_frame != g_shot_every_fight) {   /* "++n": this fight's */
+        g_shot_every_fight = g_fight_frame;
+        for (uint32_t r : g_shot_every) g_shot_frames.push_back(g_fight_frame + r);
     }
     if (!g_shot_rel.empty() && g_fight_frame) {          /* "+n" entries: now that the fight started */
         for (uint32_t r : g_shot_rel) g_shot_frames.push_back(g_fight_frame + r);
@@ -641,9 +649,11 @@ struct Register {
             for (const char* p = d; *p;) {
                 const bool rel = *p == '+';
                 if (rel) p++;
+                const bool every = rel && *p == '+';
+                if (every) p++;
                 char* e; unsigned long v = strtoul(p, &e, 10);
                 if (e == p) break;
-                (rel ? g_shot_rel : g_shot_frames).push_back((uint32_t)v);
+                (every ? g_shot_every : rel ? g_shot_rel : g_shot_frames).push_back((uint32_t)v);
                 p = e; while (*p == ',') p++;
             }
             const char* g = getenv("LD_SURF_DUMP_GATE");

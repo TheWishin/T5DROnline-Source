@@ -1,6 +1,6 @@
 """Cut-off check for the launcher in every language, at 100 % and 150 % display scaling, with withdrawn windows.
 
-    python tests/i18n_layout.py [es ko ...] [--scale 100|150]   # list what is cut off, compared with English
+    python tests/i18n_layout.py [en es ko ...] [--scale 100|150]   # list what is cut off
 
 tests/test_i18n.py runs the same walk for every language. Nothing is put on the screen: Tk computes no geometry for
 the children of a withdrawn window, so everything is judged from requested sizes and measured texts --
@@ -10,8 +10,10 @@ the children of a withdrawn window, so everything is judged from requested sizes
 * the window: the natural width of the launcher's tabs (and of the Controls, report and update windows)
   against the window's width.
 
-English is the yardstick: a language is checked for what is cut off where English is not (or clearly more
-than English), so the few places that are already tight in English are not counted against a translation.
+English is checked as it is (nothing cut off at all); the other languages against English (nothing cut off
+where English is not), which comes to the same now that English has nothing cut off. The data the Online tab is
+filled with has the widest texts each column can get: a placement rank, a player and a room of another version,
+friends that cannot be invited, the longest reasons a void game has.
 """
 import importlib.machinery
 import importlib.util
@@ -204,7 +206,11 @@ class Client:
             {"name": "Rival_Long_Name", "status": "online", "activity": "queue", "rank": "Lord of War", "tier": 31},
             {"name": "Bob", "status": "in_match", "rank": "2nd Dan", "tier": 11, "invite": "update"},
             {"name": "Old", "status": "online", "activity": "idle", "invite": "version", "rank": "1st Dan", "tier": 10},
-            {"name": "Zed", "status": "offline", "last_seen": 1792350300, "rank": "Beginner", "tier": 0}],
+            {"name": "Zed", "status": "offline", "last_seen": 1792350300, "rank": "Beginner", "tier": 0},
+            {"name": "Mika", "status": "online", "activity": "match", "rank": "Beginner", "tier": 0,
+             "placement": [4, 5]},
+            {"name": "Nina", "status": "online", "activity": "room", "rank": "Dragon Lord", "tier": 32,
+             "provisional": True}],
         "incoming": [{"name": "NewFriend_123"}],
         "outgoing": [{"name": "Somebody_Else"}]}
 
@@ -232,7 +238,9 @@ class Client:
                              "opp_char": "lee", "score": [2, 1], "delta": 12.0, "ranked": True, "status": st,
                              "reason": rs, "set": None}
                             for r, st, rs in (("won", "confirmed", None), ("lost", "forfeit", "quit"),
-                                              ("draw", "void", "desync"), ("lost", "disputed", "disputed"))]}
+                                              ("draw", "void", "desync"), ("lost", "disputed", "disputed"),
+                                              ("draw", "void", "connection"), ("lost", "forfeit", "crash_repeat"),
+                                              ("lost", "onesided", "no_report_repeat"))]}
 
 
 PLAYERS = [
@@ -243,11 +251,15 @@ PLAYERS = [
     {"id": "p3", "name": "Bob", "guest": False, "rating": 1612, "record": [30, 12, 1], "status": "match",
      "build": "b1", "rtt": 140.0, "rank": "2nd Dan", "tier": 11, "provisional": True, "main": "lee"},
     {"id": "p4", "name": "Q", "guest": False, "rating": 1612, "record": [0, 0, 0], "status": "queue", "build": "b1",
-     "rtt": 40.0, "rank": "Beginner", "tier": 0, "provisional": True, "main": "random"},
+     "rtt": 40.0, "rank": "Beginner", "tier": 0, "provisional": True, "main": "random", "placement": [4, 5]},
+    {"id": "p6", "name": "Nina", "guest": False, "rating": 1500, "record": [1, 1, 0], "status": "room", "build": "b1",
+     "rtt": 60.0, "rank": "Dragon Lord", "tier": 32, "provisional": True, "main": "lee"},
     {"id": "p5", "name": "Old", "guest": True, "record": [1, 0, 0], "status": "playing", "build": "other", "rtt": 80.0}]
 ROOMS = [{"id": "r1", "name": "Room of Rival", "owner": {"name": "Rival_Long_Name"}, "status": "open", "build": "b1",
           "ranked": True},
-         {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False}]
+         {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False},
+         {"id": "r3", "name": "Old room", "owner": {"name": "Old"}, "status": "playing", "build": "other",
+          "ranked": True}]
 RIVAL = {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lord of War", "provisional": False,
          "tier": 31}
 
@@ -331,7 +343,9 @@ class Walk:
         top.update_idletasks()
         self.screens.append(name)
         for kind, w, col, need, have, text in problems(top):
-            self.cut[(name, kind, w, col)] = (need, have, text)
+            key = (name, kind, w, col)                 # the widest text of a column counts
+            if key not in self.cut or need > self.cut[key][0]:
+                self.cut[key] = (need, have, text)
         if top is app:
             self.cut[(name, "width", "", "")] = (app.nb.winfo_reqwidth(), app.winfo_width() - 24, "")
         cat = i18n.catalog(self.lang)
@@ -448,8 +462,17 @@ class Walk:
         up.win.destroy()
 
 
-def compare(walk, english):
-    """What `walk` has cut off that the English walk at the same scale has not (or clearly less)."""
+class Nothing:
+    """A yardstick with nothing cut off: compare(walk, NOTHING) is everything `walk` has cut off."""
+    cut = {}
+
+
+NOTHING = Nothing()
+
+
+def compare(walk, english=NOTHING):
+    """What `walk` has cut off that the English walk at the same scale has not (or clearly less); without an
+    English walk, everything it has cut off."""
     out = []
     for key, (need, have, text) in sorted(walk.cut.items()):
         screen, kind, w, col = key
@@ -463,15 +486,15 @@ def compare(walk, english):
 
 
 def main(argv):
-    langs = [a for a in argv if a in LANGS] or [x for x in LANGS if x != "en"]
+    langs = [a for a in argv if a in LANGS] or list(LANGS)
     scales = [int(argv[argv.index("--scale") + 1])] if "--scale" in argv else SCALES
     bad = 0
     for scale in scales:
         english = Walk("en", scale).run()
         for lang in langs:
             t0 = time.time()
-            w = Walk(lang, scale).run()
-            lines = compare(w, english) + [f"missing text: {m!r}" for m in w.missing] + [
+            w = english if lang == "en" else Walk(lang, scale).run()
+            lines = compare(w, NOTHING if lang == "en" else english) + [f"missing text: {m!r}" for m in w.missing] + [
                 f"{s}: English left: {e}" for s, e in w.english.items() if e] + [f"on screen: {s}" for s in w.shown]
             print(f"{lang} {scale} %: {len(lines)} problems ({time.time() - t0:.1f} s)")
             for x in lines:

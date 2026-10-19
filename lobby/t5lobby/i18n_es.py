@@ -1211,7 +1211,7 @@ MESSAGES = {
     "the connection between the games failed": "falló la conexión entre los juegos",
     "both players left": "ambos jugadores salieron",
     "no result in time": "sin resultado a tiempo",
-    "repeated crashes count as losses": "los fallos repetidos cuentan como derrotas",
+    "repeated crashes count as losses": "fallos repetidos cuentan como derrotas",
     "repeated early quits": "abandonos tempranos repetidos",
     "repeated missing reports": "reportes faltantes repetidos",
     "scores differed": "los marcadores no coincidieron",
@@ -1361,6 +1361,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "Resultado enviado; esperando el reporte de tu rival...",
     "Rematch offered; waiting for your opponent...": "Rematch ofrecido; esperando a tu rival...",
     "(other version)": "(otra versión)",
+    "other version": "otra versión",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Buscando... ({ranked} en la búsqueda Ranked, {quick} en Quick Match)",
@@ -1638,7 +1639,7 @@ MESSAGES = {
         "Revisa cómo lo escribiste: los amigos se agregan por su nombre de cuenta.",
     "in a match": "en partida",
     "offline": "desconectado",
-    "(older launcher: no invites)": "(launcher viejo: sin invitar)",
+    "older launcher: no invites": "launcher viejo: sin invitaciones",
     "Friends ({count})": "Amigos ({count})",
     "offline, last seen {when}": "desconectado desde {when}",
     "Friends need an account. Log in with one to add friends and invite them.":

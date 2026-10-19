@@ -42,8 +42,9 @@ lobby features need the lobby server updated; older launchers keep working with 
   besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
   Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
   a font made for them. The new translations were made with machine help: corrections from players
-  are welcome. The Settings tab and the Controls window got room for the longer texts (at 100 % and
-  150 % display scaling).
+  are welcome. The Settings tab, the Controls window and the Online tab's lists got room for the
+  longer texts (at 100 % and 150 % display scaling); a player or friend on another version (or an
+  older launcher) shows that in the status column instead of what they are doing.
 - **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
   "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
   Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id

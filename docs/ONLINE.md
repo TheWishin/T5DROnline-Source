@@ -268,9 +268,10 @@ sends each side the other's candidates (`nat_punch`):
   (an older client gets the next 8, ahead of the public endpoint).
 
 A client with the `nat2` cap also gets a plan: both start at the same server
-time, the first half second only with a low TTL (each side opens its own NAT
-without its punch reaching the other router), then 20 punches a second to every
-candidate for the rest of the 6-second window, the predicted ports walked in
+time, at first only with a low TTL (each side opens its own NAT without its
+punch reaching the other router) until the other side has said through the
+server that it started too (`nat_punching` -> `nat_peer_punching`), then 20
+punches a second to every candidate for the rest of the 6-second window, the predicted ports walked in
 the order the peer's NAT hands them out. An older client punches every
 candidate every 30 ms for the window from the moment its message arrives, as
 before. Every punch received is answered with a punch carrying `F_HEARD`; a
@@ -358,6 +359,7 @@ Client to server:
 | `block` / `unblock` / `blocks` | `name` (or `player`) | `blocked` / `unblocked` / `blocks {rows}`; a match with that player ends like a quit |
 | `leave_set` | `reason` (`lag`) | leave the games in a row between two games, no penalty; `set_end` to both |
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
+| `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
 | `logout` | | `bye`, connection closed |
 
@@ -373,7 +375,8 @@ Server to client (pushed):
 | `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
-| `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
+| `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, wait_peer, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
+| `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
 | `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works) |
 | `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |

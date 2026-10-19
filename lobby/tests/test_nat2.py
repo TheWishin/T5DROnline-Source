@@ -19,7 +19,7 @@ import time
 import unittest
 from unittest import mock
 
-import util
+import util  # noqa: F401 -- sys.path, T5_PORTMAP=0
 from util import ServerThread, client, expect
 from t5lobby import nat, portmap, proto
 from t5lobby.nat import RelayBridge

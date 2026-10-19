@@ -2005,10 +2005,13 @@ class LobbyServer:
                 # arrives, a new one starts the moment its own arrives too (its low-TTL half second then
                 # covers an older client that gets its message a little later).
                 msg["plan"] = {"start_in": round(go - one_way[side]) if all(new) else 0,
-                               "window": window, "interval": 0.05, "slow_start": 0.6,
+                               "window": window, "interval": 0.05, "slow_start": 0.0 if all(new) else 0.6,
                                "ttl_open": self.cfg.punch_ttl_open, "scan": scan}
                 if all(new):
                     msg["plan"]["start_at"] = round(t_go, 3)
+                    # each says when it starts (nat_punching -> nat_peer_punching): the low-TTL opening lasts
+                    # until the other one has started too, however late its message came
+                    msg["plan"]["wait_peer"] = True
             else:
                 # (in order: an older client punches its list front to back, so against a symmetric peer the
                 # predicted ports come first -- the order that peer's NAT hands its ports out)
@@ -2118,6 +2121,15 @@ class LobbyServer:
 
     def udp_relay_bound(self, match_id, side, addr):
         self.note("relay_bound", match=match_id, side=side)
+
+    async def h_nat_punching(self, conn, msg):
+        """A nat2 client has started its planned punch: tell the other one (its low-TTL opening may end)."""
+        p = conn.player
+        m = p.match if p is not None else None
+        if m is None or m.id != msg.get("match") or m.state != "punch":
+            return None
+        m.players[1 - m.side(p)].send({"t": "nat_peer_punching", "match": m.id})
+        return None
 
     async def h_nat_upgrade(self, conn, msg):
         """A relayed match moved onto the direct path (or back): the clients' RelayBridges found it while the

@@ -431,6 +431,12 @@ class LobbyClient:
         self._nat_phase(self._nat_punch(msg))
         return False
 
+    async def _on_nat_peer_punching(self, msg):
+        """The opponent's launcher has started its punch (nat2): our low-TTL opening may end."""
+        if self.match and self.match["match"] == msg.get("match") and self.match.get("peer_open") is not None:
+            self.match["peer_open"].set()
+        return False
+
     async def _on_nat_relay(self, msg):
         if not self._gs or not self.match or self.match["match"] != msg["match"]:
             return False
@@ -544,6 +550,7 @@ class LobbyClient:
                                    block_direct=self.block_direct, keep_dup=self.handover == "share")
         self._gs = gs
         v2 = self.nat2 and bool(msg.get("nat2"))
+        self.match["peer_open"] = asyncio.Event()    # set by nat_peer_punching (the opponent started)
         # Before the socket sends anything: a forward made now usually carries its outgoing packets too, so
         # the endpoint the server sees below is the forwarded one.
         mapped = await self._map_port(gs.port) if v2 or self.port_mapping else None
@@ -585,11 +592,17 @@ class LobbyClient:
             self._status(mid, "punch", t("Connecting to your opponent..."))
             if start_in > 0:
                 await asyncio.sleep(min(3.0, start_in))
+            peer_open = None
             if self.match is not None:
                 self.match["punch_t0"] = time.time()
+                if plan.get("wait_peer"):
+                    # tell the opponent (through the server) that this side's NAT is opening now
+                    await self._safe(self._send({"t": "nat_punching", "match": mid}))
+                    peer_open = self.match.get("peer_open")
             got = await gs.punch(cands, timeout=max(1.0, window - late), interval=float(plan.get("interval", 0.05)),
                                  scan=scan, slow_start=float(plan.get("slow_start", 0.6)),
-                                 ttl_open=max(0.0, ttl_open - late))
+                                 ttl_open=min(ttl_open, 0.15) if peer_open else max(0.0, ttl_open - late),
+                                 peer_open=peer_open)
         else:
             self._status(mid, "punch", t("Connecting to your opponent..."))
             got = await gs.punch(cands, timeout=float(msg.get("timeout", 3.0)))

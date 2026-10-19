@@ -241,7 +241,7 @@ class GameSocket(asyncio.DatagramProtocol):
     OPEN_TTLS = (2, 3)       # past this PC's router (and a second NAT right behind it), never as far as the peer's
 
     async def punch(self, candidates, timeout=3.0, linger=0.12, interval=0.03, scan=(), scan_period=0.8,
-                    slow_start=0.0, slow_interval=0.2, ttl_open=0.0):
+                    slow_start=0.0, slow_interval=0.2, ttl_open=0.0, peer_open=None, ttl_open_max=2.0):
         """candidates: [(ip, port, kind)]. -> (addr, kind) of the best two-way path, or None.
 
         Every candidate (and every address a punch came from) gets a punch each `interval` seconds -- the
@@ -254,7 +254,10 @@ class GameSocket(asyncio.DatagramProtocol):
         side's NAT toward the peer without reaching the peer's router, so when the full punches start (both
         sides start together) each router has already sent toward the other: none of them sees an
         unsolicited packet first -- some routers then move their side to another port, answer with an ICMP
-        error that closes the other side's mapping, or count it as a flood."""
+        error that closes the other side's mapping, or count it as a flood. `peer_open`: an asyncio.Event
+        set when the server says the peer has started too; the low-TTL phase then lasts until it is set
+        (at most `ttl_open_max` seconds), so a peer whose message TCP had to send again still opens its
+        NAT before the first full punch gets there."""
         kinds = {(ip, port): kind for ip, port, kind in candidates}
         scan_list = []
         for ip, ports in scan:
@@ -271,15 +274,16 @@ class GameSocket(asyncio.DatagramProtocol):
         scan_i = 0                          # first pass: the next scan port never punched yet
         tick = 0.015
         first_ok = None
-        opened = ttl_open <= 0
+        opened = t0 if ttl_open <= 0 else None    # when the full punches began
         while True:
             now = time.monotonic()
-            low = now - t0 < ttl_open
-            if not low and not opened:
-                opened = True                       # the full punches start: a fresh pass over everything
+            low = now - t0 < ttl_open or (
+                ttl_open > 0 and peer_open is not None and not peer_open.is_set() and now - t0 < ttl_open_max)
+            if not low and opened is None:
+                opened = now                        # the full punches start: a fresh pass over everything
                 due.clear()
                 scan_i = 0
-            step = interval if low else (slow_interval if now - t0 - ttl_open < slow_start else interval)
+            step = interval if low else (slow_interval if now - opened < slow_start else interval)
             for addr in regular + [a for a in self.heard if a not in kinds]:
                 if due.get(addr, 0.0) <= now:
                     self._punch_to(addr, low_ttl=low and addr not in self.heard)

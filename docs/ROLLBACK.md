@@ -2163,8 +2163,9 @@ first requests, queued and not taken.
 | FF2 | same, hang watcher | same | 0 of 32 | host hung in match 1 (the dump above) | -- |
 | FF3 | + fix 3 | same | **32 of 32** | 0 mismatching frames, the same result hash on both PCs in every match, no hang, no abort, no fd above 4 | 3 981 / 9 577 |
 | FF6 | fixes 1-6, on main 53f775d | same | **32 of 32** | the same; the geometry manager busy at 356 of 87 693 / 99 of 74 601 boundaries, the draw manager running at none | 8 742 / 1 647 |
+| FF7 | fixes 1-6, on main 32f9bdf (final) | same | **32 of 32** | the same; every match end seen on predicted input and confirmed 1-7 frames later, the desync hunt's fallback never fired | 10 353 / 778 |
 
-FF3 and FF6 ran muted at below-normal priority next to 3-7 other game
+FF3, FF6 and FF7 ran muted at below-normal priority next to 3-7 other game
 instances (fps 11-40 in FF3's busiest stretch).
 
 **A whole-match desync after a title visit (fix 4, direct fight, not rollback).**

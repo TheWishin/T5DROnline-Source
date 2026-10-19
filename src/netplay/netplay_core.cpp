@@ -1413,6 +1413,16 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
         /* playback: both inputs from the file, the hash compared with the recorded one */
         rp::play_inputs(f, out);
         rp::play_hash(f, state_hash);
+        {   /* as local mode: the hash is "compared" at once, so a match's result is out at once too (t5_hooks
+             * flush_result waits for the deciding frame's check -- else 3 s, and a recording may end sooner) */
+            std::lock_guard<std::mutex> lk(s.mu);
+            const uint32_t i = f % kRing;
+            s.local.hash[i] = state_hash; s.local.hash_tag[i] = f + 1;
+            s.remote.hash[i] = state_hash; s.remote.hash_tag[i] = f + 1;
+            if (f + 1 > s.local_hash_max) s.local_hash_max = f + 1;
+            if (f + 1 > s.remote_hash_max) s.remote_hash_max = f + 1;
+            compare_hashes_locked();
+        }
         if (s.log) {
             std::lock_guard<std::mutex> lk(s.log_mu);
             fprintf(s.log, "%u I %04X%02X%02X%02X%02X %04X%02X%02X%02X%02X %016llx\n", f,

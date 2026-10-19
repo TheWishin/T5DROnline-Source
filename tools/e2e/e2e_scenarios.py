@@ -1807,6 +1807,15 @@ def cs_costume(ctx):
     _cs_match(ctx, pf, a, b, {a.name: "xiaoyu:rk", b.name: "lili:rp"}, "costume")
 
 
+@scenario("cs_mirror", "9 character select", game=True, suites=("game",), needs="ingame_pick",
+          desc="a mirror match picked in the game (both Steve with Square): both PCs give the second costume to the "
+               "same side and stay in sync; then both Jin with different buttons")
+def cs_mirror(ctx):
+    pf, a, b = _cs_two(ctx, "E2E Mir1", "E2E Mir2")
+    _cs_match(ctx, pf, a, b, {a.name: "steve:lp", b.name: "steve:lp"}, "mirror, same button")
+    _cs_match(ctx, pf, a, b, {a.name: "jin:lk", b.name: "jin:rp"}, "mirror, different buttons", again=True)
+
+
 @scenario("cs_random", "9 character select", game=True, suites=("game",), needs="ingame_pick",
           desc="Random (Select) on the select screen: drawn on that PC, the same fighter on both PCs")
 def cs_random(ctx):

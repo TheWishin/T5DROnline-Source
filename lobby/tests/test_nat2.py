@@ -318,6 +318,22 @@ class RelayBridgeTest(E2E):
         stats = self.s.call(lambda: self.s.srv.udp.relays[ta.match_id].stats())
         self.assertGreaterEqual(sum(stats["pkts"]), 2)              # through the server's relay
 
+    def test_bridge_takes_only_the_games_packets(self):
+        ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True})
+        g = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        g.bind(("0.0.0.0", tb.local_port))
+        g.settimeout(0.5)
+        x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        x.bind(("127.0.0.1", 0))
+        try:
+            x.sendto(b"T5NP" + b"" * 50, ta.peer)               # another program on this PC: not the game
+            with self.assertRaises(socket.timeout):
+                g.recvfrom(4096)
+            self.assertEqual(ca._bridge.stats["from_game"], 0)
+        finally:
+            g.close()
+            x.close()
+
     def test_old_peer_gets_no_bridge(self):
         ca, cb, ta, tb = self.pair(a={"relay_bridge": True}, b={"relay_bridge": True, "nat2": False})
         self.assertEqual(ta.peer, ("127.0.0.1", self.s.srv.udp.port))

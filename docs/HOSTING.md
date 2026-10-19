@@ -534,7 +534,7 @@ Inbound, to the lobby server:
 |---|---|---|---|
 | 7781 | TCP | control channel (TLS) | always |
 | 7781 | UDP | ping, registration, relay | always |
-| 7782 | UDP | NAT type probe | recommended (`T5L_UDP_PORT2=0` turns it off; symmetric NATs are then found by failed punching, ~3 s slower) |
+| 7782 | UDP | NAT type probe | recommended: without it symmetric NATs are found only by failed punching and their next ports are never predicted (`T5L_UDP_PORT2=0` turns it off) |
 | 80 | TCP | Let's Encrypt HTTP-01, during issue/renewal only | only with `--domain` |
 | 22 | TCP | SSH | for you |
 | 7780 | TCP | status endpoint | **never from outside** (it listens on 127.0.0.1) |

@@ -522,7 +522,7 @@ class LobbyClient:
         from .portmap import GamePortMapper
         self._mapper = GamePortMapper(backend_factory=self._router_factory).start()
 
-    async def _map_port(self, port, timeout=1.5):
+    async def _map_port(self, port, timeout=1.0):
         """The game socket's port forwarded on the router -> [ip, port] (ip None when unknown), or None."""
         m = self._mapper
         if m is None or not m.ready():
@@ -547,7 +547,7 @@ class LobbyClient:
         # Before the socket sends anything: a forward made now usually carries its outgoing packets too, so
         # the endpoint the server sees below is the forwarded one.
         mapped = await self._map_port(gs.port) if v2 or self.port_mapping else None
-        reg = await gs.register(probe_wait=1.5 if v2 else 1.0)
+        reg = await gs.register()
         if reg is None:
             self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"))
             return
@@ -697,8 +697,12 @@ class LobbyClient:
             await self._safe(self._send({"t": "ping"}))
             if self._gs is None and self._bridge is None:
                 await self._measure_server()
-            if self._mapper is not None:
-                await asyncio.get_running_loop().run_in_executor(None, self._mapper.renew)
+            if self._mapper is not None and self._mapper.current is not None:
+                # renewed while a match (or its relay bridge) is on; two minutes without one: closed
+                busy = self.match is not None or self._bridge is not None
+                self._map_idle = 0 if busy else getattr(self, "_map_idle", 0) + 1
+                fn = self._mapper.renew if self._map_idle < 4 else self._mapper.unmap
+                await asyncio.get_running_loop().run_in_executor(None, fn)
 
     async def _measure_server(self):
         if not self.welcome:

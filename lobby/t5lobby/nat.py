@@ -90,7 +90,6 @@ class GameSocket(asyncio.DatagramProtocol):
         self.last_rx = {}                    # addr -> last time anything from it arrived
         self.on_game = None                  # relay bridge: callback(data, addr) for the game's own packets
         self.plan = ([], [])                 # (candidates, scan) of the last punch: what a relay bridge retries
-        self._rounds = 0
         self.confirm_event = asyncio.Event()
         self.closed = asyncio.get_running_loop().create_future()
         self.seq = 0

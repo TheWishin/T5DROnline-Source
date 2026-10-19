@@ -893,41 +893,54 @@ bool pick_screen_wait();        /* the in-game select waits for its select scree
 
 /* A select screen that never gets past its loading (Select, or the in-game
  * select's Pick, before the screen takes input). Its cause is gone (the
- * reader, kReaderData), this is the backstop: the select's set-up, the mode
- * manager and the async reader are watched, and when none of them has moved
- * for T5_DF_SELECT_STUCK_SECONDS (default 30; 0 = never) -- a slow disk or a
- * loaded PC keeps the reader's queue moving, a wedged load does not -- the game
- * says what it waits on and ends as a stuck reset does (exit code 6: the
- * launcher starts a fresh game for the match, docs/DIRECTFIGHT.md). Before,
- * such a screen sat at phase 1 until the next command (e3/p2: 46 s) or for
- * good (pf_off2). */
-uint32_t g_select_stuck_s = 30;
-uint64_t g_sl_sig = 0;          /* what moved last: phase word, modes, reader state */
-ULONGLONG g_sl_ms = 0;          /* when it last moved */
+ * reader, kReaderData); this is the backstop, and it must never end a slow
+ * load (PS3_TEST_FS_DELAY=150: one request of the select's took over 30 s, its
+ * whole set-up 38 s). Two states get nowhere by themselves:
+ *   - the reader wedged: busy, no completion token, and the reader thread
+ *     parked on its request semaphore -- nobody will post the token the service
+ *     waits for (what the bad copy did); a slow read has the thread waiting for
+ *     its data instead, or a token pending: T5_DF_SELECT_STUCK_SECONDS (10);
+ *   - nothing to load: the reader idle with an empty queue while the select's
+ *     phase word, the mode manager and the queue stay as they are: the stuck
+ *     seconds of a reset (T5_DF_STUCK_SECONDS, 60).
+ * Either one held without a break for that long: the game says what it waits
+ * on and ends as a stuck reset does (exit code 6: the launcher starts a fresh
+ * game for the match, which match_driver reports as game_stuck, no strike).
+ * Before, such a screen sat at phase 1 until the next command (e3/p2: 46 s)
+ * or for good (pf_off2). 0 = never. */
+uint32_t g_select_stuck_s = 10;
+int g_sl_kind = 0;              /* 1 wedged reader, 2 nothing to load; 0 the select loads (or is live) */
+uint64_t g_sl_sig = 0;          /* phase word, modes, reader state when the kind began */
+ULONGLONG g_sl_ms = 0;          /* when it began */
 bool g_sl_dumped = false;
 void select_load_check(uint32_t f)
 {
-    const bool loading = g_ctl && g_select_stuck_s &&
-        ((g_ph == Ph::Select && !(mode_cur() == kModeSelect && rd32(kSelectState) >= 3)) || pick_screen_wait());
-    if (!loading) { g_sl_ms = 0; return; }
-    const uint32_t q = rd32(kReader + 0x14);
-    uint32_t queued = 0;
-    for (uint32_t r = q; r >= kReaderPool && r < kReaderPoolEnd && queued < 70; r = rd32(r + 4)) queued++;
-    const uint64_t sig = (uint64_t)rd32(kSelectState) ^ ((uint64_t)mode_cur() << 8) ^ ((uint64_t)mode_next() << 16) ^
-                         ((uint64_t)rd32(kReader + 8) << 24) ^ ((uint64_t)q << 28) ^ ((uint64_t)queued << 58) ^
-                         ((uint64_t)(uint32_t)t5_sem_count(rd32(kReader + 4)) << 40);
+    const bool loading = g_ctl && ((g_ph == Ph::Select && !(mode_cur() == kModeSelect && rd32(kSelectState) >= 3)) ||
+                                   pick_screen_wait());
+    const uint32_t busy = rd32(kReader + 8), q = rd32(kReader + 0x14);
+    const int32_t tokens = t5_sem_count(rd32(kReader + 4));
+    int kind = 0;
+    if (loading) {
+        if (busy == 1 && tokens == 0 && sem_parked(rd32(kReader))) kind = 1;
+        else if (busy == 0 && q == 0) kind = 2;
+    }
+    const uint32_t limit = kind == 1 ? g_select_stuck_s : kind == 2 ? g_stuck_s : 0;
+    const uint64_t sig = (uint64_t)rd32(kSelectState) | ((uint64_t)mode_cur() << 8) | ((uint64_t)mode_next() << 16) |
+                         ((uint64_t)q << 24);
     const ULONGLONG now = GetTickCount64();
-    if (!g_sl_ms || sig != g_sl_sig) { g_sl_sig = sig; g_sl_ms = now; g_sl_dumped = false; return; }
+    if (!limit) { g_sl_kind = 0; return; }
+    if (kind != g_sl_kind || sig != g_sl_sig) { g_sl_kind = kind; g_sl_sig = sig; g_sl_ms = now; g_sl_dumped = false; return; }
     const ULONGLONG ms = now - g_sl_ms;
-    if (ms >= (ULONGLONG)g_select_stuck_s * 500 && !g_sl_dumped) {
+    const char* what = kind == 1 ? "the async reader waits for a read nobody does" : "nothing loads";
+    if (ms >= (ULONGLONG)limit * 500 && !g_sl_dumped) {
         g_sl_dumped = true;
-        note("frame %u: the select screen's loading has not moved for %u s (mode %u, next %u, phase word %u; %s):", f,
-             (unsigned)(ms / 1000), mode_cur(), mode_next(), rd32(kSelectState), reader_desc().c_str());
+        note("frame %u: the select screen's loading is stuck for %u s, %s (mode %u, next %u, phase word %u; %s):", f,
+             (unsigned)(ms / 1000), what, mode_cur(), mode_next(), rd32(kSelectState), reader_desc().c_str());
         stuck_dump(f);
     }
-    if (ms < (ULONGLONG)g_select_stuck_s * 1000) return;
-    note("frame %u: STUCK: the select screen's loading has not moved for %u s (mode %u, phase word %u; %s) -- the game ends, "
-         "the launcher starts a fresh one", f, g_select_stuck_s, mode_cur(), rd32(kSelectState), reader_desc().c_str());
+    if (ms < (ULONGLONG)limit * 1000) return;
+    note("frame %u: STUCK: the select screen's loading for %u s, %s (mode %u, phase word %u; %s) -- the game ends, "
+         "the launcher starts a fresh one", f, limit, what, mode_cur(), rd32(kSelectState), reader_desc().c_str());
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
     fflush(stdout); fflush(stderr);
     TerminateProcess(GetCurrentProcess(), 6);

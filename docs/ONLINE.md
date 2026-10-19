@@ -103,10 +103,12 @@ lobby/
    changes, at most ~3 times a second.
 4. **Finding an opponent**, three ways:
    - *Quick match*: the queue pairs the players with the lowest estimated ping
-     (sum of both players' ping to the server).
+     (the best relay path: the smallest sum of both players' round trips to a relay, the
+     server's own included -- docs/RANKED.md "Found match"), within a ping window that grows
+     while they wait (80 ms + 20 per second; any ping after 30 s).
    - *Ranked*: pairs by rating and ping; the allowed rating gap grows while you
      wait (100 points + 25 per second, at most 800) and so does the allowed
-     ping (80 ms + 10 per second, at most 400). Accounts only (configurable).
+     ping (80 ms + 10 per second; any ping after 60 s). Accounts only (configurable).
      The *strict* option keeps the gap at 150 points. The same two players are not
      paired again for 30 s after a ranked game.
    - Players who blocked each other are never paired by any of these.
@@ -426,7 +428,7 @@ Server to client (pushed):
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
-| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}`, `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
+| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}` (the best relay path, docs/RANKED.md "Found match"), `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
 | `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
@@ -581,6 +583,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
+| `T5L_PING_START` / `T5L_PING_WIDEN` / `T5L_PING_ANY_SECONDS` | `80` / `10` / `60` | ranked queue: the estimated ping a pair may have at first (ms), how fast that grows while both wait (ms per s), and after how long any ping goes (0 = never) |
+| `T5L_QUICK_PING_WIDEN` / `T5L_QUICK_PING_ANY_SECONDS` | `20` / `30` | the same for the quick queue (it starts at `T5L_PING_START` too) |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
 | `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |

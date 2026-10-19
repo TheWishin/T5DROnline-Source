@@ -42,7 +42,7 @@ log = logging.getLogger("t5lobby")
 
 SEND_PIECE = 16384          # compressed bytes per spec_data to a spectator
 PENDING_LIMIT = 192 * 1024  # a spectator's unsent output above this: wait before sending it more
-MAX_UPLOAD_PIECE = 6144     # compressed bytes in one spec_data from the streamer (the line limit is 8 KB)
+MAX_UPLOAD_PIECE = 5120     # compressed bytes in one spec_data from the streamer (base64 under the 8 KB line limit)
 
 
 class Stream:

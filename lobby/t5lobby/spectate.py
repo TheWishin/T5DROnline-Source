@@ -13,10 +13,14 @@ the game shows pictures). The spectator's launcher unpacks it into a file of who
 
 Stdlib only; used by the client library, the launcher and tools/spectate_test.py.
 """
+import asyncio
 import base64
 import os
 import struct
+import time
 import zlib
+
+from .proto import LobbyError as LobbyErrorBase, valid_match_id
 
 MAGIC = b"T5LIVE 1\n"
 EXT = ".t5live"
@@ -272,3 +276,189 @@ class Receiver:
             self.f.close()
         except OSError:
             pass
+
+
+def prune(folder, days=2.0):
+    """Old live streams and spectators' files: gone after `days` (their data is in the replays)."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    n = 0
+    for f in names:
+        if f.endswith(EXT):
+            p = os.path.join(folder, f)
+            try:
+                if time.time() - os.path.getmtime(p) > days * 86400:
+                    os.remove(p)
+                    n += 1
+            except OSError:
+                pass
+    return n
+
+
+# ---------------------------------------------------------------------------- the client library's side
+
+UPLOAD_TICK = 0.5           # seconds between two looks at the game's live file
+UPLOAD_PER_TICK = 8192      # compressed bytes per look at most (16 KB/s; a match needs a few hundred bytes a second)
+
+
+class ClientMixin:
+    """Spectating in LobbyClient (client.py): the streamer's uploads and the spectator's download.
+
+    Streamer: the match driver sets T5_REPLAY_LIVE=live_path(live_dir, stream) for every match the
+    server gives a stream id; when the server asks (spec_want) a task sends the file as it grows, and
+    stops when asked (spec_stop) or at the stream's end. Nothing waits for it.
+    Spectator: watch() -> `watching`; the pieces go into watch_dir/watch-<stream>.t5live; the event
+    `spec_ready` {stream, path} says the file has the session and its first match (start the game on
+    it), `spec_end` {stream, reason} that no more comes (the file has its END record then)."""
+
+    def _spec_init(self, spectate, live_dir=None, watch_dir=None):
+        self.spectate = spectate
+        self.live_dir = live_dir         # where the player's games write their live streams (the match driver sets it)
+        self.watch_dir = watch_dir       # where a spectator's file goes
+        self.spec_prefs = None           # (allow, ranked): sent after every login
+        self.spec_watch = None           # what this client watches: {stream, path, receiver, ready, info}
+        self._uploads = {}               # stream id -> {"up": Uploader, "wanted": bool, "task", "eof_sent"}
+
+    def has_spectate(self):
+        w = self.welcome or {}
+        return bool(self.spectate and "spectate" in (w.get("features") or ()) and "spectate" in (w.get("caps") or ()))
+
+    # ---------------------------------------------------------------- privacy
+    def set_spectate_prefs(self, allow, ranked=False):
+        """Allow spectators of this player's matches (ranked: also of ranked ones). Kept and sent again after
+        every login; the server allows nobody until it has them."""
+        self.spec_prefs = (bool(allow), bool(ranked))
+        if self.connected and self.me and self.has_spectate():
+            self._fire({"t": "spec_prefs", "allow": self.spec_prefs[0], "ranked": self.spec_prefs[1]})
+
+    async def _spec_after_login(self):
+        if self.spec_prefs is not None and self.has_spectate():
+            await self._safe(self._send({"t": "spec_prefs", "allow": self.spec_prefs[0], "ranked": self.spec_prefs[1]}))
+
+    # ---------------------------------------------------------------- watching
+    def watch(self, name=None, room=None):
+        """Watch the match friend `name` plays, or room `room`'s match. -> the `watching` reply
+        {stream, match, players, ranked, began, spectators}; then spec_ready / spec_end events."""
+        msg = {"t": "watch"}
+        if room is not None:
+            msg["room"] = room
+        else:
+            msg["name"] = name
+        return self._call(msg)
+
+    def unwatch(self):
+        """Stop watching (the spectator's game is the caller's to close)."""
+        if self._loop is not None:
+            self._run(self._spec_close_watch("left"))
+        if self.connected:
+            try:
+                self._fire({"t": "unwatch"})
+            except LobbyErrorBase:
+                pass
+
+    async def _spec_close_watch(self, why):
+        w, self.spec_watch = self.spec_watch, None
+        if w is not None:
+            w["receiver"].close(why)
+
+    async def _on_watching(self, msg):
+        sid = msg.get("stream")
+        if not valid_match_id(sid) or not self.watch_dir:
+            return False
+        await self._spec_close_watch("switched")
+        os.makedirs(self.watch_dir, exist_ok=True)
+        path = os.path.join(self.watch_dir, "watch-" + sid + EXT)
+        self.spec_watch = {"stream": sid, "path": path, "receiver": Receiver(path), "ready": False, "info": msg,
+                           "bytes": 0}
+
+    async def _on_spec_data(self, msg):
+        w = self.spec_watch
+        if w is None or msg.get("stream") != w["stream"]:
+            return False
+        r = w["receiver"]
+        try:
+            ok = r.add_b64(int(msg.get("off", -1)), str(msg.get("data", "")))
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            why = r.parser.bad or "a piece of the stream is missing"
+            await self._spec_close_watch(why)
+            await self._safe(self._send({"t": "unwatch"}))
+            self._emit({"t": "spec_end", "stream": w["stream"], "reason": "damaged", "detail": why, "ready": w["ready"]})
+            return False
+        w["bytes"] = r.expect
+        if r.parser.ready and not w["ready"]:
+            w["ready"] = True
+            self._emit({"t": "spec_ready", "stream": w["stream"], "path": w["path"],
+                        "matches": list(r.parser.matches), "session": r.parser.session})
+        return False                 # (not every piece to the UI)
+
+    async def _on_spec_end(self, msg):
+        w = self.spec_watch
+        if w is None or msg.get("stream") != w["stream"]:
+            return False
+        await self._spec_close_watch(str(msg.get("reason") or "over"))
+        msg["ready"] = w["ready"]
+        return None
+
+    # ---------------------------------------------------------------- streaming (the player's side)
+    async def _on_spec_want(self, msg):
+        sid = msg.get("stream")
+        if not valid_match_id(sid):
+            return False
+        if self.live_dir:
+            await self._spec_start_upload(sid, int(msg.get("from", 0)))
+        return None                  # (the event too: a UI may show it, the tests wait for it)
+
+    async def _spec_start_upload(self, sid, frm):
+        u = self._uploads.get(sid)
+        if frm == 0 and (u is None or u["up"].sent != 0):
+            if u is not None:
+                u["wanted"] = False
+            u = self._uploads[sid] = {"up": Uploader(live_path(self.live_dir, sid)), "wanted": False, "task": None,
+                                      "eof_sent": False}
+        if u is None or u["up"].sent != frm:
+            await self._safe(self._send({"t": "spec_fail", "stream": sid, "why": "out of step"}))
+            return
+        u["wanted"] = True
+        if u["task"] is None or u["task"].done():
+            u["task"] = asyncio.ensure_future(self._spec_upload(sid, u))
+            self._tasks.append(u["task"])
+
+    async def _on_spec_stop(self, msg):
+        u = self._uploads.get(msg.get("stream"))
+        if u is not None:
+            u["wanted"] = False
+        return None
+
+    async def _spec_upload(self, sid, u):
+        up = u["up"]
+        t0 = time.monotonic()
+        while u["wanted"] and not os.path.exists(up.path):
+            if time.monotonic() - t0 > 60:
+                await self._safe(self._send({"t": "spec_fail", "stream": sid, "why": "no live data"}))
+                u["wanted"] = False
+                return
+            await asyncio.sleep(UPLOAD_TICK)
+        while u["wanted"] and self.connected and not u["eof_sent"]:
+            pieces = up.take(UPLOAD_PER_TICK)
+            for k, (off, data) in enumerate(pieces):
+                last = k == len(pieces) - 1 and up.done
+                msg = {"t": "spec_data", "stream": sid, "off": off, "data": base64.b64encode(data).decode("ascii")}
+                if last:
+                    msg["eof"] = True
+                    u["eof_sent"] = True
+                await self._send(msg)
+            if up.done and not u["eof_sent"]:
+                await self._send({"t": "spec_data", "stream": sid, "off": up.sent, "data": "", "eof": True})
+                u["eof_sent"] = True
+            if u["eof_sent"]:
+                break
+            await asyncio.sleep(UPLOAD_TICK)
+
+    async def _spec_shutdown(self):
+        for u in self._uploads.values():
+            u["wanted"] = False
+        await self._spec_close_watch("closed")

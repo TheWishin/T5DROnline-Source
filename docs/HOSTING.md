@@ -615,7 +615,7 @@ malformed lines (3%), lines over the size limit (2%), floods (1%) or log in and 
 | | before | after |
 |---|---|---|
 | CPU, mean / p95 / max (of one core) | 10.9% / 13.8% / 15.8% | 11.6% / 15.4% / 18.4% |
-| Memory (working set) after warm-up -> end, trend | 38.5 -> 45.2 MB, +8.8 MB/h | 39.1 -> 44.8 MB, +8.5 MB/h (still being traced) |
+| Memory (working set) after warm-up -> end, trend | 38.5 -> 45.2 MB, +8.8 MB/h | 39.1 -> 44.8 MB, +8.5 MB/h -- a warm-up, not a leak: in two 60-minute runs (with and without backups) it stays at 42–45 MB from minute 15 to the end (max 46.8 MB), and `--memtrace` snapshots show the Python heap flat (8.7 -> 6.9 MB between minutes 6 and 15) |
 | Threads (max), handles | 10, 355–363 | 8, 346–356 |
 | Response time (ping), p50 / p99 / p99.9 / max | 1.2 / 19.7 / 60 / 945 ms | 1.2 / 18.2 / 37 / 66 ms |
 | Matches started, relay delivery | 2198, 99.94% | 2374, 99.96% |

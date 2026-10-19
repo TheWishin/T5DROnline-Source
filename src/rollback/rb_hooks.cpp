@@ -422,6 +422,8 @@ struct Register {
          * is offered to the peer (rb_net.cpp); its hooks are harmless until the
          * handshake agrees on it */
         if ((!m || !*m) && getenv("T5_NET_MODE") && *getenv("T5_NET_MODE")) m = "net";
+        /* a replay being watched: the file decides rollback or lockstep (rb_net.cpp offered_by_env), whatever T5_RB_MODE says */
+        if (getenv("T5_NET_MODE") && !_stricmp(getenv("T5_NET_MODE"), "replay")) m = "net";
         if ((!m || !*m) && getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR")) m = "net";   /* a persistent game: sessions come later */
         if (!m || !*m) return;
         if (!strcmp(m, "lockstep") || !strcmp(m, "off")) return;

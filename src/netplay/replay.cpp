@@ -509,6 +509,21 @@ uint32_t play_target() { return P().target; }
 uint32_t play_match_index() { return P().begun; }
 const char* play_error() { return P().error.c_str(); }
 
+bool peek_rollback(const char* path)
+{
+    if (!path || !*path) return false;
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return false;
+    char buf[4096] = {};
+    const size_t n = fread(buf, 1, sizeof buf - 1, fp);
+    fclose(fp);
+    buf[n] = 0;
+    if (strncmp(buf, kMagic, sizeof kMagic - 1)) return false;
+    char* nl = strchr(buf + sizeof kMagic - 1, 10);   /* the end of the JSON line */
+    if (nl) *nl = 0;
+    return strstr(buf, "\"mode\": \"rollback\"") != nullptr;
+}
+
 bool play_load(const char* path)
 {
     Play& p = P();

@@ -1074,6 +1074,9 @@ constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008, kPadR1 = 0x0800;
 
 uint16_t replay_pad()
 {
+    static int on = -1;   /* T5_REPLAY_CONTROLS=0: the pad does not steer the playback (tests on a PC in use) */
+    if (on < 0) { const char* e = getenv("T5_REPLAY_CONTROLS"); on = !(e && *e == '0'); }
+    if (!on) return 0;
     np_host_pad d = {};
     if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
@@ -1726,7 +1729,7 @@ void read_session_env()
     }
     { const char* r = t5_env("T5_NET_RESULT_FILE"); g_result_file = r ? r : ""; }
     { const char* o = t5_env("T5_NET_ON_LOST"); g_on_lost_idle = o && !_stricmp(o, "idle"); }
-    g_start_mode = g_persistent ? StartMode::External : StartMode::Boot;
+    g_start_mode = g_persistent || np::replaying() ? StartMode::External : StartMode::Boot;   /* (a replay starts at its fight, as live) */
     if (const char* st = t5_env("T5_NET_START")) {
         if (!_stricmp(st, "external")) g_start_mode = StartMode::External;
         else if (!_strnicmp(st, "frame:", 6)) { g_start_mode = StartMode::Frame; g_start_frame = (uint32_t)atoi(st + 6); }

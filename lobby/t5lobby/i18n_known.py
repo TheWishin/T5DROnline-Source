@@ -196,6 +196,7 @@ REPORT = (
     N_("Online: the files of the last match"),
     N_("controls.ini (your button settings)"),
     N_("Desync dumps (game state numbers, binary)"),
+    N_("The last replay (the inputs of the last online session, without names)"),
     N_("could not be cleaned of private data"),
     N_("no room left in the size limit"),
     N_("could not be read"),

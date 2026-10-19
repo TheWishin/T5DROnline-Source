@@ -67,6 +67,7 @@ uint32_t hash_every();
 bool playing();                                     /* T5_NET_MODE=replay with a loaded file */
 bool play_load(const char* path);                   /* netplay_core configure(); false = no usable file (play_error() says why) */
 const char* play_error();
+bool peek_rollback(const char* path);               /* the file's header says rollback (usable during static init) */
 int  play_slot();
 int  play_delay();
 bool play_rollback();

@@ -531,11 +531,12 @@ MESSAGES = {
     "Keyboard": "Tastatur",
     "Xbox controller": "Xbox-Controller",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "Tastatur und der erste XInput-Controller steuern beide Spieler 1 (sie werden "
-        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Die "
-        "Tastenbelegung im Spiel änderst du im Options-Menü des Spiels.",
+        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Das "
+        "Options-Menü des Spiels kann die Tastenbelegung für das Spielen offline ändern; online "
+        "gelten nur die Tasten aus dem Launcher.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "

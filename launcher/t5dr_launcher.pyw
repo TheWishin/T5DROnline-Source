@@ -515,8 +515,8 @@ class App(tk.Tk):
         tv.pack(fill="x")
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "Keyboard and the first XInput controller both drive player 1 (they are combined). The keyboard "
-            "only counts while the game window has focus. Button layout inside the game can be changed in its "
-            "own Options menu.")).pack(anchor="w", pady=(6, 0))
+            "only counts while the game window has focus. The game's own Options menu can change the button "
+            "layout for offline play; online games use the launcher's buttons only.")).pack(anchor="w", pady=(6, 0))
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "In this window, on the Online tab, a controller or arcade stick works without mouse or keyboard: "
             "Cross / A accepts a match or rematch and starts a search, Circle / B declines, leaves or stops the "

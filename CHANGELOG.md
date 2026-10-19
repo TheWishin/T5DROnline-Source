@@ -3,6 +3,29 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.2 (not released yet)
+
+### Offline
+- **Unlock all stages** (player request): launcher **Settings -> Unlocks**. The Tekken 5 stages,
+  normally earned after about 50 fights, are there in Arcade, VS, Practice and the rest from the
+  start. Your save is not changed; switched off, the game is as before.
+- **Unlock all customization items** (same place): everything in **ITEM SHOP & EQUIP** costs 0
+  Fight Money. What you take stays in your save like a bought item; the launcher backs the save up
+  once before the first game with it (`save-backups` in the game's folder).
+
+### Online
+- **Different saves no longer desync.** The game copies its own OPTIONS (round time, difficulty)
+  and its unlocks into the match, so two players whose saves differed -- another round time, a
+  stage or Jinpachi unlocked -- could fight apart (another round timer, or another fighter after a
+  rematch) and the match was voided as a desync. Online games now keep a save of their own
+  (`gamedata-online` in the game's folder, the same fresh save on both PCs; patch 0044), and the
+  unlocks always count as on a fresh save online. Your own save is never touched by online play;
+  the game's own OPTIONS (button layout, round time, volumes) apply offline only -- set the
+  buttons in the launcher, they work online as before.
+- **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
+  turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
+  each was played in sync in both netcode modes.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

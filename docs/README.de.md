@@ -223,7 +223,8 @@ Tastatur (Standard) und Xbox-Controller:
   - Zwei Spieler an einer Tastatur: `[keys1] preset = tekken` und
     `[keys2] preset = numpad`.
   - `1+2 = O` — eine Taste für zwei Knöpfe.
-- Das Options-Menü des Spiels kann die Knopfbelegung auch ändern.
+- Das Options-Menü des Spiels kann die Knopfbelegung auch ändern, nur für das
+  Spielen offline (Online-Spiele haben einen eigenen frischen Spielstand, siehe "Online").
 - Eine Test-Zip von vor dem Abend des 2026-10-16 kennt nur Tastatur und
   Xbox-Pads. `controls.ini` und DirectInput kamen später.
 
@@ -261,6 +262,13 @@ Gut zu wissen:
   dasselbe gewählt hat, sonst Auto. Ranked-Matches nutzen immer 2. Ruckelt ein
   Match auf einem langsamen PC, kann ein Spieler auf Delay-Netcode umschalten:
   Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
+- Online-Spiele haben einen eigenen Spielstand (`gamedata-online` im
+  Spielordner), auf beiden PCs derselbe frische: Was du in den **OPTIONS** des
+  Spiels einstellst (Tastenbelegung, Rundenzeit, Schwierigkeit) und deine
+  Freischaltungen gelten nur offline, damit beide Spieler immer dasselbe Spiel
+  spielen. Stell deine Tasten im Launcher ein (Settings -> Set up
+  controllers); die gelten auch online. Dein eigener Spielstand wird beim
+  Online-Spielen nie angefasst.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.

@@ -140,6 +140,8 @@ class OnlineView:
         self.host_var = tk.StringVar(tab.parent, value="")
         self.ring = None
         self.bar_spinner = None
+        self.set_ring = None               # the countdown to a ranked set's next game (result card)
+        self.set_ring_total = 1.0
         self._build()
         tab.set_var.trace_add("write", lambda *_: self.refresh())
 
@@ -926,11 +928,13 @@ class OnlineView:
                 self.fighters = tuple(n["chars"])
         self.refresh()
 
-    def result(self, ev, mine, text):
+    def result(self, ev, mine, text, set_end=None):
+        """The result card: one game's (match_result), or with `set_end` a whole ranked set's (its score in games
+        and its one rating change)."""
         tab = self.tab
         drv = tab.driver
         tk_ = drv.session_ticket if drv is not None else None
-        self.result_info = {"ev": ev, "mine": mine, "text": text,
+        self.result_info = {"ev": ev, "mine": mine, "text": text, "set_end": set_end,
                             "slot": getattr(tk_, "slot", None),
                             "opp": (getattr(tk_, "opponent", None) or {}).get("name"),
                             "ranked": ev.get("ranked", (self.match_ev or {}).get("ranked"))}
@@ -1168,7 +1172,7 @@ class OnlineView:
         lag = (tab.lag or {}).get("text")
         sig = (kind, id(tab.match), (self.revealed or {}).get("name"), tab.ready_sent, tab.challenge,
                tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None,
-               tab.set_var.get())
+               tab.set_var.get(), id(tab.set_bar))
         if sig == self._bar_sig:
             return
         self._bar_sig = sig
@@ -1177,6 +1181,7 @@ class OnlineView:
             w.destroy()
         self.ring = None
         self.bar_spinner = None
+        self.set_ring = None
         show_text = kind == "question"
         if kind == "ready":
             self._visual_ready(self.bar_visual)
@@ -1186,9 +1191,8 @@ class OnlineView:
             self._visual_challenge(self.bar_visual)
         elif kind == "result":
             self._visual_result(self.bar_visual)
-            # (the countdown to a ranked set's next game shows too)
-            show_text = (tab.rematch_bar is not None and tab.bar_text.get() != tab.rematch_bar[0]) or (
-                getattr(tab, "set_bar", None) is not None)
+            # (a ranked set's countdown to its next game is the strip on the card; bar_text keeps the same line)
+            show_text = tab.rematch_bar is not None and tab.bar_text.get() != tab.rematch_bar[0]
         if show_text:
             self.bar_label.configure(style="Card.H3.TLabel" if kind == "question" else "Card.Accent.TLabel")
             self.bar_label.grid(row=1, column=0, sticky="w", pady=(self.px(10) if kind != "question" else 0, 0))
@@ -1314,6 +1318,13 @@ class OnlineView:
     def _outcome(self):
         info = self.result_info or {}
         ev = info.get("ev") or {}
+        se = info.get("set_end")
+        if se:
+            if se.get("status") in ("confirmed", "forfeit") and se.get("result") == "win":
+                return "win", t("SET WON"), "Win."
+            if se.get("status") in ("confirmed", "forfeit") and se.get("result") == "loss":
+                return "loss", t("SET LOST"), "Loss."
+            return "void", t("NO CONTEST"), "Even."
         st = ev.get("status")
         counted = st in ("confirmed", "onesided", "forfeit", "resolved")
         mine = info.get("mine")
@@ -1339,19 +1350,27 @@ class OnlineView:
         col = {"win": C["ok"], "loss": C["bad"]}.get(kind, C["text"])
         ttk.Label(banner, text=title, style=pre + "Huge.TLabel", foreground=col).grid(row=0, column=0, rowspan=2,
                                                                                        sticky="w")
-        if info.get("opp"):
+        se = info.get("set_end")
+        if se:
+            sub = t("Ranked set vs {name}", name=info["opp"]) if info.get("opp") else t("Ranked set")
+        elif info.get("opp"):
             sub = (t("Ranked match vs {name}", name=info["opp"]) if info.get("ranked")
                    else t("Casual match vs {name}", name=info["opp"]))
         else:
             sub = t("Ranked match") if info.get("ranked") else t("Casual match")
-        set_text = self.set_text(ev)
+        set_text = "" if se or tab.set_bar is not None else self.set_text(ev)   # (the set strip shows it)
         if set_text:
             sub += "  \u00b7  " + set_text[:1].upper() + set_text[1:]
         ttk.Label(banner, text=sub, style=pre + "Bold.TLabel").grid(row=0, column=1, sticky="sw", padx=(px(16), 0))
         ttk.Label(banner, text=info.get("text", ""), style=pre + "Small.TLabel").grid(row=1, column=1, sticky="nw",
                                                                                         padx=(px(16), 0))
         score = ev.get("score")
-        if isinstance(score, (list, tuple)) and len(score) == 2:
+        if se and isinstance(se.get("wins"), (list, tuple)) and len(se["wins"]) == 2:
+            sc = self.body(banner, pre.rstrip(".") + "Body.TFrame")         # a set: the games, from this side
+            sc.grid(row=0, column=2, rowspan=2, sticky="e", padx=(px(12), px(4)))
+            ttk.Label(sc, text=f"{se['wins'][0]} – {se['wins'][1]}", style=pre + "Big.TLabel").pack(anchor="e")
+            ttk.Label(sc, text=t("GAMES  (YOU – THEM)"), style=pre + "Caps.TLabel").pack(anchor="e")
+        elif isinstance(score, (list, tuple)) and len(score) == 2:
             slot = info.get("slot")
             a, b = (score[0], score[1]) if slot != 1 else (score[1], score[0])
             sc = self.body(banner, pre.rstrip(".") + "Body.TFrame")
@@ -1360,7 +1379,10 @@ class OnlineView:
             ttk.Label(sc, text=t("ROUNDS  (YOU – THEM)") if slot is not None else t("ROUNDS  (P1 – P2)"),
                       style=pre + "Caps.TLabel").pack(anchor="e")
         row = 1
-        r = ev.get("rating")
+        if tab.set_bar is not None and not se:
+            self._set_strip(v, row)                 # between two games of a ranked set: the score, the countdown
+            row += 1
+        r = (se or {}).get("rating") if se else ev.get("rating")
         if r:
             rr = self.body(v)
             rr.grid(row=row, column=0, sticky="w", pady=(px(10), 0))
@@ -1397,6 +1419,52 @@ class OnlineView:
                 row=0, column=0, sticky="nw", padx=(0, px(8)))
             self.wrap(ttk.Label(lr, text=describe_lag(lag), style="Card.warn.TLabel" if bad else "Card.Small.TLabel",
                                 justify="left"), self.stage_card, 150).grid(row=0, column=1, sticky="w")
+
+    def _set_strip(self, v, row):
+        """A ranked set between two games: 'RANKED SET, BEST OF 3', one dot per game won (green) or lost (red),
+        the set score, and a small ring counting down to the next game (it starts by itself)."""
+        tab, px = self.tab, self.px
+        info, slot, end = tab.set_bar
+        w = info.get("wins") or [0, 0]
+        mine, theirs = (w[0], w[1]) if slot == 0 else (w[1], w[0])
+        best = int(info.get("best_of") or 3)
+        nxt = info.get("next") or {}
+        number = nxt.get("number") or info.get("number") or 1
+        strip = self.card(v, "Tile.TFrame", 10)
+        strip.grid(row=row, column=0, sticky="we", pady=(px(10), 0))
+        strip.columnconfigure(2, weight=1)
+        ttk.Label(strip, text=t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        d, gap = px(12), px(6)
+        dots = tk.Canvas(strip, width=best * (d + gap), height=d + 2, bg=C["raised"], highlightthickness=0,
+                         takefocus=0)
+        for i in range(best):
+            x = i * (d + gap) + 1
+            col = C["ok"] if i < mine else C["bad"] if i < mine + theirs else None
+            dots.create_oval(x, 1, x + d, d + 1, fill=col or C["raised"], outline=col or C["line_hi"], width=2)
+        dots.grid(row=1, column=0, sticky="w", pady=(px(6), 0))
+        ttk.Label(strip, text=t("Set {mine}-{theirs}", mine=mine, theirs=theirs), style="Tile.Num.TLabel").grid(
+            row=1, column=1, sticky="w", padx=(px(12), 0), pady=(px(4), 0))
+        when = (t("Game {number} of {best} again (no winner), starts in", number=number, best=best)
+                if nxt.get("replay") else t("Game {number} of {best} starts in", number=number, best=best))
+        ttk.Label(strip, text=when, style="Tile.Bold.TLabel").grid(row=0, column=2, rowspan=2, sticky="e",
+                                                                      padx=(0, px(10)))
+        self.set_ring_total = max(1.0, float(nxt.get("in") or 0) or (end - time.monotonic()))
+        self.set_ring = theme.CountdownRing(strip, size=50, width=5, bg=C["raised"])
+        self.set_ring.grid(row=0, column=3, rowspan=2, sticky="e")
+        self._update_set_ring()
+
+    def _update_set_ring(self):
+        sb = self.tab.set_bar
+        if self.set_ring is None:
+            return
+        if sb is None:
+            self.set_ring = None
+            return
+        try:
+            self.set_ring.set(max(0.0, sb[2] - time.monotonic()), self.set_ring_total)
+        except tk.TclError:
+            self.set_ring = None
 
     def _render_result_card(self):
         tab, px = self.tab, self.px
@@ -1449,7 +1517,8 @@ class OnlineView:
             return True
         if self._stage == "result" and getattr(self, "res_spinner", None) is not None:
             return True
-        return self._stage == "bar" and (self.ring is not None or self.bar_spinner is not None)
+        return self._stage == "bar" and (self.ring is not None or self.bar_spinner is not None
+                                         or self.set_ring is not None)
 
     def _ensure_anim(self):
         if self._anim_id is None and self._anim_needed():
@@ -1475,6 +1544,8 @@ class OnlineView:
                 self._update_elapsed()
             if self.ring is not None:
                 self._update_ring()
+            if self.set_ring is not None:
+                self._update_set_ring()
             if self.bar_spinner is not None and shown:
                 self.bar_spinner.step(dt)
             if self._stage == "result" and getattr(self, "res_spinner", None) is not None and shown:

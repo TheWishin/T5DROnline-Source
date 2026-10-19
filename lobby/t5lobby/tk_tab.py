@@ -1119,7 +1119,8 @@ class OnlineTab:
             self.status(text + ".")
             if self.last_result is not None:
                 res = ev.get("result")
-                self.view.result(self.last_result, True if res == "win" else False if res == "loss" else None, text)
+                self.view.result(self.last_result, True if res == "win" else False if res == "loss" else None, text,
+                                 set_end=ev)
             if ev.get("reason") == "decided" and self.rematch_bar is not None:
                 self.rematch_bar = (text if len(text) < 70 else t("Rematch? (a new set)"), self.rematch_bar[1])
                 self._show_rematch_bar()          # a rematch is a new set

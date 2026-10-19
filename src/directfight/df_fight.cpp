@@ -563,6 +563,7 @@ void begin_select(uint32_t f)
         note("player %d: %s (id %d) -> cell %d, color %d", p + 1, kName[g_cfg.chr[p]], g_cfg.chr[p], c, g_cfg.color[p]);
     }
     note("stage %d, rounds %d", g_cfg.stage, g_cfg.rounds);
+    costume_session(f, session_netplay());
     if (g_cfg.pick > 0 && pick_begin(f)) return;
     /* the same fighter as in the session's last fight keeps its costume (a
      * ranked set's later games: the lock names the characters only); the same
@@ -1311,6 +1312,13 @@ void fight_on_frame(uint32_t f)
          * (both players' records done), and the panel only writes the word. */
         if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
         if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
+        /* custom costumes: no fight before the opponent's table is here (both PCs
+         * write both tables at the game mode's start; df_costume.cpp) */
+        if (!costume_ready(session_netplay())) {
+            costume_session(f, session_netplay());          /* (set already, or netplay was not up at the select) */
+            if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: waiting for the opponent's costume table", f);
+            break;
+        }
         if (f >= g_ph_frame + g_stage_wait && press_idle(0) && press_idle(1) && ((f - g_ph_frame - g_stage_wait) % 30) == 0) {
             for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }
@@ -1323,6 +1331,7 @@ void fight_on_frame(uint32_t f)
             wr8(kRoundsToWin, (uint8_t)g_cfg.rounds);
             if (session_netplay() && !g_cfg.match.empty()) t5_netplay_set_match(g_cfg.match.c_str());
             write_hud(g_cfg, f);
+            costume_apply(f, session_netplay());
         }
         if (g_cfg.stage >= 0) wr32(kStageId, (uint32_t)g_cfg.stage);
         /* FIGHT START (lockstep frame 0 is the next frame) at the first frame the
@@ -1340,6 +1349,7 @@ void fight_on_frame(uint32_t f)
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
         pick_fight_start(f);
+        costume_check(f);
         for (int p = 0; p < 2; p++) { g_last_chr[p] = g_cfg.chr[p]; g_last_btn[p] = g_cfg.btn[p]; }
         g_session_matches++;
         g_match++;

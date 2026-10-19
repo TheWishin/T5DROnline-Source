@@ -1,0 +1,31 @@
+diff --git a/libs/system/cellSaveData.c b/libs/system/cellSaveData.c
+index 92b237c..1cf2d91 100644
+--- a/libs/system/cellSaveData.c
++++ b/libs/system/cellSaveData.c
+@@ -51,7 +51,25 @@
+  * Internal helpers
+  * -----------------------------------------------------------------------*/
+ 
+-static char s_save_root[1024] = "./gamedata/dev_hdd0/home/00000001/savedata";
++static char s_save_root_buf[1024] = "./gamedata/dev_hdd0/home/00000001/savedata";
++
++/* PS3_SAVEDATA_DIR=<dir>: the saves live in <dir> instead (T5DR: a game started for
++ * online play keeps a save of its own, so both PCs start from the same fresh save and
++ * the player's offline save is never read or written by it). Read once. */
++static const char* save_root(void)
++{
++    static int done;
++    if (!done) {
++        const char* e = getenv("PS3_SAVEDATA_DIR");
++        if (e && *e && strlen(e) < sizeof(s_save_root_buf) - 64) {
++            snprintf(s_save_root_buf, sizeof(s_save_root_buf), "%s", e);
++            printf("[cellSaveData] saves in %s (PS3_SAVEDATA_DIR)\n", s_save_root_buf);
++        }
++        done = 1;
++    }
++    return s_save_root_buf;
++}
++#define s_save_root save_root()
+ 
+ /* Ensure directory (and parents) exist */
+ static void ensure_dirs(const char* path)

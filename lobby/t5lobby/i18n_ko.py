@@ -475,6 +475,17 @@ MESSAGES = {
     "in the game.":
         "화면은 창 크기에 맞춰지며, 선명도는 내부 해상도에 따라 달라집니다. 창 가장자리를 끌어 크기를 바꿀 수도 있습니"
         "다. 게임에서 Alt+Enter 또는 F11로 테두리 없는 전체 화면을 전환합니다.",
+    "Unlocks": "잠금 해제",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "모든 스테이지 잠금 해제 (Tekken 5 스테이지, Arcade를 클리어하지 않아도)",
+    "Unlock all customization items (free in the item shop)":
+        "모든 커스터마이즈 아이템 잠금 해제 (ITEM SHOP에서 무료)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "오프라인 전용입니다 (Arcade, VS, Practice 등). 세이브는 바뀌지 않습니다. 무료로 받은 아이템은 계속 "
+        "내 것이 됩니다 (세이브를 먼저 save-backups에 백업합니다). 온라인에서는 두 플레이어가 항상 같은 "
+        "스테이지와 기본 코스튬을 씁니다.",
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
@@ -520,10 +531,11 @@ MESSAGES = {
     "Keyboard": "키보드",
     "Xbox controller": "Xbox 컨트롤러",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "키보드와 첫 번째 XInput 컨트롤러는 둘 다 플레이어 1을 조작합니다 (합쳐짐). 키보드는 게임 창에 포커스가 있을 "
-        "때만 적용됩니다. 게임 안의 버튼 배치는 게임의 Options 메뉴에서 바꿀 수 있습니다.",
+        "때만 적용됩니다. 게임 자체의 Options 메뉴에서 오프라인 플레이용 버튼 배치를 바꿀 수 있습니다. 온라인 "
+        "게임은 런처의 버튼 설정만 사용합니다.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -1320,6 +1332,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "결과를 보냈습니다. 상대의 보고를 기다리는 중...",
     "Rematch offered; waiting for your opponent...": "Rematch를 신청했습니다. 상대를 기다리는 중...",
     "(other version)": "(다른 버전)",
+    "other version": "다른 버전",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "검색 중... (Ranked 대기 {ranked}명, Quick Match {quick}명)",
@@ -1593,7 +1606,7 @@ MESSAGES = {
         "철자를 확인하세요: 친구는 계정 이름으로 추가합니다.",
     "in a match": "매치 중",
     "offline": "오프라인",
-    "(older launcher: no invites)": "(구버전 런처: 초대 불가)",
+    "older launcher: no invites": "구버전 런처: 초대 불가",
     "Friends ({count})": "친구 ({count})",
     "offline, last seen {when}": "오프라인 ({when})",
     "Friends need an account. Log in with one to add friends and invite them.":

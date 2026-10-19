@@ -999,11 +999,7 @@ class RenderTests(Base):
 class EveryLanguageRenderTests(Base):
     """The launcher, the Online tab's screens, the Controls, report and update windows, built (withdrawn) in each
     language at 100 % and 150 % display scaling (tests/i18n_layout.py): no text missing from the catalog, no English
-    left on screen, nothing cut off where English is not, no window on screen."""
-    # Cut off in German as in English (the column is narrow for "playing (other version)" in both): not new.
-    # German on the Friends page (texts the German tests of the friends feature require): longer than English there.
-    KNOWN = {"de": (re.escape("im Spiel (andere Version)"), re.escape("angefragt: wartet auf eine Antwort"),
-                    r"online friend(s|'s invite): \d+ px wide")}
+    left on screen, nothing cut off (English included), no window on screen."""
     english = {}
 
     @classmethod
@@ -1026,9 +1022,15 @@ class EveryLanguageRenderTests(Base):
                 self.assertEqual(walk.missing, [], "texts shown that the catalog does not have")
                 self.assertEqual({s: e for s, e in walk.english.items() if e}, {}, "English texts still on screen")
                 self.assertGreaterEqual(len(walk.screens), 20)
-                cut = [c for c in i18n_layout.compare(walk, base)
-                       if not any(re.search(k, c) for k in self.KNOWN.get(lang, ()))]
-                self.assertEqual(cut, [], f"cut off in {lang} at {scale} % (python tests/i18n_layout.py {lang})")
+                self.assertEqual(i18n_layout.compare(walk, base), [],
+                                 f"cut off in {lang} at {scale} % (python tests/i18n_layout.py {lang})")
+
+    def test_english_cuts_nothing_off(self):
+        import i18n_layout
+        for scale in i18n_layout.SCALES:
+            with self.subTest(scale=scale):
+                self.assertEqual(i18n_layout.compare(self.baseline(scale)), [],
+                                 f"cut off in English at {scale} % (python tests/i18n_layout.py en)")
 
     def test_english_shows_no_window(self):
         base = self.baseline(100)
@@ -1147,7 +1149,7 @@ class OnlineTabGermanTests(German):
         self.assertEqual(rows[0][0], "Me  (du)")
         self.assertEqual(rows[0][5], "in der Lobby")
         self.assertEqual(rows[1][1], "Gast")
-        self.assertEqual(rows[1][5], "im Spiel (andere Version)")
+        self.assertEqual(rows[1][5], "andere Version")
         room = self.tab.tv_rooms.item("r1", "values")
         self.assertEqual(room[2], "offen ranked")
         self.assertIn("2nd Dan", " ".join(str(v) for v in rows[0]))
@@ -1191,7 +1193,7 @@ class OnlineTabGermanTests(German):
         t = self.tab
         for status, reason, expect in (
                 ("confirmed", None, "Ergebnis bestätigt."),
-                ("void", "desync", "Kein Ergebnis (die beiden Spiele waren nicht mehr synchron)."),
+                ("void", "desync", "Kein Ergebnis (die Spiele liefen nicht mehr synchron)."),
                 ("forfeit", "quit", "Match durch Aufgabe entschieden (ein Spieler ist gegangen)."),
                 ("disputed", "disputed", "Du und dein Gegner habt verschiedene Ergebnisse gemeldet -- zählt nicht "
                                           "(die Meldungen passten nicht zusammen).")):
@@ -1352,10 +1354,10 @@ class OnlineTabGermanTests(German):
         t.on_event({"t": "friends"})
         t.nb.select(3)
         texts, english = self.shown()
-        for expect in ("FREUNDE", "Zu einem Match einladen", "In meinen Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
-                       "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "angefragt: wartet auf eine Antwort",
+        for expect in ("FREUNDE", "Zum Match einladen", "In den Raum einladen", "Entfernen", "FREUND HINZUFÜGEN",
+                       "Anfrage senden", "ANFRAGEN", "möchte dein Freund sein", "wartet auf Antwort",
                        i18n.t("searching"), "im Match", "Freunde (1)", "3 online · 4 von 100",
-                       i18n.t("in lobby") + " (älterer Launcher: keine Einladungen)"):
+                       "älterer Launcher: keine Einladungen"):
             self.assertIn(expect, texts)
         self.assertTrue(any(x.startswith("offline, zuletzt gesehen ") for x in texts), texts)
         self.assertEqual(english, [])

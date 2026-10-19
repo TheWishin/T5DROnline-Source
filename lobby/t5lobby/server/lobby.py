@@ -53,7 +53,7 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -2439,7 +2439,7 @@ class LobbyServer:
         seed = int.from_bytes(m.tag[:4], "big")
         m.pick = self._pick_seconds(m)
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
-        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[2]
+        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed, old_stages=self._old_stages(m))[2]
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -2474,6 +2474,11 @@ class LobbyServer:
                 "continue": m.continued, "rematch_of": m.rematch_of,
                 "min_seconds": self.cfg.min_match_seconds,
                 "set": m.set.info() if m.set is not None else None})
+
+    def _old_stages(self, m):
+        """May this match's stage be a Tekken 5 one? The server's choice (T5L_OLD_STAGES), and only when both clients
+        know those stage keys (cap "old_stages"; an older launcher could not start the fight)."""
+        return bool(self.cfg.old_stages) and all("old_stages" in getattr(p.conn, "caps", ()) for p in m.players)
 
     def _pick_seconds(self, m):
         """In-game select (docs/RANKED.md "Character select in the game"): both players pick on their

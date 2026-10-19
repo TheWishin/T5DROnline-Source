@@ -181,6 +181,7 @@ void trace_call(int i, ppu_context* ctx)
     fprintf(g_tr_log, "C %u %d t%llu %06X %llx %llx %llx %llx %llx %llx -> %llx\n", f, rs, (unsigned long long)tid, g_tr_addr[i],
             (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)a5, (unsigned long long)a6, (unsigned long long)a7,
             (unsigned long long)a8, (unsigned long long)ctx->gpr[3]);
+    fflush(g_tr_log);   /* a test game is usually killed: keep every line */
 }
 template <int I> void trace_hook(ppu_context* ctx) { trace_call(I, ctx); }
 template <int... I> constexpr std::array<GuestFn, sizeof...(I)> make_hooks(std::integer_sequence<int, I...>) { return { &trace_hook<I>... }; }

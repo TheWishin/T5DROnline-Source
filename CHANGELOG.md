@@ -5,7 +5,7 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
-**Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution.** The new
+**Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new
 lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
 
 ### Online
@@ -29,6 +29,17 @@ lobby features need the lobby server updated; older launchers keep working with 
   memory ran out. The select screen is now closed and opened again the way the game itself does
   it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
   lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
+- **Different saves no longer desync.** The game copies its own OPTIONS (round time, difficulty)
+  and its unlocks into the match, so two players whose saves differed -- another round time, a
+  stage or Jinpachi unlocked -- could fight apart (another round timer, or another fighter after a
+  rematch) and the match was voided as a desync. Online games now keep a save of their own
+  (`gamedata-online` in the game's folder, the same fresh save on both PCs; patch 0044), and the
+  unlocks always count as on a fresh save online. Your own save is never touched by online play;
+  the game's own OPTIONS (button layout, round time, volumes) apply offline only -- set the
+  buttons in the launcher, they work online as before.
+- **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
+  turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
+  each was played in sync in both netcode modes.
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the
@@ -42,8 +53,15 @@ lobby features need the lobby server updated; older launchers keep working with 
   besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
   Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
   a font made for them. The new translations were made with machine help: corrections from players
-  are welcome. The Settings tab and the Controls window got room for the longer texts (at 100 % and
-  150 % display scaling).
+  are welcome. The Settings tab, the Controls window and the Online tab's lists got room for the
+  longer texts (at 100 % and 150 % display scaling); a player or friend on another version (or an
+  older launcher) shows that in the status column instead of what they are doing.
+- **Unlock all stages** (player request): launcher **Settings -> Unlocks**. The Tekken 5 stages,
+  normally earned after about 50 fights, are there in Arcade, VS, Practice and the rest from the
+  start. Your save is not changed; switched off, the game is as before.
+- **Unlock all customization items** (same place): everything in **ITEM SHOP & EQUIP** costs 0
+  Fight Money. What you take stays in your save like a bought item; the launcher backs the save up
+  once before the first game with it (`save-backups` in the game's folder).
 - **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
   "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
   Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id

@@ -75,6 +75,8 @@ class Config:
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
     ingame_pick: int = 30           # T5L_INGAME_PICK: seconds to pick the character on the game's own select screen
                                     # (when both players' launchers and games can; 0 = off: the launcher's character)
+    old_stages: bool = False        # T5L_OLD_STAGES: the stage drawn for a match may be one of the Tekken 5 stages too
+                                    # (when both clients announce "old_stages"; docs/RANKED.md "Characters and stages")
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)

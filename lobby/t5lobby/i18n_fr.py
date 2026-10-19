@@ -491,6 +491,17 @@ MESSAGES = {
     "in the game.":
         "L'image est mise à l'échelle de la fenêtre ; sa netteté dépend de la Résolution interne. Tu peux aussi "
         "tirer les bords de la fenêtre. Alt+Entrée ou F11 bascule en plein écran sans bordure en jeu.",
+    "Unlocks": "Déblocages",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Débloquer tous les stages (ceux de Tekken 5, sans finir le mode Arcade)",
+    "Unlock all customization items (free in the item shop)":
+        "Débloquer tous les objets de personnalisation (gratuits dans l'ITEM SHOP)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Hors ligne seulement (Arcade, VS, Practice et le reste). Ta sauvegarde n'est pas modifiée ; les objets "
+        "que tu prends gratuitement restent à toi (la sauvegarde est d'abord copiée, dans save-backups). En "
+        "ligne, les deux joueurs ont toujours les mêmes stages et les costumes par défaut.",
     "Sound and start": "Son et démarrage",
     "Mute sound": "Couper le son",
     "Start minimized, without taking focus (for testing)": "Démarrer réduit, sans prendre le focus (pour les tests)",
@@ -540,11 +551,11 @@ MESSAGES = {
     "Keyboard": "Clavier",
     "Xbox controller": "Manette Xbox",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "Le clavier et la première manette XInput contrôlent tous deux le joueur 1 (ils sont combinés). Le clavier "
-        "ne compte que quand la fenêtre du jeu a le focus. La disposition des boutons dans le jeu se change dans son "
-        "propre menu Options.",
+        "ne compte que quand la fenêtre du jeu a le focus. Le menu Options du jeu peut changer la disposition des "
+        "boutons pour jouer hors ligne ; en ligne, seuls les boutons du launcher comptent.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -1220,7 +1231,7 @@ MESSAGES = {
     "the connection between the games failed": "la connexion entre les jeux a échoué",
     "both players left": "les deux joueurs sont partis",
     "no result in time": "pas de résultat à temps",
-    "repeated crashes count as losses": "les plantages répétés comptent comme des défaites",
+    "repeated crashes count as losses": "les plantages répétés sont des défaites",
     "repeated early quits": "abandons précoces répétés",
     "repeated missing reports": "signalements manquants répétés",
     "scores differed": "les scores différaient",
@@ -1374,6 +1385,7 @@ MESSAGES = {
         "Résultat envoyé ; en attente du signalement de ton adversaire...",
     "Rematch offered; waiting for your opponent...": "Rematch proposé ; en attente de ton adversaire...",
     "(other version)": "(autre version)",
+    "other version": "autre version",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Recherche... ({ranked} en file Ranked, {quick} en Quick Match)",
@@ -1659,7 +1671,7 @@ MESSAGES = {
         "Vérifie l'orthographe : les amis s'ajoutent par leur nom de compte.",
     "in a match": "en match",
     "offline": "hors ligne",
-    "(older launcher: no invites)": "(vieux launcher : pas d'invit.)",
+    "older launcher: no invites": "vieux launcher : pas d'invitations",
     "Friends ({count})": "Amis ({count})",
     "offline, last seen {when}": "hors ligne depuis {when}",
     "Friends need an account. Log in with one to add friends and invite them.":

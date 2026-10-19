@@ -488,6 +488,17 @@ MESSAGES = {
     "in the game.":
         "La imagen se escala a la ventana; su nitidez depende de la Resolución interna. También puedes arrastrar los "
         "bordes de la ventana. Alt+Enter o F11 cambia a pantalla completa sin bordes en el juego.",
+    "Unlocks": "Desbloqueos",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Desbloquear todos los escenarios (los de Tekken 5, sin completar Arcade)",
+    "Unlock all customization items (free in the item shop)":
+        "Desbloquear todos los ítems de personalización (gratis en la ITEM SHOP)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Solo offline (Arcade, VS, Practice y los demás). Tu partida guardada no cambia; los ítems que "
+        "tomes gratis se quedan contigo (antes se hace una copia de la partida guardada, en save-backups). "
+        "Online, ambos jugadores siempre tienen los mismos escenarios y los trajes predeterminados.",
     "Sound and start": "Sonido e inicio",
     "Mute sound": "Silenciar sonido",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sin tomar el foco (para pruebas)",
@@ -535,11 +546,11 @@ MESSAGES = {
     "Keyboard": "Teclado",
     "Xbox controller": "Control Xbox",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "El teclado y el primer control XInput manejan al jugador 1 (se combinan). El teclado solo cuenta mientras "
-        "la ventana del juego tiene el foco. La asignación de botones dentro del juego se cambia en su propio menú "
-        "Options.",
+        "la ventana del juego tiene el foco. El menú Options del propio juego puede cambiar la asignación de "
+        "botones para jugar offline; las partidas online solo usan los botones del launcher.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -1211,7 +1222,7 @@ MESSAGES = {
     "the connection between the games failed": "falló la conexión entre los juegos",
     "both players left": "ambos jugadores salieron",
     "no result in time": "sin resultado a tiempo",
-    "repeated crashes count as losses": "los fallos repetidos cuentan como derrotas",
+    "repeated crashes count as losses": "fallos repetidos cuentan como derrotas",
     "repeated early quits": "abandonos tempranos repetidos",
     "repeated missing reports": "reportes faltantes repetidos",
     "scores differed": "los marcadores no coincidieron",
@@ -1361,6 +1372,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "Resultado enviado; esperando el reporte de tu rival...",
     "Rematch offered; waiting for your opponent...": "Rematch ofrecido; esperando a tu rival...",
     "(other version)": "(otra versión)",
+    "other version": "otra versión",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Buscando... ({ranked} en la búsqueda Ranked, {quick} en Quick Match)",
@@ -1638,7 +1650,7 @@ MESSAGES = {
         "Revisa cómo lo escribiste: los amigos se agregan por su nombre de cuenta.",
     "in a match": "en partida",
     "offline": "desconectado",
-    "(older launcher: no invites)": "(launcher viejo: sin invitar)",
+    "older launcher: no invites": "launcher viejo: sin invitaciones",
     "Friends ({count})": "Amigos ({count})",
     "offline, last seen {when}": "desconectado desde {when}",
     "Friends need an account. Log in with one to add friends and invite them.":

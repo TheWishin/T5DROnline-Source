@@ -825,7 +825,7 @@ def system_text(ctx, now=None, game_log=None):
 
 
 SETTING_KEYS = ("display", "internal_res", "vsync", "stage_blur", "power_saving", "input_delay", "mute", "background",
-                "low_priority")
+                "low_priority", "unlock_stages", "unlock_items")
 
 
 def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
@@ -849,6 +849,8 @@ def settings_lines(settings, labels=None, env_overrides=None, out_dir=None):
          f"Mute sound: {yesno(st.get('mute'))}",
          f"Start minimized without focus: {yesno(st.get('background'))}",
          f"Build at low priority: {yesno(st.get('low_priority'))}",
+         f"Unlock all stages (offline): {yesno(st.get('unlock_stages'))}",
+         f"Unlock all customization items (offline): {yesno(st.get('unlock_items'))}",
          f"Player name set: {yesno((st.get('nickname') or '').strip())}",
          f"Package and license chosen: {yesno(st.get('pkg') and st.get('rap'))}"]
     if out_dir:

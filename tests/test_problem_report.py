@@ -655,7 +655,8 @@ class SystemInfo(unittest.TestCase):
             info = report.build_info_for(out, {"version": "9.9.9"}, ROOT)
         self.assertEqual(info["code_id"], "aab9cb523c06a67b")
         self.assertRegex(info.get("build_id", ""), r"^[0-9a-f]{16}$")
-        self.assertEqual(info["net"], 3)
+        from t5lobby.buildid import NETPLAY_VERSION
+        self.assertEqual(info["net"], NETPLAY_VERSION)
 
 
 class LauncherLog(unittest.TestCase):

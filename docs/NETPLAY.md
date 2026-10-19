@@ -298,7 +298,7 @@ How a session starts, survives trouble, and ends when it cannot go on
 | Other build | A peer with another `T5_NET_BUILD`, or another netplay protocol version (older builds), is refused at the first HELLO, and told so (REJECT) -> `build_mismatch` within a second or two of boot, on both sides |
 | Packets | With `T5_NET_KEY` (the lobby's per-match secret, sent only over the lobby's TCP channel) every packet ends in a SipHash-2-4 tag; without it the key comes from `T5_NET_MATCH` + `T5_NET_SEED` when both are set, else packets are unauthenticated (direct-IP play). Packets with a wrong tag, an unknown session or another peer process's nonce are dropped |
 | Who is the peer | The first authenticated HELLO (unauthenticated: only from the IP in `T5_NET_PEER` when it is given); after the handshake only that process (session id + nonce + tag) |
-| Lobby could not connect the two PCs directly | The relay; between two 1.1.1 launchers the match moves onto the direct path as soon as it works ("Getting a direct connection" below) |
+| Lobby could not connect the two PCs directly | The relay: the lobby server's own, or for two 1.1.1 launchers whichever relay (the lobby server's or a regional relay-only server) has the smallest sum of both players' round trips (docs/ONLINE.md "Regional relays"); between two 1.1.1 launchers the match moves onto the direct path as soon as it works ("Getting a direct connection" below) |
 | NAT rebinding / new relay mapping | The peer's packets arrive from a new address: they still prove who sent them, so the game answers there from then on ("the peer's address changed ... following it") |
 | Short outage / loss / jitter | Lockstep stalls and resumes; resends every 15 ms; nothing is lost while the outage is shorter than `T5_NET_TIMEOUT` |
 | Peer silent for `T5_NET_TIMEOUT` | `peer_timeout` (keepalives every 200 ms; a frozen process is silent) |
@@ -510,6 +510,16 @@ when allowed. `tests/test_nat2.py` runs the clients and server of the newest rel
   every 40 s).
 - The prediction needs the server's second UDP port (7782) open; the lobby server has to run this
   branch for everything but the router forward.
+
+
+**Regional relays (branch regional-relays, 1.1.1).** What the punch cannot open still goes through a
+relay, and with one lobby server in Nuremberg that relay was always in Germany. The central server can
+now list relay-only servers in other regions (docs/HOSTING.md "Adding a relay server"); 1.1.1 launchers
+measure their round trip to each, and a match that needs a relay takes the one with the smallest sum of
+both players' round trips (two players in California: a node in Oregon, ~30-80 ms instead of 300-400).
+Lobby, accounts and ranking stay on the one server. The relay bridge works the same way through a
+regional relay: the match moves onto the direct path when a burst gets through
+(`lobby/tests/test_relays.py` UpgradeFromRegionalTest). Older launchers keep the central relay.
 
 ## What had to be made deterministic
 

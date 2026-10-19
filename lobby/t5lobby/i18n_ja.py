@@ -1341,6 +1341,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "結果を送信しました。相手の報告を待っています...",
     "Rematch offered; waiting for your opponent...": "Rematch を申し込みました。相手を待っています...",
     "(other version)": "（別バージョン）",
+    "other version": "別バージョン",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "検索中...（Ranked 待ち {ranked} 人、Quick Match {quick} 人）",
@@ -1624,7 +1625,7 @@ MESSAGES = {
         "つづりを確認してください：フレンドはアカウント名で追加します。",
     "in a match": "対戦中",
     "offline": "オフライン",
-    "(older launcher: no invites)": "（古いランチャー：招待不可）",
+    "older launcher: no invites": "古いランチャー：招待不可",
     "Friends ({count})": "フレンド（{count}）",
     "offline, last seen {when}": "オフライン（{when}）",
     "Friends need an account. Log in with one to add friends and invite them.":

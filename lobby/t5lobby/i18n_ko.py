@@ -1320,6 +1320,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "결과를 보냈습니다. 상대의 보고를 기다리는 중...",
     "Rematch offered; waiting for your opponent...": "Rematch를 신청했습니다. 상대를 기다리는 중...",
     "(other version)": "(다른 버전)",
+    "other version": "다른 버전",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "검색 중... (Ranked 대기 {ranked}명, Quick Match {quick}명)",
@@ -1593,7 +1594,7 @@ MESSAGES = {
         "철자를 확인하세요: 친구는 계정 이름으로 추가합니다.",
     "in a match": "매치 중",
     "offline": "오프라인",
-    "(older launcher: no invites)": "(구버전 런처: 초대 불가)",
+    "older launcher: no invites": "구버전 런처: 초대 불가",
     "Friends ({count})": "친구 ({count})",
     "offline, last seen {when}": "오프라인 ({when})",
     "Friends need an account. Log in with one to add friends and invite them.":

@@ -1345,6 +1345,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "Resultado enviado; esperando o relato do oponente...",
     "Rematch offered; waiting for your opponent...": "Rematch oferecido; esperando o oponente...",
     "(other version)": "(outra versão)",
+    "other version": "outra versão",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Procurando... ({ranked} na fila Ranked, {quick} no Quick Match)",
@@ -1623,7 +1624,7 @@ MESSAGES = {
         "Confira a digitação: amigos são adicionados pelo nome da conta.",
     "in a match": "em partida",
     "offline": "offline",
-    "(older launcher: no invites)": "(launcher antigo)",
+    "older launcher: no invites": "launcher antigo: sem convites",
     "Friends ({count})": "Amigos ({count})",
     "offline, last seen {when}": "offline desde {when}",
     "Friends need an account. Log in with one to add friends and invite them.":

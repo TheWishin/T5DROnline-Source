@@ -384,6 +384,20 @@ class AbortPicker(threading.Thread):
             self.did = f"failed: {e!r}"
 
 
+def abort_plan(aborts, text):
+    """{match k: aborted sessions after it} from --aborts N (k = 0) and --abort-plan 'K:N,...'."""
+    plan = {}
+    for item in filter(None, (text or "").replace(" ", "").split(",")):
+        kk, nn = item.split(":")
+        if int(kk) < 0 or int(nn) < 0:
+            raise ValueError(f"--abort-plan {item}: K and N must not be negative")
+        if int(nn):
+            plan[int(kk)] = plan.get(int(kk), 0) + int(nn)
+    if aborts:
+        plan[0] = plan.get(0, 0) + aborts
+    return plan
+
+
 RE_LIVE = re.compile(r"in-game select: the select screen is live")
 RE_RESTARTED = re.compile(r"select screen restarted")
 
@@ -507,12 +521,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1, help="the aborts' random choices")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    plan = {}
-    for item in filter(None, a.abort_plan.split(",")):
-        kk, nn = item.split(":")
-        plan[int(kk)] = plan.get(int(kk), 0) + int(nn)
-    if a.aborts:
-        plan[0] = plan.get(0, 0) + a.aborts
+    plan = abort_plan(a.aborts, a.abort_plan)
     if (plan or a.offline) and a.flow != "persistent":
         sys.exit("--aborts / --abort-plan / --offline need --flow persistent")
     rnd = random.Random(a.seed)

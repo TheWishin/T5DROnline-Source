@@ -52,6 +52,7 @@ TITLE_VERSION = "01.00"
 CONTENT_ID = "UP0700-NPUB30009_00-UPDATE0000010000"
 GAME_NAME = "Tekken 5: Dark Resurrection Online (PS3, US PSN, NPUB30009 v01.00)"
 ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
+PKG_SIZE = 619430240
 CODE_END = "0x3C7100"   # end of .lib.stub; past it is .rodata
 
 STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile"]
@@ -271,6 +272,20 @@ def need_pkg(a):
     return cid
 
 
+def program_kind(path):
+    """"self" for a PS3 program as the package carries it, "elf" for one already decrypted, None for anything
+    else (an empty or cut-short file left by a stopped run)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size < 0x1000:
+        return None
+    return {b"SCE\0": "self", b"\x7fELF": "elf"}.get(head)
+
+
 def step_decrypt(a):
     if os.path.exists(P.elf) and sha1(P.elf) == ELF_SHA1 and not a.force:
         print("  already done")
@@ -281,12 +296,21 @@ def step_decrypt(a):
         fail(f"{a.rap} is not a PS3 license: a .rap file is exactly 16 bytes.")
     eboot = os.path.join(P.pkg_dir, "USRDIR", "EBOOT.BIN")
     sfo = os.path.join(P.pkg_dir, "PARAM.SFO")
-    if not (os.path.exists(eboot) and os.path.exists(sfo)) or a.force:
+
+    def take_out():
         cid = need_pkg(a)
         print(f"  package content ID: {cid}")
         # Only the program and its PARAM.SFO first: a few MB, seconds.
         for name in ("PARAM.SFO", "EBOOT.BIN"):
             run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir, "--only", name], env=keys_env())
+
+    if not (os.path.exists(eboot) and os.path.exists(sfo)) or a.force:
+        take_out()
+    elif program_kind(eboot) is None and a.pkg:
+        # Left by an earlier run that was stopped while taking it out (empty or cut short).
+        print("  the program taken out by an earlier run is damaged: taking it out of the package again")
+        os.remove(eboot)
+        take_out()
     if not os.path.exists(eboot):
         fail("This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or theme?). "
              f"The port needs {GAME_NAME}.")
@@ -295,15 +319,27 @@ def step_decrypt(a):
     print(f"  PARAM.SFO: {title} / {tid} / version {ver}")
     if tid != TITLE_ID:
         fail(f"This package is \"{title}\" ({tid}). The port needs {GAME_NAME}.")
-    try:
-        out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, a.rap, P.elf, "--keys", P.keys],
-                  capture=True)
-    except subprocess.CalledProcessError as e:
-        if "wrong .rap" in (e.output or ""):
-            fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
-                 f"the package's content ID ({CONTENT_ID}).")
-        fail("Decrypting the game program failed (see the log above). Is the package complete? "
-             f"Its size should be 619,430,240 bytes.")
+    kind = program_kind(eboot)
+    if kind == "elf":
+        # A re-packed package that carries the program already decrypted: usable when it is the same program
+        # (the SHA-1 pin below decides).
+        print("  the package carries the program already decrypted")
+        os.makedirs(os.path.dirname(P.elf), exist_ok=True)
+        shutil.copyfile(eboot, P.elf)
+        out = ""
+    else:
+        try:
+            out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, a.rap, P.elf, "--keys", P.keys],
+                      capture=True)
+        except subprocess.CalledProcessError as e:
+            if "wrong .rap" in (e.output or ""):
+                fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
+                     f"the package's content ID ({CONTENT_ID}).")
+            if a.pkg and os.path.exists(a.pkg) and os.path.getsize(a.pkg) != PKG_SIZE:
+                fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: "
+                     "the download is incomplete or it is a different file. Download it again.")
+            fail("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press "
+                 f"BUILD GAME again; if it fails again, check that the package is {PKG_SIZE:,} bytes.")
     got = sha1(P.elf)
     if got != ELF_SHA1:
         os.remove(P.elf)

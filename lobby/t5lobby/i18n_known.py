@@ -133,8 +133,10 @@ BUILD_TOOL = (
        "SHA-1 {sha}...). The port supports only {game}, content ID {supported}."),
     N_("The license (.rap) does not belong to this package. Use the .rap whose name matches the package's content "
        "ID ({id})."),
-    N_("Decrypting the game program failed (see the log above). Is the package complete? Its size should be "
-       "619,430,240 bytes."),
+    N_("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
+       "again; if it fails again, check that the package is {size} bytes."),
+    N_("The package is {size} bytes, the supported one is {supported} bytes: the download is incomplete or it is "
+       "a different file. Download it again."),
     N_("The ps3recomp copy in this folder does not match this version of the port. Download the release again and "
        "extract it into an empty folder."),
     N_("Git is needed to download ps3recomp (the recompiler). Install Git, or use a release zip, which already "

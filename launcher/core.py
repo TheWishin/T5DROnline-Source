@@ -91,6 +91,9 @@ DEFAULTS = {
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
+    "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
+    "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
+    "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
     "mute": False,
@@ -131,6 +134,8 @@ class Settings(dict):
             self["internal_res"] = "native"
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
+        if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
+            self["training"] = "frames"
 
     def save(self):
         try:
@@ -161,6 +166,14 @@ class Settings(dict):
             env["PS3_FULLSCREEN"] = "1"
         if self["input_delay"] in INPUT_DELAYS:
             env["T5_RB_NET_DELAY"] = self["input_delay"]
+        if self["training"] in TRAINING_MODES:
+            env["T5_TRAINING"] = self["training"]
+            if self["training"] != "off":
+                if self["training_all"]:
+                    env["T5_TRAINING_ALL"] = "1"
+                if self["training_online"]:
+                    env["T5_TRAINING_ONLINE"] = "1"
+                env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
         for line in self["extra_env"].splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -654,6 +667,18 @@ INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
 VSYNC_MODES = {          # English; t(label) where it is shown
     "on": N_("On (smooth, default)"),
     "off": N_("Off (lowest latency, may tear)"),
+}
+
+
+# Training overlay (docs/TRAINING.md): the game draws, over its picture, the last inputs of each
+# player with how many frames each was held, and after each exchange the startup of the move and
+# the frame advantage (+3, -12). In Practice; the two options widen it to the other offline modes
+# and to online matches (there only this PC's own inputs, no frame data). It only reads the game's
+# memory, so it never changes a match. F2 in the game switches it for the session.
+TRAINING_MODES = {       # English; t(label) where it is shown
+    "off": N_("Off"),
+    "inputs": N_("Inputs"),
+    "frames": N_("Inputs + frame data"),
 }
 
 

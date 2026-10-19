@@ -2217,9 +2217,9 @@ from column 11 the cursor went middle -> bottom -> middle for ever. The driver
 stepped sideways first only from column 0. Now from column 11 too (LEFT).
 Any same-session pick from Bruce or Kuma/Panda to a top-row fighter (Eddy,
 Baek, Mokujin, Devil Jin, Raven, Asuka, Feng, Ganryu, Wang, Armor King) hit it:
-a rematch with another fighter, the next game of a ranked set. A new session
-starts on a fresh select screen (cursors at their defaults) and was not
-affected.
+a rematch with another fighter, or any next match in the same session (whether
+the ranked sets' next game is one was not checked). A new session starts on a
+fresh select screen (cursors at their defaults) and was not affected.
 
 **Not explained: a select screen that never loads, under heavy load.** Twice on
 the rebased build with 9-13 game instances on the PC (F10 and F12, both in

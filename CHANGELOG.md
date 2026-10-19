@@ -3,6 +3,17 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Online
+- **No more broken game after several cancelled matches.** When a match ended at the character
+  select without a fight -- the opponent left during the pick, or the lobby cancelled the match --
+  four to eleven times in a row, the open game broke and stayed stuck until it was closed. Each
+  time, the game built a second select screen on top of the old one, which kept running until
+  memory ran out. The select screen is now closed and opened again the way the game itself does
+  it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
+  lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The

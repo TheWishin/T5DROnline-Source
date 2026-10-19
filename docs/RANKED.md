@@ -4,6 +4,8 @@ What a player does, like Tekken 6 Native Online: open the launcher's **Online**
 tab, log in (or play as a guest), pick a character, press **Ranked match**. When
 an opponent is found the game starts by itself, the result is reported by
 itself, the rank moves, and **Rematch** keeps both games open for the next one.
+A ranked match is a **set**: best of 3 games, and the rank moves once, when the
+set is decided ([Ranked sets](#ranked-sets-best-of-3)).
 
 The lobby (server, NAT traversal, relay, Glicko-2) is described in
 [ONLINE.md](ONLINE.md); the netplay layer in [NETPLAY.md](NETPLAY.md). This page
@@ -17,6 +19,7 @@ and the glue between the lobby and the game.
 - [Matchmaking](#matchmaking)
 - [Characters and stages](#characters-and-stages)
 - [Results and match integrity](#results-and-match-integrity)
+- [Ranked sets (best of 3)](#ranked-sets-best-of-3)
 - [The match flow (glue)](#the-match-flow-glue)
 - [Game control channel (persistent game)](#game-control-channel-persistent-game)
 - [In-game identity: names and ranks in the HUD](#in-game-identity-names-and-ranks-in-the-hud)
@@ -119,7 +122,8 @@ around 1st Kyu / 1st Dan; 40 points per Dan-level step means a win against an
 equal opponent (+10-20 once the rating has settled, much more at first) moves
 you noticeably, and the top names stay rare.
 
-- **Placement**: the first 5 ranked matches (`T5L_PLACEMENT`) show "Beginner
+- **Placement**: the first 5 ranked sets (`T5L_PLACEMENT`; a ranked game against an
+  older launcher counts as one) show "Beginner
   (placement n/5)" -- what the game itself shows for a new profile. After the
   5th the tier is set from the rating, at most 3rd Dan (`T5L_PLACEMENT_CAP`, 12);
   higher has to be earned.
@@ -155,7 +159,8 @@ gives ranked matches). Challenges are always casual.
 
 **Anti win-trading cap**: the same two accounts move each other's rating at
 most 10 times per 24 hours (`T5L_PAIR_CAP`); later matches between them are
-played as casual (both are told).
+played as casual (both are told). A ranked set counts once, however many games
+it had; the cap is checked when a set begins, never in the middle of one.
 
 ## Characters and stages
 
@@ -268,6 +273,83 @@ evidence allows (state hash, server clock, lobby presence) and visible where it
 does not (strikes, disputes, history). Every report, the path, RTT and the
 reasons are stored for review. A real referee needs the server to re-simulate
 the inputs, which is out of reach for now.
+
+## Ranked sets (best of 3)
+
+Owner's decision (2026-10-19): a ranked set lasts until one player has won 2 games (best of 3), and the
+set counts once for the ranking. Each game is still first to 3 rounds (`T5L_ROUNDS`).
+
+**What the players see.** The queue (or a ranked room) finds an opponent as before. Game 1 starts. When it
+ends, the tab shows "Set 1-0 -- game 2 of 3 starts in 6 s" and the next game starts by itself: no rematch
+vote, the same two characters (the set's character lock), the same sides (P1 stays P1). In the fight the
+names under the health bars carry the games won from game 2 on ("Alice [1]"). When a player has 2 wins the
+set is over: "You won the set 2-1; rating 1532 (+32) -- PROMOTED to 1st Dan!". **Rematch** after that is a
+new set.
+
+**The rating changes once**, at the end of the set: one Glicko-2 update for each player from the set's
+result (won = 1, lost = 0; the score inside the set does not matter), one placement step, one rank check.
+The games of a set change no rating and no win/loss record on their own. The record (W/L) and "ranked
+matches" on the profile count sets.
+
+**Rules** (`lobby.py` "ranked sets"; the integrity rules above apply to every game):
+
+| What happens | The set |
+|---|---|
+| a game is confirmed (or onesided / resolved) | the winner gets a game; 2 games = the set is won (status `confirmed`) |
+| a player quits a game, closes the game, or loses the lobby for good mid-game (the game is a forfeit) | lost by that player at once (`forfeit`), whatever the score |
+| a player leaves **between** two games: Leave set, declines, logs out, blocks the opponent, leaves the ranked room, does not come back to the lobby within 60 s | lost by that player (`forfeit`) once a game has counted; before that the set is void, no rating change |
+| queueing, a room or a challenge between two games | refused ("you are in a ranked set (1-0); leave it first") |
+| a game voided by a **desync** | the game is played again (the same number, "game 2 of 3 again"), over a **new connection** so both games reset first |
+| a game without a winner: a draw, too short, no result | played again as well |
+| more than 2 such replays in one set (`T5L_SET_REPLAYS`) | the set is void, no rating change |
+| a game voided by a **crash** (blame), a dispute, a broken connection, no reports | the set is void, no rating change; the crash is still a strike for the crasher (and a loss from the third strike on, which loses the set) |
+| an early quit (within `T5L_MIN_MATCH_SECONDS`) | in game 1: void with a strike, as for a single game; in a later game: leaving, the set is lost |
+| "Leave: too laggy" after a lag check that found more lag than the ping explains | the set is void, no penalty for anyone |
+| the lobby server restarts in the middle of a set | the set is void (below) |
+
+**Between two games.** The countdown is `T5L_SET_NEXT_SECONDS` (6). Each launcher tells the lobby whether its
+game still runs, connected to the opponent's (`set_next` with `keep`). When both do, the next game continues
+inside the running games, exactly like a rematch (`match_start` with `continue: true`): the launcher writes
+the next fight to the game, about 2-4 s from the command to the fight. Otherwise (a game was closed or
+crashed, or after a desync) the next game gets a new connection (punch or relay, like a new match, but no
+ready check). In a persistent game the last session's end ("peer lost (peer_quit)" when the other game went
+idle first) may reach the log after the next game was handed over; the match driver counts a lost opponent
+only from the new session's own lines (found in the first real-game runs: the replay after a desync was
+reported as a disconnect). A player whose lobby connection drops between two games has the same 60 s
+(`T5L_RECONNECT_GRACE`) as in a match; the launcher reconnects by itself and the set goes on.
+
+**Server restart.** A running set lives in the server's memory, like a running match. When the server
+starts, every set its database still shows as `playing` is made **void** (reason `server_restart`), and so is
+any game of it still `playing`. Nothing has to be undone: no game of a set changed a rating. Resuming the set
+is not attempted (the launchers' sessions are gone after a restart anyway; they log in again).
+
+**History and profile.** Every game of a set is a row in the history as before, with `set` {id, game, status,
+result, score, delta} added; the set's rating change shows on its deciding game. The profile also has `sets`:
+each set with its result, score, rating change and its games (score, characters, stage). The database keeps
+sets in their own table (`sets`); the games point to it (`matches.set_id`, `set_game`).
+
+**Older launchers.** Sets need both launchers to know them (`hello.caps: "sets"`). A ranked match with a
+launcher that does not (1.0.0 and older) is played the old way: every game is rated when it ends, and the
+next one is a rematch vote. `T5L_RANKED_SET_WINS=1` turns sets off for everybody.
+
+**Opting in (tools and tests).** `LobbyClient(..., sets=True)` announces sets (the default is `False`, so
+scripts and tests written before keep per-game rating); `MatchDriver` then answers `set_next` by itself.
+The Online tab turns it on; `"sets": false` in its online.json turns it off for that launcher.
+
+**In-game character select** (ingame-select branch): only game 1 of a set is picked; the lobby keeps the
+characters locked for games 2 and 3 (`match_start.set.number` > 1, `continue: true`).
+
+**Measured (2026-10-19, `lobby/tools/set_session.py`, main's t5dr.exe, two persistent games on one PC
+loaded by other work, 1 round per game to save time).** A 2-0 set (run e5, Heihachi vs Kazuya) and a 2-1
+set (run e6, Asuka vs Lili, games won/lost/won as planned): every game confirmed, no rating change until
+the deciding game, then one update (1500 -> 1662 / 1338, the same as one won game between two new
+players); games 2 and 3 continued in the running games; from a game's result to the next game's FIGHT
+START 7.8-10.7 s (6 s of it the countdown), 22 s after a desync (new connection, the games reset first).
+The same runs played the rules live: desynced games replayed over a new connection, a set void after the
+third desync, a crash voiding a set with the crasher blamed, a too-slow game voiding as no_report. Those
+desyncs are the game's, not the lobby's: identical inputs in both frame logs, no rollback before them, in
+lockstep (`T5_RB_MODE=off`) too -- 6 of 14 lockstep games, 3 of 3 rollback games, about 1,000-1,700 frames
+into the fight while one player stood still (runs build/bo3/runs/e3..e6, local only).
 
 ## The match flow (glue)
 
@@ -435,7 +517,8 @@ sees is switched on by the client (see "Protocol additions").
 A **set** is the games you play in a row against one opponent: the first match and every rematch
 of it. A set ends when someone leaves it, when the rematch window runs out, when a game is
 cancelled, or when someone queues for a new opponent. Nothing in a set changes a rating by
-itself. Each game is rated when it ends, as before.
+itself. Each game is rated when it ends, as before. A **ranked** set between two launchers that
+know it is different: best of 3, rated once at its end ([Ranked sets](#ranked-sets-best-of-3)).
 
 ### Found match: the ping first, the name later
 
@@ -480,7 +563,8 @@ block list is under **Blocked players...** in the tab. It lists them and has **U
   forfeit (a loss) once the match is older than `T5L_MIN_MATCH_SECONDS`, a void with a strike
   before that. Before the game started it just cancels it. The launcher does not offer the button
   during a game, but the server enforces it for other clients.
-- Blocking between two games ends the set and changes no rating.
+- Blocking between two games ends the set and changes no rating -- except between two games of a ranked
+  set: that is leaving it, a loss once a game has counted.
 - At most 200 blocks (`T5L_MAX_BLOCKS`).
 
 ### Strict matchmaking
@@ -498,7 +582,7 @@ tab says so.
 
 ### Same-opponent cooldown
 
-After a ranked game, the ranked queue does not match the same two players again for 30 seconds
+After a ranked game (or ranked set), the ranked queue does not match the same two players again for 30 seconds
 (`T5L_PAIR_COOLDOWN`). Other opponents are not affected. A rematch that both accept is not held
 back, because it is their own choice. Casual matches are not held back either. This is
 separate from the cap of 10 ranked matches per pair per day (`T5L_PAIR_CAP`).
@@ -548,7 +632,8 @@ reports after it.
 **Leaving.** When the check shows more lag than the ping explains, the result bar gets **Leave:
 too laggy**. Either player may leave without penalty. The set ends, the opponent is told, and the
 rating does not change: the game that was just played keeps its result, and leaving adds no
-forfeit and no strike. **Nothing ends by itself.** A bad check does not void the game, undo a
+forfeit and no strike. In a ranked set (best of 3) it makes the whole set void; the server lets a
+player out for free only after a lag check whose verdict was "more lag" (any other leave is a loss). **Nothing ends by itself.** A bad check does not void the game, undo a
 rating, or end the set. The players can still rematch. The server keeps the numbers with the
 match record (`matches.lag`, JSON) so an admin can look.
 
@@ -636,6 +721,9 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_STRIKE_LIMIT` | 3 | blamed voids per 24 h before they count as losses |
 | `T5L_PAIR_CAP` | 10 | ranked matches per pair of accounts per 24 h |
 | `T5L_REMATCH_WINDOW` | 20 | seconds to agree on a rematch |
+| `T5L_RANKED_SET_WINS` | 2 | games to win a ranked set (2 = best of 3), rated once at its end; 1 = every ranked game rated on its own (as before) |
+| `T5L_SET_NEXT_SECONDS` | 6 | countdown from a game's result to the set's next game |
+| `T5L_SET_REPLAYS` | 2 | games without a winner (desync, draw, too short) played again per set; one more and the set is void |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
@@ -655,7 +743,7 @@ The database upgrades itself (new columns and tables are added on start).
 
 Additive (protocol 1; `welcome.features` lists them: ranks, sessions, recovery,
 passwd, profile, history, chars, integrity, rematch, blind_ready, blocks, strict, set_lock,
-lag_check, notices). The protocol version did not change: a client announces what it understands
+lag_check, notices, ranked_sets). The protocol version did not change: a client announces what it understands
 in `hello.caps`, and an older client gets the old messages.
 
 | Client -> server | Reply |
@@ -676,6 +764,8 @@ in `hello.caps`, and an older client gets the old messages.
 | `block` `name` (or `player`); `unblock` `name`; `blocks` | `blocked {name, blocks, left_match}`; `unblocked`; `blocks {rows: [{name, guest, since}]}` |
 | `leave_set` `reason` (`lag` after the lag check) | -- (`set_end` follows) |
 | `lag` `match`, `frames`, `waited_ms`, `pc_fps`, `fps` (after a match) | -- (`lag_check` follows for both players) |
+| `hello` `caps`: `sets` (ranked sets) | `welcome.set_wins` (games to win a set; 1 = no sets for this client) |
+| `set_next` `match`, `keep` (between two games of a ranked set: this game still runs, connected) | `set_next {set, state: waiting\|started, in}` |
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
@@ -697,6 +787,19 @@ both_pcs|null, yours {extra_frames, pc_fps}, opponent {...}, text, can_leave, ra
 `server_notice {id, text, expires, cleared}` (clients without the `notices` cap get a `notice` with
 `code: server_notice`). Error texts and notices carry no IP addresses.
 
+New for ranked sets (only between two clients with the `sets` cap): `set` in `match_found`,
+`match_start`, `match_result` and `lag_check` adds `rated: true, wins_needed, best_of, wins [P1, P2],
+number` (the set's game: 1, 2, 3; a replay keeps it), `replays`, `state: active|ended`, `next {in, number,
+replay}` (in a `match_result` when the next game follows) and `result {status, reason, winner, blame}` (P1/P2
+sides) once it ended. `match_result` of a game inside the set has `rating: null` and `rematch_window: 0`; the
+deciding game's `rating` is the set's change. `match_found.origin` is `set` for the next games (no ready
+check). `set_end` adds `reason: decided|left|declined|lag|disconnect|both_left|cancelled` and, from the
+player's side, `rated, status: confirmed|forfeit|void, outcome_reason, result: win|loss|null, wins [you,
+opp], games, best_of, blame: you|opponent|null, rating`. Notices `opponent_dropped` / `opponent_back` carry
+`set` between two games. `profile` + `sets [{id, time, status, reason, opponent, result, score, delta,
+games}]`; `history` rows of a set's games + `set {id, game, status, result, score, delta}`. Queueing,
+creating or joining a room, or a challenge in the middle of a ranked set: `error busy`.
+
 ## Tests and tools
 
 ```sh
@@ -706,7 +809,15 @@ python -m unittest test_tk_tab      # the Online tab: register, saved login, TLS
                                     # blind accept, strict, block list, lag check, server notice
 python -m unittest test_t6          # Tekken 6 style options: blind ready, blocks, strict, cooldown, character
                                     # lock, lag check, notices, no IP addresses in messages
+python -m unittest test_sets        # ranked sets: 2-0, 2-1, quits in game 1/2/3, leaving, desync replays and the
+                                    # void after 2, pair cap and cooldown, older clients, server restart, rooms,
+                                    # the driver with stub games, texts and HUD names
 ```
+
+`lobby/tools/set_session.py` plays ranked sets end to end on one PC: a local lobby, two accounts, the
+ranked queue, two games through the match driver (persistent game), sets played to a plan (`--plan
+2-0,2-1`: with the real game only the planned winner of each game presses buttons). See "Ranked sets" for
+what it checks.
 
 `lobby/tools/ranked_session.py` plays a whole ranked session on one PC through
 the launcher's glue: two accounts, characters, ranked queue, punch, both games,

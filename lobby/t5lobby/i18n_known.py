@@ -54,6 +54,10 @@ SERVER = (
     N_("ranked needs an account"),
     N_("ranked matches come from the ranked queue on this server"),
     N_("your character is locked until this ranked set ends"),
+    N_("the ranked set goes on by itself"),
+    N_("you are in a ranked set ({mine}-{theirs}); leave it first (that counts as a loss)"),
+    N_("that player is in a ranked set"),
+    N_("you are not in a ranked set"),
     N_("finish your running match with the same game build first"),
     N_("this PC ran its last match at {fps} fps; ranked needs at least {min_fps} (both games run at the slower "
        "PC's speed). Close other programs or lower the resolution scale, then play a casual match to measure again"),

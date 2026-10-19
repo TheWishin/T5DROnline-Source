@@ -62,6 +62,12 @@ class Config:
     strike_limit: int = 3           # T5L_STRIKE_LIMIT: voids caused within 24 h before they count as losses
     pair_cap: int = 10              # T5L_PAIR_CAP: ranked matches per pair of accounts per 24 h that count
     rematch_window: float = 20.0    # T5L_REMATCH_WINDOW: seconds to agree on a rematch
+    # ranked sets (docs/RANKED.md "Ranked sets"): first to this many games wins the set, rated once at its end;
+    # 1 = every ranked game is rated on its own (the old way, and always with clients that do not announce "sets")
+    ranked_set_wins: int = 2        # T5L_RANKED_SET_WINS
+    set_next_seconds: float = 6.0   # T5L_SET_NEXT_SECONDS: countdown from a game's result to the set's next game
+    set_replays: int = 2            # T5L_SET_REPLAYS: games without a winner (desync, draw, too short) played again
+                                    # per set; one more and the set is void
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the

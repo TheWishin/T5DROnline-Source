@@ -3,7 +3,8 @@
 
     python tools/fight_bench.py [--exe build/cmake/t5dr.exe] [--cpus N|0xMASK]
                                 [--fight lil,ask,20,3] [--secs 42] [--skip 24]
-                                [--out build/fight-bench/NAME] [NAME=VALUE ...]
+                                [--out build/fight-bench/NAME] [--polite]
+                                [--json FILE] [NAME=VALUE ...]
 
 Boots the game in direct-fight mode (T5_FIGHT, docs/DIRECTFIGHT.md) with the
 window minimised and P1 pressing buttons, and measures the window from fight
@@ -20,6 +21,13 @@ patch 0027). On a PC with SMT, processors 2k and 2k+1 are one core, so
 Other programs running at the same time change the result a lot (see
 docs/RENDER_PERF.md "Weaker PCs"); the "other load" line says how many
 processors they kept busy during the window.
+
+Per thread it prints the share of one processor, the CPU time per frame and
+how often the thread was switched in (context switches a second: a thread
+that wakes thousands of times a second keeps a laptop's cores out of their
+sleep states, docs/RENDER_PERF.md "Laptops"). --polite mutes the game
+(PS3_AUDIO_MUTE=1) and starts it at below-normal priority, for a PC someone
+is using. --json writes every number to a file.
 """
 import argparse
 import csv
@@ -75,6 +83,55 @@ if IS_WIN:
     def ft(t):
         return (t.dwHighDateTime << 32 | t.dwLowDateTime) / 1e7
 
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtQueryInformationThread.argtypes = [W.HANDLE, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+                                               ctypes.c_void_p]
+    psapi = ctypes.WinDLL("psapi")
+    psapi.EnumProcessModules.argtypes = [W.HANDLE, ctypes.c_void_p, W.DWORD, ctypes.POINTER(W.DWORD)]
+    psapi.GetModuleBaseNameW.argtypes = [W.HANDLE, W.HMODULE, W.LPWSTR, W.DWORD]
+    psapi.GetModuleInformation.argtypes = [W.HANDLE, W.HMODULE, ctypes.c_void_p, W.DWORD]
+    k32.OpenProcess.restype = W.HANDLE
+    k32.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+
+    def modules(pid):
+        """[(base, size, name)] of the modules loaded in pid."""
+        h = k32.OpenProcess(0x0410, False, pid)          # QUERY_INFORMATION | VM_READ
+        if not h:
+            return []
+        out = []
+        try:
+            arr = (W.HMODULE * 1024)()
+            need = W.DWORD()
+            if psapi.EnumProcessModules(h, arr, ctypes.sizeof(arr), ctypes.byref(need)):
+                for i in range(min(1024, need.value // ctypes.sizeof(W.HMODULE))):
+                    nm = ctypes.create_unicode_buffer(260)
+                    psapi.GetModuleBaseNameW(h, W.HMODULE(arr[i]), nm, 260)
+
+                    class MI(ctypes.Structure):
+                        _fields_ = [("base", ctypes.c_void_p), ("size", W.DWORD), ("entry", ctypes.c_void_p)]
+                    mi = MI()
+                    if psapi.GetModuleInformation(h, W.HMODULE(arr[i]), ctypes.byref(mi), ctypes.sizeof(mi)):
+                        out.append((mi.base or 0, mi.size, nm.value))
+        finally:
+            k32.CloseHandle(h)
+        return out
+
+    _mods = {}
+
+    def start_module(pid, h):
+        """Module holding the thread's start address ("" if unknown)."""
+        addr = ctypes.c_void_p()
+        if ntdll.NtQueryInformationThread(h, 9, ctypes.byref(addr), ctypes.sizeof(addr), None) != 0:
+            return ""
+        a = addr.value or 0
+        mods = _mods.get(pid)
+        if mods is None:
+            mods = _mods[pid] = modules(pid)
+        for base, size, nm in mods:
+            if base <= a < base + size:
+                return nm
+        return ""
+
     def thread_times(pid):
         """{tid: (name, cpu seconds)} for the threads of pid."""
         out = {}
@@ -84,7 +141,7 @@ if IS_WIN:
         ok = k32.Thread32First(snap, ctypes.byref(te))
         while ok:
             if te.th32OwnerProcessID == pid:
-                h = k32.OpenThread(0x0800, False, te.th32ThreadID)   # QUERY_LIMITED_INFORMATION
+                h = k32.OpenThread(0x0840, False, te.th32ThreadID)   # QUERY_(LIMITED_)INFORMATION
                 if h:
                     c, e, kt, ut = W.FILETIME(), W.FILETIME(), W.FILETIME(), W.FILETIME()
                     if k32.GetThreadTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
@@ -93,11 +150,47 @@ if IS_WIN:
                         if k32.GetThreadDescription(h, ctypes.byref(name)) >= 0 and name.value is not None:
                             nm = name.value
                             k32.LocalFree(ctypes.cast(name, ctypes.c_void_p))
-                        out[te.th32ThreadID] = (nm or "(unnamed)", ft(kt) + ft(ut))
+                        if not nm:
+                            sm = start_module(pid, h)
+                            nm = "(unnamed%s)" % (" " + sm if sm else "")
+                        out[te.th32ThreadID] = (nm, ft(kt) + ft(ut))
                     k32.CloseHandle(h)
             ok = k32.Thread32Next(snap, ctypes.byref(te))
         k32.CloseHandle(snap)
         return out
+
+    ntdll.NtQuerySystemInformation.argtypes = [ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+                                               ctypes.POINTER(ctypes.c_ulong)]
+
+    def thread_switches(pid):
+        """{tid: context switches so far} for the threads of pid (SystemProcessInformation)."""
+        size = 1 << 22
+        for _ in range(6):
+            buf = ctypes.create_string_buffer(size)
+            need = ctypes.c_ulong(0)
+            st = ntdll.NtQuerySystemInformation(5, buf, size, ctypes.byref(need)) & 0xFFFFFFFF
+            if st == 0xC0000004:                     # STATUS_INFO_LENGTH_MISMATCH
+                size = max(size * 2, need.value + (1 << 16))
+                continue
+            if st != 0:
+                return {}
+            raw = buf.raw
+            off = 0
+            while True:
+                nxt = int.from_bytes(raw[off:off + 4], "little")
+                nthr = int.from_bytes(raw[off + 4:off + 8], "little")
+                upid = int.from_bytes(raw[off + 80:off + 88], "little")
+                if upid == pid:
+                    out = {}
+                    for i in range(nthr):
+                        t = off + 256 + 80 * i               # SYSTEM_THREAD_INFORMATION, x64
+                        tid = int.from_bytes(raw[t + 48:t + 56], "little")
+                        out[tid] = int.from_bytes(raw[t + 64:t + 68], "little")
+                    return out
+                if not nxt:
+                    return {}
+                off += nxt
+        return {}
 
     def sys_times():
         i, k, u = W.FILETIME(), W.FILETIME(), W.FILETIME()
@@ -114,6 +207,9 @@ def main():
     ap.add_argument("--secs", type=float, default=42.0, help="end of the window, s after fight start")
     ap.add_argument("--skip", type=float, default=24.0, help="start of the window, s after fight start")
     ap.add_argument("--out", default="", help="directory for logs (default build/fight-bench/<time>)")
+    ap.add_argument("--polite", action="store_true",
+                    help="someone uses this PC: the game muted (PS3_AUDIO_MUTE=1) at below-normal priority")
+    ap.add_argument("--json", default="", help="also write the results to this file")
     ap.add_argument("env", nargs="*", help="extra NAME=VALUE for the game")
     a = ap.parse_args()
 
@@ -131,6 +227,8 @@ def main():
         "PS3_FRAMELOG": os.path.join(out, "frames.csv"),
         "PS3_PAD_FILE": os.path.join(out, "pad.txt"),
     })
+    if a.polite:
+        env["PS3_AUDIO_MUTE"] = "1"
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
@@ -149,8 +247,9 @@ def main():
             sys.exit("could not set the CPU mask %s" % hex(mask))
     log = open(os.path.join(out, "game.log"), "w")
     try:
+        flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (IS_WIN and a.polite) else 0
         p = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
-                             env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT)
+                             env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
     finally:
         if old:
             k32.SetProcessAffinityMask(me, old)
@@ -185,9 +284,9 @@ def main():
             else:
                 rel = now - fight_t
                 if IS_WIN and len(tt) == 0 and rel >= a.skip:
-                    tt.append((time.perf_counter(), thread_times(p.pid), sys_times()))
+                    tt.append((time.perf_counter(), thread_times(p.pid), sys_times(), thread_switches(p.pid)))
                 if IS_WIN and len(tt) == 1 and rel >= a.secs - 1:
-                    tt.append((time.perf_counter(), thread_times(p.pid), sys_times()))
+                    tt.append((time.perf_counter(), thread_times(p.pid), sys_times(), thread_switches(p.pid)))
                 if rel >= a.secs:
                     break
                 while pad and pad[0][0] <= rel:
@@ -209,25 +308,43 @@ def main():
     dts = [float(r["dt_us"]) / 1000.0 for r in w if float(r["dt_us"]) > 0]
     gpu = [float(r["gpu_us"]) / 1000.0 for r in w if r.get("gpu_us") and float(r["gpu_us"]) > 0]
     fps = len(dts) / (sum(dts) / 1000.0) if dts else 0.0
+    res = {"cpus": hex(mask) if mask else "all", "frames": len(dts), "fps": fps,
+           "p50": pct(dts, 50), "p95": pct(dts, 95), "p99": pct(dts, 99), "max": max(dts) if dts else 0.0,
+           "over_17_5": sum(d > 17.5 for d in dts), "env": a.env, "exe": os.path.abspath(a.exe), "out": out}
     print("cpus=%s frames=%d fps=%.2f frame ms p50=%.2f p95=%.2f p99=%.2f max=%.1f, over 17.5 ms: %d" % (
-        hex(mask) if mask else "all", len(dts), fps, pct(dts, 50), pct(dts, 95), pct(dts, 99),
-        max(dts) if dts else 0, sum(d > 17.5 for d in dts)))
+        res["cpus"], len(dts), fps, res["p50"], res["p95"], res["p99"], res["max"], res["over_17_5"]))
     if gpu:
+        res["gpu_p10"], res["gpu_median"] = pct(gpu, 10), statistics.median(gpu)
         print("GPU ms per frame: p10 %.3f median %.3f (timestamps; other programs on the GPU inflate them)" % (
             pct(gpu, 10), statistics.median(gpu)))
     if len(tt) == 2:
         span = tt[1][0] - tt[0][0]
-        rows = {}
+        # frames presented while the CPU times were taken
+        nfr = max(1, sum(1 for r in rows if tt[0][0] * freq <= float(r["qpc"]) <= tt[1][0] * freq))
+        threads = {}
         for tid, (nm, t) in tt[1][1].items():
             d = t - tt[0][1].get(tid, (nm, 0.0))[1]
-            r = rows.setdefault(nm, [0, 0.0])
+            sw = tt[1][3].get(tid, 0) - tt[0][3].get(tid, 0)
+            r = threads.setdefault(nm, [0, 0.0, 0])
             r[0] += 1
             r[1] += d
-        tot = sum(v[1] for v in rows.values()) / span
+            r[2] += max(0, sw)
+        tot = sum(v[1] for v in threads.values()) / span
         mach = ((tt[1][2][1] - tt[0][2][1]) - (tt[1][2][0] - tt[0][2][0])) / span
-        print("game CPU %.2f processors; other load %.1f processors" % (tot, mach - tot))
-        for nm, (n, d) in sorted(rows.items(), key=lambda kv: -kv[1][1])[:10]:
-            print("  %6.1f%%  x%-3d %s" % (100.0 * d / span, n, nm))
+        sw_tot = sum(v[2] for v in threads.values()) / span
+        res.update({"span_s": span, "frames_in_cpu_window": nfr, "game_cpu": tot, "other_load": mach - tot,
+                    "cpu_ms_per_frame": 1000.0 * tot * span / nfr, "switches_per_s": sw_tot,
+                    "threads": {nm: {"n": n, "cpu_pct": 100.0 * d / span, "ms_per_frame": 1000.0 * d / nfr,
+                                     "switches_per_s": sw / span}
+                                for nm, (n, d, sw) in threads.items()}})
+        print("game CPU %.2f processors (%.1f ms per frame), %.0f context switches/s; other load %.1f processors" % (
+            tot, res["cpu_ms_per_frame"], sw_tot, mach - tot))
+        for nm, (n, d, sw) in sorted(threads.items(), key=lambda kv: -kv[1][1])[:16]:
+            print("  %6.1f%%  %6.2f ms/frame  %6.0f sw/s  x%-3d %s" % (100.0 * d / span, 1000.0 * d / nfr,
+                                                                      sw / span, n, nm))
+    if a.json:
+        with open(a.json, "w") as f:
+            json.dump(res, f, indent=1)
     print("logs:", out)
 
 

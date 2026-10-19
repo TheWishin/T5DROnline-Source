@@ -17,8 +17,8 @@ import urllib.error
 import zipfile
 
 from e2e_flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
-                   leave, login, match_row, parse_segment, profile, queue_match, rematch, started_both,
-                   wait_fight, wait_results, STUB_MATCH_SECONDS)
+                   leave, log_has, login, match_row, parse_segment, profile, queue_match, rematch,
+                   server_says, started_both, wait_fight, wait_results, STUB_MATCH_SECONDS)
 from e2e_harness import Abort, Skip
 
 SCENARIOS = []
@@ -994,6 +994,155 @@ def net_mixed_fallback(ctx):
     login(ctx, a)
     login(ctx, b)
     net_case(ctx, a, b, "mixed: one side lockstep only, RTT 40", 40, 0, 0, "auto", False, None, mode="lockstep")
+
+
+# ------------------------------------------------------------------ relay -> direct while the match runs (1.1.1)
+def _relay_bridge():
+    """nat.RelayBridge in this tree (nat-robust, 1.1.1), or None."""
+    try:
+        from t5lobby.nat import RelayBridge
+        return RelayBridge
+    except ImportError:
+        return None
+
+
+def _upgrades(p, mid, path="direct"):
+    return [ts for ts, e in p.events if e.get("t") == "nat_upgrade" and e.get("match") == mid and e.get("path") == path]
+
+
+def relay_upgrade_case(ctx, a, b, label, expect=True, real=True):
+    """The punch phase fails (both launchers ignore the opponent's direct packets: block_direct), so the match
+    starts on the lobby server's relay; then the direct path is opened again. Between two 1.1.1 launchers the
+    relay bridge finds it in its first burst (the match's start + 35 s, the same server time on both) and both
+    move the game's packets onto it while the match runs; the games keep talking to 127.0.0.1 and must not
+    notice. expect=False: one side is a 1.1.0-style client (no nat2), so no bridge and the match stays on the
+    relay to its end."""
+    rb = _relay_bridge()
+    ctx.shaper.set(0, 0, 0, on=False)
+    for p in (a, b):
+        p.client.block_direct = True
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    started = max(a.matches[mid]["started"], b.matches[mid]["started"])
+    for p in (a, b):
+        p.client.block_direct = False                 # (the next match punches normally)
+    paths = [p.matches[mid].get("path") for p in (a, b)]
+    ctx.check(f"{label}: the match starts on the relay", paths == ["relay", "relay"], paths)
+    bridges = [p.client._bridge for p in (a, b)]
+    if expect:
+        ctx.check(f"{label}: a relay bridge in both launchers", all(bridges), [type(x).__name__ for x in bridges])
+        if not all(bridges):
+            raise Abort("no relay bridge")
+        peers = [tuple(getattr(getattr(p.tab.driver, "ticket", None), "peer", ()) or ()) for p in (a, b)]
+        ctx.check(f"{label}: both games talk to their own launcher (127.0.0.1:<bridge port>)",
+                  all(len(pr) == 2 and pr[0] == "127.0.0.1" and int(pr[1]) == br.port for pr, br in zip(peers, bridges)),
+                  f"game peers {peers}, bridge ports {[br.port for br in bridges]}")
+        for br in bridges:
+            br.gs.block_direct = False                # the direct path opens: only the punch phase was blocked
+        ctx.note(f"{label}: punch phase blocked -> relay; direct path opened {time.time() - started:.1f} s after "
+                 f"match_start; first burst due at +{rb.FIRST_BURST:.0f} s")
+    else:
+        ctx.check(f"{label}: no relay bridge (a 1.1.0 client on one side)", not any(bridges),
+                  [type(x).__name__ for x in bridges])
+    if real and not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    up = None
+    if expect:
+        deadline = started + rb.FIRST_BURST + rb.BURST + 15.0
+        ok = ctx.wait(lambda: _upgrades(a, mid) and _upgrades(b, mid), max(5.0, deadline - time.time()),
+                      f"{label}: both launchers moved the match onto the direct path (nat_upgrade)")
+        if ok:
+            up = [_upgrades(p, mid)[0] for p in (a, b)]
+            ctx.note(f"{label}: switched {up[0] - started:.1f} s / {up[1] - started:.1f} s after match_start")
+            s0 = [dict(br.stats) for br in bridges]
+            ctx.sleep(5.0)
+            s1 = [dict(br.stats) for br in bridges]
+            for p, br, x0, x1 in zip((a, b), bridges, s0, s1):
+                d_in, r_in = x1["direct_in"] - x0["direct_in"], x1["relay_in"] - x0["relay_in"]
+                ctx.check(f"{label}: {p.name}: the opponent's packets now come straight from its PC",
+                          br.path == "direct" and d_in >= 20 and r_in <= d_in // 10,
+                          f"in the 5 s after the switch: {d_in} direct, {r_in} through the relay, "
+                          f"{x1['from_game'] - x0['from_game']} sent by this game; bridge path {br.path}")
+            ctx.check(f"{label}: the Online tab says so on both PCs",
+                      a.saw_status("Direct connection found", since) and b.saw_status("Direct connection found", since),
+                      f"{a.status_text()!r} / {b.status_text()!r}")
+            ctx.check(f"{label}: the lobby server logged both switches",
+                      server_says(ctx, rf"match {mid}: side 0 left the relay for the direct path") and
+                      server_says(ctx, rf"match {mid}: side 1 left the relay for the direct path"))
+    wait_results(ctx, mid, (a, b))
+    t_res = min(p.matches[mid].get("result") or 1e18 for p in (a, b))
+    if expect and up:
+        if real:
+            fight = max(p.matches[mid].get("fight_at") or 0 for p in (a, b))
+            ctx.check(f"{label}: the switch came while the fight ran", fight < min(up) and max(up) < t_res,
+                      f"FIGHT START +{fight - started:.1f} s, switch +{min(up) - started:.1f}/{max(up) - started:.1f} s,"
+                      f" result +{t_res - started:.1f} s")
+        else:
+            ctx.check(f"{label}: the switch came while the match ran", max(up) < t_res,
+                      f"switch +{max(up) - started:.1f} s, result +{t_res - started:.1f} s")
+        back = [ts for p in (a, b) for ts in _upgrades(p, mid, "relay") if ts < t_res]
+        ctx.check(f"{label}: on the direct path to the end (no fall back to the relay)", not back,
+                  f"{len(back)} switches back")
+        ctx.note(f"{label}: bridge counters {[dict(br.stats) for br in bridges]}")
+    elif not expect:
+        ctx.check(f"{label}: no switch: the match stays on the relay", not _upgrades(a, mid) and not _upgrades(b, mid))
+    if real:
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b))
+        mode = ctx.run.netcode
+        ctx.check(f"{label}: netcode {mode} on both", row[a.name]["mode"] == mode and row[b.name]["mode"] == mode,
+                  f"{row[a.name]['mode']}/{row[b.name]['mode']}")
+        for p in (a, b):
+            ctx.check(f"{label}: {p.name}'s game kept one peer address (it never had to follow one)",
+                      not log_has(p, r"the peer's address changed", mid))
+    else:
+        st = [p.matches[mid].get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        rf = [p.result_file(mid) or {} for p in (a, b)]
+        ctx.check(f"{label}: both stub games: same winner, 0 mismatching frames",
+                  rf[0].get("winner") == rf[1].get("winner") and not rf[0].get("desync") and not rf[1].get("desync"),
+                  f"winner {rf[0].get('winner')}/{rf[1].get('winner')}, desync {rf[0].get('desync')}/{rf[1].get('desync')}")
+        for p in (a, b):
+            ctx.check(f"{label}: {p.name}'s stub game never lost its peer",
+                      not log_has(p, r"no input from the peer|peer lost|DESYNC", mid))
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
+    ctx.sleep(1.0)
+    return mid
+
+
+@scenario("net_relay_upgrade", "6 netcode", game=True, suites=("game", "net"),
+          desc="1.1.1 relay bridge: the punch fails, the match starts on the relay, the direct path opens; both "
+               "launchers move the fight onto it at the match's start + 35 s, the games stay in sync")
+def net_relay_upgrade(ctx):
+    if _relay_bridge() is None:
+        raise Skip("no relay bridge in this tree (nat-robust, 1.1.1)")
+    game_server(ctx, T5L_ROUNDS=max(2, ctx.run.rounds))     # a fight still running 35-40 s after match_start
+    a = ctx.player("E2E Up1")
+    b = ctx.player("E2E Up2")
+    login(ctx, a)
+    login(ctx, b)
+    relay_upgrade_case(ctx, a, b, "relay -> direct")
+
+
+@scenario("relay_upgrade_stub", "6 netcode", suites=("lobby", "net"),
+          desc="1.1.1 relay bridge with stub games: relay -> direct during a 55 s match; against a 1.1.0-style "
+               "client (no nat2) no bridge and the match stays on the relay")
+def relay_upgrade_stub(ctx):
+    if _relay_bridge() is None:
+        raise Skip("no relay bridge in this tree (nat-robust, 1.1.1)")
+    stub_server(ctx)
+    a = ctx.player("E2E Ups1", kind="stub", env={"T5_STUB_SECONDS": 55})
+    b = ctx.player("E2E Ups2", kind="stub", env={"T5_STUB_SECONDS": 55})
+    login(ctx, a)
+    login(ctx, b)
+    relay_upgrade_case(ctx, a, b, "stub: relay -> direct", real=False)
+    c = ctx.player("E2E Old110", kind="stub", env={"T5_STUB_SECONDS": 45})
+    ctx.no_nat2.add(c.name)
+    login(ctx, c)
+    ctx.check("the 1.1.0-style client logged in without nat2", c.client is not None and not c.client.nat2)
+    relay_upgrade_case(ctx, c, b, "stub: 1.1.0 client on the relay", expect=False, real=False)
 
 
 # ============================================================================== 7. failures

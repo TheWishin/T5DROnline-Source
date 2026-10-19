@@ -613,6 +613,8 @@ class Player:
     def client_made(self, c):
         if self.ctx.block_direct.get(self.name):
             c.block_direct = True
+        if self.name in self.ctx.no_nat2 and hasattr(c, "nat2"):
+            c.nat2 = False           # a 1.1.0-style client: no planned punch, no relay bridge
 
     def _record(self, ev):
         now = time.time()
@@ -1048,6 +1050,7 @@ class Ctx:
         self.players = []
         self.shaper = Shaper()
         self.block_direct = {}
+        self.no_nat2 = set()        # player names whose client behaves like 1.1.0 (no "nat2" cap)
         self.checks = []            # (name, ok, detail, level)
         self.evidence = []
         self.t0 = time.time()

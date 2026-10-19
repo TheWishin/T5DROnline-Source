@@ -115,6 +115,7 @@ which a busy PC's preemption does not inflate):
 | `[audio-rate]` silent share taken before `PS3_AUDIO_MUTE` | every muted test game read 100 % silent |
 | the 8 s / 15 s `[WATCHDOG]` thread dumps only when no frame was presented in the last 0.5 s (`WATCHDOG_ALWAYS=1` forces them) | ~1 300 lines in every player's log, every thread suspended in turn during the intro movie, module names resolved under the loader lock while a thread is suspended |
 | debug console `poke16` | the soak holds a fighter's health (an i16) |
+| a detached PPU thread's host handles, each thread's sleep timer: closed when the thread ends | ~70 handles an hour leaked (below) |
 | `tests/run_ps3recomp_tests.py`: `spu_near_float`; `tests/test_soak.py` | |
 
 ## Results (2026-10-19, patch 0041 on the series to 0035)
@@ -241,6 +242,37 @@ options, gallery/online, idle with the attract demo); the PC 92 % busy:
 Below 12 processors the pools are smaller (44-53 threads instead of 65-71).
 fps below 59 here is the busy PC: the same runs' frame rates follow the
 other games' load, not the processor count.
+
+### 60 minutes of everything (`soak.py mixed --minutes 60`, all processors)
+
+61 min, 44 milestones (arcade to the end with 7 characters, VS 2 matches at a
+time, survival, practice, ghost, options, gallery, online, attract idle), two
+menu presses lost and recovered. The PC 90 % busy (up to 10 other games).
+
+| | 0-10 min | 20-30 min | 40-50 min | 60-70 min |
+|---|---|---|---|---|
+| handles | 793-816 | 816-839 | 834-860 | 867-879 |
+| threads | 66-72 | 66-69 | 66-69 | 67-69 |
+| private MB | 1 189-1 330 | 1 304-1 351 | 1 376-1 422 | 1 385-1 388 |
+| fps (mean of 5-s windows) | 48.1 | 51.5 | 49.0 | 56.1 |
+
+No crash, NID, syscall, guest fault, render drop, decode error, FIFO line;
+the sound core 13.4 M cycles per tick, 2 300 of 690 371 ticks over 5.33 ms;
+803 of ~690 000 audio blocks not written (0.12 %). Private memory steps up
+when new characters and stages load (texture and pipeline caches) and is
+flat over the last 30 minutes.
+
+**Handle leak (fixed in 0041).** Handles crept by ~70 an hour at a steady
+thread count. By type (`tools/soak/handles.py`, a 12-minute diff): IRTimer
++6, Event +5, Thread +4. The title starts ~300 threads an hour (sound
+decoders, particles, demuxers, autosaves); two kinds of handle stayed behind:
+
+- a **detached** guest thread frees its own slot when it ends, but on Windows
+  its host thread handle and join event were never closed (the POSIX half
+  detaches) -- `sys_ppu_thread.c` now closes them, and no longer signals an
+  event of a slot that may already belong to a new thread;
+- each thread's high-resolution sleep timer (`host_sched.c`) was kept for
+  good -- now closed at thread exit (a fiber-local-storage destructor).
 
 ### Open: NULL resource lookups in the draw thread (seen once)
 

@@ -3,6 +3,54 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.2 (not released yet)
+
+**Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The
+new lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
+
+### Online
+- **Opponents nearby first.** The ping shown when a match is found is now the best path the
+  two of you can get, through the nearest relay server: two players in California see about
+  50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents
+  with a low ping first and widen the search while you wait (any opponent after 30 s in quick,
+  60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
+  before.
+- **Friends** (accounts): add a friend by account name on the Online tab's new **Friends** page; they accept or
+  decline. The list shows who is online, searching, in a match or offline, and changes by itself. Remove a friend
+  there too. Blocking a player ends the friendship.
+- **Invites**: invite a friend who is online to a casual match, or into your room. They get the question like a
+  challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
+- Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
+  can be repeated after a week.
+
+### Launcher
+- **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
+  "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
+  Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
+  (docs/ONLINE.md "Discord Rich Presence").
+
+### Servers
+- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
+  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
+
+## v1.1.2 (unreleased)
+
+### Security
+- **Signed updates.** The launcher's self-update now checks an Ed25519 signature of the release
+  (`SHA256SUMS.sig`) made with the owner's key, once the owner has set it up (docs/RELEASING.md
+  "Release signature"): a release that somebody else managed to put on GitHub is refused. Updating
+  from 1.1.1 to 1.1.2 works as before.
+- **Lobby servers cannot touch your files.** A lobby server (any server you add) could send a match
+  name that made the launcher delete or write files outside its own folder. Match names are now
+  checked.
+- **Matches are harder to disturb from outside.** A stranger who found your game's port could end a
+  match before it started with one packet, and somebody who recorded the match's traffic could make
+  your game send its packets elsewhere. Both are refused now (docs/NETPLAY.md "Connection problems").
+- Lobby servers: regional relays get the players' relay tokens sealed, a relay node refuses requests
+  recorded before its restart, a flood of pings no longer blocks match setup, password changes are
+  rate-limited, and the database is private to the server's user (docs/HOSTING.md).
+- Problem reports also remove lobby recovery codes.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

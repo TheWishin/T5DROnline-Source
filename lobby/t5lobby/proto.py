@@ -130,6 +130,20 @@ def scrub_addresses(text):
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_\-\.\[\]\(\)!\? ]{2,16}$")
 
+# A match id as servers make them ("m" + 12 hex digits). The launcher puts it into file names (result,
+# fight and status files, the handover socket file) and into the game's fight line, so a server -- any
+# server a player adds -- must not be able to send one with a path, a dot or a space in it (1.1.2).
+MATCH_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def valid_match_id(value):
+    return isinstance(value, str) and MATCH_ID_RE.fullmatch(value) is not None
+
+
+def file_safe(value):
+    """`value` for a file name: letters, digits, '_' and '-' only (anything else becomes '_')."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(value))[:40] or "_"
+
 
 def valid_name(name):
     """Display/account names: 2-16 printable ASCII characters from a safe set, no leading/trailing space."""

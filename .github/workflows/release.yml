@@ -402,6 +402,16 @@ jobs:
           fi
           gh api "repos/$GH_REPO" --jq .full_name
 
+      # Only the signing tool and the launcher's key list (the release signature step below).
+      - uses: actions/checkout@v7
+        with:
+          path: src
+          sparse-checkout: |
+            tools/release_sign.py
+            launcher/release_sig.py
+            launcher/updater.py
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v8
         with:
           name: T5DR-Online-${{ needs.build.outputs.version }}
@@ -411,6 +421,17 @@ jobs:
         working-directory: dist
         run: sha256sum -c SHA256SUMS
 
+      # Release signature (docs/RELEASING.md "Release signature"): an Ed25519 signature of SHA256SUMS
+      # (SHA256SUMS.sig) with the owner's key, a secret of the "release" environment only -- the build
+      # job never sees it. Launchers that carry the public key (RELEASE_PUBLIC_KEYS in
+      # launcher/updater.py) install only signed updates. No secret and no key in the launcher: the
+      # release goes out unsigned, as up to 1.1.1. A key in the launcher but no secret, or a secret
+      # whose public key the launcher lacks: the run stops here, before anything is published.
+      - name: Release signature
+        env:
+          T5DR_RELEASE_SIGNING_KEY: ${{ secrets.T5DR_RELEASE_SIGNING_KEY }}
+        run: python3 src/tools/release_sign.py ci --version "$VERSION" --dist dist
+
       # Idempotent, so "Re-run failed jobs" finishes a half-done publish. A published
       # release's zip is never replaced by a different one: yank it first.
       - name: Create the release (or finish a partial one)
@@ -419,12 +440,13 @@ jobs:
           set -euo pipefail
           zip="T5DR-Online-$VERSION.zip"
           title="T5DR Online $VERSION"
+          sig=(); if [ -f SHA256SUMS.sig ]; then sig=(SHA256SUMS.sig); fi
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             # A DRAFT in the public repository: only the owner sees it. The owner downloads the zip,
             # checks it on VirusTotal and clicks "Publish release" (docs/RELEASING.md). The tag is
             # made on publishing, on the public main (the README commit), so the release's
             # "Source code" archives hold the README only.
-            gh release create "$TAG" "$zip" SHA256SUMS --draft --target main --title "$title" \
+            gh release create "$TAG" "$zip" SHA256SUMS "${sig[@]}" --draft --target main --title "$title" \
               --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
           else
             draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
@@ -435,10 +457,10 @@ jobs:
                 echo "::error::$TAG is already published with a different $zip. Yank it first (docs/RELEASING.md) or release a new version."
                 exit 1
               fi
-              echo "$TAG already has this exact zip; refreshing notes and SHA256SUMS only"
-              gh release upload "$TAG" SHA256SUMS --clobber
+              echo "$TAG already has this exact zip; refreshing notes, SHA256SUMS and its signature only"
+              gh release upload "$TAG" SHA256SUMS "${sig[@]}" --clobber
             else
-              gh release upload "$TAG" "$zip" SHA256SUMS --clobber
+              gh release upload "$TAG" "$zip" SHA256SUMS "${sig[@]}" --clobber
             fi
             gh release edit "$TAG" --title "$title" --notes-file RELEASE_NOTES.md --prerelease="$PRERELEASE"
           fi

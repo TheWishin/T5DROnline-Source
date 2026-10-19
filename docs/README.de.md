@@ -248,6 +248,16 @@ Gut zu wissen:
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.
+- **Freunde** (mit Konto, ab 1.1.2): Füge auf der Seite **Freunde** im
+  Online-Reiter einen Freund mit seinem Kontonamen hinzu. Hat er angenommen,
+  siehst du, wann er online ist, sucht oder im Match ist. **Zu einem Match
+  einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
+  seiner Seite startet es. Wer einen Spieler blockiert, beendet die
+  Freundschaft.
+- **Discord** (freiwillig, standardmäßig aus): Settings -> Discord zeigt „In der
+  Lobby“, „Sucht ein Ranked-Match“ oder dein Match („Im Match: Jin vs Kazuya
+  (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf
+  deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr

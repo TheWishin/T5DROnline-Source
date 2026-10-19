@@ -1,7 +1,7 @@
 {
  "version": 2,
  "status": "verified",
- "note": "Character and stage ids for T5_FIGHT=p1,p2,stage,rounds (direct-fight mode, docs/DIRECTFIGHT.md). Characters: the game's own order (3-letter codes at 0x1001CE58). Stages: the ids 17-34 the stage select lists; names are known for two so far. 'boss': not selectable in Versus (Jinpachi has no cursor cell); 'unverified': selected through another character's cell (Panda = Kuma's cell, alternate confirm) -- never picked at random.",
+ "note": "Character and stage ids for T5_FIGHT=p1,p2,stage,rounds (direct-fight mode, docs/DIRECTFIGHT.md). Characters: the game's own order (3-letter codes at 0x1001CE58). Stages: the ids 17-34 the stage select lists; names are known for two so far. 't5': the Tekken 5 stages (ids 0-13 and 15, sprites stage_1_old..stage_15_old), drawn only when the server enables them (T5L_OLD_STAGES) and both clients announce the old_stages cap. 'boss': not selectable in Versus (Jinpachi has no cursor cell); 'unverified': selected through another character's cell (Panda = Kuma's cell, alternate confirm) -- never picked at random.",
  "fighters": [
   {"key": "paul", "name": "Paul", "id": 0, "code": "pau"},
   {"key": "law", "name": "Marshall Law", "id": 1, "code": "law"},
@@ -58,6 +58,21 @@
   {"key": "s31", "name": "Stage 31", "id": 31},
   {"key": "s32", "name": "Stage 32", "id": 32},
   {"key": "s33", "name": "Industrial yard", "id": 33},
-  {"key": "s34", "name": "Stage 34", "id": 34}
+  {"key": "s34", "name": "Stage 34", "id": 34},
+  {"key": "t5s01", "name": "Tekken 5 stage 1", "id": 0, "t5": true},
+  {"key": "t5s02", "name": "Tekken 5 stage 2", "id": 1, "t5": true},
+  {"key": "t5s03", "name": "Tekken 5 stage 3", "id": 2, "t5": true},
+  {"key": "t5s04", "name": "Tekken 5 stage 4", "id": 3, "t5": true},
+  {"key": "t5s05", "name": "Tekken 5 stage 5", "id": 4, "t5": true},
+  {"key": "t5s06", "name": "Tekken 5 stage 6", "id": 5, "t5": true},
+  {"key": "t5s07", "name": "Tekken 5 stage 7", "id": 6, "t5": true},
+  {"key": "t5s08", "name": "Tekken 5 stage 8", "id": 7, "t5": true},
+  {"key": "t5s09", "name": "Tekken 5 stage 9", "id": 8, "t5": true},
+  {"key": "t5s10", "name": "Tekken 5 stage 10", "id": 9, "t5": true},
+  {"key": "t5s11", "name": "Tekken 5 stage 11", "id": 10, "t5": true},
+  {"key": "t5s12", "name": "Tekken 5 stage 12", "id": 11, "t5": true},
+  {"key": "t5s13", "name": "Tekken 5 stage 13", "id": 12, "t5": true},
+  {"key": "t5s14", "name": "Tekken 5 stage 14", "id": 13, "t5": true},
+  {"key": "t5s15", "name": "Tekken 5 stage 15", "id": 15, "t5": true}
  ]
 }

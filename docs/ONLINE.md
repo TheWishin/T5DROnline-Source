@@ -581,6 +581,7 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
+| `T5L_OLD_STAGES` | `0` | `1` = the stage drawn for a match may also be one of the Tekken 5 stages (both clients must announce `old_stages`; docs/RANKED.md "Characters and stages") |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
 | `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |

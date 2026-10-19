@@ -186,6 +186,18 @@ button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
 before lockstep starts and would differ between the two PCs.
 
+**The Tekken 5 stages** (1.1.2): `data/fighters.json` also lists the old
+stages of Tekken 5, keys `t5s01`..`t5s15` ("t5": the game's stage ids 0-13 and
+15, the ones the stage select offers once they are unlocked; docs/DIRECTFIGHT.md
+"Unlocks"). The server draws a match's stage from them too when
+`T5L_OLD_STAGES=1` (default off) and both clients announced the `old_stages`
+cap (1.1.2 launchers do: they know the keys; an older one could not start the
+fight). Otherwise the draw is exactly the old one (the same stage for the same
+seed). The direct-fight driver writes the stage id itself, so a stage plays the
+same whether or not a player unlocked it in their game, and online games
+answer the unlock check as a fresh save does on both PCs. Every one of the 15
+stages was played in sync in both netcode modes (runs old_rb / old_ls).
+
 ### Character select in the game
 
 The server offers it in `match_start`: `fight.pick` = seconds to pick
@@ -793,6 +805,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
 | `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
+| `T5L_OLD_STAGES` | 0 | 1 = a match's stage may also be one of the Tekken 5 stages (`t5s01`..`t5s15`) when both clients announce `old_stages` |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |

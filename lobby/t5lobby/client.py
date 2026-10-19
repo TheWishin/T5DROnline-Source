@@ -61,7 +61,7 @@ class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, old_stages=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -89,7 +89,9 @@ class LobbyClient:
         against another nat2 client, keep the game socket here and move the match onto the direct path
         when it starts to work (RelayBridge). relays: measure the UDP round trip to the regional relays a
         server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
-        behaves like a 1.1.0 client there (only the lobby server's own relay)."""
+        behaves like a 1.1.0 client there (only the lobby server's own relay). old_stages: this client knows the
+        Tekken 5 stage keys (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its
+        matches; False behaves like a 1.1.1 client (tests)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -105,6 +107,7 @@ class LobbyClient:
         self.blind_ready = blind_ready
         self.ingame_pick = ingame_pick
         self.sets = sets
+        self.old_stages = old_stages
         self.notices = {}            # id -> {"text", "expires"}: server notices showing now
 
         self.events = queue.Queue()
@@ -233,6 +236,7 @@ class LobbyClient:
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
                                                 "client": CLIENT_NAME, "build": self.build.as_wire(),
                                                 "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])
+                                                + (["old_stages"] if self.old_stages else [])
                                                 + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])

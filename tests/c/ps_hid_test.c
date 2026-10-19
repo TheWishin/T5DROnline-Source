@@ -231,7 +231,7 @@ static void test_dualsense_01(void)
     u8 rep[600]; RawState r, e;
     size_t len = build(PSM_DS, M_SIMPLE, &s, 1, rep);
     CHECK(len == 78 && ps_parse(PSM_DS, 1, rep, len, &r) == PSR_DS_SIMPLE, "DualSense BT simple");
-    CHECK(ps_parse(PSM_DS, 0, rep, len, &r) == PSR_DS_SIMPLE, "a 78-byte 0x01 is the simple report even if the path did not say Bluetooth");
+    CHECK(ps_parse(PSM_DS, -1, rep, len, &r) == PSR_DS_SIMPLE, "link not known: a 78-byte 0x01 is the simple report");
     CHECK(ps_parse(PSM_DS, 1, rep, 10, &r) == PSR_DS_SIMPLE, "an unpadded 10-byte simple report");
     expect_raw(PSM_DS, M_SIMPLE, &s, &e);
     CHECK(same_raw(&r, &e), "simple report content");
@@ -239,6 +239,11 @@ static void test_dualsense_01(void)
     CHECK(len == 64 && ps_parse(PSM_DS, 0, rep, len, &r) == PSR_DS_USB, "DualSense USB");
     expect_raw(PSM_DS, M_USB, &s, &e);
     CHECK(same_raw(&r, &e), "USB report content");
+    CHECK(ps_parse(PSM_DS, -1, rep, len, &r) == PSR_DS_USB && same_raw(&r, &e), "link not known: 64 bytes = USB");
+    u8 big[600]; memset(big, 0, sizeof big); memcpy(big, rep, 64);
+    CHECK(ps_parse(PSM_DS, 0, big, 128, &r) == PSR_DS_USB && same_raw(&r, &e), "USB known: the full report, whatever the length");
+    CHECK(ps_parse(PSM_DS4, -1, big, 64, &r) == PSR_DS4_USB && ps_parse(PSM_DS4, -1, big, 547, &r) == PSR_DS4_SIMPLE,
+          "DS4 0x01 named by link / length");
     RawState keep; ps_neutral(&keep); r = keep;
     CHECK(ps_parse(PSM_DS, 0, rep, 9, &r) == PSR_NONE && same_raw(&r, &keep), "a cut report is not parsed");
 }

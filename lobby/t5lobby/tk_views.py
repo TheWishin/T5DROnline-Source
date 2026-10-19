@@ -19,11 +19,12 @@ The tab calls refresh() whenever its state may have changed (after every event a
 show_bar() / hide_bar() around its questions, after_event() / after_driver() with what it got.
 Colours, fonts and the drawn pieces come from theme.py.
 """
+import re
 import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import proto, ranks, theme
+from . import i18n, proto, ranks, theme
 from .i18n import N_, t
 from .lag import describe_event as describe_lag
 from .theme import C
@@ -36,8 +37,10 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
             "request": N_("Request")}
 
 # What the player can do about an error: words to look for in the message (lower case; the English words of the
-# server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The same
-# tips in both languages are in the catalog; tests/test_i18n.py checks that each pair of words belongs together.
+# server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The tips are in
+# every catalog; tests/test_i18n.py checks that each pair of words belongs together. In the other languages the
+# message is recognised by its whole translation (_tip_patterns): every catalog text whose English key holds the
+# entry's English words.
 ERROR_HELP = (
     (("cannot reach", "ist nicht erreichbar"),
      N_("Check the server address and your internet connection, then try again.")),
@@ -81,9 +84,33 @@ ERROR_HELP = (
 )
 
 
+_HOLE = re.compile(r"\{\w+\}")
+_TIPS = {}            # language -> [[regex of a translated message, ...] per ERROR_HELP entry]
+
+
+def _tip_patterns():
+    """For each ERROR_HELP entry, regexes that find its messages in the current language: the translations of the
+    catalog texts whose English text holds one of the entry's English words, a {placeholder} matching anything."""
+    lang = i18n.language()
+    if lang not in _TIPS:
+        cat = i18n.catalog(lang)
+        keys = [(k.lower(), v.lower()) for k, v in cat.items()]
+        per_entry = []
+        for words, _tip in ERROR_HELP:
+            rxs = []
+            for key, text in keys:
+                if any(w in key for w in words) and text:
+                    parts = _HOLE.split(text)
+                    rxs.append(re.compile(".+?".join(re.escape(p) for p in parts)))
+            per_entry.append(rxs)
+        _TIPS[lang] = per_entry
+    return _TIPS[lang]
+
+
 def friendly_error(text):
     """'Lobby: wrong name or password' -> 'Wrong name or password. Check the spelling, or use ...'
-    (the same in German: 'Lobby: Name oder Passwort falsch' -> 'Name oder Passwort falsch. Prüfe ...')."""
+    (the same in German: 'Lobby: Name oder Passwort falsch' -> 'Name oder Passwort falsch. Prüfe ...', and in
+    each other language)."""
     msg = proto.scrub_addresses(str(text or "")).strip()
     for prefix in (t("Lobby error: {error}", error="\0").split("\0")[0], t("Lobby: {message}", message="\0").split("\0")[0],
                    "Lobby error: ", "Lobby: "):
@@ -93,7 +120,9 @@ def friendly_error(text):
         return ""
     msg = msg[0].upper() + msg[1:]
     low = msg.lower()
-    tip = next((tip_text for words, tip_text in ERROR_HELP if any(w in low for w in words)), "")
+    patterns = _tip_patterns() if i18n.language() != "en" else [()] * len(ERROR_HELP)
+    tip = next((tip_text for (words, tip_text), rxs in zip(ERROR_HELP, patterns)
+                if any(w in low for w in words) or any(rx.search(low) for rx in rxs)), "")
     tip = t(tip) if tip else ""
     if tip and tip.lower() not in low:
         msg = msg.rstrip(".") + ". " + tip
@@ -669,7 +698,7 @@ class OnlineView:
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 150, 76, 72, 86, 110, 68), height=6)
+                                       (130, 150, 76, 80, 86, 110, 68), height=6)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -698,14 +727,14 @@ class OnlineView:
         cc.rowconfigure(1, weight=1)
         head, _tools = self.section_head(cc, t("Chat").upper())
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        tab.chat_log = tk.Text(cc, height=10, width=30, state="disabled", wrap="word", font=self.th.fonts["body"],
+        tab.chat_log = tk.Text(cc, height=10, width=26, state="disabled", wrap="word", font=self.th.fonts["body"],
                                bg=C["surface"], fg=C["text"], relief="flat", borderwidth=0, highlightthickness=0,
                                padx=px(2), pady=px(2), cursor="arrow", takefocus=0)
         tab.chat_log.grid(row=1, column=0, sticky="nsew")
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)
-        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry")
+        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=10)   # (it grows with the card)
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
@@ -755,7 +784,7 @@ class OnlineView:
         ttk.Label(card, textvariable=tab.prof_text, style="Card.Muted.TLabel", justify="left").grid(
             row=1, column=1, sticky="w", pady=(px(2), px(8)))
         fr, tab.tv_hist = self.tree(card, ("when", "result", "opponent", "chars", "score", "rating", "status"),
-                                    (110, 60, 120, 180, 60, 64, 170), height=7, image_col=False, select="none")
+                                    (110, 84, 120, 180, 60, 76, 330), height=7, image_col=False, select="none")
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])

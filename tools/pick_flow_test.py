@@ -63,6 +63,9 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fight_flow_test as ff  # noqa: E402  (the pause-menu check, docs/NETPLAY.md "No pause online")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T0 = time.time()
 
@@ -144,11 +147,17 @@ def step(cell, target):
     return "RIGHT" if fwd <= back else "LEFT"
 
 
-def mash_script(path, seed, frames=400000):
+def mash_script(path, seed, frames=400000, start_every=0):
+    """start_every N: about every N-th input is START (pause mashing; fight_flow_test.mash_script)."""
     rnd = random.Random(seed)
     buttons = [0x4000, 0x2000, 0x8000, 0x1000, 0x4000 | 0x2000, 0x8000 | 0x1000, 0x10, 0x20, 0x40, 0x80, 0x20, 0x80]
     out, f = [], 30
     while f < frames:
+        if start_every and rnd.randrange(start_every) == 0:
+            n = rnd.randint(1, 4)
+            out.append(f"{f} {n} {0x0008 | rnd.choice([0, 0, 0x8000, 0x4000]):#x}")
+            f += n + rnd.randint(1, 6)
+            continue
         n = rnd.randint(1, 4)
         out.append(f"{f} {n} {rnd.choice(buttons):#x}")
         f += n + rnd.randint(1, 6)
@@ -200,7 +209,10 @@ class Game:
             "T5_DF_STATUS_FILE": self.status_path, "T5_NET_TIMEOUT": "20", "T5_NET_SCRIPT_FIGHT": "1",
         })
         if self.a.mash:
-            env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx)
+            env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
+                                               start_every=self.a.mash_start)
+        if self.a.mash_start:
+            env["T5_DF_WATCH"] = ff.PAUSE_WORD   # the pause menu, logged when it opens
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
@@ -509,6 +521,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--delay", type=int, default=2)
     ap.add_argument("--mash", action="store_true")
+    ap.add_argument("--mash-start", type=int, default=0, metavar="N",
+                    help="--mash: about every N-th input is START (pause mashing); the run fails if a pause menu opens")
     ap.add_argument("--rematch-wait", type=float, default=1.0)
     ap.add_argument("--port", type=int, default=7600)
     ap.add_argument("--seconds", type=float, default=3600)
@@ -716,6 +730,18 @@ def main():
                             sync.append((fn, int(mm.group(1)), int(mm.group(2))))
             report[f"sync{g.idx}"] = sync[-3:]
             log(f"game {g.idx}: last sync checks {sync[-3:]}")
+        if a.mash_start:
+            for g in games:
+                opens = ff.pause_menu_opens(os.path.join(g.dir, "df_frames.log"))
+                tally = [0, 0, 0]
+                for fn in sorted(f for f in os.listdir(g.dir) if f.startswith("game") and f.endswith(".log")):
+                    tally = [x + y for x, y in zip(tally, ff.start_tally(os.path.join(g.dir, fn)))]
+                report[f"pause{g.idx}"] = {"menu_opened": opens, "start_cut_p1": tally[0], "start_cut_p2": tally[1],
+                                           "start_kept": tally[2]}
+                log(f"game {g.idx}: pause menu opened {opens} time(s); START taken out on {tally[0]} (P1) + "
+                    f"{tally[1]} (P2) frames, kept on {tally[2]} (post-match skip)")
+                if opens:
+                    ok_all = False
         if report.get("aborts"):
             n_ok = sum(1 for ab in report["aborts"] if ab["ok"])
             restarts = {g.idx: sum(ab["restarts"].get(g.idx, 0) for ab in report["aborts"]) for g in games}

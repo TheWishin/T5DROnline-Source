@@ -1498,6 +1498,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "O jogo abre direto na luta.",
     "The result comes back here: rematch or next game.": "O resultado volta para cá: Rematch ou próxima partida.",
     "With a controller: A accepts, B declines.": "Com controle: A aceita, B recusa.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "Online ninguém pode pausar a luta: Start não abre o menu de pausa.",
     "Lobby": "Lobby",
     "Leaderboard": "Ranking",
     "Profile": "Perfil",

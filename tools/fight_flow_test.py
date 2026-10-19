@@ -119,15 +119,26 @@ def motion_moves(fwd, back):
     ]
 
 
-def mash_script(path, seed, frames=400000, gap=6, moves=False):
-    """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that pauses a fight).
-    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts).
-    moves: half of the inputs are motion inputs (motion_moves) in either facing."""
+START = 0x0008
+
+
+def mash_script(path, seed, frames=400000, gap=6, moves=False, start_every=0):
+    """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that paused a fight
+    before 1.1.2). gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer
+    mispredicts). moves: half of the inputs are motion inputs (motion_moves) in either facing.
+    start_every N: about every N-th input is START (alone or with an attack) -- a player mashing pause;
+    online it must never pause (docs/NETPLAY.md "No pause online"). The script is not filtered on the
+    sending side, so START reaches the wire like from a modified client."""
     rnd = random.Random(seed)
     buttons = [0x4000, 0x2000, 0x8000, 0x1000, 0x4000 | 0x2000, 0x8000 | 0x1000, 0x10, 0x20, 0x40, 0x80, 0x20, 0x80]
     seqs = motion_moves(R, L) + motion_moves(L, R)
     out, f = [], 30
     while f < frames:
+        if start_every and rnd.randrange(start_every) == 0:
+            n = rnd.randint(1, 4)
+            out.append(f"{f} {n} {START | rnd.choice([0, 0, 0x8000, 0x4000]):#x}")
+            f += n + rnd.randint(1, gap)
+            continue
         if moves and rnd.random() < 0.5:
             for mask, n in rnd.choice(seqs):
                 if mask:
@@ -192,6 +203,39 @@ def close_windows(pid):
     return len(found)
 
 
+# The game's pause menu (VS fight): this word goes 0 -> 2 when it opens and back to 0 when it closes
+# (with 0x1008F0B4/B8 1 -> 0 and 0x100996B4 1 -> 3; build/nopause probes p1/p4, docs/NETPLAY.md
+# "No pause online"). With T5_DF_WATCH the direct-fight log has every change.
+PAUSE_WORD = "10092EA0"
+RE_PAUSE_OPEN = re.compile(r"\[0x10092EA0\] 0x00000000 -> 0x0*[1-9A-F]")
+RE_NO_PAUSE = re.compile(r"no pause online, (the match|after the last match): START taken out on (\d+) frame\(s\) of P1's "
+                         r"input and (\d+) of P2's, kept on (\d+)")
+
+
+def pause_menu_opens(path):
+    """How often the pause menu opened in a direct-fight log (T5_DF_WATCH with PAUSE_WORD)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return sum(1 for ln in f if RE_PAUSE_OPEN.search(ln))
+    except OSError:
+        return 0
+
+
+def start_tally(path):
+    """START frames the no-pause rule took out of P1's / P2's input, and kept (the post-match skip)."""
+    t = [0, 0, 0]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = RE_NO_PAUSE.search(ln)
+                if m:
+                    for i in range(3):
+                        t[i] += int(m.group(2 + i))
+    except OSError:
+        pass
+    return t
+
+
 FIFO_BAD = (("fifo_stall", re.compile(r"queued flip never reached by the FIFO walker")),
             ("drain_stalled", re.compile(r"fifo recycle: drain stalled")),
             ("fifo_resync", re.compile(r"\[cellGcmSys\] FIFO (resync|walker circling)")))
@@ -248,7 +292,10 @@ class Game:
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
-                                               gap=getattr(self.a, "mash_gap", 6), moves=getattr(self.a, "moves", False))
+                                               gap=getattr(self.a, "mash_gap", 6), moves=getattr(self.a, "moves", False),
+                                               start_every=getattr(self.a, "mash_start", 0))
+        if getattr(self.a, "mash_start", 0):
+            env["T5_DF_WATCH"] = PAUSE_WORD   # the pause menu, logged when it opens (pause_menu_opens)
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
@@ -378,6 +425,8 @@ def main():
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--mash", action="store_true")
     ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
+    ap.add_argument("--mash-start", type=int, default=0, metavar="N",
+                    help="--mash: about every N-th input is START (pause mashing); the run fails if a pause menu opens")
     ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (electrics, hellsweeps, qcf/hcb, "
                                                         "dashes, throws, ki charge): what players do")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
@@ -441,7 +490,7 @@ def main():
                 os.remove(p)
             except OSError:
                 pass
-    report = {"flow": a.flow, "mash": a.mash, "pattern": a.pattern, "skew": a.skew, "stutter": a.stutter,
+    report = {"flow": a.flow, "mash": a.mash, "mash_start": a.mash_start, "pattern": a.pattern, "skew": a.skew, "stutter": a.stutter,
               "hz2": a.hz2, "env": a.env, "env1": a.env1, "env2": a.env2, "cpus": [a.cpus1, a.cpus2],
               "gamedata": [a.gamedata1, a.gamedata2], "matches": []}
     ok_all = True
@@ -616,6 +665,18 @@ def main():
             log(f"game {g.idx}: last sync checks {sync[-3:]}")
         if fifo_total.get("fifo_stall") or fifo_total.get("drain_stalled"):
             ok_all = False
+        if a.mash_start:
+            for g in games:
+                opens = pause_menu_opens(os.path.join(g.dir, "df_frames.log"))
+                tally = [0, 0, 0]
+                for fn in sorted(f for f in os.listdir(g.dir) if f.startswith("game") and f.endswith(".log")):
+                    tally = [x + y for x, y in zip(tally, start_tally(os.path.join(g.dir, fn)))]
+                report[f"pause{g.idx}"] = {"menu_opened": opens, "start_cut_p1": tally[0], "start_cut_p2": tally[1],
+                                           "start_kept": tally[2]}
+                log(f"game {g.idx}: pause menu opened {opens} time(s); START taken out on {tally[0]} (P1) + "
+                    f"{tally[1]} (P2) frames, kept on {tally[2]} (post-match skip)")
+                if opens:
+                    ok_all = False
         log(f"FIFO: {fifo_total or 'no stall, no resync'}")
         report["ok"] = ok_all
         with open(os.path.join(a.out, "report.json"), "w") as f:

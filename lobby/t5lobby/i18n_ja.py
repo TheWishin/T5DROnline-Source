@@ -1497,6 +1497,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "ゲームは対戦画面から直接始まります。",
     "The result comes back here: rematch or next game.": "結果はここに戻ります：Rematch か次の試合へ。",
     "With a controller: A accepts, B declines.": "コントローラー：A で受ける、B で断る。",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "オンラインでは誰も対戦をポーズできません。Start でポーズメニューは開きません。",
     "Lobby": "ロビー",
     "Leaderboard": "ランキング",
     "Profile": "プロフィール",

@@ -2,7 +2,9 @@
 """Diff two games' desync dumps: the rollback loop's rb_desync_f<frame>.bin or the lockstep's
 np_desync_f<frame>.bin (T5_NET_DESYNC_DUMP=1; the gameplay-hash bytes in region order).
 
-    python tools/rb_desync_diff.py DIR_A DIR_B      (e.g. run1 run2 of tools/fight_flow_test.py)
+    python tools/rb_desync_diff.py DIR_A DIR_B [--first-diff]     (e.g. run1 run2 of tools/fight_flow_test.py)
+
+Also the per-frame dumps of T5_RB_DUMP_AT (rb_frame_f<frame>.bin, tools/rb_equiv_test.py --dump).
 
 Lists, per common frame, the differing 32-bit words as address:A/B, then the words that differ
 most often. The rollback dump's regions are src/rollback/rb_state.cpp kGame (skipped words zeroed)."""
@@ -26,13 +28,17 @@ def addr_of(off):
 
 
 def dumps(d):
-    return {os.path.basename(p): p for p in glob.glob(os.path.join(d, "*_desync_f*.bin"))}
+    files = glob.glob(os.path.join(d, "*_desync_f*.bin")) + glob.glob(os.path.join(d, "rb_frame_f*.bin"))   # T5_RB_DUMP_AT
+    return {os.path.basename(p): p for p in files}
 
 
 def main():
     a, b = dumps(sys.argv[1]), dumps(sys.argv[2])
     common = sorted(set(a) & set(b))
     print(f"{len(a)} / {len(b)} dumps, {len(common)} common frames")
+    if "--first-diff" in sys.argv:          # skip the frames that are equal (whole-fight dumps)
+        common = [n for n in common if open(a[n], "rb").read() != open(b[n], "rb").read()]
+        print(f"{len(common)} of them differ" + (f", first {common[0]}" if common else ""))
     agg = {}
     for name in common[:20]:
         x, y = open(a[name], "rb").read(), open(b[name], "rb").read()

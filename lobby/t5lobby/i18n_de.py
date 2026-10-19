@@ -431,9 +431,9 @@ MESSAGES = {
     "Online tab: accept / decline": "Online-Reiter: annehmen / ablehnen",
     "native Windows build  ·  launcher {version}": "native Windows-Version  ·  Launcher {version}",
     "Build": "Bauen",
-    "Play": "Spielen",
+    "Play offline": "Offline spielen",
     "Settings": "Einstellungen",
-    "Online": "Online",
+    "Play online": "Online spielen",
     "Output: {folder}": "Ausgabe: {folder}",
     "Your game": "Dein Spiel",
     "Package (.pkg)": "Paket (.pkg)",
@@ -462,7 +462,12 @@ MESSAGES = {
     "Report a problem...": "Problem melden...",
     "Checking the build…": "Prüfe den Build…",
     "Your name (shown in the game)": "Dein Name (im Spiel sichtbar)",
-    "PLAY": "PLAY",
+    "PLAY OFFLINE": "OFFLINE SPIELEN",
+    "Arcade, Versus, Practice and the other modes on this PC. To play against people over the "
+    "internet, use the":
+        "Arcade, Versus, Training und die anderen Modi auf diesem PC. Um über das Internet "
+        "gegen andere zu spielen, nutze den",
+    "Online tab": "Online-Reiter",
     "Stop game": "Spiel stoppen",
     "Open newest game log": "Neuestes Spiel-Log öffnen",
     "Open saves folder": "Speicherordner öffnen",
@@ -674,6 +679,11 @@ MESSAGES = {
     "too many connections": "zu viele Verbindungen",
     "server full": "Server voll",
     "slow down": "Nicht so schnell",
+    "bad request": "Ungültige Anfrage",
+    "the server is busy; try again in a few seconds": "Der Server ist gerade ausgelastet; versuch es in ein paar Sekunden noch einmal",
+    "the chat is busy; try again in a moment": "Der Chat ist gerade ausgelastet; versuch es gleich noch einmal",
+    "that name looks too much like the account {other}": "Der Name ist dem Konto {other} zu ähnlich",
+    "that name looks too much like {name}, who is online": "Der Name ist zu ähnlich wie {name} (gerade online)",
     "flooding: disconnected": "zu viele Nachrichten: Verbindung getrennt",
     "this server speaks lobby protocol {version}; update the launcher":
         "Dieser Server nutzt das Lobby-Protokoll {version}; aktualisiere den Launcher",
@@ -716,6 +726,11 @@ MESSAGES = {
         "Ranked-Matches kommen auf diesem Server aus der Ranked-Suche",
     "your character is locked until this ranked set ends":
         "Dein Charakter ist gesperrt, bis dieses Ranked-Set vorbei ist",
+    "the ranked set goes on by itself": "Das Ranked-Set geht von selbst weiter",
+    "you are in a ranked set ({mine}-{theirs}); leave it first (that counts as a loss)":
+        "Du bist in einem Ranked-Set ({mine}-{theirs}); verlass es zuerst (das zählt als Niederlage)",
+    "that player is in a ranked set": "Dieser Spieler ist gerade in einem Ranked-Set",
+    "you are not in a ranked set": "Du bist in keinem Ranked-Set",
     "finish your running match with the same game build first":
         "Beende zuerst dein laufendes Match mit demselben Spiel-Build",
     "this PC ran its last match at {fps} fps; ranked needs at least {min_fps} (both "
@@ -1072,8 +1087,46 @@ MESSAGES = {
     # ---- lobby/t5lobby/padnav.py
     "(+{count} more)": "(+{count} weitere)",
     # ---- lobby/t5lobby/ranks.py
+    "{wins}W {losses}L": "{wins}W {losses}L",
+    "{draws}D": "{draws}D",
     "{rank} (placement {done}/{total})": "{rank} (Platzierung {done}/{total})",
+    # ---- lobby/t5lobby/sets.py
+    "a game was too short to count": "ein Spiel war zu kurz, um zu zählen",
+    "a fight ended without a winner": "ein Kampf endete ohne Sieger",
+    "too many games without a winner": "zu viele Spiele ohne Sieger",
+    "left after the lag check": "nach dem Lag-Check verlassen",
+    "the lobby server restarted": "der Lobby-Server wurde neu gestartet",
+    "a player left right away": "ein Spieler ist sofort gegangen",
+    "the next game could not start": "das nächste Spiel konnte nicht starten",
+    "a player left before a game counted": "ein Spieler ist gegangen, bevor ein Spiel gezählt hat",
+    "a player lost the lobby connection": "ein Spieler hat die Verbindung zur Lobby verloren",
+    "set won": "Set gewonnen",
+    "set lost": "Set verloren",
+    "Set {mine}-{theirs}": "Set {mine}-{theirs}",
+    "game {number} of {best}": "Spiel {number} von {best}",
+    "game {number} of {best} again (no winner)": "Spiel {number} von {best} noch einmal (kein Sieger)",
+    "starts in {seconds} s": "startet in {seconds} s",
+    "The set does not count ({why}); no rating change": "Das Set zählt nicht ({why}); keine Wertungsänderung",
+    "The set does not count; no rating change": "Das Set zählt nicht; keine Wertungsänderung",
+    "You won the set (your opponent left it)": "Du hast das Set gewonnen (dein Gegner hat es verlassen)",
+    "You won the set": "Du hast das Set gewonnen",
+    "You lost the set (you left it)": "Du hast das Set verloren (du hast es verlassen)",
+    "You lost the set": "Du hast das Set verloren",
+    "You won the set {mine}-{theirs}": "Du hast das Set {mine}-{theirs} gewonnen",
+    "You lost the set {mine}-{theirs}": "Du hast das Set {mine}-{theirs} verloren",
+    "set game {number}": "Set-Spiel {number}",
+    # ---- lobby/t5lobby/theme.py
+    "Good connection": "Gute Verbindung",
+    "Laggy connection": "Verbindung mit Lag",
+    "OK connection": "Ordentliche Verbindung",
+    "Ping not known yet": "Ping noch nicht bekannt",
+    "sec": "Sek.",
     # ---- lobby/t5lobby/tk_tab.py
+    "Leave set (counts as a loss)": "Set verlassen (zählt als Niederlage)",
+    "Leave the ranked set": "Ranked-Set verlassen",
+    "Leave this ranked set?\n\nLeaving a ranked set counts as losing it.":
+        "Dieses Ranked-Set verlassen?\n\nWer ein Ranked-Set verlässt, hat es verloren.",
+    "Rematch? (a new set)": "Rematch? (ein neues Set)",
     "in a room": "in einem Raum",
     "in lobby": "in der Lobby",
     "matching": "im Match-Aufbau",
@@ -1125,68 +1178,16 @@ MESSAGES = {
     "Challenge expired.": "Herausforderung abgelaufen.",
     "direct": "direkt",
     "via the lobby server's relay": "über das Relay des Lobby-Servers",
-    "Rank": "Rang",
-    "Rating": "Wertung",
-    "Record": "Bilanz",
-    "Main": "Main",
-    "Ping": "Ping",
-    "Room": "Raum",
-    "Status": "Status",
-    "Owner": "Ersteller",
-    "Place": "Platz",
-    "State": "Zustand",
-    "When": "Wann",
-    "Characters": "Charaktere",
-    "Opponent": "Gegner",
-    "Result": "Ergebnis",
-    "Score": "Runden",
-    "{wins}W {losses}L": "{wins}W {losses}L",
-    "{draws}D": "{draws}D",
     "Lobby error: {error}": "Lobby-Fehler: {error}",
     "guest": "Gast",
-    "Account": "Konto",
-    "Server": "Server",
-    "Name": "Name",
-    "Password": "Passwort",
-    "Remember me": "Angemeldet bleiben",
-    "Log in": "Anmelden",
-    "Play as guest": "Als Gast spielen",
-    "Forgot password...": "Passwort vergessen...",
-    "Server certificate...": "Server-Zertifikat...",
-    "Host for friends": "Für Freunde hosten",
-    "Open router ports (UPnP)": "Router-Ports öffnen (UPnP)",
     "Not connected. Ranked needs an account; guests play casual matches.":
         "Nicht verbunden. Ranked braucht ein Konto; Gäste spielen Casual-Matches.",
-    "Log out": "Abmelden",
-    "Change password...": "Passwort ändern...",
-    "New recovery codes...": "Neue Wiederherstellungs-Codes...",
-    "My profile": "Mein Profil",
-    "Blocked players...": "Blockierte Spieler...",
     "Passwords are only sent to servers on this PC / your network, or over an encrypted "
     "(TLS) connection.":
         "Passwörter gehen nur an Server auf diesem PC oder in deinem Netzwerk, oder über "
         "eine verschlüsselte (TLS-)Verbindung.",
-    "Character": "Charakter",
-    "Strict (ranked: +-150 rating)": "Streng (Ranked: +-150 Wertung)",
-    "Ranked match": "Ranked-Match",
-    "Quick match": "Quick Match",
-    "Stop searching": "Suche beenden",
-    "Create room": "Raum erstellen",
-    "Join room": "Raum beitreten",
-    "Leave room": "Raum verlassen",
-    "Challenge": "Herausfordern",
-    "Lobby": "Lobby",
-    "Leaderboard": "Rangliste",
-    "Profile": "Profil",
-    "Chat": "Chat",
-    "Refresh": "Aktualisieren",
-    "Order: rating minus twice its uncertainty (a few matches are needed to climb). '?' "
-    "= provisional.":
-        "Reihenfolge: Wertung minus das Doppelte der Unsicherheit (ein paar Matches sind "
-        "nötig, um aufzusteigen). „?“ = vorläufig.",
     "Double-click a player in the lobby or the leaderboard.":
         "Doppelklick auf einen Spieler in der Lobby oder der Rangliste.",
-    "Use a controller here": "Controller hier benutzen",
     "{name} (guest, casual matches only)": "{name} (Gast, nur Casual-Matches)",
     "{record} this session": "{record} in dieser Sitzung",
     "rating {rating}": "Wertung {rating}",
@@ -1215,6 +1216,7 @@ MESSAGES = {
     "next time.)":
         "Auch die gespeicherte Anmeldung auf diesem PC vergessen?\n\n(Nein = du wirst beim "
         "nächsten Mal automatisch angemeldet.)",
+    "Log out": "Abmelden",
     "Not connected.": "Nicht verbunden.",
     "Change password": "Passwort ändern",
     "Current password:": "Aktuelles Passwort:",
@@ -1225,18 +1227,9 @@ MESSAGES = {
         "Passwort geändert. Gespeicherte Anmeldungen auf anderen PCs sind beendet.",
     "Recovery codes": "Wiederherstellungs-Codes",
     "Your password (the old codes stop working):": "Dein Passwort (die alten Codes gelten dann nicht mehr):",
-    "Your account is ready.": "Dein Konto ist fertig.",
-    "These codes are the only way back into your account if you forget the password "
-    "(there is no e-mail). Each code works once. Write them down or save them somewhere "
-    "safe -- they are not shown again.":
-        "Diese Codes sind der einzige Weg zurück in dein Konto, wenn du das Passwort "
-        "vergisst (es gibt keine E-Mail). Jeder Code gilt nur einmal. Schreibe sie auf oder "
-        "speichere sie an einem sicheren Ort -- sie werden nicht noch einmal angezeigt.",
     "Save recovery codes": "Wiederherstellungs-Codes speichern",
     "T5DR Online recovery codes for {name} on {server}":
         "T5DR Online Wiederherstellungs-Codes für {name} auf {server}",
-    "Save to a file...": "In Datei speichern...",
-    "I have saved them": "Ich habe sie gespeichert",
     "Forgot password": "Passwort vergessen",
     "Account name:": "Kontoname:",
     "One of your recovery codes (XXXX-XXXX-XXXX):": "Einer deiner Wiederherstellungs-Codes (XXXX-XXXX-XXXX):",
@@ -1308,6 +1301,7 @@ MESSAGES = {
         "Verbindung zur Lobby verloren -- verbinde neu (dein Match läuft weiter)...",
     "Reconnected to the lobby.": "Wieder mit der Lobby verbunden.",
     "Lost the lobby connection: {reason}": "Verbindung zur Lobby verloren: {reason}",
+    "Lost the connection to the lobby server.": "Verbindung zum Lobby-Server verloren.",
     "Removed from the lobby: {reason}": "Aus der Lobby entfernt: {reason}",
     "The game closed. How did the match against {opponent} end?":
         "Das Spiel wurde geschlossen. Wie ist das Match gegen {opponent} ausgegangen?",
@@ -1338,6 +1332,7 @@ MESSAGES = {
         "Strafe.",
     "Your opponent left. The set is over.": "Dein Gegner ist gegangen. Das Set ist vorbei.",
     "Rematch {name}": "Rematch mit {name}",
+    "Next game": "Nächstes Spiel",
     "Leave": "Verlassen",
     "Block {name}": "{name} blockieren",
     "Leave: too laggy": "Verlassen: zu laggy",
@@ -1370,6 +1365,7 @@ MESSAGES = {
     "Hosting a lobby on this PC. Log in to join it yourself.":
         "Eine Lobby läuft auf diesem PC. Melde dich an, um selbst beizutreten.",
     "Hosting failed: {message}": "Hosten fehlgeschlagen: {message}",
+    "Host for friends": "Für Freunde hosten",
     "The lobby server stopped (exit code {code}); see its log in {folder}.":
         "Der Lobby-Server wurde beendet (Exit-Code {code}); sein Log liegt in {folder}.",
     "Stopped hosting.": "Hosten beendet.",
@@ -1381,4 +1377,214 @@ MESSAGES = {
         "Ranked Match (Konten) oder Quick Match; dann wählst du deinen Kämpfer im Spiel (Select = zufällig). Der Charakter hier gilt, wenn du nicht rechtzeitig wählst.",
     "pick your fighter in the game ({secs} s)": "Kämpfer im Spiel wählen ({secs} s)",
     "(locked for this ranked set)": "(fest für dieses Ranked-Set)",
+    "Pick your fighter in the game": "Wähle deinen Kämpfer im Spiel",
+    "Your opponent is picking": "Dein Gegner wählt",
+    # ---- lobby/t5lobby/tk_views.py
+    "Rank": "Rang",
+    "Rating": "Wertung",
+    "Record": "Bilanz",
+    "Main": "Main",
+    "Ping": "Ping",
+    "Room": "Raum",
+    "Status": "Status",
+    "Owner": "Ersteller",
+    "Place": "Platz",
+    "State": "Zustand",
+    "When": "Wann",
+    "Characters": "Charaktere",
+    "Opponent": "Gegner",
+    "Result": "Ergebnis",
+    "Score": "Runden",
+    "Check the server address and your internet connection, then try again.":
+        "Prüfe die Server-Adresse und deine Internetverbindung und versuche es dann noch "
+        "einmal.",
+    "Check your internet connection, then try again.":
+        "Prüfe deine Internetverbindung und versuche es dann noch einmal.",
+    "The server is slow or gone; try again in a minute.":
+        "Der Server ist langsam oder weg; versuche es in einer Minute noch einmal.",
+    "Log in again.": "Melde dich noch einmal an.",
+    "Ask whoever runs the server for its current fingerprint (\"Server certificate...\").":
+        "Frage den Betreiber des Servers nach dem aktuellen Fingerabdruck "
+        "(„Server-Zertifikat...“).",
+    "Check the spelling, or use \"Forgot password...\".":
+        "Prüfe die Schreibweise, oder nutze „Passwort vergessen...“.",
+    "Check the name and the code; each code works once.": "Prüfe den Namen und den Code; jeder Code gilt nur einmal.",
+    "Pick another name, or wait a minute if that was you.":
+        "Nimm einen anderen Namen, oder warte eine Minute, falls du das warst.",
+    "Log in with that account's password, or pick another name.":
+        "Melde dich mit dem Passwort dieses Kontos an, oder nimm einen anderen Namen.",
+    "Pick another name.": "Nimm einen anderen Namen.",
+    "Update the game to the release this server asks for.":
+        "Aktualisiere das Spiel auf das Release, das dieser Server verlangt.",
+    "You both need the same release of the game.": "Ihr braucht beide dasselbe Release des Spiels.",
+    "Update the launcher to the newest release.": "Aktualisiere den Launcher auf das neueste Release.",
+    "Create an account (free) to play ranked.": "Erstelle ein (kostenloses) Konto, um Ranked zu spielen.",
+    "Pick another room or create your own.": "Wähle einen anderen Raum oder erstelle einen eigenen.",
+    "Log in with your password.": "Melde dich mit deinem Passwort an.",
+    "Build the game on the Build tab first.": "Baue das Spiel zuerst im Reiter Bauen.",
+    "Allow T5DR Online through the Windows firewall, then search again.":
+        "Erlaube T5DR Online in der Windows-Firewall und suche dann noch einmal.",
+    "Try again; if it keeps failing, check your firewall or router.":
+        "Versuche es noch einmal; klappt es weiter nicht, prüfe deine Firewall oder deinen "
+        "Router.",
+    "Log in again; your settings are kept.": "Melde dich noch einmal an; deine Einstellungen bleiben erhalten.",
+    "Type the same password twice.": "Gib zweimal dasselbe Passwort ein.",
+    "Find a new opponent.": "Suche einen neuen Gegner.",
+    "Check the Play offline tab: does the game start there?":
+        "Sieh im Reiter Offline spielen nach: Startet das Spiel dort?",
+    "Against other players over the internet. Log in or play as a guest; the game starts "
+    "by itself, straight into the fight, and the result comes back here.":
+        "Gegen andere Spieler über das Internet. Melde dich an oder spiele als Gast; das "
+        "Spiel startet von selbst, direkt im Kampf, und das Ergebnis kommt hierher zurück.",
+    "Server": "Server",
+    "Server certificate...": "Server-Zertifikat...",
+    "Name": "Name",
+    "Log in": "Anmelden",
+    "Password": "Passwort",
+    "Password again": "Passwort noch einmal",
+    "Name: 2 to 16 letters, digits, spaces or _-.[]()!?":
+        "Name: 2 bis 16 Buchstaben, Ziffern, Leerzeichen oder _-.[]()!?",
+    "Password: 6 to 128 characters": "Passwort: 6 bis 128 Zeichen",
+    "Both passwords the same": "Beide Passwörter gleich",
+    "You get recovery codes once: the only way back in if you forget the password":
+        "Du bekommst die Wiederherstellungs-Codes einmal: der einzige Weg zurück, wenn du "
+        "das Passwort vergisst",
+    "Remember me": "Angemeldet bleiben",
+    "Forgot password...": "Passwort vergessen...",
+    "Casual matches with the name above, no account and no password. Ranked matches, the "
+    "leaderboard and your match history need an account.":
+        "Casual-Matches mit dem Namen oben, ohne Konto und ohne Passwort. Ranked-Matches, "
+        "die Rangliste und dein Match-Verlauf brauchen ein Konto.",
+    "Play as guest": "Als Gast spielen",
+    "Runs a lobby on this PC. Your friends type the address it shows into their Server "
+    "box.":
+        "Startet eine Lobby auf diesem PC. Deine Freunde tragen die Adresse, die sie zeigt, "
+        "in ihr Server-Feld ein.",
+    "Open router ports (UPnP)": "Router-Ports öffnen (UPnP)",
+    "How it works": "So geht es",
+    "Quick match (casual) or Ranked match (account).": "Quick Match (Casual) oder Ranked-Match (mit Konto).",
+    "An opponent is found: accept within 15 seconds.": "Ein Gegner wird gefunden: Nimm innerhalb von 15 Sekunden an.",
+    "The game opens straight into the fight.": "Das Spiel öffnet sich direkt im Kampf.",
+    "The result comes back here: rematch or next game.":
+        "Das Ergebnis kommt hierher zurück: Rematch oder nächstes Spiel.",
+    "With a controller: A accepts, B declines.": "Mit Controller: A nimmt an, B lehnt ab.",
+    "Lobby": "Lobby",
+    "Leaderboard": "Rangliste",
+    "Profile": "Profil",
+    "My profile": "Mein Profil",
+    "Find an opponent online": "Gegner online finden",
+    "Character": "Charakter",
+    "Locked for this ranked set": "Für dieses Ranked-Set gesperrt",
+    "Ranked match": "Ranked-Match",
+    "Quick match": "Quick Match",
+    "Casual: the lowest ping first": "Casual: der niedrigste Ping zuerst",
+    "Strict (ranked: +-150 rating)": "Streng (Ranked: +-150 Wertung)",
+    "Searching": "Suche",
+    "Looking for an opponent": "Suche einen Gegner",
+    "Searching for": "Suche seit",
+    "Stop searching": "Suche beenden",
+    "In match": "Im Match",
+    "CASUAL": "CASUAL",
+    "Input delay": "Input-Delay",
+    "Connection": "Verbindung",
+    "Players online": "Spieler online",
+    "Challenge": "Herausfordern",
+    "Rooms": "Räume",
+    "Create room": "Raum erstellen",
+    "Join room": "Raum beitreten",
+    "Leave room": "Raum verlassen",
+    "Chat": "Chat",
+    "Send": "Senden",
+    "Refresh": "Aktualisieren",
+    "Order: rating minus twice its uncertainty (a few matches are needed to climb). '?' "
+    "= provisional.":
+        "Reihenfolge: Wertung minus das Doppelte der Unsicherheit (ein paar Matches sind "
+        "nötig, um aufzusteigen). „?“ = vorläufig.",
+    "Your account": "Dein Konto",
+    "Blocked players...": "Blockierte Spieler...",
+    "Change password...": "Passwort ändern...",
+    "New recovery codes...": "Neue Wiederherstellungs-Codes...",
+    "Dismiss": "Ausblenden",
+    "Use a controller here": "Controller hier benutzen",
+    "none open": "keiner offen",
+    "In your room “{name}”. Waiting for a second player...":
+        "In deinem Raum „{name}“. Warte auf einen zweiten Spieler...",
+    "In the room “{name}”. The match starts when you are both ready.":
+        "Im Raum „{name}“. Das Match startet, wenn ihr beide bereit seid.",
+    "Hosting. Friends type this as their Server:\n{share}":
+        "Du hostest. Deine Freunde tragen das als ihren Server ein:\n{share}",
+    "Same network: {lan}": "Im selben Netzwerk: {lan}",
+    "Guest · casual matches": "Gast · Casual-Matches",
+    "Rating {rating}  ·  {record}": "Wertung {rating}  ·  {record}",
+    "Main: {character}": "Main: {character}",
+    "Server ping {ms} ms": "Server-Ping {ms} ms",
+    "Create an account to play ranked": "Erstelle ein Konto, um Ranked zu spielen",
+    "Rated: close to your rank, good connection": "Gewertet: nah an deinem Rang, gute Verbindung",
+    "Similar rank and a good connection, strict: within 150 rating points (this can take "
+    "a while).":
+        "Ähnlicher Rang und gute Verbindung, streng: innerhalb von 150 Wertungspunkten (das "
+        "kann dauern).",
+    "Similar rank and a good connection.": "Ähnlicher Rang und gute Verbindung.",
+    "The opponent with the lowest ping first.": "Zuerst der Gegner mit dem niedrigsten Ping.",
+    "{ranked} in the ranked queue  ·  {quick} in quick match":
+        "{ranked} in der Ranked-Suche  ·  {quick} bei Quick Match",
+    "Character select": "Charakterwahl",
+    "Stage select": "Stage-Wahl",
+    "Match over": "Match vorbei",
+    "Waiting for the next match": "Warte auf das nächste Match",
+    "Your game is running": "Dein Spiel läuft",
+    "Starting the game...": "Das Spiel startet...",
+    "Waiting for the game...": "Warte auf das Spiel...",
+    "vs your opponent": "gegen deinen Gegner",
+    "vs {name}": "gegen {name}",
+    "{count} frame  ({ms} ms)": "{count} Frame  ({ms} ms)",
+    "{count} frames  ({ms} ms)": "{count} Frames  ({ms} ms)",
+    "Direct": "Direkt",
+    "Local network": "Lokales Netzwerk",
+    "Relay (lobby server)": "Relay (Lobby-Server)",
+    "Guest": "Gast",
+    "{rank}  ·  rating {rating}": "{rank}  ·  Wertung {rating}",
+    "SET · GAME {game}": "SET · SPIEL {game}",
+    "Opponent hidden": "Gegner verborgen",
+    "Name and side are shown once you both accept.": "Name und Seite werden gezeigt, sobald ihr beide annehmt.",
+    "(estimate through the server)": "(Schätzung über den Server)",
+    "Accepted. Waiting for your opponent...": "Angenommen. Warte auf deinen Gegner...",
+    "Match ready": "Match bereit",
+    "Connecting the two games...": "Verbinde die beiden Spiele...",
+    "wants to play you. Accept to start the match.": "will gegen dich spielen. Nimm an, um das Match zu starten.",
+    "YOU WIN": "SIEG",
+    "YOU LOSE": "NIEDERLAGE",
+    "DRAW": "UNENTSCHIEDEN",
+    "MATCH OVER": "MATCH VORBEI",
+    "NO CONTEST": "KEINE WERTUNG",
+    "Casual match": "Casual-Match",
+    "ROUNDS  (P1 – P2)": "RUNDEN  (P1 – P2)",
+    "ROUNDS  (YOU – THEM)": "RUNDEN  (DU – GEGNER)",
+    "GAMES  (YOU – THEM)": "SPIELE  (DU – GEGNER)",
+    "SET WON": "SET GEWONNEN",
+    "SET LOST": "SET VERLOREN",
+    "Ranked set": "Ranked-Set",
+    "Ranked set vs {name}": "Ranked-Set gegen {name}",
+    "RANKED SET · BEST OF {best}": "RANKED-SET · BEST OF {best}",
+    "Game {number} of {best} starts in": "Spiel {number} von {best} startet in",
+    "Game {number} of {best} again (no winner), starts in":
+        "Spiel {number} von {best} noch einmal (kein Sieger), startet in",
+    "Rating {rating}": "Wertung {rating}",
+    "PROMOTED": "AUFGESTIEGEN",
+    "DEMOTED": "ABGESTIEGEN",
+    "PLACED": "EINGESTUFT",
+    "Placement match {done} of {total}": "Platzierungsmatch {done} von {total}",
+    "Lag check": "Lag-Check",
+    "Rematch offered. Waiting for {opp}...": "Rematch angeboten. Warte auf {opp}...",
+    "Back to the lobby": "Zurück zur Lobby",
+    "New recovery codes": "Neue Wiederherstellungs-Codes",
+    "Your account is ready": "Dein Konto ist fertig",
+    "These codes are the only way back into your account if you forget the password "
+    "(there is no e-mail). Each code works once. Write them down or save them somewhere "
+    "safe -- they are not shown again.":
+        "Diese Codes sind der einzige Weg zurück in dein Konto, wenn du das Passwort "
+        "vergisst (es gibt keine E-Mail). Jeder Code gilt nur einmal. Schreibe sie auf oder "
+        "speichere sie an einem sicheren Ort -- sie werden nicht noch einmal angezeigt.",
+    "Save to a file...": "In Datei speichern...",
+    "I have saved them": "Ich habe sie gespeichert",
 }

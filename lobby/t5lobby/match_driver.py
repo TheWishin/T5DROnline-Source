@@ -26,6 +26,9 @@ From "match found" to "result reported" without the player doing anything:
                   both players pick on the game's own select screen, the line's characters are the
                   fallback; the fighters the game fought with go to the lobby with the result
                   (`chars`: the history, and the first game of a ranked set locks them)
+    ranked set    between two games of a ranked set (best of 3, docs/RANKED.md "Ranked sets") the
+                  next game starts by itself: the driver tells the lobby whether this game still
+                  runs connected (set_next keep), and the next game continues in it like a rematch
 
 Two ways to run the game:
 
@@ -50,6 +53,7 @@ poll() a few times a second and shows the notes it gets back:
     {"t": "driver", "kind": "status", "text": ...}
     {"t": "driver", "kind": "ask_result", "match": id, "opponent": name}   no result: ask the player
     {"t": "driver", "kind": "rematch_offer", "match": id, "opponent": name, "timeout": s}
+    {"t": "driver", "kind": "set_next", "match": id, "set": {...}}         a ranked set goes on by itself
     {"t": "driver", "kind": "game_closed"}
 """
 import functools
@@ -363,6 +367,7 @@ class MatchDriver:
         self.df_status = None        # the whole last status
         self.saw_fight = False       # this match's fight was seen in the status file
         self.fight_chars = None      # [P1 id, P2 id] the game fought this match with (status file at FIGHT START)
+        self.fight_buttons = None    # [P1, P2] their confirm buttons = costumes (1-4, 0 = default), from the same
         self.t_over = None           # when the status said the fight is over (no result file yet)
         self.df_base = 0             # the status' match number before this match (its fight has a higher one)
         self.ticket = None           # MatchTicket of the match being played
@@ -377,6 +382,8 @@ class MatchDriver:
         self.last_fps = None         # this PC's sustained speed in its last match (reported to the lobby)
         self.ctl_wait = None         # (seq, sent at, booting) of a control command the game has not taken yet
         self.ctl_failures = 0        # persistent games that died or did not answer
+        self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
+                                     # in the log -- the last session's "peer lost" -- are not this match's)
 
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
@@ -451,6 +458,11 @@ class MatchDriver:
             # in-game select: the players pick on the game's select screen within that many seconds;
             # p1/p2 above are the fallback (the launchers' characters)
             line += f" pick={int(fight['pick'])}"
+        else:
+            b = fight.get("buttons")
+            if isinstance(b, list) and len(b) == 2 and all(isinstance(x, int) and 0 <= x <= 4 for x in b) and any(b):
+                # a ranked set's next game: the costumes its first game picked in the game
+                line += f" buttons={b[0]}|{b[1]}"
         return line
 
     def _write_fight_file(self, line, mid=None, ev=None):
@@ -521,12 +533,14 @@ class MatchDriver:
                 self._call(self.client.leave_match, mid)
                 return
             self.ticket = _Continued(mid, ev, self.session_ticket)
+            self.need_session = None
             self.match_ev = ev
             self._discard_result("stale")    # nothing the game wrote before this match belongs to it
             self.mark = self.glog.mark()
             self.reported = False
             self.saw_fight = False
             self.fight_chars = None
+            self.fight_buttons = None
             self.t_over = None
             self.df_base = int((self.df_status or {}).get("match") or 0)
             if self.mode == "persistent" and self.ctl is not None:
@@ -545,10 +559,16 @@ class MatchDriver:
         self.reported = False
         self.saw_fight = False
         self.fight_chars = None
+        self.fight_buttons = None
         self.t_over = None
         self.df_base = int((self.df_status or {}).get("match") or 0) if self.game_running() else 0
+        self.need_session = None
         if self.mode == "persistent" and self.game_running() and self.ctl is not None:
-            # a new opponent in the running game: a new netplay session (docs/DIRECTFIGHT.md)
+            # a new opponent in the running game: a new netplay session (docs/DIRECTFIGHT.md). The last session may
+            # still log its end ("peer lost (peer_quit)" when the other game went idle first): that is not this match.
+            if self.glog is not None:
+                self.glog.poll()
+                self.need_session = self.glog.sessions + 1
             self._send_fight(mid, self.match_env(ev, ticket))
         else:
             self.stop_game()
@@ -643,7 +663,14 @@ class MatchDriver:
                 # desync report): whatever our game writes for it now must not count for the next.
                 self._discard_result("unreported")
             self.ticket = None
-        if ev.get("rematch_window") and self.auto_rematch > 0:
+        s = ev.get("set") or {}
+        if s.get("rated") and s.get("next"):
+            # A ranked set goes on by itself (no vote): say whether this game can play the next one as it runs.
+            fn = getattr(self.client, "set_next", None)
+            if fn is not None:
+                self._call(fn, ev["match"], self.connected_game())
+            self.note("set_next", match=ev["match"], set=s)
+        elif ev.get("rematch_window") and self.auto_rematch > 0:
             self.rematch(ev["match"], True)
 
     def rematch(self, match_id=None, accept=True):
@@ -711,6 +738,8 @@ class MatchDriver:
             # the fighters of this match (with the in-game select: what the players picked)
             if isinstance(st.get("p1"), int) and isinstance(st.get("p2"), int):
                 self.fight_chars = [st["p1"], st["p2"]]
+                b = [st.get("b1"), st.get("b2")]
+                self.fight_buttons = b if all(isinstance(x, int) and 0 <= x <= 4 for x in b) else None
             # FIGHT START is a netplay sync point (frame counters, input ring, random seeds): only
             # mismatches from here on belong to this match, not menu ones from before it.
             if self.glog is not None:
@@ -782,7 +811,9 @@ class MatchDriver:
                 winner = 0 if w1 > w2 else 1 if w2 > w1 else None
                 self._report(mid, winner, [w1, w2], "game", desync=self._evidence() or 0)
                 return
-            if g.peer_lost > self.mark[2] and (not running or self._grace("lost")):
+            lost = g.peer_lost > self.mark[2] and (self.need_session is None or (
+                g.sessions >= self.need_session and g.session_lost > 0))
+            if lost and (not running or self._grace("lost")):
                 # (a game that ends the match itself writes a result file with the reason first;
                 # give it a moment before reporting from the log)
                 reason = g.lost_reason or "peer_lost"
@@ -869,9 +900,15 @@ class MatchDriver:
         keys = [self._key(c) for c in self.fight_chars]
         return keys if all(keys) else None
 
+    def _picked_costumes(self):
+        """[P1, P2] confirm buttons (costumes) of a match whose characters were picked in the game: a ranked set
+        keeps them for its next games, also over a new connection (the game's own memory is per session)."""
+        return list(self.fight_buttons) if self._picked_chars() and self.fight_buttons else None
+
     def _report(self, mid, winner, score, source, **ev):
         if "chars" not in ev:
             ev["chars"] = self._picked_chars()
+            ev["costumes"] = self._picked_costumes()
         self.reported = True
         self.t_reported = time.monotonic()
         ev = {k: v for k, v in ev.items() if v is not None}
@@ -949,11 +986,18 @@ def fps_from_logs(log_dir):
 
 def hud_values(ev):
     """([P1 name, P2 name], [P1 tier, P2 tier]) for the fight HUD from match_start's players (P1
-    first, the same list on both PCs), or None. Guests and unplaced players get the Beginner badge."""
+    first, the same list on both PCs), or None. Guests and unplaced players get the Beginner badge.
+    In a ranked set from its second game on, each name ends with that player's games won ("Alice [1]";
+    match_start's `set.wins`, the same on both PCs)."""
     players = (ev or {}).get("players") or []
     if len(players) != 2:
         return None
     names = [str(p.get("name", ""))[:16] for p in players]
+    s = (ev or {}).get("set") or {}
+    wins = s.get("wins")
+    if s.get("rated") and int(s.get("number") or 1) > 1 and isinstance(wins, list) and len(wins) == 2:
+        # a ranked set from game 2 on: the games won so far after each name ("Alice [1]"), 16 characters at most
+        names = [f"{n[:12]} [{int(w)}]" for n, w in zip(names, wins)]
     tiers = []
     for p in players:
         t = p.get("tier")

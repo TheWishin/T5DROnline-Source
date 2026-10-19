@@ -141,6 +141,76 @@ class PickedTest(Base):
             self.assertEqual(e.exception.code, proto.E_BAD_REQUEST)
 
 
+class RatedSetPickTest(Base):
+    """A ranked set of best of 3 (both clients know "sets"): only game 1 is picked in the game; games 2 and 3
+    start by themselves with game 1's fighters and costumes, also over a new connection."""
+    server_cfg = {"set_next_seconds": 0.3}
+
+    def acc(self, name, pick=True, **kw):
+        return super().acc(name, pick, sets=True, **kw)
+
+    def play(self, a, b, ev, winner, chars=None, costumes=None, desync=None):
+        for c in (a, b):
+            try:
+                c.report_result(winner, [3, 1] if winner == 0 else [1, 3], ev["match"], source="game", chars=chars,
+                                costumes=costumes, desync=desync)
+            except LobbyError:
+                if not desync:
+                    raise
+        return expect(a, "match_result"), expect(b, "match_result")
+
+    def next_game(self, a, b, keep=True):
+        for c in (a, b):
+            c.set_next(None, keep=keep)
+        return expect(a, "match_start", 20.0), expect(b, "match_start", 20.0)
+
+    def test_game_1_picked_games_2_and_3_locked_with_costumes(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, eb = self.ranked(a, b)
+        self.assertEqual((ea["set"]["rated"], ea["set"]["number"], ea["fight"]["pick"]), (True, 1, 30))
+        picked = ["kazuya", "lili"] if ea["slot"] == 0 else ["lili", "kazuya"]       # P1/P2 of this set
+        costumes = [2, 4] if ea["slot"] == 0 else [4, 2]                           # Alice RP, Bob RK
+        ra, _ = self.play(a, b, ea, 0, picked, costumes)
+        self.assertEqual(ra["set"]["number"], 2)
+        e2, _ = self.next_game(a, b)
+        self.assertNotIn("pick", e2["fight"])                                      # game 2: no select screen
+        self.assertEqual(self.mine(e2), ("kazuya", "lili"))
+        self.assertEqual(e2["fight"]["buttons"], costumes)                          # and the same costumes
+        self.play(a, b, e2, 1)                                                     # 1-1 (no chars: no pick)
+        e3, _ = self.next_game(a, b, keep=False)                                    # game 3 over a new connection
+        self.assertEqual((e3["set"]["number"], e3["continue"]), (3, False))
+        self.assertNotIn("pick", e3["fight"])
+        self.assertEqual(self.mine(e3), ("kazuya", "lili"))
+        self.assertEqual(e3["fight"]["buttons"], costumes)
+        self.play(a, b, e3, 0)
+        se = expect(a, "set_end")
+        self.assertEqual((se["status"], se["games"]), ("confirmed", 3))
+        hist = a.profile("Alice", 5)["history"]
+        self.assertEqual({(h["you_char"], h["opp_char"]) for h in hist}, {("kazuya", "lili")})
+
+    def test_a_replayed_game_1_is_picked_again(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, _ = self.ranked(a, b)
+        ra, _ = self.play(a, b, ea, 0, ["kazuya", "lili"], [1, 3], desync=9)       # game 1 desynced: void
+        self.assertEqual((ra["status"], ra["set"]["number"]), ("void", 1))
+        e1, _ = self.next_game(a, b)
+        self.assertEqual((e1["set"]["number"], e1["fight"]["pick"]), (1, 30))      # nothing counted: pick again
+        self.assertNotIn("buttons", e1["fight"])
+        self.play(a, b, e1, 0, ["steve", "asuka"], [0, 0])
+        e2, _ = self.next_game(a, b)
+        self.assertNotIn("pick", e2["fight"])
+        self.assertEqual((e2["fight"]["p1"], e2["fight"]["p2"]), ("steve", "asuka"))
+        self.assertNotIn("buttons", e2["fight"])                                    # default costumes: nothing to say
+
+    def test_bad_costumes_are_refused(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        ea, _ = self.ranked(a, b)
+        for bad in ([1], [5, 1], [-1, 0], [True, 1], "1,2"):
+            with self.assertRaises(LobbyError) as e:
+                a.report_result(0, [1, 0], ea["match"], source="game", chars=["jin", "paul"], costumes=bad)
+            self.assertEqual(e.exception.code, proto.E_BAD_REQUEST)
+
+
 class DriverUnitTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="drvpick")
@@ -165,8 +235,13 @@ class DriverUnitTest(unittest.TestCase):
         drv.match_ev = ev
         drv.ticket = types.SimpleNamespace(match_id="m1")
         drv.fight_chars = [15, 12]                                         # the status file at FIGHT START
+        drv.fight_buttons = [2, 3]
         drv._report("m1", 0, [1, 0], "game", desync=0)
         self.assertEqual(calls[-1][1]["chars"], ["kazuya", "panda"])
+        self.assertEqual(calls[-1][1]["costumes"], [2, 3])
+        # a locked set's later game: the costumes on the fight line
+        self.assertEqual(drv.fight_line({"fight": dict(ev["fight"], pick=0, buttons=[2, 3])}), "9,33,20,3 buttons=2|3")
+        self.assertEqual(drv.fight_line({"fight": dict(ev["fight"], pick=0, buttons=[0, 0])}), "9,33,20,3")
         drv.match_ev = {"fight": dict(ev["fight"], pick=0)}                # no in-game select: nothing to say
         drv._report("m1", 0, [1, 0], "game", desync=0)
         self.assertNotIn("chars", calls[-1][1])

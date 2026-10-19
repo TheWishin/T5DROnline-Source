@@ -133,6 +133,7 @@ Tm& tm_slot(uint32_t t)
 /* ---- the hook ----------------------------------------------------------------- */
 int hook(ppu_context* ctx, uint32_t target)
 {
+    if (ktrace_icall(ctx, target)) return 1;   /* T5_RB_KTRACE: the file manager's requests, the sound library's heap calls */
     if (ctx->thread_id != main_tid()) {
         if (g_cut2_count && g_cut_on.load(std::memory_order_relaxed) && set_has(g_cut2_key, target)) {
             ctx->gpr[3] = 0;

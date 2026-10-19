@@ -56,6 +56,21 @@ def log(msg):
     print(f"[netplay] {msg}", flush=True)
 
 
+def replace(tmp, path):
+    """os.replace that waits out a reader: the launcher may be reading `path` this very moment,
+    and Windows refuses to replace a file another process has open without delete sharing. The
+    real game retries the same way (src/directfight/df_fight.cpp write_text); a stub that did not
+    died with PermissionError instead, which the launcher saw as a crash (exit 1) and the lobby
+    voided the match -- the flaky DriverTest.test_process_mode_with_rematch_in_the_same_game."""
+    for _ in range(400):                 # up to ~2 s; a launcher read takes microseconds
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(0.005)
+    os.replace(tmp, path)
+
+
 class Session:
     """One netplay session (one opponent) from an environment dict."""
 
@@ -186,7 +201,7 @@ class Session:
             if path:
                 with open(path + ".tmp", "w") as f:
                     json.dump({"match": self.match_id, "winner": None, "score": [0, 0], "reason": "peer_timeout"}, f)
-                os.replace(path + ".tmp", path)
+                replace(path + ".tmp", path)
             return "lost"
         if r != "ok":
             return r
@@ -210,7 +225,7 @@ class Session:
             with open(tmp, "w") as f:
                 json.dump({"match": self.match_id, "winner": winner, "score": score,
                            "fps": float(env.get("T5_STUB_FPS", "59.9"))}, f)
-            os.replace(tmp, path)
+            replace(tmp, path)
         # drain: let the opponent see our last frames
         self.exchange(20)
         return "ok"
@@ -238,7 +253,7 @@ def status(env, state, match, last=None, chars=None):
             if chars:
                 d["p1"], d["p2"] = chars
             json.dump(d, f)
-        os.replace(path + ".tmp", path)
+        replace(path + ".tmp", path)
 
 
 def run_env(env):
@@ -270,7 +285,7 @@ def run_env(env):
                     for tok in line.replace(",", " ").split():
                         if tok.startswith("match="):
                             s.match_id = tok[6:]
-                    os.replace(fight_file, fight_file + ".done")
+                    replace(fight_file, fight_file + ".done")
             chars, pick = fight_chars(env, line)
             if pick:
                 status(env, "pick", n - 1, chars=chars)
@@ -300,12 +315,7 @@ def persistent(ctl_dir):
         path = os.path.join(ctl_dir, "state.json")
         with open(path + ".tmp", "w") as f:
             json.dump(dict(kw, state=st, seq=seq, ctl=1), f)
-        for i in range(50):      # the launcher may be reading it this moment (Windows refuses the replace then)
-            try:
-                os.replace(path + ".tmp", path)
-                break
-            except PermissionError:
-                time.sleep(0.01)
+        replace(path + ".tmp", path)     # the launcher may be reading it this moment
 
     seen = 0
     fights = 0          # the status file's match counter, as the game's (every fight in the process)

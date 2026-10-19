@@ -59,8 +59,21 @@ CONTROLS = [
 
 
 def set_big_state(btn, enabled):
+    if isinstance(btn, ttk.Button):          # the dark theme's big button (theme.py draws its states)
+        btn.configure(state="normal" if enabled else "disabled", cursor="hand2" if enabled else "arrow")
+        return
     btn.configure(state="normal" if enabled else "disabled",
                   bg=COLORS["accent"] if enabled else "#aab4c0", cursor="hand2" if enabled else "arrow")
+
+
+def load_theme():
+    """The dark theme shared with the Online tab (lobby/t5lobby/theme.py; online.py put lobby/ on the
+    path). None in a copy without lobby/: the launcher then keeps the plain Windows look."""
+    try:
+        from t5lobby import theme
+        return theme
+    except ImportError:
+        return None
 
 
 def enable_dpi_awareness():
@@ -134,6 +147,10 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ look
     def _style(self):
+        self.theme = load_theme()
+        if self.theme is not None:
+            self._dark_style()
+            return
         st = ttk.Style(self)
         if "vista" in st.theme_names():
             st.theme_use("vista")
@@ -151,7 +168,35 @@ class App(tk.Tk):
         st.configure("StepFail.TLabel", foreground=COLORS["error"], font=("Segoe UI", 10, "bold"), padding=(6, 2))
         st.configure("TNotebook.Tab", padding=(16, 6))
 
+    def _dark_style(self):
+        th = self.theme.apply(self)
+        self.theme.bind_return_on_buttons(self)
+        C = self.theme.C
+        COLORS.update({"ok": C["ok"], "warn": C["warn"], "error": C["bad"], "muted": C["muted"],
+                       "accent": C["accent"], "accent_hover": C["accent_hi"], "log_bg": C["surface"],
+                       "log_fg": C["muted"], "text": C["text"], "step": C["info"]})
+        if controls_ui is not None:          # the Controls window's colours on the dark background
+            controls_ui.COLORS.update({"ok": C["ok"], "muted": C["muted"], "warn": C["warn"], "error": C["bad"],
+                                       "live": self.theme.mix(C["ok"], C["surface"], 0.78)})
+        st = th.style
+        f = th.fonts
+        px = th.px
+        self.option_add("*Text.Font", f["mono"])
+        st.configure("Step.TLabel", font=f["body"], foreground=C["faint"], padding=(px(6), px(2)))
+        st.configure("StepRun.TLabel", font=f["bold"], foreground=C["accent_hi"], padding=(px(6), px(2)))
+        st.configure("StepDone.TLabel", font=f["body"], foreground=C["ok"], padding=(px(6), px(2)))
+        st.configure("StepFail.TLabel", font=f["bold"], foreground=C["bad"], padding=(px(6), px(2)))
+        # the same window at any DPI (fonts grow with it), never larger than the screen
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.minsize(min(px(900), sw - 40), min(px(680), sh - 80))
+        if not self.readonly:
+            self.geometry(f"{min(px(1080), sw - 40)}x{min(px(840), sh - 80)}")
+        else:
+            self.geometry(f"{px(1080)}x{px(840)}+60+60")
+
     def big_button(self, parent, text, cmd):
+        if getattr(self, "theme", None) is not None:
+            return ttk.Button(parent, text=text, command=cmd, style="Hero.TButton", cursor="hand2")
         b = tk.Button(parent, text=text, command=cmd, font=("Segoe UI", 13, "bold"), fg="white",
                       bg=COLORS["accent"], activebackground=COLORS["accent_hover"], activeforeground="white",
                       relief="flat", padx=28, pady=8, cursor="hand2", disabledforeground="#c8d1dc")
@@ -161,6 +206,8 @@ class App(tk.Tk):
     def _layout(self):
         head = ttk.Frame(self, padding=(16, 12, 16, 4))
         head.pack(fill="x")
+        if getattr(self, "theme", None) is not None:
+            self.theme.Mark(head, size=30).pack(side="left", padx=(0, 10))
         ttk.Label(head, text="Tekken 5: Dark Resurrection Online", style="H1.TLabel").pack(side="left")
         ttk.Label(head, style="Muted.TLabel",
                   text="   " + t("native Windows build  ·  launcher {version}",
@@ -169,8 +216,8 @@ class App(tk.Tk):
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
-        for key, label in (("build", t("Build")), ("play", t("Play")), ("settings", t("Settings")),
-                           ("online", t("Online"))):
+        for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
+                           ("online", t("Play online"))):
             f = ttk.Frame(self.nb)
             self.nb.add(f, text=f"  {label}  ")
             self.tabs[key] = f
@@ -183,7 +230,7 @@ class App(tk.Tk):
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)
         bar = ttk.Frame(self, padding=(16, 4))
-        bar.pack(fill="x")
+        bar.pack(fill="x", side="bottom", before=self.nb)     # (stays visible when a tab is too tall)
         ttk.Label(bar, textvariable=self.status, style="Muted.TLabel").pack(side="left")
         ttk.Label(bar, style="Muted.TLabel",
                   text=t("Output: {folder}", folder=self.settings.out_dir)).pack(side="right")
@@ -236,7 +283,7 @@ class App(tk.Tk):
         self.tools_tv.column("state", width=70, stretch=False, anchor="center")
         self.tools_tv.column("detail", width=520)
         self.tools_tv.tag_configure("bad", foreground=COLORS["error"])
-        self.tools_tv.tag_configure("good", foreground="#24292f")
+        self.tools_tv.tag_configure("good", foreground=COLORS.get("text", "#24292f"))
         self.tools_sum = tk.StringVar(value=t("Checking…"))
         self.tools_sum_lbl = ttk.Label(tools, textvariable=self.tools_sum)
         self.tools_sum_lbl.grid(row=0, column=0, sticky="w")
@@ -288,13 +335,30 @@ class App(tk.Tk):
         self.log = ScrolledText(tab, height=8, font=("Consolas", 9), bg=COLORS["log_bg"], fg=COLORS["log_fg"],
                                 insertbackground=COLORS["log_fg"], relief="flat", state="disabled", wrap="none")
         self.log.grid(row=3, column=0, sticky="nsew", padx=8, pady=(4, 8))
-        self.log.tag_configure("step", foreground="#58a6ff")
+        self.log.tag_configure("step", foreground=COLORS.get("step", "#58a6ff"))
         self.log.tag_configure("err", foreground="#ff7b72")
+        if getattr(self, "theme", None) is not None:
+            # the dark theme's thin scroll bar instead of the light Windows one
+            self.log.configure(padx=8, pady=6, highlightthickness=0)
+            self.log.vbar.pack_forget()
+            sb = ttk.Scrollbar(self.log.frame, orient="vertical", command=self.log.yview)
+            sb.pack(side="right", fill="y", before=self.log._w)   # (str(self.log) is its frame)
+            self.log.configure(yscrollcommand=sb.set)
+            self.log.frame.configure(bg=COLORS["log_bg"])
 
     def _play_tab(self, tab):
         box = ttk.Frame(tab, padding=24)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text=t("Play"), style="H1.TLabel").pack(anchor="w")
+        ttk.Label(box, text=t("Play offline"), style="H1.TLabel").pack(anchor="w")
+        # what "offline" means, and the way to the Online tab (internet play)
+        what = ttk.Frame(box)
+        what.pack(anchor="w", pady=(2, 0))
+        ttk.Label(what, style="Muted.TLabel", text=t(
+            "Arcade, Versus, Practice and the other modes on this PC. To play against people over the "
+            "internet, use the")).pack(side="left")
+        self.to_online_btn = ttk.Button(what, text=t("Online tab"), style="Link.TButton", cursor="hand2",
+                                        command=lambda: self.nb.select(self.tabs["online"]))
+        self.to_online_btn.pack(side="left")
         self.state_var = tk.StringVar(value=t("Checking the build…"))
         self.state_lbl = ttk.Label(box, textvariable=self.state_var, wraplength=820, justify="left")
         self.state_lbl.pack(anchor="w", pady=(6, 14))
@@ -305,7 +369,7 @@ class App(tk.Tk):
         ttk.Entry(nick, textvariable=self.nick_var, width=20).pack(side="left", padx=8)
         row = ttk.Frame(box)
         row.pack(anchor="w")
-        self.play_btn = self.big_button(row, t("PLAY"), self.play)
+        self.play_btn = self.big_button(row, t("PLAY OFFLINE"), self.play)
         self.play_btn.pack(side="left")
         self.stop_btn = ttk.Button(row, text=t("Stop game"), command=self.stop_game, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
@@ -734,7 +798,7 @@ class App(tk.Tk):
             self.play_btn.configure(text=t("BUILD GAME"), command=self.build_from_play)
             set_big_state(self.play_btn, not running and not self.build)
         else:
-            self.play_btn.configure(text=t("PLAY"), command=self.play)
+            self.play_btn.configure(text=t("PLAY OFFLINE"), command=self.play)
             set_big_state(self.play_btn, self.game_state().get("ok") and not running)
         self.stop_btn.configure(state="normal" if running else "disabled")
 

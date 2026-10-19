@@ -271,6 +271,14 @@ struct State : Session {
     std::mutex mu;                     /* guards the session fields and the socket */
     std::atomic<SOCKET> sock{ INVALID_SOCKET };   /* closed and replaced between sessions (rx_thread follows) */
     bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
+    /* T5_NET_LOCAL_LAG=n (local mode, tests: tools/rb_equiv_test.py --lag): the
+     * second player's input of frame t is known only from the live boundary
+     * t - delay + n on, as if it came over a network n frames late -- the
+     * rollback loop predicts it before that and rolls back when it differs,
+     * on one PC, with the same inputs every run. */
+    uint32_t local_lag = 0;
+    uint32_t local_live = 0;           /* the latest live boundary (rb_sample_local) */
+    uint32_t local_release = 0;        /* frames < this are known: the loop waited for them (rb_wait_remote) */
     void (*stuck_handler)(const char*) = nullptr;
     HANDLE rx_event = nullptr;
     bool net_up = false;               /* WSAStartup done, receive and tick threads running */
@@ -1020,6 +1028,10 @@ void configure()
     if (const char* v = env("T5_NET_CONNECT_TIMEOUT")) s.connect_timeout_s = atoi(v);
     if (const char* v = env("T5_NET_START_TIMEOUT")) s.start_timeout_s = atoi(v);
     if (const char* v = env("T5_NET_LOCALPAD")) s.localpad = atoi(v) != 0;
+    if (const char* v = env("T5_NET_LOCAL_LAG")) {
+        s.local_lag = (uint32_t)std::max(0, std::min(8, atoi(v)));
+        if (s.local_lag && s.mode == Mode::Local) note("TEST: the second player's input is known %u frame(s) late (T5_NET_LOCAL_LAG)", s.local_lag);
+    }
     if (const char* v = env("T5_NET_BUILD")) {
         uint32_t h = 2166136261u;
         for (const char* c = v; *c; c++) { h ^= (uint8_t)*c; h *= 16777619u; }
@@ -1317,6 +1329,12 @@ uint32_t match_seed()
     std::lock_guard<std::mutex> lk(s.mu);
     return s.seed ? s.seed : s.session;
 }
+uint32_t session_seed()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    return s.seed;
+}
 
 void log_extra(uint32_t f, const char* text)
 {
@@ -1465,10 +1483,18 @@ void rb_sample_local(uint32_t f, bool neutral, const PadInput* forced)
     }
     if (t + 1 > s.local_max) s.local_max = t + 1;
     if (s.mode == Mode::Local) {
-        /* no peer: the second player is this PC's port 2 / script, confirmed at once */
+        s.local_live = f;
+        /* no peer: the second player is this PC's port 2 / script, confirmed at once
+         * (T5_NET_LOCAL_LAG: known `local_lag` frames later, see local_horizon_locked) */
         PadInput theirs = kNeutral;
         if (s.localpad) device_input(1, &theirs);
         theirs.buttons |= script_mask(s.script2, t) | s.padfile2.poll(t);
+        /* the second player follows the same rules a peer's game applies at
+         * this boundary (the intro takes no input, the post-match input is a
+         * rule): a real peer never presses there, and with T5_NET_LOCAL_LAG a
+         * press there would roll the game back into the fight's loading */
+        if (forced) theirs = *forced;
+        else if (neutral) theirs = kNeutral;
         for (uint32_t g = s.remote_contig; g <= t; g++) { s.remote.in[g % kRing] = theirs; s.remote.in_tag[g % kRing] = g + 1; }
         while (s.remote.in_tag[s.remote_contig % kRing] == s.remote_contig + 1) s.remote_contig++;
         return;
@@ -1483,11 +1509,20 @@ PadInput rb_local(uint32_t f)
     return s.local.in_tag[f % kRing] == f + 1 ? s.local.in[f % kRing] : kNeutral;
 }
 
+/* local lag: inputs of frames >= this are not known yet (T5_NET_LOCAL_LAG) */
+static uint32_t local_horizon_locked(const State& s)
+{
+    const uint32_t h = s.local_live + (uint32_t)s.delay + 1;
+    const uint32_t lagged = h > s.local_lag ? h - s.local_lag : 0;
+    return lagged > s.local_release ? lagged : s.local_release;   /* a wait for the peer = its inputs came */
+}
+
 bool rb_remote(uint32_t f, PadInput* out)
 {
     State& s = S();
     std::lock_guard<std::mutex> lk(s.mu);
     if (s.remote.in_tag[f % kRing] != f + 1) return false;
+    if (s.mode == Mode::Local && s.local_lag && f >= local_horizon_locked(s)) return false;
     *out = s.remote.in[f % kRing];
     return true;
 }
@@ -1496,6 +1531,7 @@ uint32_t rb_remote_contig()
 {
     State& s = S();
     std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mode == Mode::Local && s.local_lag) return std::min(s.remote_contig, local_horizon_locked(s));
     return s.remote_contig;
 }
 
@@ -1506,6 +1542,10 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
     for (;;) {
         {
             std::lock_guard<std::mutex> lk(s.mu);
+            if (s.mode == Mode::Local && s.local_lag) {   /* the loop waits for the peer's input up to f: here it comes */
+                if (f + 1 > s.local_release) s.local_release = f + 1;
+                return std::min(s.remote_contig, local_horizon_locked(s));
+            }
             if (s.remote_contig > f || s.peer_lost || s.mode == Mode::Local) return s.remote_contig;
             const ULONGLONG now = GetTickCount64();
             if (now - s.last_send_ms >= 15) send_inputs_locked();

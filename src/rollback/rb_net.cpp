@@ -165,11 +165,14 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+uint32_t g_force_every = 0, g_force_depth = 4, g_forced = 0, g_force_last = UINT32_MAX;
+uint32_t g_wft_from = 0, g_wft_frames = 0;   /* T5_RB_WFT_NET=from:frames (tests): the write-fault tracer (T5_RB_WFT) over those live frames */   /* T5_RB_NET_FORCE=every[:depth] (tests) */
 /* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
  * to rb_desync_f<frame>.bin when the peer's hash for that frame differs (both
  * sides do; tools/netplay_memdiff.py diffs the two files) */
 constexpr uint32_t kDumpFrames = 64, kDumpBytes = 0x6000;
 bool g_dump = false; uint32_t g_dumps = 0;
+uint32_t g_dump_from = 1, g_dump_to = 0;   /* T5_RB_DUMP_AT=from:to: rb_frame_f<frame>.bin, the final bytes (tools/rb_equiv_test.py) */
 uint8_t* g_dump_ring = nullptr; uint32_t g_dump_tag[kDumpFrames], g_dump_len[kDumpFrames];
 uint32_t g_hash_sent = 0;        /* final hashes handed over for frames < this */
 uint32_t g_floor = 0;            /* no rollback before this frame (start / scene barrier) */
@@ -267,8 +270,8 @@ void report()
          g_st.sleeps, g_st.sleep_ms, g_st.frames ? g_st.lead_sum / g_st.frames : 0.0,
          g_st.frames ? g_st.commit_ms / g_st.frames : 0.0, np::rb_peer_ack(), np::rb_mismatches(), g_phase_changes,
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
-    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u",
-         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads);
+    note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
+         ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads, g_forced);
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
@@ -312,6 +315,7 @@ bool offered_by_env()
 
 void offer()
 {
+    ktrace_install();   /* T5_RB_KTRACE: diagnostics only */
     if (g_offered) return;
     g_offered = true;
     if (!offered_by_env()) return;
@@ -344,9 +348,24 @@ bool enabled()
             if (g_intro_rule) g_warmup = 0;   /* the intro takes no input: nothing there to wait for */
             if (const char* s = getenv("T5_RB_NET_WARMUP")) g_warmup = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_NET_DESYNC_DUMP")) { g_dump = *s == '1'; if (g_dump) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes); }
+            if (const char* s = getenv("T5_RB_DUMP_AT")) {   /* tests: from:to -- the final gameplay bytes of those frames */
+                unsigned a = 0, b = 0;
+                if (sscanf(s, "%u:%u", &a, &b) == 2 && b >= a) {
+                    g_dump_from = a; g_dump_to = b;
+                    if (!g_dump_ring) g_dump_ring = (uint8_t*)calloc(kDumpFrames, kDumpBytes);
+                }
+            }
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
+            if (const char* s = getenv("T5_RB_WFT_NET")) { unsigned a = 0, n = 1; sscanf(s, "%u:%u", &a, &n); g_wft_from = a; g_wft_frames = n; wft_install(); }
+            if (const char* s = getenv("T5_RB_NET_FORCE")) {
+                unsigned e = 0, d = 4;
+                sscanf(s, "%u:%u", &e, &d);
+                g_force_every = e; g_force_depth = std::max(1u, std::min(d, 8u));
+                if (g_force_every && g_force_every <= g_force_depth) g_force_every = g_force_depth + 1;
+                if (g_force_every) note("rbnet: TEST: a %u-frame rollback every %u fight frames (T5_RB_NET_FORCE)", g_force_depth, g_force_every);
+            }
             if (const char* s = getenv("T5_RB_NET_SKIPSOUND")) g_skipsound = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TIMESYNC")) g_timesync = *s != '0';
             if (const char* s = getenv("T5_RB_NET_TS_FLIP")) g_ts_flip = *s == '1';
@@ -389,6 +408,11 @@ void start(uint32_t f)
     np::PadInput r;
     for (uint32_t g = f; g > 0 && g + 64 > f; g--) if (np::rb_remote(g - 1, &r)) { g_last_remote = r; break; }
     QueryPerformanceCounter(&g_t_window);
+    ktrace_note("session: the rollback loop starts at frame %u", f);
+    if (ktrace_on()) {   /* the sound library's allocator callbacks (diagnostics) */
+        const uint32_t tbl[] = { 0x10088F0Cu, 0x10088F10u, 0x10088F88u, 0x10088F8Cu };
+        for (uint32_t a : tbl) { const uint32_t opd = rd32(a); ktrace_note("sound allocator slot %08X -> OPD %08X -> code %08X", a, opd, opd ? rd32(opd) : 0); }
+    }
     note("rbnet: rollback loop takes over at frame %u (delay %d, max prediction %u frames, peer inputs known for < %u)",
          f, g_delay, g_maxpred, np::rb_remote_contig());
 }
@@ -408,7 +432,9 @@ void session_reset()
     report();
     note("rbnet: session over: the loop stops (whole session: %u frames, %u rollbacks, %u stalls; reader tokens given back %u)",
          g_tot.frames, g_tot.rollbacks, g_tot.stalls, g_tot.reader_tokens);
+    { char hs[256]; sndheap_stats(hs, sizeof hs); note("rbnet: sound heap: %s", hs); }
     g_active = false;
+    ktrace_note("session over");
     memset(g_hash_tag, 0, sizeof g_hash_tag);
     memset(g_used_tag, 0, sizeof g_used_tag);
     memset(g_phase_tag, 0, sizeof g_phase_tag);
@@ -419,6 +445,7 @@ void session_reset()
     g_next_f = 0; g_early_f = UINT32_MAX; g_tick_waited = false; g_early_tick_seen = false; g_early_committed = 0;
     g_last_remote = np::kNeutral;
     g_st = Stats(); g_tot = Stats();
+    g_dumps = 0;   /* T5_NET_DESYNC_DUMP: 20 per session (a deliberately desynced session used to take them all) */
     state_reset();
 }
 
@@ -496,6 +523,23 @@ static void tick_wait()
     g_tick_waited = true;
 }
 
+/* Every frame before upto that ran on a predicted remote input has had that
+ * input confirmed as predicted: the state the game shows now is final -- no
+ * rollback can take it back any more (the direct-fight driver acts on a match
+ * end only once this holds for the frames up to it, t5_netplay_match_end_final).
+ * Predictions are never older than the prediction window, so the last 64
+ * frames before upto are enough. */
+bool state_final(uint32_t upto)
+{
+    if (!g_active) return true;
+    for (uint32_t g = upto > 64 ? upto - 64 : 0; g < upto; g++) {
+        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
+        np::PadInput real;
+        if (!np::rb_remote(g, &real) || !(real == g_used[g % kHist])) return false;
+    }
+    return true;
+}
+
 /* The first frame g < min(rc, f) whose confirmed remote input differs from
  * the prediction it was simulated with (UINT32_MAX: none). */
 static uint32_t scan_mispredictions(uint32_t f, uint32_t rc)
@@ -564,6 +608,7 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     }
     cellAtrac_rb_rolled_back();   /* the music stream reader is rewound with the title: the library sorts its feeds out */
     reader_sem_restore(first_wrong);   /* the reader's completion token, as at that boundary */
+    ktrace_note("rollback at %u to %u (%u frames)", f, first_wrong, depth);
     LATLOG('M', "%u %u %.2f", f, first_wrong, rms);   /* PS3_LATENCY_LOG: rollback from f to first_wrong (restore ms) */
     g_st.rollbacks++; g_st.depth_hist[std::min<uint32_t>(depth, 16)]++; g_st.restore_ms += rms;
     if (depth > g_st.max_depth) g_st.max_depth = depth;
@@ -592,6 +637,7 @@ uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
     LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
+    if (f) ktrace_boundary(f - 1, g_resim);
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     post_record(f);
@@ -607,7 +653,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
      * not compared -- their state follows the loading, whose progress differs
      * between a game that has played and a fresh one (t5_hooks.cpp kIntroHash) */
     if (g_intro_rule && rd32(kPhaseWord) <= 12) g_hash[f % kHist] = 0x4F52544E49ull;
-    if (g_dump) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
+    if (g_dump_ring) { g_dump_tag[f % kDumpFrames] = f + 1; g_dump_len[f % kDumpFrames] = state_game_bytes(g_dump_ring + (size_t)(f % kDumpFrames) * kDumpBytes, kDumpBytes); }
     for (uint32_t mf; g_dump && np::take_mismatch(&mf);) {
         if (g_dump_tag[mf % kDumpFrames] != mf + 1 || g_dumps >= 20) continue;
         char path[64]; snprintf(path, sizeof path, "rb_desync_f%06u.bin", mf);
@@ -651,6 +697,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             if (g_verbose) note("rbnet: frame %u: fight phase %u -> %u: lockstep for %u frames", f, g_last_phase, phase, g_phase_lock);
         }
         g_last_phase = phase;
+        if (g_wft_frames && wft_enabled()) {
+            if (f == g_wft_from) { wft_arm(); note("rbnet: write-fault trace armed at frame %u for %u frame(s)", f, g_wft_frames); }
+            if (f == g_wft_from + g_wft_frames) wft_disarm("net");
+        }
         if (!(g_early_f == f && !g_tick_waited)) live_tick_part(f);
     }
     /* Early rollback (T5_RB_NET_EARLY, docs/ROLLBACK.md section 26): this
@@ -720,6 +770,19 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     const uint32_t upto = std::min(rc, f);
     const uint32_t first_wrong = scan_mispredictions(f, rc);
     if (first_wrong != UINT32_MAX && start_rollback(f, first_wrong, out)) return first_wrong;
+    /* T5_RB_NET_FORCE (tests): a rollback of g_force_depth frames every
+     * g_force_every live fight frames, re-simulated with the same inputs -- what
+     * a misprediction does, without needing one. A match played that way must
+     * give the same hash on every frame as the same match without it
+     * (tools/rb_equiv_test.py); anything the restore or the re-simulation's cuts
+     * leave different shows up there, on one PC, every run. */
+    if (g_force_every && f >= g_force_depth && (f % g_force_every) == 0 && f - g_force_depth >= g_floor && f != g_force_last) {
+        g_force_last = f;   /* once per frame: the boundary comes back here after the re-simulation */
+        bool ok = true;
+        for (uint32_t g = f - g_force_depth; g <= f && ok; g++)
+            ok = g_post_tag[g % 4096] == g + 1 && g_fighting[g % 4096] && (g == f || g_used_tag[g % kHist] == g + 1);
+        if (ok && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
+    }
 
     /* final hashes: every input before g is confirmed and no rollback is pending */
     for (uint32_t g = std::max(g_hash_sent, g_floor); g <= upto && g <= f; g++) {
@@ -728,6 +791,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
          * ends frames apart on a game that has played and a fresh one) */
         if (scene_flag && g == f) break;
         if (g_hash_tag[g % kHist] == g + 1) np::rb_push_hash(g, g_hash[g % kHist]);
+        if (g >= g_dump_from && g <= g_dump_to && g_dump_tag[g % kDumpFrames] == g + 1) {
+            char path[64]; snprintf(path, sizeof path, "rb_frame_f%06u.bin", g);
+            if (FILE* fp = fopen(path, "wb")) { fwrite(g_dump_ring + (size_t)(g % kDumpFrames) * kDumpBytes, 1, g_dump_len[g % kDumpFrames], fp); fclose(fp); }
+        }
         g_hash_sent = g + 1;
     }
 

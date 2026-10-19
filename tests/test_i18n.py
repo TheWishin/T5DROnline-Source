@@ -177,7 +177,8 @@ class CatalogTests(Base):
         # t(variable): the variable must hold a text marked with N_(); keep the list short and known
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
-                                     "problem_report_ui.py", "controls_ui.py"})
+                                     "problem_report_ui.py", "controls_ui.py",
+                                     "tk_views.py"})
 
 
 class EngineTests(German):
@@ -628,8 +629,8 @@ class RenderTests(Base):
         app.update()
         texts = all_texts(app)
         self.assertEqual(app.language, "en")
-        for expect in ("Build", "Play", "Settings", "Online", "BUILD GAME", "PLAY", "Quick match", "Ranked match",
-                       "Log in", "Language"):
+        for expect in ("Build", "Play offline", "Settings", "Play online", "BUILD GAME", "PLAY OFFLINE",
+                       "Online tab", "Quick match", "Ranked match", "Log in", "Language"):
             self.assertTrue(any(expect in t for t in texts), expect)
         self.assertNotIn("Bauen", " ".join(texts))
 
@@ -642,8 +643,9 @@ class RenderTests(Base):
         keys = set(i18n_de.MESSAGES)
         english_left = sorted({t for t in texts if t in keys and i18n_de.MESSAGES[t] != t})
         self.assertEqual(english_left, [], "English texts still on screen")
-        for expect in ("Bauen", "Spielen", "Einstellungen", "BUILD GAME", "PLAY", "Quick Match", "Ranked-Match",
-                       "Anmelden", "Als Gast spielen", "Sprache", "Rangliste"):
+        for expect in ("Bauen", "Offline spielen", "Einstellungen", "Online spielen", "BUILD GAME", "OFFLINE SPIELEN",
+                       "Online-Reiter", "Quick Match", "Ranked-Match", "Anmelden", "Als Gast spielen", "Sprache",
+                       "Rangliste"):
             self.assertTrue(any(expect in t for t in texts), expect)
         # most of the screen changed
         i18n.set_language("en")
@@ -928,7 +930,7 @@ class OnlineTabGermanTests(German):
         t.rematch_bar = ("Ergebnis", "Rival")
         t._show_rematch_bar()
         labels = [str(b.cget("text")) for b in t.bar_buttons.winfo_children()]
-        self.assertEqual(labels, ["Rematch mit Rival", "Verlassen", "Rival blockieren"])
+        self.assertEqual(labels, ["Rematch mit Rival", "Nächstes Spiel", "Verlassen", "Rival blockieren"])
         self.assertEqual(i18n.missing(), [])
 
     def test_driver_notes(self):
@@ -943,10 +945,114 @@ class OnlineTabGermanTests(German):
 
     def test_buttons_and_headings_are_german(self):
         texts = all_texts(self.root)
-        for expect in ("Konto", "Anmelden", "Als Gast spielen", "Ranked-Match", "Quick Match", "Suche beenden",
-                       "Raum erstellen", "Herausfordern", "Rangliste", "Profil", "Spieler", "Bilanz", "Controller hier benutzen"):
+        for expect in ("Online spielen", "Anmelden", "Konto erstellen", "Als Gast spielen", "Ranked-Match",
+                       "Quick Match", "Suche beenden", "Raum erstellen", "Herausfordern", "Rangliste", "Profil",
+                       "SPIELER", "BILANZ", "FÜR FREUNDE HOSTEN", "Controller hier benutzen"):
             self.assertIn(expect, texts)
         self.assertEqual(i18n.missing(), [])
+        keys = set(i18n_de.MESSAGES)
+        self.assertEqual(sorted({t for t in texts if t in keys and i18n_de.MESSAGES[t] != t}), [])
+
+    def shown(self):
+        """The texts on screen now, and the English ones among them (a text of the catalog, not translated)."""
+        self.root.update()
+        texts = all_texts(self.root)
+        keys = set(i18n_de.MESSAGES)
+        english = sorted({t for t in texts if t in keys and i18n_de.MESSAGES[t] != t})
+        return texts, english
+
+    def test_every_screen_of_the_view(self):
+        """The cards of the Online tab (tk_views.py), one after the other: no English left, no text missing."""
+        t = self.tab
+        t._set_account_view(True)
+        t.on_event({"t": "lobby_state", "players": [], "rooms": [], "queue": {"ranked": 3, "quick": 1}})
+        texts, english = self.shown()
+        for expect in ("Gast", "Gewertet: nah an deinem Rang, gute Verbindung", "SPIELER ONLINE", "RÄUME"):
+            self.assertTrue(any(expect in x for x in texts), expect)
+        self.assertEqual(english, [])
+        t.client.me["status"] = "queue"
+        t.cfg["last_search"] = "ranked"
+        t.strict_var.set(1)
+        t.view.refresh()
+        texts, english = self.shown()
+        self.assertTrue(any(x.startswith("Ähnlicher Rang und gute Verbindung, streng") for x in texts), texts)
+        self.assertIn("3 in der Ranked-Suche  ·  1 bei Quick Match", texts)
+        self.assertEqual(english, [])
+        t.client.me["status"] = "idle"
+        t.on_event({"t": "match_found", "match": "m1", "ranked": True, "blind": True, "opponent": None,
+                    "ping": {"known": True, "ms": 42.0}, "ready_timeout": 15, "ready_check": True})
+        texts, english = self.shown()
+        for expect in ("GEGNER GEFUNDEN", "Gegner verborgen", "Gute Verbindung",
+                       "Name und Seite werden gezeigt, sobald ihr beide annehmt.", "(Schätzung über den Server)"):
+            self.assertTrue(any(expect in x for x in texts), expect)
+        self.assertEqual(english, [])
+        t.ready_sent = True
+        t.view._bar_sig = None
+        t.view.refresh()
+        texts, english = self.shown()
+        self.assertIn("Angenommen. Warte auf deinen Gegner...", texts)
+        t.on_event({"t": "match_reveal", "opponent": {"name": "Rival", "guest": False, "rating": 1520,
+                                                       "rank": "3rd Dan", "provisional": False, "tier": 5}})
+        texts, english = self.shown()
+        self.assertIn("MATCH BEREIT", texts)
+        self.assertIn("Verbinde die beiden Spiele...", texts)
+        self.assertEqual(english, [])
+        t.on_event({"t": "challenged", "challenge": "c1", "from": {"name": "Rival", "guest": False, "rating": 1500,
+                                                                    "rank": "2nd Dan", "provisional": False}})
+        texts, english = self.shown()
+        self.assertIn("will gegen dich spielen. Nimm an, um das Match zu starten.", texts)
+        self.assertIn("Annehmen", texts)
+        self.assertEqual(english, [])
+        t.hide_bar()
+        t.on_event({"t": "match_start", "ranked": True, "opponent": {"name": "Rival", "guest": False, "rating": 1520,
+                                                                      "rank": "3rd Dan", "tier": 5},
+                    "rtt_ms": 41.6, "path": "relay", "delay": 2, "fight": {"p1": "jin", "p2": "random"}})
+        t.driver = type("D", (), {"ticket": object(), "game_running": lambda self: True, "session_ticket": None,
+                                  "close": lambda self: None, "poll": lambda self: []})()
+        t.view.refresh()
+        texts, english = self.shown()
+        for expect in ("IM MATCH", "gegen Rival", "2 Frames  (33 ms)", "Relay (Lobby-Server)", "Dein Spiel läuft",
+                       "INPUT-DELAY", "VERBINDUNG"):
+            self.assertTrue(any(expect in x for x in texts), (expect, texts[-40:]))
+        self.assertEqual(english, [])
+        t.driver = None
+        t.on_event({"t": "match_result", "status": "confirmed", "winner": None, "score": [2, 1], "ranked": True,
+                    "rating": {"after": {"r": 1612.3}, "delta": 12.0, "event": "promoted",
+                               "rank_after": {"rank": "Lone Wolf", "tier": 8}}})
+        t.on_event({"t": "lag_check", "ping_ms": 37.4, "expected_frames": 2, "observed_frames": 4.2,
+                    "verdict": "more_lag", "cause": "network", "can_leave": True, "text": "x"})
+        t.view.refresh()
+        texts, english = self.shown()
+        for expect in ("UNENTSCHIEDEN", "Ranked-Match", "AUFGESTIEGEN", "Wertung 1612", "LAG-CHECK",
+                       "RUNDEN  (P1 – P2)", "Nächstes Spiel", "Zurück zur Lobby"):
+            self.assertTrue(any(expect in x for x in texts), (expect, texts[-40:]))
+        self.assertEqual(english, [])
+        self.assertEqual(i18n.missing(), [])
+
+    def test_errors_get_a_tip_in_german(self):
+        from t5lobby import tk_views
+        self.assertEqual(tk_views.friendly_error("Lobby: Name oder Passwort falsch"),
+                         "Name oder Passwort falsch. Prüfe die Schreibweise, oder nutze „Passwort vergessen...“.")
+        self.assertEqual(tk_views.friendly_error("Lobby-Fehler: Ranked braucht ein Konto"),
+                         "Ranked braucht ein Konto. Erstelle ein (kostenloses) Konto, um Ranked zu spielen.")
+        self.assertEqual(tk_views.friendly_error("Lobby: something new"), "Something new")
+        i18n.set_language("en")
+        self.assertEqual(tk_views.friendly_error("Lobby: wrong name or password"),
+                         "Wrong name or password. Check the spelling, or use \"Forgot password...\".")
+
+    def test_every_error_tip_matches_its_german_words(self):
+        """ERROR_HELP looks for words in the message: the English ones in the server's text, the German ones in
+        its translation. Each pair has to belong to the same known message."""
+        from t5lobby import tk_views
+        english = [k for k in i18n_de.MESSAGES]
+        for words, _tip in tk_views.ERROR_HELP:
+            en_words, de_words = [words[0]], list(words[1:])
+            hits = [k for k in english if en_words[0] in k.lower()]
+            self.assertTrue(hits, f"no text has {en_words[0]!r}")
+            for k in hits:
+                de = i18n_de.MESSAGES[k].lower()
+                self.assertTrue(any(w in de for w in de_words),
+                                f"{en_words[0]!r} is in {k[:60]!r} but none of {de_words} is in {de[:70]!r}")
 
 
 @unittest.skipIf(tk is None, "no tkinter")

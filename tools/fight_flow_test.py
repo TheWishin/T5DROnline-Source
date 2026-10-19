@@ -12,7 +12,7 @@ T5_FIGHT_FILE, written at slightly different times on the two sides (two launche
 every match as a control command (docs/DIRECTFIGHT.md "Persistent game"): "idle",
 then "fight" with a NEW session each time (new UDP ports, seed, key, match id), as
 for a new opponent. --rematch-every K makes every K-th match a rematch in the
-running session instead. --fresh-at N restarts the joiner's game before match N (a
+running session instead. --fresh-at N restarts the joiner's game (--fresh-role host: the host's) before match N (a
 new opponent whose game has just started meets a game that has played already).
 
 --exe2 runs the joiner's game from another build (tools/cross_build_test.py).
@@ -46,6 +46,21 @@ How real players differ from the scripted flow (rematch-fix, 2026-10-18):
   --hz2 HZ          the joiner's display runs at HZ (RSX_TEST_DISPLAY_HZ: 240 = no
                     display lock, the game on the 59.94 Hz clock, like the friend's PC)
 
+Two different PCs (desync hunt, 2026-10-18; docs/NETPLAY.md "Desync hunt"):
+
+  --cpus1/--cpus2 N|0xMASK   that game runs on N logical processors (0..N-1) or the mask,
+                    and PS3_CPUS says so (its thread pools size from it): a 4-, 6-, 8-
+                    or 16-core PC. The game starts suspended, gets the mask, resumes.
+  --hitch2 MS[:MIN:MAX]      the joiner's main thread stalls MS at a frame boundary every
+                    MIN..MAX frames (T5_TEST_HITCH) while its other threads run on (a
+                    shader compile or a busy PC; --stutter stops the whole process)
+  --gamedata1/--gamedata2 DIR   copy DIR (a gamedata tree: dev_hdd0/home/.../savedata)
+                    into that game's folder before it starts: a player's own save with
+                    its options and custom characters (a fresh folder has the defaults)
+  --clock2 SECONDS  the joiner's clock runs SECONDS away from the host's
+                    (PS3_FIXED_TIME=<now+S>+, a running clock; persistent games use the
+                    real clock, so two PCs never read the same time)
+
 Checks, per match: both games reach FIGHT START of that match, both write its
 result file (same winner and state hash, 0 mismatching frames). Prints the time
 from the command (fight file / control command) to FIGHT START on both sides.
@@ -73,13 +88,53 @@ def log(msg):
     print(f"[{time.time() - T0:7.1f}s] {msg}", flush=True)
 
 
-def mash_script(path, seed, frames=400000, gap=6):
+# Pad bits (PadInput.buttons: DIGITAL1 | DIGITAL2 << 8) and the Tekken buttons 1/2/3/4 = LP/RP/LK/RK.
+U, R, D, L = 0x10, 0x20, 0x40, 0x80
+B1, B2, B3, B4 = 0x8000, 0x1000, 0x4000, 0x2000
+
+
+def motion_moves(fwd, back):
+    """What players do and a random mash almost never does: frame-exact motion inputs (electrics,
+    hellsweeps, dragon-punch and half-circle motions, dashes, sidesteps), throws and the all-buttons
+    ki charge -- each a list of (mask, frames). fwd/back: the direction bits for one facing."""
+    df, db = D | fwd, D | back
+    return [
+        [(fwd, 1), (0, 1), (D, 1), (df | B2, 2)],                 # electric wind god fist (f,n,d,df+2)
+        [(fwd, 1), (0, 1), (D, 1), (df | B1, 2)],                 # wind god fist family, df+1
+        [(fwd, 1), (0, 1), (D, 1), (df | B4, 2)],                 # hellsweep (f,n,d,df+4)
+        [(fwd, 2), (0, 2), (D, 2), (df, 1), (df | B2, 3)],        # slower wgf
+        [(D, 1), (df, 1), (fwd | B1, 2)],                         # qcf+1
+        [(D, 1), (db, 1), (back | B2, 2)],                        # qcb+2
+        [(fwd, 1), (df, 1), (D, 1), (db, 1), (back | B1, 2)],     # hcb+1
+        [(back, 1), (db, 1), (D, 1), (df, 1), (fwd | B3, 2)],     # hcf+3
+        [(fwd, 2), (0, 2), (fwd, 6)],                             # dash
+        [(back, 2), (0, 2), (back, 2), (0, 2), (back, 2)],        # backdash
+        [(U, 1), (0, 3)], [(D, 1), (0, 3)],                       # sidesteps
+        [(B1 | B3, 2)], [(B2 | B4, 2)],                           # throws
+        [(df | B1 | B2, 2)], [(back | B1 | B2, 3)], [(fwd | B3 | B4, 2)], [(U | fwd | B3 | B4, 2)],
+        [(B1 | B2 | B3 | B4, 40)],                                # ki charge (Mishimas)
+        [(D, 6), (df | B2, 2)], [(D, 6), (D | B4, 2)],            # crouch moves
+        [(fwd | B2, 2), (0, 4), (B1, 2)], [(B1, 2), (0, 3), (B2, 2), (0, 3), (B1, 2)],   # strings
+        [(back, 20), (back | B2, 2)],                             # charged back moves
+    ]
+
+
+def mash_script(path, seed, frames=400000, gap=6, moves=False):
     """Face buttons and directions, 1-4 frames each, 1..gap frames apart (no START: that pauses a fight).
-    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts)."""
+    gap 6 (default) is button mashing; ~20 is closer to a person (fewer inputs the peer mispredicts).
+    moves: half of the inputs are motion inputs (motion_moves) in either facing."""
     rnd = random.Random(seed)
     buttons = [0x4000, 0x2000, 0x8000, 0x1000, 0x4000 | 0x2000, 0x8000 | 0x1000, 0x10, 0x20, 0x40, 0x80, 0x20, 0x80]
+    seqs = motion_moves(R, L) + motion_moves(L, R)
     out, f = [], 30
     while f < frames:
+        if moves and rnd.random() < 0.5:
+            for mask, n in rnd.choice(seqs):
+                if mask:
+                    out.append(f"{f} {n} {mask:#x}")
+                f += n
+            f += rnd.randint(1, gap)
+            continue
         n = rnd.randint(1, 4)
         out.append(f"{f} {n} {rnd.choice(buttons):#x}")
         f += n + rnd.randint(1, gap)
@@ -100,6 +155,13 @@ def read_json(path):
 _ntdll = ctypes.WinDLL("ntdll") if os.name == "nt" else None
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 _u32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
+
+
+def cpu_mask(spec):
+    """--cpus1/--cpus2: N = logical processors 0..N-1, or 0xMASK; 0 = no change."""
+    if not spec:
+        return 0
+    return int(spec, 16) if spec.lower().startswith("0x") else (1 << int(spec)) - 1
 
 
 def suspend_process(pid, on):
@@ -186,7 +248,7 @@ class Game:
         })
         if self.a.mash:
             env["T5_NET_SCRIPT"] = mash_script(os.path.join(self.dir, "mash.txt"), 100 + self.idx,
-                                               gap=getattr(self.a, "mash_gap", 6))
+                                               gap=getattr(self.a, "mash_gap", 6), moves=getattr(self.a, "moves", False))
         for kv in self.a.env + (self.a.env1 if self.role == "host" else self.a.env2):
             k, v = kv.split("=", 1)
             env[k] = v
@@ -200,8 +262,23 @@ class Game:
         vfs = os.path.abspath(self.a.vfs)
         exe = self.a.exe2 if self.role == "join" and self.a.exe2 else self.a.exe
         flags = 0x00004000 if getattr(self.a, "below_normal", False) and os.name == "nt" else 0   # BELOW_NORMAL_PRIORITY_CLASS
+        gd = self.a.gamedata1 if self.role == "host" else self.a.gamedata2
+        if gd and self.starts == 1:      # a player's own save: copied once, the game keeps writing it
+            import shutil
+            dst = os.path.join(self.dir, "gamedata")
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(gd, dst)
+            log(f"game {self.idx}: save data from {gd}")
+        mask = cpu_mask(self.a.cpus1 if self.role == "host" else self.a.cpus2)
+        if mask:
+            env["PS3_CPUS"] = str(bin(mask).count("1"))
+            flags |= 0x00000004          # CREATE_SUSPENDED: the mask is in before the game sizes its pools
         self.proc = subprocess.Popen([os.path.abspath(exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
                                      cwd=self.dir, env=env, stdout=lf, stderr=subprocess.STDOUT, creationflags=flags)
+        if mask:
+            ok = _k32.SetProcessAffinityMask(ctypes.c_void_p(int(self.proc._handle)), ctypes.c_size_t(mask))
+            suspend_process(self.proc.pid, False)
+            log(f"game {self.idx}: affinity {mask:#x} ({bin(mask).count('1')} logical processors){'' if ok else ' FAILED'}")
         log(f"game {self.idx} ({self.role}) started, pid {self.proc.pid}, log {self.log_path}")
 
     def stop(self):
@@ -252,10 +329,15 @@ def fight_line(a, k, prev=None):
     keeps the players' picks, the stage is drawn again)."""
     chars = a.chars.split(",")
     p1, p2 = chars[(2 * k) % len(chars)], chars[(2 * k + 1) % len(chars)]
+    colors = (a.colors or "").split(",") if getattr(a, "colors", "") else []
+    c1 = colors[(2 * k) % len(colors)] if colors else ""
+    c2 = colors[(2 * k + 1) % len(colors)] if colors else ""
     if prev:
         p1, p2 = prev.split(",")[:2]
+        if colors:
+            c1, c2 = prev.split(",")[4:6]
     stages = [int(s) for s in a.stages.split(",")]
-    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}"
+    return f"{p1},{p2},{stages[k % len(stages)]},{a.rounds}" + (f",{c1},{c2}" if colors else "")
 
 
 def match_kind(a, k):
@@ -296,6 +378,8 @@ def main():
     ap.add_argument("--stages", default="20,33,25,31")
     ap.add_argument("--mash", action="store_true")
     ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
+    ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (electrics, hellsweeps, qcf/hcb, "
+                                                        "dashes, throws, ki charge): what players do")
     ap.add_argument("--rematch-every", type=int, default=0, help="persistent: every K-th match is a rematch in the session")
     ap.add_argument("--pattern", default="", help="persistent: N (new session) / R (rematch) per match in turn, e.g. NNR")
     ap.add_argument("--same-chars", action="store_true", help="a rematch keeps the last match's characters (the lobby's way)")
@@ -307,6 +391,11 @@ def main():
     ap.add_argument("--polite", action="store_true",
                     help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--fresh-at", type=int, default=0, help="persistent: restart the joiner's game before this match")
+    ap.add_argument("--fresh-role", choices=["host", "join", "alt"], default="join",
+                    help="--fresh-at/--fresh-every restart this side's game (alt: host and joiner in turn)")
+    ap.add_argument("--fresh-every", type=int, default=0,
+                    help="persistent: every K-th match after the first is an opponent switch against a fresh game")
+    ap.add_argument("--colors", default="", help="costumes 1|2 per character slot, cycled like --chars (T5_FIGHT p1color,p2color)")
     ap.add_argument("--rematch-wait", type=float, default=1.0,
                     help="seconds between a match's results and the next command (players clicking Rematch late: 20)")
     ap.add_argument("--port", type=int, default=7400)
@@ -317,6 +406,12 @@ def main():
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for the joiner's game only")
     ap.add_argument("--exe2", help="the joiner's t5dr.exe (another build, t5dr_game.dll beside it; "
                                    "tools/cross_build_test.py --flow persistent)")
+    ap.add_argument("--cpus1", default="", help="host's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
+    ap.add_argument("--cpus2", default="", help="joiner's CPUs: N logical processors or 0xMASK (+ PS3_CPUS)")
+    ap.add_argument("--hitch2", default="", help="MS[:MIN:MAX] -- the joiner's main thread stalls (T5_TEST_HITCH)")
+    ap.add_argument("--gamedata1", default="", help="copy this gamedata tree (a player's save) for the host's game")
+    ap.add_argument("--gamedata2", default="", help="copy this gamedata tree (a player's save) for the joiner's game")
+    ap.add_argument("--clock2", type=float, default=0.0, help="the joiner's clock this many seconds off the host's")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     a.below_normal = a.polite
@@ -324,6 +419,13 @@ def main():
         a.env = a.env + ["PS3_AUDIO_MUTE=1"]
     if a.hz2:
         a.env2 = a.env2 + [f"RSX_TEST_DISPLAY_HZ={a.hz2:g}"]
+    if a.hitch2:
+        a.env2 = a.env2 + [f"T5_TEST_HITCH={a.hitch2}"]
+    if a.clock2:
+        a.env2 = a.env2 + [f"PS3_FIXED_TIME={int(time.time() + a.clock2)}+"]
+    for g, gd in (("1", a.gamedata1), ("2", a.gamedata2)):
+        if gd and not os.path.isdir(os.path.join(gd, "dev_hdd0")):
+            sys.exit(f"--gamedata{g}: {gd} has no dev_hdd0 folder")
     closes = {}
     for c in a.close:
         k, role, sec = c.split(":")
@@ -340,7 +442,8 @@ def main():
             except OSError:
                 pass
     report = {"flow": a.flow, "mash": a.mash, "pattern": a.pattern, "skew": a.skew, "stutter": a.stutter,
-              "hz2": a.hz2, "env": a.env, "matches": []}
+              "hz2": a.hz2, "env": a.env, "env1": a.env1, "env2": a.env2, "cpus": [a.cpus1, a.cpus2],
+              "gamedata": [a.gamedata1, a.gamedata2], "matches": []}
     ok_all = True
     stop = threading.Event()
     st_on = threading.Event()
@@ -392,7 +495,13 @@ def main():
                             time.sleep(random.uniform(0.2, 1.5))   # two launchers never write at the same moment
                         write_atomic(g.fight_path, f"{line} match={mid}\n")
                 else:
-                    if a.fresh_at == k and g.role == "join" and g.running():
+                    fresh_now = a.fresh_at == k and g.role == a.fresh_role
+                    if a.fresh_every and k > 1 and (k - 1) % a.fresh_every == 0:
+                        # an opponent switch: a new session against a freshly started game; the side
+                        # restarted alternates (--fresh-role alt), so each persistent game meets fresh ones
+                        role = a.fresh_role if a.fresh_role != "alt" else ("join" if ((k - 1) // a.fresh_every) % 2 else "host")
+                        fresh_now = g.role == role
+                    if fresh_now and g.running():
                         log(f"match {k}: restarting game {g.idx} (a new opponent's fresh game)")
                         g.stop()
                     if not g.running():

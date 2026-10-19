@@ -43,7 +43,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
-| Controls | Keyboard, Xbox pads (XInput), PlayStation pads, arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -164,9 +164,11 @@ Keyboard (default) and Xbox controller:
 - The keyboard works only while the game window has the focus. Pads work even
   when it does not.
 - Keyboard and the first pad both drive player 1.
-- PlayStation pads (DualShock 4, DualSense), arcade sticks and hitboxes are read
-  through DirectInput. Nothing to install. An arcade stick was tried on real
-  hardware: every input came through.
+- PlayStation pads (DualShock 4, DualSense) are read directly, over USB and
+  Bluetooth, also after Steam or DS4Windows used them (no Steam needed; started
+  through Steam with Steam Input on, the game uses Steam's virtual pad instead).
+  Arcade sticks and hitboxes are read through DirectInput. Nothing to install.
+  An arcade stick was tried on real hardware: every input came through.
 - Pads can be plugged in or out while the game runs.
 - In the launcher's Online tab a pad or stick runs the lobby without mouse or
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and

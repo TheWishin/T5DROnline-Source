@@ -642,7 +642,9 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 - Xbox pads and XInput-mode sticks are read with XInput. Everything else (PS3/PS4-mode sticks and hitboxes,
   DualShock 4, DualSense, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
   numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through both
-  is read once, through XInput. Plain `ctypes`, one thread, 60 polls a second while the launcher is in front
+  is read once, through XInput. (The game reads DualShock 4 / DualSense as HID devices since ps3recomp patch
+  0042; WinMM, like DirectInput, gets nothing from a Bluetooth pad that Steam or DS4Windows switched to its
+  extended report, so the launcher does not see such a pad until it is turned off and on.) Plain `ctypes`, one thread, 60 polls a second while the launcher is in front
   (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while it is
   not (0.01%).
 - Switch: **Use a controller here** at the bottom of the tab (saved as `pad` in `online.json`).

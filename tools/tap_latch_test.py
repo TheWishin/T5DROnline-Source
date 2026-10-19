@@ -7,6 +7,7 @@ pad must reach the game exactly once -- held in one read, released in the next.
     python tools/tap_latch_test.py --exe ... --out ... --pair --rollback       # the rollback loop
     python tools/tap_latch_test.py --exe ... --out ... --env PAD_TAP_LATCH=0   # reference: taps get lost
     python tools/tap_latch_test.py --out <earlier run> [--pair] --analyze      # analysis only
+    python tools/tap_latch_test.py --exe ... --out ... --hid dualsense,bt-ext   # through a DualSense's reports
 
 Boots straight into a fight (T5_FIGHT), waits until it has settled (--after,
 12 s), then writes taps of 2-5 ms (random length and phase against the
@@ -30,6 +31,17 @@ are ignored.
   --rollback: rollback loop at input delay 0 (frames re-simulate); the local
            checks as above, sync from the rollback hash exchange.
 
+  --hid MODEL,MODE: the taps come as input reports of a DualShock 4 / DualSense
+           (ps3recomp patch 0042: PS3_PAD_HID_FAKE feeds the runtime's own HID
+           reader from a file; MODEL ds4|dualsense|edge, MODE usb|bt-simple|
+           bt-ext, or bt-steam: simple reports, half way through the extended
+           ones, as when Steam starts during the game; see
+           tools/ps_hid_reports.py), on port 1 through the "ps"
+           layout like a real pad -- XInput, DirectInput and the keyboard off.
+           Every second tap is a press and its release in one write: two
+           reports between two samples, which only the reader's tap memory can
+           deliver (a sub-millisecond tap).
+
 Also prints fps in the fight and the pad sampler's rate and CPU ([pad-tap]).
 Exit code 0 = every tap delivered exactly once (and in sync with --pair).
 """
@@ -44,6 +56,37 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUTTONS = {"SQUARE": 0x8000, "TRIANGLE": 0x1000, "CROSS": 0x4000, "CIRCLE": 0x2000, "DOWN": 0x0040}
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ps_hid_reports as phr  # noqa: E402
+HID_PIDS = {"ds4": "09CC", "dualsense": "0CE6", "edge": "0DF2"}
+
+
+class HidWriter:
+    """Writes the taps as input reports of a PlayStation pad into the PS3_PAD_HID_FAKE file."""
+
+    def __init__(self, model, mode, switch_at=None):
+        """mode bt-steam: Bluetooth simple reports, then from report `switch_at` on the extended ones -- the
+        pad switched over by Steam while the game runs."""
+        self.model, self.mode, self.n, self.switch_at = model, mode, 0, switch_at
+
+    def report(self, name):
+        self.n += 1
+        s = phr.PadState(buttons=() if name in (None, "DOWN") else (name.lower(),),
+                         hat=4 if name == "DOWN" else None)
+        mode = self.mode
+        if mode == "bt-steam":
+            mode = "bt-ext" if self.switch_at is not None and self.n >= self.switch_at else "bt-simple"
+        return phr.padded(self.model, mode, phr.report(self.model, mode, s, counter=self.n)).hex() + "\n"
+
+    def write(self, path, name, kind, new=False):
+        """Append the reports (the file is the pad's report queue, PS3_PAD_HID_FAKE); new: start the file.
+        kind: press, release, or tap (press and release, two reports in one write)."""
+        text = (self.report(name) if kind == "press" else self.report(None) if kind == "release"
+                else self.report(name) + self.report(None))
+        with open(path, "w" if new else "a") as f:
+            f.write(text)
+
+
 FPS_RE = re.compile(r"\[fps\] ([0-9.]+) \(frames (\d+)\.\.(\d+)")
 
 
@@ -89,27 +132,42 @@ def schedule(n, seed, t0_ns):
     return out
 
 
-def run_taps(plans):
+def run_taps(plans, hid=None):
     """plans: [(pad_path, taps)] -> {pad_path: [(button, t0, t1, t2, t3)]}: press
     write begun / done, release write begun / done (perf_counter_ns). One thread
-    plays every instance's taps in time order, so each tap is timed exactly."""
+    plays every instance's taps in time order, so each tap is timed exactly.
+    hid: a HidWriter -- reports instead of button names; every second tap is
+    pressed and released in one write (t2 = t3 = t1)."""
     ev = []
     for path, taps in plans:
-        for (t, length, b) in taps:
-            ev.append((t, 0, path, b))
-            ev.append((t + length, 1, path, b))
+        for i, (t, length, b) in enumerate(taps):
+            instant = hid is not None and i % 2 == 1
+            ev.append((t, 0, path, b, instant))
+            if not instant:
+                ev.append((t + length, 1, path, b, False))
     ev.sort()
     done = {path: [] for path, _ in plans}
     press = {}
-    for t, kind, path, b in ev:
+    for t, kind, path, b, instant in ev:
         wait_until(t)
         if kind == 0:
             a = now_ns()
-            write_file(path, f"{b} T={a}")
+            if hid and instant:
+                hid.write(path, b, "tap")
+                e = now_ns()
+                done[path].append((b, a, e, e, e))
+                continue
+            if hid:
+                hid.write(path, b, "press")
+            else:
+                write_file(path, f"{b} T={a}")
             press[path] = (a, now_ns())
         else:
             a = now_ns()
-            write_file(path, "")
+            if hid:
+                hid.write(path, b, "release")
+            else:
+                write_file(path, "")
             done[path].append((b,) + press[path] + (a, now_ns()))
     return done
 
@@ -237,7 +295,19 @@ def launch_and_tap(a, out, base, roles, vfs):
         env = dict(base)
         pad = os.path.join(d, "pad.txt")
         write_file(pad, "")
-        env["PS3_PAD_FILE"] = pad
+        if a.hid:
+            # port 1 = the fake pad's reports; no other device is read
+            model, mode = a.hid
+            pad = os.path.join(d, "hid.txt")
+            HidWriter(model, mode).write(pad, None, "release", new=True)
+            ini = os.path.join(d, "controls.ini")
+            write_file(ini, "[general]\nxinput = 0\ndinput = 0\nhid = 1\nkeyboard = 0\n"
+                            f"[port1]\ndevice = dinput:054C:{HID_PIDS[model]}\n")
+            env["PS3_CONTROLS"] = ini
+            env["PS3_PAD_HID_FAKE"] = f"{model},{'usb' if mode == 'usb' else 'bt'},{pad}"
+            env.pop("PS3_PAD_FILE", None)
+        else:
+            env["PS3_PAD_FILE"] = pad
         env["PS3_PAD_READ_LOG"] = os.path.join(d, "reads.log")
         env["T5_DF_STATUS_FILE"] = os.path.join(d, "status.json")
         for f in ("status.json", "reads.log", "frames.log"):
@@ -275,7 +345,7 @@ def launch_and_tap(a, out, base, roles, vfs):
         time.sleep(a.after)
         t0 = now_ns() + 50_000_000
         plans = [(x["pad"], schedule(a.taps, a.seed * 100 + k, t0)) for k, x in enumerate(procs)]
-        done = run_taps(plans)
+        done = run_taps(plans, HidWriter(*a.hid, switch_at=a.taps + 1) if a.hid else None)
         with open(os.path.join(out, "taps.json"), "w") as f:
             json.dump({x["pad"]: done[x["pad"]] for x in procs}, f)
         time.sleep(3.0 + a.hold)      # the frame log is flushed every 60 frames
@@ -310,7 +380,18 @@ def main():
     ap.add_argument("--timeout", type=float, default=150, help="seconds to wait for the fight")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every instance")
     ap.add_argument("--analyze", action="store_true", help="only analyze an earlier run in --out")
+    ap.add_argument("--hid", metavar="MODEL,MODE",
+                    help="taps as reports of a PlayStation pad through the runtime's HID reader (patch 0042):"
+                         " MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext|bt-steam (simple reports, then"
+                         " half way the extended ones, as when Steam starts while the game runs)")
     a = ap.parse_args()
+    if a.hid:
+        model, _, mode = a.hid.partition(",")
+        if model not in HID_PIDS or mode not in ("usb", "bt-simple", "bt-ext", "bt-steam"):
+            ap.error("--hid MODEL,MODE: MODEL ds4|dualsense|edge, MODE usb|bt-simple|bt-ext|bt-steam")
+        if a.pair:
+            ap.error("--hid is for one instance")
+        a.hid = (model, mode)
 
     vfs = os.path.abspath(a.vfs).replace("\\", "/")
     out = os.path.abspath(a.out)
@@ -327,7 +408,8 @@ def main():
     if a.analyze:
         with open(os.path.join(out, "taps.json")) as f:
             done = json.load(f)
-        procs = [{"dir": os.path.join(out, r), "pad": os.path.join(out, r, "pad.txt")} for r in roles]
+        procs = [{"dir": os.path.join(out, r), "pad": os.path.join(out, r, "hid.txt" if a.hid else "pad.txt")}
+                 for r in roles]
         done = {x["pad"]: next(v for k, v in done.items() if os.path.normcase(k) == os.path.normcase(x["pad"]))
                 for x in procs}
     else:

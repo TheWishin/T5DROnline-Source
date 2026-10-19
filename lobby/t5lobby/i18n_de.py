@@ -396,6 +396,15 @@ MESSAGES = {
         "{secret} Passwörter, Tokens oder Schlüssel, {email} E-Mail-Adressen.",
     "Open folder": "Ordner öffnen",
     # ---- launcher/t5dr_launcher.pyw
+    "Discord": "Discord",
+    "Show what I play in my Discord status (Rich Presence)":
+        "In meinem Discord-Status zeigen, was ich spiele (Rich Presence)",
+    "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through the "
+    "Discord app on this PC. Without Discord running nothing happens.":
+        "„In der Lobby“, „Sucht ein Ranked-Match“ oder dein Match (Kämpfer, Stand im Ranked-Set) mit Zeit, über die "
+        "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
+    "This copy has no Discord application id yet, so this does nothing for now.":
+        "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
     "Square": "Quadrat",
@@ -789,6 +798,33 @@ MESSAGES = {
     "that player is not on your block list": "Dieser Spieler steht nicht auf deiner Blockliste",
     "you are not in a set": "Du bist in keinem Set",
     "no such finished match": "Dieses beendete Match gibt es nicht",
+    "guests cannot have friends; create an account (free)":
+        "Gäste können keine Freunde haben; erstelle ein (kostenloses) Konto",
+    "there is no account with that name": "Es gibt kein Konto mit diesem Namen",
+    "you cannot add yourself": "Du kannst dich nicht selbst hinzufügen",
+    "you blocked that player; unblock them first":
+        "Du hast diesen Spieler blockiert; hebe die Blockierung zuerst auf",
+    "your friends list is full ({max})": "Deine Freundesliste ist voll ({max})",
+    "you can send {count} friend requests a day; try again tomorrow":
+        "Du kannst {count} Freundschaftsanfragen am Tag senden; versuche es morgen wieder",
+    "{count} of your friend requests are waiting for an answer; cancel some first":
+        "{count} deiner Freundschaftsanfragen warten auf eine Antwort; ziehe zuerst ein paar zurück",
+    "{name} declined your last request; you can ask again in {days} day(s)":
+        "{name} hat deine letzte Anfrage abgelehnt; du kannst in {days} Tag(en) wieder anfragen",
+    "that player has too many friend requests waiting": "Bei diesem Spieler warten zu viele Freundschaftsanfragen",
+    "that player's friends list is full": "Die Freundesliste dieses Spielers ist voll",
+    "no friend request from that player": "Keine Freundschaftsanfrage von diesem Spieler",
+    "no friend request to that player": "Keine Freundschaftsanfrage an diesen Spieler",
+    "that player is not on your friends list": "Dieser Spieler ist nicht in deiner Freundesliste",
+    "that friend is not online": "Dieser Freund ist nicht online",
+    "that friend's launcher is too old for invites (it needs 1.1.2 or newer)":
+        "Der Launcher dieses Freundes ist zu alt für Einladungen (er braucht 1.1.2 oder neuer)",
+    "create a room first, then invite": "Erstelle zuerst einen Raum, dann lade ein",
+    "that friend is busy right now": "Dieser Freund ist gerade beschäftigt",
+    "one invite at a time": "Immer nur eine Einladung",
+    "that player has invites pending": "Dieser Spieler hat noch offene Einladungen",
+    "that invite is over": "Diese Einladung ist vorbei",
+    "the invite is no longer possible": "Die Einladung ist nicht mehr möglich",
     "{name} is back in the lobby": "{name} ist zurück in der Lobby",
     "{name} lost the lobby connection; waiting {seconds} s for them to return":
         "{name} hat die Verbindung zur Lobby verloren; warte {seconds} s auf die Rückkehr",
@@ -1048,6 +1084,15 @@ MESSAGES = {
     "queue": "in der Suche",
     "match": "im Match",
     "playing": "im Spiel",
+    # ---- lobby/t5lobby/discord_rpc.py
+    "In lobby": "In der Lobby",
+    "Searching ranked": "Sucht ein Ranked-Match",
+    "Searching quick match": "Sucht ein Quick Match",
+    "Ranked, Set {mine}-{theirs}": "Ranked-Set {mine}-{theirs}",
+    "Ranked": "Ranked",
+    "Casual": "Casual",
+    "In match: {mine} vs {theirs} ({what})": "Im Match: {mine} vs {theirs} ({what})",
+    "In match ({what})": "Im Match ({what})",
     # ---- lobby/t5lobby/lag.py
     "Ping {ping} ms should mean about {frames} frames behind.":
         "Bei {ping} ms Ping sind etwa {frames} Frames Rückstand normal.",
@@ -1621,4 +1666,67 @@ MESSAGES = {
         "speichere sie an einem sicheren Ort -- sie werden nicht noch einmal angezeigt.",
     "Save to a file...": "In Datei speichern...",
     "I have saved them": "Ich habe sie gespeichert",
+    # ---- friends (tk_tab.py, tk_views.py)
+    "Request": "Anfrage",
+    "Friends": "Freunde",
+    "Invite to a match": "Zu einem Match einladen",
+    "Invite to my room": "In meinen Raum einladen",
+    "Remove": "Entfernen",
+    "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
+        "Lade einen Freund ein, der online ist: Ein Klick auf seiner Seite startet ein Casual-Match oder holt ihn "
+        "in deinen Raum.",
+    "Add a friend": "Freund hinzufügen",
+    "Send request": "Anfrage senden",
+    "Their account name. They become your friend when they accept.":
+        "Sein Kontoname. Ihr seid Freunde, sobald er annimmt.",
+    "Requests": "Anfragen",
+    "Take back": "Zurückziehen",
+    "Invite from a friend": "Einladung von einem Freund",
+    "invites you to the room “{room}”. Accept to join it; the match starts at once.":
+        "lädt dich in den Raum „{room}“ ein. Nimm an, um beizutreten; das Match startet sofort.",
+    "invites you to a casual match. Accept to start it.":
+        "lädt dich zu einem Casual-Match ein. Nimm an, um es zu starten.",
+    "Check the spelling: friends are added by their account name.":
+        "Prüfe die Schreibweise: Freunde werden mit ihrem Kontonamen hinzugefügt.",
+    "in a match": "im Match",
+    "offline": "offline",
+    "(older launcher: no invites)": "(älterer Launcher: keine Einladungen)",
+    "Friends ({count})": "Freunde ({count})",
+    "offline, last seen {when}": "offline, zuletzt gesehen {when}",
+    "Friends need an account. Log in with one to add friends and invite them.":
+        "Freunde brauchen ein Konto. Melde dich mit einem an, um Freunde hinzuzufügen und einzuladen.",
+    "This lobby server has no friends list (it needs version 1.1.2 or newer).":
+        "Dieser Lobby-Server hat keine Freundesliste (dafür braucht er Version 1.1.2 oder neuer).",
+    "wants to be your friend": "möchte dein Freund sein",
+    "asked: waiting for an answer": "angefragt: wartet auf eine Antwort",
+    "{online} online · {count} of {max}": "{online} online · {count} von {max}",
+    "Your friends see when you are online. Invite one who is online to play.":
+        "Deine Freunde sehen, wann du online bist. Lade einen ein, der online ist, um zu spielen.",
+    "No friends yet. Add one by account name: they become your friend when they accept.":
+        "Noch keine Freunde. Füge einen mit seinem Kontonamen hinzu: Ihr seid Freunde, sobald er annimmt.",
+    "Cancel the invite": "Einladung zurückziehen",
+    "You and {name} are friends now.": "Du und {name} seid jetzt Freunde.",
+    "Friend request sent to {name}. They become your friend when they accept.":
+        "Freundschaftsanfrage an {name} gesendet. Ihr seid Freunde, sobald sie angenommen ist.",
+    "Request from {name} declined.": "Anfrage von {name} abgelehnt.",
+    "Request to {name} taken back.": "Anfrage an {name} zurückgezogen.",
+    "Remove friend": "Freund entfernen",
+    "Remove {name} from your friends?\n\nYou can ask again later; they have to accept again.":
+        "{name} aus deinen Freunden entfernen?\n\nDu kannst später wieder anfragen; die Anfrage muss dann wieder "
+        "angenommen werden.",
+    "{name} is no longer your friend.": "{name} ist nicht mehr dein Freund.",
+    "Select a friend in the list first.": "Wähle zuerst einen Freund in der Liste.",
+    "Invite sent to {name}; waiting for an answer ({seconds} s)...":
+        "Einladung an {name} gesendet; warte auf eine Antwort ({seconds} s)...",
+    "{name} ({rank}) invites you to the room “{room}”": "{name} ({rank}) lädt dich in den Raum „{room}“ ein",
+    "{name} ({rank}) invites you to a casual match": "{name} ({rank}) lädt dich zu einem Casual-Match ein",
+    "The invite from {name} ran out.": "Die Einladung von {name} ist abgelaufen.",
+    "The invite from {name} ended.": "Die Einladung von {name} ist beendet.",
+    "{name} declined your invite.": "{name} hat deine Einladung abgelehnt.",
+    "{name} did not answer your invite.": "{name} hat auf deine Einladung nicht geantwortet.",
+    "The invite to {name} ended.": "Die Einladung an {name} ist beendet.",
+    "{name} wants to be your friend: see the Friends tab.":
+        "{name} möchte dein Freund sein: siehe den Reiter Freunde.",
+    "{name} accepted your friend request.": "{name} hat deine Freundschaftsanfrage angenommen.",
+    "{name} declined your friend request.": "{name} hat deine Freundschaftsanfrage abgelehnt.",
 }

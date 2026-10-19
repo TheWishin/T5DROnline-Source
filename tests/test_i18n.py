@@ -54,7 +54,7 @@ DEV_ONLY = {
     "unknown message X", "bad field: X", "mode is quick or ranked", "winner is 0 (P1), 1 (P2) or null (draw)",
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
-    "unknown character X",
+    "unknown character X", "kind is casual or room",
     "mode is guest, account, register, session or resume",
 }
 

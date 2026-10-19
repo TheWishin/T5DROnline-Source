@@ -34,6 +34,11 @@ def backup_db(db_path, dest_dir, keep=14, prefix=PREFIX):
         n += 1
         final = os.path.join(dest_dir, f"{prefix}{stamp}-{n}.db")
     tmp = final + ".part"
+    for old in glob.glob(os.path.join(dest_dir, prefix + "*.part")):
+        try:
+            os.remove(old)                                # left by a backup that was interrupted (crash, kill)
+        except OSError:
+            pass
     src = sqlite3.connect(db_path, timeout=30)
     try:
         dst = sqlite3.connect(tmp)
@@ -43,8 +48,16 @@ def backup_db(db_path, dest_dir, keep=14, prefix=PREFIX):
             _check(dst)
         finally:
             dst.close()
+    except BaseException:
+        try:
+            os.remove(tmp)                                # never leave half a backup behind
+        except OSError:
+            pass
+        raise
     finally:
         src.close()
+    with open(tmp, "rb+") as f:
+        os.fsync(f.fileno())                              # on disk before it carries a backup's name
     os.replace(tmp, final)
     if os.name != "nt":
         os.chmod(final, 0o600)            # password hashes inside

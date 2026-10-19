@@ -52,7 +52,31 @@ E_INSECURE = "insecure"     # client side: no password over a plain connection t
 # ---------------------------------------------------------------------------- control channel
 
 def encode(msg):
-    return (json.dumps(msg, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    # "replace": a lone surrogate (valid JSON as "\ud800", not encodable as UTF-8) must never make a message
+    # unsendable -- one in a client's build "release" used to stop the lobby list for everybody.
+    return (json.dumps(msg, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8", "replace")
+
+
+def clean_text(value, limit):
+    """A client-supplied string the server keeps or passes on: printable characters only (no
+    control, format -- e.g. right-to-left override -- or surrogate code points), at most `limit`
+    characters, and at most two combining marks in a row (no "Zalgo" text towering over the chat)."""
+    import unicodedata
+    out = []
+    marks = 0
+    for ch in str(value)[:limit * 4]:
+        if not ch.isprintable():
+            continue
+        if unicodedata.combining(ch):
+            marks += 1
+            if marks > 2:
+                continue
+        else:
+            marks = 0
+        out.append(ch)
+        if len(out) >= limit:
+            break
+    return "".join(out)
 
 
 def decode(line):
@@ -128,9 +152,51 @@ def name_key(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
+def name_skeleton(name):
+    """What a name looks like: names with the same skeleton pass for each other on screen, so a new
+    name may not share one with an account or a player online ("Wishin", "Wish-in", "W1shin",
+    "WIshin" and "Wishln" are one name here). Lower case, letters and digits only, with the
+    look-alikes folded: capital I, 1 and i -> l, 0 -> o, rn -> m, vv -> w."""
+    s = str(name).replace("I", "l").lower().translate(_LOOKALIKE)
+    return re.sub(r"[^a-z0-9]", "", s).replace("rn", "m").replace("vv", "w")
+
+
+_LOOKALIKE = str.maketrans({"0": "o", "1": "l", "i": "l"})
+_LEET = str.maketrans({"3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g"})
+
+
+def _staff_key(name):
+    return name_skeleton(name).translate(_LEET)
+
+
+_RESERVED_KEYS = frozenset(_staff_key(n) for n in RESERVED_NAMES)
+_RESERVED_PREFIX_KEYS = tuple(_staff_key(p) for p in RESERVED_PREFIXES)
+
+
 def reserved_name(name):
+    """Reserved without regard to case, punctuation, look-alike letters or digits standing for
+    letters ("Adm1n", "M0derat0r", "5ystem" and "0fficial_x" are refused like "admin")."""
     k = name_key(name)
-    return k in RESERVED_NAMES or any(k.startswith(p) for p in RESERVED_PREFIXES) or not k
+    if not k or k in RESERVED_NAMES or any(k.startswith(p) for p in RESERVED_PREFIXES):
+        return True
+    sk = _staff_key(name)
+    return sk in _RESERVED_KEYS or any(sk.startswith(p) for p in _RESERVED_PREFIX_KEYS)
+
+
+def address_key(ip, v6_prefix=64):
+    """What the per-address limits count by: the address itself for IPv4 (and IPv4-mapped IPv6),
+    the /64 network for IPv6 -- one subscriber usually gets a whole /64, so a limit per single IPv6
+    address would not limit anything."""
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(str(ip).split("%", 1)[0])
+    except ValueError:
+        return str(ip)
+    if a.version == 6:
+        if a.ipv4_mapped is not None:
+            return str(a.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{a}/{v6_prefix}", strict=False))
+    return str(a)
 
 
 def parse_hostport(spec, default_port=DEFAULT_PORT):
@@ -166,6 +232,8 @@ SERVER_TYPES = frozenset((U_SPING, U_REGISTER, U_PROBE, U_RELAY_BIND))
 U_PUNCH = 16       # hole punching; flag F_HEARD = "I have received your punches"
 U_PPING = 17       # peer RTT measurement
 U_PPONG = 18
+
+PEER_TYPES = frozenset((U_PUNCH, U_PPING, U_PPONG))   # what the relay carries besides the game's T5NP packets
 
 F_HEARD = 1
 

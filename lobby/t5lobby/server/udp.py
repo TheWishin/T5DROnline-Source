@@ -78,7 +78,7 @@ class UdpService:
         self.ctl_buckets = KeyedBuckets(rate=100, burst=200)   # control packets per source IP
         # ... and from everybody together: spoofed sources cannot turn the pings into a flood
         self.ctl_global = TokenBucket(cfg.udp_ctl_pps, cfg.udp_ctl_pps * 2)
-        self.stats = {"rx": 0, "relayed": 0, "relayed_bytes": 0, "dropped": 0}
+        self.stats = {"rx": 0, "relayed": 0, "relayed_bytes": 0, "dropped": 0, "relay_refused": 0}
         self.port = self.port2 = 0
 
     async def start(self, loop):
@@ -147,6 +147,15 @@ class UdpService:
         self.stats["relayed_bytes"] += len(data)
         transport.sendto(data, dst)
 
+    def _relayable(self, data, kind):
+        """The relay carries the two games' traffic and nothing else: netplay packets (T5NP), the
+        lobby's peer packets (punch, peer ping) of the match, nothing larger than netplay's biggest
+        packet. Anything else from a bound endpoint -- someone using the session as a free tunnel or
+        proxy -- is dropped."""
+        if len(data) > self.cfg.relay_max_bytes:
+            return False
+        return data[:4] == proto.GAME_MAGIC or kind in proto.PEER_TYPES
+
     def _try_relatch(self, transport, data, addr):
         """Game traffic from an unknown endpoint: a NAT that re-mapped the game's socket between the
         launcher's relay bind and the game's first packet. Accept it for the one bound side with that
@@ -171,15 +180,22 @@ class UdpService:
         if which == 0:
             hit = self.relay_eps.get(addr)
             if hit is not None and kind not in proto.SERVER_TYPES:
-                self._forward(transport, hit[0], hit[1], data)
+                if self._relayable(data, kind):
+                    self._forward(transport, hit[0], hit[1], data)
+                else:
+                    hit[0].dropped[hit[1]] += 1
+                    self.stats["dropped"] += 1
+                    self.stats["relay_refused"] += 1
                 return
+        key = proto.address_key(addr[0], self.cfg.ipv6_prefix)
         if kind is None:
-            relatch_ok = which == 0 and self.relays and self.ctl_buckets.take(addr[0])
+            relatch_ok = (which == 0 and self.relays and self._relayable(data, kind)
+                          and self.ctl_buckets.take(key) and self.ctl_global.take())
             if relatch_ok and self._try_relatch(transport, data, addr):
                 return
             self.stats["dropped"] += 1
             return
-        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(addr[0]) or not self.ctl_global.take():
+        if kind not in proto.SERVER_TYPES or not self.ctl_buckets.take(key) or not self.ctl_global.take():
             self.stats["dropped"] += 1
             return
         if kind == proto.U_SPING and len(data) == proto.PING.size:

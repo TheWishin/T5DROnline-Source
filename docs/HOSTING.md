@@ -401,6 +401,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 | `purge-inactive --days N [--include-played] --yes` | deletes accounts not seen for N days (by default only accounts that never finished a game: name squatters) |
 | `backup [DIR] [--keep N]`, `restore FILE --yes` | see Backups |
 | `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |
+| `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
 
 ### Status, health, metrics
@@ -459,6 +460,34 @@ Install on the new machine and stop both. Copy `t5lobby.db` (or restore a backup
 self-signed setup, the `tls/` folder, then start. Then update the DNS record, or `servers.json`
 if you used an IP address.
 
+### Updates and restarts
+
+A restart drops every lobby connection. The launchers log in again by themselves only with a
+remembered login (guests log in again by hand), and a match that was running cannot be reported
+any more: the server marks it **void (`server_restart`)** when it starts again -- no rating change,
+no blame for anybody. To restart without voiding matches:
+
+    sudo t5lobby-admin drain --wait 600 && sudo systemctl restart t5lobby
+
+`drain` stops new matches at once (players get a notice), `--wait` returns when the last running
+match has its result (a first-to-3 match takes 2-7 minutes). The restart ends the drain.
+
+What a crash (or `kill -9`, or a power cut) can and cannot do to the data:
+
+- **Database**: everything the server writes while handling one message or timer -- for a ranked
+  result both ratings, both records and the match row -- is one SQLite transaction, committed
+  before any reply about it leaves the server (`synchronous=FULL`, WAL). A crash loses at most the
+  last such step, never half of it. (Before, each statement committed alone; in a test that kills
+  a writer at random moments, 6 of 12 kills left one player's rating changed without the match.)
+- **Matches running at the crash**: void (`server_restart`) on the next start, as above.
+- **TLS key and certificate, `host.json`**: written to a temporary file, flushed to disk, then
+  renamed over the old one -- old or new, never a truncated file. Half a pair (a crash between
+  the two files on the very first start) is noticed and made again; a working pair is never
+  replaced.
+- **Backups**: written as `*.part`, flushed, then renamed; a leftover `.part` from an interrupted
+  backup is removed by the next one. The WAL file is folded back into the database every hour,
+  and expired remembered logins are deleted then.
+
 ## Abuse protection: defaults for a public server
 
 All limits are per server process, in memory, and need no configuration. The table lists the
@@ -468,22 +497,31 @@ a public server.
 | Limit | Built-in | Public profile | Why |
 |---|---|---|---|
 | Concurrent connections | 500 (`T5L_MAX_CLIENTS`) | 500 | ~35 MB RAM at this size. The admin tool shows how close you are |
-| Connections per address | 8 (`T5L_MAX_PER_IP`) | 8 | Mobile carriers put many players behind one address (CGNAT). 8 is a compromise. Raise it for LAN events |
+| Connections per address | 8 (`T5L_MAX_PER_IP`) | 8 | Mobile carriers put many players behind one address (CGNAT). 8 is a compromise. Raise it for LAN events. An IPv6 address counts as its /64 (`T5L_IPV6_PREFIX`) here and in every other per-address limit: one subscriber usually has a whole /64 |
 | New connections per address | 0.5/s, burst 10 (`T5L_CONN_RATE`, `T5L_CONN_BURST`) | same | Also limited by nftables (20/s) when you use `--firewall nft` |
+| Connections not logged in yet | 100 in all (`T5L_MAX_PRELOGIN`) | same | A flood of connections that never log in is refused ("server busy") before it crowds out players |
+| TLS handshake | starts only after the address checks, 10 s to finish (`T5L_TLS_HANDSHAKE_TIMEOUT`) | same | Before, every connection got an uncounted 60 s handshake: a slowloris could hold any number of sockets. (Python 3.11+; on 3.10 only the 10 s timeout applies) |
 | Messages per connection | 20/s, burst 40. After 10 strikes, a 60 s address ban | same | |
-| Unread output per connection | 1 MB (`T5L_MAX_PENDING_KB`) | same | A client that stops reading is dropped. Before this limit, one could pin ~12 MB of server memory |
-| Login | 15 s to finish. 5 wrong passwords per address and per name, then 1/min. 3 new accounts per address, then 1 per 10 min | same | |
-| Names | 2–16 safe characters. Reserved names refused (`admin…`, `moderator…`, `official…`, `t5lobby…`, `system`, `server`, `p1`, ... ignoring case and punctuation; see RANKED.md), plus any name containing a word from `T5L_NAME_BLOCKLIST` | add a word file | Impersonation, offensive names |
-| Chat | 1 line/s, burst 5, 200 characters | same | |
+| Expensive requests per connection | leaderboard, profile, history, whole lobby list: 1/s, burst 10 (`T5L_HEAVY_RATE`, `_BURST`). Queue, rooms, character, ping and other changes everybody's lobby list shows: 2/s, burst 20 (`T5L_STATE_RATE`, `_BURST`) | same | Each costs the server (database scans, an update to every player) far more than the client |
+| Unread output per connection | 1 MB (`T5L_MAX_PENDING_KB`) | same | A client that stops reading is dropped at once (the connection is aborted; a graceful close waited for the peer to read, for ever) |
+| Login | 15 s to finish. 5 wrong passwords per address and per name, then 1/min; attempts count before the check, so parallel guesses on many connections cannot get past it. An address the account logged in from before is not held back by the name's limit (someone else guessing cannot lock the owner out). 3 new accounts per address, then 1 per 10 min | same | |
+| Password hashing | 2 at once, 64 waiting (`T5L_PW_CONCURRENCY`, `T5L_PW_QUEUE`); more: "the server is busy, try again" | same | scrypt costs ~16 MB and tens of ms each: a login flood from many addresses cannot pile up memory and CPU |
+| Names | 2–16 safe characters. Reserved names refused (`admin…`, `moderator…`, `official…`, `t5lobby…`, `system`, `server`, `p1`, ... ignoring case, punctuation, look-alike letters and digits for letters: `Adm1n`, `M0derat0r`, `5ystem`; see RANKED.md), plus any name containing a word from `T5L_NAME_BLOCKLIST`. A new name (guest or account) must not look like an account or a player online: `W1shin`, `WIshin`, `Wish.in` next to `Wishin` are refused | add a word file | Impersonation, offensive names |
+| Text from clients | printable characters only (no control or direction-changing characters), at most 2 combining marks in a row; a character that cannot be sent becomes `?` | same | One unsendable character in a client's build name used to stop the lobby list for everybody |
+| Chat | 1 line/s per player (burst 5), 2/s per address, **20/s for the whole lobby** (`T5L_CHAT_TOTAL_RATE`), 200 characters | same | Every line goes to every player |
 | UDP control packets | 100/s per address **and 5000/s in total** (`T5L_UDP_CTL_PPS`) | same | The total stops spoofed-source ping floods from being reflected at many victims. Answers are never larger than requests |
 | Relay per player | 512 kbit/s, 400 packets/s | **256 kbit/s, 240 packets/s** | The game needs ~85 kbit/s at ~60 packets/s. 3–4× headroom, and the relay can't be used as a traffic cannon |
-| Relay sessions | 100 (`T5L_MAX_RELAYS`) | 100 | ~17 Mbit/s each way at the game's rate. A 2-vCPU VPS handles that |
+| What the relay carries | the game's own packets (`T5NP`) and the lobby's peer packets, at most 2048 bytes (`T5L_RELAY_MAX_BYTES`); everything else is dropped | same | Two accounts can always force the relay: it must not be a free tunnel or proxy |
+| Relay sessions | 100 (`T5L_MAX_RELAYS`), 3 per address (`T5L_MAX_RELAYS_PER_IP`), closed when their match has run 20 min (`T5L_RELAY_MAX_SECONDS`; no match takes that long) | 100 | ~17 Mbit/s each way at the game's rate. A 2-vCPU VPS handles that. Without the per-address and time limits a few addresses could hold every slot for hours |
+| Ranked between accounts on one address | never paired by the ranked queue; a ranked room or rematch between them is unranked (`T5L_RANKED_SAME_IP=1` allows it) | same | One player's alts feeding each other wins |
 | Accounts on a server without TLS | the server warns in its log; the launcher refuses to send a password to it unless it is on the player's own network | install.sh turns accounts off with `--no-tls` | Passwords would cross the network in clear |
 | Bans | `t5lobby-admin ban / ban-ip`. Take effect within 5 s | | |
 
-Not handled (and how to cope): results are self-reported, so two colluding accounts can trade
-wins. Every match's reports, path and RTT are in the database, and you can use `matches` and
-`user`, then `reset-rating` and `ban`. There is no captcha or e-mail verification on account
+Not handled (and how to cope): results are self-reported, so two colluding accounts on different
+addresses can still trade wins within `T5L_PAIR_CAP` a day (RANKED.md "Results and match integrity"
+lists what the server does decide from evidence: desync claims, early and withheld reports,
+disconnect reports, repeat disputers). Every match's reports, path and RTT are in the database,
+and you can use `matches` and `user`, then `reset-rating` and `ban`. There is no captcha or e-mail verification on account
 creation. To clean up, use `purge-inactive`. A determined attacker with many addresses can
 still fill the lobby. Lower `T5L_MAX_CLIENTS` keeps the server itself healthy, and the
 provider's DDoS filtering handles volumetric floods.
@@ -563,6 +601,36 @@ A 2 vCPU / 2–4 GB VPS with 20 TB of traffic therefore holds several hundred pl
 default 100 relay sessions with room to spare. Real-world averages are far lower than "100
 online all month". Over the internet, the relay's cost to players is the detour through the
 server's location. Its processing adds 0.1–0.4 ms (ONLINE.md).
+
+**Soak and abuse (2026-10-19, `lobby/tools/soak_test.py`, `lobby/tools/login_flood.py`).** The
+server pinned to two CPUs (a 2 vCPU VPS), file database, backups every 6 minutes, the same
+desktop as above (multiply CPU by 2–3 for a VPS). 200 simulated players for 35 minutes, ~176
+online at a time: accounts and guests, quick and ranked queue, rooms, ready checks, NAT steps,
+matches of 35–90 s with both results reported, rematches, a quarter of the matches through the
+relay at the game's packet rate, chat, leaderboard and profiles -- and among them players who
+lose the lobby mid-match and come back (8%), stop reading their socket for minutes (3%), send
+malformed lines (3%), lines over the size limit (2%), floods (1%) or log in and out again and again
+(3%). "Before" is main at 3dba465, "after" this hardening:
+
+| | before | after |
+|---|---|---|
+| CPU, mean / p95 / max (of one core) | 10.9% / 13.8% / 15.8% | 11.6% / 15.4% / 18.4% |
+| Memory (working set) after warm-up -> end, trend | 38.5 -> 45.2 MB, +8.8 MB/h | 39.1 -> 44.8 MB, +8.5 MB/h (still being traced) |
+| Threads (max), handles | 10, 355–363 | 8, 346–356 |
+| Response time (ping), p50 / p99 / p99.9 / max | 1.2 / 19.7 / 60 / 945 ms | 1.2 / 18.2 / 37 / 66 ms |
+| Matches started, relay delivery | 2198, 99.94% | 2374, 99.96% |
+
+Under a **login flood** (150 addresses sending wrong passwords for 20 real accounts as fast as
+the answers come, 60 s, 20 honest players pinging):
+
+| | before | after |
+|---|---|---|
+| Peak memory | **480 MB** working set (564 MB private: the systemd unit's `MemoryMax=512M` would kill the server) | 66 MB |
+| Peak threads | 37 | 10 |
+| Password checks run (limit: 5 per name) | 200 (parallel guesses got past the limit) | 100 |
+| Honest players' ping, p50 / p99 | 0.8 / 5473 ms | 0.9 / 96 ms |
+
+Every scrypt hash costs ~16 MB while it runs; before, nothing bounded how many ran at once.
 
 ## What the owner decides
 

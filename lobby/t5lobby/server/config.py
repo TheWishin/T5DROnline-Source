@@ -98,6 +98,26 @@ class Config:
     backup_hours: float = 24        # T5L_BACKUP_HOURS: one backup this often ...
     backup_keep: int = 14           # T5L_BACKUP_KEEP: ... and keep the newest this many
     admin_poll: float = 5.0         # T5L_ADMIN_POLL: seconds between checks for bans made with the admin tool
+    # abuse protection added for the public launch (docs/HOSTING.md, "Abuse protection")
+    max_prelogin: int = 100         # T5L_MAX_PRELOGIN: connections that have not logged in yet, all addresses together
+    tls_handshake_timeout: float = 10.0  # T5L_TLS_HANDSHAKE_TIMEOUT: seconds a new connection gets for its TLS handshake
+    ipv6_prefix: int = 64           # T5L_IPV6_PREFIX: IPv6 addresses count per network of this size for the per-address limits
+    heavy_rate: float = 1.0         # T5L_HEAVY_RATE: leaderboard / profile / history / full lobby list requests per second ...
+    heavy_burst: int = 10           # T5L_HEAVY_BURST: ... per connection, after a burst of this many
+    state_rate: float = 2.0         # T5L_STATE_RATE: requests that change what the lobby list shows (queue, rooms,
+    state_burst: int = 20           # T5L_STATE_BURST:  character, ping, ...) per second per connection, after a burst
+    chat_total_rate: float = 20.0   # T5L_CHAT_TOTAL_RATE: chat lines per second for the whole lobby (every line goes to everybody)
+    pw_concurrency: int = 2         # T5L_PW_CONCURRENCY: password hashes computed at the same time (keep it below the
+                                    # number of CPUs: the event loop must always find one free) ...
+    pw_queue: int = 64              # T5L_PW_QUEUE: ... and waiting; more -> "server busy, try again"
+    max_match_seconds: float = 420.0  # T5L_MAX_MATCH_SECONDS: the longest a real match takes; a lone result report does not
+                                    # count against an opponent who is still online before this much time since the start
+    dispute_limit: int = 3          # T5L_DISPUTE_LIMIT: disputed ranked results per account in 24 h; from then on that
+                                    # account loses a disputed ranked match against an opponent below the limit (0 = off)
+    ranked_same_ip: bool = False    # T5L_RANKED_SAME_IP: ranked matches between two players on one internet address count
+    relay_max_bytes: int = 2048     # T5L_RELAY_MAX_BYTES: largest packet the relay forwards (netplay's own maximum)
+    relay_max_seconds: float = 1200.0  # T5L_RELAY_MAX_SECONDS: a relay closes when its match has run this long (0 = never)
+    max_relays_per_ip: int = 3      # T5L_MAX_RELAYS_PER_IP: relay sessions at once per internet address (0 = no limit)
 
     @classmethod
     def from_env(cls, env=None, **overrides):

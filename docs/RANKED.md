@@ -223,23 +223,41 @@ How the server decides (`LobbyServer._reconcile` and friends):
 
 | Situation | Status | Rating | Blame |
 |---|---|---|---|
-| any report has `desync` > 0 | void (`desync`) at once | no | no |
+| both reports have `desync` > 0 (both games saw it), or one has and nothing contradicts it (the other report is manual, a crash, ...) | void (`desync`) | no | no |
+| one report has `desync` > 0, the other game's report counts 0 mismatching frames | void (`desync_claim`) -- both games compare the same hashes, so a real desync is in both reports | no | claimant (strike) |
+| ... and both sent the same final state hash | the claim changes nothing: decided as if there were none | | |
 | both report the same winner | **confirmed** (scores compared; differing scores are dropped) | yes | |
 | ... but less than 30 s after the match started (`T5L_MIN_MATCH_SECONDS`, server clock) | void (`too_short`) | no | |
 | both games report no winner and no round won (a fight left without a result) | void (`no_result`) | no | |
 | winners differ, both sent a state hash, hashes equal, exactly one report is from the game | **resolved**: the game's report wins (the other was changed by hand) | yes | |
-| winners differ, hashes differ | void (`desync`) | no | |
+| winners differ, hashes differ, neither game counted mismatching frames | void (`desync`) | no | |
+| winners differ, hashes differ, a game's own detector counted 0 | **disputed** (`hash_mismatch`): one report is not what its game said | no | |
 | winners differ, no evidence | **disputed** (logged, counted per player) | no | |
+| ... a ranked dispute, one account has `T5L_DISPUTE_LIMIT` (3) disputes in 24 h, the other fewer | **forfeit** (`dispute_repeat`): the repeat disputer loses | yes | repeat disputer |
 | a player quits (`leave_match`, closing the game, logging out mid-match) | **forfeit**: a loss | yes | quitter |
+| ... after already reporting a result (logs out or blocks the opponent while waiting) | not a quit: the report stands and the rules for one report decide | | |
 | ... within the minimum match length | void (`early_quit`) | no | quitter (strike) |
 | a game crashes, the other game finished the match | onesided: the other result stands | yes | |
 | a game crashes, the other did not finish | void (`crash`) | no | crasher (strike) |
-| both games lost each other (both `disconnect`), or `disconnect` + a result | void (`connection`) | no | no |
-| a player's **lobby connection** drops mid-match and does not come back within 60 s (`T5L_RECONNECT_GRACE`) | **forfeit** (`disconnect`), unless the opponent already reported that player as the winner | yes | dropped player |
+| `disconnect` + a finished result read from the game (its winner reached the rounds to win) | onesided (`disconnect`): the finished game's result stands -- the connection failed after the deciding round, or the report is a loser's way out | yes | |
+| both games lost each other (both `disconnect`), or `disconnect` + an unfinished result | void (`connection`) | no | no |
+| ... and only one player's lobby connection dropped during the match | void (`connection`) | no | that player (strike) |
+| a player's **lobby connection** drops mid-match and does not come back within 60 s (`T5L_RECONNECT_GRACE`) | **forfeit** (`disconnect`), unless the opponent already reported that player as the winner, or the dropped player had already reported a result | yes | dropped player |
 | only one report within 90 s (`T5L_RESULT_TIMEOUT`), and it names the *other* player as winner | onesided (a report against one's own interest) | yes | |
-| only one report claiming the reporter won, the opponent online but silent | void (`no_report`) | no | silent player (strike) |
+| only one report claiming the reporter won (or a desync, or a lost connection), the opponent online but silent | the server first waits until `T5L_MAX_MATCH_SECONDS` (420) after the start -- the opponent may still be fighting, and a report can come early -- then void (`no_report`) | no | silent player (strike) |
 | only one report, the opponent left the lobby | onesided (`T5L_ACCEPT_ONESIDED`) | yes | |
 | nothing at all within 3 h | void (`timeout`) | no | |
+
+**Early and forged reports.** A report that comes while the opponent's game still runs (a
+modified launcher claiming a win, a desync or a lost connection a minute into the match) used to
+decide the match 90 s later and give the honest opponent a strike for "not reporting" -- three
+of those, and the honest player's next voids became losses. Now nobody is blamed for silence
+before `T5L_MAX_MATCH_SECONDS` after the start; the honest report arrives in that time and the
+two reports are reconciled as usual (contradicting results: disputed, see the repeat rule).
+
+**Accounts on one address.** The ranked queue never pairs two players on the same internet address
+(one household, or one player's alts feeding each other wins), and a ranked room or rematch between
+them is played unranked with a notice (`same_address`). `T5L_RANKED_SAME_IP=1` allows it (LAN events).
 
 **Strikes**: a void with blame is a strike for that account. From the third
 strike within 24 hours (`T5L_STRIKE_LIMIT`), further crashes, early quits and
@@ -736,6 +754,9 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |
 | `T5L_WARN_FPS` | 55 | below this both players are told at match found (0 = off) |
+| `T5L_MAX_MATCH_SECONDS` | 420 | a lone result counts against an opponent who is online only after this long since the start |
+| `T5L_DISPUTE_LIMIT` | 3 | ranked disputes per account in 24 h; from then on that account loses a dispute against an opponent below the limit (0 = off) |
+| `T5L_RANKED_SAME_IP` | 0 | ranked between two players on one internet address counts |
 
 The database upgrades itself (new columns and tables are added on start).
 

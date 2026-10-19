@@ -31,6 +31,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -109,7 +110,20 @@ void set_col(np::PadInput& in, int c, uint8_t v)
     }
 }
 
-std::vector<uint8_t> to_binary(const Data& d)
+/* the inputs of frame f for player p: Data's vectors (a loaded file) or the
+ * recorder's chunks (Store below) */
+struct InputSource {
+    virtual np::PadInput get(int p, uint32_t f) const = 0;
+    virtual uint32_t frames() const = 0;
+};
+struct DataInputs : InputSource {
+    const Data& d;
+    explicit DataInputs(const Data& x) : d(x) {}
+    np::PadInput get(int p, uint32_t f) const override { return d.in[p][f]; }
+    uint32_t frames() const override { return (uint32_t)std::min(d.in[0].size(), d.in[1].size()); }
+};
+
+std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
 {
     std::vector<uint8_t> b;
     b.insert(b.end(), { 'T', '5', 'R', 'P' });
@@ -117,7 +131,7 @@ std::vector<uint8_t> to_binary(const Data& d)
     put32(b, d.rollback ? 1u : 0u);
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed);
-    const uint32_t n = (uint32_t)std::min(d.in[0].size(), d.in[1].size());
+    const uint32_t n = src.frames();
     put32(b, n); put32(b, d.hash_every);
     put32(b, (uint32_t)d.matches.size());
     for (const Match& m : d.matches) {
@@ -140,7 +154,7 @@ std::vector<uint8_t> to_binary(const Data& d)
         for (int c = 0; c < 6; c++) {
             uint8_t prev = col(np::kNeutral, c);
             for (uint32_t f = 0; f < n; f++) {
-                const uint8_t v = col(d.in[p][f], c);
+                const uint8_t v = col(src.get(p, f), c);
                 b.push_back((uint8_t)(v ^ prev));
                 prev = v;
             }
@@ -225,7 +239,7 @@ std::string jstr(const std::string& s)
     return o + "\"";
 }
 
-std::string to_json(const Data& d, bool names)
+std::string to_json(const Data& d, bool names, uint32_t frames)
 {
     char b[512];
     std::string j = "{";
@@ -233,7 +247,7 @@ std::string to_json(const Data& d, bool names)
                           "\"rb_delay\": %d, \"seed\": %u, \"match_seed\": %u, \"frames\": %zu, \"hash_every\": %u, "
                           "\"sync_points\": %zu, \"hashes\": %zu, \"matches\": [",
              kVersion, jstr(d.build).c_str(), jstr(d.created).c_str(), d.rollback ? "rollback" : "lockstep", d.slot, d.delay,
-             d.rb_delay, d.session_seed, d.match_seed, std::min(d.in[0].size(), d.in[1].size()), d.hash_every,
+             d.rb_delay, d.session_seed, d.match_seed, (size_t)frames, d.hash_every,
              d.bars.size(), d.hashes.size());
     j += b;
     for (size_t k = 0; k < d.matches.size(); k++) {
@@ -256,22 +270,47 @@ std::string to_json(const Data& d, bool names)
     return j + "]}";
 }
 
-/* ---- recording ------------------------------------------------------------- */
+/* ---- recording -------------------------------------------------------------
+ * The inputs go into chunks that never move once allocated: the main thread only
+ * appends (and publishes the frame count after the frame is written), the writer
+ * thread reads frames below the published count without a lock. Everything else
+ * of the session (matches, sync points, hashes) is small and taken under the
+ * mutex. A write is a request to the one writer thread (an event); only the
+ * session's end writes on the calling thread. */
+constexpr uint32_t kChunk = 4096, kMaxChunks = 4096;   /* up to 16.7 M frames: 77 hours */
+struct Chunk { np::PadInput in[2][kChunk]; };
+struct Store : InputSource {
+    Data d;                                        /* everything but the inputs (d.in stays empty) */
+    std::vector<std::unique_ptr<Chunk>> chunks;    /* reserved up front: the pointers never move */
+    std::atomic<uint32_t> n{ 0 };                  /* frames recorded */
+    std::string path;
+    bool names = true;
+    Store() { chunks.reserve(kMaxChunks); }
+    np::PadInput get(int p, uint32_t f) const override { return chunks[f / kChunk]->in[p][f % kChunk]; }
+    uint32_t frames() const override { return n.load(std::memory_order_acquire); }
+};
+/* a store's frame count frozen for one write */
+struct Frozen : InputSource {
+    const Store& st; uint32_t n;
+    Frozen(const Store& s, uint32_t k) : st(s), n(k) {}
+    np::PadInput get(int p, uint32_t f) const override { return st.get(p, f); }
+    uint32_t frames() const override { return n; }
+};
+
 struct Rec {
-    std::mutex mu;
-    bool on = false, names = true, started = false;
-    std::string dir, path;
-    Data d;
-    bool have_fight = false;
+    std::mutex mu;                       /* the store's Data */
+    std::shared_ptr<Store> cur;          /* this session's (kept after its end until the next one begins) */
+    std::atomic<Store*> live{ nullptr }; /* cur while recording: rec_input's lock-free way in */
+    bool on = false, have_fight = false;
     Fight fight;
     uint32_t flush_at = UINT32_MAX, next_periodic = 0;
-    std::atomic<uint32_t> seq{ 0 };
+    HANDLE ev = nullptr;                 /* the writer thread's wake-up */
+    std::shared_ptr<Store> want;         /* the store it writes next */
 };
 Rec& R() { static Rec r; return r; }
 
 /* What recording costs the frame (main thread): the time inside the rec_* calls of
- * one live frame, summed up and logged at the session's end. Writing the file is a
- * worker thread's (except at the session's end). */
+ * one live frame, summed up and logged at the session's end. */
 struct Cost { LONGLONG acc = 0, sum = 0, max = 0, qf = 0; uint32_t frames = 0; } g_cost;
 struct Timed {
     LARGE_INTEGER t0;
@@ -293,23 +332,35 @@ void cost_note()
          1e6 * (double)g_cost.max / (double)g_cost.qf, g_cost.frames);
     g_cost = Cost();
 }
-std::mutex g_write_mu;          /* one write at a time; an older snapshot never overwrites a newer one */
-uint32_t g_written_seq = 0;
 
-void write_file(const std::string& path, const Data& d, bool names, uint32_t seq)
+std::mutex g_write_mu;          /* one write at a time */
+std::atomic<uint32_t> g_seq{ 0 };
+uint32_t g_written_seq = 0;     /* an older snapshot never overwrites a newer one */
+
+/* Write the store's file: its Data copied under the mutex (small), the inputs up
+ * to the frame count read from the chunks. */
+void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
 {
-    std::lock_guard<std::mutex> lk(g_write_mu);
+    Rec& r = R();
+    Data d;
+    uint32_t n;
+    {
+        std::lock_guard<std::mutex> lk(r.mu);
+        d = st->d;
+        n = st->frames();
+    }
+    if (d.matches.empty() || st->path.empty()) return;
+    std::lock_guard<std::mutex> wk(g_write_mu);
     if (seq < g_written_seq) return;
     g_written_seq = seq;
     LARGE_INTEGER q0, q1, qf; QueryPerformanceCounter(&q0);
-    const std::vector<uint8_t> bin = to_binary(d);
+    const std::vector<uint8_t> bin = to_binary(d, Frozen(*st, n));
     int zlen = 0;
     unsigned char* z = rp_zlib_compress(bin.data(), (int)bin.size(), &zlen);
-    if (!z) { note("cannot compress %s", path.c_str()); return; }
-    Data shown = d;
-    if (!names) for (Match& m : shown.matches) m.ft.names[0].clear(), m.ft.names[1].clear();
-    const std::string json = to_json(shown, names) + "\n";
-    const std::string tmp = path + ".tmp";
+    if (!z) { note("cannot compress %s", st->path.c_str()); return; }
+    if (!st->names) for (Match& m : d.matches) m.ft.names[0].clear(), m.ft.names[1].clear();
+    const std::string json = to_json(d, st->names, n) + "\n";
+    const std::string tmp = st->path + ".tmp";
     bool ok = false;
     if (FILE* fp = fopen(tmp.c_str(), "wb")) {
         ok = fwrite(kMagic, 1, sizeof kMagic - 1, fp) == sizeof kMagic - 1 && fwrite(json.data(), 1, json.size(), fp) == json.size() &&
@@ -317,27 +368,42 @@ void write_file(const std::string& path, const Data& d, bool names, uint32_t seq
         ok = (fclose(fp) == 0) && ok;
     }
     free(z);
-    if (ok) for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
+    if (ok) for (int i = 0; i < 50 && !MoveFileExA(tmp.c_str(), st->path.c_str(), MOVEFILE_REPLACE_EXISTING); i++) Sleep(2);
     QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
-    note("%s %s: %zu matches, %zu frames, %zu bytes (inputs and hashes %zu -> %d compressed), %.1f ms", ok ? "written" : "COULD NOT WRITE",
-         path.c_str(), d.matches.size(), std::min(d.in[0].size(), d.in[1].size()), (size_t)(sizeof kMagic - 1) + json.size() + (size_t)zlen,
-         bin.size(), zlen, 1000.0 * (double)(q1.QuadPart - q0.QuadPart) / (double)qf.QuadPart);
+    note("%s %s: %zu matches, %u frames, %zu bytes (inputs and hashes %zu -> %d compressed), %.1f ms", ok ? "written" : "COULD NOT WRITE",
+         st->path.c_str(), d.matches.size(), n, (size_t)(sizeof kMagic - 1) + json.size() + (size_t)zlen, bin.size(), zlen,
+         1000.0 * (double)(q1.QuadPart - q0.QuadPart) / (double)qf.QuadPart);
 }
 
-/* write the session so far: on a worker thread (the frame never waits for the
- * disk), or here (session end: the process may end right after) */
-void flush_locked(Rec& r, bool here)
+DWORD WINAPI writer_thread(LPVOID)
 {
-    if (!r.on || r.d.matches.empty() || r.path.empty()) return;
-    const uint32_t seq = ++r.seq;
-    if (here) { write_file(r.path, r.d, r.names, seq); return; }
-    Data snap = r.d;
-    const std::string path = r.path;
-    const bool names = r.names;
-    std::thread([snap = std::move(snap), path, names, seq]() {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-        write_file(path, snap, names, seq);
-    }).detach();
+    Rec& r = R();
+    for (;;) {
+        WaitForSingleObject(r.ev, INFINITE);
+        std::shared_ptr<Store> st;
+        uint32_t seq;
+        {
+            std::lock_guard<std::mutex> lk(r.mu);
+            st.swap(r.want);
+            seq = ++g_seq;
+        }
+        if (st) write_store(st, seq);
+    }
+}
+
+/* ask the writer thread for the file (the frame never waits for the disk); caller holds mu */
+void request_write_locked(Rec& r)
+{
+    if (!r.on || !r.cur || r.cur->d.matches.empty()) return;
+    r.want = r.cur;
+    if (!r.ev) {
+        r.ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        if (HANDLE th = CreateThread(nullptr, 0, writer_thread, nullptr, 0, nullptr)) {
+            SetThreadPriority(th, THREAD_PRIORITY_BELOW_NORMAL);
+            CloseHandle(th);
+        }
+    }
+    SetEvent(r.ev);
 }
 
 const char* env(const char* k) { const char* v = getenv(k); return v && *v ? v : nullptr; }
@@ -374,51 +440,68 @@ Play& P() { static Play p; return p; }
 
 /* ======================================================================= recording */
 bool recording() { return R().on; }
-uint32_t hash_every() { return R().d.hash_every ? R().d.hash_every : 60; }
+uint32_t hash_every()
+{
+    Store* st = R().live.load(std::memory_order_acquire);
+    return st && st->d.hash_every ? st->d.hash_every : 60;
+}
+
+/* the session's end: the file now, on this thread (the process may end right after) */
+void end_locked_then_write(std::unique_lock<std::mutex>& lk, const char* why)
+{
+    Rec& r = R();
+    if (!r.on) return;
+    for (Match& m : r.cur->d.matches)
+        if (!m.have_result) { m.reason = why ? why : "session_end"; m.ended = utc_now(); }
+    r.on = false;
+    r.live = nullptr;
+    r.want.reset();
+    std::shared_ptr<Store> st = r.cur;
+    lk.unlock();
+    write_store(st, ++g_seq);
+    cost_note();
+    lk.lock();
+}
 
 void rec_session_begin(int slot, const char* build, uint32_t session_seed)
 {
     Rec& r = R();
-    std::lock_guard<std::mutex> lk(r.mu);
-    if (r.on) flush_locked(r, true);
-    r.on = false;
-    r.d = Data();
-    r.started = r.have_fight = false;
+    std::unique_lock<std::mutex> lk(r.mu);
+    end_locked_then_write(lk, "a new session");
+    r.cur.reset();
+    r.have_fight = false;
     r.flush_at = UINT32_MAX;
     const char* dir = env("T5_REPLAY_DIR");
     if (!dir) return;
-    r.dir = dir;
+    auto st = std::make_shared<Store>();
     CreateDirectoryA(dir, nullptr);
-    { const char* n = env("T5_REPLAY_NAMES"); r.names = !(n && *n == '0'); }
-    if (const char* h = env("T5_REPLAY_HASH_EVERY")) { const int v = atoi(h); if (v >= 1 && v <= 600) r.d.hash_every = (uint32_t)v; }
-    r.d.slot = slot;
-    r.d.build = build ? build : "";
-    r.d.session_seed = session_seed;
-    r.d.created = utc_now();
-    SYSTEMTIME st; GetLocalTime(&st);
+    { const char* n = env("T5_REPLAY_NAMES"); st->names = !(n && *n == '0'); }
+    if (const char* h = env("T5_REPLAY_HASH_EVERY")) { const int v = atoi(h); if (v >= 1 && v <= 600) st->d.hash_every = (uint32_t)v; }
+    st->d.slot = slot;
+    st->d.build = build ? build : "";
+    st->d.session_seed = session_seed;
+    st->d.created = utc_now();
+    SYSTEMTIME tm; GetLocalTime(&tm);
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
     const uint32_t tag = (uint32_t)(q.QuadPart ^ (q.QuadPart >> 20) ^ GetCurrentProcessId()) & 0xFFFF;
     char name[96];
-    snprintf(name, sizeof name, "T5R-%04u%02u%02u-%02u%02u%02u-%04x.t5replay", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-             st.wSecond, tag);
-    r.path = r.dir;
-    if (!r.path.empty() && r.path.back() != '\\' && r.path.back() != '/') r.path += '\\';
-    r.path += name;
+    snprintf(name, sizeof name, "T5R-%04u%02u%02u-%02u%02u%02u-%04x.t5replay", tm.wYear, tm.wMonth, tm.wDay, tm.wHour, tm.wMinute,
+             tm.wSecond, tag);
+    st->path = dir;
+    if (!st->path.empty() && st->path.back() != '\\' && st->path.back() != '/') st->path += '\\';
+    st->path += name;
     r.next_periodic = 3600;
+    r.cur = st;
+    r.live = st.get();
     r.on = true;
-    note("recording this session to %s (player names %s)", r.path.c_str(), r.names ? "kept" : "left out");
+    note("recording this session to %s (player names %s)", st->path.c_str(), st->names ? "kept" : "left out");
 }
 
 void rec_session_end(const char* why)
 {
     Rec& r = R();
-    std::lock_guard<std::mutex> lk(r.mu);
-    if (!r.on) return;
-    for (Match& m : r.d.matches)
-        if (!m.have_result) { m.reason = why ? why : "session_end"; m.ended = utc_now(); }
-    flush_locked(r, true);
-    cost_note();
-    r.on = false;
+    std::unique_lock<std::mutex> lk(r.mu);
+    end_locked_then_write(lk, why);
 }
 
 void rec_start(uint32_t match_seed, bool rollback, int delay)
@@ -426,25 +509,36 @@ void rec_start(uint32_t match_seed, bool rollback, int delay)
     Rec& r = R();
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
-    r.d.match_seed = match_seed;
-    r.d.rollback = rollback;
-    r.d.delay = delay;
-    r.started = true;
+    r.cur->d.match_seed = match_seed;
+    r.cur->d.rollback = rollback;
+    r.cur->d.delay = delay;
 }
 
-void rec_rollback_delay(int d) { Rec& r = R(); std::lock_guard<std::mutex> lk(r.mu); if (r.on) r.d.rb_delay = d; }
+void rec_rollback_delay(int d) { Rec& r = R(); std::lock_guard<std::mutex> lk(r.mu); if (r.on) r.cur->d.rb_delay = d; }
 
+/* main thread, frames in order (no lock: see Store) */
 void rec_input(uint32_t f, const np::PadInput& p1, const np::PadInput& p2)
 {
-    Rec& r = R();
+    Store* st = R().live.load(std::memory_order_acquire);
+    if (!st) return;
     Timed t;
-    std::lock_guard<std::mutex> lk(r.mu);
-    if (!r.on) return;
-    std::vector<np::PadInput>* in = r.d.in;
-    if (f > 2000000) return;
-    if (f < in[0].size()) { in[0][f] = p1; in[1][f] = p2; return; }
-    while (in[0].size() < f) { in[0].push_back(np::kNeutral); in[1].push_back(np::kNeutral); }
-    in[0].push_back(p1); in[1].push_back(p2);
+    uint32_t n = st->n.load(std::memory_order_relaxed);
+    if (f < n) {                                   /* (never seen: the netplay core hands each frame over once) */
+        Chunk* c = st->chunks[f / kChunk].get();
+        c->in[0][f % kChunk] = p1; c->in[1][f % kChunk] = p2;
+        return;
+    }
+    while (n <= f) {
+        if (n / kChunk >= st->chunks.size()) {
+            if (st->chunks.size() >= kMaxChunks) return;
+            st->chunks.push_back(std::make_unique<Chunk>());
+        }
+        Chunk* c = st->chunks[n / kChunk].get();
+        c->in[0][n % kChunk] = n == f ? p1 : np::kNeutral;
+        c->in[1][n % kChunk] = n == f ? p2 : np::kNeutral;
+        n++;
+    }
+    st->n.store(n, std::memory_order_release);
 }
 
 void rec_hash(uint32_t f, uint64_t h)
@@ -453,9 +547,10 @@ void rec_hash(uint32_t f, uint64_t h)
     if (!r.on || (f % hash_every()) != 0) return;
     Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
-    auto& hs = r.d.hashes;
+    if (!r.on) return;
+    auto& hs = r.cur->d.hashes;
     if (!hs.empty() && hs.back().first == f) { hs.back().second = h; return; }
-    if (!hs.empty() && hs.back().first > f) {   /* an earlier frame again (a new session's frame 0 never comes here) */
+    if (!hs.empty() && hs.back().first > f) {
         for (auto& x : hs) if (x.first == f) { x.second = h; return; }
         hs.push_back({ f, h });
         std::sort(hs.begin(), hs.end());
@@ -470,7 +565,7 @@ void rec_barrier(const Barrier& b)
     Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
-    r.d.bars.push_back(b);
+    r.cur->d.bars.push_back(b);
 }
 
 void rec_fight(const Fight& ft)
@@ -491,7 +586,7 @@ void rec_match_begin(uint32_t f)
     m.start = f;
     m.ft = r.fight;
     m.started = utc_now();
-    r.d.matches.push_back(m);
+    r.cur->d.matches.push_back(m);
     r.have_fight = false;
 }
 
@@ -501,8 +596,8 @@ void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason
     Rec& r = R();
     Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
-    if (!r.on || r.d.matches.empty()) return;
-    Match& m = r.d.matches.back();
+    if (!r.on || r.cur->d.matches.empty()) return;
+    Match& m = r.cur->d.matches.back();
     if (m.have_result) return;
     m.have_result = true;
     m.winner = !winner || !strcmp(winner, "null") ? -1 : atoi(winner);
@@ -515,7 +610,7 @@ void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason
     m.complete = reason == nullptr;
     if (reason) m.reason = reason;
     m.ended = utc_now();
-    flush_locked(r, false);
+    request_write_locked(r);
     r.flush_at = at_frame + 420;    /* again once the frames after the KO are in (the playback shows them) */
 }
 
@@ -525,9 +620,12 @@ void rec_frame(uint32_t f)
     if (!r.on) return;
     {
         Timed t;
-        std::lock_guard<std::mutex> lk(r.mu);
-        if (f >= r.flush_at) { r.flush_at = UINT32_MAX; flush_locked(r, false); }
-        else if (f >= r.next_periodic) { r.next_periodic = f + 3600; flush_locked(r, false); }
+        if (f >= r.flush_at || f >= r.next_periodic) {
+            std::lock_guard<std::mutex> lk(r.mu);
+            if (f >= r.flush_at) r.flush_at = UINT32_MAX;
+            else r.next_periodic = f + 3600;
+            request_write_locked(r);
+        }
     }
     cost_frame();
 }

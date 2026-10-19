@@ -121,6 +121,12 @@ class TkTourFlowTest(TkTourBase):
         self.assertEqual((tab.view._stage, tab.view._bar_kind), ("bar", "tour_call"))
         self.assertIsNotNone(tab.view.ring)                      # the no-show countdown
         self.assertIn("started", tab.status_var.get())          # "The tournament Tab Cup has started: ..."
+        # another question takes the bar for a while (a challenge, a result ...): the call comes back after it
+        tab.show_bar("Something else", [("Fine", tab.hide_bar)])
+        self.root.update()
+        self.assertNotEqual(tab.view._bar_kind_now(), "tour_call")
+        self.bar_button("Fine").invoke()
+        self.pump(lambda: self.bar_button("Accept") is not None and tab.view._bar_kind_now() == "tour_call")
         self.bar_button("Accept").invoke()
         # the set: the tab's fake game, two games won
         for n in (1, 2):

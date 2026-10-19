@@ -198,9 +198,16 @@ class TourController:
         if self._detail_due is not None and now >= self._detail_due:
             self._detail_due = None
             self._fetch_detail()
-        if self.call is not None and self._bar_line is not None and self.tab.bar_text.get() == self._bar_line:
-            self._bar_line = self.call_text()                  # (the countdown)
-            self.tab.bar_text.set(self._bar_line)
+        if self.call is not None:
+            if self.showing_call():
+                self._bar_line = self.call_text()              # (the countdown)
+                self.tab.bar_text.set(self._bar_line)
+            elif not self.tab.view._bar_on:
+                self._show_call()                              # (another question took the bar and is gone now)
+
+    def showing_call(self):
+        """Is the tab's question bar showing the call right now (not another question that came after it)?"""
+        return self.call is not None and self._bar_line is not None and self.tab.bar_text.get() == self._bar_line
 
     def reset(self):
         """Logged out / disconnected."""

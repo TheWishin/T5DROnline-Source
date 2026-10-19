@@ -1247,7 +1247,7 @@ class OnlineView:
     # --- the bar: questions, found match, result + rematch
     def _bar_kind_now(self):
         tab = self.tab
-        if getattr(tab, "tours", None) is not None and tab.tours.call is not None:
+        if getattr(tab, "tours", None) is not None and tab.tours.showing_call():
             return "tour_call"              # "Your tournament set is ready" (tk_tour.py)
         if tab.rematch_bar is not None or getattr(tab, "set_bar", None) is not None:
             return "result"                 # (a ranked set between two games: the result, the countdown, Leave set)

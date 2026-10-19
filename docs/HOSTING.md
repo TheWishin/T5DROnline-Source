@@ -556,7 +556,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 
 | Command | |
 |---|---|
-| `status [--json]` | players online (guests/accounts/playing/searching), rooms, queues, matches running and in the last 24 h by path, relay sessions and kbit/s, accounts, bans, certificate expiry, CPU/RSS |
+| `status [--json]` | players online (guests/accounts/playing/searching), rooms, queues, matches running and in the last 24 h by path, relay sessions and kbit/s, one line per regional relay node (up/down, sessions, kbit/s, last answer), accounts, bans, certificate expiry, CPU/RSS. On a relay node: its sessions, kbit/s and the central server's last request |
 | `health [-q]` | exit code 0 when the server answers (Docker health check, scripts) |
 | `users [TEXT] [--banned]`, `user NAME`, `matches [--player NAME]` | look things up |
 | `ban NAME [--days D \| --hours H] [--reason ...]`, `unban NAME` | accounts. Without a duration, the ban is permanent. The player is kicked and their remembered logins end. Later logins are refused with the reason, but only after the correct password, so a ban never reveals that an account exists |

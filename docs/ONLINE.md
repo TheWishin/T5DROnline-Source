@@ -573,6 +573,9 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_TLS_CERT` / `T5L_TLS_KEY` | | PEM files: control channel over TLS |
 | `T5L_RELAY` / `T5L_FORCE_RELAY` | `1` / `0` | offer the relay / use only the relay |
 | `T5L_RELAY_KBPS` / `T5L_RELAY_PPS` / `T5L_MAX_RELAYS` | `512` / `400` / `100` | relay caps |
+| `T5L_RELAYS` / `T5L_RELAY_SECRET_FILE` | | regional relay nodes: relays.json (a file, re-read when it changes, or the JSON itself) / the secret for nodes without their own ("Regional relays") |
+| `T5L_RELAY_CHECK_SECONDS` / `T5L_RELAY_DEAD_SECONDS` | `5` / `20` | health check of every node, and the silence after which a node gets no new matches |
+| relay node: `T5L_RELAY_SECRET_FILE`, `T5L_RELAY_ID`, `T5L_RELAY_CENTRAL`, `T5L_RELAY_BIND_SECONDS` | `60` (the last) | `python run.py relay`: its secret, its id in relays.json, the central server's address(es) (optional), how long a session's bind tokens work |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
 | `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 6, 90 s | (the punch window was 3 s up to 1.1.0) |
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |

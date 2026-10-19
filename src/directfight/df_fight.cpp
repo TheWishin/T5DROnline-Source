@@ -90,6 +90,8 @@ constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 handicap b
                                                   * chooses (P2; P1 too after a match), then 0x0D (P2) / 0x15 (P1) */
 constexpr uint32_t kModeTitle = 1, kModeGame = 4, kModeSelect = 6;
 constexpr uint32_t kModeNone = 14;               /* the request's "next" when no mode change is pending */
+/* mode manager words (object found by df_hooks.cpp): +0x58 {cur, next, prev, param}, +0x6C the mode's task object */
+constexpr uint32_t kMgrNext = 0x5C, kMgrParam = 0x64, kMgrModeObj = 0x6C;
 
 /* Character ids (the game's own order: 3-letter codes at 0x1001CE58, names at 0x10003F18). */
 const char* const kCode[36] = {
@@ -396,6 +398,9 @@ bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
 bool g_restart_low = false;     /* Reset by a select restart: the select screen has gone through its set-up again */
 uint32_t g_restart_frame = 0;   /* ... and the frame start VS was called at the select screen */
+uint32_t g_restart_obj = 0;     /* ... and the select mode's task object it was called on (a new one comes) */
+bool g_restart_inplace = false; /* T5_DF_SELECT_RESTART=inplace: the old way (start VS alone; breaks after 4-11, docs) */
+uint32_t g_restarts = 0;        /* select restarts in this process (log) */
 ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
 uint32_t g_stuck_s = 60;        /* T5_DF_STUCK_SECONDS: a reset / leave that gets nowhere in this long ends the process */
 uint32_t g_session_matches = 0; /* fights started in this netplay session (the in-game select's exchange key) */
@@ -782,6 +787,46 @@ void persistent_frame(uint32_t f)
 
 /* A reset has a fresh select screen: the pending "fight" (a new session)
  * starts on it, else the game waits there. */
+/* A used select screen made fresh again without the title (no fight since
+ * the title; see Ph::Reset). The start-VS routine fills the VS battle config
+ * again (game type, players, VS counters) and asks the mode manager for the
+ * select mode -- a request the manager drops while the select mode is the
+ * current one (0x25D978 returns when cur == the mode asked for). Called alone
+ * at the select screen (the old restart "in place") it only made the running
+ * select mode start its set-up again (phase word 0 -> 3): the set-up builds the
+ * select scene a second time -- both fighters' preview models, the portraits,
+ * their animation and resource managers, ~150 KB of the scene heap and more --
+ * and nothing ever freed the first scene, whose tasks went on running every
+ * frame. After 3-10 such restarts an allocation in the model set-up
+ * (0x2B1F40, through the select's own update 0x1159AC -> 0x109320 ->
+ * 0x2B81E0) came back NULL: the model code wrote its node into the null page,
+ * 0x2DBBEC took a count of 0x02120420 from it and memset 138 MB from NULL --
+ * the OPD page with the vblank handler's descriptor 0x4635A8 and the code
+ * below 0x08481084 cleared (docs/DIRECTFIGHT.md "Select restarts").
+ *
+ * So the request is made to count: the driver writes it into the manager
+ * itself, as 0x25D978 would for another mode (next = select, param 0). The
+ * manager then does what it does for every mode change: it waits until no
+ * task of the select scene is busy (loads in flight), ends the select mode
+ * with its whole scene (the heap goes back) and builds a new select mode from
+ * scratch, like the title's start VS -- one or two frames. */
+void select_restart(uint32_t f)
+{
+    const uint32_t mgr = mode_manager();
+    g_restart_obj = mgr ? rd32(mgr + kMgrModeObj) : 0;
+    gcall(kFnStartGame, 4, 3);
+    if (g_restart_inplace || !mgr || mode_cur() != kModeSelect || mode_next() != kModeNone) {
+        note("frame %u: select screen restart in place (func_0004E9DC(4, 3) at the select screen; no fight since the title%s)",
+             f, g_restart_inplace ? "; T5_DF_SELECT_RESTART=inplace" : "; the mode manager is busy");
+        g_restart_obj = 0;
+        return;
+    }
+    wr32(mgr + kMgrParam, 0);
+    wr32(mgr + kMgrNext, kModeSelect);
+    note("frame %u: select screen restart (start VS at the select screen, select mode 0x%08X ended and built again by the "
+         "mode manager; no fight since the title)", f, g_restart_obj);
+}
+
 void reset_done(uint32_t f)
 {
     if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);
@@ -1429,10 +1474,9 @@ void fight_on_frame(uint32_t f)
          * visit; reproduced offline every time, also after a match played to
          * its end, also without the boot-state restore and with the title's
          * autosave suppressed). So after a fight: the title (and the boot
-         * state) as before; without one the select screen is restarted in
-         * place by the same start-VS routine (the select mode sets itself up
-         * again: phase 0 -> 3, the VS config filled again), or left as it is
-         * when it is fresh already. */
+         * state) as before; without one the select screen is restarted
+         * (select_restart() below), or left as it is when it is fresh
+         * already. */
         if (mode == kModeTitle && mode_next() == kModeNone) {
             g_title_seen = f; g_restore_due = g_fresh_taken; set_phase(Ph::Title, "title", f); break;
         }
@@ -1443,9 +1487,10 @@ void fight_on_frame(uint32_t f)
         if (mode == kModeSelect && mode_next() == kModeNone) {
             const uint32_t sel = rd32(kSelectState);
             if (g_mode_asked && !g_game_seen) {             /* the select restart is under way */
-                if (sel < 3) g_restart_low = true;
+                /* a new select mode (the manager built it) going through its set-up */
+                if (sel < 3 && (g_restart_inplace || rd32(mode_manager() + kMgrModeObj) != g_restart_obj)) g_restart_low = true;
                 if (g_restart_low && select_live()) {
-                    note("frame %u: select screen restarted", f);
+                    note("frame %u: select screen restarted (%u in this game)", f, ++g_restarts);
                     g_fresh = true;
                     reset_done(f);
                 } else if (!g_restart_low && f > g_restart_frame + 120) {
@@ -1465,8 +1510,7 @@ void fight_on_frame(uint32_t f)
                     }
                 } else {
                     g_mode_asked = true; g_restart_low = false; g_restart_frame = f;
-                    gcall(kFnStartGame, 4, 3);
-                    note("frame %u: select screen restart (func_0004E9DC(4, 3) at the select screen; no fight since the title)", f);
+                    select_restart(f);
                 }
             }
         }
@@ -1542,6 +1586,7 @@ void fight_init()
     if (!(fight && *fight) && !(file && *file) && !g_ctl) return;
     g_configured = true;
     { const char* r = getenv("T5_DF_RESET"); g_reset_titles = !(r && *r == '0'); }
+    { const char* r = getenv("T5_DF_SELECT_RESTART"); g_restart_inplace = r && !strcmp(r, "inplace"); }
     { const char* k = getenv("T5_DF_SKIP"); g_skip = !(k && *k == '0'); }
     if (const char* w = getenv("T5_DF_STAGE_WAIT")) g_stage_wait = (uint32_t)atoi(w);
     { const char* r = getenv("T5_DF_FRESH"); g_fresh_on = !(r && *r == '0'); }

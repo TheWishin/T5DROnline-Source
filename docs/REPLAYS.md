@@ -205,6 +205,12 @@ score and deciding frame's hash (20 of them on stage 27), as `tools/replay_play.
 30 of 30 replays identical to the live match (every recorded hash and result)
 ```
 
+After the merge with main 7486b0c (1.1.2: series up to 0048) the same check on the merged build,
+runs pM1-pM3: rollback persistent with a rematch (Steve vs Hwoarang, 25 and 27), lockstep process mode
+(Lili vs Kazuya 31, Jin vs Dragunov 27), in-game picks with the pause and resume (Devil Jin vs Mokujin
+20, Asuka vs Xiaoyu 27): 6 matches live with 0 mismatching frames, **6 of 6 files identical** (12 of
+12 results, 416 hashes).
+
 Also checked: the viewer's controls (`replay_play.py --press 10:START,15:START,18:R1,30:R1`, the
 second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", "speed 2x",
 "normal speed" in the log, and the verdict still identical. A file whose names were taken out for a

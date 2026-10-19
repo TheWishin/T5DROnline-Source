@@ -298,6 +298,7 @@ How a session starts, survives trouble, and ends when it cannot go on
 | Other build | A peer with another `T5_NET_BUILD`, or another netplay protocol version (older builds), is refused at the first HELLO, and told so (REJECT) -> `build_mismatch` within a second or two of boot, on both sides |
 | Packets | With `T5_NET_KEY` (the lobby's per-match secret, sent only over the lobby's TCP channel) every packet ends in a SipHash-2-4 tag; without it the key comes from `T5_NET_MATCH` + `T5_NET_SEED` when both are set, else packets are unauthenticated (direct-IP play). Packets with a wrong tag, an unknown session or another peer process's nonce are dropped |
 | Who is the peer | The first authenticated HELLO (unauthenticated: only from the IP in `T5_NET_PEER` when it is given); after the handshake only that process (session id + nonce + tag) |
+| Lobby could not connect the two PCs directly | The relay; between two 1.1.1 launchers the match moves onto the direct path as soon as it works ("Getting a direct connection" below) |
 | NAT rebinding / new relay mapping | The peer's packets arrive from a new address: they still prove who sent them, so the game answers there from then on ("the peer's address changed ... following it") |
 | Short outage / loss / jitter | Lockstep stalls and resumes; resends every 15 ms; nothing is lost while the outage is shorter than `T5_NET_TIMEOUT` |
 | Peer silent for `T5_NET_TIMEOUT` | `peer_timeout` (keepalives every 200 ms; a frozen process is silent) |
@@ -335,6 +336,180 @@ in sync.
 without the waits for the peer` -- Y is this PC's own speed (the launcher
 reports it to the lobby, which warns before a match with a slow PC and keeps
 PCs below `T5L_MIN_FPS` out of ranked; docs/RANKED.md).
+
+## Getting a direct connection (lobby, 1.1.1)
+
+How the lobby connects the two games before a match (lobby/t5lobby/nat.py, client.py, server/lobby.py;
+protocol details in docs/ONLINE.md "NAT traversal and the relay"). Branch nat-robust, 2026-10-19.
+
+**The report (1.1.0).** Two players in Southern California, two homes: "a few times it is letting us
+have a direct connection and plays decent. Other times it says direct connection not possible and
+that is when it is bad". On the relay every packet goes through the only lobby server, in Nuremberg:
+300-400 ms round trip instead of ~20.
+
+**Why the same two homes sometimes got through and sometimes not (1.1.0).**
+
+- The punch was a 3-second race that each side started the moment the server's message reached it.
+  That message comes over TCP from Germany: the two launchers get it tens of milliseconds apart (a
+  segment TCP has to send again: 0.3-1 s). Between two homes ~10 ms apart that decides whose punches
+  reach the other router first -- before that router has sent anything toward them. Many routers just
+  drop such a packet, and then the order does not matter. Others do not: a Linux router whose WAN side
+  takes the packet keeps a connection entry for it (30 s, renewed by every further punch), and its own
+  side's punches then have to leave from another port, which a port-restricted NAT on the other side
+  drops; others answer with an ICMP error or count the punches as a flood and block the sender. With
+  such a router at either end the result depends on which message arrived first and by how much -- in
+  the simulator below 84-90 % direct, the rest relay, for the same pair (lower with a slower or lossier
+  path to the server, higher when both homes happen to get it within a few milliseconds).
+- The first side to give up switched both to the relay at once; the server never waited for the
+  other side's report.
+- A NAT that gives every destination its own port ("symmetric": many carrier-grade NATs and some ISP
+  gateways) next to a port-restricted one never got through (no port prediction), and two symmetric
+  NATs went to the relay without trying.
+- The game socket's port was never forwarded on the router (UPnP / NAT-PMP was only used for "Host
+  for friends").
+
+**What 1.1.1 does.** Only lobby code; the game and its netplay are unchanged (same build id, so 1.1.0
+and 1.1.1 players still meet).
+
+- *A plan from the server* (`nat2` cap on both sides): the NAT type comes from what the server itself
+  saw (the game socket's endpoint at UDP 7781 and at 7782 -- different ports = symmetric; a small
+  step = its ports count up and the next ones can be guessed). Both launchers start at the same server
+  time (`start_at`; each one syncs its clock with the server at login, so a message TCP had to resend
+  still starts on time).
+- *Low-TTL opening*: the first punches go out with TTL 2 and 3 only. They open this side's own NAT (or
+  a second NAT right behind it) toward the opponent and die before the opponent's router. Each launcher
+  tells the other through the server when it has started (`nat_punching` -> `nat_peer_punching`), and
+  the full punches begin only when that word has come (at least 0.15 s, at most 2 s; against a 1.1.0
+  client, which cannot say it, 0.5 s from the moment the message arrived). By then both routers have
+  sent toward each other: neither sees an unsolicited punch first, so none of the behaviours above can
+  start -- even when TCP had to resend one side's message.
+- *A 6-second window at a steady rate* (`T5L_PUNCH_TIMEOUT`, was 3): 20 punches a second to every
+  candidate, every candidate at once (against a 1.1.0 client 5 a second for the first 0.6 s of full
+  punches, for routers that count unsolicited packets).
+- *Candidates*: the opponent's public endpoint, its router forward, its LAN addresses (same public
+  address only), and for a symmetric NAT whose ports count up the next 24 ports
+  (`T5L_PREDICT_PORTS`), walked in the order that NAT hands them out -- so two such NATs can meet too
+  (the n-th new port on each side). Every address a punch comes from is punched back.
+- *Router forward of the game port* (launcher Settings, "Open the game's port on my router during
+  online matches", on by default; PCP, then NAT-PMP, then UPnP; `T5_PORTMAP=0` switches it off): made
+  before the socket sends anything, external port = internal port, so the endpoint the server sees is
+  the forwarded one and every opponent gets in, whatever its own NAT. 10-minute lease renewed while a
+  match runs, closed 2 minutes after the last one; a router that only takes permanent UPnP mappings is
+  not used. Not tried when the lobby server is on this PC or the LAN.
+- *The server waits for both reports* (or the end of the window). When one side got through and the
+  other did not, the failed side punches once more for 2.5 s (it now has the addresses it heard from).
+  Only when both fail: the relay.
+- *The game socket is the punched one*: on the direct path the launcher hands the punched port to the
+  game (`T5_NET_PORT`) right after a last round of punches that refreshes both NATs; the router
+  forward, when there is one, stays for the match.
+- *Relay bridge, upgrade during the match*: between two 1.1.1 launchers the relayed match keeps the
+  punched socket in the launcher (`nat.RelayBridge`). The game talks to 127.0.0.1 (`T5_NET_PEER`) and
+  sees one address the whole time; the launcher carries its packets to the relay and tries the direct
+  path in 3-second bursts every 40 s (low TTL first, both launchers at the same server time: the match
+  start + 35 s). The silence in between matters: a router's leftover entry or flood block lasts 30 s
+  from the last packet. When a burst gets punches back both ways the launcher sends the game's packets
+  straight to the opponent; the opponent's launcher does the same on its own; packets from either path
+  are taken all the time, so the switch costs the game nothing. If the direct path goes quiet for 2.5 s
+  it goes back to the relay (kept alive by a ping every 5 s). The netplay itself would follow a new
+  address (see "Connection problems"), but it never sends to one first -- without the bridge only a
+  game change (a new build id) could start an upgrade. Players see "Direct connection found: the match
+  no longer goes through the lobby server."; the server logs it and counts `relay_upgrades`.
+
+**Measured with the NAT simulator** (`lobby/tools/natsim.py`): the real lobby server (relay and probe
+port included) and real LobbyClients on this PC, each client behind a simulated home router -- its game
+socket's packets go through a NAT object that maps them to a public endpoint (a real UDP socket on a
+loopback address of its own), filters what comes back by the NAT type, delays and drops. Home to server
+75-95 ms one way (the Nuremberg server from California), home to home 8-14 ms, 2 % UDP loss on every
+leg; the control channel through a TCP proxy with the same delay, 3 % of the messages resent after
+0.25-1 s. After `match_start` a stub game takes the port over (or the bridge's local port) and must get
+packets through in both directions -- the "game ok" column. NAT types: full cone, restricted cone,
+port-restricted cone, symmetric (sequential ports, other devices taking a port now and then), and three
+extra rows: symmetric with random ports (carrier-grade NAT), port-restricted with a flood guard (>20
+unsolicited packets in 2 s block the sender for 30 s) and port-restricted on a Linux router that keeps
+an entry for an early punch ("poison"). 50 trials per pair; before = the 1.1.0 lobby (server and both
+clients, main 1c4cd05), after = this branch.
+
+| pair | before: direct | after: direct | after: game link ok | setup to match_start, direct (s) before / after |
+|---|---|---|---|---|
+| full + full | 100 % | 100 % | 50/50 | 1.8 / 2.3 |
+| full + restricted | 100 % | 100 % | 50/50 | 1.8 / 2.2 |
+| full + port | 100 % | 100 % | 50/50 | 1.7 / 2.2 |
+| full + symmetric | 100 % | 100 % | 50/50 | 1.7 / 2.3 |
+| full + symrand | 100 % | 100 % | 50/50 | 1.9 / 2.1 |
+| full + port-guard | 98 % | 100 % | 50/50 | 1.7 / 2.3 |
+| full + port-poison | 100 % | 100 % | 50/50 | 1.9 / 2.1 |
+| restricted + restricted | 100 % | 100 % | 50/50 | 1.8 / 2.1 |
+| restricted + port | 100 % | 100 % | 50/50 | 1.7 / 2.2 |
+| restricted + symmetric | 100 % | 100 % | 50/50 | 1.7 / 2.3 |
+| restricted + symrand | 100 % | 100 % | 50/50 | 1.8 / 2.3 |
+| restricted + port-guard | 96 % | 100 % | 50/50 | 1.6 / 2.1 |
+| restricted + port-poison | 100 % | 100 % | 50/50 | 1.8 / 2.1 |
+| port + port | 100 % | 100 % | 50/50 | 1.5 / 2.0 |
+| port + symmetric | 0 % | 100 % | 50/50 | - / 2.2 |
+| port + symrand | 0 % | 0 % | 50/50 | - / - |
+| port + port-guard | 100 % | 100 % | 50/50 | 1.6 / 2.1 |
+| port + port-poison | 84 % | 100 % | 50/50 | 1.6 / 2.1 |
+| symmetric + symmetric | 0 % | 60 % | 50/50 | - / 2.1 |
+| symmetric + symrand | 0 % | 0 % | 50/50 | - / - |
+| symmetric + port-guard | 0 % | 100 % | 50/50 | - / 2.2 |
+| symmetric + port-poison | 0 % | 100 % | 50/50 | - / 2.4 |
+| symrand + symrand | 0 % | 0 % | 50/50 | - / - |
+| symrand + port-guard | 0 % | 0 % | 50/50 | - / - |
+| symrand + port-poison | 0 % | 0 % | 50/50 | - / - |
+| port-guard + port-guard | 98 % | 100 % | 50/50 | 1.9 / 2.5 |
+| port-guard + port-poison | 90 % | 100 % | 50/50 | 1.6 / 2.4 |
+| port-poison + port-poison | 86 % | 100 % | 50/50 | 1.6 / 2.2 |
+
+All pairs together: 926 of 1,400 trials direct before, 1,130 after. The price: a direct connection
+is ready ~0.5 s later (the opening and the common start), and a pair that cannot connect directly
+reaches the relay after ~8.7 s instead of ~5.5 s (the longer window). Every remaining relay row is a
+symmetric NAT with random ports next to a NAT that filters by port or maps per destination too --
+no amount of punching opens that; a router forward on either side does (next table).
+
+With a router that forwards the game port at home A (PCP / NAT-PMP / UPnP answered by the simulated
+router; 1.1.0 never asks):
+
+| pair (A has the forward) | before: direct | after: direct |
+|---|---|---|
+| symrand + port | 0 % | 100 % |
+| symrand + symrand | 0 % | 100 % |
+| symrand + symmetric | 0 % | 100 % |
+| symmetric + symmetric | 0 % | 98 % (1 trial: the simulator's own login timed out) |
+| port + symmetric | 0 % | 100 % |
+
+The relay bridge: with the control channel losing half of its messages (TCP resends, `--tcp-rto 0.5`)
+and before the opening waited for the opponent's start, 8 of 20 poison pairs went to the relay and 7 of
+those moved onto the direct path at the first burst, 35 s into the match, while the stub games kept
+exchanging packets (the eighth was still on the relay when the 45 s ended). With the final code the
+same setting gives 20 of 20 direct at once, so the bridge is left for what the punch cannot know
+about; `tests/test_nat2.py` (RelayUpgradeTest) opens the direct path in the middle of a relayed match
+and checks that both sides switch and the games' packets keep flowing. A real game pair (two t5dr.exe,
+`lobby/tools/two_players.py --exe ... --relay`) played 3,600 lockstep frames in sync at 60 fps through
+two bridges and the relay; stub games through the same path finished a match with a confirmed result.
+
+Compatibility (same simulator, 20 trials per pair; pairs full + full, port + port, port + symmetric
+both ways, symmetric + symmetric, poison + poison): every mix of a 1.1.0 or 1.1.1 server with 1.1.0
+and 1.1.1 clients connected in every trial (direct or relay) and the game link worked in every trial
+(one trial lost to the simulator's own login timeout). An older client keeps its old behaviour (punch
+on receipt, 30 ms, the server's window); a 1.1.1 server gives it the longer window, the predicted ports (8, ahead of the public
+endpoint) and the second chance, so 1.1.0 clients behind a symmetric NAT next to a port-restricted one
+get through as well; a 1.1.1 client paired with a 1.1.0 one starts on receipt like it, with the low-TTL
+opening; a 1.1.1 client with a 1.1.0 server behaves like 1.1.0 except that it still forwards its port
+when allowed. `tests/test_nat2.py` runs the clients and server of the newest release tag in git
+(v1.0.0) against this tree in the simulator (skipped in a checkout without tags).
+
+**Limits.**
+- The simulator models routers; real routers were not available here (and this PC's router is never
+  asked for a forward by any test: fakes only). The TTL opening assumes this PC's NAT is at most two
+  hops away; a NAT further away just misses the opening (as 1.1.0).
+- Two symmetric NATs with random ports and no router forward on either side stay on the relay. Two
+  symmetric NATs whose ports count up meet only when neither handed out a port to another device
+  between the probe and the punch.
+- The relay bridge needs the launcher running for the whole match, and upgrades only between two 1.1.1
+  launchers on a 1.1.1 server. The direct path is found only at the bursts (35 s after the start, then
+  every 40 s).
+- The prediction needs the server's second UDP port (7782) open; the lobby server has to run this
+  branch for everything but the router forward.
 
 ## What had to be made deterministic
 

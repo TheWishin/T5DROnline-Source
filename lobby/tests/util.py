@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 # The Online tab must not start reading this PC's real controllers during a test (a plugged-in pad would put
 # "(A)" on the buttons the tests look for by name); the pad tests give the tab fake ones.
 os.environ.setdefault("T5_PAD_NAV", "0")
+# Never ask the router of the PC that runs the tests for a port forward (port mapping tests use fakes).
+os.environ["T5_PORTMAP"] = "0"
 
 from t5lobby import proto  # noqa: E402
 from t5lobby.buildid import BuildInfo  # noqa: E402
@@ -78,6 +80,9 @@ class ServerThread:
 
 
 def client(server, name=None, build=BUILD, password=None, register=False, **kw):
+    # The relay tests check the server's relay itself: the relay bridge (two new clients keep the game socket
+    # and talk to the game on 127.0.0.1) has its own tests in test_nat2.py.
+    kw.setdefault("relay_bridge", False)
     c = LobbyClient(server.addr, build, **kw)
     c.connect()
     if name:

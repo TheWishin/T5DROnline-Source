@@ -6,7 +6,9 @@ branch `netplay`) reads it. Read by netplay today:
 
     T5_NET_MODE     host | join         host = P1 (slot 0), join = P2 (slot 1)
     T5_NET_PORT     local UDP port      the port the lobby punched through; bind exactly this one
-    T5_NET_PEER     ip:port             the opponent (direct) or the lobby server's relay port
+                                        (relay bridge: a free local port, the punched one stays in the launcher)
+    T5_NET_PEER     ip:port             the opponent (direct), the lobby server's relay port, or
+                                        127.0.0.1:<port> of the launcher's relay bridge (nat.RelayBridge)
     T5_NET_DELAY    frames              suggested input delay from the measured RTT (host's value wins)
     T5_RB_NET_DELAY auto | 0 | 1 | 2    rollback input delay: a ranked match's fixed value (the server's
                                         T5L_RANKED_INPUT_DELAY); otherwise the player's setting (launcher)

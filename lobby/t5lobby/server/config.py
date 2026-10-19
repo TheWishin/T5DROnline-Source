@@ -38,7 +38,10 @@ class Config:
     ready_timeout: float = 15.0     # T5L_READY_TIMEOUT: seconds to accept a found match
     blind_ready: bool = True        # T5L_BLIND_READY: queue matches show only the ping until both accepted (clients that ask)
     register_timeout: float = 6.0   # T5L_REGISTER_TIMEOUT: seconds for both game sockets to reach the server
-    punch_timeout: float = 3.0      # T5L_PUNCH_TIMEOUT: seconds the clients try to punch through
+    punch_timeout: float = 6.0      # T5L_PUNCH_TIMEOUT: seconds the clients try to punch through (1.0.0/1.1.0: 3)
+    punch_ttl_open: float = 0.5     # T5L_PUNCH_TTL_OPEN: seconds of low-TTL punches that only open each side's own NAT
+    predict_ports: int = 24         # T5L_PREDICT_PORTS: ports tried after a symmetric NAT's last one (0 = no prediction)
+    relay_upgrade: bool = True      # T5L_RELAY_UPGRADE: two new clients on the relay move onto the direct path when it works
     relay_timeout: float = 6.0      # T5L_RELAY_TIMEOUT: seconds to set up the relay path
     result_timeout: float = 90.0    # T5L_RESULT_TIMEOUT: wait for the second result report
     match_timeout: float = 3 * 3600.0  # T5L_MATCH_TIMEOUT: a match without results is dropped after this

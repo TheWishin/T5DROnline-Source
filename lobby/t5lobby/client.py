@@ -8,6 +8,8 @@ notice, ...) plus the client's own:
 
     {"t": "match_start", "ticket": MatchTicket, ...}   both players are connected: start the game
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
+    {"t": "nat_upgrade", "match": id, "path": "direct"|"relay", "text": ...}   a relayed match moved onto
+                                           the direct path (or back to the relay); see RelayBridge
     {"t": "reconnecting", "reason": str}   the connection broke; resuming the session in the background
     {"t": "reconnected"}                   ... and it worked (a running match carries on)
     {"t": "disconnected", "reason": str}   gone for good (log in again)
@@ -47,7 +49,7 @@ import time
 from . import proto
 from .handover import MatchTicket
 from .i18n import t
-from .nat import GameSocket, local_ipv4s, server_rtt
+from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
 from .proto import LobbyError
 
 CLIENT_NAME = "t5lobby-client/0.1"
@@ -56,7 +58,8 @@ CLIENT_NAME = "t5lobby-client/0.1"
 class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
-                 reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False):
+                 reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
+                 port_mapping=False, nat2=True, relay_bridge=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -75,7 +78,14 @@ class LobbyClient:
         knows them is best of 3 and rated once at its end; `match_result` then carries `set` {wins, number,
         next {in}, result}, the next game starts by itself (call set_next(), the match driver does), and
         `set_end` has the set's result and rating change. Off by default: every ranked game is rated on its
-        own, as before (the launcher turns it on)."""
+        own, as before (the launcher turns it on).
+        port_mapping: forward the game socket's port on the home router (PCP / NAT-PMP / UPnP) for each
+        match, so the opponent's punches get in whatever its NAT does (docs/NETPLAY.md "Getting a direct
+        connection"). Off by default (the launcher's setting turns it on; T5_PORTMAP=0 always wins).
+        nat2: speak the planned hole punching with a server that offers it (all at once, steady, port
+        prediction); False behaves exactly like a 1.1.0 client (tests). relay_bridge: on the relay path
+        against another nat2 client, keep the game socket here and move the match onto the direct path
+        when it starts to work (RelayBridge)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -122,6 +132,14 @@ class LobbyClient:
         self._tasks = []
         self._gs = None              # GameSocket of the current match
         self._nat_task = None
+        self.port_mapping = port_mapping
+        self.nat2 = nat2
+        self.relay_bridge = relay_bridge
+        self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
+        self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
+        self._bridge = None          # RelayBridge of the running relayed match
+        self.upgrades = []           # (match, path) every switch of a relay bridge, for tools and tests
+        self.clock_offset = None     # server time - this PC's time (seconds), for the punch's common start
         self._closing = False
 
     # ================================================================ thread plumbing
@@ -210,7 +228,8 @@ class LobbyClient:
                                                 "client": CLIENT_NAME, "build": self.build.as_wire(),
                                                 "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])
                                                 + (["ingame_pick"] if self.ingame_pick else [])
-                                                + (["sets"] if self.sets else [])})
+                                                + (["sets"] if self.sets else [])
+                                                + (["nat2"] if self.nat2 else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -412,6 +431,12 @@ class LobbyClient:
         self._nat_phase(self._nat_punch(msg))
         return False
 
+    async def _on_nat_peer_punching(self, msg):
+        """The opponent's launcher has started its punch (nat2): our low-TTL opening may end."""
+        if self.match and self.match["match"] == msg.get("match") and self.match.get("peer_open") is not None:
+            self.match["peer_open"].set()
+        return False
+
     async def _on_nat_relay(self, msg):
         if not self._gs or not self.match or self.match["match"] != msg["match"]:
             return False
@@ -435,8 +460,14 @@ class LobbyClient:
             return False
         if self._nat_task is not None:
             self._nat_task.cancel()
+        local_port = gs.port
         if msg["path"] == "relay":
             peer = (self.server_ip, int(msg["relay_port"]))
+            if self.match.get("bridge") and self._bridge is None:
+                b = await self._open_bridge(msg["match"], peer, msg.get("start_time"))
+                if b is not None:
+                    gs = None
+                    peer, local_port = ("127.0.0.1", b.port), b.game_port
         else:
             peer = tuple(msg["peer"])
         if msg.get("build") and msg["build"] != self.build.build_id:
@@ -444,15 +475,19 @@ class LobbyClient:
             await self._safe(self._send({"t": "leave_match", "match": msg["match"]}))
             self._emit({"t": "notice", "code": "version_mismatch", "msg": "opponent runs a different build"})
             return False
-        ticket = MatchTicket(match_id=msg["match"], role=msg["role"], slot=msg["slot"], local_port=gs.port,
+        ticket = MatchTicket(match_id=msg["match"], role=msg["role"], slot=msg["slot"], local_port=local_port,
                              peer=peer, path=msg["path"], rtt_ms=msg.get("rtt_ms", 0.0),
                              jitter_ms=msg.get("jitter_ms", 0.0), delay=msg.get("delay", 3),
                              rounds=msg.get("rounds", 3), ranked=msg.get("ranked", False),
                              opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0),
                              key=str(msg.get("key") or ""), input_delay=msg.get("input_delay"))
-        if self.handover == "share" and gs.dup is not None:
+        if self.handover == "share" and gs is not None and gs.dup is not None:
             ticket._dup_socket = gs.dup
             gs.dup = None
+        if gs is not None:
+            # A last round of punches refreshes both NATs' mappings for the moment the game takes over.
+            for addr in {peer} | set(gs.confirmed):
+                gs._punch_to(addr)
         await self._drop_game_socket()          # the port is free for the game from here on
         self.ticket = ticket
         self.match["state"] = "playing"
@@ -482,8 +517,31 @@ class LobbyClient:
     def _status(self, mid, phase, text):
         self._emit({"t": "nat_status", "match": mid, "phase": phase, "text": text})
 
+    def _server_nat2(self):
+        return bool(self.nat2 and self.welcome and "nat2" in (self.welcome.get("caps") or ()))
+
+    def _start_port_mapper(self):
+        if not self.port_mapping or self._mapper is not None:
+            return
+        if self._router_factory is None and is_local_address(self.server_ip or self.host):
+            return      # a lobby on this PC or the LAN: no router between the players, nothing to forward
+        from .portmap import GamePortMapper
+        self._mapper = GamePortMapper(backend_factory=self._router_factory).start()
+
+    async def _map_port(self, port, timeout=1.0):
+        """The game socket's port forwarded on the router -> [ip, port] (ip None when unknown), or None."""
+        m = self._mapper
+        if m is None or not m.ready():
+            return None
+        try:
+            got = await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(None, m.map, port), timeout)
+        except (asyncio.TimeoutError, OSError):
+            return None
+        return [got[0], int(got[1])] if got else None
+
     async def _nat_register(self, msg):
         await self._drop_game_socket()
+        await self._drop_bridge()
         mid = msg["match"]
         self._status(mid, "register", t("Contacting the lobby server over UDP..."))
         gs = await GameSocket.open(self.game_port, (self.server_ip, int(msg["udp_port"])),
@@ -491,6 +549,11 @@ class LobbyClient:
                                    bytes.fromhex(msg["tag"]), int(msg["side"]),
                                    block_direct=self.block_direct, keep_dup=self.handover == "share")
         self._gs = gs
+        v2 = self.nat2 and bool(msg.get("nat2"))
+        self.match["peer_open"] = asyncio.Event()    # set by nat_peer_punching (the opponent started)
+        # Before the socket sends anything: a forward made now usually carries its outgoing packets too, so
+        # the endpoint the server sees below is the forwarded one.
+        mapped = await self._map_port(gs.port) if v2 or self.port_mapping else None
         reg = await gs.register()
         if reg is None:
             self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"))
@@ -498,15 +561,51 @@ class LobbyClient:
         public, probe = reg
         nat = "unknown" if probe is None else ("eim" if probe[1] == public[1] else "symmetric")
         addrs = [[ip, gs.port] for ip in local_ipv4s(self.server_ip)]
-        self.match.update(public=public, nat=nat, local_port=gs.port)
-        await self._send({"t": "nat_local", "match": mid, "addrs": addrs, "nat": nat, "port": gs.port})
+        self.match.update(public=public, nat=nat, local_port=gs.port, nat2=v2)
+        out = {"t": "nat_local", "match": mid, "addrs": addrs, "nat": nat, "port": gs.port}
+        if mapped and v2:
+            out["mapped"] = [mapped[0] or public[0], mapped[1]]
+        await self._send(out)
 
     async def _nat_punch(self, msg):
         mid, phase = msg["match"], "punch"
         gs = self._gs
         cands = [(c["ip"], int(c["port"]), c.get("kind", "public")) for c in msg.get("candidates", [])]
-        self._status(mid, "punch", t("Connecting to your opponent..."))
-        got = await gs.punch(cands, timeout=float(msg.get("timeout", 3.0)))
+        plan = msg.get("plan") if self.nat2 else None
+        if isinstance(plan, dict):
+            # Planned by the server: start at the same moment as the opponent, punch at a steady rate for the
+            # whole window, walk the predicted ports of a NAT that maps every destination anew.
+            scan = []
+            for sc in plan.get("scan") or ():
+                try:
+                    scan.append((str(sc["ip"]), [int(p) for p in sc["ports"]][:64]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            start_in = float(plan.get("start_in", 0)) / 1000.0
+            if self.clock_offset is not None and isinstance(plan.get("start_at"), (int, float)):
+                at = float(plan["start_at"]) - self.clock_offset - time.time()
+                if -5.0 < at < 5.0:
+                    start_in = at            # the same moment as the opponent, however late this message came
+            window = min(20.0, max(1.0, float(plan.get("window", msg.get("timeout", 3.0)))))
+            ttl_open = min(2.0, max(0.0, float(plan.get("ttl_open", 0.0))))
+            late = max(0.0, -start_in)       # the opponent started this much earlier: keep to its schedule
+            self._status(mid, "punch", t("Connecting to your opponent..."))
+            if start_in > 0:
+                await asyncio.sleep(min(3.0, start_in))
+            peer_open = None
+            if self.match is not None:
+                self.match["punch_t0"] = time.time()
+                if plan.get("wait_peer"):
+                    # tell the opponent (through the server) that this side's NAT is opening now
+                    await self._safe(self._send({"t": "nat_punching", "match": mid}))
+                    peer_open = self.match.get("peer_open")
+            got = await gs.punch(cands, timeout=max(1.0, window - late), interval=float(plan.get("interval", 0.05)),
+                                 scan=scan, slow_start=float(plan.get("slow_start", 0.6)),
+                                 ttl_open=min(ttl_open, 0.15) if peer_open else max(0.0, ttl_open - late),
+                                 peer_open=peer_open)
+        else:
+            self._status(mid, "punch", t("Connecting to your opponent..."))
+            got = await gs.punch(cands, timeout=float(msg.get("timeout", 3.0)))
         if got is None:
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
             return
@@ -525,6 +624,9 @@ class LobbyClient:
         mid, phase = msg["match"], "relay"
         gs = self._gs
         relay = (self.server_ip, int(msg["udp_port"]))
+        if self.match is not None:
+            self.match["bridge"] = bool(msg.get("bridge")) and self.nat2 and self.relay_bridge and \
+                self.handover == "port"
         self._status(mid, "relay", t("Direct connection not possible; using the lobby server's relay..."))
         if not await gs.relay_bind(relay):
             await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": False})
@@ -536,6 +638,44 @@ class LobbyClient:
         rtt, jitter, _n = m
         await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": True, "peer": list(relay), "kind": "relay",
                           "rtt_ms": round(rtt, 3), "jitter_ms": round(jitter, 3)})
+
+    async def _open_bridge(self, mid, relay, start_time=None):
+        """Relay play through this launcher (RelayBridge): the game gets a local port and 127.0.0.1 as its
+        peer; the punched socket stays here, on the relay until the direct path works."""
+        gs, self._gs = self._gs, None
+
+        def switched(path, addr, mid=mid):
+            self.upgrades.append((mid, path))
+            text = t("Direct connection found: the match no longer goes through the lobby server.") \
+                if path == "direct" else t("The direct connection was lost; back on the lobby server's relay.")
+            self._emit({"t": "nat_upgrade", "match": mid, "path": path, "text": text})
+            if self._server_nat2():
+                self._tasks.append(asyncio.ensure_future(self._report_upgrade(mid, path, addr)))
+        first = None
+        if self.clock_offset is not None and isinstance(start_time, (int, float)):
+            # the same server time on both PCs: the match's start + 35 s
+            first = time.monotonic() + (float(start_time) + RelayBridge.FIRST_BURST - self.clock_offset - time.time())
+            if not time.monotonic() + 5.0 < first < time.monotonic() + 120.0:
+                first = None
+        try:
+            self._bridge = await RelayBridge.open(gs, relay, on_switch=switched, first_burst=first)
+        except OSError:
+            self._gs = gs
+            return None
+        return self._bridge
+
+    async def _report_upgrade(self, mid, path, addr):
+        msg = {"t": "nat_upgrade", "match": mid, "path": path}
+        if path == "direct" and self._bridge is not None:
+            m = await self._bridge.gs.measure(addr, n=6, timeout=2.0, need=2)
+            if m is not None:
+                msg["rtt_ms"] = round(m[0], 3)
+        await self._safe(self._send(msg))
+
+    async def _drop_bridge(self):
+        b, self._bridge = self._bridge, None
+        if b is not None:
+            await b.close()
 
     async def _drop_game_socket(self):
         gs, self._gs = self._gs, None
@@ -568,8 +708,14 @@ class LobbyClient:
                 if not self.connected:
                     return
             await self._safe(self._send({"t": "ping"}))
-            if self._gs is None:
+            if self._gs is None and self._bridge is None:
                 await self._measure_server()
+            if self._mapper is not None and self._mapper.current is not None:
+                # renewed while a match (or its relay bridge) is on; two minutes without one: closed
+                busy = self.match is not None or self._bridge is not None
+                self._map_idle = 0 if busy else getattr(self, "_map_idle", 0) + 1
+                fn = self._mapper.renew if self._map_idle < 4 else self._mapper.unmap
+                await asyncio.get_running_loop().run_in_executor(None, fn)
 
     async def _measure_server(self):
         if not self.welcome:
@@ -607,7 +753,28 @@ class LobbyClient:
             await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
         await self._measure_server()
         self._start_keepalive()
+        self._start_port_mapper()
+        if self.nat2:
+            self._tasks.append(asyncio.ensure_future(self._clock_sync()))
         return self.me
+
+    async def _clock_sync(self, n=3):
+        """The server's clock against ours (the ping that answers with the server's time, the fastest of n):
+        a planned punch starts at a server time, so a message that TCP had to send twice still starts on time."""
+        best = None
+        for _ in range(n):
+            t0 = time.time()
+            try:
+                r = await self._request({"t": "ping"}, 5.0)
+            except (LobbyError, ConnectionError, OSError):
+                return
+            t1 = time.time()
+            st = r.get("time")
+            if isinstance(st, (int, float)) and (best is None or t1 - t0 < best[0]):
+                best = (t1 - t0, float(st) - (t0 + t1) / 2.0)
+            await asyncio.sleep(0.05)
+        if best is not None:
+            self.clock_offset = best[1]
 
     # ---------------------------------------------------------------- credentials
     def password_ok(self):
@@ -842,6 +1009,9 @@ class LobbyClient:
                 except (OSError, ConnectionError, asyncio.TimeoutError):
                     pass
             await self._drop_game_socket()
+            await self._drop_bridge()
+            if self._mapper is not None:
+                await asyncio.get_running_loop().run_in_executor(None, self._mapper.unmap)
             for task in self._tasks:
                 task.cancel()
             await asyncio.gather(*self._tasks, return_exceptions=True)

@@ -148,8 +148,8 @@ lobby/
 | Variable | Read by netplay today | Meaning |
 |---|---|---|
 | `T5_NET_MODE` | yes | `host` (P1, slot 0) or `join` (P2, slot 1) |
-| `T5_NET_PORT` | yes | local UDP port: exactly the port the lobby punched through. Bind it. |
-| `T5_NET_PEER` | yes | `ip:port` of the opponent (direct/LAN) or of the lobby server's relay |
+| `T5_NET_PORT` | yes | local UDP port: exactly the port the lobby punched through (relay bridge: a free local port). Bind it. |
+| `T5_NET_PEER` | yes | `ip:port` of the opponent (direct/LAN), of the lobby server's relay, or `127.0.0.1:<port>` of the launcher's relay bridge |
 | `T5_NET_DELAY` | yes | input delay in frames for the lockstep (host's value wins, as netplay already does); the rollback delay is never above it |
 | `T5_RB_NET_DELAY` | yes | ranked only: the server's fixed rollback input delay (`T5L_RANKED_INPUT_DELAY`, default 2, in `match_start` as `input_delay`); other matches get the player's own setting from the launcher (`auto`, 0, 1, 2; docs/NETPLAY.md "Input delay") |
 | `T5_NET_TIMEOUT` | yes | seconds the peer may be silent / stall before the match ends (20) |
@@ -240,37 +240,61 @@ if (const char* path = getenv("T5_NET_SOCKET_FILE")) {
 
 ## NAT traversal and the relay
 
+The whole story -- why the same two homes sometimes got a direct connection and sometimes not, what
+1.1.1 changed, the NAT simulator and its numbers -- is in docs/NETPLAY.md, "Getting a direct
+connection". In short:
+
 On `nat_begin` each client opens the game socket (any free port, or the fixed
-port the player forwarded on the router) and sends `REGISTER` with its secret
-per-match token to the server's UDP port, and `PROBE` to the second UDP port.
-The server answers with the endpoint it saw. If the two ports saw different
-source ports, the NAT maps per destination ("symmetric"); punching between two
-symmetric NATs is pointless, so that pair goes straight to the relay.
+port the player forwarded on the router), asks the router to forward that port
+when the player allows it (launcher Settings, PCP / NAT-PMP / UPnP, 10-minute
+lease), and sends `REGISTER` with its secret per-match token to the server's
+UDP port, and `PROBE` to the second UDP port. The server answers with the
+endpoint it saw. If the two ports saw different source ports, the NAT maps per
+destination ("symmetric"); when the two ports are close, its next ports can be
+guessed. Two symmetric NATs whose ports cannot be guessed go straight to the
+relay.
 
 The client then reports its own interface addresses (`nat_local`). The server
 sends each side the other's candidates (`nat_punch`):
 
-- the public endpoint it observed, always;
+- the public endpoint it observed (for a symmetric peer only after its
+  predicted ports: that endpoint leads to the server only);
+- the peer's router forward, only on the peer's own public address;
 - the peer's private interface addresses, only when both have the same public
   IP (same router or same PC: hairpinning through the router often fails).
   Only private addresses are accepted, so a client cannot aim its opponent's
-  punches at hosts on the internet.
+  punches at hosts on the internet;
+- for a symmetric peer whose ports count up, the next 24 ports it will use
+  (an older client gets the next 8, ahead of the public endpoint).
 
-Both clients send `PUNCH` to every candidate every 30 ms, for 3 s. Every punch
-received is answered with a punch carrying `F_HEARD`; a punch carrying
-`F_HEARD` proves the path works both ways. A packet from an address that was
-not a candidate (the peer's NAT used another port) becomes a "reflexive"
-candidate. After the first confirmation the client waits 120 ms for a better
-one (local beats public), then measures 12 round trips with `PPING`/`PPONG` and
-reports `nat_result` (median RTT, jitter = p90 - median).
+A client with the `nat2` cap also gets a plan: both start at the same server
+time, at first only with a low TTL (each side opens its own NAT without its
+punch reaching the other router) until the other side has said through the
+server that it started too (`nat_punching` -> `nat_peer_punching`), then 20
+punches a second to every candidate for the rest of the 6-second window, the predicted ports walked in
+the order the peer's NAT hands them out. An older client punches every
+candidate every 30 ms for the window from the moment its message arrives, as
+before. Every punch received is answered with a punch carrying `F_HEARD`; a
+punch carrying `F_HEARD` proves the path works both ways. A packet from an
+address that was not a candidate (the peer's NAT used another port) becomes a
+"reflexive" candidate. After the first confirmation the client waits 120 ms for
+a better one (local beats public), then measures 12 round trips with
+`PPING`/`PPONG` and reports `nat_result` (median RTT, jitter = p90 - median).
 
-When either side fails, the server opens a **relay session** (`nat_relay`).
+The server waits for both reports (or the end of the window). When one side got
+through and the other did not, the failed side punches once more (2.5 s); only
+when both fail does the server open a **relay session** (`nat_relay`).
 Both clients send `RELAY_BIND` with their token from the game socket to the
 server's UDP port; from then on, every packet from one bound endpoint that is
 not addressed to the server is forwarded to the other bound endpoint, from the
 same port. The game therefore talks to `server:7781` as if it were the
 opponent. One UDP port serves every relayed match (the session is found by the
 sender's address), so a self-hoster forwards one TCP and one or two UDP ports.
+Between two `nat2` clients the game socket stays in the launcher instead (relay
+bridge): the game talks to it on 127.0.0.1, the launcher carries its packets
+to the relay and tries the direct path in 3-second bursts every 40 s (both at
+the same server time); once it works both ways the match leaves the relay
+(`nat_upgrade`), and goes back to it if the direct path goes quiet.
 
 If a NAT re-maps the game's port between the launcher's bind and the game's
 first packet, game traffic (`T5NP` magic) from the same IP is accepted for the
@@ -283,7 +307,8 @@ match is gone is swept up.
 
 Not handled: UDP blocked entirely (the match is cancelled with
 `udp_unreachable` and the player is told to check the firewall); IPv6 (the
-netplay layer is IPv4-only too); port prediction for symmetric NATs.
+netplay layer is IPv4-only too); two symmetric NATs with random ports and no
+router forward on either side (relay).
 
 ## Ratings, queues, results
 
@@ -312,7 +337,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -326,7 +351,7 @@ Client to server:
 | `challenge_reply` | `challenge`, `accept` | accepted: match without ready check |
 | `challenge_cancel` | `challenge` | |
 | `ready` | `match`, `accept` | |
-| `nat_local` | `match`, `addrs [[ip,port]]`, `nat: eim\|symmetric\|unknown`, `port` | |
+| `nat_local` | `match`, `addrs [[ip,port]]`, `nat: eim\|symmetric\|unknown`, `port`, `mapped [ip, port]` (nat2: the game port's router forward) | |
 | `nat_result` | `match`, `phase: punch\|relay`, `ok`, `peer`, `kind`, `rtt_ms`, `jitter_ms` | |
 | `game_started` | `match` | |
 | `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]`, `chars` (in-game select: the fighters), `costumes` (their confirm buttons, kept by a ranked set) | `result_ack`; the other player gets `notice result_pending` |
@@ -334,6 +359,8 @@ Client to server:
 | `block` / `unblock` / `blocks` | `name` (or `player`) | `blocked` / `unblocked` / `blocks {rows}`; a match with that player ends like a quit |
 | `leave_set` | `reason` (`lag`) | leave the games in a row between two games, no penalty; `set_end` to both |
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
+| `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
+| `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
 | `logout` | | `bye`, connection closed |
 
 Server to client (pushed):
@@ -347,9 +374,10 @@ Server to client (pushed):
 | `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}`, `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
 | `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
-| `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2` |
-| `nat_punch` | `match`, `candidates [{ip, port, kind}]`, `timeout` |
-| `nat_relay` | `match`, `udp_port`, `reason` |
+| `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
+| `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, wait_peer, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
+| `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
+| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works) |
 | `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
 | `match_result` | `match`, `status`, `winner`, `score`, `ranked`, `rating {before, after, delta}`, `you` |
@@ -473,7 +501,7 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 |---|---|---|
 | `T5L_HOST` | `0.0.0.0` | bind address |
 | `T5L_PORT` / `T5L_UDP_PORT` | `7781` | control (TCP) and UDP port |
-| `T5L_UDP_PORT2` | `7782` | NAT probe port; `0` = off (symmetric NATs are then only found by failing to punch) |
+| `T5L_UDP_PORT2` | `7782` | NAT probe port; `0` = off (symmetric NATs are then only found by failing to punch, and their ports are never predicted) |
 | `T5L_DB` | `t5lobby.db` | SQLite file; back it up to keep accounts and ratings |
 | `T5L_MOTD` | | message shown after login |
 | `T5L_ACCOUNTS` / `T5L_GUESTS` | `1` / `1` | allow accounts / guests |
@@ -483,7 +511,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_RELAY` / `T5L_FORCE_RELAY` | `1` / `0` | offer the relay / use only the relay |
 | `T5L_RELAY_KBPS` / `T5L_RELAY_PPS` / `T5L_MAX_RELAYS` | `512` / `400` / `100` | relay caps |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
-| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 3, 6, 90 s | |
+| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 6, 90 s | (the punch window was 3 s up to 1.1.0) |
+| `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
@@ -681,8 +710,8 @@ is there.
 - The persistent game starts with the first match; starting it already when the player
   queues would make the first match as quick as the later ones.
 - TURN-style relay on a separate host, or several relay regions; today the relay is the lobby server.
-- Port prediction for symmetric NATs; IPv6. (UPnP/NAT-PMP exists for "Host for friends" only,
-  opt-in, and is so far tested against fake routers only.)
+- IPv6. (Port prediction for symmetric NATs and the game port's router forward came with 1.1.1;
+  PCP / NAT-PMP / UPnP are so far tested against fake routers only.)
 - The lobby list still goes to everybody (deltas made it ~26x cheaper); past several hundred
   players it needs paging or interest filtering.
 - Moderation beyond the admin tool (docs/HOSTING.md): in-game reporting of cheaters, a kick

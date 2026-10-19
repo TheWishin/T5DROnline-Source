@@ -92,6 +92,7 @@ class Base(unittest.TestCase):
 
     def c(self, name=None, password=None, register=False, **kw):
         from t5lobby.client import LobbyClient
+        kw.setdefault("relay_bridge", False)       # the relay tests check the server's relay itself (util.client)
         c = LobbyClient(self.s.addr, BUILD, **kw)
         try:
             c.connect()

@@ -6,7 +6,8 @@ Match life cycle (states):
     ready      both players must accept (skipped for an accepted challenge or a rematch)
     nat        each client binds its game socket and registers it with the server over UDP
     punch      clients punch holes toward each other's candidate endpoints and measure RTT
-    relay      punching failed (or both NATs are symmetric): both bind to the relay
+               (clients with the "nat2" cap get a plan: a common start, a window, predicted ports)
+    relay      punching failed (or both NATs are symmetric and unpredictable): both bind to the relay
     playing    match_start sent: the game runs; waiting for result reports
     done       results reconciled (or cancelled / void)
 
@@ -46,11 +47,12 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
-            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick"]
+            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
+            "nat2"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -271,6 +273,9 @@ class Match:
         self.probe_ep = [None, None]         # ... and as the second port sees it
         self.nat_info = [None, None]         # client's nat_local message
         self.results = [None, None]          # nat_result (punch or relay phase)
+        self.punch_retry = False             # the one second chance of a side that failed while the other made it
+        self.nat_plan = None                 # what the punch phase was told (log, tests)
+        self.upgraded = None                 # a relayed match that moved onto the direct path: its round trip
         self.relay = None
         self.path = None
         self.rtt = None
@@ -474,7 +479,7 @@ class LobbyServer:
             "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
             "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
             "lag_more", "lag_leaves", "notices_sent", "sets_confirmed", "sets_forfeit", "sets_void",
-            "set_replays"), 0)
+            "set_replays", "punch_retries", "punch_predicted", "relay_upgrades"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
         self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
         self.name_block = self._load_blocklist(self.cfg.name_blocklist)
@@ -1864,7 +1869,7 @@ class LobbyServer:
         for side, p in enumerate(m.players):
             self.tokens[m.tokens[side]] = (m, side)
             p.send({"t": "nat_begin", "match": m.id, "token": m.tokens[side].hex(), "tag": m.tag.hex(),
-                    "side": side, "udp_port": self.udp.port, "udp_port2": self.udp.port2})
+                    "side": side, "udp_port": self.udp.port, "udp_port2": self.udp.port2, "nat2": True})
         self._timer(m, "nat", self.cfg.register_timeout, self._nat_timeout, m)
         self.dirty = True
 
@@ -1912,30 +1917,116 @@ class LobbyServer:
             # not be able to aim them at arbitrary hosts on the internet.
             if 0 < port < 65536 and ipa.is_private and not ipa.is_link_local and (loopback_ok or not ipa.is_loopback):
                 addrs.append([ip, port])
+        mapped = None
+        mp = msg.get("mapped")
+        if isinstance(mp, list) and len(mp) == 2:
+            try:
+                mapped = [str(ipaddress.IPv4Address(str(mp[0]))), int(mp[1])]
+            except (ValueError, TypeError):
+                mapped = None
+            if mapped and not 0 < mapped[1] < 65536:
+                mapped = None
         m.nat_info[side] = {"addrs": addrs, "nat": proto.clean_text(msg.get("nat", "unknown"), 16),
-                            "port": int(msg.get("port", 0))}
+                            "port": int(msg.get("port", 0)), "mapped": mapped}
         self._maybe_punch(m)
+
+    # How the punch phase is planned (docs/NETPLAY.md "Getting a direct connection"):
+    #  * the NAT type from what the server itself saw: the same socket's endpoint at the main and at the
+    #    probe port -- different ports = the NAT maps every destination anew ("symmetric"), and the step
+    #    between them says whether its next ports can be guessed (a small step: they count up);
+    #  * candidates: the peer's public endpoint (not for a symmetric peer: it only leads to the server), its
+    #    router forward (UPnP / NAT-PMP / PCP, only on its own public address), its LAN addresses when both
+    #    share a public address, and for a predictable symmetric peer the next ports it will use;
+    #  * a "nat2" client gets a plan: start in N ms (both start together: the server's message takes the
+    #    two players different times to arrive), punch for punch_timeout seconds, walk the predicted ports;
+    #  * an older client gets the same candidates (at most 8 predicted ones) and the window as `timeout`.
+    def _nat_view(self, m, side):
+        """-> (symmetric, step): step = probe port - main port when both were seen from one address."""
+        pub, prb = m.public_ep[side], m.probe_ep[side]
+        if pub is not None and prb is not None and prb[0] == pub[0]:
+            return prb[1] != pub[1], prb[1] - pub[1]
+        return m.nat_info[side]["nat"] == "symmetric", None
+
+    def _predicted(self, m, side):
+        """The ports a symmetric NAT will most likely give its next mappings, in the order it gives them."""
+        sym, step = self._nat_view(m, side)
+        n = self.cfg.predict_ports
+        if not sym or not step or abs(step) > 16 or n <= 0:
+            return []
+        d = 1 if step > 0 else -1
+        last = m.probe_ep[side][1]
+        return [p for p in (last + d * k for k in range(1, n + 1)) if 1024 <= p <= 65535]
 
     def _maybe_punch(self, m):
         if m.state != "nat" or None in m.public_ep or None in m.nat_info:
             return
-        nats = [i["nat"] for i in m.nat_info]
-        if self.cfg.force_relay or nats == ["symmetric", "symmetric"]:
+        views = [self._nat_view(m, i) for i in (0, 1)]
+        preds = [self._predicted(m, i) for i in (0, 1)]
+        new = ["nat2" in getattr(p.conn, "caps", ()) for p in m.players]
+        both_sym = views[0][0] and views[1][0]
+        if self.cfg.force_relay or (both_sym and not (preds[0] and preds[1])):
             self._start_relay(m, "forced" if self.cfg.force_relay else "both NATs symmetric")
             return
         m.state = "punch"
+        m.results = [None, None]
         same_ip = m.public_ep[0][0] == m.public_ep[1][0]
+        window = self.cfg.punch_timeout
+        # Both start together: the message reaches each player about half its round trip after it leaves.
+        one_way = [min(400.0, max(5.0, (getattr(p, "server_rtt", None) or 150.0) / 2.0)) for p in m.players]
+        go = max(one_way) + 60.0
+        t_go = time.time() + go / 1000.0          # (server clock; a client that synced its clock starts then)
+        plan_log = []
         for side, p in enumerate(m.players):
             o = 1 - side
-            cands = [{"ip": m.public_ep[o][0], "port": m.public_ep[o][1], "kind": "public"}]
+            o_ip, o_port = m.public_ep[o]
+            o_sym = views[o][0]
+            cands = []
             if same_ip:
                 # Same public address: the two PCs share a router (or are one PC). Hairpinning through
                 # the router often fails, so offer the peer's own interface addresses first.
                 for ip, port in m.nat_info[o]["addrs"]:
                     if [ip, port] != list(m.public_ep[o]):
-                        cands.insert(0, {"ip": ip, "port": port, "kind": "local"})
-            p.send({"t": "nat_punch", "match": m.id, "candidates": cands, "timeout": self.cfg.punch_timeout})
-        self._timer(m, "punch", self.cfg.punch_timeout + 3.0, self._punch_timeout, m)
+                        cands.append({"ip": ip, "port": port, "kind": "local"})
+            mp = m.nat_info[o].get("mapped")
+            if mp and mp[0] == o_ip and mp[1] != o_port:
+                cands.append({"ip": o_ip, "port": mp[1], "kind": "mapped"})
+            msg = {"t": "nat_punch", "match": m.id, "candidates": cands, "timeout": window}
+            if new[side]:
+                scan = []
+                if o_sym:
+                    # the peer's next ports in the order its NAT hands them out, its server endpoint last
+                    # (a symmetric pair walks both ranges in step: the n-th new mapping on each side meets)
+                    scan = [{"ip": o_ip, "ports": preds[o] + [o_port]}]
+                else:
+                    cands.append({"ip": o_ip, "port": o_port, "kind": "public"})
+                # The first half second's punches only open this side's own NAT (low TTL), so the peer's
+                # router never sees a punch from here before its own went out. Two new clients start at
+                # the same server time; against an older client, which starts the moment its message
+                # arrives, a new one starts the moment its own arrives too (its low-TTL half second then
+                # covers an older client that gets its message a little later).
+                msg["plan"] = {"start_in": round(go - one_way[side]) if all(new) else 0,
+                               "window": window, "interval": 0.05, "slow_start": 0.0 if all(new) else 0.6,
+                               "ttl_open": self.cfg.punch_ttl_open, "scan": scan}
+                if all(new):
+                    msg["plan"]["start_at"] = round(t_go, 3)
+                    # each says when it starts (nat_punching -> nat_peer_punching): the low-TTL opening lasts
+                    # until the other one has started too, however late its message came
+                    msg["plan"]["wait_peer"] = True
+            else:
+                # (in order: an older client punches its list front to back, so against a symmetric peer the
+                # predicted ports come first -- the order that peer's NAT hands its ports out)
+                pred = [{"ip": o_ip, "port": port, "kind": "public"} for port in preds[o][:8]]
+                public = [{"ip": o_ip, "port": o_port, "kind": "public"}]
+                cands.extend(pred + public if o_sym else public + pred)
+            plan_log.append({"sym": views[side][0], "step": views[side][1], "pred": len(preds[o]) if o_sym else 0,
+                             "mapped": bool(mp), "nat2": new[side]})
+            p.send(msg)
+        if any(preds):
+            self._count("punch_predicted")
+        m.nat_plan = plan_log
+        self.note("nat_plan", match=m.id, plan=plan_log)
+        log.info("match %s: punch %s", m.id, plan_log)
+        self._timer(m, "punch", go / 1000.0 + window + 3.0, self._punch_timeout, m)
         self.dirty = True
 
     def _punch_timeout(self, m):
@@ -1959,8 +2050,10 @@ class LobbyServer:
             return
         m.state = "relay"
         log.info("match %s: relay (%s)", m.id, why)
+        # Two nat2 clients keep the game socket and look for the direct path while the match runs (RelayBridge).
+        bridge = self.cfg.relay_upgrade and all("nat2" in getattr(p.conn, "caps", ()) for p in m.players)
         for side, p in enumerate(m.players):
-            p.send({"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why})
+            p.send({"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why, "bridge": bridge})
         self._timer(m, "relay", self.cfg.relay_timeout, self._relay_timeout, m)
 
     def _relay_crowded(self, m):
@@ -2029,6 +2122,38 @@ class LobbyServer:
     def udp_relay_bound(self, match_id, side, addr):
         self.note("relay_bound", match=match_id, side=side)
 
+    async def h_nat_punching(self, conn, msg):
+        """A nat2 client has started its planned punch: tell the other one (its low-TTL opening may end)."""
+        p = conn.player
+        m = p.match if p is not None else None
+        if m is None or m.id != msg.get("match") or m.state != "punch":
+            return None
+        m.players[1 - m.side(p)].send({"t": "nat_peer_punching", "match": m.id})
+        return None
+
+    async def h_nat_upgrade(self, conn, msg):
+        """A relayed match moved onto the direct path (or back): the clients' RelayBridges found it while the
+        games played. For the log and the counters only -- the relay session stays as the way back."""
+        p = conn.player
+        m = p.match if p is not None else None
+        if m is None or m.id != msg.get("match") or m.path != "relay":
+            return None
+        path = "direct" if msg.get("path") == "direct" else "relay"
+        if path == "direct":
+            try:
+                rtt = max(0.0, min(5000.0, float(msg.get("rtt_ms", 0) or 0)))
+            except (TypeError, ValueError):
+                rtt = 0.0
+            if m.upgraded is None:
+                self._count("relay_upgrades")
+            m.upgraded = rtt
+        if path == "direct":
+            log.info("match %s: side %d left the relay for the direct path (%.0f ms)", m.id, m.side(p), m.upgraded)
+        else:
+            log.info("match %s: side %d went back to the relay", m.id, m.side(p))
+        self.note("nat_upgrade", match=m.id, side=m.side(p), path=path)
+        return None
+
     async def h_nat_result(self, conn, msg):
         p = conn.player
         m = self._get_match(p, msg, ("punch", "relay"))
@@ -2044,11 +2169,27 @@ class LobbyServer:
             res["peer"] = self._peer(msg.get("peer"))
         m.results[side] = res
         if m.state == "punch":
-            if not ok:
-                self._start_relay(m, "punch failed")
-            elif all(r and r["ok"] for r in m.results):
+            if all(r and r["ok"] for r in m.results):
                 kinds = {r["kind"] for r in m.results}
                 self._start_match(m, "lan" if kinds == {"local"} else "direct")
+            elif None in m.results:
+                pass   # the other side is still punching (or measuring): its result or the deadline decides
+            elif m.results[1 - side]["ok"] != ok and not m.punch_retry:
+                # One side got through, the other did not (it stopped before the first side's punches
+                # arrived, or missed the answers): the path works one way at least. The failed side punches
+                # once more -- the addresses it heard from are on its list now.
+                m.punch_retry = True
+                failed = side if not ok else 1 - side
+                m.results[failed] = None
+                self._count("punch_retries")
+                q = m.players[failed]
+                again = {"t": "nat_punch", "match": m.id, "candidates": [], "timeout": 2.5, "retry": True}
+                if "nat2" in getattr(q.conn, "caps", ()):
+                    again["plan"] = {"start_in": 0, "window": 2.5, "interval": 0.03, "slow_start": 0.0, "scan": []}
+                q.send(again)
+                self._timer(m, "punch", 2.5 + 3.0, self._punch_timeout, m)
+            else:
+                self._start_relay(m, "punch failed")
         elif m.state == "relay":
             if all(r and r["ok"] for r in m.results):
                 self._start_match(m, "relay")

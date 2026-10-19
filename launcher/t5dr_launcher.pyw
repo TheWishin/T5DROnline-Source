@@ -452,6 +452,13 @@ class App(tk.Tk):
         ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Frames. Auto: 1 up to about 60 ms ping, 2 above. 0/1/2 count only when your opponent "
             "picked the same, otherwise Auto. Ranked matches always use 2.")).pack(anchor="w", pady=(4, 0))
+        # docs/NETPLAY.md "Getting a direct connection": a forwarded game port lets the opponent's punches in
+        self.router_ports_var = tk.BooleanVar(value=bool(self.settings.get("router_ports", True)))
+        ttk.Checkbutton(net, text=t("Open the game's port on my router during online matches (UPnP / NAT-PMP / PCP)"),
+                        variable=self.router_ports_var, command=self.save_settings).pack(anchor="w", pady=(8, 0))
+        ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Helps the direct connection when your opponent's router is strict. The port is open only while "
+            "you play and is closed again afterwards.")).pack(anchor="w", pady=(2, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -832,6 +839,8 @@ class App(tk.Tk):
         self.settings["display"] = self.display_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
+        if hasattr(self, "router_ports_var"):
+            self.settings["router_ports"] = bool(self.router_ports_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()

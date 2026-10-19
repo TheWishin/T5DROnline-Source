@@ -499,6 +499,12 @@ MESSAGES = {
     "opponent picked the same, otherwise Auto. Ranked matches always use 2.":
         "Frames. Auto: 1 bis etwa 60 ms Ping, darüber 2. 0/1/2 gelten nur, wenn dein Gegner "
         "dasselbe gewählt hat, sonst Auto. Ranked-Matches nutzen immer 2.",
+    "Open the game's port on my router during online matches (UPnP / NAT-PMP / PCP)":
+        "Den Port des Spiels während Online-Matches am Router öffnen (UPnP / NAT-PMP / PCP)",
+    "Helps the direct connection when your opponent's router is strict. The port is open only while "
+    "you play and is closed again afterwards.":
+        "Hilft bei der direkten Verbindung, wenn der Router deines Gegners streng ist. Der Port ist nur "
+        "offen, während du spielst, und wird danach wieder geschlossen.",
     "Set up controllers…": "Controller einstellen…",
     "Pick a pad, stick or hitbox, press the buttons you want for 1 2 3 4 and the rest, "
     "or start from a layout.":
@@ -663,6 +669,10 @@ MESSAGES = {
     "Measuring the connection...": "Messe die Verbindung...",
     "Direct connection not possible; using the lobby server's relay...":
         "Direkte Verbindung nicht möglich; nutze das Relay des Lobby-Servers...",
+    "Direct connection found: the match no longer goes through the lobby server.":
+        "Direkte Verbindung gefunden: Das Match läuft nicht mehr über den Lobby-Server.",
+    "The direct connection was lost; back on the lobby server's relay.":
+        "Die direkte Verbindung ist abgerissen; es geht wieder über das Relay des Lobby-Servers.",
     # ---- lobby/t5lobby/dialogs.py
     "No": "Nein",
     "Yes": "Ja",

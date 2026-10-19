@@ -188,7 +188,22 @@ sync point, each match's FIGHT START setup and result.
 
 Live: 30 matches, every one confirmed by both games with 0 mismatching frames. Recorded: 30 files
 (host and joiner each), 4.4-4.7 KB per minute of play with both players mashing (5 KB for a match of
-two rounds; 2.8-7 KB per match). Played back with the final build: FINAL_TABLE
+two rounds; 2.8-7 KB per match). Played back with the final build (before the merge with 1.1.2's
+main; run final4): **30 of 30 files identical to the live match** -- 3,509 recorded hashes compared, 0
+different; 370 sync points, all where the recording had them; 60 of 60 match results the same winner,
+score and deciding frame's hash (20 of them on stage 27), as `tools/replay_play.py` prints them:
+
+```
+| replay | match | mode | stage | fighters | winner live / replay | final hash live | final hash replay | same |
+| T5R-20261019-162607-9ec6.t5replay | 1 | rollback | 27 | Jin vs Lili | 0 / 0 | 073882e52780ad87 | 073882e52780ad87 | True |
+| T5R-20261019-162607-9ec6.t5replay | 2 | rollback | 20 | Jin vs Lili | 1 / 1 | f2bc0384c44e2982 | f2bc0384c44e2982 | True |
+| T5R-20261019-165122-3dda.t5replay | 2 | lockstep | 29 | Devil Jin vs Mokujin | 1 / 1 | 85b04dc0325081cd | 85b04dc0325081cd | True |
+| T5R-20261019-170041-d7bf.t5replay | 2 | lockstep | 27 | Steve vs Hwoarang | 1 / 1 | a5f5ea0a72dca487 | a5f5ea0a72dca487 | True |
+| T5R-20261019-170630-a17b.t5replay | 1 | rollback | 18 | Steve vs Steve | 0 / 0 | 800be2bf95d213cb | 800be2bf95d213cb | True |
+| T5R-20261019-170630-a17b.t5replay | 2 | rollback | 27 | Bryan vs Law | 1 / 1 | b254c0c1b2640f91 | b254c0c1b2640f91 | True |
+... (60 rows)
+30 of 30 replays identical to the live match (every recorded hash and result)
+```
 
 Also checked: the viewer's controls (`replay_play.py --press 10:START,15:START,18:R1,30:R1`, the
 second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", "speed 2x",

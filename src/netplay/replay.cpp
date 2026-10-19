@@ -317,12 +317,13 @@ struct Timed {
     Timed() { QueryPerformanceCounter(&t0); }
     ~Timed() { LARGE_INTEGER t1; QueryPerformanceCounter(&t1); g_cost.acc += t1.QuadPart - t0.QuadPart; }
 };
+void cost_note();
 void cost_frame()
 {
     g_cost.sum += g_cost.acc;
     if (g_cost.acc > g_cost.max) g_cost.max = g_cost.acc;
     g_cost.acc = 0;
-    g_cost.frames++;
+    if (++g_cost.frames >= 3600) cost_note();   /* once a minute, and at the session's end */
 }
 void cost_note()
 {

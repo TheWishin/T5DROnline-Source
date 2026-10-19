@@ -434,8 +434,14 @@ mode, 48 kHz; Windows converts other rates).
    Other errors on the "waiting" line (`AUDCLNT_E_UNSUPPORTED_FORMAT`,
    `AUDCLNT_E_DEVICE_IN_USE`) mean Windows refused the device. Send the log.
 5. Bluetooth headphones add delay. A wired output or speakers are safer.
-6. Crackling: the sound drops a little when the frame rate dips (0.1-3.6 % of the
-   audio blocks in our QA run, 14.6 % at worst in 5 seconds). See [Low frame
+6. Crackling or sound that breaks up: search the log for `[cellAudio] sound
+   glitches`. The line appears when 5 or more audio blocks in 5 seconds came too
+   late from the game's sound engine (or the device ran dry), and counts them.
+   The game's sound engine needs one processor core for itself all the time;
+   if other programs keep the processor busy (a game, a browser with video, a
+   virus scan, a build), close them. Builds with patch 0041 need about 40 % less
+   of that core for the sound, so 6-core PCs from 2018-2019 keep up. A low
+   frame rate makes it worse too: see [Low frame
    rate](#low-frame-rate).
 
 ## Controllers and keyboard

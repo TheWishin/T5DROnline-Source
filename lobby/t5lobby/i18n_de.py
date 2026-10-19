@@ -348,12 +348,14 @@ MESSAGES = {
         "Online-Spiel nicht möglich.\n\n({reason})",
     # ---- launcher/problem_report_ui.py
     "Before the zip is made, your Windows user name in file paths becomes <user>, "
-    "internet IP addresses become <ip> (addresses of your own network stay), and "
-    "passwords, tokens and match keys are left out. Your game files, keys, .pkg and .rap "
-    "are never included. Nothing is uploaded: you send the zip yourself.":
+    "internet IP addresses become <ip> (addresses of your own network stay), lobby player "
+    "names (yours and your opponents') become <player>, and passwords, tokens and match keys "
+    "are left out. Your game files, keys, .pkg and .rap are never included. Nothing is "
+    "uploaded: you send the zip yourself.":
         "Bevor die Zip-Datei entsteht, wird dein Windows-Benutzername in Dateipfaden zu "
         "<user>, Internet-IP-Adressen werden zu <ip> (Adressen deines eigenen Netzwerks "
-        "bleiben), und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Deine "
+        "bleiben), Spielernamen aus der Lobby (deiner und die deiner Gegner) werden zu "
+        "<player>, und Passwörter, Tokens und Match-Schlüssel werden weggelassen. Deine "
         "Spieldateien, Schlüssel, .pkg und .rap sind nie dabei. Es wird nichts hochgeladen: "
         "Du schickst die Zip-Datei selbst.",
     "{count} bytes": "{count} Bytes",
@@ -821,10 +823,15 @@ MESSAGES = {
     "the package's content ID ({id}).":
         "Die Lizenz (.rap) gehört nicht zu diesem Paket. Nimm die .rap, deren Name zur "
         "Content-ID des Pakets passt ({id}).",
-    "Decrypting the game program failed (see the log above). Is the package complete? "
-    "Its size should be 619,430,240 bytes.":
-        "Das Entschlüsseln des Spielprogramms ist fehlgeschlagen (siehe Log oben). Ist das "
-        "Paket vollständig? Es sollte 619.430.240 Bytes groß sein.",
+    "Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
+    "again; if it fails again, check that the package is {size} bytes.":
+        "Das Entschlüsseln des Spielprogramms ist fehlgeschlagen (siehe Log oben). Setz den Haken bei "
+        "\"Alle Schritte neu machen\" und drück noch einmal BUILD GAME; klappt es wieder nicht, prüf, "
+        "ob das Paket {size} Bytes groß ist.",
+    "The package is {size} bytes, the supported one is {supported} bytes: the download is incomplete or it is "
+    "a different file. Download it again.":
+        "Das Paket ist {size} Bytes groß, das unterstützte {supported} Bytes: Der Download ist unvollständig "
+        "oder es ist eine andere Datei. Lade es noch einmal herunter.",
     "The ps3recomp copy in this folder does not match this version of the port. Download "
     "the release again and extract it into an empty folder.":
         "Die ps3recomp-Kopie in diesem Ordner passt nicht zu dieser Version der Portierung. "
@@ -1052,6 +1059,8 @@ MESSAGES = {
         "Programm?).",
     "You closed the game during the match: it counts as a loss.":
         "Du hast das Spiel während des Matches geschlossen: Das zählt als Niederlage.",
+    "The game could not get back to character select and closed itself; it starts again for your next match.":
+        "Das Spiel kam nicht zur Charakterauswahl zurück und hat sich beendet; zu deinem nächsten Match startet es neu.",
     "Your opponent does not want a rematch.": "Dein Gegner will kein Rematch.",
     "The game is not running any more; leaving the rematch.":
         "Das Spiel läuft nicht mehr; das Rematch wird verlassen.",
@@ -1562,6 +1571,8 @@ MESSAGES = {
     "ROUNDS  (YOU – THEM)": "RUNDEN  (DU – GEGNER)",
     "GAMES  (YOU – THEM)": "SPIELE  (DU – GEGNER)",
     "SET WON": "SET GEWONNEN",
+    "The game waits here for your next match: Rematch, Next game or Leave.":
+        "Das Spiel wartet hier auf dein nächstes Match: Rematch, Nächstes Spiel oder Verlassen.",
     "SET LOST": "SET VERLOREN",
     "Ranked set": "Ranked-Set",
     "Ranked set vs {name}": "Ranked-Set gegen {name}",

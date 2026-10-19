@@ -104,6 +104,18 @@ if(SPU_LIFTED AND EXISTS "${SPU_DIR}/spu_workloads.c")
     if(T5DR_SPU_FAST_SKIN AND SPU_RENDER_JOBS)
         set_property(SOURCE ${SPU_RENDER_JOBS} APPEND PROPERTY COMPILE_DEFINITIONS SPU_FAST_FLOAT)
     endif()
+    # The sound core (bnuscore) only makes audio samples. With the exact path it
+    # needs 4-7 ms of its 5.33 ms audio tick on a fast desktop core, so a slower
+    # CPU misses ticks and the sound breaks up. SPU_NEAR_FLOAT (ps3recomp patch
+    # 0041, docs/SOAK.md): the SPU's float rules (no denormals, +0, extended
+    # range and overflow on the exact path) in IEEE single precision, rounding
+    # to nearest instead of toward zero; the same bits on every x86 CPU and
+    # for both build targets. OFF restores the exact path.
+    option(T5DR_SPU_NEAR_SOUND "near-exact IEEE float ops for the SPU sound core" ON)
+    file(GLOB SPU_SOUND_CORE CONFIGURE_DEPENDS "${SPU_DIR}/lifted/bnuscore/spu_recomp.c")
+    if(T5DR_SPU_NEAR_SOUND AND SPU_SOUND_CORE)
+        set_property(SOURCE ${SPU_SOUND_CORE} APPEND PROPERTY COMPILE_DEFINITIONS SPU_NEAR_FLOAT)
+    endif()
 elseif(NOT T5DR_GAME_DLL)
     message(WARNING "No lifted SPU images in ${SPU_DIR} -- the sound core will not run")
 endif()

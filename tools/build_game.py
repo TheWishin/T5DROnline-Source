@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -52,6 +53,7 @@ TITLE_VERSION = "01.00"
 CONTENT_ID = "UP0700-NPUB30009_00-UPDATE0000010000"
 GAME_NAME = "Tekken 5: Dark Resurrection Online (PS3, US PSN, NPUB30009 v01.00)"
 ELF_SHA1 = "be80165b84e30b6334baa6d6331b9db4ffd5a6a4"
+PKG_SIZE = 619430240
 CODE_END = "0x3C7100"   # end of .lib.stub; past it is .rodata
 
 STEPS = ["deps", "keys", "decrypt", "unpack", "vfs", "lift", "spu", "compile"]
@@ -185,7 +187,7 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 2   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS
+CODE_VERSION = 3   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT
 
 
 def code_id():
@@ -219,9 +221,19 @@ def prebuilt_host():
 
 # --------------------------------------------------------------------------- steps
 
+def rmtree(path):
+    """shutil.rmtree that also removes read-only files (git's object packs are read-only on Windows)."""
+    def onerror(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=onerror)
+
+
 def step_deps(a):
     vend = deps_stamp_ok()
-    if vend is True and not a.force:
+    if vend is True:
+        # Also with "Redo every step": the copy is part of the release, there is nothing to fetch again (1.0.0
+        # deleted it and tried a git clone, which failed on its read-only .git files: "Access is denied").
         print("  ps3recomp included in this package (patched) -- nothing to fetch")
     elif vend is False:
         fail("The ps3recomp copy in this folder does not match this version of the port. "
@@ -233,7 +245,7 @@ def step_deps(a):
             fail("Git is needed to download ps3recomp (the recompiler). Install Git, or use a release "
                  "zip, which already contains it.")
         if os.path.isdir(P.deps):
-            shutil.rmtree(P.deps)
+            rmtree(P.deps)
         run(["git", "-c", "core.longpaths=true", "clone", "-b", PS3RECOMP_BRANCH, PS3RECOMP_URL, P.deps])
         run(["git", "-C", P.deps, "checkout", "-q", PS3RECOMP_COMMIT])
         # Our fixes on top of the pinned commit (Windows build gaps and the like).
@@ -271,6 +283,20 @@ def need_pkg(a):
     return cid
 
 
+def program_kind(path):
+    """"self" for a PS3 program as the package carries it, "elf" for one already decrypted, None for anything
+    else (an empty or cut-short file left by a stopped run)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size < 0x1000:
+        return None
+    return {b"SCE\0": "self", b"\x7fELF": "elf"}.get(head)
+
+
 def step_decrypt(a):
     if os.path.exists(P.elf) and sha1(P.elf) == ELF_SHA1 and not a.force:
         print("  already done")
@@ -281,12 +307,21 @@ def step_decrypt(a):
         fail(f"{a.rap} is not a PS3 license: a .rap file is exactly 16 bytes.")
     eboot = os.path.join(P.pkg_dir, "USRDIR", "EBOOT.BIN")
     sfo = os.path.join(P.pkg_dir, "PARAM.SFO")
-    if not (os.path.exists(eboot) and os.path.exists(sfo)) or a.force:
+
+    def take_out():
         cid = need_pkg(a)
         print(f"  package content ID: {cid}")
         # Only the program and its PARAM.SFO first: a few MB, seconds.
         for name in ("PARAM.SFO", "EBOOT.BIN"):
             run([PY, os.path.join(P.tools, "pkg_extract.py"), a.pkg, P.pkg_dir, "--only", name], env=keys_env())
+
+    if not (os.path.exists(eboot) and os.path.exists(sfo)) or a.force:
+        take_out()
+    elif program_kind(eboot) is None and a.pkg:
+        # Left by an earlier run that was stopped while taking it out (empty or cut short).
+        print("  the program taken out by an earlier run is damaged: taking it out of the package again")
+        os.remove(eboot)
+        take_out()
     if not os.path.exists(eboot):
         fail("This package has no USRDIR/EBOOT.BIN -- it is not a game package (an add-on or theme?). "
              f"The port needs {GAME_NAME}.")
@@ -295,15 +330,27 @@ def step_decrypt(a):
     print(f"  PARAM.SFO: {title} / {tid} / version {ver}")
     if tid != TITLE_ID:
         fail(f"This package is \"{title}\" ({tid}). The port needs {GAME_NAME}.")
-    try:
-        out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, a.rap, P.elf, "--keys", P.keys],
-                  capture=True)
-    except subprocess.CalledProcessError as e:
-        if "wrong .rap" in (e.output or ""):
-            fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
-                 f"the package's content ID ({CONTENT_ID}).")
-        fail("Decrypting the game program failed (see the log above). Is the package complete? "
-             f"Its size should be 619,430,240 bytes.")
+    kind = program_kind(eboot)
+    if kind == "elf":
+        # A re-packed package that carries the program already decrypted: usable when it is the same program
+        # (the SHA-1 pin below decides).
+        print("  the package carries the program already decrypted")
+        os.makedirs(os.path.dirname(P.elf), exist_ok=True)
+        shutil.copyfile(eboot, P.elf)
+        out = ""
+    else:
+        try:
+            out = run([PY, os.path.join(ROOT, "tools", "unself.py"), eboot, a.rap, P.elf, "--keys", P.keys],
+                      capture=True)
+        except subprocess.CalledProcessError as e:
+            if "wrong .rap" in (e.output or ""):
+                fail("The license (.rap) does not belong to this package. Use the .rap whose name matches "
+                     f"the package's content ID ({CONTENT_ID}).")
+            if a.pkg and os.path.exists(a.pkg) and os.path.getsize(a.pkg) != PKG_SIZE:
+                fail(f"The package is {os.path.getsize(a.pkg):,} bytes, the supported one is {PKG_SIZE:,} bytes: "
+                     "the download is incomplete or it is a different file. Download it again.")
+            fail("Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press "
+                 f"BUILD GAME again; if it fails again, check that the package is {PKG_SIZE:,} bytes.")
     got = sha1(P.elf)
     if got != ELF_SHA1:
         os.remove(P.elf)
@@ -368,7 +415,7 @@ def step_lift(a):
          "--seed-json", os.path.join(P.analysis, "EBOOT.functions.json"),
          "-o", os.path.join(P.analysis, "functions.json")])
     if os.path.isdir(P.recomp):
-        shutil.rmtree(P.recomp)
+        rmtree(P.recomp)
     os.makedirs(P.recomp)
     run([PY, os.path.join(P.tools, "ppu_lifter.py"), P.elf,
          "--functions", os.path.join(P.analysis, "functions.json"),
@@ -410,7 +457,7 @@ def step_spu(a):
             f.write(SPU_CORE_EXTRA_FUNCS + "\n")
     if a.force or not core_done:
         if os.path.isdir(P.spu):
-            shutil.rmtree(P.spu)
+            rmtree(P.spu)
         images = os.path.join(P.spu, "images")
         os.makedirs(images)
         run([PY, os.path.join(P.tools, "extract_spu_images.py"), P.elf, "--output", images])
@@ -516,6 +563,9 @@ def main():
     # The Python tools this starts print paths; into a pipe they would use the ANSI code page and
     # stop with UnicodeEncodeError on a folder or user name outside it ("Tekken Ł東京").
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    # And the files they write (the lifted C++, JSON) in UTF-8, whatever Windows' code page is: on a
+    # Korean Windows (cp949) the lifter stopped with UnicodeEncodeError on a "--" dash in a comment.
+    os.environ["PYTHONUTF8"] = "1"
     P = Paths(a.out, a.deps)
     os.makedirs(P.out, exist_ok=True)
     os.chdir(P.out)

@@ -49,7 +49,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_views
+from . import theme, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -159,6 +159,8 @@ class OnlineTab:
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
+        self.bring_forward = winfront.raise_window    # the launcher's window to the front (tests replace it)
+        self._fronted = None                          # what it last came forward for (once per match / question)
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -1028,6 +1030,32 @@ class OnlineTab:
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
                            (t("No thanks"), lambda: self._rematch(False), "circle")])
         self.view.after_driver(n)
+        if k == "rematch_offer":
+            self._come_forward(("rematch", n.get("match")))     # a decision for the player
+        elif k == "ask_result":
+            self._come_forward(("ask", n.get("match")))
+
+    def _come_forward(self, key):
+        """The match is over and the game waits (pads neutral, at character select) for what comes next:
+        show this tab and bring the launcher's window to the front -- once per match end or question
+        (`key`). Never while a match is being played, and not while a ranked set's next game starts by
+        itself. (Players took the waiting game for a hang: build/e2e, GitHub report on 1.0.0.)"""
+        if key == self._fronted or self.set_bar is not None:
+            return
+        drv = self.driver
+        if drv is not None and drv.ticket is not None and drv.game_state not in (None, "over", "neutral"):
+            return                                  # a match is on (the fight, its loading): never then
+        self._fronted = key
+        try:
+            nb = self.parent.master
+            if isinstance(nb, ttk.Notebook) and nb.select() != str(self.parent):
+                nb.select(self.parent)              # the launcher's Online tab, with the result card
+        except tk.TclError:
+            pass
+        try:
+            self.bring_forward(self.parent)
+        except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
+            pass
 
     def _answer_result(self, what):
         self.hide_bar()
@@ -1153,6 +1181,8 @@ class OnlineTab:
             if self.client:
                 self._show_me()
                 self._set_actions()
+            # the set is over and the game waits for a choice (once: the last game's result may have done it)
+            self._come_forward(("result", (self.last_result or {}).get("match")))
             return
         if self.rematch_bar is not None:
             self.rematch_bar = None
@@ -1265,6 +1295,7 @@ class OnlineTab:
             self._show_rematch_bar()
         if self.client and self.client.me:
             self._show_me()
+        self._come_forward(("result", ev.get("match")))
 
     # ------------------------------------------------------------------ controller (padnav.py)
     # A pad or arcade stick runs the whole online loop: Cross (A) accepts a found match or a challenge,

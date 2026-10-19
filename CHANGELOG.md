@@ -3,7 +3,51 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## Unreleased
+## v1.1.0 (2026-10-19)
+
+**Online that holds up, a new launcher, ranked sets.** Both players need 1.1.0 (the lobby
+pairs equal versions). After the update press **BUILD GAME** once. From this version on the
+launcher updates itself: it offers every new release, one click.
+
+### Online fixes
+- **Matches no longer go out of sync after switching opponents.** The game has a second
+  random generator (the camera uses it, and the camera decides which fighter stands on the
+  left, so which way a sidestep goes). Netplay never reset it, so a game that had played
+  someone else, or had just shown other effects, drifted apart from a freshly started one.
+  It is now set the same on both PCs at every match start. Checked with 24 opponent
+  switches, 240 Hz against 60 Hz, 4 against 16 cores, FMA against non-FMA CPUs, stalls and
+  slow disks: all in sync. This also fixes Mokujin's pick and Devil Jin's third costume.
+- **Rollback no longer crashes or hangs.** About one match in eight ended with the game
+  closing (the game's file thread) when both players mashed; a rare freeze waited for a
+  draw thread forever; a KO taken back by a rollback could leave no result at high ping.
+  32 of 32 heavy-stutter matches and 12 of 12 KO matches at 250 ms ping ran clean.
+- **Rematch works**, also after a new session and when a player changes character
+  (moving from Bruce or Kuma to the top row used to loop). Closing the game window counts
+  as leaving (a loss), not as an out-of-sync match.
+- **No more frozen picture.** The graphics command ring overflowed on the first fight load
+  on some PCs (6 and 8 cores) and froze the picture in the menus; fixed.
+
+### In-game character select
+- Online, you now pick your fighter and costume on the game's own select screen, like on the
+  PS3: the confirm button picks the costume, Select picks at random, and after 30 seconds the
+  character set in the launcher is taken. A rematch goes back to the select screen, so you can
+  change fighter. In a ranked set you pick in game 1; games 2 and 3 keep both fighters and
+  costumes.
+
+### Offline fixes
+- Sound needs 43% less processor time (crackles on weaker PCs), long sessions no longer use
+  up the game's thread slots, and every background thread has its own memory again.
+
+### New launcher
+- Dark theme; **Play offline** and **Play online** tabs; the Online tab as clear cards
+  (login, lobby, searching, match found with ping, in match, result).
+- **German and English** (Settings: Auto / Deutsch / English).
+- **Internal resolution** in Settings: Lowest, Lower, Native (720p), 1080p, 1440p, 4K. Both
+  players can use different settings online.
+- **Updates itself** from the published releases (checks the download, keeps your game
+  and settings, goes back to the old version if anything fails).
+- Launcher exe built with Microsoft's compiler (fewer virus-scanner false alarms).
+
 
 ### Ranked sets: best of 3, rated once
 - A ranked match is now a set: the first player to win 2 games wins it (each game is still first to 3

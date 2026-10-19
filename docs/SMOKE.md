@@ -253,3 +253,52 @@ rest: log parsing, every check against synthetic runs, known-issue marking,
 the report and exit codes, process selection by parent PID, the frame
 heuristics on synthetic images (needs Pillow; skipped without it), and the
 runner's error path. CI installs Pillow for it.
+
+## End-to-end online scenarios
+
+`tools/e2e/run.py` plays the online flows the way two players would, on this
+PC: a **local** lobby server (`python -m t5lobby.server` on 127.0.0.1, its own
+database; any other address is refused), two players each driven through the
+launcher's own Online tab (`launcher/online.py` -> `t5lobby.tk_tab.OnlineTab`
+with its `LobbyClient` and `MatchDriver`, buttons pressed with `invoke()`), the
+launcher's game code (`core.Settings`, `core.GameRun`, `core.game_state`) and
+real games in persistent mode (a copy of `t5dr.exe` per run, hard-linked into
+each player's `native\`). Scenarios where the game does not matter use
+`lobby/tools/stub_game.py`. Between two real games a UDP proxy (the
+*shaper*) adds round trip, jitter and loss or cuts the link; the lobby's own
+NAT step still runs and the games are then pointed at the proxy.
+
+    python tools/e2e/run.py --list
+    python tools/e2e/run.py --suite quick          # lobby + stub scenarios, ~4 min, no game needed
+    python tools/e2e/run.py --suite game           # real matches (one round each), ~75 min
+    python tools/e2e/run.py                        # everything
+    python tools/e2e/run.py --only ranked_set,room_flow --repeat 3
+
+Output: `build/e2e/runs/<time>/report.md` (a table with runs and PASS / FAIL /
+SKIP per scenario, failures first, then every check and the evidence: match
+ids, paths, input delays, rollbacks, fps, result hashes), `report.json`, and
+per scenario its server log, both players' `native\logs` and desync dumps.
+These hold player names and local addresses: never commit them.
+
+Groups: accounts (register, saved login, wrong password, guest, the same
+account on two PCs, a server restart), quick match (blind found, accept,
+decline, timeout), ranked (sets with rating and rank after every game, the
+character lock, the pair cooldown and cap, a quit mid-set, ranked rooms),
+rooms (Ready again = a new session, then a rematch: the 1.0.0 hang), rematch
+(decline, window timeout, five in a row), netcode (rollback and lockstep, input
+delay Auto/0/1/2, RTT 20-250 ms, 2/10 % loss, jitter, the relay path, a
+mixed pair), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
+= disconnect, a game restarted between matches, another build refused),
+launcher extras (Report a problem without names/IPs/tokens, the update check
+against mocked GitHub answers, settings that survive a restart), and the
+in-game character select and best-of-3 ranked sets, which are SKIP until
+their branches are merged. Every scenario also fails when `launcher.log` gets
+an "error in the launcher" line (a Tk callback that raised).
+
+Like the smoke suite: windows minimized, games muted (`PS3_AUDIO_MUTE=1`) and
+at below-normal priority, no window or dialog ever shown (the Tk root and
+every Toplevel are withdrawn, message boxes and file dialogs answered by the
+runner), the clipboard never touched, only processes started by the runner
+stopped (a kill-on-close job ends them if it dies). fps checks only warn while
+other games or builds run. `tests/test_e2e.py` covers the shaper, the log
+parser, the scenario list and the report without a game.

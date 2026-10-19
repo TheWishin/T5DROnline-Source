@@ -39,7 +39,8 @@ except ImportError:     # lobby/ is missing from this copy: English only
 NOTE_MAX = 2000
 PRIVACY = N_(
     "Before the zip is made, your Windows user name in file paths becomes <user>, internet IP addresses "
-    "become <ip> (addresses of your own network stay), and passwords, tokens and match keys are left out. "
+    "become <ip> (addresses of your own network stay), lobby player names (yours and your opponents') "
+    "become <player>, and passwords, tokens and match keys are left out. "
     "Your game files, keys, .pkg and .rap are never included. Nothing is uploaded: you send the zip yourself.")
 
 

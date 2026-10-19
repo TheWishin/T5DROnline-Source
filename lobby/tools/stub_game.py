@@ -20,9 +20,14 @@ Knobs for tests (all optional):
                       character select after a match and can play the next one)
     T5_STUB_GAP       seconds between matches (default 2)
     T5_STUB_WINNER    0 | 1 | draw (default: from T5_NET_SEED)
+    T5_STUB_WINNERS   0,1,0: the winner of this process's 1st, 2nd, 3rd ... game (P1 = 0), cycled (ranked sets:
+                      2-1 needs a different winner per game; the same list on both sides)
     T5_STUB_DESYNC    1: this side's state hash differs from frame 30 on (both sides log it)
+    T5_STUB_DESYNC_AT 1,3: only this process's 1st and 3rd game desync
     T5_STUB_NORESULT  1: the match ends without a result file (status says 0-0, no winner)
-    T5_STUB_FAIL      crash | quit | vanish | lost   (crash: exit 3 with a [CRASH] line mid-match;
+    T5_STUB_FAIL_AT   2: T5_STUB_FAIL only in this process's 2nd game (default: every game)
+    T5_STUB_FAIL      crash | quit | vanish | lost | close   (close: like the real game's closed window -- result
+                      file with "reason": "quit", exit code 7; crash: exit 3 with a [CRASH] line mid-match;
                       quit: exit 0 mid-match, like closing the window; vanish: stop sending
                       mid-match without exiting, the opponent's game loses the peer; lost: like
                       the real game losing its opponent -- result file with "reason", exit 3)
@@ -48,7 +53,7 @@ import time
 import zlib
 
 MAGIC = b"T5NP"
-HELLO, INPUT = 1, 2
+HELLO, INPUT, BYE = 1, 2, 3     # BYE: this game was closed (like the real netplay's: the peer ends at once)
 LOBBY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -74,8 +79,9 @@ def replace(tmp, path):
 class Session:
     """One netplay session (one opponent) from an environment dict."""
 
-    def __init__(self, env):
+    def __init__(self, env, game_no=1):
         self.env = env
+        self.game_no = game_no                       # this process's n-th game (T5_STUB_*_AT, T5_STUB_WINNERS)
         self.mode = env.get("T5_NET_MODE", "")
         self.port = int(env.get("T5_NET_PORT", "0") or 0)
         self.delay = int(env.get("T5_NET_DELAY", "3") or 3)
@@ -89,7 +95,7 @@ class Session:
         self.sock = None
         self.frame = 0
         self.mismatches = 0
-        self.desync = env.get("T5_STUB_DESYNC") == "1"
+        self.desync = env.get("T5_STUB_DESYNC") == "1" or str(game_no) in _list(env.get("T5_STUB_DESYNC_AT"))
         self.vanished = False
         self.match_id = env.get("T5_NET_MATCH") or None   # like the game: the fight line's match= replaces it
 
@@ -178,6 +184,9 @@ class Session:
                             log(f"DESYNC at frame {rf}: local state hash {self.hash(rf):016x}, peer {rh:016x}")
                 elif data[:4] == MAGIC and data[4] == HELLO and self.mode == "host":
                     self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
+                elif data[:4] == MAGIC and data[4] == BYE:
+                    log("peer lost (peer_quit): the opponent left (its game was closed)")
+                    return "peer_quit"
             if time.time() - last_heard > min(self.timeout, 5.0):
                 log(f"no input from the peer for {min(self.timeout, 5.0):.0f}s -- peer lost, continuing with "
                     f"P{2 if self.mode == 'host' else 1} idle")
@@ -193,7 +202,28 @@ class Session:
         seconds = float(env.get("T5_STUB_SECONDS", "1") or 1)
         frames = max(30, int(seconds * 60))
         fail = env.get("T5_STUB_FAIL")
+        if fail and env.get("T5_STUB_FAIL_AT") and str(self.game_no) not in _list(env.get("T5_STUB_FAIL_AT")):
+            fail = None
+        if fail == "close":
+            # the window closed mid-match: the real game writes "quit" and ends itself (exit code 7)
+            self.exchange(frames // 2)
+            for _ in range(3):                       # tell the opponent's game, like the real game's BYE
+                self.sock.sendto(MAGIC + bytes([BYE, 1, self.delay, 0]) + b"\0" * 8, self.peer)
+            path = env.get("T5_NET_RESULT_FILE")
+            if path:
+                with open(path + ".tmp", "w") as f:
+                    json.dump({"match": self.match_id, "winner": None, "score": [0, 0], "reason": "quit"}, f)
+                replace(path + ".tmp", path)
+            log("stub: the window was closed (quit)")
+            return "close"
         r = self.exchange(frames, fail, frames // 2 if fail else None)
+        if r == "peer_quit":
+            path = env.get("T5_NET_RESULT_FILE")
+            if path:
+                with open(path + ".tmp", "w") as f:
+                    json.dump({"match": self.match_id, "winner": None, "score": [0, 0], "reason": "peer_quit"}, f)
+                replace(path + ".tmp", path)
+            return "lost"
         if r == "lost":
             # the real game since netplay hardening: result with the reason, then it closes (exit 3)
             log("peer lost (peer_timeout): stub")
@@ -206,6 +236,9 @@ class Session:
         if r != "ok":
             return r
         w = env.get("T5_STUB_WINNER")
+        ws = _list(env.get("T5_STUB_WINNERS"))
+        if ws:
+            w = ws[(self.game_no - 1) % len(ws)]
         if w in ("0", "1"):
             winner = int(w)
         elif w == "draw":
@@ -224,11 +257,15 @@ class Session:
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
                 json.dump({"match": self.match_id, "winner": winner, "score": score,
-                           "fps": float(env.get("T5_STUB_FPS", "59.9"))}, f)
+                           "fps": float(env.get("T5_STUB_FPS", "59.9")), "desync": self.mismatches}, f)   # (as the game: its own count)
             replace(tmp, path)
         # drain: let the opponent see our last frames
         self.exchange(20)
         return "ok"
+
+
+def _list(v):
+    return [x.strip() for x in str(v or "").split(",") if x.strip()]
 
 
 def fight_chars(env, line):
@@ -290,6 +327,8 @@ def run_env(env):
             if pick:
                 status(env, "pick", n - 1, chars=chars)
             status(env, "fight", n, chars=chars)
+            s.game_no = n
+            s.desync = env.get("T5_STUB_DESYNC") == "1" or str(n) in _list(env.get("T5_STUB_DESYNC_AT"))
             r = s.play(n, env)
             status(env, "over", n, getattr(s, "last", None), chars=chars)
             if r == "crash":
@@ -297,6 +336,8 @@ def run_env(env):
                 return 3
             if r in ("quit",):
                 return 0
+            if r == "close":
+                return 7
             if r == "lost":
                 return 3
             if r != "ok":
@@ -318,6 +359,7 @@ def persistent(ctl_dir):
         replace(path + ".tmp", path)     # the launcher may be reading it this moment
 
     seen = 0
+    games = 0
     fights = 0          # the status file's match counter, as the game's (every fight in the process)
     state("idle", 0)
     log(f"control channel {ctl_dir}: idle")
@@ -345,7 +387,8 @@ def persistent(ctl_dir):
             env = dict(os.environ)
             env.update(cmd.get("env") or {})
             state("connecting", seen, match=cmd.get("match"))
-            s = Session(env)
+            games += 1
+            s = Session(env, games)
             s.open()
             try:
                 if not s.connect():
@@ -362,6 +405,8 @@ def persistent(ctl_dir):
                 if r == "crash":
                     print("[CRASH] stub: simulated crash", flush=True)
                     return 3
+                if r == "close":
+                    return 7
                 state("result" if r == "ok" else "error", seen, match=cmd.get("match"))
             finally:
                 s.close()

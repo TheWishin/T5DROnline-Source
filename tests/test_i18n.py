@@ -396,6 +396,8 @@ class MessageCoverageTests(German):
         found = [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"LobbyError"}, 1)]
         found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"kick"}, 1)]
         found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, set(), 0, keyword="msg")]
+        spec = os.path.join(ROOT, "lobby", "t5lobby", "server", "spectating.py")     # (spectating's requests)
+        found += [(f"spectating.py:{ln}", s, src) for ln, s, src in calls_in(spec, {"LobbyError"}, 1)]
         found = [f for f in found if not (f[1] is None)]
         self.assertGreater(len(found), 80)
         # (the "msg" of a reply that repeats a LobbyError's own msg is a variable: skipped above)

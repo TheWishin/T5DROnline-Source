@@ -300,8 +300,7 @@ class BoundsTest(Base):
         want = expect(a, "spec_want", 10)
         self.assertEqual((want["stream"], want["from"]), (sid, 0))
         import base64
-        with self.assertRaises(LobbyError):                    # a piece over the size limit
-            a._call({"t": "spec_data", "stream": sid, "off": 0, "data": base64.b64encode(b"x" * 5500).decode()})
+        a._fire({"t": "spec_data", "stream": sid, "off": 0, "data": base64.b64encode(b"x" * 5500).decode()})  # too big
         self.assertEqual(expect(v, "spec_end", 10)["reason"], "stopped")
         self.assertTrue(self.s.wait_for(lambda: not self.s.srv.streams))
         v.watch(name="Alice")                                  # a new stream; this time over the buffer

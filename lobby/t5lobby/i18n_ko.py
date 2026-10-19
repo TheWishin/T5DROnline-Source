@@ -1711,4 +1711,66 @@ MESSAGES = {
         "리플레이 종료.",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "이 리플레이 파일을 삭제할까요? 같은 상대와의 대전 {n}개가 들어 있습니다.",
+    # ---- lobby/t5lobby/tk_spectate.py, server/spectating.py, launcher Settings (spectating live matches)
+    "Spectators":
+        "관전",
+    "Friends and room visitors may watch my online matches":
+        "친구와 내 방 방문자가 내 온라인 매치를 관전할 수 있음",
+    "Also my ranked matches":
+        "Ranked 매치도 허용",
+    "They see the match a few seconds late, in their own game. Only when both players allow it; a "
+    "ranked match only when both allow ranked too.":
+        "관전자는 자기 게임에서 몇 초 늦게 매치를 봅니다. 두 플레이어가 모두 허용할 때만 가능하며, Ranked 매치는 둘 다 Ranked도 허용해야 합니다.",
+    "Watch":
+        "관전",
+    "Spectating":
+        "관전 중",
+    "Stop watching":
+        "관전 그만두기",
+    "Watching":
+        "관전 중",
+    "Waiting for the match data...":
+        "매치 데이터를 기다리는 중...",
+    "About {seconds} s behind the live match.":
+        "라이브 매치보다 약 {seconds}초 늦음.",
+    "It plays from the start of the players' session, a few seconds behind.":
+        "플레이어들의 세션 시작부터, 몇 초 늦게 재생됩니다.",
+    "Watching {p1} vs {p2}.":
+        "{p1} vs {p2} 관전 중.",
+    "Spectators watching your match: {count}":
+        "내 매치를 관전하는 사람: {count}",
+    "The live match is over.":
+        "라이브 매치가 끝났습니다.",
+    "The players turned spectators off.":
+        "플레이어들이 관전을 껐습니다.",
+    "The match data stopped coming.":
+        "매치 데이터가 더 이상 오지 않습니다.",
+    "This session is too long to watch from its start.":
+        "이 세션은 너무 길어서 처음부터 관전할 수 없습니다.",
+    "Your own match is starting.":
+        "내 매치가 시작됩니다.",
+    "The match data was damaged.":
+        "매치 데이터가 손상되었습니다.",
+    "You stopped watching.":
+        "관전을 그만두었습니다.",
+    "this launcher cannot watch matches; update it":
+        "이 런처는 매치를 관전할 수 없습니다. 업데이트하세요",
+    "that match is not being played right now":
+        "그 매치는 지금 진행 중이 아닙니다",
+    "you are playing in that match":
+        "그 매치의 플레이어입니다",
+    "you are in a match yourself":
+        "이미 매치 중입니다",
+    "only friends of a player can watch this match":
+        "플레이어의 친구만 이 매치를 관전할 수 있습니다",
+    "the players do not allow spectators":
+        "플레이어들이 관전을 허용하지 않습니다",
+    "neither player can send the match right now":
+        "지금은 어느 플레이어도 매치를 보낼 수 없습니다",
+    "this match cannot be watched any more":
+        "이 매치는 더 이상 관전할 수 없습니다",
+    "this match has {count} spectators already":
+        "이 매치에는 이미 관전자가 {count}명 있습니다",
+    "the server cannot show more matches right now":
+        "서버가 지금은 더 많은 매치를 보여줄 수 없습니다",
 }

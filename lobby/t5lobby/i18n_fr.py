@@ -1776,4 +1776,67 @@ MESSAGES = {
         "Replay terminé.",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "Supprimer ce fichier de replay ? Il contient {n} match(s) contre le même adversaire.",
+    # ---- lobby/t5lobby/tk_spectate.py, server/spectating.py, launcher Settings (spectating live matches)
+    "Spectators":
+        "Spectateurs",
+    "Friends and room visitors may watch my online matches":
+        "Mes amis et les visiteurs de mon salon peuvent regarder mes matchs en ligne",
+    "Also my ranked matches":
+        "Aussi mes matchs Ranked",
+    "They see the match a few seconds late, in their own game. Only when both players allow it; a "
+    "ranked match only when both allow ranked too.":
+        "Ils voient le match quelques secondes plus tard, dans leur propre jeu. Seulement si les deux "
+        "joueurs l'autorisent ; un match Ranked seulement si les deux autorisent aussi le Ranked.",
+    "Watch":
+        "Regarder",
+    "Spectating":
+        "Spectateur",
+    "Stop watching":
+        "Arrêter de regarder",
+    "Watching":
+        "En direct",
+    "Waiting for the match data...":
+        "En attente des données du match...",
+    "About {seconds} s behind the live match.":
+        "Environ {seconds} s de retard sur le match en direct.",
+    "It plays from the start of the players' session, a few seconds behind.":
+        "La lecture part du début de la session des joueurs, avec quelques secondes de retard.",
+    "Watching {p1} vs {p2}.":
+        "Tu regardes {p1} vs {p2}.",
+    "Spectators watching your match: {count}":
+        "Spectateurs de ton match : {count}",
+    "The live match is over.":
+        "Le match en direct est terminé.",
+    "The players turned spectators off.":
+        "Les joueurs ont désactivé les spectateurs.",
+    "The match data stopped coming.":
+        "Les données du match n'arrivent plus.",
+    "This session is too long to watch from its start.":
+        "Cette session est trop longue pour être regardée depuis le début.",
+    "Your own match is starting.":
+        "Ton propre match commence.",
+    "The match data was damaged.":
+        "Les données du match étaient endommagées.",
+    "You stopped watching.":
+        "Tu as arrêté de regarder.",
+    "this launcher cannot watch matches; update it":
+        "ce launcher ne peut pas regarder de matchs ; mets-le à jour",
+    "that match is not being played right now":
+        "ce match n'est pas en cours",
+    "you are playing in that match":
+        "tu joues dans ce match",
+    "you are in a match yourself":
+        "tu es toi-même dans un match",
+    "only friends of a player can watch this match":
+        "seuls les amis d'un joueur peuvent regarder ce match",
+    "the players do not allow spectators":
+        "les joueurs n'autorisent pas les spectateurs",
+    "neither player can send the match right now":
+        "aucun joueur ne peut envoyer le match pour l'instant",
+    "this match cannot be watched any more":
+        "ce match ne peut plus être regardé",
+    "this match has {count} spectators already":
+        "ce match a déjà {count} spectateurs",
+    "the server cannot show more matches right now":
+        "le serveur ne peut pas montrer plus de matchs pour l'instant",
 }

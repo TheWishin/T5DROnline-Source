@@ -103,6 +103,8 @@ class SpectateMixin:
             return LobbyError(proto.E_STATE, "you are playing in that match")
         if viewer.match is not None and viewer.match.state not in ("done", "cancelled"):
             return LobbyError(proto.E_BUSY, "you are in a match yourself")
+        if viewer.build_id != m.build_id:      # (another build plays the stream differently)
+            return LobbyError(proto.E_VERSION, "that player runs a different build of the game")
         may = (m.room is not None
                or (viewer.account_id is not None and any(q.account_id in viewer.friends for q in m.players))
                or self._spec_tournament_may_watch(viewer, m))
@@ -136,7 +138,7 @@ class SpectateMixin:
     async def h_spec_prefs(self, conn, msg):
         p = conn.player
         if "spectate" not in conn.caps:
-            raise LobbyError(proto.E_BAD_REQUEST, "no spectate cap")
+            raise LobbyError(proto.E_BAD_REQUEST, "bad request")
         allow, ranked = bool(msg.get("allow")), bool(msg.get("ranked"))
         changed = (allow, ranked) != (p.spec_allow, p.spec_ranked)
         p.spec_allow, p.spec_ranked = allow, ranked
@@ -157,7 +159,7 @@ class SpectateMixin:
         name = str(msg.get("name") or "")
         q = self.by_name.get(name.lower())
         if q is None or not q.online:
-            raise LobbyError(proto.E_NOT_FOUND, "that player is not online")
+            raise LobbyError(proto.E_NOT_FOUND, "no such player")
         return q.match
 
     async def h_watch(self, conn, msg):
@@ -198,15 +200,22 @@ class SpectateMixin:
         st = self.streams.get(str(msg.get("stream")))
         if st is None or st.streamer is not p or st.ended is not None:
             return None                    # (a piece for a stream that ended meanwhile: dropped)
+        # (no error answers: the streamer's launcher sends these on its own; a broken stream just ends)
         off = int(msg.get("off", -1))
-        data = base64.b64decode(str(msg.get("data", "")), validate=True)
-        if off != len(st.buf) or len(data) > MAX_UPLOAD_PIECE:
+        try:
+            data = base64.b64decode(str(msg.get("data", "")), validate=True)
+        except ValueError:
+            data = None
+        if data is None or off != len(st.buf) or len(data) > MAX_UPLOAD_PIECE:
+            self._count("spectate_bad_pieces")
+            log.info("stream %s: a piece out of order or too big (%s at %s, have %d)", st.id,
+                     None if data is None else len(data), off, len(st.buf))
             self._spec_end(st, "stopped", flush=True)
-            raise LobbyError(proto.E_BAD_REQUEST, "stream piece out of order")
+            return None
         if not st.bucket.take(len(data)):
             self._count("spectate_rate_ends")
             self._spec_end(st, "stopped", flush=True)
-            raise LobbyError(proto.E_RATE, "stream too fast")
+            return None
         if len(st.buf) + len(data) > self.cfg.spectate_buffer_kb * 1024:
             self._spec_end(st, "too_long", flush=True)
             return None

@@ -1741,4 +1741,66 @@ MESSAGES = {
         "リプレイ終了。",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "このリプレイファイルを削除しますか？同じ相手との {n} 試合が入っています。",
+    # ---- lobby/t5lobby/tk_spectate.py, server/spectating.py, launcher Settings (spectating live matches)
+    "Spectators":
+        "観戦",
+    "Friends and room visitors may watch my online matches":
+        "フレンドとルームの訪問者が自分のオンライン対戦を観戦できる",
+    "Also my ranked matches":
+        "Ranked 対戦も観戦できる",
+    "They see the match a few seconds late, in their own game. Only when both players allow it; a "
+    "ranked match only when both allow ranked too.":
+        "観戦者は自分のゲームで数秒遅れて対戦を見ます。両プレイヤーが許可したときだけで、Ranked 対戦は両方が Ranked も許可したときだけです。",
+    "Watch":
+        "観戦",
+    "Spectating":
+        "観戦中",
+    "Stop watching":
+        "観戦をやめる",
+    "Watching":
+        "観戦中",
+    "Waiting for the match data...":
+        "対戦データを待っています...",
+    "About {seconds} s behind the live match.":
+        "ライブの対戦より約 {seconds} 秒遅れ。",
+    "It plays from the start of the players' session, a few seconds behind.":
+        "プレイヤーのセッションの最初から、数秒遅れで再生されます。",
+    "Watching {p1} vs {p2}.":
+        "{p1} vs {p2} を観戦中。",
+    "Spectators watching your match: {count}":
+        "あなたの対戦の観戦者: {count}",
+    "The live match is over.":
+        "ライブの対戦は終わりました。",
+    "The players turned spectators off.":
+        "プレイヤーが観戦をオフにしました。",
+    "The match data stopped coming.":
+        "対戦データが届かなくなりました。",
+    "This session is too long to watch from its start.":
+        "このセッションは長すぎて最初から観戦できません。",
+    "Your own match is starting.":
+        "自分の対戦が始まります。",
+    "The match data was damaged.":
+        "対戦データが壊れていました。",
+    "You stopped watching.":
+        "観戦をやめました。",
+    "this launcher cannot watch matches; update it":
+        "このランチャーは対戦を観戦できません。更新してください",
+    "that match is not being played right now":
+        "その対戦は今行われていません",
+    "you are playing in that match":
+        "その対戦のプレイヤーです",
+    "you are in a match yourself":
+        "すでに対戦中です",
+    "only friends of a player can watch this match":
+        "この対戦はプレイヤーのフレンドだけが観戦できます",
+    "the players do not allow spectators":
+        "プレイヤーが観戦を許可していません",
+    "neither player can send the match right now":
+        "今はどちらのプレイヤーも対戦を送れません",
+    "this match cannot be watched any more":
+        "この対戦はもう観戦できません",
+    "this match has {count} spectators already":
+        "この対戦にはすでに {count} 人の観戦者がいます",
+    "the server cannot show more matches right now":
+        "サーバーは今これ以上の対戦を表示できません",
 }

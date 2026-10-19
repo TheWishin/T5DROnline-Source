@@ -327,7 +327,7 @@ class RelayBridgeTest(E2E):
         x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         x.bind(("127.0.0.1", 0))
         try:
-            x.sendto(b"T5NP" + b"" * 50, ta.peer)               # another program on this PC: not the game
+            x.sendto(b"T5NP" + b"\x02" * 50, ta.peer)               # another program on this PC: not the game
             with self.assertRaises(socket.timeout):
                 g.recvfrom(4096)
             self.assertEqual(ca._bridge.stats["from_game"], 0)

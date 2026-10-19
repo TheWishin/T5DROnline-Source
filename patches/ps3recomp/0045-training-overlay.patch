@@ -1,8 +1,8 @@
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e53cadc..f12593e 100644
+index 8d11671..7a1162c 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -11900,6 +11900,8 @@ void rsx_live_draw_present(u32 buffer_id)
+@@ -12295,6 +12295,8 @@ void rsx_live_draw_present(u32 buffer_id)
      g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
  
      ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);

@@ -2156,9 +2156,10 @@ first requests, queued and not taken.
 | FF1 | fixes 1 + 2, rebased | persistent NNRR, mash, stutter 60, skew 2 s | 14 of 32 | host hung in match 15 | -- |
 | FF2 | same, hang watcher | same | 0 of 32 | host hung in match 1 (the dump above) | -- |
 | FF3 | + fix 3 | same | **32 of 32** | 0 mismatching frames, the same result hash on both PCs in every match, no hang, no abort, no fd above 4 | 3 981 / 9 577 |
+| FF6 | fixes 1-6, on main 53f775d | same | **32 of 32** | the same; the geometry manager busy at 356 of 87 693 / 99 of 74 601 boundaries, the draw manager running at none | 8 742 / 1 647 |
 
-FF3 ran muted at below-normal priority next to 3-7 other game instances (fps
-11-40 in the busiest stretch).
+FF3 and FF6 ran muted at below-normal priority next to 3-7 other game
+instances (fps 11-40 in FF3's busiest stretch).
 
 **A whole-match desync after a title visit (fix 4, direct fight, not rollback).**
 On the rebased build the first cycle of `reset_cycle_test.py --start-cycle 5`
@@ -2228,9 +2229,17 @@ matches with a result on both PCs, the same hash, 0 mismatching frames, 2 708 /
 confirmed 1-7 frames later; 4 of them were rolled back and seen again at the
 same frame. The bug itself (a KO that the confirmed input takes away) needs
 the peer's real input to change the outcome at the KO; it did not come up in
-these 29 scripted matches, so the proof is the code path: on the e2e g2
+these scripted matches, so the proof is the code path: on the e2e g2
 sequence the driver now stays in its fight phase until the end is confirmed,
 and a KO that never gets confirmed is simply never acted on.
+
+With mashing on both sides (R250m: fight_flow_test's mash scripts through
+`--env1/--env2 T5_NET_SCRIPT`, the same batch on the final build, main
+32f9bdf with the desync hunt's fallback): **12 of 12** matches with a result on
+both PCs, the same 12 hashes, 0 mismatching frames, 6 597 / 6 677 rollbacks
+(29 661 / 30 110 frames re-simulated); every one of the 24 match ends was first
+seen on predicted input and confirmed, 22 were rolled back and seen again, the
+fallback never fired, no abort.
 
 **A rematch stuck at the select screen (fix 6, direct fight, not rollback).**
 Found by the RTT 250 batch R250a (one session, the next match's fighters

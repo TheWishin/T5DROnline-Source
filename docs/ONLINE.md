@@ -312,7 +312,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -329,7 +329,7 @@ Client to server:
 | `nat_local` | `match`, `addrs [[ip,port]]`, `nat: eim\|symmetric\|unknown`, `port` | |
 | `nat_result` | `match`, `phase: punch\|relay`, `ok`, `peer`, `kind`, `rtt_ms`, `jitter_ms` | |
 | `game_started` | `match` | |
-| `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]`, `chars` (in-game select: the fighters) | `result_ack`; the other player gets `notice result_pending` |
+| `result` | `match`, `winner: 0\|1\|null`, `score: [p1, p2]`, `chars` (in-game select: the fighters), `costumes` (their confirm buttons, kept by a ranked set) | `result_ack`; the other player gets `notice result_pending` |
 | `leave_match` | `match` | cancels before start; a loss report while playing |
 | `block` / `unblock` / `blocks` | `name` (or `player`) | `blocked` / `unblocked` / `blocks {rows}`; a match with that player ends like a quit |
 | `leave_set` | `reason` (`lag`) | leave the games in a row between two games, no penalty; `set_end` to both |

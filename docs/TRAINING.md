@@ -75,14 +75,43 @@ own Options menu, Square still shows as 1 even if it is a kick there.
 The host with `T5_TRAINING=frames T5_TRAINING_ALL=1 T5_TRAINING_ONLINE=1`
 (its own inputs drawn every frame), the joiner without it, both sides mashing
 buttons and directions (`tools/rollback_net_test.py --mash`), one match of
-two rounds to win, Jin vs Lili on stage 20, games muted at below-normal
-priority on a PC busy with other agents' games:
+two rounds to win, games muted at below-normal priority on a PC busy with other
+agents' games:
 
-RESULTS_PAIRS
+| Run | Netcode, network | Overlay (host) | Sync | Result hash, host / joiner |
+|---|---|---|---|---|
+| rb150 (Jin vs Lili, stage 20) | rollback, RTT 150 ms +-5, 3 % loss | own inputs every frame | 0 mismatching frames (checked through frame 5,999, the match 6,530 frames); host 2,022 rollbacks, 14,646 frames re-simulated | `044469dcaf79bf9d` / `044469dcaf79bf9d` |
+| ls50 (Jin vs Lili, stage 20) | lockstep, RTT 50 ms, 1 % loss | own inputs every frame | 0 mismatching frames (checked through frame 6,599, the match 6,530 frames) | `cfacb338e8e54943` / `cfacb338e8e54943` |
+| rb150f (Lili vs Jin, stage 33), final build | rollback, RTT 150 ms +-5, 3 % loss | own inputs every frame | 0 mismatching frames (through 3,599, the match 3,822 frames); 953 rollbacks, 1,838 frames re-simulated | `418bb04e1217c36d` / `418bb04e1217c36d` |
+| ls30f (Lili vs Jin, stage 33), final build | lockstep, RTT 30 ms, 1 % loss | own inputs every frame | 0 mismatching frames (through 3,599, the match 3,822 frames) | `22f00a0a5bedee45` / `22f00a0a5bedee45` |
+
+Both sides reported the same winner and score in every pair. The host's log
+(`T5_TRAINING_LOG`) has its own player's input rows only (the final build
+does not even follow the opponent online), the present drew the panel in every
+frame of the fights (`RSX_OVERLAY_STATS`: ~60 quads per present).
 
 ## Cost
 
-RESULTS_COST
+Measured on the development PC (Ryzen 9 7950X, RTX 3090) while other agents'
+games kept 27-31 of its 32 processors busy, so frame rates say little; the
+overlay's own counters do:
+
+| Part | Where | Cost |
+|---|---|---|
+| Training hook (read both fighters, history, tracker, build the list) | main thread, once per frame | **16-21 us** CPU mean per frame, 40-53 us max (`T5_TRAINING_STATS`, the thread's own CPU time; the wall time is larger only when the busy PC preempts the thread) |
+| Overlay in the present (copy the list, lay out ~90-190 quads, one draw) | present thread | **14-16 us** CPU mean per present, 50-170 us max (`RSX_OVERLAY_STATS`) |
+| GPU | one draw of a few hundred small quads | not measurable: GPU time per frame median 514 us with the overlay, 521 us without |
+| Nothing published (setting Off, or outside its modes) | present thread | one load |
+
+GPU and frame times come from `T5_TRAINING_AB=300` in one direct fight
+(Lili vs Asuka, both panels and the frame data shown, `tools/fight_bench.py`,
+100 s): everything off in every other 5-second block, so the PC's load hits
+both halves alike: frame time p50 18.21 ms on / 18.04 ms off, mean 21.21 /
+21.24 ms, GPU p50 514 / 521 us -- the same within the noise. At 60 fps a
+frame has 16,700 us; the overlay's CPU work is about 0.2 % of it, on two
+threads. The first list after start-up costs nothing extra: the pipeline is
+built at the first present when `T5_TRAINING` is on (`rsx_overlay_prepare`),
+not in the fight (~0.1 s for the shader compile).
 
 ## How the frame data is measured
 

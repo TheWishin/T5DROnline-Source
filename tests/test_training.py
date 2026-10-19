@@ -21,8 +21,10 @@ import unittest
 
 from helpers import ROOT
 
-sys.path.insert(0, os.path.join(ROOT, "launcher"))
-sys.path.insert(0, os.path.join(ROOT, "lobby"))
+# appended, not in front: lobby/run.py must not hide tools/smoke/run.py from test_smoke.py
+for _sub in ("launcher", "lobby"):
+    if os.path.join(ROOT, _sub) not in sys.path:
+        sys.path.append(os.path.join(ROOT, _sub))
 
 PATCH = os.path.join(ROOT, "patches", "ps3recomp", "0045-training-overlay.patch")
 TRAINING = os.path.join(ROOT, "src", "training")
@@ -172,6 +174,8 @@ class PatchTest(unittest.TestCase):
 
 class LauncherSettingTest(unittest.TestCase):
     def setUp(self):
+        saved = list(sys.path)
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved))
         import core
         self.core = core
         self.tmp = tempfile.TemporaryDirectory()

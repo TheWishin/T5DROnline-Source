@@ -135,6 +135,150 @@ index eeaf244..bc176ff 100644
      }
      if (!t_timer) return 0;
      LARGE_INTEGER due;
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 007ad85..d6c62e1 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -4051,33 +4051,103 @@ extern "C" void (*g_ppu_thread_entry_trampoline)(ppu_context*);
+  * The PRX path (sys_initialize_tls in ppu_sysprx.cpp) has always done this per
+  * block; this is the same thing for the static path.
+  *
+- * ponytail: bump allocator, never freed. A thread's block is dead once it
+- * exits, but the window holds dozens and titles create their threads at boot
+- * and keep them. Reuse a free list if a title ever churns threads. */
++ * t5dr offline soak (patch 0041): blocks are reused. This was a bump
++ * allocator that never freed, on the theory that titles create their threads
++ * at boot and keep them. Tekken 5 DR does not: with its 64 KB TLS segment
++ * (0x18000 per block) the 1 MB window holds 9 blocks, it creates 11 threads at
++ * boot and then a thread per sound stream and movie, about 380 an hour. So
++ * from the boot on, and for every thread after that, the "out of room" path
++ * ran and those threads all shared one block -- the loader's first image,
++ * which nobody owns once the CRT's sys_initialize_tls has moved the main
++ * thread elsewhere. Whatever the title keeps per thread (errno, its allocator
++ * context) was shared between them.
++ *
++ * Now a block goes back on a free list when its thread ends
++ * (ppu_tls_thread_end, called from the thread procedure), and when the window
++ * is full a new block comes from the guest stack region instead. Blocks are
++ * reused, so the most ever made is the most threads alive at once, and the
++ * shared fallback is only left for a full table -- logged, with a running
++ * count, so a soak can check it never happens. */
++#include <mutex>
++enum { PPU_TLS_POOL_MAX = 128 };                /* > PPU_THREAD_MAX (64) */
++static struct { uint32_t base; uint8_t used; } s_tls_pool[PPU_TLS_POOL_MAX];
++static int        s_tls_pool_n;
++static std::mutex s_tls_pool_mtx;
++static uint32_t   s_tls_window_bump;            /* under s_tls_pool_mtx */
++static std::atomic<uint32_t> s_tls_shared_n{0}; /* shared fallbacks so far */
++static PPU_THREAD_LOCAL uint32_t t_tls_base;    /* this host thread's block */
++
++extern "C" uint32_t sys_ppu_thread_alloc_stack(uint32_t size) __attribute__((weak));
++
++/* A new block's address, or 0. Called with s_tls_pool_mtx held. */
++static uint32_t ppu_tls_carve(uint32_t total, const char** where)
++{
++    uint32_t lim = 0x11000000u;                 /* same bound the main block uses */
++    if (ppu_vm_size && ppu_vm_size < lim) lim = ppu_vm_size;
++    uint32_t base = PPU_TLS_IMG + total + s_tls_window_bump;  /* main block is the first */
++    if (base + total <= lim) { s_tls_window_bump += total; *where = "TLS window"; return base; }
++    /* The window is full: one block from the stack region, kept for reuse. */
++    uint32_t top = sys_ppu_thread_alloc_stack ? sys_ppu_thread_alloc_stack(total) : 0;
++    *where = "stack region";
++    return top ? top - total : 0;
++}
++
+ static uint32_t ppu_tls_new_block(void)
+ {
+     if (!g_tls_memsz) return 0;                 /* no PT_TLS: nothing to copy */
+     uint32_t total = (g_tls_memsz + 0x7000u + 0xFFFu) & ~0xFFFu;
+-    uint32_t lim   = 0x11000000u;               /* same bound the main block uses */
+-    if (ppu_vm_size && ppu_vm_size < lim) lim = ppu_vm_size;
+-    /* Threads are created concurrently, so hand out offsets atomically. */
+-    static uint32_t s_bump = 0;
+-    uint32_t off  = __atomic_fetch_add(&s_bump, total, __ATOMIC_RELAXED);
+-    uint32_t base = PPU_TLS_IMG + total + off;  /* main block occupies the first */
+-    if (base + total > lim) return 0;           /* out of room: share, as before */
++    uint32_t base = 0;
++    int made = -1;
++    const char* where = "";
++    {
++        std::lock_guard<std::mutex> g(s_tls_pool_mtx);
++        for (int i = 0; i < s_tls_pool_n; i++)
++            if (!s_tls_pool[i].used) { s_tls_pool[i].used = 1; base = s_tls_pool[i].base; break; }
++        if (!base && s_tls_pool_n < PPU_TLS_POOL_MAX && (base = ppu_tls_carve(total, &where))) {
++            s_tls_pool[s_tls_pool_n].base = base;
++            s_tls_pool[s_tls_pool_n].used = 1;
++            made = s_tls_pool_n++;
++        }
++    }
++    if (!base) return 0;                        /* every block in use: share */
++    if (made >= 0)
++        fprintf(stderr, "[ppu] TLS: block %d at 0x%08X (%s), %u bytes\n", made, base, where, total);
++    /* A fresh copy of the template, whether the block is new or reused. */
+     if (g_tls_filesz) memcpy(vm_base + base, vm_base + g_tls_vaddr, g_tls_filesz);
+     if (g_tls_memsz > g_tls_filesz)
+         memset(vm_base + base + g_tls_filesz, 0, g_tls_memsz - g_tls_filesz);
++    t_tls_base = base;
+     return base + 0x7000u;                      /* TLS data at r13 - 0x7000 */
+ }
+ 
++/* The calling host thread's guest thread has ended: its block is free again.
++ * sys_ppu_thread.c calls this after the entry returned or unwound out of
++ * sys_ppu_thread_exit, so no guest code runs on the block any more. */
++extern "C" void ppu_tls_thread_end(void)
++{
++    const uint32_t base = t_tls_base;
++    if (!base) return;                          /* liblv2's TLS, or the shared one */
++    t_tls_base = 0;
++    std::lock_guard<std::mutex> g(s_tls_pool_mtx);
++    for (int i = 0; i < s_tls_pool_n; i++)
++        if (s_tls_pool[i].base == base) { s_tls_pool[i].used = 0; break; }
++}
++
+ static void ppu_thread_entry_trampoline(ppu_context* ctx)
+ {
+     uint32_t code = 0, toc = 0;
+     ppu_opd_resolve((uint32_t)ctx->cia, &code, &toc);
+     if (toc) ctx->gpr[2] = toc;
+-    if (!ctx->gpr[13]) { uint32_t tp = ppu_tls_new_block();
+-                         ctx->gpr[13] = tp ? tp : PPU_TLS_TP; }
++    if (!ctx->gpr[13]) {
++        uint32_t tp = ppu_tls_new_block();
++        if (!tp && g_tls_memsz) {
++            const uint32_t n = s_tls_shared_n.fetch_add(1) + 1;
++            fprintf(stderr, "[ppu] TLS: no free block -- thread %llu shares 0x%08X with every "
++                    "other such thread (shared TLS fallback #%u)\n",
++                    (unsigned long long)ctx->thread_id, PPU_TLS_TP, n);
++        }
++        ctx->gpr[13] = tp ? tp : PPU_TLS_TP;
++    }
+     ppu_fn fn = ppu_lookup(code);
+     if (!fn) {
+         fprintf(stderr, "[ppu] thread entry 0x%08X (cia=0x%08X) not registered\n",
+@@ -4168,7 +4238,10 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
+     ctx.gpr[2]  = toc;
+     ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
+     ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
+-    ctx.gpr[13] = PPU_TLS_TP;
++    /* The calling guest thread's own TLS when there is one: on hardware the
++     * callback runs on that thread. It got the loader's first image, shared by
++     * every callback (t5dr 0041). Host-only threads (ticker, decoders) keep it. */
++    ctx.gpr[13] = (g_active_ctx && g_active_ctx->gpr[13]) ? g_active_ctx->gpr[13] : PPU_TLS_TP;
+     ctx.cia     = code;
+     /* Save/restore g_active_ctx: this scratch ctx lives on the stack, so leaving
+      * g_active_ctx pointing at it after we return leaves a DANGLING pointer once the
+@@ -4217,7 +4290,10 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
+     ctx.gpr[2]  = toc;
+     ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
+     ctx.gpr[7]  = a4; ctx.gpr[8] = a5; ctx.gpr[9] = a6; ctx.gpr[10] = a7;
+-    ctx.gpr[13] = PPU_TLS_TP;
++    /* The calling guest thread's own TLS when there is one: on hardware the
++     * callback runs on that thread. It got the loader's first image, shared by
++     * every callback (t5dr 0041). Host-only threads (ticker, decoders) keep it. */
++    ctx.gpr[13] = (g_active_ctx && g_active_ctx->gpr[13]) ? g_active_ctx->gpr[13] : PPU_TLS_TP;
+     ctx.cia     = code;
+     /* Save/restore g_active_ctx (see ppu_guest_call): the scratch ctx is stack-local,
+      * so a dangling g_active_ctx after return corrupts the crash handler / diagnostics. */
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
 index 6e75ef9..a36e3ea 100644
 --- a/runtime/ppu/tests/boot_main.cpp
@@ -571,7 +715,7 @@ index 451d4bd..dba0afe 100644
          spu->rcv_evt[2] = (uint32_t)ev.data2;
          spu->rcv_evt[3] = (uint32_t)ev.data3;
 diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
-index 9eb022a..937a4aa 100644
+index 9eb022a..7ee789a 100644
 --- a/runtime/syscalls/sys_ppu_thread.c
 +++ b/runtime/syscalls/sys_ppu_thread.c
 @@ -81,6 +81,20 @@ static void table_unlock(void)
@@ -595,7 +739,16 @@ index 9eb022a..937a4aa 100644
  /* A guest stack for a host thread that runs guest code outside any guest
   * thread (callbacks into guest code: ppu_guest_call). Returns the usable top,
   * or 0. Taken from the same region as thread stacks, under the same lock. */
-@@ -213,8 +227,12 @@ static void* ppu_host_thread_proc(void* param)
+@@ -199,6 +213,8 @@ static void* ppu_host_thread_proc(void* param)
+ 
+     /* Its lwarx reservation record (spu_coherency.c) goes with the thread. */
+     { extern void spu_coh_ppu_thread_exit(void); spu_coh_ppu_thread_exit(); }
++    /* So does its TLS block (ppu_loader.cpp): free for the next thread. */
++    { extern void ppu_tls_thread_end(void); ppu_tls_thread_end(); }
+ 
+     if (s_exit_done) {             /* sys_ppu_thread_exit finished the slot */
+         s_exit_done = 0;
+@@ -213,8 +229,12 @@ static void* ppu_host_thread_proc(void* param)
      table_lock();
      info->exit_status = (int64_t)info->ctx.gpr[3];
  
@@ -609,7 +762,7 @@ index 9eb022a..937a4aa 100644
          info->state = PPU_THREAD_STATE_FREE;
      } else {
          info->state = PPU_THREAD_STATE_FINISHED;
-@@ -223,7 +241,7 @@ static void* ppu_host_thread_proc(void* param)
+@@ -223,7 +243,7 @@ static void* ppu_host_thread_proc(void* param)
  
      /* Signal anyone waiting for join */
  #ifdef _WIN32
@@ -618,7 +771,7 @@ index 9eb022a..937a4aa 100644
      return 0;
  #else
      pthread_mutex_lock(&info->finish_mutex);
-@@ -388,7 +406,7 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+@@ -388,7 +408,7 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
      uint64_t arg          = LV2_ARG_U64(ctx, 2);
      int32_t  priority     = LV2_ARG_S32(ctx, 3);
      uint32_t stack_size   = LV2_ARG_U32(ctx, 4);
@@ -627,7 +780,7 @@ index 9eb022a..937a4aa 100644
      uint32_t name_addr    = LV2_ARG_PTR(ctx, 6);
  
      if (stack_size == 0) stack_size = VM_PPU_STACK_SIZE;
-@@ -425,9 +443,19 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+@@ -425,9 +445,19 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
      t->ctx.gpr[13]   = s_create_tls;
      t->held          = s_create_held;
  
@@ -649,7 +802,7 @@ index 9eb022a..937a4aa 100644
      t->stack_addr = stack_addr;
      t->stack_size = stack_size;
      t->entry_addr = entry;
-@@ -466,9 +494,9 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
+@@ -466,9 +496,9 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
          *out = be_id;
      }
  
@@ -661,7 +814,7 @@ index 9eb022a..937a4aa 100644
      /* YDKJ: dump the worker arg-object: func_000750A8 (thread body) does
       * this=[arg+0x8], vtable=[arg+0xC], method=[vtable+0]. If this(+0x8) is null
       * the worker dispatches its job on a null object -> construction never runs. */
-@@ -621,14 +649,18 @@ int64_t sys_ppu_thread_exit(ppu_context* ctx)
+@@ -621,14 +651,18 @@ int64_t sys_ppu_thread_exit(ppu_context* ctx)
      ppu_thread_info* t = find_thread(tid);
      if (t) {
          t->exit_status = (int64_t)status;

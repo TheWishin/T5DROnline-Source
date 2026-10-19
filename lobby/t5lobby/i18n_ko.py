@@ -180,6 +180,12 @@ MESSAGES = {
     "Controls": "조작 설정",
     "Save the changes to controls.ini?": "controls.ini에 변경 사항을 저장할까요?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "자동 (노트북, 휴대용 PC, 내장 그래픽)",
+    "On": "켜기",
+    "a mobile processor": "모바일 프로세서",
+    "battery saver is on": "Windows 배터리 절약 모드가 켜져 있음",
+    "the Power saver power plan is on": "전원 관리 옵션 '절전'이 켜져 있음",
+    "this PC has a battery (laptop or handheld)": "이 PC에 배터리가 있음 (노트북 또는 휴대용 PC)",
     "Inputs": "입력",
     "Inputs + frame data": "입력 + 프레임 데이터",
     "Auto (Windows language)": "자동 (Windows 언어)",
@@ -366,6 +372,18 @@ MESSAGES = {
         "앱으로 표시합니다. Discord가 실행 중이 아니면 아무 일도 일어나지 않습니다.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "이 사본에는 아직 Discord 애플리케이션 ID가 없어 지금은 아무 효과가 없습니다.",
+    "Power saving (laptops, handhelds)": "절전 (노트북, 휴대용 PC)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "바쁜 대기 없이 작업 스레드를 줄입니다: 프로세서가 덜 뜨거워지고 속도를 유지해 게임이 60fps를 더 오래 지킵니다"
+        ". 게임 자체는 같으며 온라인에서도 마찬가지입니다.",
+    "On for this PC.": "이 PC에서 켜짐.",
+    "Off.": "꺼짐.",
+    "Auto: on for this PC -- {reason}.": "자동: 이 PC에서는 켜짐 -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "자동: 이 PC에서는 꺼짐 (배터리 없음, 모바일 프로세서 아님). 내장 그래픽으로 실행되면 게임이 스스로 켭니다.",
+    "Power saving is on.": "절전이 켜져 있습니다.",
     "A": "A",
     "Left punch (1)": "왼손 (1)",
     "Square": "네모",

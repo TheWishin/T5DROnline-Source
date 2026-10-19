@@ -180,6 +180,12 @@ MESSAGES = {
     "Controls": "操作設定",
     "Save the changes to controls.ini?": "変更を controls.ini に保存しますか？",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "自動（ノートPC、携帯型PC、内蔵グラフィック）",
+    "On": "オン",
+    "a mobile processor": "モバイル向けプロセッサー",
+    "battery saver is on": "Windows のバッテリー節約機能がオン",
+    "the Power saver power plan is on": "電源プラン「省電力」が有効",
+    "this PC has a battery (laptop or handheld)": "このPCにはバッテリーがある（ノートPCまたは携帯型PC）",
     "Inputs": "入力",
     "Inputs + frame data": "入力 + フレームデータ",
     "Auto (Windows language)": "自動（Windowsの言語）",
@@ -369,6 +375,19 @@ MESSAGES = {
         "PCの Discord アプリを通じて表示します。Discord が起動していなければ何も起きません。",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "このコピーにはまだ Discord のアプリケーションIDがないため、今は何も起きません。",
+    "Power saving (laptops, handhelds)": "省電力（ノートPC、携帯型PC）",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "ビジーウェイトをやめ、ワーカースレッドを減らします：プロセッサーの温度が上がりにくく速度を保てるので、ゲーム"
+        "が60fpsを長く維持できます。ゲーム自体は同じで、オンラインでも変わりません。",
+    "On for this PC.": "このPCではオン。",
+    "Off.": "オフ。",
+    "Auto: on for this PC -- {reason}.": "自動：このPCではオン -- {reason}。",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "自動：このPCではオフ（バッテリーなし、モバイル向けプロセッサーではない）。内蔵グラフィックで動く場合はゲーム"
+        "が自動でオンにします。",
+    "Power saving is on.": "省電力がオンです。",
     "A": "A",
     "Left punch (1)": "左パンチ (1)",
     "Square": "□",

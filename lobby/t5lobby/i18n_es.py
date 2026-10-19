@@ -184,6 +184,12 @@ MESSAGES = {
     "Controls": "Controles",
     "Save the changes to controls.ini?": "¿Guardar los cambios en controls.ini?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (laptops, handhelds, gráficos integrados)",
+    "On": "Activado",
+    "a mobile processor": "un procesador móvil",
+    "battery saver is on": "el ahorro de batería de Windows está activado",
+    "the Power saver power plan is on": "el plan de energía “Economizador” está activo",
+    "this PC has a battery (laptop or handheld)": "esta PC tiene batería (laptop o handheld)",
     "Inputs": "Inputs",
     "Inputs + frame data": "Inputs + datos de frames",
     "Auto (Windows language)": "Auto (idioma de Windows)",
@@ -378,6 +384,19 @@ MESSAGES = {
         "través de la app de Discord en esta PC. Sin Discord abierto no pasa nada.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "Esta copia aún no tiene un ID de aplicación de Discord, así que por ahora no hace nada.",
+    "Power saving (laptops, handhelds)": "Ahorro de energía (laptops, handhelds)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Sin espera activa y con menos hilos de trabajo: el procesador se mantiene más fresco y conserva su "
+        "velocidad, así el juego sostiene los 60 fps por más tiempo. El juego en sí es el mismo, también online.",
+    "On for this PC.": "Activado en esta PC.",
+    "Off.": "Desactivado.",
+    "Auto: on for this PC -- {reason}.": "Auto: activado en esta PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto: desactivado en esta PC (sin batería ni procesador móvil); el juego lo activa solo si corre con "
+        "gráficos integrados.",
+    "Power saving is on.": "El ahorro de energía está activado.",
     "A": "A",
     "Left punch (1)": "Puño izquierdo (1)",
     "Square": "Cuadrado",

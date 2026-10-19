@@ -180,6 +180,12 @@ MESSAGES = {
     "Controls": "Controles",
     "Save the changes to controls.ini?": "Salvar as mudanças no controls.ini?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (notebooks, portáteis, gráficos integrados)",
+    "On": "Ligado",
+    "a mobile processor": "um processador móvel",
+    "battery saver is on": "a economia de bateria do Windows está ligada",
+    "the Power saver power plan is on": "o plano de energia “Economia de energia” está ativo",
+    "this PC has a battery (laptop or handheld)": "este PC tem bateria (notebook ou portátil)",
     "Inputs": "Inputs",
     "Inputs + frame data": "Inputs + dados de frame",
     "Auto (Windows language)": "Auto (idioma do Windows)",
@@ -374,6 +380,19 @@ MESSAGES = {
         "app do Discord neste PC. Sem o Discord aberto, nada acontece.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "Esta cópia ainda não tem um ID de aplicativo do Discord, então por enquanto isto não faz nada.",
+    "Power saving (laptops, handhelds)": "Economia de energia (notebooks, portáteis)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Sem espera ativa e com menos threads de trabalho: o processador esquenta menos e mantém a velocidade, então "
+        "o jogo segura os 60 fps por mais tempo. O jogo em si é o mesmo, online também.",
+    "On for this PC.": "Ligado neste PC.",
+    "Off.": "Desligado.",
+    "Auto: on for this PC -- {reason}.": "Auto: ligado neste PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto: desligado neste PC (sem bateria, sem processador móvel); o jogo liga sozinho se rodar em gráficos "
+        "integrados.",
+    "Power saving is on.": "A economia de energia está ligada.",
     "A": "A",
     "Left punch (1)": "Soco esquerdo (1)",
     "Square": "Quadrado",

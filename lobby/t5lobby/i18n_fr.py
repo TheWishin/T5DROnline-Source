@@ -183,6 +183,12 @@ MESSAGES = {
     "Controls": "Commandes",
     "Save the changes to controls.ini?": "Enregistrer les changements dans controls.ini ?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (portables, handhelds, puce graphique intégrée)",
+    "On": "Activé",
+    "a mobile processor": "un processeur mobile",
+    "battery saver is on": "l'économiseur de batterie de Windows est activé",
+    "the Power saver power plan is on": "le mode de gestion « Économie d'énergie » est actif",
+    "this PC has a battery (laptop or handheld)": "ce PC a une batterie (portable ou handheld)",
     "Inputs": "Inputs",
     "Inputs + frame data": "Inputs + données de frames",
     "Auto (Windows language)": "Auto (langue de Windows)",
@@ -381,6 +387,19 @@ MESSAGES = {
         "l'appli Discord de ce PC. Sans Discord lancé, rien ne se passe.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "Cette copie n'a pas encore d'ID d'application Discord, donc ça ne fait rien pour l'instant.",
+    "Power saving (laptops, handhelds)": "Économie d'énergie (portables, handhelds)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Pas d'attente active et moins de threads de travail : le processeur chauffe moins et garde sa vitesse, donc "
+        "le jeu tient les 60 fps plus longtemps. Le jeu lui-même est identique, en ligne aussi.",
+    "On for this PC.": "Activé sur ce PC.",
+    "Off.": "Désactivé.",
+    "Auto: on for this PC -- {reason}.": "Auto : activé sur ce PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto : désactivé sur ce PC (pas de batterie, pas de processeur mobile) ; le jeu l'active tout seul s'il "
+        "tourne sur une puce graphique intégrée.",
+    "Power saving is on.": "L'économie d'énergie est activée.",
     "A": "A",
     "Left punch (1)": "Poing gauche (1)",
     "Square": "Carré",

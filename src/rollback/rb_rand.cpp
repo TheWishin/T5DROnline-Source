@@ -37,19 +37,24 @@
  *
  * The fix (tls_rand_install, tls_rand_reseed):
  *   - the scene draws from the TLS generator as before; every other draw on
- *     the main thread (outside the scene task) comes from a private generator
- *     in host memory, so effects and stage emitters cannot move the scene's
- *     sequence, whenever they run (and a rollback's draw cut, which skips some
- *     of them in re-simulated frames, cannot either);
- *   - netplay reseeds the TLS generator at every sync point (frame 0 of a
- *     session, every scene barrier) from the match seed, like the Twister and
- *     rand(), so the history of the process no longer reaches the match.
+ *     the main thread (outside the scene task) comes from private generators
+ *     in host memory, one per call site (priv_draw, desync hunt 2: stage 27's
+ *     crowd), so effects and stage emitters cannot move the scene's sequence,
+ *     whenever they run (and a rollback's draw cut, which skips some of them
+ *     in re-simulated frames, cannot either);
+ *   - netplay reseeds the TLS generator (and the private streams) at every
+ *     sync point (frame 0 of a session, every scene barrier) from the match
+ *     seed, like the Twister and rand(), so the history of the process no
+ *     longer reaches the match.
  * T5_TLS_RAND=0 turns both off (the old behaviour, for comparisons).
  *
  * Diagnostics: T5_RAND_TRACE=1 counts rand() (0x369228) and TLS-generator calls
  * per thread and caller (rb_rand.log, every 10 s), =2 logs each distinct
  * caller chain of the TLS generator once, =3 per frame how many draws came
- * from inside the fight update (0x15498) and from elsewhere, and the state.
+ * from inside the fight update (0x15498) and from elsewhere, and the state,
+ * =4 every draw of the fight's generator 0xE859C and of the TLS generator
+ * with frame, state, actors and caller chain (rb_lcg.log; docs/NETPLAY.md
+ * "Desync hunt 2").
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -62,6 +67,7 @@
 #include <mutex>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #include "ppu_recomp.h"
 #include "rb.h"
@@ -85,11 +91,27 @@ int g_trace = 0;
 thread_local int t_scene = 0;                /* main thread: inside the scene task */
 std::atomic<uint64_t> g_private_draws{ 0 };
 
-/* the private generator: the same algorithm, in host memory (main thread only) */
-struct Shuffle { uint32_t s = 0x6E5D3C2Bu, last = 0, tab[32] = {}; bool init = false; } g_priv;
-uint32_t priv_draw()
+/* The private generators: the same algorithm, in host memory (main thread
+ * only), one per call site (the guest return address of the draw). Not all of
+ * these draws are cosmetic: stage 27's set-up (0xCB9A0, from the stage task
+ * 0x271ABC during the loading) gives each of its 21 crowd controllers a timer of
+ * rand() % 2000 + 1000, and when a timer runs out a crowd fighter starts a move
+ * in the fight's own actor loop (0x17768 -> 0xF1A74), which draws from the
+ * fight's generator 0x1008F0D0 -- the one the two fighters' moves draw from
+ * too. With one private stream the timers depended on how many emitter and
+ * effect draws came before them (thousands at frame 0, as many as the PC's
+ * frames before the session took), so two PCs (or two runs of one scripted
+ * match) gave the crowd different timers, a crowd fighter started a move on
+ * one and not the other ~800 frames in, and every later move of the fighters
+ * drew different numbers (+0x176 of a fighter block): the stage 27 Steve vs
+ * Hwoarang desyncs of the e2e runs, in lockstep and rollback alike. A stream
+ * per call site, restarted from the match seed at every sync point, makes
+ * each site's numbers depend on its own calls only: the stage set-up's are
+ * the same on every PC, and the emitters' and effects' (their count follows
+ * the PC's timing) stay among themselves. */
+struct Shuffle { uint32_t s = 0x6E5D3C2Bu, last = 0, tab[32] = {}; bool init = false; };
+uint32_t shuffle_draw(Shuffle& p)
 {
-    Shuffle& p = g_priv;
     if (!p.init) {
         for (int i = 0; i < 8; i++) p.s = p.s * kA + kC;
         for (int i = 0; i < 32; i++) { p.s = p.s * kA + kC; p.tab[i] = p.s; }
@@ -101,6 +123,34 @@ uint32_t priv_draw()
     p.last = p.tab[i];
     p.tab[i] = p.s;
     return p.last & 0x3FFFFFFFu;
+}
+constexpr int kSites = 256;                  /* open addressing; ~40 sites seen in a match */
+struct Site { uint32_t lr; Shuffle g; } g_sites[kSites];
+uint32_t g_site_seed = 0x6E5D3C2Bu;
+uint32_t g_sites_used = 0;
+Shuffle g_overflow;                          /* more sites than slots: one shared stream (never seen) */
+std::atomic<uint64_t> g_site_reseed{ 0 };    /* bit 32: a sync point's seed (low word) waits for the main thread */
+uint32_t priv_draw(uint32_t lr)
+{
+    if (const uint64_t r = g_site_reseed.exchange(0, std::memory_order_acquire)) {
+        for (Site& s : g_sites) s.lr = 0;
+        g_site_seed = (uint32_t)r ^ 0x6E5D3C2Bu;
+        g_sites_used = 0;
+        g_overflow = Shuffle{};
+    }
+    uint32_t h = (lr * 0x9E3779B1u) >> 24;
+    for (int n = 0; n < kSites; n++, h = (h + 1) & (kSites - 1)) {
+        Site& s = g_sites[h];
+        if (s.lr == lr) return shuffle_draw(s.g);
+        if (s.lr == 0) {
+            s.lr = lr;
+            s.g = Shuffle{};
+            s.g.s = g_site_seed ^ (lr * 0x85EBCA6Bu);
+            g_sites_used++;
+            return shuffle_draw(s.g);
+        }
+    }
+    return shuffle_draw(g_overflow);
 }
 
 /* ---- diagnostics (T5_RAND_TRACE) ---- */
@@ -162,16 +212,109 @@ void h_scene(ppu_context* ctx)
     t_scene--;
 }
 
+/* The scene's small LCG at 0x1008F0C4 (x -> 5x + 3; +0x64 of the battle
+ * object 0x1008F060): the fight logic steps it (0x15A40, the moves' events:
+ * which camera, which effect variant) and so did the ambient sound task
+ * 0xA9140 -> 0xA8DB8 beside the scene, which picks a random delay for its next
+ * sound from it -- but only when its last sound has stopped playing (0xAC814),
+ * which follows the audio clock and how long the PC's frames take. Two PCs then
+ * stepped the scene's LCG a different number of times, a later camera pick
+ * differed, and the camera's projected fighter positions decide the sidestep
+ * side (rb_rand.cpp header): the Steve vs Hwoarang desyncs of the e2e runs
+ * fin_b_rb and f1 (camera matrix 0x100996E0..0x1009971F and its copies at
+ * 0x100A0990 / 0x100A3B10 / 0x100A3B90 apart from ~1,000-2,000 frames into the
+ * fight, no rollback near). The task now steps a private copy: the scene's
+ * word is swapped out while it runs. */
+constexpr uint32_t kSoundTask = 0xA9140u, kSceneLcg = 0x1008F0C4u;
+GuestFn o_sound_task = nullptr;
+uint32_t g_sound_lcg = 0;
+bool g_sound_lcg_init = false;
+std::atomic<uint64_t> g_sound_task_runs{ 0 };
+inline uint32_t gr32(uint32_t a) { uint32_t v; memcpy(&v, vm_base + a, 4); return _byteswap_ulong(v); }
+inline void gw32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); memcpy(vm_base + a, &v, 4); }
+void h_sound_task(ppu_context* ctx)
+{
+    if (!g_isolating || t_scene || ctx->thread_id != main_tid()) { o_sound_task(ctx); return; }
+    const uint32_t scene = gr32(kSceneLcg);
+    if (!g_sound_lcg_init) { g_sound_lcg = scene ^ 0x5A5A5A5Au; g_sound_lcg_init = true; }
+    gw32(kSceneLcg, g_sound_lcg);
+    o_sound_task(ctx);
+    g_sound_lcg = gr32(kSceneLcg);
+    gw32(kSceneLcg, scene);
+    g_sound_task_runs.fetch_add(1, std::memory_order_relaxed);
+}
+
+FILE* g_lcg_log = nullptr;   /* T5_RAND_TRACE=4 (below) */
 void h_tls_rand(ppu_context* ctx)
 {
     const bool priv = g_isolating && t_scene == 0 && ctx->thread_id == main_tid();
     if (g_trace) trace_tls(ctx, priv);
+    if (g_lcg_log)
+        fprintf(g_lcg_log, "%u TLS %c t%llu s%d lr %08X %s\n", sim_frame(), priv ? 'P' : 'S', (unsigned long long)ctx->thread_id, t_scene,
+                (uint32_t)ctx->lr, guest_backtrace(10).c_str());
     if (priv) {
-        ctx->gpr[3] = (uint64_t)priv_draw();
+        ctx->gpr[3] = (uint64_t)priv_draw((uint32_t)ctx->lr);
         g_private_draws.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     o_tls_rand(ctx);
+}
+
+/* T5_RAND_TRACE=4: every draw of the 48-bit-style LCG 0xE859C (state * 0xDEECE66D
+ * + 0xB; the scene's generator at 0x1008F0D0 and any other state word), with
+ * the frame, the state before and the caller chain (rb_lcg.log) */
+constexpr uint32_t kLcg3 = 0xE859Cu;
+GuestFn o_lcg3 = nullptr;
+/* the actor each enclosing fight function was called for (r3), logged with a draw */
+constexpr uint32_t kCtxFns[] = { 0x15A40u, 0x1958Cu, 0x19944u, 0xFD094u, 0xEF688u, 0x14618u, 0xF4690u, 0xF1A74u,
+                                 0xE9284u, 0xDB2A4u, 0xEF7BCu, 0xF0594u, 0x39964u, 0x17768u };
+constexpr int kCtxN = (int)(sizeof kCtxFns / sizeof kCtxFns[0]);
+GuestFn o_ctx[kCtxN];
+struct CtxE { uint32_t fn, r3; };
+thread_local CtxE t_ctx[32];
+thread_local int t_nctx = 0;
+template <int I> void h_ctx(ppu_context* ctx)
+{
+    if (t_nctx < 32) t_ctx[t_nctx] = { kCtxFns[I], (uint32_t)ctx->gpr[3] };
+    t_nctx++;
+    o_ctx[I](ctx);
+    t_nctx--;
+}
+template <int... I> void install_ctx(std::integer_sequence<int, I...>)
+{
+    int ok = 0;
+    ((ok += detour(kCtxFns[I], h_ctx<I>, &o_ctx[I]) ? 1 : 0), ...);
+    note("  draw context: %d of %d fight functions", ok, kCtxN);
+}
+void h_lcg3(ppu_context* ctx)
+{
+    const uint32_t st = (uint32_t)ctx->gpr[3];
+    const uint32_t before = gr32(st);
+    if (!g_lcg_log) g_lcg_log = fopen("rb_lcg.log", "w");
+    if (g_lcg_log) {
+        std::string c;
+        for (int i = 0; i < t_nctx && i < 32; i++) { char b[24]; snprintf(b, sizeof b, " %X:%08X", t_ctx[i].fn, t_ctx[i].r3); c += b; }
+        fprintf(g_lcg_log, "%u t%llu s%d %08X %08X [%s ] %s\n", sim_frame(), (unsigned long long)ctx->thread_id, t_scene, st, before,
+                c.c_str(), guest_backtrace(14).c_str());
+    }
+    o_lcg3(ctx);
+}
+/* (=4) also: the fight's hit resolution 0x17744 (its flag and counter words) and
+ * the reaction start 0xF1A28 (r3, r4) */
+GuestFn o_res = nullptr, o_react = nullptr;
+void h_res(ppu_context* ctx)
+{
+    if (g_lcg_log) {
+        const uint32_t pf = gr32(0x4686ECu), pc = gr32(0x4686E4u), pl = gr32(0x4686E8u), pm = gr32(0x4686F0u);
+        fprintf(g_lcg_log, "%u RES flag %08X ctr %08X p1 %08X p2 %08X mode %08X\n", sim_frame(), pf ? gr32(pf) : 0, pc ? gr32(pc) : 0,
+                pl ? gr32(pl) : 0, pl ? gr32(pl + 4) : 0, pm ? gr32(pm + 0x28) : 0);
+    }
+    o_res(ctx);
+}
+void h_react(ppu_context* ctx)
+{
+    if (g_lcg_log) fprintf(g_lcg_log, "%u REACT %08X %08X %s\n", sim_frame(), (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4], guest_backtrace(3).c_str());
+    o_react(ctx);
 }
 
 void h_rand(ppu_context* ctx)
@@ -189,21 +332,27 @@ void rand_install()
     if (done || !detour_ready()) return;
     done = true;
     { const char* e = getenv("T5_TLS_RAND"); g_on = !(e && *e == '0'); }
-    { const char* e = getenv("T5_RAND_TRACE"); g_trace = (e && *e >= '1' && *e <= '3') ? *e - '0' : 0; }
+    { const char* e = getenv("T5_RAND_TRACE"); g_trace = (e && *e >= '1' && *e <= '4') ? *e - '0' : 0; }
+    if (g_trace == 4) { note("LCG 0x%06X: draws traced (rb_lcg.log): %s", kLcg3, detour(kLcg3, h_lcg3, &o_lcg3) ? "yes" : "not detourable");
+                      g_lcg_log = fopen("rb_lcg.log", "w");
+                      note("  0x17744 %d, 0xF1A28 %d", detour(0x17744u, h_res, &o_res), detour(0xF1A28u, h_react, &o_react));
+                      install_ctx(std::make_integer_sequence<int, kCtxN>{}); g_trace = 0; }
     if (g_trace) note("rand(): calls traced (T5_RAND_TRACE=%d): %s", g_trace, detour(kRand, h_rand, &o_rand) ? "yes" : "not detourable");
     if (!g_on && !g_trace) return;
     const bool scene = g_on && detour(kSceneTask, h_scene, &o_scene);
     const bool tls = detour(kTlsRand, h_tls_rand, &o_tls_rand);
     g_isolating = g_on && scene && tls;
-    note("TLS random generator: %s", g_isolating ? "the scene's own stream; effect and stage draws from a private one (T5_TLS_RAND=0: shared)"
-                                     : !g_on ? "shared (T5_TLS_RAND=0)" : "the detours could not be installed -- one shared stream (desyncs possible)");
+    const bool sound = g_isolating && detour(kSoundTask, h_sound_task, &o_sound_task);
+    note("TLS random generator: %s; the scene's LCG 0x%08X: %s", g_isolating ? "the scene's own stream; effect and stage draws from private ones, one per call site (T5_TLS_RAND=0: shared)"
+                                     : !g_on ? "shared (T5_TLS_RAND=0)" : "the detours could not be installed -- one shared stream (desyncs possible)",
+         kSceneLcg, sound ? "the ambient sound task steps its own copy" : "shared with the ambient sound task");
 }
 
 /* Netplay's sync points (frame 0 of a session, every scene barrier): the TLS
  * generator of the main thread (its TLS block at tls_base) starts over from the
  * seed -- its state word, and the "seeded" byte cleared, so the next draw fills
  * the table from it as the game's first draw ever did. */
-void tls_rand_reseed(uint32_t tls_base, uint32_t seed)
+void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams)
 {
     if (!g_on || !tls_base || !vm_base) return;
     const uint32_t be = _byteswap_ulong(seed);
@@ -211,6 +360,7 @@ void tls_rand_reseed(uint32_t tls_base, uint32_t seed)
     vm_base[tls_base + kTlsSeeded] = 0;
     memset(vm_base + tls_base + kTlsLast, 0, 4 + 32 * 4);
     (void)kTlsTable;
+    if (streams) g_site_reseed.store((1ull << 32) | seed, std::memory_order_release);   /* the private streams (main thread, next draw) */
 }
 
 uint64_t rand_private_draws() { return g_private_draws.load(); }

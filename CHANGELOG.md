@@ -3,7 +3,30 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.1 (not released yet)
+## v1.1.1 (2026-10-19)
+
+**Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1
+(the lobby pairs equal game builds, and 1.1.1 changes the game: patches 0039 and 0042). The launcher
+offers the update itself; after it, press **BUILD GAME** once.
+
+### Online
+- **Direct connections are much more reliable.** Before, whether two homes connected directly was
+  partly luck (who started sending first); then the match fell back to the relay in Germany. Both
+  sides now start at the same moment, try every address at once for longer, predict the ports of
+  routers that change them, and open the game's port on the router (UPnP / NAT-PMP / PCP). In a
+  network simulator, direct connections went from 926 to 1,130 of 1,400 router pairs, and a match
+  that had to start on a relay switches to direct as soon as that works.
+- **A relay server in the USA** (Oregon): players in America no longer detour through Germany when
+  their routers can't connect directly (see Servers).
+- **Smoother rollback at high ping:** a rollback costs 15% less; at 150 ms ping the slowest frames
+  went from 23.1 to 21.4 ms and visible stutters per match from 56 to 37 (at 250 ms: 389 to 221).
+- **No more desyncs on stage 27.** The fighters in the crowd at the back of the stage start their
+  fights on timers that the stage set up from a timing-dependent random source, and their moves
+  draw from the same random numbers as the two players. When the two PCs' crowds started a fight
+  at different moments, the players' moves went apart too, minutes into a match, in lockstep and
+  rollback alike (3 of 7 real games on stage 27 were voided). The stage now gets the same random
+  numbers on both PCs, and the ambient sound no longer steps a random number the fight uses
+  (docs/NETPLAY.md "Desync hunt 2").
 
 ### Controllers
 - **DualShock 4 and DualSense work without Steam**, over USB and Bluetooth (DualSense Edge
@@ -28,8 +51,8 @@ part is in the README's status table.
   California (300-400 ms ping). The lobby can now use small relay-only servers in other regions:
   each launcher measures its ping to every one of them, and a match that needs a relay goes
   through the one with the smallest sum of both players' pings (the lobby server's own relay
-  included). Lobby, accounts and ranks stay on the one server. Both players need 1.1.1; with an
-  older launcher the match uses the lobby server's relay as before. A relayed match still
+  included). Lobby, accounts and ranks stay on the one server. Both players need 1.1.1 (a
+  future launcher-only update that pairs with older ones falls back to the lobby server's relay). A relayed match still
   switches to the direct connection when one opens up. For hosts: `install.sh --relay-only` now
   sets up such a relay server (docs/HOSTING.md "Adding a relay server"); the old option of that
   name, relaying every match, is `--force-relay`.

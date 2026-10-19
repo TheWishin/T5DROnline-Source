@@ -84,6 +84,8 @@ agents' games:
 | ls50 (Jin vs Lili, stage 20) | lockstep, RTT 50 ms, 1 % loss | own inputs every frame | 0 mismatching frames (checked through frame 6,599, the match 6,530 frames) | `cfacb338e8e54943` / `cfacb338e8e54943` |
 | rb150f (Lili vs Jin, stage 33), final build | rollback, RTT 150 ms +-5, 3 % loss | own inputs every frame | 0 mismatching frames (through 3,599, the match 3,822 frames); 953 rollbacks, 1,838 frames re-simulated | `418bb04e1217c36d` / `418bb04e1217c36d` |
 | ls30f (Lili vs Jin, stage 33), final build | lockstep, RTT 30 ms, 1 % loss | own inputs every frame | 0 mismatching frames (through 3,599, the match 3,822 frames) | `22f00a0a5bedee45` / `22f00a0a5bedee45` |
+| rbm (Steve vs Hwoarang, stage 27), merged with main b5c55fa (0043 in the series) | rollback, RTT 100 ms +-5, 3 % loss | own inputs every frame | 0 mismatching frames (through 6,599, the match 6,587 frames); 1,490 rollbacks, 2,301 frames re-simulated | `10f206fe9f8434f5` / `10f206fe9f8434f5` |
+| lsm (Steve vs Hwoarang, stage 27), merged | lockstep, RTT 30 ms, 1 % loss | own inputs every frame | 0 mismatching frames (through 6,599, the match 6,587 frames) | `06b0b4ada03bee07` / `06b0b4ada03bee07` |
 
 Both sides reported the same winner and score in every pair. The host's log
 (`T5_TRAINING_LOG`) has its own player's input rows only (the final build
@@ -238,7 +240,7 @@ In the game:
   on block and on hit, with the attacker or the defender pressing the jab again
   as early as possible, and a whiff. PASS = every result is i10 +3 on block,
   i10 +9 on hit, 25 frames for the whiff (on the final build: 25 results, all
-  as expected).
+  as expected; again after the merge with main b5c55fa).
 - Practice through the smoke harness's menu driver with the overlay on,
   scripted attacks and backbuffer read-backs (`RSX_TEST_BB_SHOT`): the panels
   in place, the input rows (the dummy's CPU inputs included) and the

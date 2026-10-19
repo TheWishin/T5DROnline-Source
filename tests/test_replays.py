@@ -48,11 +48,11 @@ def fnv_digest(frames):
 
 
 def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, names=("A", "B"),
-              build="b1", created="2026-10-19T12:00:00Z", version=2):
+              build="b1", created="2026-10-19T12:00:00Z", version=2, delay=2, rb_delay=1):
     """A replay file written by Python (the same layout as replay.cpp's)."""
     n = len(inputs[0])
     b = bytearray(b"T5RP")
-    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, 2, 1, 7, 7, n, 60)
+    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, delay, rb_delay, 7, 7, n, 60)
     if version >= 2:
         b += struct.pack("<I", max(0, n - 1))            # the last frame the recording game ran: all of them here
     b += struct.pack("<I", len(matches))
@@ -466,6 +466,31 @@ class GameCodeTest(unittest.TestCase):
             self.assertIn("ERROR " + why, out)
         code, out = self.run_exe("read", os.path.join(self.tmp, "missing" + replays.EXT))
         self.assertIn("ERROR the file cannot be opened", out)
+
+    def test_a_header_the_playback_cannot_use_is_refused(self):
+        """review-112: a damaged or hand-made file with a player side other than 0/1, an input delay outside
+        0..30, or a match with a character / stage id the game does not have must be refused with a reason --
+        the playback indexes the two players by the side and fills its input ring up to the delay (memory
+        outside both), and an unknown character left the playback waiting at the title for ever."""
+        ins = sample_inputs(60)
+        good = [{"start": 0, "end": 50, "p1": 1, "p2": 2, "stage": 20, "winner": 0}]
+        cases = {"broken header (player side)": dict(slot=2),
+                 "broken header (input delay)": dict(delay=31),
+                 "broken header (input delay) ": dict(rb_delay=200),
+                 "broken match table": dict(matches=[dict(good[0], p2=36)]),
+                 "broken match table ": dict(matches=[dict(good[0], stage=35)])}
+        for why, kw in cases.items():
+            p = os.path.join(self.tmp, "hdr" + replays.EXT)
+            make_file(p, ins, kw.pop("matches", good), **kw)
+            code, out = self.run_exe("read", p)
+            self.assertEqual(code, 2, (why, out))
+            self.assertIn("ERROR " + why.strip(), out)
+        # the edges still play: side 1, delay 30, rollback delay unknown (-1), random stage, the last character
+        p = os.path.join(self.tmp, "edge" + replays.EXT)
+        make_file(p, ins, [dict(good[0], p1=35, stage=-1)], slot=1, delay=30, rb_delay=-1)
+        code, out = self.run_exe("read", p)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SLOT 1 DELAY 30", out)
 
     def test_a_slower_load_renumbers_the_frames(self):
         """A sync point this game reaches later than the recording continues at its own frame; the recorded

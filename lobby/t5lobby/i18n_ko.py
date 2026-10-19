@@ -181,8 +181,6 @@ MESSAGES = {
     "Save the changes to controls.ini?": "controls.ini에 변경 사항을 저장할까요?",
     # ---- launcher/core.py
     "Auto (Windows language)": "자동 (Windows 언어)",
-    "Deutsch": "Deutsch",
-    "English": "English",
     "No package chosen.": "선택한 패키지가 없습니다.",
     "File not found.": "파일을 찾을 수 없습니다.",
     "Cannot read the file: {error}": "파일을 읽을 수 없습니다: {error}",

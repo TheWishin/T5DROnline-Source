@@ -56,15 +56,18 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IS_WIN = os.name == "nt"
 
-# English or German (lobby/t5lobby/i18n.py) for what the launcher shows. The swap step runs this file alone,
+# The player's language (lobby/t5lobby/i18n.py) for what the launcher shows. The swap step runs this file alone,
 # from a copy of the bundled Python without lobby/: there the texts stay English (they go to swap.log and
 # result.json, which the launcher shows through translate_message()).
 sys.path.append(os.path.join(ROOT, "lobby"))
 try:
-    from t5lobby.i18n import N_, num, t, translate_message
+    from t5lobby.i18n import N_, num, t, translate_message, ui_family
 except ImportError:
     def N_(text):
         return text
+
+    def ui_family(default="Segoe UI"):
+        return default
 
     def t(text, /, **values):
         return text.format(**values) if values else text
@@ -1200,7 +1203,7 @@ class Updater:
             text, style = (t("If this update changes the game code, the Play tab asks you to build the game once "
                              "(about 2 minutes)."), "Muted.TLabel")
         ttk.Label(box, wraplength=560, justify="left", text=text, style=style).pack(anchor="w", pady=(4, 6))
-        notes = tk.Text(box, height=12, wrap="word", relief="flat", font=("Segoe UI", 9), padx=8, pady=6)
+        notes = tk.Text(box, height=12, wrap="word", relief="flat", font=(ui_family(), 9), padx=8, pady=6)
         notes.insert("1.0", rel.get("notes") or t("(no release notes)"))
         notes.configure(state="disabled")
         notes.pack(fill="both", expand=True)
@@ -1209,7 +1212,7 @@ class Updater:
         self.err = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.msg, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
         tk.Label(box, textvariable=self.err, fg="#cf222e", wraplength=560, justify="left",
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+                 font=(ui_family(), 9, "bold")).pack(anchor="w")
         row = ttk.Frame(box)
         row.pack(fill="x", pady=(8, 0))
         self.b_update = ttk.Button(row, text=t("Update now"), command=self.start_update)

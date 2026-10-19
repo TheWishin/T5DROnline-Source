@@ -29,6 +29,7 @@ import controls_edit as ce
 from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
 from t5lobby import dialogs, padmap, padnav
+from t5lobby.i18n import ui_family
 from t5lobby.padmap import DINPUT, XINPUT
 
 POLL_HZ = 60
@@ -457,7 +458,7 @@ class ControlsDialog:
         self.prompt.columnconfigure(0, weight=1)
         self.prompt_var = tk.StringVar()
         self.prompt_hint = tk.StringVar()
-        tk.Label(self.prompt, textvariable=self.prompt_var, font=("Segoe UI", 13, "bold"), fg=COLORS["ok"],
+        tk.Label(self.prompt, textvariable=self.prompt_var, font=(ui_family(), 13, "bold"), fg=COLORS["ok"],
                  anchor="w").grid(row=0, column=0, sticky="we")
         ttk.Label(self.prompt, textvariable=self.prompt_hint, style="Muted.TLabel").grid(row=1, column=0, sticky="w")
         pb = ttk.Frame(self.prompt)

@@ -181,8 +181,6 @@ MESSAGES = {
     "Save the changes to controls.ini?": "変更を controls.ini に保存しますか？",
     # ---- launcher/core.py
     "Auto (Windows language)": "自動（Windowsの言語）",
-    "Deutsch": "Deutsch",
-    "English": "English",
     "No package chosen.": "パッケージが選択されていません。",
     "File not found.": "ファイルが見つかりません。",
     "Cannot read the file: {error}": "ファイルを読み込めません：{error}",

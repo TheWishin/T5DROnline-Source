@@ -18,11 +18,12 @@ The tab calls refresh() whenever its state may have changed (after every event a
 show_bar() / hide_bar() around its questions, after_event() / after_driver() with what it got.
 Colours, fonts and the drawn pieces come from theme.py.
 """
+import re
 import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import proto, ranks, theme
+from . import i18n, proto, ranks, theme
 from .i18n import N_, t
 from .lag import describe_event as describe_lag
 from .theme import C
@@ -34,8 +35,10 @@ HEADINGS = {"player": N_("Player"), "rank": N_("Rank"), "rating": N_("Rating"), 
             "result": N_("Result"), "opponent": N_("Opponent"), "chars": N_("Characters"), "score": N_("Score")}
 
 # What the player can do about an error: words to look for in the message (lower case; the English words of the
-# server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The same
-# tips in both languages are in the catalog; tests/test_i18n.py checks that each pair of words belongs together.
+# server's / client's message and the German ones of its translation, i18n_known.py), and the tip. The tips are in
+# every catalog; tests/test_i18n.py checks that each pair of words belongs together. In the other languages the
+# message is recognised by its whole translation (_tip_patterns): every catalog text whose English key holds the
+# entry's English words.
 ERROR_HELP = (
     (("cannot reach", "ist nicht erreichbar"),
      N_("Check the server address and your internet connection, then try again.")),
@@ -77,9 +80,33 @@ ERROR_HELP = (
 )
 
 
+_HOLE = re.compile(r"\{\w+\}")
+_TIPS = {}            # language -> [[regex of a translated message, ...] per ERROR_HELP entry]
+
+
+def _tip_patterns():
+    """For each ERROR_HELP entry, regexes that find its messages in the current language: the translations of the
+    catalog texts whose English text holds one of the entry's English words, a {placeholder} matching anything."""
+    lang = i18n.language()
+    if lang not in _TIPS:
+        cat = i18n.catalog(lang)
+        keys = [(k.lower(), v.lower()) for k, v in cat.items()]
+        per_entry = []
+        for words, _tip in ERROR_HELP:
+            rxs = []
+            for key, text in keys:
+                if any(w in key for w in words) and text:
+                    parts = _HOLE.split(text)
+                    rxs.append(re.compile(".+?".join(re.escape(p) for p in parts)))
+            per_entry.append(rxs)
+        _TIPS[lang] = per_entry
+    return _TIPS[lang]
+
+
 def friendly_error(text):
     """'Lobby: wrong name or password' -> 'Wrong name or password. Check the spelling, or use ...'
-    (the same in German: 'Lobby: Name oder Passwort falsch' -> 'Name oder Passwort falsch. Prüfe ...')."""
+    (the same in German: 'Lobby: Name oder Passwort falsch' -> 'Name oder Passwort falsch. Prüfe ...', and in
+    each other language)."""
     msg = proto.scrub_addresses(str(text or "")).strip()
     for prefix in (t("Lobby error: {error}", error="\0").split("\0")[0], t("Lobby: {message}", message="\0").split("\0")[0],
                    "Lobby error: ", "Lobby: "):
@@ -89,7 +116,9 @@ def friendly_error(text):
         return ""
     msg = msg[0].upper() + msg[1:]
     low = msg.lower()
-    tip = next((tip_text for words, tip_text in ERROR_HELP if any(w in low for w in words)), "")
+    patterns = _tip_patterns() if i18n.language() != "en" else [()] * len(ERROR_HELP)
+    tip = next((tip_text for (words, tip_text), rxs in zip(ERROR_HELP, patterns)
+                if any(w in low for w in words) or any(rx.search(low) for rx in rxs)), "")
     tip = t(tip) if tip else ""
     if tip and tip.lower() not in low:
         msg = msg.rstrip(".") + ". " + tip

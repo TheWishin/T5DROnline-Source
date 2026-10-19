@@ -330,7 +330,7 @@ class App(tk.Tk):
         ttk.Button(row, text=t("Report a problem..."), command=self.report_problem).pack(side="right", padx=8)
         self.error = tk.StringVar()
         self.error_lbl = tk.Label(b, textvariable=self.error, fg=COLORS["error"], wraplength=860, justify="left",
-                                  font=("Segoe UI", 10, "bold"))
+                                  font=(core.ui_family(), 10, "bold"))
         self.error_lbl.grid(row=4, column=0, columnspan=3, sticky="w")
 
         # log
@@ -511,16 +511,23 @@ class App(tk.Tk):
         box.columnconfigure(1, weight=1)
 
     def _language_box(self, right):
-        """Auto / Deutsch / English. The texts are built once, so a change applies after a restart."""
+        """Auto, then every language in its own name (English, Deutsch, Español, 한국어, ...): someone who cannot
+        read the current language still finds theirs. The texts are built once, so a change applies after a
+        restart."""
         lang = ttk.LabelFrame(right, text="  " + t("Language") + "  ", padding=(12, 6))
         lang.pack(fill="x", pady=(0, 6))
-        self.language_choice = self.settings["language"]         # what this run was started with
+        self.language_choice = core.i18n.canonical(self.settings["language"]) or "auto"   # what this run started with
         self.language_var = tk.StringVar(value=self.language_choice)
-        row = ttk.Frame(lang)
-        row.pack(anchor="w")
-        for key, label in core.LANGUAGE_CHOICES:
-            ttk.Radiobutton(row, text=t(label), value=key, variable=self.language_var,
-                            command=self.language_changed).pack(side="left", padx=(0, 14))
+        grid = ttk.Frame(lang)
+        grid.pack(anchor="w")
+        per_row = 4
+        for i, (key, label) in enumerate(core.LANGUAGE_CHOICES):
+            text = t(label) if key == "auto" else label          # (a language's own name stays as it is)
+            rb = ttk.Radiobutton(grid, text=text, value=key, variable=self.language_var, command=self.language_changed)
+            if key == "auto":
+                rb.grid(row=0, column=0, columnspan=per_row, sticky="w")
+            else:
+                rb.grid(row=1 + (i - 1) // per_row, column=(i - 1) % per_row, sticky="w", padx=(0, 14))
         self.lang_note = tk.StringVar(value="")
         note = ttk.Frame(lang)
         note.pack(anchor="w", fill="x")

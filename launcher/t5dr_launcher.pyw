@@ -4,7 +4,7 @@
     python  launcher/t5dr_launcher.pyw --screenshots DIR   (docs: save a PNG of every tab, then exit)
 
 Tabs: Build (choose .pkg + .rap, check the build tools, BUILD GAME with live
-progress and log), Play, Settings, Online (placeholder; see online.py).
+progress and log), Play, Settings, Online (online.py), Replays (replays_ui.py).
 """
 import argparse
 import ctypes
@@ -26,6 +26,8 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import replays  # noqa: E402
+import replays_ui  # noqa: E402
 import updater  # noqa: E402
 try:
     import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
@@ -69,6 +71,85 @@ def set_big_state(btn, enabled):
                   bg=COLORS["accent"] if enabled else "#aab4c0", cursor="hand2" if enabled else "arrow")
 
 
+class VScroll:
+    """A frame (`inner`) that scrolls up and down inside `parent` when it is taller than the room it gets: the
+    Settings tab at 133 % display scaling and more, or in a small window. The mouse wheel anywhere over it scrolls
+    it, and a control that gets the focus (Tab, or anything else that moves it) is scrolled into view. Never
+    sideways: `inner` is as wide as the visible area, and the area asks for `inner`'s natural width, so the window's
+    usual width check still covers it."""
+
+    def __init__(self, parent, px=int):
+        bg = ttk.Style(parent).lookup("TFrame", "background") or parent.winfo_toplevel().cget("background")
+        # (no yscrollincrement: with one, Tk keeps the view on whole steps and the last few pixels of the content
+        # could never be scrolled to)
+        self.canvas = tk.Canvas(parent, background=bg, highlightthickness=0, borderwidth=0, takefocus=0,
+                                height=px(200))
+        self.bar = ttk.Scrollbar(parent, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.bar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = ttk.Frame(self.canvas)
+        self.item = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.margin = px(24)                 # what is shown above / below a control scrolled into view
+        self.step = px(60)                   # one notch of the mouse wheel
+        self.tag = f"VScroll{id(self)}"      # every widget in `inner` gets it (adopt): the wheel and the focus
+        self.canvas.bind_class(self.tag, "<MouseWheel>", self._wheel)
+        self.canvas.bind_class(self.tag, "<FocusIn>", self._focus, add="+")
+        self.inner.bind("<Configure>", lambda _e: self.refresh(), add="+")
+        self.canvas.bind("<Configure>", self._resized, add="+")
+        for w in (self.canvas, self.bar):
+            w.bindtags((self.tag,) + w.bindtags())
+
+    def adopt(self, widget=None):
+        """Give `widget` and everything in it (default: all of `inner`) the wheel and the focus handling; call it
+        after building the content, and again for widgets added later."""
+        w = self.inner if widget is None else widget
+        if self.tag not in w.bindtags():
+            w.bindtags((self.tag,) + w.bindtags())
+        for c in w.winfo_children():
+            self.adopt(c)
+
+    def refresh(self):
+        """The scrolled region from what `inner` asks for: all of its height can be scrolled to, and the area is as
+        wide as `inner` wants to be."""
+        w, h = self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()
+        self.canvas.configure(scrollregion=(0, 0, w, h), width=w)
+
+    def _resized(self, e):
+        self.canvas.itemconfigure(self.item, width=e.width)     # (as wide as the area: no sideways scrolling)
+
+    def _wheel(self, e):
+        if e.delta:
+            notches = -e.delta // 120 if abs(e.delta) >= 120 else (-1 if e.delta > 0 else 1)
+            self.scroll_to(self.canvas.canvasy(0) + notches * self.step)
+        return "break"                       # (the page scrolls, not the small text box or table under the mouse)
+
+    def scroll_to(self, y):
+        """Put the content's pixel row `y` at the top of the view (as far as the content goes)."""
+        content_h = self.inner.winfo_reqheight()
+        if content_h > 0:
+            self.canvas.yview_moveto(max(0.0, min(y, content_h - self.canvas.winfo_height())) / content_h)
+
+    def _focus(self, e):
+        try:
+            self.see(e.widget)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def see(self, widget):
+        """Scroll so that `widget` (in `inner`) is in view, with a little room around it; nothing if it is."""
+        view_h = self.canvas.winfo_height()
+        if view_h <= 1:
+            return
+        y = widget.winfo_rooty() - self.inner.winfo_rooty()
+        h = widget.winfo_height()
+        top = self.canvas.canvasy(0)
+        if y - self.margin < top:
+            self.scroll_to(y - self.margin)
+        elif y + h + self.margin > top + view_h:
+            self.scroll_to(y + h + self.margin - view_h)
+
+
 def load_theme():
     """The dark theme shared with the Online tab (lobby/t5lobby/theme.py; online.py put lobby/ on the
     path). None in a copy without lobby/: the launcher then keeps the plain Windows look."""
@@ -105,6 +186,9 @@ class App(tk.Tk):
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
+            if gone:
+                core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
         self.title(f"{APP_TITLE} {self.info.get('version', '')}".strip())
         self.minsize(900, 680)
         self.geometry("1000x780" + ("+60+60" if offscreen else ""))
@@ -232,7 +316,7 @@ class App(tk.Tk):
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
-                           ("online", t("Play online"))):
+                           ("online", t("Play online")), ("replays", t("Replays"))):
             f = ttk.Frame(self.nb)
             self.nb.add(f, text=f"  {label}  ")
             self.tabs[key] = f
@@ -241,6 +325,7 @@ class App(tk.Tk):
         self._play_tab(self.tabs["play"])
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
+        self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)
@@ -406,7 +491,9 @@ class App(tk.Tk):
             anchor="w", pady=(22, 0))
 
     def _settings_tab(self, tab):
-        box = ttk.Frame(tab, padding=(24, 16))
+        # taller than the window at 133 % display scaling and more: it scrolls (wheel, scrollbar, the focus)
+        self.settings_scroll = VScroll(tab, self.px)
+        box = ttk.Frame(self.settings_scroll.inner, padding=(24, 16))
         box.pack(fill="both", expand=True)
         left = ttk.Frame(box)
         left.grid(row=0, column=0, sticky="nwe", padx=(0, 12))
@@ -552,6 +639,23 @@ class App(tk.Tk):
         ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
             anchor="w", pady=(2, 0))
 
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
+        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
+        unl.pack(fill="x", pady=(6, 0))
+        self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
+        self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
+                        variable=self.unlock_stages_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
+                        variable=self.unlock_items_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+            "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
         # Set the buttons of pads, arcade sticks and hitboxes here instead of editing controls.ini (controls_ui.py)
@@ -578,8 +682,8 @@ class App(tk.Tk):
         tv.pack(fill="x")
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "Keyboard and the first XInput controller both drive player 1 (they are combined). The keyboard "
-            "only counts while the game window has focus. Button layout inside the game can be changed in its "
-            "own Options menu.")).pack(anchor="w", pady=(6, 0))
+            "only counts while the game window has focus. The game's own Options menu can change the button "
+            "layout for offline play; online games use the launcher's buttons only.")).pack(anchor="w", pady=(6, 0))
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "In this window, on the Online tab, a controller or arcade stick works without mouse or keyboard: "
             "Cross / A accepts a match or rematch and starts a search, Circle / B declines, leaves or stops the "
@@ -587,6 +691,7 @@ class App(tk.Tk):
             "moment. Which stick button is Cross follows your controls.ini.")).pack(anchor="w", pady=(4, 0))
         box.columnconfigure(0, weight=1)
         box.columnconfigure(1, weight=1)
+        self.settings_scroll.adopt()        # (the Restart now button too: it is made already, shown later)
 
     def _language_box(self, parent):
         """Auto, then every language in its own name (English, Deutsch, Español, 한국어, ...): someone who cannot
@@ -997,6 +1102,9 @@ class App(tk.Tk):
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()
         self.settings["low_priority"] = bool(self.lowprio_var.get())
+        if hasattr(self, "unlock_stages_var"):
+            self.settings["unlock_stages"] = bool(self.unlock_stages_var.get())
+            self.settings["unlock_items"] = bool(self.unlock_items_var.get())
         if hasattr(self, "language_var"):
             self.settings["language"] = self.language_var.get()
         self.settings.save()
@@ -1114,7 +1222,7 @@ class App(tk.Tk):
         self.after(150, self._tick)
 
     def _selected_tab(self):
-        """Key of the selected tab ('build', 'play', 'settings', 'online'), or None when no tab is selected: Tk
+        """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk
         sends <<NotebookTabChanged>> again while the window is taken apart, with nothing selected."""
         try:
             sel = self.nb.select()
@@ -1130,6 +1238,8 @@ class App(tk.Tk):
             self.refresh_game_state()
         elif tab == "online":
             self.online.on_show()
+        elif tab == "replays":
+            self.replays.on_show()
         self.save_settings()
 
     def on_close(self):
@@ -1143,6 +1253,9 @@ class App(tk.Tk):
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
         self.destroy()
+
+
+App.set_big_state = staticmethod(set_big_state)     # (the Replays tab greys its WATCH button the same way)
 
 
 # ---------------------------------------------------------------------- docs screenshots

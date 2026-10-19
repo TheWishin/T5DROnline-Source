@@ -520,6 +520,17 @@ MESSAGES = {
         "Das Bild wird auf das Fenster skaliert; wie scharf es ist, hängt von der internen "
         "Auflösung ab. Du kannst auch an den Rändern des Fensters ziehen. Alt+Enter oder F11 "
         "schaltet im Spiel auf randloses Vollbild um.",
+    "Unlocks": "Freischaltungen",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Alle Stages freischalten (die Tekken-5-Stages, ohne den Arcade-Modus durchzuspielen)",
+    "Unlock all customization items (free in the item shop)":
+        "Alle Customize-Items freischalten (gratis im Item-Shop)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Nur offline (Arcade, VS, Practice und der Rest). Dein Spielstand wird nicht verändert; Items, die du dir "
+        "gratis nimmst, bleiben dir (der Spielstand wird vorher gesichert, in save-backups). Online bekommen beide "
+        "Spieler immer dieselben Stages und die Standard-Kostüme.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
@@ -570,11 +581,12 @@ MESSAGES = {
     "Keyboard": "Tastatur",
     "Xbox controller": "Xbox-Controller",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "Tastatur und der erste XInput-Controller steuern beide Spieler 1 (sie werden "
-        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Die "
-        "Tastenbelegung im Spiel änderst du im Options-Menü des Spiels.",
+        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Das "
+        "Options-Menü des Spiels kann die Tastenbelegung für das Spielen offline ändern; online "
+        "gelten nur die Tasten aus dem Launcher.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -1015,6 +1027,8 @@ MESSAGES = {
     "Online: the files of the last match": "Online: die Dateien des letzten Matches",
     "controls.ini (your button settings)": "controls.ini (deine Tastenbelegung)",
     "Desync dumps (game state numbers, binary)": "Desync-Dumps (Zahlen des Spielzustands, binär)",
+    "The last replay (the inputs of the last online session, without names)":
+        "Das letzte Replay (die Eingaben der letzten Online-Sitzung, ohne Namen)",
     "could not be cleaned of private data": "ließ sich nicht von privaten Daten säubern",
     "no room left in the size limit": "kein Platz mehr im Größenlimit",
     "could not be read": "ließ sich nicht lesen",
@@ -1279,7 +1293,7 @@ MESSAGES = {
     "draw": "Remis",
     "loss": "Niederlage",
     "win": "Sieg",
-    "the two games went out of sync": "die beiden Spiele waren nicht mehr synchron",
+    "the two games went out of sync": "die Spiele liefen nicht mehr synchron",
     "too short to count": "zu kurz zum Zählen",
     "a game crashed": "ein Spiel ist abgestürzt",
     "the reports disagreed": "die Meldungen passten nicht zusammen",
@@ -1287,10 +1301,10 @@ MESSAGES = {
     "a player left": "ein Spieler ist gegangen",
     "a player lost the connection": "ein Spieler hat die Verbindung verloren",
     "a player did not report": "ein Spieler hat nichts gemeldet",
-    "the connection between the games failed": "die Verbindung zwischen den Spielen ist ausgefallen",
+    "the connection between the games failed": "die Verbindung der Spiele brach ab",
     "both players left": "beide Spieler sind gegangen",
     "no result in time": "kein Ergebnis rechtzeitig",
-    "repeated crashes count as losses": "wiederholte Abstürze zählen als Niederlagen",
+    "repeated crashes count as losses": "wiederholte Abstürze sind Niederlagen",
     "repeated early quits": "wiederholtes frühes Beenden",
     "repeated missing reports": "wiederholt fehlende Meldungen",
     "scores differed": "die Spielstände waren verschieden",
@@ -1446,6 +1460,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "Ergebnis gesendet; warte auf die Meldung deines Gegners...",
     "Rematch offered; waiting for your opponent...": "Rematch angeboten; warte auf deinen Gegner...",
     "(other version)": "(andere Version)",
+    "other version": "andere Version",
     "ranked": "ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Suche... ({ranked} in der Ranked-Suche, {quick} bei Quick Match)",
@@ -1724,8 +1739,8 @@ MESSAGES = {
     # ---- friends (tk_tab.py, tk_views.py)
     "Request": "Anfrage",
     "Friends": "Freunde",
-    "Invite to a match": "Zu einem Match einladen",
-    "Invite to my room": "In meinen Raum einladen",
+    "Invite to a match": "Zum Match einladen",
+    "Invite to my room": "In den Raum einladen",
     "Remove": "Entfernen",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Lade einen Freund ein, der online ist: Ein Klick auf seiner Seite startet ein Casual-Match oder holt ihn "
@@ -1745,7 +1760,7 @@ MESSAGES = {
         "Prüfe die Schreibweise: Freunde werden mit ihrem Kontonamen hinzugefügt.",
     "in a match": "im Match",
     "offline": "offline",
-    "(older launcher: no invites)": "(älterer Launcher: keine Einladungen)",
+    "older launcher: no invites": "älterer Launcher: keine Einladungen",
     "Friends ({count})": "Freunde ({count})",
     "offline, last seen {when}": "offline, zuletzt gesehen {when}",
     "Friends need an account. Log in with one to add friends and invite them.":
@@ -1753,7 +1768,7 @@ MESSAGES = {
     "This lobby server has no friends list (it needs version 1.1.2 or newer).":
         "Dieser Lobby-Server hat keine Freundesliste (dafür braucht er Version 1.1.2 oder neuer).",
     "wants to be your friend": "möchte dein Freund sein",
-    "asked: waiting for an answer": "angefragt: wartet auf eine Antwort",
+    "asked: waiting for an answer": "wartet auf Antwort",
     "{online} online · {count} of {max}": "{online} online · {count} von {max}",
     "Your friends see when you are online. Invite one who is online to play.":
         "Deine Freunde sehen, wann du online bist. Lade einen ein, der online ist, um zu spielen.",
@@ -1784,4 +1799,52 @@ MESSAGES = {
         "{name} möchte dein Freund sein: siehe den Reiter Freunde.",
     "{name} accepted your friend request.": "{name} hat deine Freundschaftsanfrage angenommen.",
     "{name} declined your friend request.": "{name} hat deine Freundschaftsanfrage abgelehnt.",
+
+    # ---- launcher/replays_ui.py, launcher/t5dr_launcher.pyw (Replays tab)
+    "Replays": "Replays",
+    "Every online match is saved here. Watch plays it back in the game exactly as it was played: the same "
+    "inputs frame by frame, checked against the live match while it plays.":
+        "Jedes Online-Match wird hier gespeichert. Ansehen spielt es im Spiel genau so ab, wie es gespielt "
+        "wurde: dieselben Eingaben Bild für Bild, während des Abspielens mit dem Live-Match verglichen.",
+    "Date": "Datum",
+    "Fighters": "Kämpfer",
+    "Netcode": "Netcode",
+    "WATCH": "ANSEHEN",
+    "Stop replay": "Replay stoppen",
+    "Delete": "Löschen",
+    "Open replays folder": "Replay-Ordner öffnen",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "Während ein Replay läuft: START (Enter) pausiert und geht weiter, SELECT (Tab) beendet das "
+        "Replay. Ein Rematch wird nach den Matches davor in derselben Sitzung abgespielt: es beginnt dort, "
+        "wo sie aufgehört haben.",
+    "Save online matches as replays": "Online-Matches als Replays speichern",
+    "Keep the players' names in replays": "Die Namen der Spieler in Replays behalten",
+    "Rollback": "Rollback",
+    "Lockstep": "Lockstep",
+    "(name not saved)": "(Name nicht gespeichert)",
+    "{matches} match(es) in {files} file(s) in {folder}": "{matches} Match(es) in {files} Datei(en) in {folder}",
+    "No replays yet. Play an online match: it is saved here.":
+        "Noch keine Replays. Spiel ein Online-Match: es wird hier gespeichert.",
+    "not finished": "nicht beendet",
+    "won {mine}-{theirs}": "gewonnen {mine}-{theirs}",
+    "lost {mine}-{theirs}": "verloren {mine}-{theirs}",
+    "Close the running game first (Stop game on the Play tab).":
+        "Schließ zuerst das laufende Spiel (Spiel stoppen im Tab Offline spielen).",
+    "Build the game first (Build tab).": "Bau zuerst das Spiel (Tab Build).",
+    "This replay cannot be played: {why}": "Dieses Replay lässt sich nicht abspielen: {why}",
+    "Recorded with another version of the game: it may not play back the same.":
+        "Mit einer anderen Version des Spiels aufgenommen: es läuft vielleicht nicht gleich ab.",
+    "Playing {fighters} ({when})...": "Spiele {fighters} ab ({when})...",
+    "The replay ended before the end of the match.": "Das Replay endete vor dem Ende des Matches.",
+    "Replay over: identical to the live match ({checks} checks, same result).":
+        "Replay zu Ende: identisch mit dem Live-Match ({checks} Prüfungen, gleiches Ergebnis).",
+    "Replay over, but it went a different way from frame {frame} on (the game or its version differs from "
+    "the one that played it).":
+        "Replay zu Ende, aber ab Bild {frame} lief es anders (das Spiel oder seine Version ist nicht die, mit "
+        "der gespielt wurde).",
+    "Replay over.": "Replay zu Ende.",
+    "Delete this replay file? It holds {n} match(es) against the same opponent.":
+        "Diese Replay-Datei löschen? Sie enthält {n} Match(es) gegen denselben Gegner.",
 }

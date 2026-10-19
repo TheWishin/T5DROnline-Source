@@ -593,8 +593,10 @@ struct Register {
         const char* s2 = getenv("T5_DF_SCRIPT2");
         const char* dm = getenv("T5_DF_DUMP");
         const char* ctl = getenv("T5_CTL_DIR");
+        const char* nm0 = getenv("T5_NET_MODE");
+        const bool replay = nm0 && !_stricmp(nm0, "replay");   /* a replay is a direct fight (docs/REPLAYS.md) */
         if (!(fight && *fight) && !(ffile && *ffile) && !(pr && *pr) && !(s1 && *s1) && !(s2 && *s2) && !(dm && *dm) &&
-            !(ctl && *ctl)) return;
+            !(ctl && *ctl) && !replay) return;
         /* netplay owns the pads with T5_NET_MODE, and in a persistent game (its
          * hooks are in from boot for the sessions to come) */
         { const char* nm = getenv("T5_NET_MODE"); g_np = (nm && *nm) || (ctl && *ctl); }

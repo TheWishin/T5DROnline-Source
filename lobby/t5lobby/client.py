@@ -53,15 +53,16 @@ from .handover import MatchTicket
 from .i18n import t
 from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
 from .proto import LobbyError
+from .tour_client import TourCalls
 
 CLIENT_NAME = "t5lobby-client/0.1"
 
 
-class LobbyClient:
+class LobbyClient(TourCalls):
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, tournaments=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -89,7 +90,10 @@ class LobbyClient:
         against another nat2 client, keep the game socket here and move the match onto the direct path
         when it starts to work (RelayBridge). relays: measure the UDP round trip to the regional relays a
         server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
-        behaves like a 1.1.0 client there (only the lobby server's own relay)."""
+        behaves like a 1.1.0 client there (only the lobby server's own relay). tournaments: take part in the
+        server's tournaments (docs/TOURNAMENTS.md; the calls are in tour_client.py): the server then sends
+        tour_call ("Your tournament set is ready") and the other tour_* events. Off by default (the launcher
+        turns it on)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -141,6 +145,7 @@ class LobbyClient:
         self.relay_bridge = relay_bridge
         self.relays = relays
         self.relay_rtts = {}         # regional relay id -> ms, as last measured and reported
+        self.tournaments = tournaments
         self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
         self._bridge = None          # RelayBridge of the running relayed match
@@ -236,7 +241,8 @@ class LobbyClient:
                                                 + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])
-                                                + (["relays"] if self.relays else [])})
+                                                + (["relays"] if self.relays else [])
+                                                + (["tournaments"] if self.tournaments else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -348,7 +354,7 @@ class LobbyClient:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
-                     "rematch", "blocked", "unblocked", "blocks", "set_next"):
+                     "rematch", "blocked", "unblocked", "blocks", "set_next", "tour_list", "tour"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:

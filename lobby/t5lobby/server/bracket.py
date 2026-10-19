@@ -349,19 +349,28 @@ class Bracket:
                 out_at[lo] = self._stage(s)
         return out_at
 
+    def place_for(self, stage):
+        """The place of an entrant knocked out at `stage`, the usual way: everyone knocked out in the same round
+        shares it. Single: the final's loser 2nd, the semi-finals' 3rd, the quarter-finals' 5th, ... Double: the
+        grand final's loser 2nd, the losers' final 3rd, then 4th, 5th, 7th, 9th, 13th ... (one place per player
+        knocked out in a later round)."""
+        if self.format == SINGLE:
+            return 1 + (1 << (self.k - stage))
+        if stage > self.losers_rounds:
+            return 2
+        later = sum(1 for s in self.sets.values() if s.bracket == "L" and s.round > stage)
+        return 3 + later
+
     def standings(self):
-        """[(entrant, place)] best first: the champion 1st, everyone knocked out by how late (entrants knocked out in
-        the same round share the place: 5th for both losers of L2 in a field of 8). Entrants still in and the
-        disqualified are not listed."""
-        out_at = {e: st for e, st in self.eliminated().items() if e not in self.dq}
-        alive = [e for e in self.entrants if e not in out_at and e not in self.dq]
+        """[(entrant, place)] best first: the champion 1st, everyone knocked out with the place of the round that
+        knocked them out (place_for). Entrants still in and the disqualified are not listed."""
         rows = []
         champ = self.champion()
         if champ is not None and champ not in self.dq:
             rows.append((champ, 1))
-        for e, st in out_at.items():
-            better = len(alive) + sum(1 for x in out_at.values() if x > st)
-            rows.append((e, 1 + better))
+        for e, st in self.eliminated().items():
+            if e not in self.dq and e != champ:
+                rows.append((e, self.place_for(st)))
         rows.sort(key=lambda r: (r[1], self.entrants.index(r[0])))
         return rows
 

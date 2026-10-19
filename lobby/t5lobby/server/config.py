@@ -77,6 +77,19 @@ class Config:
                                     # (when both players' launchers and games can; 0 = off: the launcher's character)
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
+    # community tournaments (docs/TOURNAMENTS.md)
+    tour_organizers: str = "any"    # T5L_TOUR_ORGANIZERS: who may create one: any (every account), none, or a comma list
+                                    # of account names
+    tour_admins: list = field(default_factory=list)   # T5L_TOUR_ADMINS: account names that may run every tournament
+    tour_rated: bool = False        # T5L_TOUR_RATED: tournament sets change the rating (once per set, like a ranked set)
+    tour_noshow: float = 300.0      # T5L_TOUR_NOSHOW: seconds to accept a called set; who has not is a no-show (out)
+    tour_retries: int = 2           # T5L_TOUR_RETRIES: a set that ended without a result is called again this often
+                                    # (its score kept), then it waits for the organizer
+    tour_max_open: int = 20         # T5L_TOUR_MAX_OPEN: tournaments not finished yet, on the whole server
+    tour_per_organizer: int = 2     # T5L_TOUR_PER_ORGANIZER: ... per organizer (T5L_TOUR_ADMINS have no limit)
+    tour_max_days: float = 14.0     # T5L_TOUR_MAX_DAYS: a tournament starts at most this far ahead
+    tour_keep_days: float = 7.0     # T5L_TOUR_KEEP_DAYS: finished tournaments stay in the list this long
+    tour_tick: float = 0.5          # T5L_TOUR_TICK: seconds between looks at start times and no-shows
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     # The queues pair players whose estimated ping (the best relay path: docs/RANKED.md "Matchmaking") fits a window

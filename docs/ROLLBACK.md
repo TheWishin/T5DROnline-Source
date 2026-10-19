@@ -2087,15 +2087,16 @@ Pairs (`rollback_net_test.py`, section 29's command, a whole match each). Before
 the rebase: RTT 150 default/default (RB150c) 556 rollbacks on the joiner, 0
 mismatching frames, the same result hash on both PCs; lockstep RTT 50 (LS50b,
 both `T5_RB_MODE=off`) and the fallback (MIX50b, host default, joiner
-`T5_RB_MODE=off`) 0 mismatching frames, the same hash. On the final build
-(fixes 1-4, rebased on main d7fc019): AUD_P (RTT 150 default/default, recorded)
-540 rollbacks on the joiner, 0 mismatching, the same hash; LS50c and MIX50c 0
-mismatching, the same hash. Smoke quick: boot_menu, arcade_fight, title_twice
-PASS; vs_two_pads and practice failed once with 13 other game instances and 7
-compilers on the PC (a black select-screen shot; the hang check firing during
-the test's own stop) and passed on the rerun (only fps/audio WARN under load;
-offline the change is inert). tests/ 358 OK; lobby/tests 302, one ranked driver
-test failed once under load and passed alone.
+`T5_RB_MODE=off`) 0 mismatching frames, the same hash. Fixes 1-4 on main
+d7fc019: AUD_P (RTT 150 default/default, recorded) 540 rollbacks on the joiner,
+0 mismatching, the same hash; LS50c and MIX50c 0 mismatching, the same hash.
+Fixes 1-6 on main 53f775d (with 0040): RB150f 507 / 533 rollbacks, LS50d and
+MIX50d, all 0 mismatching with the same hash on both PCs; smoke quick PASS (5
+tests, only fps/audio WARN under load; offline the change is inert -- an
+earlier smoke run under 13 other instances and 7 compilers had failed
+vs_two_pads and practice once, a black select-screen shot and the hang check
+firing during the test's own stop, both passed on the rerun); tests/ 436 OK;
+lobby/tests 337 OK.
 
 **Sound with the pool** (the music stream and the sound library's blocks
 outside the rollback state; `--audio`, sound on, RTT 150, one match each,

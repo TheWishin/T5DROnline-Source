@@ -306,7 +306,7 @@ class SyntheticLift(unittest.TestCase):
         d = cls.tmp.name
         out = os.path.join(d, name)
         e = dict(os.environ, PYTHONUTF8="1")
-        for k in ("T5DR_LIFT_TEST_KILL", "T5DR_LIFT_TEST_HANG", "T5DR_LIFT_STALL_SECONDS",
+        for k in ("T5DR_LIFT_TEST_KILL", "T5DR_LIFT_TEST_HANG", "T5DR_LIFT_TEST_FREE_MB", "T5DR_LIFT_STALL_SECONDS",
                   "T5DR_LIFT_HEARTBEAT_SECONDS"):
             e.pop(k, None)
         e.update(env)

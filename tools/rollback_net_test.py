@@ -377,6 +377,8 @@ def main():
     ap.add_argument("--mode1", default="net", help="T5_RB_MODE of the host (net, off = lockstep only, default = unset)")
     ap.add_argument("--mode2", default="net", help="T5_RB_MODE of the joiner")
     ap.add_argument("--audio", action="store_true", help="record each instance's mix to audio.f32 (AUDIO_WAV)")
+    ap.add_argument("--below-normal", action="store_true", help="start the games at below-normal CPU priority (the PC is in use)")
+    ap.add_argument("--mute", action="store_true", help="PS3_AUDIO_MUTE=1: nothing reaches the speakers (AUDIO_WAV still records the mix)")
     ap.add_argument("--dump", action="store_true", help="T5_NET_DESYNC_DUMP=1")
     ap.add_argument("--hang", type=float, default=60, help="seconds without progress that count as a hang")
     ap.add_argument("--seed1", type=int, default=11)
@@ -433,7 +435,7 @@ def main():
         base.update({"T5_FIGHT": a.fight, "T5_NET_START": "external", "T5_RB_NET_START": "0", "T5_NET_SCRIPT_FIGHT": "1"})
     if a.dump:
         base["T5_NET_DESYNC_DUMP"] = "1"
-    if a.polite:
+    if a.polite or a.mute:
         base["PS3_AUDIO_MUTE"] = "1"
     for kv in a.env:
         k, v = kv.split("=", 1)
@@ -488,9 +490,9 @@ def main():
         cpus = a.cpus1 if who == "host" else a.cpus2
         old_mask = set_affinity(cpus) if cpus else None   # inherited by the game before it sizes its pools
         try:
+            flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (os.name == "nt" and (a.below_normal or a.polite)) else 0
             p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
-                                 stdout=glog, stderr=subprocess.STDOUT,
-                                 creationflags=0x00004000 if a.polite and os.name == "nt" else 0)   # BELOW_NORMAL_PRIORITY_CLASS
+                                 stdout=glog, stderr=subprocess.STDOUT, creationflags=flags)
         finally:
             if old_mask:
                 set_affinity(old_mask)

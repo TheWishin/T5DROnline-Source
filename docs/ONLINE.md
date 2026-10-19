@@ -503,7 +503,7 @@ matches cost the server nothing after the handshake. The lobby list costs
 ## Tests, demo, measurements
 
 ```sh
-python -m unittest discover -s lobby/tests          # ~140 tests, ~3 min, all on localhost
+python -m unittest discover -s lobby/tests          # ~350 tests, ~6 min, all on localhost
 ```
 
 Unit: Glicko-2 against the paper's example, wire format, delay formula, token

@@ -55,8 +55,42 @@ const Range kExclude[] = {
     { 0x10114000u, 0x00058000u },   /* sound core mix/output area (bnusCore) */
     { 0x40000000u, 0x00100000u },   /* first heap chunk: sound system voice slots, requests, shared areas (sound threads) */
     { 0x45F00000u, 0x00100000u },   /* decoder / streaming */
+    /* The NU::File request manager: its file device (0x10750488) with the
+     * file objects (0x107507D0, 16 x 0x58: host fd at +0x18), the manager
+     * (0x10751A00: lwmutex +8, semaphore +0x40, request ids +0x48, 16 request
+     * slots of 0x40 from +0x4C, the request list +0x44C, the slot free list
+     * +0x540) and its node pool (to 0x10752034). Its thread serves the async
+     * reader (ZsAread, drained at every boundary) and the music stream thread
+     * (CnuSound2Thread: open/seek/read/close of the track, at any time); the
+     * main thread never calls it (rb_ktrace, write-fault trace w1: only the
+     * three of them write these pages). Restored, they went back to a past
+     * that the manager's thread, its clients, the kernel semaphores and the
+     * host's open files had left: request slots were lost or handed out twice
+     * (two requests in one slot -> the manager called a destroyed request ->
+     * pure virtual -> abort), file handles were never closed (fds 4, 5, 6),
+     * reads and closes failed for want of a slot (docs/ROLLBACK.md section 32).
+     * Not saved, not restored: the file system is not the match. */
+    { 0x10750000u, 0x00002000u },
 };
 const size_t kExcludeN = sizeof kExclude / sizeof kExclude[0];
+/* Bytes inside pages that otherwise stay in the state which a restore leaves
+ * alone (byte-exact kExclude): they belong to a thread that runs beside the
+ * frame, so they are never copied back -- not even for an instant, which a
+ * save-and-rewrite (kKeepWords) would do while that thread may be using them.
+ * They are masked out of the page hash. Sorted by address. */
+const Range kKeepLive[] = {
+    /* The sound library's music stream object (TOC global 0x106CECD0, the
+     * argument of the "CnuSound2Thread" that streams the track; fields up to
+     * +0x5B4): its thread keeps the open file's handle at +0x13C and its read
+     * positions here, at any time; the main thread writes it only through the
+     * library's music calls 0x334628 / 0x3349B0, which the sound hooks never
+     * repeat in a re-simulated frame (rb_sound.cpp); bnusCoreUpdateThread
+     * writes +0x42C/+0x480/+0x494. A restore gave the thread back a handle it
+     * had closed and lost the one it held (write-fault trace w1). The rest of
+     * the two pages stays in the state. */
+    { 0x106CECD0u, 0x000005B8u },
+    { 0x10752000u, 0x00000040u },   /* the file manager's node pool, its last 0x34 bytes (the page's other words are the main thread's lwmutexes and draw handshake) */
+};
 const Range kHashExclude[] = {
     { 0x0FEF0000u, 0x00010000u },   /* main thread stack: only the present chain's locals live there at the boundary */
     { 0x10532000u, 0x00001000u },   /* engine bookkeeping: request counters, vblank copies (follow the draw phase) */
@@ -145,7 +179,7 @@ static const Mask kMask[] = {
     { 0x0F800008u, 0x04 },   /* CellGcmContextData.current: the FIFO write pointer */
     { 0x106D4A44u, 0x04 },   /* graphics object: flip/present pending flag (render handshake) */
     { 0x106D4BE0u, 0x10 },   /* vblank callback list lock: owner is the ticker thread at times */
-    { 0x106CF0F8u, 0x10 },   /* TNUD::ASync progress counters (+F8, +FC, +104), advanced by its thread */
+    { 0x106CF0F8u, 0x10 },   /* the music stream object's +0x428..+0x437 (bnusCoreUpdateThread advances them; kKeepLive now) */
     { 0x1062E454u, 0x08 },   /* engine statistics (two floats following the frame time) */
     { 0x10053800u, 0x100 },  /* 15 objects' double-buffer index (1/2): follows the flip, not the sim */
     { 0x40049210u, 0x04 },   /* double-buffer selector (0x10/0x20): follows the flip */
@@ -176,6 +210,12 @@ uint64_t hash_page(uint32_t ea)
             if (p != tmp) { memcpy(tmp, p, 0x1000); p = tmp; }
             memset((uint8_t*)tmp + (m.ea - ea), 0, m.len);
         }
+    }
+    for (const Range& k : kKeepLive) {   /* never restored: not part of the page's state */
+        if (k.base >= ea + 0x1000u || k.base + k.len <= ea) continue;
+        if (p != tmp) { memcpy(tmp, p, 0x1000); p = tmp; }
+        const uint32_t a = std::max(k.base, ea) - ea, e = std::min(k.base + k.len, ea + 0x1000u) - ea;
+        memset((uint8_t*)tmp + a, 0, e - a);
     }
     uint64_t h = 0x243F6A8885A308D3ull;
     for (int i = 0; i < 512; i++) { h ^= p[i]; h *= 0x9E3779B97F4A7C15ull; h ^= h >> 32; }
@@ -217,14 +257,26 @@ static const Range kGameSkip[] = {
      * lockstep too, more often under rollback); the fight unchanged
      * (t5_hooks.cpp kDefaultHashSkip) */
     { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
+    /* (the fighters' side flags 0x10090202/03 and 0x10090AD2/D3, decided from
+     * the camera words above, stay in: they are gameplay -- t5_hooks.cpp) */
 };
+/* T5_RB_HASH_FULL=1 (tests, desync hunt): the gameplay hash and the desync
+ * dumps take the regions whole, without kGameSkip -- the words left out as
+ * cosmetic show up too, so a run can tell when they part (they may feed back
+ * into the fight: docs/NETPLAY.md "Desync hunt"). Both peers must agree on it. */
+static bool hash_full()
+{
+    static int f = -1;
+    if (f < 0) { const char* e = getenv("T5_RB_HASH_FULL"); f = e && *e == '1'; }
+    return f != 0;
+}
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap)
 {
     uint32_t n = 0;
     for (const Range& r : kGame) {
         if (n + r.len > cap) break;
         memcpy(out + n, vm_base + r.base, r.len);
-        for (const Range& k : kGameSkip) {
+        if (!hash_full()) for (const Range& k : kGameSkip) {
             const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
             for (uint32_t x = a; x < e; x++) out[n + (x - r.base)] = 0;
         }
@@ -238,7 +290,7 @@ uint64_t state_game_hash()
     static uint8_t buf[0x4000];
     for (const Range& r : kGame) {
         memcpy(buf, vm_base + r.base, r.len);
-        for (const Range& k : kGameSkip) {
+        if (!hash_full()) for (const Range& k : kGameSkip) {
             const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
             for (uint32_t x = a; x < e; x++) buf[x - r.base] = 0;
         }
@@ -533,6 +585,19 @@ uint32_t state_log_pages(uint32_t f)
  * after it would flush a put behind the walker's get. */
 static const Range kKeepWords[] = { { 0x0F800000u, 0x10u } };
 
+/* A page's content at the restore point, written back around its kKeepLive bytes. */
+static void restore_page(uint32_t ea, const uint8_t* src)
+{
+    uint32_t pos = 0;
+    for (const Range& k : kKeepLive) {
+        if (k.base >= ea + 0x1000u || k.base + k.len <= ea) continue;
+        const uint32_t a = std::max(k.base, ea) - ea, e = std::min(k.base + k.len, ea + 0x1000u) - ea;
+        if (a > pos) memcpy(vm_base + ea + pos, src + pos, a - pos);
+        pos = std::max(pos, e);
+    }
+    if (pos < 0x1000u) memcpy(vm_base + ea + pos, src + pos, 0x1000u - pos);
+}
+
 /* what the restores copied (state_restore_stats, the loop's report) */
 static uint64_t g_rs_pages[3] = {}, g_rs_count = 0;
 void state_restore_stats(char* out, size_t cap, bool reset)
@@ -585,7 +650,7 @@ static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
             if (e.ea - 0x43D00000u < 0x340000u) g_rs_pages[1]++;        /* stats: render-only parts of the heap */
             else if (e.ea - 0x444F9000u < 0x6E000u) g_rs_pages[2]++;
             else g_rs_pages[0]++;
-            memcpy(vm_base + e.ea, src, 0x1000);
+            restore_page(e.ea, src);
             if (!lazy) memcpy(shadow_rw(e.ea), src, 0x1000);   /* lazy: the page stays dirty, the refresh copies it */
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;

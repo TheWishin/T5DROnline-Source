@@ -133,6 +133,7 @@ Tm& tm_slot(uint32_t t)
 /* ---- the hook ----------------------------------------------------------------- */
 int hook(ppu_context* ctx, uint32_t target)
 {
+    if (ktrace_icall(ctx, target)) return 1;   /* T5_RB_KTRACE: the file manager's requests, the sound library's heap calls */
     if (ctx->thread_id != main_tid()) {
         if (g_cut2_count && g_cut_on.load(std::memory_order_relaxed) && set_has(g_cut2_key, target)) {
             ctx->gpr[3] = 0;
@@ -252,7 +253,7 @@ const uint32_t kDetourCut[] = {
      * mismatches in 1 404 re-simulated boundaries; pairs RC1/RC2 at RTT 150
      * in sync, displayed-frame p99 24 vs 26 ms without it. */
     0x002AAD50,
-    /* Frame-time branch (docs/ROLLBACK.md section 32). The stack profile of
+    /* Frame-time branch (docs/ROLLBACK.md section 33). The stack profile of
      * cut re-simulated frames (test mode, 6-frame rollbacks, T5_RB_CUT_TAIL=0,
      * run p1 against prof6b) still had a fifth of the game's time in model
      * rendering reached by direct calls. 0x1549FC and 0x1548C0 (tried as

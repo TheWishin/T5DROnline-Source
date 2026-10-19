@@ -47,6 +47,7 @@
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
+extern "C" int  t5_netplay_match_end_final(void);   /* netplay: the match end seen is final (rollback: every input up to it confirmed) */
 extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_set_match(const char* id);
 extern "C" unsigned t5_netplay_match_seed(void);
@@ -358,6 +359,9 @@ bool g_held = false;            /* the pads are held neutral until the next sele
 bool g_intro_hold = false;      /* the pads are held through the fight's loading and intros (netplay) */
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
+bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
+bool g_over_wait = false;       /* a match end seen on predicted input, waiting for its confirmation */
+ULONGLONG g_cmd_ms = 0;         /* when the pending "fight" came (stuck_check) */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
@@ -461,9 +465,14 @@ bool navigate(int p, int target, uint32_t f)
     uint16_t b;
     if (r != tr) {
         /* rows cycle top(0) -> middle(1) -> bottom(2) -> top with DOWN; a row
-         * without a cell in this column is skipped, so column 0 cannot reach
-         * the top row: step sideways first */
+         * without a cell in this column is skipped, so columns 0 and 11 cannot
+         * reach the top row (its cells are columns 1..10): step sideways first.
+         * Column 11 was missed: a cursor left on Bruce or Kuma/Panda went
+         * DOWN, DOWN, ... between the middle and bottom rows for a top-row
+         * fighter until the driver gave up ("cannot reach cell 30 from 23",
+         * RTT 250 batch R250a, the 6th match's select in the same session). */
         if (tr == 0 && c == 0) b = B_RIGHT;
+        else if (tr == 0 && c == 11) b = B_LEFT;
         else b = ((tr - r + 3) % 3 == 1) ? B_DOWN : B_UP;
     } else {
         /* the top row cycles its 10 cells (columns 1..10), the others 12 */
@@ -691,6 +700,7 @@ void persistent_frame(uint32_t f)
     if (c.cmd != "fight") { note("control command %u: '%s' unknown, ignored", c.seq, c.cmd.c_str()); return; }
     g_cmd = c;
     g_pending_cmd = true;
+    g_cmd_ms = GetTickCount64();
     g_ctl_error.clear();
     /* the same session (a rematch) when the launcher says so or the netplay variables are the session's */
     std::string key;
@@ -724,11 +734,17 @@ uint32_t g_leave_phase = 10;    /* T5_DF_LEAVE_PHASE (diagnostics): a fight is l
 ULONGLONG g_stuck_dumped = 0;   /* g_ph_ms of the phase whose wait was dumped */
 void stuck_check(uint32_t f)
 {
-    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken);
+    /* Neutral with a "fight" pending waits for the select screen to take input
+     * (select_live); a select mode that never gets past its loading (phase word
+     * 1, every loader parked: reset_cycle_test F10, F12 under heavy load) held
+     * the game there for good -- counted from the command, as a reset. */
+    const bool neutral_wait = g_ph == Ph::Neutral && g_pending_cmd;
+    const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken) || neutral_wait;
     if (!g_ctl || !g_stuck_s || !waiting) return;
-    const ULONGLONG ms = GetTickCount64() - g_ph_ms;
-    if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != g_ph_ms) {   /* half way: what it waits on */
-        g_stuck_dumped = g_ph_ms;
+    const ULONGLONG since = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_ms : g_ph_ms;
+    const ULONGLONG ms = GetTickCount64() - since;
+    if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != since) {   /* half way: what it waits on */
+        g_stuck_dumped = since;
         note("frame %u: %s for %u s (mode %u, next %u, phase word %u):", f, g_state_name, (unsigned)(ms / 1000),
              mode_cur(), mode_next(), rd32(kSelectState));
         stuck_dump(f);
@@ -761,8 +777,25 @@ void fight_on_frame(uint32_t f)
          * Counted from the first frame the title runs with no mode change
          * pending (a request made a frame ago may still be on its way). */
         if (mode != kModeTitle || mode_next() != kModeNone) { g_title_seen = f; break; }
+        /* Not while the title's savedata autosave still runs: it takes a memory
+         * container and 1 MB blocks from the same sys_memory window as the
+         * select mode's 65 MB block (allocated right after start VS), so the
+         * two orders put the fight's heap 1 MB apart -- and the heap pointers
+         * in the fight state with it: a whole match desynced from the first
+         * compared frame (reset_cycle_test F11 cycle 5: S's block at
+         * 0x45C00000, O's at 0x45D00000, 38 differing words, all pointers
+         * 0x100000 apart). Both games wait for it here, so both allocate in the
+         * same order. At most 10 s (an autosave takes well under one).
+         * The boot state goes back after the wait, right before start VS as
+         * before. */
+        if ((f >= g_title_seen + 30 || (g_restore_due && f >= g_title_seen + g_fresh_at)) &&
+            autosave_running() && GetTickCount64() - g_ph_ms < 10000) {
+            if (!g_autosave_wait) { g_autosave_wait = true; note("frame %u: waiting for the title's autosave before start VS", f); }
+            break;
+        }
         if (g_restore_due && f >= g_title_seen + g_fresh_at) { g_restore_due = false; fresh_restore(f); }
         if (f >= g_title_seen + 30) {
+            if (g_autosave_wait) { g_autosave_wait = false; note("frame %u: the autosave is done", f); }
             /* the boot state is taken (at boot) and put back (after a reset) at
              * the same point: the title settled, right before start VS */
             fresh_take(f);
@@ -854,6 +887,7 @@ void fight_on_frame(uint32_t f)
         g_intro_hold = false;
         g_match++;
         g_over_clear = false;
+        g_over_wait = false;
         g_held = false;
         g_fight_frame = f;
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
@@ -882,7 +916,16 @@ void fight_on_frame(uint32_t f)
         }
         const uint8_t over0 = rd8(kMatchOver);
         if (!over0) g_over_clear = true;
-        const uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        /* Under rollback a KO on the live frame may rest on predicted input;
+         * the next rollback can take it back (e2e g2, RTT 250: the pads held
+         * and START pressed in a fight that went on, no result ever). Acted
+         * on once every input under it is confirmed -- a few frames later. */
+        if (over && session_netplay() && !t5_netplay_match_end_final()) {
+            if (!g_over_wait) { g_over_wait = true; note("frame %u: the match end rests on predicted input -- acted on once confirmed", f); }
+            over = 0;
+        }
+        if (over && g_over_wait) { g_over_wait = false; note("frame %u: the match end is confirmed", f); }
         if (over && !g_held) hold_pads(f, "the match is decided");
         post_match_skip(f);
         uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
@@ -902,6 +945,22 @@ void fight_on_frame(uint32_t f)
         }
         break; }
     case Ph::Over:
+        /* Under rollback the deciding KO may have been seen on a predicted
+         * frame that the correction then undid: the fight goes on (decided byte
+         * back at 0 in the fight phase) -- netplay drops its pending result for
+         * it ("the match end ... was rolled back"). The driver must too: it held
+         * this PC's player neutral and pressed START every 20 frames to skip a
+         * win pose that never came -- the player lost control and START paused
+         * the fight, and the pause menu's presses ended in the game's end mode
+         * (8), where the next reset hung for good (desync hunt, run
+         * mx_cpus4_rb match 3: KO at 2022 rolled back, the match ran on to 4689). */
+        if (mode == kModeGame && g_over_clear && !rd8(kMatchOver) && rd32(kSelectState) == 17) {
+            note("frame %u: the match end of frame %u was taken back by a rollback -- the fight goes on", f, g_ph_frame);
+            for (int p = 0; p < 2; p++) { g_press[p].active = false; inject(p, false, 0); }
+            g_held = false; g_result_done = false; g_after_match = false; g_intro_hold = false;
+            set_phase(Ph::Fight, "fight", f);
+            break;
+        }
         /* the game shows the win pose and returns to character select by itself */
         post_match_skip(f);
         if (select_live()) {

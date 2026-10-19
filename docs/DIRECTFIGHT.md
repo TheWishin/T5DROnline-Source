@@ -205,6 +205,18 @@ late, `--rematch-wait 25`):
 | fix, rollback (the default; run rb_mash) | 4 | every time, 2.0-3.1 s from the line to FIGHT START | 0, results confirmed on both sides |
 | fix, lockstep `T5_RB_MODE=off` (runs final_mash, ls_mash) | 4 + 3 | every time, 2.0-3.4 s | 0 (14,399 lockstep frames in final_mash) |
 
+**A match end that a rollback takes back** (desync hunt, 2026-10-19): under
+rollback the deciding KO can be seen on a predicted frame and then undone by
+the correction -- the fight goes on (netplay logs "the match end seen at frame
+N was rolled back -- no result yet"). The driver used to stay in its "over"
+state: it held this PC's player neutral for the rest of the fight and pressed
+START every 20 frames to skip a win pose that never came, which paused the
+running fight; the pause menu's presses ended in the game's end mode (8), and
+the next reset hung there until the 60-s stuck check ended the game (run
+mx_cpus4_rb: a 4-processor joiner, KO at frame 2022 undone, the match ran on to
+4689). Now the driver goes back to the fight when the decided byte is 0 again
+in the fight phase, and releases the pads.
+
 **The fight's loading and intros take no input either** under netplay: from
 FIGHT START until the fight phase word 0x1008F070 passes 12 (7 = game mode
 start, 8-12 loading and intros, 17 = fighting; again between rounds) the

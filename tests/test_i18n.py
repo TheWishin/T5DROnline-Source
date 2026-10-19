@@ -104,6 +104,12 @@ class Base(unittest.TestCase):
     def setUp(self):
         saved = list(sys.path)
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), saved))
+        # Last of all (cleanups run in reverse): what a test's windows left behind is freed here, on the main
+        # thread. Left to the garbage collector it can be freed on any thread that happens to trigger a collection --
+        # a subprocess pipe reader of a later test -- and Tcl aborts the interpreter ("Tcl_AsyncDelete: async handler
+        # deleted by the wrong thread"; seen in test_lift_spu_jobs once the launcher had its Replays tab).
+        import gc
+        self.addCleanup(gc.collect)
         # Nothing a test does may reach the person at this PC: no box, no file picker, and the launcher's log is a
         # temporary file, not launcher.log in the program folder.
         self.log_dir = tempfile.mkdtemp()

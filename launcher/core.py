@@ -104,6 +104,8 @@ DEFAULTS = {
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
+    "replays": True,           # online matches are saved as replays in <out>/replays (T5_REPLAY_DIR, docs/REPLAYS.md)
+    "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
@@ -165,6 +167,10 @@ class Settings(dict):
     def out_dir(self):
         return os.path.abspath(self["out"] or os.path.join(ROOT, "native"))
 
+    @property
+    def replay_dir(self):
+        return os.path.join(self.out_dir, "replays")
+
     def env_overrides(self):
         env = {}
         if self["nickname"].strip():
@@ -187,6 +193,12 @@ class Settings(dict):
             env["PS3_FULLSCREEN"] = "1"
         if self["input_delay"] in INPUT_DELAYS:
             env["T5_RB_NET_DELAY"] = self["input_delay"]
+        if self["replays"]:
+            # every online session is recorded (src/netplay/replay.cpp); offline games and a replay being
+            # watched record nothing
+            env["T5_REPLAY_DIR"] = self.replay_dir
+            if not self["replay_names"]:
+                env["T5_REPLAY_NAMES"] = "0"
         if self["training"] in TRAINING_MODES:
             env["T5_TRAINING"] = self["training"]
             if self["training"] != "off":

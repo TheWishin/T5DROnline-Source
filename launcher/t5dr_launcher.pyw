@@ -4,7 +4,7 @@
     python  launcher/t5dr_launcher.pyw --screenshots DIR   (docs: save a PNG of every tab, then exit)
 
 Tabs: Build (choose .pkg + .rap, check the build tools, BUILD GAME with live
-progress and log), Play, Settings, Online (placeholder; see online.py).
+progress and log), Play, Settings, Online (online.py), Replays (replays_ui.py).
 """
 import argparse
 import ctypes
@@ -26,6 +26,8 @@ import online  # noqa: E402
 from core import N_, t  # noqa: E402  (English text in, the player's language out; lobby/t5lobby/i18n.py)
 import problem_report as report  # noqa: E402
 import problem_report_ui as report_ui  # noqa: E402
+import replays  # noqa: E402
+import replays_ui  # noqa: E402
 import updater  # noqa: E402
 try:
     import controls_ui  # noqa: E402  (needs lobby/t5lobby; without it the Settings tab has no button for it)
@@ -105,6 +107,9 @@ class App(tk.Tk):
         if not offscreen:
             core.log(f"launcher {self.info.get('version', '?')} started, Python {sys.version.split()[0]}, "
                      f"output {self.settings.out_dir}")
+            gone = replays.prune(self.settings.replay_dir)       # the newest replays.DEFAULT_KEEP files stay
+            if gone:
+                core.log(f"replays: {gone} old replay file(s) deleted (the newest {replays.DEFAULT_KEEP} are kept)")
         self.title(f"{APP_TITLE} {self.info.get('version', '')}".strip())
         self.minsize(900, 680)
         self.geometry("1000x780" + ("+60+60" if offscreen else ""))
@@ -232,7 +237,7 @@ class App(tk.Tk):
         self.nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         self.tabs = {}
         for key, label in (("build", t("Build")), ("play", t("Play offline")), ("settings", t("Settings")),
-                           ("online", t("Play online"))):
+                           ("online", t("Play online")), ("replays", t("Replays"))):
             f = ttk.Frame(self.nb)
             self.nb.add(f, text=f"  {label}  ")
             self.tabs[key] = f
@@ -241,6 +246,7 @@ class App(tk.Tk):
         self._play_tab(self.tabs["play"])
         self._settings_tab(self.tabs["settings"])
         self.online = online.OnlineTab(self.tabs["online"], self)
+        self.replays = replays_ui.ReplaysTab(self.tabs["replays"], self)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.status = tk.StringVar(value="")
         self.status.trace_add("write", self._log_status)
@@ -1134,7 +1140,7 @@ class App(tk.Tk):
         self.after(150, self._tick)
 
     def _selected_tab(self):
-        """Key of the selected tab ('build', 'play', 'settings', 'online'), or None when no tab is selected: Tk
+        """Key of the selected tab ('build', 'play', 'settings', 'online', 'replays'), or None when no tab is selected: Tk
         sends <<NotebookTabChanged>> again while the window is taken apart, with nothing selected."""
         try:
             sel = self.nb.select()
@@ -1150,6 +1156,8 @@ class App(tk.Tk):
             self.refresh_game_state()
         elif tab == "online":
             self.online.on_show()
+        elif tab == "replays":
+            self.replays.on_show()
         self.save_settings()
 
     def on_close(self):
@@ -1163,6 +1171,9 @@ class App(tk.Tk):
         self.nb.unbind("<<NotebookTabChanged>>")          # (destroying the tabs would fire it with none selected)
         self.online.on_close()
         self.destroy()
+
+
+App.set_big_state = staticmethod(set_big_state)     # (the Replays tab greys its WATCH button the same way)
 
 
 # ---------------------------------------------------------------------- docs screenshots

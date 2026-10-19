@@ -67,6 +67,10 @@ class Guard(unittest.TestCase):
     def test_rap_by_name(self):
         self.assertCaught("licenses/UP0000-TEST00000_00-0000000000000000.rap", fake_bytes("rap"), "'.rap' files")
 
+    def test_replay_by_name(self):
+        self.assertCaught("native/replays/T5R-20261019-120000-abcd.t5replay", b"T5REPLAY 1\n{}\n", "players' replays")
+        self.assertCaught("docs/example.t5replay", b"T5REPLAY 1\n{}\n", "players' replays")
+
     def test_binary(self):
         self.assertCaught("assets/blob.dat", fake_bytes("blob", 64), "binary file")
 

@@ -8,6 +8,16 @@ part is in the README's status table.
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new
 lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
 
+### Replays
+- **Every online match is saved as a replay** (a few KB each, in `native\replays`): both players'
+  inputs frame by frame, the random seeds and sync points of the netcode, each match's fighters,
+  costumes, stage and result. The new **Replays** tab lists them (date, fighters, result,
+  opponent); **Watch** plays the match again in the game exactly as it happened and checks it
+  against the live match while it plays (the tab says "identical to the live match" at the end).
+  START pauses, SELECT ends the replay. A rematch is shown after the matches before it in the same
+  session (it starts from what they left). Recording can be switched off, and the players' names can be
+  left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
+
 ### Online
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
   two of you can get, through the nearest relay server: two players in California see about

@@ -15,6 +15,9 @@ What goes in (each part only when it exists):
   online/        the lobby/online files of the last match (result, status, fight line, control files)
   controls.ini   when there is one
   desync/        np_desync_*.bin / rb_desync_*.bin (game state numbers of a desync, binary)
+  replay/        the newest replay (native/replays, docs/REPLAYS.md): both players' inputs and the game's
+                 state checks of the last online session, so the match can be played again here; the
+                 players' names are taken out of it first (replays.strip_names)
   contents.txt   what is in the zip, what was shortened, what was removed
 
 Privacy -- applied to every text file before it goes into the zip (class Scrubber):
@@ -54,6 +57,11 @@ import struct
 import urllib.parse
 import sys
 import zipfile
+
+try:
+    import replays          # launcher/replays.py (the last replay goes in without the players' names)
+except ImportError:          # a copy without it: no replay in the report
+    replays = None
 
 TOOL_VERSION = 1
 DEFAULT_CAP = 20 * 1024 * 1024
@@ -893,7 +901,7 @@ class Item:
         self.arcname = arcname
         self.path = path
         self.text = text
-        self.kind = kind                       # "text" (scrubbed) or "binary" (copied)
+        self.kind = kind                       # "text" (scrubbed), "binary" (copied) or "replay" (copied without names)
         self.limit = limit                     # most bytes this item may take (None: the budget decides)
         self.note = note
         if size is not None:
@@ -1087,6 +1095,10 @@ def discover(ctx, note="", now=None):
     ctl = _controls_ini(ctx)
     if ctl:
         groups.append(Group("controls", "controls.ini (your button settings)", [Item("controls.ini", ctl, limit=256 << 10)]))
+    rep = _newest(os.path.join(out, "replays", "*.t5replay"), 1)
+    if rep and replays is not None:
+        groups.append(Group("replay", "The last replay (the inputs of the last online session, without names)",
+                            [Item("replay/" + os.path.basename(rep[0]), rep[0], kind="replay", limit=4 << 20)]))
     dumps = _newest(os.path.join(out, "np_desync_*.bin"), 8) + _newest(os.path.join(out, "rb_desync_*.bin"), 8)
     if dumps:
         groups.append(Group("desync", "Desync dumps (game state numbers, binary)",
@@ -1217,11 +1229,14 @@ def build(ctx, dest_dir, note="", enabled=None, cap=DEFAULT_CAP, now=None, group
             if room <= 0:
                 res.skipped.append((it.arcname, "no room left in the size limit"))
                 continue
-            if it.kind == "binary":
+            if it.kind in ("binary", "replay"):
                 try:
-                    with open(it.path, "rb") as f:
-                        data = f.read()
-                except OSError:
+                    if it.kind == "replay":       # the players' names never leave the PC
+                        data = replays.strip_names(it.path, P_PLAYER)
+                    else:
+                        with open(it.path, "rb") as f:
+                            data = f.read()
+                except (OSError, ValueError, replays.ReplayError if replays else OSError):
                     res.skipped.append((it.arcname, "could not be read"))
                     continue
                 if len(data) > room:
@@ -1287,6 +1302,7 @@ def contents_text(res, now, left_out):
          f"  {res.counts['email']} e-mail addresses -> {P_EMAIL}",
          f"  {res.counts['player']} lobby player names (yours and your opponents') -> {P_PLAYER}",
          "The desync dumps (desync/*.bin) are binary game state numbers and are copied as they are.",
+         "The replay (replay/*.t5replay) holds both players' inputs and state checks; the names are taken out.",
          "", "Files:"]
     for m in res.members:
         L.append(f"  {m['name']}  {human(m['size'])}"

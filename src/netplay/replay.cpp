@@ -268,6 +268,31 @@ struct Rec {
     std::atomic<uint32_t> seq{ 0 };
 };
 Rec& R() { static Rec r; return r; }
+
+/* What recording costs the frame (main thread): the time inside the rec_* calls of
+ * one live frame, summed up and logged at the session's end. Writing the file is a
+ * worker thread's (except at the session's end). */
+struct Cost { LONGLONG acc = 0, sum = 0, max = 0, qf = 0; uint32_t frames = 0; } g_cost;
+struct Timed {
+    LARGE_INTEGER t0;
+    Timed() { QueryPerformanceCounter(&t0); }
+    ~Timed() { LARGE_INTEGER t1; QueryPerformanceCounter(&t1); g_cost.acc += t1.QuadPart - t0.QuadPart; }
+};
+void cost_frame()
+{
+    g_cost.sum += g_cost.acc;
+    if (g_cost.acc > g_cost.max) g_cost.max = g_cost.acc;
+    g_cost.acc = 0;
+    g_cost.frames++;
+}
+void cost_note()
+{
+    if (!g_cost.frames) return;
+    if (!g_cost.qf) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_cost.qf = f.QuadPart; }
+    note("recording cost the frame %.2f us on average, %.1f us at most, over %u frames", 1e6 * (double)g_cost.sum / (double)g_cost.frames / (double)g_cost.qf,
+         1e6 * (double)g_cost.max / (double)g_cost.qf, g_cost.frames);
+    g_cost = Cost();
+}
 std::mutex g_write_mu;          /* one write at a time; an older snapshot never overwrites a newer one */
 uint32_t g_written_seq = 0;
 
@@ -392,6 +417,7 @@ void rec_session_end(const char* why)
     for (Match& m : r.d.matches)
         if (!m.have_result) { m.reason = why ? why : "session_end"; m.ended = utc_now(); }
     flush_locked(r, true);
+    cost_note();
     r.on = false;
 }
 
@@ -411,6 +437,7 @@ void rec_rollback_delay(int d) { Rec& r = R(); std::lock_guard<std::mutex> lk(r.
 void rec_input(uint32_t f, const np::PadInput& p1, const np::PadInput& p2)
 {
     Rec& r = R();
+    Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
     std::vector<np::PadInput>* in = r.d.in;
@@ -424,6 +451,7 @@ void rec_hash(uint32_t f, uint64_t h)
 {
     Rec& r = R();
     if (!r.on || (f % hash_every()) != 0) return;
+    Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     auto& hs = r.d.hashes;
     if (!hs.empty() && hs.back().first == f) { hs.back().second = h; return; }
@@ -439,6 +467,7 @@ void rec_hash(uint32_t f, uint64_t h)
 void rec_barrier(const Barrier& b)
 {
     Rec& r = R();
+    Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on) return;
     r.d.bars.push_back(b);
@@ -470,6 +499,7 @@ void rec_result(const char* winner, unsigned w1, unsigned w2, const char* reason
                 uint32_t desync, uint32_t at_frame)
 {
     Rec& r = R();
+    Timed t;
     std::lock_guard<std::mutex> lk(r.mu);
     if (!r.on || r.d.matches.empty()) return;
     Match& m = r.d.matches.back();
@@ -493,9 +523,13 @@ void rec_frame(uint32_t f)
 {
     Rec& r = R();
     if (!r.on) return;
-    std::lock_guard<std::mutex> lk(r.mu);
-    if (f >= r.flush_at) { r.flush_at = UINT32_MAX; flush_locked(r, false); }
-    else if (f >= r.next_periodic) { r.next_periodic = f + 3600; flush_locked(r, false); }
+    {
+        Timed t;
+        std::lock_guard<std::mutex> lk(r.mu);
+        if (f >= r.flush_at) { r.flush_at = UINT32_MAX; flush_locked(r, false); }
+        else if (f >= r.next_periodic) { r.next_periodic = f + 3600; flush_locked(r, false); }
+    }
+    cost_frame();
 }
 
 /* ======================================================================== playback */

@@ -2,7 +2,7 @@
 """Play replay files back through the game and check them against the live match (docs/REPLAYS.md).
 
     python tools/replay_play.py --exe build/cmake/t5dr.exe --out build/rp/play  <file or folder> ...
-        [--match K] [--speed 0|1|2] [--timeout 900] [--env NAME=VALUE]
+        [--match K] [--speed 0|1|2] [--timeout 900] [--parallel N] [--env NAME=VALUE]
 
 Each file is played by its own game (netplay's local mode fed by the file, T5_NET_MODE=replay):
 the recorded inputs frame by frame, the recorded sync points, seeds and counters, the loop the
@@ -86,12 +86,16 @@ def main():
     ap.add_argument("--speed", type=int, default=0, help="0 as fast as possible, 1 normal, 2 double")
     ap.add_argument("--timeout", type=float, default=900, help="seconds per replay")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every game")
+    ap.add_argument("--parallel", type=int, default=1, help="games at a time")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows, ok = [], 0
-    for i, f in enumerate(files_of(a.files), 1):
+    files = files_of(a.files)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, a.parallel)) as pool:
+        verdicts = list(pool.map(lambda job: play(a, job[1], job[0]), enumerate(files, 1)))
+    for i, (f, v) in enumerate(zip(files, verdicts), 1):
         h = replays.read_header(f)
-        v = play(a, f, i)
         same = bool(v.get("identical"))
         ok += same
         for m in v.get("matches", []):
@@ -110,7 +114,7 @@ def main():
     print("|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         print("| %s | %s | %s | %s | %s | %s / %s | %s | %s | %s |" % r)
-    total = len(files_of(a.files))
+    total = len(files)
     print(f"\n{ok} of {total} replays identical to the live match (every recorded hash and result)")
     return 0 if ok == total else 1
 

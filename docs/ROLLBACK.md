@@ -2217,8 +2217,8 @@ from column 11 the cursor went middle -> bottom -> middle for ever. The driver
 stepped sideways first only from column 0. Now from column 11 too (LEFT).
 Any same-session pick from Bruce or Kuma/Panda to a top-row fighter (Eddy,
 Baek, Mokujin, Devil Jin, Raven, Asuka, Feng, Ganryu, Wang, Armor King) hit it:
-a rematch with another fighter, or any next match in the same session (whether
-the ranked sets' next game is one was not checked). A new session starts on a
+a rematch with another fighter, or the next game of a ranked set with another
+fighter (it continues in the running session like a rematch, match_driver.py). A new session starts on a
 fresh select screen (cursors at their defaults) and was not affected.
 
 **Not explained: a select screen that never loads, under heavy load.** Twice on

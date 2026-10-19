@@ -366,5 +366,73 @@ class VSync(unittest.TestCase):
         self.assertIn("g_ldp.vsync = !(e && e[0] == '0');", patch)
 
 
+class PowerSaving(unittest.TestCase):
+    """Launcher Settings -> Power saving: Auto (default: the game decides, PS3_LAPTOP unset), On (1), Off (0)."""
+
+    def path(self, saved=None):
+        d = tempfile.mkdtemp(prefix="t5dr-power")
+        p = os.path.join(d, "launcher.json")
+        if saved is not None:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(saved, f)
+        return p
+
+    def test_auto_by_default_sets_nothing(self):
+        s = core.Settings(self.path())
+        self.assertEqual(s["power_saving"], "auto")
+        self.assertNotIn("PS3_LAPTOP", s.env_overrides())
+        old = core.Settings(self.path({"display": "window1080"}))     # launcher.json of an older version
+        self.assertEqual(old["power_saving"], "auto")
+
+    def test_on_and_off_go_to_the_game(self):
+        self.assertEqual(core.Settings(self.path({"power_saving": "on"})).env_overrides()["PS3_LAPTOP"], "1")
+        env = core.Settings(self.path({"power_saving": "off"})).env_overrides()
+        self.assertEqual(env["PS3_LAPTOP"], "0")
+        _cmd, game_env, _cwd = core.run_game.game_command(tempfile.mkdtemp(), env)
+        self.assertEqual(game_env["PS3_LAPTOP"], "0")
+
+    def test_unknown_value_is_auto(self):
+        for bad in ("maybe", "", None, True, 1, "ON", []):
+            s = core.Settings(self.path({"power_saving": bad}))
+            self.assertEqual(s["power_saving"], "auto", bad)
+            self.assertNotIn("PS3_LAPTOP", s.env_overrides())
+
+    def test_mobile_processor_names(self):
+        mobile = ["AMD Ryzen Z1 Extreme", "AMD Ryzen Z1", "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",
+                  "AMD Ryzen 9 6900HS with Radeon Graphics", "AMD Ryzen 7 5800H with Radeon Graphics",
+                  "AMD Ryzen 9 7945HX with Radeon Graphics", "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+                  "Intel(R) Core(TM) i7-7700HQ CPU @ 2.80GHz", "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+                  "12th Gen Intel(R) Core(TM) i7-1260P", "Intel(R) Core(TM) Ultra 7 155H",
+                  "Intel(R) Core(TM) Ultra 7 258V", "Intel(R) N100", "Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz",
+                  "13th Gen Intel(R) Core(TM) i9-13980HX"]
+        desktop = ["AMD Ryzen 9 7950X 16-Core Processor", "AMD Ryzen 7 5800X3D 8-Core Processor",
+                   "AMD Ryzen 7 8700G w/ Radeon 780M Graphics", "AMD Ryzen 5 5600 6-Core Processor",
+                   "Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz", "13th Gen Intel(R) Core(TM) i5-13400F",
+                   "Intel(R) Core(TM) i7-9700 CPU @ 3.00GHz", "Intel(R) Core(TM) i9-14900KS"]
+        for n in mobile:
+            self.assertTrue(core.MOBILE_CPU.search(n), n)
+        for n in desktop:
+            self.assertFalse(core.MOBILE_CPU.search(n), n)
+
+    def test_auto_rule(self):
+        desk = (True, None, False, False)
+        self.assertEqual(core.power_saving_auto(desk, "381b4222-f694-41f0-9685-ff5bb260df2e",
+                                                "AMD Ryzen 9 7950X 16-Core Processor"), (False, None))
+        on, why = core.power_saving_auto((False, 64, True, False), "", "AMD Ryzen Z1 Extreme")
+        self.assertTrue(on)
+        self.assertIn("battery", why)
+        self.assertTrue(core.power_saving_auto((True, None, False, True), "", "x")[0])          # battery saver
+        self.assertTrue(core.power_saving_auto(desk, core.POWER_SAVER_PLAN, "x")[0])            # Power saver plan
+        self.assertTrue(core.power_saving_auto(desk, "", "AMD Ryzen Z1 Extreme")[0])            # handheld chip
+
+    def test_runtime_rule_matches(self):
+        # host_sched.c hs_mobile_cpu_name keeps the same suffix list as core.MOBILE_CPU
+        patch = text("patches", "ps3recomp", "0047-laptop-power-saving.patch")
+        self.assertIn('getenv("PS3_LAPTOP")', patch)
+        for suf in ("HS", "HX", "HQ", "G7"):
+            self.assertIn('"%s"' % suf, patch)
+        self.assertIn('strstr(s, "Ryzen Z")', patch)
+
+
 if __name__ == "__main__":
     unittest.main()

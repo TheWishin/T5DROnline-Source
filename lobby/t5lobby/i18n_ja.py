@@ -180,6 +180,8 @@ MESSAGES = {
     "Controls": "操作設定",
     "Save the changes to controls.ini?": "変更を controls.ini に保存しますか？",
     # ---- launcher/core.py
+    "Inputs": "入力",
+    "Inputs + frame data": "入力 + フレームデータ",
     "Auto (Windows language)": "自動（Windowsの言語）",
     "No package chosen.": "パッケージが選択されていません。",
     "File not found.": "ファイルが見つかりません。",
@@ -468,6 +470,13 @@ MESSAGES = {
     "without the glow. Only your picture changes: online, both players can choose differently.":
         "一部のステージは画面をぼかしたり（霧の沼）、太陽を光らせたりします。オフにすると光彩なしでくっきり表示します"
         "。変わるのは自分の画面だけなので、オンラインでも各プレイヤーが別々に選べます。",
+    "Training overlay": "トレーニング表示",
+    "Also in the other offline modes (Arcade, Versus, ...)": "他のオフラインモードでも表示（Arcade、Versus など）",
+    "Also online (only your own inputs, no frame data)": "オンラインでも表示（自分の入力のみ、フレームデータなし）",
+    "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+    "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
+        "Practice で：直近の入力と各入力を押していたフレーム数、攻防ごとに技の発生と先に動ける側（+3、-12）を表示しま"
+        "す。ゲーム中は F2 で切り替えます。",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "画面：{width} x {height}。全画面では {step} が合います。",
     "Online input delay": "オンライン入力遅延",

@@ -184,6 +184,8 @@ MESSAGES = {
     "Controls": "Controles",
     "Save the changes to controls.ini?": "¿Guardar los cambios en controls.ini?",
     # ---- launcher/core.py
+    "Inputs": "Inputs",
+    "Inputs + frame data": "Inputs + datos de frames",
     "Auto (Windows language)": "Auto (idioma de Windows)",
     "No package chosen.": "No se eligió ningún paquete.",
     "File not found.": "Archivo no encontrado.",
@@ -477,6 +479,13 @@ MESSAGES = {
     "without the glow. Only your picture changes: online, both players can choose differently.":
         "Algunos escenarios desenfocan la imagen (el pantano con niebla) o hacen brillar el sol. Desactivado los "
         "muestra nítidos, sin el brillo. Solo cambia tu imagen: online, cada jugador puede elegir distinto.",
+    "Training overlay": "Overlay de entrenamiento",
+    "Also in the other offline modes (Arcade, Versus, ...)": "También en los demás modos offline (Arcade, Versus, ...)",
+    "Also online (only your own inputs, no frame data)": "También online (solo tus inputs, sin datos de frames)",
+    "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+    "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
+        "En Practice: tus últimos inputs con cuántos frames se mantuvo cada uno, y tras cada intercambio el startup "
+        "del movimiento y quién puede actuar primero (+3, -12). F2 en el juego lo activa o desactiva.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Tu pantalla: {width} x {height}. En pantalla completa, {step} coincide con ella.",
     "Online input delay": "Input delay online",

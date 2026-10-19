@@ -180,6 +180,8 @@ MESSAGES = {
     "Controls": "조작 설정",
     "Save the changes to controls.ini?": "controls.ini에 변경 사항을 저장할까요?",
     # ---- launcher/core.py
+    "Inputs": "입력",
+    "Inputs + frame data": "입력 + 프레임 데이터",
     "Auto (Windows language)": "자동 (Windows 언어)",
     "No package chosen.": "선택한 패키지가 없습니다.",
     "File not found.": "파일을 찾을 수 없습니다.",
@@ -465,6 +467,13 @@ MESSAGES = {
     "without the glow. Only your picture changes: online, both players can choose differently.":
         "일부 스테이지는 화면을 흐리게 하거나(안개 낀 늪) 햇빛을 번지게 합니다. 끄면 번짐 없이 선명하게 보입니다. 내 "
         "화면만 바뀌므로 온라인에서 두 플레이어가 서로 다르게 골라도 됩니다.",
+    "Training overlay": "트레이닝 오버레이",
+    "Also in the other offline modes (Arcade, Versus, ...)": "다른 오프라인 모드에서도 (Arcade, Versus, ...)",
+    "Also online (only your own inputs, no frame data)": "온라인에서도 (내 입력만, 프레임 데이터 없음)",
+    "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+    "startup of the move and who can act first (+3, -12). F2 in the game switches it.":
+        "Practice에서: 최근 입력과 각 입력을 유지한 프레임 수, 그리고 공방이 끝날 때마다 기술의 발생 프레임과 누가 "
+        "먼저 움직일 수 있는지(+3, -12)를 표시합니다. 게임에서 F2로 켜고 끕니다.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "내 화면: {width} x {height}. 전체 화면에서는 {step}이(가) 맞습니다.",
     "Online input delay": "온라인 입력 지연",

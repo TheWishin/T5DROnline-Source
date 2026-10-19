@@ -213,8 +213,16 @@ Tastatur (Standard) und Xbox-Controller:
 3. Suche ein **Quick**- oder **Ranked**-Match, oder öffne einen Lobby-Raum für
    einen Freund. Wird ein Gegner gefunden, siehst du den Ping und nimmst
    innerhalb von 15 Sekunden an.
-4. Das Spiel startet direkt im Kampf: wer zuerst 3 Runden gewinnt. Danach
-   **Rematch** oder **Next game**. Das Spiel bleibt zwischen den Matches offen.
+4. Das Spiel zeigt seine eigene Charakterauswahl. Wähle deinen Kämpfer mit
+   Pad, Stick oder Tastatur innerhalb von 30 Sekunden: Die Taste, mit der du
+   bestätigst, wählt das Kostüm, **Select** (Tab auf der Tastatur, Back am
+   Xbox-Pad) wählt zufällig. Wählst du nichts, bekommst du den Charakter aus
+   dem Launcher. Haben beide gewählt, startet der Kampf: wer zuerst 3 Runden
+   gewinnt. Der Name unter deinem Kämpfer zählt die Sekunden herunter;
+   "PICKING..." beim Gegner heißt, du wartest auf seine Wahl.
+5. Danach **Rematch** oder **Next game**. Ein Rematch führt wieder zur
+   Charakterauswahl. In einem Ranked-Set bleiben die Kämpfer des ersten Spiels
+   für alle Rematches. Das Spiel bleibt zwischen den Matches offen.
 
 Gut zu wissen:
 

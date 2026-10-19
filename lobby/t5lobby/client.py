@@ -56,7 +56,7 @@ CLIENT_NAME = "t5lobby-client/0.1"
 class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
-                 reconnect=60.0, plain_passwords=False, blind_ready=False, sets=False):
+                 reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -69,6 +69,8 @@ class LobbyClient:
         ping at first (`match_found` has `opponent: None`, `blind: True`) and the opponent's name and
         side arrive in `match_reveal` once both accepted. Off by default: `match_found` then names the
         opponent as it always did (the launcher and the CLI turn it on).
+        ingame_pick: this player's game can pick the character on its own select screen (docs/RANKED.md,
+        "Character select in the game"); the server then sends `fight.pick` when both players' can.
         sets: play ranked sets (docs/RANKED.md "Ranked sets"): a ranked set against another client that
         knows them is best of 3 and rated once at its end; `match_result` then carries `set` {wins, number,
         next {in}, result}, the next game starts by itself (call set_next(), the match driver does), and
@@ -87,6 +89,7 @@ class LobbyClient:
         self.reconnect_window = reconnect
         self.plain_passwords = plain_passwords
         self.blind_ready = blind_ready
+        self.ingame_pick = ingame_pick
         self.sets = sets
         self.notices = {}            # id -> {"text", "expires"}: server notices showing now
 
@@ -205,6 +208,7 @@ class LobbyClient:
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
                                                 "client": CLIENT_NAME, "build": self.build.as_wire(),
                                                 "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])
+                                                + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
@@ -780,14 +784,16 @@ class LobbyClient:
         return self._call({"t": "game_started", "match": mid})
 
     def report_result(self, winner, score=None, match_id=None, source=None, desync=None, hash=None,
-                      frames=None, reason=None):
+                      frames=None, reason=None, chars=None, costumes=None):
         """winner: 0 (P1 = host) or 1 (P2 = join) or None (draw / no result); score: [P1 rounds, P2 rounds].
         source: game (read from the game) | manual (the player said) | quit | crash | disconnect.
-        desync / hash / frames: the netplay layer's evidence when there is any (docs/RANKED.md)."""
+        desync / hash / frames: the netplay layer's evidence when there is any (docs/RANKED.md).
+        chars: [P1 fighter, P2 fighter] the game fought with (keys; in-game select); costumes: their confirm
+        buttons [P1, P2] (1-4 = LP, RP, LK, RK; 0 = the default), which a ranked set keeps."""
         mid = match_id or (self.ticket.match_id if self.ticket else None) or (self.match or {}).get("match")
         msg = {"t": "result", "match": mid, "winner": winner, "score": score}
         for k, v in (("source", source), ("desync", desync), ("hash", hash), ("frames", frames),
-                     ("reason", reason)):
+                     ("reason", reason), ("chars", chars), ("costumes", costumes)):
             if v is not None:
                 msg[k] = v
         return self._call(msg)

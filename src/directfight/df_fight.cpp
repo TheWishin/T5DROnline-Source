@@ -7,9 +7,14 @@
  *               netplay a stage derived from the shared seed (the game's pick happens
  *               on each PC on its own and would differ)
  *       rounds  rounds to win (default T5_NET_ROUNDS, else 3)
- *       colors  1 or 2 (costume; the second confirm's button)
+ *       colors  1 or 2 (kept for old lines: the second confirm is the handicap bar,
+ *               not a costume; the costume is the button that confirms the character)
  *       match=  the lobby's match id (any position, key=value): goes into the result
  *               file so the launcher can tell this match's result from an old one
+ *       pick=N  in-game select (docs/DIRECTFIGHT.md "Character select in the game"):
+ *               each player picks character and costume on the game's own select
+ *               screen within N seconds (else p1/p2 of the line, the launcher's
+ *               characters); the picks are exchanged over the netplay session
  *   T5_FIGHT_FILE=<path>   the next fight: the file holds one T5_FIGHT line; it is
  *                          read when the game idles at character select (after a
  *                          match, or from boot when T5_FIGHT is not set) and renamed
@@ -55,6 +60,10 @@ extern "C" int  t5_netplay_session_begin(void);
 extern "C" void t5_netplay_session_end(const char* why);
 extern "C" const char* t5_netplay_take_session_lost(void);
 extern "C" const char* t5_env(const char* key);
+extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick);
+extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick);
+extern "C" int  t5_netplay_connected(void);
+extern "C" void t5_netplay_pause(void);
 
 namespace df {
 
@@ -76,7 +85,9 @@ constexpr uint32_t kRecord       = 0x10093F58;   /* per-player select records, 0
 constexpr uint32_t kRecordStride = 0x78;
 constexpr uint32_t kRecCell      = 0x00;         /* cursor cell */
 constexpr uint32_t kRecFace      = 0x08;         /* portrait id under the cursor */
-constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 costume, then done (0x15 on P1, 0x0D on P2) */
+constexpr uint32_t kRecModel     = 0x0C;         /* the picked model id (character + costume; 0xFFFFFFFF until confirmed) */
+constexpr uint32_t kRecState     = 0x20;         /* u8: 3 choosing, 9 handicap bar, then done: 0x0C while the other side still
+                                                  * chooses (P2; P1 too after a match), then 0x0D (P2) / 0x15 (P1) */
 constexpr uint32_t kModeTitle = 1, kModeGame = 4, kModeSelect = 6;
 constexpr uint32_t kModeNone = 14;               /* the request's "next" when no mode change is pending */
 
@@ -116,8 +127,12 @@ int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
 /* ---- configuration ----------------------------------------------------- */
 /* HUD identity (docs/DIRECTFIGHT.md "Names and ranks in the HUD"): names[p]
  * empty = the game's own "Unknown", rank[p] < 0 = left as the game has it. */
+/* btn[p]: the button that confirms side p's character (1-4, btn_bits(); 0 = the
+ * default: Cross, Square for Kuma, T5_DF_ALT_BUTTON for Panda) -- an in-game pick's
+ * costume. pick: seconds for the in-game select (0 = the line's characters). */
 struct Fight { int chr[2] = { -1, -1 }; int stage = -1; int rounds = 3; int color[2] = { 1, 1 }; bool valid = false;
-               std::string text, match; std::string names[2]; int rank[2] = { -1, -1 }; bool hud = false; };
+               std::string text, match; std::string names[2]; int rank[2] = { -1, -1 }; bool hud = false;
+               int btn[2] = { 0, 0 }; int pick = 0; };
 std::string g_fight_file, g_status_file, g_result_file;
 Fight g_cfg;            /* the fight being set up / fought */
 bool g_configured = false;
@@ -178,10 +193,13 @@ void parse_hud(Fight& f, const char* names, const char* ranks, bool encoded)
     }
 }
 
+int g_pick_default = 0;   /* T5_DF_PICK=<seconds>: the in-game select for fight lines without pick= (tests) */
+
 bool parse_fight(const char* s, Fight& out)
 {
     Fight f; f.text = s ? s : "";
     f.rounds = default_rounds();
+    f.pick = g_pick_default;
     /* the HUD identity carries over from the last fight (a rematch: same players) unless the line has its own */
     for (int p = 0; p < 2; p++) { f.names[p] = out.names[p]; f.rank[p] = out.rank[p]; }
     f.hud = out.hud;
@@ -195,6 +213,14 @@ bool parse_fight(const char* s, Fight& out)
         else if (_stricmp(k.c_str(), "match") == 0) f.match = cur.substr(eq + 1);   /* key=value options */
         else if (_stricmp(k.c_str(), "names") == 0) names = cur.substr(eq + 1);
         else if (_stricmp(k.c_str(), "ranks") == 0) ranks = cur.substr(eq + 1);
+        else if (_stricmp(k.c_str(), "pick") == 0) { const int n = atoi(cur.substr(eq + 1).c_str()); f.pick = n < 0 ? 0 : n > 120 ? 120 : n; }
+        else if (_stricmp(k.c_str(), "buttons") == 0) {   /* buttons=b1|b2: the confirm buttons (costumes), 1-4, 0 = default */
+            const std::string v = cur.substr(eq + 1);
+            const size_t bar = v.find('|');
+            const int b1 = atoi(v.c_str()), b2 = bar == std::string::npos ? 0 : atoi(v.c_str() + bar + 1);
+            f.btn[0] = b1 >= 1 && b1 <= 4 ? b1 : 0;
+            f.btn[1] = b2 >= 1 && b2 <= 4 ? b2 : 0;
+        }
         cur.clear();
     };
     for (const char* p = s; p && *p; p++) {
@@ -289,7 +315,7 @@ void ctl_report(uint32_t f)
     const char* c;
     if (st == "boot") c = "boot";
     else if (st == "title" || st == "reset" || st == "leave") c = g_pending_cmd ? "connecting" : (g_ctl_error.empty() ? "idle" : "error");
-    else if (st == "select" || st == "stage") c = "connecting";
+    else if (st == "select" || st == "stage" || st == "pick" || st == "pick_wait") c = "connecting";
     else if (st == "loading") c = "loading";
     else if (st == "fight") c = "fight";
     else if (st == "over") c = "result";
@@ -297,19 +323,20 @@ void ctl_report(uint32_t f)
     ctl_state(c, f, g_ctl_match, g_ctl_error.empty() ? nullptr : g_ctl_error.c_str(), g_sessions);
 }
 
+std::string status_extra();   /* the in-game select's part of the status (below) */
 void status(const char* state, uint32_t f)
 {
     g_state_name = state;
     note("frame %u: state %s", f, state);
     ctl_report(f);
     if (g_status_file.empty()) return;
-    char buf[512];
+    char buf[640];
     snprintf(buf, sizeof buf,
              "{\"state\": \"%s\", \"frame\": %u, \"match\": %u, \"p1\": %d, \"p2\": %d, \"stage\": %d, \"rounds\": %d, "
-             "\"last_winner\": %s, \"last_score\": [%d, %d]}\n",
+             "\"last_winner\": %s, \"last_score\": [%d, %d], \"pick\": %d, \"b1\": %d, \"b2\": %d%s}\n",
              state, f, g_match, g_cfg.chr[0], g_cfg.chr[1], g_cfg.stage, g_cfg.rounds,
              g_last_winner == -2 ? "null" : g_last_winner == -1 ? "null" : (g_last_winner == 0 ? "0" : "1"),
-             g_last_score[0], g_last_score[1]);
+             g_last_score[0], g_last_score[1], g_cfg.pick, g_cfg.btn[0], g_cfg.btn[1], status_extra().c_str());
     write_text(g_status_file, buf);
 }
 
@@ -348,7 +375,9 @@ bool read_fight_file(Fight& out)
 /* Reset: towards a fresh select screen (persistent game, before a new
  * opponent) -- through the title once after a fight, else by restarting the
  * select screen. Leave: out of a fight whose session ended (persistent game). */
-enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave };
+/* Pick / PickWait: the in-game select (this PC's player picks on the select
+ * screen, then the peer's pick is awaited; Select drives the peer's side). */
+enum class Ph { Boot, Title, Select, Stage, WaitGame, Fight, Over, Neutral, Reset, Leave, Pick, PickWait };
 Ph g_ph = Ph::Boot;
 uint32_t g_ph_frame = 0;        /* frame the phase began */
 uint32_t g_title_seen = UINT32_MAX;
@@ -369,6 +398,9 @@ bool g_restart_low = false;     /* Reset by a select restart: the select screen 
 uint32_t g_restart_frame = 0;   /* ... and the frame start VS was called at the select screen */
 ULONGLONG g_ph_ms = 0;          /* wall time the phase began (the stuck check) */
 uint32_t g_stuck_s = 60;        /* T5_DF_STUCK_SECONDS: a reset / leave that gets nowhere in this long ends the process */
+uint32_t g_session_matches = 0; /* fights started in this netplay session (the in-game select's exchange key) */
+int g_last_chr[2] = { -1, -1 }, g_last_btn[2] = { 0, 0 };   /* the session's last fight: who with which button (costume) */
+bool g_pause_asked = false;     /* in-game select: the lockstep's pause is requested (after a match) */
 CtlCmd g_cmd;                   /* the pending "fight" (g_pending_cmd) */
 bool g_cmd_rematch = false;
 bool g_reset_titles = true;     /* T5_DF_RESET=0: a new opponent starts from the select screen as it is */
@@ -401,6 +433,8 @@ void service_presses(uint32_t f)
     }
 }
 bool press_idle(int p) { return !g_press[p].active; }
+/* the button that confirms a character when no pick names one */
+uint16_t default_confirm(int chr) { return chr == 12 ? g_alt_button : chr == 11 ? (uint16_t)B_SQUARE : (uint16_t)B_CROSS; }
 
 /* From the moment a match is decided until the driver's next select, the game
  * reads both pads as neutral: mashing through the KO and the win pose otherwise
@@ -434,7 +468,13 @@ void post_match_skip(uint32_t f)
     for (int p = 0; p < 2; p++) if (drives(p)) press(p, g_skip_button, f);
 }
 
-void set_phase(Ph ph, const char* name, uint32_t f) { g_ph = ph; g_ph_frame = f; g_ph_ms = GetTickCount64(); g_mode_asked = false; status(name, f); }
+void set_phase(Ph ph, const char* name, uint32_t f)
+{
+    /* out of the in-game select by any other way (a reset, a session lost while
+     * picking): its hints under the portraits go */
+    if ((g_ph == Ph::Pick || g_ph == Ph::PickWait) && ph != Ph::Pick && ph != Ph::PickWait) plates_restore();
+    g_ph = ph; g_ph_frame = f; g_ph_ms = GetTickCount64(); g_mode_asked = false; status(name, f);
+}
 /* The select screen takes input for the players this PC drives: the select
  * mode, its state 3, and every record this PC drives still "choosing". Under
  * lockstep (a rematch) that is this PC's own player only. The peer's game may
@@ -470,7 +510,7 @@ bool navigate(int p, int target, uint32_t f)
          * Column 11 was missed: a cursor left on Bruce or Kuma/Panda went
          * DOWN, DOWN, ... between the middle and bottom rows for a top-row
          * fighter until the driver gave up ("cannot reach cell 30 from 23",
-         * RTT 250 batch R250a, the 6th match's select in the same session). */
+         * RTT 250 batch R250a; in-game select run final_rb match 12). */
         if (tr == 0 && c == 0) b = B_RIGHT;
         else if (tr == 0 && c == 11) b = B_LEFT;
         else b = ((tr - r + 3) % 3 == 1) ? B_DOWN : B_UP;
@@ -503,6 +543,8 @@ void resolve_stage(bool may_block)
     note("stage: random -> %d (from the shared seed, match %u)", g_cfg.stage, g_match + 1);
 }
 
+bool pick_begin(uint32_t f);   /* in-game select (below) */
+void pick_fight_start(uint32_t f);   /* in-game select: what was picked, both sides (below) */
 void begin_select(uint32_t f)
 {
     g_steps[0] = g_steps[1] = 0;
@@ -516,6 +558,23 @@ void begin_select(uint32_t f)
         note("player %d: %s (id %d) -> cell %d, color %d", p + 1, kName[g_cfg.chr[p]], g_cfg.chr[p], c, g_cfg.color[p]);
     }
     note("stage %d, rounds %d", g_cfg.stage, g_cfg.rounds);
+    if (g_cfg.pick > 0 && pick_begin(f)) return;
+    /* the same fighter as in the session's last fight keeps its costume (a
+     * ranked set's later games: the lock names the characters only); the same
+     * on both PCs, which played the same fights */
+    for (int p = 0; p < 2; p++) {
+        if (!g_cfg.btn[p] && g_cfg.chr[p] == g_last_chr[p] && g_last_btn[p]) g_cfg.btn[p] = g_last_btn[p];
+        /* Kuma and Panda share a cell and the button decides which (punch Kuma,
+         * kick Panda): a costume button of the other kind (a hand-made
+         * buttons=) would fight the other bear under this one's name
+         * (pick_flow_test --no-pick: "Panda with Square", model 0x1E) -- the
+         * default button instead, the same on both PCs */
+        const int b = g_cfg.btn[p];
+        if ((g_cfg.chr[p] == 11 && (b == 3 || b == 4)) || (g_cfg.chr[p] == 12 && (b == 1 || b == 2))) {
+            note("player %d: %s cannot be confirmed with %s -- the default button", p + 1, kName[g_cfg.chr[p]], btn_name(b));
+            g_cfg.btn[p] = 0;
+        }
+    }
     set_phase(Ph::Select, "select", f);
 }
 
@@ -561,6 +620,10 @@ void start_session_fight(uint32_t f)
     ctl_apply_env(g_cmd);
     g_session = t5_netplay_session_begin() != 0;
     g_sessions++;
+    g_session_matches = 0;
+    g_last_chr[0] = g_last_chr[1] = -1;
+    g_last_btn[0] = g_last_btn[1] = 0;
+    g_pause_asked = false;
     g_session_key = session_key();
     g_after_match = false;
     g_ctl_error.clear();
@@ -757,6 +820,266 @@ void stuck_check(uint32_t f)
     TerminateProcess(GetCurrentProcess(), 6);
 }
 
+/* ---- in-game select (docs/DIRECTFIGHT.md "Character select in the game") --------
+ * pick=N on the fight line: each player picks character and costume on the
+ * game's own select screen. The two select screens are not in lockstep (the
+ * first match of a session: lockstep has not started; a rematch: the lockstep
+ * pauses at the select screen, see Over). This PC's player moves its own
+ * cursor -- the local pad goes to its side only, filtered (directions, one face
+ * button at a time: the confirming button is the costume; L1, Start and the
+ * rest blocked; Select = a random pick) -- and the driver confirms the handicap
+ * bar at 100 %. The pick (character, button, model id) goes to the peer over
+ * the netplay session; the peer's pick, once in, is driven onto the other side
+ * by the driver (Select), then the stage and the fight as always. No pick
+ * within N seconds: the driver picks the line's character for this player
+ * (the launcher's). The select screen's name plates show the seconds left and
+ * whether the opponent is still picking. */
+struct Pick {
+    bool on = false;             /* this match's fighters are picked on the select screen */
+    bool net = false;            /* the peer's pick comes over the netplay session (else: offline, the line's character) */
+    int me = 0;                  /* the side this PC's player picks */
+    uint32_t key = 0;            /* exchange key: the session's match number */
+    uint32_t secs = 30;
+    bool live = false;           /* the select screen takes input for this player */
+    ULONGLONG t0 = 0;            /* ... since then (the pick's clock) */
+    bool armed = false;          /* every button was up once since then (a press left from the launcher counts not) */
+    uint16_t raw_prev = 0;
+    uint16_t face = 0;           /* the one face button held (never two at a time: the costume is unambiguous) */
+    uint16_t confirm = 0;        /* the face button the game saw last */
+    int auto_chr = -1, auto_btn = 0;   /* the driver picks for this player: the time ran out, or Select (random) */
+    bool have = false;           /* this player's pick is known (character confirmed) */
+    int chr = -1, cell = -1, btn = 0, model = -1;
+    uint32_t t9 = 0;             /* frame the handicap bar came up */
+    bool peer = false;           /* the opponent's pick is in */
+    int peer_model = -1;
+    ULONGLONG tw = 0;            /* PickWait since */
+    int shown_s = -1;
+    bool bad_noted = false;
+    uint8_t last_st = 0;
+};
+Pick g_pick;
+int g_models[2] = { -1, -1 };    /* the model ids both sides fight with (status file) */
+
+std::string status_extra()
+{
+    char b[96];
+    snprintf(b, sizeof b, ", \"m1\": %d, \"m2\": %d", g_models[0], g_models[1]);
+    return b;
+}
+
+void pick_wait_frame(uint32_t f);
+bool pick_begin(uint32_t f)
+{
+    const bool net = session_netplay();
+    if (net && t5_netplay_lockstep_active()) {
+        note("frame %u: in-game select: the lockstep runs (not paused) -- the line's characters instead", f);
+        return false;
+    }
+    g_pick = Pick();
+    g_pick.on = true;
+    g_pick.net = net;
+    g_pick.me = net ? t5_netplay_local_slot() : 0;
+    if (g_pick.me < 0 || g_pick.me > 1) g_pick.me = 0;
+    g_pick.secs = (uint32_t)g_cfg.pick;
+    g_pick.key = 0x70000000u | (g_session_matches + 1);
+    g_models[0] = g_models[1] = -1;
+    note("frame %u: in-game select: player %d picks on the select screen (%u s, else %s), exchange key %08X%s", f, g_pick.me + 1,
+         g_pick.secs, kName[g_cfg.chr[g_pick.me]], g_pick.key, net ? "" : " (no netplay: the other side keeps the line's character)");
+    set_phase(Ph::Pick, "pick", f);
+    return true;
+}
+
+void pick_frame(uint32_t f)
+{
+    Pick& k = g_pick;
+    const int me = k.me;
+    const uint8_t st = rd8(rec(me) + kRecState);
+    if (!k.live) {
+        if (mode_cur() != kModeSelect || rd32(kSelectState) < 3 || st != 3) {
+            if ((f - g_ph_frame) % 120 == 0 && f > g_ph_frame)
+                note("frame %u: in-game select: waiting for the select screen (mode %u, select state %u, record %02X)", f, mode_cur(),
+                     rd32(kSelectState), st);
+            return;
+        }
+        k.live = true;
+        k.t0 = GetTickCount64();
+        for (int p = 0; p < 2; p++) inject(p, true, 0);
+        write_hud(g_cfg, f);   /* the players' names under the portraits already (written again at FIGHT START) */
+        plates_save();
+        const uint32_t cell = rd32(rec(me) + kRecCell);
+        note("frame %u: in-game select: the select screen is live, player %d's cursor at cell %u (%s)", f, me + 1, cell,
+             cell < 35 && kGrid[cell] >= 0 ? kName[kGrid[cell]] : "?");
+    }
+    const ULONGLONG ms = GetTickCount64() - k.t0;
+    if (st != k.last_st) {   /* every state of this player's record (3 choosing, 9 handicap, done) */
+        note("frame %u: in-game select: player %d's record state %02X -> %02X (word %08X)", f, me + 1, k.last_st, st,
+             rd32(rec(me) + kRecState));
+        k.last_st = st;
+    }
+    if (st == 3) {
+        if (k.auto_chr < 0 && ms >= (ULONGLONG)k.secs * 1000) {
+            k.auto_chr = g_cfg.chr[me];
+            k.auto_btn = 0;
+            g_steps[me] = 0;
+            inject(me, true, 0);
+            plate_text(me, "TIME UP");
+            note("frame %u: in-game select: no pick within %u s -- %s (the launcher's character) for player %d", f, k.secs,
+                 kName[k.auto_chr], me + 1);
+        }
+        if (k.auto_chr >= 0) {   /* the driver picks: as in a direct fight */
+            if (!press_idle(me)) return;
+            const int target = cell_of(k.auto_chr);
+            if (target >= 0 && navigate(me, target, f)) {
+                k.confirm = k.auto_btn ? btn_bits(k.auto_btn) : default_confirm(k.auto_chr);
+                press(me, k.confirm, f);
+            }
+            return;
+        }
+        const int left = (int)(((ULONGLONG)k.secs * 1000 - ms + 999) / 1000);
+        if (left != k.shown_s) {
+            char t[24];
+            snprintf(t, sizeof t, "CHOOSE  %d", left);
+            plate_text(me, t);
+            k.shown_s = left;
+        }
+        const uint16_t raw = pick_read_local_pad();
+        if (!k.armed) {
+            if (raw) { inject(me, true, 0); return; }
+            k.armed = true;
+        }
+        if ((raw & B_SELECT) && !(k.raw_prev & B_SELECT)) {
+            /* Select: a random character and costume, drawn on this PC; the pick
+             * goes to the peer like any other, so both games fight the same */
+            LARGE_INTEGER q; QueryPerformanceCounter(&q);
+            uint32_t x = (uint32_t)q.QuadPart ^ (uint32_t)(q.QuadPart >> 32) ^ (GetCurrentProcessId() * 0x9E3779B9u) ^ f;
+            x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
+            k.auto_chr = (int)(x % 35);                      /* 0..34: every selectable character (not Jinpachi) */
+            const uint32_t y = x / 35;
+            k.auto_btn = k.auto_chr == 11 ? 1 + (int)(y % 2)  /* Kuma: a punch button */
+                       : k.auto_chr == 12 ? 3 + (int)(y % 2)  /* Panda: a kick button */
+                       : 1 + (int)(y % 4);
+            g_steps[me] = 0;
+            inject(me, true, 0);
+            plate_text(me, "RANDOM");
+            note("frame %u: in-game select: Select -- random pick for player %d: %s with %s", f, me + 1, kName[k.auto_chr],
+                 btn_name(k.auto_btn));
+            k.raw_prev = raw;
+            return;
+        }
+        k.raw_prev = raw;
+        if (g_trace_presses) {   /* T5_DF_TRACE=1: every move of this player's cursor (tests drive it closed-loop) */
+            const int cell = (int)rd32(rec(me) + kRecCell);
+            if (cell != k.cell) { k.cell = cell; note("frame %u: in-game select: cursor at cell %d", f, cell); }
+        }
+        if (k.face && !(raw & k.face)) k.face = 0;
+        if (!k.face)
+            for (int b = 1; b <= 4; b++)
+                if (raw & btn_bits(b)) { k.face = btn_bits(b); break; }
+        if (k.face) k.confirm = k.face;
+        inject(me, true, (uint16_t)((raw & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) | k.face));
+        return;
+    }
+    if (!k.have) {
+        /* the character is confirmed (the handicap bar is up): what was picked */
+        inject(me, true, 0);
+        k.have = true;
+        k.t9 = f;
+        k.cell = (int)rd32(rec(me) + kRecCell);
+        k.model = (int)rd32(rec(me) + kRecModel);
+        k.btn = btn_index(k.confirm);
+        if (!k.btn) k.btn = 3;
+        int chr = k.cell >= 0 && k.cell < 35 ? kGrid[k.cell] : -1;
+        if (chr == 11 && (k.btn == 3 || k.btn == 4)) chr = 12;   /* Kuma's cell with a kick button: Panda */
+        const int by_model = model_char(k.model);
+        if (chr < 0) chr = by_model >= 0 ? by_model : g_cfg.chr[me];
+        if (by_model != chr)
+            note("frame %u: in-game select: cell %d gives %s, model 0x%X says %s (model table?) -- the cell counts", f, k.cell,
+                 kName[chr], k.model, by_model >= 0 ? kName[by_model] : "?");
+        k.chr = chr;
+        g_cfg.chr[me] = chr;
+        g_cfg.btn[me] = k.btn;
+        note("frame %u: in-game select: player %d picked %s with %s (cell %d, model 0x%X) after %.1f s%s", f, me + 1, kName[chr],
+             btn_name(k.btn), k.cell, k.model, ms / 1000.0, k.auto_chr >= 0 ? " (by the driver)" : "");
+        if (k.net) t5_netplay_pick_send(k.key, pick_pack(chr, k.cell, k.btn, k.model));
+    }
+    if (st == 9) {   /* the handicap bar: kept at 100 %, confirmed by the driver */
+        if (press_idle(me) && f >= k.t9 + 10 && (f - k.t9) % 20 == 10) press(me, B_CROSS, f);
+        return;
+    }
+    /* done: 0x0C while the other side is still choosing (P2 always; P1 too on the
+     * select screen a match returns to: run rep1), then 0x0D / 0x15 (probe e10) */
+    if (st == 0x15 || st == 0x0D || st == 0x0C) {
+        k.tw = GetTickCount64();
+        plate_text(me, nullptr);
+        set_phase(Ph::PickWait, "pick_wait", f);
+        pick_wait_frame(f);
+    }
+}
+
+void pick_wait_frame(uint32_t f)
+{
+    Pick& k = g_pick;
+    const int other = 1 - k.me;
+    bool go = false;
+    unsigned v = 0;
+    if (k.net && t5_netplay_pick_peer(k.key, &v)) {
+        int chr, cell, btn, model;
+        if (pick_unpack(v, &chr, &cell, &btn, &model) && chr < 35 && cell_of(chr) == cell) {
+            g_cfg.chr[other] = chr;
+            g_cfg.btn[other] = btn;
+            k.peer = true;
+            k.peer_model = model;
+            go = true;
+            note("frame %u: in-game select: player %d (the opponent) picked %s with %s (model 0x%X); waited %.1f s", f, other + 1,
+                 kName[chr], btn_name(btn), model, (GetTickCount64() - k.tw) / 1000.0);
+        } else if (!k.bad_noted) {
+            k.bad_noted = true;
+            note("frame %u: in-game select: the opponent's pick %08X makes no sense -- waiting for another", f, v);
+        }
+    }
+    /* The opponent's own clock runs out after the same N seconds (its select
+     * screen may have come up a few seconds after this one) and then sends the
+     * launcher's character; only a game that never gets to pick is waited out. */
+    if (!go && (!k.net || GetTickCount64() - k.t0 > (ULONGLONG)(k.secs + 45) * 1000)) {
+        g_cfg.btn[other] = 0;
+        go = true;
+        note("frame %u: in-game select: %s -- player %d plays %s (the line's character)", f,
+             k.net ? "no pick came from the opponent" : "no netplay", other + 1, kName[g_cfg.chr[other]]);
+    }
+    if (!go) {
+        plate_text(other, "PICKING...");
+        return;
+    }
+    plates_restore();
+    g_steps[0] = g_steps[1] = 0;
+    set_phase(Ph::Select, "select", f);   /* the driver confirms the opponent's pick on its side, then the stage */
+}
+
+/* FIGHT START: what both sides fight with (the same on both PCs, or the pick
+ * went wrong somewhere) */
+void pick_fight_start(uint32_t f)
+{
+    for (int p = 0; p < 2; p++) g_models[p] = (int)rd32(rec(p) + kRecModel);
+    note("frame %u: fighters: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)%s", f, kName[g_cfg.chr[0]],
+         btn_name(g_cfg.btn[0]), g_models[0], kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]), g_models[1],
+         g_pick.on ? " (in-game select)" : "");
+    if (!g_pick.on) return;
+    g_pick.on = false;
+    const int me = g_pick.me, other = 1 - me;
+    /* a mirror match with the same costume: the game gives P2 the character's
+     * other costume (both PCs alike, probe dvj2 match 4) -- not a wrong pick */
+    if (g_cfg.chr[0] == g_cfg.chr[1] && g_models[0] != g_models[1] &&
+        ((me == 1 && g_pick.have && g_pick.model == g_models[0]) || (other == 1 && g_pick.peer && g_pick.peer_model == g_models[0]))) {
+        note("frame %u: in-game select: mirror match, P2 fights in the other costume (model 0x%X)", f, g_models[1]);
+        return;
+    }
+    if (g_pick.have && g_models[me] != g_pick.model)
+        note("frame %u: PICK MISMATCH: player %d's side has model 0x%X, picked 0x%X", f, me + 1, g_models[me], g_pick.model);
+    if (g_pick.peer && g_models[other] != g_pick.peer_model)
+        note("frame %u: PICK MISMATCH: player %d's side has model 0x%X here, 0x%X on the opponent's PC", f, other + 1,
+             g_models[other], g_pick.peer_model);
+}
+
 void fight_on_frame(uint32_t f)
 {
     if (!g_configured) return;
@@ -836,9 +1159,9 @@ void fight_on_frame(uint32_t f)
                 if (navigate(p, target, f)) {
                     /* Kuma and Panda share a cell: a punch button (SQUARE) picks
                      * Kuma, a kick button (CROSS/CIRCLE) Panda -- so Kuma cannot
-                     * be confirmed with CROSS like everyone else (it gave Panda). */
-                    const uint16_t confirm = g_cfg.chr[p] == 12 ? g_alt_button
-                                           : g_cfg.chr[p] == 11 ? (uint16_t)B_SQUARE : (uint16_t)B_CROSS;
+                     * be confirmed with CROSS like everyone else (it gave Panda).
+                     * An in-game pick names its button (the costume). */
+                    const uint16_t confirm = g_cfg.btn[p] ? btn_bits(g_cfg.btn[p]) : default_confirm(g_cfg.chr[p]);
                     press(p, confirm, f);
                 }
             } else if (st == 9) {
@@ -885,6 +1208,9 @@ void fight_on_frame(uint32_t f)
         g_wait_setup = false;
         for (int p = 0; p < 2; p++) inject(p, false, 0);   /* (before lockstep: the hooks' own injection, cleared) */
         g_intro_hold = false;
+        pick_fight_start(f);
+        for (int p = 0; p < 2; p++) { g_last_chr[p] = g_cfg.chr[p]; g_last_btn[p] = g_cfg.btn[p]; }
+        g_session_matches++;
         g_match++;
         g_over_clear = false;
         g_over_wait = false;
@@ -963,7 +1289,16 @@ void fight_on_frame(uint32_t f)
         }
         /* the game shows the win pose and returns to character select by itself */
         post_match_skip(f);
+        if (select_live() && g_cfg.pick > 0 && session_netplay() && t5_netplay_lockstep_active() &&
+            !(g_ctl && g_pending_cmd && !g_cmd_rematch)) {
+            /* in-game select: the next pick is made on each PC's own select
+             * screen, so the lockstep pauses here (a sync point: both games ask
+             * at the same game frame) and resumes at the next FIGHT START */
+            if (!g_pause_asked) { g_pause_asked = true; t5_netplay_pause(); note("frame %u: lockstep pause requested (in-game select next)", f); }
+            break;
+        }
         if (select_live()) {
+            g_pause_asked = false;
             if (g_ctl) {
                 if (g_pending_cmd && g_cmd_rematch) start_rematch(f);
                 else if (g_pending_cmd) { set_phase(Ph::Neutral, "neutral", f); go_reset(f); }
@@ -1050,6 +1385,12 @@ void fight_on_frame(uint32_t f)
             }
         }
         if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: reset: waiting in mode %u", f, mode);
+        break;
+    case Ph::Pick:
+        pick_frame(f);
+        break;
+    case Ph::PickWait:
+        pick_wait_frame(f);
         break;
     case Ph::Leave:
         /* out of a fight whose session ended: the game's own way back to select --
@@ -1149,6 +1490,7 @@ void fight_init()
     if (const char* r = getenv("T5_NET_RESULT_FILE")) g_result_file = r;
     if (const char* s = getenv("T5_DF_STATUS_FILE")) g_status_file = s;
     if (const char* a = getenv("T5_DF_ALT_BUTTON")) g_alt_button = (uint16_t)strtoul(a, nullptr, 16);
+    if (const char* pk = getenv("T5_DF_PICK")) { const int n = atoi(pk); g_pick_default = n < 0 ? 0 : n > 120 ? 120 : n; }
     { const char* t = getenv("T5_DF_TRACE"); g_trace_presses = t && *t == '1'; }
     if (fight && *fight && !g_ctl) parse_fight(fight, g_cfg);
     note("direct fight: %s%s%s", g_cfg.valid ? g_cfg.text.c_str() : g_ctl ? "(persistent game: fights from the control channel)"

@@ -75,8 +75,10 @@ constexpr ULONGLONG kPingMs  = 200;           /* keepalive while nothing else is
 
 /* HELLO: handshake (session, delay, build, seed). INPUT: inputs + hashes +
  * scene changes. BYE: leaving. PING: keepalive with the sender's progress.
- * REJECT: "I am in another session / a different build" (fail fast). */
-enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5 };
+ * REJECT: "I am in another session / a different build" (fail fast).
+ * PICK: the character a player picked on the game's own select screen
+ * (in-game select, docs/DIRECTFIGHT.md "Character select in the game"). */
+enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6 };
 enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
@@ -94,6 +96,10 @@ struct PingExt  { uint8_t flags; uint32_t frame; uint32_t t_us; uint32_t echo_us
 constexpr uint8_t PING_STARTED = 1;    /* the sender's lockstep has begun (frame 0 ran) */
 constexpr uint8_t PING_ROLLBACK = 2;   /* the sender offers rollback (as in its HELLO; the first HELLOs may predate the offer) */
 struct RejectExt { uint8_t why; };
+/* key: the match the pick is for (both games derive it from the lobby's match id);
+ * pick: the sender's pick (0 = none yet; packed by the direct-fight code); ack: the
+ * key of the peer's pick the sender holds -- the peer stops resending there */
+struct PickExt  { uint32_t key; uint32_t pick; uint32_t ack; };
 constexpr uint32_t kHelloRollback = 1u;
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
@@ -203,6 +209,12 @@ struct Session {
     float rtt_ms[32] = {};             /* round-trip samples from PING echoes */
     uint32_t nrtt = 0;
     int8_t local_lead = 0, peer_lead = 0;   /* frame advantage estimates, ours (sent) and the peer's (received) */
+    /* In-game select: this player's pick (sent every 100 ms until the peer has
+     * it), the peer's pick, and acknowledgements still owed to the peer. */
+    uint32_t pick_key = 0, pick_val = 0, pick_acked = 0;
+    uint32_t peer_pick_key = 0, peer_pick_val = 0;
+    int pick_acks_owed = 0;
+    ULONGLONG pick_sent_ms = 0;
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
     int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
@@ -486,6 +498,15 @@ void send_ping_locked()
                                                             (uint8_t)(s.mode == Mode::Host && s.rb_decided >= 0 ? s.rb_decided : 0xFF) } };
     send_raw(&p, sizeof p);
     s.last_send_ms = GetTickCount64();
+}
+
+/* In-game select: our pick (if any) and the acknowledgement of the peer's. */
+void send_pick_locked()
+{
+    State& s = S();
+    struct { Hdr h; PickExt x; } p = { make_hdr(PKT_PICK), { s.pick_key, s.pick_val, s.peer_pick_key } };
+    send_raw(&p, sizeof p);
+    s.pick_sent_ms = GetTickCount64();
 }
 
 /* The round trip so far: the median of the PING echo samples, else the
@@ -822,6 +843,22 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         SetEvent(s.rx_event);
         return;
     }
+    if (h->type == PKT_PICK) {
+        /* never answered at once (two sides answering each other would not
+         * stop): the tick thread sends the acknowledgement, three times */
+        if (n >= (int)(sizeof(Hdr) + sizeof(PickExt))) {
+            PickExt x; memcpy(&x, h + 1, sizeof x);
+            if (x.key && x.pick) {
+                if (x.key != s.peer_pick_key || x.pick != s.peer_pick_val)
+                    note("the opponent's pick for match key %08X: %08X", x.key, x.pick);
+                s.peer_pick_key = x.key; s.peer_pick_val = x.pick;
+                s.pick_acks_owed = 3;
+            }
+            if (s.pick_key && x.ack == s.pick_key) s.pick_acked = s.pick_key;
+        }
+        SetEvent(s.rx_event);
+        return;
+    }
     if (h->type != PKT_INPUT) return;
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return;
     const InputHdr* ih = (const InputHdr*)(h + 1);
@@ -913,6 +950,10 @@ DWORD WINAPI tick_thread(LPVOID)
                                 s.peer_known ? addr_str(s.peer).c_str() : "its address is not known");
             } else {
                 if (now - s.last_send_ms >= kPingMs) send_ping_locked();
+                if (((s.pick_key && s.pick_acked != s.pick_key) || s.pick_acks_owed > 0) && now - s.pick_sent_ms >= 100) {
+                    if (s.pick_acks_owed > 0) s.pick_acks_owed--;
+                    send_pick_locked();
+                }
                 if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000)
                     lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
             }
@@ -1604,6 +1645,25 @@ uint32_t rb_mismatches() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu);
 uint32_t rb_peer_ack() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.peer_ack; }
 
 void set_local_inject(bool on, uint16_t buttons) { g_local_inject = buttons; g_local_inject_on = on; }
+
+void pick_set(uint32_t key, uint32_t val)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.pick_key == key && s.pick_val == val) return;
+    s.pick_key = val ? key : 0; s.pick_val = val; s.pick_acked = 0;
+    if (val) note("this player's pick for match key %08X: %08X", key, val);
+    if (val && s.connected && !s.peer_lost) send_pick_locked();
+}
+
+bool pick_peer(uint32_t key, uint32_t* val)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!key || s.peer_pick_key != key || !s.peer_pick_val) return false;
+    if (val) *val = s.peer_pick_val;
+    return true;
+}
 void set_script_gate(bool on) { g_script_gate = on; }
 
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
@@ -1661,3 +1721,8 @@ extern "C" const char* t5_env(const char* key)
 {
     return np::env_raw(key);
 }
+
+/* In-game select (src/directfight): this player's pick for a match, and the peer's. */
+extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick) { np::pick_set(key, pick); }
+extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick) { return np::pick_peer(key, pick) ? 1 : 0; }
+extern "C" int  t5_netplay_connected(void) { return np::connected() ? 1 : 0; }

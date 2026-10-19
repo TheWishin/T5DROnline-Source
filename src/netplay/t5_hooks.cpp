@@ -52,7 +52,7 @@
  *   T5_NET_HASH      regions hashed into the per-frame state hash,
  *                    "addr:len,addr:len" (hex). Default: kDefaultHash.
  *   T5_NET_HASH_SKIP words inside those regions left out (default kDefaultHashSkip)
- *   T5_NET_DESYNC_DUMP=1  on a hash mismatch, write the hashed bytes of that
+ *   T5_NET_DESYNC_DUMP=1  on a hash mismatch, write the hashed bytes of that (=<n>: up to n files, default 20)
  *                    frame to np_desync_f<frame>.bin (diff the two PCs' files)
  *   T5_NET_PAGEHASH  "addr:len[:every]" (hex, every in frames, default 60):
  *                    write per-4KB-page hashes of that range to the frame log.
@@ -234,6 +234,16 @@ bool g_await_load = false;  /* direct fight: the end of the fight's loading is s
  * the end of the loading the intros run a fixed 28 frames on both PCs. */
 bool fight_loaded_now() { const uint32_t p = rd32(0x1008F070u); return p >= 11 && p <= 17; }
 bool g_idle = false;      /* ticks are ours (keyread parked) but no lockstep runs: between two sessions */
+/* In-game select (docs/DIRECTFIGHT.md "Character select in the game"): between
+ * two matches of a session the lockstep pauses -- each player picks on the
+ * game's own select screen, which is not lockstep material -- and resumes at the
+ * next fight's start. The pause is a sync point (both games at the same frame,
+ * every input before it confirmed); while paused the hooks run as between two
+ * sessions (g_idle); t5_netplay_start() resumes at the paused frame number with
+ * a sync point that also sets the game's frame counters and input ring equal
+ * (the two games ran their own number of frames meanwhile). */
+std::atomic<bool> g_pause_requested{ false };
+bool g_paused = false;
 /* Offline (no netplay): the keyread tick on the main thread too (T5_LATE_INPUT,
  * default on, docs/RENDER_PERF.md "Input latency"). The game's own keyread
  * thread reads the pads at the vblank, then waits for the frame lock the main
@@ -346,6 +356,7 @@ bool g_desync_dump = false;
 std::vector<uint8_t> g_snap[kSnapFrames];
 uint32_t g_snap_tag[kSnapFrames];
 uint32_t g_desync_dumps = 0;
+uint32_t g_desync_dump_max = 20;   /* T5_NET_DESYNC_DUMP=<n> (n > 1): this many files at most (default 20) */
 
 /* ---- the pad, as the game sees it ------------------------------------------ */
 
@@ -949,6 +960,29 @@ void skip_frames(uint32_t d)
     for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
 }
 
+/* The game's per-frame counters and input ring the same on both PCs (a fresh
+ * start, and the resume after the in-game select). */
+void equal_counters()
+{
+    wr64(kFrameClock, 0x10000);
+    for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, 0x10000);
+    wr32(kRingResetFlag, 1);
+}
+
+/* The lockstep stops at a sync point (in-game select): the hooks run as between
+ * two sessions until t5_netplay_start() resumes it at frame f. */
+void go_paused(uint32_t f)
+{
+    g_pause_requested = false;
+    g_paused = true;
+    g_idle = true;
+    g_frame = f;
+    g_inject_on = 0;
+    np::set_local_inject(false, 0);
+    g_cur[0] = g_cur[1] = np::kNeutral;
+    np::note("frame %u: lockstep paused (in-game select); it resumes at this frame when the next fight starts", f);
+}
+
 /* The random generators the game draws from, seeded the same on both PCs: the
  * Mersenne Twister, the C rand(), and the main thread's TLS generator 0x3AFC3C
  * (the scene's draws: camera, move effects, the game mode's set-up; without it
@@ -1014,7 +1048,7 @@ void on_frame_start(ppu_context* ctx)
         t5_df_mode_cur() == 6)
         rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu);
     if (g_offline) { offline_frame(ctx); return; }
-    bool fresh_start = false;
+    bool fresh_start = false, resume = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {
         g_boot_frames++;
@@ -1077,9 +1111,15 @@ void on_frame_start(ppu_context* ctx)
             return;
         }
         g_idle = false;
-        g_frame = 0;
-        fresh_start = true;
-        np::note("lockstep of session %u from here (the keyread thread is still parked)", np::sessions());
+        if (g_paused) {
+            g_paused = false;
+            resume = true;
+            np::note("lockstep of session %u resumes at frame %u", np::sessions(), g_frame);
+        } else {
+            g_frame = 0;
+            fresh_start = true;
+            np::note("lockstep of session %u from here (the keyread thread is still parked)", np::sessions());
+        }
     }
     uint32_t f = g_frame;
     {   /* T5_NET_SCRIPT_FIGHT=1 (tests): scripted presses only while direct fight is in a fight */
@@ -1093,11 +1133,28 @@ void on_frame_start(ppu_context* ctx)
          * leave a trace. The per-frame counters get the same value on both
          * sides, the input ring is cleared, the RNGs are reseeded at frame 0
          * below; the handshake at frame 0 is the ready barrier. */
-        wr64(kFrameClock, 0x10000);
-        for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, 0x10000);
-        wr32(kRingResetFlag, 1);
+        equal_counters();
+    }
+    if (resume) {
+        /* The end of a pause (in-game select): the two games ran their own
+         * select screens for different numbers of frames. Both meet at a sync
+         * point at the paused frame number, then get the same counters, input
+         * ring and random seeds -- as at a fresh start -- and the next match's
+         * mismatch count starts here. The rollback loop, stopped at the pause,
+         * starts again from this frame below. */
+        const uint32_t nf = np::scene_barrier(f);
+        f = nf;
+        g_frame = f;
+        g_scenes++;
+        equal_counters();
+        reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+        apply_rounds();
+        match_begins(f);
+        g_await_load = g_directfight;
+        np::log_extra(f, "resume");
     }
     const bool resync = g_start_requested.exchange(false);   /* next match in the same process */
+    const bool pause = g_pause_requested.load() && !resync && !resume;   /* in-game select: stop at a sync point */
     if (rb::net::enabled() && f >= rb::net::start_frame() && f > 0) {
         /* Rollback netplay (T5_RB_MODE=net, src/rollback/rb_net.cpp): the
          * loop commits the state, exchanges inputs, rolls back and re-simulates
@@ -1120,8 +1177,9 @@ void on_frame_start(ppu_context* ctx)
          * frames earlier or later than one that has just started (persistent
          * game, a new opponent: 2 frames, run rb_ps1), and without the barrier
          * the two then fight frames apart. */
-        const bool load_end = g_await_load && !rb::net::bypass() && (fight_loaded_now() || rd32(kRingResetFlag) != 0);
-        const bool scene = resync || load_end;
+        /* (at a resume the ring reset is ours, not the end of the loading) */
+        const bool load_end = g_await_load && !rb::net::bypass() && !resume && (fight_loaded_now() || rd32(kRingResetFlag) != 0);
+        const bool scene = resync || load_end || (pause && !rb::net::bypass());
         np::PadInput in[2];
         /* The loaders (ZsAread, decoder) are drained before the boundary's
          * snapshot, not after it: the state saved at a boundary is then one
@@ -1136,6 +1194,15 @@ void on_frame_start(ppu_context* ctx)
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
             const uint32_t nf = np::scene_barrier(f);
+            if (pause) {
+                /* every input before f is confirmed and both games are at nf:
+                 * the loop stops (its undo logs go), the select screens run on
+                 * their own until the next fight */
+                rb::net::session_reset();
+                go_paused(nf);
+                keyread_tick();
+                return;
+            }
             if (nf > f) skip_frames(nf - f);
             g_scenes++;
             reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
@@ -1159,8 +1226,8 @@ void on_frame_start(ppu_context* ctx)
         }
         return;
     }
-    const bool load_end = g_await_load && fight_loaded_now() && f > 0;   /* the end of the fight's loading: a sync point too */
-    if ((rd32(kRingResetFlag) || resync || load_end) && f > 0) {
+    const bool load_end = g_await_load && fight_loaded_now() && f > 0 && !resume;   /* the end of the fight's loading: a sync point too */
+    if (((rd32(kRingResetFlag) && !resume) || resync || load_end || pause) && f > 0) {
         /* The game changed scene during the last frame (every scene start
          * asks keyread to clear the input ring). Scene changes that wait on
          * loading or sound land a frame or two apart on the two PCs, so they
@@ -1168,6 +1235,11 @@ void on_frame_start(ppu_context* ctx)
          * with the game's frame clock moved along on the side that skipped,
          * and the random generator reseeded the same way on both. */
         const uint32_t nf = np::scene_barrier(f);
+        if (pause) {   /* in-game select: both games at nf, the lockstep stops there */
+            go_paused(nf);
+            keyread_tick();
+            return;
+        }
         if (nf > f) skip_frames(nf - f);   /* the game's counters move along by the frames this side skipped */
         f = nf;
         g_scenes++;
@@ -1199,7 +1271,7 @@ void on_frame_start(ppu_context* ctx)
     uint64_t h = state_hash(&parts);
     if (g_directfight && intro_phase_now()) h = kIntroHash;   /* the fight's loading and intros: not compared (below) */
     for (uint32_t mf; g_desync_dump && np::take_mismatch(&mf);) {
-        if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= 20) continue;
+        if (g_snap_tag[mf % kSnapFrames] != mf + 1 || g_desync_dumps >= g_desync_dump_max) continue;
         char path[64];
         snprintf(path, sizeof path, "np_desync_f%06u.bin", mf);
         if (FILE* fp = fopen(path, "wb")) {
@@ -1470,7 +1542,8 @@ void h_cellPadInit(ppu_context* ctx)
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
-    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); g_desync_dump = dd && *dd == '1'; }
+    { const char* dd = getenv("T5_NET_DESYNC_DUMP"); const int n = dd ? atoi(dd) : 0;
+      g_desync_dump = n >= 1; if (n > 1) g_desync_dump_max = (uint32_t)n; }
     InitializeCriticalSection(&g_result_cs);
     read_session_env();
     { const char* t = getenv("T5_NET_TAKEOVER_TEST"); g_takeover_test = t && *t == '1'; }
@@ -1566,6 +1639,8 @@ void persistent_lost(const char* reason)
     rb::net::session_reset();
     np::session_end(reason);
     g_idle = g_active.load();
+    g_paused = false;
+    g_pause_requested = false;
     g_start_requested = false;
     g_inject_on = 0;
     g_session_lost = reason;
@@ -1593,6 +1668,8 @@ extern "C" int t5_netplay_session_begin(void)
     LeaveCriticalSection(&g_result_cs);
     g_lost_written = false;
     g_start_requested = false;
+    g_paused = false;
+    g_pause_requested = false;
     g_inject_on = 0;
     g_cur[0] = g_cur[1] = np::kNeutral;
     g_session_lost = nullptr;
@@ -1613,6 +1690,8 @@ extern "C" void t5_netplay_session_end(const char* why)
     rb::net::session_reset();
     np::session_end(why);
     g_idle = g_active.load();
+    g_paused = false;
+    g_pause_requested = false;
     g_start_requested = false;
     g_inject_on = 0;
 }
@@ -1661,6 +1740,14 @@ extern "C" void t5_netplay_start(void)
 {
     g_start_requested = true;
 }
+
+/* In-game select: pause the running lockstep at the next frame (a sync point;
+ * both games ask at the same game frame). No-op without a running lockstep. */
+extern "C" void t5_netplay_pause(void)
+{
+    if (g_active.load() && !g_idle && np::enabled()) g_pause_requested = true;
+}
+extern "C" int t5_netplay_paused(void) { return g_paused ? 1 : 0; }
 
 extern "C" void t5_netplay_inject(int port, int on, unsigned buttons)
 {

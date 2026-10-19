@@ -261,6 +261,32 @@ and wrote the ring after the main thread had taken this frame's entry -- 5-12 %
 of presses reached the game a frame late (docs/RENDER_PERF.md "Input
 latency"). `T5_LATE_INPUT=0` leaves the pads to the game's own thread.
 
+## In-game select: picks and a paused lockstep
+
+With the in-game select (docs/DIRECTFIGHT.md "Character select in the game")
+each player picks on the game's own select screen, which runs on each PC on its
+own; only the picks cross the network. Two small additions, both on the
+session's own socket and key:
+
+- **PICK packets** (type 6): `{key, pick, ack}` -- the match the pick is for
+  (the session's match number), the sender's pick (character, confirm button,
+  model id, cursor cell; 0 = none yet) and the key of the peer's pick the
+  sender holds. The network thread resends our pick every 100 ms until the peer
+  acknowledges it, and acknowledges a received pick three times (never at
+  once: two sides answering each other would not stop). `t5_netplay_pick_send()`
+  / `t5_netplay_pick_peer()`.
+- **A paused lockstep** between two matches of a session: `t5_netplay_pause()`
+  makes the next frame a sync point (a scene barrier; under rollback every
+  input before it is confirmed first), then the lockstep (or the rollback loop,
+  which stops and drops its undo logs) is paused and the hooks run as between
+  two sessions of a persistent game -- keyread tick on the main thread with
+  neutral pads plus the direct-fight driver's injections; the socket,
+  keepalives and the timeouts stay. `t5_netplay_start()` at the next fight
+  resumes at the paused frame number: another sync point, then the game's frame
+  counters, input ring and random seeds are set equal as at a fresh start (the
+  two select screens ran for different numbers of frames), the match's
+  mismatch count starts there, and the rollback loop starts again.
+
 ## Connection problems
 
 How a session starts, survives trouble, and ends when it cannot go on

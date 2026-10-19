@@ -1,7 +1,8 @@
 # Direct fight: boot straight into a VS match
 
-The lobby picks the characters, the game starts in the fight, and it stays
-open between matches (like Tekken 6 Native Online). `src/directfight/` is the
+The players pick their fighters on the game's own select screen (or the lobby
+picks them), the game goes straight to the fight, and it stays open between
+matches (like Tekken 6 Native Online). `src/directfight/` is the
 in-game half of that: it drives the game's own mode machine and character
 select from the frame boundary hook, applies the fight settings where the game
 reads them, calls the netplay hook at fight start, reports the result and waits
@@ -16,13 +17,14 @@ All guest addresses are for NPUB30009 v01.00.
 ## Interface
 
 ```
-T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>][ names=<n1>|<n2>][ ranks=<r1>|<r2>]   the first match
+T5_FIGHT=p1,p2,stage[,rounds][,p1color,p2color][ match=<id>][ names=<n1>|<n2>][ ranks=<r1>|<r2>][ pick=<s>]   the first match
 T5_FIGHT_FILE=<path>                                 the next matches, one line in the same format
 T5_NET_RESULT_FILE=<path>                            {"match": id, "winner": 0|1|null, "score": [p1, p2], ...} per match
 T5_DF_STATUS_FILE=<path>                             JSON status for the launcher (rewritten on change)
 T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars (lobby names, 16 characters)
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
+T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
 ```
 
 - `p1`, `p2`: character id 0-35, 3-letter code or name prefix (table below).
@@ -41,18 +43,28 @@ T5_CTL_DIR=<dir>                                     persistent game: every matc
   launcher never takes a result of one match (say, one the lobby voided) for
   the next. The launcher appends it to every line it writes to `T5_FIGHT_FILE`;
   the first match's id is `T5_NET_MATCH`.
-- `p1color`, `p2color`: 1 or 2, the costume (the button of the second confirm).
-  Unverified beyond costume 1.
+- `p1color`, `p2color`: 1 or 2. Kept for old lines; it changes nothing: the
+  second confirm it picks the button of is the handicap bar (see "Character
+  select in the game"). The costume is the button that confirms the character.
+- `pick=<seconds>` (key=value): the in-game select -- both players pick
+  character and costume on the select screen within that many seconds; `p1`,
+  `p2` are what a player gets who does not pick in time (the launcher's
+  character). See "Character select in the game".
 - `T5_FIGHT_FILE` is read when the game idles at character select (after a
   match, or from boot when `T5_FIGHT` is not set) and renamed to `<path>.done`
   once consumed. Write it atomically (write to a temp file, rename).
 - Status file: `{"state": ..., "frame": N, "match": k, "p1", "p2", "stage",
-  "rounds", "last_winner", "last_score"}` with state one of `title`, `select`,
+  "rounds", "last_winner", "last_score", "pick", "b1", "b2", "m1", "m2"}` with
+  state one of `title`, `pick`, `pick_wait`, `select`,
   `stage`, `loading`, `fight`, `over`, `neutral` (and in a persistent game
   `reset`: back to the title for a fresh select screen, `leave`: out of a
   fight whose session ended). `neutral` = at character
   select, waiting for `T5_FIGHT_FILE`. `fight` with `match` = k means match k is
-  running.
+  running. `pick`: this player picks on the select screen; `pick_wait`: picked,
+  waiting for the opponent's pick. `p1`/`p2` are the fighters (with the in-game
+  select: what was picked, once known), `b1`/`b2` the confirm buttons (1 Square,
+  2 Triangle, 3 Cross, 4 Circle; 0 = the default), `m1`/`m2` the model ids both
+  sides fight with (from FIGHT START on).
 - Result file: written by netplay when netplay is on (with `match`, `desync`,
   `frames`, `hash`, `fps`, and `reason` when the match could not be finished;
   docs/NETPLAY.md), by the direct-fight code when netplay is off (`match`,
@@ -115,12 +127,15 @@ param)`; the factory is `func_0025E6AC`.
    requests mode 6. The namco logo / intro / title menu are skipped by never
    waiting for them.
 2. Select mode: per player, the select record at 0x10093F58 + p*0x78: +0 the
-   cursor cell, +8 the portrait id under it, +0x20 the state byte (3 choosing,
-   9 costume, then 0x15 (P1) / 0x0D (P2) done). The select state 0x1008F070 is
-   3 while the screen takes input. The cursor is moved by injected presses
-   (closed loop: read the cell, step toward the target cell, re-read; one step
-   per 8 frames), CROSS confirms the character, the costume button confirms
-   again. When both are done, CROSS confirms the stage panel (every 30 frames
+   cursor cell, +8 the portrait id under it, +0x0C the picked model id
+   (character + costume), +0x20 the state byte (3 choosing, 9 the handicap bar,
+   then done: 0x0C while the other side still chooses, then 0x15 on P1, 0x0D
+   on P2). The select
+   state 0x1008F070 is 3 while the screen takes input. The cursor is moved by
+   injected presses (closed loop: read the cell, step toward the target cell,
+   re-read; one step per 8 frames), CROSS confirms the character (or the
+   button an in-game pick names: the costume), CROSS again the handicap bar
+   (100 %). When both are done, CROSS confirms the stage panel (every 30 frames
    until the select state reaches 4); the stage shown does not matter. The
    confirm writes the panel's own (random) pick to 0x1008F088 (two frames
    before the select state turns 4); the configured stage is written there at
@@ -158,6 +173,160 @@ Kuma and Panda share the last bottom cell: a punch button (SQUARE) confirms
 Kuma, a kick button Panda. The driver presses SQUARE for Kuma and
 `T5_DF_ALT_BUTTON` (default CIRCLE) for Panda; checked by forcing both
 (before, Kuma was confirmed with CROSS and came out as Panda).
+
+## Character select in the game (branch ingame-select)
+
+Owner's request: pick the character in the game, not in the launcher. With
+`pick=N` on the fight line (the lobby sends it, docs/RANKED.md "Character
+select in the game") each player picks character and costume on the game's own
+select screen, then both PCs fight exactly those picks with the usual
+lockstep/rollback start. The two select screens are **not** in lockstep: each
+PC's select screen runs on its own, and only the picks travel.
+
+What the select screen does (probes with scripted pads, build/cs/exp):
+
+- Every face button confirms the character, and the button is the costume:
+  Square (LP) and Triangle (RP), Cross (LK) and Circle (RK) give the same
+  model for most characters (two costumes; Lili 0x4D / 0x4E, Dragunov 0x4F /
+  0x50), Xiaoyu has four (0x10, 0x11, 0x13, 0x14 for LP, LK, RP, RK). Kuma's
+  cell gives Kuma with a punch button (model 0x1E) and Panda with a kick button
+  (0x1F). The picked model id is at record +0x0C.
+- State 9 after the confirm is the **handicap bar** (100 %), not a costume
+  choice; the next confirm finishes the pick. The record then reads 0x0C while
+  the other side still chooses (always on P2; on P1 at the select screen a
+  match returns to, not at a fresh one), then 0x15 on P1 and 0x0D on P2.
+- L1 loads customize data ("L1 BUTTON : LOAD CUSTOMIZE DATA"); Start, Select,
+  R1, L2, R2, L3 and R3 do nothing here. There is no random cell (Jinpachi's
+  cell 24 is skipped by the cursor).
+- The name and rank plates of the select screen come from the VS custom data
+  (see "Names and ranks in the HUD") and are read every frame: written at the
+  select screen they show at once.
+
+The flow, per PC (`df_fight.cpp` phases Pick and PickWait, helpers in
+`df_pick.cpp`):
+
+1. **Pick.** Once the select screen takes input, this PC's pad drives this
+   player's side only (P1 on the host, P2 on the joiner), the other side reads
+   neutral. The pad is read through the runtime's pad layer
+   (`cellPad_sample_local(0)`: controls.ini, sticks, keyboard,
+   `PS3_PAD_FILE`) and filtered: d-pad and left stick as directions, one face
+   button at a time (so the confirming button, the costume, is never in
+   doubt), **Select = random** (character and costume drawn on this PC), L1,
+   Start and the rest never reach the game. A button held when the screen came
+   up counts only after it was let go (the Cross that accepted the match in the
+   launcher must not pick). The name plate under this player's portrait counts
+   down ("CHOOSE 17"). After the confirm the driver confirms the handicap bar
+   at 100 %.
+2. The pick -- character, button, model id -- goes to the opponent's game as a
+   **PICK packet** over the netplay session (docs/NETPLAY.md "In-game
+   select"), keyed by the session's match number, resent every 100 ms until
+   acknowledged.
+3. **PickWait.** The opponent's plate says "PICKING..." until its pick is in.
+   Then the driver moves the opponent's cursor to its pick and confirms with its
+   button (as for a lobby-picked fight), then the stage (the line's, from the
+   lobby), FIGHT START, lockstep frame 0 / the resume (below). At FIGHT START
+   both sides' model ids are logged ("fighters: P1 ... (model 0x..), P2 ...",
+   every fight) and compared with the picks ("PICK MISMATCH" if not).
+4. **Timeout.** No pick within N seconds of this player's select screen
+   coming up: the driver picks the line's character for this player (the
+   launcher's) with the default button ("TIME UP"), and that pick goes to the
+   opponent like any other. A game that never sends a pick (but keeps its
+   session alive) is waited for N + 45 s, then its side gets the line's
+   character too.
+
+**Rematches.** Between two matches of a session the lockstep (or rollback) used
+to keep running through the select screen. With the in-game select it pauses
+there: when the select screen is back after a match, both games ask for a pause
+at the same game frame (`t5_netplay_pause()`); the next frame is a sync point
+(under rollback every input before it is confirmed), and from there the hooks
+run as between two sessions (keyread tick with neutral pads, the session's
+socket and keepalives stay). At the next FIGHT START `t5_netplay_start()`
+resumes at the paused frame number with a sync point that also sets the game's
+frame counters, input ring and random seeds equal (the two select screens ran
+for different numbers of frames); the rollback loop starts again from there.
+The first match of a session needs none of this: its lockstep starts at FIGHT
+START anyway.
+
+**Ranked lock.** A ranked set (best of 3, docs/RANKED.md "Ranked sets") is
+picked in its game 1 only; games 2 and 3 come with no `pick` (the set's
+characters are those game 1 picked): the select screen is skipped and the
+driver picks both sides as in a lobby-picked fight, on each PC locally (after a
+picked game the lockstep is paused there all the same). The costumes come
+along as `buttons=b1|b2` on the fight line (the lobby keeps the confirm buttons
+game 1 reported); without it a fighter that is the same as in the session's
+last fight keeps its costume -- only within one netplay session, so a set game
+over a new connection (a replay after a desync, a restarted game) needs the
+lobby's buttons. The set's next game starts by itself after the countdown (no
+vote): the game gets the same "fight" command in the running session (or a new
+session); one that comes while the win pose still runs waits for the select
+screen.
+
+Not done: no in-game text beyond the name plates (the launcher's status line
+says the same: "Pick your fighter in the game", "Waiting for your opponent to
+pick..."); Jinpachi stays unpickable (no cell); the customize data (L1) is not
+offered online.
+
+Test: `tools/pick_flow_test.py` -- two games on this PC, each player's picks
+pressed through its `PS3_PAD_FILE` closed-loop on the cursor cell the game
+logs (`T5_DF_TRACE=1`), scenarios per match: `<char>:<lp|rp|lk|rk>`,
+`random`, `timeout`, `late<s>:<char>:<button>`; persistent flow with new
+sessions and rematches, or process flow (`T5_FIGHT_FILE`); `--locked-after`
+for a ranked set's lock. A match passes when both games log the same picks
+(character, button, model) at FIGHT START, scripted picks are what was asked,
+and both results have the same winner and state hash with 0 mismatching frames.
+
+**Results** (2026-10-18/19, two games on this PC, muted, minimized, below-normal
+priority, other agents' games beside them -- 22-55 fps):
+
+- **Through a local lobby** (`lobby/tools/ranked_session.py --exe ... --persistent
+  --attacks --ingame-pick --pick1 ... --pick2 ...`, the launcher's glue, scripted
+  picks): **19 matches, every one started on both PCs with the same fighters and
+  costumes, every result confirmed, 0 mismatching frames.**
+
+  | Run | Mode | What |
+  |---|---|---|
+  | e2e_ranked | rollback | ranked set of 3: game 1 picked Jin (Triangle) vs Lili (Cross) over the launchers' Kazuya/Heihachi; games 2 and 3 skipped the select screen with the same fighters and costumes; the history says jin vs lili |
+  | e2e_ranked_ls | lockstep | ranked set of 2: Select = random (Heihachi), Kuma's cell + Cross = Panda; game 2 locked to Panda vs Heihachi |
+  | e2e_room_ls | lockstep | room match, then the room rematch with both changing; a random pick, a timeout (the launcher's character) |
+  | e2e_room_rb | rollback | room match + rematch, both changing, a pick 6 s late |
+  | e2e_quick_rb | rollback | quick match + rematch, both changing |
+  | e2e_sets_rb | rollback | ranked set of 2, then the next opponent (a new pairing, a new session) against a **freshly started game** (P2's game closed in between), P1 changes Jin -> Steve, set of 2 again |
+  | e2e_sets_ls | lockstep | quick: 2 pairings of 2, rematches where only P1 changes (Kazuya -> Julia, Asuka -> Law), a fresh game in the second pairing |
+
+- **After the merge with main (2026-10-19: ranked sets of best of 3, the TLS
+  generator fix, rollback-crash, lobby hardening)**, `lobby/tools/ranked_session.py
+  --exe ... --persistent --ingame-pick --rounds 1 --plan ...` (the planned
+  winner's game attacks through T5_NET_PADFILE), table by `tools/pick_report.py`:
+  **28 of 28 matches started on both PCs with the same fighters and costumes,
+  0 mismatching frames, the same state hash, confirmed.**
+
+  | Run | Mode | What |
+  |---|---|---|
+  | m_quick_rb / m_quick_ls | rollback / lockstep | quick match + 3 rematches; every rematch changes both fighters across column 11 and the top row (Bruce/Kuma/Panda <-> Raven/Eddy/Devil Jin/Armor King) and costumes (Devil Jin Cross -> Circle, Armor King Square -> Circle) |
+  | m_room_rb / m_room_ls | rollback / lockstep | room match + 2 rematches with new picks; Select = random and timeouts on either side |
+  | m_set_rb / m_set_ls | rollback / lockstep | ranked set 2-1 / 1-2: game 1 picked (Kuma Triangle vs Xiaoyu Circle = her 4th costume; Lili vs Panda), games 2 and 3 started by themselves after 6 s with `buttons=2\|4`, the same models |
+  | m_switch_rb / m_switch_ls | rollback / lockstep | quick pairing of 2, P2's game closed, a new pairing of 2 against a freshly started game |
+
+  Also launcher-picked rematches (no in-game select, the owner's "rematch with
+  a character change" report on 1.0.x) across column 11 and the top row in both
+  directions, with `buttons=` on new sessions and rematches:
+  `pick_flow_test.py --no-pick --mash --rematch-every 2`, 4/4 rollback (m_np_rb)
+  and 4/4 lockstep (m_np_ls), 0 mismatching frames.
+- **`tools/pick_flow_test.py`** (no lobby; persistent unless noted): 20 of 25
+  matches OK across the runs t1, rep1, big_ls, final_rb, proc_rb. The 5 others:
+  Devil Jin (big_ls match 6; the TLS generator, fixed since, see "Known
+  transient mismatches"); two short
+  mismatches under rollback in final_rb (22 frames Wang vs Heihachi, 1 frame
+  Raven vs Asuka, mid-fight, same winner; the same pairs ran clean in
+  e2e_room_rb); one hang that was the driver's cursor (from column 11 -- Bruce,
+  Kuma -- the top row was never reached; fixed); and in process mode under
+  rollback at ~22 fps one game showed "The installed game data is corrupted"
+  after a KO (mode 8, the game's end) -- the post-match loads under deep
+  rollbacks (depth 9), the known rollback-over-loads problem (ROLLBACK.md 31),
+  not the select screen.
+- Picks seen: every costume button, Xiaoyu's four costumes, Kuma/Panda,
+  random, timeouts on either side, a late pick, mirror matches (P2 gets the
+  other costume: logged, not a mismatch).
 
 ## After the match: no input reaches the select screen
 
@@ -606,6 +775,20 @@ Results: see docs/ROLLBACK.md section 31 (the cycle runs).
 
 ## Known transient mismatches
 
+**Devil Jin and Mokujin desync online (found by ingame-select, 2026-10-18;
+fixed by desync-hunt, docs/NETPLAY.md "Desync hunt").** The in-game select's
+test runs picked every character, and two of them went out of sync with or
+without the in-game select (Mokujin 4 of 6 lobby-picked matches apart for good
+from the first frame after the intros; Devil Jin as P2 4 of 4 for 81-618
+frames, xyz points of both fighters). Both came from the title's second random
+generator, the main thread's TLS LCG 0x3AFC3C, which was never reseeded: the
+game mode's set-up picks Mokujin's copied fighter from it, and the camera and
+effects (Devil Jin's) draw from it in the fight. It is now reseeded at every
+sync point and pinned to the session seed while the select mode runs -- the
+two select screens of the in-game select run for different numbers of frames,
+so the pin matters for every picked fight. Nothing of this branch excluded
+either character or any hash word for it.
+
 Two kinds of words differed between the two games in the runs of this work;
 neither changed the fight (the same hash again afterwards, the same result).
 
@@ -700,13 +883,19 @@ host/join pair started with `T5_NET_START=external`.
   game's sessions and boot-state areas.
 - `src/directfight/df_ctl.cpp`: the control channel of a persistent game
   (cmd.json / state.json, a small JSON reader, the session environment).
+- `src/directfight/df_pick.cpp`: the in-game select's helpers (the local pad
+  for the select screen, the name plates as hints, the PICK value, model ids);
+  its phases are in `df_fight.cpp`.
 - `src/netplay/t5_hooks.cpp`: `t5_netplay_inject(port, on, buttons)` and
   `t5_netplay_enabled()`, `t5_netplay_start()` (netplay's); for a persistent
-  game `t5_netplay_session_begin/end`, `t5_netplay_take_session_lost`.
+  game `t5_netplay_session_begin/end`, `t5_netplay_take_session_lost`; for the
+  in-game select `t5_netplay_pause()` (resumed by `t5_netplay_start()`);
+  `netplay_core.cpp`: `t5_netplay_pick_send/peer` (PICK packets).
 - `src/netplay/netplay_core.cpp`: `np::session_begin/end` (the per-session
   state in one struct), the session environment overlay `t5_env*`.
 - `src/rollback/rb_net.cpp`, `rb_state.cpp`: `session_reset`, `state_reset`.
-- Tests: `tools/fight_flow_test.py` (pairs, many matches, rematch or
+- Tests: `tools/pick_flow_test.py` (the in-game select, two games, scripted
+  picks), `tools/fight_flow_test.py` (pairs, many matches, rematch or
   persistent flow, `--mash`, `--fresh-at`), `tools/reset_cycle_test.py` (one
   persistent game through every way a session ends), `tools/dryrun_online.py
   --mode persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),

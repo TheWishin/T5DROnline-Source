@@ -1119,6 +1119,7 @@ class OnlineView:
             "  ·  " + t("rematch").upper() if ev.get("origin") == "rematch" else ""),
                               style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
         state = {"title": t("The game is starting..."), "select": t("Character select"),
+                 "pick": t("Pick your fighter in the game"), "pick_wait": t("Your opponent is picking"),
                  "stage": t("Stage select"), "loading": t("Loading the fight..."), "fight": t("Fight!"),
                  "over": t("Match over"), "neutral": t("Waiting for the next match")}.get(phase)
         if running:

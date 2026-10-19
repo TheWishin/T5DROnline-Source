@@ -785,8 +785,6 @@ void persistent_frame(uint32_t f)
     ctl_report(f);
 }
 
-/* A reset has a fresh select screen: the pending "fight" (a new session)
- * starts on it, else the game waits there. */
 /* A used select screen made fresh again without the title (no fight since
  * the title; see Ph::Reset). The start-VS routine fills the VS battle config
  * again (game type, players, VS counters) and asks the mode manager for the
@@ -797,12 +795,12 @@ void persistent_frame(uint32_t f)
  * select scene a second time -- both fighters' preview models, the portraits,
  * their animation and resource managers, ~150 KB of the scene heap and more --
  * and nothing ever freed the first scene, whose tasks went on running every
- * frame. After 3-10 such restarts an allocation in the model set-up
+ * frame. In the 4th to 11th restart an allocation of the model code
  * (0x2B1F40, through the select's own update 0x1159AC -> 0x109320 ->
  * 0x2B81E0) came back NULL: the model code wrote its node into the null page,
- * 0x2DBBEC took a count of 0x02120420 from it and memset 138 MB from NULL --
- * the OPD page with the vblank handler's descriptor 0x4635A8 and the code
- * below 0x08481084 cleared (docs/DIRECTFIGHT.md "Select restarts").
+ * 0x2DBBEC took a count from there and memset 138 MB from NULL -- the OPD
+ * page with the vblank handler's descriptor 0x4635A8 and the code below
+ * 0x08481084 cleared (docs/DIRECTFIGHT.md "Select restarts").
  *
  * So the request is made to count: the driver writes it into the manager
  * itself, as 0x25D978 would for another mode (next = select, param 0). The
@@ -827,6 +825,8 @@ void select_restart(uint32_t f)
          "mode manager; no fight since the title)", f, g_restart_obj);
 }
 
+/* A reset has a fresh select screen: the pending "fight" (a new session)
+ * starts on it, else the game waits there. */
 void reset_done(uint32_t f)
 {
     if (g_pending_cmd && !g_cmd_rematch) start_session_fight(f);

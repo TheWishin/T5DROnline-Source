@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -2497,3 +2498,294 @@ def bo3_pair_cap(ctx):
               _set_of(a, mid2))
     ctx.check("both were told why", any(ev.get("code") == "pair_cap" for ev in a.events_of("notice", t)) and
               any(ev.get("code") == "pair_cap" for ev in b.events_of("notice", t)))
+
+
+# ============================================================================== 12. 1.1.2
+def _log_has_line(p, pattern):
+    rx = re.compile(pattern)
+    return next((ln for ln in log_lines(p) if rx.search(ln)), None)
+
+
+def _two_matches(ctx, a, b, label, rematches=1):
+    """A quick match and `rematches` rematches in the running games; every one confirmed and in sync."""
+    mid = queue_match(ctx, a, b, "quick")
+    rows = []
+    for k in range(rematches + 1):
+        if k:
+            mid = rematch(ctx, a, b)
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label + (f", rematch {k}" if k else ""))
+        fps_check(ctx, row, (a, b))
+        rows.append(row)
+    return rows
+
+
+@scenario("net_training_online", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="training overlay online (Settings: also online, own inputs) on one side only: the overlay reads "
+               "guest memory only, so the match stays in sync; a match and a rematch")
+def net_training_online(ctx):
+    if "training_online" not in core.DEFAULTS:
+        raise Skip("no training overlay setting in this launcher (training-overlay, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E TrainOn")
+    b = ctx.player("E2E TrainOff")
+    a.app.settings.update(training="frames", training_online=True)
+    b.app.settings.update(training="frames", training_online=False)
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    la, lb = _log_has_line(a, r"\[training\] overlay: .*online: own inputs"), _log_has_line(b, r"online: own inputs")
+    ctx.check("the overlay is on online in one game only", la is not None and lb is None,
+              f"{a.name}: {la!r}; {b.name}: {lb!r}")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "training overlay on one side")
+    fps_check(ctx, row, (a, b))
+    mid = rematch(ctx, a, b)
+    if wait_fight(ctx, mid, (a, b), timeout=150):
+        wait_results(ctx, mid, (a, b))
+        match_row(ctx, mid, (a, b), "confirmed", "training overlay on one side, rematch")
+
+
+@scenario("net_power_saving", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="power saving (PS3_LAPTOP=1: fewer worker threads, no spinning waits) on one side only, off on the "
+               "other: in sync, a match and a rematch")
+def net_power_saving(ctx):
+    if "power_saving" not in core.DEFAULTS:
+        raise Skip("no power saving setting in this launcher (laptop-power-saving, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Laptop")
+    b = ctx.player("E2E Desktop")
+    a.app.settings["power_saving"] = "on"
+    b.app.settings["power_saving"] = "off"
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    la = _log_has_line(a, r"\[sched\] power saving on \(PS3_LAPTOP=1")
+    lb = _log_has_line(b, r"\[sched\] power saving off \(PS3_LAPTOP=0")
+    ctx.check("power saving on in one game (PS3_LAPTOP=1), off in the other (PS3_LAPTOP=0)", la and lb,
+              f"{a.name}: {la!r}; {b.name}: {lb!r}")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "power saving on one side")
+    fps_check(ctx, row, (a, b))
+    mid = rematch(ctx, a, b)
+    if wait_fight(ctx, mid, (a, b), timeout=150):
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", "power saving on one side, rematch")
+        fps_check(ctx, row, (a, b))
+
+
+@scenario("friends_invite", "12 1.1.2", game=True, suites=("game",),
+          desc="friends on the Online tab: A asks B by account name, B accepts the request, A invites B to a casual "
+               "match, B declines once, then accepts with one click: a real match, confirmed")
+def friends_invite(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Fran", password="fran-pass-1")
+    b = ctx.player("E2E Finn", password="finn-pass-1")
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    if not hasattr(a.tab, "do_invite"):
+        raise Skip("no friends on this Online tab (social, 1.1.2)")
+    ctx.wait(lambda: a.tab._friends_ok() and b.tab._friends_ok(), 15, "the Friends page is on for both (accounts)")
+    a.tab.friend_name_var.set(b.name)
+    a.tab.do_add_friend()
+    ctx.wait(lambda: b.tab.tv_requests.exists(f"in:{a.name}"), 20, f"{b.name} sees {a.name}'s friend request")
+    b.tab.tv_requests.selection_set(f"in:{a.name}")
+    b.tab.do_friend_answer(True)
+    fid = f"f:{b.name}"
+    ctx.wait(lambda: a.tab.tv_friends.exists(fid) and (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok", 20,
+             f"{a.name} has {b.name} as a friend, online and free to invite")
+    ctx.check(f"{b.name} has {a.name} as a friend too", b.tab.tv_friends.exists(f"f:{a.name}"))
+    # an invite declined
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: b.bar_button("Decline") is not None, 20, f"{b.name} gets the invite (Accept / Decline in the bar)")
+    ctx.check("the invite names the friend", b.saw_status(re.escape(a.name) + r".*invites you to a casual match", t),
+              b.status_text())
+    b.click("Decline")
+    ctx.wait(lambda: any(e.get("state") == "declined" for e in a.events_of("invite_update", t)), 15,
+             f"{a.name} hears the decline")
+    ctx.check("no match from a declined invite", not a.events_of("match_found", t) and not b.events_of("match_found", t))
+    # an invite accepted: one click starts the casual match
+    ctx.wait(lambda: (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok" and a.tab.outgoing_invite is None, 15,
+             f"{a.name} can invite again")
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: b.bar_button("Accept") is not None, 20, f"{b.name} gets the second invite")
+    b.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 40,
+                    "the accepted invite starts the match on both PCs (no ready check)"):
+        raise Abort("no match from the invite")
+    mid = latest(a, "match_start", t)["match"]
+    ctx.check("a casual match", not a.matches[mid].get("ranked"), a.matches[mid].get("ranked"))
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "invited match")
+    fps_check(ctx, row, (a, b))
+
+
+@scenario("region_matchmaking", "12 1.1.2", suites=("lobby", "net"),
+          desc="region first: two relay nodes (fake relays.json) behind simulated round trips; West1 is paired with "
+               "West2 (est. ~50 ms) although Far (~220 ms) searched first; Far gets West1 only once the ping window "
+               "has grown (80 ms + 20 ms/s)")
+def region_matchmaking(ctx):
+    rtt = {"main": (150, 150, 150), "usw": (20, 30, 200), "usc": (60, 70, 180)}
+    _regional_world(ctx, real=False, rtt=rtt)
+    w1 = ctx.player("E2E West1", kind="stub", env={"T5_STUB_SECONDS": 4})
+    w2 = ctx.player("E2E West2", kind="stub", env={"T5_STUB_SECONDS": 4})
+    far = ctx.player("E2E Far", kind="stub", env={"T5_STUB_SECONDS": 4})
+    for i, p in enumerate((w1, w2, far)):
+        _routed(ctx, p, i)
+        login(ctx, p)
+    ctx.wait(lambda: all(len(p.client.relay_rtts or {}) >= 2 for p in (w1, w2, far)), 20, "all three measured both relays")
+    ctx.note(f"measured relay round trips: { {p.name: p.client.relay_rtts for p in (w1, w2, far)} }")
+    t0 = time.time()
+    far.press("quick")
+    ctx.sleep(0.5)
+    w1.press("quick")
+    ctx.sleep(2.0)
+    w2.press("quick")
+    mid = found_both(ctx, w1, w2, t0, 20)
+    ping = (latest(w1, "match_found", t0) or {}).get("ping")
+    ctx.check("West1 is paired with West2 (near), not with Far who searched first", not latest(far, "match_found", t0),
+              f"estimated ping {ping}")
+    ctx.check("the near pair's estimate is the best relay path (~50 ms)", ping is not None and 30 <= float(ping) <= 100,
+              ping)
+    for p in (w1, w2):
+        accept(ctx, p, mid)
+    started_both(ctx, w1, w2, mid)
+    wait_results(ctx, mid, (w1, w2), timeout=STUB_MATCH_SECONDS + 30)
+    ctx.check("near match confirmed", [p.matches[mid].get("status") for p in (w1, w2)] == ["confirmed", "confirmed"])
+    for p in (w1, w2):
+        leave(ctx, p)
+    ctx.wait(lambda: w1.action_on("quick"), 30, "West1 free again")
+    ctx.check("Far is still searching (nobody near)", not latest(far, "match_found", t0))
+    t1 = time.time()
+    w1.press("quick")
+    mid2 = found_both(ctx, w1, far, t1, 45)
+    waited = (min(ts for ts, e in w1.events if e.get("t") == "match_found" and ts >= t1) - t1)
+    ping2 = (latest(w1, "match_found", t1) or {}).get("ping")
+    ctx.check("Far gets West1 once the window has grown to its ~220 ms (about 7 s, not at once, not never)",
+              4.0 <= waited <= 20.0, f"after {waited:.1f} s, estimated ping {ping2}")
+    ctx.check("the far pair's estimate is ~220 ms", ping2 is not None and 160 <= float(ping2) <= 300, ping2)
+    for p in (w1, far):
+        accept(ctx, p, mid2)
+    started_both(ctx, w1, far, mid2)
+    wait_results(ctx, mid2, (w1, far), timeout=STUB_MATCH_SECONDS + 30)
+    ctx.check("far match confirmed", [p.matches[mid2].get("status") for p in (w1, far)] == ["confirmed", "confirmed"])
+
+
+@scenario("old_client_111", "12 1.1.2", game=True, suites=("game",),
+          desc="the real 1.1.1 Online tab, client and match driver (git tag v1.1.1) on the 1.1.2 lobby: two 1.1.1 "
+               "launchers play a match and a rematch, then a 1.1.1 launcher plays a 1.1.2 one (same game build)")
+def old_client_111(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Old111a", lobby="v1.1.1")
+    b = ctx.player("E2E Old111b", lobby="v1.1.1")
+    login(ctx, a)
+    login(ctx, b)
+    ctx.check("both run the 1.1.1 lobby code", all(type(p.client).__module__.startswith("t5lobby_v111") for p in (a, b)),
+              [type(p.client).__module__ for p in (a, b)])
+    _two_matches(ctx, a, b, "1.1.1 + 1.1.1")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick"), 30, "the 1.1.1 player is free again")
+    c = ctx.player("E2E New112")
+    login(ctx, c)
+    mid = queue_match(ctx, a, c, "quick")
+    if not wait_fight(ctx, mid, (a, c), timeout=150):
+        raise Abort("no fight")
+    wait_results(ctx, mid, (a, c))
+    row = match_row(ctx, mid, (a, c), "confirmed", "1.1.1 + 1.1.2")
+    fps_check(ctx, row, (a, c))
+
+
+def _stray_packets(seed):
+    """Packets a stranger might send to a game's port before the match starts (netplay hardening, 1.1.2)."""
+    import random
+    import struct
+    r = random.Random(seed)
+
+    def hdr(kind, ver=3):
+        return struct.pack("<IBBBBII", 0x504E3554, kind, ver, 2, 0, r.getrandbits(32), r.getrandbits(32))
+    return [
+        ("foreign-version HELLO, 6 bytes (ended the session before 1.1.2)", b"T5NP" + bytes([1, 2])),
+        ("foreign-version HELLO, full header", hdr(1, ver=2) + bytes(12)),
+        ("HELLO from a stranger", hdr(1) + bytes(12)),
+        ("BYE from a stranger", hdr(3)),
+        ("REJECT from a stranger", hdr(5)),
+        ("PING from a stranger", hdr(4) + bytes(24)),
+        ("garbage", bytes(r.getrandbits(8) for _ in range(64))),
+        ("empty", b""),
+        ("1400 bytes", b"T5NP" + bytes(1396)),
+    ]
+
+
+@scenario("net_stray_packets", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="netplay hardening: strangers' packets to both games' ports until FIGHT START (a 6-byte foreign HELLO, "
+               "HELLO/BYE/REJECT/PING from a stranger, garbage), and copies of the opponent's packets played back from "
+               "another address all match long: the match goes on, in sync")
+def net_stray_packets(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Stray1")
+    b = ctx.player("E2E Stray2")
+    login(ctx, a)
+    login(ctx, b)
+    ctx.shaper.set(40, 0, 0)
+    ctx.shaper.replay = 9
+    stats0 = ctx.shaper.stats()
+    pkts = _stray_packets(ctx.run.seed)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sent = {"n": 0, "last": 0.0}
+    try:
+        mid = queue_match(ctx, a, b, "quick")
+        ports = [getattr(getattr(p.tab.driver, "ticket", None), "local_port", None) for p in (a, b)]
+        ctx.note(f"game ports {ports}; stray packets from {sock.getsockname()}: {[n for n, _d in pkts]}")
+
+        def spray():
+            now = time.time()
+            if now - sent["last"] >= 0.25:
+                sent["last"] = now
+                for port in ports:
+                    if port:
+                        for _n, data in pkts:
+                            try:
+                                sock.sendto(data, ("127.0.0.1", int(port)))
+                                sent["n"] += 1
+                            except OSError:
+                                pass
+            return all(fight_started(p, mid) for p in (a, b))
+        ok = ctx.wait(spray, 150, f"{mid}: FIGHT START on both PCs, strangers' packets arriving until then")
+        ctx.note(f"{sent['n']} stray packets sent before FIGHT START")
+        if not ok:
+            raise Abort("no fight")
+    finally:
+        sock.close()
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "stray packets before start, replayed packets")
+    fps_check(ctx, row, (a, b))
+    for p in (a, b):
+        seg = p.log_segment(mid)
+        ign = next((ln for ln in seg if "ignored (not the opponent's)" in ln), None)
+        bad = next((ln for ln in seg if re.search(r"build_mismatch|peer lost|cannot connect|rejected", ln)), None)
+        ctx.check(f"{p.name}'s game ignored the foreign HELLO (it arrived: the log says so)", ign is not None,
+                  (ign or "no 'ignored (not the opponent's)' line").strip()[:200])
+        ctx.check(f"{p.name}'s game: no build_mismatch / peer lost / reject", bad is None, (bad or "").strip()[:200])
+    st = ctx.shaper.stats(stats0)
+    dropped = sum(1 for p in (a, b) for ln in p.log_segment(mid) if "old packet of the opponent's" in ln)
+    ctx.check("the games never answered the replayed copies' address (no session moved there)",
+              st["replayed"] > 50 and st["to_replayer"] == 0, f"proxy {st}; 'old packet ... dropped' lines {dropped}")
+    ctx.shaper.replay = 0

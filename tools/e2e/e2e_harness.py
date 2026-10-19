@@ -218,10 +218,11 @@ class Proxy:
         self.real = {"a": ("127.0.0.1", a_port), "b": ("127.0.0.1", b_port)}
         self.sa = self._sock()
         self.sb = self._sock()
+        self.sr = self._sock()          # shaper.replay: copies of real packets come from here (another address)
         self.ports = {a_port: self.sa.getsockname()[1], b_port: self.sb.getsockname()[1]}
         self.queue = []
         self.seq = 0
-        self.stats = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0}
+        self.stats = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0, "replayed": 0, "to_replayer": 0}
         self.rnd = random.Random(a_port * 7919 + b_port)
         self.stop = False
         self.thread = threading.Thread(target=self._loop, daemon=True, name=f"proxy {a_port}<->{b_port}")
@@ -262,9 +263,15 @@ class Proxy:
         self.seq += 1
         heapq.heappush(self.queue, item)
         self.stats[direction] += 1
+        if sh.replay and self.seq % sh.replay == 0:
+            # a recorded packet of the opponent's played back from another address 40 ms later (netplay
+            # hardening, 1.1.2: the game must not follow the opponent there while the real address is alive)
+            heapq.heappush(self.queue, (due + 0.04, self.seq, self.sr, data, item[4]))
+            self.seq += 1
+            self.stats["replayed"] += 1
 
     def _loop(self):
-        socks = [self.sa, self.sb]
+        socks = [self.sa, self.sb, self.sr]
         while not self.stop:
             now = time.perf_counter()
             while self.queue and self.queue[0][0] <= now:
@@ -286,13 +293,16 @@ class Proxy:
                         break
                     except OSError:
                         break
+                    if s is self.sr:
+                        self.stats["to_replayer"] += 1     # a game answered the replayer: it followed the copy
+                        continue
                     # A sends to sb (B's stand-in) -> a2b; B sends to sa -> b2a
                     self._take(data, "a2b" if s is self.sb else "b2a")
 
     def close(self):
         self.stop = True
         self.thread.join(2)
-        for s in (self.sa, self.sb):
+        for s in (self.sa, self.sb, self.sr):
             try:
                 s.close()
             except OSError:
@@ -378,13 +388,14 @@ class RelayNodes:
                 pass
 
     def routes(self, index):
-        """Delay proxies for player `index` (0 = A, 1 = B): {relay id: proxy address}."""
+        """Delay proxies for player `index` (0 = A, 1 = B, ... as many as the rtt tuples have): {relay id: proxy
+        address}."""
         relay_e2e = relay_tool()
         targets = {"main": ("127.0.0.1", self.ctx.server.udp),
                    **{rid: ("127.0.0.1", n["udp"]) for rid, n in self.nodes.items()}}
         out = {}
         for rid, target in targets.items():
-            px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'AB'[index]}")
+            px = relay_e2e.UdpDelay(target, self.rtt[rid][index], f"{rid}/{'ABCDEFGH'[index]}")
             px.start()
             self.proxies.append(px)
             out[rid] = tuple(px.addr)
@@ -439,6 +450,7 @@ class Shaper:
         self.jitter = 0.0
         self.loss = 0.0
         self.cut = False
+        self.replay = 0                 # every n-th packet also played back from another address (0: off)
         self.proxies = {}
         self.build_override = {}     # player name -> T5_NET_BUILD to hand that player's game (mismatch tests)
 
@@ -472,7 +484,7 @@ class Shaper:
 
     def stats(self, since=None):
         """Packets through the proxies (and dropped / cut), minus a former stats() result `since`."""
-        out = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0}
+        out = {"a2b": 0, "b2a": 0, "dropped": 0, "cut": 0, "replayed": 0, "to_replayer": 0}
         for px in self.proxies.values():
             for k in out:
                 out[k] += px.stats[k]

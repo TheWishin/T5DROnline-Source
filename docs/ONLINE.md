@@ -774,15 +774,36 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 
 ## Languages
 
-The launcher and the Online tab speak English and German (Settings -> Language; Auto follows Windows).
-`lobby/t5lobby/i18n.py` has the lookup: `t("English text", name=value)`; the English text is the key, the German
-catalog is `i18n_de.py`. The lobby server stays English and sends English: its error texts, notices and kick
-reasons carry a `code` or a fixed sentence, and the client puts the sentences it knows into German
+The launcher and the Online tab speak English, German, Spanish, Korean, Japanese, Brazilian Portuguese and
+French (Settings -> Language, each listed in its own name: English, Deutsch, Español, 한국어, 日本語, Português
+(Brasil), Français). Auto follows Windows' user interface language when the launcher has it (any Spanish,
+French or German Windows; any Portuguese one gets Brazilian Portuguese), else English; `T5_LANG=<code>`
+overrides it for development.
+
+`lobby/t5lobby/i18n.py` has the lookup: `t("English text", name=value)`; the English text is the key. One
+catalog per language with the same keys: `i18n_de.py`, `i18n_es.py`, `i18n_ko.py`, `i18n_ja.py`,
+`i18n_pt_br.py`, `i18n_fr.py`. Names players know from the game and the lobby stay as they are in every
+language: Quick Match, Ranked, BUILD GAME, Rematch, Rollback, the character and rank names. Numbers use a
+decimal comma in German, Portuguese and French. Korean and Japanese use a Windows font with their glyphs
+(Malgun Gothic; Yu Gothic UI, else Meiryo UI / Meiryo / MS UI Gothic) instead of Segoe UI and Bahnschrift,
+which have none: Tk's own fallback would draw kanji in a Chinese font.
+
+**The Spanish, Korean, Japanese, Brazilian Portuguese and French texts are machine-assisted translations and
+have not been read by native speakers yet. Corrections are welcome:** an issue with the text as shown and what
+it should say, or a change to the catalog (`lobby/t5lobby/i18n_<lang>.py`, keep the `{placeholders}`).
+
+The lobby server stays English and sends English: its error texts, notices and kick reasons carry a `code`
+or a fixed sentence, and the client puts the sentences it knows into the player's language
 (`i18n.translate_message`, the list is `i18n_known.py`; an unknown sentence is shown as it came). The lag
 check is built on the client from the numbers in the `lag_check` event (`lag.describe_event`), not from its
-`text`. A new server message, client error or build-tool error needs an entry in `i18n_known.py` and a
-German text; `python tools/i18n_extract.py` lists what is missing and `tests/test_i18n.py` fails until it
-is there.
+`text`. A new text, server message, client error or build-tool error needs an entry in every catalog (and
+the messages one in `i18n_known.py`): `python tools/i18n_extract.py` lists what is missing (`--skeleton
+--lang ko` prints the lines to paste) and `tests/test_i18n.py` fails until it is there.
+
+Long texts: `tests/test_i18n.py` builds the launcher, every screen of the Online tab and the Controls, report
+and update windows in each language at 100 % and 150 % display scaling (windows withdrawn, nothing on
+screen) and fails for a text cut off where English is not (`python tests/i18n_layout.py [lang]` prints the
+list). Labels that can be long in other languages wrap or get room for every language.
 
 ## What is left
 

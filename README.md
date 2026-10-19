@@ -16,6 +16,9 @@ Found a bug? Please report it (see "Bug reports" below).
 
 Deutsch: `docs\README.de.md` in this folder.
 
+**Languages:** the launcher speaks English, Deutsch, Español, 한국어, 日本語, Português (Brasil)
+and Français (**Settings** -> **Language**).
+
 ## What is this?
 
 - The PS3 game's program is translated to C++ ahead of time (static
@@ -121,10 +124,15 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 
 ## Playing
 
-- The launcher speaks English or German (Deutsch). **Settings** -> **Language**:
-  Auto follows the language of Windows. A change applies when the launcher
-  starts again (the **Restart now** button does that). The game itself stays
-  in English.
+- The launcher speaks English, German (Deutsch), Spanish (Español), Korean
+  (한국어), Japanese (日本語), Brazilian Portuguese (Português (Brasil)) and
+  French (Français). **Settings** -> **Language** lists each in its own name;
+  Auto follows the language of Windows (English when Windows uses another
+  language). A change applies when the launcher starts again (the **Restart
+  now** button does that). The game itself stays in English. The Spanish,
+  Korean, Japanese, Portuguese and French texts were translated with machine
+  help: if something reads wrong, please tell us (see "Bug reports") --
+  corrections are welcome.
 - The game opens in its own window and scales its picture to the window.
   **Settings** has window sizes, maximized, borderless fullscreen and mute.
 - **Settings** -> **Internal resolution** sets how sharp the picture is, like

@@ -5,6 +5,14 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
+### Launcher
+- **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français,
+  besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
+  Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
+  a font made for them. The new translations were made with machine help: corrections from players
+  are welcome. The Settings tab and the Controls window got room for the longer texts (at 100 % and
+  150 % display scaling).
+
 ### Online
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
   two of you can get, through the nearest relay server: two players in California see about

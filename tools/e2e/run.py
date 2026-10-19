@@ -119,7 +119,8 @@ def write_report(run, results, a, t0):
     L = [f"# End-to-end report ({datetime.datetime.now():%Y-%m-%d %H:%M})", "",
          f"- tree: `{harness.ROOT}` ({_git_head()}), game: `{run.exe or 'none'}`, rounds per match {run.rounds}, "
          f"netcode {getattr(run, 'netcode', 'rollback')}"
-         + (f", every real match on stage {run.stage} (--stage)" if getattr(run, "stage", None) else ""),
+         + (f", every real match on stage {run.stage} (--stage)" if getattr(run, "stage", None) else "")
+         + (", replays played back (--replays)" if getattr(run, "replays", False) else ""),
          f"- suite `{a.suite}`" + (f", only `{a.only}`" if a.only else "") + f", repeat {a.repeat}, "
          f"{(time.time() - t0) / 60:.0f} min",
          f"- other load while running: {results[-1]['contention'] if results else '-'} (fps checks only warn then)", "",
@@ -186,6 +187,9 @@ def main():
                     help="lockstep: every real game runs with T5_RB_MODE=off (the scenarios that pick their own netcode "
                          "skip or keep theirs)")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--replays", action="store_true",
+                    help="play every real-game scenario's recorded sessions back (tools/replay_play.py): each must be "
+                         "identical to its live match")
     ap.add_argument("--stage", default=None,
                     help="stage key (e.g. s27): every real match is fought there -- both launchers hand it to their "
                          "game instead of the lobby's pick")
@@ -204,7 +208,7 @@ def main():
     out = a.out or os.path.join(harness.ROOT, "build", "e2e", "runs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     harness.below_normal_priority()
     run = Run(out, exe if any(s.game for s in sel) or exe else None, harness.find_game_root(), seed=a.seed,
-              rounds=a.rounds, short=a.short, netcode=a.netcode, stage=a.stage)
+              rounds=a.rounds, short=a.short, netcode=a.netcode, stage=a.stage, replays=a.replays)
     run.stage_bin()
     run.tk_root()
     log(f"e2e run {out}: {len(sel)} scenario(s) x {a.repeat}, exe {run.exe}, game root {run.game_root}")

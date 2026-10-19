@@ -769,7 +769,7 @@ class Player:
         """run.py --stage: this launcher hands its game that stage instead of the lobby's pick -- the same rewrite
         on both sides (in place, before the driver sees the event), so both games load the same stage; the lobby
         never checks it."""
-        stage = getattr(self.ctx.run, "stage", None)
+        stage = getattr(self.ctx, "force_stage", None) or getattr(self.ctx.run, "stage", None)
         if stage and self.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict)                 and ev["fight"].get("stage") != stage:
             ev["fight"] = dict(ev["fight"], stage=stage, lobby_stage=ev["fight"].get("stage"))
 
@@ -1062,8 +1062,10 @@ class Abort(Exception):
 class Run:
     current = None
 
-    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback", stage=None):
+    def __init__(self, out, exe, game_root, seed=1, rounds=1, short=False, netcode="rollback", stage=None,
+                 replays=False):
         self.stage = stage           # run.py --stage: every real match fought on this stage (both launchers)
+        self.replays = replays       # run.py --replays: every scenario's recorded sessions played back (Ctx.close)
         self.out = os.path.abspath(out)
         os.makedirs(self.out, exist_ok=True)
         self.exe = exe
@@ -1335,6 +1337,52 @@ class Ctx:
         self.evidence.append(str(text))
         log(f"[{self.name}] {text}")
 
+    def check_replays(self, parallel=2, per_file=600):
+        """run.py --replays: the sessions this scenario's real games recorded (<out>/replays, docs/REPLAYS.md) played
+        back by tools/replay_play.py with this run's game; every one must be identical to the live match (each
+        recorded state hash and result)."""
+        files = []
+        for p in self.players:
+            if p.kind != "real":
+                continue
+            d = os.path.join(p.out, "replays")
+            try:
+                names = sorted(os.listdir(d))
+            except OSError:
+                names = []
+            files += [os.path.join(d, n) for n in names if n.endswith(".t5replay")
+                      and os.path.getmtime(os.path.join(d, n)) >= self.t0 - 5]
+        real = [m for m in self.matches if any(isinstance(v, dict) and "result_file" in v for v in m.values())]
+        if not files:
+            self.check("replays: this scenario's online sessions were recorded", not real,
+                       f"no .t5replay file, {len(real)} real match(es) played")
+            return
+        exe = os.path.join(self.run.bin, "t5dr.exe")
+        exe = exe if os.path.isfile(exe) else self.run.exe
+        out = os.path.join(self.dir, "replay_play")
+        cmd = [sys.executable, os.path.join(TOOLS, "replay_play.py"), "--exe", exe,
+               "--vfs", os.path.join(self.run.game_root, "game", "vfs"), "--out", out,
+               "--parallel", str(parallel), "--timeout", str(per_file)] + files
+        logf = os.path.join(self.dir, "replay_play.log")
+        t0 = time.time()
+        limit = per_file * ((len(files) + parallel - 1) // parallel) + 120
+        with open(logf, "w", encoding="utf-8") as lf:
+            pr = subprocess.Popen(cmd, cwd=ROOT, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                  creationflags=core.CREATE_NO_WINDOW if IS_WIN else 0)
+            Run.current.own(pr)
+            while pr.poll() is None and time.time() - t0 < limit:
+                self.pump(1.0)
+            if pr.poll() is None:
+                pr.kill()
+        text = open(logf, encoding="utf-8", errors="replace").read()
+        lines = [ln for ln in text.splitlines() if re.match(r"\[\d+\] ", ln)]
+        for ln in lines:
+            self.check(f"replay {ln.split(':', 1)[0]} identical to the live match", "-- IDENTICAL" in ln, ln[:300])
+        summary = next((ln for ln in text.splitlines() if "replays identical to the live match" in ln), "")
+        self.check(f"replays: {len(files)} session(s) played back, all identical",
+                   pr.returncode == 0 and len(lines) == len(files), summary or f"exit {pr.returncode}, see {logf}")
+        self.note(f"replays: {summary} in {time.time() - t0:.0f} s ({logf})")
+
     def failed(self):
         return any(not ok and lvl == "fail" for _n, ok, _d, lvl in self.checks)
 
@@ -1356,6 +1404,11 @@ class Ctx:
         dlg = [d for d in getattr(self.run, "dialogs", []) if d[0] >= self.t0]
         if dlg:
             self.note(f"dialogs the code tried to show (answered by the runner): {[(k, a) for _t, k, a, _kw in dlg]}")
+        if getattr(self.run, "replays", False) and self.game and self.players:
+            try:
+                self.check_replays()
+            except Exception as e:     # noqa: BLE001
+                self.check("replays played back", False, f"{type(e).__name__}: {e}")
         self.shaper.close()
         if self.relays is not None:
             self.relays.close()

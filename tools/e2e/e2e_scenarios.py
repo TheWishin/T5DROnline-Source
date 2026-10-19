@@ -2790,3 +2790,69 @@ def net_stray_packets(ctx):
     ctx.check("the games never answered the replayed copies' address (no session moved there)",
               st["replayed"] > 50 and st["to_replayer"] == 0, f"proxy {st}; 'old packet ... dropped' lines {dropped}")
     ctx.shaper.replay = 0
+
+
+@scenario("net_unlocks_one_side", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="Settings -> Unlocks (Tekken 5 stages, free items) on one side only: online both games answer as a "
+               "fresh save (patch 0044, gamedata-online), so the match and two rematches stay in sync")
+def net_unlocks_one_side(ctx):
+    if "unlock_stages" not in core.DEFAULTS:
+        raise Skip("no unlock settings in this launcher (unlock-stages, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Unlocked")
+    b = ctx.player("E2E Plain")
+    a.app.settings.update(unlock_stages=True, unlock_items=True)
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "unlocks on one side", rematches=2)
+    la = _log_has_line(a, r"unlock: online game -- unlocks as on a fresh save.* and the unlock settings")
+    lb = _log_has_line(b, r"unlock: online game -- unlocks as on a fresh save")
+    ctx.check("online, both games use the fresh save's unlocks (the unlocked side says it ignores its settings)",
+              la is not None and lb is not None and "unlock settings" not in lb,
+              f"{a.name}: {(la or '').strip()[:160]!r}; {b.name}: {(lb or '').strip()[:160]!r}")
+    ctx.note(f"stages fought: {[(r.get('fight') or {}).get('stage') for r in rows]}")
+
+
+@scenario("old_stages_match", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="a lobby with T5L_OLD_STAGES=1: the stage pool has the 15 Tekken 5 stages too; matches until one "
+               "lands on a Tekken 5 stage by the lobby's own draw (forced if six do not), played in sync")
+def old_stages_match(ctx):
+    from t5lobby import fighters
+    t5 = [s["key"] for s in fighters.table().stages if s.get("t5")]
+    if not t5:
+        raise Skip("no Tekken 5 stages in this tree (unlock-stages, 1.1.2)")
+    game_server(ctx, T5L_OLD_STAGES=1)
+    a = ctx.player("E2E OldSt1")
+    b = ctx.player("E2E OldSt2")
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    drawn, k = [], 0
+    while True:
+        if k:
+            mid = rematch(ctx, a, b)
+        stage = (a.matches[mid].get("fight") or {}).get("stage")
+        drawn.append(stage)
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", f"old stages on, match {k + 1} ({stage})")
+        fps_check(ctx, row, (a, b))
+        if stage in t5:
+            seg = a.log_segment(mid)
+            ln = next((x for x in seg if "FIGHT START" in x and mid in x), "")
+            ctx.check(f"a Tekken 5 stage drawn by the lobby ({stage}) and fought", bool(ln), ln.strip()[:200])
+            break
+        k += 1
+        if k >= 6:
+            ctx.note(f"six draws without a Tekken 5 stage ({drawn}): the next match is forced onto {t5[0]}")
+            ctx.force_stage = t5[0]
+            mid = rematch(ctx, a, b)
+            if wait_fight(ctx, mid, (a, b), timeout=150):
+                wait_results(ctx, mid, (a, b))
+                match_row(ctx, mid, (a, b), "confirmed", f"old stages, forced {t5[0]}")
+            ctx.force_stage = None
+            break
+    ctx.note(f"stages the lobby drew: {drawn}")

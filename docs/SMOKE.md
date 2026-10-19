@@ -291,7 +291,14 @@ mixed pair, and 1.1.1's relay bridge: a match that starts on the relay because
 the punch was blocked moves onto the direct path at the match's start + 35 s
 while the fight runs, `net_relay_upgrade` with real games and
 `relay_upgrade_stub` with stub games plus a 1.1.0-style client that stays on
-the relay), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
+the relay; regional relays: two relay-only nodes (`run.py relay`) next to the
+lobby server and a UDP delay proxy per player and relay, the lobby must pick
+the node with the smallest round-trip sum and fall back to the next one when
+it stops -- `relay_regional` with real games, `relay_regional_stub`, and
+`relay_e2e_tool` / `relay_e2e_tool_game` run `lobby/tools/relay_e2e.py` as
+it is; `relay_old_client` plays the real 1.1.0 Online tab, client and match
+driver from the git tag `v1.1.0` against 1.1.1 on the lobby server's own
+relay; `net_vsync_off`: VSync off in one game of the match, in sync), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
 = disconnect, a game restarted between matches, another build refused),
 launcher extras (Report a problem without names/IPs/tokens, the update check
 against mocked GitHub answers, settings that survive a restart), the in-game

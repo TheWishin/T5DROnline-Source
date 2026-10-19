@@ -30,6 +30,26 @@ START, scripted picks are what was asked for (a timeout is the line's character)
 "PICK MISMATCH", both results the same winner and state hash with 0 mismatching frames.
 Exit code 0 = every match OK. Every game is killed at the end; the games run minimized, muted
 (PS3_AUDIO_MUTE=1) and at below-normal priority.
+
+Select restarts (docs/DIRECTFIGHT.md "Select restarts"; persistent flow only):
+
+  --aborts N        before match 1, N sessions in a row that end at the select screen
+                    without a fight -- an opponent who leaves during the pick, a match
+                    the lobby cancels: "fight" (new session, pick=N line), the pickers
+                    move the cursor, pick or do nothing, then after 0.4-4 s the session
+                    ends: both launchers say "idle", or only one game's (the other one's
+                    session ends by the peer's BYE; its launcher's "idle" follows),
+                    in turn (--abort-how both|host|join|mix). Each game then restarts
+                    its select screen (no fight since the title: no title visit). Checked
+                    per abort: both games back at neutral, one more "select screen
+                    restarted" in each log, no NULL access / bad guest call / crash /
+                    stuck line. Then the matches run as usual (fights, rematches, sync).
+  --abort-plan K:N,...  N aborts after match K as well (0 = before match 1, like --aborts)
+  --offline         one game, no netplay: the aborts and matches offline (P1 picks with
+                    the pad script, P2 keeps the line's character; the result file must
+                    name a winner). With --env T5_DF_SELECT_RESTART=inplace the driver
+                    restarts the select screen the old way: that broke the game after
+                    the 4th-11th restart, and these checks catch it.
 """
 import argparse
 import json
@@ -43,6 +63,23 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T0 = time.time()
+
+# A game in the state the old select restart left it in (and other faults the aborts must not cause).
+BAD = [
+    ("bad_guest_call", re.compile(r"guest_call: OPD .* not registered")),
+    ("null_call", re.compile(r"\[null-call\]")),
+    ("null_write", re.compile(r"\[null-write\]")),
+    ("null_read", re.compile(r"\[null-read\]")),
+    ("fence_overflow", re.compile(r"fence queue overflow")),
+    ("crash", re.compile(r"\[CRASH\]")),
+    ("abort", re.compile(r"abort\(\) is called")),
+    ("reset_stuck", re.compile(r"reset: waiting in mode")),
+    ("stuck_exit", re.compile(r"STUCK:")),
+]
+
+
+def bad_lines(text):
+    return [name for name, rx in BAD if rx.search(text)]
 
 CODES = ["pau", "law", "lei", "kin", "yos", "nin", "hwo", "xia", "cha", "jin", "jul", "kum",
          "pan", "bry", "hei", "kaz", "lee", "ste", "mar", "mok", "edd", "jac", "rog", "ann",
@@ -197,6 +234,9 @@ class Game:
         os.makedirs(self.ctl, exist_ok=True)
         write_atomic(os.path.join(self.ctl, "cmd.json"), json.dumps(dict(kw, seq=self.seq, cmd=cmd, time=time.time())))
 
+    def ctl_state(self):
+        return read_json(os.path.join(self.ctl, "state.json")) or {}
+
     def log_size(self):
         try:
             return os.path.getsize(self.log_path)
@@ -286,6 +326,9 @@ class Picker(threading.Thread):
 
 def session_env(a, k, match, game, port0):
     seed = 1000 + 7919 * k
+    if getattr(a, "offline", False):      # no netplay: the driver writes the result file itself
+        return {"T5_NET_ROUNDS": str(a.rounds), "T5_NET_RESULT_FILE": game.result_path, "T5_DF_STATUS_FILE": game.status_path,
+                "T5_HUD_NAMES": "Tester One|Tester Two", "T5_HUD_RANKS": f"{(k * 3) % 37},{(k * 5) % 37}"}
     env = {
         "T5_NET_MODE": game.role, "T5_NET_DELAY": str(a.delay), "T5_NET_TIMEOUT": "20", "T5_NET_MATCH": match,
         "T5_NET_ROUNDS": str(a.rounds), "T5_NET_PATH": "lan", "T5_NET_RTT_MS": "1", "T5_NET_SEED": str(seed),
@@ -313,6 +356,120 @@ def expected(spec, line_char):
     if c == 11 and m.group(2) in ("lk", "rk"):
         c = 12
     return NAMES[c], BUTTONS[m.group(2)][1]
+
+
+class AbortPicker(threading.Thread):
+    """One player during a session that will be aborted: moves the cursor a few cells (the preview
+    models load), maybe confirms, or does nothing -- until `stop` is set."""
+
+    def __init__(self, game, stop, rnd, may_pick):
+        super().__init__(daemon=True)
+        self.g, self.stop, self.rnd = game, stop, rnd
+        self.what = rnd.choice(["none", "move", "move", "pick"] if may_pick else ["none", "move", "move"])
+        self.did = "none"
+
+    def run(self):
+        try:
+            if self.what == "none":
+                return
+            for _ in range(self.rnd.randint(1, 6)):
+                if self.stop.is_set():
+                    return
+                self.g.press(self.rnd.choice(["LEFT", "RIGHT", "UP", "DOWN"]), 0.08, self.rnd.uniform(0.1, 0.4))
+                self.did = "move"
+            if self.what == "pick" and not self.stop.is_set():
+                self.g.press(self.rnd.choice(["SQUARE", "TRIANGLE", "CROSS", "CIRCLE"]), 0.1, 0.3)
+                self.did = "pick"
+        except Exception as e:     # noqa: BLE001 -- the abort goes on
+            self.did = f"failed: {e!r}"
+
+
+RE_LIVE = re.compile(r"in-game select: the select screen is live")
+RE_RESTARTED = re.compile(r"select screen restarted")
+
+
+def run_aborts(a, games, n, first_i, rnd, report):
+    """n sessions that end at the select screen (see --aborts). False on the first failure."""
+    hows = {"mix": ["both", "host", "join"], "both": ["both"], "host": ["host"], "join": ["join"]}[a.abort_how]
+    if len(games) == 1:
+        hows = ["both"]
+    chars = a.chars.split(",")
+    for i in range(first_i, first_i + n):
+        k = 1000 + i
+        mid = f"a{i:03d}"
+        port = a.port + 2000 + 4 * (i % 400)
+        line = f"{chars[(2 * i) % len(chars)]},{chars[(2 * i + 1) % len(chars)]},{20 + i % 10},{a.rounds} pick={a.pick_seconds}"
+        how = hows[i % len(hows)]
+        pos = {g.idx: g.log_size() for g in games}
+        t0 = time.time()
+        for g in games:
+            g.send("fight", match=mid, env=dict(session_env(a, k, mid, g, port), T5_FIGHT=line))
+        ab = {"i": i, "match": mid, "line": line, "how": how}
+        # the select screen live on every game (its in-game select waits for this PC's player)
+        t_end = time.time() + 60
+        while time.time() < t_end and not all(RE_LIVE.search(g.log_since(pos[g.idx])) for g in games):
+            if not all(g.running() for g in games) or any(bad_lines(g.log_since(pos[g.idx])) for g in games):
+                break
+            time.sleep(0.1)
+        live = all(RE_LIVE.search(g.log_since(pos[g.idx])) for g in games)
+        stop = threading.Event()
+        # one side at most confirms its pick (offline none: P2 would follow at once): the fight never starts
+        picker_side = rnd.randrange(len(games)) if len(games) > 1 else -1
+        pickers = [AbortPicker(g, stop, rnd, j == picker_side) for j, g in enumerate(games)] if live else []
+        for pk in pickers:
+            pk.start()
+        time.sleep(rnd.uniform(0.4, 4.0) if live else 0)
+        stop.set()
+        for pk in pickers:
+            pk.join(5)
+        for g in games:
+            g.pad("")
+        # the session ends: both launchers leave, or one game's -- the other's session ends by its BYE
+        if how == "both":
+            order = list(games)
+            rnd.shuffle(order)
+            for g in order:
+                g.send("idle")
+                time.sleep(rnd.uniform(0.0, 0.5))
+        else:
+            leaver = games[0] if how == "host" else games[1]
+            leaver.send("idle")
+            time.sleep(rnd.uniform(1.0, 2.5))
+            for g in games:
+                if g is not leaver:
+                    g.send("idle")
+        # back at neutral, each select screen restarted once more, no fault
+        t_end = time.time() + 45
+        back = False
+        while time.time() < t_end:
+            if not all(g.running() for g in games):
+                break
+            texts = {g.idx: g.log_since(pos[g.idx]) for g in games}
+            if any(bad_lines(t) for t in texts.values()):
+                break
+            if all(g.status().get("state") == "neutral" and int(g.ctl_state().get("seq") or 0) >= g.seq for g in games) \
+                    and all(RE_RESTARTED.search(t) for t in texts.values()):
+                back = True
+                break
+            time.sleep(0.2)
+        texts = {g.idx: g.log_since(pos[g.idx]) for g in games}
+        ab["live"] = live
+        ab["pickers"] = [pk.did for pk in pickers]
+        ab["restarts"] = {g.idx: len(RE_RESTARTED.findall(texts[g.idx])) for g in games}
+        ab["bad"] = {g.idx: bad_lines(texts[g.idx]) for g in games if bad_lines(texts[g.idx])}
+        ab["seconds"] = round(time.time() - t0, 1)
+        ab["ok"] = live and back and not ab["bad"] and all(g.running() for g in games)
+        report.setdefault("aborts", []).append(ab)
+        log(f"abort {i} ({mid}, {how}): {'OK' if ab['ok'] else 'FAILED'} -- pickers {ab['pickers']}, "
+            f"restarts {ab['restarts']}, {ab['seconds']} s"
+            + (f", BAD {ab['bad']}" if ab["bad"] else "") + ("" if live else ", the select screen never came")
+            + ("" if back else ", not back at neutral")
+            + (", a fight started (too late an abort)" if any("state loading" in t or "state leave" in t for t in texts.values())
+               else ""))
+        if not ab["ok"]:
+            return False
+        time.sleep(rnd.uniform(0.2, 1.0))      # the next opponent: the lobby's accept and punch
+    return True
 
 
 def main():
@@ -343,9 +500,23 @@ def main():
     ap.add_argument("--env", action="append", default=[])
     ap.add_argument("--env1", action="append", default=[])
     ap.add_argument("--env2", action="append", default=[])
+    ap.add_argument("--aborts", type=int, default=0, help="persistent: N sessions ending at the select screen before match 1")
+    ap.add_argument("--abort-plan", default="", help="K:N,... -- N aborted sessions after match K (0 = before match 1)")
+    ap.add_argument("--abort-how", choices=["mix", "both", "host", "join"], default="mix")
+    ap.add_argument("--offline", action="store_true", help="one game without netplay (persistent flow)")
+    ap.add_argument("--seed", type=int, default=1, help="the aborts' random choices")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    games = [Game(a, 1, "host"), Game(a, 2, "join")]
+    plan = {}
+    for item in filter(None, a.abort_plan.split(",")):
+        kk, nn = item.split(":")
+        plan[int(kk)] = plan.get(int(kk), 0) + int(nn)
+    if a.aborts:
+        plan[0] = plan.get(0, 0) + a.aborts
+    if (plan or a.offline) and a.flow != "persistent":
+        sys.exit("--aborts / --abort-plan / --offline need --flow persistent")
+    rnd = random.Random(a.seed)
+    games = [Game(a, 1, "host")] if a.offline else [Game(a, 1, "host"), Game(a, 2, "join")]
     for g in games:
         for p in (g.status_path, g.result_path, g.fight_path, g.fight_path + ".done", os.path.join(g.ctl, "cmd.json"),
                   os.path.join(g.ctl, "state.json")):
@@ -356,12 +527,25 @@ def main():
     picks = [s.split("/") for s in a.picks.split(",")]
     chars = a.chars.split(",")
     stages = [int(s) for s in a.stages.split(",")]
-    report = {"flow": a.flow, "matches": []}
+    report = {"flow": a.flow, "offline": a.offline, "abort_plan": plan, "matches": []}
     ok_all = True
+    n_aborts = 0
     try:
         port, sess_k, sess_first = a.port, 1, 1
         locked = None
         fixed_time = str(int(time.time()))
+        if plan.get(0):
+            for g in games:      # the games come up at the title and wait at a select screen, nothing pending
+                e = g.base_env()
+                e["T5_CTL_DIR"] = g.ctl
+                g.start(e)
+            t_end = time.time() + 120
+            while time.time() < t_end and not all(g.status().get("state") == "neutral" for g in games):
+                time.sleep(0.5)
+            if not run_aborts(a, games, plan[0], n_aborts, rnd, report):
+                ok_all = False
+                raise StopIteration
+            n_aborts += plan[0]
         for k in range(a.first, a.first + a.matches):
             mid = f"p{k:02d}"
             new_session = a.flow == "persistent" and (k == a.first or (k - 1) % a.rematch_every == 0)
@@ -416,6 +600,8 @@ def main():
                 t_cmd[g.idx] = time.time()
             log(f"match {k} ({mid}): {line}{' (rematch)' if rematch else ''}{' LOCKED' if lock else ''}, picks {spec}")
             pickers = []
+            if spec and a.offline:
+                spec = [spec[0], "timeout"]       # no netplay: P2 keeps the line's character
             if spec:
                 for g in games:
                     pk = Picker(g, spec[g.slot], pos[g.idx], time.time() + 240)
@@ -434,7 +620,7 @@ def main():
                     if r and r.get("match") == mid and g.idx not in results:
                         results[g.idx] = r
                         log(f"match {k}: game {g.idx} result {json.dumps(r)}")
-                if len(results) == 2 or not all(g.running() for g in games):
+                if len(results) == len(games) or not all(g.running() for g in games):
                     break
                 time.sleep(0.25)
             got = {}
@@ -446,11 +632,19 @@ def main():
                     m.setdefault("problems", []).append(f"game {g.idx}: PICK MISMATCH")
             m["picks"] = got
             problems = m.setdefault("problems", [])
+            for g in games:
+                bad = bad_lines(g.log_since(pos[g.idx]))
+                if bad:
+                    problems.append(f"game {g.idx}: {bad}")
+            if a.offline:
+                got[2] = got[1]
             if got[1] is None or got[1] != got[2]:
                 problems.append(f"picks differ or missing: {got}")
             elif spec:
                 for side in (0, 1):
                     want = expected(spec[side], (p1c, p2c)[side])
+                    if a.offline and side == 1:     # the driver confirms the line's character with its default button
+                        want = (NAMES[char_id(p2c)], "default")
                     have = (got[1][3 * side], got[1][3 * side + 1])
                     if want and tuple(want) != have:
                         problems.append(f"P{side + 1} picked {have}, wanted {want}")
@@ -464,6 +658,8 @@ def main():
             if got.get(1) and a.locked_after and n_in_session == 0:
                 locked = (str(NAMES.index(got[1][0])), str(NAMES.index(got[1][3])))
             r1, r2 = results.get(1), results.get(2)
+            if a.offline:
+                r2 = r1
             res_ok = (r1 is not None and r2 is not None and r1.get("winner") == r2.get("winner")
                       and r1.get("winner") is not None and r1.get("hash") == r2.get("hash")
                       and not r1.get("desync") and not r2.get("desync"))
@@ -477,11 +673,18 @@ def main():
             log(f"match {k}: {'OK' if m['ok'] else 'FAILED'} -- picks {got.get(1)}, to FIGHT {m['to_fight_s']}, winners "
                 f"{[r and r.get('winner') for r in (r1, r2)]}, desync {[r and r.get('desync') for r in (r1, r2)]}"
                 + (f"; problems {problems}" if problems else ""))
-            if (not res_ok and not a.keep_going) or not all(g.running() for g in games) or len(results) < 2:
+            if (not res_ok and not a.keep_going) or not all(g.running() for g in games) or len(results) < len(games):
                 ok_all = False
                 break
             time.sleep(a.rematch_wait)
+            if plan.get(k):
+                if not run_aborts(a, games, plan[k], n_aborts, rnd, report):
+                    ok_all = False
+                    break
+                n_aborts += plan[k]
         time.sleep(2.0)
+    except StopIteration:
+        pass
     finally:
         for g in games:
             g.stop()
@@ -495,6 +698,11 @@ def main():
                             sync.append((fn, int(mm.group(1)), int(mm.group(2))))
             report[f"sync{g.idx}"] = sync[-3:]
             log(f"game {g.idx}: last sync checks {sync[-3:]}")
+        if report.get("aborts"):
+            n_ok = sum(1 for ab in report["aborts"] if ab["ok"])
+            restarts = {g.idx: sum(ab["restarts"].get(g.idx, 0) for ab in report["aborts"]) for g in games}
+            report["restarts"] = restarts
+            log(f"aborted sessions: {n_ok}/{len(report['aborts'])} OK, select restarts per game {restarts}")
         report["ok"] = ok_all
         with open(os.path.join(a.out, "report.json"), "w") as f:
             json.dump(report, f, indent=1)

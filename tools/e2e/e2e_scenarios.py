@@ -1127,18 +1127,20 @@ def net_relay_upgrade(ctx):
 
 
 @scenario("relay_upgrade_stub", "6 netcode", suites=("lobby", "net"),
-          desc="1.1.1 relay bridge with stub games: relay -> direct during a 55 s match; against a 1.1.0-style "
+          desc="1.1.1 relay bridge with stub games: relay -> direct during a ~65 s match; against a 1.1.0-style "
                "client (no nat2) no bridge and the match stays on the relay")
 def relay_upgrade_stub(ctx):
     if _relay_bridge() is None:
         raise Skip("no relay bridge in this tree (nat-robust, 1.1.1)")
     stub_server(ctx)
-    a = ctx.player("E2E Ups1", kind="stub", env={"T5_STUB_SECONDS": 55})
-    b = ctx.player("E2E Ups2", kind="stub", env={"T5_STUB_SECONDS": 55})
+    # T5_STUB_SECONDS counts frames (60 a second), but a stub frame waits for the peer's packet: ~17 frames a
+    # second, so 18 "seconds" are about 65 s -- the first burst (+35 s) falls into the match
+    a = ctx.player("E2E Ups1", kind="stub", env={"T5_STUB_SECONDS": 18})
+    b = ctx.player("E2E Ups2", kind="stub", env={"T5_STUB_SECONDS": 18})
     login(ctx, a)
     login(ctx, b)
     relay_upgrade_case(ctx, a, b, "stub: relay -> direct", real=False)
-    c = ctx.player("E2E Old110", kind="stub", env={"T5_STUB_SECONDS": 45})
+    c = ctx.player("E2E Old110", kind="stub", env={"T5_STUB_SECONDS": 18})
     ctx.no_nat2.add(c.name)
     login(ctx, c)
     ctx.check("the 1.1.0-style client logged in without nat2", c.client is not None and not c.client.nat2)

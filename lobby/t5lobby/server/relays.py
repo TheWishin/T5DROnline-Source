@@ -61,6 +61,7 @@ class RelayNodeRef:
         self.ctl_rtt = None            # ms, the control channel's round trip
         self.error = None              # why it is down, when it said ("clock", ...)
         self.checking = False
+        self.warned_plain = False      # logged once: an older node gets the bind tokens readable
         self.opened = 0
         self.open_failed = 0
 
@@ -346,9 +347,10 @@ class RelayPool:
                 hit[1].set_result(msg)
             return
 
-    async def request(self, node, op, timeout=1.5, tries=3, **fields):
+    async def request(self, node, op, timeout=1.5, tries=3, bind_tokens=None, **fields):
         """One control request -> the node's answer (dict) or None. Each try is a new datagram with a new id
-        (the node refuses an id it has seen); the operations are idempotent."""
+        (the node refuses an id it has seen); the operations are idempotent. bind_tokens (open): sealed
+        under each datagram's id for a node that understands it (relayctl "etokens"), else readable."""
         if self.transport is None or node.addr is None:
             return None
         fut = asyncio.get_running_loop().create_future()
@@ -356,6 +358,11 @@ class RelayPool:
         try:
             for _ in range(max(1, tries)):
                 msg = relayctl.request(op, node.id, **fields)
+                if bind_tokens is not None:
+                    if "etokens" in (node.stats.get("caps") or ()):
+                        msg["etokens"] = relayctl.seal_tokens(node.secret, msg["id"], bind_tokens)
+                    else:
+                        msg["tokens"] = [t.hex() for t in bind_tokens]
                 ids.append(msg["id"])
                 self.pending[msg["id"]] = (node, fut)
                 data = relayctl.pack(node.secret, relayctl.REQUEST, msg)
@@ -439,7 +446,11 @@ class RelayPool:
     # ------------------------------------------------------------------ sessions
     async def open(self, node, sid, tokens, lease):
         """-> (RemoteRelay or None, error). A node that does not answer is marked down at once."""
-        r = await self.request(node, "open", timeout=1.5, tries=3, sid=sid, tokens=[t.hex() for t in tokens],
+        if "etokens" not in (node.stats.get("caps") or ()) and not getattr(node, "warned_plain", False):
+            node.warned_plain = True
+            log.warning("relay %s runs an older version: its sessions' bind tokens cross the control channel "
+                        "readable -- update the node (docs/HOSTING.md, Running relay nodes)", node.id)
+        r = await self.request(node, "open", timeout=1.5, tries=3, sid=sid, bind_tokens=list(tokens),
                                lease=round(lease))
         if r is not None and r.get("ok"):
             node.opened += 1

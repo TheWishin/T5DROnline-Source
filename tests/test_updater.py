@@ -20,6 +20,7 @@ from helpers import ROOT
 
 sys.path.insert(0, os.path.join(ROOT, "launcher"))
 import updater  # noqa: E402
+import release_sig  # noqa: E402
 
 SCRIPT_EXT = (".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta")
 
@@ -97,11 +98,15 @@ def make_zip(version="1.0.1", extra=None, top=None, inner_version=None):
     return buf.getvalue()
 
 
-def release(version="1.0.1", zip_bytes=b"", sums=None, api_digest="auto", code_id=None):
+def release(version="1.0.1", zip_bytes=b"", sums=None, api_digest="auto", code_id=None, sig=None):
+    """(GitHub's API answer, {url: bytes}). sig: the bytes of a SHA256SUMS.sig asset, a seed (32 bytes:
+    sign this release with it), or None (no signature asset)."""
     zname = f"T5DR-Online-{version}.zip"
     digest = hashlib.sha256(zip_bytes).hexdigest()
     sums = f"{digest}  {zname}\n" if sums is None else sums
     base = f"https://github.com/TheWishin/T5DROnline/releases/download/v{version}/"
+    if isinstance(sig, bytes) and len(sig) == 32:
+        sig = release_sig.make_sig_file(sig, version, sums.encode()).encode()
     data = {
         "tag_name": f"v{version}", "name": f"T5DR Online {version}", "draft": False, "prerelease": False,
         "html_url": f"https://github.com/TheWishin/T5DROnline/releases/tag/v{version}",
@@ -114,7 +119,12 @@ def release(version="1.0.1", zip_bytes=b"", sums=None, api_digest="auto", code_i
              "digest": None if api_digest is None else "sha256:" + (digest if api_digest == "auto" else api_digest)},
         ],
     }
-    return data, {base + "SHA256SUMS": sums.encode(), base + zname: zip_bytes}
+    files = {base + "SHA256SUMS": sums.encode(), base + zname: zip_bytes}
+    if sig is not None:
+        data["assets"].append({"name": "SHA256SUMS.sig", "size": len(sig), "state": "uploaded",
+                               "browser_download_url": base + "SHA256SUMS.sig"})
+        files[base + "SHA256SUMS.sig"] = sig
+    return data, files
 
 
 class FakeResponse(io.BytesIO):
@@ -420,6 +430,10 @@ class Prepare(unittest.TestCase):
             "player's settings": make_zip("1.0.1", {"T5DR-Online-1.0.1/launcher.json": "{}"}),
             "wrong version inside": make_zip("1.0.1", inner_version="1.0.9"),
             "wrong top folder": make_zip("1.0.1", top="T5DR-Online-1.0.2"),
+            "native with a trailing dot": make_zip("1.0.1", {"T5DR-Online-1.0.1/native./gamedata/x": "x"}),
+            "settings with a trailing space": make_zip("1.0.1", {"T5DR-Online-1.0.1/launcher.json ": "{}"}),
+            "a device name": make_zip("1.0.1", {"T5DR-Online-1.0.1/tools/CON": "x"}),
+            "a device name with an extension": make_zip("1.0.1", {"T5DR-Online-1.0.1/tools/nul.txt": "x"}),
         }
         for why, z in cases.items():
             with self.subTest(why):
@@ -427,6 +441,173 @@ class Prepare(unittest.TestCase):
                     self.prepare(*release("1.0.1", z))
                 self.assert_nothing_changed()
                 self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "evil.py")))
+
+
+# --------------------------------------------------------------------------- the release signature
+
+class Signature(unittest.TestCase):
+    """SHA256SUMS signed with the owner's Ed25519 key (launcher/release_sig.py): once the launcher has a
+    key, a release without a valid signature by it is refused -- the case of a stolen release token or
+    a hijacked GitHub login, where zip, SHA256SUMS and GitHub's digest all agree."""
+
+    RFC8032 = [   # RFC 8032 section 7.1, tests 1-3: (secret key, public key, message, signature)
+        ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+         "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+         "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f05"
+         "95bbe24655141438e7a100b"),
+        ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+         "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+         "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eae"
+         "b4302aeeb00d291612bb0c00"),
+        ("c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+         "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025", "af82",
+         "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e97"
+         "16ed28dc027beceea1ec40a"),
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.install = os.path.join(self.tmp.name, "T5DR-Online-1.0.0")
+        make_install(self.install)
+        self.before = tree(self.install)
+        self.seed = os.urandom(32)                       # a throwaway key made for this test only
+        self.pub = release_sig.public_key(self.seed).hex()
+        p = mock.patch.object(updater, "RELEASE_PUBLIC_KEYS", (self.pub,))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def prepare(self, data, files):
+        return updater.prepare_update(updater.parse_release(data), self.install, opener=FakeGitHub(files))
+
+    def refused(self, data, files, why):
+        with self.assertRaisesRegex(updater.UpdateError, why):
+            self.prepare(data, files)
+        self.assertEqual(tree(self.install), self.before)
+        for d in updater.stage_roots(self.install):
+            self.assertFalse(os.path.exists(d), d)
+
+    def sig_of(self, rel):
+        data, files = rel
+        return files[data["assets"][-1]["browser_download_url"]]
+
+    def test_rfc8032_vectors(self):
+        for sk, pk, msg, sig in self.RFC8032:
+            sk, msg, sig = bytes.fromhex(sk), bytes.fromhex(msg), bytes.fromhex(sig)
+            self.assertEqual(release_sig.public_key(sk).hex(), pk)
+            self.assertEqual(release_sig.sign(sk, msg), sig)
+            self.assertTrue(release_sig.verify(bytes.fromhex(pk), msg, sig))
+            self.assertFalse(release_sig.verify(bytes.fromhex(pk), msg + b"x", sig))
+            for i in (0, 31, 32, 63):
+                bad = bytearray(sig)
+                bad[i] ^= 0x01
+                self.assertFalse(release_sig.verify(bytes.fromhex(pk), msg, bytes(bad)), i)
+
+    def test_malleable_and_broken_signatures(self):
+        sk, pk, msg, sig = (bytes.fromhex(x) for x in self.RFC8032[1])
+        s = int.from_bytes(sig[32:], "little") + release_sig._L          # S + L: the same point, refused
+        self.assertFalse(release_sig.verify(pk, msg, sig[:32] + s.to_bytes(32, "little")))
+        self.assertFalse(release_sig.verify(pk, msg, sig[:63]))
+        self.assertFalse(release_sig.verify(bytes([0xFF] * 32), msg, sig))      # not a point
+        self.assertFalse(release_sig.verify(pk[:31], msg, sig))
+
+    def test_same_as_pycryptodome(self):
+        try:
+            from Crypto.PublicKey import ECC
+            from Crypto.Signature import eddsa
+        except ImportError:
+            self.skipTest("pycryptodome with EdDSA is not installed")
+        for n in range(8):
+            seed, msg = os.urandom(32), os.urandom(n * 13)
+            key = ECC.construct(curve="Ed25519", seed=seed)
+            sig = eddsa.new(key, "rfc8032").sign(msg)
+            self.assertEqual(release_sig.sign(seed, msg), sig)
+            self.assertEqual(release_sig.public_key(seed), key.public_key().export_key(format="raw"))
+
+    def test_signed_release_installs(self):
+        z = make_zip("1.0.1")
+        staged = self.prepare(*release("1.0.1", z, sig=self.seed))
+        self.assertEqual(tree(staged["new"])["launcher/t5dr_launcher.pyw"], b"# new launcher\n")
+
+    def test_unsigned_release_is_refused(self):
+        self.refused(*release("1.0.1", make_zip("1.0.1")), "not signed")
+
+    def test_release_by_another_key_is_refused(self):
+        self.refused(*release("1.0.1", make_zip("1.0.1"), sig=os.urandom(32)), "does not know")
+
+    def test_a_forged_key_id_does_not_help(self):
+        data, files = release("1.0.1", make_zip("1.0.1"), sig=os.urandom(32))
+        url = data["assets"][-1]["browser_download_url"]
+        doc = json.loads(files[url])
+        doc["key"] = release_sig.key_id(bytes.fromhex(self.pub))           # claims the owner's key
+        files[url] = json.dumps(doc).encode()
+        self.refused(data, files, "does not match")
+
+    def test_replaced_zip_and_sums_with_the_old_signature(self):
+        """A compromised release: a new zip with matching SHA256SUMS and GitHub digest, the genuine .sig."""
+        good = release("1.0.1", make_zip("1.0.1"), sig=self.seed)
+        evil = make_zip("1.0.1", {"T5DR-Online-1.0.1/tools/evil.py": "x"})
+        self.refused(*release("1.0.1", evil, sig=self.sig_of(good)), "does not match")
+
+    def test_an_old_signed_release_cannot_pose_as_a_new_one(self):
+        """Downgrade: 1.0.1's genuine zip, SHA256SUMS and signature re-published as 1.0.2."""
+        z = make_zip("1.0.1")
+        old = release("1.0.1", z, sig=self.seed)
+        sums = old[1][old[0]["assets"][0]["browser_download_url"]].decode()
+        self.refused(*release("1.0.2", z, sums=sums, sig=self.sig_of(old)), "not 1.0.2")
+
+    def test_garbage_signature_files(self):
+        z = make_zip("1.0.1")
+        kid = release_sig.key_id(bytes.fromhex(self.pub))
+        for junk in (b"", b"{", b"[]", b'{"format": "x"}', bytes([0xFF, 0xFE]) * 10, b"[" * 3000,
+                     json.dumps({"format": release_sig.FORMAT, "version": "1.0.1", "key": kid,
+                                 "signature": "zz"}).encode()):
+            with self.subTest(junk=junk[:20]):
+                self.refused(*release("1.0.1", z, sig=junk), "signature")
+
+    def test_oversized_signature_file(self):
+        self.refused(*release("1.0.1", make_zip("1.0.1"), sig=b" " * (updater.MAX_SIG + 10)), "bigger")
+
+    def test_no_key_configured_keeps_the_old_check(self):
+        with mock.patch.object(updater, "RELEASE_PUBLIC_KEYS", ()):
+            self.assertTrue(self.prepare(*release("1.0.1", make_zip("1.0.1")))["new"])
+
+    def test_shipped_public_keys_are_keys(self):
+        import ast
+        with open(os.path.join(ROOT, "launcher", "updater.py"), encoding="utf-8") as f:
+            src = f.read()
+        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", None) == "RELEASE_PUBLIC_KEYS" for t in n.targets))
+        for k in ast.literal_eval(node.value):
+            release_sig.parse_public_key(k)                  # 64 hex digits and a point on the curve
+
+    def test_test_versions_are_never_installed(self):
+        for change in (lambda d: d.update(prerelease=True),
+                       lambda d: d.update(tag_name="v1.0.1-rc1"),
+                       lambda d: d.update(tag_name="v1.0.1+build5")):
+            data, _ = release("1.0.1", b"z")
+            change(data)
+            with self.assertRaisesRegex(updater.UpdateError, "test version"):
+                updater.parse_release(data)
+
+    def test_old_cache_is_asked_again(self):
+        cache = os.path.join(self.tmp.name, updater.CACHE_FILE)
+        data, _ = release("1.0.1", b"z")
+        old = updater.parse_release(data)
+        old.pop("sig")
+        write(cache, json.dumps({"checked": 1000, "etag": 'W/"1"', "release": old}))
+        gh = FakeGitHub(api=data)
+        updater.check_latest(cache, opener=gh, now=1001)
+        self.assertEqual(len(gh.calls), 1)                         # not answered from the old cache
+        self.assertNotIn("If-None-Match", gh.calls[0][1])
+
+    def test_swap_step_runs_isolated(self):
+        with mock.patch.object(updater, "_spawn") as spawn:
+            updater.start_swap({"sroot": self.tmp.name, "new": self.tmp.name}, "1.0.0", "1.0.1", root=self.install,
+                               wait_pid=0, python="py.exe")
+        self.assertEqual(spawn.call_args[0][0][:3], ["py.exe", "-I", "-B"])
 
 
 # --------------------------------------------------------------------------- the swap

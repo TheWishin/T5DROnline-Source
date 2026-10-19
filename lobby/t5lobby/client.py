@@ -339,6 +339,12 @@ class LobbyClient:
     async def _dispatch(self, msg):
         t = msg["t"]
         rid = msg.get("re")
+        if msg.get("match") is not None and not proto.valid_match_id(msg["match"]):
+            # never a path or a fight-line option from a server's message: the id goes into file names
+            fut = self._pending.get(rid) if rid is not None else None
+            if fut is not None and not fut.done():
+                fut.set_exception(LobbyError(proto.E_BAD_REQUEST, "the server sent a malformed match id"))
+            return
         if rid is not None and rid in self._pending:
             fut = self._pending.get(rid)
             if not fut.done():

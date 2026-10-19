@@ -719,6 +719,8 @@ MESSAGES = {
     "this server has no guest logins": "Dieser Server erlaubt keine Gäste",
     "too many failed logins; wait a few minutes": "zu viele fehlgeschlagene Anmeldungen; warte ein paar Minuten",
     "too many failed attempts; wait a few minutes": "zu viele fehlgeschlagene Versuche; warte ein paar Minuten",
+    "too many password changes; wait a minute": "zu viele Passwortänderungen; warte eine Minute",
+    "too many requests for new codes; wait a minute": "zu viele Anfragen nach neuen Codes; warte eine Minute",
     "too many new accounts from this address": "zu viele neue Konten von dieser Adresse",
     "the saved login has expired; log in with your password":
         "Die gespeicherte Anmeldung ist abgelaufen; melde dich mit deinem Passwort an",
@@ -820,6 +822,7 @@ MESSAGES = {
         "Internet gehen. Spiele als Gast, oder bitte den Betreiber des Servers, TLS "
         "einzurichten und dir den Fingerabdruck zu geben.",
     "connection closed": "Verbindung geschlossen",
+    "the server sent a malformed match id": "Der Server hat eine ungültige Match-ID geschickt",
     "message too long": "Nachricht zu lang",
     "closed": "geschlossen",
     "Choose your game package (.pkg) first.": "Wähle zuerst dein Spielpaket (.pkg).",
@@ -1043,6 +1046,17 @@ MESSAGES = {
     "'.', '..' or an empty part": "„.“, „..“ oder ein leerer Teil",
     "outside the folder {folder}": "außerhalb des Ordners {folder}",
     "named like the player's own files": "heißt wie die eigenen Dateien des Spielers",
+    "a name Windows does not keep as written": "ein Name, den Windows nicht so speichert, wie er geschrieben ist",
+    "Release {version} is a test version; it is not installed automatically.":
+        "Release {version} ist eine Testversion; sie wird nicht automatisch installiert.",
+    "Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+    "the project's release process; nothing was changed.":
+        "Release {version} ist nicht mit dem Release-Schlüssel des Projekts signiert (keine SHA256SUMS.sig). Es "
+        "stammt nicht aus dem Release-Ablauf des Projekts; es wurde nichts geändert.",
+    "Release {version} failed the signature check ({error}). It was not made by the project's release "
+    "process; nothing was changed.":
+        "Release {version} hat die Signaturprüfung nicht bestanden ({error}). Es stammt nicht aus dem "
+        "Release-Ablauf des Projekts; es wurde nichts geändert.",
     "idle": "frei",
     "room": "im Raum",
     "queue": "in der Suche",

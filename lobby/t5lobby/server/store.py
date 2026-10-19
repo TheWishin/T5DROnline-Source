@@ -176,6 +176,22 @@ def new_recovery_code():
     return f"{raw[:4]}-{raw[4:8]}-{raw[8:]}"
 
 
+def _private(path):
+    """Password hashes live in the database: no access for other users of the machine (POSIX). The systemd
+    unit's UMask=0077 does this for a service install; "Host for friends" on Linux/macOS, Docker and a hand
+    start inherit the user's umask (often 022: everybody may read). SQLite gives the -wal/-shm files the
+    database's mode. The group keeps what it had (an admin group setup)."""
+    if path == ":memory:" or str(path).startswith("file:") or os.name == "nt":
+        return
+    for p in (path, path + "-wal", path + "-shm"):
+        try:
+            st = os.stat(p)
+            if st.st_mode & 0o007:
+                os.chmod(p, st.st_mode & 0o770)
+        except OSError:
+            pass
+
+
 class Store:
     def __init__(self, path):
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
@@ -184,6 +200,7 @@ class Store:
         self.db.execute("PRAGMA busy_timeout=5000")    # the admin tool may hold the write lock briefly
         self.db.execute("PRAGMA synchronous=FULL")     # a committed result survives a power cut, not only a crash
         self.db.executescript(SCHEMA)
+        _private(path)
         self._add_columns()
         self.db.executescript(RANKED_INDEXES)
         self._backfill_skeletons()

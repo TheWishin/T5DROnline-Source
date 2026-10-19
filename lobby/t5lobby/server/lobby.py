@@ -468,6 +468,9 @@ class LobbyServer:
         self.ip_connects = KeyedBuckets(rate=self.cfg.conn_rate, burst=self.cfg.conn_burst)  # new connections per IP
         self.login_fail = KeyedBuckets(rate=1 / 60.0, burst=5)  # failed password logins per IP and per name
         self.registrations = KeyedBuckets(rate=1 / 600.0, burst=3)  # new accounts per IP
+        # password changes and new recovery codes per account, right or wrong: each costs one or two scrypt
+        # runs, and a logged-in account with its own password could otherwise keep the hashing busy for everyone
+        self.pw_ops = KeyedBuckets(rate=1 / 20.0, burst=3)
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
         self.bans = BanList()
         self.dirty = True
@@ -1043,6 +1046,8 @@ class LobbyServer:
         key = "name:" + p.name.lower()
         if not self.login_fail.peek_ok(key):
             raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        if not self.pw_ops.take(f"a:{p.account_id}"):
+            raise LobbyError(proto.E_RATE, "too many password changes; wait a minute")
         row = self.store.account_by_id(p.account_id)
         if not await self._pw(check_password, str(msg.get("old", "")), row["pw"]):
             self.login_fail.take(key)
@@ -1085,6 +1090,8 @@ class LobbyServer:
         key = "name:" + p.name.lower()
         if not self.login_fail.peek_ok(key):
             raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        if not self.pw_ops.take(f"a:{p.account_id}"):
+            raise LobbyError(proto.E_RATE, "too many requests for new codes; wait a minute")
         row = self.store.account_by_id(p.account_id)
         if not await self._pw(check_password, str(msg.get("password", "")), row["pw"]):
             self.login_fail.take(key)
@@ -3467,6 +3474,7 @@ class LobbyServer:
             self.ip_connects.prune()
             self.login_fail.prune()
             self.registrations.prune()
+            self.pw_ops.prune()
             self.chat_rate.prune()
             self.bans.prune()
             self.udp.ctl_buckets.prune()

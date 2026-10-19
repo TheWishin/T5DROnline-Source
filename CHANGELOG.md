@@ -13,6 +13,24 @@ part is in the README's status table.
   60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
   before.
 
+## v1.1.2 (unreleased)
+
+### Security
+- **Signed updates.** The launcher's self-update now checks an Ed25519 signature of the release
+  (`SHA256SUMS.sig`) made with the owner's key, once the owner has set it up (docs/RELEASING.md
+  "Release signature"): a release that somebody else managed to put on GitHub is refused. Updating
+  from 1.1.1 to 1.1.2 works as before.
+- **Lobby servers cannot touch your files.** A lobby server (any server you add) could send a match
+  name that made the launcher delete or write files outside its own folder. Match names are now
+  checked.
+- **Matches are harder to disturb from outside.** A stranger who found your game's port could end a
+  match before it started with one packet, and somebody who recorded the match's traffic could make
+  your game send its packets elsewhere. Both are refused now (docs/NETPLAY.md "Connection problems").
+- Lobby servers: regional relays get the players' relay tokens sealed, a relay node refuses requests
+  recorded before its restart, a flood of pings no longer blocks match setup, password changes are
+  rate-limited, and the database is private to the server's user (docs/HOSTING.md).
+- Problem reports also remove lobby recovery codes.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

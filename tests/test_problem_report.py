@@ -180,6 +180,13 @@ class Secrets(unittest.TestCase):
                   "reader tokens given back 0"):
             self.assertEqual(sc.text(t), t)
 
+    def test_lobby_recovery_codes(self):
+        sc = scrubber()
+        for code in ("ABCD-EFGH-JKMN", "abcd-efgh-jkmn", "Z2Z3-Y4Y5-XWVU"):
+            self.assertEqual(sc.text(f"my code {code} does not work"), "my code <removed> does not work")
+        for t in ("frame 1100-2200-3300 x", "build 2026-10-19-1200 ok", "LOOKLIKE-ABCD-EFGH-JKMN-X"):
+            self.assertEqual(sc.text(t), t)
+
     def test_exact_values_are_removed_wherever_they_are(self):
         sc = scrubber(secrets=[FAKE_TOKEN, "x"])           # a value shorter than 6 characters is ignored
         self.assertEqual(sc.text(f"resume {FAKE_TOKEN}!"), "resume <removed>!")

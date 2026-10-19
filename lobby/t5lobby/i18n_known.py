@@ -33,6 +33,8 @@ SERVER = (
     N_("this server has no guest logins"),
     N_("too many failed logins; wait a few minutes"),
     N_("too many failed attempts; wait a few minutes"),
+    N_("too many password changes; wait a minute"),
+    N_("too many requests for new codes; wait a minute"),
     N_("too many new accounts from this address"),
     N_("the saved login has expired; log in with your password"),
     N_("session expired; log in again"),
@@ -117,6 +119,7 @@ CLIENT = (
     N_("connection closed"),
     N_("message too long"),
     N_("closed"),
+    N_("the server sent a malformed match id"),
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab
@@ -259,6 +262,12 @@ UPDATER = (
     N_("'.', '..' or an empty part"),
     N_("outside the folder {folder}"),
     N_("named like the player's own files"),
+    N_("a name Windows does not keep as written"),
+    N_("Release {version} is a test version; it is not installed automatically."),
+    N_("Release {version} is not signed with the project's release key (no SHA256SUMS.sig). It was not made by "
+       "the project's release process; nothing was changed."),
+    N_("Release {version} failed the signature check ({error}). It was not made by the project's release "
+       "process; nothing was changed."),
 )
 
 # Words that are part of a message ("you are {status}": the server's player states), translated on their own.

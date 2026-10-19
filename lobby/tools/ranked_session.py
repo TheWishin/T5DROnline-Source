@@ -21,12 +21,21 @@ game"); with the real game, --pick1/--pick2 give each player's picks per pick ro
 the last one repeats; tools/pick_flow_test.py's scenarios: <char>:<lp|rp|lk|rk>, random, timeout,
 late<s>:<char>:<button>), pressed through the game's PS3_PAD_FILE.
 
-With --exe both instances open minimized (PS3_WINDOW_BACKGROUND=1), no pads or keyboard
-unless --input; every game started here is killed at the end.
+Ranked sets (docs/RANKED.md "Ranked sets"): both clients announce them (as the launcher does; --no-bo3:
+not), so a ranked pairing is best of 3 -- only game 1 is picked in the game, games 2 and 3 start by
+themselves after the countdown with game 1's fighters and costumes. --plan 1,2,1: who wins each game (that
+player's game attacks through T5_NET_PADFILE while the fight runs, the other stands still; "-" = both
+still), the last entry repeats -- e.g. a 2-1 set.
+
+With --exe both instances open minimized (PS3_WINDOW_BACKGROUND=1), muted (PS3_AUDIO_MUTE=1), at
+below-normal priority, no pads or keyboard unless --input; every game started here is killed at the end.
+The local lobby lets two accounts on 127.0.0.1 play ranked (T5L_RANKED_SAME_IP=1) and has no PC-speed or
+pair-cooldown limits. <out>/events.json: every lobby event and report per player (tools/pick_report.py).
 """
 import argparse
 import json
 import os
+import random
 import re
 import socket
 import subprocess
@@ -44,7 +53,9 @@ from t5lobby.buildid import BuildInfo  # noqa: E402
 from t5lobby.client import LobbyClient  # noqa: E402
 from t5lobby.match_driver import MatchDriver  # noqa: E402
 
-GAME_ENV = {"PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1"}
+GAME_ENV = {"PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
+            "PS3_AUDIO_MUTE": "1"}
+BELOW_NORMAL = 0x00004000
 
 
 def free_port(kind=socket.SOCK_STREAM):
@@ -60,7 +71,12 @@ def start_server(a, db):
     env = dict(os.environ, T5L_DB=db, T5L_LOG_LEVEL="INFO", PYTHONPATH=LOBBY,
                T5L_FORCE_RELAY="1" if a.relay else "0", T5L_SCRYPT_N=str(1 << 12),
                T5L_PLACEMENT=str(a.placement), T5L_MIN_MATCH_SECONDS=str(a.min_seconds),
-               T5L_RESULT_TIMEOUT=str(a.result_timeout), T5L_RECONNECT_GRACE="10", T5L_ROUNDS=str(a.rounds))
+               T5L_RESULT_TIMEOUT=str(a.result_timeout), T5L_RECONNECT_GRACE="10", T5L_ROUNDS=str(a.rounds),
+               # two accounts on one PC: ranked between them counts here (lobby hardening refuses it by default),
+               # no PC-speed gate (two games and other work share this PC), no pause before the next pairing,
+               # no status port (another local lobby may hold 7780)
+               T5L_RANKED_SAME_IP="1", T5L_MIN_FPS="0", T5L_WARN_FPS="0", T5L_PAIR_COOLDOWN="0", T5L_STATUS_PORT="0",
+               T5L_SET_NEXT_SECONDS=str(a.set_next))
     log = open(os.path.join(a.out, "server.log"), "w")
     p = subprocess.Popen([sys.executable, "-m", "t5lobby.server", "--host", "127.0.0.1", "--port", str(tcp),
                           "--udp-port", str(udp), "--udp-port2", str(udp2)], env=env, cwd=LOBBY,
@@ -88,7 +104,8 @@ class ProcGame:
             si.wShowWindow = 7      # SW_SHOWMINNOACTIVE
         with open(log_path, "w") as lf:
             self.proc = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=lf, stderr=subprocess.STDOUT,
-                                         stdin=subprocess.DEVNULL, startupinfo=si)
+                                         stdin=subprocess.DEVNULL, startupinfo=si,
+                                         creationflags=BELOW_NORMAL if minimized and os.name == "nt" else 0)
 
     def running(self):
         return self.proc.poll() is None
@@ -110,7 +127,7 @@ class Player:
         self.a, self.idx, self.name, self.char = a, idx, name, char
         self.dir = os.path.abspath(os.path.join(a.out, f"p{idx}"))
         os.makedirs(self.dir, exist_ok=True)
-        self.client = LobbyClient(addr, build, auto_ready=True, ingame_pick=a.ingame_pick)
+        self.client = LobbyClient(addr, build, auto_ready=True, ingame_pick=a.ingame_pick, sets=not a.no_bo3)
         self.client.connect()
         try:
             self.client.login(name, "password-" + name)
@@ -122,6 +139,12 @@ class Player:
         self.driver = MatchDriver(self.client, self.launch, self.dir, mode=mode, extra_env=extra,
                                   ask_manual=False, auto_rematch=a.matches - 1)
         self.events = []
+        self.padfile = os.path.join(self.dir, "netpad.txt")      # --plan: this player's attacks (T5_NET_PADFILE)
+        open(self.padfile, "w").close()
+        self.attacking = False
+        self.role = None
+        self.games_started = 0
+        self.rnd = random.Random(11 + idx)
 
     def launch(self, env):
         a = self.a
@@ -134,7 +157,7 @@ class Player:
         if role in ("host", "join"):
             full.update(dict(kv.split("=", 1) for kv in (a.env_host if role == "host" else a.env_join)))
         log = os.path.join(self.dir, f"game{n}.log")
-        if a.exe and a.attacks and "T5_NET_SCRIPT" not in full and role in ("host", "join"):
+        if a.exe and a.attacks and not a.plan and "T5_NET_SCRIPT" not in full and role in ("host", "join"):
             ev, f = [], 120
             while f < 60000:      # P1: square + right, P2: triangle + left (like the direct-fight tests)
                 if role == "host":
@@ -153,6 +176,8 @@ class Player:
             full["PS3_HDD0_ROOT"] = os.path.join(vfs, "dev_hdd0").replace("\\", "/")
             full["PS3_TITLE"] = f"T5DR ranked session: {self.name}"
             full["T5_NET_LOG"] = os.path.join(self.dir, f"frames{n}.log")
+            if a.plan:
+                full["T5_NET_PADFILE"] = self.padfile
             if not a.input:
                 full.update({"T5_NET_LOCALPAD": "0", "PAD_NO_KEYBOARD": "1"})
             if a.ingame_pick and not a.input:
@@ -193,9 +218,17 @@ class Player:
                       f"{'ranked' if ev['ranked'] else 'unranked'}, origin {ev['origin']}", flush=True)
             elif t == "match_start":
                 f = ev.get("fight") or {}
+                s = ev.get("set") or {}
+                self.role = "host" if ev["slot"] == 0 else "join"
+                plan = self.a.plan.split(",") if self.a.plan else []
+                self.attacking = bool(plan) and plan[min(self.games_started, len(plan) - 1)].strip() == str(self.idx)
+                self.games_started += 1
                 print(f"  [{self.name}] match_start {ev['match']}: path {ev['path']}, delay {ev['delay']}, "
-                      f"{f.get('p1')} vs {f.get('p2')} on {f.get('stage')}{' (continued)' if ev.get('continue') else ''}",
-                      flush=True)
+                      f"{f.get('p1')} vs {f.get('p2')} on {f.get('stage')}{' (continued)' if ev.get('continue') else ''}"
+                      + (f", pick {f['pick']} s" if f.get("pick") else "")
+                      + (f", buttons {f['buttons']}" if f.get("buttons") else "")
+                      + (f", set game {s.get('number')} of best {s.get('best_of')} {s.get('wins')}" if s.get("rated") else "")
+                      + (", attacks" if self.attacking else ", stands still" if plan else ""), flush=True)
             elif t == "match_result":
                 r = ev.get("rating") or {}
                 print(f"  [{self.name}] result {ev['status']}{' (' + ev['reason'] + ')' if ev.get('reason') else ''}: "
@@ -203,6 +236,9 @@ class Player:
                       + (f", rating {r['before']['r']:.0f} -> {r['after']['r']:.0f}, rank "
                          f"{ranks.label(r['rank_before'])} -> {ranks.label(r['rank_after'])}"
                          f"{' [' + r['event'] + ']' if r.get('event') else ''}" if r else ""), flush=True)
+            elif t == "set_end":
+                print(f"  [{self.name}] set_end {ev.get('status')}: {ev.get('result')} {ev.get('wins')} in {ev.get('games')} "
+                      f"games{' (' + str(ev.get('outcome_reason')) + ')' if ev.get('outcome_reason') else ''}", flush=True)
             elif t in ("notice", "match_cancel", "rematch"):
                 print(f"  [{self.name}] {t}: {ev.get('msg') or ev.get('reason') or ev.get('state')}", flush=True)
         for n in self.driver.poll():
@@ -211,6 +247,40 @@ class Player:
 
     def results(self):
         return [e for e in self.events if e["t"] == "match_result"]
+
+    def set_ends(self):
+        return [e for e in self.events if e["t"] == "set_end"]
+
+    def rated(self):
+        """The pairing being played is a rated set (best of 3)."""
+        starts = [e for e in self.events if e["t"] == "match_start"]
+        return bool(starts) and bool((starts[-1].get("set") or {}).get("rated"))
+
+    def bot(self):
+        """--plan: the planned winner attacks while the fight runs; the other player stands still."""
+        if not self.a.exe or not self.a.plan or not self.attacking or not self.driver.game_running():
+            return
+        try:
+            with open(self.driver.status_path) as f:
+                st = json.load(f)
+        except (OSError, ValueError, TypeError):
+            return
+        if st.get("state") != "fight":
+            return
+        try:
+            if os.path.getsize(self.padfile):
+                return
+        except OSError:
+            return
+        fwd = 0x20 if self.role == "host" else 0x80
+        down = 0x40
+        btn = self.rnd.choice([0x8000, 0x1000, 0x4000, 0x2000, 0x8000 | 0x4000, 0x1000 | 0x2000,
+                               down | 0x4000, down | 0x2000, fwd | 0x1000, fwd, fwd])
+        try:
+            with open(self.padfile, "w") as fp:
+                fp.write(f"{btn:#x} {self.rnd.randint(3, 6)}")
+        except OSError:
+            pass
 
     def close(self):
         self.driver.close()
@@ -304,6 +374,10 @@ def main():
                                                             "pairing (a fresh game against a persistent one)")
     ap.add_argument("--pick1", default="timeout", help="real game, --ingame-pick: player 1's picks")
     ap.add_argument("--pick2", default="timeout", help="real game, --ingame-pick: player 2's picks")
+    ap.add_argument("--no-bo3", action="store_true", help="the clients do not announce ranked sets (per-game rating)")
+    ap.add_argument("--set-next", type=float, default=6.0, help="server: seconds to a ranked set's next game")
+    ap.add_argument("--plan", default="", help="real game: the winner per game, 1 or 2 (- = nobody attacks), "
+                                               "comma-separated, the last repeats (T5_NET_PADFILE bot)")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for both games")
     ap.add_argument("--env1", action="append", default=[], help="NAME=VALUE for player 1's game")
     ap.add_argument("--env2", action="append", default=[], help="NAME=VALUE for player 2's game")
@@ -340,16 +414,27 @@ def main():
         while time.time() < t_end:
             for p in players:
                 p.pump()
+                p.bot()
             done = [len(p.results()) for p in players]
-            if min(done) >= total:
+            rated = any(p.rated() for p in players)
+            if rated:
+                # a rated set ends by itself (2 wins): the pairing is over when both saw set_end
+                pairing_over = min(len(p.set_ends()) for p in players) >= set_no
+            else:
+                pairing_over = min(done) >= a.matches * set_no
+            if pairing_over and set_no >= a.sets:
                 break
-            if min(done) >= a.matches * set_no:
+            if not rated and min(done) >= total:
+                break
+            if pairing_over:
                 # the set is over: both leave it and meet again as a new pairing (a new netplay
                 # session in the running games, as for the next opponent); --fresh-p2: player 2's
                 # game is closed first, so a fresh game meets a persistent one
                 set_no += 1
                 for p in players:
                     last = p.results()[-1]["match"]
+                    if rated:
+                        continue                # the rated set has ended: nothing to leave
                     try:
                         p.client.rematch(last, False)
                     except Exception as e:      # noqa: BLE001 -- the set may have ended already
@@ -383,6 +468,9 @@ def main():
                                           players[0].client.leaderboard()]))
         for p in players:
             print(f"{p.name} reported: {p.driver.history}")
+        with open(os.path.join(a.out, "events.json"), "w") as f:
+            json.dump({p.name: {"idx": p.idx, "events": p.events, "reported": p.driver.history,
+                                "games": [g.log_path for g in p.games]} for p in players}, f, indent=1, default=str)
         return 0 if all(len(p.results()) >= 1 for p in players) else 1
     finally:
         for p in players:

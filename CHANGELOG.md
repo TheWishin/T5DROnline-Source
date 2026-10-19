@@ -66,6 +66,10 @@ lobby features need the lobby server updated; older launchers keep working with 
   are welcome. The Settings tab, the Controls window and the Online tab's lists got room for the
   longer texts (at 100 % and 150 % display scaling); a player or friend on another version (or an
   older launcher) shows that in the status column instead of what they are doing.
+- **The Settings tab scrolls.** It had grown taller than the window (at 133 % display scaling and
+  more the bottom, with Unlocks and the Controls table, could not be reached). Now the mouse wheel
+  anywhere over it scrolls it, there is a scrollbar, and a control you reach with Tab is scrolled
+  into view. Still two columns, never sideways.
 - **Unlock all stages** (player request): launcher **Settings -> Unlocks**. The Tekken 5 stages,
   normally earned after about 50 fights, are there in Arcade, VS, Practice and the rest from the
   start. Your save is not changed; switched off, the game is as before.

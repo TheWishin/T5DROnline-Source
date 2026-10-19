@@ -91,7 +91,9 @@ CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challe
                   "expired": N_("Challenge expired.")}
 # A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.
 FRIEND_STATE_TEXT = {"in_match": N_("in a match"), "offline": N_("offline")}
-FRIEND_INVITE_TEXT = {"update": N_("(older launcher: no invites)"), "version": N_("(other version)")}
+# ... and, when they cannot be invited for a reason of their side, that reason instead (the presence icon still
+# says online or in a match).
+FRIEND_INVITE_TEXT = {"update": N_("older launcher: no invites"), "version": N_("other version")}
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
@@ -854,7 +856,7 @@ class OnlineTab:
         if st == "offline" and f.get("last_seen"):
             text = t("offline, last seen {when}", when=stamp(f["last_seen"]))
         if f.get("invite") in FRIEND_INVITE_TEXT:
-            text += " " + _word(FRIEND_INVITE_TEXT, f["invite"])
+            text = _word(FRIEND_INVITE_TEXT, f["invite"])
         return text
 
     def _fill_friends(self):
@@ -1426,9 +1428,8 @@ class OnlineTab:
         self.tv_players.delete(*self.tv_players.get_children())
         rtt_of = {}
         for p in ev.get("players", []):
-            status = _word(STATUS_TEXT, p["status"])
-            if p["build"] != mine:
-                status += " " + t("(other version)")
+            # another version: that is what matters (no challenge either way), not what they are doing
+            status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
             ms = None if p["rtt"] is None or (me and p["id"] == me["id"]) else p["rtt"] + my_rtt
             rtt_of[p["id"]] = ms
             ping = "" if ms is None else f"~{ms:.0f} ms"

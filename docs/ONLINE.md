@@ -703,6 +703,7 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
+| `T5L_OLD_STAGES` | `0` | `1` = the stage drawn for a match may also be one of the Tekken 5 stages (both clients must announce `old_stages`; docs/RANKED.md "Characters and stages") |
 | `T5L_PING_START` / `T5L_PING_WIDEN` / `T5L_PING_ANY_SECONDS` | `80` / `10` / `60` | ranked queue: the estimated ping a pair may have at first (ms), how fast that grows while both wait (ms per s), and after how long any ping goes (0 = never) |
 | `T5L_QUICK_PING_WIDEN` / `T5L_QUICK_PING_ANY_SECONDS` | `20` / `30` | the same for the quick queue (it starts at `T5L_PING_START` too) |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
@@ -936,9 +937,9 @@ the messages one in `i18n_known.py`): `python tools/i18n_extract.py` lists what 
 --lang ko` prints the lines to paste) and `tests/test_i18n.py` fails until it is there.
 
 Long texts: `tests/test_i18n.py` builds the launcher, every screen of the Online tab and the Controls, report
-and update windows in each language at 100 % and 150 % display scaling (windows withdrawn, nothing on
-screen) and fails for a text cut off where English is not (`python tests/i18n_layout.py [lang]` prints the
-list). Labels that can be long in other languages wrap or get room for every language.
+and update windows in each language at 100 %, 133 % and 150 % display scaling (windows withdrawn, nothing on
+screen) and fails for a text cut off (`python tests/i18n_layout.py [lang]` prints the list); the walk also
+scrolls to the bottom of the Settings tab and checks that all of it can be scrolled to. Labels that can be long in other languages wrap or get room for every language.
 
 ## What is left
 

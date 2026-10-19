@@ -948,7 +948,9 @@ Arcade runs -- the offline-soak agent's arcade saves -- and the lifted code):
   the save keeps the player's byte, autosaves write it back unchanged, and the
   setting off is the old game. Checked: the VS stage panel's list (0x1009405C)
   holds 17..34 without it and 0..13, 15, 17..34, 37 with it on a fresh save
-  (runs t_on / t_fixed); the save file is not rewritten. (Poking the byte
+  (runs t_on / t_fixed), and PRACTICE's stage select shows NEW STAGE SELECT /
+  OLD STAGE SELECT with the same list (run prac1); the save file is not
+  rewritten. (Poking the byte
   instead, the first try, went into the save with the title's autosave.)
 
 **Customization items.** The item shop (ITEM SHOP & EQUIP after picking a
@@ -1021,6 +1023,36 @@ starts VS with 0x4E9DC, not through the VS menu (0x572CC -> 0x1F99BC, which
 copies the save's profile for both sides and sets their profile pointers
 0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom data and
 both fighters wear their default costumes on both PCs (traced in t_df_items).
+
+**Plan: each player's custom costume online (not in 1.1.2).** Checked by
+hand (run cos1, one game): the fight reads its costumes from the VS custom
+data -- with no profile, as online, Lili's costume block is zeros; the Lace
+Hairband written into it between the select confirm and the fight's loading
+(bought list +0x00 and worn HEAD +0x40 of costume 1) is on her in the fight's
+intro. So:
+
+1. The launcher reads the player's own save (SYS-DATA, profile +0x400): for
+   every character the 0x108-byte costume block at +0x820 + c * 0x108 (only
+   the non-empty ones; Fight Money and names stay out) and announces a cap
+   `costumes` with its queue/ready message.
+2. The lobby server, when both clients have the cap (and a server setting,
+   say `T5L_COSTUMES`, allows it; ranked too only if the items are cosmetic),
+   sends both players' blocks to both in `match_start` (`fight.costumes`,
+   size-checked, at most 35 x 0x108 bytes per player). Both PCs then hold the
+   same bytes from the same message: nothing to agree on over the netplay
+   link, and locked set games, rematches and the in-game select need nothing
+   extra.
+3. The launcher writes them to a file named on the fight line; at FIGHT START
+   (before `t5_netplay_start()` and the fight's loading) the driver writes,
+   for each side, the block of the fighter it fights with (the item
+   character index: the fighter object +0x40, as 0x2A77B0 reads it) into that
+   side's VS custom data. Both PCs load the same item models for both sides.
+4. The VS custom data is outside the netplay hash and does not change during
+   a fight; anything the items change in the match (item models, an item
+   move) is the same on both PCs. Proof wanted: rollback and lockstep pairs
+   with costumes on both sides and mirrors, 0 mismatching frames, frame dumps
+   of both PCs showing the same costumes. Still open: whether any item has a
+   gameplay effect (T5 item moves) -- it decides ranked, not determinism.
 
 ## Character ids
 

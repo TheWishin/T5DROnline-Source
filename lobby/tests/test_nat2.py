@@ -281,7 +281,8 @@ class PunchTest(E2E):
             ca, cb, ta, tb = self.pair(b={"nat2": False})
         self.assertEqual(ta.path, "direct")
         plan = self.s.call(lambda: self.s.srv.by_name["alice"].match.nat_plan)
-        self.assertEqual([p["nat2"] for p in plan], [True, False])
+        bob = self.s.call(lambda: self.s.srv.by_name["alice"].match.side(self.s.srv.by_name["bob"]))
+        self.assertEqual([p["nat2"] for p in plan], [bob != 0, bob != 1])      # (quick match: either may host)
 
     def test_second_chance_for_a_side_that_gave_up(self):
         # Bob's first punch "fails" at once (its window ended before Alice's punches came, say); Alice gets

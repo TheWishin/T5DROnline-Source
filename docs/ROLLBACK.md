@@ -2215,7 +2215,7 @@ never got the KO confirmed and left the game mode "without a result" (the
 netplay result was written); R250d (final build, fixes 5 and 6): **12 of 12**
 matches with a result on both PCs, the same hash, 0 mismatching frames, 2 708 /
 2 619 rollbacks; all 24 match ends were first seen on predicted input and
-confirmed 1-11 frames later; 4 of them were rolled back and seen again at the
+confirmed 1-7 frames later; 4 of them were rolled back and seen again at the
 same frame. The bug itself (a KO that the confirmed input takes away) needs
 the peer's real input to change the outcome at the KO; it did not come up in
 these 29 scripted matches, so the proof is the code path: on the e2e g2

@@ -1087,14 +1087,18 @@ class OnlineTab:
         except AttributeError:
             on = False
         if not on:
+            self._presence_noid = False
             if self.presence is not None:
                 self._stop_presence()
             return
         if self.presence is None:
+            if getattr(self, "_presence_noid", False):
+                return                       # (no application id in this copy: Settings says so; looked once)
             self._presence_cfg = discord_rpc.load_config(settings)
             app_id = self._presence_cfg.get("application_id")
             if not app_id:
-                return                       # (no application id in this copy: Settings says so)
+                self._presence_noid = True
+                return
             self.presence = discord_rpc.DiscordPresence(app_id, paths=self.discord_paths, log=_launcher_log).start()
             self._presence_last = None
         want = self._presence_wanted()

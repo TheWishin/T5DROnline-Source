@@ -227,7 +227,7 @@ class RelayNode:
             self.counters["sessions_refused_full"] += 1
             return {"ok": False, "error": "full"}
         now = time.monotonic()
-        self.meta[sid] = {"bind_until": now + max(1.0, self.cfg.relay_bind_seconds),
+        self.meta[sid] = {"bind_until": now + max(0.1, self.cfg.relay_bind_seconds),
                           "deadline": now + self._lease(msg)}
         self.counters["sessions_opened"] += 1
         log.info("session %s opened (%d open)", sid, len(self.udp.relays))

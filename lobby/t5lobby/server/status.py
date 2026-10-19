@@ -99,6 +99,17 @@ def prometheus(st):
     p = st.get("process") or {}
     g("process_cpu_seconds_total", p.get("cpu_s"), "CPU time used")
     g("process_resident_megabytes", p.get("rss_mb"), "resident memory")
+    nodes = st.get("relays") or []
+    for name, key, help_ in (("relay_node_up", "alive", "1 while a regional relay node answers its health checks"),
+                             ("relay_node_sessions", "sessions", "relay sessions open on a regional node"),
+                             ("relay_node_kbit_per_second", "kbit_s", "a regional node's throughput, last minute"),
+                             ("relay_node_last_seen_seconds", "last_seen_s", "seconds since a node's last answer")):
+        rows = [(n["id"], int(n[key]) if isinstance(n.get(key), bool) else n.get(key)) for n in nodes]
+        rows = [(rid, v) for rid, v in rows if v is not None]
+        if rows:
+            lines.append(f"# HELP t5lobby_{name} {help_}")
+            lines.append(f"# TYPE t5lobby_{name} gauge")
+            lines.extend(f't5lobby_{name}{{relay="{rid}"}} {v}' for rid, v in rows)
     return "\n".join(lines) + "\n"
 
 

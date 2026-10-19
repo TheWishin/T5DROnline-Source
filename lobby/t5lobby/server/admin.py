@@ -123,6 +123,9 @@ def cmd_status(a):
     if a.json:
         print(json.dumps(st, indent=1))
         return 0
+    if st.get("role") == "relay":
+        print_node_status(st)
+        return 0
     p, r, db = st["players"], st["relay"], st.get("db", {})
     up = st["uptime_s"]
     print(f"{st['server']}  up {up // 86400}d {up % 86400 // 3600}h {up % 3600 // 60}m")
@@ -133,6 +136,8 @@ def cmd_status(a):
           f"last 24 h: {db.get('matches_24h', '?')} {db.get('matches_24h_by_path', '')}")
     print(f"relay     {r['sessions']}/{r['max']} sessions, {r['kbit_s']:.0f} kbit/s now, "
           f"{r['bytes_total'] / 1e6:.1f} MB since start{'  (relay only)' if r['force_relay'] else ''}")
+    for line in relay_lines(st):
+        print(line)
     print(f"accounts  {db.get('accounts', '?')} ({db.get('accounts_seen_24h', '?')} seen in 24 h), "
           f"banned {db.get('accounts_banned', 0)}, address bans {db.get('ip_bans', 0)}")
     tls = st.get("tls")
@@ -146,6 +151,56 @@ def cmd_status(a):
     print(f"process   cpu {pr.get('cpu_s')} s, rss {pr.get('rss_mb')} MB, python {pr.get('python')}; "
           f"traffic {c['tcp_out_bytes'] / 1e6:.1f} MB out / {c['tcp_in_bytes'] / 1e6:.1f} MB in (control)")
     return 0
+
+
+def _ago(s):
+    if s is None:
+        return "never"
+    s = float(s)
+    return f"{s:.0f} s ago" if s < 120 else f"{s / 60:.0f} min ago" if s < 7200 else f"{s / 3600:.0f} h ago"
+
+
+def relay_lines(st):
+    """One line per regional relay node (T5L_RELAYS) of a central server's status."""
+    out = []
+    if st.get("relays_error"):
+        out.append(f"relays    relays.json: {st['relays_error']}")
+    for n in st.get("relays") or ():
+        if not n.get("enabled", True):
+            state = "disabled"
+        elif not n.get("resolved", True):
+            state = "address not found"
+        elif n.get("alive"):
+            state = "up"
+        else:
+            state = "DOWN" + (f" ({n['error']})" if n.get("error") else "")
+        line = f"relay {n['id']:<5} {n.get('name', '')}: {state}"
+        if n.get("sessions") is not None:
+            line += (f", {n['sessions']}/{n.get('max', '?')} sessions, {float(n.get('kbit_s') or 0):.0f} kbit/s")
+        line += f", last seen {_ago(n.get('last_seen_s'))}"
+        if n.get("ctl_rtt_ms") is not None and n.get("alive"):
+            line += f" (control round trip {n['ctl_rtt_ms']:.0f} ms)"
+        if n.get("open_failed"):
+            line += f", {n['open_failed']} session request(s) failed"
+        out.append(line)
+    return out
+
+
+def print_node_status(st):
+    """`status` against a relay-only node (python run.py relay)."""
+    r, c, pr = st["relay"], st.get("counters", {}), st.get("process", {})
+    up = st["uptime_s"]
+    print(f"{st['server']}  relay node {st.get('id') or '(no id)'}  up {up // 86400}d {up % 86400 // 3600}h "
+          f"{up % 3600 // 60}m")
+    print(f"relay     {r['sessions']}/{r['max']} sessions ({r['bound']} with both players), {r['kbit_s']:.0f} kbit/s "
+          f"now, {r['bytes_total'] / 1e6:.1f} MB since start, {r['dropped_total']} packets dropped")
+    last = (st.get("central") or {}).get("last_request_s")
+    print(f"central   last request {_ago(last)}" + ("  -- check the secret, the id and the firewall"
+                                                    if last is None or last > 60 else ""))
+    print(f"sessions  {c.get('sessions_opened', 0)} opened, {c.get('sessions_expired', 0)} past their lease, "
+          f"{c.get('sessions_idle', 0)} idle, {c.get('sessions_unbound', 0)} never bound; "
+          f"{c.get('binds_refused', 0)} binds and {c.get('ctl_refused', 0)} control packets refused")
+    print(f"process   cpu {pr.get('cpu_s')} s, rss {pr.get('rss_mb')} MB, python {pr.get('python')}")
 
 
 def cmd_health(a):

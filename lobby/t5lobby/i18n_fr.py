@@ -1088,7 +1088,7 @@ MESSAGES = {
     "Rematch? (a new set)": "Rematch ? (un nouveau set)",
     "in a room": "dans un salon",
     "in lobby": "dans le lobby",
-    "matching": "match en préparation",
+    "matching": "matchmaking",
     "searching": "en recherche",
     "full": "plein",
     "open": "ouvert",

@@ -776,7 +776,7 @@ class OnlineView:
         ttk.Label(card, textvariable=tab.prof_text, style="Card.Muted.TLabel", justify="left").grid(
             row=1, column=1, sticky="w", pady=(px(2), px(8)))
         fr, tab.tv_hist = self.tree(card, ("when", "result", "opponent", "chars", "score", "rating", "status"),
-                                    (110, 84, 120, 180, 60, 76, 300), height=7, image_col=False, select="none")
+                                    (110, 84, 120, 180, 60, 76, 330), height=7, image_col=False, select="none")
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])

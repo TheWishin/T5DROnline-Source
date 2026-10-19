@@ -1067,7 +1067,7 @@ MESSAGES = {
     "Rematch? (a new set)": "Rematch? (um set novo)",
     "in a room": "em uma sala",
     "in lobby": "no lobby",
-    "matching": "montando partida",
+    "matching": "pareando",
     "searching": "procurando",
     "full": "cheia",
     "open": "aberta",

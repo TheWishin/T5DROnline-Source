@@ -95,6 +95,10 @@ FRIEND_INVITE_TEXT = {"update": N_("(older launcher: no invites)"), "version": N
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
+# A question's controller buttons (Accept (A) ...) take only presses made this long after it came up: a press meant
+# for what was there before -- A for a search, a menu -- must not answer a challenge or an invite that popped up in
+# the same moment (security review 2: a challenger or a friend could time one against a player using the pad).
+BAR_ARM_S = 0.4
 
 
 def _word(table, key):
@@ -196,6 +200,7 @@ class OnlineTab:
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
+        self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -374,6 +379,8 @@ class OnlineTab:
             self.bar_spec.append((b, label, pad))
             if pad:
                 self.bar_pad[pad] = cmd
+        if self.bar_pad:
+            self._bar_t = (self.pad.clock if self.pad is not None else time.monotonic)()
         self.view.show_bar()
         self._pad_relabel()
 
@@ -1782,6 +1789,8 @@ class OnlineTab:
         act = self._pad_plan().get(ev.button)
         if act is None:
             return
+        if act[0] is None and ev.t < self._bar_t + BAR_ARM_S:
+            return                  # a question's button, pressed before the question was there to be read
         self._pad_until = now + PAD_COOLDOWN_S
         act[1]()
 

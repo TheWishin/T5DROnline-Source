@@ -828,7 +828,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_STRICT_RANGE` | 150 | rating points a strict ranked search stays within |
 | `T5L_PAIR_COOLDOWN` | 30 | seconds before the ranked queue matches the same two players again (0 = off) |
 | `T5L_MAX_BLOCKS` | 200 | blocked players per account or guest session |
-| `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS` | 100, 20, 30, 14, 7, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
+| `T5L_MAX_FRIENDS`, `T5L_FRIEND_REQUESTS_DAY`, `T5L_FRIEND_PENDING`, `T5L_FRIEND_REQUEST_DAYS`, `T5L_FRIEND_RETRY_DAYS`, `T5L_INVITE_SECONDS`, `T5L_INVITE_RETRY_SECONDS`, `T5L_FRIEND_REQUESTS_ADDRESS` | 100, 20, 30, 14, 7, 60, 30, 60 | friends and invites (docs/ONLINE.md "Friends and invites") |
 | `T5L_LAG_TOLERANCE` | 1 | extra frames of waiting before the lag check says "more than the ping explains" |
 | `T5L_LAG_WAIT` | 6 | seconds the lag check waits for the second player's report |
 | `T5L_MIN_FPS` | 40 | a PC whose last match ran slower may not play ranked (0 = off) |

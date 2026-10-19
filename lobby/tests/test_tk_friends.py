@@ -136,6 +136,7 @@ class TkFriendsTest(TkBase):
         self.pump(lambda: not tab.view._bar_on and tab.invite is None)                 # the question is gone
         self.assertIn("The invite from Rival ended.", tab.status_var.get())
         time.sleep(2.1)                                           # (one invite per 2 s)
+        self.s.call(lambda: self.s.srv.retry_after.clear())       # (and after taking it back: T5L_INVITE_RETRY_SECONDS)
         self.other.invite("Ranker")
         self.pump(lambda: self.bar_button("Decline") is not None)
         self.bar_button("Decline").invoke()
@@ -163,6 +164,7 @@ class TkFriendsTest(TkBase):
         tab.actions["room"].invoke()
         self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
         time.sleep(2.1)
+        self.s.call(lambda: self.s.srv.retry_after.clear())       # (after a no: T5L_INVITE_RETRY_SECONDS)
         tab.friend_actions["invite_room"].invoke()
         ev = expect(self.other, "invited")
         self.assertEqual(ev["kind"], "room")

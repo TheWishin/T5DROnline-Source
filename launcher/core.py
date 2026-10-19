@@ -23,7 +23,7 @@ import build_game  # noqa: E402  (constants, pkg/sfo readers, code_id)
 import prereqs     # noqa: E402
 import run_game    # noqa: E402
 
-# English or German (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
+# The player's language (lobby/t5lobby/i18n.py): t("English text", name=value) and N_("text") to mark a text that
 # is translated where it is shown. The launcher chooses the language once, at start (apply_language).
 sys.path.append(os.path.join(ROOT, "lobby"))      # (appended: lobby/run.py must not hide another run module)
 try:
@@ -96,7 +96,7 @@ DEFAULTS = {
     "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
     "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
-    "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
+    "language": "auto",        # auto (the Windows language) | en | de | es | ko | ja | pt-BR | fr -- applies at start
     "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
     "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
@@ -107,7 +107,8 @@ DEFAULTS = {
 }
 
 
-LANGUAGE_CHOICES = [("auto", N_("Auto (Windows language)")), ("de", N_("Deutsch")), ("en", N_("English"))]
+# What the Settings box offers: Auto, then every language in its own name (those names are never translated).
+LANGUAGE_CHOICES = [("auto", N_("Auto (Windows language)"))] + (list(i18n.LANGUAGES.items()) if I18N else [])
 
 
 def clock(seconds):
@@ -117,8 +118,13 @@ def clock(seconds):
 
 
 def apply_language(settings):
-    """Switch the texts to the language in the settings ('auto' = the Windows language). -> 'de' | 'en'."""
+    """Switch the texts to the language in the settings ('auto' = the Windows language). -> the language code."""
     return i18n.init(settings["language"]) if I18N else "en"
+
+
+def ui_family(default="Segoe UI"):
+    """The font family for texts in the launcher's language (Segoe UI; a Korean / Japanese font for those)."""
+    return i18n.ui_family(default) if I18N else default
 
 
 class Settings(dict):

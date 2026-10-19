@@ -302,23 +302,35 @@ def play_match(world, clients, a, out_dir, expect_relay, expect_rtt):
         os.makedirs(d, exist_ok=True)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         env.update(tk.game_env(result_file=os.path.join(d, "result.json")))
+        flags = 0
         if a.exe:
+            # the real game, the way the launcher's match driver starts it: straight into the fight (one round
+            # to win), lockstep/rollback from the fight on, the same frozen clock on both PCs; muted, in the
+            # background, below normal priority (other work on this PC goes first)
+            from t5lobby import fighters
+            f = starts[c].get("fight") or {}
             vfs = os.path.abspath(a.vfs)
             env.update(PS3_GCM_TICKER_PUMP="1", RSX_LIVE_DRAW="1", PS3_VERBOSE="0", PS3_WINDOW_BACKGROUND="1",
                        PS3_AUDIO_MUTE="1", T5_NET_LOCALPAD="0", PAD_NO_KEYBOARD="1",
                        PS3_VFS_ROOT=vfs.replace("\\", "/"),
                        PS3_HDD0_ROOT=os.path.join(vfs, "dev_hdd0").replace("\\", "/"),
-                       T5_FIGHT="0,1,0,1", PS3_TITLE=f"relay e2e P{tk.slot + 1}")
+                       T5_FIGHT=fighters.table().fight_env(f["p1"], f["p2"], f["stage"], 1),
+                       T5_NET_START="external", PS3_FIXED_TIME=str(int(starts[c]["start_time"])),
+                       T5_NET_LOG=os.path.join(d, "frames.log"), PS3_TITLE=f"relay e2e P{tk.slot + 1}")
             cmd = [os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")]
+            flags = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
         else:
             env.update(T5_STUB_SECONDS=str(a.seconds))
             cmd = [sys.executable, os.path.join(HERE, "stub_game.py")]
         lf = open(os.path.join(d, "game.log"), "w", encoding="utf-8")
         procs.append((subprocess.Popen(cmd, cwd=d, env=env, stdout=lf, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL), lf))
+                                       stdin=subprocess.DEVNULL, creationflags=flags), lf))
         dirs.append(d)
     t_end = time.monotonic() + (a.game_seconds if a.exe else 30 + a.seconds)
     while time.monotonic() < t_end and any(p.poll() is None for p, _lf in procs):
+        if a.exe and all(read_result_file(os.path.join(d, "result.json")) is not None for d in dirs):
+            time.sleep(2)               # (the real game stays after the match: both results are in)
+            break
         time.sleep(0.25)
     for p, lf in procs:
         if p.poll() is None:

@@ -8,7 +8,8 @@ The database is --db, else $T5L_DB, else ./t5lobby.db -- the same rule the serve
 with the server's environment (systemd: `sudo -u t5lobby env $(cat /etc/t5lobby/t5lobby.env) ...`
 or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobby-admin ...`).
 
-    status [--json]                      players online, rooms, matches today, relay bandwidth
+    status [--json]                      players online, rooms, matches today, relay bandwidth, one line per
+                                         regional relay node (on a relay node: its sessions and kbit/s)
     health                               exit code 0 when the server answers (health checks)
     users [TEXT] [--banned] [--limit N]  accounts, most recently seen first
     user NAME                            one account and its last matches

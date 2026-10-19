@@ -1152,7 +1152,7 @@ class LobbyServer:
         it could not reach is left out (and is then never chosen for its matches)."""
         rtts = msg["rtts"]
         if not isinstance(rtts, dict):
-            raise LobbyError(proto.E_BAD_REQUEST, "rtts")
+            raise TypeError("rtts is {relay id: ms}")          # (-> "bad field", for programmers)
         out = {}
         for rid, ms in list(rtts.items())[:MAX_RELAYS]:
             if rid in self.relays.nodes and isinstance(ms, (int, float)) and 0 <= ms < 10000:

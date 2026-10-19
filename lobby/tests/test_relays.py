@@ -596,6 +596,25 @@ class ChoiceTest(Regional):
             del self.nodes["ase"]
             extra.stop()
 
+    def test_a_new_secret_is_picked_up(self):
+        sf = os.path.join(self.tmp, "relay.secret")
+        with open(sf, "w") as f:
+            f.write("f" * 64)                        # the central server's copy no longer matches the nodes'
+        self.assertTrue(self.s.wait_for(lambda: not any(n.alive for n in self.s.srv.relays.nodes.values()), 10))
+        with open(sf, "w") as f:
+            f.write(SECRET.decode())
+        self.assertTrue(self.s.wait_for(lambda: all(n.alive for n in self.s.srv.relays.nodes.values()), 10))
+
+    def test_secret_file_copied_after_the_entry(self):
+        # the operator writes relays.json first and copies the node's secret second: no restart, no touch
+        self.write_relays(self.nodes, extra=[{"id": "ase", "host": "127.0.0.1", "port": 9,
+                                              "secret_file": "ase.secret"}])
+        self.assertTrue(self.s.wait_for(lambda: "ase.secret" in (self.s.srv.relays.error or ""), 10))
+        self.assertEqual(len(self.s.srv.relays.nodes), 2)                 # the last good list stays
+        with open(os.path.join(self.tmp, "ase.secret"), "w") as f:
+            f.write(SECRET.decode())
+        self.assertTrue(self.s.wait_for(lambda: len(self.s.srv.relays.nodes) == 3 and not self.s.srv.relays.error, 10))
+
     def test_admin_status_lines(self):
         from t5lobby.server import admin
         out = io.StringIO()

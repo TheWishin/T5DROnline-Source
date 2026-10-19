@@ -52,6 +52,8 @@ class RelayNodeRef:
         self.secret = secret
         self.enabled = enabled
         self.ip = None                 # resolved IPv4 address (what the players get)
+        self.secret_path = None        # the file the secret came from (a new secret there is picked up)
+        self.resolve_at = 0.0          # an unresolvable host name is tried again from this time (monotonic)
         self.alive = False             # answered a health check within T5L_RELAY_DEAD_SECONDS
         self.last_seen = None          # time.monotonic() of the last answer
         self.since = time.monotonic()  # of the last up / down change
@@ -196,7 +198,9 @@ def parse(text, base_dir, default_secret_file=""):
         if not os.path.isabs(sf) and base_dir:
             sf = os.path.join(base_dir, sf)
         secret = relayctl.load_secret(sf)
-        out.append(RelayNodeRef(rid, name, host, port, secret, enabled=e.get("enabled", True) is not False))
+        n = RelayNodeRef(rid, name, host, port, secret, enabled=e.get("enabled", True) is not False)
+        n.secret_path = sf
+        out.append(n)
     return out
 
 
@@ -207,7 +211,7 @@ class RelayPool:
         self.nodes = {}                    # id -> RelayNodeRef
         self.pending = {}                  # request id -> (RelayNodeRef, Future)
         self.transport = None
-        self._mtime = None
+        self._stamp = None                 # modification times of relays.json and the secret files it names
         self._task = None
         self._spawned = set()
         self.error = None                  # why relays.json could not be used (status, log)
@@ -252,17 +256,27 @@ class RelayPool:
         with open(src, encoding="utf-8") as f:
             return f.read(), os.path.dirname(os.path.abspath(src)), st.st_mtime_ns
 
+    def _stamp_now(self, secret_paths=None):
+        """What reload() compares: the modification times of relays.json and of the secret files."""
+        def mt(path):
+            try:
+                return os.stat(path).st_mtime_ns
+            except OSError:
+                return None
+        src = self.cfg.relays.strip()
+        if secret_paths is None:
+            secret_paths = sorted({n.secret_path for n in self.nodes.values() if n.secret_path})
+        return (None if src[:1] in ("[", "{") else mt(src)), tuple((sp, mt(sp)) for sp in secret_paths)
+
     async def reload(self, force=False):
-        """Read relays.json again when it changed. -> True when the list players get changed. A broken file
-        keeps the last good list (and says why in the log and the status)."""
+        """Read relays.json again when it (or a secret file it names) changed. -> True when the list players get
+        changed. A broken file keeps the last good list (and says why in the log and the status)."""
         if not self.configured:
             return False
-        src = self.cfg.relays.strip()
+        if not force and self._stamp == self._stamp_now():
+            return False
         try:
-            if not force and src[:1] not in ("[", "{"):
-                if os.stat(src).st_mtime_ns == self._mtime:
-                    return False
-            text, base, mtime = self._source()
+            text, base, _mtime = self._source()
             fresh = parse(text, base, self.cfg.relay_secret_file)
         except (OSError, ValueError) as e:
             msg = str(e)
@@ -270,29 +284,31 @@ class RelayPool:
                 log.error("regional relays: %s -- %s", msg,
                           "keeping the last good list" if self.nodes else "no regional relays")
             self.error = msg
-            try:
-                self._mtime = os.stat(src).st_mtime_ns if src[:1] not in ("[", "{") else 0
-            except OSError:
-                self._mtime = None
+            self._stamp = None        # (tried again every check: a secret file copied over after it is found)
             return False
         self.error = None
-        self._mtime = mtime
+        self._stamp = self._stamp_now(sorted({n.secret_path for n in fresh if n.secret_path}))
         loop = asyncio.get_running_loop()
         before = self.public_list()
         nodes = {}
+        news = False
         for n in fresh:
             old = self.nodes.get(n.id)
             if old is not None and old.same(n):
                 nodes[n.id] = old               # keeps its health
                 continue
+            news = True
             n.ip = await loop.run_in_executor(None, _resolve, n.host)
+            n.resolve_at = time.monotonic() + 60.0
             nodes[n.id] = n
         for rid in set(self.nodes) - set(nodes):
+            news = True
             log.info("relay %s removed from the list", rid)
         self.nodes = nodes
-        log.info("regional relays: %s", ", ".join(f"{n.id} ({n.name}, {n.ip or 'unresolved'}:{n.port}"
-                                                    f"{'' if n.enabled else ', disabled'})" for n in nodes.values())
-                 or "none")
+        if news or force:
+            log.info("regional relays: %s", ", ".join(f"{n.id} ({n.name}, {n.ip or 'unresolved'}:{n.port}"
+                                                        f"{'' if n.enabled else ', disabled'})" for n in nodes.values())
+                     or "none")
         for n in nodes.values():
             if n.ip is not None and n.enabled and n.last_seen is None and self.transport is not None:
                 self._spawn(self._check(n))
@@ -364,11 +380,27 @@ class RelayPool:
             await asyncio.sleep(max(0.05, self.cfg.relay_check_seconds))
             try:
                 await self.reload()
+                await self._resolve_again()
                 for n in list(self.nodes.values()):
                     if n.ip is not None and n.enabled and not n.checking:
                         self._spawn(self._check(n))
             except Exception:
                 log.exception("relay health check")
+
+    async def _resolve_again(self):
+        """A node whose host name did not resolve: try again once a minute (DNS may come later than the file)."""
+        now = time.monotonic()
+        loop = asyncio.get_running_loop()
+        got = False
+        for n in list(self.nodes.values()):
+            if n.ip is None and n.enabled and now >= n.resolve_at:
+                n.resolve_at = now + 60.0
+                n.ip = await loop.run_in_executor(None, _resolve, n.host)
+                if n.ip is not None:
+                    log.info("relay %s: %s is %s", n.id, n.host, n.ip)
+                    got = True
+        if got and self.on_change is not None:
+            self.on_change()
 
     async def _check(self, n):
         n.checking = True

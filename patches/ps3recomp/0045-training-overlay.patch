@@ -1,0 +1,857 @@
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 8d11671..7a1162c 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -12295,6 +12295,8 @@ void rsx_live_draw_present(u32 buffer_id)
+     g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
+ 
+     ld_present_copy(bb, bbi, srcimg, presented_surface->w, presented_surface->h);
++    extern void rsx_overlay_present(void*, void*, void*, uint32_t, uint32_t);   /* patch 0045: rsx_overlay.c */
++    rsx_overlay_present(g.dev, g.list, bb, presented_surface->w, presented_surface->h);
+     ld_test_backbuffer_shot(bb);
+ 
+     bar[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+diff --git a/libs/video/rsx_overlay.c b/libs/video/rsx_overlay.c
+new file mode 100644
+index 0000000..12af132
+--- /dev/null
++++ b/libs/video/rsx_overlay.c
+@@ -0,0 +1,738 @@
++/*
++ * rsx_overlay -- text and boxes over the finished picture (patch 0045).
++ * See rsx_overlay.h for the interface.
++ *
++ * Drawing: one draw call of instanced-free quads. Every quad is 48 bytes in an
++ * upload buffer (a ring of 8 slots, so a frame the GPU may still be reading is
++ * never overwritten), read by the vertex shader as a structured buffer through
++ * a root SRV; the font is 128 glyphs x 64 bits in a constant buffer (root CBV)
++ * that the pixel shader tests bit by bit. No texture, no sampler, no
++ * shader-visible descriptor heap: the present's own heaps and root signature
++ * are left alone, and the backbuffer gets one RTV in a heap of our own.
++ * Glyph quads are placed on whole window pixels and are a whole number of
++ * window pixels per font pixel, so the text is exactly as sharp as the window.
++ *
++ * Built with -DRSX_OVERLAY_NO_D3D (tests) it is only the list, the font and
++ * the layout.
++ */
++#include "rsx_overlay.h"
++
++#include <math.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#if defined(_WIN32)
++#  define WIN32_LEAN_AND_MEAN
++#  include <windows.h>
++#  if !defined(RSX_OVERLAY_NO_D3D)
++#    include <d3d12.h>
++#    include <d3dcompiler.h>
++#  endif
++#else
++#  include <pthread.h>
++#  include <time.h>
++#  define RSX_OVERLAY_NO_D3D 1
++#endif
++
++/* ---------------------------------------------------------------- the font
++ * Our own 5 x 7 glyphs ('#' = on), drawn for this overlay. Codes 1..9 are
++ * the directions in numpad notation (5 = neutral), 0x0B/0x0C/0x0E/0x0F and
++ * 0x10..0x12 the German letters Ae Oe Ue sz ae oe ue (UTF-8 input is mapped
++ * to them). */
++typedef struct { unsigned char code; const char* rows[7]; } ovl_glyph_src;
++
++static const ovl_glyph_src k_glyphs[] = {
++    { 0x01, { ".....", "....#", "...#.", "#.#..", "##...", "###..", "....." } },   /* down-back */
++    { 0x02, { "..#..", "..#..", "..#..", "..#..", "#.#.#", ".###.", "..#.." } },   /* down */
++    { 0x03, { ".....", "#....", ".#...", "..#.#", "...##", "..###", "....." } },   /* down-forward */
++    { 0x04, { ".....", "..#..", ".#...", "#####", ".#...", "..#..", "....." } },   /* back */
++    { 0x05, { ".....", ".....", ".###.", ".###.", ".###.", ".....", "....." } },   /* neutral */
++    { 0x06, { ".....", "..#..", "...#.", "#####", "...#.", "..#..", "....." } },   /* forward */
++    { 0x07, { ".....", "###..", "##...", "#.#..", "...#.", "....#", "....." } },   /* up-back */
++    { 0x08, { "..#..", ".###.", "#.#.#", "..#..", "..#..", "..#..", "..#.." } },   /* up */
++    { 0x09, { ".....", "..###", "...##", "..#.#", ".#...", "#....", "....." } },   /* up-forward */
++    { 0x0B, { "#...#", ".###.", "#...#", "#...#", "#####", "#...#", "#...#" } },   /* Ae */
++    { 0x0C, { "#...#", ".###.", "#...#", "#...#", "#...#", "#...#", ".###." } },   /* Oe */
++    { 0x0E, { "#...#", ".....", "#...#", "#...#", "#...#", "#...#", ".###." } },   /* Ue */
++    { 0x0F, { ".##..", "#..#.", "#..#.", "###..", "#..#.", "#..#.", "#.##." } },   /* sz */
++    { 0x10, { ".#.#.", ".....", ".###.", "....#", ".####", "#...#", ".####" } },   /* ae */
++    { 0x11, { ".#.#.", ".....", ".###.", "#...#", "#...#", "#...#", ".###." } },   /* oe */
++    { 0x12, { ".#.#.", ".....", "#...#", "#...#", "#...#", "#..##", ".##.#" } },   /* ue */
++    { ' ',  { ".....", ".....", ".....", ".....", ".....", ".....", "....." } },
++    { '!',  { "..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.." } },
++    { '"',  { ".#.#.", ".#.#.", ".....", ".....", ".....", ".....", "....." } },
++    { '#',  { ".#.#.", ".#.#.", "#####", ".#.#.", "#####", ".#.#.", ".#.#." } },
++    { '%',  { "##...", "##..#", "...#.", "..#..", ".#...", "#..##", "...##" } },
++    { '&',  { ".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#" } },
++    { '\'', { "..#..", "..#..", ".....", ".....", ".....", ".....", "....." } },
++    { '(',  { "...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#." } },
++    { ')',  { ".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..." } },
++    { '*',  { ".....", "..#..", "#.#.#", ".###.", "#.#.#", "..#..", "....." } },
++    { '+',  { ".....", "..#..", "..#..", "#####", "..#..", "..#..", "....." } },
++    { ',',  { ".....", ".....", ".....", ".....", ".##..", "..#..", ".#..." } },
++    { '-',  { ".....", ".....", ".....", "#####", ".....", ".....", "....." } },
++    { '.',  { ".....", ".....", ".....", ".....", ".....", ".##..", ".##.." } },
++    { '/',  { ".....", "....#", "...#.", "..#..", ".#...", "#....", "....." } },
++    { '0',  { ".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###." } },
++    { '1',  { "..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###." } },
++    { '2',  { ".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####" } },
++    { '3',  { "#####", "...#.", "..#..", "...#.", "....#", "#...#", ".###." } },
++    { '4',  { "...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#." } },
++    { '5',  { "#####", "#....", "####.", "....#", "....#", "#...#", ".###." } },
++    { '6',  { "..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###." } },
++    { '7',  { "#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..." } },
++    { '8',  { ".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###." } },
++    { '9',  { ".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.." } },
++    { ':',  { ".....", ".##..", ".##..", ".....", ".##..", ".##..", "....." } },
++    { ';',  { ".....", ".##..", ".##..", ".....", ".##..", "..#..", ".#..." } },
++    { '<',  { "...#.", "..#..", ".#...", "#....", ".#...", "..#..", "...#." } },
++    { '=',  { ".....", ".....", "#####", ".....", "#####", ".....", "....." } },
++    { '>',  { ".#...", "..#..", "...#.", "....#", "...#.", "..#..", ".#..." } },
++    { '?',  { ".###.", "#...#", "....#", "...#.", "..#..", ".....", "..#.." } },
++    { '@',  { ".###.", "#...#", "....#", ".##.#", "#.#.#", "#.#.#", ".###." } },
++    { 'A',  { ".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#" } },
++    { 'B',  { "####.", "#...#", "#...#", "####.", "#...#", "#...#", "####." } },
++    { 'C',  { ".###.", "#...#", "#....", "#....", "#....", "#...#", ".###." } },
++    { 'D',  { "###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.." } },
++    { 'E',  { "#####", "#....", "#....", "####.", "#....", "#....", "#####" } },
++    { 'F',  { "#####", "#....", "#....", "####.", "#....", "#....", "#...." } },
++    { 'G',  { ".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".####" } },
++    { 'H',  { "#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#" } },
++    { 'I',  { ".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###." } },
++    { 'J',  { "..###", "...#.", "...#.", "...#.", "...#.", "#..#.", ".##.." } },
++    { 'K',  { "#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#" } },
++    { 'L',  { "#....", "#....", "#....", "#....", "#....", "#....", "#####" } },
++    { 'M',  { "#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#" } },
++    { 'N',  { "#...#", "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#" } },
++    { 'O',  { ".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###." } },
++    { 'P',  { "####.", "#...#", "#...#", "####.", "#....", "#....", "#...." } },
++    { 'Q',  { ".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#" } },
++    { 'R',  { "####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#" } },
++    { 'S',  { ".####", "#....", "#....", ".###.", "....#", "....#", "####." } },
++    { 'T',  { "#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.." } },
++    { 'U',  { "#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###." } },
++    { 'V',  { "#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.." } },
++    { 'W',  { "#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#." } },
++    { 'X',  { "#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#" } },
++    { 'Y',  { "#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.." } },
++    { 'Z',  { "#####", "....#", "...#.", "..#..", ".#...", "#....", "#####" } },
++    { '[',  { ".###.", ".#...", ".#...", ".#...", ".#...", ".#...", ".###." } },
++    { ']',  { ".###.", "...#.", "...#.", "...#.", "...#.", "...#.", ".###." } },
++    { '^',  { "..#..", ".#.#.", "#...#", ".....", ".....", ".....", "....." } },
++    { '_',  { ".....", ".....", ".....", ".....", ".....", ".....", "#####" } },
++    { '|',  { "..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.." } },
++    { '~',  { ".....", ".....", ".#...", "#.#.#", "...#.", ".....", "....." } },
++    { 'a',  { ".....", ".....", ".###.", "....#", ".####", "#...#", ".####" } },
++    { 'b',  { "#....", "#....", "####.", "#...#", "#...#", "#...#", "####." } },
++    { 'c',  { ".....", ".....", ".###.", "#....", "#....", "#...#", ".###." } },
++    { 'd',  { "....#", "....#", ".####", "#...#", "#...#", "#...#", ".####" } },
++    { 'e',  { ".....", ".....", ".###.", "#...#", "#####", "#....", ".###." } },
++    { 'f',  { "..##.", ".#..#", ".#...", "###..", ".#...", ".#...", ".#..." } },
++    { 'g',  { ".....", ".####", "#...#", "#...#", ".####", "....#", ".###." } },
++    { 'h',  { "#....", "#....", "#.##.", "##..#", "#...#", "#...#", "#...#" } },
++    { 'i',  { "..#..", ".....", ".##..", "..#..", "..#..", "..#..", ".###." } },
++    { 'j',  { "...#.", ".....", "..##.", "...#.", "...#.", "#..#.", ".##.." } },
++    { 'k',  { "#....", "#....", "#..#.", "#.#..", "##...", "#.#..", "#..#." } },
++    { 'l',  { ".##..", "..#..", "..#..", "..#..", "..#..", "..#..", ".###." } },
++    { 'm',  { ".....", ".....", "##.#.", "#.#.#", "#.#.#", "#...#", "#...#" } },
++    { 'n',  { ".....", ".....", "#.##.", "##..#", "#...#", "#...#", "#...#" } },
++    { 'o',  { ".....", ".....", ".###.", "#...#", "#...#", "#...#", ".###." } },
++    { 'p',  { ".....", "####.", "#...#", "#...#", "####.", "#....", "#...." } },
++    { 'q',  { ".....", ".####", "#...#", "#...#", ".####", "....#", "....#" } },
++    { 'r',  { ".....", ".....", "#.##.", "##..#", "#....", "#....", "#...." } },
++    { 's',  { ".....", ".....", ".####", "#....", ".###.", "....#", "####." } },
++    { 't',  { ".#...", ".#...", "###..", ".#...", ".#...", ".#..#", "..##." } },
++    { 'u',  { ".....", ".....", "#...#", "#...#", "#...#", "#..##", ".##.#" } },
++    { 'v',  { ".....", ".....", "#...#", "#...#", "#...#", ".#.#.", "..#.." } },
++    { 'w',  { ".....", ".....", "#...#", "#...#", "#.#.#", "#.#.#", ".#.#." } },
++    { 'x',  { ".....", ".....", "#...#", ".#.#.", "..#..", ".#.#.", "#...#" } },
++    { 'y',  { ".....", "#...#", "#...#", "#...#", ".####", "....#", ".###." } },
++    { 'z',  { ".....", ".....", "#####", "...#.", "..#..", ".#...", "#####" } },
++};
++
++static uint32_t g_font[128 * 2];   /* 8 rows x 8 bits per glyph; bit (row & 3) * 8 + col of word row >> 2 */
++static uint8_t  g_have_glyph[128];
++
++static void ovl_font_init(void)
++{
++    static int done = 0;
++    if (done) return;
++    memset(g_font, 0, sizeof g_font);
++    for (size_t i = 0; i < sizeof k_glyphs / sizeof k_glyphs[0]; i++) {
++        const unsigned c = k_glyphs[i].code & 127u;
++        g_have_glyph[c] = 1;
++        for (unsigned r = 0; r < 7; r++)
++            for (unsigned x = 0; x < 5; x++)
++                if (k_glyphs[i].rows[r][x] == '#')
++                    g_font[c * 2 + (r >> 2)] |= 1u << ((r & 3u) * 8u + x);
++    }
++    done = 1;
++}
++
++int rsx_overlay_glyph_rows(unsigned code, uint8_t rows[7])
++{
++    ovl_font_init();
++    if (code >= 128 || !g_have_glyph[code]) {
++        if (rows) memset(rows, 0, 7);
++        return 0;
++    }
++    for (unsigned r = 0; r < 7; r++)
++        rows[r] = (uint8_t)((g_font[code * 2 + (r >> 2)] >> ((r & 3u) * 8u)) & 0x1Fu);
++    return 1;
++}
++
++/* Next glyph code of a UTF-8 string (advances *s); 0 at the end. */
++static unsigned ovl_next_code(const unsigned char** s)
++{
++    const unsigned char* p = *s;
++    unsigned c = *p;
++    if (!c) return 0;
++    if (c < 0x80) {
++        *s = p + 1;
++    } else if ((c & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
++        const unsigned u = ((c & 0x1Fu) << 6) | (p[1] & 0x3Fu);
++        *s = p + 2;
++        switch (u) {
++        case 0xC4: c = 0x0B; break;   /* Ae */
++        case 0xD6: c = 0x0C; break;   /* Oe */
++        case 0xDC: c = 0x0E; break;   /* Ue */
++        case 0xE4: c = 0x10; break;   /* ae */
++        case 0xF6: c = 0x11; break;   /* oe */
++        case 0xFC: c = 0x12; break;   /* ue */
++        case 0xDF:            c = 0x0F; break;   /* sz */
++        default:              c = '?';  break;
++        }
++    } else {
++        /* longer sequences and stray bytes: one '?' per character */
++        p++;
++        while ((*p & 0xC0) == 0x80) p++;
++        *s = p;
++        c = '?';
++    }
++    ovl_font_init();
++    if (c >= 128 || !g_have_glyph[c]) c = '?';
++    return c;
++}
++
++static int ovl_count_codes(const char* utf8)
++{
++    const unsigned char* s = (const unsigned char*)(utf8 ? utf8 : "");
++    int n = 0;
++    while (ovl_next_code(&s)) n++;
++    return n;
++}
++
++float rsx_overlay_text_width(const char* utf8, float px)
++{
++    const int n = ovl_count_codes(utf8);
++    return n > 0 ? (float)(n * 6 - 1) * px : 0.0f;
++}
++
++/* ---------------------------------------------------------------- lists */
++#define OVL_MAX_ITEMS 1024
++#define OVL_MAX_TEXT  16384
++#define OVL_MAX_QUADS 4096
++
++typedef struct {
++    float x, y, w, h, px;
++    uint32_t rgba;
++    uint32_t text;      /* offset into the text pool (text items) */
++    uint8_t kind;       /* 0 box, 1 text */
++    uint8_t flags;
++} ovl_item;
++
++typedef struct {
++    uint32_t n, ntext;
++    ovl_item items[OVL_MAX_ITEMS];
++    char text[OVL_MAX_TEXT];
++} ovl_list;
++
++static ovl_list g_build;            /* the producer's list being built */
++static ovl_list g_pub;              /* the newest published list */
++static volatile long g_pub_items;   /* items in g_pub (read without the lock as a hint) */
++static int g_building;
++static volatile long g_prepare;     /* rsx_overlay_prepare(): build the pipeline at the next present */
++
++#if defined(_WIN32)
++static SRWLOCK g_lock = SRWLOCK_INIT;
++#  define OVL_LOCK()   AcquireSRWLockExclusive(&g_lock)
++#  define OVL_UNLOCK() ReleaseSRWLockExclusive(&g_lock)
++#else
++static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
++#  define OVL_LOCK()   pthread_mutex_lock(&g_lock)
++#  define OVL_UNLOCK() pthread_mutex_unlock(&g_lock)
++#endif
++
++static void list_rect(ovl_list* L, float x, float y, float w, float h, uint32_t rgba)
++{
++    if (L->n >= OVL_MAX_ITEMS || !(w > 0.0f) || !(h > 0.0f)) return;
++    ovl_item* it = &L->items[L->n++];
++    memset(it, 0, sizeof *it);
++    it->kind = 0; it->x = x; it->y = y; it->w = w; it->h = h; it->rgba = rgba;
++}
++
++static void list_text(ovl_list* L, float x, float y, float px, uint32_t rgba, unsigned flags, const char* s)
++{
++    if (!s || !*s || L->n >= OVL_MAX_ITEMS) return;
++    const size_t len = strlen(s);
++    if (L->ntext + len + 1 > OVL_MAX_TEXT) return;
++    ovl_item* it = &L->items[L->n++];
++    memset(it, 0, sizeof *it);
++    it->kind = 1; it->x = x; it->y = y; it->px = px > 0.0f ? px : 1.0f; it->rgba = rgba;
++    it->flags = (uint8_t)flags;
++    it->text = L->ntext;
++    memcpy(L->text + L->ntext, s, len + 1);
++    L->ntext += (uint32_t)len + 1;
++}
++
++void rsx_overlay_prepare(void)
++{
++    g_prepare = 1;
++}
++
++void rsx_overlay_begin(void)
++{
++    g_build.n = 0;
++    g_build.ntext = 0;
++    g_building = 1;
++}
++
++void rsx_overlay_rect(float x, float y, float w, float h, uint32_t rgba)
++{
++    if (g_building) list_rect(&g_build, x, y, w, h, rgba);
++}
++
++void rsx_overlay_text(float x, float y, float px, uint32_t rgba, unsigned flags, const char* utf8)
++{
++    if (g_building) list_text(&g_build, x, y, px, rgba, flags, utf8);
++}
++
++void rsx_overlay_end(void)
++{
++    if (!g_building) return;
++    g_building = 0;
++    OVL_LOCK();
++    g_pub.n = g_build.n;
++    g_pub.ntext = g_build.ntext;
++    memcpy(g_pub.items, g_build.items, sizeof(ovl_item) * g_build.n);
++    memcpy(g_pub.text, g_build.text, g_build.ntext);
++    g_pub_items = (long)g_build.n;
++    OVL_UNLOCK();
++}
++
++void rsx_overlay_clear(void)
++{
++    g_building = 0;
++    if (!g_pub_items) return;
++    OVL_LOCK();
++    g_pub.n = 0;
++    g_pub.ntext = 0;
++    g_pub_items = 0;
++    OVL_UNLOCK();
++}
++
++/* ---------------------------------------------------------------- layout */
++static float ovl_round(float v) { return floorf(v + 0.5f); }
++
++/* The picture's rectangle in the backbuffer: the same letterbox as the
++ * present copy (rsx_live_draw.c ld_present_copy). */
++static void ovl_viewport(uint32_t bw, uint32_t bh, uint32_t aw, uint32_t ah,
++                         float* vx, float* vy, float* vw, float* vh)
++{
++    if (!aw || !ah) { aw = bw; ah = bh; }
++    const float fw = (float)bw, fh = (float)bh;
++    const float k = fw / (float)aw < fh / (float)ah ? fw / (float)aw : fh / (float)ah;
++    *vw = (float)aw * k;
++    *vh = (float)ah * k;
++    *vx = (float)(long)((fw - *vw) * 0.5f);
++    *vy = (float)(long)((fh - *vh) * 0.5f);
++}
++
++static int ovl_layout_list(const ovl_list* L, uint32_t bw, uint32_t bh, uint32_t aw, uint32_t ah,
++                           rsx_overlay_quad* out, int max)
++{
++    float vx, vy, vw, vh;
++    ovl_viewport(bw, bh, aw, ah, &vx, &vy, &vw, &vh);
++    const float sx = vw / RSX_OVERLAY_CANVAS_W, sy = vh / RSX_OVERLAY_CANVAS_H;
++    int n = 0;
++    for (uint32_t i = 0; i < L->n; i++) {
++        const ovl_item* it = &L->items[i];
++        if (it->kind == 0) {
++            if (n >= max) break;
++            rsx_overlay_quad* q = &out[n];
++            q->x0 = ovl_round(vx + it->x * sx);
++            q->y0 = ovl_round(vy + it->y * sy);
++            q->x1 = ovl_round(vx + (it->x + it->w) * sx);
++            q->y1 = ovl_round(vy + (it->y + it->h) * sy);
++            q->glyph = -1;
++            q->rgba = it->rgba;
++            if (q->x1 > q->x0 && q->y1 > q->y0) n++;
++            continue;
++        }
++        const char* s = L->text + it->text;
++        float fp = ovl_round(it->px * sy);       /* window pixels per font pixel */
++        if (fp < 1.0f) fp = 1.0f;
++        const int codes = ovl_count_codes(s);
++        if (!codes) continue;
++        const float width = (float)(codes * 6 - 1) * fp;
++        float ox = ovl_round(vx + it->x * sx);
++        if (it->flags & RSX_OVL_RIGHT) ox -= width;
++        else if (it->flags & RSX_OVL_CENTER) ox -= ovl_round(width * 0.5f);
++        const float oy = ovl_round(vy + it->y * sy);
++        for (int pass = (it->flags & RSX_OVL_SHADOW) ? 0 : 1; pass < 2; pass++) {
++            const float dx = pass ? 0.0f : fp, dy = pass ? 0.0f : fp;
++            const uint32_t a = it->rgba & 0xFFu;
++            const uint32_t col = pass ? it->rgba : (uint32_t)((a * 3u) / 4u);   /* shadow: black, 3/4 of the alpha */
++            const unsigned char* p = (const unsigned char*)s;
++            int k = 0;
++            for (unsigned c; (c = ovl_next_code(&p)) != 0; k++) {
++                if (c == ' ') continue;
++                if (n >= max) return n;
++                rsx_overlay_quad* q = &out[n++];
++                q->x0 = ox + (float)(k * 6) * fp + dx;
++                q->y0 = oy + dy;
++                q->x1 = q->x0 + 5.0f * fp;
++                q->y1 = q->y0 + 7.0f * fp;
++                q->glyph = (int)c;
++                q->rgba = col;
++            }
++        }
++    }
++    return n;
++}
++
++int rsx_overlay_layout(uint32_t bb_w, uint32_t bb_h, uint32_t pic_w, uint32_t pic_h,
++                       rsx_overlay_quad* out, int max)
++{
++    OVL_LOCK();
++    const int n = ovl_layout_list(&g_pub, bb_w, bb_h, pic_w, pic_h, out, max);
++    OVL_UNLOCK();
++    return n;
++}
++
++/* The RSX_OVERLAY_TEST card: every glyph at three sizes, boxes, alignment. */
++static void ovl_test_card(ovl_list* L)
++{
++    char line[64];
++    L->n = 0; L->ntext = 0;
++    list_rect(L, 40, 40, 1200, 300, RSX_OVL_RGBA(0, 0, 0, 160));
++    list_rect(L, 40, 40, 1200, 2, RSX_OVL_RGBA(255, 255, 255, 255));
++    float y = 52;
++    for (int size = 1; size <= 3; size++) {
++        int k = 0;
++        for (int c = 1; c < 128; c++) {
++            if (!g_have_glyph[c]) continue;
++            line[k++] = (char)c;
++            if (k == 48) break;
++        }
++        line[k] = 0;
++        list_text(L, 52, y, (float)size, RSX_OVL_RGBA(255, 255, 255, 255), RSX_OVL_SHADOW, line);
++        y += 10.0f * (float)size;
++        k = 0;
++        for (int c = 0x42; c < 128 && k < 48; c++) if (g_have_glyph[c]) line[k++] = (char)c;
++        line[k] = 0;
++        list_text(L, 52, y, (float)size, RSX_OVL_RGBA(255, 220, 64, 255), RSX_OVL_SHADOW, line);
++        y += 10.0f * (float)size;
++    }
++    list_text(L, 1228, 300, 2, RSX_OVL_RGBA(120, 255, 120, 255), RSX_OVL_RIGHT | RSX_OVL_SHADOW,
++              "RIGHT +12 \xC3\x84\xC3\x96\xC3\x9C\xC3\x9F");
++    list_text(L, 640, 300, 2, RSX_OVL_RGBA(255, 120, 120, 255), RSX_OVL_CENTER | RSX_OVL_SHADOW, "CENTER -10");
++}
++
++/* ---------------------------------------------------------------- D3D12 */
++#if !defined(RSX_OVERLAY_NO_D3D)
++
++#define OVL_SLOTS 8
++typedef struct { float r[4]; float uv[4]; uint32_t color; uint32_t glyph; uint32_t pad[2]; } ovl_gpu_quad;
++
++static struct {
++    int failed;
++    ID3D12Device* dev;
++    DXGI_FORMAT fmt;
++    ID3D12RootSignature* rs;
++    ID3D12PipelineState* pso;
++    ID3D12DescriptorHeap* rtv_heap;
++    ID3D12Resource* quads;          /* OVL_SLOTS x OVL_MAX_QUADS, upload heap, mapped */
++    ID3D12Resource* font;           /* 1 KB constant buffer, upload heap */
++    uint8_t* quads_cpu;
++    uint32_t slot;
++} g_d;
++
++static rsx_overlay_quad g_lay[OVL_MAX_QUADS];   /* present thread only */
++static ovl_list g_draw;                         /* present thread's copy of the published list */
++static ovl_list g_test;
++
++static ID3D12Resource* ovl_upload_buffer(ID3D12Device* dev, UINT64 size)
++{
++    D3D12_HEAP_PROPERTIES hp = {0};
++    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
++    D3D12_RESOURCE_DESC rd = {0};
++    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++    rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
++    rd.Format = DXGI_FORMAT_UNKNOWN; rd.SampleDesc.Count = 1;
++    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++    ID3D12Resource* r = NULL;
++    if (FAILED(dev->lpVtbl->CreateCommittedResource(dev, &hp, D3D12_HEAP_FLAG_NONE, &rd,
++                                                    D3D12_RESOURCE_STATE_GENERIC_READ, NULL,
++                                                    &IID_ID3D12Resource, (void**)&r)))
++        return NULL;
++    return r;
++}
++
++static void ovl_release_pipeline(void)
++{
++    if (g_d.pso) { g_d.pso->lpVtbl->Release(g_d.pso); g_d.pso = NULL; }
++}
++
++static int ovl_pipeline(ID3D12Device* dev, DXGI_FORMAT fmt)
++{
++    if (g_d.failed) return -1;
++    if (g_d.dev && g_d.dev != dev) return -1;     /* another device: not ours to mix */
++    if (g_d.pso && g_d.fmt == fmt) return 0;
++    g_d.dev = dev;
++    static const char vs_src[] =
++        "struct Q { float4 r; float4 uv; uint color; uint glyph; uint2 pad; };\n"
++        "StructuredBuffer<Q> quads : register(t0);\n"
++        "struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0;\n"
++        "           nointerpolation float4 col : COLOR0; nointerpolation uint glyph : GLYPH; };\n"
++        "O main(uint vid : SV_VertexID) {\n"
++        "    Q q = quads[vid / 6];\n"
++        "    uint c = vid % 6;\n"
++        "    float2 t = float2((c == 1 || c == 4 || c == 5) ? 1.0 : 0.0, (c == 2 || c == 3 || c == 5) ? 1.0 : 0.0);\n"
++        "    O o;\n"
++        "    o.pos = float4(lerp(q.r.xy, q.r.zw, t), 0.0, 1.0);\n"
++        "    o.uv = lerp(q.uv.xy, q.uv.zw, t);\n"
++        "    o.col = float4((q.color >> 24) & 255, (q.color >> 16) & 255, (q.color >> 8) & 255, q.color & 255) / 255.0;\n"
++        "    o.glyph = q.glyph;\n"
++        "    return o;\n"
++        "}\n";
++    static const char ps_src[] =
++        "cbuffer Font : register(b0) { uint4 bits[64]; };\n"
++        "struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0;\n"
++        "           nointerpolation float4 col : COLOR0; nointerpolation uint glyph : GLYPH; };\n"
++        "float4 main(O i) : SV_Target {\n"
++        "    if (i.glyph != 0xFFFFFFFFu) {\n"
++        "        int2 p = int2(floor(i.uv));\n"
++        "        if (p.x < 0 || p.x > 4 || p.y < 0 || p.y > 6) discard;\n"
++        "        uint w = i.glyph * 2 + ((uint)p.y >> 2);\n"
++        "        uint4 v = bits[w >> 2];\n"
++        "        uint k = w & 3;\n"
++        "        uint word = k == 0 ? v.x : k == 1 ? v.y : k == 2 ? v.z : v.w;\n"
++        "        if (((word >> (((uint)p.y & 3) * 8 + (uint)p.x)) & 1) == 0) discard;\n"
++        "    }\n"
++        "    return i.col;\n"
++        "}\n";
++    ID3DBlob *vs = NULL, *ps = NULL, *err = NULL;
++    HRESULT hr = D3DCompile(vs_src, sizeof(vs_src) - 1, "overlay_vs", NULL, NULL, "main", "vs_5_0",
++                            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err);
++    if (SUCCEEDED(hr))
++        hr = D3DCompile(ps_src, sizeof(ps_src) - 1, "overlay_ps", NULL, NULL, "main", "ps_5_0",
++                        D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err);
++    if (FAILED(hr)) {
++        fprintf(stderr, "[overlay] shader compile failed: %s\n",
++                err ? (const char*)err->lpVtbl->GetBufferPointer(err) : "?");
++        if (err) err->lpVtbl->Release(err);
++        if (vs) vs->lpVtbl->Release(vs);
++        g_d.failed = 1;
++        return -1;
++    }
++    if (err) { err->lpVtbl->Release(err); err = NULL; }
++    if (!g_d.rs) {
++        D3D12_ROOT_PARAMETER param[2] = {0};
++        param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
++        param[0].Descriptor.ShaderRegister = 0;
++        param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
++        param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
++        param[1].Descriptor.ShaderRegister = 0;
++        param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++        D3D12_ROOT_SIGNATURE_DESC rsd = {0};
++        rsd.NumParameters = 2; rsd.pParameters = param;
++        ID3DBlob* sig = NULL;
++        hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
++        if (SUCCEEDED(hr)) {
++            hr = dev->lpVtbl->CreateRootSignature(dev, 0, sig->lpVtbl->GetBufferPointer(sig),
++                                                  sig->lpVtbl->GetBufferSize(sig),
++                                                  &IID_ID3D12RootSignature, (void**)&g_d.rs);
++            sig->lpVtbl->Release(sig);
++        }
++        if (err) { err->lpVtbl->Release(err); err = NULL; }
++    }
++    if (SUCCEEDED(hr)) {
++        D3D12_GRAPHICS_PIPELINE_STATE_DESC pd = {0};
++        pd.pRootSignature = g_d.rs;
++        pd.VS.pShaderBytecode = vs->lpVtbl->GetBufferPointer(vs);
++        pd.VS.BytecodeLength = vs->lpVtbl->GetBufferSize(vs);
++        pd.PS.pShaderBytecode = ps->lpVtbl->GetBufferPointer(ps);
++        pd.PS.BytecodeLength = ps->lpVtbl->GetBufferSize(ps);
++        D3D12_RENDER_TARGET_BLEND_DESC* b = &pd.BlendState.RenderTarget[0];
++        b->BlendEnable = TRUE;
++        b->SrcBlend = D3D12_BLEND_SRC_ALPHA;
++        b->DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
++        b->BlendOp = D3D12_BLEND_OP_ADD;
++        b->SrcBlendAlpha = D3D12_BLEND_ZERO;
++        b->DestBlendAlpha = D3D12_BLEND_ONE;
++        b->BlendOpAlpha = D3D12_BLEND_OP_ADD;
++        b->LogicOp = D3D12_LOGIC_OP_NOOP;
++        b->RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN |
++                                   D3D12_COLOR_WRITE_ENABLE_BLUE;
++        pd.SampleMask = 0xFFFFFFFFu;
++        pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++        pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++        pd.RasterizerState.DepthClipEnable = TRUE;
++        pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++        pd.NumRenderTargets = 1;
++        pd.RTVFormats[0] = fmt;
++        pd.SampleDesc.Count = 1;
++        ovl_release_pipeline();
++        hr = dev->lpVtbl->CreateGraphicsPipelineState(dev, &pd, &IID_ID3D12PipelineState, (void**)&g_d.pso);
++    }
++    vs->lpVtbl->Release(vs);
++    ps->lpVtbl->Release(ps);
++    if (SUCCEEDED(hr) && !g_d.rtv_heap) {
++        D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
++        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
++        hd.NumDescriptors = 1;
++        hr = dev->lpVtbl->CreateDescriptorHeap(dev, &hd, &IID_ID3D12DescriptorHeap, (void**)&g_d.rtv_heap);
++    }
++    if (SUCCEEDED(hr) && !g_d.quads) {
++        g_d.quads = ovl_upload_buffer(dev, (UINT64)OVL_SLOTS * OVL_MAX_QUADS * sizeof(ovl_gpu_quad));
++        D3D12_RANGE none = {0, 0};
++        if (!g_d.quads || FAILED(g_d.quads->lpVtbl->Map(g_d.quads, 0, &none, (void**)&g_d.quads_cpu)))
++            hr = E_FAIL;
++    }
++    if (SUCCEEDED(hr) && !g_d.font) {
++        g_d.font = ovl_upload_buffer(dev, 1024);
++        uint8_t* p = NULL;
++        D3D12_RANGE none = {0, 0};
++        if (g_d.font && SUCCEEDED(g_d.font->lpVtbl->Map(g_d.font, 0, &none, (void**)&p))) {
++            ovl_font_init();
++            memcpy(p, g_font, sizeof g_font);
++            g_d.font->lpVtbl->Unmap(g_d.font, 0, NULL);
++        } else {
++            hr = E_FAIL;
++        }
++    }
++    if (FAILED(hr)) {
++        fprintf(stderr, "[overlay] pipeline failed hr=0x%08lX; no overlay\n", (unsigned long)hr);
++        ovl_release_pipeline();
++        g_d.failed = 1;
++        return -1;
++    }
++    g_d.fmt = fmt;
++    fprintf(stderr, "[overlay] ready (format %d)\n", (int)fmt);
++    return 0;
++}
++
++static LONGLONG ovl_qpc(void) { LARGE_INTEGER t; QueryPerformanceCounter(&t); return t.QuadPart; }
++
++void rsx_overlay_present(void* devp, void* listp, void* bbp, uint32_t pic_w, uint32_t pic_h)
++{
++    static int mode = -1, stats = 0;
++    if (mode < 0) {
++        const char* e = getenv("RSX_OVERLAY");
++        const char* t = getenv("RSX_OVERLAY_TEST");
++        const char* s = getenv("RSX_OVERLAY_STATS");
++        mode = (e && e[0] == '0') ? 0 : (t && t[0] == '1') ? 2 : 1;
++        stats = s && s[0] == '1';
++        if (mode == 2) { ovl_font_init(); ovl_test_card(&g_test); }
++    }
++    if (!mode || g_d.failed) return;
++    ID3D12Device* dev = (ID3D12Device*)devp;
++    ID3D12GraphicsCommandList* list = (ID3D12GraphicsCommandList*)listp;
++    ID3D12Resource* bb = (ID3D12Resource*)bbp;
++    if (!g_pub_items && mode != 2) {            /* nothing published: the usual case */
++        if (g_prepare && dev && bb) {           /* a producer is coming: compile now, not at its first list */
++            D3D12_RESOURCE_DESC pd;
++            bb->lpVtbl->GetDesc(bb, &pd);
++            g_prepare = 0;
++            ovl_pipeline(dev, pd.Format);
++        }
++        return;
++    }
++    if (!dev || !list || !bb) return;
++    const LONGLONG t0 = stats ? ovl_qpc() : 0;
++
++    D3D12_RESOURCE_DESC bd;
++    bb->lpVtbl->GetDesc(bb, &bd);
++    const uint32_t bw = (uint32_t)bd.Width, bh = bd.Height;
++    OVL_LOCK();
++    g_draw.n = g_pub.n;
++    g_draw.ntext = g_pub.ntext;
++    memcpy(g_draw.items, g_pub.items, sizeof(ovl_item) * g_pub.n);
++    memcpy(g_draw.text, g_pub.text, g_pub.ntext);
++    OVL_UNLOCK();
++    const ovl_list* L = (g_draw.n || mode != 2) ? &g_draw : &g_test;
++    const int n = ovl_layout_list(L, bw, bh, pic_w, pic_h, g_lay, OVL_MAX_QUADS);
++    if (n <= 0) return;
++    if (ovl_pipeline(dev, bd.Format) != 0) return;
++
++    g_d.slot = (g_d.slot + 1) % OVL_SLOTS;
++    ovl_gpu_quad* gq = (ovl_gpu_quad*)(g_d.quads_cpu + (size_t)g_d.slot * OVL_MAX_QUADS * sizeof(ovl_gpu_quad));
++    const float ix = 2.0f / (float)bw, iy = 2.0f / (float)bh;
++    for (int i = 0; i < n; i++) {
++        const rsx_overlay_quad* q = &g_lay[i];
++        ovl_gpu_quad g;
++        g.r[0] = q->x0 * ix - 1.0f; g.r[1] = 1.0f - q->y0 * iy;
++        g.r[2] = q->x1 * ix - 1.0f; g.r[3] = 1.0f - q->y1 * iy;
++        g.uv[0] = 0.0f; g.uv[1] = 0.0f; g.uv[2] = 5.0f; g.uv[3] = 7.0f;
++        g.color = q->rgba;
++        g.glyph = q->glyph < 0 ? 0xFFFFFFFFu : (uint32_t)q->glyph;
++        g.pad[0] = g.pad[1] = 0;
++        gq[i] = g;
++    }
++
++    D3D12_RESOURCE_BARRIER b = {0};
++    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++    b.Transition.pResource = bb;
++    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    list->lpVtbl->ResourceBarrier(list, 1, &b);
++
++    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
++    g_d.rtv_heap->lpVtbl->GetCPUDescriptorHandleForHeapStart(g_d.rtv_heap, &rtv);
++    dev->lpVtbl->CreateRenderTargetView(dev, bb, NULL, rtv);
++    list->lpVtbl->OMSetRenderTargets(list, 1, &rtv, FALSE, NULL);
++    D3D12_VIEWPORT vp = { 0.0f, 0.0f, (float)bw, (float)bh, 0.0f, 1.0f };
++    D3D12_RECT sc = { 0, 0, (LONG)bw, (LONG)bh };
++    list->lpVtbl->RSSetViewports(list, 1, &vp);
++    list->lpVtbl->RSSetScissorRects(list, 1, &sc);
++    list->lpVtbl->SetGraphicsRootSignature(list, g_d.rs);
++    list->lpVtbl->SetPipelineState(list, g_d.pso);
++    list->lpVtbl->SetGraphicsRootShaderResourceView(
++        list, 0, g_d.quads->lpVtbl->GetGPUVirtualAddress(g_d.quads) +
++                     (UINT64)g_d.slot * OVL_MAX_QUADS * sizeof(ovl_gpu_quad));
++    list->lpVtbl->SetGraphicsRootConstantBufferView(list, 1, g_d.font->lpVtbl->GetGPUVirtualAddress(g_d.font));
++    list->lpVtbl->IASetPrimitiveTopology(list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    list->lpVtbl->DrawInstanced(list, (UINT)n * 6u, 1, 0, 0);
++
++    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
++    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
++    list->lpVtbl->ResourceBarrier(list, 1, &b);
++
++    if (stats) {
++        static LONGLONG fq = 0, sum = 0, mx = 0;
++        static unsigned cnt = 0, quads = 0;
++        if (!fq) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); fq = f.QuadPart; }
++        const LONGLONG d = ovl_qpc() - t0;
++        sum += d; if (d > mx) mx = d;
++        quads += (unsigned)n;
++        if (++cnt == 600) {
++            fprintf(stderr, "[overlay] 600 presents: CPU %.1f us mean, %.1f us max, %.0f quads mean, %ux%u\n",
++                    1e6 * (double)sum / (double)fq / 600.0, 1e6 * (double)mx / (double)fq,
++                    (double)quads / 600.0, bw, bh);
++            cnt = 0; sum = 0; mx = 0; quads = 0;
++        }
++    }
++}
++
++#else /* RSX_OVERLAY_NO_D3D */
++
++void rsx_overlay_present(void* dev, void* list, void* backbuffer, uint32_t pic_w, uint32_t pic_h)
++{
++    (void)dev; (void)list; (void)backbuffer; (void)pic_w; (void)pic_h;
++    (void)ovl_test_card;
++}
++
++#endif
+diff --git a/libs/video/rsx_overlay.h b/libs/video/rsx_overlay.h
+new file mode 100644
+index 0000000..e9e4947
+--- /dev/null
++++ b/libs/video/rsx_overlay.h
+@@ -0,0 +1,94 @@
++/*
++ * rsx_overlay -- text and boxes drawn over the finished picture (patch 0045).
++ *
++ * A producer (the training tools, src/training/ in the T5DR repository)
++ * describes what to show between rsx_overlay_begin() and rsx_overlay_end();
++ * the present thread draws the newest complete list on every present, into
++ * the swap-chain backbuffer after the game's frame was copied/scaled into it
++ * -- after internal-resolution scaling, at the window's own resolution, so the
++ * text stays sharp at any Internal resolution and window size.
++ *
++ * Coordinates are a 1280 x 720 canvas over the game picture (the letterbox
++ * bars are outside it). Text uses a small built-in 5 x 7 bitmap font of our
++ * own (rsx_overlay.c): `px` is the size of one font pixel in canvas units, a
++ * character cell is 6 x 8 font pixels (the glyph and one pixel of spacing).
++ * On screen a font pixel is a whole number of window pixels (at least 1).
++ * Characters: ASCII 0x20..0x7E (a few rare symbols drawn as '?'), the UTF-8
++ * German letters (Ae Oe Ue ae oe ue sz), and the eight directions plus neutral in
++ * numpad notation as the bytes 0x01..0x09 (1 = down-back ... 5 = neutral ...
++ * 9 = up-forward, as seen by a fighter facing right).
++ *
++ * The overlay never reads or writes guest memory and adds nothing to the
++ * game's frame: with no list published (the default) the present does one
++ * relaxed load and returns.
++ *
++ * One producer thread at a time calls begin/rect/text/end; the present
++ * thread calls rsx_overlay_present(). Both sides are lock-protected only for
++ * the hand-over of a finished list.
++ *
++ * Environment (diagnostics):
++ *   RSX_OVERLAY=0        never draw (a published list is ignored)
++ *   RSX_OVERLAY_TEST=1   draw a test card (every glyph, boxes) when no
++ *                        producer published anything -- for checking the
++ *                        renderer with RSX_TEST_BB_SHOT
++ *   RSX_OVERLAY_STATS=1  every 600 drawn presents: CPU time of the overlay
++ *                        in the present (mean / max microseconds), quads
++ */
++#ifndef RSX_OVERLAY_H
++#define RSX_OVERLAY_H
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define RSX_OVERLAY_CANVAS_W 1280.0f
++#define RSX_OVERLAY_CANVAS_H 720.0f
++
++/* text flags */
++#define RSX_OVL_SHADOW 1u   /* a dark copy one font pixel down-right, under the text */
++#define RSX_OVL_RIGHT  2u   /* x is the right edge of the text */
++#define RSX_OVL_CENTER 4u   /* x is the centre of the text */
++
++/* colours: 0xRRGGBBAA */
++#define RSX_OVL_RGBA(r, g, b, a) \
++    (((uint32_t)(r) << 24) | ((uint32_t)(g) << 16) | ((uint32_t)(b) << 8) | (uint32_t)(a))
++
++/* A producer will draw: build the overlay's pipeline at the next present
++ * (start-up) rather than at the first list (a ~0.1 s compile in a fight). */
++void  rsx_overlay_prepare(void);
++void  rsx_overlay_begin(void);
++void  rsx_overlay_rect(float x, float y, float w, float h, uint32_t rgba);
++void  rsx_overlay_text(float x, float y, float px, uint32_t rgba, unsigned flags, const char* utf8);
++void  rsx_overlay_end(void);       /* publish: drawn from the next present on */
++void  rsx_overlay_clear(void);     /* publish an empty list: nothing is drawn */
++/* Width of a text in canvas units at font pixel size px (6 font pixels per
++ * character, the last one's spacing included). */
++float rsx_overlay_text_width(const char* utf8, float px);
++
++/* Present thread (rsx_live_draw.c), between the copy of the frame into the
++ * backbuffer and the backbuffer's transition to PRESENT. dev =
++ * ID3D12Device*, list = ID3D12GraphicsCommandList* (open), backbuffer =
++ * ID3D12Resource* in COPY_DEST (left in COPY_DEST), pic_w x pic_h = the size
++ * of the presented picture (its aspect gives the letterbox, as the present
++ * copy computes it). */
++void  rsx_overlay_present(void* dev, void* list, void* backbuffer, uint32_t pic_w, uint32_t pic_h);
++
++/* ---- for tests (tests/c/overlay_test.c in the T5DR repository) ---------- */
++/* The 7 rows of a glyph, bit 0 = leftmost of 5 columns; returns 0 when the
++ * code has no glyph of its own (it is drawn as '?'). */
++int   rsx_overlay_glyph_rows(unsigned code, uint8_t rows[7]);
++/* The quads the present would draw for the published list into a
++ * bb_w x bb_h backbuffer showing a pic_w x pic_h picture: up to max quads of
++ * {x0, y0, x1, y1 (window pixels), glyph (-1 = solid box), rgba}; returns the
++ * number of quads. */
++typedef struct { float x0, y0, x1, y1; int glyph; uint32_t rgba; } rsx_overlay_quad;
++int   rsx_overlay_layout(uint32_t bb_w, uint32_t bb_h, uint32_t pic_w, uint32_t pic_h,
++                         rsx_overlay_quad* out, int max);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* RSX_OVERLAY_H */

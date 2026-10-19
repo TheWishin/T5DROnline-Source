@@ -84,6 +84,7 @@ extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hook
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
 extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the mode manager's current mode (6 = select) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
+extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.cpp: the training overlay */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
@@ -1038,6 +1039,7 @@ void offline_frame(ppu_context* ctx)
 
 void on_frame_start(ppu_context* ctx)
 {
+    if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
     if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
         g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */

@@ -5,8 +5,8 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
-**Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The
-new lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
+**Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution.** The new
+lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
 
 ### Online
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
@@ -22,6 +22,20 @@ new lobby features need the lobby server updated; older launchers keep working w
   challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
 - Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
   can be repeated after a week.
+- **No more broken game after several cancelled matches.** When a match ended at the character
+  select without a fight -- the opponent left during the pick, or the lobby cancelled the match --
+  four to eleven times in a row, the open game broke and stayed stuck until it was closed. Each
+  time, the game built a second select screen on top of the old one, which kept running until
+  memory ran out. The select screen is now closed and opened again the way the game itself does
+  it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
+  lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
+
+### Training
+- **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the
+  last move: startup (i10), then +/- frames on block, hit or counter hit, or the whole move on a whiff. On by
+  default in Practice; **Settings -> Training overlay** chooses Off / Inputs / Inputs + frame data and whether it
+  also shows in other offline modes or online (there only your own side). **F2** switches it in the game. The
+  numbers are measured in this game, not copied from tables (docs/TRAINING.md, ps3recomp patch 0045).
 
 ### Launcher
 - **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
@@ -29,11 +43,15 @@ new lobby features need the lobby server updated; older launchers keep working w
   Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
   (docs/ONLINE.md "Discord Rich Presence").
 
-### Servers
-- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
-  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
-
-## v1.1.2 (unreleased)
+### Picture
+- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
+  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
+  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
+  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
+  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
+  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
+  shows those stages sharp and without the glow. It only changes your picture; online, both
+  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
 
 ### Security
 - **Signed updates.** The launcher's self-update now checks an Ed25519 signature of the release
@@ -51,15 +69,28 @@ new lobby features need the lobby server updated; older launchers keep working w
   rate-limited, and the database is private to the server's user (docs/HOSTING.md).
 - Problem reports also remove lobby recovery codes.
 
-### Picture
-- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
-  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
-  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
-  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
-  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
-  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
-  shows those stages sharp and without the glow. It only changes your picture; online, both
-  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
+### Servers
+- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
+  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
+
+### Laptops, handhelds and 8-core APUs (laptop-perf, ps3recomp patch 0047)
+- **Less CPU around the same game.** The main thread no longer polls for the end of its frame (it
+  waited in a busy loop or woke up 50-100 times a frame), the vblank thread no longer polls the
+  last millisecond before every frame, the sound mixer wakes once per audio block instead of 20
+  times, and on processors with 8-23 threads (8 cores with SMT, the common gaming CPU) nothing
+  spins next to the game's main thread any more. On 8 cores / 16 threads a fight needs 30 % less
+  CPU for the same 60 fps (on a busy test PC it went from 54 to 59 fps).
+- **Power saving** (Settings, default Auto): on laptops, handhelds (ROG Ally, Legion Go and
+  similar), mobile processors and integrated graphics the game also uses fewer helper threads and
+  never busy-waits, so the processor stays cooler and keeps its clock. The game itself is the
+  same, online too; the window title says "power saving" when it is on.
+- **The log says why frames are slow.** Every 30 s with slow frames: how many, and whether the
+  processor (the game, the render translation), the graphics or showing the picture took the time,
+  next to the power source, power plan and the processor's clock limit. "Report a problem" adds
+  the power plan, power mode, clock limit and temperature sensors to system.txt, and which
+  graphics chip drives each screen (laptops with two GPUs).
+- The game's clock follows a 59/60 Hz display only while that display's timing makes sense, and
+  never faster than 60 Hz.
 
 ### Building the game
 - **The build no longer stops at "Translate code".** A player's build sat at 68% for good: when one of the

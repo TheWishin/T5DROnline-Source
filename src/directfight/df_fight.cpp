@@ -856,8 +856,23 @@ struct Pick {
     int shown_s = -1;
     bool bad_noted = false;
     uint8_t last_st = 0;
+    uint16_t hold = 0;           /* P2's confirm (its face button), held until P1 is confirmed on this PC (below) */
+    bool held = false;           /* ... and pressed */
+    bool peer_none = false;      /* no pick came from the opponent: the line's character */
 };
 Pick g_pick;
+
+/* Mirror matches: the select screen gives the SECOND of two confirms of the
+ * same model the character's other costume (Steve Square 0x29 twice: the one
+ * confirmed later becomes 0x2A). Which one is second must not depend on which
+ * side is local -- each PC used to confirm its own player first (the host P1,
+ * the joiner P2) and the two games fought Steve 0x29 vs 0x2A on one PC and
+ * 0x2A vs 0x29 on the other: every frame apart from the fight's first (e2e
+ * cs_mirror, 1.1.0 blocker). So on every PC and every path P1 is confirmed
+ * first and P2 only after P1's pick is settled (record past the handicap bar):
+ * the game's own rule then gives P2 the other costume on both PCs, whatever
+ * that costume is for the fighter (2 or 4 costumes). */
+bool p1_settled() { return rd8(rec(0) + kRecState) >= 0x0C; }
 int g_models[2] = { -1, -1 };    /* the model ids both sides fight with (status file) */
 
 std::string status_extra()
@@ -868,6 +883,7 @@ std::string status_extra()
 }
 
 void pick_wait_frame(uint32_t f);
+bool take_peer_pick(uint32_t f);
 bool pick_begin(uint32_t f)
 {
     const bool net = session_netplay();
@@ -916,6 +932,34 @@ void pick_frame(uint32_t f)
              rd32(rec(me) + kRecState));
         k.last_st = st;
     }
+    if (st == 3 && k.hold) {
+        /* P2 (this PC's player on the joiner) has chosen; its confirm waits until
+         * P1 -- the opponent's pick, driven here -- is settled (p1_settled) */
+        if (k.held) {   /* pressed: the record leaves 3 within a frame or two; pressed again if it did not */
+            if (press_idle(me) && f >= k.t9 + 40) { k.t9 = f; press(me, k.hold, f); }
+            return;
+        }
+        if (!press_idle(0) || !press_idle(me)) return;
+        inject(me, true, 0);
+        if (!take_peer_pick(f)) { plate_text(1 - me, "PICKING..."); return; }
+        const uint8_t s1 = rd8(rec(0) + kRecState);
+        if (s1 == 3) {
+            const int target = cell_of(g_cfg.chr[0]);
+            if (target >= 0 && navigate(0, target, f))
+                press(0, g_cfg.btn[0] ? btn_bits(g_cfg.btn[0]) : default_confirm(g_cfg.chr[0]), f);
+            return;
+        }
+        if (s1 == 9) { press(0, g_cfg.color[0] == 2 ? B_TRIANGLE : B_CROSS, f); return; }
+        if (!p1_settled()) return;
+        plate_text(1 - me, nullptr);
+        k.held = true;
+        k.t9 = f;
+        k.confirm = k.hold;
+        press(me, k.hold, f);
+        note("frame %u: in-game select: P1 is settled (model 0x%X) -- player %d's confirm %s goes in now", f,
+             rd32(rec(0) + kRecModel), me + 1, btn_name(btn_index(k.hold)));
+        return;
+    }
     if (st == 3) {
         if (k.auto_chr < 0 && ms >= (ULONGLONG)k.secs * 1000) {
             k.auto_chr = g_cfg.chr[me];
@@ -931,7 +975,14 @@ void pick_frame(uint32_t f)
             const int target = cell_of(k.auto_chr);
             if (target >= 0 && navigate(me, target, f)) {
                 k.confirm = k.auto_btn ? btn_bits(k.auto_btn) : default_confirm(k.auto_chr);
-                press(me, k.confirm, f);
+                if (me == 1 && !p1_settled()) {
+                    k.hold = k.confirm;
+                    k.tw = GetTickCount64();
+                    note("frame %u: in-game select: player 2's pick %s with %s waits for P1's", f, kName[k.auto_chr],
+                         btn_name(btn_index(k.hold)));
+                } else {
+                    press(me, k.confirm, f);
+                }
             }
             return;
         }
@@ -972,10 +1023,24 @@ void pick_frame(uint32_t f)
             if (cell != k.cell) { k.cell = cell; note("frame %u: in-game select: cursor at cell %d", f, cell); }
         }
         if (k.face && !(raw & k.face)) k.face = 0;
+        bool newly = false;
         if (!k.face)
             for (int b = 1; b <= 4; b++)
-                if (raw & btn_bits(b)) { k.face = btn_bits(b); break; }
+                if (raw & btn_bits(b)) { k.face = btn_bits(b); newly = true; break; }
         if (k.face) k.confirm = k.face;
+        if (newly && me == 1 && !p1_settled()) {
+            /* this player's choice: cell and button; the game sees the confirm
+             * once P1's pick is settled (the opponent's pick stays hidden until
+             * then, as before) */
+            k.hold = k.face;
+            k.tw = GetTickCount64();
+            inject(me, true, 0);
+            plate_text(me, "READY");
+            const int cell = (int)rd32(rec(me) + kRecCell);
+            note("frame %u: in-game select: player 2 chose cell %d (%s) with %s -- confirmed once P1's pick is in", f, cell,
+                 cell >= 0 && cell < 35 && kGrid[cell] >= 0 ? kName[kGrid[cell]] : "?", btn_name(btn_index(k.hold)));
+            return;
+        }
         inject(me, true, (uint16_t)((raw & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) | k.face));
         return;
     }
@@ -1016,10 +1081,13 @@ void pick_frame(uint32_t f)
     }
 }
 
-void pick_wait_frame(uint32_t f)
+/* The opponent's pick (or, after N + 45 s without one, the line's character):
+ * true once known, into g_cfg for the opponent's side. */
+bool take_peer_pick(uint32_t f)
 {
     Pick& k = g_pick;
     const int other = 1 - k.me;
+    if (k.peer || k.peer_none) return true;
     bool go = false;
     unsigned v = 0;
     if (k.net && t5_netplay_pick_peer(k.key, &v)) {
@@ -1042,12 +1110,19 @@ void pick_wait_frame(uint32_t f)
      * launcher's character; only a game that never gets to pick is waited out. */
     if (!go && (!k.net || GetTickCount64() - k.t0 > (ULONGLONG)(k.secs + 45) * 1000)) {
         g_cfg.btn[other] = 0;
+        k.peer_none = true;
         go = true;
         note("frame %u: in-game select: %s -- player %d plays %s (the line's character)", f,
              k.net ? "no pick came from the opponent" : "no netplay", other + 1, kName[g_cfg.chr[other]]);
     }
-    if (!go) {
-        plate_text(other, "PICKING...");
+    if (go) g_steps[other] = 0;
+    return go;
+}
+
+void pick_wait_frame(uint32_t f)
+{
+    if (!take_peer_pick(f)) {
+        plate_text(1 - g_pick.me, "PICKING...");
         return;
     }
     plates_restore();
@@ -1066,13 +1141,12 @@ void pick_fight_start(uint32_t f)
     if (!g_pick.on) return;
     g_pick.on = false;
     const int me = g_pick.me, other = 1 - me;
-    /* a mirror match with the same costume: the game gives P2 the character's
-     * other costume (both PCs alike, probe dvj2 match 4) -- not a wrong pick */
-    if (g_cfg.chr[0] == g_cfg.chr[1] && g_models[0] != g_models[1] &&
-        ((me == 1 && g_pick.have && g_pick.model == g_models[0]) || (other == 1 && g_pick.peer && g_pick.peer_model == g_models[0]))) {
-        note("frame %u: in-game select: mirror match, P2 fights in the other costume (model 0x%X)", f, g_models[1]);
-        return;
-    }
+    /* A mirror match of one costume: P2, confirmed after P1 on every PC
+     * (p1_settled), fights in the game's other costume -- the picks' models say
+     * so already (P2's own pick reads its model after its confirm), so the
+     * checks below hold for mirrors too. */
+    if (g_cfg.chr[0] == g_cfg.chr[1])
+        note("frame %u: in-game select: mirror match: P1 model 0x%X, P2 model 0x%X", f, g_models[0], g_models[1]);
     if (g_pick.have && g_models[me] != g_pick.model)
         note("frame %u: PICK MISMATCH: player %d's side has model 0x%X, picked 0x%X", f, me + 1, g_models[me], g_pick.model);
     if (g_pick.peer && g_models[other] != g_pick.peer_model)
@@ -1156,6 +1230,13 @@ void fight_on_frame(uint32_t f)
             if (st == 3) {
                 const int target = cell_of(g_cfg.chr[p]);
                 if (target < 0) { if (g_steps[p]++ == 0) note("player %d: no cell for character %d", p + 1, g_cfg.chr[p]); continue; }
+                /* a mirror: P2's confirm after P1's is settled (p1_settled) -- the
+                 * game's "second confirm gets the other costume" rule then falls
+                 * on P2 on both PCs, in every game of a locked set too */
+                if (p == 1 && g_cfg.chr[0] == g_cfg.chr[1] && !p1_settled()) {
+                    navigate(p, target, f);
+                    continue;
+                }
                 if (navigate(p, target, f)) {
                     /* Kuma and Panda share a cell: a punch button (SQUARE) picks
                      * Kuma, a kick button (CROSS/CIRCLE) Panda -- so Kuma cannot
@@ -1168,7 +1249,12 @@ void fight_on_frame(uint32_t f)
                 press(p, g_cfg.color[p] == 2 ? B_TRIANGLE : B_CROSS, f);
             }
         }
-        if (all_done) set_phase(Ph::Stage, "stage", f);
+        if (all_done) {
+            note("frame %u: select done: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)", f, kName[g_cfg.chr[0]],
+                 btn_name(g_cfg.btn[0]), rd32(rec(0) + kRecModel), kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]),
+                 rd32(rec(1) + kRecModel));
+            set_phase(Ph::Stage, "stage", f);
+        }
         break; }
     case Ph::Stage:
         if (mode == kModeGame) { g_wait_setup = false; set_phase(Ph::WaitGame, "loading", f); break; }

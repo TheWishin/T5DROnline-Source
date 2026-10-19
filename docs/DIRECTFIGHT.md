@@ -188,9 +188,11 @@ What the select screen does (probes with scripted pads, build/cs/exp):
 - Every face button confirms the character, and the button is the costume:
   Square (LP) and Triangle (RP), Cross (LK) and Circle (RK) give the same
   model for most characters (two costumes; Lili 0x4D / 0x4E, Dragunov 0x4F /
-  0x50), Xiaoyu has four (0x10, 0x11, 0x13, 0x14 for LP, LK, RP, RK). Kuma's
-  cell gives Kuma with a punch button (model 0x1E) and Panda with a kick button
-  (0x1F). The picked model id is at record +0x0C.
+  0x50); Triangle is a third costume for Law, Yoshimitsu, Jin, Lee, Anna,
+  Ganryu, Bruce and Raven; Xiaoyu and Asuka have four (Xiaoyu 0x10, 0x13, 0x11,
+  0x14 for LP, RP, LK, RK). Kuma's cell gives Kuma with a punch button (model
+  0x1E) and Panda with a kick button (0x1F). The picked model id is at record
+  +0x0C. Full table: "Mirror matches" below.
 - State 9 after the confirm is the **handicap bar** (100 %), not a costume
   choice; the next confirm finishes the pick. The record then reads 0x0C while
   the other side still chooses (always on P2; on P1 at the select screen a
@@ -233,6 +235,77 @@ The flow, per PC (`df_fight.cpp` phases Pick and PickWait, helpers in
    opponent like any other. A game that never sends a pick (but keeps its
    session alive) is waited for N + 45 s, then its side gets the line's
    character too.
+
+**Mirror matches (1.1.0 blocker, fixed 2026-10-19).** When the second of the
+two sides confirms the model the first one already has, the select screen
+gives it another costume ("the second confirm gets the other costume" -- the
+game's own rule, on the picked model, not the button: Steve Square and Steve
+Triangle collide as well). Each PC used to confirm its own player first -- the
+host P1, the joiner P2 -- so the two games put the other costume on different
+sides (Steve vs Steve, both Square: host P1 0x29 / P2 0x2A, joiner P1 0x2A /
+P2 0x29, every frame of the fight apart; e2e `cs_mirror`; two timeouts with
+the same launcher fighter too). Now P1 is confirmed first on every PC and on
+every path, and P2 only once P1's record is past the handicap bar (state 0x0C
+and up, `p1_settled()`): on the joiner the player's confirm (or the driver's,
+for a timeout or Select) is held -- the name plate says READY -- until the
+host's pick has come and has been driven onto P1; the opponent's pick stays
+hidden until this player has chosen, as before. In a lobby-picked or locked
+fight (a ranked set's games 2 and 3, launcher-picked rematches) the Select
+phase confirms P2 of a mirror only after P1 is settled. The game's rule then
+runs the same way on both PCs, whatever "the other costume" is for the
+fighter. It is (model of the first pick -> the second pick's model, both sides
+confirming the same button; probe with one offline game, P1 confirmed first):
+
+| Fighter | LP (Square) | RP (Triangle) | LK (Cross) | RK (Circle) |
+|---|---|---|---|---|
+| Paul | 00 -> 01 | 00 -> 01 | 01 -> 00 | 01 -> 00 |
+| Law | 02 -> 03 | 04 -> 02 | 03 -> 02 | 03 -> 02 |
+| Lei | 05 -> 06 | 05 -> 06 | 06 -> 05 | 06 -> 05 |
+| King | 07 -> 08 | 07 -> 08 | 08 -> 07 | 08 -> 07 |
+| Yoshimitsu | 09 -> 0A | 0B -> 09 | 0A -> 09 | 0A -> 09 |
+| Nina | 0C -> 0D | 0C -> 0D | 0D -> 0C | 0D -> 0C |
+| Hwoarang | 0E -> 0F | 0E -> 0F | 0F -> 0E | 0F -> 0E |
+| Xiaoyu | 10 -> 13 | 13 -> 10 | 11 -> 14 | 14 -> 11 |
+| Christie | 15 -> 16 | 15 -> 16 | 16 -> 15 | 16 -> 15 |
+| Jin | 19 -> 1A | 1B -> 19 | 1A -> 19 | 1A -> 19 |
+| Julia | 1C -> 1D | 1C -> 1D | 1D -> 1C | 1D -> 1C |
+| Kuma | 1E -> 1F | 1E -> 1F | -- | -- |
+| Panda | -- | -- | 1F -> 1E | 1F -> 1E |
+| Bryan | 20 -> 21 | 20 -> 21 | 21 -> 20 | 21 -> 20 |
+| Heihachi | 22 -> 23 | 22 -> 23 | 23 -> 22 | 23 -> 22 |
+| Kazuya | 24 -> 25 | 24 -> 25 | 25 -> 24 | 25 -> 24 |
+| Lee | 26 -> 27 | 28 -> 26 | 27 -> 26 | 27 -> 26 |
+| Steve | 29 -> 2A | 29 -> 2A | 2A -> 29 | 2A -> 29 |
+| Marduk | 2B -> 2C | 2B -> 2C | 2C -> 2B | 2C -> 2B |
+| Mokujin | 2D -> 2E | 2D -> 2E | 2E -> 2D | 2E -> 2D |
+| Eddy | 17 -> 18 | 17 -> 18 | 18 -> 17 | 18 -> 17 |
+| Jack-5 | 2F -> 30 | 2F -> 30 | 30 -> 2F | 30 -> 2F |
+| Roger Jr. | 31 -> 32 | 31 -> 32 | 32 -> 31 | 32 -> 31 |
+| Anna | 33 -> 34 | 35 -> 33 | 34 -> 33 | 34 -> 33 |
+| Wang | 36 -> 37 | 36 -> 37 | 37 -> 36 | 37 -> 36 |
+| Ganryu | 38 -> 39 | 3A -> 38 | 39 -> 38 | 39 -> 38 |
+| Asuka | 3B -> 3D | 3D -> 3B | 3C -> 3E | 3E -> 3C |
+| Bruce | 3F -> 40 | 41 -> 3F | 40 -> 3F | 40 -> 3F |
+| Baek | 42 -> 43 | 42 -> 43 | 43 -> 42 | 43 -> 42 |
+| Devil Jin | 44 -> 45 | 44 -> 45 | 45 -> 44 | 45 -> 44 |
+| Raven | 46 -> 47 | 48 -> 46 | 47 -> 46 | 47 -> 46 |
+| Feng | 49 -> 4A | 49 -> 4A | 4A -> 49 | 4A -> 49 |
+| Armor King | 4B -> 4C | 4B -> 4C | 4C -> 4B | 4C -> 4B |
+| Lili | 4D -> 4E | 4D -> 4E | 4E -> 4D | 4E -> 4D |
+| Dragunov | 4F -> 50 | 4F -> 50 | 50 -> 4F | 50 -> 4F |
+
+So the second pick takes the first's alternative: two-costume fighters swap,
+the Triangle (third) costume falls back to the Square one, Xiaoyu and Asuka
+swap LP/RP and LK/RK, and **a Kuma mirror makes P2 Panda** (a Panda mirror P2
+Kuma); the lobby's history still says Kuma vs Kuma, the lock replays the same
+(P1 Kuma, then P2 with Kuma's button -> Panda). Verified online after the fix
+(two games, local lobby): e2e `cs_mirror` PASS (Steve Square x2: 0x29 / 0x2A
+on both PCs; Jin Triangle vs Cross); ranked_session mirrors: rollback quick +
+rematches (Steve LP/LP, Baek RK/RK, Xiaoyu RK/LP, Kuma LP/RP -> Kuma vs Panda),
+lockstep room (Steve timeout/timeout, Devil Jin LP/RP, Xiaoyu RK/RK), a
+rollback ranked set Steve LP/LP with games 2 and 3 locked (0x29 / 0x2A in all
+three) and a lockstep ranked set Kuma RP/LP (Kuma vs Panda in all three): 15
+mirror matches, 0 mismatching frames, the same hash, all confirmed.
 
 **Rematches.** Between two matches of a session the lockstep (or rollback) used
 to keep running through the select screen. With the in-game select it pauses
@@ -325,8 +398,9 @@ priority, other agents' games beside them -- 22-55 fps):
   rollbacks (depth 9), the known rollback-over-loads problem (ROLLBACK.md 31),
   not the select screen.
 - Picks seen: every costume button, Xiaoyu's four costumes, Kuma/Panda,
-  random, timeouts on either side, a late pick, mirror matches (P2 gets the
-  other costume: logged, not a mismatch).
+  random, timeouts on either side, a late pick, mirror matches (in these runs
+  the two PCs gave the other costume to different sides unnoticed; fixed, see
+  "Mirror matches").
 
 ## After the match: no input reaches the select screen
 
@@ -702,6 +776,21 @@ walker's own recovery, also in ordinary fights on main): rollback 2 in S over th
 (200 and 261 mismatching frames); before the title fix a second reset with no
 fight in between broke the game, as in the dry run. Also: `tests/` 143 OK,
 `lobby/tests` 296 OK, the smoke quick suite 81 checks PASS.
+
+**Open (found 2026-10-19 by the mirror costume probe, not fixed):** the
+select screen restarted in place (`func_0004E9DC(4, 3)` at the select screen,
+"no fight since the title") several times in a row without a fight between
+breaks the game: after the 4th to 11th such restart in one process the vblank
+OPD 0x4635A8 reads zero and the main thread writes into the null page (the
+same picture as the title's second visit above). The probe left every session
+at the stage panel, right after both picks ("idle" there), one game, offline;
+one restart per process never failed (136 of 136). Online this is a run of
+sessions that end at the select screen without a fight (an opponent who
+leaves during the pick, again and again); in the probe the broken game kept
+running in "connecting" for minutes (whether the stuck check ends it online
+was not tested). Next step: what the start-VS routine
+allocates at the select screen and does not free (the restart could visit the
+title once instead after a few restarts).
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

@@ -562,8 +562,19 @@ void begin_select(uint32_t f)
     /* the same fighter as in the session's last fight keeps its costume (a
      * ranked set's later games: the lock names the characters only); the same
      * on both PCs, which played the same fights */
-    for (int p = 0; p < 2; p++)
+    for (int p = 0; p < 2; p++) {
         if (!g_cfg.btn[p] && g_cfg.chr[p] == g_last_chr[p] && g_last_btn[p]) g_cfg.btn[p] = g_last_btn[p];
+        /* Kuma and Panda share a cell and the button decides which (punch Kuma,
+         * kick Panda): a costume button of the other kind (a hand-made
+         * buttons=) would fight the other bear under this one's name
+         * (pick_flow_test --no-pick: "Panda with Square", model 0x1E) -- the
+         * default button instead, the same on both PCs */
+        const int b = g_cfg.btn[p];
+        if ((g_cfg.chr[p] == 11 && (b == 3 || b == 4)) || (g_cfg.chr[p] == 12 && (b == 1 || b == 2))) {
+            note("player %d: %s cannot be confirmed with %s -- the default button", p + 1, kName[g_cfg.chr[p]], btn_name(b));
+            g_cfg.btn[p] = 0;
+        }
+    }
     set_phase(Ph::Select, "select", f);
 }
 

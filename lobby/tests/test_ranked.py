@@ -286,6 +286,16 @@ class AccountTest(Base):
         self.assertEqual(ev["match"], ea["match"])
         self.assertEqual(self.player("Anna").status, "playing")
 
+    def test_a_replaced_login_says_why_in_plain_words(self):
+        # e2e finding: the first PC's tab said "Lost the lobby connection: 0 bytes read on a total of
+        # undefined expected bytes" after the account logged in elsewhere
+        a = self.acc("Kuma")
+        a2 = self.c()
+        a2.login("Kuma", "pw-Kuma")
+        ev = expect(a, "disconnected", timeout=10)
+        self.assertEqual(ev["reason"], "removed from the lobby: logged in from another place")
+        self.assertNotIn("bytes read", ev["reason"])
+
 
 class RankedFlowTest(Base):
     def test_characters_ranks_profile_history_leaderboard(self):
@@ -815,6 +825,34 @@ class DriverResultFileTest(unittest.TestCase):
         self.drv.poll()
         self.assertEqual([(r["match"], r["winner"]) for r in self.client.reports], [("m2", 0)])
 
+    def test_the_games_own_desync_count_wins_over_the_logs_late_total(self):
+        # The log's cumulative count is printed every 600 frames: a line printed after this match's FIGHT START
+        # still counts mismatches of the frames before it (the last match's end). The game counts from FIGHT START.
+        log = os.path.join(self.dir, "game.log")
+        with open(log, "w") as f:
+            f.write("[netplay] sync check through frame 2999: 668 mismatching frame(s)\n")
+        from t5lobby.match_driver import GameLog
+        self.drv.glog = GameLog(log)
+        self.drv.mark = self.drv.glog.mark()                           # FIGHT START of this match
+        with open(log, "a") as f:
+            f.write("[netplay] sync check through frame 3599: 927 mismatching frame(s)\n")
+        self.write({"match": "m1", "winner": 1, "score": [0, 1], "desync": 0, "hash": "ab"})
+        self.drv.poll()
+        self.assertEqual(self.client.reports[0]["desync"], 0)
+
+    def test_a_game_without_its_own_count_still_reports_the_logs(self):
+        log = os.path.join(self.dir, "game.log")
+        with open(log, "w") as f:
+            f.write("[netplay] sync check through frame 599: 0 mismatching frame(s)\n")
+        from t5lobby.match_driver import GameLog
+        self.drv.glog = GameLog(log)
+        self.drv.mark = self.drv.glog.mark()
+        with open(log, "a") as f:
+            f.write("[netplay] sync check through frame 1199: 12 mismatching frame(s)\n")
+        self.write({"match": "m1", "winner": 1, "score": [0, 1]})
+        self.drv.poll()
+        self.assertEqual(self.client.reports[0]["desync"], 12)
+
     def test_reason_means_disconnect(self):
         self.write({"match": "m1", "winner": None, "score": [1, 0], "reason": "peer_timeout"})
         self.drv.poll()
@@ -829,6 +867,17 @@ class DriverResultFileTest(unittest.TestCase):
         self.drv.poll()
         r = self.client.reports[0]
         self.assertEqual((r["source"], r["reason"]), ("disconnect", "peer_lost"))
+
+    def test_a_game_that_gave_up_its_reset_is_not_a_crash(self):
+        # exit code 6: the persistent game's reset for this match was stuck for 60 s and it ended itself
+        # (e2e: the match was voided as this player's crash -- a strike -- before the fight even started)
+        class Proc:
+            returncode = 6
+        self.game.proc = Proc()
+        self.game.alive = False
+        self.drv.poll()
+        r = self.client.reports[0]
+        self.assertEqual((r["source"], r["reason"]), ("disconnect", "game_stuck"))
 
     def test_closed_window_is_a_quit(self):
         # Alt+F4 / the X button / Esc mid-match: the game writes "quit", tells the peer and exits with 7

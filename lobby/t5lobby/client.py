@@ -97,6 +97,7 @@ class LobbyClient:
         self.session = None          # "remember me" token from a password login (store it, not the password)
         self.recovery_codes = None   # shown once after registering
         self._kicked = False
+        self._kick_reason = ""
         self._reconnecting = False
         self.welcome = None
         self.me = None
@@ -250,7 +251,12 @@ class LobbyClient:
                 except ValueError:
                     continue
                 await self._dispatch(msg)
-        except (asyncio.IncompleteReadError, ConnectionError, OSError) as e:
+        except asyncio.IncompleteReadError:
+            reason = "the lobby server closed the connection"      # (not asyncio's "0 bytes read on a total of ...")
+        except ConnectionError:
+            # (not "[WinError 10054] <the message in the Windows language>": a player reads this)
+            reason = "the connection to the lobby server was cut"
+        except OSError as e:
             reason = str(e) or reason
         except asyncio.LimitOverrunError:
             reason = "message too long"
@@ -262,6 +268,8 @@ class LobbyClient:
                 if not fut.done():
                     fut.set_exception(LobbyError("disconnected", reason))
             await self._drop_game_socket()
+            if self._kicked and self._kick_reason:
+                reason = f"removed from the lobby: {self._kick_reason}"   # e.g. logged in from another place
             if not self._closing and not self._reconnecting:
                 if self.token and self.me and not self._kicked and self.reconnect_window > 0:
                     self._tasks.append(asyncio.ensure_future(self._reconnect(reason)))
@@ -336,6 +344,7 @@ class LobbyClient:
 
     async def _on_kicked(self, msg):
         self._kicked = True
+        self._kick_reason = str(msg.get("reason") or "")
 
     async def _on_lobby_delta(self, msg):
         """What changed since the last update (the server sends whole lists only now and then):

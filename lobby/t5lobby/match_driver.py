@@ -104,9 +104,15 @@ REASON_TEXT = {         # English; word(REASON_TEXT, key) where it is shown
     "rejected": N_("Your opponent's game is in another match."),
     "bind_failed": N_("The game could not open its network port (another program uses it?)."),
     "quit": N_("You closed the game during the match: it counts as a loss."),
+    "game_stuck": N_("The game could not get back to character select and closed itself; it starts again for "
+                     "your next match."),
 }
-# Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp).
-EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch"}
+# Exit codes of a game whose netplay session could not go on (src/netplay/t5_hooks.cpp), and 6: a persistent
+# game whose reset to character select for the next match was stuck for 60 s ended itself ("STUCK";
+# docs/DIRECTFIGHT.md "After a session ends") -- it gave up on purpose before this match's fight, not a
+# crash, so no strike (e2e run: a rolled-back KO left the game unable to reset, and the next match was voided
+# as this player's crash).
+EXIT_REASON = {3: "peer_lost", 4: "no_peer", 5: "build_mismatch", 6: "game_stuck"}
 # The player closed the game window (Alt+F4, the X button, Esc) while a netplay session was set up:
 # the game told the opponent and ended itself; for the lobby that is this player's quit (a loss).
 EXIT_QUIT = 7
@@ -775,8 +781,18 @@ class MatchDriver:
                 return
             self._archive(mid)
             self._perf(extra.get("fps"))
-            desync = self._evidence() or 0
-            desync = max(desync, int(extra.get("desync") or 0))
+            if "desync" in extra:
+                # The game counts the mismatching frames of this match itself, from its FIGHT START sync point
+                # (netplay match_begin). The log's count is cumulative and only printed every 600 frames: a
+                # line printed after this match's FIGHT START still holds mismatches of the frames before it
+                # (the last match's win pose and select screen) -- e2e run: a rematch voided as a desync
+                # while both games said 0.
+                try:
+                    desync = int(extra["desync"])
+                except (TypeError, ValueError):
+                    desync = self._evidence() or 0
+            else:
+                desync = self._evidence() or 0      # (older games write no count)
             reason = extra.get("reason")
             if reason == "quit":
                 # This player closed the game window mid-match (exit code 7): a quit, i.e. a loss.

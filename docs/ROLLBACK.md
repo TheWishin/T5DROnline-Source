@@ -2278,17 +2278,165 @@ waits for in phase 1 is not known yet -- `tools/stuck_watch.py` dumps the
 threads of a game whose "fight" command is followed by no state change (with
 `PS3_DEBUG`).
 
+## 33. Frame time under rollback (branch frame-time, 2026-10-19)
+
+Goal: the 99th percentile of the present-to-present time while fighting at
+RTT 150 from 24-25 ms (section 29) to 20 ms or less, with the same sync and no
+more input delay. **Result: 23.1 -> 21.4 ms on a quiet PC (RTT 150), 30.6 ->
+27.7 ms at RTT 250; 20 ms is not reached, and cannot be by rollback work
+alone: the fight's frames without any rollback, time-sync sleep or wait already
+have a p99 of 20.1-20.6 ms (below).**
+
+**Where the time went (main).** An early rollback (section 27) started only
+after the frame was presented, and after the next boundary's snapshot that was
+taken then: the restore ended 2.0-3.0 ms after the present (lat.log M after
+P); restore 1.1-1.4 ms, then ~1.8-2 ms per re-simulated frame. At RTT 150
+almost every rollback is 3 frames deep (6.3 ms in all) and the tick comes
+~7 ms after the present, so most of them ended after their tick.
+
+**What changed.**
+
+1. *The snapshot at the flip request* (`rb_hooks.cpp`): `cellGcmSetFlip` on the
+   main thread marks the request, and the next flip-status poll takes the next
+   boundary's snapshot (`early_commit`) while the walker still translates the
+   frame -- it only reads guest memory. The early check polls every 0.2 ms
+   (was 0.5). The restore now ends 0.5-1.5 ms after the present for 50-61 % of
+   the rollbacks (main: 0-2 %); the rest wait for the peer's packet.
+   `T5_RB_NET_EARLY_COMMIT=present` = the old place. (The restored state of a
+   boundary is still the boundary's own snapshot, after section 32's side
+   drain: an earlier entry in the same log only holds a page's content at the
+   previous boundary.)
+2. *Skinning output out of the state while a match is fought* (patch 0039,
+   `rb_state.cpp job_page/job_gate`): the runtime records the heap pages that
+   SPURS job DMA PUTs fill completely (the vertex skinning's output buffers,
+   read only by the RSX); while phase 17 runs and the match is not decided they
+   are neither saved nor restored, and the record is forgotten (the shadow
+   takes them in again) at the decision, at every barrier and session reset.
+   Restore 1.13 -> 0.63 ms per rollback (MS150). `T5_RB_JOB_PAGES=keep`.
+3. *Four more direct-call cuts* (`rb_icall.cpp kDetourCut`: `0x1549D4`,
+   `0x154898` -- the whole functions whose bodies `0x1549FC`/`0x1548C0` section
+   26 found to be tails --, `0x0A25A8`, `0x35D894`). Local-lag A/B (one game,
+   P2's input 7 frames late, the same match): 2.14 -> 1.86 ms per re-simulated
+   frame (window averages, noisy).
+4. *No undo log for confirmed re-simulated frames* (`T5_RB_NET_LAZY`, default
+   on): during a re-simulation the boundaries before `g_checked` (every input
+   before them confirmed: no rollback can reach them again) commit nothing, the
+   one at `g_checked` brings the shadow up to date without a log
+   (`state_refresh`), and the restore skips the shadow copies and the write-watch
+   reset (`state_rollback_lazy`). Small at RTT 150 (a few boundaries per
+   window). A lazy re-simulation leaves the boundaries before its refresh out of
+   reach; `state_rollback` already refuses such a target, and the test hook
+   `T5_RB_NET_FORCE` now asks `state_reachable` first.
+
+Together: a rollback costs 6.4 -> 5.4 ms at RTT 150 (depth 3: 6.31 -> 5.40,
+depth 4: 8.4 -> 7.0) and 12.1 -> 10.5 ms at RTT 250 (depth 6: 12.2 -> 10.4).
+
+**Tried and left out: the draw lists and the render scratch out of the
+state** (`T5_RB_RENDER_STATE=drop`, off). The NU draw lists (0x43D00000) are
+double-buffered: the draw manager's thread (`NU::Draw::RequestManager`,
+0x1074BE80, in the state) consumes in frame n what frame n-1 built, through
+pointers a restore puts back while the lists keep a later frame's nodes. At RTT
+150 with the joiner stuttering the host's draw thread called a garbage vtable
+(0x43B94000) and wrote 0x00100B80 over guest memory within one or two matches
+(runs C1, C2; C4 = only that change: the same; C3 = only the job pages: 6 of 6
+matches clean). Test mode and the local-lag test never hit it.
+
+**After the merge with main 59f2cdf** (rollback-crash, desync-hunt): the lazy
+restore writes pages through `restore_page` (the `kKeepLive` bytes stay live);
+the TLS generator's block (0x0E000000) stays in the state, and none of the cuts
+runs inside the scene task (0x10BD8), whose draws come from it. Equivalence test
+(`tools/rb_equiv_test.py --lag 7 --full`: one game, P2's input 7 frames late,
+1 104 rollbacks, camera and secondary motion in the hash): 4 910 frames, 0
+different; again on the final build (with `T5_RB_NET_SAMPLE`): 4 854, 0.
+
+**Correctness** (final build, `tools/rollback_net_test.py` with the new
+`--mash` and `--stutter`: one session per run, the next matches through
+`--next`, RTT 150 +-5 ms, 3 % loss, input delay by ping, both sides mash
+(fight_flow_test's scripts), the joiner suspended 60 ms every 0.2-0.6 s,
+muted, below-normal priority; next to 4-8 other game instances, 28-31 of 32
+processors busy):
+
+| run | mode | matches | rollbacks (host / joiner) | result |
+|---|---|---|---|---|
+| rbA | rollback | 11 | 15 398 / 7 494 | 11 of 11: 0 mismatching frames (through frame 56 399), the same result hash on both PCs, no abort |
+| rbB | rollback | 11 | 14 816 / 6 255 | 11 of 11 (through frame 53 399), the same |
+| lsA | lockstep (`--mode1 off --mode2 off`) | 4 | -- | 4 of 4 (through frame 19 799), the same |
+
+No "cannot be rolled back", no undo-ring overflow, no FIFO stall in any log.
+Before the draw lists were put back: C1 and C2 aborted in match 1 and 2 (above).
+
+**Frame times** (`rollback_net_test.py --fight 26,33,20,2 --rtt R --jitter 5
+--loss 3 --delay 6 --mode1 default --mode2 default --matches 1 --cpus1
+0xFF0000 --cpus2 0xFF000000 --latlog --polite`, section 29's command; base =
+main 59f2cdf with its series, ft = this branch; base and ft back to back, in
+turn; present-to-present over the fought frames -- from the first frame after
+the intros to the match end, from frames.log / results.jsonl, the same frames
+for both builds: `tools/rollback_frame_times.py --span frames`). Quiet PC:
+0 compilers, 0-2 other game instances, 5.7-11 of 32 processors busy (the two
+games included). p50 / p95 / p99 in ms, the mean over the runs and both sides,
+range in brackets; "> 20 ms" and "2+ refreshes" (frames the 59.95 Hz display
+showed for two or more refreshes) per side and match:
+
+| RTT | build | runs | p50 | p95 | p99 | > 20 ms | 2+ refreshes | rollback cost |
+|---|---|---|---|---|---|---|---|---|
+| 50 | base | 2 | 16.7 | 18.5 (18.4-18.6) | 20.5 (20.3-20.6) | 60 | 28 | 2.3 ms |
+| 50 | ft | 2 | 16.7 | 18.4 (18.2-18.5) | **20.3** (20.2-20.4) | 54 | 21 | 1.8 ms |
+| 150 | base | 3 | 16.7 | 19.9 (19.6-20.4) | 23.1 (22.9-23.9) | 203 | 56 | 6.4 ms |
+| 150 | ft | 3 | 16.7 | 19.0 (18.9-19.2) | **21.4** (21.0-22.0) | 115 | 37 | 5.4 ms |
+| 250 | base | 2 | 16.7 | 25.6 (25.5-25.8) | 30.6 (30.1-31.0) | 716 | 389 | 12.1 ms |
+| 250 | ft | 2 | 16.7 | 23.4 (23.1-23.6) | **27.7** (27.4-28.0) | 556 | 221 | 10.5 ms |
+
+The same pairs next to other agents' games (4 other instances, 16-19
+processors busy, RTT 150): base p99 25.6-28.1, ft 23.6-24.4; at 22-25 busy
+processors (Q150) both 32-34 ms -- load, not rollback: most long frames there
+had no rollback in them. Every run: both sides in sync, the same result hash.
+
+**Why not 20 ms.** Over the frames with no rollback, no time-sync sleep and no
+wait for the peer in them, present-to-present alone has a p99 of 20.1-20.6 ms
+in every RTT 50/150 run of both builds (43-60 such frames over 20 ms per
+match): a live frame takes a median 9 ms (p90 ~11) from its tick to its
+present, and two frames in a row that differ by 3+ ms make one interval over
+20 ms. The
+rollbacks now add ~1 ms to that at RTT 150 (main: ~2.7). The metric as set
+cannot reach 20 ms through the rollback; what the player sees improved more:
+frames shown for two refreshes at RTT 150 56 -> 37 per match, at RTT 250 389 ->
+221.
+
+**What is left for the rollback itself.** A re-simulated frame (profile of the
+lag-7 test, `T5_RB_NET_SAMPLE=400`): the fight update 29 %, the task at
+`0x26C85C` 17 %, the stage task `0x2683F4` 15 % (both whole functions, outside
+the scene task; cutting them would pause their state for the depth of every
+rollback unless their memory left the state too -- not done), the boundary's
+snapshot ~16 %, the rest small. The walker still translates a frame a median
+2.5-2.6 ms after its flip request (F -> P); 50-61 % of the rollbacks have the
+peer's input by then, so starting them at the flip request would give them
+that time -- but the restore and the re-simulation (its skinning jobs write the
+buffers the walker reads) must then keep off the memory the walker reads for
+the frame in flight. Not done.
+
+Tools: `tools/rollback_net_test.py --mash [--mash-gap N] [--moves] --stutter MS`
+(and `--polite`, `--latlog`); `tools/rollback_frame_times.py --span frames`
+(builds without the fighting flag); the `rbnet:` lines give the re-simulation's
+breakdown (commit, boundary, game frame, CPU vs wall), restore+re-simulation
+by depth, early rollbacks that ended after their tick and by how much, pages
+per restore, job pages; `PS3_LATENCY_LOG` adds the fighting flag to N, Q
+(rollback done), S (time-sync sleep) and T (wait for the peer). Smoke quick
+(muted, below-normal, 8 other game instances): exit 0, 5 tests, WARN only for
+audio (muted) -- no FAIL; tests/ 433 OK (2 skipped).
+
 ## What is left
 
 - The file request thread under rollback (sections 30-31): fixed in section 32,
   with the sound library's heap, the geometry manager's drain (the present
   hang) and the title autosave's heap race; open there: a 3-frame transient at
   "Fight!" in the match after a deliberately desynced session.
-- Rollbacks of 4+ frames at RTT 150 still end after the tick and cost their
-  vblank. Further cuts need whole functions (see the tails above), or an early
-  start at the flush instead of after the present, which needs the render
-  inputs of the frame being translated (skinned vertices) kept out of the
-  restore.
+- Frame time (section 33): p99 present-to-present at RTT 150 is 21.4 ms on a
+  quiet PC (main 23.1); the frames without any rollback alone have a p99 of
+  ~20.3 ms, so 20 ms is out of reach for rollback work. What is left for the
+  rollback: an early start at the flip request (the walker's 2.5 ms; needs the
+  restore and the re-simulation's skinning jobs kept off what the walker reads
+  for the frame in flight), or the two big non-scene tasks of a re-simulated
+  frame (`0x26C85C`, `0x2683F4`) with their memory out of the state.
 - The metric in the `rbnet:` lines ("displayed frame times") is boundary to
   boundary; with early rollbacks a late live start makes one long and one short
   interval without a missed vblank. `tools/latency_test.py`'s display cadence

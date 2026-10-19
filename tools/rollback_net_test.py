@@ -392,6 +392,13 @@ def main():
     ap.add_argument("--latlog", action="store_true",
                     help="PS3_LATENCY_LOG per game (lat.log): present-to-present times in the fight and display "
                          "refreshes without a new frame go into the summary")
+    ap.add_argument("--mash", action="store_true",
+                    help="fight_flow_test's mash scripts instead of the attack scripts: face buttons and directions "
+                         "at random, 1..--mash-gap frames apart (T5_NET_SCRIPT, fights only with --fight)")
+    ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
+    ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (fight_flow_test --moves)")
+    ap.add_argument("--stutter", type=int, default=0,
+                    help="suspend the joiner's game for MS every 0.2-0.6 s once it runs (a choppy PC: deep rollbacks)")
     ap.add_argument("--analyze", action="store_true", help="only summarize the run --out again")
     a = ap.parse_args()
     if a.analyze:
@@ -480,8 +487,13 @@ def main():
             env.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0",
                         "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}"})
         sp = os.path.join(wd, "script.txt")
-        with open(sp, "w") as fp:
-            fp.write("\n".join(e.replace(":", " ") for e in script.split(",")) + "\n")
+        if a.mash:   # fight_flow_test's mash script (no START: that pauses a fight)
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from fight_flow_test import mash_script
+            mash_script(sp, (a.seed1 if who == "host" else a.seed2) + 100, gap=a.mash_gap, moves=a.moves)
+        else:
+            with open(sp, "w") as fp:
+                fp.write("\n".join(e.replace(":", " ") for e in script.split(",")) + "\n")
         env["T5_NET_SCRIPT"] = sp
         for kv in (a.env1 if who == "host" else a.env2):
             k, v = kv.split("=", 1)
@@ -549,6 +561,27 @@ def main():
 
     hung = {"host": False, "join": False}
     t0 = time.time()
+    stutter_stop = threading.Event()
+    stutter_n = [0]
+    if a.stutter and os.name == "nt":
+        import ctypes
+        ntdll, k32 = ctypes.WinDLL("ntdll"), ctypes.WinDLL("kernel32")
+
+        def stutter_loop(pid):
+            """--stutter: the joiner's process suspended for a.stutter ms every 0.2-0.6 s"""
+            while not stutter_stop.wait(random.uniform(0.2, 0.6)):
+                h = k32.OpenProcess(0x0800, False, pid)   # PROCESS_SUSPEND_RESUME
+                if not h:
+                    return
+                try:
+                    if ntdll.NtSuspendProcess(h) == 0:
+                        time.sleep(a.stutter / 1000.0)
+                        ntdll.NtResumeProcess(h)
+                        stutter_n[0] += 1
+                finally:
+                    k32.CloseHandle(h)
+        stutter_thread = threading.Thread(target=stutter_loop, args=(procs[1][1].pid,), daemon=True)
+        stutter_thread.start()
     try:
         while time.time() - t0 < a.seconds:
             if any(p.poll() is not None for _, p, _ in procs):
@@ -592,6 +625,9 @@ def main():
                 break
             time.sleep(0.1 if a.audio else 0.5)
     finally:
+        stutter_stop.set()
+        if a.stutter and os.name == "nt":
+            stutter_thread.join(5)   # never kill a suspended game half way
         rcs = {}
         for who, p, glog in procs:
             if p.poll() is None:
@@ -623,6 +659,8 @@ def main():
             out.append("  result: " + r)
     if proxy:
         out.append(f"proxy: {proxy.stats}")
+    if a.stutter:
+        out.append(f"stutter: the joiner suspended {stutter_n[0]} times for {a.stutter} ms")
     open(os.path.join(d, "summary.txt"), "w").write("\n".join(out) + "\n")
     print("\n".join(out))
 

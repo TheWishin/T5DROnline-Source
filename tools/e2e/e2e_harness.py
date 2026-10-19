@@ -601,10 +601,13 @@ class Player:
     settings and output folder, and the games it started."""
 
     def __init__(self, ctx, name, kind="real", password=None, char=None, input_delay="auto", env=None,
-                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None):
+                 mash_gap=20, game_mode=None, user_dir=None, tag="", sets=None, bot=False, lobby=None, devices=False):
         """bot=True: no scripted presses; the player attacks live (T5_NET_PADFILE) only while ctx.plan says
         this player wins the game being fought, else stands still -- planned results (ranked sets 2-0, 2-1).
-        sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes)."""
+        sets=False: online.json "sets": false (the old protocol: every ranked game rated, rematch votes).
+        devices=True: the player plays with this PC's controllers as a person does -- the game reads its pads
+        and keyboard (PS3_PAD_DEVICES=1, no PAD_NO_KEYBOARD / T5_NET_LOCALPAD=0, no scripted mashing); the
+        scenario gives it a fake one (PS3_PAD_HID_FAKE). The picker's pad file stays on port 1."""
         import tkinter as tk
         from tkinter import ttk
         self.ctx, self.name, self.kind, self.password = ctx, name, kind, password
@@ -619,14 +622,16 @@ class Player:
         self.matches = {}         # match id -> what this player saw of it
         self.app = E2EApp(self)
         self.mash_gap = mash_gap
+        self.devices = bool(devices)
         self.extra_env = dict(env or {})
         st = self.app.settings
         st["out"] = self.out
         st["nickname"] = name
         st["background"] = True
         st["input_delay"] = input_delay
-        lines = ["PS3_AUDIO_MUTE=1", "PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0", "T5_NET_DESYNC_DUMP=1",
+        lines = ["PS3_AUDIO_MUTE=1", "T5_NET_DESYNC_DUMP=1",
                  f"RSX_SHADER_CACHE_DIR={ctx.run.shader_cache}", f"PS3_TITLE=T5DR e2e {name}"]
+        lines += ["PS3_PAD_DEVICES=1"] if devices else ["PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0"]
         if kind == "real":
             # the in-game select (ingame-select): this player's pad file, the cursor cell in the log
             lines += [f"PS3_PAD_FILE={os.path.join(self.dir, 'pad.txt')}", "T5_DF_TRACE=1"]
@@ -639,7 +644,7 @@ class Player:
         if self.bot:
             open(self.padfile, "w").close()
             lines.append(f"T5_NET_PADFILE={self.padfile}")
-        elif kind == "real":
+        elif kind == "real" and not devices:
             import fight_flow_test
             mash = fight_flow_test.mash_script(os.path.join(self.dir, "mash.txt"),
                                                1000 + sum(map(ord, name)) + ctx.run.seed, gap=mash_gap)
@@ -734,7 +739,7 @@ class Player:
 
             def match_env(ev, ticket):
                 env = orig_env(ev, ticket)
-                if me.kind == "real" and not me.bot and not ev.get("continue") and \
+                if me.kind == "real" and not me.bot and not me.devices and not ev.get("continue") and \
                         "T5_NET_SCRIPT" not in (me.extra_env or {}):
                     # every session its own presses (a session reads T5_NET_SCRIPT when it starts; the same
                     # file every time would play the same match over and over)

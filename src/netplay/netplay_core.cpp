@@ -19,8 +19,10 @@
  *                   under it; without it the key comes from T5_NET_MATCH + T5_NET_SEED when
  *                   both are given, else packets are not authenticated
  *   T5_NET_LOCALPAD 0 ignores this PC's devices (tests: scripts only). Otherwise
- *                   the local player is whatever the runtime's controls put on
- *                   port 1 (cellPad_sample_local: pads, sticks, keyboard, remaps)
+ *                   the local player is read through the runtime's controls
+ *                   (cellPad_sample_local: pads, sticks, keyboard, remaps): online the
+ *                   port pressed last, local mode port 1 (local_pad.cpp)
+ *   T5_NET_PADPORT  1..7: the local player is that port only (1 = 1.1.1's way)
  *   T5_NET_BUILD    build id; a peer whose HELLO carries a different one is refused
  *   T5_NET_SEED     shared random seed (from the lobby); the host's value is used
  *   T5_NET_MATCH, T5_NET_PATH, T5_NET_RTT_MS   lobby details, logged
@@ -53,8 +55,7 @@
 #include "netplay.h"
 #include "replay.h"
 
-/* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian. */
-struct HostPadData { int32_t len; uint16_t button[64]; };
+/* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian (HostPadData: netplay.h). */
 extern "C" int32_t cellPad_sample_local(uint32_t port_no, HostPadData* out);
 
 namespace np {
@@ -385,15 +386,30 @@ uint16_t script_mask(const std::vector<ScriptEvent>& ev, uint32_t f)
     return m;
 }
 
+/* One port's HostPadData into *in (nothing when the port had nothing). */
+void pad_into(const HostPadData& d, PadInput* in)
+{
+    if (d.len == 0) return;
+    in->buttons |= (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
+    in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
+}
+
 /* This PC's devices on local port `port`, through the runtime's own pad layer
  * (cellPad_sample_local: controls.ini mapping, sticks, keyboard, PS3_PAD_FILE). */
 void device_input(uint32_t port, PadInput* in)
 {
     HostPadData d;
-    if (cellPad_sample_local(port, &d) != 0 || d.len == 0) return;
-    in->buttons |= (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
-    in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
-    in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
+    if (cellPad_sample_local(port, &d) != 0) return;
+    pad_into(d, in);
+}
+
+/* This PC's player (local_pad.cpp: online the controller pressed last, else port 1). */
+void player_input(PadInput* in)
+{
+    HostPadData d;
+    local_player_sample(&d);
+    pad_into(d, in);
 }
 
 /* Menu driving by the direct-fight mode while lockstep runs: the local
@@ -410,7 +426,7 @@ PadInput sample_local(uint32_t f)
     PadInput in = kNeutral;
 
     if (g_local_inject_on.load()) { in.buttons = g_local_inject.load(); return in; }
-    if (s.localpad) device_input(0, &in);
+    if (s.localpad) player_input(&in);
     if (g_script_gate.load()) in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
     return in;

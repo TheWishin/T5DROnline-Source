@@ -96,8 +96,6 @@ void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_cont
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
-struct np_host_pad { int32_t len; uint16_t button[64]; };
-int32_t cellPad_sample_local(uint32_t port_no, np_host_pad* out);   /* patch 0009: this PC's input on a port (replay controls) */
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 typedef int64_t (*np_lv2_fn)(ppu_context*);
@@ -1073,8 +1071,9 @@ uint16_t replay_pad()
     static int on = -1;   /* T5_REPLAY_CONTROLS=0: the pad does not steer the playback (tests on a PC in use) */
     if (on < 0) { const char* e = getenv("T5_REPLAY_CONTROLS"); on = !(e && *e == '0'); }
     if (!on) return 0;
-    np_host_pad d = {};
-    if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
+    HostPadData d = {};
+    np::local_player_sample(&d);           /* any of this PC's controllers (local_pad.cpp) */
+    if (d.len == 0) return 0;
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
 }
 

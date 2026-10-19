@@ -13,6 +13,15 @@
 #pragma once
 #include <stdint.h>
 
+/* libs/input/cellPad.c (patch 0009): one PS3 port's local input as cellPad_sample_local fills it, host-endian:
+ * len (0 = nothing on the port), then button[] as cellPadGetData lays it out ([2] DIGITAL1, [3] DIGITAL2,
+ * [4..7] RX RY LX LY). */
+struct HostPadData { int32_t len; uint16_t button[64]; };
+
+/* The session's value of an environment variable (netplay_core.cpp: a persistent game's control channel
+ * overlay, else the process environment); null when unset. */
+extern "C" const char* t5_env(const char* key);
+
 namespace np {
 
 /* One player's input for one frame: CELL_PAD_CTRL_* bits (DIGITAL1 in the
@@ -76,6 +85,11 @@ void  log_extra(uint32_t f, const char* text);
  * are polled on every pad read. player 0 = this PC's pad, 1 = T5_NET_SCRIPT2 /
  * T5_NET_PADFILE2. */
 PadInput poll_now(int player);
+
+/* This PC's player's controller (local_pad.cpp, docs/NETPLAY.md "Which controller plays online"): online the
+ * local port pressed last, else port 1. Fills *out as cellPad_sample_local does; returns the port (0-based).
+ * Live samples only -- never from a re-simulated frame. */
+int   local_player_sample(HostPadData* out);
 
 void  note(const char* fmt, ...);
 

@@ -1402,6 +1402,154 @@ def log_lines(p):
     return out
 
 
+# ------------------------------------------------------------------ this PC's controller online (1.1.2)
+# A player's report on 1.1.1: "my DualSense works only offline". The runtime gives each controller a port in the
+# order it finds them (XInput pads first); a DualSense behind another source -- a virtual Xbox pad (DS4Windows,
+# DSX), a handheld's own pad, an idle pad -- lands on port 2, which offline is player 2 (it still plays), while
+# netplay took the online player from port 1 only. docs/NETPLAY.md "Which controller plays online".
+DS_BITS = {"square": 0x8000, "cross": 0x4000, "circle": 0x2000, "triangle": 0x1000}
+DS_HAT_BITS = {2: 0x0020, 6: 0x0080, 4: 0x0040}          # hat right / left / down -> RIGHT LEFT DOWN
+DS_MASK = sum(DS_BITS.values()) | sum(DS_HAT_BITS.values())
+RE_FRAME = re.compile(r"^(\d+) I ([0-9A-Fa-f]{4})[0-9A-Fa-f]{8} ([0-9A-Fa-f]{4})[0-9A-Fa-f]{8} [0-9a-fA-F]{16}"
+                      r"(?: ([RP]))?")
+
+
+class HidMasher:
+    """A DualSense on Bluetooth in its extended mode (what Steam / DS4Windows leave it in), as the runtime's
+    PS3_PAD_HID_FAKE reads it: every press and release is one input report (0x31, CRC filled in) appended to
+    the file. start() mashes face buttons and the d-pad like a person (40-90 ms presses, 60-160 ms apart)."""
+
+    def __init__(self, path, seed=7):
+        import random
+        import ps_hid_reports as phr     # tools/
+        self.phr, self.path, self.rnd = phr, path, random.Random(seed)
+        self.n = 0
+        self.presses = 0
+        self.stop_ev = None
+        self.thread = None
+        self._write(phr.PadState(), new=True)          # plugged in from the start, nothing held
+
+    def _write(self, state, new=False):
+        self.n += 1
+        rep = self.phr.padded("dualsense", "bt-ext", self.phr.report("dualsense", "bt-ext", state, counter=self.n))
+        with open(self.path, "w" if new else "a") as f:
+            f.write(rep.hex() + "\n")
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.06, 0.16)):
+            face = rnd.choice(sorted(DS_BITS))
+            hat = rnd.choice([None, None, 2, 6, 4])
+            self._write(self.phr.PadState(buttons={face}, hat=hat))
+            self.presses += 1
+            if self.stop_ev.wait(rnd.uniform(0.04, 0.09)):
+                break
+            self._write(self.phr.PadState())
+        self._write(self.phr.PadState())
+
+    def start(self):
+        import threading
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="hid-masher", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        if self.thread is not None:
+            self.stop_ev.set()
+            self.thread.join(2)
+            self.thread = None
+
+
+class ForegroundWatch:
+    """Samples the foreground window's process 5x a second: was the player's game ever in front?"""
+
+    def __init__(self, pid):
+        import threading
+        self.pid, self.samples, self.front = pid, 0, 0
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="fg-watch", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        import ctypes
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        while not self.stop_ev.wait(0.2):
+            pid = ctypes.c_ulong(0)
+            hwnd = user32.GetForegroundWindow()
+            if hwnd:
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            self.samples += 1
+            self.front += pid.value == self.pid
+
+    def stop(self):
+        self.stop_ev.set()
+        self.thread.join(2)
+
+
+def frames_pressed(path, col, mask, confirmed_only=True):
+    """Frames of a netplay frame log (T5_NET_LOG) whose input in column `col` (0 = P1, 1 = P2) holds any of
+    `mask`; under rollback only lines whose remote input was confirmed (R) when logged."""
+    n = total = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = RE_FRAME.match(ln)
+                if not m or (confirmed_only and m.group(4) == "P"):
+                    continue
+                total += 1
+                n += (int(m.group(2 + col), 16) & mask) != 0
+    except OSError:
+        pass
+    return n, total
+
+
+@scenario("net_dualsense", "6 netcode", game=True, suites=("game", "net"),
+          desc="one player plays with a DualSense on Bluetooth (fake HID pad, extended reports) that the runtime "
+               "put on port 2 (port 1: the picker's pad file and the keyboard), its game window never in front: "
+               "the DualSense's presses reach the other PC, in sync (1.1.1 read the online player from port 1 only)")
+def net_dualsense(ctx):
+    game_server(ctx)
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    masher = HidMasher(hid, seed=ctx.run.seed)
+    logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("pad", "rival")}
+    a = ctx.player("E2E Pad", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}", "T5_NET_LOG": logs["pad"],
+                                                 "PS3_PAD_READ_LOG": os.path.join(ctx.dir, "reads-pad.log")})
+    b = ctx.player("E2E Rival", env={"T5_NET_LOG": logs["rival"]})
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=180):
+        raise Abort("no fight")
+    g = a.game()
+    fg = ForegroundWatch(g.proc.pid if g is not None and g.proc is not None else -1)
+    masher.start()
+    try:
+        wait_results(ctx, mid, (a, b))
+    finally:
+        masher.stop()
+        fg.stop()
+    match_row(ctx, mid, (a, b), "confirmed", "DualSense on port 2")
+    port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'")
+    ctx.check("the runtime put the DualSense (Bluetooth, extended reports) on port 2: port 1 has another source",
+              bool(port_line) and "port 2 (player 2)" in port_line and "Bluetooth" in port_line, port_line)
+    kb = log_line(a, r"\[pad\] keyboard -> port 1")
+    ctx.check("the keyboard is there too (port 1)", bool(kb), kb)
+    ctx.check("the DualSense player's game window was never the foreground window during the fight",
+              fg.samples >= 10 and fg.front == 0, f"{fg.front} of {fg.samples} samples in front")
+    follow = log_line(a, r"\[netplay\] local player: port 2 now")
+    ctx.check("netplay took the online player from the DualSense's port", bool(follow), follow)
+    col = 0 if a.matches[mid].get("slot") == 0 else 1
+    peer_n, peer_total = frames_pressed(logs["rival"], col, DS_MASK)
+    own_n, own_total = frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False)
+    ctx.check("the DualSense's presses reached the other PC", peer_n >= 30 and masher.presses >= 10,
+              f"{masher.presses} presses sent; on the other PC {peer_n} of {peer_total} confirmed frames hold "
+              f"them (player {col + 1}); on this PC {own_n} of {own_total} frames")
+    ctx.note(f"DualSense player = P{col + 1}; {masher.presses} presses; frames with them: other PC {peer_n}/"
+             f"{peer_total}, own {own_n}/{own_total}; foreground samples {fg.front}/{fg.samples}")
+
+
 # ============================================================================== 7. failures
 def _two(ctx, n1, n2, **kw):
     game_server(ctx, **kw)

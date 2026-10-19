@@ -635,6 +635,16 @@ server's view and for old clients, the pure-Python certificate checked with open
 reload, servers.json, Host for friends end to end, UPnP/NAT-PMP against fake routers; the Online
 tab's Host for friends button.
 
+**Regional relays** (`test_relays.py`, `lobby/tools/relay_e2e.py`): the control channel, the relay node's
+limits, the choice by the sum of both round trips, dead / silent / full nodes, relays.json changes, the
+direct upgrade from a regional relay, compatibility with the 1.1.0 client and server from git; the tool
+runs a central server and two nodes as processes with UDP delay proxies between each player and each
+relay, and plays stub games (or `--exe t5dr.exe`) through the chosen one:
+
+```sh
+python lobby/tools/relay_e2e.py                       # scenarios best, dead, old (~1 min)
+```
+
 **Two players on one PC** (`lobby/tools/two_players.py`): starts a local
 server, logs in two guests, quick match, then starts two games with the
 handed-over environment. With `--exe` it runs `t5dr.exe` built with the netplay

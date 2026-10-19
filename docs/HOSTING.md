@@ -866,7 +866,10 @@ relays.json, the node's limits, the choice, a dead / silent / full node, the lis
 the direct upgrade from a regional relay, a rematch in the running games renewing the node's lease,
 admin lines, the 1.1.0 client and server from git) and `lobby/tools/relay_e2e.py` (central server and
 two nodes as processes, players behind UDP delay proxies, stub games: the relay with the smallest
-sum carries the match, a killed node is skipped, a 1.1.0 client gets the central relay).
+sum carries the match, a killed node is skipped, a 1.1.0 client gets the central relay). With two real
+games (`--exe`, main's t5dr.exe) the match went through the node with the smallest sum (round trip
+136 ms for a simulated 120), both relay bridges carried it: 4,270 frames, 0 mismatching, 18,329
+packets through the node, result confirmed.
 `install.sh --root DIR --relay-only --relay-id usw` (a staged install) was then run with the settings
 it wrote and answered a control request signed with the secret it made. Not verified: a real node
 on Hetzner and real round trips across the Atlantic.

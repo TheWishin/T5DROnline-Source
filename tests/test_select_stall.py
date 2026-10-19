@@ -51,14 +51,14 @@ class HarnessLogTest(unittest.TestCase):
         # a select still loading (new wait-line content or a new file open) is progress, the same lines again are not
         p0 = sst.progress(STALLED)
         self.assertEqual(sst.progress(STALLED), p0)
-        self.assertNotEqual(sst.progress(STALLED + "[fs] open '/dev_hdd0/x' -> fd 3
-"), p0)
+        nl = chr(10)
+        self.assertNotEqual(sst.progress(STALLED + "[fs] open '/dev_hdd0/x' -> fd 3" + nl), p0)
         self.assertNotEqual(sst.progress(STALLED + "[df] frame 8929: waiting for the select screen (mode 6, select state 1, "
-                                         "records 00/00; reader busy 1, queue 0x1009FFE0 (4 request(s)), completion tokens 0)
-"), p0)
+                                         "records 00/00; reader busy 1, queue 0x1009FFE0 (4 request(s)), completion tokens 0)"
+                                         + nl), p0)
         self.assertEqual(sst.progress(STALLED + "[df] frame 8929: waiting for the select screen (mode 6, select state 1, "
-                                      "records 00/00; reader busy 1, queue 0x1009FF68 (5 request(s)), completion tokens 0)
-"), p0)
+                                      "records 00/00; reader busy 1, queue 0x1009FF68 (5 request(s)), completion tokens 0)"
+                                      + nl), p0)
         self.assertNotEqual(sst.progress(FIXED), sst.progress(FIXED.split("[df] frame 1700")[0]))
 
     def test_faults_and_the_backstop(self):

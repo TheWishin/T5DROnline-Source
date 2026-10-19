@@ -3,6 +3,17 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Online
+- **Your custom costumes online.** Whatever you bought and put on in the item shop (ITEM SHOP & EQUIP:
+  head, face, body, colours) now shows in online matches, for both players: your opponent sees your
+  customization and you see theirs. It comes from your own save (the one you play offline with), is sent
+  to the opponent when the match connects, and both PCs check it the same way -- a damaged save shows the
+  default costume instead, never something only one PC has. Both players need 1.1.3 (the game's netplay
+  changed: protocol 4). Tested in rollback and lockstep with different costumes on both sides and in
+  mirror matches: both PCs show the same, 0 desyncs.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new

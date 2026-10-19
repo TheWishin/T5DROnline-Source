@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 
-from .. import proto
+from .. import proto, relayctl
 from .ratelimit import KeyedBuckets, TokenBucket
 
 log = logging.getLogger("t5lobby.udp")
@@ -69,11 +69,16 @@ class _Proto(asyncio.DatagramProtocol):
 
 
 class UdpService:
-    """Owned by the LobbyServer. `lobby` provides udp_register(token, addr, probe) -> bool."""
+    """Owned by the LobbyServer, or by a RelayNode (server/relaynode.py: the relay alone, for a central lobby
+    elsewhere). `lobby` provides udp_register(token, addr, probe) -> bool and udp_relay_bound(); a relay node
+    also relay_control(data, addr, transport) for the central server's authenticated control datagrams
+    (relayctl.py) and relay_bind_allowed(session, side, addr) -> bool."""
 
     def __init__(self, lobby, cfg):
         self.lobby = lobby
         self.cfg = cfg
+        self.control = getattr(lobby, "relay_control", None)
+        self.bind_allowed = getattr(lobby, "relay_bind_allowed", None)
         self.main = None
         self.probe = None
         self.relays = {}            # match id -> RelaySession
@@ -196,6 +201,12 @@ class UdpService:
                     self.stats["relay_refused"] += 1
                 return
         key = proto.address_key(addr[0], self.cfg.ipv6_prefix)
+        if kind is None and self.control is not None and relayctl.is_control(data):
+            if which == 0 and self.ctl_buckets.take(key) and self.ctl_global.take():
+                self.control(data, addr, transport)
+            else:
+                self.stats["dropped"] += 1
+            return
         if kind is None:
             relatch_ok = (which == 0 and self.relays and self._relayable(data, kind)
                           and self.ctl_buckets.take(key) and self.ctl_global.take())
@@ -220,6 +231,10 @@ class UdpService:
             if hit is None:
                 return
             s, side = hit
+            if self.bind_allowed is not None and not self.bind_allowed(s, side, addr):
+                self.stats["dropped"] += 1
+                self.stats["relay_refused"] += 1
+                return
             self._bind(s, side, addr)
             transport.sendto(proto.pk_token_ack(proto.U_RELAY_ACK, token, addr), addr)
             self.lobby.udp_relay_bound(s.match_id, side, addr)

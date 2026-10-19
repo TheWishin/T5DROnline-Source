@@ -123,6 +123,16 @@ class Config:
     relay_max_bytes: int = 2048     # T5L_RELAY_MAX_BYTES: largest packet the relay forwards (netplay's own maximum)
     relay_max_seconds: float = 1200.0  # T5L_RELAY_MAX_SECONDS: a relay closes when its match has run this long (0 = never)
     max_relays_per_ip: int = 3      # T5L_MAX_RELAYS_PER_IP: relay sessions at once per internet address (0 = no limit)
+    # regional relays (docs/HOSTING.md "Adding a relay server"): relay-only nodes in other regions, chosen per match
+    relays: str = ""                # T5L_RELAYS: central server: relays.json -- a file, or the JSON itself; "" = none
+    relay_secret_file: str = ""     # T5L_RELAY_SECRET_FILE: the secret shared with the relay nodes (central: for the
+                                    # nodes without a "secret_file" of their own; a relay node: its secret)
+    relay_check_seconds: float = 5.0   # T5L_RELAY_CHECK_SECONDS: central: health check of every relay node this often
+    relay_dead_seconds: float = 20.0   # T5L_RELAY_DEAD_SECONDS: central: a node that has not answered this long is skipped
+    relay_bind_seconds: float = 60.0   # T5L_RELAY_BIND_SECONDS: relay node: a session's bind tokens work this long
+    relay_id: str = ""              # T5L_RELAY_ID: relay node: its id in the central's relays.json (other ids refused)
+    relay_central: list = field(default_factory=list)  # T5L_RELAY_CENTRAL: relay node: the central server's addresses;
+                                    # control datagrams from anywhere else are dropped (empty: any, the secret decides)
 
     @classmethod
     def from_env(cls, env=None, **overrides):

@@ -133,7 +133,9 @@ class StatusHttp:
             elif path == "/status":
                 code, ctype, body = 200, "application/json", json.dumps(self.lobby.status(), indent=1) + "\n"
             elif path == "/metrics":
-                code, ctype, body = 200, "text/plain; version=0.0.4", prometheus(self.lobby.status())
+                metrics = getattr(self.lobby, "metrics", None)        # (a relay node has its own)
+                code, ctype, body = 200, "text/plain; version=0.0.4", (
+                    metrics() if metrics is not None else prometheus(self.lobby.status()))
             else:
                 code, ctype, body = 404, "text/plain", "not found\n"
             data = body.encode("utf-8")

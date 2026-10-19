@@ -80,6 +80,8 @@ class GameSocket(asyncio.DatagramProtocol):
         self.tag = tag
         self.side = side
         self.block_direct = block_direct     # testing: ignore the peer unless it comes through the relay
+        self.relay = None                    # the relay this socket bound to (the lobby server's, or a regional one)
+        self.relay_token = None              # ... and the token it bound with (a regional relay has its own)
         self.transport = None
         self.sock = None
         self.port = 0
@@ -166,18 +168,18 @@ class GameSocket(asyncio.DatagramProtocol):
             if self.on_game is not None and data[:4] == proto.GAME_MAGIC:
                 self.on_game(data, addr)
             return
-        from_server = addr == self.server or addr == self.server2
+        from_server = addr == self.server or addr == self.server2 or addr == self.relay
         if kind in (proto.U_REG_ACK, proto.U_PROBE_ACK, proto.U_RELAY_ACK) and from_server:
             if len(data) == proto.TOKEN_ACK.size:
                 _k, tok, seen = proto.un_token_ack(data)
-                if tok == self.token:
+                if tok == self.token or (kind == proto.U_RELAY_ACK and tok == self.relay_token):
                     self._resolve(kind, seen)
             return
         if kind == proto.U_SPONG and from_server and len(data) == proto.PING.size:
             _m, _k, _v, seq, t = proto.PING.unpack(data)
             self._resolve(("s", seq), time.perf_counter() - t)
             return
-        if self.block_direct and addr != self.server:
+        if self.block_direct and addr != self.server and addr != self.relay:
             return
         if kind == proto.U_PUNCH and len(data) == proto.PUNCH.size:
             _m, _k, _v, tag, side, flags, seq = proto.PUNCH.unpack(data)
@@ -329,11 +331,15 @@ class GameSocket(asyncio.DatagramProtocol):
         targets += [a for a in self.heard if a not in targets]
         return list(dict.fromkeys(targets))
 
-    async def relay_bind(self, relay, timeout=4.0):
+    async def relay_bind(self, relay, timeout=4.0, token=None):
+        """Bind this socket into the match's relay session: the lobby server's (with the match token) or a
+        regional relay node's (with the bind token the server handed out for it). -> True once acknowledged."""
+        self.relay = tuple(relay)
+        self.relay_token = token or self.token
         ack = self._wait(proto.U_RELAY_ACK)
         t_end = time.monotonic() + timeout
         while time.monotonic() < t_end and not ack.done():
-            self.send(proto.pk_token(proto.U_RELAY_BIND, self.token), relay)
+            self.send(proto.pk_token(proto.U_RELAY_BIND, self.relay_token), self.relay)
             await asyncio.wait([ack], timeout=0.1)
         return ack.done()
 

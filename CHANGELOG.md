@@ -3,6 +3,25 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Online
+- **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments (running,
+  open for sign-up, finished). Anyone with an account can create one: single or double elimination, sets of best
+  of 3 or 5, a start time, 8 to 64 players, an optional check-in window, random seeding or by rating. Players sign
+  up (and check in); at the start the server draws the bracket and calls each set: "Your tournament set is ready",
+  **Accept** within 5 minutes, and the game starts by itself. A set plays like a casual set with the in-game select,
+  and its results come from the games with all the lobby's rules (quitting or leaving loses the set, desynced games
+  are played again, a crash calls the set again with its score). Who does not accept in time is out. The organizer
+  can report or override a result, reset a set and disqualify a player. The bracket shows live sets and results;
+  the server keeps everything in its database and carries on after a restart. Tournament sets do not change the
+  rating unless the server's owner turns that on. docs/TOURNAMENTS.md.
+
+### Servers
+- New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
+  brackets on the status port (`/tournaments`, `/tournaments/<id>`) for streamers' overlays (docs/TOURNAMENTS.md).
+  The tournament tables are created at the first start (their own schema version). Older launchers see nothing new.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The

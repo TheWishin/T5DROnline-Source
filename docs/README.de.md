@@ -260,6 +260,14 @@ Gut zu wissen:
   einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
   seiner Seite startet es. Wer einen Spieler blockiert, beendet die
   Freundschaft.
+- **Turniere** (mit Konto, ab 1.1.3): Die Seite **Turniere** im Online-Reiter
+  zeigt die Turniere des Servers. **Anmelden** (und **Einchecken**, wenn das
+  Turnier danach fragt); ist dein Set dran, zeigt der Reiter „Dein Turnier-Set
+  ist bereit“: **Annehmen** innerhalb von 5 Minuten, dann startet das Spiel von
+  selbst. Sets gehen über Best of 3 oder 5 und laufen wie lockere Sets mit der
+  Auswahl im Spiel; der Turnierbaum (Single oder Double Elimination) füllt sich
+  von selbst. Jeder mit Konto kann mit **Anlegen...** ein Turnier ausrichten.
+  Mehr in [TOURNAMENTS.md](TOURNAMENTS.md) (auf Englisch).
 - **Discord** (freiwillig, standardmäßig aus): Settings -> Discord zeigt „In der
   Lobby“, „Sucht ein Ranked-Match“ oder dein Match („Im Match: Jin vs Kazuya
   (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf

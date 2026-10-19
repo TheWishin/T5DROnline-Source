@@ -593,7 +593,8 @@ class TourManager:
             self._drop_entrant_row(t, p.account_id)
             self._save(t, [])
         elif t.state == "running":
-            if not e.dq and e.seed is not None:
+            # (knocked out already: nothing to withdraw from, and the place stays)
+            if not e.dq and e.seed is not None and e.aid not in t.bracket.eliminated():
                 self._disqualify(t, e, "withdrew")
         else:
             raise LobbyError(proto.E_STATE, "that tournament is over")
@@ -1066,21 +1067,26 @@ class TourManager:
                     if d.get("live") != "called" or t.state != "running":
                         continue
                     if now >= float(d.get("deadline") or 0):
-                        self._no_show(t, s)
+                        self._no_show(t, s, now)
                     else:
                         self._maybe_start(t, s)
             if t.state in ("finished", "cancelled") and (t.ended or 0) < now - self.cfg.tour_keep_days * DAY:
                 del self.tours[t.id]
         self._announce()
 
-    def _no_show(self, t, s):
+    def _no_show(self, t, s, now):
         """The no-show time of a called set is over: whoever has not accepted (or is not there) loses it and is
-        disqualified; nobody there: both are out, and their next opponents get walkovers."""
+        disqualified; nobody there: both are out, and their next opponents get walkovers. Both accepted and online
+        but one still busy (a game the organizer took out of the tournament, ...): another no-show time for that,
+        then the busy one is the no-show."""
         acc = s.data.get("accepted") or [False, False]
         ps = [self._player(aid, t.name_of(aid)) for aid in s.p]
         there = [bool(acc[i]) and ps[i] is not None and ps[i].online for i in (0, 1)]
         if all(there):
-            return self._maybe_start(t, s)              # (both there and accepted: it starts as soon as it can)
+            self._maybe_start(t, s)                     # (both there and accepted: it starts as soon as it can)
+            if s.data.get("live") != "called" or now < float(s.data.get("deadline") or 0) + self.cfg.tour_noshow:
+                return
+            there = [self._free(p) for p in ps]
         before = set(t.bracket.eliminated())
         gone = [i for i in (0, 1) if not there[i]]
         log.info("tournament %s: set %s no-show: %s", t.id, s.id, ", ".join(t.name_of(s.p[i]) for i in gone))

@@ -253,6 +253,13 @@ Good to know:
   searching or in a match. **Invite to a match** (or to your room) asks them;
   one click on **Accept** on their side starts it. Blocking a player ends the
   friendship.
+- **Tournaments** (accounts, from 1.1.3): the Online tab's **Tournaments** page
+  lists the server's tournaments. **Sign up** (and **Check in** when it asks),
+  and when your set is ready the tab shows "Your tournament set is ready":
+  **Accept** within 5 minutes and the game starts by itself. Sets are best of 3
+  or 5, played like casual sets with the in-game select; the bracket (single or
+  double elimination) fills in by itself. Anyone with an account can organize
+  one with **Create...**. See [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
 - **Discord** (optional, off by default): Settings -> Discord shows "In lobby",
   "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
   with a timer in your Discord status, through the Discord app on your PC.

@@ -585,7 +585,11 @@ The server serves `http://127.0.0.1:7780/` (`T5L_STATUS_HOST`, `T5L_STATUS_PORT`
 - `/metrics` returns the same numbers in Prometheus format (`t5lobby_players_online`,
   `t5lobby_relay_kbit_per_second`, `t5lobby_matches_found_total`, `t5lobby_tls_cert_days_left`, ...).
 
-It shows counts only, no names and no addresses. It stays on loopback. To watch it from
+- `/tournaments` and `/tournaments/<id>` return the community tournaments and their brackets as JSON, read-only,
+  for streamers' overlays (names only; docs/TOURNAMENTS.md "For streamers", with a reverse proxy example that
+  passes only these paths).
+
+Apart from the tournaments, it shows counts only, no names and no addresses. It stays on loopback. To watch it from
 elsewhere, use an SSH tunnel (`ssh -L 7780:127.0.0.1:7780 root@server`), or bind it to a
 private interface and allow only your monitor's address. Every 15 minutes the log gets a
 one-line summary (`T5L_STATUS_LOG_MINUTES`).

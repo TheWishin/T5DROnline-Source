@@ -24,7 +24,7 @@ Contents:
 - [Controllers and keyboard](#controllers-and-keyboard)
 - [Online play](#online-play)
 - [Windows versions and other PCs](#windows-versions-and-other-pcs)
-- [Low frame rate](#low-frame-rate)
+- [Low frame rate](#low-frame-rate) -- also [Game speeds up or slows down on a laptop or handheld](#game-speeds-up-or-slows-down-on-a-laptop-or-handheld)
 - [White screen or crash after a few minutes](#white-screen-or-crash-after-a-few-minutes)
 - [Saves](#saves)
 - [Other known problems](#other-known-problems)
@@ -774,11 +774,75 @@ What may help as well:
 
 - Close other programs, especially browsers, game overlays and recorders.
 - Do not build the game while playing. Do not run a second copy.
-- Laptops: plug in the charger and choose the "High performance" power mode.
-  Make sure the game uses the fast graphics chip (see [The window is
-  black](#the-window-is-black)). **(untested)**
+- Laptops and handhelds: see [Game speeds up or slows down on a laptop or
+  handheld](#game-speeds-up-or-slows-down-on-a-laptop-or-handheld).
 - Slow frame rates also make the movies slow and the sound drop out (see [No
   sound](#no-sound)).
+
+### Game speeds up or slows down on a laptop or handheld
+
+The game's speed is its frame rate, like on the PS3: one game frame per
+picture, 60 a second. When the PC cannot make 60 pictures a second, the whole
+game gets slower (fights, timers, music tempo stays). It never runs faster
+than 60: a game that "speeds up again" was slow before and got its 60 back.
+
+On a laptop or a Windows handheld (ROG Ally, Legion Go, MSI Claw and other
+Steam Deck-style PCs) the usual cause is **power or heat**: the processor
+runs fast at first, gets hot or reaches its power limit after a few minutes,
+and lowers its clock until the game misses frames. On a handheld, a laptop
+or a mini PC with an AMD/Intel APU (processor and graphics on one chip, e.g.
+Radeon 780M) the processor and the graphics share one power budget (15-65
+W), so everything the processor wastes is taken from both. On 8-core
+processors with 16 threads the game used to busy-wait on several threads,
+which slowed its own main thread on the same cores; since 1.1.3 it does
+not (on every PC, power saving or not).
+
+- **Power saving** (launcher **Settings -> Power saving**, default **Auto**):
+  the game stops busy-waiting and uses fewer helper threads, so the processor
+  stays cooler and keeps its clock. Auto turns it on by itself when the PC has
+  a battery, battery saver or the "Power saver" plan is on, the processor is a
+  mobile one, or the game runs on integrated graphics. The game log says
+  `[sched] power saving on (...)` and the window title shows "power saving".
+  The game itself does not change, so you can play online against a PC
+  without it.
+- **Plug in the charger** and pick the fastest power mode (Windows: Settings
+  -> System -> Power -> Power mode "Best performance"; handhelds: the
+  maker's Turbo/Performance mode, e.g. Armoury Crate on the ROG Ally, Legion
+  Space on the Legion Go). On battery many handhelds and laptops limit the
+  power a lot.
+- **Internal resolution Lower or Lowest** on integrated graphics: less work
+  for the graphics leaves more of the shared power budget to the processor.
+- **Two graphics chips** (NVIDIA Optimus, AMD switchable graphics): the game
+  picks the fast chip. The screen is still driven by the integrated chip and
+  every picture is copied across; the log says `[gpu] display: ... hybrid
+  present`. If Windows' Settings -> System -> Display -> Graphics has a
+  choice for `t5dr.exe`, it wins over the game's own choice: set it to "High
+  performance".
+- Keep the air vents free; a laptop stand helps. Some laptops have a "fan
+  boost" or performance key in their own control app.
+
+**What the log says.** Every 30 seconds with slow frames the game log has a
+line like
+
+    [slow-frames] last 30 s: 1702 frames, 214 slow (over 20.9 ms): CPU 201 (game 187, render translation 9,
+    vblank thread late 5), GPU 9, present 4; ... vblank clock 59.94 Hz | on battery (battery 61 %),
+    power plan "Balanced", processor clock limit 2100 of 3800 MHz (held back: heat or the power plan)
+
+- **CPU** slow frames: the processor was too slow for the frame -- power
+  saving, the charger, the power mode, closing programs.
+- **GPU** slow frames: the graphics were too slow -- a lower Internal
+  resolution.
+- **present** slow frames: showing the picture took long -- on a laptop with
+  two GPUs the copy between them, or the compositor; try borderless
+  fullscreen (Alt+Enter).
+- "processor clock limit ... (held back ...)" means Windows says the
+  processor may not run at its full speed right now: heat, the power plan, or
+  the battery.
+
+**Report a problem** (launcher) puts the power source, power plan, power
+mode, processor clock limit and (where Windows has one) the temperature
+sensor into `system.txt`, plus the last `[slow-frames]` lines of the game
+log.
 
 ## White screen or crash after a few minutes
 

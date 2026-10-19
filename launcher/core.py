@@ -103,6 +103,7 @@ DEFAULTS = {
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
+    "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
 }
 
 
@@ -137,6 +138,8 @@ class Settings(dict):
             self["internal_res"] = "native"
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
+        if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
+            self["power_saving"] = "auto"
         if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
             self["stage_blur"] = "on"
         if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
@@ -165,6 +168,8 @@ class Settings(dict):
             env["PS3_INTERNAL_RES"] = self["internal_res"]
         if self["vsync"] == "off":
             env["PS3_VSYNC"] = "0"
+        if self["power_saving"] in ("on", "off"):       # auto: the game decides (PS3_LAPTOP unset)
+            env["PS3_LAPTOP"] = "1" if self["power_saving"] == "on" else "0"
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
         if self["display"] == "borderless":
@@ -675,6 +680,84 @@ VSYNC_MODES = {          # English; t(label) where it is shown
     "on": N_("On (smooth, default)"),
     "off": N_("Off (lowest latency, may tear)"),
 }
+
+# Power saving (PS3_LAPTOP, ps3recomp patch 0047, docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"): the
+# same game at the same 60 fps with less CPU around it -- no spinning waits, fewer worker threads --
+# so a laptop's or handheld's processor stays under its heat and power limit and keeps its clock
+# (on an APU the CPU and the graphics share one power budget). Auto: the game turns it on when the
+# PC has a battery, battery saver or the "Power saver" plan is on, the processor is a mobile one,
+# or it renders on integrated graphics. Only timing around the game changes, never the game, so
+# the two players of an online match may choose differently.
+POWER_SAVING = {         # English; t(label) where it is shown
+    "auto": N_("Auto (laptops, handhelds, integrated graphics)"),
+    "on": N_("On"),
+    "off": N_("Off"),
+}
+# The same rule as the runtime's hs_mobile_cpu_name (host_sched.c): a model number with a mobile
+# suffix (7840U, 6800H, 8845HS, 7945HX, 7700HQ, 1165G7, 1260P, 8100Y, Core Ultra 155H / 258V),
+# Ryzen Z1/Z2 (handhelds) and Ryzen AI, N100-style parts.
+MOBILE_CPU = re.compile(r"\b\d{3,5}(?:U|H|HS|HX|HQ|HK|HL|Y|P|V|G1|G4|G7)\b|Ryzen (?:Z\d|AI)\b|\bN\d{3,4}\b")
+POWER_SAVER_PLAN = "a1841308-3541-4fab-bc81-f71556f20b4a"
+
+
+def system_power_status():
+    """(ac: True/False/None, battery_percent or None, has_battery, battery_saver) from Windows."""
+    if not IS_WIN:
+        return None, None, False, False
+
+    class SPS(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                    ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+    s = SPS()
+    try:
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+            return None, None, False, False
+    except (OSError, AttributeError):
+        return None, None, False, False
+    has = s.BatteryFlag not in (128, 255)
+    ac = {0: False, 1: True}.get(s.ACLineStatus)
+    return ac, (s.BatteryLifePercent if has and s.BatteryLifePercent <= 100 else None), has, bool(s.SystemStatusFlag & 1)
+
+
+def active_power_plan():
+    """The active power plan's GUID (lower case) from the registry, or ''."""
+    if not IS_WIN:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes") as k:
+            return str(winreg.QueryValueEx(k, "ActivePowerScheme")[0]).lower()
+    except OSError:
+        return ""
+
+
+def cpu_name():
+    if not IS_WIN:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+            return " ".join(str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).split())
+    except OSError:
+        return ""
+
+
+def power_saving_auto(status=None, plan=None, cpu=None):
+    """(on, reason) for 'Auto' on this PC, as far as the launcher can tell before the game runs (the
+    game decides the same way and also turns it on when it finds integrated graphics). reason is an
+    English text for t()."""
+    ac, _pct, has_battery, saver = status if status is not None else system_power_status()
+    if has_battery:
+        return True, N_("this PC has a battery (laptop or handheld)")
+    if saver:
+        return True, N_("battery saver is on")
+    if (plan if plan is not None else active_power_plan()) == POWER_SAVER_PLAN:
+        return True, N_("the Power saver power plan is on")
+    if MOBILE_CPU.search(cpu if cpu is not None else cpu_name()):
+        return True, N_("a mobile processor")
+    return False, None
 
 
 # Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage

@@ -197,6 +197,12 @@ MESSAGES = {
     "Controls": "Steuerung",
     "Save the changes to controls.ini?": "Die Änderungen in controls.ini speichern?",
     # ---- launcher/core.py
+    "Auto (laptops, handhelds, integrated graphics)": "Auto (Laptops, Handhelds, integrierte Grafik)",
+    "On": "An",
+    "a mobile processor": "ein Laptop-Prozessor",
+    "battery saver is on": "der Stromsparmodus von Windows ist an",
+    "the Power saver power plan is on": "der Energiesparplan \"Energiesparmodus\" ist aktiv",
+    "this PC has a battery (laptop or handheld)": "dieser PC hat einen Akku (Laptop oder Handheld)",
     "Inputs": "Eingaben",
     "Inputs + frame data": "Eingaben + Framedaten",
     "Auto (Windows language)": "Auto (Sprache von Windows)",
@@ -407,6 +413,19 @@ MESSAGES = {
         "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
     "This copy has no Discord application id yet, so this does nothing for now.":
         "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
+    "Power saving (laptops, handhelds)": "Stromsparen (Laptops, Handhelds)",
+    "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
+    "holds 60 fps longer. The game itself is the same, online too.":
+        "Kein aktives Warten und weniger Arbeits-Threads: Der Prozessor bleibt kühler und behält seinen Takt, "
+        "so hält das Spiel die 60 fps länger. Das Spiel selbst bleibt gleich, auch online.",
+    "On for this PC.": "An für diesen PC.",
+    "Off.": "Aus.",
+    "Auto: on for this PC -- {reason}.": "Auto: an für diesen PC -- {reason}.",
+    "Auto: off for this PC (no battery, no mobile processor); the game turns it on by itself if it runs on "
+    "integrated graphics.":
+        "Auto: aus für diesen PC (kein Akku, kein Laptop-Prozessor); läuft das Spiel auf integrierter Grafik, "
+        "schaltet es das Stromsparen selbst ein.",
+    "Power saving is on.": "Stromsparen ist an.",
     "A": "A",
     "Left punch (1)": "Linker Schlag (1)",
     "Square": "Quadrat",

@@ -202,6 +202,8 @@ def main():
     a = ap.parse_args()
     a.mash = not a.no_mash
     a.exe2 = None
+    # fight_flow_test's Player reads these (a player's save to copy, CPU masks); none here
+    a.gamedata1 = a.gamedata2 = a.cpus1 = a.cpus2 = ""
     if a.polite:
         a.mute = a.below_normal = True
     if a.mute:

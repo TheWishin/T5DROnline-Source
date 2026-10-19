@@ -2207,6 +2207,21 @@ costs a few frames between the KO and the driver's hold; the rule covers them.
 Lockstep: unchanged (final at once). The log says `the match end rests on
 predicted input -- acted on once confirmed` / `the match end is confirmed`.
 
+Evidence (`rollback_net_test.py --rtt 250 --jitter 10 --delay 2`, one session,
+12 one-round matches through `--next`, attack scripts): R250a (before the fix)
+5 matches, results on both, then the select-screen case of fix 6; R250c (the
+first version of the fix: the whole live state final) -- the joiner's driver
+never got the KO confirmed and left the game mode "without a result" (the
+netplay result was written); R250d (final build, fixes 5 and 6): **12 of 12**
+matches with a result on both PCs, the same hash, 0 mismatching frames, 2 708 /
+2 619 rollbacks; all 24 match ends were first seen on predicted input and
+confirmed 1-11 frames later; 4 of them were rolled back and seen again at the
+same frame. The bug itself (a KO that the confirmed input takes away) needs
+the peer's real input to change the outcome at the KO; it did not come up in
+these 29 scripted matches, so the proof is the code path: on the e2e g2
+sequence the driver now stays in its fight phase until the end is confirmed,
+and a KO that never gets confirmed is simply never acted on.
+
 **A rematch stuck at the select screen (fix 6, direct fight, not rollback).**
 Found by the RTT 250 batch R250a (one session, the next match's fighters
 through `--next`): `player 1: cannot reach cell 30 from 23, giving up`, and the

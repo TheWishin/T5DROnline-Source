@@ -1501,8 +1501,8 @@ void on_frame_start(ppu_context* ctx)
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();
+    rp::rec_frame(f);   /* (before the match watch: a result written at this frame must find the frame counted) */
     watch_match(f, true, h);
-    rp::rec_frame(f);
     check_session();   /* the peer may have been lost while we waited for its input */
     char extra[128];
     snprintf(extra, sizeof extra, "R%u W%u S%u T%llu V%llu", rd32(kRingReadIdx), rd32(kRingWriteIdx),

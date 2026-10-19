@@ -231,8 +231,9 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
         }
     }
     std::sort(d.hashes.begin(), d.hashes.end());
-    if (ver < 2)   /* the estimate never cuts a recorded match's end (its rollback delay may be unknown) */
-        for (const Match& m : d.matches) if (m.have_result && m.end > d.last && m.end < frames) d.last = m.end;
+    /* never before a recorded match's end (format 1: the estimate, its rollback delay may be unknown;
+     * a file written at the very frame of a result, before that frame was counted) */
+    for (const Match& m : d.matches) if (m.have_result && m.end > d.last && m.end < frames) d.last = m.end;
     return true;
 }
 

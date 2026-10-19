@@ -69,6 +69,7 @@ static int do_write(const char* dir, uint32_t frames, uint32_t seed)
         }
         rp::rec_input(f, held[0], held[1]);
         dg = digest_in(digest_in(dg, held[0]), held[1]);
+        rp::rec_frame(f);                          /* (the hooks: frame f ran) */
         rp::rec_hash(f, 0x9E3779B97F4A7C15ull * (f + 1));
         if (f == 200) {
             rp::Barrier b; b.kind = rp::kLoad; b.f = 198; b.nf = 200; b.seed = 0xAAAA0001; b.has_state = true;

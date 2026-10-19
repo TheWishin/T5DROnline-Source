@@ -224,6 +224,14 @@ target_sources(t5dr PRIVATE ${DIRECTFIGHT_SOURCES})
 set_source_files_properties(${DIRECTFIGHT_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
     INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/syscalls")
 
+# Training overlay (our own code, src/training/, docs/TRAINING.md): input display and
+# frame data drawn by the runtime's overlay layer (ps3recomp patch 0045). Off unless
+# T5_TRAINING is set; reads guest memory only, never writes it.
+file(GLOB TRAINING_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/training/*.cpp")
+target_sources(t5dr PRIVATE ${TRAINING_SOURCES})
+set_source_files_properties(${TRAINING_SOURCES} PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS
+    INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/libs/video")
+
 # Frame timing for performance work (src/perf/): off unless T5_PERF_LOG is set.
 file(GLOB PERF_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/perf/*.cpp")
 target_sources(t5dr PRIVATE ${PERF_SOURCES})

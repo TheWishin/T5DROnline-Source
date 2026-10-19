@@ -183,7 +183,7 @@ index 80b8e6f..ad0fa13 100644
  
  /* Store graphics handler callback */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 8d11671..d90b555 100644
+index 7a1162c..25ac5a9 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -54,6 +54,7 @@ void rsx_pf_stamp(int slot)

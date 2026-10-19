@@ -3347,8 +3347,10 @@ class LobbyServer:
             raise LobbyError(proto.E_BUSY, "that friend is busy right now")
         self._set_free(q, requester=p)
         now = time.monotonic()
-        if now - p.last_invite < 2.0 or any(i.src is p for i in self.invites.values()):
+        if any(i.src is p for i in self.invites.values()):
             raise LobbyError(proto.E_RATE, "one invite at a time")
+        if now - p.last_invite < 2.0:           # the last one ended already: only too soon
+            raise LobbyError(proto.E_RATE, "wait a moment before inviting again")
         if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has invites pending")
         p.last_invite = now

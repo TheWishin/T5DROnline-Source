@@ -418,6 +418,24 @@ class InviteTest(Base):
             b.answer_invite(r["invite"], True)
         self.assertIn("that invite is over", e.exception.msg)
 
+    def test_inviting_again_too_soon_says_wait(self):
+        """The first invite is over (declined), but it is less than 2 s old: the answer names the rate limit, not
+        "one invite at a time" (there is none waiting); while one waits, that one is the answer."""
+        a, b = self.friends()
+        r = a.invite("Bob")
+        expect(b, "invited")
+        with self.assertRaises(LobbyError) as e:                          # one waits
+            a.invite("Bob")
+        self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "one invite at a time"))
+        b.answer_invite(r["invite"], False)
+        self.assertEqual(expect(a, "invite_update")["state"], "declined")
+        with self.assertRaises(LobbyError) as e:                          # none waits, but too soon
+            a.invite("Bob")
+        self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "wait a moment before inviting again"))
+        time.sleep(2.1)
+        a.invite("Bob")                                                   # later it goes
+        expect(b, "invited")
+
     def test_an_invite_runs_out(self):
         self.s.stop()
         self.s = server(invite_seconds=0.6)

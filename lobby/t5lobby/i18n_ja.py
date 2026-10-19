@@ -812,6 +812,7 @@ MESSAGES = {
     "create a room first, then invite": "先にルームを作成してから招待してください",
     "that friend is busy right now": "そのフレンドは今取り込み中です",
     "one invite at a time": "招待は一度に1つだけです",
+    "wait a moment before inviting again": "少し待ってから、もう一度招待してください",
     "that player has invites pending": "そのプレイヤーには保留中の招待があります",
     "that invite is over": "その招待は終了しています",
     "the invite is no longer possible": "この招待はもうできません",

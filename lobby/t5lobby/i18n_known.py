@@ -115,6 +115,7 @@ SERVER = (
     N_("create a room first, then invite"),
     N_("that friend is busy right now"),
     N_("one invite at a time"),
+    N_("wait a moment before inviting again"),
     N_("that player has invites pending"),
     N_("that invite is over"),
     N_("the invite is no longer possible"),

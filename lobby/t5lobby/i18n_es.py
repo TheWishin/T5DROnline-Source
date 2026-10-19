@@ -829,6 +829,7 @@ MESSAGES = {
     "create a room first, then invite": "primero crea una sala y luego invita",
     "that friend is busy right now": "ese amigo está ocupado ahora",
     "one invite at a time": "una invitación a la vez",
+    "wait a moment before inviting again": "espera un momento antes de volver a invitar",
     "that player has invites pending": "ese jugador tiene invitaciones pendientes",
     "that invite is over": "esa invitación terminó",
     "the invite is no longer possible": "la invitación ya no es posible",

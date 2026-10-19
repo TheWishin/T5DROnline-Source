@@ -802,6 +802,7 @@ MESSAGES = {
     "create a room first, then invite": "먼저 방을 만든 뒤 초대하세요",
     "that friend is busy right now": "그 친구는 지금 바쁩니다",
     "one invite at a time": "초대는 한 번에 하나만",
+    "wait a moment before inviting again": "잠시 기다린 뒤 다시 초대하세요",
     "that player has invites pending": "그 플레이어에게 대기 중인 초대가 있습니다",
     "that invite is over": "그 초대는 끝났습니다",
     "the invite is no longer possible": "더 이상 초대할 수 없습니다",

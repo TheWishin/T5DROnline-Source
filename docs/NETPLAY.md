@@ -544,6 +544,159 @@ build/nq/runs, after = build/nh/runs:
 | `T5_FIGHT=...,random` | two different stages, every frame mismatching | stage from the seed on both, in sync |
 | boot take-over (boot mode, no input, 3 pairs at a time) | ~9 % at frame 1, mostly deadlocked (QA); 1 of 50 boots at frame 3, desync from frame 0 (same harness, main build) | 200 boots: all at frame 2 on both sides, no hang, no mismatch |
 
+## Desync hunt (branch desync-hunt, 2026-10-19)
+
+Real players saw desyncs with no rollback before them (0.1.9 match 2, 1.0.0
+19:38 match 1) and, in the owner's 1.0.0 logs of 2026-10-18, more: after an
+opponent switch every frame different from the first compared one (Heihachi
+vs Kazuya and Heihachi vs Heihachi on stage 29, two opponents: 4,998 of 5,221
+and 7,393 of 7,619 frames), a rematch against Mokujin likewise, and in other
+matches 829-1,298 mismatching frames that began mid-round and ended at the
+next round (Jin vs Dragunov, Kazuya vs Heihachi). None of it reproduced with
+two games on one PC as the tests ran them.
+
+**The cause: the title's second random generator.** 0x3AFC3C is a shuffled
+LCG (x * 0x19660D + 0x3C6EF35F, a 32-word table) kept in the calling thread's
+TLS -- state at TLS+0, a "seeded" byte at +0x10094, the last draw at +0x10098,
+the table at +0x1009C; only the main thread draws from it, so it lives in the
+main thread's TLS block 0x0E000000. Netplay reseeded the Mersenne Twister and
+the C rand() at its sync points, never this one. Most of the game draws from
+it: the fighters' move effects, the camera (0x878CC: angle and distance of a
+camera move), the game mode's set-up, and also effect and stage tasks beside
+the scene (the stage emitter 0xA1768, ~10 draws a frame; effects that spawn
+9-11 particles when they first play). Three ways it went apart between PCs:
+
+1. *History.* Its state at a match depended on everything the process had
+   drawn since boot: a game that had played other opponents and one just
+   started began the fight from different states -- the opponent-switch
+   desyncs.
+2. *Timing.* An effect plays its first burst on the frame its data has come
+   in from the file thread, which no loader drain waits for: a frame or a few
+   apart on two PCs (two runs of one scripted match in one process: the burst
+   at frame 470 in one, 477 in the other), and every draw after that differed.
+3. *The select screen.* The game mode's set-up picks Mokujin's fighter for the
+   match from it (0x121E0C <- 0x5A304 <- 0x53C88, game mode phase 2), before
+   lockstep frame 0, after however many draws each PC's select screen made:
+   Mokujin copied Feng on one PC and Kazuya on the other (0x1009094C 0x1001F
+   vs 0x1000F) -- the ingame-select agent's "Mokujin desyncs" too.
+
+**Why it was gameplay, not cosmetic.** The camera words are left out of the
+hashes as display state, and so is +0x6C8 of each fighter block (0x10090708,
+0x10090FD8): the fighter's camera-projected screen x. But 0x808D8 compares the
+two and writes which fighter stands on the left (+0x1C2/+0x1C3 of the blocks
+at 0x10090040 / 0x10090910), and that decides which way an up or down tap
+sidesteps. Two PCs with different camera draws turned the same sidestep
+different ways (the first differing words of every such run: the side flags,
+then the fighters' processed input, DOWN on one PC and UP on the other), and
+the fight came apart -- or, when the round ended the same way, came back
+together at the next round: the mid-round transients of the owner's logs.
+The side flags were in the hash all along (they flagged it); the camera
+draws were not.
+
+**The fix** (`src/rollback/rb_rand.cpp`, `src/netplay/t5_hooks.cpp`
+`reseed()`; T5_TLS_RAND=0 turns it off):
+
+- the scene (the scene task 0x10BD8: menus, game mode, fight) draws from the
+  TLS generator as before; every other draw on the main thread -- effect and
+  stage tasks, render passes -- comes from a private generator in host
+  memory, so they can no longer move the scene's sequence, whenever they run
+  (a rollback's draw cut, which skips some of them in re-simulated frames,
+  cannot either);
+- netplay reseeds the TLS generator at every sync point (frame 0 of a
+  session, every scene barrier) from the match seed, like the Twister and
+  rand(): the process's history no longer reaches a match;
+- with a direct-fight session set up, the generator is pinned to the session
+  seed (T5_NET_SEED, the lobby's, the same on both PCs before the handshake)
+  at every boundary while the select mode runs, so the game mode's set-up
+  (Mokujin's pick) draws the same on both PCs however long the select took.
+
+The TLS block (0x0E000000, 128 KB) is in the rollback state already
+(`rb_state.cpp` kSave): a restore puts the generator back with the frame,
+and the re-simulation draws the same numbers (rb_equiv_test --lag and
+--force below: equal on every frame).
+
+The hashes keep the camera words out and the side flags in (comments at
+kDefaultHashSkip / kGameSkip).
+
+**New tools.**
+
+- `tools/rb_equiv_test.py`: one game, the same scripted match twice (netplay's
+  local mode: both players scripted with motion inputs, the rollback loop
+  running, a fixed seed and clock), compared frame by frame on the final
+  gameplay hash. The test run adds `--lag N` (T5_NET_LOCAL_LAG: the second
+  player's input known N frames late -- predicted, mispredicted, rolled back
+  as against a peer N frames away), `--force every:depth` (T5_RB_NET_FORCE:
+  rollbacks with the same inputs), `--cpus N`, `--test-env` (any hardware
+  stand-in below); `--full` hashes without the skip list (T5_RB_HASH_FULL),
+  `--dump` diffs the words around the first difference (T5_RB_DUMP_AT,
+  `tools/rb_desync_diff.py --first-diff`). A deterministic game gives the
+  same hash on every frame, at any fps, with or without rollbacks; before the
+  fix no two runs of Jin vs Dragunov did (all twelve apart from frame 1546).
+- `tools/fight_flow_test.py`: `--cpus1/--cpus2` (affinity + PS3_CPUS),
+  `--hitch2 MS[:MIN:MAX]` (T5_TEST_HITCH: the joiner's main thread stalls
+  while its other threads run on), `--gamedata1/2` (a player's own save),
+  `--clock2 S`, `--fresh-every K --fresh-role alt` (opponent switches against
+  fresh games), `--colors` (costumes), `--moves` (motion inputs: electrics,
+  hellsweeps, qcf/hcb, dashes, sidesteps, throws, ki charge -- a random mash
+  almost never does them).
+- Runtime (patch 0040): `PS3_TEST_FS_DELAY=ms[:ms_per_MB]`, a slow or cold disk
+  on one PC. Diagnostics: `T5_RAND_TRACE=1|2|3` (rand() and TLS-generator
+  calls per thread and caller, distinct caller chains with mode and phase,
+  per-frame draws), `T5_RB_WFT_NET=from:frames` (the write-fault tracer in the
+  netplay loop).
+
+**What was tested** (this PC, Ryzen 9 7950X, other agents' games running;
+fixed build unless marked):
+
+| test | build | what | runs / matches | frames compared | result |
+|---|---|---|---|---|---|
+| rb_equiv, no rollback, Jin vs Dragunov 25 | before | two runs of one scripted match, one process | 12 runs | ~2,000 each | every pair apart from frame 1546 (the TLS draws) |
+| rb_equiv, no rollback, Jin vs Dragunov 25 | fixed | the same, fps 22 vs 28 | 2 | 1,979 | equal |
+| rb_equiv `--lag 3/4` (390-570 rollbacks) | fixed | Kazuya vs Feng 32, Jin vs Dragunov 25, Heihachi vs Mokujin 29 (twice), Devil Jin (Triangle) vs Dragunov 25, Marduk vs King 22 (2 rounds, KOs, 1,047 rollbacks), Law vs Marduk 26 | 8 | 1,799-4,738 each | equal on every frame, same result |
+| rb_equiv `--force 9:5` (223 forced) | fixed | Kazuya vs Heihachi 30 | 1 | 2,339 | equal |
+| pair, persistent, both fresh, `--moves` | before (main) | Kazuya vs Feng 32 | 1 | -- | 1,265 / 2,822 mismatching, different results |
+| pair, opponent switches (fresh vs persistent, alternating), rollback | fixed | 12 matches, 11 switches: Mokujin, Heihachi, Kazuya, Devil Jin (Triangle), Jin, Dragunov, Feng, Lili; stages 17-33 | 12 | -- | 12/12 confirmed, 0 mismatching frames |
+| the same, lockstep | fixed | 12 matches, 11 switches | 12 | -- | 12/12, 0 mismatching frames |
+| the same with the TLS isolation but no select pin | fixed (partial) | match 1 Mokujin vs Heihachi | 1 | -- | Mokujin's pick apart: failed (led to the select pin) |
+
+| pair, the e2e agent's voided matchups (2 rounds, KOs), rollback | fixed | Steve vs Hwoarang 34, Bruce vs Lee 25, Marduk vs Bryan 18, Kazuya vs Feng 32, Marduk vs King 22, Marduk vs Roger 21 (N R N R N R) | 6 | -- | 6/6, 0 mismatching frames |
+| rb_equiv `--lag 3`, release layout (`-DT5DR_GAME_DLL=ON` + t5dr_game.dll) | fixed | Heihachi vs Mokujin 29 | 1 | 2,691 | equal, the same final hash as the exe build |
+
+Two PCs that differ, stood in for on this PC (pairs, persistent game, both
+players mashing with motion inputs, 1 round unless noted; rollback delay 2
+unless noted):
+
+| run | the second PC | mode | matches | result |
+|---|---|---|---|---|
+| hz240_rb / hz240_ls | display at 240 Hz (no display lock, the 59.94 Hz clock) | rollback / lockstep | 4 / 3 | all in sync |
+| cpus4_rb | host 16, joiner 4 logical processors (affinity + PS3_CPUS), rollback delay 1 | rollback | 3 | 2 in sync; match 3 lost to a driver bug (below) |
+| cpus4_rb2 | the same, joiner also suspended 40 ms every 0.2-0.6 s, 2 rounds | rollback | 2 | match 1 in sync; match 2: the known NU::File::RequestManager abort (0x374150, the rollback-crash agent's) |
+| cpus6_ls | host 6, joiner 16 logical processors | lockstep | 3 | all in sync |
+| hitch_rb | joiner's main thread stalls 150 ms every 30-90 frames (T5_TEST_HITCH) | rollback | 3 | all in sync |
+| stutter_rb | joiner process suspended 60 ms every 0.2-0.6 s | rollback | 3 | all in sync |
+| fsdelay_rb | joiner's disk: 3 ms per open/read + 40 ms per MB (PS3_TEST_FS_DELAY) | rollback | 3 | all in sync |
+| noaudio_rb | joiner with the launcher's "Mute sound" (PS3_NO_AUDIO=1: no audio for the game) | rollback | 3 | all in sync |
+| clock_rb | joiner's clock 37,000 s off | rollback | 3 | all in sync |
+| throttle_rb | joiner minimized under Windows power throttling (PS3_SCHED_THROTTLE=0) | rollback | 3 | all in sync |
+| mixdelay / mixdelay_ls | rollback setting 1 vs 2 / lockstep delay 2 vs 5 | rollback / lockstep | 3 / 3 | all in sync |
+| fma_rb / fma_ls | joiner: baseline build (`-DT5DR_LIFTED_ARCH=none`), software fma (PS3_FP_SOFT_FMA=1), the C runtime's non-FMA3 paths; host x86-64-v3 | rollback / lockstep | 3 / 3 | all in sync |
+| rematch10b | a session of 10 matches: 1 new, 9 rematches with the same fighters, commands 1.5 s apart, P1/P2 first in turn | rollback | 10 | all in sync |
+
+One game visible against one minimized was not run (every test game stays
+minimized while the owner uses this PC); throttle_rb covers what a minimized
+window changes (Windows' timer and power throttling).
+
+**Also found: a match end that a rollback takes back** (cpus4_rb match 3):
+the KO seen on a predicted frame and undone, the direct-fight driver kept
+holding the local player and pressed START into the running fight; fixed in
+`df_fight.cpp`, docs/DIRECTFIGHT.md "A match end that a rollback takes back".
+
+**Left open.** Two PCs that differ in the CPU's make (Intel vs AMD) or a real
+display at 240/500 Hz were stood in for, not used. The private generator
+makes effect particles and stage emitters differ between the two PCs' screens
+(display only, as the camera may). The NU::File::RequestManager abort under
+heavy rollback (2 of ~110 matches here) is the rollback-crash agent's.
+
 ## Limits and next steps
 
 - **Menu transitions are not fully deterministic.** Picking a mode or skipping

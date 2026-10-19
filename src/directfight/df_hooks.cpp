@@ -197,6 +197,19 @@ uint32_t mode_manager() { return g_mgr; }
 uint32_t mode_cur()  { return g_mgr ? rd32(g_mgr + kModeReq) : 0xFFFFFFFFu; }
 uint32_t mode_next() { return g_mgr ? rd32(g_mgr + kModeReq + 4) : 0xFFFFFFFFu; }
 
+/* The title mode starts a savedata autosave thread (entry 0x458740) after a
+ * fight; it takes a 5 MB memory container and 1 MB blocks from it while it
+ * writes (df_fight.cpp, Ph::Title). */
+bool autosave_running()
+{
+    for (int i = 0; i < PPU_THREAD_MAX; i++) {
+        const ppu_thread_info& t = g_ppu_threads[i];
+        if (t.state != PPU_THREAD_STATE_RUNNING && t.state != PPU_THREAD_STATE_DETACHED) continue;
+        if (!strncmp(t.name, "savedata_autosave", 17)) return true;
+    }
+    return false;
+}
+
 /* A reset or leave that waits too long (df_fight.cpp stuck_check): what the
  * mode manager is at and where every guest thread last entered the kernel */
 void stuck_dump(uint32_t f)

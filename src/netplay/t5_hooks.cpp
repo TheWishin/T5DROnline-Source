@@ -77,14 +77,17 @@
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
+namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed); }   /* rb_rand.cpp: the TLS random generator */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
 extern "C" int t5_df_game_mode(void);  /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode */
+extern "C" uint32_t t5_df_mode_cur(void);  /* src/directfight/df_fight.cpp: the mode manager's current mode (6 = select) */
 extern "C" void t5_df_window_closed(void);   /* src/directfight/df_fight.cpp: state.json "quit" (persistent game) */
 /* ps3recomp patch 0035 (boot_main.cpp, rsx_null_backend.c): the game window was closed; Esc asks twice */
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
+namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -326,6 +329,13 @@ const char* kDefaultHashSkip =
      * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
      * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
     "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
+/* The fighters' side flags stay IN the hash: +0x1C2/+0x1C3 of the blocks at
+ * 0x10090040 and 0x10090910 (bytes 0x10090202/03, 0x10090AD2/D3), written by
+ * 0x808D8 from the camera-projected screen x above (+0x6C8, left out): which
+ * fighter stands on the left, i.e. which way an up/down tap sidesteps. The
+ * camera words are left out as display state, but where the camera decides
+ * gameplay, these flags show it at once (desync hunt: the camera drew from the
+ * title's TLS generator, which went apart between PCs -- rb_rand.cpp). */
 
 /* T5_NET_DESYNC_DUMP=1: keep the hashed bytes of the last 64 frames and,
  * when the peer reports a different hash for one of them, write them to
@@ -635,6 +645,70 @@ double drain_wait(uint32_t f)
     return us / 1000.0;
 }
 
+/* The draw side's request managers, drained before every rollback boundary
+ * (docs/ROLLBACK.md section 32). NU::Draw::Geometry::RequestManager (thread 5,
+ * object 0x10742880, loop 0x35B888) is woken by a post of its semaphore (id at
+ * +0x50) for each request queued (0x35BE6C), counts itself busy in +8 while it
+ * works through its queue and parks again. The present (0x383C9C -> 0x35BF6C)
+ * queues one request and spins until +8 is 0 -- but only until then: the
+ * thread may not have woken yet, or the draw manager's sync after it
+ * (0x357714) hands it more, so at the boundary it can still be working. A
+ * snapshot taken then holds +8 = 1 (and a queue half way through); a rollback
+ * to that frame puts the 1 back after the thread has parked, nothing takes it
+ * away again (every later wake adds and removes its own 1), and the next
+ * present spins on it for good: the host hang of runs FF1/FF2 (main at
+ * 0x35C014, the geometry thread parked, the draw manager idle).
+ * NU::Draw::RequestManager (thread 4, object 0x1074BE80) is idle at the
+ * boundary by construction (0x357714 waits for it); it is only counted. */
+constexpr uint32_t kGeomMgr = 0x10742880u;   /* +8 busy count, +0x50 wake semaphore id */
+constexpr uint32_t kDrawMgr = 0x1074BE80u;   /* +0x98 wake counter (value u64 at +0xA8): 1 = working through its list */
+bool g_side_drain = true;                    /* T5_RB_SIDE_DRAIN=0: count only, do not wait */
+std::atomic<uint32_t> g_geom_sem{ 0 };
+uint64_t g_sd_geom = 0, g_sd_draw = 0, g_sd_us = 0, g_sd_max_us = 0, g_sd_frames = 0;
+uint32_t g_sd_timeouts = 0;
+
+bool geom_idle()
+{
+    const uint32_t id = rd32(kGeomMgr + 0x50);
+    if (!id || id > 256) return true;   /* not created yet */
+    g_geom_sem = id;
+    const np_sys_semaphore_info& s = g_sys_semaphores[id - 1];
+    if (!s.active) return true;
+    return *(volatile int32_t*)&s.value == 0 && *(volatile int32_t*)&s.waiters > 0;
+}
+/* (its request list may hold the next frame's first requests: queued, not taken) */
+bool draw_idle() { return rd64(kDrawMgr + 0xA8) == 0; }
+
+void side_drain(uint32_t f)
+{
+    if (f && f % 600 == 0 && g_sd_frames) {
+        np::note("side drain: geometry manager busy at %llu of %llu boundaries (waited %.1f ms, longest %.2f ms), draw manager running at %llu",
+                 (unsigned long long)g_sd_geom, (unsigned long long)g_sd_frames, g_sd_us / 1000.0, g_sd_max_us / 1000.0,
+                 (unsigned long long)g_sd_draw);
+        g_sd_geom = g_sd_draw = g_sd_us = g_sd_max_us = g_sd_frames = 0;
+    }
+    g_sd_frames++;
+    if (!draw_idle()) g_sd_draw++;
+    if (geom_idle()) return;
+    g_sd_geom++;
+    if (!g_side_drain) return;
+    LARGE_INTEGER q0, q1, qf;
+    QueryPerformanceCounter(&q0);
+    const ULONGLONG t0 = GetTickCount64();
+    while (!geom_idle()) {
+        if (g_drain_event) WaitForSingleObject(g_drain_event, 1); else Sleep(1);
+        if (GetTickCount64() - t0 > 2000) {
+            if (g_sd_timeouts++ < 10)
+                np::note("frame %u: geometry manager still busy after 2 s, going on (count %d, semaphore %u)",
+                         f, (int32_t)rd32(kGeomMgr + 8), rd32(kGeomMgr + 0x50));
+            break;
+        }
+    }
+    QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
+    const uint64_t us = (uint64_t)((q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart);
+    g_sd_us += us; if (us > g_sd_max_us) g_sd_max_us = us;
+}
+
 /* lockstep: drain at the top of the frame; the rollback loop is told about the
  * load (it keeps re-simulations clear of loads) */
 void drain_workers(uint32_t f)
@@ -875,11 +949,17 @@ void skip_frames(uint32_t d)
     for (uint32_t a : { 0x1008EB9Cu, 0x1008F07Cu, 0x1009442Cu }) wr32(a, rd32(a) + d);
 }
 
-/* Both random generators the game draws from, seeded the same on both PCs. */
+/* The random generators the game draws from, seeded the same on both PCs: the
+ * Mersenne Twister, the C rand(), and the main thread's TLS generator 0x3AFC3C
+ * (the scene's draws: camera, move effects, the game mode's set-up; without it
+ * a game that had played other opponents began each fight from a different
+ * state than one just started -- docs/NETPLAY.md "Desync hunt"). */
+uint32_t g_main_tls = 0;   /* the main thread's TLS block (its r13 - 0x7000), from its frame waits */
 void reseed(uint32_t seed)
 {
     gcall(kFnMtSeed, seed);
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
+    rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu);
 }
 
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
@@ -919,6 +999,20 @@ void offline_frame(ppu_context* ctx)
 
 void on_frame_start(ppu_context* ctx)
 {
+    rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
+    if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
+        g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */
+    /* Direct fight with a session: while the select mode runs, the TLS generator
+     * is pinned to the session's seed at every boundary. The select screen and
+     * the game mode's set-up draw from it before lockstep frame 0 reseeds it --
+     * the set-up picks Mokujin's fighter for the match (0x121E0C <- 0x5A304 <-
+     * 0x53C88, game mode phase 2) -- and how many draws the select screen made
+     * depended on how long each PC took there; Mokujin copied Feng on one PC
+     * and Kazuya on the other (desync hunt runs v1c/v5: 0x1009094C 0x1001F vs
+     * 0x1000F from the first frame). Pinned, the set-up draws the same on both. */
+    if (g_main_tls && (g_directfight || g_persistent) && np::enabled() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
+        t5_df_mode_cur() == 6)
+        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu);
     if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
@@ -1037,6 +1131,7 @@ void on_frame_start(ppu_context* ctx)
          * a taken token back hung the game mode at the match's end,
          * docs/ROLLBACK.md section 30). */
         const double load_ms = drain_wait(f);
+        side_drain(f);   /* the geometry manager parked too (a snapshot or restore beside it hung the present) */
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
@@ -1184,6 +1279,35 @@ void sem_trace_dump()
     TraceSc<141>::dump("sys_timer_usleep");
 }
 
+/* T5_TEST_HITCH=<ms>[:<min>:<max>] (tests, docs/NETPLAY.md "Desync hunt"): the
+ * main thread stalls <ms> at a live frame boundary every <min>..<max> frames
+ * (default 120..600) while the game's other threads -- the vblank ticker, the
+ * sound core, the loaders, the file thread -- run on: a shader compile or a busy
+ * PC on one side of a pair. (fight_flow_test --stutter suspends the whole
+ * process, which stops those threads as well.) */
+struct TestHitch {
+    uint32_t ms = 0, lo = 120, hi = 600, next = 0, n = 0;
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    TestHitch()
+    {
+        const char* e = getenv("T5_TEST_HITCH");
+        if (!e || !*e) return;
+        unsigned a = 0, b = 0, c = 0;
+        const int k = sscanf(e, "%u:%u:%u", &a, &b, &c);
+        ms = a;
+        if (k == 3 && b && c >= b) { lo = b; hi = c; }
+        next = pick();
+    }
+    uint32_t pick() { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return lo + (uint32_t)(rng % (hi - lo + 1)); }
+    void frame()
+    {
+        if (!ms || --next) return;
+        next = pick();
+        if (n++ < 3) np::note("T5_TEST_HITCH: the main thread stalls %u ms (every %u..%u frames)", ms, lo, hi);
+        Sleep(ms);
+    }
+} g_test_hitch;
+
 int64_t w_sem_wait(ppu_context* ctx)
 {
     if (g_trace) {
@@ -1203,6 +1327,7 @@ int64_t w_sem_wait(ppu_context* ctx)
         return r;
     }
     if (id < (uint32_t)kMaxSem && g_drain[id]) { g_drain_seen[id] = true; SetEvent(g_drain_event); }
+    if (id && id == g_geom_sem.load(std::memory_order_relaxed) && g_drain_event) SetEvent(g_drain_event);
     const uint32_t fs = rd32(kFrameSemPtr);
     if (fs && id == fs && ctx->thread_id == g_main_tid) g_frame_wait_ctx = ctx;   /* the boundary's tick wait (early rollback) */
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::bypass()) {
@@ -1217,7 +1342,10 @@ int64_t w_sem_wait(ppu_context* ctx)
         return 0;
     }
     int64_t r = g_orig_wait(ctx);
-    if (fs && id == fs && r == 0) on_frame_start(ctx);
+    if (fs && id == fs && r == 0) {
+        if (ctx->thread_id == g_main_tid) g_test_hitch.frame();
+        on_frame_start(ctx);
+    }
     return r;
 }
 
@@ -1333,6 +1461,12 @@ void h_cellPadInit(ppu_context* ctx)
     if (g_offline) { install_syscall_hooks(); return; }
     np::init();
     if (!np::enabled() && !g_persistent) return;
+    /* The sound library's heap (rb_sndheap.cpp): in every online session,
+     * rollback or lockstep (T5_RB_MODE=off too), before the library's first
+     * allocation. Where its blocks live changes the layout of the C library
+     * heap, which reaches the hashed state: a PC with it and one without
+     * desynced in lockstep (rollback-crash run MIX50: 4 233 frames). */
+    rb::sndheap_install();
     rb::net::offer();   /* rollback in the HELLO unless T5_RB_MODE=off (rb_net.cpp offered_by_env) */
     const char* hs = getenv("T5_NET_HASH");
     g_hash_ranges = parse_ranges(hs ? hs : kDefaultHash);
@@ -1384,6 +1518,7 @@ void h_cellPadInit(ppu_context* ctx)
         }
         g_drain_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         np::note("draining loader semaphores at each frame: %s", *spec ? spec : "(none)");
+        if (const char* s = getenv("T5_RB_SIDE_DRAIN")) g_side_drain = *s != '0';
     }
     if (g_passive) { np::note("passive reference mode: %d pad(s), keyread left alone", g_pads); return; }
     install_syscall_hooks();
@@ -1548,6 +1683,25 @@ extern "C" int t5_netplay_enabled(void)
 extern "C" int t5_netplay_lockstep_active(void)
 {
     return g_active.load() && !g_idle ? 1 : 0;
+}
+
+/* The direct-fight driver (df_fight.cpp) acts on a match end only once this
+ * says it is final: under rollback the live frame rests on predicted peer
+ * input for up to the prediction window, and a KO seen there can be undone by
+ * the next rollback (e2e g2, RTT 250: the driver held its pads and pressed
+ * START to skip a replay in a fight that went on -- the peer never saw a KO,
+ * the match never ended). Final = this side's match watch has the end
+ * (watch_match: g_result_done, taken back by a rollback that undoes it) and
+ * every input of the frames up to it is confirmed as simulated -- the frames
+ * after the KO do not matter (the post-match rule decides them, and they
+ * cannot change the KO); or its result is out already. Not "the whole live
+ * state is final": at RTT 250 the last 10-15 frames always rest on
+ * predictions. Without rollback: at once. */
+extern "C" int t5_netplay_match_end_final(void)
+{
+    if (!rb::net::active()) return 1;
+    if (!g_result_done) return 0;
+    return !g_pending.on || rb::net::state_final(g_pending.f) ? 1 : 0;
 }
 
 extern "C" int t5_netplay_local_slot(void)

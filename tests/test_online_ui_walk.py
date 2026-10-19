@@ -159,7 +159,7 @@ class OnlineUiWalk(unittest.TestCase):
         self.others = []
         self.files = []
         self.s = util.ServerThread(blind_ready=True, ready_timeout=15.0, rematch_window=40.0, result_timeout=3.0,
-                                   lag_wait=3.0, reconnect_grace=1.0).start()
+                                   lag_wait=3.0, reconnect_grace=1.0, set_next_seconds=5.0).start()
         self.n_shot = 0
 
     def tearDown(self):
@@ -563,6 +563,31 @@ class OnlineUiWalk(unittest.TestCase):
         self.pump(lambda: tab.blocks_window is not None, 10, "blocked players")
         self.shot("blocked_players", tab.blocks_window)
         tab.blocks_window.destroy()
+        tab.view.dismiss_result()
+
+        # a ranked set (best of 3) against a client that knows sets: the countdown to game 2, then the set's end
+        rs = self.client("Rival_S", password="rival-pw1", register=True, auto_ready=True, sets=True)
+        self.pump(lambda: str(tab.actions["ranked"].cget("state")) == "normal", 20, "ranked again")
+        tab.actions["ranked"].invoke()
+        self.pump(lambda: self.status_of("kaze_r") == "queue", 10, "set search")
+        rs.ranked_match()
+        self.pump(lambda: self.found("ready"), 30, "set found")
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: tab.view._stage == "match", 30, "set game 1")
+        self.finish_fake(True, rs, 3, 0)
+        self.pump(lambda: tab.view.set_ring is not None, 20, "set countdown")
+        self.assertIn("starts in", tab.bar_text.get())
+        self.wait(1.0)
+        self.shot("ranked_set_countdown")
+        self.pump(lambda: tab.view._stage == "match", 30, "set game 2 (by itself)")
+        self.shot("ranked_set_game2_by_itself")
+        self.finish_fake(True, rs, 3, 1)
+        self.pump(lambda: (tab.view.result_info or {}).get("set_end") is not None, 20, "set result")
+        self.pump(lambda: tab.view._outcome()[0] == "win", 5, "SET WON")
+        self.shot("ranked_set_won")
+        b = self.bar_button("Leave")
+        if b is not None:
+            b.invoke()
         tab.view.dismiss_result()
 
         # leaderboard, profile

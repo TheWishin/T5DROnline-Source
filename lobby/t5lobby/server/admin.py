@@ -32,6 +32,10 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
                                          20 min"); the launcher shows it in its status bar. Default: 60 minutes
     notice --clear                       take the message down
     notices                              the latest messages and whether they are showing
+    drain [--wait SECONDS] [--off]       before a restart (an update): no new matches -- queues, rooms,
+                                         challenges and rematches are refused -- while the running ones
+                                         finish; --wait returns when none is left (exit 1 on timeout).
+                                         Then restart the server; the restart ends the drain
     gen-cert [--dir DIR] [--name HOST] [--days N] [--force]   self-signed certificate + fingerprint
     fingerprint CERT                     SHA-256 fingerprint of a certificate (what clients pin)
     server-entry --name NAME --host HOST [--port N] (--cert CERT | --ca | --plain)
@@ -379,6 +383,37 @@ def cmd_notices(a):
     return 0
 
 
+def cmd_drain(a):
+    st = _open(a)
+    st.set_flag("drain", None if a.off else time.time())
+    if a.off:
+        print("drain off: new matches are taken again")
+        return 0
+    print("drain on: no new matches (the server notices within T5L_ADMIN_POLL seconds)")
+    if not a.wait:
+        return 0
+    t_end = time.time() + a.wait
+    last = None
+    time.sleep(1.0)
+    while time.time() < t_end:
+        try:
+            _code, body = _fetch(_status_url(a))
+            s = json.loads(body)
+            n = s["matches"]["running"]
+        except (OSError, ValueError, KeyError) as e:
+            print(f"server not reachable at {_status_url(a)} ({e})")
+            return 1
+        if s.get("draining") and n == 0:
+            print("no match running: restart now")
+            return 0
+        if n != last:
+            print(f"{n} match(es) still running ...", flush=True)
+            last = n
+        time.sleep(2.0)
+    print(f"still {last} match(es) running after {a.wait:.0f} s")
+    return 1
+
+
 def cmd_gen_cert(a):
     from . import selfsigned
     t0 = time.monotonic()
@@ -484,6 +519,9 @@ def main(argv=None):
     g.add_argument("--clear", action="store_true", help="take the showing notice(s) down")
     p = add("notices", cmd_notices, "the latest notices")
     p.add_argument("--limit", type=int, default=10)
+    p = add("drain", cmd_drain, "no new matches before a restart")
+    p.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="wait until no match runs")
+    p.add_argument("--off", action="store_true", help="take new matches again")
     p = add("gen-cert", cmd_gen_cert, "make a self-signed TLS certificate")
     p.add_argument("--dir", default=".")
     p.add_argument("--name", default="t5lobby", help="host name or address to put in it (informational)")

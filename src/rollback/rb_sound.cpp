@@ -284,6 +284,7 @@ void sound_install()
             note("sound: the play/tick detours could not be installed -- falling back to skipping the sound update in re-simulated frames");
         }
     }
+    sndheap_install();
     calltrace_install();
     note("sound in re-simulated frames: %s", g_mode == SoundMode::Resim ? "resim (update runs, starts deduplicated, library tick once per displayed frame)"
                                             : g_mode == SoundMode::Skip ? "skip (sound update off)" : "raw (everything runs again)");

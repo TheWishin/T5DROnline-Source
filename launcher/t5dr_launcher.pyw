@@ -434,6 +434,28 @@ class App(tk.Tk):
             "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
             anchor="w", pady=(4, 0))
 
+        # Training overlay (T5_TRAINING*, core.TRAINING_MODES, docs/TRAINING.md): inputs and frame data
+        # drawn over the picture in Practice; it only reads the game, so it never changes a match.
+        tr = ttk.LabelFrame(left, text="  " + t("Training overlay") + "  ", padding=(12, 6))
+        tr.pack(fill="x", pady=(6, 0))
+        self.training_var = tk.StringVar(value=self.settings["training"] if self.settings["training"] in
+                                         core.TRAINING_MODES else "frames")
+        row = ttk.Frame(tr)
+        row.pack(anchor="w")
+        for key, label in core.TRAINING_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.training_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        self.training_all_var = tk.BooleanVar(value=bool(self.settings.get("training_all")))
+        self.training_online_var = tk.BooleanVar(value=bool(self.settings.get("training_online")))
+        ttk.Checkbutton(tr, text=t("Also in the other offline modes (Arcade, Versus, ...)"),
+                        variable=self.training_all_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(tr, text=t("Also online (only your own inputs, no frame data)"),
+                        variable=self.training_online_var, command=self.save_settings).pack(anchor="w")
+        ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+            "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
+            anchor="w", pady=(4, 0))
+
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
         if core.I18N:
@@ -893,6 +915,10 @@ class App(tk.Tk):
         if hasattr(self, "stage_blur_var"):
             self.settings["stage_blur"] = self.stage_blur_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
+        if hasattr(self, "training_var"):
+            self.settings["training"] = self.training_var.get()
+            self.settings["training_all"] = bool(self.training_all_var.get())
+            self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):

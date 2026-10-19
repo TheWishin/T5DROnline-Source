@@ -407,7 +407,7 @@ def _next_set_game(ctx, a, b, mid, label):
 
 def _play_set(ctx, a, b, mid, plan, label):
     """Play a ranked set to its end following plan ("AA", "ABA", ...). Returns (set_end of a, of b, game ids)."""
-    t0 = time.time() - 1
+    t0 = min(p.matches.get(mid, {}).get("started") or time.time() for p in (a, b))   # (not before this set began: the last set's set_end can be a moment old)
     mids = [mid]
     for k in range(3):
         _set_game(ctx, a, b, mid, f"{label} game {k + 1}")
@@ -1791,7 +1791,7 @@ def _bo3_pair(ctx, n1, n2, env1=None, env2=None, sets=(None, None), **srv):
 def _stub_set(ctx, a, b, mid, label, games_max=6, timeout=150):
     """Follow a stub set until set_end: every game's result (no rating on its own), the next game started by itself.
     Returns (set_end of a, set_end of b, [(match id, status, set number, continued)])."""
-    t0 = time.time() - 1
+    t0 = min(p.matches.get(mid, {}).get("started") or time.time() for p in (a, b))   # (not before this set began: the last set's set_end can be a moment old)
     seen = []
     for _ in range(games_max):
         wait_results(ctx, mid, (a, b), STUB_MATCH_SECONDS)

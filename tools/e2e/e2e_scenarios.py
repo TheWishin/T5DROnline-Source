@@ -2809,10 +2809,12 @@ def net_unlocks_one_side(ctx):
     login(ctx, a)
     login(ctx, b)
     rows = _two_matches(ctx, a, b, "unlocks on one side", rematches=2)
-    la = _log_has_line(a, r"unlock: online game -- unlocks as on a fresh save.* and the unlock settings")
+    # (the launcher leaves T5_UNLOCK_* out of an online game's environment: core.UNLOCK_ENV; the game answers as a
+    # fresh save online whatever it is given)
+    la = _log_has_line(a, r"unlock: online game -- unlocks as on a fresh save")
     lb = _log_has_line(b, r"unlock: online game -- unlocks as on a fresh save")
-    ctx.check("online, both games use the fresh save's unlocks (the unlocked side says it ignores its settings)",
-              la is not None and lb is not None and "unlock settings" not in lb,
+    ctx.check("online, both games use the fresh save's unlocks (the unlock settings stay offline)",
+              la is not None and lb is not None,
               f"{a.name}: {(la or '').strip()[:160]!r}; {b.name}: {(lb or '').strip()[:160]!r}")
     ctx.note(f"stages fought: {[(r.get('fight') or {}).get('stage') for r in rows]}")
 

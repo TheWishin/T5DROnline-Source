@@ -184,6 +184,8 @@ def check_path(path):
     ext = os.path.splitext(name)[1]
     if ext in BLOCKED_EXT and name not in BLOCKED_NAMES:
         found.append(f"'{ext}' files are game data, licenses or keys")
+    if ext == ".t5replay":
+        found.append("'.t5replay' files are players' replays (their matches, maybe their names): never in the repository")
     bad_dirs = [d for d in parts[:-1] if d in BLOCKED_DIRS]
     if bad_dirs:
         found.append(f"lives under {bad_dirs[0]}/, which holds game files, keys or local clones")

@@ -1155,7 +1155,8 @@ int64_t replay_frame_wait(ppu_context* ctx)
             wr32(kMinVblanksWord, r.minvb[0]); wr32(kMinVblanksWord + 4, r.minvb[1]);
             r.minvb_saved = false;
         }
-        np::note("replay: frame %u: %s", g_frame, want == 0 ? "as fast as possible (the matches before the watched one)" :
+        np::note("replay: frame %u: %s", g_frame, want == 0 && ff ? "as fast as possible (the matches before the watched one)" :
+                                                  want == 0 ? "as fast as possible (T5_REPLAY_SPEED=0)" :
                                                   want == 2 ? "2x speed" : "normal speed");
         r.speed = want;
         QueryPerformanceCounter(&r.next);

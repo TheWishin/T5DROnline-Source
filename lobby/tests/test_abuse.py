@@ -335,6 +335,22 @@ class LoginAbuseTest(Base):
         self.s.call(lambda: self.s.srv.good_logins.setdefault("victim", {}).update({"127.0.0.1": time.monotonic()}))
         self.c("Victim", password="pw-Victim")                             # the owner's own address still works
 
+    def test_password_changes_are_rate_limited(self):
+        """A logged-in account with its own (right) password used to be able to keep the server's password
+        hashing busy for everybody (two scrypt runs per change, nothing counted a success)."""
+        v = self.acc("Victim")
+        pw = ["pw-Victim", "pw-Second", "pw-Third", "pw-Fourth"]
+        for i in range(3):
+            v.change_password(pw[i], pw[i + 1])
+        hashed = self.s.call(lambda: self.s.srv.pw_waiting)
+        with self.assertRaises(LobbyError) as cm:
+            v.change_password(pw[3], "pw-Fifth")
+        self.assertEqual(cm.exception.code, proto.E_RATE)
+        with self.assertRaises(LobbyError) as cm:
+            v.new_recovery_codes(pw[3])                              # the same budget
+        self.assertEqual(cm.exception.code, proto.E_RATE)
+        self.assertEqual(self.s.call(lambda: self.s.srv.pw_waiting), hashed)
+
     def test_password_work_is_queued_with_a_bound(self):
         self.acc("Victim")
         self.cfg(pw_concurrency=1, pw_queue=2, scrypt_n=1 << 15)
@@ -342,6 +358,54 @@ class LoginAbuseTest(Base):
         codes = self.wrong_logins(5)
         self.assertIn(proto.E_RATE, codes)
         self.assertGreaterEqual(self.s.call(lambda: self.s.srv.counters.get("pw_busy", 0)), 1)
+
+
+# ============================================================================== UDP control packets
+class UdpTotalTest(unittest.TestCase):
+    """The server-wide cap on UDP control packets (T5L_UDP_CTL_PPS) is there against reflection: only the
+    ping is answered to anybody. A spoofed flood that uses it up must not stop registrations and relay binds,
+    which are answered only for a token the server handed out."""
+
+    class Lobby:
+        def __init__(self, token):
+            self.token = token
+            self.bound = []
+
+        def udp_register(self, token, addr, probe):
+            return token == self.token
+
+        def udp_relay_bound(self, sid, side, addr):
+            self.bound.append((sid, side, addr))
+
+    class Transport:
+        def __init__(self):
+            self.sent = []
+
+        def sendto(self, data, addr):
+            self.sent.append((data, addr))
+
+    def test_flood_of_pings_does_not_block_registration_and_binds(self):
+        from t5lobby.server import Config
+        from t5lobby.server.ratelimit import TokenBucket
+        from t5lobby.server.udp import UdpService
+        tok = proto.new_token()
+        lobby = self.Lobby(tok)
+        svc = UdpService(lobby, Config(db=":memory:"))
+        svc.ctl_global = TokenBucket(0.001, 1)
+        svc.ctl_global.take()                                        # the total is used up (a spoofed flood)
+        tr = self.Transport()
+        svc.on_datagram(0, tr, proto.pk_ping(proto.U_SPING, 1, 1.0), ("198.51.100.7", 4000))
+        self.assertEqual(tr.sent, [])                                # pings: not answered now
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_REGISTER, tok), ("198.51.100.8", 4001))
+        self.assertEqual(proto.un_token_ack(tr.sent[-1][0])[0], proto.U_REG_ACK)
+        rtok = [proto.new_token(), proto.new_token()]
+        svc.open_relay("m1", rtok)
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_RELAY_BIND, rtok[0]), ("198.51.100.9", 4002))
+        self.assertEqual(proto.un_token_ack(tr.sent[-1][0])[0], proto.U_RELAY_ACK)
+        self.assertEqual(lobby.bound, [("m1", 0, ("198.51.100.9", 4002))])
+        n = len(tr.sent)
+        svc.on_datagram(0, tr, proto.pk_token(proto.U_REGISTER, proto.new_token()), ("198.51.100.10", 4003))
+        self.assertEqual(len(tr.sent), n)                            # an unknown token gets nothing
 
 
 # ============================================================================== connection floods

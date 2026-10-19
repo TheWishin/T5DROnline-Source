@@ -50,13 +50,13 @@ def valid_app_id(value):
     return s if s.isdigit() and 15 <= len(s) <= 22 else None
 
 
-def load_config(settings=None, env=None, path=CONFIG_FILE):
+def load_config(settings=None, env=None, path=None):
     """{"application_id": str | None, "large_image": str, "large_text": str}: data/discord.json (what the release
     ships), then the launcher's settings ("discord_app_id"), then T5_DISCORD_APP_ID -- the last one set wins."""
     env = os.environ if env is None else env
     cfg = {"application_id": None, "large_image": "", "large_text": "T5DR Online"}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path or CONFIG_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             cfg["application_id"] = valid_app_id(data.get("application_id"))

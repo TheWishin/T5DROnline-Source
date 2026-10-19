@@ -184,6 +184,15 @@ class PythonSideTest(unittest.TestCase):
 
 
 class LauncherSideTest(unittest.TestCase):
+    def test_the_tab_ships_in_the_release(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import package_release
+        import smoke_release
+        for f in ("launcher/replays.py", "launcher/replays_ui.py"):
+            self.assertIn(f, package_release.OUR_FILES)
+            self.assertIn(f, smoke_release.REQUIRED)
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, *f.split("/"))))
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="t5dr-replay")
         self.addCleanup(shutil.rmtree, self.tmp, True)

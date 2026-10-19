@@ -89,6 +89,7 @@ OUR_FILES = [
     "launcher/t5dr_launcher.pyw", "launcher/core.py", "launcher/online.py", "launcher/updater.py",
     "launcher/problem_report.py", "launcher/problem_report_ui.py",
     "launcher/controls_ui.py", "launcher/controls_edit.py", "launcher/stub/t5dr_stub.c",
+    "launcher/replays.py", "launcher/replays_ui.py",
     "docs/RELEASE.md",
     # online: "Host for friends" entry point (works with the bundled, isolated Python) and the server list
     "lobby/run.py", "lobby/servers.json",

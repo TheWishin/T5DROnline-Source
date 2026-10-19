@@ -81,6 +81,13 @@ class Config:
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
     max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
+    # friends and invites (docs/ONLINE.md "Friends"): accounts only
+    max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
+    friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h
+    friend_pending: int = 30        # T5L_FRIEND_PENDING: requests waiting for an answer, per sender and per receiver
+    friend_request_days: float = 14.0  # T5L_FRIEND_REQUEST_DAYS: an unanswered request runs out after this
+    friend_retry_days: float = 7.0  # T5L_FRIEND_RETRY_DAYS: after a decline, the same request again only after this
+    invite_seconds: float = 60.0    # T5L_INVITE_SECONDS: an invite to a match or a room waits this long for an answer
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"
     lag_wait: float = 6.0           # T5L_LAG_WAIT: seconds to wait for the second player's lag report
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed

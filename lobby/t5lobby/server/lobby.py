@@ -45,11 +45,12 @@ from .udp import UdpService
 log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets"))   # optional protocol features a client may announce in hello
+# optional protocol features a client may announce in hello
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
-            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets"]
+            "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -187,6 +188,7 @@ class GameSet:
         self.locked = bool(ranked)
         self.ranked = bool(ranked)
         self.picks = {}                 # player id -> the character picked for the whole (locked) set
+        self.costumes = {}              # player id -> its confirm button (1-4) when picked in the game (in-game select)
         self.matches = []
         self.games = 0                  # games started
         self.current = None             # the match being set up or played
@@ -282,7 +284,8 @@ class Match:
         self.relay_stats = None
         self.relay_id = None                 # key of the relay session (a continued rematch keeps the old one)
         self.picks = [host.char, join.char]  # characters as picked (may be "random")
-        self.chars = None                    # resolved at match start
+        self.chars = None                    # resolved at match start (the games' own picks replace them, below)
+        self.pick = 0                        # seconds to pick on the game's select screen (0: the launchers' characters)
         self.stage = None
         self.started = None                  # time.time() of match_start
         self.rematch_of = None
@@ -2066,6 +2069,7 @@ class LobbyServer:
         if m.set is not None:
             m.set.games += 1
         seed = int.from_bytes(m.tag[:4], "big")
+        m.pick = self._pick_seconds(m)
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
         m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[2]
         for side, p in enumerate(m.players):
@@ -2093,12 +2097,66 @@ class LobbyServer:
                 "rounds": self.cfg.rounds, "ranked": m.ranked, "build": m.build_id,
                 "opponent": m.players[1 - side].brief(), "seed": int.from_bytes(m.tag[:4], "big"),
                 "key": m.key,                          # T5_NET_KEY (the tag above travels in UDP punches)
-                "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
+                "fight": dict({"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage, "rounds": self.cfg.rounds},
+                              **({"pick": m.pick} if m.pick else {}), **self._locked_costumes(m)),
                 "start_time": int(m.started),          # PS3_FIXED_TIME: the same game clock on both PCs
                 "players": [q.brief() for q in m.players],
                 "continue": m.continued, "rematch_of": m.rematch_of,
                 "min_seconds": self.cfg.min_match_seconds,
                 "set": m.set.info() if m.set is not None else None})
+
+    def _pick_seconds(self, m):
+        """In-game select (docs/RANKED.md "Character select in the game"): both players pick on their
+        game's own select screen, the characters in `fight` are the fallback. Only when both clients
+        can (caps), and in a locked (ranked) set only in the game that fixes its characters."""
+        if self.cfg.ingame_pick <= 0:
+            return 0
+        if not all("ingame_pick" in getattr(p.conn, "caps", ()) for p in m.players):
+            return 0
+        if not self._picks_in_game(m):
+            return 0
+        return int(self.cfg.ingame_pick)
+
+    @staticmethod
+    def _locked_costumes(m):
+        """A locked set's later game after an in-game pick: {"buttons": [P1, P2]}, the costumes (confirm
+        buttons) its picking game fought with, so a new connection or a restarted game keeps them too."""
+        gs = m.set
+        if m.pick or gs is None or not gs.locked or not gs.costumes:
+            return {}
+        b = [gs.costumes.get(p.id, 0) for p in m.players]
+        return {"buttons": b} if any(b) else {}
+
+    @staticmethod
+    def _picks_in_game(m):
+        """Does this game pick its characters on the select screen? Casual games (no lock) always: a
+        rematch goes back to the select screen. A rated set (best of 3) only in game 1 -- a replay of
+        game 1 (desync, draw) too, nothing counted yet; games 2 and 3 start by themselves with game 1's
+        fighters and costumes. An older per-game ranked set (a client without "sets") in its first game."""
+        gs = m.set
+        if gs is None or not gs.locked:
+            return True
+        if gs.rated:
+            return m.set_number == 1
+        return bool(gs.matches) and gs.matches[0] is m
+
+    def _picked(self, m):
+        """The characters the games fought with (in-game select): what both reports say, or the one
+        report that says it; None when they disagree or nobody said."""
+        if not m.pick:
+            return None
+        got = [r["chars"] for r in m.reports if r and r.get("chars")]
+        if not got or (len(got) == 2 and got[0] != got[1]):
+            return None
+        return list(got[0])
+
+    @staticmethod
+    def _picked_costumes(m):
+        """The confirm buttons (costumes) both reports agree on for an in-game pick, or None."""
+        got = [r.get("costumes") for r in m.reports if r and r.get("chars")]
+        if not got or any(c is None for c in got) or (len(got) == 2 and got[0] != got[1]):
+            return None
+        return list(got[0])
 
     async def h_game_started(self, conn, msg):
         self._get_match(conn.player, msg, ("playing",))
@@ -2136,8 +2194,33 @@ class LobbyServer:
         h = str(h)[:32].lower() if h else None
         frames = msg.get("frames")
         frames = max(0, min(10 ** 9, int(frames))) if frames is not None else None
+        chars = msg.get("chars")
+        if chars is not None:
+            # the fighters the game fought with (in-game select): keys, or the game's ids
+            ok = isinstance(chars, list) and len(chars) == 2
+            keys = []
+            for c in chars if ok else ():
+                f = self.table.fighter(c) if isinstance(c, str) else (
+                    self.table.fighter_by_id(c) if isinstance(c, int) and not isinstance(c, bool) else None)
+                if f is None or f.get("boss"):
+                    ok = False
+                    break
+                keys.append(f["key"])
+            if not ok:
+                raise LobbyError(proto.E_BAD_REQUEST, "chars is [P1 fighter, P2 fighter]")
+            chars = keys
+        costumes = msg.get("costumes")
+        if costumes is not None:
+            # their confirm buttons (1-4 = LP, RP, LK, RK; 0 = the default): the costumes a ranked set keeps
+            if not (isinstance(costumes, list) and len(costumes) == 2 and all(
+                    isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 4 for x in costumes)):
+                raise LobbyError(proto.E_BAD_REQUEST, "costumes is [P1 button, P2 button]")
         rep = {"winner": winner, "score": score, "source": source, "desync": desync, "hash": h, "frames": frames,
                "reason": proto.clean_text(msg.get("reason", ""), 32), "at": time.time()}
+        if chars is not None:
+            rep["chars"] = chars
+            if costumes is not None:
+                rep["costumes"] = list(costumes)
         if m.reports[side] is not None and m.reports[side]["source"] != "quit":
             return {"t": "result_ack", "match": m.id}        # first report stands
         m.reports[side] = rep
@@ -2416,6 +2499,20 @@ class LobbyServer:
     def _finish(self, m, status, winner, score, reason=None, blame=None):
         self._cancel_timers(m)
         m.state = "done"
+        picked = self._picked(m)
+        if picked:
+            # In-game select: the history counts what was fought; the game of a locked (ranked) set whose
+            # characters were picked in the game (_picks_in_game: a rated set's game 1) fixes them for the
+            # rest of the set.
+            if picked != m.chars:
+                log.info("match %s: picked in the game %s vs %s (launchers: %s vs %s)", m.id, picked[0], picked[1],
+                         *(m.chars or ["?", "?"]))
+            m.chars = picked
+            if m.set is not None and m.set.locked and m.set.state == "active":
+                costumes = self._picked_costumes(m) or [0, 0]
+                for p, c, b in zip(m.players, picked, costumes):
+                    m.set.picks[p.id] = c
+                    m.set.costumes[p.id] = b
         # A game of a rated set changes no rating and no record by itself: the set does, once, at its end.
         gs = m.set if m.set is not None and m.set.rated and m.set.state == "active" else None
         counts = status in COUNTED

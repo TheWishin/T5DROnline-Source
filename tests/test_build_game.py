@@ -6,6 +6,7 @@ import argparse
 import io
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -231,6 +232,55 @@ class Steps(unittest.TestCase):
         with mock.patch.object(self.bg, "run", fake_run):
             self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "different version")
         self.assertFalse(os.path.exists(self.bg.P.elf))      # the wrong program is not kept
+
+    def fake_pkg(self, size=None):
+        pkg = os.path.join(self.tmp.name, "game.pkg")
+        hdr = bytearray(0x60)
+        hdr[0:4] = b"\x7fPKG"
+        hdr[0x30:0x30 + len(self.bg.CONTENT_ID)] = self.bg.CONTENT_ID.encode()
+        put(pkg, bytes(hdr) + bytes((size or 0x60) - 0x60))
+        return pkg
+
+    def test_decrypt_takes_a_damaged_leftover_program_out_again(self):
+        # An earlier run stopped while taking EBOOT.BIN out: an empty file stays behind. The next run must
+        # take it out of the package again instead of failing with "not a SELF" for good.
+        rap = self.stage_package(self.bg.TITLE_ID)
+        eboot = os.path.join(self.bg.P.pkg_dir, "USRDIR", "EBOOT.BIN")
+        put(eboot, b"")
+        calls = []
+
+        def fake_run(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            calls.append(os.path.basename(cmd[1]))
+            if "pkg_extract.py" in cmd[1] and cmd[-1] == "EBOOT.BIN":
+                put(eboot, b"SCE\0" + bytes(0x2000))
+            if "unself.py" in cmd[1]:
+                put(self.bg.P.elf, b"decrypted")
+            return ""
+        with mock.patch.object(self.bg, "run", fake_run):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap, pkg=self.fake_pkg())),
+                                  "different version")       # the fake program is not the pinned one
+        self.assertEqual(calls, ["pkg_extract.py", "pkg_extract.py", "unself.py"])
+
+    def test_decrypt_names_an_incomplete_package(self):
+        rap = self.stage_package(self.bg.TITLE_ID)
+        eboot = os.path.join(self.bg.P.pkg_dir, "USRDIR", "EBOOT.BIN")
+        put(eboot, b"SCE\0" + bytes(0x2000))
+
+        def failing_unself(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd, output="not a SELF")
+        with mock.patch.object(self.bg, "run", failing_unself):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap, pkg=self.fake_pkg(0x1000))),
+                                  "the download is incomplete")
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "Redo every step")
+
+    def test_decrypt_takes_an_already_decrypted_program(self):
+        # A re-packed package with the program already decrypted: no unself, the SHA-1 pin decides.
+        rap = self.stage_package(self.bg.TITLE_ID)
+        put(os.path.join(self.bg.P.pkg_dir, "USRDIR", "EBOOT.BIN"), b"\x7fELF" + bytes(0x2000))
+        with mock.patch.object(self.bg, "run", lambda *a, **k: self.fail("must not decrypt")):
+            self.assertBuildError(lambda: self.bg.step_decrypt(self.args(rap=rap)), "different version")
+        self.assertFalse(os.path.exists(self.bg.P.elf))
 
     def test_sha1(self):
         p = os.path.join(self.tmp.name, "f")

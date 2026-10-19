@@ -47,9 +47,9 @@ from . import fighters, lag, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
-from .match_driver import MatchDriver, fps_from_logs
+from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_views
+from . import theme, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -159,6 +159,8 @@ class OnlineTab:
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
+        self.bring_forward = winfront.raise_window    # the launcher's window to the front (tests replace it)
+        self._fronted = None                          # what it last came forward for (once per match / question)
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -458,6 +460,7 @@ class OnlineTab:
         c = LobbyClient(spec, build, tls=tls, tls_fingerprint=fp,
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
+                        ingame_pick=self._game_can_pick(),
                         sets=bool(self.cfg.get("sets", True)))   # online.json "sets": false: no ranked sets
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
@@ -469,6 +472,12 @@ class OnlineTab:
             out = getattr(self.app.settings, "out_dir", os.getcwd())
             c.perf_fps = fps_from_logs(os.path.join(out, "logs"))
         return c
+
+    def _game_can_pick(self):
+        """This PC's game picks the characters on its own select screen (in-game select)."""
+        out = getattr(self.app.settings, "out_dir", os.getcwd())
+        return game_supports_pick([os.path.join(out, "build", "cmake", "t5dr.exe"),
+                                   os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
         name, pw = self.name_var.get().strip(), self.pw_var.get()
@@ -510,6 +519,9 @@ class OnlineTab:
             self._set_account_view(True)
             self._show_me()
             hint = t("Pick a character, then Ranked match (accounts) or Quick match.")
+            if client.ingame_pick and "ingame_pick" in (w.get("features") or []):
+                hint = t("Ranked match (accounts) or Quick match; then pick your fighter in the game (Select = "
+                         "random). The character here is used when you do not pick in time.")
             if w.get("motd"):
                 hint = w["motd"]
             self.hint_var.set((t("Encrypted connection (TLS).") + " " if client.tls else "") + hint)
@@ -953,13 +965,20 @@ class OnlineTab:
             self.set_var.set(sets.status_text(ev.get("set"), ev.get("slot") or 0))
             f = ev.get("fight") or {}
             delay = ev.get("delay") or 0
-            self.match_var.set(" -- ".join((
-                t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
-                else t("Casual match vs {name}", name=ev["opponent"]["name"]),
-                t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")), p2=self.table.fighter_name(f.get("p2"))),
-                t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
-                  ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")), frames=ev.get("delay"),
-                  delay_ms=f"{delay * 16.7:.0f}"))))
+            self._match_head = (t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
+                                else t("Casual match vs {name}", name=ev["opponent"]["name"]))
+            self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
+                                 ms=f"{ev.get('rtt_ms', 0):.0f}", how=_word(PATH_TEXT, ev.get("path")),
+                                 frames=ev.get("delay"), delay_ms=f"{delay * 16.7:.0f}")
+            if f.get("pick"):
+                # in-game select: the fighters are picked on the game's own select screen
+                fighters_text = t("pick your fighter in the game ({secs} s)", secs=f["pick"])
+            else:
+                fighters_text = t("{p1} vs {p2}", p1=self.table.fighter_name(f.get("p1")),
+                                  p2=self.table.fighter_name(f.get("p2")))
+                if (ev.get("set") or {}).get("locked") and (ev.get("set") or {}).get("game", 1) > 1:
+                    fighters_text += " " + t("(locked for this ranked set)")
+            self.match_var.set(" -- ".join((self._match_head, fighters_text, self._match_tail)))
         elif kind == "match_result":
             self._show_result(ev)
         elif kind == "rematch":
@@ -993,6 +1012,12 @@ class OnlineTab:
             self._save_cfg()
         if k == "status":
             self.status(n["text"])
+        elif k == "game_state":
+            # the fight started: show who fights (with the in-game select, what the players picked)
+            if n.get("state") == "fight" and n.get("chars") and getattr(self, "_match_head", None):
+                p1, p2 = n["chars"]
+                self.match_var.set(" -- ".join((self._match_head, t("{p1} vs {p2}", p1=self.table.fighter_name(p1),
+                                                                    p2=self.table.fighter_name(p2)), self._match_tail)))
         elif k == "ask_result":
             self.show_bar(t("The game closed. How did the match against {opponent} end?", opponent=n["opponent"]), [
                 (t("I won"), lambda: self._answer_result("won")),
@@ -1005,6 +1030,32 @@ class OnlineTab:
                           [(t("Rematch"), lambda: self._rematch(True), "cross"),
                            (t("No thanks"), lambda: self._rematch(False), "circle")])
         self.view.after_driver(n)
+        if k == "rematch_offer":
+            self._come_forward(("rematch", n.get("match")))     # a decision for the player
+        elif k == "ask_result":
+            self._come_forward(("ask", n.get("match")))
+
+    def _come_forward(self, key):
+        """The match is over and the game waits (pads neutral, at character select) for what comes next:
+        show this tab and bring the launcher's window to the front -- once per match end or question
+        (`key`). Never while a match is being played, and not while a ranked set's next game starts by
+        itself. (Players took the waiting game for a hang: build/e2e, GitHub report on 1.0.0.)"""
+        if key == self._fronted or self.set_bar is not None:
+            return
+        drv = self.driver
+        if drv is not None and drv.ticket is not None and drv.game_state not in (None, "over", "neutral"):
+            return                                  # a match is on (the fight, its loading): never then
+        self._fronted = key
+        try:
+            nb = self.parent.master
+            if isinstance(nb, ttk.Notebook) and nb.select() != str(self.parent):
+                nb.select(self.parent)              # the launcher's Online tab, with the result card
+        except tk.TclError:
+            pass
+        try:
+            self.bring_forward(self.parent)
+        except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
+            pass
 
     def _answer_result(self, what):
         self.hide_bar()
@@ -1130,6 +1181,8 @@ class OnlineTab:
             if self.client:
                 self._show_me()
                 self._set_actions()
+            # the set is over and the game waits for a choice (once: the last game's result may have done it)
+            self._come_forward(("result", (self.last_result or {}).get("match")))
             return
         if self.rematch_bar is not None:
             self.rematch_bar = None
@@ -1242,6 +1295,7 @@ class OnlineTab:
             self._show_rematch_bar()
         if self.client and self.client.me:
             self._show_me()
+        self._come_forward(("result", ev.get("match")))
 
     # ------------------------------------------------------------------ controller (padnav.py)
     # A pad or arcade stick runs the whole online loop: Cross (A) accepts a found match or a challenge,

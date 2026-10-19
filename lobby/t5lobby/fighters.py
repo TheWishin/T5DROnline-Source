@@ -38,6 +38,13 @@ class Table:
     def stage(self, key):
         return self._s.get(key)
 
+    def fighter_by_id(self, fid):
+        """The fighter with the game's character id (the in-game select reports ids), or None."""
+        for x in self.fighters:
+            if x["id"] == fid:
+                return x
+        return None
+
     def fighter_name(self, key):
         x = self._f.get(key)
         return x["name"] if x else (t("Random") if key == RANDOM else (key or "?"))

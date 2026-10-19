@@ -164,6 +164,11 @@ it had; the cap is checked when a set begins, never in the middle of one.
 
 ## Characters and stages
 
+**Picked in the game** (branch ingame-select, below) when both players' launchers
+and games can: after the match is found each player picks fighter and costume on
+the game's own select screen. The character set in the launcher is the
+**default**: a player who does not pick within 30 s gets it.
+
 The player picks a character in the launcher before queueing (or "Random"); it
 is shown in the lobby and sent with the queue request. At match start the
 server resolves "random" picks and the stage with the match's shared seed, so
@@ -180,6 +185,43 @@ its stage select; names are known for two stages so far). Not offered: Jinpachi
 button, unverified). Rounds: first to 3 (`T5L_ROUNDS`), like Tekken 6 online.
 The stage is always resolved by the server: the game's own random pick happens
 before lockstep starts and would differ between the two PCs.
+
+### Character select in the game
+
+The server offers it in `match_start`: `fight.pick` = seconds to pick
+(`T5L_INGAME_PICK`, default 30; 0 = off) when **both** clients announced the
+`ingame_pick` cap in their `hello` (the launcher does when its game build has the
+in-game select: it finds `T5_DF_PICK` in `t5dr.exe` / `t5dr_game.dll`), and in
+a locked (ranked) set only in the game that fixes its characters: game 1 of a
+ranked set of best of 3 (`set.number` 1 -- a replay of game 1 after a desync or
+draw too, nothing has counted yet), the first game of an older per-game ranked
+set. Casual games always pick (a rematch goes back to the select screen).
+`fight.p1`/`p2` stay the launchers' characters, resolved as before: the
+fallback.
+
+- The launcher puts `pick=N` on the game's fight line (`T5_FIGHT`, a
+  `T5_FIGHT_FILE` line, the control channel's `T5_FIGHT`); the game does the
+  rest (docs/DIRECTFIGHT.md "Character select in the game"): select screen,
+  the picks exchanged between the two games, the fight. The tab's status line
+  follows the game ("Pick your fighter in the game", "Waiting for your
+  opponent to pick...") and shows the fighters once the fight starts.
+- With the result the launcher reports `chars: [P1, P2]`: the fighters the game
+  fought with (from the direct-fight status file at FIGHT START). The server
+  takes what both reports say (or the one report that says anything; two
+  different answers count for nothing) for the match history, the profile's
+  character statistics and the "main" -- and, for the picked game of a ranked
+  set, as the set's lock. With them `costumes: [P1, P2]`, the confirm buttons
+  (1-4 = LP, RP, LK, RK, 0 = the default; status file `b1`/`b2`): the set's
+  later games get them as `fight.buttons` and the launcher writes
+  `buttons=b1|b2` on the fight line, so games 2 and 3 fight the same costumes
+  even over a new connection (a replay after a desync) or in a restarted game --
+  the game's own memory of the last costume lasts one netplay session.
+- **Random**: the Select button on the select screen picks a random fighter and
+  costume -- drawn on that player's PC, sent like any pick, so both games fight
+  the same. The launcher's "Random" is resolved by the server as before (the
+  fallback).
+- **Timeout**: a player who picks nothing within 30 s gets the launcher's
+  character (with the default costume), and the opponent's game gets that pick.
 
 ## Results and match integrity
 
@@ -357,8 +399,9 @@ next one is a rematch vote. `T5L_RANKED_SET_WINS=1` turns sets off for everybody
 scripts and tests written before keep per-game rating); `MatchDriver` then answers `set_next` by itself.
 The Online tab turns it on; `"sets": false` in its online.json turns it off for that launcher.
 
-**In-game character select** (ingame-select branch): only game 1 of a set is picked; the lobby keeps the
-characters locked for games 2 and 3 (`match_start.set.number` > 1, `continue: true`).
+**In-game character select**: only game 1 of a set is picked (`fight.pick`); games 2 and 3 start by
+themselves after the countdown with no select screen, with game 1's fighters (`fight.p1`/`p2`) and costumes
+(`fight.buttons`), whether they continue in the running games or come over a new connection.
 
 **Measured (2026-10-19, `lobby/tools/set_session.py`, main's t5dr.exe, two persistent games on one PC
 loaded by other work, 1 round per game to save time).** A 2-0 set (run e5, Heihachi vs Kazuya) and a 2-1
@@ -611,7 +654,9 @@ separate from the cap of 10 ranked matches per pair per day (`T5L_PAIR_CAP`).
 ### Character lock
 
 In a **ranked set**, the character cannot change between the games. The server fixes both
-characters when the set is found. Every game of the set, including rematches in a ranked room,
+characters when the set is found. With the in-game select the first game is picked on the select
+screen, and what it was fought with (the `chars` of its result reports) becomes the lock; the later
+games have no `fight.pick` and skip the select screen. Every game of the set, including rematches in a ranked room,
 gets those characters in `match_start.fight`. The launcher cannot override it: it only writes
 the `T5_FIGHT` line the server sent. The character box in the tab is greyed out while the set
 runs. A request to change it is refused (`bad_state`).
@@ -747,6 +792,7 @@ New `T5L_*` variables (all in `server/config.py`):
 | `T5L_SET_REPLAYS` | 2 | games without a winner (desync, draw, too short) played again per set; one more and the set is void |
 | `T5L_RANKED_ROOMS` | 1 | rooms may be ranked |
 | `T5L_ROUNDS` | 3 | rounds to win (`T5_FIGHT`) |
+| `T5L_INGAME_PICK` | 30 | seconds to pick on the game's own select screen when both clients can (`fight.pick`); 0 = the launchers' characters |
 | `T5L_RANKED_INPUT_DELAY` | 2 | rollback input delay of ranked matches, frames, the same for everybody (`-1`: the players' own settings) |
 | `T5L_READY_TIMEOUT` | 15 | seconds to accept a found match (was 20) |
 | `T5L_BLIND_READY` | 1 | a queue match shows only the ping until both accepted (for clients that ask); 0 = names at once |
@@ -780,10 +826,10 @@ in `hello.caps`, and an older client gets the old messages.
 | `recovery_codes` `password` | `recovery_codes {codes}` |
 | `set_char` `char`; `queue` + `char` | |
 | `profile` `name`, `history`; `history` `name`, `limit`, `offset`; `leaderboard` `limit`, `offset` | `profile {profile}`, `history {rows}`, `leaderboard {rows}` (+ rank, provisional, main, online) |
-| `result` + `source`, `desync`, `hash`, `frames`, `reason` | `result_ack` |
+| `result` + `source`, `desync`, `hash`, `frames`, `reason`, `chars` ([P1, P2] fighter keys or game ids: what the game fought with), `costumes` ([P1, P2] confirm buttons 0-4) | `result_ack` |
 | `perf` `fps` (this PC's speed in its last match; re-sent after every login) | -- |
 | `rematch` `match`, `accept`, `keep` | `rematch {state: waiting\|accepted, next}` |
-| `hello` `caps`: `blind_ready` (blind ready check), `notices` (server notices) | `welcome.caps` echoes what the server accepted; `welcome` also has `strict_range`, `pair_cooldown` |
+| `hello` `caps`: `blind_ready` (blind ready check), `notices` (server notices), `ingame_pick` (this player's game picks on its own select screen) | `welcome.caps` echoes what the server accepted; `welcome` also has `strict_range`, `pair_cooldown` |
 | `queue` + `strict` (ranked only) | `queued {mode, strict}` |
 | `block` `name` (or `player`); `unblock` `name`; `blocks` | `blocked {name, blocks, left_match}`; `unblocked`; `blocks {rows: [{name, guest, since}]}` |
 | `leave_set` `reason` (`lag` after the lag check) | -- (`set_end` follows) |
@@ -793,7 +839,8 @@ in `hello.caps`, and an older client gets the old messages.
 
 Server -> client: players in `lobby_state` and `brief()` carry `tier`, `rank`,
 `provisional`, `placement`, `main`, `char`; `match_found` + `you`, `rematch_of`,
-`keep`; `match_start` + `fight {p1, p2, stage, rounds}`, `players [brief, brief]`,
+`keep`; `match_start` + `fight {p1, p2, stage, rounds, pick, buttons}` (`pick`: seconds, in-game select;
+`buttons`: a locked set's costumes), `players [brief, brief]`,
 `continue`, `rematch_of`, `min_seconds`, `start_time`, `key` (T5_NET_KEY); `brief()` + `fps`;
 `match_result` + `reason`, `blame`
 (you/opponent), `fight`, `rematch_window`, and `rating` + `rank_before`,

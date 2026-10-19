@@ -823,10 +823,15 @@ MESSAGES = {
     "the package's content ID ({id}).":
         "Die Lizenz (.rap) gehört nicht zu diesem Paket. Nimm die .rap, deren Name zur "
         "Content-ID des Pakets passt ({id}).",
-    "Decrypting the game program failed (see the log above). Is the package complete? "
-    "Its size should be 619,430,240 bytes.":
-        "Das Entschlüsseln des Spielprogramms ist fehlgeschlagen (siehe Log oben). Ist das "
-        "Paket vollständig? Es sollte 619.430.240 Bytes groß sein.",
+    "Decrypting the game program failed (see the log above). Tick \"Redo every step\" and press BUILD GAME "
+    "again; if it fails again, check that the package is {size} bytes.":
+        "Das Entschlüsseln des Spielprogramms ist fehlgeschlagen (siehe Log oben). Setz den Haken bei "
+        "\"Alle Schritte neu machen\" und drück noch einmal BUILD GAME; klappt es wieder nicht, prüf, "
+        "ob das Paket {size} Bytes groß ist.",
+    "The package is {size} bytes, the supported one is {supported} bytes: the download is incomplete or it is "
+    "a different file. Download it again.":
+        "Das Paket ist {size} Bytes groß, das unterstützte {supported} Bytes: Der Download ist unvollständig "
+        "oder es ist eine andere Datei. Lade es noch einmal herunter.",
     "The ps3recomp copy in this folder does not match this version of the port. Download "
     "the release again and extract it into an empty folder.":
         "Die ps3recomp-Kopie in diesem Ordner passt nicht zu dieser Version der Portierung. "
@@ -1373,6 +1378,16 @@ MESSAGES = {
     "The lobby server stopped (exit code {code}); see its log in {folder}.":
         "Der Lobby-Server wurde beendet (Exit-Code {code}); sein Log liegt in {folder}.",
     "Stopped hosting.": "Hosten beendet.",
+    # in-game character select (branch ingame-select)
+    "Pick your fighter in the game ({secs} s; Select = random; no pick = the character set here).":
+        "Wähle deinen Kämpfer im Spiel ({secs} s; Select = zufällig; ohne Wahl der hier eingestellte Charakter).",
+    "Waiting for your opponent to pick...": "Warte auf die Wahl deines Gegners...",
+    "Ranked match (accounts) or Quick match; then pick your fighter in the game (Select = random). The character here is used when you do not pick in time.":
+        "Ranked Match (Konten) oder Quick Match; dann wählst du deinen Kämpfer im Spiel (Select = zufällig). Der Charakter hier gilt, wenn du nicht rechtzeitig wählst.",
+    "pick your fighter in the game ({secs} s)": "Kämpfer im Spiel wählen ({secs} s)",
+    "(locked for this ranked set)": "(fest für dieses Ranked-Set)",
+    "Pick your fighter in the game": "Wähle deinen Kämpfer im Spiel",
+    "Your opponent is picking": "Dein Gegner wählt",
     # ---- lobby/t5lobby/tk_views.py
     "Rank": "Rang",
     "Rating": "Wertung",
@@ -1556,6 +1571,8 @@ MESSAGES = {
     "ROUNDS  (YOU – THEM)": "RUNDEN  (DU – GEGNER)",
     "GAMES  (YOU – THEM)": "SPIELE  (DU – GEGNER)",
     "SET WON": "SET GEWONNEN",
+    "The game waits here for your next match: Rematch, Next game or Leave.":
+        "Das Spiel wartet hier auf dein nächstes Match: Rematch, Nächstes Spiel oder Verlassen.",
     "SET LOST": "SET VERLOREN",
     "Ranked set": "Ranked-Set",
     "Ranked set vs {name}": "Ranked-Set gegen {name}",

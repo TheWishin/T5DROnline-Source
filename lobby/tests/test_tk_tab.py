@@ -96,6 +96,8 @@ class TkBase(unittest.TestCase):
         self.tab.new_window = hidden_window
         self.tab.ask_string = lambda *a, **k: None
         self.tab.ask_yes_no = lambda *a, **k: False
+        self.fronted = []                       # the window never really comes forward in a test
+        self.tab.bring_forward = lambda w: self.fronted.append(w)
         self.other = None
 
     def tearDown(self):
@@ -184,6 +186,73 @@ class TkTabTest(TkBase):
             tab._poll()                                     # and the next poll is quiet too
         finally:
             c.close()
+
+    def texts_under(self, widget):
+        out = []
+        for w in widget.winfo_children():
+            try:
+                out.append(str(w.cget("text")))
+            except tk.TclError:
+                pass
+            out += self.texts_under(w)
+        return out
+
+    def test_after_the_match_the_window_comes_forward_once(self):
+        """The game waits at character select after a match (pads neutral, for the launcher's next command):
+        the launcher comes forward with the result card, which says so -- once, never during the match;
+        the opponent's rematch question brings it forward again."""
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        self.other = client(self.s, "Rival", auto_ready=True)
+        self.pump(lambda: len(tab.tv_players.get_children()) == 2)
+        tab.actions["quick"].invoke()
+        self.other.quick_match()
+        self.pump(lambda: self.bar_button("Accept") is not None)
+        self.bar_button("Accept").invoke()
+        self.pump(lambda: len(self.app.games) == 1)
+        self.pump(lambda: tab.view._stage == "match")
+        self.assertEqual(self.fronted, [])                                    # not during the match
+        g = self.app.games[0]
+        slot = 0 if g.env["T5_NET_MODE"] == "host" else 1
+        import json
+        with open(g.env["T5_NET_RESULT_FILE"], "w") as f:                    # the game writes its result and
+            json.dump({"winner": slot, "score": [3, 1] if slot == 0 else [1, 3]}, f)   # stays open (waits)
+        self.other.report_result(slot, [3, 1] if slot == 0 else [1, 3])
+        self.pump(lambda: tab.last_result is not None)
+        self.root.update()
+        self.assertEqual(self.fronted, [tab.parent])                          # once
+        self.assertTrue(tab.view.game_waits())
+        self.assertIn("The game waits here for your next match: Rematch, Next game or Leave.",
+                      self.texts_under(tab.view.bar_visual))
+        for _ in range(5):
+            tab._poll()
+        self.assertEqual(len(self.fronted), 1)                                # still once
+        ev = expect(self.other, "match_result")
+        self.other.rematch(ev["match"], True)                                 # the opponent asks: a decision
+        self.pump(lambda: len(self.fronted) == 2)
+
+    def test_never_forward_while_a_match_is_on(self):
+        import types
+        tab = self.tab
+        tab.driver = types.SimpleNamespace(ticket=object(), game_state="fight", close=lambda: None)
+        tab._come_forward(("result", "m1"))
+        tab.driver.game_state = "loading"
+        tab._come_forward(("result", "m1"))
+        self.assertEqual(self.fronted, [])
+        tab.driver.ticket = None                                              # the match is over
+        tab._come_forward(("result", "m1"))
+        tab._come_forward(("result", "m1"))
+        self.assertEqual(self.fronted, [tab.parent])
+        tab.driver = None
+
+    def test_a_withdrawn_window_is_not_shown(self):
+        from t5lobby import winfront
+        w = hidden_window(self.root)
+        self.assertFalse(winfront.raise_window(w))
+        self.assertEqual(w.state(), "withdrawn")
+        w.destroy()
 
     def test_the_tests_never_touch_the_real_clipboard(self):
         for name in ("clipboard_clear", "clipboard_append", "clipboard_get"):

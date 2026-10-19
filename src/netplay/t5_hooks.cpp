@@ -77,7 +77,7 @@
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
-namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed); }   /* rb_rand.cpp: the TLS random generator */
+namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
 extern "C" int t5_df_in_fight(void);   /* src/directfight/df_fight.cpp (T5_NET_SCRIPT_FIGHT) */
 extern "C" void t5_df_frame_tick(ppu_context* ctx);   /* src/directfight/df_hooks.cpp: its frame hook, when no wait runs it */
@@ -997,7 +997,7 @@ void reseed(uint32_t seed)
 {
     gcall(kFnMtSeed, seed);
     gcall(kFnSrand, seed ^ 0x5A5A5A5Au);
-    rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu);
+    rb::tls_rand_reseed(g_main_tls, seed ^ 0x3C6EF35Fu, true);   /* and the private streams (stage 27's crowd timers) */
     wr32(0x1008F0C4u, seed ^ 0x00003039u);   /* the scene's LCG (x -> 5x + 3, rb_rand.cpp) */
 }
 
@@ -1051,7 +1051,7 @@ void on_frame_start(ppu_context* ctx)
      * 0x1000F from the first frame). Pinned, the set-up draws the same on both. */
     if (g_main_tls && (g_directfight || g_persistent) && np::enabled() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
         t5_df_mode_cur() == 6)
-        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu);
+        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu, false);   /* the private streams run on (the select's emitters) */
     if (g_offline) { offline_frame(ctx); return; }
     bool fresh_start = false, resume = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */

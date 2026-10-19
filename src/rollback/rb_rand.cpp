@@ -37,19 +37,24 @@
  *
  * The fix (tls_rand_install, tls_rand_reseed):
  *   - the scene draws from the TLS generator as before; every other draw on
- *     the main thread (outside the scene task) comes from a private generator
- *     in host memory, so effects and stage emitters cannot move the scene's
- *     sequence, whenever they run (and a rollback's draw cut, which skips some
- *     of them in re-simulated frames, cannot either);
- *   - netplay reseeds the TLS generator at every sync point (frame 0 of a
- *     session, every scene barrier) from the match seed, like the Twister and
- *     rand(), so the history of the process no longer reaches the match.
+ *     the main thread (outside the scene task) comes from private generators
+ *     in host memory, one per call site (priv_draw, desync hunt 2: stage 27's
+ *     crowd), so effects and stage emitters cannot move the scene's sequence,
+ *     whenever they run (and a rollback's draw cut, which skips some of them
+ *     in re-simulated frames, cannot either);
+ *   - netplay reseeds the TLS generator (and the private streams) at every
+ *     sync point (frame 0 of a session, every scene barrier) from the match
+ *     seed, like the Twister and rand(), so the history of the process no
+ *     longer reaches the match.
  * T5_TLS_RAND=0 turns both off (the old behaviour, for comparisons).
  *
  * Diagnostics: T5_RAND_TRACE=1 counts rand() (0x369228) and TLS-generator calls
  * per thread and caller (rb_rand.log, every 10 s), =2 logs each distinct
  * caller chain of the TLS generator once, =3 per frame how many draws came
- * from inside the fight update (0x15498) and from elsewhere, and the state.
+ * from inside the fight update (0x15498) and from elsewhere, and the state,
+ * =4 every draw of the fight's generator 0xE859C and of the TLS generator
+ * with frame, state, actors and caller chain (rb_lcg.log; docs/NETPLAY.md
+ * "Desync hunt 2").
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -347,7 +352,7 @@ void rand_install()
  * generator of the main thread (its TLS block at tls_base) starts over from the
  * seed -- its state word, and the "seeded" byte cleared, so the next draw fills
  * the table from it as the game's first draw ever did. */
-void tls_rand_reseed(uint32_t tls_base, uint32_t seed)
+void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams)
 {
     if (!g_on || !tls_base || !vm_base) return;
     const uint32_t be = _byteswap_ulong(seed);
@@ -355,7 +360,7 @@ void tls_rand_reseed(uint32_t tls_base, uint32_t seed)
     vm_base[tls_base + kTlsSeeded] = 0;
     memset(vm_base + tls_base + kTlsLast, 0, 4 + 32 * 4);
     (void)kTlsTable;
-    g_site_reseed.store((1ull << 32) | seed, std::memory_order_release);   /* the private streams too (main thread, next draw) */
+    if (streams) g_site_reseed.store((1ull << 32) | seed, std::memory_order_release);   /* the private streams (main thread, next draw) */
 }
 
 uint64_t rand_private_draws() { return g_private_draws.load(); }

@@ -31,6 +31,10 @@ shows where it stands ("Set 1-0 -- game 2 of 3", t5lobby.sets.status_text); betw
 counts down to the next game (it starts by itself) and offers "Leave set" (a loss); the set's result and
 its one rating change come with set_end (t5lobby.sets.result_text).
 
+Tournaments (docs/TOURNAMENTS.md, tk_tour.py): a Tournaments page (list, sign-up, check-in, the bracket, the
+organizer's buttons) and the card "Your tournament set is ready" with Accept (A); the set itself plays like a set
+above.
+
     python -m t5lobby.tk_tab --server 127.0.0.1:7781     # standalone window, stub game (testing)
 """
 import json
@@ -49,7 +53,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_views, winfront
+from . import theme, tk_tour, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -176,6 +180,7 @@ class OnlineTab:
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
+        self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -419,6 +424,7 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._tick_set()
+        self.tours.tick()
         self._show_notice()
         self._pad_tick()
         self.view.tick()
@@ -463,7 +469,8 @@ class OnlineTab:
                         ingame_pick=self._game_can_pick(),
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
-                        port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)))
+                        port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
+                        tournaments=True)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -618,6 +625,7 @@ class OnlineTab:
         self.set_var.set("")
         self.lag = None
         self.notice_var.set("")
+        self.tours.reset()
         self.view.reset()
         self.hide_bar()
         self.match_var.set("")
@@ -801,9 +809,13 @@ class OnlineTab:
     def _on_subtab(self):
         try:
             sel = self.nb.select()
-            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile
+            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile, 3 tournaments
         except tk.TclError:
             return                                         # (the tabs are being destroyed)
+        if tab == 3:
+            self.tours.shown()
+        else:
+            self.tours.page_shown = False
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:
@@ -898,6 +910,8 @@ class OnlineTab:
     def on_event(self, ev):
         kind = ev["t"]
         c = self.client
+        if kind.startswith("tour_") or kind == "match_found":
+            self.tours.on_event(ev)                        # tournaments (tk_tour.py)
         if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()
@@ -967,8 +981,12 @@ class OnlineTab:
             self.set_var.set(sets.status_text(ev.get("set"), ev.get("slot") or 0))
             f = ev.get("fight") or {}
             delay = ev.get("delay") or 0
-            self._match_head = (t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
-                                else t("Casual match vs {name}", name=ev["opponent"]["name"]))
+            if (ev.get("set") or {}).get("tournament"):
+                self._match_head = t("Tournament set vs {name}", name=ev["opponent"]["name"])
+            elif ev.get("ranked"):
+                self._match_head = t("Ranked match vs {name}", name=ev["opponent"]["name"])
+            else:
+                self._match_head = t("Casual match vs {name}", name=ev["opponent"]["name"])
             regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
             self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
                                  ms=f"{ev.get('rtt_ms', 0):.0f}",
@@ -1171,6 +1189,8 @@ class OnlineTab:
             # a ranked set is over: its result and its one rating change, on the last game's result card
             self.set_bar = None
             text = sets.result_text(ev)
+            if ev.get("tournament") and ev.get("status") not in ("confirmed", "forfeit"):
+                text = t("The set has no result; the tournament calls it again or its organizer decides")
             w = ev.get("wins") or [0, 0]
             self.set_var.set(t("Set {mine}-{theirs}", mine=w[0], theirs=w[1]))
             self.status(text + ".")
@@ -1249,9 +1269,15 @@ class OnlineTab:
             self.bar_text.set(self._set_bar_text())
 
     def _leave_set(self):
-        if not self.ask_yes_no(t("Leave the ranked set"),
-                               t("Leave this ranked set?\n\nLeaving a ranked set counts as losing it."),
-                               parent=self.parent):
+        info = self.set_bar[0] if self.set_bar is not None else {}
+        if info.get("tournament"):
+            ok = self.ask_yes_no(t("Leave the tournament set"),
+                                 t("Leave this tournament set?\n\nYou lose the set."), parent=self.parent)
+        else:
+            ok = self.ask_yes_no(t("Leave the ranked set"),
+                                 t("Leave this ranked set?\n\nLeaving a ranked set counts as losing it."),
+                                 parent=self.parent)
+        if not ok:
             return
         self.hide_bar()
         self.set_bar = None

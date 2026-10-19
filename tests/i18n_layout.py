@@ -349,6 +349,17 @@ class Walk:
              "needed_for": "", "install": "Microsoft.VisualStudio.2022.BuildTools"}])
         app.nb.select(app.tabs["build"])
         self.screen("build tools")
+        import core                      # the translation step's quiet hint under the progress bar (two lines)
+        detail = app.detail.get()
+        app.step_state["lift"] = "running"
+        app.cur_step, app.step_t0, app.sub = "lift", time.time() - 260, 0.5
+        app.build = type("B", (), {"events": __import__("queue").Queue(),
+                                   "quiet_hint": lambda _self: core.lift_quiet_hint("lift", 240)})()
+        app._drain_build()
+        self.screen("build quiet hint")
+        app.build, app.cur_step = None, None
+        app.step_state["lift"] = "pending"
+        app.detail.set(detail)
 
     def _online(self):
         app = self.app

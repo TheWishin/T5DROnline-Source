@@ -256,6 +256,12 @@ MESSAGES = {
     "Game files": "ゲームファイル",
     "Sound core": "サウンドコア",
     "Translate code": "コード変換",
+    "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+    "has the details.":
+        "「コード変換」ステップが {minutes} 分間何も出力していません。遅いPCや負荷の高いPCではまだ処理中の場合がありま"
+        "す。変化がなければ他のプログラムを閉じ、キャンセルを押してからもう一度 BUILD GAME を押してください。詳細は "
+        "build.log にあります。",
     "The graphics card stopped working for the game (the driver crashed, was reset or "
     "updated). Start the game again. If it happens again, update the graphics driver.":
         "グラフィックカードがゲームで動作しなくなりました（ドライバーのクラッシュ、リセット、または更新）。ゲームをも"

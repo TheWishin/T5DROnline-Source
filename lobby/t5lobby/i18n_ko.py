@@ -253,6 +253,12 @@ MESSAGES = {
     "Game files": "게임 파일",
     "Sound core": "사운드 코어",
     "Translate code": "코드 변환",
+    "The translation step has printed nothing for {minutes} minutes. On a slow or busy PC it may still be "
+    "working. If nothing changes, close other programs, press Cancel and then BUILD GAME again; build.log "
+    "has the details.":
+        "'코드 변환' 단계가 {minutes}분 동안 아무것도 출력하지 않았습니다. 느리거나 바쁜 PC에서는 아직 작업 중일 수 "
+        "있습니다. 변화가 없으면 다른 프로그램을 닫고 취소를 누른 뒤 BUILD GAME을 다시 누르세요. 자세한 내용은 "
+        "build.log에 있습니다.",
     "The graphics card stopped working for the game (the driver crashed, was reset or "
     "updated). Start the game again. If it happens again, update the graphics driver.":
         "그래픽 카드가 게임에서 작동을 멈췄습니다 (드라이버가 충돌했거나 재설정 또는 업데이트됨). 게임을 다시 시작하세"

@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -104,6 +105,8 @@ DEFAULTS = {
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
+    "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
+    "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
 }
 
 
@@ -192,6 +195,12 @@ class Settings(dict):
                 if self["training_online"]:
                     env["T5_TRAINING_ONLINE"] = "1"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
+        # Unlocks count offline only: a game started for online play answers as a fresh save does,
+        # whatever it is given (both PCs must build the same select screens and stage lists).
+        if self["unlock_stages"]:
+            env["T5_UNLOCK_STAGES"] = "1"
+        if self["unlock_items"]:
+            env["T5_UNLOCK_ITEMS"] = "1"
         for line in self["extra_env"].splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -602,6 +611,44 @@ def explain_exit(code, lines):
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
 
 
+UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS")
+ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE", "T5_FIGHT", "T5_FIGHT_FILE")
+
+
+def is_online_env(env):
+    """A game started for online play (the lobby's persistent game, netplay, direct fight)."""
+    return any(env.get(k) for k in ONLINE_ENV)
+
+
+def saves_dir(out_dir):
+    """Where the game keeps its saves (the runtime's ./gamedata in the output folder)."""
+    return os.path.join(out_dir, "gamedata", "dev_hdd0", "home", "00000001", "savedata")
+
+
+def online_saves_dir(out_dir):
+    """The save folder of games started for online play (PS3_SAVEDATA_DIR; docs/NETPLAY.md "One save for online")."""
+    return os.path.join(out_dir, "gamedata-online", "dev_hdd0", "home", "00000001", "savedata")
+
+
+def backup_saves_once(out_dir, tag):
+    """Copy the save folder to <out>/save-backups/<tag>-<time>/ the first time a feature that changes what the
+    save keeps is used (free items: what is taken stays in the save). Copying it back undoes it. Only once per
+    tag (a marker file); -> the backup folder, or None (nothing to copy, already done, or it failed)."""
+    src = saves_dir(out_dir)
+    root = os.path.join(out_dir, "save-backups")
+    marker = os.path.join(root, f"{tag}.done")
+    if os.path.exists(marker) or not os.path.isdir(src) or not os.listdir(src):
+        return None
+    dst = os.path.join(root, f"{tag}-{datetime.datetime.now():%Y%m%d-%H%M%S}")
+    try:
+        shutil.copytree(src, dst)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(dst + "\n")
+        return dst
+    except OSError:
+        return None
+
+
 class GameRun:
     """The running game: its process, log file and the last fps line."""
 
@@ -619,6 +666,15 @@ class GameRun:
         if monitor_point and "PS3_WINDOW_MONITOR" not in env_over:
             env_over["PS3_WINDOW_MONITOR"] = "%d,%d" % monitor_point   # open on the launcher's monitor
         env_over.update(extra_env or {})
+        if is_online_env(env_over):
+            for k in UNLOCK_ENV:            # the game ignores them online anyway; keep its log and reports plain
+                env_over.pop(k, None)
+            # An online game keeps a save of its own (patches/ps3recomp/0044): both PCs start from the same
+            # fresh save -- the game copies its own OPTIONS (round time, difficulty, ...) and unlocks into the
+            # match state -- and the player's offline save is never read or written by it.
+            env_over.setdefault("PS3_SAVEDATA_DIR", online_saves_dir(self.out))
+        elif env_over.get("T5_UNLOCK_ITEMS"):
+            backup_saves_once(self.out, "free-items")
         cmd, env, cwd = run_game.game_command(self.out, env_over)
         if not os.path.exists(cmd[0]):
             raise FileNotFoundError(t("t5dr.exe is not built yet"))

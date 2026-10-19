@@ -89,6 +89,7 @@ extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
 namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
+extern "C" void t5_unlock_install(void);   /* src/directfight/df_unlock.cpp: unlocks (docs/DIRECTFIGHT.md "Unlocks") */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -1041,6 +1042,7 @@ void on_frame_start(ppu_context* ctx)
 {
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
+    t5_unlock_install();  /* likewise */
     if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
         g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */
     /* Direct fight with a session: while the select mode runs, the TLS generator

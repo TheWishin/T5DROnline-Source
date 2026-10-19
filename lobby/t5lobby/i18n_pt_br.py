@@ -484,6 +484,17 @@ MESSAGES = {
     "in the game.":
         "A imagem é ajustada à janela; a nitidez depende da Resolução interna. Você também pode arrastar as bordas "
         "da janela. Alt+Enter ou F11 alterna a tela cheia sem bordas no jogo.",
+    "Unlocks": "Desbloqueios",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Desbloquear todos os cenários (os do Tekken 5, sem zerar o Arcade)",
+    "Unlock all customization items (free in the item shop)":
+        "Desbloquear todos os itens de customização (grátis na ITEM SHOP)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Só offline (Arcade, VS, Practice e o resto). Seu save não muda; os itens que você pegar de graça "
+        "continuam seus (o save é copiado antes, em save-backups). Online, os dois jogadores sempre têm os "
+        "mesmos cenários e os trajes padrão.",
     "Sound and start": "Som e início",
     "Mute sound": "Silenciar som",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sem pegar o foco (para testes)",
@@ -531,10 +542,11 @@ MESSAGES = {
     "Keyboard": "Teclado",
     "Xbox controller": "Controle Xbox",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "O teclado e o primeiro controle XInput controlam o jogador 1 (são combinados). O teclado só vale enquanto a "
-        "janela do jogo tem o foco. O layout de botões dentro do jogo muda no próprio menu Options dele.",
+        "janela do jogo tem o foco. O menu Options do próprio jogo pode mudar o layout de botões para jogar "
+        "offline; partidas online usam só os botões do launcher.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "

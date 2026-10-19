@@ -491,6 +491,17 @@ MESSAGES = {
     "in the game.":
         "L'image est mise à l'échelle de la fenêtre ; sa netteté dépend de la Résolution interne. Tu peux aussi "
         "tirer les bords de la fenêtre. Alt+Entrée ou F11 bascule en plein écran sans bordure en jeu.",
+    "Unlocks": "Déblocages",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Débloquer tous les stages (ceux de Tekken 5, sans finir le mode Arcade)",
+    "Unlock all customization items (free in the item shop)":
+        "Débloquer tous les objets de personnalisation (gratuits dans l'ITEM SHOP)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Hors ligne seulement (Arcade, VS, Practice et le reste). Ta sauvegarde n'est pas modifiée ; les objets "
+        "que tu prends gratuitement restent à toi (la sauvegarde est d'abord copiée, dans save-backups). En "
+        "ligne, les deux joueurs ont toujours les mêmes stages et les costumes par défaut.",
     "Sound and start": "Son et démarrage",
     "Mute sound": "Couper le son",
     "Start minimized, without taking focus (for testing)": "Démarrer réduit, sans prendre le focus (pour les tests)",
@@ -540,11 +551,11 @@ MESSAGES = {
     "Keyboard": "Clavier",
     "Xbox controller": "Manette Xbox",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "Le clavier et la première manette XInput contrôlent tous deux le joueur 1 (ils sont combinés). Le clavier "
-        "ne compte que quand la fenêtre du jeu a le focus. La disposition des boutons dans le jeu se change dans son "
-        "propre menu Options.",
+        "ne compte que quand la fenêtre du jeu a le focus. Le menu Options du jeu peut changer la disposition des "
+        "boutons pour jouer hors ligne ; en ligne, seuls les boutons du launcher comptent.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "

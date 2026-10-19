@@ -520,6 +520,17 @@ MESSAGES = {
         "Das Bild wird auf das Fenster skaliert; wie scharf es ist, hängt von der internen "
         "Auflösung ab. Du kannst auch an den Rändern des Fensters ziehen. Alt+Enter oder F11 "
         "schaltet im Spiel auf randloses Vollbild um.",
+    "Unlocks": "Freischaltungen",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "Alle Stages freischalten (die Tekken-5-Stages, ohne den Arcade-Modus durchzuspielen)",
+    "Unlock all customization items (free in the item shop)":
+        "Alle Customize-Items freischalten (gratis im Item-Shop)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "Nur offline (Arcade, VS, Practice und der Rest). Dein Spielstand wird nicht verändert; Items, die du dir "
+        "gratis nimmst, bleiben dir (der Spielstand wird vorher gesichert, in save-backups). Online bekommen beide "
+        "Spieler immer dieselben Stages und die Standard-Kostüme.",
     "Sound and start": "Ton und Start",
     "Mute sound": "Ton aus",
     "Start minimized, without taking focus (for testing)": "Minimiert starten, ohne den Fokus zu nehmen (zum Testen)",
@@ -570,11 +581,12 @@ MESSAGES = {
     "Keyboard": "Tastatur",
     "Xbox controller": "Xbox-Controller",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "Tastatur und der erste XInput-Controller steuern beide Spieler 1 (sie werden "
-        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Die "
-        "Tastenbelegung im Spiel änderst du im Options-Menü des Spiels.",
+        "zusammengelegt). Die Tastatur gilt nur, solange das Spielfenster den Fokus hat. Das "
+        "Options-Menü des Spiels kann die Tastenbelegung für das Spielen offline ändern; online "
+        "gelten nur die Tasten aus dem Launcher.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "

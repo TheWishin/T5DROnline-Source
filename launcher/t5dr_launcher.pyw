@@ -552,6 +552,23 @@ class App(tk.Tk):
         ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
             anchor="w", pady=(2, 0))
 
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
+        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
+        unl.pack(fill="x", pady=(6, 0))
+        self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
+        self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
+                        variable=self.unlock_stages_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
+                        variable=self.unlock_items_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+            "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
         # Set the buttons of pads, arcade sticks and hitboxes here instead of editing controls.ini (controls_ui.py)
@@ -578,8 +595,8 @@ class App(tk.Tk):
         tv.pack(fill="x")
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "Keyboard and the first XInput controller both drive player 1 (they are combined). The keyboard "
-            "only counts while the game window has focus. Button layout inside the game can be changed in its "
-            "own Options menu.")).pack(anchor="w", pady=(6, 0))
+            "only counts while the game window has focus. The game's own Options menu can change the button "
+            "layout for offline play; online games use the launcher's buttons only.")).pack(anchor="w", pady=(6, 0))
         ttk.Label(ctl, style="Muted.TLabel", wraplength=860, justify="left", text=t(
             "In this window, on the Online tab, a controller or arcade stick works without mouse or keyboard: "
             "Cross / A accepts a match or rematch and starts a search, Circle / B declines, leaves or stops the "
@@ -997,6 +1014,9 @@ class App(tk.Tk):
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
         self.settings["nickname"] = self.nick_var.get().strip()
         self.settings["low_priority"] = bool(self.lowprio_var.get())
+        if hasattr(self, "unlock_stages_var"):
+            self.settings["unlock_stages"] = bool(self.unlock_stages_var.get())
+            self.settings["unlock_items"] = bool(self.unlock_items_var.get())
         if hasattr(self, "language_var"):
             self.settings["language"] = self.language_var.get()
         self.settings.save()

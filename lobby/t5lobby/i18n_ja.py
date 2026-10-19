@@ -479,6 +479,17 @@ MESSAGES = {
     "in the game.":
         "画面はウィンドウに合わせて拡大縮小され、鮮明さは内部解像度で決まります。ウィンドウの端をドラッグしてサイズを"
         "変えることもできます。ゲーム中は Alt+Enter または F11 でボーダーレス全画面に切り替わります。",
+    "Unlocks": "アンロック",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "全ステージをアンロック（Tekken 5 のステージ、Arcade をクリアしなくても）",
+    "Unlock all customization items (free in the item shop)":
+        "全カスタマイズアイテムをアンロック（ITEM SHOP で無料）",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま"
+        "自分のものになります（先にセーブを save-backups にバックアップします）。オンラインでは両プレイヤーが常に"
+        "同じステージとデフォルトのコスチュームになります。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
@@ -524,11 +535,11 @@ MESSAGES = {
     "Keyboard": "キーボード",
     "Xbox controller": "Xboxコントローラー",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "キーボードと1台目の XInput コントローラーはどちらもプレイヤー1を操作します（合成されます）。キーボードはゲー"
-        "ムウィンドウにフォーカスがあるときだけ有効です。ゲーム内のボタン配置はゲームの Options メニューで変更できます"
-        "。",
+        "ムウィンドウにフォーカスがあるときだけ有効です。ゲーム自体の Options メニューでオフラインプレイ用のボタン配置を"
+        "変更できます。オンライン対戦ではランチャーのボタン設定だけが使われます。",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "

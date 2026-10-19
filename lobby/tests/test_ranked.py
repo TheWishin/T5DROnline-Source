@@ -100,7 +100,7 @@ class FightersTest(unittest.TestCase):
         self.assertNotIn(a[0], ("jinpachi", "panda"))                      # no bosses, nothing unverified
         self.assertEqual(t.fight_env("paul", "law", "s20", 3), "0,1,20,3")
         self.assertEqual((t.fighter("lili")["id"], t.fighter("dragunov")["id"]), (33, 34))   # DIRECTFIGHT.md
-        self.assertEqual([s["id"] for s in t.stages], list(range(17, 35)))
+        self.assertEqual([s["id"] for s in t.stages if not s.get("t5")], list(range(17, 35)))   # + the T5 stages (test_old_stages)
         self.assertFalse(t.valid_fighter("jinpachi"))
 
 

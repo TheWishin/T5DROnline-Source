@@ -112,23 +112,28 @@ def catalog(lang):
     return importlib.import_module("." + CATALOGS[lang], __package__).MESSAGES if lang in CATALOGS else {}
 
 
-def ui_family(default="Segoe UI", families=None):
-    """The font family for texts in the current language: `default` for the languages Segoe UI covers, the
-    installed font of FONTS for Korean and Japanese (`families`: the installed ones; else Tk is asked, which
-    needs a Tk window). `default` when none of them is installed."""
-    names = FONTS.get(_lang)
+def font_of(lang, families=None):
+    """The installed font of FONTS for `lang` (Korean, Japanese), or None (a language Segoe UI covers, or none of
+    them installed). `families`: the installed ones; else Tk is asked (which needs a Tk window)."""
+    names = FONTS.get(canonical(lang) or "")
     if not names:
-        return default
+        return None
     if families is not None:
-        return next((n for n in names if n in families), default)
-    if _fonts.get(_lang) is None:
+        return next((n for n in names if n in families), None)
+    if lang not in _fonts:
         try:
             import tkinter.font as tkfont
             installed = set(tkfont.families())
         except Exception:     # noqa: BLE001 -- no Tk window yet: Tk's own fallback
-            return default
-        _fonts[_lang] = next((n for n in names if n in installed), "")
-    return _fonts[_lang] or default
+            return None
+        _fonts[lang] = next((n for n in names if n in installed), None)
+    return _fonts[lang]
+
+
+def ui_family(default="Segoe UI", families=None):
+    """The font family for texts in the current language: `default` for the languages Segoe UI covers, the
+    installed font of FONTS for Korean and Japanese (`default` when none of them is installed)."""
+    return font_of(_lang, families) or default
 
 
 def language():

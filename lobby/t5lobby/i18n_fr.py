@@ -249,7 +249,7 @@ MESSAGES = {
     "Check & decrypt": "Vérifier et déchiffrer",
     "Key data": "Données de clés",
     "Recompiler": "Recompilateur",
-    "Unpack": "Décompresser",
+    "Unpack": "Extraire",
     "Compile": "Compiler",
     "Game files": "Fichiers du jeu",
     "Sound core": "Moteur audio",

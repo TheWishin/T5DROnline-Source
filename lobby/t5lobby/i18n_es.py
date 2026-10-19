@@ -12,7 +12,7 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 MESSAGES = {
     # ---- launcher/controls_edit.py
     "Attack buttons": "Botones de ataque",
-    "Several buttons with one press (macros)": "Varios botones con una pulsación (macros)",
+    "Several buttons with one press (macros)": "Varios botones a la vez (macros)",
     "Start, Select and the other buttons": "Start, Select y los demás botones",
     "Directions": "Direcciones",
     "1 (Left Punch)": "1 (Puño izquierdo)",
@@ -248,7 +248,7 @@ MESSAGES = {
     "Check & decrypt": "Verificar y descifrar",
     "Key data": "Datos de claves",
     "Recompiler": "Recompilador",
-    "Unpack": "Desempaquetar",
+    "Unpack": "Extraer",
     "Compile": "Compilar",
     "Game files": "Archivos del juego",
     "Sound core": "Núcleo de sonido",

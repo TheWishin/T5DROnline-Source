@@ -13,7 +13,7 @@ Same keys and groups as i18n_de.py; tests/test_i18n.py and tools/i18n_extract.py
 MESSAGES = {
     # ---- launcher/controls_edit.py
     "Attack buttons": "Botões de ataque",
-    "Several buttons with one press (macros)": "Vários botões com um toque (macros)",
+    "Several buttons with one press (macros)": "Vários botões num toque (macros)",
     "Start, Select and the other buttons": "Start, Select e os outros botões",
     "Directions": "Direções",
     "1 (Left Punch)": "1 (Soco esquerdo)",
@@ -240,10 +240,10 @@ MESSAGES = {
         "GAME. Seu jogo descompactado e seus saves continuam; só o código é traduzido e compilado de novo.",
     "Ready: {title_id} v{version}, program SHA-1 {sha}... verified, built {when}.":
         "Pronto: {title_id} v{version}, SHA-1 do programa {sha}... verificado, compilado {when}.",
-    "Check & decrypt": "Verificar e descriptografar",
+    "Check & decrypt": "Verificar e decifrar",
     "Key data": "Dados de chaves",
     "Recompiler": "Recompilador",
-    "Unpack": "Descompactar",
+    "Unpack": "Extrair",
     "Compile": "Compilar",
     "Game files": "Arquivos do jogo",
     "Sound core": "Núcleo de som",

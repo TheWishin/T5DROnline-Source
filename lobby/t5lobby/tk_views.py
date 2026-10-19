@@ -690,7 +690,7 @@ class OnlineView:
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 150, 76, 72, 86, 110, 68), height=6)
+                                       (130, 150, 76, 80, 86, 110, 68), height=6)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -719,14 +719,14 @@ class OnlineView:
         cc.rowconfigure(1, weight=1)
         head, _tools = self.section_head(cc, t("Chat").upper())
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        tab.chat_log = tk.Text(cc, height=10, width=30, state="disabled", wrap="word", font=self.th.fonts["body"],
+        tab.chat_log = tk.Text(cc, height=10, width=26, state="disabled", wrap="word", font=self.th.fonts["body"],
                                bg=C["surface"], fg=C["text"], relief="flat", borderwidth=0, highlightthickness=0,
                                padx=px(2), pady=px(2), cursor="arrow", takefocus=0)
         tab.chat_log.grid(row=1, column=0, sticky="nsew")
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)
-        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry")
+        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=10)   # (it grows with the card)
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
@@ -776,7 +776,7 @@ class OnlineView:
         ttk.Label(card, textvariable=tab.prof_text, style="Card.Muted.TLabel", justify="left").grid(
             row=1, column=1, sticky="w", pady=(px(2), px(8)))
         fr, tab.tv_hist = self.tree(card, ("when", "result", "opponent", "chars", "score", "rating", "status"),
-                                    (110, 60, 120, 180, 60, 64, 170), height=7, image_col=False, select="none")
+                                    (110, 84, 120, 180, 60, 76, 300), height=7, image_col=False, select="none")
         fr.grid(row=2, column=0, columnspan=2, sticky="nsew")
         tab.tv_hist.tag_configure("won", foreground=C["ok"])
         tab.tv_hist.tag_configure("lost", foreground=C["bad"])

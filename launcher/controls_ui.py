@@ -22,13 +22,14 @@ import re
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from collections import namedtuple
 from tkinter import ttk
 
 import controls_edit as ce
 from controls_edit import N_, t  # noqa: F401  (N_ marks texts for translation)
 from controls_edit import DeviceRef
-from t5lobby import dialogs, padmap, padnav
+from t5lobby import dialogs, padmap, padnav, theme
 from t5lobby.i18n import ui_family
 from t5lobby.padmap import DINPUT, XINPUT
 
@@ -265,6 +266,11 @@ def _kind_name(kind):
     return t("Xbox pad (XInput)") if kind == XINPUT else t("DirectInput controller")
 
 
+def game_button_name(slot):
+    """A game button's name in the player's language; L1, R2, 1+2 ... are the same in every language (not texts)."""
+    return slot.label if slot.label == slot.key else t(slot.label)
+
+
 class ControlsDialog:
     """The Controls window. `sources` / `foreground` / `clock` / `thread=False` / `ask` / `path` let a test run it
     with fake controllers and no real devices."""
@@ -314,26 +320,42 @@ class ControlsDialog:
             self._after = self.top.after(33, self._tick)
 
     # ---------------------------------------------------------------- layout
+    def px(self, v):
+        """Pixels at this DPI: the window, its columns and wrap lengths grow with Windows' display scaling."""
+        return int(round(v * theme.scale_of(self.top)))
+
+    def chars(self, texts):
+        """A Combobox width (in average characters) that shows the longest of `texts` in any language (a Korean or
+        Japanese character is about two average ones wide)."""
+        try:
+            f = tkfont.nametofont("TkTextFont", root=self.top)
+            return int(max(f.measure(x) for x in texts) / max(1, f.measure("0"))) + 3
+        except (tk.TclError, ValueError):
+            return max(len(x) for x in texts) + 2
+
     def _build(self):
-        top = self.top
+        top, px = self.top, self.px
         top.title(t("Controls - T5DR Online"))
-        top.minsize(880, 640)
+        sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+        w, h = min(px(1040), sw - 40), min(px(880), sh - 80)      # (room for the longer languages)
+        top.minsize(min(px(880), w), min(px(640), h))
         try:                                # over the launcher's window, not at the corner of the screen
-            top.geometry("980x720+%d+%d" % (max(self.app.winfo_rootx() + 30, 0), max(self.app.winfo_rooty() + 30, 0)))
+            top.geometry("%dx%d+%d+%d" % (w, h, max(self.app.winfo_rootx() + 30, 0),
+                                          max(self.app.winfo_rooty() + 30, 0)))
         except tk.TclError:
-            top.geometry("980x720")
+            top.geometry("%dx%d" % (w, h))
         top.columnconfigure(0, weight=1)
         top.rowconfigure(2, weight=1)
         ttk.Label(top, text=t("Controls"), style="H1.TLabel").grid(row=0, column=0, sticky="w", padx=16, pady=(12, 0))
         self.intro_var = tk.StringVar(value=t(
             "Press a button on a controller to pick it, then set its buttons. The game reads the file when it starts."))
-        ttk.Label(top, textvariable=self.intro_var, style="Muted.TLabel", wraplength=900, justify="left").grid(
+        ttk.Label(top, textvariable=self.intro_var, style="Muted.TLabel", wraplength=px(900), justify="left").grid(
             row=1, column=0, sticky="we", padx=16, pady=(0, 6))
 
         body = ttk.Frame(top)
         body.grid(row=2, column=0, sticky="nsew", padx=12)
         body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2, minsize=380)
+        body.columnconfigure(1, weight=2, minsize=px(380))
         body.rowconfigure(1, weight=1)
 
         # --- players
@@ -345,12 +367,12 @@ class ControlsDialog:
         for col, head, w, stretch in (("lamp", "", 28, False), ("player", t("Player"), 80, False),
                                       ("device", t("Controller"), 380, True), ("state", t("Pressed now"), 320, True)):
             self.tv_players.heading(col, text=head)
-            self.tv_players.column(col, width=w, stretch=stretch, anchor="center" if col == "lamp" else "w")
+            self.tv_players.column(col, width=px(w), stretch=stretch, anchor="center" if col == "lamp" else "w")
         self.tv_players.tag_configure("lit", foreground=COLORS["ok"])
         self.tv_players.tag_configure("none", foreground=COLORS["muted"])
         self.tv_players.grid(row=0, column=0, sticky="we")
         self.tv_players.bind("<<TreeviewSelect>>", self._on_player_select)
-        self.pad_note = ttk.Label(pl, style="Muted.TLabel", wraplength=900, justify="left")
+        self.pad_note = ttk.Label(pl, style="Muted.TLabel", wraplength=px(900), justify="left")
         self.pad_note.grid(row=1, column=0, sticky="w", pady=(4, 0))
         # the controller moves through this window (Up / Down, Cross, ...); off: it only lights the lamps
         self.pad_var = tk.BooleanVar(value=True)
@@ -368,15 +390,15 @@ class ControlsDialog:
         self.tv.heading("#0", text=t("Game button"))
         self.tv.heading("buttons", text=t("Controller button"))
         self.tv.heading("note", text="")
-        self.tv.column("#0", width=210, stretch=False)
-        self.tv.column("buttons", width=170)
-        self.tv.column("note", width=90, stretch=False)
+        self.tv.column("#0", width=px(280), stretch=False)        # (wide enough for every language)
+        self.tv.column("buttons", width=px(160))
+        self.tv.column("note", width=px(80), stretch=False)
         self.tv.tag_configure("live", background=COLORS["live"])
         self.tv.tag_configure("own", foreground=COLORS["warn"])
         for gid, glabel in ce.SLOT_GROUPS:
             self.tv.insert("", "end", iid="g:" + gid, text=t(glabel), open=True)
         for s in ce.SLOTS:
-            self.tv.insert("g:" + s.group, "end", iid=s.key, text=t(s.label), values=("-", ""))
+            self.tv.insert("g:" + s.group, "end", iid=s.key, text=game_button_name(s), values=("-", ""))
         sb = ttk.Scrollbar(bt, orient="vertical", command=self.tv.yview)
         self.tv.configure(yscrollcommand=sb.set)
         self.tv.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
@@ -384,16 +406,16 @@ class ControlsDialog:
         self.tv.bind("<Double-1>", lambda _e: self.set_selected())
         self.tv.bind("<Return>", lambda _e: self.set_selected())
         self.tv.bind("<Delete>", lambda _e: self.clear_selected())
-        row = ttk.Frame(bt)
+        row = ttk.Frame(bt)                 # two rows of two: narrow enough in every language
         row.grid(row=2, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.btn_all = ttk.Button(row, text=t("Set up all buttons"), command=self.start_all)
-        self.btn_all.pack(side="left")
+        self.btn_all.grid(row=0, column=0, sticky="we")
         self.btn_dirs = ttk.Button(row, text=t("Set up directions"), command=self.start_directions)
-        self.btn_dirs.pack(side="left", padx=6)
+        self.btn_dirs.grid(row=0, column=1, sticky="we", padx=(6, 0))
         self.btn_one = ttk.Button(row, text=t("Set selected"), command=self.set_selected)
-        self.btn_one.pack(side="left")
+        self.btn_one.grid(row=1, column=0, sticky="we", pady=(4, 0))
         self.btn_clear = ttk.Button(row, text=t("Clear"), command=self.clear_selected)
-        self.btn_clear.pack(side="left", padx=6)
+        self.btn_clear.grid(row=1, column=1, sticky="we", padx=(6, 0), pady=(4, 0))
 
         # --- options
         op = ttk.Frame(body)
@@ -404,12 +426,13 @@ class ControlsDialog:
         lay.columnconfigure(0, weight=1)
         self.preset_var = tk.StringVar()
         self.preset_box = ttk.Combobox(lay, textvariable=self.preset_var, state="readonly",
-                                       width=max(len(t(ce.recipe_title(r, k))) for r in ce.RECIPES
-                                                 for k in r.specs) + 2)
+                                       width=self.chars([t(ce.recipe_title(r, k)) for r in ce.RECIPES
+                                                         for k in r.specs]))
         self.preset_box.grid(row=0, column=0, sticky="we")
         self.preset_box.bind("<<ComboboxSelected>>", lambda _e: self._show_preset_text())
         self.preset_text = tk.StringVar()
-        ttk.Label(lay, textvariable=self.preset_text, style="Muted.TLabel", wraplength=330, justify="left").grid(
+        ttk.Label(lay, textvariable=self.preset_text, style="Muted.TLabel", wraplength=px(330),
+                  justify="left").grid(
             row=1, column=0, sticky="w", pady=(4, 4))
         r2 = ttk.Frame(lay)
         r2.grid(row=2, column=0, sticky="we")
@@ -422,8 +445,10 @@ class ControlsDialog:
         sc.grid(row=1, column=0, sticky="we", pady=(6, 0))
         self.scope_var = tk.StringVar(value=ce.SCOPE_MODEL)
         self.scope_btns = {}
+        ttk.Style(top).configure("W360.TRadiobutton", wraplength=px(360))     # (long in some languages)
         for scope in (ce.SCOPE_MODEL, ce.SCOPE_KIND, ce.SCOPE_PORT):
-            b = ttk.Radiobutton(sc, text="", value=scope, variable=self.scope_var, command=self._on_scope)
+            b = ttk.Radiobutton(sc, text="", value=scope, variable=self.scope_var, command=self._on_scope,
+                                style="W360.TRadiobutton")
             b.pack(anchor="w")
             self.scope_btns[scope] = b
 
@@ -443,11 +468,11 @@ class ControlsDialog:
                 (t("Opposite directions"), self.socd_var, self.socd_opts, self._on_socd))):
             ttk.Label(pt, text=label).grid(row=r, column=0, sticky="w", pady=2, padx=(0, 6))
             box = ttk.Combobox(pt, textvariable=var, values=[o[1] for o in opts], state="readonly",
-                               width=max(len(o[1]) for o in opts) + 2)
+                               width=self.chars([o[1] for o in opts]))
             box.grid(row=r, column=1, sticky="we", pady=2)
             box.bind("<<ComboboxSelected>>", lambda _e, c=cmd: c())
             setattr(self, ("player", "stick", "socd")[r] + "_box", box)
-        ttk.Label(pt, style="Muted.TLabel", wraplength=340, justify="left", text=t(
+        ttk.Label(pt, style="Muted.TLabel", wraplength=px(340), justify="left", text=t(
             "Left stick, 8-way d-pad: a hitbox or stick in left-stick mode sends the direction as a stick; the "
             "game then reads it as d-pad presses. Left+Right (or Up+Down) at once happens on keyboards and "
             "hitboxes; the game cannot take both. Stick and opposite directions belong to the player's port.")).grid(
@@ -474,7 +499,7 @@ class ControlsDialog:
         bar.grid(row=4, column=0, sticky="we")
         bar.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="")
-        self.status_lbl = ttk.Label(bar, textvariable=self.status_var, style="Muted.TLabel", wraplength=640,
+        self.status_lbl = ttk.Label(bar, textvariable=self.status_var, style="Muted.TLabel", wraplength=px(640),
                                     justify="left")
         self.status_lbl.grid(row=0, column=0, sticky="w")
         self.btn_save = ttk.Button(bar, text=t("Save"), command=self.do_save)
@@ -526,7 +551,7 @@ class ControlsDialog:
         return sel[0] if sel and sel[0] in ce.SLOT_BY_KEY else None
 
     def slot_label(self, key):
-        return t(ce.SLOT_BY_KEY[key].label)
+        return game_button_name(ce.SLOT_BY_KEY[key])
 
     # ---------------------------------------------------------------- the loop
     def _tick(self):

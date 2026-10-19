@@ -789,9 +789,13 @@ than 60: a game that "speeds up again" was slow before and got its 60 back.
 On a laptop or a Windows handheld (ROG Ally, Legion Go, MSI Claw and other
 Steam Deck-style PCs) the usual cause is **power or heat**: the processor
 runs fast at first, gets hot or reaches its power limit after a few minutes,
-and lowers its clock until the game misses frames. On a handheld or a laptop
-with an AMD/Intel APU the processor and the graphics share one power budget
-(15-30 W), so everything the processor wastes is taken from both.
+and lowers its clock until the game misses frames. On a handheld, a laptop
+or a mini PC with an AMD/Intel APU (processor and graphics on one chip, e.g.
+Radeon 780M) the processor and the graphics share one power budget (15-65
+W), so everything the processor wastes is taken from both. On 8-core
+processors with 16 threads the game used to busy-wait on several threads,
+which slowed its own main thread on the same cores; since 1.1.3 it does
+not (on every PC, power saving or not).
 
 - **Power saving** (launcher **Settings -> Power saving**, default **Auto**):
   the game stops busy-waiting and uses fewer helper threads, so the processor

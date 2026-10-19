@@ -183,7 +183,7 @@ index 80b8e6f..ad0fa13 100644
  
  /* Store graphics handler callback */
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e53cadc..acf0eba 100644
+index e53cadc..3ab9e6f 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -54,6 +54,7 @@ void rsx_pf_stamp(int slot)
@@ -329,20 +329,22 @@ index e53cadc..acf0eba 100644
      for (;;) {
          if (ld_vjob_try_run(s)) continue;
          /* idle: spin briefly (draws arrive every few microseconds while a
-@@ -7085,13 +7170,21 @@ static int ld_vjob_enabled(void)
+@@ -7085,13 +7170,23 @@ static int ld_vjob_enabled(void)
          getenv("LD_TRACE_PSO") || getenv("LD_FORCE_VA"))
          return 0;
      /* Workers by the processors this process may use (host_sched_cpus):
 -     * 3 from 12 up (as measured for 0023), fewer below -- on 4 logical
-+     * 3 from 24 up (as measured for 0023 at 32), fewer below -- on 4 logical
++     * 3 from 24 up (as measured for 0023 at 32), one below -- on 4 logical
       * processors three spinning workers took CPU from the skinning jobs and
 -     * the walker they serve. */
-+     * the walker they serve, and on 8 cores with SMT (16) three workers
-+     * spinning 2,000 PAUSEs past every walk took 0.27 of a processor, on the
-+     * walker's own cores' siblings (patch 0047; was: 3 and 2,000 from 12). */
++     * the walker they serve; on 8 cores with SMT (16) three workers spinning
++     * 2,000 PAUSEs past every walk took 0.54 of a processor and two with 300
++     * still 0.33-0.37 (4,400 wake-ups a second), one 0.19, with the same
++     * translation time (patch 0047: walk 3.0-3.6 ms with one, 3.4-3.5 with
++     * two; was 3 and 2,000 from 12, 2 from 8). */
      const int cpus = host_sched_cpus();
 -    int n = cpus >= 12 ? 3 : cpus >= 8 ? 2 : 1;
-+    int n = cpus >= 24 ? 3 : cpus >= 8 ? 2 : 1;
++    int n = cpus >= 24 ? 3 : 1;
 +    g_vj_spin = cpus >= 24 ? 2000 : 300;
 +    /* Power saving (patch 0047, host_sched_laptop): one worker, and the short
 +     * spin that only bridges the gaps between two draws of a walk -- the 2,000
@@ -355,7 +357,7 @@ index e53cadc..acf0eba 100644
      if (n < 1) return 0;
      if (n > 16) n = 16;
      g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
-@@ -7103,8 +7196,9 @@ static int ld_vjob_enabled(void)
+@@ -7103,8 +7198,9 @@ static int ld_vjob_enabled(void)
          if (h) { SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL); CloseHandle(h); started++; }
      }
      g_vj_threads = started;
@@ -367,7 +369,7 @@ index e53cadc..acf0eba 100644
      return started > 0;
  }
  
-@@ -10757,6 +10851,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -10757,6 +10853,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          g_ld_frame_wait = g.swap->lpVtbl->GetFrameLatencyWaitableObject(g.swap);
          fprintf(stderr, "[pacing] max frame latency %u (waitable swap chain)\n", latency);
      }
@@ -422,7 +424,7 @@ index 409182a..d833f08 100644
          s_state.title_frames = s_state.frame_count;
          s_state.title_time = now;
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index bc176ff..5f7be79 100644
+index bc176ff..0ee0df5 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -39,12 +39,24 @@
@@ -439,7 +441,7 @@ index bc176ff..5f7be79 100644
 - *                             1], PS3_SCHED_SUBMS) -- see host_sched_cpus()
 + *                             affinity mask: SPURS_JOB_THREADS [n/2, max 12;
 + *                             power saving max 6], RSX_VERTEX_THREADS [3 from
-+ *                             24, 2 from 8, else 1; power saving 1],
++ *                             24, else 1 (2 from 8 before patch 0047)],
 + *                             PS3_SCHED_SUBMS) -- see host_sched_cpus()
 + *   PS3_LAPTOP=1|0|auto       power saving (patch 0047, host_sched.h) [auto:
 + *                             on with a battery, battery saver, the Power

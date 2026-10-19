@@ -589,3 +589,165 @@ Only host pixels change, so the two players may choose different steps:
   and a build, the pair at below-normal priority.)
 - Lockstep, host **1440p** vs joiner **Lower**, RTT 30 ms, 1 % loss: 0
   mismatching, the same result hash `93f6b16c9bdd829d` on both sides.
+
+## Laptops, handhelds and 8-core APUs (patch 0047, branch `laptop-perf`)
+
+Two player reports: an HP Omen 15 (2017, i7-7700HQ, GTX 1050/1060 with
+Optimus) where "the game goes faster but then goes slow", and a Zen 4 APU
+(8 cores / 16 threads, Radeon 780M; first thought a handheld, then a mini PC
+at 65 W) at 40-52 fps in fights at 720p, 1080p and 4K alike, menus at 60.
+The game's speed is its frame rate (one game frame per vblank, like the
+PS3), so both are frames that miss their vblank: the CPU side of a frame
+(the game, then the render translation) took longer than 16.7 ms. On a
+laptop that happens when heat or the power limit lowers the clock after a
+few minutes; on an APU the CPU and the graphics share one power budget; on
+8 cores with SMT a busy-waiting thread on the sibling of the main thread or
+the walker slows the frame's critical path. In every case the waste around
+the game is what to cut: the game's own work stays what it is.
+
+### Where the CPU went
+
+`tools/fight_bench.py` now prints, per thread, the share of one processor,
+the CPU time per frame and the context switches per second (a thread that
+wakes thousands of times a second keeps its core out of its sleep states;
+`--json` has every number, `--polite` mutes the game and starts it at
+below-normal priority; a kill-on-close job ends the game if the bench is
+killed). Fight Lili vs Asuka on stage 20, P1 pressing buttons. Before patch
+0047, all 32 logical processors (spin mode for sub-ms sleeps), 3.1
+processors for the game:
+
+| thread | share of one processor | context switches/s | what it was doing |
+|---|---|---|---|
+| main | 75 % | 11,300 | the game's frame (~5-8 ms), then polling the flip: `while (cellGcmGetFlipStatus()) usleep(100)` (0x34BA30), each usleep a SwitchToThread spin from 12 processors up |
+| sound core (`spu`) | 58-66 % | 1,300-2,300 | the SPU sound DSP, 187.5 ticks a second: real work |
+| SPURS job threads (11) | 57 % | 3,500 | skinning: ~8 ms of work a frame, ~10 ms with 11 threads |
+| vertex-fetch workers (3) | 54 % (with driver threads) | 3,600 | ~2 ms of work a frame, the rest 2,000 `PAUSE`s after every job |
+| ticker | 27 % | 850 | vblank clock + render translation (~3-4 ms a frame) + present, and a poll through the last millisecond before every tick |
+| pad sampler | 7-9 % | 1,100-1,500 | the 1 ms sampler (with a scripted pad file: a file open per sample; a real pad costs 1-3 %) |
+| audio mixer | 1 % | 1,850 | a 250 us timer poll between blocks (20 wake-ups per 5.33 ms block) |
+
+The D3D12 driver is not where it goes: the walker's own CPU time per frame
+(frame log `fifo_cpu_us`, thread cycles) was 4.0-4.2 ms rendering on this
+PC's integrated Radeon (RDNA2, the 780M's driver family) and 4.0-4.05 ms on
+the RTX 3090 (paired runs on the two CCDs, halves swapped); the iGPU's GPU
+time was 2.8 ms a frame at Native. Nor the GPU: the same fps at 720p and 4K,
+and `[slow-frames]` (below) names the GPU only when the CPU waits for its
+fences.
+
+### What changed
+
+| change | for whom | switch |
+|---|---|---|
+| **The flip wait without the poll**: a usleep under 1 ms right after `cellGcmGetFlipStatus` said WAITING waits for the status to change (WaitOnAddress, woken by the vblank's flip completion), at most 20 ms -- one wake-up a frame instead of 50-100 timer wake-ups, or instead of a processor spinning all frame; the frame starts a few microseconds after its flip instead of up to one poll later. The rollback netcode keeps the plain poll on the main thread (its early rollback looks at the network between two polls: `cellGcm_flip_poll_plain`) | everyone | `PS3_FLIP_WAIT=0` |
+| Vblank ticker: a high-resolution waitable timer to the microsecond next to the FIFO kick event; it used to wait whole milliseconds (up to 1 ms late) and then poll the last millisecond (FIFO walk + GCM pump + message pump per round); now it polls the last 250 us, none with power saving. Two `getenv` per loop round went too | everyone | `PS3_TICKER_SPIN_US=n` |
+| Audio mixer sleeps until its next block is due; it polls every 250 us only while it waits for a block the game writes late (as before) | everyone | -- |
+| Sub-ms sleeps spin (SwitchToThread) only from **24** logical processors up (was 12); 3 vertex workers with 2,000 `PAUSE`s also only from 24, one worker with 300 below (was 3 from 12, 2 from 8: on 16 logical processors two workers cost 0.33-0.37 of a processor and 4,400 wake-ups a second, one 0.19, the walk took the same 3.0-3.6 ms). 8 cores with SMT -- the common gaming CPU -- no longer spin on the siblings of the walker and the main thread | 8-23 logical processors | `PS3_SCHED_SUBMS`, `RSX_VERTEX_THREADS`, `RSX_VERTEX_SPIN` |
+| The frame-latency wait before a vsync'd present never runs past the game's next vblank tick (was: up to 20 ms on the ticker, i.e. on the game's clock) | displays that are not 59/60 Hz, VSync on | -- |
+| **Power saving** (`PS3_LAPTOP`, launcher **Settings -> Power saving: Auto / On / Off**): sub-ms sleeps on the timer, no ticker poll, one vertex worker with the short spin, at most 6 SPURS job threads, background threads (audio device, PSO writer ...) on EcoQoS. The game, its 60 fps, the 1 ms pad sampling and the tap latch are unchanged | Auto: a battery (laptop, handheld), battery saver or the Power saver plan on, a mobile processor by name (Ryzen ...U/H/HS/HX, Ryzen Z1/Z2/AI, Core ...U/H/HQ/HX/P/Y/G7, Core Ultra, N100 ...), or the renderer on integrated graphics (D3D12 UMA: an APU, whose CPU and GPU share one power budget) | `PS3_LAPTOP=1/0/auto` |
+| Display lock (patch 0034): every DWM sample is checked, not only the once-a-second one; a period outside 59.3-60.7 Hz or no clock three samples in a row turns the lock off at once (it used to follow a bad period for up to a second); three such drops in 30 s keep it off for a minute; the tick period is never shorter than 1/60 s | 59/60 Hz displays | `PS3_DISPLAY_LOCK=0` |
+| Diagnostics: `[sched] power saving on/off (why)`, `[power]` (AC/battery, plan, processor clock limit), `[gpu] adapter: ... integrated/dedicated`, `[gpu] display: ...` (which adapter drives the window's screen: a laptop with two GPUs copies every frame across, "hybrid present"), every 30 s with slow frames a `[slow-frames]` line (below); the window title says "power saving" | everyone | `PS3_SLOW_FRAMES=0` |
+
+The game never runs faster than 60: its clock is the ticker's (59.94 Hz, or
+a 59/60 Hz display's own with the display lock); after a stall the ticker
+fires each missed vblank once, which can only lose game time, and the
+`[slow-frames]` line reports the clock's rate over the window (`vblank clock
+59.94 Hz`, flagged above 60.05). "Faster, then slow" on a laptop is a game
+that ran at 60 and then lost frames to heat or the power limit.
+
+On a "59 Hz" display with the display lock, `N of M frames late for their
+vblank` counts frames whose release-to-present took longer than the lock's
+lead; with the lead at its maximum (16.48 ms) every frame over 16.5 ms is
+"late", even one that still makes the next vblank tick. Nearly all frames
+late (2,485 of 2,495 in the APU log) is the symptom of a CPU-bound frame,
+not a cause: the lock costs no throughput (the guest's flip completes on the
+first tick after its translation, with or without it).
+
+### `[slow-frames]`
+
+    [slow-frames] last 30 s: 1381 frames, 495 slow (over 20.9 ms): CPU 479 (game 401, render
+    translation 25, vblank thread late 53), GPU 0, present 16; median per frame: game 7.4 ms,
+    translation 0.3, GPU wait 0.0, present 0.4; worst 250.1 ms (CPU, game); vblank clock 59.95 Hz |
+    on AC power (no battery: a desktop PC), power plan "Ausbalanciert", processor clock limit 4501 of 4501 MHz
+
+A frame is slow when it was shown more than 1.25 vblanks after the one
+before. Its reason is what took its time: **CPU, game** (the game's frame
+from its release by the vblank to its flip request: game logic, skinning,
+command building), **CPU, render translation** (flip request -> the walker
+reached the flip), **CPU, vblank thread late** (the tick that released the
+frame came more than 2 ms late: the ticker got no processor), **GPU** (the
+CPU waited for GPU fences for 30 % of the frame or more) or **present**
+(the present call, including the frame-latency wait, took 4 ms or more: a
+display path through another GPU, a compositor). The power part is read
+each time, so heat or a battery that lowers the clock limit shows up next
+to the slow frames. Every 5 minutes without slow frames there is a quiet
+line. "Report a problem" puts the last few of these lines, the power
+source, plan and power mode, the processor clock limit and Windows' thermal
+zone temperatures (where the PC has a sensor Windows reads) into
+`system.txt`.
+
+### Two GPUs
+
+Checked on this PC, whose screen hangs off the RTX 3090 and which also has
+the 7950X's integrated Radeon: `RSX_ADAPTER=radeon` renders on the iGPU and
+every frame is copied to the other GPU for the screen, the hybrid present of
+an Optimus laptop the other way round. The log says `[gpu] adapter: AMD
+Radeon(TM) Graphics (... integrated) -- RSX_ADAPTER`, `[sched] power saving
+on (integrated graphics (AMD Radeon(TM) Graphics) share the processor's
+power budget)`, `[gpu] display: the window's screen is driven by NVIDIA
+GeForce RTX 3090, the game renders on AMD Radeon(TM) Graphics -- every frame
+is copied between the two GPUs`; the display lock stayed on (the DWM clock
+is the screen's), present median 0.4 ms, no slow frame classed GPU or
+present beyond the load's. The exports `NvOptimusEnablement` /
+`AmdPowerXpressRequestHighPerformance` and the high-performance adapter
+choice are unchanged; the per-app choice in Windows' Graphics settings still
+wins over both.
+
+### Results
+
+Paired runs: two games at the same time on the two CCDs of this PC (logical
+processors 0-15 and 16-31, 8 cores with SMT each -- the APU's layout), the
+halves swapped for the second round, `tools/fight_bench.py --polite`
+(muted, below-normal priority), window fight start +24..42 s. Other agents'
+games kept 20-30 of the 32 processors busy all the time, so fps below 60 is
+the load's; CPU time and wake-ups per frame are the comparison that holds.
+"Before" is the series to 0042 (main 932b1c9), "default" this patch with
+power saving off (what a desktop gets), "power saving" with it on.
+
+| logical processors | build | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU (processors) | CPU ms per frame | context switches/s | other load |
+|---|---|---|---|---|---|---|---|---|
+| 16 (8c/16t) | before | 59.93 | 197 | 19.1 | 3.14 | 52.4 | 13,187 | 19.7 |
+| 16 | **default** | 59.96 | 198 | 19.1 | **2.21** | **36.8** | 8,260 | 20.5 |
+| 16 | before | 59.37 | 275 | 25.3 | 3.17 | 53.5 | 17,172 | 22.4 |
+| 16 | **power saving** | 59.64 | 258 | 20.5 | **2.30** | **38.7** | 8,302 | 23.2 |
+| 16, more load | before / default (an earlier build with 2 vertex workers) | 54.1 / **59.3** | 451 / 303 | 28.5 / 26.8 | 2.91 / 2.53 | 53.7 / 42.7 | 19,071 / 11,581 | 25 |
+| 4 (2c/4t) | before / power saving | 26.3 / 29.6 | 999 / 996 | 67.4 / 54.0 | 1.58 / 1.64 | 60.2 / 55.8 | 11,260 / 8,029 | 29.7 |
+| 4 (2c/4t) | default / power saving | 28.9 / 29.0 | 979 / 981 | 74 / 100 | **1.59 / 1.57** | 55.7 / 54.0 | 8,388 / 8,160 | 29.5 |
+
+On 16 logical processors the game needs 30 % less CPU for the same 60 fps:
+the main thread 94 % of a processor (3,700 wake-ups a second) -> 42 % (530),
+the vertex workers 60 % (three) -> 18 % (one), the walk the same 3.2-3.7 ms
+(`fifo_cpu_us`). On 4 threads -- the "4-core laptop" stand-in -- the game
+used 1.57-1.64 of its 4 processors (39-41 %) with power saving off or on,
+the frame rate set by the 30 other busy processors; below 8 logical
+processors the defaults of patch 0027 already avoided spinning, so there
+power saving only saves wake-ups (8,400 -> 8,200 a second) and the patch's
+general part the rest (11,300 -> 8,400).
+
+**Input latency** (`tools/latency_test.py --polite`, 30 jab presses each,
+before and default side by side on the two halves, swapped): median press ->
+display vblank 47.9 -> 43.3 ms (29.5 processors busy) and 38.9 -> 38.4 ms (22
+busy); refreshes without a new frame 274 -> 177 and 9 -> 9 of ~1,680. The
+flip now releases the main thread a few microseconds after the vblank
+instead of after the next poll.
+
+**Online.** Power saving is timing only, so the two PCs of a match may
+differ: rollback (default settings, RTT 50 +-5 ms, 3 % loss, host with power
+saving, joiner without, 8 logical processors each), one match of two rounds:
+sync through frame 4199 0 mismatching on both sides, the same result hash
+`02f57cf40b7058e3`, 56 / 525 rollbacks (84 / 2,359 frames re-simulated),
+no decode error or abort. Lockstep (RTT 30 ms, 1 % loss, host without,
+joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
+
+Not tried: a real laptop, handheld or APU (this PC has none), the game's
+fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
+none here; `system.txt` then says so).

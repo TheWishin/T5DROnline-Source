@@ -3,6 +3,27 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## Unreleased (planned for 1.1.3)
+
+### Laptops, handhelds and 8-core APUs (laptop-perf, ps3recomp patch 0047)
+- **Less CPU around the same game.** The main thread no longer polls for the end of its frame (it
+  waited in a busy loop or woke up 50-100 times a frame), the vblank thread no longer polls the
+  last millisecond before every frame, the sound mixer wakes once per audio block instead of 20
+  times, and on processors with 8-23 threads (8 cores with SMT, the common gaming CPU) nothing
+  spins next to the game's main thread any more. On 8 cores / 16 threads a fight needs 30 % less
+  CPU for the same 60 fps (on a busy test PC it went from 54 to 59 fps).
+- **Power saving** (Settings, default Auto): on laptops, handhelds (ROG Ally, Legion Go and
+  similar), mobile processors and integrated graphics the game also uses fewer helper threads and
+  never busy-waits, so the processor stays cooler and keeps its clock. The game itself is the
+  same, online too; the window title says "power saving" when it is on.
+- **The log says why frames are slow.** Every 30 s with slow frames: how many, and whether the
+  processor (the game, the render translation), the graphics or showing the picture took the time,
+  next to the power source, power plan and the processor's clock limit. "Report a problem" adds
+  the power plan, power mode, clock limit and temperature sensors to system.txt, and which
+  graphics chip drives each screen (laptops with two GPUs).
+- The game's clock follows a 59/60 Hz display only while that display's timing makes sense, and
+  never faster than 60 Hz.
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

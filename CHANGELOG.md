@@ -29,6 +29,15 @@ lobby features need the lobby server updated; older launchers keep working with 
   memory ran out. The select screen is now closed and opened again the way the game itself does
   it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
   lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
+- **No more frozen character select before the next match.** On a busy PC the select screen
+  for a new opponent or a character change could stay frozen while loading, for good, until the
+  game was closed ("Rematch / character select hangs"). When the game started, it noted its
+  state at the title screen while the title was still reading a file, and after a fight it put
+  that note back, so the game's file reader waited for a read that never came. The note now
+  leaves the file reader out and is taken only once the title has finished loading. If a select
+  screen ever stops loading anyway, the game closes itself after 10 seconds and the launcher
+  starts a fresh one for the match, instead of a frozen screen (docs/DIRECTFIGHT.md "Select
+  stall after a fight").
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the

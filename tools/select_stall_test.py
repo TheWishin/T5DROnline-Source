@@ -50,6 +50,7 @@ BAD = [
     ("crash", re.compile(r"\[CRASH\]")),
     ("abort", re.compile(r"abort\(\) is called")),
     ("stuck_exit", re.compile(r"STUCK:")),
+    ("bad_fight_line", re.compile(r"no usable T5_FIGHT")),     # a harness error, not the game's
 ]
 RE_FIGHT = re.compile(r"\[df\] frame (\d+): FIGHT START match (\d+)")
 RE_STARTVS = re.compile(r"\[df\] frame (\d+): start VS battle \(func_0004E9DC\(4, 3\)\) from the title mode")
@@ -57,7 +58,7 @@ RE_STAGE = re.compile(r"\[df\] frame (\d+): state stage")
 RE_WAITSEL = re.compile(r"\[df\] frame (\d+): waiting for the select screen \(mode (\d+), select state (\d+)")
 RE_READER = re.compile(r"\[df\] frame (\d+): (boot state of .*|before the restore: .*|the match state areas are back .*|"
                        r"the async reader .*|.*reader.*)")
-CHARS = ["kaz", "hei", "ask", "law", "jin", "xia", "pau", "bry", "nin", "lei", "stv", "hwo"]
+CHARS = ["kaz", "hei", "ask", "law", "jin", "xia", "pau", "bry", "nin", "lei", "ste", "hwo"]
 
 
 def log(msg):

@@ -890,7 +890,7 @@ included); the restart itself 37-60 frames. Seen once in these runs and not a
 restart: a select screen entered from the title after a fight that stayed at
 select phase 1 for good (offline, a heavily loaded PC, pf_off2); the same wait
 is in a main-build log without any restart (build/bo3/runs/e3/p2, 42 s) --
-left for its own investigation.
+the boot-state copy and the game's file reader, fixed in the next section.
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

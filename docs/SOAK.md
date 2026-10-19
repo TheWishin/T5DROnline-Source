@@ -17,6 +17,8 @@ touched.
     python tools/soak/problems.py game.log          # the problem scan of any log, also a player's
     python tools/soak/threads.py PID [seconds]      # per-thread CPU of a running game, with thread names
     python tools/soak/explore.py --exe EXE --dir DIR  # closed-loop explorer (commands in DIR/cmd.txt)
+    python tools/soak/handles.py PID [--save F] [--diff F]  # handle counts by type (a creeping count)
+    python tools/soak/rtt_fight.py --rtt 150 [--jitter 5] <fight_flow_test.py options>  # matches with a round trip
 
 Every game runs minimized without focus (`PS3_WINDOW_BACKGROUND=1`,
 `PAD_NO_KEYBOARD=1`) at below-normal priority; `--mute` adds
@@ -328,6 +330,22 @@ fallback #n)`; `problems.py` counts those lines (`tls`) and the blocks made
 | before (om8, 40 min mixed) | 157 | 9 / 0 | 148 (by the allocator: every thread after the 9th) |
 | every mode (om9: boot, intro, demo, VS, online, survival, practice, gallery, options; then the reload boot) | 59; 15 | 9 / 5; 9 / 3 | 0; 0 |
 | 40 min mixed (om10) | see below | | |
+
+Rollback sync check on that build (om10: the series to 0040 + 0041, main
+59f2cdf), because the later threads' blocks left the rollback's saved range
+(below). Two games on this PC, persistent games, `--mash`, `--polite`:
+
+| run | tool | mode | matches | in sync, same winner and final hash | rollbacks |
+|---|---|---|---|---|---|
+| rb150_om10 | `tools/soak/rtt_fight.py --rtt 150 --jitter 5 --flow persistent --pattern NNR --matches 6` | rollback, round trip measured 149-150 ms, input delay 2 (auto) | 6 (4 new sessions, 2 rematches) | 6 of 6, 0 mismatching frames | 6 807 (16 056 frames re-simulated), 40-99 per 300 frames |
+| ls_om10 | `tools/fight_flow_test.py --env T5_RB_MODE=off --pattern NR --matches 2` | lockstep, delay 2 | 2 | 2 of 2 | -- |
+
+No FIFO stall or resync, no crash or guest fault, 0 shared TLS fallbacks
+(14 blocks made per game: 9 window, 5 stack region). `rtt_fight.py` runs
+`fight_flow_test.py` with `rollback_net_test.py`'s UDP proxy between the
+games (per session: the joiner's peer is a proxy on the host's port + 2,
+the host answers whoever it hears from), since `fight_flow_test.py` itself
+has no round trip.
 
 The first nine blocks are carved in the same order as before, so the boot
 threads (file, draw and geometry request managers, ASync, keyread, ZsAread,

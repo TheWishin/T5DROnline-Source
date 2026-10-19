@@ -26,10 +26,15 @@ Around the matches (docs/RANKED.md, "Tekken 6 style options"):
     lag check     after a match both games report how long they waited for each other; both
                   players get "ping X should mean Y frames behind, it was Z"
     notices       a message from the admin tool reaches every connected client
+
+Friends (docs/ONLINE.md "Friends and invites", accounts only, clients with the "friends" cap): a request the other side
+accepts, a list with who is online / in a match / offline (pushed as it changes), invites to a casual match or
+to the inviter's room that one click accepts. A block ends a friendship.
 """
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import ssl
 import sys
@@ -48,12 +53,12 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "old_stages"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays"]
+            "nat2", "relays", "friends"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -105,6 +110,8 @@ class Player:
         self.blocks = {}                # block key -> {name, guest, since}: players this one never meets again
         self.strict = False             # ranked queue: only opponents within T5L_STRICT_RANGE rating points
         self.set = None                 # the GameSet this player is in (games in a row with one opponent)
+        self.friends = set()            # account ids of this account's friends (guests have none)
+        self.last_invite = 0.0
         if account:
             self.rating = glicko.Rating(account["rating"], account["rd"], account["vol"])
             self.record = [account["wins"], account["losses"], account["draws"]]
@@ -170,6 +177,17 @@ class Challenge:
     def __init__(self, src, dst):
         self.id = "c" + _rid()
         self.src, self.dst = src, dst
+        self.timer = None
+
+
+class Invite:
+    """A friend asked to play: a casual match ("casual") or the inviter's room ("room")."""
+
+    def __init__(self, src, dst, kind, room=None):
+        self.id = "i" + _rid()
+        self.src, self.dst = src, dst
+        self.kind = kind
+        self.room = room
         self.timer = None
 
 
@@ -457,6 +475,9 @@ class LobbyServer:
         self.conns = set()
         self.players = {}          # id -> Player (online or resumable)
         self.by_name = {}          # lower name -> Player
+        self.by_account = {}       # account id -> Player (online or resumable)
+        self.invites = {}          # invite id -> Invite (friends)
+        self._presence = {}        # account id -> (status, activity, name, build, cap): what the friends were last told
         self.sessions = {}         # resume token -> Player
         self.rooms = {}
         self.challenges = {}
@@ -467,6 +488,9 @@ class LobbyServer:
         self.ip_connects = KeyedBuckets(rate=self.cfg.conn_rate, burst=self.cfg.conn_burst)  # new connections per IP
         self.login_fail = KeyedBuckets(rate=1 / 60.0, burst=5)  # failed password logins per IP and per name
         self.registrations = KeyedBuckets(rate=1 / 600.0, burst=3)  # new accounts per IP
+        # password changes and new recovery codes per account, right or wrong: each costs one or two scrypt
+        # runs, and a logged-in account with its own password could otherwise keep the hashing busy for everyone
+        self.pw_ops = KeyedBuckets(rate=1 / 20.0, burst=3)
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
         self.bans = BanList()
         self.dirty = True
@@ -488,7 +512,8 @@ class LobbyServer:
             "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
             "lag_more", "lag_leaves", "notices_sent", "sets_confirmed", "sets_forfeit", "sets_void",
             "set_replays", "punch_retries", "punch_predicted", "relay_upgrades", "relay_regional",
-            "relay_fallbacks"), 0)
+            "relay_fallbacks", "friend_requests", "friendships_made", "friendships_ended", "invites_sent",
+            "invites_accepted"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
         self.ip_bans = []          # [(ip_network, until)] from the database (the admin tool writes them)
         self.name_block = self._load_blocklist(self.cfg.name_blocklist)
@@ -752,10 +777,12 @@ class LobbyServer:
 
     # ------------------------------------------------------------------ dispatch
     PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
-    HEAVY = frozenset(("leaderboard", "profile", "history", "lobby"))
+    HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "set_char", "udp_rtt", "perf",
                        "relay_rtt",
-                       "challenge", "challenge_cancel", "block", "unblock", "leave_set"))
+                       "challenge", "challenge_cancel", "block", "unblock", "leave_set",
+                       "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",
+                       "invite_cancel"))
 
     async def dispatch(self, conn, line):
         """Handle one line; False closes the connection."""
@@ -842,7 +869,11 @@ class LobbyServer:
                 "strict_range": self.cfg.strict_range, "pair_cooldown": self.cfg.pair_cooldown,
                 "set_wins": self.cfg.ranked_set_wins if "sets" in conn.caps else 1,
                 # regional relays: the client measures its UDP round trip to each and reports it (relay_rtt)
-                **({"relays": self.relays.public_list()} if "relays" in conn.caps else {})}
+                **({"relays": self.relays.public_list()} if "relays" in conn.caps else {}),
+                # friends: the limits, for the launcher's texts
+                **({"friend_limits": {"max": self.cfg.max_friends, "per_day": self.cfg.friend_requests_day,
+                                      "invite_seconds": self.cfg.invite_seconds}}
+                   if "friends" in conn.caps else {})}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -966,6 +997,8 @@ class LobbyServer:
             self.store.touch(account["id"])
             for b in self.store.blocks_of(account["id"]):
                 p.blocks[f"a:{b['blocked_id']}"] = {"name": b["blocked_name"], "guest": False, "since": b["created"]}
+            p.friends = self.store.friend_ids(account["id"])
+            self.by_account[account["id"]] = p
         conn.player = p
         self.players[p.id] = p
         self.by_name[name.lower()] = p
@@ -982,6 +1015,7 @@ class LobbyServer:
         if codes:
             reply["recovery_codes"] = codes
         asyncio.get_running_loop().call_soon(self._send_active_notices, p)
+        asyncio.get_running_loop().call_soon(self._send_friends, p)
         return reply
 
     def _take_over(self, conn, p, session):
@@ -1042,6 +1076,8 @@ class LobbyServer:
         key = "name:" + p.name.lower()
         if not self.login_fail.peek_ok(key):
             raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        if not self.pw_ops.take(f"a:{p.account_id}"):
+            raise LobbyError(proto.E_RATE, "too many password changes; wait a minute")
         row = self.store.account_by_id(p.account_id)
         if not await self._pw(check_password, str(msg.get("old", "")), row["pw"]):
             self.login_fail.take(key)
@@ -1084,6 +1120,8 @@ class LobbyServer:
         key = "name:" + p.name.lower()
         if not self.login_fail.peek_ok(key):
             raise LobbyError(proto.E_RATE, "too many failed attempts; wait a few minutes")
+        if not self.pw_ops.take(f"a:{p.account_id}"):
+            raise LobbyError(proto.E_RATE, "too many requests for new codes; wait a minute")
         row = self.store.account_by_id(p.account_id)
         if not await self._pw(check_password, str(msg.get("password", "")), row["pw"]):
             self.login_fail.take(key)
@@ -1103,6 +1141,7 @@ class LobbyServer:
         log.info("resume %s %r", p.id, p.name)
         reply = {"t": "login_ok", "you": p.public(), "token": p.token, "resumed": True}
         asyncio.get_running_loop().call_soon(self._send_active_notices, p)
+        asyncio.get_running_loop().call_soon(self._send_friends, p)
         m = p.match
         if m is not None and m.state == "playing":
             side = m.side(p)
@@ -1259,6 +1298,8 @@ class LobbyServer:
         self._leave_room(p)
         for c in [c for c in self.challenges.values() if p in (c.src, c.dst)]:
             self._end_challenge(c, "cancelled")
+        for inv in [i for i in self.invites.values() if p in (i.src, i.dst)]:
+            self._end_invite(inv, "cancelled")
         m = p.match
         if m is not None and m.state not in ("playing", "done"):
             self.cancel_match(m, "opponent_left", by=p)
@@ -1287,6 +1328,8 @@ class LobbyServer:
             del self.by_name[p.name.lower()]
         if self.by_skel.get(proto.name_skeleton(p.name)) is p:
             del self.by_skel[proto.name_skeleton(p.name)]
+        if p.account_id is not None and self.by_account.get(p.account_id) is p:
+            del self.by_account[p.account_id]
         self.sessions.pop(p.token, None)
         self._leave_queue(p)
         self._leave_room(p)
@@ -1382,6 +1425,8 @@ class LobbyServer:
         d["self"] = me is not None and me.account_id == aid
         if d["self"]:
             d["recovery_codes_left"] = self.store.recovery_left(aid)
+        elif me is not None and me.account_id is not None and me.conn is not None and "friends" in me.conn.caps:
+            d["friend"] = self._friend_relation(me, aid)     # friends | asked | asks | None (the Add friend button)
         return d
 
     async def h_history(self, conn, msg):
@@ -1413,14 +1458,24 @@ class LobbyServer:
                 p.status = "idle"
             self.dirty = True
 
-    @staticmethod
-    def _est_ping(a, b):
-        """Ping between two players as the server can tell before they are connected: each one's
-        UDP round trip to the server, added (the relay path; a direct path is usually shorter).
-        The real peer-to-peer ping is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
+    def _est_ping(self, a, b):
+        """Ping between two players as the server can tell before they are connected -> (ms, known, via).
+
+        The worst the pair can get: the relay path through the best relay, the sum of both players' UDP round
+        trips to it -- this server (`udp_rtt`) or a regional relay both of them measured (`relay_rtt`, clients
+        with the "relays" cap that is up), whichever sum is smaller (via: "main" or the relay's id). A direct
+        path is usually shorter. Two Californians whose round trips to Nuremberg are 150 ms each but 25 ms to
+        a relay in Oregon: about 50 ms, not 300. A pair with a 1.1.0 / 1.1.1 client measured no regional relay:
+        the sum through this server, as before. An unknown round trip to this server counts as 50 ms and makes
+        the estimate `known: false` -- unless a measured regional relay gives one. The real peer-to-peer ping
+        is measured after both accepted (nat.py, `rtt_ms` in match_start)."""
         ra = a.server_rtt if a.server_rtt is not None else 50.0
         rb = b.server_rtt if b.server_rtt is not None else 50.0
-        return ra + rb
+        est, known, via = ra + rb, a.server_rtt is not None and b.server_rtt is not None, RELAY_MAIN
+        regional = self._pair_relays(a, b, own=False)
+        if regional and (regional[0][0] < est or not known):
+            est, known, via = regional[0][0], True, regional[0][1].id
+        return est, known, via
 
     @staticmethod
     def _pair_id(p):
@@ -1448,23 +1503,26 @@ class LobbyServer:
                 for b in q[i + 1:]:
                     if b in taken or b.build_id != a.build_id or self._is_blocked(a, b):
                         continue
-                    ping = self._est_ping(a, b)
+                    ping = self._est_ping(a, b)[0]
+                    wb = now - b.queue_since
+                    # region first: the estimated ping must fit the window of both, which grows while they wait
+                    limit = min(self._ping_limit(wa, mode), self._ping_limit(wb, mode))
+                    if ping > limit:
+                        continue
                     if mode == "ranked":
                         if not self.cfg.ranked_same_ip and self._same_address(a, b):
                             continue                     # one household / one PC: never a ranked pair (alt farming)
                         if self._cooling(a, b, time.monotonic()):
                             continue                     # just played each other: not again within T5L_PAIR_COOLDOWN
-                        wb = now - b.queue_since
                         window = min(self._rating_window(wa), self._rating_window(wb))
-                        limit = min(self._ping_limit(wa), self._ping_limit(wb))
                         dr = abs(a.rating.r - b.rating.r)
-                        if dr > window or ping > limit:
+                        if dr > window:
                             continue
                         if (a.strict or b.strict) and dr > self.cfg.strict_range:
                             continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
-                        score = dr / window + ping / limit
+                        score = dr / window + (ping / limit if limit < math.inf else ping / 1000.0)
                     else:
-                        score = ping
+                        score = ping                     # quick: the closest one within the window
                     if best_score is None or score < best_score:
                         best, best_score = b, score
                 if best is not None:
@@ -1487,9 +1545,16 @@ class LobbyServer:
     def _rating_window(waited):
         return min(800.0, 100.0 + 25.0 * waited)
 
-    @staticmethod
-    def _ping_limit(waited):
-        return min(400.0, 80.0 + 10.0 * waited)
+    def _ping_limit(self, waited, mode="ranked"):
+        """The highest estimated ping a queue pair may have after `waited` seconds (docs/RANKED.md "Matchmaking"):
+        T5L_PING_START ms at first, growing while the player waits, and any ping at all once it has waited
+        T5L_PING_ANY_SECONDS (quick: faster and sooner) -- nobody waits for ever because nobody is near."""
+        c = self.cfg
+        widen, any_s = (c.ping_widen, c.ping_any_seconds) if mode == "ranked" else \
+            (c.quick_ping_widen, c.quick_ping_any_seconds)
+        if any_s > 0 and waited >= any_s:
+            return math.inf
+        return c.ping_start + widen * max(0.0, waited)
 
     async def _tick_queue(self):
         while True:
@@ -1608,20 +1673,24 @@ class LobbyServer:
                               room=prev.room, rematch_of=prev, keep=keep)
         return {"t": "rematch", "match": prev.id, "state": "accepted", "next": m.id}
 
-    def _room_start(self, r):
+    def _room_start(self, r, invited=False):
+        """Two players in the room: their match, with a ready check -- except right after a friend accepted an
+        invite to the room (origin "invite": both have said yes already)."""
         if r.id not in self.rooms or len(r.members) != 2 or r.match is not None or self.draining:
             return
         if any(not q.online or q.match is not None for q in r.members):
             return
         gs = r.set if r.set is not None and r.set.state == "active" and \
             {id(q) for q in r.set.players} == {id(q) for q in r.members} else None
-        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked, origin="room", room=r,
-                                    game_set=gs)
+        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked,
+                                    origin="invite" if invited else "room", room=r, game_set=gs)
 
     def _leave_room(self, p):
         r = p.room
         if r is None:
             return
+        for inv in [i for i in self.invites.values() if i.room is r and i.src is p]:
+            self._end_invite(inv, "cancelled")           # (an invite to a room its owner left)
         p.room = None
         if p.status == "room":
             p.status = "idle"
@@ -1729,10 +1798,13 @@ class LobbyServer:
         m = Match(host, join, ranked, origin, room)
         m.rematch_of = rematch_of.id if rematch_of is not None else None
         self.matches[m.id] = m
+        for inv in [i for i in self.invites.values() if i.src in (host, join) or i.dst in (host, join)]:
+            self._end_invite(inv, "cancelled")          # (playing someone else now)
         self._join_set(m, rematch_of, game_set)
-        skip_ready = origin in ("challenge", "rematch", "set")
-        est = self._est_ping(host, join)
-        ping = {"ms": round(est), "kind": "estimate", "known": host.server_rtt is not None and join.server_rtt is not None}
+        skip_ready = origin in ("challenge", "rematch", "set", "invite")
+        est, known, via = self._est_ping(host, join)
+        # (`via` stays on this server: which relay the estimate went through would hint where a blind opponent lives)
+        ping = {"ms": round(est), "kind": "estimate", "known": known}
         for side, p in enumerate(m.players):
             p.match = m
             p.status = "match"
@@ -1753,7 +1825,7 @@ class LobbyServer:
         self._speed_notice(m)
         self.dirty = True
         self.counters["matches_found"] += 1
-        self.note("match_found", match=m.id, origin=origin)
+        self.note("match_found", match=m.id, origin=origin, ping=round(est), via=via)
         log.info("match %s: %s vs %s (%s%s)", m.id, host.name, join.name, origin, ", ranked" if ranked else "")
         if keep:
             # Both games still run and are connected: same path, same ports, no NAT work.
@@ -2097,13 +2169,19 @@ class LobbyServer:
     # chosen node refuses the session (full) or does not answer, the next one is tried, down to ours.
     def _relay_options(self, m):
         """-> [(sum of both players' round trips in ms, RelayNodeRef or None for ours)], best first."""
+        return self._pair_relays(*m.players, own=self.cfg.relay)
+
+    def _pair_relays(self, a, b, own=True):
+        """The relays two players could be relayed through, best first: [(sum of both round trips in ms, RelayNodeRef
+        or None for this server's own)]. Regional ones only when both clients measured them (the "relays" cap) and
+        the node is up. The relay choice (_relay_options) and the ping estimate (_est_ping) use it."""
         opts = []
-        if self.cfg.relay:
+        if own:
             # (an unknown round trip to us counts as far, so that a measured regional relay can win)
-            opts.append((sum(p.server_rtt if p.server_rtt is not None else 500.0 for p in m.players), 0, None))
-        if all("relays" in getattr(p.conn, "caps", ()) for p in m.players):
+            opts.append((sum(p.server_rtt if p.server_rtt is not None else 500.0 for p in (a, b)), 0, None))
+        if all("relays" in getattr(p.conn, "caps", ()) for p in (a, b)):
             for n in self.relays.usable():
-                ms = [p.relay_rtt.get(n.id) for p in m.players]
+                ms = [p.relay_rtt.get(n.id) for p in (a, b)]
                 if None not in ms:
                     opts.append((sum(ms), 1, n))
         opts.sort(key=lambda o: (o[0], o[1]))
@@ -2950,6 +3028,8 @@ class LobbyServer:
             self._count("blocks_made")
             log.info("%s blocked %s", p.name, shown)
         left = await self._after_block(p, key)
+        if p.account_id is not None and aid is not None:
+            self._unfriend(p.account_id, aid, why="block")    # a block ends a friendship (and its requests)
         return {"t": "blocked", "name": shown, "blocks": len(p.blocks), "left_match": left}
 
     async def _after_block(self, p, key):
@@ -2990,6 +3070,359 @@ class LobbyServer:
         rows = [{"name": b["name"], "guest": b["guest"], "since": b["since"]}
                 for b in sorted(conn.player.blocks.values(), key=lambda b: b["since"])]
         return {"t": "blocks", "rows": rows}
+
+    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends and invites")
+    # Accounts only. A request waits for the other side to accept it and runs out after T5L_FRIEND_REQUEST_DAYS.
+    # Limits: T5L_FRIEND_REQUESTS_DAY requests per account per 24 h, T5L_FRIEND_PENDING waiting at once (sent by
+    # one account, and to one account), T5L_MAX_FRIENDS friends, a declined request again only after
+    # T5L_FRIEND_RETRY_DAYS. A block ends a friendship and the requests between the two; a request to someone who
+    # blocked you is never shown to them (it looks like one nobody answers). The list and its changes go only to
+    # clients with the "friends" cap -- an older launcher gets none of these messages -- and who is online / in a
+    # match / offline is pushed with the lobby broadcasts (friend_status).
+    @staticmethod
+    def _can(p, cap):
+        return p is not None and p.conn is not None and not p.conn.closed and cap in p.conn.caps
+
+    @staticmethod
+    def _need_account(p):
+        if p.account_id is None:
+            raise LobbyError(proto.E_NOT_ALLOWED, "guests cannot have friends; create an account (free)")
+
+    def _account_named(self, name):
+        row = self.store.account(name) if proto.valid_name(name) else None
+        if row is None:
+            raise LobbyError(proto.E_NOT_FOUND, "there is no account with that name")
+        return row
+
+    def _request_since(self):
+        """Requests made before this (unix time) have run out."""
+        return time.time() - self.cfg.friend_request_days * DAY
+
+    @staticmethod
+    def _presence_of(q):
+        """(status, activity) of a player as friends see it: online | in_match | offline, and the lobby status."""
+        if q is None or not q.online:
+            return "offline", None
+        return ("in_match" if q.status in ("match", "playing") else "online"), q.status
+
+    def _invitable(self, viewer, q):
+        """Can `viewer` invite friend `q` now? ok | busy | offline | update (an older launcher) | version."""
+        if q is None or not q.online:
+            return "offline"
+        if not self._can(q, "friends"):
+            return "update"
+        if q.build_id != viewer.build_id:
+            return "version"
+        if q.status not in ("idle", "queue"):
+            return "busy"
+        return "ok"
+
+    def _friend_entry(self, viewer, row):
+        """One friend in a `friends` list, as `viewer` sees it."""
+        q = self.by_account.get(row["id"])
+        status, activity = self._presence_of(q)
+        d = {"name": row["name"], "status": status, "activity": activity, "since": row["since"],
+             "last_seen": row["last_seen"], "invite": self._invitable(viewer, q)}
+        if q is not None:
+            d["rating"] = round(q.rating.r)
+            d.update(q.rank_info())
+        else:
+            d["rating"] = round(row["rating"])
+            d.update(ranks.describe(ranks.RankState(row["tier"], row["ranked_games"], row["tier_since"],
+                                                    row["tier_peak"], row["tier_floor"]), row["rd"], self.rules))
+        return d
+
+    def _friends_msg(self, p):
+        aid = p.account_id
+        since = self._request_since()
+        sent = self.store.requests_sent_since(aid, time.time() - DAY)
+        return {"t": "friends", "friends": [self._friend_entry(p, r) for r in self.store.friends_of(aid)],
+                "incoming": [{"name": r["name"], "time": r["time"]} for r in self.store.incoming_requests(aid, since)],
+                "outgoing": [{"name": r["name"], "time": r["time"]} for r in self.store.outgoing_requests(aid, since)],
+                "max": self.cfg.max_friends, "requests_left": max(0, self.cfg.friend_requests_day - sent)}
+
+    def _send_friends(self, p):
+        """The whole list to `p`: after login and whenever it changed (other than who is online)."""
+        if p is None or p.account_id is None or not self._can(p, "friends"):
+            return
+        p.send(self._friends_msg(p))
+
+    def _send_friends_soon(self, *aids):
+        for aid in aids:
+            asyncio.get_running_loop().call_soon(self._send_friends, self.by_account.get(aid))
+
+    async def h_friends(self, conn, msg):
+        """The friends list: {friends [{name, status, activity, invite, rank ...}], incoming, outgoing, max,
+        requests_left}."""
+        self._need_account(conn.player)
+        return self._friends_msg(conn.player)
+
+    async def h_friend_add(self, conn, msg):
+        """Ask the account `name` to be friends. -> friend_added {name, state: pending | friends} (friends at
+        once when they had asked this player already)."""
+        p = conn.player
+        self._need_account(p)
+        row = self._account_named(str(msg.get("name") or "").strip())
+        tid, name = row["id"], row["name"]
+        if tid == p.account_id:
+            raise LobbyError(proto.E_BAD_REQUEST, "you cannot add yourself")
+        if tid in p.friends:
+            return {"t": "friend_added", "name": name, "state": "friends"}
+        if f"a:{tid}" in p.blocks:
+            raise LobbyError(proto.E_NOT_ALLOWED, "you blocked that player; unblock them first")
+        since = self._request_since()
+        hidden = self.store.is_blocked_by(tid, p.account_id)        # they blocked this player: never shown to them
+        if not hidden and self.store.pending_request(tid, p.account_id, since) is not None:
+            self._befriend(p.account_id, tid)                       # they asked first: this is the answer
+            return {"t": "friend_added", "name": name, "state": "friends"}
+        if self.store.pending_request(p.account_id, tid, since) is not None:
+            return {"t": "friend_added", "name": name, "state": "pending"}     # (asked already: not counted again)
+        if len(p.friends) >= self.cfg.max_friends:
+            raise LobbyError(proto.E_NOT_ALLOWED, f"your friends list is full ({self.cfg.max_friends})")
+        now = time.time()
+        if self.store.requests_sent_since(p.account_id, now - DAY) >= self.cfg.friend_requests_day:
+            raise LobbyError(proto.E_RATE, f"you can send {self.cfg.friend_requests_day} friend requests a day; "
+                                           "try again tomorrow")
+        if len(self.store.outgoing_requests(p.account_id, since)) >= self.cfg.friend_pending:
+            raise LobbyError(proto.E_NOT_ALLOWED, f"{self.cfg.friend_pending} of your friend requests are waiting "
+                                                  "for an answer; cancel some first")
+        declined = self.store.last_declined(p.account_id, tid)
+        if declined is not None and now - declined < self.cfg.friend_retry_days * DAY:
+            days = max(1, int(-(-(declined + self.cfg.friend_retry_days * DAY - now) // DAY)))
+            raise LobbyError(proto.E_NOT_ALLOWED, f"{name} declined your last request; you can ask again in "
+                                                  f"{days} day(s)")
+        if not hidden and len(self.store.incoming_requests(tid, since)) >= self.cfg.friend_pending:
+            raise LobbyError(proto.E_BUSY, "that player has too many friend requests waiting")
+        self.store.add_friend_request(p.account_id, tid, now)
+        self._count("friend_requests")
+        log.info("%s asked %s to be friends%s", p.name, name, " (not shown: blocked)" if hidden else "")
+        q = self.by_account.get(tid)
+        if not hidden and self._can(q, "friends"):
+            q.send({"t": "friend_request", "name": p.name, "time": now})
+        self._send_friends_soon(p.account_id, *(() if hidden else (tid,)))
+        return {"t": "friend_added", "name": name, "state": "pending"}
+
+    def _befriend(self, a, b):
+        """Accounts a (who said yes) and b become friends; both lists change, b hears that a accepted."""
+        if self.store.friend_count(a) >= self.cfg.max_friends:
+            raise LobbyError(proto.E_NOT_ALLOWED, f"your friends list is full ({self.cfg.max_friends})")
+        if self.store.friend_count(b) >= self.cfg.max_friends:
+            raise LobbyError(proto.E_NOT_ALLOWED, "that player's friends list is full")
+        self.store.add_friendship(a, b)
+        for x, y in ((a, b), (b, a)):
+            q = self.by_account.get(x)
+            if q is not None:
+                q.friends.add(y)
+        self._count("friendships_made")
+        row_a = self.store.account_by_id(a)
+        qb = self.by_account.get(b)
+        if row_a is not None and self._can(qb, "friends"):
+            qb.send({"t": "friend_update", "name": row_a["name"], "state": "accepted"})
+        log.info("friends: %s and %s", row_a["name"] if row_a else a, qb.name if qb else b)
+        self._send_friends_soon(a, b)
+
+    def _unfriend(self, a, b, why):
+        """Accounts a and b are no longer friends (a removed b, or blocked b): invites between them end, and for a
+        block the requests between them too. -> True when they were friends."""
+        was = self.store.remove_friendship(a, b)
+        if why == "block":
+            self.store.answer_requests(a, b, "cancelled")
+            self.store.answer_requests(b, a, "cancelled")
+        for x, y in ((a, b), (b, a)):
+            q = self.by_account.get(x)
+            if q is not None:
+                q.friends.discard(y)
+        for inv in [i for i in self.invites.values() if {i.src.account_id, i.dst.account_id} == {a, b}]:
+            self._end_invite(inv, "cancelled")
+        if was:
+            self._count("friendships_ended")
+            log.info("friends no more (%s): accounts %s and %s", why, a, b)
+        self._send_friends_soon(a, b)
+        return was
+
+    async def h_friend_answer(self, conn, msg):
+        """Accept (`accept`: true) or decline the friend request of `name`."""
+        p = conn.player
+        self._need_account(p)
+        row = self._account_named(str(msg.get("name") or "").strip())
+        if self.store.is_blocked_by(p.account_id, row["id"]) or \
+                self.store.pending_request(row["id"], p.account_id, self._request_since()) is None:
+            raise LobbyError(proto.E_NOT_FOUND, "no friend request from that player")
+        if msg.get("accept"):
+            self._befriend(p.account_id, row["id"])
+            return None
+        self.store.answer_requests(row["id"], p.account_id, "declined")
+        q = self.by_account.get(row["id"])
+        if self._can(q, "friends"):
+            q.send({"t": "friend_update", "name": p.name, "state": "declined"})
+        self._send_friends_soon(p.account_id, row["id"])
+        return None
+
+    async def h_friend_cancel(self, conn, msg):
+        """Take back this player's own request to `name`."""
+        p = conn.player
+        self._need_account(p)
+        row = self._account_named(str(msg.get("name") or "").strip())
+        if not self.store.answer_requests(p.account_id, row["id"], "cancelled"):
+            raise LobbyError(proto.E_NOT_FOUND, "no friend request to that player")
+        self._send_friends_soon(p.account_id, row["id"])
+
+    async def h_friend_remove(self, conn, msg):
+        """End the friendship with `name` (the other side's list changes; nobody is told more)."""
+        p = conn.player
+        self._need_account(p)
+        row = self._account_named(str(msg.get("name") or "").strip())
+        if not self._unfriend(p.account_id, row["id"], why="remove"):
+            raise LobbyError(proto.E_NOT_FOUND, "that player is not on your friends list")
+
+    def _friend_relation(self, me, aid):
+        """What account `aid` is to `me` on a profile: friends | asked (me -> them) | asks (them -> me) | None."""
+        if me is None or me.account_id is None or aid == me.account_id:
+            return None
+        if aid in me.friends:
+            return "friends"
+        since = self._request_since()
+        if self.store.pending_request(me.account_id, aid, since) is not None:
+            return "asked"
+        if not self.store.is_blocked_by(me.account_id, aid) and \
+                self.store.pending_request(aid, me.account_id, since) is not None:
+            return "asks"
+        return None
+
+    def _push_presence(self):
+        """Who is online, in a match or offline: what changed since the last lobby broadcast goes to each friend
+        who is online with the "friends" cap (friend_status {name, status, activity, invite})."""
+        now = {}
+        for q in self.players.values():
+            if q.account_id is not None and q.online:
+                st, act = self._presence_of(q)
+                now[q.account_id] = (st, act, q.name, q.build_id, self._can(q, "friends"))
+        old = self._presence
+        changed = [aid for aid, v in now.items() if old.get(aid) != v] + [aid for aid in old if aid not in now]
+        self._presence = now
+        if not changed:
+            return
+        watchers = [w for w in self.players.values() if w.friends and self._can(w, "friends")]
+        for aid in changed:
+            v = now.get(aid)
+            q = self.by_account.get(aid) if v else None
+            st, act, name = (v[0], v[1], v[2]) if v else ("offline", None, old[aid][2])
+            for w in watchers:
+                if aid in w.friends:
+                    w.send({"t": "friend_status", "name": name, "status": st, "activity": act,
+                            "invite": self._invitable(w, q)})
+
+    # ------------------------------------------------------------------ invites (friends)
+    async def h_invite(self, conn, msg):
+        """Invite a friend who is online: `kind` casual (a casual match; it starts when the friend accepts, no
+        ready check) or room (this player's room: the friend joins it and the match starts). The friend gets
+        `invited`; the invite waits T5L_INVITE_SECONDS. -> invite_sent {invite, name, kind, expires}."""
+        p = conn.player
+        self._refuse_draining()
+        self._need_account(p)
+        kind = msg.get("kind", "casual")
+        if kind not in ("casual", "room"):
+            raise LobbyError(proto.E_BAD_REQUEST, "kind is casual or room")
+        q = self.by_name.get(str(msg.get("name") or "").strip().lower())
+        if q is None or q.account_id is None or q.account_id not in p.friends or not q.online:
+            raise LobbyError(proto.E_NOT_FOUND, "that friend is not online")
+        if not self._can(q, "friends"):
+            raise LobbyError(proto.E_NOT_ALLOWED, "that friend's launcher is too old for invites (it needs 1.1.2 or "
+                                                  "newer)")
+        if q.build_id != p.build_id:
+            raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
+        if self._is_blocked(p, q):
+            raise LobbyError(proto.E_NOT_ALLOWED, "that player is not available")
+        room = None
+        if kind == "room":
+            room = p.room
+            if room is None:
+                raise LobbyError(proto.E_STATE, "create a room first, then invite")
+            if len(room.members) >= 2 or room.match is not None:
+                raise LobbyError(proto.E_FULL, "room is full")
+        elif p.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        self._set_free(p)
+        if q.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, "that friend is busy right now")
+        self._set_free(q, requester=p)
+        now = time.monotonic()
+        if now - p.last_invite < 2.0 or any(i.src is p for i in self.invites.values()):
+            raise LobbyError(proto.E_RATE, "one invite at a time")
+        if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
+            raise LobbyError(proto.E_BUSY, "that player has invites pending")
+        p.last_invite = now
+        inv = Invite(p, q, kind, room)
+        self.invites[inv.id] = inv
+        inv.timer = asyncio.get_running_loop().call_later(self.cfg.invite_seconds, self._end_invite, inv, "expired")
+        ev = {"t": "invited", "invite": inv.id, "from": p.brief(), "kind": kind, "expires": self.cfg.invite_seconds}
+        if room is not None:
+            ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked}
+        q.send(ev)
+        self._count("invites_sent")
+        log.info("%s invited %s (%s)", p.name, q.name, kind)
+        return {"t": "invite_sent", "invite": inv.id, "name": q.name, "kind": kind, "expires": self.cfg.invite_seconds}
+
+    async def h_invite_answer(self, conn, msg):
+        """One click: `accept` true starts the casual match (no ready check) or joins the inviter's room (its match
+        starts at once); false declines."""
+        p = conn.player
+        inv = self.invites.get(msg.get("invite"))
+        if inv is None or inv.dst is not p:
+            raise LobbyError(proto.E_NOT_FOUND, "that invite is over")
+        if not msg.get("accept") or self.draining:
+            self._end_invite(inv, "declined")
+            self._refuse_draining()
+            return None
+        src, r = inv.src, inv.room
+        gone = (not src.online or src.account_id not in p.friends or self._is_blocked(src, p)
+                or src.build_id != p.build_id)
+        if inv.kind == "casual":
+            gone = gone or src.status not in ("idle", "queue") or src.match is not None
+        else:
+            gone = gone or r.id not in self.rooms or src not in r.members or len(r.members) >= 2 or r.match is not None
+        if gone:
+            self._end_invite(inv, "cancelled")
+            raise LobbyError(proto.E_BUSY, "the invite is no longer possible")
+        if p.status not in ("idle", "queue"):
+            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
+        if inv.kind == "casual":
+            self._abandon_set(src, requester=p)
+            self._abandon_set(p)
+            self._end_invite(inv, "accepted")
+            self._leave_queue(src)
+            self._leave_queue(p)
+            self._count("invites_accepted")
+            self.create_match(src, p, ranked=False, origin="invite")
+            return None
+        if r.ranked:
+            self._check_speed(p)
+        self._abandon_set(p)
+        self._end_invite(inv, "accepted")
+        self._leave_queue(p)
+        r.members.append(p)
+        p.room, p.status = r, "room"
+        self.dirty = True
+        self._count("invites_accepted")
+        asyncio.get_running_loop().call_soon(self._room_start, r, True)
+        return {"t": "room", "room": r.public()}
+
+    async def h_invite_cancel(self, conn, msg):
+        inv = self.invites.get(msg.get("invite"))
+        if inv is None or inv.src is not conn.player:
+            raise LobbyError(proto.E_NOT_FOUND, "that invite is over")
+        self._end_invite(inv, "cancelled")
+
+    def _end_invite(self, inv, state):
+        """accepted | declined | cancelled | expired: both sides are told (invite_update)."""
+        if self.invites.pop(inv.id, None) is None:
+            return
+        if inv.timer is not None:
+            inv.timer.cancel()
+        for q, other in ((inv.src, inv.dst), (inv.dst, inv.src)):
+            if self._can(q, "friends"):
+                q.send({"t": "invite_update", "invite": inv.id, "state": state, "name": other.name,
+                        "kind": inv.kind})
 
     # ------------------------------------------------------------------ sets
     def _end_set(self, gs, reason, by=None):
@@ -3232,14 +3665,20 @@ class LobbyServer:
     def _abandon_set(self, p, requester=None):
         """`p` starts something new (queue, room, challenge): the old set is over. Not in the middle of a
         ranked set: that has to be left on purpose (leave_set), and leaving it is losing it."""
+        self._set_free(p, requester)
+        gs = p.set
+        if gs is not None and gs.state == "active" and gs.current is None:
+            self._decline_recent(gs, p)
+            self._end_set(gs, "left", by=p)
+
+    @staticmethod
+    def _set_free(p, requester=None):
+        """Refuse something new while `p` is in the middle of a ranked set (that has to be left on purpose)."""
         gs = p.set
         if gs is not None and gs.rated and gs.state == "active":
             a, b = gs.wins[p.id], gs.wins[gs.other(p).id]
             raise LobbyError(proto.E_BUSY, f"you are in a ranked set ({a}-{b}); leave it first (that counts as a loss)"
                              if requester is None else "that player is in a ranked set")
-        if gs is not None and gs.state == "active" and gs.current is None:
-            self._decline_recent(gs, p)
-            self._end_set(gs, "left", by=p)
 
     def _expire_recent(self, m):
         self.recent.pop(m.id, None)
@@ -3426,6 +3865,10 @@ class LobbyServer:
                 self._broadcast_lobby()
             except Exception:
                 log.exception("lobby broadcast")
+            try:
+                self._push_presence()
+            except Exception:
+                log.exception("friends' presence")
 
     async def _tick_housekeeping(self):
         while True:
@@ -3444,6 +3887,7 @@ class LobbyServer:
             self.ip_connects.prune()
             self.login_fail.prune()
             self.registrations.prune()
+            self.pw_ops.prune()
             self.chat_rate.prune()
             self.bans.prune()
             self.udp.ctl_buckets.prune()
@@ -3479,6 +3923,7 @@ class LobbyServer:
             return
         self._last_db_upkeep = time.monotonic()
         self.store.prune_sessions()
+        self.store.expire_friend_requests(time.time() - self.cfg.friend_request_days * DAY)
         self.store.flush()
         if self.cfg.db != ":memory:":
             asyncio.ensure_future(asyncio.to_thread(_checkpoint, self.cfg.db))     # (it may wait for a backup)

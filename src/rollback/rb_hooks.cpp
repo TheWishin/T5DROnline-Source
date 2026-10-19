@@ -54,6 +54,7 @@ void    cellGcmSetUserCommand(void* ctx, uint32_t cause);
 int32_t cellGcmSetFlip(void* context, uint32_t bufferId);
 uint32_t cellGcmGetFlipStatus(void);
 int     cellGcm_xlat_presented(void);   /* ps3recomp patch 0034: the held flip is translated and presented */
+void    cellGcm_flip_poll_plain(void);  /* ps3recomp patch 0047: the next usleep polls instead of waiting for the flip */
 void    cellGcmResetFlipStatus(void);
 void    cellGcmSetWaitFlip(void);
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -290,6 +291,10 @@ void h_cellGcmGetFlipStatus(ppu_context* ctx)
          * and an early rollback then started only after it) */
         if (g_flip_asked || cellGcm_xlat_presented()) { net::early_commit(); g_flip_asked = false; }
         if (cellGcm_xlat_presented() && net::early_check()) st = 0;
+        /* the title's usleep(100) after this answer stays a short poll: the
+         * early rollback above looks at the network between two polls (the
+         * runtime would otherwise wait for the flip itself, patch 0047) */
+        cellGcm_flip_poll_plain();
     }
     ctx->gpr[3] = st;
 }

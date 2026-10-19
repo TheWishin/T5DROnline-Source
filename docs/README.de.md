@@ -46,6 +46,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
+| Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Siehe [TRAINING.md](TRAINING.md) (englisch). |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
@@ -125,6 +126,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Online input delay | Online-Input-Delay |
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
+| Stage blur / glow | Stage-Unschärfe / Leuchten |
 | Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
 
 **BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
@@ -139,6 +141,19 @@ Sprachen gleich.
   Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
   auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
   jeder Spieler selbst wählen.
+- **Settings** -> **Stage blur / glow** (Stage-Unschärfe / Leuchten): Manche
+  Stages machen das ganze Bild weich (der neblige Sumpf und drei weitere) oder
+  lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
+  der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
+  das Leuchten. Online kann jeder Spieler selbst wählen.
+- **Settings** -> **Trainings-Anzeige**: Im Practice-Modus zeigt das Spiel deine
+  letzten Eingaben (Richtungen als Pfeile, 1 2 3 4 für die Knöpfe, jede mit der
+  Zahl der Frames, die sie gehalten wurde) und nach jedem Schlagabtausch den
+  Startup des Moves (`i10`) und wer zuerst wieder handeln kann (`GEBLOCKT +3`,
+  `TREFFER -12`). Aus / Eingaben / Eingaben + Framedaten; auf Wunsch auch in
+  den anderen Offline-Modi und online (dort nur deine eigenen Eingaben). **F2**
+  im Spiel schaltet sie um. Sie liest das Spiel nur und ändert nie ein Match.
+  Mehr in [TRAINING.md](TRAINING.md) (englisch).
 - **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; beides
   ist anfangs aus):
   - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach
@@ -272,6 +287,16 @@ Gut zu wissen:
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.
+- **Freunde** (mit Konto, ab 1.1.2): Füge auf der Seite **Freunde** im
+  Online-Reiter einen Freund mit seinem Kontonamen hinzu. Hat er angenommen,
+  siehst du, wann er online ist, sucht oder im Match ist. **Zu einem Match
+  einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
+  seiner Seite startet es. Wer einen Spieler blockiert, beendet die
+  Freundschaft.
+- **Discord** (freiwillig, standardmäßig aus): Settings -> Discord zeigt „In der
+  Lobby“, „Sucht ein Ranked-Match“ oder dein Match („Im Match: Jin vs Kazuya
+  (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf
+  deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr

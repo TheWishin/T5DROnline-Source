@@ -44,6 +44,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
+| Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
@@ -138,6 +139,17 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
+- **Settings** -> **Stage blur / glow**: some stages soften the whole picture
+  (the misty swamp, and three more) or let the sun glow (the scrapyard). On
+  (default) looks as on the PS3, at every internal resolution; Off shows those
+  stages sharp, without the glow. Online, each player can choose their own.
+- **Settings** -> **Training overlay**: in Practice the game shows your last
+  inputs (directions as arrows, 1 2 3 4 for the buttons, with how many frames
+  each was held) and, after each exchange, the startup of the move (`i10`) and
+  who can act first (`BLOCK +3`, `HIT -12`). Off / Inputs / Inputs + frame data;
+  it can also be on in the other offline modes, and online (only your own
+  inputs). **F2** in the game switches it. It only reads the game, so it never
+  changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
 - **Settings** -> **Unlocks** (offline play; both Off by default):
   - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
     after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
@@ -264,6 +276,14 @@ Good to know:
   save is never touched by online play.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
+- **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
+  tab's **Friends** page. Once they accept, you see when they are online,
+  searching or in a match. **Invite to a match** (or to your room) asks them;
+  one click on **Accept** on their side starts it. Blocking a player ends the
+  friendship.
+- **Discord** (optional, off by default): Settings -> Discord shows "In lobby",
+  "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
+  with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
@@ -427,6 +447,8 @@ Where to read on:
 - `docs/CI.md` — continuous integration and the game-data guard
   (`python tools/check_no_game_data.py` before you commit).
 - `docs/controls.ini` — every control setting.
+- `docs/TRAINING.md` — the training overlay (input display, frame data) and the
+  runtime's overlay layer it draws with.
 - `docs/TROUBLESHOOTING.md` — fixes for players.
 - `CHANGELOG.md` — what landed, by day.
 

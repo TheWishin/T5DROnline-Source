@@ -21,6 +21,16 @@ notice, ...) plus the client's own:
     {"t": "lag_check", ...}                after a match: "ping X ms should mean about Y frames behind, it was Z"
     {"t": "set_end", "set", "reason", "by"} the games in a row with one opponent are over (characters unlock);
                                            a ranked set (sets=True, below) adds its result and the rating change
+    {"t": "friends", ...}                  the friends list changed (friends=True, a server with "friends"):
+                                           friends [{name, status online|in_match|offline, activity, invite, ...}],
+                                           incoming / outgoing requests; also in .friend_list
+    {"t": "friend_status", "name", "status", "activity", "invite"}   a friend came online, went into a match,
+                                           left ... (already merged into .friend_list)
+    {"t": "friend_request", "name"}        someone asks to be friends (answer_friend)
+    {"t": "friend_update", "name", "state": "accepted"|"declined"}   the answer to this player's request
+    {"t": "invited", "invite", "from", "kind": "casual"|"room", "room", "expires"}   a friend invites this player
+                                           (answer_invite: one call starts the match or joins the room)
+    {"t": "invite_update", "invite", "state": "accepted"|"declined"|"cancelled"|"expired", "name", "kind"}
 
 Texts that reach a player (notice, nat_status, disconnected, ...) never contain an IP address:
 proto.scrub_addresses is applied to them here, and the server does the same before it sends them.
@@ -61,7 +71,7 @@ class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, old_stages=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -89,9 +99,11 @@ class LobbyClient:
         against another nat2 client, keep the game socket here and move the match onto the direct path
         when it starts to work (RelayBridge). relays: measure the UDP round trip to the regional relays a
         server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
-        behaves like a 1.1.0 client there (only the lobby server's own relay). old_stages: this client knows the
-        Tekken 5 stage keys (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its
-        matches; False behaves like a 1.1.1 client (tests)."""
+        behaves like a 1.1.0 client there (only the lobby server's own relay). friends: the friends list and
+        invites (docs/ONLINE.md "Friends and invites") with a server that has them; False behaves like a 1.1.1 client (the
+        server then sends none of their messages). old_stages: this client knows the Tekken 5 stage keys
+        (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its matches; False behaves like a
+        1.1.1 client (tests)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -109,6 +121,9 @@ class LobbyClient:
         self.sets = sets
         self.old_stages = old_stages
         self.notices = {}            # id -> {"text", "expires"}: server notices showing now
+        self.friends = friends
+        self.friend_list = None      # the last `friends` message (friend_status merged in), None before the first
+        self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
 
         self.events = queue.Queue()
         self.session = None          # "remember me" token from a password login (store it, not the password)
@@ -240,7 +255,8 @@ class LobbyClient:
                                                 + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])
-                                                + (["relays"] if self.relays else [])})
+                                                + (["relays"] if self.relays else [])
+                                                + (["friends"] if self.friends else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -343,6 +359,12 @@ class LobbyClient:
     async def _dispatch(self, msg):
         t = msg["t"]
         rid = msg.get("re")
+        if msg.get("match") is not None and not proto.valid_match_id(msg["match"]):
+            # never a path or a fight-line option from a server's message: the id goes into file names
+            fut = self._pending.get(rid) if rid is not None else None
+            if fut is not None and not fut.done():
+                fut.set_exception(LobbyError(proto.E_BAD_REQUEST, "the server sent a malformed match id"))
+            return
         if rid is not None and rid in self._pending:
             fut = self._pending.get(rid)
             if not fut.done():
@@ -352,7 +374,7 @@ class LobbyClient:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
-                     "rematch", "blocked", "unblocked", "blocks", "set_next"):
+                     "rematch", "blocked", "unblocked", "blocks", "set_next", "friend_added", "invite_sent"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -418,6 +440,20 @@ class LobbyClient:
         now = time.time()
         return [n["text"] for _i, n in sorted(self.notices.items())
                 if not n["expires"] or n["expires"] > now]
+
+    async def _on_friends(self, msg):
+        self.friend_list = {k: msg.get(k) for k in ("friends", "incoming", "outgoing", "max", "requests_left")}
+
+    async def _on_friend_status(self, msg):
+        for f in (self.friend_list or {}).get("friends") or ():
+            if f.get("name") == msg.get("name"):
+                f.update({k: msg.get(k) for k in ("status", "activity", "invite")})
+
+    async def _on_invited(self, msg):
+        self.invites[msg.get("invite")] = msg
+
+    async def _on_invite_update(self, msg):
+        self.invites.pop(msg.get("invite"), None)
 
     async def _on_relays(self, msg):
         """The server's list of regional relays changed: measure the new list."""
@@ -956,6 +992,44 @@ class LobbyClient:
         if strict:
             msg["strict"] = True
         return self._call(msg)
+
+    # ---------------------------------------------------------------- friends and invites (docs/ONLINE.md "Friends and invites")
+    def has_friends(self):
+        """Does this server keep friends lists (and did this client ask for them)? Accounts only."""
+        w = self.welcome or {}
+        return bool(self.friends and "friends" in (w.get("features") or ()) and "friends" in (w.get("caps") or ()))
+
+    def friends_list(self):
+        """{friends [{name, status, activity, invite, rank, rating, last_seen}], incoming [{name, time}], outgoing,
+        max, requests_left} (also kept in .friend_list, and pushed as it changes)."""
+        r = self._call({"t": "friends"})
+        return {k: r.get(k) for k in ("friends", "incoming", "outgoing", "max", "requests_left")}
+
+    def add_friend(self, name):
+        """Ask the account `name` to be friends. -> {"name", "state": "pending" | "friends"}"""
+        return self._call({"t": "friend_add", "name": name})
+
+    def answer_friend(self, name, accept=True):
+        return self._call({"t": "friend_answer", "name": name, "accept": bool(accept)})
+
+    def cancel_friend_request(self, name):
+        return self._call({"t": "friend_cancel", "name": name})
+
+    def remove_friend(self, name):
+        return self._call({"t": "friend_remove", "name": name})
+
+    def invite(self, name, kind="casual"):
+        """Invite a friend who is online: kind "casual" (a casual match) or "room" (this player's room).
+        -> {"invite", "name", "kind", "expires"}"""
+        return self._call({"t": "invite", "name": name, "kind": kind})
+
+    def answer_invite(self, invite_id, accept=True):
+        """Accepting starts the match (casual) or joins the friend's room, where the match starts at once."""
+        self.invites.pop(invite_id, None)
+        return self._call({"t": "invite_answer", "invite": invite_id, "accept": bool(accept)})
+
+    def cancel_invite(self, invite_id):
+        return self._call({"t": "invite_cancel", "invite": invite_id})
 
     # ---------------------------------------------------------------- blocking, sets, lag check
     def block(self, name):

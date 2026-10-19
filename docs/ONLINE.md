@@ -20,6 +20,8 @@ install for players or for whoever runs the server.
 - [Handover to the game](#handover-to-the-game)
 - [NAT traversal and the relay](#nat-traversal-and-the-relay) (and [regional relays](#regional-relays))
 - [Ratings, queues, results](#ratings-queues-results)
+- [Friends and invites](#friends-and-invites)
+- [Discord Rich Presence](#discord-rich-presence)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
 - [Running your own server](#running-your-own-server)
@@ -44,6 +46,7 @@ lobby/
     lag.py        the post-game lag check: ping X should mean Y frames behind, it was Z
     fighters.py   character / stage keys <-> the game's ids (data/fighters.json) for T5_FIGHT
     match_driver.py  the glue: match_start -> game -> result file -> report -> rematch
+    discord_rpc.py   optional Discord Rich Presence over the Discord app's local IPC pipe (no SDK)
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
     theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
@@ -56,7 +59,7 @@ lobby/
       lobby.py    players, rooms, queues, challenges, matches, results, bans, status numbers
       udp.py      UDP ping, endpoint registration, NAT probe, relay
       store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans,
-                  blocked players, server notices
+                  blocked players, server notices, friends and friend requests; numbered schema migrations
       admin.py    python -m t5lobby.server.admin: status, users, bans, passwords, recovery codes,
                   backups, certificates (accounts_admin.py: the account commands alone)
       status.py   local HTTP /health, /status, /metrics
@@ -103,10 +106,12 @@ lobby/
    changes, at most ~3 times a second.
 4. **Finding an opponent**, three ways:
    - *Quick match*: the queue pairs the players with the lowest estimated ping
-     (sum of both players' ping to the server).
+     (the best relay path: the smallest sum of both players' round trips to a relay, the
+     server's own included -- docs/RANKED.md "Found match"), within a ping window that grows
+     while they wait (80 ms + 20 per second; any ping after 30 s).
    - *Ranked*: pairs by rating and ping; the allowed rating gap grows while you
      wait (100 points + 25 per second, at most 800) and so does the allowed
-     ping (80 ms + 10 per second, at most 400). Accounts only (configurable).
+     ping (80 ms + 10 per second; any ping after 60 s). Accounts only (configurable).
      The *strict* option keeps the gap at 150 points. The same two players are not
      paired again for 30 s after a ranked game.
    - Players who blocked each other are never paired by any of these.
@@ -378,6 +383,111 @@ crashes, desyncs, disputes, minimum match length, strikes, rematches) are in
 grace period -> `forfeit`; winners differ -> decided by the netplay state hash
 when there is one (`resolved`), else `disputed`.
 
+## Friends and invites
+
+(1.1.2; code: `server/lobby.py` "friends", `server/store.py`, `client.py`, the Friends page in `tk_tab.py` /
+`tk_views.py`.) Like a console friends list. **Accounts only**: a guest has no account to keep friends on, so the
+server refuses every friends message from a guest ("guests cannot have friends; create an account (free)"), and a
+guest's name is not an account name anyone can add.
+
+**Adding a friend.** Type the other player's account name on the Online tab's **Friends** page and press **Send
+request**. They see "X wants to be your friend" and the request under REQUESTS; **Accept** makes you friends (on
+both lists at once), **Decline** tells you so. If they had asked you already, your request is their answer: you are
+friends at once. You can take back a request that waits (**Take back**). A request nobody answers runs out after 14
+days.
+
+**The list.** Each friend shows as online (in the lobby, in a room, searching), in a match, or offline ("last seen"),
+with their rank. It changes by itself: the server pushes every change with the lobby updates (at most ~3 a second).
+The tab name shows the requests waiting for you: "Friends (2)".
+
+**Removing.** Select a friend, **Remove**. The other side's list changes too; nobody is told more.
+
+**Invites.** Select a friend who is online and press **Invite to a match** (a casual match) or, when you are in a
+room of your own, **Invite to my room**. They get a question like a challenge: "X invites you to a casual match"
+with **Accept (A)** / **Decline (B)**. **One click starts it**: a casual match begins without a ready check (both of
+you said yes already); for a room invite they join your room and the room's match starts at once. An invite waits 60
+seconds, then runs out; your button reads **Cancel the invite** meanwhile. An invite ends when either of you starts
+another match, leaves, or logs out. Only casual matches: ranked comes from the ranked queue (or a ranked room, which
+a room invite can be).
+
+**Limits** (against spam, all in `server/config.py`):
+
+| | Default | Variable |
+|---|---|---|
+| friends per account | 100 | `T5L_MAX_FRIENDS` |
+| friend requests an account sends per 24 hours (answered or not) | 20 | `T5L_FRIEND_REQUESTS_DAY` |
+| requests waiting for an answer, sent by one account, and to one account | 30 | `T5L_FRIEND_PENDING` |
+| an unanswered request runs out after | 14 days | `T5L_FRIEND_REQUEST_DAYS` |
+| after a decline, the same request again only after | 7 days | `T5L_FRIEND_RETRY_DAYS` |
+| an invite waits for an answer | 60 s | `T5L_INVITE_SECONDS` |
+| invites | one at a time per player, one per 2 s, at most 3 waiting for one player | |
+
+The requests and invites also count against the usual per-connection limits (2 requests a second, burst 20).
+
+**Blocks override friendship.** Blocking a friend ends the friendship and cancels every request and invite between
+the two. Unblocking does not make you friends again. A request from you to someone who blocked you is never shown to
+them: it looks like a request nobody answers, and it runs out. You cannot ask someone you blocked yourself ("unblock
+them first").
+
+**Older launchers.** Everything above is switched on by the client: a launcher announces the `friends` cap in
+`hello`, and the server sends friends messages only to such clients (`welcome.features` lists `friends` so a new
+launcher knows the server has them). A 1.1.0 or 1.1.1 launcher logs in, plays and is matched exactly as before and
+never receives one of the new messages, also when its account has friends (they see it online, with "older launcher:
+no invites"). A new launcher on an older server finds no `friends` feature and the Friends page says the server
+does not have them.
+
+**Storage.** Two tables, added by the first numbered schema migration (`PRAGMA user_version` 1; `store.MIGRATIONS`):
+`friends` (one row per direction) and `friend_requests` (with their state: pending, accepted, declined, cancelled,
+expired; answered ones are deleted after 60 days). The migration runs once, at the server's first start after the
+update, in one transaction with the version number. A database from a newer server is used as it is, and the 1.1.0
+server still opens an upgraded database (tested), so going back to an older release works. Deleting an account
+(admin tool) deletes its friends and requests.
+
+## Discord Rich Presence
+
+Optional, **off by default**: launcher **Settings -> Discord -> "Show what I play in my Discord status"**. Then the
+player's Discord status reads "Playing T5DR Online" with one of
+
+| State | Discord shows |
+|---|---|
+| logged in, in the lobby or a room | In lobby |
+| searching | Searching ranked / Searching quick match |
+| in a match | In match: Jin vs Kazuya (Ranked, Set 1-0) -- your fighter first, the ranked set's score from your side; (Casual) for other matches; "In match (Ranked)" while the fighters are still being picked |
+
+and the time since that state began. Not logged in: nothing. The texts follow the launcher's language.
+
+How (`lobby/t5lobby/discord_rpc.py`, pure Python, no Discord SDK): the launcher talks to the **Discord app on the
+same PC** over its documented local IPC pipe, `\\.\pipe\discord-ipc-0` to `-9` (a Unix socket of that name on
+Linux / macOS): a handshake with the application id, then `SET_ACTIVITY` frames. Nothing goes over the network from
+the launcher; Discord shows the status to the player's Discord friends. A background thread does the talking: at
+most one update per 4 seconds (Discord's own limit is 5 per 20 s), the newest state wins, Discord's PING is answered,
+the activity is taken down when the setting is turned off or the launcher closes. **Without Discord running it does
+nothing**: it looks for the pipe every 20 seconds, quietly (one line in launcher.log, no message to the player).
+When Discord starts later, or restarts, the status appears by itself.
+
+**The application id.** Discord names the game after a Discord *application*, which the person who ships the launcher
+creates once. The id is a config value: `application_id` in `lobby/t5lobby/data/discord.json` (shipped with the
+release; empty = Rich Presence does nothing and Settings says so), overridden per player by `"discord_app_id"` in
+launcher.json, and by the environment variable `T5_DISCORD_APP_ID`.
+
+Creating the application (the owner, once, about 5 minutes; nobody else can do this for you):
+
+1. Open https://discord.com/developers/applications and log in with your Discord account.
+2. **New Application**. Name: **T5DR Online** (this is the name players see after "Playing"). Accept Discord's
+   developer terms. Create.
+3. On the **General Information** page copy the **Application ID** (a long number).
+4. Put it into `lobby/t5lobby/data/discord.json` as `"application_id": "<the number>"` and commit; the next release
+   carries it. (To try it first: launcher.json `"discord_app_id"`, or `T5_DISCORD_APP_ID` in the environment.)
+5. Optional, a picture next to the status: **Rich Presence -> Art Assets -> Add Image(s)**, upload your own logo
+   (512 x 512 or larger) -- never art taken from the game -- and name the asset, e.g. `logo`; then set
+   `"large_image": "logo"` in the same file. Without it the status has no picture.
+6. Check: Discord running on your PC, the setting on, log in to the Online tab -- your Discord profile shows "In
+   lobby" within a few seconds. `python -m t5lobby.discord_rpc <application id>` (in `lobby/`) shows "In lobby" for
+   30 seconds without the launcher.
+
+The application needs no bot, no OAuth redirect and no secret; the id is not a secret either (every Discord status
+shows it to anyone who looks).
+
 ## Protocol reference
 
 ### Control channel
@@ -391,7 +501,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays) |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}` |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -416,6 +526,13 @@ Client to server:
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
+| `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}` |
+| `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
+| `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
+| `friend_cancel` / `friend_remove` | `name` | `ok` (take back a request / end a friendship) |
+| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited` |
+| `invite_answer` | `invite`, `accept` | accepted: casual -> `match_found` (origin `invite`, no ready check) for both; room -> `room {room}` and the room's match starts (origin `invite`, no ready check) |
+| `invite_cancel` | `invite` | `ok`; both get `invite_update` |
 | `logout` | | `bye`, connection closed |
 
 Server to client (pushed):
@@ -426,7 +543,7 @@ Server to client (pushed):
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
-| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}`, `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
+| `match_found` | `match`, `ranked`, `origin: queue\|room\|challenge`, `role`, `slot`, `opponent`, `ready_check`, `ready_timeout`, `ping {ms, kind: estimate, known}` (the best relay path, docs/RANKED.md "Found match"), `set`. A blind check (queue match, client with `blind_ready`) has `blind: true`, `opponent: null` and no `role` / `slot` |
 | `match_reveal` | blind checks only, once both accepted: `match`, `role`, `slot`, `opponent`, `you` |
 | `opponent_ready` | `match` |
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
@@ -441,6 +558,11 @@ Server to client (pushed):
 | `lag_check` | after a match, to both players: ping, expected and observed frames behind, verdict, cause, a sentence (RANKED.md) |
 | `server_notice` | `id`, `text`, `expires`, `cleared` -- a message from the admin tool (clients without the `notices` cap get a `notice` instead) |
 | `notice` | `code`, `msg` (never contains an IP address) |
+| `friends` | clients with the `friends` cap: the whole list (as the `friends` reply) after login and whenever it changed |
+| `friend_status` | `name`, `status`, `activity`, `invite`: a friend came online, went into a match, went offline ... |
+| `friend_request` / `friend_update` | someone asks you; the answer to your request (`state: accepted\|declined`) |
+| `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires` |
+| `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind` |
 | `kicked` | `reason` |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
@@ -582,7 +704,11 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
 | `T5L_OLD_STAGES` | `0` | `1` = the stage drawn for a match may also be one of the Tekken 5 stages (both clients must announce `old_stages`; docs/RANKED.md "Characters and stages") |
+| `T5L_PING_START` / `T5L_PING_WIDEN` / `T5L_PING_ANY_SECONDS` | `80` / `10` / `60` | ranked queue: the estimated ping a pair may have at first (ms), how fast that grows while both wait (ms per s), and after how long any ping goes (0 = never) |
+| `T5L_QUICK_PING_WIDEN` / `T5L_QUICK_PING_ANY_SECONDS` | `20` / `30` | the same for the quick queue (it starts at `T5L_PING_START` too) |
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
+| `T5L_MAX_FRIENDS` / `T5L_FRIEND_REQUESTS_DAY` / `T5L_FRIEND_PENDING` | `100` / `20` / `30` | friends per account, requests sent per 24 h, requests waiting per sender and per receiver ("Friends and invites") |
+| `T5L_FRIEND_REQUEST_DAYS` / `T5L_FRIEND_RETRY_DAYS` / `T5L_INVITE_SECONDS` | `14` / `7` / `60` | an unanswered request runs out; a declined one may be repeated after; an invite waits |
 | `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |
@@ -635,6 +761,17 @@ online and scheduled backups and restore, upgrade of an old database, lobby delt
 server's view and for old clients, the pure-Python certificate checked with openssl, certificate
 reload, servers.json, Host for friends end to end, UPnP/NAT-PMP against fake routers; the Online
 tab's Host for friends button.
+
+**Friends** (`test_friends.py`): requests, accepting and declining, both asking at once, taking back, removing,
+the list with presence (online, searching, in a match, offline, another build, an older launcher), the limits
+(per day, waiting, list size, a full inbox, running out), blocks ending a friendship and hiding requests, invites
+(casual and room with one click, declined, cancelled, run out, who can be invited, a queue match ending one), a
+restart keeping friendships, the schema migration (old, oldest, newer, a failed step, deleting an account, the
+1.1.0 server on an upgraded database), and the 1.1.0 and 1.1.1 clients (from git) and the 1.1.0 server.
+`test_tk_friends.py`: the Friends page and invites in the Online tab (no visible window) and Rich Presence fed by
+the tab. **Discord** (`test_discord.py`): the IPC frames against a fake Discord on a test-only pipe (never the
+real Discord's): handshake, updates, taking it down, the rate limit, PING, no Discord, Discord starting later and
+restarting, a refused application id, the configuration, the texts in English and German.
 
 **Regional relays** (`test_relays.py`, `lobby/tools/relay_e2e.py`): the control channel, the relay node's
 limits, the choice by the sum of both round trips, dead / silent / full nodes, relays.json changes, the
@@ -707,6 +844,8 @@ colour, rating, W-L):
 | In a match | The opponent, ping, input delay, connection, "Your game is running" and where the game is |
 | Result | Win / loss banner, rounds, rating change, promotion / demotion / placement, lag check, Rematch (A) / Next game / Leave (B) / Block |
 | Errors | One line on a red banner: what went wrong and what to do |
+| Friends (a page next to Lobby, Leaderboard, Profile) | Your friends with a dot (green online, yellow in a match, grey ring offline), rank and what they do; Invite to a match / Invite to my room / Remove; Add a friend (account name); REQUESTS with Accept / Decline / Take back |
+| Invite from a friend | Their badge and name, "invites you to a casual match" (or "to the room ..."), Accept (A) / Decline (B) |
 
 A ranked set's score goes into `OnlineTab.set_var` ("Set 1-0, game 2 of 3"); the match cards show it as a
 tag. Tests: `tests/test_online_ui_walk.py` walks the launcher through every state (local server, two
@@ -720,8 +859,8 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
 
 | Button | What it does |
 |---|---|
-| **A** (Cross) | Accept a found match or a challenge. Rematch (also when the opponent offers one). Search: ranked for an account at first, quick for a guest, afterwards the kind you searched last. After you left a game (B), A is "back to ranked". |
-| **B** (Circle) | Decline a found match or a challenge. Leave / No thanks after a game. Stop searching. |
+| **A** (Cross) | Accept a found match, a challenge or a friend's invite. Rematch (also when the opponent offers one). Search: ranked for an account at first, quick for a guest, afterwards the kind you searched last. After you left a game (B), A is "back to ranked". |
+| **B** (Circle) | Decline a found match, a challenge or a friend's invite. Leave / No thanks after a game. Stop searching. |
 | **Y** (Triangle) | Nothing. Every match gets a random stage from the server, a rematch too, so there is no stage to choose. (The fighter is picked in the game itself, with the game's controls.) |
 
 - The buttons say which pad button presses them: "Accept (A)", "Decline (B)", "Ranked match (A)". A stick
@@ -794,6 +933,6 @@ is there.
 - Moderation beyond the admin tool (docs/HOSTING.md): in-game reporting of cheaters, a kick
   without a ban.
 - Relay sessions do not survive a server restart (relayed games in progress break).
-- Spectating, replays, region tags, friends list.
+- Spectating, replays, region tags. (Friends came with 1.1.2: "Friends and invites".)
 - The server has not been run on a real VPS or across two real NATs yet; everything above was
   measured on localhost.

@@ -91,13 +91,20 @@ DEFAULTS = {
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
+    "stage_blur": "on",        # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
+    "training": "frames",      # training overlay in Practice: off | inputs | frames (inputs + frame data), T5_TRAINING
+    "training_all": False,     # ... also in the other offline modes (T5_TRAINING_ALL=1)
+    "training_online": False,  # ... also online, this PC's own inputs only (T5_TRAINING_ONLINE=1)
     "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
+    "discord_presence": False, # online: show the lobby / search / match in Discord (Rich Presence, docs/ONLINE.md)
+    "discord_app_id": "",      # ... with this Discord application instead of the release's (lobby data/discord.json)
     "mute": False,
     "background": False,       # start minimized without focus (testing)
     "extra_env": "",           # NAME=VALUE lines
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
+    "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
 }
@@ -134,6 +141,12 @@ class Settings(dict):
             self["internal_res"] = "native"
         if not isinstance(self["vsync"], str) or self["vsync"] not in VSYNC_MODES:
             self["vsync"] = "on"
+        if not isinstance(self["power_saving"], str) or self["power_saving"] not in POWER_SAVING:
+            self["power_saving"] = "auto"
+        if not isinstance(self["stage_blur"], str) or self["stage_blur"] not in STAGE_BLUR_MODES:
+            self["stage_blur"] = "on"
+        if not isinstance(self["training"], str) or self["training"] not in TRAINING_MODES:
+            self["training"] = "frames"
 
     def save(self):
         try:
@@ -158,12 +171,24 @@ class Settings(dict):
             env["PS3_INTERNAL_RES"] = self["internal_res"]
         if self["vsync"] == "off":
             env["PS3_VSYNC"] = "0"
+        if self["power_saving"] in ("on", "off"):       # auto: the game decides (PS3_LAPTOP unset)
+            env["PS3_LAPTOP"] = "1" if self["power_saving"] == "on" else "0"
+        if self["stage_blur"] == "off":
+            env["PS3_STAGE_BLUR"] = "0"
         if self["display"] == "borderless":
             # the game's own borderless fullscreen (Alt+Enter/F11 toggle it, Esc leaves it first,
             # it follows the monitor), not a restyled window from outside
             env["PS3_FULLSCREEN"] = "1"
         if self["input_delay"] in INPUT_DELAYS:
             env["T5_RB_NET_DELAY"] = self["input_delay"]
+        if self["training"] in TRAINING_MODES:
+            env["T5_TRAINING"] = self["training"]
+            if self["training"] != "off":
+                if self["training_all"]:
+                    env["T5_TRAINING_ALL"] = "1"
+                if self["training_online"]:
+                    env["T5_TRAINING_ONLINE"] = "1"
+                env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
         # whatever it is given (both PCs must build the same select screens and stage lists).
         if self["unlock_stages"]:
@@ -710,6 +735,107 @@ INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
 VSYNC_MODES = {          # English; t(label) where it is shown
     "on": N_("On (smooth, default)"),
     "off": N_("Off (lowest latency, may tear)"),
+}
+
+# Power saving (PS3_LAPTOP, ps3recomp patch 0047, docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"): the
+# same game at the same 60 fps with less CPU around it -- no spinning waits, fewer worker threads --
+# so a laptop's or handheld's processor stays under its heat and power limit and keeps its clock
+# (on an APU the CPU and the graphics share one power budget). Auto: the game turns it on when the
+# PC has a battery, battery saver or the "Power saver" plan is on, the processor is a mobile one,
+# or it renders on integrated graphics. Only timing around the game changes, never the game, so
+# the two players of an online match may choose differently.
+POWER_SAVING = {         # English; t(label) where it is shown
+    "auto": N_("Auto (laptops, handhelds, integrated graphics)"),
+    "on": N_("On"),
+    "off": N_("Off"),
+}
+# The same rule as the runtime's hs_mobile_cpu_name (host_sched.c): a model number with a mobile
+# suffix (7840U, 6800H, 8845HS, 7945HX, 7700HQ, 1165G7, 1260P, 8100Y, Core Ultra 155H / 258V),
+# Ryzen Z1/Z2 (handhelds) and Ryzen AI, N100-style parts.
+MOBILE_CPU = re.compile(r"\b\d{3,5}(?:U|H|HS|HX|HQ|HK|HL|Y|P|V|G1|G4|G7)\b|Ryzen (?:Z\d|AI)\b|\bN\d{3,4}\b")
+POWER_SAVER_PLAN = "a1841308-3541-4fab-bc81-f71556f20b4a"
+
+
+def system_power_status():
+    """(ac: True/False/None, battery_percent or None, has_battery, battery_saver) from Windows."""
+    if not IS_WIN:
+        return None, None, False, False
+
+    class SPS(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                    ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_ubyte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+    s = SPS()
+    try:
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+            return None, None, False, False
+    except (OSError, AttributeError):
+        return None, None, False, False
+    has = s.BatteryFlag not in (128, 255)
+    ac = {0: False, 1: True}.get(s.ACLineStatus)
+    return ac, (s.BatteryLifePercent if has and s.BatteryLifePercent <= 100 else None), has, bool(s.SystemStatusFlag & 1)
+
+
+def active_power_plan():
+    """The active power plan's GUID (lower case) from the registry, or ''."""
+    if not IS_WIN:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes") as k:
+            return str(winreg.QueryValueEx(k, "ActivePowerScheme")[0]).lower()
+    except OSError:
+        return ""
+
+
+def cpu_name():
+    if not IS_WIN:
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+            return " ".join(str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).split())
+    except OSError:
+        return ""
+
+
+def power_saving_auto(status=None, plan=None, cpu=None):
+    """(on, reason) for 'Auto' on this PC, as far as the launcher can tell before the game runs (the
+    game decides the same way and also turns it on when it finds integrated graphics). reason is an
+    English text for t()."""
+    ac, _pct, has_battery, saver = status if status is not None else system_power_status()
+    if has_battery:
+        return True, N_("this PC has a battery (laptop or handheld)")
+    if saver:
+        return True, N_("battery saver is on")
+    if (plan if plan is not None else active_power_plan()) == POWER_SAVER_PLAN:
+        return True, N_("the Power saver power plan is on")
+    if MOBILE_CPU.search(cpu if cpu is not None else cpu_name()):
+        return True, N_("a mobile processor")
+    return False, None
+
+
+# Stage blur / glow: some stages filter the whole picture -- a soft focus on the misty swamp (stage
+# 34) and stages 24, 26 and 28, a glow around the sun on stage 20. On (default): as the game draws
+# it, at every internal resolution like at Native. Off: PS3_STAGE_BLUR=0, those stages sharp and
+# without the glow; the HUD and every other stage stay as they are. Only the picture changes, so the
+# two players of an online match may choose differently. docs/RENDER_PERF.md "Stage blur and glow".
+STAGE_BLUR_MODES = {     # English; t(label) where it is shown
+    "on": N_("On (default)"),
+    "off": N_("Off"),
+}
+
+
+# Training overlay (docs/TRAINING.md): the game draws, over its picture, the last inputs of each
+# player with how many frames each was held, and after each exchange the startup of the move and
+# the frame advantage (+3, -12). In Practice; the two options widen it to the other offline modes
+# and to online matches (there only this PC's own inputs, no frame data). It only reads the game's
+# memory, so it never changes a match. F2 in the game switches it for the session.
+TRAINING_MODES = {       # English; t(label) where it is shown
+    "off": N_("Off"),
+    "inputs": N_("Inputs"),
+    "frames": N_("Inputs + frame data"),
 }
 
 

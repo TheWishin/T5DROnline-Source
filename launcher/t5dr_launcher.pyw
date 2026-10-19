@@ -418,20 +418,56 @@ class App(tk.Tk):
         ttk.Label(vs, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "The game always runs at 60 fps, like on the PS3.")).pack(anchor="w", pady=(4, 0))
 
-        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
-        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
-        unl = ttk.LabelFrame(left, text="  " + t("Unlocks") + "  ", padding=(12, 6))
-        unl.pack(fill="x", pady=(6, 0))
-        self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
-        self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
-        ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
-                        variable=self.unlock_stages_var, command=self.save_settings).pack(anchor="w")
-        ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
-                        variable=self.unlock_items_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
-        ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
-            "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
-            "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+        # Stage blur / glow (PS3_STAGE_BLUR=0 when off, core.STAGE_BLUR_MODES): the soft focus some
+        # stages put on the picture and the sun's glow. Picture only, like VSync.
+        sb = ttk.LabelFrame(left, text="  " + t("Stage blur / glow") + "  ", padding=(12, 6))
+        sb.pack(fill="x", pady=(6, 0))
+        self.stage_blur_var = tk.StringVar(value=self.settings["stage_blur"]
+                                           if self.settings["stage_blur"] in core.STAGE_BLUR_MODES else "on")
+        row = ttk.Frame(sb)
+        row.pack(anchor="w")
+        for key, label in core.STAGE_BLUR_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.stage_blur_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        ttk.Label(sb, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+            "without the glow. Only your picture changes: online, both players can choose differently.")).pack(
+            anchor="w", pady=(4, 0))
+
+        # Power saving (PS3_LAPTOP, core.POWER_SAVING; docs/RENDER_PERF.md "Laptops, handhelds and 8-core APUs"):
+        # less CPU around the same game, so a laptop or handheld keeps its clock and its 60 fps.
+        ps = ttk.LabelFrame(left, text="  " + t("Power saving (laptops, handhelds)") + "  ", padding=(12, 6))
+        ps.pack(fill="x", pady=(6, 0))
+        self.power_var = tk.StringVar(value=self.settings["power_saving"]
+                                      if self.settings["power_saving"] in core.POWER_SAVING else "auto")
+        for key, label in core.POWER_SAVING.items():
+            ttk.Radiobutton(ps, text=t(label), value=key, variable=self.power_var,
+                            command=self._power_saving_changed).pack(anchor="w", pady=1)
+        self.power_hint = ttk.Label(ps, style="Muted.TLabel", wraplength=300, justify="left")
+        self.power_hint.pack(anchor="w", pady=(4, 0))
+        self._power_saving_changed(save=False)
+
+        # Training overlay (T5_TRAINING*, core.TRAINING_MODES, docs/TRAINING.md): inputs and frame data
+        # drawn over the picture in Practice; it only reads the game, so it never changes a match.
+        tr = ttk.LabelFrame(left, text="  " + t("Training overlay") + "  ", padding=(12, 6))
+        tr.pack(fill="x", pady=(6, 0))
+        self.training_var = tk.StringVar(value=self.settings["training"] if self.settings["training"] in
+                                         core.TRAINING_MODES else "frames")
+        row = ttk.Frame(tr)
+        row.pack(anchor="w")
+        for key, label in core.TRAINING_MODES.items():
+            ttk.Radiobutton(row, text=t(label), value=key, variable=self.training_var,
+                            command=self.save_settings).pack(side="left", padx=(0, 14))
+        self.training_all_var = tk.BooleanVar(value=bool(self.settings.get("training_all")))
+        self.training_online_var = tk.BooleanVar(value=bool(self.settings.get("training_online")))
+        ttk.Checkbutton(tr, text=t("Also in the other offline modes (Arcade, Versus, ...)"),
+                        variable=self.training_all_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(tr, text=t("Also online (only your own inputs, no frame data)"),
+                        variable=self.training_online_var, command=self.save_settings).pack(anchor="w")
+        ttk.Label(tr, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "In Practice: your last inputs with how many frames each was held, and after each exchange the "
+            "startup of the move and who can act first (+3, -12). F2 in the game switches it.")).pack(
+            anchor="w", pady=(4, 0))
 
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="nwe")
@@ -488,6 +524,30 @@ class App(tk.Tk):
         ttk.Label(net, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Helps the direct connection when your opponent's router is strict. The port is open only while "
             "you play and is closed again afterwards.")).pack(anchor="w", pady=(2, 0))
+
+        # Discord Rich Presence (lobby/t5lobby/discord_rpc.py, docs/ONLINE.md): off unless the player turns it on
+        dc = ttk.LabelFrame(right, text="  " + t("Discord") + "  ", padding=(12, 6))
+        dc.pack(fill="x", pady=(6, 0))
+        self.discord_var = tk.BooleanVar(value=bool(self.settings.get("discord_presence", False)))
+        ttk.Checkbutton(dc, text=t("Show what I play in my Discord status (Rich Presence)"), variable=self.discord_var,
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=self._discord_hint()).pack(
+            anchor="w", pady=(2, 0))
+
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
+        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
+        unl.pack(fill="x", pady=(6, 0))
+        self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
+        self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
+                        variable=self.unlock_stages_var, command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
+                        variable=self.unlock_items_var, command=self.save_settings).pack(anchor="w", pady=(4, 0))
+        ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+            "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -862,15 +922,58 @@ class App(tk.Tk):
         if save:
             self.save_settings()
 
+    def _discord_hint(self):
+        text = t("\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through "
+                 "the Discord app on this PC. Without Discord running nothing happens.")
+        try:
+            from t5lobby import discord_rpc
+            ready = bool(discord_rpc.load_config(self.settings).get("application_id"))
+        except ImportError:
+            ready = False
+        if not ready:
+            text += "\n" + t("This copy has no Discord application id yet, so this does nothing for now.")
+        return text
+
+    def power_saving_text(self):
+        """What power saving does on this PC with the chosen setting (Settings hint, status line)."""
+        key = self.power_var.get() if hasattr(self, "power_var") else self.settings["power_saving"]
+        if key == "on":
+            return True, t("On for this PC.")
+        if key == "off":
+            return False, t("Off.")
+        on, why = core.power_saving_auto()
+        if on:
+            return True, t("Auto: on for this PC -- {reason}.", reason=t(why))
+        return False, t("Auto: off for this PC (no battery, no mobile processor); the game turns it on "
+                        "by itself if it runs on integrated graphics.")
+
+    def _power_saving_changed(self, save=True):
+        _on, text = self.power_saving_text()
+        self.power_hint.configure(text=t(
+            "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, "
+            "so the game holds 60 fps longer. The game itself is the same, online too.") + "\n" + text)
+        if save:
+            self.save_settings()
+
     def save_settings(self):
         if self.readonly:
             return
         self.settings["display"] = self.display_var.get()
+        if hasattr(self, "power_var"):
+            self.settings["power_saving"] = self.power_var.get()
         self.settings["internal_res"] = self.internal_res_var.get()
         self.settings["vsync"] = self.vsync_var.get()
+        if hasattr(self, "stage_blur_var"):
+            self.settings["stage_blur"] = self.stage_blur_var.get()
         self.settings["input_delay"] = self.input_delay_var.get()
+        if hasattr(self, "training_var"):
+            self.settings["training"] = self.training_var.get()
+            self.settings["training_all"] = bool(self.training_all_var.get())
+            self.settings["training_online"] = bool(self.training_online_var.get())
         if hasattr(self, "router_ports_var"):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
+        if hasattr(self, "discord_var"):
+            self.settings["discord_presence"] = bool(self.discord_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
@@ -901,8 +1004,14 @@ class App(tk.Tk):
         core.log(f"game started: process {pid}, log {os.path.basename(g.log_path)}, settings give "
                  f"{', '.join(f'{k}={v}' for k, v in sorted(self.settings.env_overrides().items())) or 'nothing'}, "
                  f"asked for by the launcher: {', '.join(sorted(env or {})) or 'nothing'}")
-        self.status.set(t("Game started (process {pid}). Log: {log}", pid=pid,
-                          log="native\\logs\\" + os.path.basename(g.log_path)))
+        status = t("Game started (process {pid}). Log: {log}", pid=pid,
+                   log="native\\logs\\" + os.path.basename(g.log_path))
+        try:
+            if self.power_saving_text()[0]:
+                status += "  " + t("Power saving is on.")
+        except Exception:       # noqa: BLE001 -- a status hint must never stop a game start
+            pass
+        self.status.set(status)
         self._update_play_buttons()
         return g
 
@@ -950,7 +1059,8 @@ class App(tk.Tk):
             pass
         out = self.settings.out_dir
         labels = {"display": dict(core.DISPLAY_MODES), "internal_res": core.INTERNAL_RES_LABELS,
-                  "vsync": core.VSYNC_MODES, "input_delay": core.INPUT_DELAYS}
+                  "vsync": core.VSYNC_MODES, "stage_blur": core.STAGE_BLUR_MODES,
+                  "input_delay": core.INPUT_DELAYS, "power_saving": core.POWER_SAVING}
         lines = report.settings_lines(self.settings, labels, self.settings.env_overrides(), out)
         info = self.info
         build_problem = True if self.error.get() else None

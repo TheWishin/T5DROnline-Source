@@ -81,8 +81,23 @@ class Config:
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
+    # The queues pair players whose estimated ping (the best relay path: docs/RANKED.md "Matchmaking") fits a window
+    # that starts at T5L_PING_START ms and grows by T5L_PING_WIDEN ms (quick: T5L_QUICK_PING_WIDEN) per second the
+    # two have waited; after T5L_PING_ANY_SECONDS (quick: T5L_QUICK_PING_ANY_SECONDS) any ping goes (0 = never)
+    ping_start: float = 80.0        # T5L_PING_START
+    ping_widen: float = 10.0        # T5L_PING_WIDEN (ranked queue)
+    ping_any_seconds: float = 60.0  # T5L_PING_ANY_SECONDS (ranked queue)
+    quick_ping_widen: float = 20.0  # T5L_QUICK_PING_WIDEN
+    quick_ping_any_seconds: float = 30.0  # T5L_QUICK_PING_ANY_SECONDS
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
     max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
+    # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only
+    max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
+    friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h
+    friend_pending: int = 30        # T5L_FRIEND_PENDING: requests waiting for an answer, per sender and per receiver
+    friend_request_days: float = 14.0  # T5L_FRIEND_REQUEST_DAYS: an unanswered request runs out after this
+    friend_retry_days: float = 7.0  # T5L_FRIEND_RETRY_DAYS: after a decline, the same request again only after this
+    invite_seconds: float = 60.0    # T5L_INVITE_SECONDS: an invite to a match or a room waits this long for an answer
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"
     lag_wait: float = 6.0           # T5L_LAG_WAIT: seconds to wait for the second player's lag report
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed

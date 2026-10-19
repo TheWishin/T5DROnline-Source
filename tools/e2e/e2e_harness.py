@@ -158,7 +158,10 @@ class LobbyServer:
     def start(self):
         env = dict(os.environ)
         env.update({"PYTHONPATH": LOBBY, "T5L_STATUS_PORT": "0", "T5L_LOG_LEVEL": "INFO", "T5L_SCRYPT_N": str(1 << 12),
-                    "T5L_CONN_RATE": "50", "T5L_CONN_BURST": "200", "T5L_MAX_PER_IP": "64", "T5L_MIN_FPS": "0"})
+                    "T5L_CONN_RATE": "50", "T5L_CONN_BURST": "200", "T5L_MAX_PER_IP": "64", "T5L_MIN_FPS": "0",
+                    # both players of a scenario are on this PC (one address): let them play ranked against each
+                    # other (lobby-hardening's alt rule); the scenario ranked_same_address keeps the rule on
+                    "T5L_RANKED_SAME_IP": "1"})
         env.update({k: str(v) for k, v in self.env.items()})
         lf = open(self.log_path, "a", encoding="utf-8")
         lf.write(f"--- start {self.starts + 1} {datetime.datetime.now():%H:%M:%S} env "

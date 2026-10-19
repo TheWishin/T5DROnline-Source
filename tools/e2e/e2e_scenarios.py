@@ -1591,6 +1591,74 @@ def rematch_char_change(ctx, rtt=None):
         _play(ctx, a, b, mid, label)
 
 
+@scenario("rematch_char_change_edge", "11 opponents and characters", game=True, suites=("game",),
+          desc="rematches that move the cursor from Bruce or Kuma (the select grid's right edge) to the top row and "
+               "back, on both sides (the owner's 'rematch with a character change' hang, fixed by rollback-crash)")
+def rematch_char_change_edge(ctx, rtt=None):
+    game_server(ctx)
+    if rtt:
+        ctx.shaper.set(rtt, rtt / 6.0, 0.5)
+    a = ctx.player("E2E Edge1", char="bruce")
+    b = ctx.player("E2E Edge2", char="kuma")
+    login(ctx, a)
+    login(ctx, b)
+    a.set_char("bruce")
+    b.set_char("kuma")
+    mid = queue_match(ctx, a, b, "quick")
+    _play(ctx, a, b, mid, "match 1 (Bruce vs Kuma)")
+    for label, change in (("Bruce -> Raven (top row)", {a: "raven"}),
+                          ("Kuma -> Feng (top row)", {b: "feng"}),
+                          ("back to Kuma and Bruce", {a: "kuma", b: "bruce"}),
+                          ("Kuma -> Eddy, Bruce -> Devil Jin (both to the top row)", {a: "eddy", b: "devil_jin"}),
+                          ("top row -> Bruce and Kuma", {a: "bruce", b: "kuma"}),
+                          ("Bruce -> Wang, Kuma -> Armor King (top row, the far ends)", {a: "wang", b: "armor_king"})):
+        t = time.time()
+        for p, key in change.items():
+            ctx.wait(lambda p=p: str(p.tab.char_cb.cget("state")) == "readonly", 10, f"{p.name}: character box open")
+            p.set_char(key)
+        ctx.sleep(1.5)
+        ctx.check(f"{label}: no character change refused", not any(p.saw_status("locked|Lobby:", t) for p in (a, b)),
+                  [p.status_text() for p in (a, b)])
+        mid = rematch(ctx, a, b)
+        f = a.matches[mid].get("fight") or {}
+        picks = _picks(a, b, mid)
+        ctx.check(f"{label}: continues in the running session", a.matches[mid].get("cont"))
+        ctx.check(f"{label}: the lobby sends the new fighters", all(picks.get(p.name) == key for p, key in change.items()),
+                  f"fight {f.get('p1')} vs {f.get('p2')}, picks {picks}")
+        _play(ctx, a, b, mid, label)
+
+
+@scenario("ranked_same_address", "3 ranked", suites=("quick", "lobby"),
+          desc="lobby-hardening: two accounts on one internet address never play ranked against each other -- the queue "
+               "does not pair them and a ranked room's match is played unranked, both told (T5L_RANKED_SAME_IP=0)")
+def ranked_same_address(ctx):
+    stub_server(ctx, T5L_RANKED_SAME_IP=0)
+    a = ctx.player("E2E Alt1", kind="stub", password="alt1-pass-1")
+    b = ctx.player("E2E Alt2", kind="stub", password="alt2-pass-1")
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    t = time.time()
+    a.press("ranked")
+    ctx.sleep(0.3)
+    b.press("ranked")
+    ctx.check("the ranked queue never pairs two accounts on one address",
+              not ctx.wait(lambda: latest(a, "match_found", t), 10, fail=False))
+    a.press("cancel")
+    b.press("cancel")
+    ctx.wait(lambda: a.action_on("ranked") and b.action_on("ranked"), 10)
+    box = a.call(a.client.create_room, "E2E same address", True)
+    ctx.wait(lambda: box, 10, "ranked room created")
+    rid = (box.get("ok") or {}).get("id")
+    ctx.wait(lambda: b.tab.tv_rooms.exists(rid), 10, "room listed")
+    t = time.time()
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    ctx.check("the ranked room's match is played unranked", not a.matches[mid].get("ranked"), a.matches[mid].get("ranked"))
+    ctx.check("both are told why", any(ev.get("code") == "same_address" for ev in a.events_of("notice", t)) and
+              any(ev.get("code") == "same_address" for ev in b.events_of("notice", t)))
+
+
 @scenario("opponent_switch_rtt", "11 opponents and characters", game=True, suites=("game",),
           desc="opponent_switch over an internet-like link: RTT 30 ms, jitter +-5 ms, 0.5% loss (the owner's 1.0.0 "
                "game had RTT 26 ms)")

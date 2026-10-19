@@ -265,11 +265,11 @@ class GameSocket(asyncio.DatagramProtocol):
                     scan_list.append((ip, port))
         scanned = set(scan_list)
         regular = [a for a in kinds if a not in scanned]
-        self.plan = (list(candidates), [(ip, list(ports)) for ip, ports in scan])
+        if candidates or scan:              # (a retry with nothing new keeps the plan for a relay bridge)
+            self.plan = (list(candidates), [(ip, list(ports)) for ip, ports in scan])
         t0 = time.monotonic()
         due = {}
-        scan_i = 0
-        scan_first = True
+        scan_i = 0                          # first pass: the next scan port never punched yet
         tick = 0.015
         first_ok = None
         opened = ttl_open <= 0
@@ -279,20 +279,25 @@ class GameSocket(asyncio.DatagramProtocol):
             if not low and not opened:
                 opened = True                       # the full punches start: a fresh pass over everything
                 due.clear()
-                scan_i, scan_first = 0, True
+                scan_i = 0
             step = interval if low else (slow_interval if now - t0 - ttl_open < slow_start else interval)
             for addr in regular + [a for a in self.heard if a not in kinds]:
                 if due.get(addr, 0.0) <= now:
                     self._punch_to(addr, low_ttl=low and addr not in self.heard)
                     due[addr] = now + step
             if scan_list:
-                n = 4 if scan_first else max(1, int(round(len(scan_list) * tick / scan_period)))
-                for _ in range(n):
-                    self._punch_to(scan_list[scan_i], low_ttl=low)
-                    scan_i += 1
+                # first pass in order, 4 new destinations per tick; then each port again every scan_period
+                for _ in range(4):
                     if scan_i >= len(scan_list):
-                        scan_i = 0
-                        scan_first = False
+                        break
+                    addr = scan_list[scan_i]
+                    self._punch_to(addr, low_ttl=low)
+                    due[addr] = now + scan_period
+                    scan_i += 1
+                for addr in scan_list[:scan_i]:
+                    if due.get(addr, 0.0) <= now:
+                        self._punch_to(addr, low_ttl=low)
+                        due[addr] = now + scan_period
             if self.confirmed and first_ok is None:
                 first_ok = now
             if first_ok is not None and (now - first_ok >= linger or

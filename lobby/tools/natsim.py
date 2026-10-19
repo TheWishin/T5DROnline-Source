@@ -98,8 +98,15 @@ class Tree:
         self._patch()
 
     def _patch(self):
+        """Route the game sockets of simulated homes through their NAT; everything else (a client that is
+        not in a simulated home) keeps the real behaviour, so tests can run next to the simulation."""
         GS = self.nat.GameSocket
+        self._orig = {"open": GS.__dict__["open"], "send": GS.__dict__["send"],
+                      "local": self.client.local_ipv4s, "rtt": self.client.server_rtt}
         orig_open = GS.open.__func__
+        orig_send = GS.send
+        orig_local = self.client.local_ipv4s
+        orig_rtt = self.client.server_rtt
 
         async def sim_open(cls, port, *a, **kw):
             gs = await orig_open(cls, port, *a, **kw)
@@ -111,29 +118,33 @@ class Tree:
         GS.open = classmethod(sim_open)
 
         def sim_send(self, data, addr, *a, **kw):
-            if self.transport is None or self.transport.is_closing():
-                return
             home = getattr(self, "_sim_home", None)
             if home is None:                       # not a simulated home: the real socket
-                self.transport.sendto(data, addr)
-            else:
-                home.nat.outbound(self.port, data, addr, ttl=kw.get("ttl"))
+                return orig_send(self, data, addr, *a, **kw)
+            if self.transport is None or self.transport.is_closing():
+                return
+            home.nat.outbound(self.port, data, addr, ttl=kw.get("ttl"))
             self.stats["tx"] += 1
         GS.send = sim_send
 
         def sim_local(target_ip):
             home = HOMES.get(id(asyncio.get_running_loop()))
-            return [home.private_ip] if home else []
+            return [home.private_ip] if home else orig_local(target_ip)
         self.client.local_ipv4s = sim_local
 
         async def sim_server_rtt(server, *a, **kw):      # (the real one pings past the simulated network)
             home = HOMES.get(id(asyncio.get_running_loop()))
             if home is None:
-                return None
+                return await orig_rtt(server, *a, **kw)
             return 2 * home.nat.net.server_ms + home.nat.net.server_jitter
         self.client.server_rtt = sim_server_rtt
-        if hasattr(self.nat, "local_ipv4s"):
-            self.nat.local_ipv4s = sim_local
+
+    def unpatch(self):
+        GS = self.nat.GameSocket
+        GS.open = self._orig["open"]
+        GS.send = self._orig["send"]
+        self.client.local_ipv4s = self._orig["local"]
+        self.client.server_rtt = self._orig["rtt"]
 
 
 HOMES = {}            # id(client loop) -> Home
@@ -689,18 +700,27 @@ class Sim:
                    max_prelogin=10000, max_relays=10000, max_relays_per_ip=0, max_match_seconds=0.0,
                    state_rate=1000.0, state_burst=1000, udp_ctl_pps=100000, idle_timeout=600.0)
         cfg.update(self.server_cfg)
+        import dataclasses
+        known = {f.name for f in dataclasses.fields(tr.server.Config)}
+        cfg = {k: v for k, v in cfg.items() if k in known}      # (an older server has fewer settings)
         self.srv_loop = tr.proto.new_event_loop()
         ready = threading.Event()
+        failed = []
 
         def run():
             asyncio.set_event_loop(self.srv_loop)
-            self.srv = tr.server.LobbyServer(tr.server.Config(**cfg))
-            self.srv_loop.run_until_complete(self.srv.start())
+            try:
+                self.srv = tr.server.LobbyServer(tr.server.Config(**cfg))
+                self.srv_loop.run_until_complete(self.srv.start())
+            except Exception as e:     # noqa: BLE001
+                failed.append(e)
+                ready.set()
+                return
             ready.set()
             self.srv_loop.run_forever()
         threading.Thread(target=run, daemon=True).start()
-        if not ready.wait(10):
-            raise RuntimeError("server did not start")
+        if not ready.wait(10) or failed:
+            raise RuntimeError(f"server did not start: {failed}")
         self.build = tr.buildid.BuildInfo("be80165b84e30b6334baa6d6331b9db4ffd5a6a4", "0123456789abcdef", "sim")
 
     def stop_server(self):

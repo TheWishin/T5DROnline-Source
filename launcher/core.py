@@ -90,6 +90,7 @@ DEFAULTS = {
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
     "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
+    "router_ports": True,      # online: forward the game's port on the router for a match (PCP / NAT-PMP / UPnP)
     "language": "auto",        # auto (the Windows language) | de | en -- applies when the launcher starts
     "mute": False,
     "background": False,       # start minimized without focus (testing)

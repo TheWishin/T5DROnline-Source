@@ -461,7 +461,9 @@ class OnlineTab:
                         game_port=int(self.cfg.get("game_port", 0) or 0),
                         plain_passwords=bool(self.cfg.get("plain_passwords")), blind_ready=True,
                         ingame_pick=self._game_can_pick(),
-                        sets=bool(self.cfg.get("sets", True)))   # online.json "sets": false: no ranked sets
+                        sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
+                        # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
+                        port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)))
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -948,7 +950,7 @@ class OnlineTab:
             self._set_ended(ev)
         elif kind == "server_notice":
             self._show_notice()
-        elif kind == "nat_status":
+        elif kind in ("nat_status", "nat_upgrade"):
             self.status(ev["text"])
         elif kind == "match_cancel":
             self.match = None

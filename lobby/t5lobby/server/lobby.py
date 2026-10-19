@@ -1999,16 +1999,22 @@ class LobbyServer:
                     scan = [{"ip": o_ip, "ports": preds[o] + [o_port]}]
                 else:
                     cands.append({"ip": o_ip, "port": o_port, "kind": "public"})
-                # Both new: the first half second's punches only open each side's own NAT (low TTL), so
-                # neither router sees an unsolicited punch before it sent its own. An older peer starts at
-                # once with full punches anyway.
-                msg["plan"] = {"start_in": round(go - one_way[side]), "start_at": round(t_go, 3),
-                               "window": window, "interval": 0.05,
-                               "slow_start": 0.6, "ttl_open": self.cfg.punch_ttl_open if all(new) else 0.0,
-                               "scan": scan}
+                # The first half second's punches only open this side's own NAT (low TTL), so the peer's
+                # router never sees a punch from here before its own went out. Two new clients start at
+                # the same server time; against an older client, which starts the moment its message
+                # arrives, a new one starts the moment its own arrives too (its low-TTL half second then
+                # covers an older client that gets its message a little later).
+                msg["plan"] = {"start_in": round(go - one_way[side]) if all(new) else 0,
+                               "window": window, "interval": 0.05, "slow_start": 0.6,
+                               "ttl_open": self.cfg.punch_ttl_open, "scan": scan}
+                if all(new):
+                    msg["plan"]["start_at"] = round(t_go, 3)
             else:
-                cands.append({"ip": o_ip, "port": o_port, "kind": "public"})
-                cands.extend({"ip": o_ip, "port": port, "kind": "public"} for port in preds[o][:8])
+                # (in order: an older client punches its list front to back, so against a symmetric peer the
+                # predicted ports come first -- the order that peer's NAT hands its ports out)
+                pred = [{"ip": o_ip, "port": port, "kind": "public"} for port in preds[o][:8]]
+                public = [{"ip": o_ip, "port": o_port, "kind": "public"}]
+                cands.extend(pred + public if o_sym else public + pred)
             plan_log.append({"sym": views[side][0], "step": views[side][1], "pred": len(preds[o]) if o_sym else 0,
                              "mapped": bool(mp), "nat2": new[side]})
             p.send(msg)

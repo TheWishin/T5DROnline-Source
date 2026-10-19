@@ -517,6 +517,8 @@ class LobbyClient:
     def _start_port_mapper(self):
         if not self.port_mapping or self._mapper is not None:
             return
+        if self._router_factory is None and is_local_address(self.server_ip or self.host):
+            return      # a lobby on this PC or the LAN: no router between the players, nothing to forward
         from .portmap import GamePortMapper
         self._mapper = GamePortMapper(backend_factory=self._router_factory).start()
 

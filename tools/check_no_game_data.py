@@ -26,6 +26,7 @@ The checks read the blobs git would commit (the index, or the commits in
 --history), not the working tree.
 """
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -45,6 +46,20 @@ ALLOW = {
     # stub variants: a PNG is compressed data and makes the resource section look packed.
     "launcher/stub/t5dr_bmp.ico",
 }
+
+# Exact old file versions (git blob ids) exempt from the binary check, for --history: our own sources
+# that once held a stray control byte, fixed since. Only ever add a blob after looking at it.
+ALLOW_BLOBS = {
+    # lobby/tests/test_nat2.py with one raw 0x02 byte in a fake packet's string literal (fixed in 5d51c99)
+    "dc6ade695600729797864e05d410bae26ceec2ba",
+    "98a405b7a4242823d0beb4694e02c8d1ad7fab1e",
+    "00946d9994541447c1b0e9d28d6d0107f5c190e6",
+}
+
+
+def blob_id(b):
+    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
+
 
 BLOCKED_EXT = {
     ".pkg", ".rap", ".rif", ".edat", ".sdat", ".self", ".sprx", ".prx", ".elf",
@@ -184,7 +199,7 @@ def check_content(path, b):
         for magic, what in MAGIC:
             if b.startswith(magic):
                 found.append(f"starts like a {what}")
-        if not is_text(b):
+        if not is_text(b) and blob_id(b) not in ALLOW_BLOBS:
             found.append("binary file (NUL/control bytes or not UTF-8); our sources are text")
     t = b.decode("latin-1")
     head = t[:512]

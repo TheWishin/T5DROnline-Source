@@ -18,7 +18,14 @@ of the fight (N lines with the fighting flag):
     with --hz the grid of a simulated display (RSX_TEST_DISPLAY_HZ) instead;
   - p95 / p99 without the intervals that hold a time-sync sleep (what the
     rollbacks leave).
+
+A build without the fighting flag (main before the frame-time branch) gets
+the same stretch from the run's own files beside the log: from the first
+frame whose final hash in frames.log is not the intro marker to the match
+end (results.jsonl "frames"); --span frames uses that for every build, so
+two builds are measured over the same frames.
 """
+import os
 import argparse
 import bisect
 
@@ -47,14 +54,48 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(q * (len(xs) - 1) + 0.5))] if xs else float("nan")
 
 
-def analyze(path, over, hz):
+INTRO_HASH = "0000004f52544e49"   # rb_net.cpp: the final hash of an intro frame (not compared)
+
+
+def frame_span(path):
+    """[first fought frame, match end] from frames.log / results.jsonl next to lat.log, or None"""
+    d = os.path.dirname(os.path.abspath(path))
+    first = None
+    try:
+        for line in open(os.path.join(d, "frames.log"), errors="replace"):
+            p = line.split()
+            if len(p) >= 3 and p[1] == "F" and p[2] != INTRO_HASH and p[0].isdigit():
+                first = int(p[0])
+                break
+    except OSError:
+        return None
+    end = None
+    try:
+        import json
+        for line in open(os.path.join(d, "results.jsonl"), errors="replace"):
+            line = line.strip()
+            if line:
+                end = int(json.loads(line).get("frames") or 0) or end
+                break
+    except (OSError, ValueError):
+        return None
+    return (first, end) if first is not None and end else None
+
+
+def analyze(path, over, hz, span_mode="flag"):
     freq, ev = load(path)
     ms = 1000.0 / freq
+    has_flag = any(k == "N" and len(a) >= 4 for _, k, a in ev)
+    span = frame_span(path) if (span_mode == "frames" or not has_flag) else None
+    if span:
+        print(f"{path}: the fight = frames {span[0]}..{span[1]} (frames.log / results.jsonl)")
     fight = False
     P = []
     C = []
     for t, k, a in ev:
-        if k == "N" and len(a) >= 4 and a[1] == "0":
+        if k == "N" and len(a) >= 3 and a[1] == "0" and span:
+            fight = span[0] <= int(a[0]) <= span[1]
+        elif k == "N" and len(a) >= 4 and a[1] == "0":
             fight = a[3] == "1"
         elif k == "P":
             P.append((t, fight))
@@ -135,9 +176,12 @@ def main():
     ap.add_argument("logs", nargs="+")
     ap.add_argument("--over", type=float, default=20.0, help="threshold for the long intervals, ms")
     ap.add_argument("--hz", type=float, default=0.0, help="refresh grid of a simulated display (RSX_TEST_DISPLAY_HZ)")
+    ap.add_argument("--span", choices=("flag", "frames"), default="flag",
+                    help="the fight: the boundaries' fighting flag (default; frames when a build has none) or "
+                         "frames.log/results.jsonl for every build (the same frames for two builds)")
     a = ap.parse_args()
     for p in a.logs:
-        analyze(p, a.over, a.hz)
+        analyze(p, a.over, a.hz, a.span)
 
 
 if __name__ == "__main__":

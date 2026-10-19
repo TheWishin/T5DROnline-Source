@@ -123,14 +123,19 @@ static inline bool job_page(uint32_t ea)
     const uint32_t i = (ea - g_job_base) >> 12;
     return g_job_active && g_job_lines && ea >= g_job_base && i < g_job_pages && g_job_lines[i] == ~0ull;
 }
-/* The same goes for the main thread's own render output while a match is
- * fought: the NU draw lists (both buffers, rebuilt by every drawn frame) and
- * the per-frame render scratch -- hash-excluded since phase 1. Left out of the
- * state only while fighting, like the job pages (test run h3: after the
- * deciding KO the result screen's transition read them back -- the phase word
- * came out 1 instead of 2 after a restore; h4 / i*: none in the fight).
- * T5_RB_RENDER_STATE=keep keeps them in. */
-static bool g_render_drop = true;
+/* An experiment, OFF by default (T5_RB_RENDER_STATE=drop): the main thread's
+ * render output while a match is fought -- the NU draw lists (0x43D00000, both
+ * buffers) and the per-frame render scratch, hash-excluded since phase 1 --
+ * left out of the state like the job pages. It is not safe: the lists are
+ * double-buffered, the draw manager's thread (NU::Draw::RequestManager,
+ * 0x1074BE80, in the state) consumes in frame n what frame n-1 built, through
+ * pointers a restore puts back while the lists keep a later frame's nodes. At
+ * RTT 150 with the joiner stuttering the host's draw thread called a garbage
+ * vtable (0x43B94000) and wrote 0x00100B80 over guest memory within one or two
+ * matches (runs C1, C2, C4; C3 with them kept: no crash). Test mode and the
+ * local-lag equivalence test never hit it. Also: after the deciding KO the
+ * result screen's transition read them back (test run h3). */
+static bool g_render_drop = false;
 static const Range kRenderOnly[] = { { 0x43D00000u, 0x00340000u }, { 0x444F9000u, 0x0006E000u } };
 static inline bool render_page(uint32_t ea)
 {
@@ -370,14 +375,14 @@ void state_init()
     }
     {   const char* e = getenv("T5_RB_JOB_PAGES");
         const char* r = getenv("T5_RB_RENDER_STATE");
-        g_render_drop = !(r && !strcmp(r, "keep"));
+        g_render_drop = r && !strcmp(r, "drop");
         if (!(e && !strcmp(e, "keep"))) {
             g_job_lines = spurs_job_put_lines(&g_job_base, &g_job_pages);
             spurs_job_put_reset();
             spurs_job_put_track(1);
         }
         note("state: while a match is fought, render output is left out of the rollback state: %s%s%s "
-             "(T5_RB_JOB_PAGES=keep / T5_RB_RENDER_STATE=keep keep them in)",
+             "(T5_RB_JOB_PAGES=keep keeps them in; T5_RB_RENDER_STATE=drop also drops the draw lists: unsafe, tests only)",
              g_job_lines ? "the pages the SPURS jobs fill (vertex skinning)" : "",
              g_job_lines && g_render_drop ? ", " : "", g_render_drop ? "the draw lists and the render scratch" : "");
     }

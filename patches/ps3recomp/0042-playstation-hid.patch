@@ -1,0 +1,1003 @@
+diff --git a/libs/input/pad_host.h b/libs/input/pad_host.h
+index 4ec711e..c1a40e8 100644
+--- a/libs/input/pad_host.h
++++ b/libs/input/pad_host.h
+@@ -5,8 +5,12 @@
+  * drives:
+  *   - XInput pads (Xbox controllers, XInput-mode arcade sticks/hitboxes)
+  *   - DirectInput 8 game controllers: every HID joystick/gamepad that is not
+- *     XInput -- PS3/PS4-mode arcade sticks and hitboxes, DualShock 4,
+- *     DualSense, Switch Pro, generic USB pads. dinput8.dll ships with Windows.
++ *     XInput -- PS3/PS4-mode arcade sticks and hitboxes, Switch Pro, generic
++ *     USB pads. dinput8.dll ships with Windows.
++ *   - DualShock 4 / DualSense / DualSense Edge read directly as HID devices
++ *     (setupapi + hid.dll), every report mode over USB and Bluetooth -- also
++ *     the Bluetooth extended report DirectInput cannot read, which Steam and
++ *     DS4Windows switch these pads to. Bound like DirectInput devices.
+  *   - the keyboard (only while a window of this process has the focus)
+  *   - PS3_PAD_FILE / PS3_PAD_FILE2 scripted input (ports 1 / 2)
+  *
+diff --git a/libs/input/pad_host_win32.c b/libs/input/pad_host_win32.c
+index 9527105..02bb69f 100644
+--- a/libs/input/pad_host_win32.c
++++ b/libs/input/pad_host_win32.c
+@@ -22,6 +22,11 @@
+  * So: XInput for XInput devices (unchanged), DirectInput 8 for everything
+  * else, with XInput devices filtered out of the DInput list (their HID path
+  * contains "IG_") so a pad is never counted twice.
++ *
++ * The exception: DualShock 4 and DualSense are read as raw HID devices (see
++ * "PlayStation pads read directly" below). Over Bluetooth they switch to a
++ * report DirectInput cannot read once Steam or another program asked them
++ * for it -- the pad then works only through Steam until it is reconnected.
+  */
+ #ifdef _WIN32
+ 
+@@ -32,6 +37,9 @@
+ #include <xinput.h>
+ #define DIRECTINPUT_VERSION 0x0800
+ #include <dinput.h>
++#include <setupapi.h>
++#include <hidsdi.h>
++#include <hidpi.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -45,6 +53,8 @@
+ #pragma comment(lib, "xinput.lib")
+ #pragma comment(lib, "dinput8.lib")
+ #pragma comment(lib, "dxguid.lib")
++#pragma comment(lib, "hid.lib")        /* hid.dll and setupapi.dll: part of every Windows */
++#pragma comment(lib, "setupapi.lib")
+ 
+ /* ---------------------------------------------------------------------------
+  * Time
+@@ -575,8 +585,33 @@ typedef struct {
+     int  socd;
+ } PortCfg;
+ 
++/* PlayStation pads read as HID devices (see "PlayStation pads read directly"). */
++#define PS_VID 0x054C
++enum { PSM_NONE = 0, PSM_DS4, PSM_DS, PSM_EDGE };
++static const char* const k_psm_name[] = { "?", "DualShock 4", "DualSense", "DualSense Edge" };
++
++static int ps_model(u16 vid, u16 pid)
++{
++    if (vid != PS_VID) return PSM_NONE;
++    switch (pid) {
++    case 0x05C4: case 0x09CC: return PSM_DS4;     /* DualShock 4, first and second model */
++    case 0x0CE6: return PSM_DS;                  /* DualSense */
++    case 0x0DF2: return PSM_EDGE;                /* DualSense Edge */
++    default: return PSM_NONE;
++    }
++}
++
++/* USB VID/PID pairs (SDL_GAMECONTROLLER_IGNORE_DEVICES[_EXCEPT], set by Steam) */
++#define VIDPID_MAX 64
++typedef struct { int set, n; u32 id[VIDPID_MAX]; } VidPidList;
++
+ static struct {
+     int  xinput, dinput, dinput_all, background;
++    int  hid;                        /* DualShock 4 / DualSense read as HID devices */
++    int  steam_input;                /* leave a pad Steam Input handles to its virtual pad */
++    VidPidList steam_ignore, steam_except;
++    int  hid_fake_model, hid_fake_bt; /* PS3_PAD_HID_FAKE=<model>,<usb|bt>,<file> (tests) */
++    char hid_fake[MAX_PATH * 2];
+     int  kb_port, kb2_port;          /* 0-based, -1 = off */
+     int  min_ports;                  /* ports reported connected at least */
+     int  mirror;
+@@ -639,6 +674,75 @@ static int env_int(const char* name, int def)
+     return (v && *v) ? atoi(v) : def;
+ }
+ 
++/* "0xAAAA/0xBBBB,0xCCCC/0xDDDD" (SDL's format; "@file" = read the list from that file). */
++static void parse_vidpid_list(VidPidList* l, const char* v)
++{
++    memset(l, 0, sizeof *l);
++    if (!v || !*v) return;
++    char buf[4096]; size_t n = 0;
++    if (v[0] == '@') {
++        FILE* f = fopen(v + 1, "rb");
++        if (f) { n = fread(buf, 1, sizeof buf - 1, f); fclose(f); }
++    } else {
++        n = strlen(v); if (n > sizeof buf - 1) n = sizeof buf - 1;
++        memcpy(buf, v, n);
++    }
++    buf[n] = 0;
++    l->set = 1;
++    char* save = NULL;
++    for (char* tok = strtok_s(buf, ", \t\r\n", &save); tok; tok = strtok_s(NULL, ", \t\r\n", &save)) {
++        char* slash = strchr(tok, '/');
++        if (!slash) continue;
++        *slash = 0;
++        char* e1; char* e2;
++        unsigned long vid = strtoul(tok, &e1, 16), pid = strtoul(slash + 1, &e2, 16);
++        if (e1 == tok || e2 == slash + 1 || vid > 0xFFFF || pid > 0xFFFF) continue;
++        if (l->n < VIDPID_MAX) l->id[l->n++] = (u32)vid << 16 | (u32)pid;
++    }
++}
++
++static int vidpid_listed(const VidPidList* l, u16 vid, u16 pid)
++{
++    for (int i = 0; i < l->n; i++) if (l->id[i] == ((u32)vid << 16 | pid)) return 1;
++    return 0;
++}
++
++/* SteamVirtualGamepadInfo: a file Steam writes for a game it starts with Steam
++ * Input on -- one "[slot N]" section per virtual pad it gives the game, with
++ * the VID= and PID= of the real controller behind it. Read when asked (only
++ * on a device scan): Steam rewrites it as pads come and go. */
++static int steam_virtual_for(u16 vid, u16 pid)
++{
++    const char* path = getenv("SteamVirtualGamepadInfo");
++    if (!path || !*path) return 0;
++    FILE* f = fopen(path, "rb");
++    if (!f) return 0;
++    char line[256];
++    unsigned long v = 0, p = 0;
++    int hit = 0;
++    while (!hit && fgets(line, sizeof line, f)) {
++        const char* s = line;
++        while (*s == ' ' || *s == '\t') s++;
++        if (*s == '[') { v = p = 0; continue; }             /* next slot */
++        if (!_strnicmp(s, "VID=", 4)) v = strtoul(s + 4, NULL, 0);
++        else if (!_strnicmp(s, "PID=", 4)) p = strtoul(s + 4, NULL, 0);
++        else continue;
++        hit = v == vid && p == pid;
++    }
++    fclose(f);
++    return hit;
++}
++
++/* Does Steam give the game a virtual pad for this device and ask games to
++ * leave the device itself alone? SDL's two variables, which Steam sets for a
++ * game it starts with Steam Input on, and its virtual pad list. */
++static int steam_lists(u16 vid, u16 pid)
++{
++    if (vidpid_listed(&g_cfg.steam_ignore, vid, pid)) return 1;
++    if (g_cfg.steam_except.set && g_cfg.steam_except.n && !vidpid_listed(&g_cfg.steam_except, vid, pid)) return 1;
++    return steam_virtual_for(vid, pid);
++}
++
+ static void load_config(void)
+ {
+     /* Where: PS3_CONTROLS, else controls.ini next to the executable, else in
+@@ -664,6 +768,31 @@ static void load_config(void)
+     g_cfg.xinput      = ini_int("general", "xinput", 1);
+     g_cfg.dinput      = ini_int("general", "dinput", 1);
+     g_cfg.dinput_all  = env_int("PS3_PAD_DINPUT_ALL", ini_int("general", "dinput_all", 0));
++    /* The HID path takes over pads DirectInput would read, so it follows
++     * dinput unless set: dinput = 0 (one virtual pad from DS4Windows, say)
++     * keeps the real pad unread as before. */
++    g_cfg.hid         = env_int("PS3_PAD_HID", ini_int("general", "hid", g_cfg.dinput)) != 0;
++    g_cfg.steam_input = env_int("PS3_PAD_STEAM_INPUT", ini_int("general", "steam_input", 1)) != 0;
++    parse_vidpid_list(&g_cfg.steam_ignore, getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES"));
++    parse_vidpid_list(&g_cfg.steam_except, getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"));
++    {   /* PS3_PAD_HID_FAKE=<ds4|dualsense|edge>,<usb|bt>,<file>: a pad whose reports come from a file */
++        const char* f = getenv("PS3_PAD_HID_FAKE");
++        g_cfg.hid_fake[0] = 0;
++        if (f && *f) {
++            char m[16] = "", b[8] = "";
++            const char* c1 = strchr(f, ',');
++            const char* c2 = c1 ? strchr(c1 + 1, ',') : NULL;
++            if (c1 && c2 && c1 - f < (ptrdiff_t)sizeof m && c2 - c1 - 1 < (ptrdiff_t)sizeof b && c2[1]) {
++                memcpy(m, f, (size_t)(c1 - f)); memcpy(b, c1 + 1, (size_t)(c2 - c1 - 1));
++                g_cfg.hid_fake_model = name_eq(m, "ds4") ? PSM_DS4 : name_eq(m, "dualsense") ? PSM_DS :
++                                       name_eq(m, "edge") ? PSM_EDGE : PSM_NONE;
++                g_cfg.hid_fake_bt = name_eq(b, "bt");
++                if (g_cfg.hid_fake_model && (g_cfg.hid_fake_bt || name_eq(b, "usb")))
++                    snprintf(g_cfg.hid_fake, sizeof g_cfg.hid_fake, "%s", c2 + 1);
++            }
++            if (!g_cfg.hid_fake[0]) printf("[pad] PS3_PAD_HID_FAKE=%s: expected <ds4|dualsense|edge>,<usb|bt>,<file>\n", f);
++        }
++    }
+     g_cfg.background  = ini_int("general", "background", 1);
+     g_cfg.kb_port     = parse_port_number(ini_get("general", "keyboard"), 0);
+     g_cfg.kb2_port    = parse_port_number(ini_get("general", "keyboard2"), 1);
+@@ -710,9 +839,11 @@ static void load_config(void)
+  * Devices
+  * -----------------------------------------------------------------------*/
+ 
+-enum { DEV_XINPUT = 1, DEV_DINPUT = 2 };
++enum { DEV_XINPUT = 1, DEV_DINPUT = 2, DEV_HID = 3 };   /* DEV_HID: bound like DirectInput */
+ #define MAX_DEVS 16
+ 
++struct HidDev;
++
+ typedef struct {
+     int  kind;                 /* 0 = free slot */
+     volatile LONG lost;        /* a read failed: the hot-plug thread drops it */
+@@ -727,7 +858,10 @@ typedef struct {
+     u32  last_bits[(CID_COUNT + 31) / 32];
+     u8   rumble[2];
+     int  di_buffered;          /* DInput event buffer set up (tap latch) */
+-    int  di_primed;            /* first drain done: older events discarded */
++    int  di_primed;            /* first drain done: older events discarded (DInput, HID) */
++    struct HidDev* hid;        /* DEV_HID: the reader */
++    int  hid_failed;           /* DEV_HID: its death was counted (hid_fail_add) */
++    WCHAR path[MAX_PATH];      /* DEV_DINPUT / DEV_HID: HID device path ("" = unknown) */
+ } PadDev;
+ 
+ static PadDev   g_dev[MAX_DEVS];
+@@ -839,6 +973,424 @@ static void di_drain(PadDev* d, RawState* r)
+     d->di_primed = 1;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * PlayStation pads read directly: DualShock 4 (054C:05C4, 054C:09CC),
++ * DualSense (054C:0CE6), DualSense Edge (054C:0DF2)
++ *
++ * DirectInput reads these through their HID report descriptor, which
++ * describes report 0x01 only. Over Bluetooth a pad starts out sending a short
++ * "simple" report 0x01. Once a program asks it for more (Steam with
++ * "PlayStation Controller Support", DS4Windows, anything that reads motion or
++ * sets the light bar), it sends the extended report instead -- 0x11 on a
++ * DualShock 4, 0x31 on a DualSense -- until it is switched off or
++ * reconnected. The descriptor calls that report vendor-defined, so DirectInput
++ * (and joy.cpl, WinMM and every DirectInput game) gets no input at all: the
++ * pad "only works through Steam". Over USB the full report 0x01 is the only
++ * one, and DirectInput reads it.
++ *
++ * So these pads are opened as HID devices (setupapi + hid.dll) and their input
++ * reports parsed here, in every mode ([0] = report ID):
++ *
++ *   ID       pad, link       bytes   layout
++ *   0x01     DS4 USB         64      [1..4] LX LY RX RY  [5..7] buttons  [8] L2  [9] R2  (then motion...)
++ *   0x01     DS4 BT simple   10      the same first 10 bytes
++ *   0x11     DS4 BT extended 78      [1] flags (0x80: input data present)  [2] -  then the USB layout
++ *                                    from [3]: [3..6] sticks [7..9] buttons [10] L2 [11] R2
++ *   0x12-19  DS4 BT + audio  142-547 as 0x11 (only while audio is streamed to the pad)
++ *   0x01     DS USB          64      [1..4] sticks  [5] L2  [6] R2  [7] counter  [8..10] buttons
++ *   0x01     DS BT simple    10      the DS4 layout: [1..4] sticks [5..7] buttons [8] L2 [9] R2
++ *   0x31     DS BT extended  78      [1] sequence  then the USB layout from [2]: [2..5] sticks
++ *                                    [6] L2 [7] R2 [8] counter [9..11] buttons
++ *
++ * The three button bytes are the same in all of them: byte 0 = hat in the low
++ * nibble (0 = up, clockwise in eighths to 7 = up-left, 8 = centred) + square
++ * cross circle triangle in bits 4-7; byte 1 = L1 R1 L2 R2 share/create options
++ * L3 R3; byte 2 = PS, touchpad click, mute (DualSense full reports only; the
++ * other bits of the DS4's and of the simple reports are a counter), and on a
++ * DualSense Edge bits 4-7 = left Fn, right Fn, left paddle, right paddle.
++ * Sticks and triggers are 0..255; sticks centre at 128, up/left = 0.
++ * Windows hands every report over padded to the device's longest one
++ * (InputReportByteLength: 64 over USB, 78 for a DualSense and 547 for a DS4 on
++ * Bluetooth), which is how a DualSense's simple 0x01 is told from its USB 0x01.
++ *
++ * Bluetooth extended reports end in a CRC-32 (the zlib / IEEE 802.3 one) of
++ * the byte 0xA1 (Bluetooth HID "input" header) followed by the report up to
++ * the CRC, little-endian. Output reports would use 0xA2 -- but nothing is
++ * ever sent to the pad: no output report, and no feature report read either
++ * (reading the calibration or pairing feature report is what switches a
++ * Bluetooth pad to the extended report), so it stays in the mode it is in and
++ * other programs see it as before. No rumble or light bar (there was none
++ * through DirectInput either).
++ *
++ * The parsed state is what DirectInput reports for the same pad: B1-B14 in the
++ * order above (square cross circle triangle L1 R1 L2 R2 share options L3 R3 PS
++ * touchpad), B15 mute, B16-B19 the Edge buttons, hat 1 = d-pad, X Y = left
++ * stick, Z RZ = right stick, RX RY = L2 R2 travel. So the "ps" layout,
++ * [dinput.054C:0CE6] sections, dinput:... port pins and joy.cpl's button
++ * numbers apply unchanged: the pad is a DirectInput-class device, read another
++ * way. A reader thread per pad waits on an overlapped ReadFile and keeps the
++ * newest state plus every button, hat and axis direction that was down in any
++ * report since the last sample (what the DirectInput event buffer gives), so
++ * the 1 ms sampler and the tap latch treat it exactly as a DirectInput device.
++ * Reading does not depend on the window focus.
++ *
++ * Never twice: DirectInput skips a device whose HID path a reader holds, and
++ * the HID scan skips one DirectInput holds. If the HID open fails (another
++ * program opened the pad exclusively), the pad stays with DirectInput.
++ * [general] hid = 0 (env PS3_PAD_HID=0) turns this off: DirectInput as before.
++ * -----------------------------------------------------------------------*/
++
++/* report modes, for the log */
++enum { PSR_NONE = 0, PSR_DS4_USB, PSR_DS4_SIMPLE, PSR_DS4_EXT, PSR_DS_USB, PSR_DS_SIMPLE, PSR_DS_EXT };
++static const char* const k_psr_name[] = {
++    "-", "USB reports", "Bluetooth simple reports", "Bluetooth extended reports",
++    "USB reports", "Bluetooth simple reports", "Bluetooth extended reports" };
++
++/* CRC-32, reflected polynomial 0xEDB88320 (zlib's crc32(): ps_crc32(ps_crc32(0, a), b) = crc of a then b). */
++static u32 ps_crc32(u32 crc, const u8* p, size_t n)
++{
++    static const u32 t[16] = {
++        0x00000000u, 0x1DB71064u, 0x3B6E20C8u, 0x26D930ACu, 0x76DC4190u, 0x6B6B51F4u, 0x4DB26158u, 0x5005713Cu,
++        0xEDB88320u, 0xF00F9344u, 0xD6D6A3E8u, 0xCB61B38Cu, 0x9B64C2B0u, 0x86D3D2D4u, 0xA00AE278u, 0xBDBDF21Cu };
++    crc = ~crc;
++    while (n--) {
++        crc ^= *p++;
++        crc = (crc >> 4) ^ t[crc & 15];
++        crc = (crc >> 4) ^ t[crc & 15];
++    }
++    return ~crc;
++}
++
++/* Length of a Bluetooth extended report, whose last 4 bytes are its CRC; 0 = a report without one.
++ * DS4 0x11 = 78 bytes, 0x12..0x18 64 more each, 0x19 = 547; DualSense 0x31 = 78. */
++static size_t ps_crc_len(int model, u8 id)
++{
++    if (model == PSM_DS4 && id >= 0x11 && id <= 0x19) return id == 0x19 ? 547u : 78u + 64u * (u32)(id - 0x11);
++    if ((model == PSM_DS || model == PSM_EDGE) && id == 0x31) return 78u;
++    return 0;
++}
++
++/* 1 = the report's CRC is right, 0 = wrong, -1 = nothing to check (no CRC, or the report is cut short). */
++static int ps_crc_check(int model, const u8* p, size_t n)
++{
++    if (!n) return -1;
++    const size_t len = ps_crc_len(model, p[0]);
++    if (!len || n < len) return -1;
++    static const u8 hdr = 0xA1;
++    const u32 crc = ps_crc32(ps_crc32(0, &hdr, 1), p, len - 4);
++    const u8* c = p + len - 4;
++    return crc == ((u32)c[0] | (u32)c[1] << 8 | (u32)c[2] << 16 | (u32)c[3] << 24);
++}
++
++/* Which reports with a wrong CRC are dropped. A pad that has sent a good one
++ * gets bad ones dropped (a damaged report would be input nobody gave) -- unless
++ * 200 come in a row; a pad that sent 25 bad ones and never a good one does not
++ * fill the CRC in (some third-party pads): its reports are used. A good report
++ * ends that. */
++#define PS_CRC_RUN_NEVER_GOOD 25
++#define PS_CRC_RUN_WAS_GOOD   200
++typedef struct { u32 good, bad, run; int lenient; } PsCrcGate;
++
++static int ps_crc_gate(PsCrcGate* g, int ok)
++{
++    if (ok < 0) return 1;
++    if (ok) { g->good++; g->run = 0; g->lenient = 0; return 1; }
++    g->bad++; g->run++;
++    if (g->run >= (g->good ? PS_CRC_RUN_WAS_GOOD : PS_CRC_RUN_NEVER_GOOD)) g->lenient = 1;
++    return g->lenient;
++}
++
++/* 0..255 -> -32768..32767, what DirectInput gives for a logical 0..255 axis with DIPROP_RANGE -32768..32767. */
++static s32 ps_axis(u8 v) { return (s32)v * 257 - 32768; }
++
++/* st: LX LY RX RY; b: the three button bytes; b2mask: the bits of b[2] that are buttons. */
++static void ps_fill(RawState* r, const u8* st, const u8* b, u8 b2mask, u8 l2, u8 r2)
++{
++    /* hat value -> up(1) right(2) down(4) left(8) */
++    static const u8 hat[8] = { 1, 1 | 2, 2, 2 | 4, 4, 4 | 8, 8, 8 | 1 };
++    memset(r, 0, sizeof *r);
++    const unsigned h = b[0] & 15u;
++    if (h < 8)
++        for (unsigned d = 0; d < 4; d++) if ((hat[h] >> d) & 1) raw_set(r, CID_HAT + d);
++    const unsigned x = b[2] & b2mask;
++    r->bits[0] = (u32)(b[0] >> 4) | (u32)b[1] << 4 | (u32)(x & 7u) << 12 | (u32)(x >> 4) << 15;
++    r->axis[0] = ps_axis(st[0]); r->axis[1] = ps_axis(st[1]);     /* X Y   = left stick */
++    r->axis[2] = ps_axis(st[2]); r->axis[5] = ps_axis(st[3]);     /* Z RZ  = right stick */
++    r->axis[3] = ps_axis(l2);    r->axis[4] = ps_axis(r2);        /* RX RY = L2 R2 */
++    r->lt = l2; r->rt = r2;
++    axis_dirs(r);
++}
++
++/* One input report of a pad of `model` -> *r. n = the bytes ReadFile returned. bt: 1 = the pad is on
++ * Bluetooth, 0 = on USB, -1 = not known (then the length decides: 64 = USB). It matters only for a
++ * DualSense's report 0x01: the full one over USB, the simple one over Bluetooth. Returns the PSR_*
++ * mode, or PSR_NONE (r untouched) for a report that holds no input state. */
++static int ps_parse(int model, int bt, const u8* p, size_t n, RawState* r)
++{
++    if (!p || n < 10) return PSR_NONE;
++    const u8 id = p[0];
++    if (model == PSM_DS4) {
++        if (id == 0x01) {
++            ps_fill(r, p + 1, p + 5, 0x03, p[8], p[9]);
++            return (bt > 0 || (bt < 0 && n != 64)) ? PSR_DS4_SIMPLE : PSR_DS4_USB;
++        }
++        if (id >= 0x11 && id <= 0x19 && n >= 12 && (p[1] & 0x80)) {
++            ps_fill(r, p + 3, p + 7, 0x03, p[10], p[11]);
++            return PSR_DS4_EXT;
++        }
++        return PSR_NONE;
++    }
++    if (model == PSM_DS || model == PSM_EDGE) {
++        const u8 full = model == PSM_EDGE ? 0xF7 : 0x07;
++        if (id == 0x01) {
++            if (bt > 0 || (bt < 0 && n != 64)) { ps_fill(r, p + 1, p + 5, 0x03, p[8], p[9]); return PSR_DS_SIMPLE; }
++            ps_fill(r, p + 1, p + 8, full, p[5], p[6]);
++            return PSR_DS_USB;
++        }
++        if (id == 0x31 && n >= 12) { ps_fill(r, p + 2, p + 9, full, p[6], p[7]); return PSR_DS_EXT; }
++    }
++    return PSR_NONE;
++}
++
++/* The state of a pad at rest (before its first report). */
++static void ps_neutral(RawState* r)
++{
++    static const u8 st[4] = { 128, 128, 128, 128 }, b[3] = { 8, 0, 0 };
++    ps_fill(r, st, b, 0, 0, 0);
++}
++
++typedef struct HidDev {
++    HANDLE h, thread, stop;
++    OVERLAPPED ov;
++    SRWLOCK lock;                     /* cur, tap */
++    RawState cur;                     /* the newest report */
++    u32  tap[(CID_COUNT + 31) / 32];  /* down in any report since the last take */
++    volatile LONG dead;               /* reading failed: the pad is gone */
++    volatile LONG leak;               /* the reader did not stop: keep the memory */
++    int  model, bt;                   /* bt: 1 Bluetooth, 0 USB, -1 not known (see ps_parse) */
++    u16  vid, pid;
++    DWORD in_len;                     /* bytes per read (InputReportByteLength) */
++    /* reader thread only */
++    int  mode; u8 mode_id; int mode_logs;
++    u32  n_reports, n_dropped;
++    PsCrcGate crc;
++    char name[80];
++    char fake[MAX_PATH * 2];          /* PS3_PAD_HID_FAKE: the reports come from this file */
++    u8   buf[1024];
++} HidDev;
++
++static const char* hid_link(const HidDev* h)
++{
++    return h->bt > 0 ? "Bluetooth" : h->bt == 0 ? "USB" : h->in_len > 64 ? "Bluetooth?" : "USB?";
++}
++
++/* A parsed report: the newest state, and its presses kept for the next take. */
++static void hid_store(HidDev* h, const RawState* r)
++{
++    AcquireSRWLockExclusive(&h->lock);
++    h->cur = *r;
++    for (int i = 0; i < (CID_COUNT + 31) / 32; i++) h->tap[i] |= r->bits[i];
++    ReleaseSRWLockExclusive(&h->lock);
++}
++
++/* The newest state into *r; with taps also everything that was down in a report since the previous take
++ * (r->tap, as di_drain marks it). */
++static void hid_take(HidDev* h, RawState* r, int taps)
++{
++    AcquireSRWLockExclusive(&h->lock);
++    *r = h->cur;
++    if (taps) memcpy(r->tap, h->tap, sizeof r->tap);
++    else memset(r->tap, 0, sizeof r->tap);
++    memset(h->tap, 0, sizeof h->tap);
++    ReleaseSRWLockExclusive(&h->lock);
++}
++
++/* One report as read from the pad. Reader thread. */
++static void hid_feed(HidDev* h, const u8* p, size_t n)
++{
++    if (!n) return;
++    const int was_lenient = h->crc.lenient;
++    if (!ps_crc_gate(&h->crc, ps_crc_check(h->model, p, n))) {
++        if (h->n_dropped++ < 3) {
++            printf("[pad] HID '%s': report 0x%02X with a wrong CRC dropped\n", h->name, p[0]);
++            fflush(stdout);
++        }
++        return;
++    }
++    if (h->crc.lenient && !was_lenient) {
++        printf("[pad] HID '%s': %u reports in a row with a wrong CRC -- using them anyway\n", h->name, h->crc.run);
++        fflush(stdout);
++    }
++    RawState r;
++    const int mode = ps_parse(h->model, h->bt, p, n, &r);
++    if (!mode) return;
++    h->n_reports++;
++    if (mode != h->mode || p[0] != h->mode_id) {
++        /* first report, and every change (Steam switching the pad while we run) */
++        if (h->mode_logs++ < 16) {
++            printf("[pad] HID '%s': %s (0x%02X)\n", h->name, k_psr_name[mode], p[0]);
++            fflush(stdout);
++        }
++        h->mode = mode; h->mode_id = p[0];
++    }
++    hid_store(h, &r);
++}
++
++static DWORD WINAPI hid_reader_main(LPVOID arg)
++{
++    HidDev* h = (HidDev*)arg;
++    HANDLE w[2] = { h->stop, h->ov.hEvent };
++    DWORD err = 0;
++    int empty = 0;
++    for (;;) {
++        DWORD n = 0;
++        ResetEvent(h->ov.hEvent);
++        if (!ReadFile(h->h, h->buf, h->in_len, &n, &h->ov)) {
++            err = GetLastError();
++            if (err != ERROR_IO_PENDING) break;
++            err = 0;
++            DWORD r;
++            do r = WaitForMultipleObjects(2, w, FALSE, 1000); while (r == WAIT_TIMEOUT);
++            if (r != WAIT_OBJECT_0 + 1) {
++                /* stop: cancel the read, and wait for it to let go of buf and ov */
++                CancelIoEx(h->h, &h->ov);
++                if (WaitForSingleObject(h->ov.hEvent, 2000) != WAIT_OBJECT_0) InterlockedExchange(&h->leak, 1);
++                return 0;
++            }
++            if (!GetOverlappedResult(h->h, &h->ov, &n, FALSE)) { err = GetLastError(); break; }
++        }
++        if (!n && ++empty > 1000) { err = ERROR_HANDLE_EOF; break; }   /* never a spin on empty reads */
++        if (n) empty = 0;
++        hid_feed(h, h->buf, n);
++    }
++    if (WaitForSingleObject(h->stop, 0) != WAIT_OBJECT_0) {
++        printf("[pad] HID '%s': reading stopped (error %lu)\n", h->name, (unsigned long)err);
++        fflush(stdout);
++    }
++    InterlockedExchange(&h->dead, 1);
++    return 0;
++}
++
++/* Hex bytes of one line ("01 80 80 ..." or "018080..."), up to '#' or the end. */
++static size_t hex_bytes(const char* s, const char* end, u8* out, size_t cap)
++{
++    size_t n = 0; int hi = -1;
++    for (; s < end && *s != '#'; s++) {
++        int v = isdigit((unsigned char)*s) ? *s - '0' : (*s >= 'a' && *s <= 'f') ? *s - 'a' + 10 :
++                (*s >= 'A' && *s <= 'F') ? *s - 'A' + 10 : -1;
++        if (v < 0) continue;
++        if (hi < 0) hi = v;
++        else { if (n < cap) out[n++] = (u8)(hi << 4 | v); hi = -1; }
++    }
++    return n;
++}
++
++/* PS3_PAD_HID_FAKE (tests): the file is a log of input reports in hex, one per line ('#' starts a
++ * comment), that a test appends to. Read every millisecond; every line added since the last read is fed
++ * in order, padded as Windows pads them -- as a real pad's reports wait in the HID driver's queue, none
++ * is lost, and lines appended in one write are reports that came between two samples. A file that got
++ * shorter is read again from its start; the file gone = the pad unplugged. */
++static DWORD WINAPI hid_fake_main(LPVOID arg)
++{
++    HidDev* h = (HidDev*)arg;
++    HANDLE tmr = CreateWaitableTimerExW(NULL, NULL, 0x00000002 /* HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
++    if (!tmr) tmr = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
++    char* text = (char*)malloc(65536);
++    LONGLONG off = 0;
++    for (; text;) {
++        if (tmr) {
++            LARGE_INTEGER due; due.QuadPart = -10000;   /* 1 ms */
++            SetWaitableTimer(tmr, &due, 0, NULL, NULL, FALSE);
++            HANDLE w[2] = { h->stop, tmr };
++            if (WaitForMultipleObjects(2, w, FALSE, 1000) == WAIT_OBJECT_0) break;
++        } else if (WaitForSingleObject(h->stop, 1) == WAIT_OBJECT_0) break;
++        HANDLE f = CreateFileA(h->fake, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++        if (f == INVALID_HANDLE_VALUE) {
++            if (GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND) {
++                printf("[pad] HID '%s': %s is gone -- unplugged\n", h->name, h->fake);
++                fflush(stdout);
++                break;
++            }
++            continue;
++        }
++        LARGE_INTEGER size, pos;
++        DWORD n = 0;
++        if (GetFileSizeEx(f, &size)) {
++            if (size.QuadPart < off) off = 0;                  /* written anew */
++            pos.QuadPart = off;
++            if (size.QuadPart > off && SetFilePointerEx(f, pos, NULL, FILE_BEGIN) && !ReadFile(f, text, 65535, &n, NULL))
++                n = 0;
++        }
++        CloseHandle(f);
++        const char* s = text;
++        for (;;) {                                             /* complete lines only */
++            const char* e = n ? (const char*)memchr(s, '\n', (size_t)(text + n - s)) : NULL;
++            if (!e) break;
++            u8 rep[sizeof h->buf];
++            const size_t k = hex_bytes(s, e, rep, h->in_len);
++            if (k) {
++                memset(rep + k, 0, h->in_len - k);
++                hid_feed(h, rep, h->in_len);
++            }
++            s = e + 1;
++        }
++        off += s - text;
++    }
++    if (tmr) CloseHandle(tmr);
++    free(text);
++    InterlockedExchange(&h->dead, 1);
++    return 0;
++}
++
++static HidDev* hid_new(int model, u16 vid, u16 pid, int bt, DWORD in_len, const char* name)
++{
++    HidDev* h = (HidDev*)calloc(1, sizeof *h);
++    if (!h) return NULL;
++    InitializeSRWLock(&h->lock);
++    h->h = INVALID_HANDLE_VALUE;
++    h->model = model; h->vid = vid; h->pid = pid; h->bt = bt;
++    h->in_len = in_len < 10 ? 64 : in_len > sizeof h->buf ? (DWORD)sizeof h->buf : in_len;
++    snprintf(h->name, sizeof h->name, "%s", name);
++    ps_neutral(&h->cur);
++    h->stop = CreateEventW(NULL, TRUE, FALSE, NULL);
++    h->ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
++    if (!h->stop || !h->ov.hEvent) {
++        if (h->stop) CloseHandle(h->stop);
++        if (h->ov.hEvent) CloseHandle(h->ov.hEvent);
++        free(h);
++        return NULL;
++    }
++    return h;
++}
++
++static void hid_free(HidDev* h)
++{
++    if (!h) return;
++    if (h->thread) {
++        SetEvent(h->stop);
++        if (WaitForSingleObject(h->thread, 3000) != WAIT_OBJECT_0) InterlockedExchange(&h->leak, 1);
++        else CloseHandle(h->thread);
++    }
++    if (h->leak) return;            /* a read may still write into it: keep it all */
++    if (h->h != INVALID_HANDLE_VALUE) CloseHandle(h->h);
++    CloseHandle(h->ov.hEvent);
++    CloseHandle(h->stop);
++    free(h);
++}
++
++static int hid_start(HidDev* h)
++{
++    h->thread = CreateThread(NULL, 0, h->fake[0] ? hid_fake_main : hid_reader_main, h, 0, NULL);
++    if (!h->thread) return 0;
++    /* like the sampler: a report is timed when it arrives, not when the game's threads let us run */
++    SetThreadPriority(h->thread, THREAD_PRIORITY_HIGHEST);
++    typedef HRESULT (WINAPI *SetThreadDescription_t)(HANDLE, PCWSTR);
++    SetThreadDescription_t sd = (SetThreadDescription_t)(void*)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
++    if (sd) sd(h->thread, L"pad HID reader");
++    return 1;
++}
++
+ /* Read one device now. 0 = gone. */
+ static int dev_read(PadDev* d, RawState* r)
+ {
+@@ -863,6 +1415,14 @@ static int dev_read(PadDev* d, RawState* r)
+         axis_dirs(r);
+         return 1;
+     }
++    if (d->kind == DEV_HID) {
++        HidDev* h = d->hid;
++        if (h->dead) { InterlockedExchange(&d->lost, 1); return 0; }
++        /* taps only with the tap latch (as di_buffered), and not from before the first read */
++        hid_take(h, r, g_cfg.tap_latch && d->di_primed);
++        d->di_primed = 1;
++        return 1;
++    }
+     IDirectInputDevice8W* di = d->di;
+     DIJOYSTATE2 js;
+     HRESULT hr = di->lpVtbl->Poll(di);
+@@ -890,6 +1450,7 @@ static void dev_release(PadDev* d)
+         XInputSetState(d->xi, &v);
+     }
+     if (d->di) { d->di->lpVtbl->Unacquire(d->di); d->di->lpVtbl->Release(d->di); }
++    if (d->hid) hid_free(d->hid);
+     memset(d, 0, sizeof *d);
+ }
+ 
+@@ -915,6 +1476,9 @@ static PadDev* dev_alloc(void)
+ static void dev_describe(const PadDev* d, char* out, size_t cap)
+ {
+     if (d->kind == DEV_XINPUT) snprintf(out, cap, "XInput #%lu (%s)", (unsigned long)d->xi, d->name);
++    else if (d->kind == DEV_HID)
++        snprintf(out, cap, "HID '%s' %04X:%04X (%s, %s)", d->name, d->vid, d->pid, k_psm_name[d->hid->model],
++                 hid_link(d->hid));
+     else snprintf(out, cap, "DInput '%s' %04X:%04X", d->name, d->vid, d->pid);
+ }
+ 
+@@ -929,18 +1493,29 @@ static BOOL CALLBACK di_enum_cb(LPCDIDEVICEINSTANCEW inst, LPVOID ctx)
+     return DIENUM_CONTINUE;
+ }
+ 
+-static int di_is_xinput(IDirectInputDevice8W* di)
++/* The device's HID path into out ("" if DirectInput does not say). */
++static void di_path(IDirectInputDevice8W* di, WCHAR* out, size_t cap)
+ {
+     DIPROPGUIDANDPATH gp;
+     memset(&gp, 0, sizeof gp);
+     gp.diph.dwSize = sizeof gp; gp.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+     gp.diph.dwHow = DIPH_DEVICE;
+-    if (FAILED(di->lpVtbl->GetProperty(di, DIPROP_GUIDANDPATH, &gp.diph))) return 0;
+-    for (WCHAR* p = gp.wszPath; *p; p++)
++    out[0] = 0;
++    if (FAILED(di->lpVtbl->GetProperty(di, DIPROP_GUIDANDPATH, &gp.diph))) return;
++    gp.wszPath[MAX_PATH - 1] = 0;
++    if (wcslen(gp.wszPath) < cap) wcscpy_s(out, cap, gp.wszPath);
++}
++
++static int path_is_xinput(const WCHAR* path)
++{
++    for (const WCHAR* p = path; *p; p++)
+         if ((p[0] == L'I' || p[0] == L'i') && (p[1] == L'G' || p[1] == L'g') && p[2] == L'_') return 1;
+     return 0;
+ }
+ 
++static int hid_claims(const WCHAR* path, u16 vid, u16 pid);
++static int steam_skips(u16 vid, u16 pid);
++
+ static BOOL CALLBACK di_axis_cb(LPCDIDEVICEOBJECTINSTANCEW obj, LPVOID ctx)
+ {
+     IDirectInputDevice8W* di = (IDirectInputDevice8W*)ctx;
+@@ -979,12 +1554,26 @@ static void di_scan(void)
+         char name[80];
+         WideCharToMultiByte(CP_UTF8, 0, in->tszProductName, -1, name, sizeof name, NULL, NULL);
+         u16 vid = LOWORD(in->guidProduct.Data1), pid = HIWORD(in->guidProduct.Data1);
+-        if (!g_cfg.dinput_all && di_is_xinput(di)) {
++        WCHAR path[MAX_PATH];
++        di_path(di, path, MAX_PATH);
++        if (!g_cfg.dinput_all && path_is_xinput(path)) {
+             static int said;
+             if (said++ < 8) printf("[pad] DInput '%s' %04X:%04X is an XInput device -- read through XInput\n", name, vid, pid);
+             di->lpVtbl->Release(di);
+             continue;
+         }
++        if (g_cfg.hid && ps_model(vid, pid)) {
++            /* a DualShock 4 / DualSense the HID path reads (or leaves to Steam Input) */
++            const int claimed = hid_claims(path, vid, pid), steam = !claimed && steam_skips(vid, pid);
++            if (claimed || steam) {
++                static int said;
++                if (said++ < 8)
++                    printf("[pad] DInput '%s' %04X:%04X %s\n", name, vid, pid,
++                           claimed ? "is read directly (HID)" : "is left to Steam Input");
++                di->lpVtbl->Release(di);
++                continue;
++            }
++        }
+         if (FAILED(di->lpVtbl->SetDataFormat(di, &c_dfDIJoystick2))) { di->lpVtbl->Release(di); continue; }
+         /* No SetCooperativeLevel: the default is non-exclusive background,
+          * which is what we want (read whether or not we have the focus). */
+@@ -1014,12 +1603,219 @@ static void di_scan(void)
+         d->kind = DEV_DINPUT; d->di = di; d->inst = in->guidInstance; d->di_buffered = buffered;
+         d->vid = vid; d->pid = pid; d->order = ++g_dev_order;
+         snprintf(d->name, sizeof d->name, "%s", name);
++        wcscpy_s(d->path, MAX_PATH, path);
+         ReleaseSRWLockExclusive(&g_dev_lock);
+         printf("[pad] found DInput '%s' %04X:%04X%s\n", name, vid, pid,
+                SUCCEEDED(ahr) ? "" : " (acquire failed, will retry)");
+     }
+ }
+ 
++/* --- PlayStation pads: HID enumeration (hot-plug thread / init only) --- */
++
++/* Does a live HID reader hold this device? Without a path (DirectInput did not
++ * name one), any reader of the same model counts. */
++static int hid_claims(const WCHAR* path, u16 vid, u16 pid)
++{
++    int held = 0;
++    AcquireSRWLockShared(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS && !held; i++) {
++        const PadDev* d = &g_dev[i];
++        if (d->kind != DEV_HID || d->lost || d->hid->fake[0]) continue;
++        held = path[0] ? !_wcsicmp(d->path, path) : (d->vid == vid && d->pid == pid);
++    }
++    ReleaseSRWLockShared(&g_dev_lock);
++    return held;
++}
++
++/* Leave a PlayStation pad to Steam Input? When Steam starts the game (or the
++ * launcher) with Steam Input on, the game gets a virtual Xbox pad for it and
++ * Steam lists the real pad in SDL_GAMECONTROLLER_IGNORE_DEVICES: reading the
++ * real one as well would make one pad two players. Only while an XInput pad is
++ * there to take its place ([general] steam_input = 0: always read it). */
++static int steam_skips(u16 vid, u16 pid)
++{
++    if (!g_cfg.steam_input || !ps_model(vid, pid) || !steam_lists(vid, pid)) return 0;
++    int xi = 0;
++    AcquireSRWLockShared(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind == DEV_XINPUT && !g_dev[i].lost) xi = 1;
++    ReleaseSRWLockShared(&g_dev_lock);
++    return xi;
++}
++
++/* Paths the HID path gave up on: an open that failed counts 3 (DirectInput
++ * takes the pad at once), a reader that died while the pad is still there 1
++ * (reopened, at most twice). Forgotten when the pad is unplugged. */
++#define HID_FAIL_MAX 8
++static struct { WCHAR path[MAX_PATH]; int n; } g_hid_fail[HID_FAIL_MAX];
++
++static int hid_fails(const WCHAR* path)
++{
++    for (int i = 0; i < HID_FAIL_MAX; i++) if (g_hid_fail[i].n && !_wcsicmp(g_hid_fail[i].path, path)) return g_hid_fail[i].n;
++    return 0;
++}
++
++static void hid_fail_add(const WCHAR* path, int k)
++{
++    int free_slot = -1;
++    for (int i = 0; i < HID_FAIL_MAX; i++) {
++        if (g_hid_fail[i].n && !_wcsicmp(g_hid_fail[i].path, path)) { g_hid_fail[i].n += k; return; }
++        if (!g_hid_fail[i].n && free_slot < 0) free_slot = i;
++    }
++    if (free_slot < 0) free_slot = 0;
++    wcscpy_s(g_hid_fail[free_slot].path, MAX_PATH, path);
++    g_hid_fail[free_slot].n = k;
++}
++
++/* Add a reader for h as a new device (it is started here). */
++static void hid_add(HidDev* h, const WCHAR* path, const char* how)
++{
++    AcquireSRWLockExclusive(&g_dev_lock);
++    PadDev* d = dev_alloc();
++    if (d) {
++        d->kind = DEV_HID; d->hid = h; d->vid = h->vid; d->pid = h->pid; d->order = ++g_dev_order;
++        snprintf(d->name, sizeof d->name, "%s", h->name);
++        wcscpy_s(d->path, MAX_PATH, path);
++    }
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    if (!d || !hid_start(h)) {
++        if (d) { AcquireSRWLockExclusive(&g_dev_lock); memset(d, 0, sizeof *d); ReleaseSRWLockExclusive(&g_dev_lock); }
++        hid_free(h);
++        printf("[pad] HID '%s': no room or no reader thread -- not used\n", h->name);
++        return;
++    }
++    printf("[pad] found HID '%s' %04X:%04X (%s, %s), %s\n", h->name, h->vid, h->pid, k_psm_name[h->model],
++           hid_link(h), how);
++}
++
++static void hid_fake_scan(void)
++{
++    int have = 0;
++    AcquireSRWLockExclusive(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) {
++        PadDev* d = &g_dev[i];
++        if (d->kind != DEV_HID || !d->hid->fake[0]) continue;
++        if (d->hid->dead) InterlockedExchange(&d->lost, 1);
++        else if (!d->lost) have = 1;
++    }
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    if (have || GetFileAttributesA(g_cfg.hid_fake) == INVALID_FILE_ATTRIBUTES) return;
++    static const u16 pids[] = { 0, 0x09CC, 0x0CE6, 0x0DF2 };
++    const int m = g_cfg.hid_fake_model, bt = g_cfg.hid_fake_bt;
++    char name[80]; snprintf(name, sizeof name, "Fake %s", k_psm_name[m]);
++    HidDev* h = hid_new(m, PS_VID, pids[m], bt, bt ? (m == PSM_DS4 ? 547 : 78) : 64, name);
++    if (!h) return;
++    snprintf(h->fake, sizeof h->fake, "%s", g_cfg.hid_fake);
++    char how[MAX_PATH * 2 + 40]; snprintf(how, sizeof how, "reports from %s (PS3_PAD_HID_FAKE)", g_cfg.hid_fake);
++    hid_add(h, L"", how);
++}
++
++static void hid_scan(void)
++{
++    if (!g_cfg.hid) return;
++    if (g_cfg.hid_fake[0]) { hid_fake_scan(); return; }   /* a test: no real pad is touched */
++    GUID hg; HidD_GetHidGuid(&hg);
++    HDEVINFO set = SetupDiGetClassDevsW(&hg, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
++    if (set == INVALID_HANDLE_VALUE) return;
++    typedef struct { WCHAR path[MAX_PATH]; u16 vid, pid; int model, bt; DWORD in_len; char name[80]; } Found;
++    Found* found = (Found*)calloc(MAX_DEVS, sizeof *found);
++    int nf = 0;
++    union { SP_DEVICE_INTERFACE_DETAIL_DATA_W d; char raw[sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) + MAX_PATH * sizeof(WCHAR)]; } det;
++    for (DWORD i = 0; found && nf < MAX_DEVS; i++) {
++        SP_DEVICE_INTERFACE_DATA ifd; ifd.cbSize = sizeof ifd;
++        if (!SetupDiEnumDeviceInterfaces(set, NULL, &hg, i, &ifd)) break;
++        det.d.cbSize = sizeof det.d;
++        if (!SetupDiGetDeviceInterfaceDetailW(set, &ifd, &det.d, sizeof det, NULL, NULL)) continue;   /* path too long */
++        /* No access asked: works for any HID device (keyboards too) and reads nothing from it. */
++        HANDLE f = CreateFileW(det.d.DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
++        if (f == INVALID_HANDLE_VALUE) continue;
++        HIDD_ATTRIBUTES at; memset(&at, 0, sizeof at); at.Size = sizeof at;
++        const int model = HidD_GetAttributes(f, &at) ? ps_model(at.VendorID, at.ProductID) : PSM_NONE;
++        HIDP_CAPS caps; memset(&caps, 0, sizeof caps);
++        PHIDP_PREPARSED_DATA pp = NULL;
++        if (model && HidD_GetPreparsedData(f, &pp)) {   /* the report descriptor, already in Windows */
++            if (HidP_GetCaps(pp, &caps) != HIDP_STATUS_SUCCESS) memset(&caps, 0, sizeof caps);
++            HidD_FreePreparsedData(pp);
++        }
++        /* the game pad collection (generic desktop: game pad, or joystick) */
++        if (model && caps.UsagePage == 0x01 && (caps.Usage == 0x05 || caps.Usage == 0x04) &&
++            wcslen(det.d.DevicePath) < MAX_PATH) {
++            Found* o = &found[nf++];
++            wcscpy_s(o->path, MAX_PATH, det.d.DevicePath);
++            o->vid = at.VendorID; o->pid = at.ProductID; o->model = model;
++            o->in_len = caps.InputReportByteLength;
++            /* The link, from the path: Bluetooth HID profile's service UUID, or a USB
++             * device's "hid#vid_" (another Bluetooth stack: not known, the length decides) */
++            WCHAR low[MAX_PATH]; wcscpy_s(low, MAX_PATH, det.d.DevicePath); _wcslwr_s(low, MAX_PATH);
++            o->bt = wcsstr(low, L"00001124-0000-1000-8000-00805f9b34fb") ? 1 : wcsstr(low, L"hid#vid_") ? 0 : -1;
++            WCHAR wn[127]; wn[0] = 0;
++            if (!HidD_GetProductString(f, wn, sizeof wn)) wn[0] = 0;
++            wn[126] = 0;
++            o->name[0] = 0;
++            if (wn[0]) WideCharToMultiByte(CP_UTF8, 0, wn, -1, o->name, sizeof o->name, NULL, NULL);
++            if (!o->name[0]) snprintf(o->name, sizeof o->name, "%s", k_psm_name[model]);
++        }
++        CloseHandle(f);
++    }
++    SetupDiDestroyDeviceInfoList(set);
++    if (!found) return;
++    /* Readers of pads that are gone are dropped; a reader that died while its pad is still
++     * there counts as a failure of that path. Failures of pads that are gone are forgotten. */
++    AcquireSRWLockExclusive(&g_dev_lock);
++    for (int i = 0; i < MAX_DEVS; i++) {
++        PadDev* d = &g_dev[i];
++        if (d->kind != DEV_HID || d->hid->fake[0]) continue;
++        int present = 0;
++        for (int k = 0; k < nf; k++) if (!_wcsicmp(found[k].path, d->path)) present = 1;
++        if (!present) InterlockedExchange(&d->lost, 1);
++        else if (d->hid->dead) {
++            InterlockedExchange(&d->lost, 1);
++            if (!d->hid_failed) { d->hid_failed = 1; hid_fail_add(d->path, 1); }
++        }
++    }
++    ReleaseSRWLockExclusive(&g_dev_lock);
++    for (int i = 0; i < HID_FAIL_MAX; i++) {
++        if (!g_hid_fail[i].n) continue;
++        int present = 0;
++        for (int k = 0; k < nf; k++) if (!_wcsicmp(found[k].path, g_hid_fail[i].path)) present = 1;
++        if (!present) g_hid_fail[i].n = 0;
++    }
++    for (int k = 0; k < nf; k++) {
++        const Found* o = &found[k];
++        int held = 0;
++        AcquireSRWLockShared(&g_dev_lock);
++        for (int i = 0; i < MAX_DEVS; i++)
++            if ((g_dev[i].kind == DEV_HID || g_dev[i].kind == DEV_DINPUT) && !g_dev[i].lost && !_wcsicmp(g_dev[i].path, o->path))
++                held = 1;
++        ReleaseSRWLockShared(&g_dev_lock);
++        if (held || hid_fails(o->path) >= 3) continue;      /* ours already, or DirectInput's */
++        if (steam_skips(o->vid, o->pid)) {
++            static int said;
++            if (said++ < 4)
++                printf("[pad] HID '%s' %04X:%04X: Steam Input handles this pad -- the game uses Steam's virtual Xbox"
++                       " pad for it ([general] steam_input = 0 reads it directly)\n", o->name, o->vid, o->pid);
++            continue;
++        }
++        HidDev* h = hid_new(o->model, o->vid, o->pid, o->bt, o->in_len, o->name);
++        if (!h) continue;
++        h->h = CreateFileW(o->path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
++                           FILE_FLAG_OVERLAPPED, NULL);
++        if (h->h == INVALID_HANDLE_VALUE) {
++            const DWORD e = GetLastError();
++            printf("[pad] HID '%s' %04X:%04X: cannot open it (error %lu%s) -- %s\n", o->name, o->vid, o->pid,
++                   (unsigned long)e,
++                   e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION ? ", another program holds it" : "",
++                   g_cfg.dinput ? "read through DirectInput" : "not read (dinput = 0)");
++            hid_free(h);
++            hid_fail_add(o->path, 3);
++            continue;
++        }
++        HidD_SetNumInputBuffers(h->h, 64);   /* room for reports while the reader is late */
++        hid_add(h, o->path, "read directly");
++    }
++    free(found);
++    fflush(stdout);
++}
++
+ static void xi_scan(void)
+ {
+     if (!g_cfg.xinput) return;
+@@ -1052,7 +1848,7 @@ static int spec_matches(const PortCfg* pc, const PadDev* d)
+ {
+     if (pc->spec == SPEC_XINPUT) return d->kind == DEV_XINPUT && (pc->xi_slot < 0 || (DWORD)pc->xi_slot == d->xi);
+     if (pc->spec == SPEC_DINPUT) {
+-        if (d->kind != DEV_DINPUT) return 0;
++        if (d->kind != DEV_DINPUT && d->kind != DEV_HID) return 0;   /* a pad read through HID is a DInput-class one */
+         if (pc->vid) return d->vid == pc->vid && d->pid == pc->pid;
+         if (pc->match[0]) {
+             char a[80], b[48];
+@@ -1131,8 +1927,12 @@ static DWORD WINAPI hotplug_main(LPVOID arg)
+          * input device list changed, or when a device was lost. */
+         UINT raw = raw_device_count();
+         int lost = 0;
+-        for (int i = 0; i < MAX_DEVS; i++) if (g_dev[i].kind == DEV_DINPUT && g_dev[i].lost) lost = 1;
+-        if (g_cfg.dinput && (raw != last_raw || lost)) { last_raw = raw; di_scan(); }
++        for (int i = 0; i < MAX_DEVS; i++)
++            if ((g_dev[i].kind == DEV_DINPUT && g_dev[i].lost) || (g_dev[i].kind == DEV_HID && (g_dev[i].lost || g_dev[i].hid->dead)))
++                lost = 1;
++        /* HID first: DirectInput then leaves the PlayStation pads it reads alone */
++        if ((g_cfg.dinput || g_cfg.hid) && (raw != last_raw || lost)) { last_raw = raw; hid_scan(); di_scan(); }
++        else if (g_cfg.hid && g_cfg.hid_fake[0]) hid_scan();       /* the fake pad's file may (re)appear */
+         AcquireSRWLockExclusive(&g_dev_lock);
+         assign_ports();
+         ReleaseSRWLockExclusive(&g_dev_lock);
+@@ -1158,7 +1958,17 @@ static BOOL CALLBACK init_cb(PINIT_ONCE once, PVOID param, PVOID* ctx)
+         HRESULT hr = DirectInput8Create(GetModuleHandleW(NULL), DIRECTINPUT_VERSION, &IID_IDirectInput8W, (void**)&g_di, NULL);
+         if (FAILED(hr)) { printf("[pad] DirectInput8Create failed 0x%08lX: HID sticks unavailable\n", (unsigned long)hr); g_di = NULL; }
+     }
+-    if (g_cfg.devices) { xi_scan(); di_scan(); }
++    if (g_cfg.devices) {
++        const char* svg = getenv("SteamVirtualGamepadInfo");
++        if (g_cfg.steam_ignore.n || g_cfg.steam_except.n || (svg && *svg))
++            printf("[pad] started by Steam with Steam Input (%d device(s) to leave alone%s%s)\n", g_cfg.steam_ignore.n,
++                   g_cfg.steam_except.n ? ", all but the ones in SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT" : "",
++                   svg && *svg ? ", virtual pad list SteamVirtualGamepadInfo" : "");
++    }
++    if (g_cfg.devices && g_cfg.dinput && !g_cfg.hid)
++        printf("[pad] hid = 0: DualShock 4 / DualSense through DirectInput only (no input from a Bluetooth pad"
++               " in its extended mode)\n");
++    if (g_cfg.devices) { xi_scan(); hid_scan(); di_scan(); }
+     else printf("[pad] scripted input (PS3_PAD_FILE*): physical pads ignored (PS3_PAD_DEVICES=1 to use them)\n");
+     AcquireSRWLockExclusive(&g_dev_lock);
+     assign_ports();

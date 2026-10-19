@@ -9,6 +9,7 @@
   kernels in fragment program ucode, rsx_fp_apply_single_tap makes their taps one (the programs it writes
   compile with D3DCompile). Skipped without a patched ps3recomp tree (PS3RECOMP_DIR) or a C compiler.
 """
+import importlib.util
 import json
 import os
 import re
@@ -20,8 +21,7 @@ import unittest
 
 from helpers import ROOT
 
-sys.path.insert(0, os.path.join(ROOT, "launcher"))
-sys.path.insert(0, os.path.join(ROOT, "lobby"))
+sys.path.insert(0, os.path.join(ROOT, "launcher"))     # (not lobby/: its run.py would hide tools/smoke/run.py)
 import core  # noqa: E402
 import problem_report as report  # noqa: E402
 
@@ -100,7 +100,9 @@ class Setting(unittest.TestCase):
         self.assertIn('"stage_blur": core.STAGE_BLUR_MODES', src)     # the problem report's labels
 
     def test_german(self):
-        from t5lobby import i18n_de
+        spec = importlib.util.spec_from_file_location("i18n_de_blur", os.path.join(ROOT, "lobby", "t5lobby", "i18n_de.py"))
+        i18n_de = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(i18n_de)
         for en, de in (("Stage blur / glow", "Stage-Unschärfe / Leuchten"), ("On (default)", "An (Standard)"),
                        ("Off", "Aus")):
             self.assertEqual(i18n_de.MESSAGES[en], de)

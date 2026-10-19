@@ -987,9 +987,26 @@ actor loop (0x17744: its flag and counter; 0xF1A28: each actor) -- rb_lcg.log.
 `T5_NET_DUMP=frames` with `T5_NET_DUMP_RANGES=425C0000:30000` dumps the
 crowd.
 
-**What was tested:**
+**What was tested** (this PC, other agents' games running; stage 27 unless
+noted):
 
-TESTS_TABLE
+| test | build | what | runs / matches | result |
+|---|---|---|---|---|
+| rb_equiv `--full`, Steve vs Hwoarang, 1 and 3 rounds, a reference and runs with T5_TEST_HITCH (or a second reference beside it) | before (1c4cd05 + the sound-task fix) | one scripted match, one process | 13 comparisons | 6 apart (first word 0x1008F0D0 at frame 757 or 848); four different final states, winners 3-0 or 0-3 |
+| the same | fixed | 1 round / 3 rounds | 8 + 8 comparisons, 20 runs | all equal; every run the same final hash; the crowd's 21 timers equal in all 20 (dump at frame 200) |
+| pair, lockstep, `--pattern NRRRRR --same-chars --rounds 3`, Steve vs Hwoarang | before (main 1c4cd05) | a rematch chain | 2 matches | match 2 apart: 1,563 mismatching frames, same winner, the e2e words |
+| pair, rollback, the same | before (main 1c4cd05) | a rematch chain | 2 matches | match 2 apart, different winners |
+| the same two pairs | fixed | | 6 + 6 | all in sync |
+| pair, rollback, Jin vs Lili, `NRRRRR` | fixed | | 6 | all in sync |
+| pair, rollback, opponent switches (`NNNN`, a fresh game every 2nd match, host and joiner in turn), 2 rounds | fixed | | 4 | all in sync; the crowd's set-up runs again at every new session (41 draws) |
+| rb_equiv `--full --lag 3`, Steve vs Hwoarang 2 rounds / Heihachi vs Mokujin 29 | fixed, on main 2c7ed8a | 1,047 / 533 rollbacks | 2 | equal on every frame |
+| pairs, lockstep / rollback, 6 matches each (N R N N R N), 12 stages: 29 24 31 20 34 17 / 25 30 33 18 32 22, 12 fighters, 2 rounds | fixed, on main 2c7ed8a | the per-call-site streams elsewhere | 6 + 6 | all in sync |
+| pairs, lockstep / rollback, stage 27, 6 matches each (N R R N R R: Jin vs Lili, Steve vs Hwoarang), 3 rounds | fixed, on main 2c7ed8a | | 6 + 6 | all in sync |
+| rb_equiv `--full`, Jin vs Lili 3 rounds, T5_TEST_HITCH=100:20:60 | fixed, on main 2c7ed8a | | 1 | equal on all 6,299 frames |
+
+Also run on main 2c7ed8a: tests/ (473, OK), the lobby's suite (15 modules, 455
+tests, OK), smoke quick (5/5 PASS), the game-data guard (`--keys` and
+`--history HEAD`: exit 0).
 
 ## Limits and next steps
 

@@ -20,6 +20,13 @@ offers the update itself; after it, press **BUILD GAME** once.
   their routers can't connect directly (see Servers).
 - **Smoother rollback at high ping:** a rollback costs 15% less; at 150 ms ping the slowest frames
   went from 23.1 to 21.4 ms and visible stutters per match from 56 to 37 (at 250 ms: 389 to 221).
+- **No more desyncs on stage 27.** The fighters in the crowd at the back of the stage start their
+  fights on timers that the stage set up from a timing-dependent random source, and their moves
+  draw from the same random numbers as the two players. When the two PCs' crowds started a fight
+  at different moments, the players' moves went apart too, minutes into a match, in lockstep and
+  rollback alike (3 of 7 real games on stage 27 were voided). The stage now gets the same random
+  numbers on both PCs, and the ambient sound no longer steps a random number the fight uses
+  (docs/NETPLAY.md "Desync hunt 2").
 
 ### Controllers
 - **DualShock 4 and DualSense work without Steam**, over USB and Bluetooth (DualSense Edge

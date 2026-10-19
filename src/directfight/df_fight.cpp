@@ -393,6 +393,7 @@ bool g_fresh = false;           /* the select screen was entered from the title 
 bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
 bool g_over_wait = false;       /* a match end seen on predicted input, waiting for its confirmation */
 ULONGLONG g_cmd_ms = 0;         /* when the pending "fight" came (stuck_check) */
+uint32_t g_cmd_frame = 0;       /* ... and its frame */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
 bool g_game_seen = false;       /* the game mode ran since the last trip to the title (a fight, or part of one) */
@@ -818,6 +819,7 @@ void persistent_frame(uint32_t f)
     g_cmd = c;
     g_pending_cmd = true;
     g_cmd_ms = GetTickCount64();
+    g_cmd_frame = f;
     g_ctl_error.clear();
     /* the same session (a rematch) when the launcher says so or the netplay variables are the session's */
     std::string key;
@@ -889,6 +891,13 @@ void reset_done(uint32_t f)
  * match (match_driver: a persistent game that is not running is started again). */
 uint32_t g_leave_phase = 10;    /* T5_DF_LEAVE_PHASE (diagnostics): a fight is left once its phase word is past this */
 ULONGLONG g_stuck_dumped = 0;   /* g_ph_ms of the phase whose wait was dumped */
+/* A wait counts as stuck only once it has also run this many frames per
+ * second of it (a third of 60): the checks run at frame boundaries, so a game
+ * that is really stuck in a mode change keeps its full frame rate, while one
+ * that its PC slows to a crawl (other programs at normal priority: 0.8-2.7 fps
+ * for a minute in select_stall_test O1) is still on its way -- before, the
+ * reset's 60 s ended such a game 0.1 s after its select screen had loaded. */
+constexpr uint32_t kStuckMinFps = 20;
 bool pick_screen_wait();        /* the in-game select waits for its select screen (below) */
 
 /* A select screen that never gets past its loading (Select, or the in-game
@@ -912,6 +921,7 @@ uint32_t g_select_stuck_s = 10;
 int g_sl_kind = 0;              /* 1 wedged reader, 2 nothing to load; 0 the select loads (or is live) */
 uint64_t g_sl_sig = 0;          /* phase word, modes, reader state when the kind began */
 ULONGLONG g_sl_ms = 0;          /* when it began */
+uint32_t g_sl_frame = 0;        /* ... and its frame */
 bool g_sl_dumped = false;
 void select_load_check(uint32_t f)
 {
@@ -929,7 +939,10 @@ void select_load_check(uint32_t f)
                          ((uint64_t)q << 24);
     const ULONGLONG now = GetTickCount64();
     if (!limit) { g_sl_kind = 0; return; }
-    if (kind != g_sl_kind || sig != g_sl_sig) { g_sl_kind = kind; g_sl_sig = sig; g_sl_ms = now; g_sl_dumped = false; return; }
+    if (kind != g_sl_kind || sig != g_sl_sig) {
+        g_sl_kind = kind; g_sl_sig = sig; g_sl_ms = now; g_sl_frame = f; g_sl_dumped = false;
+        return;
+    }
     const ULONGLONG ms = now - g_sl_ms;
     const char* what = kind == 1 ? "the async reader waits for a read nobody does" : "nothing loads";
     if (ms >= (ULONGLONG)limit * 500 && !g_sl_dumped) {
@@ -938,7 +951,7 @@ void select_load_check(uint32_t f)
              (unsigned)(ms / 1000), what, mode_cur(), mode_next(), rd32(kSelectState), reader_desc().c_str());
         stuck_dump(f);
     }
-    if (ms < (ULONGLONG)limit * 1000) return;
+    if (ms < (ULONGLONG)limit * 1000 || f - g_sl_frame < limit * kStuckMinFps) return;
     note("frame %u: STUCK: the select screen's loading for %u s, %s (mode %u, phase word %u; %s) -- the game ends, "
          "the launcher starts a fresh one", f, limit, what, mode_cur(), rd32(kSelectState), reader_desc().c_str());
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);
@@ -957,6 +970,7 @@ void stuck_check(uint32_t f)
     const bool waiting = g_ph == Ph::Leave || g_ph == Ph::Reset || (g_ph == Ph::Title && g_fresh_taken) || neutral_wait;
     if (!g_ctl || !g_stuck_s || !waiting) return;
     const ULONGLONG since = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_ms : g_ph_ms;
+    const uint32_t since_f = neutral_wait && g_cmd_ms > g_ph_ms ? g_cmd_frame : g_ph_frame;
     const ULONGLONG ms = GetTickCount64() - since;
     if (ms >= (ULONGLONG)g_stuck_s * 500 && g_stuck_dumped != since) {   /* half way: what it waits on */
         g_stuck_dumped = since;
@@ -964,7 +978,7 @@ void stuck_check(uint32_t f)
              mode_cur(), mode_next(), rd32(kSelectState));
         stuck_dump(f);
     }
-    if (ms < (ULONGLONG)g_stuck_s * 1000) return;
+    if (ms < (ULONGLONG)g_stuck_s * 1000 || f - since_f < g_stuck_s * kStuckMinFps) return;
     note("frame %u: STUCK: %s for %u s (mode %u, next %u, phase word %u) -- the game ends, the launcher starts a fresh one",
          f, g_state_name, g_stuck_s, mode_cur(), mode_next(), rd32(kSelectState));
     ctl_state("error", f, g_ctl_match, "stuck", g_sessions);

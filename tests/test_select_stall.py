@@ -96,7 +96,14 @@ class DriverSourceTest(unittest.TestCase):
         self.assertIn("busy == 1 && tokens == 0 && sem_parked(rd32(kReader))", body)
         self.assertIn("busy == 0 && q == 0", body)
         self.assertIn("TerminateProcess(GetCurrentProcess(), 6)", body)
+        self.assertIn("f - g_sl_frame < limit * kStuckMinFps", body)
         self.assertRegex(self.src, r"void stuck_check\(uint32_t f\)\s*\{\s*select_load_check\(f\);")
+
+    def test_a_crawling_game_is_not_stuck(self):
+        # the stuck exits need the frames too: a PC starved to 1 fps is slow, not stuck
+        self.assertRegex(self.src, r"constexpr uint32_t kStuckMinFps = \d+;")
+        body = re.search(r"void stuck_check\(uint32_t f\)\s*\{(.*?)\n\}", self.src, re.S).group(1)
+        self.assertIn("f - since_f < g_stuck_s * kStuckMinFps", body)
 
 
 def split_areas(areas, guard=True, lo=0x1009FE20, hi=0x100A0988):

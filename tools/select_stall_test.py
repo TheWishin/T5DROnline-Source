@@ -18,7 +18,8 @@ than that is a stall: the game's reader and loader state is dumped through PS3_D
 ends with exit code 1.
 
 Load (a PC in use, the conditions of the reports):
-  --cpus N     the game and the hogs share the first N logical processors (affinity, inherited)
+  --cpus N     the game and the hogs share N logical processors (affinity, inherited; --cpu-first K:
+               from processor K on, for two runs side by side)
   --hog N      N busy-loop processes of our own at normal priority beside the game (which runs at
                below-normal priority, as every test game here)
   --fs-delay MS  PS3_TEST_FS_DELAY: every file open/read of the game waits MS ms (a slow disk)
@@ -89,17 +90,17 @@ def write_atomic(path, text):
             time.sleep(0.02)
 
 
-def set_own_affinity(n):
-    """The first n logical processors for this process -- children (game, hogs) inherit it."""
+def set_own_affinity(n, first=0):
+    """n logical processors from `first` on for this process -- children (game, hogs) inherit it."""
     if not n or os.name != "nt":
         return
     k32 = ctypes.windll.kernel32
     k32.GetCurrentProcess.restype = ctypes.c_void_p
-    mask = (1 << n) - 1
+    mask = ((1 << n) - 1) << first
     if not k32.SetProcessAffinityMask(ctypes.c_void_p(k32.GetCurrentProcess()), ctypes.c_size_t(mask)):
         log(f"could not set the affinity mask 0x{mask:X}")
     else:
-        log(f"affinity: logical processors 0..{n - 1} (game and hogs)")
+        log(f"affinity: logical processors {first}..{first + n - 1} (game and hogs)")
 
 
 class Game:
@@ -206,7 +207,8 @@ def main():
                     help="a new match not at FIGHT START this long after its command = a stall")
     ap.add_argument("--wait", default="0.5:4", help="seconds after FIGHT START before the next command (min:max)")
     ap.add_argument("--hog", type=int, default=0, help="busy-loop processes of our own beside the game")
-    ap.add_argument("--cpus", type=int, default=0, help="game and hogs on the first N logical processors")
+    ap.add_argument("--cpus", type=int, default=0, help="game and hogs on N logical processors (from --cpu-first on)")
+    ap.add_argument("--cpu-first", type=int, default=0, help="the first of the --cpus processors (two runs side by side)")
     ap.add_argument("--fs-delay", type=int, default=0, help="PS3_TEST_FS_DELAY ms per file open/read")
     ap.add_argument("--keep-going", action="store_true", help="after a stall: restart the game and go on")
     ap.add_argument("--env", action="append", default=[])
@@ -215,7 +217,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     rnd = random.Random(a.seed)
     lo, hi = (float(x) for x in a.wait.split(":"))
-    set_own_affinity(a.cpus)
+    set_own_affinity(a.cpus, a.cpu_first)
     hogs = []
     for _ in range(a.hog):
         hogs.append(subprocess.Popen([sys.executable, "-c", "while True: pass"]))

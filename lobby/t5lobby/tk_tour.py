@@ -758,7 +758,7 @@ class BracketView:
             elif isinstance(score, list) and len(score) == 2:
                 val = str(score[side])
             elif s["state"] == "done" and s.get("winner") is not None:
-                val = "W" if s["winner"] == side else "-"
+                val = "✓" if s["winner"] == side else "-"      # (a walkover / organizer's result: no score)
             if val is not None:
                 win = s["state"] == "done" and s.get("winner") == side
                 self._text(x + W - px(8), yy, val, anchor="e", fill=C["ok"] if win else C["muted"],

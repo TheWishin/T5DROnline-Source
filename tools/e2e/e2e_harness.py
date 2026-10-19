@@ -435,8 +435,7 @@ class _PickPad:
     def __init__(self, p):
         self.p = p
         self.pad_path = os.path.join(p.dir, "pad.txt")
-
-    @property
+        self.active = True               # a picker of an earlier match must not press into this one
     def log_path(self):
         g = self.p.game()
         return g.log_path if g is not None else None
@@ -450,6 +449,8 @@ class _PickPad:
             return ""
 
     def pad(self, text):
+        if not self.active and text:
+            return
         for _ in range(100):
             try:
                 with open(self.pad_path, "w") as f:
@@ -682,10 +683,12 @@ class Player:
         fi = self.tab.table.fighter(key) or {}
         if fi.get("id") is None:
             return
+        for _m, _k, _pk, old in self.pickers:
+            old.active = False               # (a match that never reached its fight left its picker waiting)
         g = _PickPad(self)
         pk = pick_flow_test.Picker(g, f"{fi['id']}:lp", mark[1] if mark else 0, time.time() + 150)
         pk.start()
-        self.pickers.append((ev.get("match"), key, pk))
+        self.pickers.append((ev.get("match"), key, pk, g))
         log(f"{self.name}: picks {fi.get('name')} on the select screen (match {ev.get('match')})")
 
     def bot_tick(self):

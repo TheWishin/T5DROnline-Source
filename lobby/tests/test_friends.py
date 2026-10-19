@@ -452,6 +452,18 @@ class InviteTest(Base):
         ev = expect(a, "invite_update")                                   # Bob left: Alice's invite ended
         self.assertEqual(ev["state"], "cancelled")
 
+    def test_a_stale_invite_ends_as_cancelled(self):
+        a, b = self.friends()
+        r = a.invite("Bob")
+        expect(b, "invited")
+        a.create_room("elsewhere")                                # Alice is busy now
+        with self.assertRaises(LobbyError) as e:
+            b.answer_invite(r["invite"], True)
+        self.assertIn("the invite is no longer possible", e.exception.msg)
+        ev = expect(a, "invite_update")
+        self.assertEqual((ev["invite"], ev["state"]), (r["invite"], "cancelled"))   # not "accepted"
+        self.assertEqual(self.s.call(lambda: self.s.srv.counters["invites_accepted"]), 0)
+
     def test_a_queue_match_ends_the_invite(self):
         a, b = self.friends()
         c = self.acc("Cid", auto_ready=True)

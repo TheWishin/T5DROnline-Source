@@ -490,10 +490,11 @@ The log then prints each press, for example `[pad] port 2 Wireless Controller: B
 pressed -> R1`. Use the `B6`-style names in `controls.ini`. For one pad model use
 a section named like `[dinput.0F0D:00EE]` (vendor:product IDs, shown in the
 `[pad] found DInput` and `[pad] found HID` log lines). A DualShock 4 or DualSense
-has the same names as before: B1 Square, B2 Cross, B3 Circle, B4 Triangle, B5 L1,
-B6 R1, B7 L2, B8 R2, B9 Share/Create, B10 Options, B11 L3, B12 R3, B13 PS, B14
-touchpad click, B15 mute (DualSense), B16-B19 the DualSense Edge's Fn buttons and
-back paddles.
+has the names DirectInput gives it: B1 Square, B2 Cross, B3 Circle, B4 Triangle,
+B5 L1, B6 R1, B7 L2, B8 R2, B9 Share/Create, B10 Options, B11 L3, B12 R3, B13 PS,
+B14 touchpad click; the game also reads B15 = mute (DualSense) and B16-B19 = the
+DualSense Edge's Fn buttons and back paddles (left Fn, right Fn, left paddle,
+right paddle).
 
 ### PlayStation controllers (DualShock 4, DualSense) and Steam
 
@@ -530,7 +531,8 @@ or DS4Windows used the pad before. The log shows it:
   steam_input = 0
   ```
 
-  If the pad still acts as player 1 *and* player 2, see the next section.
+  If the pad still acts as player 1 *and* player 2, see [Two
+  pads](#two-pads-or-my-pad-acts-as-player-1-and-player-2-ds4windows-steam-input).
 - **`cannot open it (error 5, another program holds it) -- read through
   DirectInput`.** Another program opened the pad for itself (DS4Windows with
   "Hide DS4 Controller", or its exclusive mode). The game then reads DS4Windows'
@@ -549,10 +551,10 @@ or DS4Windows used the pad before. The log shows it:
 - Tested without a real pad: reports of every kind (USB, Bluetooth short and full
   report) were built from the published formats and fed into the game, which
   turned every button, direction, stick and trigger and every short tap into the
-  right input. If yours does something
-  odd, send the log (Report a problem) and say which pad and how it is
-  connected. A different PlayStation-compatible pad (other vendor, or the
-  DualShock 4 USB wireless adaptor) is read through DirectInput as before.
+  right input. If yours does something odd, send the log (Report a problem) and
+  say which pad and how it is connected. A different PlayStation-compatible pad
+  (other vendor, or the DualShock 4 USB wireless adaptor) is read through
+  DirectInput as before.
 
 ### The Controls screen (Settings -> Set up controllers...)
 

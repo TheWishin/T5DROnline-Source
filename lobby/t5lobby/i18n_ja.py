@@ -1245,8 +1245,8 @@ MESSAGES = {
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "検索中...（Ranked 待ち {ranked} 人、Quick Match {quick} 人）",
-    "ping about {ms} ms (through the server; measured directly once you both accept)":
-        "Ping 約 {ms}ms（サーバー経由。両者が受けると直接測定）",
+    "ping about {ms} ms (estimated; measured directly once you both accept)":
+        "Ping 約 {ms}ms（推定。両者が受けると直接測定）",
     "ping not known yet": "Ping はまだ不明",
     "Opponent found": "対戦相手が見つかりました",
     "accept within {seconds} s?": "{seconds} 秒以内に受けますか？",
@@ -1461,7 +1461,7 @@ MESSAGES = {
     "SET · GAME {game}": "セット · 第{game}試合",
     "Opponent hidden": "相手は非公開",
     "Name and side are shown once you both accept.": "お互いが受けると名前とサイドが表示されます。",
-    "(estimate through the server)": "（サーバー経由の推定）",
+    "(estimated before you connect)": "（接続前の推定）",
     "Accepted. Waiting for your opponent...": "受けました。相手を待っています...",
     "Match ready": "対戦準備完了",
     "Connecting the two games...": "2つのゲームを接続中...",

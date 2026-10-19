@@ -1276,8 +1276,8 @@ MESSAGES = {
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "Recherche... ({ranked} en file Ranked, {quick} en Quick Match)",
-    "ping about {ms} ms (through the server; measured directly once you both accept)":
-        "ping d'environ {ms} ms (via le serveur ; mesuré en direct dès que vous acceptez tous les deux)",
+    "ping about {ms} ms (estimated; measured directly once you both accept)":
+        "ping d'environ {ms} ms (estimé ; mesuré en direct dès que vous acceptez tous les deux)",
     "ping not known yet": "ping pas encore connu",
     "Opponent found": "Adversaire trouvé",
     "accept within {seconds} s?": "accepter sous {seconds} s ?",
@@ -1494,7 +1494,7 @@ MESSAGES = {
     "Opponent hidden": "Adversaire masqué",
     "Name and side are shown once you both accept.":
         "Le nom et le côté s'affichent dès que vous acceptez tous les deux.",
-    "(estimate through the server)": "(estimation via le serveur)",
+    "(estimated before you connect)": "(estimé avant la connexion)",
     "Accepted. Waiting for your opponent...": "Accepté. En attente de ton adversaire...",
     "Match ready": "Match prêt",
     "Connecting the two games...": "Connexion des deux jeux...",

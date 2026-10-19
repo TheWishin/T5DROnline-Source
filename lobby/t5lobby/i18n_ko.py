@@ -1226,8 +1226,8 @@ MESSAGES = {
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "검색 중... (Ranked 대기 {ranked}명, Quick Match {quick}명)",
-    "ping about {ms} ms (through the server; measured directly once you both accept)":
-        "핑 약 {ms}ms (서버 경유 추정, 둘 다 수락하면 직접 측정)",
+    "ping about {ms} ms (estimated; measured directly once you both accept)":
+        "핑 약 {ms}ms (추정치, 둘 다 수락하면 직접 측정)",
     "ping not known yet": "핑 아직 모름",
     "Opponent found": "상대를 찾았습니다",
     "accept within {seconds} s?": "{seconds}초 안에 수락할까요?",
@@ -1435,7 +1435,7 @@ MESSAGES = {
     "SET · GAME {game}": "세트 · {game}경기",
     "Opponent hidden": "상대 비공개",
     "Name and side are shown once you both accept.": "둘 다 수락하면 이름과 위치가 공개됩니다.",
-    "(estimate through the server)": "(서버 경유 추정)",
+    "(estimated before you connect)": "(연결 전 추정치)",
     "Accepted. Waiting for your opponent...": "수락했습니다. 상대를 기다리는 중...",
     "Match ready": "매치 준비 완료",
     "Connecting the two games...": "두 게임을 연결하는 중...",

@@ -523,6 +523,22 @@ static void tick_wait()
     g_tick_waited = true;
 }
 
+/* Every frame before upto that ran on a predicted remote input has had that
+ * input confirmed as predicted: the state the game shows now is final -- no
+ * rollback can take it back any more (the direct-fight driver acts on a match
+ * end only then, t5_netplay_state_final). Predictions are never older than
+ * the prediction window, so the last 64 frames are enough. */
+bool state_final(uint32_t upto)
+{
+    if (!g_active) return true;
+    for (uint32_t g = upto > 64 ? upto - 64 : 0; g < upto; g++) {
+        if (g_used_tag[g % kHist] != g + 1 || !g_pred[g % kHist]) continue;
+        np::PadInput real;
+        if (!np::rb_remote(g, &real) || !(real == g_used[g % kHist])) return false;
+    }
+    return true;
+}
+
 /* The first frame g < min(rc, f) whose confirmed remote input differs from
  * the prediction it was simulated with (UINT32_MAX: none). */
 static uint32_t scan_mispredictions(uint32_t f, uint32_t rc)

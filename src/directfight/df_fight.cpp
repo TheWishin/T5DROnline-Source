@@ -47,6 +47,7 @@
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
+extern "C" int  t5_netplay_state_final(void);   /* netplay: no unconfirmed prediction under the state (rollback) */
 extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_set_match(const char* id);
 extern "C" unsigned t5_netplay_match_seed(void);
@@ -359,6 +360,7 @@ bool g_intro_hold = false;      /* the pads are held through the fight's loading
 uint32_t g_decided = 0;         /* frame the match was decided (hold_pads) */
 bool g_fresh = false;           /* the select screen was entered from the title and no fight was driven on it since */
 bool g_autosave_wait = false;   /* the title waits for its savedata autosave before start VS */
+bool g_over_wait = false;       /* a match end seen on predicted input, waiting for its confirmation */
 ULONGLONG g_cmd_ms = 0;         /* when the pending "fight" came (stuck_check) */
 bool g_mode_asked = false;      /* Reset / Leave: the mode request is out */
 bool g_wait_setup = false;      /* WaitGame: the fight's setup is written (FIGHT START waits for the game mode's phase 7) */
@@ -880,6 +882,7 @@ void fight_on_frame(uint32_t f)
         g_intro_hold = false;
         g_match++;
         g_over_clear = false;
+        g_over_wait = false;
         g_held = false;
         g_fight_frame = f;
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
@@ -908,7 +911,16 @@ void fight_on_frame(uint32_t f)
         }
         const uint8_t over0 = rd8(kMatchOver);
         if (!over0) g_over_clear = true;
-        const uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        uint8_t over = g_over_clear ? over0 : 0;   /* a rematch starts with the last match's flag still set */
+        /* Under rollback a KO on the live frame may rest on predicted input;
+         * the next rollback can take it back (e2e g2, RTT 250: the pads held
+         * and START pressed in a fight that went on, no result ever). Acted
+         * on once every input under it is confirmed -- a few frames later. */
+        if (over && session_netplay() && !t5_netplay_state_final()) {
+            if (!g_over_wait) { g_over_wait = true; note("frame %u: the match end rests on predicted input -- acted on once confirmed", f); }
+            over = 0;
+        }
+        if (over && g_over_wait) { g_over_wait = false; note("frame %u: the match end is confirmed", f); }
         if (over && !g_held) hold_pads(f, "the match is decided");
         post_match_skip(f);
         uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);

@@ -96,7 +96,8 @@ T5_DF_PICK=<seconds>                                 pick=<seconds> for fight li
   press with the cursor state), `T5_DF_LOG`, `T5_DF_DUMP=frames`,
   `T5_DF_DUMP_RANGES`, `T5_DF_DUMP_MODES=1`, `T5_DF_WATCH=addr,...`,
   `T5_DF_POKE=frame:addr:width:value`, `T5_DF_SHOT=frames` (needs
-  `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`), `T5_DF_SCRIPT[2]` (frame scripts, tests),
+  `LD_SURF_DUMP`/`LD_SURF_DUMP_GATE`; `+n` = n frames after the first FIGHT
+  START, whatever the loading took), `T5_DF_SCRIPT[2]` (frame scripts, tests),
   `T5_DF_STARTVS=N` (the title-to-select jump alone), `T5_DF_FIND=frame:text,...`
   (log every address of that text, ASCII and UTF-16BE, in guest memory at
   that frame), `T5_DF_FRESH_LOG`, `T5_DF_FRESH_AT`, `T5_DF_GUARD`,

@@ -505,6 +505,14 @@ MESSAGES = {
     "On (smooth, default)": "An (flüssig, Standard)",
     "Off (lowest latency, may tear)": "Aus (geringste Verzögerung, Bild kann reißen)",
     "The game always runs at 60 fps, like on the PS3.": "Das Spiel läuft immer mit 60 fps, wie auf der PS3.",
+    "Stage blur / glow": "Stage-Unschärfe / Leuchten",
+    "On (default)": "An (Standard)",
+    "Off": "Aus",
+    "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
+    "without the glow. Only your picture changes: online, both players can choose differently.":
+        "Manche Stages machen das Bild unscharf (der neblige Sumpf) oder lassen die Sonne leuchten. "
+        "Aus zeigt sie scharf, ohne das Leuchten. Nur dein Bild ändert sich: Online können beide "
+        "Spieler verschieden wählen.",
     "Your screen: {width} x {height}. In fullscreen, {step} matches it.":
         "Dein Bildschirm: {width} x {height}. Im Vollbild passt {step} dazu.",
     "Online input delay": "Online-Input-Delay",

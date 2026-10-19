@@ -138,6 +138,10 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
+- **Settings** -> **Stage blur / glow**: some stages soften the whole picture
+  (the misty swamp, and three more) or let the sun glow (the scrapyard). On
+  (default) looks as on the PS3, at every internal resolution; Off shows those
+  stages sharp, without the glow. Online, each player can choose their own.
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.

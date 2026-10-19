@@ -180,8 +180,12 @@ std::vector<std::pair<uint32_t, uint32_t>> g_watch;   /* addr, last value */
  * "start game type" routine func_0004E9DC(4 = VS BATTLE, 3 = both players) */
 int g_startvs = -1; uint32_t g_title_frame = UINT32_MAX; bool g_startvs_done = false;
 constexpr uint32_t kFnStartGame = 0x0004E9DC;
-/* T5_DF_SHOT=f1,f2,...: frame-exact screenshots through the live renderer's LD_SURF_DUMP_GATE */
+/* T5_DF_SHOT=f1,f2,...: frame-exact screenshots through the live renderer's LD_SURF_DUMP_GATE.
+ * An entry "+n" is n frames after FIGHT START of the first match (the frame
+ * numbers from boot differ with loading times; counted from the fight start
+ * they name the same moment of the fight in every run). */
 std::vector<uint32_t> g_shot_frames;
+std::vector<uint32_t> g_shot_rel;
 std::string g_shot_gate;
 uint32_t g_shot_armed = UINT32_MAX;
 uint64_t g_main_tid = 1;
@@ -375,6 +379,10 @@ void shot(uint32_t f)
     if (g_shot_armed != UINT32_MAX && f >= g_shot_armed + 30) {
         remove(g_shot_gate.c_str());   /* re-arms the renderer for the next one */
         g_shot_armed = UINT32_MAX;
+    }
+    if (!g_shot_rel.empty() && g_fight_frame) {          /* "+n" entries: now that the fight started */
+        for (uint32_t r : g_shot_rel) g_shot_frames.push_back(g_fight_frame + r);
+        g_shot_rel.clear();
     }
     for (uint32_t sf : g_shot_frames) {
         if (sf != f || g_shot_armed != UINT32_MAX) continue;
@@ -631,9 +639,11 @@ struct Register {
         }
         if (const char* d = getenv("T5_DF_SHOT")) {
             for (const char* p = d; *p;) {
+                const bool rel = *p == '+';
+                if (rel) p++;
                 char* e; unsigned long v = strtoul(p, &e, 10);
                 if (e == p) break;
-                g_shot_frames.push_back((uint32_t)v);
+                (rel ? g_shot_rel : g_shot_frames).push_back((uint32_t)v);
                 p = e; while (*p == ',') p++;
             }
             const char* g = getenv("LD_SURF_DUMP_GATE");

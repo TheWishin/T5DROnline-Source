@@ -3,6 +3,30 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.2 (not released yet)
+
+**Friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The friends list needs the
+lobby server updated; older launchers keep working with it and see nothing new.
+
+### Online
+- **Friends** (accounts): add a friend by account name on the Online tab's new **Friends** page; they accept or
+  decline. The list shows who is online, searching, in a match or offline, and changes by itself. Remove a friend
+  there too. Blocking a player ends the friendship.
+- **Invites**: invite a friend who is online to a casual match, or into your room. They get the question like a
+  challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
+- Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
+  can be repeated after a week.
+
+### Launcher
+- **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
+  "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
+  Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
+  (docs/ONLINE.md "Discord Rich Presence").
+
+### Servers
+- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
+  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

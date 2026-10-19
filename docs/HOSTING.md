@@ -640,6 +640,12 @@ no blame for anybody. To restart without voiding matches:
 `drain` stops new matches at once (players get a notice), `--wait` returns when the last running
 match has its result (a first-to-3 match takes 2-7 minutes). The restart ends the drain.
 
+**Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
+schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with
+its version number, so a crash in the middle leaves the old version and the step runs again. Take a backup before
+an update all the same (`t5lobby-admin backup`). Going back to the previous release after an upgrade works: an older
+server leaves the tables it does not know alone.
+
 What a crash (or `kill -9`, or a power cut) can and cannot do to the data:
 
 - **Database**: everything the server writes while handling one message or timer -- for a ranked

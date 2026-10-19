@@ -31,7 +31,7 @@ index 7f3e678..bb58b77 100644
       * this guest address. A DMA landing in the loaded ELF image is always a
       * bug, and it is invisible to the sampling traces -- YDKJ had an SPU job
 diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
-index 09b5d2b..30832b6 100644
+index 09b5d2b..457841f 100644
 --- a/runtime/spu/spurs_job.c
 +++ b/runtime/spu/spurs_job.c
 @@ -47,6 +47,50 @@
@@ -44,7 +44,7 @@ index 09b5d2b..30832b6 100644
 + * vertices into three ~0.7 MB buffers in the heap that only the RSX reads --
 + * ~480 pages a frame, 40 % of what a rollback restored. Pages a job has
 + * filled completely are render output, not game state; the layer leaves them
-+ * out (src/rollback, docs/ROLLBACK.md section 32).
++ * out (src/rollback, docs/ROLLBACK.md section 33).
 + *   spurs_job_put_track(1)   start recording (off by default: no cost)
 + *   spurs_job_put_lines()    per heap page, the 64-byte lines job PUTs have
 + *                            covered (bit i = line i); ~0 = the whole page

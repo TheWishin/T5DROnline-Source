@@ -273,6 +273,9 @@ void h_cellGcmSetUserCommand(ppu_context* ctx)
     cellGcmSetUserCommand((void*)(uintptr_t)(uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4]);
     ctx->gpr[3] = 0;
 }
+extern bool g_flip_asked;
+/* T5_RB_NET_EARLY_COMMIT=present: the old place (after the present) */
+bool g_early_commit_at_flip = [] { const char* e = getenv("T5_RB_NET_EARLY_COMMIT"); return !(e && !strcmp(e, "present")); }();
 void h_cellGcmGetFlipStatus(ppu_context* ctx)
 {
     if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }   /* DONE */
@@ -280,9 +283,13 @@ void h_cellGcmGetFlipStatus(ppu_context* ctx)
     /* early rollback (rb_net.cpp early_check): the frame is translated and
      * presented, a rollback is already known -- report the flip done so the
      * boundary can start now; it waits for the tick itself */
-    if (st != 0 && g_mode == Mode::Net && ctx->thread_id == g_main_tid && cellGcm_xlat_presented()) {
-        net::early_commit();
-        if (net::early_check()) st = 0;
+    if (st != 0 && g_mode == Mode::Net && ctx->thread_id == g_main_tid) {
+        /* The next boundary's snapshot only reads guest memory, so it is taken
+         * as soon as the frame has asked for its flip -- while the walker still
+         * translates it (frame-time branch; it used to wait for the present,
+         * and an early rollback then started only after it) */
+        if (g_flip_asked || cellGcm_xlat_presented()) { net::early_commit(); g_flip_asked = false; }
+        if (cellGcm_xlat_presented() && net::early_check()) st = 0;
     }
     ctx->gpr[3] = st;
 }
@@ -292,9 +299,11 @@ void h_cellGcmResetFlipStatus(ppu_context* ctx)
     cellGcmResetFlipStatus();
     ctx->gpr[3] = 0;
 }
+bool g_flip_asked = false;   /* the main thread queued its frame's flip (early_commit may run) */
 void h_cellGcmSetFlip(ppu_context* ctx)
 {
     if (ctx->thread_id == g_main_tid) QueryPerformanceCounter(&g_t_flip);
+    if (ctx->thread_id == g_main_tid && !g_bypass) g_flip_asked = g_early_commit_at_flip;
     if (g_bypass && ctx->thread_id == g_main_tid) { ctx->gpr[3] = 0; return; }   /* re-simulating: nothing to show */
     ctx->gpr[3] = (uint64_t)(int64_t)cellGcmSetFlip((void*)(uintptr_t)(uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4]);
 }

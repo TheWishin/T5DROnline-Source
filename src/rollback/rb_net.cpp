@@ -7,6 +7,7 @@
 #include <string.h>
 #include <algorithm>
 #include <atomic>
+#include <intrin.h>
 
 #include "rb.h"
 #include "rb_state.h"
@@ -20,6 +21,7 @@ extern "C" int cellAtrac_rb_live_rings(uint32_t* ea, uint32_t* size, int cap);  
 extern "C" void cellAtrac_rb_rolled_back(void);   /* patch 0024/0025: the title's stream reader was rewound with it */
 extern "C" int t5_df_game_mode(void);             /* src/directfight/df_fight.cpp: the game's mode manager is in the game mode (4) */
 extern "C" int32_t t5_sem_count(uint32_t id);          /* src/netplay/t5_hooks.cpp: a kernel semaphore's count */
+extern "C" long cellSpurs_jobs_run(void);              /* ps3recomp patch 0039: SPURS jobs run so far */
 extern "C" int t5_sem_set_count(uint32_t id, int32_t v);
 
 namespace rb { namespace net {
@@ -165,6 +167,11 @@ np::PadInput g_used[kHist];      uint32_t g_used_tag[kHist];      /* the remote 
 bool         g_pred[kHist];                                       /* ... and whether it was a prediction */
 
 uint32_t g_checked = 0;          /* mispredictions resolved for frames < this */
+/* frame-time branch (T5_RB_NET_LAZY, default on): during a re-simulation the
+ * boundaries before g_commit_from record no undo log, g_commit_from's only
+ * refreshes the shadow (0: off / done) */
+bool     g_lazy = true;
+uint32_t g_commit_from = 0;
 uint32_t g_force_every = 0, g_force_depth = 4, g_forced = 0, g_force_last = UINT32_MAX;
 uint32_t g_wft_from = 0, g_wft_frames = 0;   /* T5_RB_WFT_NET=from:frames (tests): the write-fault tracer (T5_RB_WFT) over those live frames */   /* T5_RB_NET_FORCE=every[:depth] (tests) */
 /* T5_NET_DESYNC_DUMP=1: the gameplay bytes of the last 64 boundaries, written
@@ -208,6 +215,17 @@ struct Stats {
     double early_wait_ms = 0;       /* time an early boundary waited for its tick */
     uint32_t depth_hist[17] = {};
     uint32_t reader_tokens = 0;     /* restores that gave the reader's completion token back (reader_sem_restore) */
+    /* where a re-simulation's time goes (frame-time branch): per re-simulated
+     * frame the boundary's snapshot (commit), the rest of the boundary, and the
+     * game's own frame (keyread tick, the sim with the cuts, the bypassed
+     * present); over the whole rollback the main thread's CPU time against the
+     * wall time (the difference: waits on other threads, or preempted) */
+    double rs_commit_ms = 0, rs_bnd_ms = 0, rs_game_ms = 0, rs_cpu_ms = 0, rs_wall_ms = 0;
+    uint32_t rs_frames_timed = 0;
+    double depth_ms[17] = {}, depth_ms_max[17] = {};   /* restore + re-simulation, by depth */
+    uint32_t late = 0; double late_ms = 0, late_ms_max = 0;   /* early rollbacks that ended after their tick: how late */
+    uint32_t commits_skipped = 0, refreshes = 0;             /* re-simulated boundaries without an undo log (T5_RB_NET_LAZY) */
+    long rs_jobs = 0;                                        /* SPURS jobs (skinning) run during re-simulations */
 } g_st, g_tot;
 LARGE_INTEGER g_t_window;
 
@@ -237,13 +255,37 @@ void inputs_for(uint32_t g, np::PadInput out[2])
 /* displayed-frame times: wall time between two live boundaries (what the
  * player sees; a rollback's re-simulation lands in the frame it happens in) */
 constexpr int kFtBins = 400;     /* 0.5 ms bins up to 200 ms */
-uint32_t g_ft_win[kFtBins], g_ft_all[kFtBins];
+uint32_t g_ft_win[kFtBins], g_ft_all[kFtBins], g_ft_fight[kFtBins];
 LARGE_INTEGER g_t_live; bool g_t_live_ok = false;
-void ft_add(double ms)
+void ft_add(double ms, bool fight)
 {
     int b = (int)(ms * 2.0); if (b < 0) b = 0; if (b >= kFtBins) b = kFtBins - 1;
     g_ft_win[b]++; g_ft_all[b]++;
+    if (fight) g_ft_fight[b]++;   /* the match being fought (phase 17, not decided): no loads, no intro */
 }
+/* the match is being fought: direct fight's game mode, phase 17, not decided */
+constexpr uint32_t kPhaseWordF = 0x1008F070u, kDecidedByteF = 0x1008EBD5u;
+bool fighting_now() { return rd32(kPhaseWordF) == 17 && vm_base[kDecidedByteF] == 0 && (!g_intro_rule || t5_df_game_mode()); }
+/* re-simulation timing (Stats::rs_*) */
+LARGE_INTEGER g_t_bnd_out;   /* when the last boundary handed the game its frame */
+bool g_t_bnd_out_ok = false;
+uint64_t g_rs_cyc0 = 0;      /* main thread cycles at the rollback's start */
+long g_rs_jobs0 = 0;         /* SPURS jobs run at the rollback's start */
+double g_rs_restore_ms = 0;
+LARGE_INTEGER g_t_tick_seen; /* the swallowed tick of an early boundary */
+double g_cyc_per_ms = 0;
+double cyc_per_ms()
+{
+    if (g_cyc_per_ms > 0) return g_cyc_per_ms;
+    /* QueryThreadCycleTime counts TSC ticks: measure the TSC against QPC once */
+    LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
+    const uint64_t t0 = __rdtsc();
+    do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 100 < f.QuadPart);
+    const uint64_t t1 = __rdtsc();
+    g_cyc_per_ms = (double)(t1 - t0) * (double)f.QuadPart / (double)(b.QuadPart - a.QuadPart) / 1000.0;
+    return g_cyc_per_ms;
+}
+uint64_t thread_cycles() { ULONG64 c = 0; QueryThreadCycleTime(GetCurrentThread(), &c); return c; }
 double ft_pct(const uint32_t* h, double q)
 {
     uint64_t n = 0; for (int i = 0; i < kFtBins; i++) n += h[i];
@@ -272,7 +314,25 @@ void report()
          ss.started_live, ss.deduped, ss.started_resim, ss.orphaned, ss.stops_kept, ss.stops_suppressed, ss.queries_replayed, ss.events_kept, ss.events_new);
     note("rbnet: frame times (displayed frames) this window p50 %.1f ms p99 %.1f ms max %.1f ms; whole run p50 %.1f p99 %.1f; intro frames with neutral input %u, post-match frames by rule %u, select screen frames in lockstep %u, loads %u, forced rollbacks %u",
          ft_pct(g_ft_win, 0.5), ft_pct(g_ft_win, 0.99), ft_pct(g_ft_win, 0.99999), ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.99), g_intro_frames, g_post_frames, g_select_lock_frames, g_loads, g_forced);
+    {   /* frame-time branch: p95 too, and the frames of the fight alone (no loads, intro or result screens) */
+        uint64_t nf = 0; for (int i = 0; i < kFtBins; i++) nf += g_ft_fight[i];
+        note("rbnet: frame times, whole run p50 %.1f p95 %.1f p99 %.1f ms; while fighting (%llu frames) p50 %.1f p95 %.1f p99 %.1f ms",
+             ft_pct(g_ft_all, 0.5), ft_pct(g_ft_all, 0.95), ft_pct(g_ft_all, 0.99), (unsigned long long)nf,
+             ft_pct(g_ft_fight, 0.5), ft_pct(g_ft_fight, 0.95), ft_pct(g_ft_fight, 0.99));
+        char dh[400]; int k = 0;
+        for (int d = 1; d <= 16; d++)
+            if (g_st.depth_hist[d]) k += snprintf(dh + k, sizeof dh - k, " %d:%.1f/%.1f", d, g_st.depth_ms[d] / g_st.depth_hist[d], g_st.depth_ms_max[d]);
+        const double n = g_st.rs_frames_timed ? (double)g_st.rs_frames_timed : 1.0;
+        note("rbnet: re-simulated frames %u: per frame commit %.2f ms, rest of the boundary %.2f ms, game frame %.2f ms; "
+             "rollbacks: main thread CPU %.1f of %.1f ms wall (%.1f ms not running: waits, preemption); "
+             "restore+resim ms by depth (avg/max)%s; early rollbacks that ended after their tick %u (%.2f ms late on average, max %.2f); "
+             "boundaries without an undo log %u, shadow refreshes %u; SPURS jobs run during re-simulations %ld",
+             g_st.rs_frames_timed, g_st.rs_commit_ms / n, g_st.rs_bnd_ms / n, g_st.rs_game_ms / n,
+             g_st.rs_cpu_ms, g_st.rs_wall_ms, g_st.rs_wall_ms - g_st.rs_cpu_ms, k ? dh : " -",
+             g_st.late, g_st.late ? g_st.late_ms / g_st.late : 0.0, g_st.late_ms_max, g_st.commits_skipped, g_st.refreshes, g_st.rs_jobs);
+    }
     { char cs[512]; state_commit_stats(cs, sizeof cs, true); note("rbnet: snapshots: %s", cs); }
+    { char rs[256]; state_restore_stats(rs, sizeof rs, true); note("rbnet: restores: %s; heap pages the SPURS jobs fill, left out of the state: %u", rs, state_job_pages()); }
     note("rbnet: early rollbacks (before the frame's tick, in the time it waited for it) %u of %u, %.1f ms waited for the tick after them; "
          "snapshots taken early %.2f ms per frame; direct-call cut hits %llu",
          g_st.early_rollbacks, g_st.rollbacks, g_st.early_wait_ms, g_st.frames ? g_st.early_commit_ms / g_st.frames : 0.0,
@@ -358,6 +418,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_LOG")) g_verbose = *s == '1';
             if (const char* s = getenv("T5_RB_NET_SAMPLE")) g_sample_left = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_EARLY")) g_early_on = *s != '0';
+            if (const char* s = getenv("T5_RB_NET_LAZY")) g_lazy = *s != '0';
             if (const char* s = getenv("T5_RB_WFT_NET")) { unsigned a = 0, n = 1; sscanf(s, "%u:%u", &a, &n); g_wft_from = a; g_wft_frames = n; wft_install(); }
             if (const char* s = getenv("T5_RB_NET_FORCE")) {
                 unsigned e = 0, d = 4;
@@ -421,6 +482,7 @@ void session_reset()
 {
     if (!g_active) return;
     if (g_resim) { set_bypass(false); sound_skip(false); cut_set(false); g_resim = false; }
+    g_commit_from = 0;   /* state_reset() below brings the shadow up to date */
     /* The game goes on without the loop (back to a select screen for the
      * next opponent): what start() changed in it goes back -- the present's
      * vblank pacing -- and the sound hooks forget the session's frames (a
@@ -486,7 +548,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2]);
 static void live_tick_part(uint32_t f)
 {
     { LARGE_INTEGER t; QueryPerformanceCounter(&t);
-      if (g_t_live_ok) ft_add(1000.0 * (double)(t.QuadPart - g_t_live.QuadPart) / (double)g_qpf.QuadPart);
+      if (g_t_live_ok) ft_add(1000.0 * (double)(t.QuadPart - g_t_live.QuadPart) / (double)g_qpf.QuadPart, fighting_now());
       g_t_live = t; g_t_live_ok = true; }
     /* the frame time this machine actually runs at (sleeps are in frames) */
     if (g_frames_timed == 0) QueryPerformanceCounter(&g_t_frame0);
@@ -596,11 +658,25 @@ void reader_sem_restore(uint32_t g)
     } else note("rbnet: reader completion semaphore %u: could not be set back to %d (now %d)", id, v, was);
 }
 
+LARGE_INTEGER g_rb_t0;   /* the rollback's start, before the restore */
 static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2])
 {
     const uint32_t depth = f - first_wrong;
     uint32_t pages = 0; double rms = 0;
-    bool ok = first_wrong >= g_floor && state_rollback(first_wrong, &pages, &rms);
+    QueryPerformanceCounter(&g_rb_t0);
+    g_rs_cyc0 = thread_cycles();
+    g_rs_jobs0 = cellSpurs_jobs_run();
+    /* Frame-time branch: the boundaries before g_checked (every input before
+     * them confirmed) are never rolled back to again, so the re-simulation
+     * keeps no undo log for them: the restore leaves the shadow to the first
+     * commit (lazy), the boundaries up to g_checked - 1 commit nothing, and
+     * g_checked's boundary only brings the shadow up to date (state_refresh).
+     * scan_mispredictions() has just set g_checked > first_wrong; the inputs
+     * known now do not change during the re-simulation (no poll in it). */
+    const bool lazy = g_lazy && g_checked > first_wrong && g_checked <= f;
+    bool ok = first_wrong >= g_floor && (lazy ? state_rollback_lazy(first_wrong, &pages, &rms)
+                                              : state_rollback(first_wrong, &pages, &rms));
+    g_commit_from = ok && lazy ? g_checked : 0;
     if (!ok) {
         note("rbnet: frame %u: misprediction at %u (%u frames back) cannot be rolled back (oldest reachable %u, floor %u) -- DESYNC likely",
              f, first_wrong, depth, state_oldest_frame(), g_floor);
@@ -627,23 +703,58 @@ static bool start_rollback(uint32_t f, uint32_t first_wrong, np::PadInput out[2]
     return true;
 }
 
+double g_bnd_cms = 0;          /* this boundary's commit (boundary() sets it) */
 uint32_t on_boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
+    LARGE_INTEGER t_in; QueryPerformanceCounter(&t_in);
+    const bool was_resim = g_resim;
+    if (was_resim && g_t_bnd_out_ok) {   /* a re-simulated frame has just run: the game's part of it */
+        g_st.rs_game_ms += 1000.0 * (double)(t_in.QuadPart - g_t_bnd_out.QuadPart) / (double)g_qpf.QuadPart;
+        g_st.rs_frames_timed++;
+    }
+    g_bnd_cms = 0;
     const uint32_t run = boundary(f, scene_flag, out);
     set_sim_frame(run);   /* the sound side keys its per-frame start log on it (rb_sound.cpp) */
+    QueryPerformanceCounter(&g_t_bnd_out); g_t_bnd_out_ok = true;
+    if (was_resim) {
+        g_st.rs_commit_ms += g_bnd_cms;
+        /* the rest of a boundary inside the re-simulation (the last one also
+         * runs the live part: its tick wait is not re-simulation, not counted) */
+        if (g_resim) g_st.rs_bnd_ms += 1000.0 * (double)(g_t_bnd_out.QuadPart - t_in.QuadPart) / (double)g_qpf.QuadPart - g_bnd_cms;
+    }
     return run;
+}
+/* the end of a rollback's re-simulation (boundary(), back at the live frame) */
+static void rollback_done(uint32_t f)
+{
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    const double wall = 1000.0 * (double)(t.QuadPart - g_rb_t0.QuadPart) / (double)g_qpf.QuadPart;
+    const double cpu = (double)(thread_cycles() - g_rs_cyc0) / cyc_per_ms();
+    g_st.rs_wall_ms += wall; g_st.rs_cpu_ms += cpu;
+    g_st.rs_jobs += cellSpurs_jobs_run() - g_rs_jobs0;
+    const uint32_t d = std::min<uint32_t>(g_resim_target - g_resim_from, 16);
+    g_st.depth_ms[d] += wall; if (wall > g_st.depth_ms_max[d]) g_st.depth_ms_max[d] = wall;
+    if (g_early_f == f && !g_tick_waited && g_early_tick_seen) {   /* an early rollback that the tick overtook */
+        const double late = 1000.0 * (double)(t.QuadPart - g_t_tick_seen.QuadPart) / (double)g_qpf.QuadPart;
+        g_st.late++; g_st.late_ms += late; if (late > g_st.late_ms_max) g_st.late_ms_max = late;
+    }
+    LATLOG('Q', "%u %u %.2f %.2f", f, g_resim_from, wall, cpu);   /* PS3_LATENCY_LOG: the rollback to g_resim_from is done (wall / CPU ms) */
 }
 
 static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
 {
-    LATLOG('N', "%u %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early) */
+    LATLOG('N', "%u %d %d %d", f, g_resim ? 1 : 0, g_early_f == f ? 1 : 0, fighting_now() ? 1 : 0);   /* PS3_LATENCY_LOG: boundary f (resim, early, fighting) */
     if (f) ktrace_boundary(f - 1, g_resim);
     g_phase_at[f % 4096] = (uint8_t)rd32(kPhaseWord); g_phase_tag[f % 4096] = f + 1;
     g_intro_flag[f % 4096] = intro_phase(rd32(kPhaseWord), t5_df_game_mode() != 0);
     post_record(f);
     double cms = 0;
-    const uint32_t dirty = state_commit(f, nullptr, &cms);
-    (void)dirty;
+    /* a boundary of a re-simulated frame no rollback can reach back to: no
+     * undo log (start_rollback); the last such one brings the shadow up to date */
+    if (g_resim && g_commit_from && f < g_commit_from) g_st.commits_skipped++;
+    else if (g_resim && g_commit_from && f == g_commit_from) { state_refresh(&cms); g_commit_from = 0; g_st.refreshes++; }
+    else state_commit(f, nullptr, &cms);
+    g_bnd_cms = cms;
     reader_sem_save(f);
     /* the gameplay hash (the netplay desync check's regions): what the peers
      * compare once every input before f is confirmed; a rollback re-simulates
@@ -671,6 +782,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         cut_set(false);
         const double ms = ms_since(g_resim_t0);
         g_st.rollback_ms += ms; if (ms > g_st.rollback_ms_max) g_st.rollback_ms_max = ms;
+        rollback_done(f);
         if (g_sampling) { sample_stop("netresim"); g_sampling = false; }
         if (g_verbose) note("rbnet: rollback %u -> %u done in %.2f ms (%u frames re-simulated)", g_resim_target, g_resim_from, ms, g_resim_target - g_resim_from);
     } else {
@@ -740,6 +852,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             else { LARGE_INTEGER t0; QueryPerformanceCounter(&t0); np::rb_wait_remote(UINT32_MAX - 1, (uint32_t)ms); (void)t0; }   /* at the boundary, socket pumped */
             g_last_sleep_frame = f;
             g_st.sleeps++; g_st.sleep_ms += ms;
+            LATLOG('S', "%u %d %.2f", f, frames, ms);   /* PS3_LATENCY_LOG: a time-sync sleep at boundary f (frames, ms) */
             g_wait_acc_ms += ms;
             if (g_verbose) note("rbnet: frame %u: %.1f frames ahead of the peer, slept %d frame(s)", f, adv, frames);
         }
@@ -761,6 +874,7 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         rc = np::rb_wait_remote(need - 1, 2000);
         const double ms = ms_since(t0);
         g_st.stalls++; g_st.stall_ms += ms; if (warm || select) g_st.stall_ms_lock += ms;
+        LATLOG('T', "%u %.2f", f, ms);   /* PS3_LATENCY_LOG: boundary f waited for the peer's input (ms) */
         g_wait_acc_ms += ms;
         if (g_verbose || ms > 100) note("rbnet: frame %u waited %.1f ms for the peer's input up to frame %u (%s)", f, ms, need - 1,
                                         scene_flag ? "scene change" : warm ? "warm-up" : select ? "select screen" : "prediction window");
@@ -781,7 +895,10 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
         bool ok = true;
         for (uint32_t g = f - g_force_depth; g <= f && ok; g++)
             ok = g_post_tag[g % 4096] == g + 1 && g_fighting[g % 4096] && (g == f || g_used_tag[g % kHist] == g + 1);
-        if (ok && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
+        /* a lazy re-simulation (T5_RB_NET_LAZY) kept no undo log for the confirmed
+         * frames it re-ran: those boundaries are out of reach, as they are for any
+         * real misprediction */
+        if (ok && state_reachable(f - g_force_depth) && start_rollback(f, f - g_force_depth, out)) { g_forced++; return f - g_force_depth; }
     }
 
     /* final hashes: every input before g is confirmed and no rollback is pending */
@@ -822,7 +939,7 @@ bool early_check()
     if (!f || f < g_lock_until || f < g_started_at + g_warmup) return false;
     if (g_intro_rule && g_select_lock && t5_df_mode_cur() == 6) return false;   /* lockstep at the select screen */
     LARGE_INTEGER t; QueryPerformanceCounter(&t);
-    if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 2000) return false;   /* every 0.5 ms */
+    if (g_early_last_check.QuadPart && t.QuadPart - g_early_last_check.QuadPart < g_qpf.QuadPart / 5000) return false;   /* every 0.2 ms (was 0.5) */
     g_early_last_check = t;
     np::rb_poll();
     const uint32_t upto = std::min(np::rb_remote_contig(), f);
@@ -853,7 +970,13 @@ void early_commit()
 }
 /* the vblank's post of the frame semaphore while an early boundary re-simulates
  * (swallowed like every post during a re-simulation): it was this frame's tick */
-void early_tick_posted() { if (g_early_f != UINT32_MAX && !g_tick_waited) g_early_tick_seen = true; }
+void early_tick_posted()
+{
+    if (g_early_f != UINT32_MAX && !g_tick_waited) {
+        if (!g_early_tick_seen) QueryPerformanceCounter(&g_t_tick_seen);
+        g_early_tick_seen = true;
+    }
+}
 void set_tick_waiter(void (*fn)(bool came)) { g_tick_waiter = fn; }
 
 } } // namespace rb::net

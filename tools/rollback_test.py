@@ -69,14 +69,18 @@ def main():
     ap.add_argument("--fight", default="", help="direct fight p1,p2,stage[,rounds]: boots into the match (T5_FIGHT); the test starts 120 frames into it")
     ap.add_argument("--icall-at", type=float, default=0, help="seconds: trace the main thread's indirect calls for 0.5 s")
     ap.add_argument("--runs", default=RUNS)
+    ap.add_argument("--vfs", default=VFS)
+    ap.add_argument("--polite", action="store_true",
+                    help="someone is using this PC: the game muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     a = ap.parse_args()
+    vfs = a.vfs
 
     d = os.path.join(a.runs, a.out)
     os.makedirs(d, exist_ok=True)
     env = dict(os.environ)
     env.update({
-        "PS3_VFS_ROOT": VFS,
-        "PS3_HDD0_ROOT": VFS + "/dev_hdd0",
+        "PS3_VFS_ROOT": vfs,
+        "PS3_HDD0_ROOT": vfs + "/dev_hdd0",
         "PS3_TITLE": "T5DR rollback test",
         "PS3_GCM_TICKER_PUMP": "1",
         "RSX_LIVE_DRAW": "1",
@@ -104,6 +108,8 @@ def main():
         env["PS3_ICALL_TRACE"] = "1"
         if os.path.exists(gate):
             os.remove(gate)
+    if a.polite:
+        env["PS3_AUDIO_MUTE"] = "1"
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
@@ -112,8 +118,9 @@ def main():
     import shutil
     exe = os.path.join(d, "t5dr.exe")
     shutil.copyfile(a.exe, exe)
-    p = subprocess.Popen([exe, VFS + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=d,
-                         stdout=log, stderr=subprocess.STDOUT)
+    p = subprocess.Popen([exe, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=d,
+                         stdout=log, stderr=subprocess.STDOUT,
+                         creationflags=0x00004000 if a.polite and os.name == "nt" else 0)   # BELOW_NORMAL_PRIORITY_CLASS
     print(f"started pid {p.pid} in {d}")
     shots = sorted(float(s) for s in a.shots.split(",") if s)
     t0 = time.time()

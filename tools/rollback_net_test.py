@@ -151,6 +151,9 @@ RE_SOUND = re.compile(r"sounds: (\d+) started live, (\d+) kept from a first run,
                       r"music/bank events: (\d+) repeats skipped, (\d+) new)?")
 RE_FT = re.compile(r"frame times \(displayed frames\) this window p50 ([0-9.]+) ms p99 ([0-9.]+) ms max ([0-9.]+) ms; whole run p50 ([0-9.]+) p99 ([0-9.]+)")
 RE_SYNC = re.compile(r"sync check through frame (\d+): (\d+) mismatching")
+RE_FT2 = re.compile(r"frame times, whole run p50 ([0-9.]+) p95 ([0-9.]+) p99 ([0-9.]+) ms; while fighting \((\d+) frames\) p50 ([0-9.]+) p95 ([0-9.]+) p99 ([0-9.]+)")
+RE_RS = re.compile(r"re-simulated frames (\d+): per frame commit ([0-9.]+) ms, rest of the boundary ([0-9.]+) ms, game frame ([0-9.]+) ms; "
+                   r"rollbacks: main thread CPU ([0-9.]+) of ([0-9.]+) ms wall.*?by depth \(avg/max\)(.*?); early rollbacks that ended after their tick (\d+) \(([0-9.]+) ms late on average, max ([0-9.]+)\)")
 
 
 def summarize(d, who, rc, hung):
@@ -162,8 +165,28 @@ def summarize(d, who, rc, hung):
     adv = []
     sync = None
     ft = None
+    ft2 = None
     ftmax = 0.0
+    rs = dict(frames=0, commit=0.0, bnd=0.0, game=0.0, cpu=0.0, wall=0.0, late=0, late_ms=0.0, late_max=0.0)
+    depth = {}
     for l in lines:
+        m = RE_FT2.search(l)
+        if m:
+            ft2 = [float(x) for x in m.groups()]
+        m = RE_RS.search(l)
+        if m:
+            n = int(m.group(1))
+            rs["frames"] += n
+            rs["commit"] += n * float(m.group(2)); rs["bnd"] += n * float(m.group(3)); rs["game"] += n * float(m.group(4))
+            rs["cpu"] += float(m.group(5)); rs["wall"] += float(m.group(6))
+            for part in m.group(7).split():
+                if ":" in part and "/" in part:
+                    dd, v = part.split(":")
+                    avg, mx = v.split("/")
+                    e = depth.setdefault(int(dd), [0.0, 0.0])
+                    e[0] = max(e[0], float(avg)); e[1] = max(e[1], float(mx))
+            k = int(m.group(8))
+            rs["late"] += k; rs["late_ms"] += k * float(m.group(9)); rs["late_max"] = max(rs["late_max"], float(m.group(10)))
         m = RE_FT.search(l)
         if m:
             ft = (float(m.group(4)), float(m.group(5)))
@@ -197,6 +220,13 @@ def summarize(d, who, rc, hung):
            f"{tot['resim']} frames re-simulated, {tot['stalls']} stalls ({tot['stall_ms']:.0f} ms, {tot['lock_ms']:.0f} ms in lockstep windows), {tot['sleeps']} time-sync sleeps "
            f"({tot['sleep_ms']:.0f} ms), advantage per window min {min(adv) if adv else 0:.2f} max {max(adv) if adv else 0:.2f}"
            + (f", displayed frame time p50 {ft[0]:.1f} ms p99 {ft[1]:.1f} ms max {ftmax:.1f} ms" if ft else ""),
+           (f"  displayed frame times (boundary to boundary), whole run p50 {ft2[0]:.1f} p95 {ft2[1]:.1f} p99 {ft2[2]:.1f} ms; "
+            f"while fighting ({int(ft2[3])} frames) p50 {ft2[4]:.1f} p95 {ft2[5]:.1f} p99 {ft2[6]:.1f} ms" if ft2 else "  (no p95 / fight-only frame times in this build)"),
+           (f"  re-simulation: {rs['frames']} frames, per frame commit {rs['commit'] / max(1, rs['frames']):.2f} ms, rest of the boundary "
+            f"{rs['bnd'] / max(1, rs['frames']):.2f} ms, game {rs['game'] / max(1, rs['frames']):.2f} ms; rollbacks CPU {rs['cpu']:.0f} of "
+            f"{rs['wall']:.0f} ms wall; worst window avg/max ms by depth " + " ".join(f"{d}:{v[0]:.1f}/{v[1]:.1f}" for d, v in sorted(depth.items()))
+            + f"; early rollbacks the tick overtook {rs['late']} ({rs['late_ms'] / max(1, rs['late']):.2f} ms late avg, max {rs['late_max']:.2f})"
+            if rs["frames"] else "  (no re-simulation breakdown in this build)"),
            f"  sounds: {snd[0]} started live, {snd[1]} kept from a first run, {snd[2]} new in re-simulated frames, {snd[3]} played on; "
            f"stops {snd[4]} repeats skipped, {snd[5]} new not applied; {snd[6]} answers replayed; events {snd[7]} repeats skipped, {snd[8]} new"]
     for l in starts + overs:
@@ -204,6 +234,112 @@ def summarize(d, who, rc, hung):
     for l in aborted[:3]:
         out.append("  ABORT: " + l.strip())
     return out
+
+
+def pct(xs, p):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    k = (len(xs) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(xs) - 1)
+    return xs[f] + (xs[c] - xs[f]) * (k - f)
+
+
+def latlog_stats(path):
+    """--latlog: what the player sees, from the runtime's latency probe (PS3_LATENCY_LOG,
+    ps3recomp patch 0034, extended by 0039): intervals between two presents (P lines)
+    while the match is fought (N lines with the fighting flag, rb_net.cpp), how many
+    display refreshes showed no new frame (the DWM vblank grid of the C lines) and,
+    per rollback (M line), when the live frame after it was presented compared with
+    the vblank it was meant for."""
+    if not os.path.exists(path):
+        return None
+    freq = 10_000_000
+    P, C, N, M, V = [], [], [], [], []
+    with open(path, errors="replace") as f:
+        for line in f:
+            if line.startswith("# qpc_frequency="):
+                freq = int(line.split("=")[1])
+                continue
+            p = line.split()
+            if len(p) < 2:
+                continue
+            try:
+                t = int(p[1])
+                if p[0] == "P":
+                    P.append(t)
+                elif p[0] == "C" and len(p) >= 4:
+                    C.append((t, int(p[2]), int(p[3])))
+                elif p[0] == "N" and len(p) >= 5:
+                    N.append((t, int(p[2]), int(p[3]), int(p[4]), int(p[5]) if len(p) >= 6 else -1))
+                elif p[0] == "M":
+                    M.append((t, int(p[2]), int(p[3])))
+                elif p[0] == "V":
+                    V.append(t)
+            except ValueError:
+                pass
+    ms = 1000.0 / freq
+    # the fought stretches: live boundaries (resim 0) with the fighting flag
+    spans, cur = [], None
+    for t, f, resim, early, fight in N:
+        if resim:
+            continue
+        if fight == 1:
+            if cur is None:
+                cur = [t, t]
+            cur[1] = t
+        elif fight == 0 and cur is not None:
+            spans.append(cur)
+            cur = None
+    if cur is not None:
+        spans.append(cur)
+    if not spans:
+        return None
+    import bisect
+    iv = []
+    pres = []
+    for a, b in spans:
+        i, j = bisect.bisect_left(P, a), bisect.bisect_right(P, b)
+        seg = P[i:j]
+        pres += seg
+        iv += [(seg[k + 1] - seg[k]) * ms for k in range(len(seg) - 1)]
+    out = {"presents": len(pres), "p50": pct(iv, 50), "p95": pct(iv, 95), "p99": pct(iv, 99), "max": max(iv) if iv else 0,
+           "over_20ms": sum(1 for x in iv if x > 20.0), "over_25ms": sum(1 for x in iv if x > 25.0), "intervals": len(iv)}
+    # display refreshes with no new frame: each present lands on the next refresh after it (+0.5 ms copy)
+    if C and pres:
+        Cq = [c[0] for c in C]
+        gpu = freq // 2000
+        slots = []
+        for p_ in pres:
+            k = bisect.bisect_right(Cq, p_) - 1
+            if k < 0:
+                continue
+            vb, per = C[k][1], C[k][2]
+            n = -(-(p_ + gpu - vb) // per)
+            slots.append(((vb + n * per), per))
+        if slots:
+            per = sorted(s[1] for s in slots)[len(slots) // 2]
+            ids = [round(s[0] / per) for s in slots]
+            gaps = [ids[k + 1] - ids[k] for k in range(len(ids) - 1)]
+            within = [g for g in gaps if 0 <= g <= 30]      # a new stretch (the next round) starts far away
+            out["display_hz"] = freq / per
+            out["refreshes_per_frame"] = {str(g): within.count(g) for g in sorted(set(within))}
+    return out
+
+
+def busy_now():
+    """(clang-cl processes, t5dr processes, idle s, total s of all processors so far)"""
+    import ctypes
+    from ctypes import wintypes as W
+    i, k, u = W.FILETIME(), W.FILETIME(), W.FILETIME()
+    ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(i), ctypes.byref(k), ctypes.byref(u))
+    ft = lambda t: (t.dwHighDateTime << 32 | t.dwLowDateTime) / 1e7
+    try:
+        tl = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=20).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        tl = ""
+    return tl.count('"clang-cl.exe"'), tl.count('"t5dr.exe"'), ft(i), ft(k) + ft(u)
 
 
 def set_affinity(spec):
@@ -251,7 +387,27 @@ def main():
     ap.add_argument("--runs", default=RUNS)
     ap.add_argument("--cpus1", default="", help="host's CPU affinity: N logical processors (0..N-1) or 0xMASK")
     ap.add_argument("--cpus2", default="", help="joiner's CPU affinity (e.g. 0xFF0000 / 0xFF000000: 8 processors each on the second CCD)")
+    ap.add_argument("--polite", action="store_true",
+                    help="someone is using this PC: games muted (PS3_AUDIO_MUTE=1) at below-normal priority")
+    ap.add_argument("--latlog", action="store_true",
+                    help="PS3_LATENCY_LOG per game (lat.log): present-to-present times in the fight and display "
+                         "refreshes without a new frame go into the summary")
+    ap.add_argument("--mash", action="store_true",
+                    help="fight_flow_test's mash scripts instead of the attack scripts: face buttons and directions "
+                         "at random, 1..--mash-gap frames apart (T5_NET_SCRIPT, fights only with --fight)")
+    ap.add_argument("--mash-gap", type=int, default=6, help="--mash: at most this many frames between presses (20 ~ a person)")
+    ap.add_argument("--moves", action="store_true", help="--mash with motion inputs (fight_flow_test --moves)")
+    ap.add_argument("--stutter", type=int, default=0,
+                    help="suspend the joiner's game for MS every 0.2-0.6 s once it runs (a choppy PC: deep rollbacks)")
+    ap.add_argument("--analyze", action="store_true", help="only summarize the run --out again")
     a = ap.parse_args()
+    if a.analyze:
+        d = os.path.join(a.runs, a.out)
+        print(open(os.path.join(d, "summary.txt")).read() if os.path.exists(os.path.join(d, "summary.txt")) else "")
+        for who in ("host", "join"):
+            print(who, json.dumps(latlog_stats(os.path.join(d, who, "lat.log"))))
+        return
+    load0 = busy_now()
     vfs = a.vfs
 
     d = os.path.join(a.runs, a.out)
@@ -286,7 +442,7 @@ def main():
         base.update({"T5_FIGHT": a.fight, "T5_NET_START": "external", "T5_RB_NET_START": "0", "T5_NET_SCRIPT_FIGHT": "1"})
     if a.dump:
         base["T5_NET_DESYNC_DUMP"] = "1"
-    if a.mute:
+    if a.polite or a.mute:
         base["PS3_AUDIO_MUTE"] = "1"
     for kv in a.env:
         k, v = kv.split("=", 1)
@@ -307,6 +463,8 @@ def main():
         env["T5_RB_LOG"] = os.path.join(wd, "rb_frames.log")
         env["T5_DF_STATUS_FILE"] = os.path.join(wd, "status.json")
         env["T5_NET_RESULT_FILE"] = os.path.join(wd, "result.json")
+        if a.latlog:
+            env["PS3_LATENCY_LOG"] = os.path.join(wd, "lat.log")
         if a.audio:
             env["AUDIO_WAV"] = os.path.join(wd, "audio.f32")
             env["AUDIO_RATE"] = "1"
@@ -329,8 +487,13 @@ def main():
             env.update({"T5_NET_MODE": "join", "T5_NET_PORT": "0",
                         "T5_NET_PEER": f"127.0.0.1:{host_port if a.no_proxy else proxy_port}"})
         sp = os.path.join(wd, "script.txt")
-        with open(sp, "w") as fp:
-            fp.write("\n".join(e.replace(":", " ") for e in script.split(",")) + "\n")
+        if a.mash:   # fight_flow_test's mash script (no START: that pauses a fight)
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from fight_flow_test import mash_script
+            mash_script(sp, (a.seed1 if who == "host" else a.seed2) + 100, gap=a.mash_gap, moves=a.moves)
+        else:
+            with open(sp, "w") as fp:
+                fp.write("\n".join(e.replace(":", " ") for e in script.split(",")) + "\n")
         env["T5_NET_SCRIPT"] = sp
         for kv in (a.env1 if who == "host" else a.env2):
             k, v = kv.split("=", 1)
@@ -339,7 +502,7 @@ def main():
         cpus = a.cpus1 if who == "host" else a.cpus2
         old_mask = set_affinity(cpus) if cpus else None   # inherited by the game before it sizes its pools
         try:
-            flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (os.name == "nt" and a.below_normal) else 0
+            flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (os.name == "nt" and (a.below_normal or a.polite)) else 0
             p = subprocess.Popen([exe if who == "host" else exe2, vfs + "/PS3_GAME/USRDIR/EBOOT.elf"], env=env, cwd=wd,
                                  stdout=glog, stderr=subprocess.STDOUT, creationflags=flags)
         finally:
@@ -398,6 +561,27 @@ def main():
 
     hung = {"host": False, "join": False}
     t0 = time.time()
+    stutter_stop = threading.Event()
+    stutter_n = [0]
+    if a.stutter and os.name == "nt":
+        import ctypes
+        ntdll, k32 = ctypes.WinDLL("ntdll"), ctypes.WinDLL("kernel32")
+
+        def stutter_loop(pid):
+            """--stutter: the joiner's process suspended for a.stutter ms every 0.2-0.6 s"""
+            while not stutter_stop.wait(random.uniform(0.2, 0.6)):
+                h = k32.OpenProcess(0x0800, False, pid)   # PROCESS_SUSPEND_RESUME
+                if not h:
+                    return
+                try:
+                    if ntdll.NtSuspendProcess(h) == 0:
+                        time.sleep(a.stutter / 1000.0)
+                        ntdll.NtResumeProcess(h)
+                        stutter_n[0] += 1
+                finally:
+                    k32.CloseHandle(h)
+        stutter_thread = threading.Thread(target=stutter_loop, args=(procs[1][1].pid,), daemon=True)
+        stutter_thread.start()
     try:
         while time.time() - t0 < a.seconds:
             if any(p.poll() is not None for _, p, _ in procs):
@@ -441,6 +625,9 @@ def main():
                 break
             time.sleep(0.1 if a.audio else 0.5)
     finally:
+        stutter_stop.set()
+        if a.stutter and os.name == "nt":
+            stutter_thread.join(5)   # never kill a suspended game half way
         rcs = {}
         for who, p, glog in procs:
             if p.poll() is None:
@@ -454,13 +641,26 @@ def main():
             proxy.stop = True
             log.write(f"proxy: {proxy.stats}\n")
         log.close()
-    out = [f"run {a.out}: rtt {a.rtt} jitter {a.jitter} loss {a.loss} delay {a.delay} maxpred {a.maxpred}, {time.time() - t0:.0f} s, modes {a.mode1}/{a.mode2}"]
+    load1 = busy_now()
+    tot = load1[3] - load0[3]
+    busy = (tot - (load1[2] - load0[2])) / max(1e-9, time.time() - t0) / 1.0 if tot > 0 else 0.0
+    out = [f"run {a.out}: rtt {a.rtt} jitter {a.jitter} loss {a.loss} delay {a.delay} maxpred {a.maxpred}, {time.time() - t0:.0f} s, modes {a.mode1}/{a.mode2}",
+           f"machine: clang-cl processes {load0[0]} at the start / {load1[0]} at the end, t5dr processes {load0[1]} / {load1[1]} "
+           f"(both games included), processors busy on average {busy:.1f}"]
     for who, _, _ in procs:
         out += summarize(d, who, rcs[who], hung[who])
+        ls = latlog_stats(os.path.join(d, who, "lat.log")) if a.latlog else None
+        if ls:
+            out.append(f"  presents while fighting: {ls['presents']}, present-to-present p50 {ls['p50']:.1f} ms p95 {ls['p95']:.1f} "
+                       f"p99 {ls['p99']:.1f} max {ls['max']:.1f}, {ls['over_20ms']} over 20 ms, {ls['over_25ms']} over 25 ms"
+                       + (f"; display {ls['display_hz']:.2f} Hz, refreshes per new frame {ls['refreshes_per_frame']}"
+                          if "display_hz" in ls else ""))
         for r in files[who]["results"]:
             out.append("  result: " + r)
     if proxy:
         out.append(f"proxy: {proxy.stats}")
+    if a.stutter:
+        out.append(f"stutter: the joiner suspended {stutter_n[0]} times for {a.stutter} ms")
     open(os.path.join(d, "summary.txt"), "w").write("\n".join(out) + "\n")
     print("\n".join(out))
 

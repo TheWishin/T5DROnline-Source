@@ -253,6 +253,26 @@ const uint32_t kDetourCut[] = {
      * mismatches in 1 404 re-simulated boundaries; pairs RC1/RC2 at RTT 150
      * in sync, displayed-frame p99 24 vs 26 ms without it. */
     0x002AAD50,
+    /* Frame-time branch (docs/ROLLBACK.md section 33). The stack profile of
+     * cut re-simulated frames (test mode, 6-frame rollbacks, T5_RB_CUT_TAIL=0,
+     * run p1 against prof6b) still had a fifth of the game's time in model
+     * rendering reached by direct calls. 0x1549FC and 0x1548C0 (tried as
+     * "tails" before, see below) are the bodies of two whole functions that
+     * start 0x28 bytes earlier: 0x1549D4 / 0x154898 load a global render list
+     * (TOC -0x4070 / -0x4078), push the frame (stdu -0xC0) and draw every node
+     * of it (0x155FF8 / 0x155F78 -> 0x155178 -> 0x35375C, the node's virtual
+     * draw): ~10 % of a re-simulated frame. 0x0A25A8 (whole: stdu -0x140) sets
+     * a render context up (0x154A3C .. 0x154E14 setters, matrices) and draws a
+     * list through 0x1549D4: ~8 %, called from the fighter node and 0x26651C.
+     * 0x35D894 (whole: stdu -0x70) hands a camera/projection record to the NU
+     * renderer (0x35E388: matrix setup, 0x358538 / 0x35874C): ~5 %. Test mode
+     * v1/v2 (3-frame rollbacks every 12 frames through a whole match with KOs,
+     * with and without the drawn tail frame): 0 gameplay-hash mismatches in
+     * 1 947 and 996 re-simulated boundaries; p1 (6-frame rollbacks): 0 in 1 668.
+     * Tried and left out: 0x1118E0 (particles), 0x158CBC, 0x2AB46C (effects):
+     * together they changed gameplay words 0x100996B4.. after a round change
+     * and one run aborted (c2, c5). */
+    0x001549D4, 0x00154898, 0x000A25A8, 0x0035D894,
 };
 /* Tried and left out: 0x1549FC / 0x1548C0 (model render calls) and, on their
  * own, 0x15AD9C / 0x15B01C: they are function TAILS the function finder split

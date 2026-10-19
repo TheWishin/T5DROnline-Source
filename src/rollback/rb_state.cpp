@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <vector>
+#include <string>
 #include <algorithm>
 
 #include "rb.h"
@@ -102,8 +103,56 @@ const Range kHashExclude[] = {
 const size_t kHashExcludeN = sizeof kHashExclude / sizeof kHashExclude[0];
 static std::vector<Range> g_hash_exclude_dyn, g_exclude_dyn;
 
+/* Pages the title's SPURS jobs fill completely (the vertex skinning's output
+ * buffers: render data only the RSX reads) are not game state: left out of
+ * snapshots and restores (frame-time branch, ps3recomp patch 0039 records
+ * them; T5_RB_JOB_PAGES=keep keeps them in). The record is forgotten at every
+ * barrier (state_drop_logs: a load may give the heap another use), after the
+ * shadow has been brought up to the guest for those pages. */
+extern "C" {
+void spurs_job_put_track(int on);
+const uint64_t* spurs_job_put_lines(uint32_t* base, uint32_t* pages);
+void spurs_job_put_reset(void);
+}
+static const uint64_t* g_job_lines = nullptr;
+static uint32_t g_job_base = 0, g_job_pages = 0;
+static bool g_job_active = false;   /* only while a match is fought (job_gate) */
+static bool g_job_spent = false;    /* the match was decided: not again before the next barrier (state_drop_logs / state_reset) */
+static inline bool job_page(uint32_t ea)
+{
+    const uint32_t i = (ea - g_job_base) >> 12;
+    return g_job_active && g_job_lines && ea >= g_job_base && i < g_job_pages && g_job_lines[i] == ~0ull;
+}
+/* An experiment, OFF by default (T5_RB_RENDER_STATE=drop): the main thread's
+ * render output while a match is fought -- the NU draw lists (0x43D00000, both
+ * buffers) and the per-frame render scratch, hash-excluded since phase 1 --
+ * left out of the state like the job pages. It is not safe: the lists are
+ * double-buffered, the draw manager's thread (NU::Draw::RequestManager,
+ * 0x1074BE80, in the state) consumes in frame n what frame n-1 built, through
+ * pointers a restore puts back while the lists keep a later frame's nodes. At
+ * RTT 150 with the joiner stuttering the host's draw thread called a garbage
+ * vtable (0x43B94000) and wrote 0x00100B80 over guest memory within one or two
+ * matches (runs C1, C2, C4; C3 with them kept: no crash). Test mode and the
+ * local-lag equivalence test never hit it. Also: after the deciding KO the
+ * result screen's transition read them back (test run h3). */
+static bool g_render_drop = false;
+static const Range kRenderOnly[] = { { 0x43D00000u, 0x00340000u }, { 0x444F9000u, 0x0006E000u } };
+static inline bool render_page(uint32_t ea)
+{
+    if (!g_job_active || !g_render_drop) return false;
+    for (const Range& r : kRenderOnly) if (ea - r.base < r.len) return true;
+    return false;
+}
+static void job_pages_forget();
+uint32_t state_job_pages()
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; g_job_lines && i < g_job_pages; i++) n += g_job_lines[i] == ~0ull;
+    return n;
+}
 bool excluded_page(uint32_t ea)
 {
+    if (job_page(ea) || render_page(ea)) return true;
     for (const Range& r : kExclude) if (ea >= r.base && ea < r.base + r.len) return true;
     for (const Range& r : g_exclude_dyn) if (ea >= r.base && ea < r.base + r.len) return true;
     return false;
@@ -324,6 +373,19 @@ void state_init()
             while (*q == ',') q++;
         }
     }
+    {   const char* e = getenv("T5_RB_JOB_PAGES");
+        const char* r = getenv("T5_RB_RENDER_STATE");
+        g_render_drop = r && !strcmp(r, "drop");
+        if (!(e && !strcmp(e, "keep"))) {
+            g_job_lines = spurs_job_put_lines(&g_job_base, &g_job_pages);
+            spurs_job_put_reset();
+            spurs_job_put_track(1);
+        }
+        note("state: while a match is fought, render output is left out of the rollback state: %s%s%s "
+             "(T5_RB_JOB_PAGES=keep keeps them in; T5_RB_RENDER_STATE=drop also drops the draw lists: unsafe, tests only)",
+             g_job_lines ? "the pages the SPURS jobs fill (vertex skinning)" : "",
+             g_job_lines && g_render_drop ? ", " : "", g_render_drop ? "the draw lists and the render scratch" : "");
+    }
     g_page_hash = (uint64_t*)calloc(kPages, sizeof(uint64_t));
     g_ww.resize(1u << 16);
     g_shadow_size = 0;
@@ -370,8 +432,10 @@ void state_commit_stats(char* out, size_t cap, bool reset)
     if (reset) { g_cs_ww_ms = g_cs_copy_ms = g_cs_total_ms = 0; g_cs_commits = g_cs_pages = 0; memset(g_cs_range_pages, 0, sizeof g_cs_range_pages); memset(g_cs_heap, 0, sizeof g_cs_heap); }
 }
 
+static void job_gate();
 uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* ms)
 {
+    job_gate();
     PumpHold hold;
     LARGE_INTEGER q, a, b; QueryPerformanceFrequency(&q); QueryPerformanceCounter(&a);
     uint32_t n = 0;
@@ -444,6 +508,14 @@ uint32_t state_commit(uint32_t f, void (*on_page)(uint32_t, uint64_t), double* m
     return n;
 }
 
+bool state_reachable(uint32_t to)
+{
+    if (!g_newest || to >= g_newest) return false;
+    for (uint32_t f = g_newest - 1; ; f--) {
+        if (g_log[f % kLogFrames].tag != f + 1) return false;
+        if (f == to) return true;
+    }
+}
 uint32_t state_oldest_frame()
 {
     uint32_t oldest = g_newest;   /* frame + 1 */
@@ -457,15 +529,61 @@ uint32_t state_oldest_frame()
 void state_reset()
 {
     if (!g_ready) return;
+    job_pages_forget();
+    g_job_active = false; g_job_spent = false;
     memset(g_log, 0, sizeof g_log);
     g_ring_pos = 0; g_newest = 0; g_oldest = 0;
     state_commit(0, nullptr, nullptr);
 }
 
+/* Forget the job-filled pages: the shadow takes their current content first
+ * (they were not committed while left out), then they count as state again
+ * until the jobs fill them anew. */
+static void job_pages_forget()
+{
+    if (!g_shadow) return;
+    if (!g_job_active) { if (g_job_lines) spurs_job_put_reset(); return; }
+    PumpHold hold;
+    uint32_t n = 0;
+    for (uint32_t i = 0; g_job_lines && i < g_job_pages; i++) {
+        if (g_job_lines[i] != ~0ull) continue;
+        const uint32_t ea = g_job_base + (i << 12);
+        if (uint8_t* sh = shadow_rw(ea)) { memcpy(sh, vm_base + ea, 0x1000); n++; }
+    }
+    if (g_render_drop)
+        for (const Range& r : kRenderOnly)
+            if (uint8_t* sh = shadow_rw(r.base)) memcpy(sh, vm_base + r.base, r.len);
+    if (g_job_lines) spurs_job_put_reset();
+    (void)n;
+}
+/* Only while a match is fought (game phase 17, the match not decided): what
+ * the heap holds around a fight -- the intro's loads, the result screen, the
+ * win pose -- may take the skinning buffers' place (test run g1: the result
+ * screen's records at 0x1008E690 came out different after a restore once
+ * pages were left out past the deciding KO). Leaving the fight forgets the
+ * pages (the shadow takes them in again); entering it starts a new record. */
+static void job_gate()
+{
+    if (!g_job_lines && !g_render_drop) return;
+    uint32_t ph; memcpy(&ph, vm_base + 0x1008F070u, 4);
+    const bool fight = _byteswap_ulong(ph) == 17 && vm_base[0x1008EBD5u] == 0 && !g_job_spent;
+    if (fight == g_job_active) return;
+    if (fight) { if (g_job_lines) spurs_job_put_reset(); g_job_active = true; }
+    else {
+        const uint32_t n = state_job_pages();
+        job_pages_forget(); g_job_active = false;
+        if (vm_base[0x1008EBD5u] != 0) g_job_spent = true;   /* decided (a round end only pauses it) */
+        static int notes = 0;
+        if (notes++ < 8) note("state: the fight is over (phase %u, decided %u): the %u job-filled pages are state again until the next barrier",
+                              _byteswap_ulong(ph), vm_base[0x1008EBD5u], n);
+    }
+}
 void state_drop_logs()
 {
     for (Log& l : g_log) l.tag = 0;
     g_oldest = g_newest;
+    job_pages_forget();
+    g_job_active = false; g_job_spent = false;   /* a barrier: the next fight starts a new record */
 }
 uint32_t state_log_pages(uint32_t f)
 {
@@ -493,7 +611,21 @@ static void restore_page(uint32_t ea, const uint8_t* src)
     if (pos < 0x1000u) memcpy(vm_base + ea + pos, src + pos, 0x1000u - pos);
 }
 
-bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
+/* what the restores copied (state_restore_stats, the loop's report) */
+static uint64_t g_rs_pages[3] = {}, g_rs_count = 0;
+void state_restore_stats(char* out, size_t cap, bool reset)
+{
+    const double n = g_rs_count ? (double)g_rs_count : 1.0;
+    snprintf(out, cap, "%llu restores: %.0f pages each (draw lists %.0f, render scratch %.0f, the rest %.0f)",
+             (unsigned long long)g_rs_count, (double)(g_rs_pages[0] + g_rs_pages[1] + g_rs_pages[2]) / n,
+             (double)g_rs_pages[1] / n, (double)g_rs_pages[2] / n, (double)g_rs_pages[0] / n);
+    if (reset) { memset(g_rs_pages, 0, sizeof g_rs_pages); g_rs_count = 0; }
+}
+static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy);
+bool state_rollback(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, false); }
+bool state_rollback_lazy(uint32_t to, uint32_t* pages, double* ms) { return state_rollback_(to, pages, ms, !g_page_hashing); }
+void state_refresh(double* ms) { state_commit(0, nullptr, ms); }
+static bool state_rollback_(uint32_t to, uint32_t* pages, double* ms, bool lazy)
 {
     PumpHold hold;
     uint8_t keep[sizeof kKeepWords / sizeof kKeepWords[0]][0x10];
@@ -526,14 +658,33 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
             if (w & bit) continue;
             w |= bit;
             touched.push_back(pg);
+            if (job_page(e.ea) || render_page(e.ea)) continue;   /* render output left out of the state since it was logged */
             const uint8_t* src = g_pages + (size_t)slot * 0x1000;
+            if (e.ea - 0x43D00000u < 0x340000u) g_rs_pages[1]++;        /* stats: render-only parts of the heap */
+            else if (e.ea - 0x444F9000u < 0x6E000u) g_rs_pages[2]++;
+            else g_rs_pages[0]++;
             restore_page(e.ea, src);
-            memcpy(shadow_rw(e.ea), src, 0x1000);
+            if (!lazy) memcpy(shadow_rw(e.ea), src, 0x1000);   /* lazy: the page stays dirty, the refresh copies it */
             if (g_page_hashing && !hash_excluded_page(e.ea)) { g_hash += (e.hash - g_page_hash[pg]) * weight(pg); g_page_hash[pg] = e.hash; }
             n++;
         }
     }
+    /* T5_RB_RESTORE_DUMP=N: the pages of the first N restores, by 64 KB block (diagnostics) */
+    static int dump_left = -1;
+    if (dump_left < 0) { const char* e = getenv("T5_RB_RESTORE_DUMP"); dump_left = e ? atoi(e) : 0; }
+    if (dump_left > 0) {
+        dump_left--;
+        std::vector<uint32_t> v(touched.begin(), touched.end());
+        std::sort(v.begin(), v.end());
+        std::string line; char t[32];
+        for (size_t i = 0; i < v.size();) {
+            size_t j = i; while (j < v.size() && (v[j] >> 4) == (v[i] >> 4)) j++;
+            snprintf(t, sizeof t, " %08X:%u", (v[i] >> 4) << 16, (unsigned)(j - i)); line += t; i = j;
+        }
+        logline("D restore to %u: %zu pages by 64 KB block:%s", to, v.size(), line.c_str());
+    }
     for (uint32_t pg : touched) seen[pg >> 6] = 0;
+    g_rs_count++;
     /* the logs above `to` describe frames that will be re-simulated: drop them
      * and hand their ring slots back (the ring position returns to the start
      * of frame `to`'s log) */
@@ -543,10 +694,11 @@ bool state_rollback(uint32_t to, uint32_t* pages, double* ms)
     if (g_oldest > to) g_oldest = to;
     for (size_t i = 0; i < sizeof kKeepWords / sizeof kKeepWords[0]; i++) {
         memcpy(vm_base + kKeepWords[i].base, keep[i], kKeepWords[i].len);
-        if (uint8_t* sh = shadow_rw(kKeepWords[i].base)) memcpy(sh, keep[i], kKeepWords[i].len);
+        if (uint8_t* sh = shadow_rw(kKeepWords[i].base); sh && !lazy) memcpy(sh, keep[i], kKeepWords[i].len);
     }
-    /* our own writes must not count as the next frame's dirt */
-    for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
+    /* our own writes must not count as the next frame's dirt -- unless lazy:
+     * then they must, so the refresh brings the shadow to them */
+    if (!lazy) for (const Range& r : kSave) ResetWriteWatch(vm_base + r.base, r.len);
     QueryPerformanceCounter(&b);
     if (pages) *pages = n;
     if (ms) *ms = 1000.0 * (double)(b.QuadPart - a.QuadPart) / (double)q.QuadPart;

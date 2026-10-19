@@ -106,5 +106,59 @@ class OnTest(ServerTest):
         self.assertTrue(self.calls and not any(self.calls))
 
 
+class NewCapsTest(ServerTest):
+    """old_stages next to what 1.1.2 added on main: friends and invites (cap "friends"), region matchmaking (cap
+    "relays", ranked and quick queues), and launchers older than 1.1.2 still playing on such a server."""
+    server_cfg = {"old_stages": True}
+
+    def setUp(self):
+        super().setUp()
+        from t5lobby.server.ratelimit import KeyedBuckets       # a few accounts per test from one address
+        self.s.call(lambda: setattr(self.s.srv, "registrations", KeyedBuckets(rate=100.0, burst=100)))
+
+    def test_off_by_default(self):
+        pass
+
+    def test_hello_keeps_every_cap(self):
+        a = self.acc("Alice")
+        for cap in ("delta", "notices", "nat2", "relays", "friends", "old_stages"):
+            self.assertIn(cap, a.welcome["caps"])
+
+    def test_invite_match(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        a.add_friend("Bob")
+        expect(b, "friend_request")
+        b.answer_friend("Alice", True)
+        r = a.invite("Bob", "casual")
+        expect(b, "invited")
+        b.answer_invite(r["invite"], True)
+        sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
+        self.assertEqual(sa["fight"]["stage"], sb["fight"]["stage"])
+        self.assertIn(sa["fight"]["stage"], {s["key"] for s in fighters.table().stages})
+        self.assertIn(True, self.calls)
+
+    def test_ranked(self):
+        a, b = self.acc("Alice"), self.acc("Bob")
+        a.ranked_match("jin")
+        b.ranked_match("paul")
+        sa, sb = expect(a, "match_start", 20), expect(b, "match_start", 20)
+        self.assertTrue(sa["ranked"])
+        self.assertEqual(sa["fight"]["stage"], sb["fight"]["stage"])
+        self.assertIn(True, self.calls)
+
+    def test_older_launchers_play(self):
+        # 1.1.1: no friends, no old_stages; 1.1.0: no regional relays and no nat2 either
+        new1, v111 = self.acc("Alice"), self.acc("Bob", old_stages=False, friends=False)
+        self.assertEqual({"friends", "old_stages"} & set(v111.welcome["caps"]), set())
+        st = self.match(new1, v111)
+        self.assertFalse(st.startswith("t5s"), st)
+        new2 = self.acc("Cid")
+        v110 = self.acc("Dan", old_stages=False, friends=False, relays=False, nat2=False)
+        self.assertEqual({"friends", "old_stages", "relays", "nat2"} & set(v110.welcome["caps"]), set())
+        st = self.match(new2, v110)
+        self.assertFalse(st.startswith("t5s"), st)
+        self.assertTrue(self.calls and not any(self.calls))
+
+
 if __name__ == "__main__":
     unittest.main()

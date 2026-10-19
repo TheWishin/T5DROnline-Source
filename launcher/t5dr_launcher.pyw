@@ -325,7 +325,8 @@ class App(tk.Tk):
         self.progress = ttk.Progressbar(b, maximum=1000)
         self.progress.grid(row=1, column=0, columnspan=3, sticky="we", pady=(6, 2))
         self.detail = tk.StringVar(value=t("Press BUILD GAME. It takes a few minutes; the game data stays in this folder."))
-        ttk.Label(b, textvariable=self.detail, style="Muted.TLabel").grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Label(b, textvariable=self.detail, style="Muted.TLabel", wraplength=860,
+                  justify="left").grid(row=2, column=0, columnspan=3, sticky="w")
         row = ttk.Frame(b)
         row.grid(row=3, column=0, columnspan=3, sticky="we", pady=(8, 2))
         self.build_btn = self.big_button(row, t("BUILD GAME"), self.start_build)
@@ -853,9 +854,11 @@ class App(tk.Tk):
         if self.cur_step and self.step_state.get(self.cur_step) == "running":
             n = core.build_game.STEPS.index(self.cur_step) + 1
             el = int(time.time() - self.step_t0)
+            # a translation step that printed nothing for minutes gets a second line saying so (and what to do)
+            hint = b.quiet_hint()
             self.detail.set(t("Step {n} of {total}: {title}  —  {elapsed}", n=n, total=len(core.build_game.STEPS),
                               title=t(core.STEP_TITLES[self.cur_step]), elapsed=core.clock(el))
-                            + (f"  ({int(self.sub * 100)}%)" if self.sub else ""))
+                            + (f"  ({int(self.sub * 100)}%)" if self.sub else "") + ("\n" + hint if hint else ""))
         self.progress["value"] = int(self._overall() * 1000)
         if ended is not None:
             self._build_finished(ended)

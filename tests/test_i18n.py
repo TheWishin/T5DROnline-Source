@@ -977,9 +977,17 @@ class RenderTests(Base):
         self.assertEqual(rows[0][1], "3.12.10 in C:\\Py\\python.exe")
         app.step_state["lift"] = "running"
         app.cur_step, app.step_t0, app.sub = "lift", time.time() - 75, 0.5
-        app.build = type("B", (), {"events": __import__("queue").Queue()})()
+        quiet = []                         # the build's quiet hint (core.lift_quiet_hint), none at first
+        app.build = type("B", (), {"events": __import__("queue").Queue(),
+                                   "quiet_hint": lambda _self: quiet[-1] if quiet else None})()
         app._drain_build()
         self.assertTrue(app.detail.get().startswith("Schritt 6 von 8: Code übersetzen  —  1:15"), app.detail.get())
+        self.assertNotIn("\n", app.detail.get())
+        quiet.append(self.core.lift_quiet_hint("lift", 200))
+        app._drain_build()
+        first, second = app.detail.get().split("\n")
+        self.assertTrue(first.startswith("Schritt 6 von 8: Code übersetzen"), first)
+        self.assertTrue(second.startswith("Der Schritt „Code übersetzen“ hat seit 3 Minuten nichts ausgegeben."), second)
         app.build.events.put(("error", "Choose your license file (.rap) first."))
         app._drain_build()
         self.assertEqual(app.error.get(), "Wähle zuerst deine Lizenzdatei (.rap).")

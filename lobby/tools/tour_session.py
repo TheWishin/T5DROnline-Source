@@ -83,6 +83,32 @@ def start_server(a):
     sys.exit("lobby server did not start")
 
 
+def self_exe(a):
+    return bool(a.exe)
+
+
+def close_windows(pid):
+    """WM_CLOSE to every visible top-level window of process `pid` (Alt+F4 / the X button). -> how many."""
+    if os.name != "nt":
+        return 0
+    import ctypes
+    import ctypes.wintypes as wt
+    u32 = ctypes.WinDLL("user32")
+    found = []
+    proto = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+    def cb(h, _lp):
+        p = wt.DWORD()
+        u32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == pid and u32.IsWindowVisible(h):
+            found.append(h)
+        return True
+    u32.EnumWindows(proto(cb), 0)
+    for h in found:
+        u32.PostMessageW(h, 0x0010, 0, 0)
+    return len(found)
+
+
 class Player:
     def __init__(self, a, addr, build, idx, name):
         self.a, self.idx, self.name = a, idx, name
@@ -103,6 +129,9 @@ class Player:
         self.called_at = {}            # set id -> time of its call
         self.call_to_fight = []        # seconds from a call to the set's first FIGHT START
         self.waiting_fight = None
+        self.quit_armed = None         # (match id, fight base) when this player quits the running game (--quit)
+        self.quit_fight_t = None
+        self.quits = []                # match ids this player quit
         self.driver = MatchDriver(self.client, self.launch, self.dir, mode="persistent", ask_manual=False,
                                   extra_env=dict(kv.split("=", 1) for kv in a.env))
 
@@ -164,12 +193,16 @@ class Player:
                 opp = seeds.get((ev.get("opponent") or {}).get("name")) or 99
                 self.attacking = mine < opp
                 sid = ts.get("set")
+                base = int((self.status() or {}).get("match") or 0) if self.driver.game_running() else 0
                 if sid in self.called_at:
-                    self.waiting_fight = (sid, self.called_at.pop(sid),
-                                          int((self.status() or {}).get("match") or 0) if self.driver.game_running()
-                                          else 0)
+                    self.waiting_fight = (sid, self.called_at.pop(sid), base)
+                # --quit SET:GAME: the player who loses that game (the worse seed, who stands still) quits it mid-fight
+                if self.a.quit == (sid, int(s.get("number") or 1)) and not self.attacking:
+                    self.quit_armed = (ev["match"], base)
+                    self.quit_fight_t = None
                 log(f"{self.name}: game {s.get('number')} of set {sid} vs {(ev.get('opponent') or {}).get('name')} "
-                    f"P{ev['slot'] + 1}" + (" -- attacks" if self.a.exe and self.attacking else ""))
+                    f"P{ev['slot'] + 1}" + (" -- attacks" if self.a.exe and self.attacking else "")
+                    + (" -- will quit it" if self.quit_armed else ""))
             elif t == "match_result":
                 s = ev.get("set") or {}
                 self.attacking = False
@@ -187,6 +220,26 @@ class Player:
         if w and st.get("state") == "fight" and int(st.get("match") or 0) > w[2]:
             self.call_to_fight.append(round(time.time() - w[1], 1))
             self.waiting_fight = None
+        q = self.quit_armed
+        if q and st.get("state") == "fight" and int(st.get("match") or 0) > q[1]:
+            if self.quit_fight_t is None:
+                self.quit_fight_t = time.time()
+            elif time.time() - self.quit_fight_t >= self.a.quit_after:
+                self.quit_armed = None
+                if self.a.exe:
+                    # the real player's way: Alt+F4 / the X button -> the game ends its session as a quit (BYE to
+                    # the opponent, result "quit", exit code 7) and the driver reports it
+                    n = close_windows(self.driver.game.proc.pid) if self.driver.game is not None else 0
+                    log(f"{self.name}: closes the game window in the fight of {q[0]} ({n} window(s))")
+                    if n:
+                        self.quits.append(q[0])
+                else:
+                    log(f"{self.name}: leaves the match {q[0]} in the fight")
+                    try:
+                        self.client.leave_match(q[0])
+                        self.quits.append(q[0])
+                    except LobbyError as e:
+                        log(f"{self.name}: leave: {e.msg}")
 
     def bot(self):
         if not self.a.exe or not self.attacking or not self.driver.game_running():
@@ -231,7 +284,13 @@ def main():
     ap.add_argument("--stub-seconds", type=float, default=1.0, help="stub games: one game's length")
     ap.add_argument("--seconds", type=float, default=3600.0, help="give up after this long")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every game (every match too)")
+    ap.add_argument("--quit", help="SET:GAME, e.g. W1-2:2: the loser of that game quits it mid-fight (closes the game "
+                                   "window; stub games: leaves the match) -- the set must go to the other player")
+    ap.add_argument("--quit-after", type=float, default=4.0, help="seconds into that fight")
     a = ap.parse_args()
+    if a.quit:
+        sid, _c, num = a.quit.partition(":")
+        a.quit = (sid, int(num or 1))
     a.out = os.path.abspath(a.out)
     os.makedirs(a.out, exist_ok=True)
     LOGF = open(os.path.join(a.out, "harness.log"), "a", encoding="utf-8")
@@ -281,7 +340,8 @@ def main():
             log("  " + tour_text.set_line(s, info) + f"  [{s['id']}, {len(s.get('games') or [])} games]")
         played = [s for s in b.get("sets") or () if s["state"] == "done" and s["reason"] not in ("bye", "empty",
                                                                                                  "skipped")]
-        not_by_games = [s["id"] for s in played if s["reason"] is not None]
+        quit_set = a.quit[0] if a.quit else None
+        not_by_games = [s["id"] for s in played if s["reason"] is not None and s["id"] != quit_set]
         ok &= full["state"] == "finished" and not not_by_games
         log("standings: " + ", ".join(f"{r['place']}. {r['name']}" for r in full.get("standings") or ()))
         log(f"champion: {full.get('champion')}; sets played: {len(played)}; not decided by the games: {not_by_games}")
@@ -289,16 +349,45 @@ def main():
         try:
             import sqlite3
             db = sqlite3.connect(os.path.join(a.out, "lobby.db"))
-            rows = db.execute("SELECT status, reports FROM matches WHERE set_id IS NOT NULL").fetchall()
+            rows = db.execute("SELECT id, status, reason, reports FROM matches WHERE set_id IS NOT NULL "
+                              "ORDER BY started").fetchall()
             db.close()
         except Exception as e:      # noqa: BLE001 -- the check below says it
             log(f"database: {e}")
-        sources = {r["source"] for _st, rep in rows for r in json.loads(rep or "[]") if r}
-        by_status = {}
-        for st, _rep in rows:
+        quitted = {m for p in players for m in p.quits}
+        by_status, bad = {}, []
+        for mid, st, why, rep in rows:
             by_status[st] = by_status.get(st, 0) + 1
-        log(f"games: {len(rows)} {by_status}; reported from: {sorted(sources)}")
-        ok &= bool(rows) and sources <= {"game"}
+            reps = [r for r in json.loads(rep or "[]") if r]
+            if mid in quitted:
+                srcs = sorted(r["source"] for r in reps)
+                good = st == "forfeit" and "quit" in srcs
+                log(f"  game {mid}: {st} ({why}), reports {srcs} -- the planned quit {'OK' if good else 'NOT AS PLANNED'}")
+            else:
+                hashes = {r.get("hash") for r in reps}
+                # (the stub game writes no state hash: equal hashes are checked with the real game)
+                good = (st == "confirmed" and len(reps) == 2 and all(r["source"] == "game" for r in reps)
+                        and len(hashes) == 1 and (None not in hashes or not self_exe(a))
+                        and not any(r.get("desync") for r in reps))
+                log(f"  game {mid}: {st}{' (' + why + ')' if why else ''}, from {[r['source'] for r in reps]}, "
+                    f"hashes {'equal ' + str(next(iter(hashes))) if len(hashes) == 1 else hashes}, "
+                    f"desync {[r.get('desync') for r in reps]}{'' if good else '  <-- NOT OK'}")
+            if not good:
+                bad.append(mid)
+        log(f"games: {len(rows)} {by_status}; not as expected: {bad}")
+        ok &= bool(rows) and not bad
+        if a.quit:
+            bs = next((s for s in b.get("sets") or () if s["id"] == quit_set), None)
+            quitter = next((p.name for p in players if p.quits), None)
+            if bs is None or quitter is None or bs.get("winner") is None:
+                log(f"the planned quit in {quit_set} did not happen")
+                ok = False
+            else:
+                winner_name = bs["p"][bs["winner"]]
+                good = bs["reason"] == "forfeit" and winner_name not in (None, quitter)
+                ok &= good
+                log(f"set {quit_set}: {quitter} quit game {a.quit[1]} -> {bs['reason']}, the set to {winner_name} "
+                    f"(games before: {bs.get('score')}) -> {'OK' if good else 'NOT AS PLANNED'}")
         times = [x for p in players for x in p.call_to_fight]
         if times:
             log(f"call -> first FIGHT START of the set: median {sorted(times)[len(times) // 2]} s, max {max(times)} s "

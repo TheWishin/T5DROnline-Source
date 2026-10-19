@@ -295,7 +295,8 @@ priority, other agents' games beside them -- 22-55 fps):
 
 - **`tools/pick_flow_test.py`** (no lobby; persistent unless noted): 20 of 25
   matches OK across the runs t1, rep1, big_ls, final_rb, proc_rb. The 5 others:
-  Devil Jin (big_ls match 6; see "Known transient mismatches"); two short
+  Devil Jin (big_ls match 6; the TLS generator, fixed since, see "Known
+  transient mismatches"); two short
   mismatches under rollback in final_rb (22 frames Wang vs Heihachi, 1 frame
   Raven vs Asuka, mid-fight, same winner; the same pairs ran clean in
   e2e_room_rb); one hang that was the driver's cursor (from column 11 -- Bruce,
@@ -755,29 +756,19 @@ Results: see docs/ROLLBACK.md section 31 (the cycle runs).
 
 ## Known transient mismatches
 
-**Devil Jin and Mokujin desync online (found by ingame-select, 2026-10-18; not
-fixed).** The in-game select's test runs picked every character, and two of
-them went out of sync with or without the in-game select -- the same with
-lobby-picked fights as on main (`tools/pick_flow_test.py --no-pick`, lockstep,
-`T5_NET_DESYNC_DUMP`):
-
-- **Mokujin**: 4 of 6 lobby-picked matches with Mokujin went apart for good
-  (1,122-1,503 mismatching frames, from the first frame after the intros, the
-  results differ). Mokujin copies a random fighter's moves each round; that
-  choice is not the same on both PCs. Run mok_np.
-- **Devil Jin**: as P2 it desynced in 4 of 4 lobby-picked matches (his default
-  costume; 81-618 mismatching frames), as P1 in 1 of 8; with his other costume
-  in most matches either way. The words that differ are xyz points of his
-  fighter block and of the opponent's (+0x368 and +0x6C8 of his block, +0x0,
-  +0x580, +0x6D4 of the other one, 0x10099660/70, 0x100A3D34, 0x100A3DEC),
-  far into the fight, for 35-600 frames, then equal again; the winner was the
-  same every time. Points that follow timing, not input (wings or effects),
-  like the camera words below -- but too many and too central to leave out of
-  the hash without knowing what reads them. Runs dvj1, dvj2, dvj3, dvj_np.
-
-Either one voids a ranked match today. Next step: find the RNG Mokujin's style
-comes from (and seed it from the match seed), and what writes Devil Jin's
-points.
+**Devil Jin and Mokujin desync online (found by ingame-select, 2026-10-18;
+fixed by desync-hunt, docs/NETPLAY.md "Desync hunt").** The in-game select's
+test runs picked every character, and two of them went out of sync with or
+without the in-game select (Mokujin 4 of 6 lobby-picked matches apart for good
+from the first frame after the intros; Devil Jin as P2 4 of 4 for 81-618
+frames, xyz points of both fighters). Both came from the title's second random
+generator, the main thread's TLS LCG 0x3AFC3C, which was never reseeded: the
+game mode's set-up picks Mokujin's copied fighter from it, and the camera and
+effects (Devil Jin's) draw from it in the fight. It is now reseeded at every
+sync point and pinned to the session seed while the select mode runs -- the
+two select screens of the in-game select run for different numbers of frames,
+so the pin matters for every picked fight. Nothing of this branch excluded
+either character or any hash word for it.
 
 Two kinds of words differed between the two games in the runs of this work;
 neither changed the fight (the same hash again afterwards, the same result).

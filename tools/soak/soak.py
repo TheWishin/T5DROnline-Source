@@ -414,10 +414,12 @@ def sc_practice(d, seconds=30):
     g.phase("practice-menu", "menu")
     g.press("START", gap=1500)
     g.shot("practice-menu", expect="content")
+    g.wait(1.5)                                     # the menu ignores input while it slides in
     for _ in range(9):
-        g.press("DOWN", gap=350)                    # RETURN TO TITLE SCREEN
-    g.press("CROSS", gap=800)
-    g.press("RIGHT", gap=600)                       # [No] -> [Yes]
+        g.press("DOWN", gap=500)                    # RETURN TO TITLE SCREEN
+    g.shot("practice-return", expect="content", settle=0.5, timeout=3)
+    g.press("CROSS", gap=1000)
+    g.press("RIGHT", gap=800)                       # [No] -> [Yes]
     g.press("CROSS", gap=1500)
     ok = d.wait_mode(M_TITLE, timeout=30)
     g.expect("practice-exit", ok, "practice menu -> RETURN TO TITLE SCREEN" if ok else f"mode {g.mode}")

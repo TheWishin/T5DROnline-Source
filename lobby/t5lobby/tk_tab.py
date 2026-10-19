@@ -1068,13 +1068,16 @@ class OnlineTab:
             slot = info.get("slot") or 0
             fight = info.get("fight")
             fighters = None
-            if fight and all(x and x != fighters_random() for x in fight):
+            # Only fighters of our own table and whole-number scores: the status is public on the player's Discord
+            # profile, and a lobby server (any server a player adds) sent the keys -- an unknown key used to go there
+            # as it came, any text up to 128 characters (security review 2).
+            if fight and len(fight) == 2 and all(isinstance(x, str) and self.table.fighter(x) for x in fight):
                 names = [self.table.fighter_name(x) for x in fight]
                 fighters = (names[0], names[1]) if slot == 0 else (names[1], names[0])
-            st = info.get("set") or {}
+            st = info.get("set") if isinstance(info.get("set"), dict) else {}
             score = None
-            if st.get("rated"):
-                w = st.get("wins") or [0, 0]
+            w = st.get("wins")
+            if st.get("rated") and isinstance(w, (list, tuple)) and len(w) == 2 and                     all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 100 for v in w):
                 score = (w[0], w[1]) if slot == 0 else (w[1], w[0])
             spec = dict(kind="match", ranked=info.get("ranked"), fighters=fighters, set_score=score)
         elif c.me.get("status") == "queue":

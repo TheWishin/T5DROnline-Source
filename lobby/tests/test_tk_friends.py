@@ -236,6 +236,32 @@ class TkDiscordTest(TkBase):
         self.pump(lambda: self.fake.activities[-1] is None)
         self.assertIsNone(tab.presence)
 
+    def test_server_text_never_reaches_the_discord_status(self):
+        # (security review 2) the status is public on the player's Discord profile; the fighter keys and the set score
+        # come from the lobby server -- any server a player adds. An unknown key went there as it came.
+        import types
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        saved = tab.driver
+        try:
+            tab.driver = types.SimpleNamespace(ticket=object())
+            for fight, wins in ((("visit evil.example for free coins", "jin"), [1, 0]), ((["x"], "jin"), [1, 0]),
+                                (("lili", "asuka"), ["<b>9</b>", 0]), (("lili", "asuka"), [True, 0])):
+                tab._match_info = {"match": "m1", "ranked": True, "slot": 0, "fight": fight,
+                                   "set": {"rated": True, "wins": wins}}
+                details = tab._presence_wanted()["details"]
+                self.assertNotIn("evil", details)
+                self.assertNotIn("<b>", details)
+                self.assertNotIn("True", details)
+            tab._match_info = {"match": "m1", "ranked": True, "slot": 1, "fight": ("lili", "asuka"),
+                               "set": {"rated": True, "wins": [2, 1]}}
+            self.assertEqual(tab._presence_wanted()["details"], "In match: Asuka vs Lili (Ranked, Set 1-2)")
+        finally:
+            tab.driver = saved
+            tab._match_info = None
+
     def test_off_by_default(self):
         tab = self.tab
         self.app.settings["discord_app_id"] = APP                 # (an id alone does not turn it on)

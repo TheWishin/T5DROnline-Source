@@ -87,6 +87,8 @@ lobby features need the lobby server updated; older launchers keep working with 
 - When an account was last online is shown to its friends only (profiles showed it to everybody).
 - A lobby server can no longer make the launcher send pings to addresses of its choosing as often as it likes (the
   relay measurement runs once at a time and skips anything that is not an IP address).
+- Your Discord status shows only fighter names the launcher knows and plain set scores: a lobby server could put any
+  text of its choosing there.
 
 ### Servers
 - The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going

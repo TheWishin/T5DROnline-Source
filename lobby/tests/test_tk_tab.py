@@ -98,6 +98,8 @@ class TkBase(unittest.TestCase):
         self.tab.ask_yes_no = lambda *a, **k: False
         self.fronted = []                       # the window never really comes forward in a test
         self.tab.bring_forward = lambda w: self.fronted.append(w)
+        self.game_fronted = []                  # nor the game's
+        self.tab.bring_game_forward = lambda pid: self.game_fronted.append(pid)
         self.other = None
 
     def tearDown(self):
@@ -232,6 +234,34 @@ class TkTabTest(TkBase):
         ev = expect(self.other, "match_result")
         self.other.rematch(ev["match"], True)                                 # the opponent asks: a decision
         self.pump(lambda: len(self.fronted) == 2)
+
+    def test_the_game_comes_forward_when_its_match_starts_and_the_launcher_is_in_front(self):
+        tab = self.tab
+
+        class Game:
+            proc = type("P", (), {"pid": 4242})()
+
+            def running(self):
+                return True
+        self.app.game = Game()
+        front = [True]
+        tab.launcher_in_front = lambda: front[0]
+        tab.on_driver({"kind": "game_state", "state": "title", "match": 1})
+        self.assertEqual(self.game_fronted, [])                       # booting: not yet
+        tab.on_driver({"kind": "game_state", "state": "pick", "match": 1})
+        tab.on_driver({"kind": "game_state", "state": "loading", "match": 1})
+        tab.on_driver({"kind": "game_state", "state": "fight", "match": 1})
+        self.assertEqual(self.game_fronted, [4242])                   # once per match
+        front[0] = False
+        tab.on_driver({"kind": "game_state", "state": "loading", "match": 2})
+        self.assertEqual(self.game_fronted, [4242])                   # another program in front: never
+        front[0] = True
+        self.app.settings["background"] = True
+        tab.on_driver({"kind": "game_state", "state": "fight", "match": 3})
+        self.assertEqual(self.game_fronted, [4242])                   # "start minimized" (tests): never
+        self.app.settings["background"] = False
+        tab.on_driver({"kind": "game_state", "state": "pick", "match": 4})
+        self.assertEqual(self.game_fronted, [4242, 4242])
 
     def test_never_forward_while_a_match_is_on(self):
         import types

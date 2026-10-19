@@ -692,6 +692,8 @@ class Player:
         tab.pad_visible = lambda: False
         if hasattr(tab, "bring_forward"):
             tab.bring_forward = lambda *a, **kw: None     # the (withdrawn) launcher window never goes to the front
+        if hasattr(tab, "bring_game_forward"):
+            tab.bring_game_forward = lambda *a, **kw: None    # nor the game's (they also start minimized)
         tab.server_var.set(self.ctx.server.addr if self.ctx.server else "127.0.0.1:1")
         tab.name_var.set(self.name)
         if char:

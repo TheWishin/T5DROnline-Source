@@ -1508,7 +1508,8 @@ def frames_pressed(path, col, mask, confirmed_only=True):
 @scenario("net_dualsense", "6 netcode", game=True, suites=("game", "net"),
           desc="one player plays with a DualSense on Bluetooth (fake HID pad, extended reports) that the runtime "
                "put on port 2 (port 1: the picker's pad file and the keyboard), its game window never in front: "
-               "the DualSense's presses reach the other PC, in sync (1.1.1 read the online player from port 1 only)")
+               "the DualSense's presses reach the other PC, in sync; two matches (two sessions of the running game, "
+               "picks made with the pad file in between) (1.1.1 read the online player from port 1 only)")
 def net_dualsense(ctx):
     game_server(ctx)
     hid = os.path.join(ctx.dir, "dualsense-bt.txt")
@@ -1519,35 +1520,48 @@ def net_dualsense(ctx):
     b = ctx.player("E2E Rival", env={"T5_NET_LOG": logs["rival"]})
     login(ctx, a)
     login(ctx, b)
-    mid = queue_match(ctx, a, b, "quick")
-    if not wait_fight(ctx, mid, (a, b), timeout=180):
-        raise Abort("no fight")
-    g = a.game()
-    fg = ForegroundWatch(g.proc.pid if g is not None and g.proc is not None else -1)
-    masher.start()
-    try:
-        wait_results(ctx, mid, (a, b))
-    finally:
-        masher.stop()
-        fg.stop()
-    match_row(ctx, mid, (a, b), "confirmed", "DualSense on port 2")
-    port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'")
-    ctx.check("the runtime put the DualSense (Bluetooth, extended reports) on port 2: port 1 has another source",
-              bool(port_line) and "port 2 (player 2)" in port_line and "Bluetooth" in port_line, port_line)
-    kb = log_line(a, r"\[pad\] keyboard -> port 1")
-    ctx.check("the keyboard is there too (port 1)", bool(kb), kb)
-    ctx.check("the DualSense player's game window was never the foreground window during the fight",
-              fg.samples >= 10 and fg.front == 0, f"{fg.front} of {fg.samples} samples in front")
-    follow = log_line(a, r"\[netplay\] local player: port 2 now")
-    ctx.check("netplay took the online player from the DualSense's port", bool(follow), follow)
-    col = 0 if a.matches[mid].get("slot") == 0 else 1
-    peer_n, peer_total = frames_pressed(logs["rival"], col, DS_MASK)
-    own_n, own_total = frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False)
-    ctx.check("the DualSense's presses reached the other PC", peer_n >= 30 and masher.presses >= 10,
-              f"{masher.presses} presses sent; on the other PC {peer_n} of {peer_total} confirmed frames hold "
-              f"them (player {col + 1}); on this PC {own_n} of {own_total} frames")
-    ctx.note(f"DualSense player = P{col + 1}; {masher.presses} presses; frames with them: other PC {peer_n}/"
-             f"{peer_total}, own {own_n}/{own_total}; foreground samples {fg.front}/{fg.samples}")
+    for k in range(2):
+        label = f"DualSense on port 2, match {k + 1}"
+        if k:
+            for p in (a, b):
+                leave(ctx, p)
+            ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "both can search again")
+        mid = queue_match(ctx, *((a, b) if k == 0 else (b, a)), "quick")
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort(f"{label}: no fight")
+        col = 0 if a.matches[mid].get("slot") == 0 else 1
+        peer0 = frames_pressed(logs["rival"], col, DS_MASK)
+        own0 = frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False)
+        g = a.game()
+        fg = ForegroundWatch(g.proc.pid if g is not None and g.proc is not None else -1)
+        presses0 = masher.presses
+        masher.start()
+        try:
+            wait_results(ctx, mid, (a, b))
+        finally:
+            masher.stop()
+            fg.stop()
+        match_row(ctx, mid, (a, b), "confirmed", label)
+        if k == 0:
+            port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'")
+            ctx.check("the runtime put the DualSense (Bluetooth, extended reports) on port 2: port 1 has another "
+                      "source", bool(port_line) and "port 2 (player 2)" in port_line and "Bluetooth" in port_line,
+                      port_line)
+            kb = log_line(a, r"\[pad\] keyboard -> port 1")
+            ctx.check("the keyboard is there too (port 1)", bool(kb), kb)
+        ctx.check(f"{label}: the DualSense player's game window was never the foreground window during the fight",
+                  fg.samples >= 10 and fg.front == 0, f"{fg.front} of {fg.samples} samples in front")
+        ctx.check(f"{label}: netplay took the online player from the DualSense's port",
+                  log_has(a, r"\[netplay\] local player: port 2 now", mid))
+        peer = [x - y for x, y in zip(frames_pressed(logs["rival"], col, DS_MASK), peer0)]
+        own = [x - y for x, y in zip(frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False), own0)]
+        sent = masher.presses - presses0
+        ctx.check(f"{label}: the DualSense's presses reached the other PC", peer[0] >= 30 and sent >= 10,
+                  f"{sent} presses sent; on the other PC {peer[0]} of {peer[1]} confirmed frames hold them "
+                  f"(player {col + 1}); on this PC {own[0]} of {own[1]} frames")
+        ctx.note(f"{label}: DualSense player = P{col + 1} ({'host' if col == 0 else 'joiner'}); {sent} presses; "
+                 f"frames with them: other PC {peer[0]}/{peer[1]}, own {own[0]}/{own[1]}; foreground samples "
+                 f"{fg.front}/{fg.samples}")
 
 
 # ============================================================================== 7. failures

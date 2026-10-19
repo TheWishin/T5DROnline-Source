@@ -13,8 +13,8 @@ It works with the controller itself: once a controller has been touched (or chos
 the buttons, Cross sets one, Triangle clears it, Start saves and Circle closes -- by the controller's own
 buttons as controls.ini defines them (lobby/t5lobby/padnav.py rules: only while this window is in front).
 
-Reading the devices is DevicePoller: the same XInput / WinMM sources as the Online tab's PadNav, on its own
-thread. Nothing here touches Tk from that thread. Tests give it fake sources and a fake clock.
+Reading the devices is DevicePoller: the same XInput / PlayStation (HID) / WinMM sources as the Online tab's
+PadNav, on its own thread. Nothing here touches Tk from that thread. Tests give it fake sources and a fake clock.
 """
 import os
 import queue
@@ -61,8 +61,10 @@ class DevicePoller:
     held when the window comes forward do not make an edge. An axis that rests at one end (a trigger at -32768)
     is not a press until it has been seen let go."""
 
-    def __init__(self, sources, foreground=None, clock=time.monotonic, hz=POLL_HZ, scan_s=SCAN_S):
+    def __init__(self, sources, foreground=None, clock=time.monotonic, hz=POLL_HZ, scan_s=SCAN_S, controls=None):
+        """controls(): the controls.ini being edited (padmap.Controls), handed to the sources before each scan."""
         self.sources = list(sources)
+        self.controls = controls
         self.foreground = foreground or (lambda: True)
         self.clock = clock
         self.hz = hz
@@ -96,8 +98,14 @@ class DevicePoller:
             self._next_scan = 0.0
         if now >= self._next_scan:
             self._next_scan = now + self.scan_s
+            try:
+                controls = self.controls() if self.controls else None
+            except Exception:               # noqa: BLE001 -- an editor that cannot answer: the sources keep theirs
+                controls = None
             for s in self.sources:
                 try:
+                    if controls is not None:
+                        s.configure(controls)
                     s.scan()
                 except Exception as e:      # noqa: BLE001
                     self.error = f"{type(s).__name__}.scan: {e}"
@@ -133,11 +141,16 @@ class DevicePoller:
         return None
 
     def _forget(self):
-        """The window left the front: no button is known to be up any more."""
+        """The window left the front: no button is known to be up any more, and no device stays open."""
         self._active = False
         self._prev.clear()
         self._rest.clear()
         self.held = {}
+        for s in self.sources:
+            try:
+                s.pause()
+            except Exception as e:          # noqa: BLE001
+                self.error = f"{type(s).__name__}.pause: {e}"
 
     def drain(self):
         out = []
@@ -297,7 +310,9 @@ class ControlsDialog:
         self.no_pads = not sources
         if foreground is None:
             foreground = padnav.window_foreground_check(padnav.toplevel_hwnd(self.top))
-        self.poller = DevicePoller(sources, foreground=foreground, **({"clock": clock} if clock else {}))
+        self._poll_controls = self.editor.controls()     # (set on the Tk thread; the poller only reads it)
+        self.poller = DevicePoller(sources, foreground=foreground, controls=lambda: self._poll_controls,
+                                   **({"clock": clock} if clock else {}))
         self.portmap = padmap.PortMap(self.editor.controls())
         self.nav = PadNavigator()
         self.chosen = None              # key of the controller being set up
@@ -568,6 +583,7 @@ class ControlsDialog:
         if self._closed:
             return
         now = self.poller.clock()
+        self._poll_controls = self.editor.controls()
         edges = self.poller.drain()
         devices = self.poller.devices
         self._sync_devices(devices)
@@ -645,11 +661,12 @@ class ControlsDialog:
 
     def _device_text(self, d):
         ids = f", {d.vid:04X}:{d.pid:04X}" if d.vid else ""
-        return f"{d.name}  ({_kind_name(d.kind)}{ids})"
+        kind = t("PlayStation pad, read directly") if padmap.is_hid_key(d.key) else _kind_name(d.kind)
+        return f"{d.name}  ({kind}{ids})"
 
     def _why_unused(self, d):
         c = self.editor.controls()
-        if (d.kind == XINPUT and not c.use_xinput) or (d.kind == DINPUT and not c.use_dinput):
+        if not c.reads_kind(d):
             return t("switched off in [general]")
         return t("no free player port")
 

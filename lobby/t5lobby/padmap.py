@@ -198,6 +198,10 @@ class Controls:
         g = self._get("general", "xinput")
         self.use_xinput = _flag(g, True)
         self.use_dinput = _flag(self._get("general", "dinput"), True)
+        # the PlayStation pads read as HID devices (patch 0042): on unless set, following dinput as in the game;
+        # steam_input = 0 reads a pad Steam Input hands out as a virtual Xbox pad anyway
+        self.use_hid = _flag(self._get("general", "hid"), self.use_dinput)
+        self.steam_input = _flag(self._get("general", "steam_input"), True)
         self.ports = [self._port_spec(p) for p in range(MAX_PORTS)]
         self._tables = {}
 
@@ -277,6 +281,14 @@ class Controls:
             self.warnings.append(f"unknown device '{v}'")
         return spec
 
+    def reads_kind(self, dev):
+        """Does the game read this kind of device at all ([general] xinput / dinput / hid)? dev: .kind .key"""
+        if dev.kind == XINPUT:
+            return self.use_xinput
+        if is_hid_key(getattr(dev, "key", "")):
+            return self.use_hid
+        return self.use_dinput
+
     def port_matches(self, p, dev):
         """spec_matches() in the patch. dev needs .kind .slot .vid .pid .name"""
         spec = self.ports[p]
@@ -350,6 +362,11 @@ class Controls:
         """{'cross': ['A'], 'circle': ['B'], 'triangle': ['Y']} -- the sources bound to exactly that button."""
         t = self.table(kind, port, vid, pid)
         return {name: t.sources_exactly(mask) for name, mask in FACE.items()}
+
+
+def is_hid_key(key):
+    """A PlayStation pad the launcher reads as a HID device (padnav.HidSource keys them "hid:<path>")."""
+    return str(key).startswith("hid:")
 
 
 def _flag(v, default):
@@ -438,7 +455,7 @@ class PortMap:
                 self.order[d.key] = self._seq
         c = self.controls
         for d in sorted((d for d in devices if d.key not in self.port), key=lambda d: self.order[d.key]):
-            if (d.kind == XINPUT and not c.use_xinput) or (d.kind == DINPUT and not c.use_dinput):
+            if not c.reads_kind(d):
                 continue                    # the game does not read this kind of device at all
             taken = set(p for p in self.port.values() if p >= 0)
             port = -1

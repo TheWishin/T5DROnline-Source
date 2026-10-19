@@ -479,7 +479,9 @@ def ranked_set(ctx):
     _play_set(ctx, a, b, mid2, "AA", "set 2 (rematch)")
     prof = profile(ctx, a) or {}
     ctx.check("profile: two ranked sets", prof.get("ranked_games") == 2, f"ranked_games {prof.get('ranked_games')}")
-    t_last = time.time()
+    # the lobby's cooldown runs from the set's last result (server: pair_last), not from here (a profile query and
+    # the set's end screen later, under load several seconds)
+    t_last = max([ts for ts, e in a.events if e.get("t") in ("match_result", "set_end")] or [time.time()])
     leave(ctx, a)
     ctx.wait(lambda: str(a.tab.char_cb.cget("state")) == "readonly", 15, "character unlocked after the set")
     a.set_char("king")

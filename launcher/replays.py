@@ -142,6 +142,10 @@ def read_payload(path):
         x["clock"] = r.u64()
         x["c"] = [r.u32(), r.u32(), r.u32()]
         bars.append(x)
+    if out["version"] < 2:      # the estimate never cuts a recorded match's end (its rollback delay may be unknown)
+        for m in ms:
+            if m["have_result"] and out["last_frame"] < m["end"] < frames:
+                out["last_frame"] = m["end"]
     out["sync_points"] = bars
     out["hashes"] = [(r.u32(), "%016x" % r.u64()) for _ in range(r.u32())]
     cols = []

@@ -192,7 +192,7 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     if (ver >= 2) d.last = r.u32();
     else {   /* format 1 (development files) had no last frame: the inputs reach the input delay past it */
         const int dl = d.rollback && d.rb_delay >= 0 ? d.rb_delay : d.delay;
-        d.last = frames > (uint32_t)dl + 1 ? frames - (uint32_t)dl - 1 : 0;
+        d.last = frames > (uint32_t)dl + 1 ? frames - (uint32_t)dl - 1 : 0;   /* (raised to the last match's end below) */
     }
     const uint32_t nm = r.u32();
     if (nm > 10000) { *why = "broken match table"; return false; }
@@ -231,6 +231,8 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
         }
     }
     std::sort(d.hashes.begin(), d.hashes.end());
+    if (ver < 2)   /* the estimate never cuts a recorded match's end (its rollback delay may be unknown) */
+        for (const Match& m : d.matches) if (m.have_result && m.end > d.last && m.end < frames) d.last = m.end;
     return true;
 }
 

@@ -288,10 +288,9 @@ Jedes Online-Match wird als Replay gespeichert (ein paar KB, in
 Ergebnis und Gegner; **Ansehen** spielt das Match im Spiel noch einmal ab,
 genau so, wie es war: dieselben Eingaben Bild für Bild, während des Abspielens
 mit dem Live-Match verglichen (am Ende steht im Reiter "identisch mit dem
-Live-Match"). Während es läuft, pausiert **START** (Enter), **R1** (W)
-schaltet auf doppelte Geschwindigkeit, **SELECT** (Tab) beendet es. Ein Rematch
-wird nach den Matches davor in derselben Sitzung gezeigt; die laufen schnell
-durch. Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
+Live-Match"). Während es läuft, pausiert **START** (Enter), **SELECT** (Tab)
+beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
+gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
 weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
 Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
 

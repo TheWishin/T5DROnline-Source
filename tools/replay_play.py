@@ -2,23 +2,22 @@
 """Play replay files back through the game and check them against the live match (docs/REPLAYS.md).
 
     python tools/replay_play.py --exe build/cmake/t5dr.exe --out build/rp/play  <file or folder> ...
-        [--match K] [--speed 0|1|2] [--timeout 900] [--parallel N] [--env NAME=VALUE]
+        [--match K] [--timeout 900] [--parallel N] [--env NAME=VALUE]
 
 Each file is played by its own game (netplay's local mode fed by the file, T5_NET_MODE=replay):
 the recorded inputs frame by frame, the recorded sync points, seeds and counters, the loop the
 session ran (rollback or lockstep). The game compares every recorded state hash (one every
 T5_REPLAY_HASH_EVERY frames, 60 by default) and every match's result (winner, score, the deciding
 frame's hash) with the live ones and writes its verdict (T5_REPLAY_RESULT); this tool prints a
-table and a summary. --match K plays the session up to match K (0, the default: every match);
---speed 0 (the default) runs as fast as the PC can, 1 at normal speed.
+table and a summary. --match K plays the session up to match K (0, the default: every match).
 
 Games run minimized, muted, at below-normal priority, with the pad ignored (T5_REPLAY_CONTROLS=0);
 each one is killed when its time is up. Exit code 0 = every replay identical to its live match.
 
---press 8:START,13:START,16:R1,30:R1 checks the viewer's controls: the presses go to the game's
+--press 8:START,13:START checks the viewer's controls: the presses go to the game's
 port 1 through PS3_PAD_FILE (the pad then steers the playback) that many seconds after the watched
-match began (its "the match being watched" log line); the log must show the pause, the time paused
-and the speed changes, and the verdict must still be identical.
+match began (its "the match being watched" log line); the log must show the pause and the time
+paused, and the verdict must still be identical.
 """
 import argparse
 import json
@@ -64,7 +63,7 @@ def play(a, path, idx):
         if item.strip():
             t_s, btn = item.split(":", 1)
             presses.append((float(t_s), btn.strip().upper()))
-    env.update(replays.playback_env(path, a.match, res, a.speed, controls=bool(presses)))
+    env.update(replays.playback_env(path, a.match, res, controls=bool(presses)))
     padfile = os.path.join(d, "pad.txt")
     if presses:
         open(padfile, "w").close()
@@ -108,7 +107,6 @@ def main():
     ap.add_argument("--vfs", default=os.path.join(ROOT, "game", "vfs"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--match", type=int, default=0, help="play up to this match of each session (0: all)")
-    ap.add_argument("--speed", type=int, default=0, help="0 as fast as possible, 1 normal, 2 double")
     ap.add_argument("--timeout", type=float, default=900, help="seconds per replay")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every game")
     ap.add_argument("--parallel", type=int, default=1, help="games at a time")

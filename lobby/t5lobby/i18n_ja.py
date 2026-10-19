@@ -1684,8 +1684,11 @@ MESSAGES = {
         "削除",
     "Open replays folder":
         "リプレイフォルダーを開く",
-    "While a replay plays: START (Enter) pauses and goes on, R1 (W) switches between normal and double speed, SELECT (Tab) ends the replay. A rematch is played after the matches before it in the same session (they run fast): it starts from what they left.":
-        "リプレイ再生中：START（Enter）で一時停止／再開、R1（W）で通常速度と2倍速を切り替え、SELECT（Tab）でリプレイを終了します。再戦は同じセッションのそれ以前の対戦（高速で再生）の後に再生されます：その対戦が残した状態から始まるためです。",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "リプレイ再生中：START（Enter）で一時停止／再開、SELECT（Tab）でリプレイを終了します。"
+        "再戦は同じセッションのそれ以前の対戦の後に再生されます：その対戦が残した状態から始まるためです。",
     "Save online matches as replays":
         "オンライン対戦をリプレイとして保存する",
     "Keep the players' names in replays":

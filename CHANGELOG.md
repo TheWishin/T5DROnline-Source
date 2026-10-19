@@ -14,8 +14,8 @@ lobby features need the lobby server updated; older launchers keep working with 
   costumes, stage and result. The new **Replays** tab lists them (date, fighters, result,
   opponent); **Watch** plays the match again in the game exactly as it happened and checks it
   against the live match while it plays (the tab says "identical to the live match" at the end).
-  START pauses, R1 switches to double speed, SELECT ends the replay. A rematch is shown after the
-  matches before it, which run fast. Recording can be switched off, and the players' names can be
+  START pauses, SELECT ends the replay. A rematch is shown after the matches before it in the same
+  session (it starts from what they left). Recording can be switched off, and the players' names can be
   left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
 
 ### Online

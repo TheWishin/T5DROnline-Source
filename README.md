@@ -281,9 +281,9 @@ Every online match is saved as a replay (a few KB, in `native\replays`). The
 plays the match again in the game, exactly as it happened: the same inputs
 frame by frame, checked against the live match while it plays (the tab says
 "identical to the live match" at the end). While it plays, **START** (Enter)
-pauses, **R1** (W) switches to double speed, **SELECT** (Tab) ends it. A
-rematch is shown after the matches before it in the same session, which run
-fast. The tab can switch recording off or leave the players' names out. A
+pauses, **SELECT** (Tab) ends it. A rematch is shown after the matches before
+it in the same session (a rematch starts from what the match before it left).
+The tab can switch recording off or leave the players' names out. A
 replay plays only with the game version that recorded it. Details:
 [docs/REPLAYS.md](docs/REPLAYS.md).
 

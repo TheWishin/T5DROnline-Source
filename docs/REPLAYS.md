@@ -75,14 +75,18 @@ The local pad (keyboard or controller, not a player in a replay) steers it:
 | Button | Keyboard | What it does |
 |---|---|---|
 | START | Enter | pause; again: go on |
-| R1 | W | normal speed <-> double speed |
 | SELECT | Tab | end the replay (the game closes) |
 
 The game closes by itself a few seconds after the watched match's KO, and the tab shows the verdict
 ("identical to the live match (N checks, same result)", or the frame from which it went another way).
-`T5_REPLAY_SPEED=0|1|2` sets the start speed (0: as fast as the PC can, tests),
 `T5_REPLAY_CONTROLS=0` takes the pad away from the playback (tests), `T5_REPLAY_EXIT=0` keeps the
 game open after the end.
+
+**No faster pace.** Double speed, and the earlier matches of a session as fast as possible, were
+built and measured: the frame did not wait for its vblank tick, but the game still shows one picture
+per vblank (the flip waits for it), and such a playback ran at 30-44 frames a second -- slower than
+normal (59). Faster would need frames that skip the draw and the flip, like the rollback loop's
+re-simulated frames; not done. A playback runs at the game's own pace.
 
 **A rematch is played after the matches before it.** The game state at a rematch's start is what the
 match before it left (leftovers in the fight block, the C heap, effect pools...): both live PCs share
@@ -90,8 +94,7 @@ that history, a freshly started game does not -- a persistent game that has play
 differ in 1,662 of 1,662 frames' hashes without the boot-state copy (docs/DIRECTFIGHT.md "A game that
 has played meets a fresh one"). The netplay guarantee is "a fresh game equals a persistent game at a
 new session's start" (title visit, boot-state copy). So a replay always starts at its session's
-start, and watching match k plays matches 1..k-1 first, as fast as the PC can (no vblank wait, the
-present's vblank pacing off), then match k at normal speed.
+start, and watching match k plays matches 1..k-1 first (the viewer sees them; SELECT ends it).
 
 ## How the playback works
 
@@ -167,12 +170,9 @@ mismatching frames live.
 
 Two games on this PC (`tools/fight_flow_test.py`, `tools/pick_flow_test.py`: host and joiner, both
 recording into their own folder, muted, minimized, below-normal priority, both players mashing with
-motion inputs), then every file played back by `tools/replay_play.py` (the whole session, matches
-before the last one as fast as possible) and compared: every recorded hash (one per 60 frames), every
+motion inputs), then every file played back by `tools/replay_play.py` (the whole session) and compared: every recorded hash (one per 60 frames), every
 sync point, each match's FIGHT START setup and result.
 
-| run | netcode | flow | matches (stage) | sessions | live | playback |
-|---|---|---|---|---|---|---|
 | run | netcode | flow | matches (stage) | files |
 |---|---|---|---|---|
 | t1 | rollback | process mode, a rematch through `T5_FIGHT_FILE` | Jin vs Lili x2 (20) | 2 |
@@ -211,9 +211,11 @@ runs pM1-pM3: rollback persistent with a rematch (Steve vs Hwoarang, 25 and 27),
 20, Asuka vs Xiaoyu 27): 6 matches live with 0 mismatching frames, **6 of 6 files identical** (12 of
 12 results, 416 hashes).
 
-Also checked: the viewer's controls (`replay_play.py --press 10:START,15:START,18:R1,30:R1`, the
-second match of t1 watched): "paused at frame 2746", "going on (paused 5.0 s)", "speed 2x",
-"normal speed" in the log, and the verdict still identical. A file whose names were taken out for a
+Also checked: the viewer's pause (`replay_play.py --press 10:START,15:START`, the second match of t1
+watched): "paused at frame 2746", "going on (paused 5.0 s)" in the log, the verdict still identical.
+(These runs were made while the playback still had double speed and a fast-forward for the earlier
+matches; both were taken out afterwards -- see "No faster pace" -- and the merged build's runs pM1-pM3
+played at normal speed.) A file whose names were taken out for a
 report plays the same (tests). Bugs the proof runs found and fixed (none of them in the game's
 determinism -- the hashes were equal every time): a lockstep playback held a match's result for
 netplay's 3-second fallback and lost it when the recording ended sooner; a playback that ran to the
@@ -233,8 +235,6 @@ never stops before a recorded match's end).
   (`T5_NET_START=boot`) is not recorded (no match setup to play it from).
 - The hash is compared every 60 frames (a difference shows up to 59 frames late; the result's hash
   is compared exactly).
-- Sound runs on the PC's clock: at double speed and while matches are skipped, music and effects
-  play at their own pace.
 - The playback shows the game's "Unknown" in the HUD when names were not kept.
 
 ## Files and variables
@@ -247,7 +247,7 @@ never stops before a recorded match's end).
 | `T5_NET_MODE=replay` + `T5_REPLAY_FILE` | play a file back |
 | `T5_REPLAY_MATCH=k` | watch match k (0 / unset: the whole session, every match checked) |
 | `T5_REPLAY_RESULT` | the verdict (JSON) |
-| `T5_REPLAY_SPEED`, `T5_REPLAY_CONTROLS`, `T5_REPLAY_EXIT`, `T5_REPLAY_TAIL` | start speed, pad control, close at the end, frames shown after the KO (360) |
+| `T5_REPLAY_CONTROLS`, `T5_REPLAY_EXIT`, `T5_REPLAY_TAIL` | pad control, close at the end, frames shown after the KO (360) |
 | `tools/replay_play.py` | play files or folders back, print the table, exit 0 when all are identical; `--press` tests the controls |
 | `launcher/replays.py` | read, list, prune (the newest 200 files are kept), strip names |
 | `tests/test_replays.py`, `tests/c/replay_test.cpp` | format, both readers and writers against each other, the frame renumbering, the tab, the report |

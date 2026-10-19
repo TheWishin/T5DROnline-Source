@@ -1800,12 +1800,12 @@ MESSAGES = {
     "Stop replay": "Replay stoppen",
     "Delete": "Löschen",
     "Open replays folder": "Replay-Ordner öffnen",
-    "While a replay plays: START (Enter) pauses and goes on, R1 (W) switches between normal and double "
-    "speed, SELECT (Tab) ends the replay. A rematch is played after the matches before it in the same "
-    "session (they run fast): it starts from what they left.":
-        "Während ein Replay läuft: START (Enter) pausiert und geht weiter, R1 (W) schaltet zwischen normaler "
-        "und doppelter Geschwindigkeit um, SELECT (Tab) beendet das Replay. Ein Rematch wird nach den Matches "
-        "davor in derselben Sitzung abgespielt (sie laufen schnell): es beginnt dort, wo sie aufgehört haben.",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "Während ein Replay läuft: START (Enter) pausiert und geht weiter, SELECT (Tab) beendet das "
+        "Replay. Ein Rematch wird nach den Matches davor in derselben Sitzung abgespielt: es beginnt dort, "
+        "wo sie aufgehört haben.",
     "Save online matches as replays": "Online-Matches als Replays speichern",
     "Keep the players' names in replays": "Die Namen der Spieler in Replays behalten",
     "Rollback": "Rollback",

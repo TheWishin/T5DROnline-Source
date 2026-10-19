@@ -237,7 +237,7 @@ def prune(folder, keep=DEFAULT_KEEP):
     return gone
 
 
-def playback_env(path, match=0, result_path=None, speed=None, controls=True):
+def playback_env(path, match=0, result_path=None, controls=True):
     """The game's environment for watching match `match` (1-based; 0 = the whole session) of a replay:
     netplay's local mode fed by the file, the loop it was recorded with, direct fight."""
     read_header(path)            # (a file that is not a replay raises ReplayError here, not in the game)
@@ -250,8 +250,6 @@ def playback_env(path, match=0, result_path=None, speed=None, controls=True):
     # (rollback or lockstep: the game takes it from the file; T5_RB_MODE does not apply to a replay)
     if result_path:
         env["T5_REPLAY_RESULT"] = os.path.abspath(result_path)
-    if speed is not None:
-        env["T5_REPLAY_SPEED"] = str(int(speed))
     if not controls:
         env["T5_REPLAY_CONTROLS"] = "0"
     return env

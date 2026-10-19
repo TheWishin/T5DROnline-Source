@@ -149,10 +149,9 @@ class PythonSideTest(unittest.TestCase):
     def test_playback_env(self):
         p = os.path.join(self.tmp, "a" + replays.EXT)
         make_file(p, sample_inputs(10), [{"start": 0, "end": 5, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])
-        env = replays.playback_env(p, 2, os.path.join(self.tmp, "v.json"), speed=0, controls=False)
+        env = replays.playback_env(p, 2, os.path.join(self.tmp, "v.json"), controls=False)
         self.assertEqual(env["T5_NET_MODE"], "replay")
         self.assertEqual(env["T5_REPLAY_MATCH"], "2")
-        self.assertEqual(env["T5_REPLAY_SPEED"], "0")
         self.assertEqual(env["T5_REPLAY_CONTROLS"], "0")
         self.assertNotIn("T5_RB_MODE", env)               # the file decides rollback or lockstep, not the launcher
         bad = os.path.join(self.tmp, "bad" + replays.EXT)

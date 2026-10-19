@@ -1052,26 +1052,20 @@ void sync_record(uint32_t kind, uint32_t f, uint32_t nf, uint32_t seed)
     rp::rec_barrier(b);
 }
 
-/* ---- replays: the playback's pace (docs/REPLAYS.md "Watching") -----------------
+/* ---- replays: the playback's controls (docs/REPLAYS.md "Watching") ------------
  * The local pad (keyboard or controller) is not a player in a playback; it
- * steers it: START pauses and goes on, R1 switches between normal speed and 2x,
- * SELECT ends the replay. The matches of the session before the watched one run
- * as fast as the PC can (they must be played: a rematch starts from what the
- * match before it left). Faster than normal the frame does not wait for the
- * vblank: the frame semaphore's tokens are taken without waiting and the pace is
- * our own clock, and the present's wait for a vblank is off (0x106D4D98, as the
- * rollback loop has it anyway). T5_REPLAY_SPEED=0|1|2: the start speed (0 = as
- * fast as possible, tests). */
-constexpr uint32_t kMinVblanksWord = 0x106D4D98u;
+ * steers it: START pauses and goes on, SELECT ends the replay. The playback runs
+ * at the game's own pace: the frame waits for its vblank tick as always. (Faster
+ * was tried -- 2x and the earlier matches of a session as fast as possible, with
+ * the frame semaphore not waited for: the game still shows one picture per
+ * vblank, its flip waits for it, and such a playback ran at 30-44 frames a
+ * second, slower than normal; so there is no faster pace.) */
 struct ReplayPace {
-    bool inited = false, paused = false, quit = false, minvb_saved = false;
-    int speed = 1, user_speed = 1;
+    bool inited = false, quit = false;
     uint16_t prev = 0;
-    uint32_t minvb[2] = { 0, 0 };
-    LARGE_INTEGER next = {}, qf = {};
-    double ms_paused = 0;
+    LARGE_INTEGER qf = {};
 } g_rp;
-constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008, kPadR1 = 0x0800;
+constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008;
 
 uint16_t replay_pad()
 {
@@ -1083,8 +1077,7 @@ uint16_t replay_pad()
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
 }
 
-/* the frame semaphore's tokens, taken without waiting (they piled up while the
- * main thread did not wait: a pause, a faster pace) */
+/* the frame semaphore's tokens, taken without waiting (they piled up during a pause) */
 void replay_take_tokens(ppu_context* ctx)
 {
     np_lv2_fn tw = g_lv2_syscalls[SC_SEM_TRYWAIT];
@@ -1108,25 +1101,22 @@ void replay_end(const char* why)
     TerminateProcess(GetCurrentProcess(), 0);
 }
 
-/* The playback's frame wait, instead of the frame semaphore wait (main thread,
- * once the lockstep runs). Returns what the wait returns; the direct-fight
- * driver's frame hook has run when it returns 0. */
+/* The playback's frame wait (main thread, once the lockstep runs): the end, the
+ * viewer's buttons, then the frame semaphore wait as always (the direct-fight
+ * driver's frame hook runs inside it). */
 int64_t replay_frame_wait(ppu_context* ctx)
 {
     ReplayPace& r = g_rp;
     if (!r.inited) {
         r.inited = true;
         QueryPerformanceFrequency(&r.qf);
-        if (const char* e = getenv("T5_REPLAY_SPEED")) { const int v = atoi(e); r.user_speed = v == 0 ? 0 : v >= 2 ? 2 : 1; }
-        np::note("replay: START pauses, R1 switches 2x speed, SELECT ends the replay");
+        np::note("replay: START pauses, SELECT ends the replay");
     }
     if (!rp::play_frame(g_frame)) { replay_end("the replay is over"); return g_orig_wait(ctx); }
     const uint16_t b = replay_pad(), press = (uint16_t)(b & ~r.prev);
     r.prev = b;
     if (press & kPadSelect) r.quit = true;
-    if (press & kPadR1) { r.user_speed = r.user_speed == 2 ? 1 : 2; np::note("replay: speed %dx", r.user_speed); }
     if ((press & kPadStart) && !r.quit) {
-        r.paused = true;
         np::note("replay: paused at frame %u", g_frame);
         LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
         while (!r.quit) {
@@ -1134,52 +1124,14 @@ int64_t replay_frame_wait(ppu_context* ctx)
             const uint16_t b2 = replay_pad(), p2 = (uint16_t)(b2 & ~r.prev);
             r.prev = b2;
             if (p2 & kPadSelect) r.quit = true;
-            if (p2 & kPadR1) { r.user_speed = r.user_speed == 2 ? 1 : 2; np::note("replay: speed %dx", r.user_speed); }
             if (p2 & kPadStart) break;
         }
         QueryPerformanceCounter(&t1);
-        r.paused = false;
         np::note("replay: going on (paused %.1f s)", (double)(t1.QuadPart - t0.QuadPart) / (double)r.qf.QuadPart);
-        replay_take_tokens(ctx);
-        QueryPerformanceCounter(&r.next);
+        replay_take_tokens(ctx);   /* no burst of frames to catch up */
     }
     if (r.quit) { replay_end("ended by the viewer (SELECT)"); return g_orig_wait(ctx); }
-    /* the matches before the watched one: as fast as possible */
-    const bool ff = rp::play_match_index() < rp::play_target() && rp::play_target() > 1;
-    const int want = ff ? 0 : r.user_speed;
-    if (want != r.speed) {
-        if (want != 1 && !r.minvb_saved) {
-            r.minvb[0] = rd32(kMinVblanksWord); r.minvb[1] = rd32(kMinVblanksWord + 4);
-            r.minvb_saved = true;
-            wr32(kMinVblanksWord, 0); wr32(kMinVblanksWord + 4, 0);
-        } else if (want == 1 && r.minvb_saved && !rb::net::active()) {
-            wr32(kMinVblanksWord, r.minvb[0]); wr32(kMinVblanksWord + 4, r.minvb[1]);
-            r.minvb_saved = false;
-        }
-        np::note("replay: frame %u: %s", g_frame, want == 0 && ff ? "as fast as possible (the matches before the watched one)" :
-                                                  want == 0 ? "as fast as possible (T5_REPLAY_SPEED=0)" :
-                                                  want == 2 ? "2x speed" : "normal speed");
-        r.speed = want;
-        QueryPerformanceCounter(&r.next);
-        if (want == 1) replay_take_tokens(ctx);
-    }
-    if (r.speed == 1) return g_orig_wait(ctx);
-    replay_take_tokens(ctx);
-    if (r.speed == 2) {
-        const LONGLONG period = (LONGLONG)((double)r.qf.QuadPart / 59.94 / 2.0);
-        LARGE_INTEGER now; QueryPerformanceCounter(&now);
-        if (now.QuadPart - r.next.QuadPart > 4 * period) r.next = now;     /* behind: no burst to catch up */
-        r.next.QuadPart += period;
-        for (;;) {
-            QueryPerformanceCounter(&now);
-            const LONGLONG left = r.next.QuadPart - now.QuadPart;
-            if (left <= 0) break;
-            const DWORD ms = (DWORD)(left * 1000 / r.qf.QuadPart);
-            if (ms >= 2) Sleep(ms - 1); else YieldProcessor();
-        }
-    }
-    t5_df_frame_tick(ctx);   /* the direct-fight driver's frame (it hooks the real wait) */
-    return 0;
+    return g_orig_wait(ctx);
 }
 
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
@@ -1617,7 +1569,7 @@ int64_t w_sem_wait(ppu_context* ctx)
         return 0;
     }
     if (fs && id == fs && ctx->thread_id == g_main_tid && g_active && np::replaying()) {
-        /* a replay being watched: its own pace (pause, 2x, fast-forward) */
+        /* a replay being watched: its end, pause and SELECT */
         const int64_t r = replay_frame_wait(ctx);
         if (r == 0) on_frame_start(ctx);
         return r;

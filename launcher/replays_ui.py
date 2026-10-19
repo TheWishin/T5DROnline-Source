@@ -59,9 +59,9 @@ class ReplaysTab:
         ttk.Label(box, textvariable=self.verdict, style="H2.TLabel", wraplength=860, justify="left").pack(
             anchor="w", pady=(6, 2))
         ttk.Label(box, style="Muted.TLabel", wraplength=860, justify="left", text=t(
-            "While a replay plays: START (Enter) pauses and goes on, R1 (W) switches between normal and double "
-            "speed, SELECT (Tab) ends the replay. A rematch is played after the matches before it in the same "
-            "session (they run fast): it starts from what they left.")).pack(anchor="w", pady=(2, 8))
+            "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A rematch is "
+            "played after the matches before it in the same session: it starts from what they left.")).pack(
+            anchor="w", pady=(2, 8))
 
         opts = ttk.Frame(box)
         opts.pack(anchor="w")

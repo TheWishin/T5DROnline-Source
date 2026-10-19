@@ -1682,8 +1682,11 @@ MESSAGES = {
         "Apagar",
     "Open replays folder":
         "Abrir pasta de replays",
-    "While a replay plays: START (Enter) pauses and goes on, R1 (W) switches between normal and double speed, SELECT (Tab) ends the replay. A rematch is played after the matches before it in the same session (they run fast): it starts from what they left.":
-        "Durante um replay: START (Enter) pausa e continua, R1 (W) alterna entre velocidade normal e dupla, SELECT (Tab) encerra o replay. Uma revanche é reproduzida depois das partidas anteriores da mesma sessão (passam rápido): ela começa de onde elas pararam.",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "Durante um replay: START (Enter) pausa e continua, SELECT (Tab) encerra o replay. Uma revanche é "
+        "reproduzida depois das partidas anteriores da mesma sessão: ela começa de onde elas pararam.",
     "Save online matches as replays":
         "Salvar partidas online como replays",
     "Keep the players' names in replays":

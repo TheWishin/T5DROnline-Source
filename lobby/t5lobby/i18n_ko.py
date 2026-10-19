@@ -1652,8 +1652,12 @@ MESSAGES = {
         "삭제",
     "Open replays folder":
         "리플레이 폴더 열기",
-    "While a replay plays: START (Enter) pauses and goes on, R1 (W) switches between normal and double speed, SELECT (Tab) ends the replay. A rematch is played after the matches before it in the same session (they run fast): it starts from what they left.":
-        "리플레이 재생 중: START(Enter)로 일시정지/계속, R1(W)로 보통 속도와 2배속 전환, SELECT(Tab)로 리플레이를 끝냅니다. 재대전은 같은 세션의 앞선 대전(빠르게 재생) 다음에 재생됩니다: 앞선 대전이 남긴 상태에서 시작하기 때문입니다.",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "리플레이 재생 중: START(Enter)로 일시정지/계속, SELECT(Tab)로 리플레이를 끝냅니다. "
+        "재대전은 같은 세션의 앞선 대전 다음에 재생됩니다: 앞선 대전이 남긴 "
+        "상태에서 시작하기 때문입니다.",
     "Save online matches as replays":
         "온라인 대전을 리플레이로 저장",
     "Keep the players' names in replays":

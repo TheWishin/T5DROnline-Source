@@ -228,6 +228,102 @@ class LauncherSideTest(unittest.TestCase):
         self.assertEqual(replays.read_payload(q)["frames"], 32)
 
 
+class ReplaysTabTest(unittest.TestCase):
+    """The launcher's Replays tab, built for real (not shown): the rows, Watch (the game's environment and the
+    verdict it shows afterwards), Delete, in English and German."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_i18n as ti
+        if ti.tk is None:
+            self.skipTest("no tkinter")
+        self.ti = ti
+        self.base = ti.Base("setUp")
+        self.base.setUp()                       # no dialogs, launcher.log in a temporary folder, sys.path restored
+        self.addCleanup(self.base.doCleanups)
+        self.dir = tempfile.mkdtemp(prefix="t5dr-replaytab")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")
+        self.addCleanup(os.environ.pop, "T5_ONLINE_DIR", None)
+        self.native = os.path.join(self.dir, "native")
+        os.makedirs(os.path.join(self.native, "replays"))
+        self.file = os.path.join(self.native, "replays", "T5R-test" + replays.EXT)
+        make_file(self.file, sample_inputs(50),
+                  [{"start": 0, "end": 20, "p1": 9, "p2": 33, "stage": 27, "winner": 0, "score": (2, 1),
+                    "started": "2026-10-19T12:00:00Z"},
+                   {"start": 25, "end": 45, "p1": 9, "p2": 33, "stage": 27, "winner": 1, "score": (0, 2),
+                    "started": "2026-10-19T12:04:00Z"}], slot=0, names=("Me", "Rival"))
+
+    def launcher(self, language):
+        import core
+        from t5lobby import i18n
+        st = core.Settings(os.path.join(self.dir, "launcher.json"))
+        st["language"] = language
+        st["out"] = self.native
+        mod = self.ti.load_launcher()
+        try:
+            app = mod.App(offscreen=False, settings=st)
+        except self.ti.tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        app.withdraw()
+        self.ti.cancel_timers(app)
+        app.refresh_game_state = lambda: None
+
+        def close():
+            self.ti.cancel_timers(app)
+            app.online.on_close()
+            app.destroy()
+            i18n.set_language("en")
+        self.addCleanup(close)
+        return app
+
+    def test_rows_watch_and_verdict(self):
+        app = self.launcher("en")
+        app.nb.select(app.tabs["replays"])
+        app.update()
+        tab = app.replays
+        rows = [tab.tv.item(i, "values") for i in tab.tv.get_children()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(list(rows[0][1:]), ["Jin vs Lili", "lost 0-2", "Rival", "Rollback  ·  rematch"])
+        self.assertEqual(list(rows[1][1:]), ["Jin vs Lili", "won 2-1", "Rival", "Rollback"])
+        started = {}
+
+        class FakeGame:
+            def running(self):
+                return False
+
+            def stop(self):
+                pass
+
+        def start_game(env=None):
+            started.update(env)
+            with open(env["T5_REPLAY_RESULT"], "w", encoding="utf-8") as f:
+                json.dump({"identical": True, "hashes_compared": 69, "matches": []}, f)
+            return FakeGame()
+        app.start_game = start_game
+        app.game_state = lambda: {"ok": True}
+        tab.tv.selection_set("0")
+        app.update()
+        tab.watch()
+        self.assertEqual(started["T5_NET_MODE"], "replay")
+        self.assertEqual(started["T5_REPLAY_MATCH"], "2")
+        self.assertEqual(os.path.normcase(started["T5_REPLAY_FILE"]), os.path.normcase(os.path.abspath(self.file)))
+        tab._poll()
+        self.assertIn("identical to the live match (69 checks", tab.verdict.get())
+        self.assertIsNone(tab.watching)
+
+    def test_german(self):
+        from t5lobby import i18n
+        app = self.launcher("de")
+        app.nb.select(app.tabs["replays"])
+        app.update()
+        texts = self.ti.all_texts(app.tabs["replays"])
+        self.assertIn("ANSEHEN", texts)
+        self.assertTrue(any("gewonnen 2-1" in str(v) for i in app.replays.tv.get_children()
+                            for v in app.replays.tv.item(i, "values")))
+        self.assertEqual(i18n.missing(), [])
+
+
 def find_stb():
     cands = [os.environ.get("PS3RECOMP_DIR"), os.path.join(ROOT, "deps", "ps3recomp")]
     try:

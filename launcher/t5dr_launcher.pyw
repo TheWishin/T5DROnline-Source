@@ -1010,6 +1010,9 @@ class App(tk.Tk):
         self.destroy()
 
 
+App.set_big_state = staticmethod(set_big_state)     # (the Replays tab greys its WATCH button the same way)
+
+
 # ---------------------------------------------------------------------- docs screenshots
 
 def capture_window(widget, path):

@@ -126,12 +126,9 @@ class ReplaysTab:
     def _buttons(self):
         busy = self.watching is not None
         have = self.selected() is not None
-        try:
-            from t5dr_launcher import set_big_state
-        except ImportError:
-            set_big_state = None
-        if set_big_state is not None:
-            set_big_state(self.watch_btn, have and not busy)
+        big = getattr(self.app, "set_big_state", None)       # (the launcher's: the hero button's own look)
+        if big is not None:
+            big(self.watch_btn, have and not busy)
         else:
             self.watch_btn.configure(state="normal" if have and not busy else "disabled")
         self.delete_btn.configure(state="normal" if have and not busy else "disabled")
@@ -161,6 +158,7 @@ class ReplaysTab:
             self.verdict.set(t("Build the game first (Build tab)."))
             return
         result = os.path.join(self.app.settings.out_dir, "logs", "replay-verdict.json")
+        os.makedirs(os.path.dirname(result), exist_ok=True)
         try:
             os.remove(result)
         except OSError:

@@ -14,6 +14,11 @@ table and a summary. --match K plays the session up to match K (0, the default: 
 
 Games run minimized, muted, at below-normal priority, with the pad ignored (T5_REPLAY_CONTROLS=0);
 each one is killed when its time is up. Exit code 0 = every replay identical to its live match.
+
+--press 8:START,13:START,16:R1,30:R1 checks the viewer's controls: the presses go to the game's
+port 1 through PS3_PAD_FILE (the pad then steers the playback) that many seconds after the watched
+match began (its "the match being watched" log line); the log must show the pause, the time paused
+and the speed changes, and the verdict must still be identical.
 """
 import argparse
 import json
@@ -54,7 +59,16 @@ def play(a, path, idx):
         "PS3_GCM_TICKER_PUMP": "1", "RSX_LIVE_DRAW": "1", "PS3_VERBOSE": "0", "PS3_WINDOW_BACKGROUND": "1",
         "PS3_AUDIO_MUTE": "1", "PAD_NO_KEYBOARD": "1", "T5_NET_LOG": os.path.join(d, "frames.log"),
     })
-    env.update(replays.playback_env(path, a.match, res, a.speed, controls=False))
+    presses = []
+    for item in (a.press or "").split(","):
+        if item.strip():
+            t_s, btn = item.split(":", 1)
+            presses.append((float(t_s), btn.strip().upper()))
+    env.update(replays.playback_env(path, a.match, res, a.speed, controls=bool(presses)))
+    padfile = os.path.join(d, "pad.txt")
+    if presses:
+        open(padfile, "w").close()
+        env["PS3_PAD_FILE"] = padfile
     for kv in a.env:
         k, v = kv.split("=", 1)
         env[k] = v
@@ -62,9 +76,20 @@ def play(a, path, idx):
     t0 = time.time()
     p = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")], cwd=d, env=env,
                          stdout=log, stderr=subprocess.STDOUT, creationflags=0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+    t_watch = None
     try:
         while p.poll() is None and time.time() - t0 < a.timeout:
-            time.sleep(1.0)
+            time.sleep(0.05 if presses else 1.0)
+            if presses and t_watch is None:
+                with open(os.path.join(d, "game.log"), encoding="utf-8", errors="replace") as f:
+                    if "the match being watched" in f.read():
+                        t_watch = time.time()
+            while presses and t_watch is not None and time.time() - t_watch >= presses[0][0]:
+                _, btn = presses.pop(0)
+                with open(padfile, "w") as f:
+                    f.write(btn)
+                time.sleep(0.25)
+                open(padfile, "w").close()
     finally:
         if p.poll() is None:
             p.kill()
@@ -87,6 +112,7 @@ def main():
     ap.add_argument("--timeout", type=float, default=900, help="seconds per replay")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for every game")
     ap.add_argument("--parallel", type=int, default=1, help="games at a time")
+    ap.add_argument("--press", default="", help="S:BUTTON,... -- presses S seconds after the watched match began")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows, ok = [], 0

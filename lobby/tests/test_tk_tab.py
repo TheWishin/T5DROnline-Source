@@ -164,6 +164,27 @@ class TkTabTest(TkBase):
         tab.report_btn.invoke()
         self.assertEqual(self.app.reports, 1)
 
+    def test_the_connection_ends_in_the_middle_of_the_events(self):
+        """The lobby drops the tab while more events wait in its queue (build/e2e finding, old UI): the poll
+        stops at "disconnected" instead of reading the next event from a client that is gone, and the tab
+        shows the login screen with the error."""
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        c = tab.client
+        try:
+            c.events.put({"t": "disconnected", "reason": "test"})
+            c.events.put({"t": "chat", "from": {"name": "Late"}, "text": "still here?"})
+            tab._poll()                                     # (an exception here is what the launcher logged)
+            self.assertIsNone(tab.client)
+            self.assertIn("Lost the connection to the lobby server", tab.view.err_var.get())
+            self.root.update()
+            self.assertEqual(tab.view.scr_login.winfo_manager(), "grid")
+            tab._poll()                                     # and the next poll is quiet too
+        finally:
+            c.close()
+
     def test_the_tests_never_touch_the_real_clipboard(self):
         for name in ("clipboard_clear", "clipboard_append", "clipboard_get"):
             self.assertIn(name, vars(self.root), f"{name} must be the in-memory stand-in (TkBase.setUp)")

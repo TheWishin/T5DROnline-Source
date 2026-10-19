@@ -173,14 +173,26 @@ static const Range kGameSkip[] = {
      * lockstep too, more often under rollback); the fight unchanged
      * (t5_hooks.cpp kDefaultHashSkip) */
     { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
+    /* (the fighters' side flags 0x10090202/03 and 0x10090AD2/D3, decided from
+     * the camera words above, stay in: they are gameplay -- t5_hooks.cpp) */
 };
+/* T5_RB_HASH_FULL=1 (tests, desync hunt): the gameplay hash and the desync
+ * dumps take the regions whole, without kGameSkip -- the words left out as
+ * cosmetic show up too, so a run can tell when they part (they may feed back
+ * into the fight: docs/NETPLAY.md "Desync hunt"). Both peers must agree on it. */
+static bool hash_full()
+{
+    static int f = -1;
+    if (f < 0) { const char* e = getenv("T5_RB_HASH_FULL"); f = e && *e == '1'; }
+    return f != 0;
+}
 uint32_t state_game_bytes(uint8_t* out, uint32_t cap)
 {
     uint32_t n = 0;
     for (const Range& r : kGame) {
         if (n + r.len > cap) break;
         memcpy(out + n, vm_base + r.base, r.len);
-        for (const Range& k : kGameSkip) {
+        if (!hash_full()) for (const Range& k : kGameSkip) {
             const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
             for (uint32_t x = a; x < e; x++) out[n + (x - r.base)] = 0;
         }
@@ -194,7 +206,7 @@ uint64_t state_game_hash()
     static uint8_t buf[0x4000];
     for (const Range& r : kGame) {
         memcpy(buf, vm_base + r.base, r.len);
-        for (const Range& k : kGameSkip) {
+        if (!hash_full()) for (const Range& k : kGameSkip) {
             const uint32_t a = std::max(k.base, r.base), e = std::min(k.base + k.len, r.base + r.len);
             for (uint32_t x = a; x < e; x++) buf[x - r.base] = 0;
         }

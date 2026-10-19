@@ -2055,6 +2055,10 @@ without a lock; two opens at the same moment on two threads could share an fd.
 Not this bug's cause -- the file manager serialises the title's opens -- and
 left alone.)
 
+The desync hunt (main without this branch) hit the same abort twice -- `abort()`
+from 0x3C3AAC called at 0x374150 in the file manager's loop, an archive open at
+fd 5 before it in one (runs mx_cpus4_rb2, mx_rematch10): fix 1's path.
+
 `tools/reset_cycle_test.py` now fails a cycle on the title's `abort()` in either
 game (before, an abort of O counted as "O log: clean"), keeps the end of a
 replaced game's log for the check, and has `--below-normal` / `--mute` for a PC
@@ -2206,6 +2210,12 @@ and only got out of its "fight" phase when the game left the game mode). It
 costs a few frames between the KO and the driver's hold; the rule covers them.
 Lockstep: unchanged (final at once). The log says `the match end rests on
 predicted input -- acted on once confirmed` / `the match end is confirmed`.
+The desync hunt found the same sequence (run mx_cpus4_rb match 3) and merged a
+fallback into main at the same time (d42e648, `df_fight.cpp` Ph::Over): a
+driver already in "over" whose KO was taken back (decided byte 0 again in the
+fight phase) releases its pads and returns to "fight". Both are in: with this
+fix the driver does not go to "over" on an unconfirmed KO in the first place
+(no frames of held pads), the fallback covers whatever still gets there.
 
 Evidence (`rollback_net_test.py --rtt 250 --jitter 10 --delay 2`, one session,
 12 one-round matches through `--next`, attack scripts): R250a (before the fix)

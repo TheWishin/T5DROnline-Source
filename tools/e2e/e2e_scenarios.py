@@ -1312,7 +1312,9 @@ def _relay_tool_run(ctx, real):
     cmd = [sys.executable, tool, "--scenarios", "best,dead,old"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     if real:
-        cmd += ["--exe", ctx.run.exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs")]
+        # (--game-seconds: the tool gives a real match 150 s by default -- too tight next to other agents' games:
+        # an idle fight at 180 ms ran past it once, "no result file", while both games still played)
+        cmd += ["--exe", ctx.run.exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs"), "--game-seconds", "300"]
         if ctx.run.netcode == "lockstep":
             env["T5_RB_MODE"] = "off"
     logf = os.path.join(ctx.dir, "relay_e2e.log")
@@ -1320,7 +1322,7 @@ def _relay_tool_run(ctx, real):
         pr = subprocess.Popen(cmd, cwd=harness_root(), env=env, stdout=lf, stderr=subprocess.STDOUT,
                               stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0)
         ctx.run.own(pr)
-        t_end = time.time() + (900 if real else 300)
+        t_end = time.time() + (1500 if real else 300)
         while pr.poll() is None and time.time() < t_end:
             ctx.sleep(1.0)
         if pr.poll() is None:

@@ -5,8 +5,8 @@ part is in the README's status table.
 
 ## v1.1.2 (not released yet)
 
-**Opponents nearby first, friends, invites, Discord.** Launcher and lobby only (no game change, same build id). The
-new lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
+**Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution.** The new
+lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
 
 ### Online
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
@@ -22,6 +22,20 @@ new lobby features need the lobby server updated; older launchers keep working w
   challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
 - Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
   can be repeated after a week.
+- **No more broken game after several cancelled matches.** When a match ended at the character
+  select without a fight -- the opponent left during the pick, or the lobby cancelled the match --
+  four to eleven times in a row, the open game broke and stayed stuck until it was closed. Each
+  time, the game built a second select screen on top of the old one, which kept running until
+  memory ran out. The select screen is now closed and opened again the way the game itself does
+  it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
+  lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
+
+### Training
+- **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the
+  last move: startup (i10), then +/- frames on block, hit or counter hit, or the whole move on a whiff. On by
+  default in Practice; **Settings -> Training overlay** chooses Off / Inputs / Inputs + frame data and whether it
+  also shows in other offline modes or online (there only your own side). **F2** switches it in the game. The
+  numbers are measured in this game, not copied from tables (docs/TRAINING.md, ps3recomp patch 0045).
 
 ### Launcher
 - **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français,
@@ -35,11 +49,15 @@ new lobby features need the lobby server updated; older launchers keep working w
   Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
   (docs/ONLINE.md "Discord Rich Presence").
 
-### Servers
-- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
-  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
-
-## v1.1.2 (unreleased)
+### Picture
+- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
+  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
+  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
+  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
+  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
+  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
+  shows those stages sharp and without the glow. It only changes your picture; online, both
+  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
 
 ### Security
 - **Signed updates.** The launcher's self-update now checks an Ed25519 signature of the release
@@ -57,15 +75,9 @@ new lobby features need the lobby server updated; older launchers keep working w
   rate-limited, and the database is private to the server's user (docs/HOSTING.md).
 - Problem reports also remove lobby recovery codes.
 
-### Picture
-- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
-  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
-  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
-  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
-  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
-  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
-  shows those stages sharp and without the glow. It only changes your picture; online, both
-  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
+### Servers
+- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
+  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
 
 ## v1.1.1 (2026-10-19)
 

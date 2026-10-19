@@ -47,6 +47,20 @@ class HarnessLogTest(unittest.TestCase):
         self.assertIsNone(sst.RE_FIGHT.search(STALLED))
         self.assertEqual([w[2] for w in sst.RE_WAITSEL.findall(STALLED)], ["1", "1"])
 
+    def test_progress_moves_on_a_slow_select(self):
+        # a select still loading (new wait-line content or a new file open) is progress, the same lines again are not
+        p0 = sst.progress(STALLED)
+        self.assertEqual(sst.progress(STALLED), p0)
+        self.assertNotEqual(sst.progress(STALLED + "[fs] open '/dev_hdd0/x' -> fd 3
+"), p0)
+        self.assertNotEqual(sst.progress(STALLED + "[df] frame 8929: waiting for the select screen (mode 6, select state 1, "
+                                         "records 00/00; reader busy 1, queue 0x1009FFE0 (4 request(s)), completion tokens 0)
+"), p0)
+        self.assertEqual(sst.progress(STALLED + "[df] frame 8929: waiting for the select screen (mode 6, select state 1, "
+                                      "records 00/00; reader busy 1, queue 0x1009FF68 (5 request(s)), completion tokens 0)
+"), p0)
+        self.assertNotEqual(sst.progress(FIXED), sst.progress(FIXED.split("[df] frame 1700")[0]))
+
     def test_faults_and_the_backstop(self):
         self.assertIn("stuck_exit", sst.bad_lines(
             "[df] frame 9000: STUCK: the select screen's loading for 10 s, the async reader waits for a read nobody does\n"))

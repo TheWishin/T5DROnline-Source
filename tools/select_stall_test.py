@@ -12,10 +12,10 @@ match state back as at boot, calls start VS and drives the new select screen int
 The next command comes 0.5-4 s after FIGHT START, so the old fight is left in its loading, its intros
 or the fight itself, in turn.
 
-Checked per cycle: FIGHT START of the new match within --stall-seconds of the command, no fault line
-(NULL access, bad guest call, crash, stuck). A select screen that waits in its loading phase longer
-than that is a stall: the game's reader and loader state is dumped through PS3_DEBUG and the run
-ends with exit code 1.
+Checked per cycle: FIGHT START of the new match, no fault line (NULL access, bad guest call, crash,
+stuck). No progress for --stall-seconds (no new driver state, select wait line or file open -- a PC
+starved to a few fps still makes progress) is a stall: the game's reader and loader state is dumped
+through PS3_DEBUG and the run ends with exit code 1 (--keep-going: the game is started again).
 
 Load (a PC in use, the conditions of the reports):
   --cpus N     the game and the hogs share N logical processors (affinity, inherited; --cpu-first K:
@@ -57,6 +57,7 @@ RE_FIGHT = re.compile(r"\[df\] frame (\d+): FIGHT START match (\d+)")
 RE_STARTVS = re.compile(r"\[df\] frame (\d+): start VS battle \(func_0004E9DC\(4, 3\)\) from the title mode")
 RE_STAGE = re.compile(r"\[df\] frame (\d+): state stage")
 RE_WAITSEL = re.compile(r"\[df\] frame (\d+): waiting for the select screen \(mode (\d+), select state (\d+)")
+RE_WAITSEL_FULL = re.compile(r"\[df\] frame \d+: waiting for the select screen (\(.*\))")
 RE_READER = re.compile(r"\[df\] frame (\d+): (boot state of .*|before the restore: .*|the match state areas are back .*|"
                        r"the async reader .*|.*reader.*)")
 CHARS = ["kaz", "hei", "ask", "law", "jin", "xia", "pau", "bry", "nin", "lei", "ste", "hwo"]
@@ -64,6 +65,16 @@ CHARS = ["kaz", "hei", "ask", "law", "jin", "xia", "pau", "bry", "nin", "lei", "
 
 def log(msg):
     print(f"[{time.time() - T0:8.1f}s] {msg}", flush=True)
+
+
+RE_DFSTATE = re.compile(r"\[df\] frame \d+: (state \w+|select done|.*title's loads|before the restore)")
+
+
+def progress(text):
+    """What moves while a cycle is on its way: the driver's state lines, the select's wait lines
+    (their content, not the frame number) and the game's file opens."""
+    waits = RE_WAITSEL_FULL.findall(text)
+    return len(RE_DFSTATE.findall(text)), waits[-1] if waits else "", text.count("[fs] open")
 
 
 def bad_lines(text):
@@ -204,7 +215,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cycles", type=int, default=20)
     ap.add_argument("--stall-seconds", type=float, default=60.0,
-                    help="a new match not at FIGHT START this long after its command = a stall")
+                    help="no progress towards the next FIGHT START for this long = a stall (at most 4x in all)")
     ap.add_argument("--wait", default="0.5:4", help="seconds after FIGHT START before the next command (min:max)")
     ap.add_argument("--hog", type=int, default=0, help="busy-loop processes of our own beside the game")
     ap.add_argument("--cpus", type=int, default=0, help="game and hogs on N logical processors (from --cpu-first on)")
@@ -243,13 +254,21 @@ def main():
                 g.send("fight", match=mid, env=env)
             c = {"k": k, "match": mid, "line": line}
             fight = None
-            while time.time() - t0 < a.stall_seconds and g.running():
+            # a stall = no progress for --stall-seconds (a PC starved to 1 fps still gets there: the
+            # game's state lines, its select wait lines and its file opens go on), at most 4x that in all
+            last_sig, last_move = None, time.time()
+            while time.time() - t0 < 4 * a.stall_seconds and g.running():
                 text = g.log_since(pos)
                 if bad_lines(text):
                     break
                 m = RE_FIGHT.search(text)
                 if m:
                     fight = m
+                    break
+                sig = progress(text)
+                if sig != last_sig:
+                    last_sig, last_move = sig, time.time()
+                elif time.time() - last_move >= a.stall_seconds:
                     break
                 time.sleep(0.2)
             text = g.log_since(pos)

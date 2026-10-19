@@ -902,6 +902,22 @@ void fight_on_frame(uint32_t f)
         }
         break; }
     case Ph::Over:
+        /* Under rollback the deciding KO may have been seen on a predicted
+         * frame that the correction then undid: the fight goes on (decided byte
+         * back at 0 in the fight phase) -- netplay drops its pending result for
+         * it ("the match end ... was rolled back"). The driver must too: it held
+         * this PC's player neutral and pressed START every 20 frames to skip a
+         * win pose that never came -- the player lost control and START paused
+         * the fight, and the pause menu's presses ended in the game's end mode
+         * (8), where the next reset hung for good (desync hunt, run
+         * mx_cpus4_rb match 3: KO at 2022 rolled back, the match ran on to 4689). */
+        if (mode == kModeGame && g_over_clear && !rd8(kMatchOver) && rd32(kSelectState) == 17) {
+            note("frame %u: the match end of frame %u was taken back by a rollback -- the fight goes on", f, g_ph_frame);
+            for (int p = 0; p < 2; p++) { g_press[p].active = false; inject(p, false, 0); }
+            g_held = false; g_result_done = false; g_after_match = false; g_intro_hold = false;
+            set_phase(Ph::Fight, "fight", f);
+            break;
+        }
         /* the game shows the win pose and returns to character select by itself */
         post_match_skip(f);
         if (select_live()) {

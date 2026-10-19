@@ -329,6 +329,26 @@ class NothingIsSentTest(unittest.TestCase):
         self.assertEqual(padnav._Win32Hid.GENERIC_READ, 0x80000000)
         self.assertEqual(padnav._Win32Hid.FILE_SHARE_RW, 0x3)                     # read and write sharing
 
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_the_game_can_open_a_device_the_launcher_holds(self):
+        # Any HID collection on this PC that can be read stands in for a pad: held open the launcher's way, it
+        # still opens the game's way (pad_host_win32.c: GENERIC_READ, read and write sharing, overlapped).
+        api = padnav._Win32Hid()
+        k = api.k32
+        for path in api.paths():
+            h = k.CreateFileW(path, api.GENERIC_READ, api.FILE_SHARE_RW, None, api.OPEN_EXISTING,
+                              api.FILE_FLAG_OVERLAPPED, None)
+            if not h or h == api.INVALID:
+                continue                     # keyboards, mice: Windows keeps those for itself
+            try:
+                g = k.CreateFileW(path, 0x80000000, 0x1 | 0x2, None, 3, 0x40000000, None)
+                self.assertTrue(g and g != api.INVALID, path)
+                k.CloseHandle(g)
+            finally:
+                k.CloseHandle(h)
+            return
+        self.skipTest("no readable HID device on this PC")
+
 
 class NavTest(unittest.TestCase):
     """The navigator (Online tab) and the port map with a PlayStation pad read here."""

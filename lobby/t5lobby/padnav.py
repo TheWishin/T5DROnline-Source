@@ -630,6 +630,10 @@ class _Win32Hid:
 
     def enumerate(self):
         """[HidInfo] of the PlayStation pads' game pad collections now present."""
+        return [i for i in (self._probe(p) for p in self.paths()) if i is not None]
+
+    def paths(self):
+        """The device paths of every HID collection now present."""
         out = []
         g = self.GUID()
         self.hid.HidD_GetHidGuid(ctypes.byref(g))
@@ -650,10 +654,7 @@ class _Win32Hid:
                 ctypes.c_uint32.from_buffer(buf).value = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6   # cbSize
                 if not self.sa.SetupDiGetDeviceInterfaceDetailW(devs, ctypes.byref(ifd), buf, need.value, None, None):
                     continue
-                path = ctypes.wstring_at(ctypes.addressof(buf) + 4)
-                info = self._probe(path)
-                if info is not None:
-                    out.append(info)
+                out.append(ctypes.wstring_at(ctypes.addressof(buf) + 4))
         finally:
             self.sa.SetupDiDestroyDeviceInfoList(devs)
         return out
@@ -805,7 +806,10 @@ class HidSource(PadSource):
         self.env = os.environ if env is None else env
         if api is None:
             fake = self.env.get("PS3_PAD_HID_FAKE")
-            api = FakeHid(fake) if fake else (_Win32Hid() if os.name == "nt" else None)
+            try:
+                api = FakeHid(fake) if fake else (_Win32Hid() if os.name == "nt" else None)
+            except (OSError, AttributeError):        # no hid.dll / setupapi.dll: the pads stay with WinMM
+                api = None
         self.api = api
         self.xinput_present = xinput_present or (lambda: False)
         self.on = True                  # [general] hid (follows dinput, as in the game)

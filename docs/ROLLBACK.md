@@ -2188,10 +2188,13 @@ not land. Net2 never saw a KO. The netplay result watch handled that
 it had gone to its "over" phase on the predicted KO for good, held its pads and,
 from 40 frames on, pressed START every 20 frames to skip the replay -- in a
 fight that went on. Under rollback the post-match rule decides the inputs only
-while the game state shows the match decided, so those START presses went into
-the input stream on both PCs and paused and unpaused the fight; 2 400 frames
-later the launcher gave up, and the next match's reset waited 60 s in the game
-mode and ended the game (exit 6). The driver's acts on a match end are
+while the game state shows the match decided, so with no KO in the state the
+held pads and the START presses (START pauses a VS fight) went into the input
+stream of both PCs; Net1's own attack script had stopped too (it runs only in
+the driver's "fight" phase). The match did not end in the next 2 400 frames,
+the launcher gave up, and the next match's reset waited 60 s in the game mode
+and ended the game (exit 6). (No per-frame input log of that run exists; the
+pause is inferred from the presses and the game staying in its fight phase.) The driver's acts on a match end are
 irreversible, so under rollback it now acts only once the end is final
 (`t5_netplay_match_end_final`, `df_fight.cpp` Ph::Fight): this side's match
 watch has it and every frame up to it ran on confirmed input

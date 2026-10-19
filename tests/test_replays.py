@@ -48,11 +48,13 @@ def fnv_digest(frames):
 
 
 def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, names=("A", "B"),
-              build="b1", created="2026-10-19T12:00:00Z"):
+              build="b1", created="2026-10-19T12:00:00Z", version=2):
     """A replay file written by Python (the same layout as replay.cpp's)."""
     n = len(inputs[0])
     b = bytearray(b"T5RP")
-    b += struct.pack("<IIIIiIIII", 1, 1 if rollback else 0, slot, 2, 1, 7, 7, n, 60)
+    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, 2, 1, 7, 7, n, 60)
+    if version >= 2:
+        b += struct.pack("<I", max(0, n - 1))            # the last frame the recording game ran: all of them here
     b += struct.pack("<I", len(matches))
     for m in matches:
         b += struct.pack("<6I", m["start"], m["end"], m["end"] - m["start"], m["end"], 0,
@@ -432,6 +434,22 @@ class GameCodeTest(unittest.TestCase):
         self.assertIn("SLOT 1 DELAY 2 ROLLBACK 1", out)
         self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16),
                          fnv_digest(list(zip(ins[0], ins[1]))))
+
+    def test_format_1_files_still_play(self):
+        """Development files of format 1 had no last frame: the playback stops the input delay before the end
+        of the inputs (the frames a game decides ahead and never ran)."""
+        ins = sample_inputs(300, seed=4)
+        path = os.path.join(self.tmp, "v1" + replays.EXT)
+        make_file(path, ins, [{"start": 0, "end": 250, "p1": 1, "p2": 2, "stage": 20, "winner": 0}], version=1)
+        self.assertEqual(replays.read_payload(path)["last_frame"], 300 - 1 - 1)     # rollback delay 1
+        code, out = self.run_exe("read", path)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(int(self.lines(out, "DIGESTPLUS")[0], 16), fnv_digest(list(zip(ins[0], ins[1]))[:299]))
+        self.assertEqual(replays.read_payload(path)["inputs"][0], ins[0])
+        stripped = os.path.join(self.tmp, "v1s" + replays.EXT)
+        with open(stripped, "wb") as f:
+            f.write(replays.strip_names(path))
+        self.assertEqual(replays.read_payload(stripped)["matches"][0]["names"], ["", ""])
 
     def test_damaged_files_are_refused_with_a_reason(self):
         good = os.path.join(self.tmp, "g" + replays.EXT)

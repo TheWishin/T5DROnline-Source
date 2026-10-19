@@ -119,6 +119,11 @@ def read_payload(path):
     out["rollback"] = bool(r.u32() & 1)
     out["slot"], out["delay"], out["rb_delay"] = r.u32(), r.u32(), r.i32()
     out["seed"], out["match_seed"], frames, out["hash_every"] = r.u32(), r.u32(), r.u32(), r.u32()
+    if out["version"] >= 2:
+        out["last_frame"] = r.u32()
+    else:                       # format 1 (development files): the inputs reach the input delay past the last frame
+        dl = out["rb_delay"] if out["rollback"] and out["rb_delay"] >= 0 else out["delay"]
+        out["last_frame"] = max(0, frames - dl - 1)
     out["frames"] = frames
     ms = []
     for _ in range(r.u32()):
@@ -283,7 +288,9 @@ def strip_names(path, placeholder="<player>"):
         raise ReplayError("damaged data") from e
     # walk to the names in the match table and drop them
     r = _R(bytes(b))
-    r.i = 4 + 4 + 4 * 6 + 4 * 2      # magic, version, flags/slot/delay/rb_delay/seed/match seed, frames, hash every
+    version = struct.unpack_from("<I", b, 4)[0]
+    # magic, version, flags/slot/delay/rb_delay/seed/match seed, frames, hash every (, last frame)
+    r.i = 4 + 4 + 4 * 6 + 4 * 2 + (4 if version >= 2 else 0)
     nm = r.u32()
     out = bytearray(b[:r.i])
     for _ in range(nm):

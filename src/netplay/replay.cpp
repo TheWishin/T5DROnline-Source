@@ -8,9 +8,10 @@
  *            game needs to play the session back; the JSON is only a view of it
  *
  * Binary, little-endian:
- *   "T5RP" u32 version
+ *   "T5RP" u32 version (2)
  *   u32 flags (bit 0: rollback), slot, delay, rollback delay (0xFFFFFFFF: unknown)
- *   u32 session seed (T5_NET_SEED), match seed, frames N, hash interval
+ *   u32 session seed (T5_NET_SEED), match seed, frames N, hash interval, the last frame the
+ *       recording game ran (the inputs reach the input delay past it; format 1 had no such field)
  *   u32 matches, each: u32 start, end, frames, hash frame, desync, flags (bit 0 result,
  *       bit 1 hash, bit 2 complete); i32 p1, p2, b1, b2, m1, m2, stage, rounds, pick,
  *       winner (-1: none), score1, score2; u64 hash; str name1, name2 (u16 length + bytes)
@@ -45,7 +46,7 @@ unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_l
 namespace rp {
 namespace {
 
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;   /* 2: the last frame the recording game ran (after the hash interval) */
 constexpr char kMagic[] = "T5REPLAY 1\n";
 
 struct Match {
@@ -61,6 +62,7 @@ struct Data {
     int slot = 0, delay = 0, rb_delay = -1;
     bool rollback = false;
     uint32_t session_seed = 0, match_seed = 0, hash_every = 60;
+    uint32_t last = 0;            /* the last frame the recording game ran (its inputs go `delay` frames further) */
     std::string build, created;
     std::vector<np::PadInput> in[2];
     std::vector<std::pair<uint32_t, uint64_t>> hashes;
@@ -132,7 +134,7 @@ std::vector<uint8_t> to_binary(const Data& d, const InputSource& src)
     put32(b, (uint32_t)d.slot); put32(b, (uint32_t)d.delay); put32(b, (uint32_t)d.rb_delay);
     put32(b, d.session_seed); put32(b, d.match_seed);
     const uint32_t n = src.frames();
-    put32(b, n); put32(b, d.hash_every);
+    put32(b, n); put32(b, d.hash_every); put32(b, d.last);
     put32(b, (uint32_t)d.matches.size());
     for (const Match& m : d.matches) {
         put32(b, m.start); put32(b, m.end); put32(b, m.frames); put32(b, m.hash_frame); put32(b, m.desync);
@@ -182,11 +184,16 @@ bool from_binary(const uint8_t* p, size_t n, Data& d, std::string* why)
     if (n < 8 || memcmp(p, "T5RP", 4)) { *why = "not a replay payload"; return false; }
     r.i = 4;
     const uint32_t ver = r.u32();
-    if (ver != kVersion) { *why = "replay format " + std::to_string(ver) + " (this game reads " + std::to_string(kVersion) + ")"; return false; }
+    if (ver < 1 || ver > kVersion) { *why = "replay format " + std::to_string(ver) + " (this game reads 1 to " + std::to_string(kVersion) + ")"; return false; }
     d.rollback = (r.u32() & 1) != 0;
     d.slot = (int)r.u32(); d.delay = (int)r.u32(); d.rb_delay = (int)r.u32();
     d.session_seed = r.u32(); d.match_seed = r.u32();
     const uint32_t frames = r.u32(); d.hash_every = r.u32();
+    if (ver >= 2) d.last = r.u32();
+    else {   /* format 1 (development files) had no last frame: the inputs reach the input delay past it */
+        const int dl = d.rollback && d.rb_delay >= 0 ? d.rb_delay : d.delay;
+        d.last = frames > (uint32_t)dl + 1 ? frames - (uint32_t)dl - 1 : 0;
+    }
     const uint32_t nm = r.u32();
     if (nm > 10000) { *why = "broken match table"; return false; }
     for (uint32_t k = 0; k < nm && !r.bad; k++) {
@@ -244,10 +251,10 @@ std::string to_json(const Data& d, bool names, uint32_t frames)
     char b[512];
     std::string j = "{";
     snprintf(b, sizeof b, "\"format\": %u, \"build\": %s, \"created\": %s, \"mode\": \"%s\", \"slot\": %d, \"delay\": %d, "
-                          "\"rb_delay\": %d, \"seed\": %u, \"match_seed\": %u, \"frames\": %zu, \"hash_every\": %u, "
+                          "\"rb_delay\": %d, \"seed\": %u, \"match_seed\": %u, \"frames\": %zu, \"last_frame\": %u, \"hash_every\": %u, "
                           "\"sync_points\": %zu, \"hashes\": %zu, \"matches\": [",
              kVersion, jstr(d.build).c_str(), jstr(d.created).c_str(), d.rollback ? "rollback" : "lockstep", d.slot, d.delay,
-             d.rb_delay, d.session_seed, d.match_seed, (size_t)frames, d.hash_every,
+             d.rb_delay, d.session_seed, d.match_seed, (size_t)frames, d.last, d.hash_every,
              d.bars.size(), d.hashes.size());
     j += b;
     for (size_t k = 0; k < d.matches.size(); k++) {
@@ -283,6 +290,7 @@ struct Store : InputSource {
     Data d;                                        /* everything but the inputs (d.in stays empty) */
     std::vector<std::unique_ptr<Chunk>> chunks;    /* reserved up front: the pointers never move */
     std::atomic<uint32_t> n{ 0 };                  /* frames recorded */
+    std::atomic<uint32_t> last{ 0 };               /* the last live frame this game ran (rec_frame) */
     std::string path;
     bool names = true;
     Store() { chunks.reserve(kMaxChunks); }
@@ -349,6 +357,7 @@ void write_store(const std::shared_ptr<Store>& st, uint32_t seq)
         std::lock_guard<std::mutex> lk(r.mu);
         d = st->d;
         n = st->frames();
+        d.last = st->last.load(std::memory_order_relaxed);
     }
     if (d.matches.empty() || st->path.empty()) return;
     std::lock_guard<std::mutex> wk(g_write_mu);
@@ -434,6 +443,12 @@ struct Play {
     bool finished = false;
     std::string end_why;
     uint32_t model_bad = 0;
+    /* the last frame to play: the last one the recording game ran (its inputs reach `delay` frames further) */
+    uint32_t end_frame() const
+    {
+        const uint32_t n = (uint32_t)d.in[0].size();
+        return d.last && d.last < n ? d.last : (n ? n - 1 : 0);
+    }
 };
 Play& P() { static Play p; return p; }
 
@@ -621,6 +636,7 @@ void rec_frame(uint32_t f)
     if (!r.on) return;
     {
         Timed t;
+        if (Store* st = r.live.load(std::memory_order_relaxed)) if (f > st->last.load(std::memory_order_relaxed)) st->last.store(f, std::memory_order_relaxed);
         if (f >= r.flush_at || f >= r.next_periodic) {
             std::lock_guard<std::mutex> lk(r.mu);
             if (f >= r.flush_at) r.flush_at = UINT32_MAX;
@@ -711,7 +727,7 @@ uint32_t play_barrier(uint32_t k, uint32_t f)
     p.bar_seen = k + 1;
     if (k >= p.d.bars.size()) {
         /* at the recording's last frame the live game may simply not have got there before the session ended */
-        if ((int64_t)f - p.offset + 1 >= (int64_t)p.d.in[0].size()) return f;
+        if ((int64_t)f - p.offset >= (int64_t)p.end_frame()) return f;
         if (p.bar_bad++ < 5) note("sync point %u at playback frame %u: the recording has only %zu -- not the same game any more", k, f, p.d.bars.size());
         return f;
     }
@@ -839,7 +855,7 @@ bool play_frame(uint32_t pf)
     p.last_p = pf;
     const int64_t r = (int64_t)pf - p.offset;
     if (pf >= p.end_at) { p.end_why = "the watched match is over"; return false; }
-    if (r >= (int64_t)p.d.in[0].size()) { p.end_why = "end of the recording"; return false; }
+    if (r > (int64_t)p.end_frame()) { p.end_why = "end of the recording"; return false; }
     return true;
 }
 

@@ -26,7 +26,7 @@ within 15 s; the opponent's name comes after both accepted), "Strict" limits ran
 lag check ("ping X ms should mean about Y frames behind, it was Z") appears after a match with a
 way to leave without penalty, and a message from the server's admin shows in the status bar.
 
-Friends (docs/ONLINE.md "Friends", accounts on a server that has them): the Friends page lists them with who is
+Friends (docs/ONLINE.md "Friends and invites", accounts on a server that has them): the Friends page lists them with who is
 online / in a match / offline, sends and answers requests, removes, and invites a friend to a casual match or to
 this player's room; an invite from a friend comes up like a challenge, Accept (A) starts it with one click.
 
@@ -833,7 +833,7 @@ class OnlineTab:
             self.chat_var.set("")
             self.call(self.client.chat, text)
 
-    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends")
+    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends and invites")
     def _friends_ok(self):
         """Logged in with an account on a server that keeps friends."""
         c = self.client

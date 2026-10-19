@@ -100,7 +100,7 @@ class LobbyClient:
         when it starts to work (RelayBridge). relays: measure the UDP round trip to the regional relays a
         server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
         behaves like a 1.1.0 client there (only the lobby server's own relay). friends: the friends list and
-        invites (docs/ONLINE.md "Friends") with a server that has them; False behaves like a 1.1.1 client (the
+        invites (docs/ONLINE.md "Friends and invites") with a server that has them; False behaves like a 1.1.1 client (the
         server then sends none of their messages)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
@@ -983,7 +983,7 @@ class LobbyClient:
             msg["strict"] = True
         return self._call(msg)
 
-    # ---------------------------------------------------------------- friends and invites (docs/ONLINE.md "Friends")
+    # ---------------------------------------------------------------- friends and invites (docs/ONLINE.md "Friends and invites")
     def has_friends(self):
         """Does this server keep friends lists (and did this client ask for them)? Accounts only."""
         w = self.welcome or {}

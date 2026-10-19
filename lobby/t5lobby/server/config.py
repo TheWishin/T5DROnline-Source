@@ -81,7 +81,7 @@ class Config:
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     pair_cooldown: float = 30.0     # T5L_PAIR_COOLDOWN: seconds before two players who just finished a ranked game are queue-matched again
     max_blocks: int = 200           # T5L_MAX_BLOCKS: blocked players per account / guest session
-    # friends and invites (docs/ONLINE.md "Friends"): accounts only
+    # friends and invites (docs/ONLINE.md "Friends and invites"): accounts only
     max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
     friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h
     friend_pending: int = 30        # T5L_FRIEND_PENDING: requests waiting for an answer, per sender and per receiver

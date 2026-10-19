@@ -27,7 +27,7 @@ Around the matches (docs/RANKED.md, "Tekken 6 style options"):
                   players get "ping X should mean Y frames behind, it was Z"
     notices       a message from the admin tool reaches every connected client
 
-Friends (docs/ONLINE.md "Friends", accounts only, clients with the "friends" cap): a request the other side
+Friends (docs/ONLINE.md "Friends and invites", accounts only, clients with the "friends" cap): a request the other side
 accepts, a list with who is online / in a match / offline (pushed as it changes), invites to a casual match or
 to the inviter's room that one click accepts. A block ends a friendship.
 """
@@ -476,7 +476,7 @@ class LobbyServer:
         self.by_name = {}          # lower name -> Player
         self.by_account = {}       # account id -> Player (online or resumable)
         self.invites = {}          # invite id -> Invite (friends)
-        self._presence = {}        # account id -> (status, activity, name, build): what the friends were last told
+        self._presence = {}        # account id -> (status, activity, name, build, cap): what the friends were last told
         self.sessions = {}         # resume token -> Player
         self.rooms = {}
         self.challenges = {}
@@ -3031,7 +3031,7 @@ class LobbyServer:
                 for b in sorted(conn.player.blocks.values(), key=lambda b: b["since"])]
         return {"t": "blocks", "rows": rows}
 
-    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends")
+    # ------------------------------------------------------------------ friends (docs/ONLINE.md "Friends and invites")
     # Accounts only. A request waits for the other side to accept it and runs out after T5L_FRIEND_REQUEST_DAYS.
     # Limits: T5L_FRIEND_REQUESTS_DAY requests per account per 24 h, T5L_FRIEND_PENDING waiting at once (sent by
     # one account, and to one account), T5L_MAX_FRIENDS friends, a declined request again only after
@@ -3334,29 +3334,31 @@ class LobbyServer:
             self._end_invite(inv, "declined")
             self._refuse_draining()
             return None
-        src = inv.src
-        self._end_invite(inv, "accepted")
-        if not src.online or src.account_id not in p.friends or self._is_blocked(src, p) or \
-                src.build_id != p.build_id:
+        src, r = inv.src, inv.room
+        gone = (not src.online or src.account_id not in p.friends or self._is_blocked(src, p)
+                or src.build_id != p.build_id)
+        if inv.kind == "casual":
+            gone = gone or src.status not in ("idle", "queue") or src.match is not None
+        else:
+            gone = gone or r.id not in self.rooms or src not in r.members or len(r.members) >= 2 or r.match is not None
+        if gone:
+            self._end_invite(inv, "cancelled")
             raise LobbyError(proto.E_BUSY, "the invite is no longer possible")
         if p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         if inv.kind == "casual":
-            if src.status not in ("idle", "queue") or src.match is not None:
-                raise LobbyError(proto.E_BUSY, "the invite is no longer possible")
             self._abandon_set(src, requester=p)
             self._abandon_set(p)
+            self._end_invite(inv, "accepted")
             self._leave_queue(src)
             self._leave_queue(p)
             self._count("invites_accepted")
             self.create_match(src, p, ranked=False, origin="invite")
             return None
-        r = inv.room
-        if r.id not in self.rooms or src not in r.members or len(r.members) >= 2 or r.match is not None:
-            raise LobbyError(proto.E_BUSY, "the invite is no longer possible")
         if r.ranked:
             self._check_speed(p)
         self._abandon_set(p)
+        self._end_invite(inv, "accepted")
         self._leave_queue(p)
         r.members.append(p)
         p.room, p.status = r, "room"

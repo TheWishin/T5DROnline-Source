@@ -142,7 +142,7 @@ CREATE INDEX IF NOT EXISTS sets_p2 ON sets (p2_account, ended);
 # start, and they stay that way. A database from a newer server (a higher version) is used as it is: an older
 # server never undoes a step, and the tables it does not know are left alone.
 MIGRATIONS = [
-    (1, "friends and friend requests (docs/ONLINE.md \"Friends\")", """
+    (1, "friends and friend requests (docs/ONLINE.md \"Friends and invites\")", """
 CREATE TABLE IF NOT EXISTS friends (
     account_id INTEGER NOT NULL,       -- one row per direction: (a, b) and (b, a)
     friend_id INTEGER NOT NULL,
@@ -745,7 +745,7 @@ class Store:
         return self._x("SELECT 1 FROM blocks WHERE account_id = ? AND blocked_id = ?", (aid, other)).fetchone() \
             is not None
 
-    # ----------------------------------------------------------------- friends (docs/ONLINE.md "Friends")
+    # ----------------------------------------------------------------- friends (docs/ONLINE.md "Friends and invites")
     # A friendship is two rows, one per direction, made when a request is accepted. Requests are kept with their
     # state after they are answered: the daily limit counts the requests sent, and a declined one may only be
     # repeated after a while. A request to someone who blocked the sender is stored like any other but never

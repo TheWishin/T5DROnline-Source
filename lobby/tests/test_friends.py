@@ -1,4 +1,4 @@
-"""Friends and invites (docs/ONLINE.md "Friends"): requests the other side must accept, the list with who is
+"""Friends and invites (docs/ONLINE.md "Friends and invites"): requests the other side must accept, the list with who is
 online / in a match / offline, removing, invites to a casual match or a room with a one-click accept; the
 limits (requests per day, waiting requests, list size, one invite at a time), blocks ending a friendship, guests
 kept out; the database migration that adds the tables; and older launchers and servers (1.1.0 from git, and a

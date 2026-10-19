@@ -1685,17 +1685,23 @@ extern "C" int t5_netplay_lockstep_active(void)
     return g_active.load() && !g_idle ? 1 : 0;
 }
 
-/* The direct-fight driver (df_fight.cpp) acts on what the game shows -- a
- * match end -- only once this says the state is final: under rollback the
- * live frame rests on predicted peer input for up to the prediction window,
- * and a KO seen there can be undone by the next rollback (e2e g2, RTT 250:
- * the driver held its pads and pressed START to skip a replay in a fight that
- * went on -- the peer never saw a KO, the match never ended). Frames before
- * g_frame have run (the driver's hook runs after the frame's wait, before its
- * boundary, or inside the boundary after an early rollback's re-simulation). */
-extern "C" int t5_netplay_state_final(void)
+/* The direct-fight driver (df_fight.cpp) acts on a match end only once this
+ * says it is final: under rollback the live frame rests on predicted peer
+ * input for up to the prediction window, and a KO seen there can be undone by
+ * the next rollback (e2e g2, RTT 250: the driver held its pads and pressed
+ * START to skip a replay in a fight that went on -- the peer never saw a KO,
+ * the match never ended). Final = this side's match watch has the end
+ * (watch_match: g_result_done, taken back by a rollback that undoes it) and
+ * every input of the frames up to it is confirmed as simulated -- the frames
+ * after the KO do not matter (the post-match rule decides them, and they
+ * cannot change the KO); or its result is out already. Not "the whole live
+ * state is final": at RTT 250 the last 10-15 frames always rest on
+ * predictions. Without rollback: at once. */
+extern "C" int t5_netplay_match_end_final(void)
 {
-    return rb::net::state_final(g_frame) ? 1 : 0;
+    if (!rb::net::active()) return 1;
+    if (!g_result_done) return 0;
+    return !g_pending.on || rb::net::state_final(g_pending.f) ? 1 : 0;
 }
 
 extern "C" int t5_netplay_local_slot(void)

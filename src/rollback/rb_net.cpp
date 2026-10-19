@@ -526,8 +526,9 @@ static void tick_wait()
 /* Every frame before upto that ran on a predicted remote input has had that
  * input confirmed as predicted: the state the game shows now is final -- no
  * rollback can take it back any more (the direct-fight driver acts on a match
- * end only then, t5_netplay_state_final). Predictions are never older than
- * the prediction window, so the last 64 frames are enough. */
+ * end only once this holds for the frames up to it, t5_netplay_match_end_final).
+ * Predictions are never older than the prediction window, so the last 64
+ * frames before upto are enough. */
 bool state_final(uint32_t upto)
 {
     if (!g_active) return true;

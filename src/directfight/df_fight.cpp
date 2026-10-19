@@ -47,7 +47,7 @@
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
-extern "C" int  t5_netplay_state_final(void);   /* netplay: no unconfirmed prediction under the state (rollback) */
+extern "C" int  t5_netplay_match_end_final(void);   /* netplay: the match end seen is final (rollback: every input up to it confirmed) */
 extern "C" int  t5_netplay_local_slot(void);
 extern "C" void t5_netplay_set_match(const char* id);
 extern "C" unsigned t5_netplay_match_seed(void);
@@ -916,7 +916,7 @@ void fight_on_frame(uint32_t f)
          * the next rollback can take it back (e2e g2, RTT 250: the pads held
          * and START pressed in a fight that went on, no result ever). Acted
          * on once every input under it is confirmed -- a few frames later. */
-        if (over && session_netplay() && !t5_netplay_state_final()) {
+        if (over && session_netplay() && !t5_netplay_match_end_final()) {
             if (!g_over_wait) { g_over_wait = true; note("frame %u: the match end rests on predicted input -- acted on once confirmed", f); }
             over = 0;
         }

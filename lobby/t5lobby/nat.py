@@ -106,6 +106,10 @@ class GameSocket(asyncio.DatagramProtocol):
             self.dup = sock.dup()            # survives transport.close(): for socket handover
         await loop.create_datagram_endpoint(lambda: self, sock=sock)
         self.sock = sock
+        try:
+            self.ttl0 = sock.getsockopt(socket.IPPROTO_IP, socket.IP_TTL) or 64
+        except OSError:
+            self.ttl0 = 64
         self.port = sock.getsockname()[1]
         return self
 
@@ -120,10 +124,25 @@ class GameSocket(asyncio.DatagramProtocol):
     def error_received(self, exc):
         pass
 
-    def send(self, data, addr):
-        if self.transport is not None and not self.transport.is_closing():
+    def send(self, data, addr, ttl=None):
+        """ttl: send this one packet with a small IP TTL -- it opens this side's NAT toward `addr` and dies a
+        hop or two later, before it reaches the peer's router (see punch(), ttl_open)."""
+        if self.transport is None or self.transport.is_closing():
+            return
+        if ttl is None:
             self.transport.sendto(data, addr)
-            self.stats["tx"] += 1
+        else:
+            # On the socket itself, not through the transport: a packet the transport queued would leave
+            # later with the TTL already put back.
+            try:
+                self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+                try:
+                    self.sock.sendto(data, addr)
+                finally:
+                    self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl0)
+            except OSError:
+                return
+        self.stats["tx"] += 1
 
     async def close(self):
         if self.transport is not None:
@@ -211,12 +230,19 @@ class GameSocket(asyncio.DatagramProtocol):
         probe = prb.result() if prb is not None and prb.done() else None
         return public, probe
 
-    def _punch_to(self, addr):
+    def _punch_to(self, addr, low_ttl=False):
         self.seq += 1
-        self.send(proto.pk_punch(self.tag, self.side, proto.F_HEARD if addr in self.heard else 0, self.seq), addr)
+        pkt = proto.pk_punch(self.tag, self.side, proto.F_HEARD if addr in self.heard else 0, self.seq)
+        if low_ttl:
+            for ttl in self.OPEN_TTLS:
+                self.send(pkt, addr, ttl=ttl)
+        else:
+            self.send(pkt, addr)
+
+    OPEN_TTLS = (2, 3)       # past this PC's router (and a second NAT right behind it), never as far as the peer's
 
     async def punch(self, candidates, timeout=3.0, linger=0.12, interval=0.03, scan=(), scan_period=0.8,
-                    slow_start=0.0, slow_interval=0.2):
+                    slow_start=0.0, slow_interval=0.2, ttl_open=0.0):
         """candidates: [(ip, port, kind)]. -> (addr, kind) of the best two-way path, or None.
 
         Every candidate (and every address a punch came from) gets a punch each `interval` seconds -- the
@@ -224,7 +250,12 @@ class GameSocket(asyncio.DatagramProtocol):
         not take the first ones, sent before the peer's own punches opened its NAT, for a flood. `scan`:
         [(ip, [ports])] predicted endpoints of a NAT that maps every destination to a new port, walked in
         order: the first pass quickly (each new destination opens a mapping on a symmetric NAT of ours, in
-        the same order as the peer walks over our ports), then once every `scan_period` seconds."""
+        the same order as the peer walks over our ports), then once every `scan_period` seconds.
+        `ttl_open`: for the first seconds every punch goes out with a TTL of 2 and 3 only. That opens this
+        side's NAT toward the peer without reaching the peer's router, so when the full punches start (both
+        sides start together) each router has already sent toward the other: none of them sees an
+        unsolicited packet first -- some routers then move their side to another port, answer with an ICMP
+        error that closes the other side's mapping, or count it as a flood."""
         kinds = {(ip, port): kind for ip, port, kind in candidates}
         scan_list = []
         for ip, ports in scan:
@@ -241,17 +272,23 @@ class GameSocket(asyncio.DatagramProtocol):
         scan_first = True
         tick = 0.015
         first_ok = None
+        opened = ttl_open <= 0
         while True:
             now = time.monotonic()
-            step = slow_interval if now - t0 < slow_start else interval
+            low = now - t0 < ttl_open
+            if not low and not opened:
+                opened = True                       # the full punches start: a fresh pass over everything
+                due.clear()
+                scan_i, scan_first = 0, True
+            step = interval if low else (slow_interval if now - t0 - ttl_open < slow_start else interval)
             for addr in regular + [a for a in self.heard if a not in kinds]:
                 if due.get(addr, 0.0) <= now:
-                    self._punch_to(addr)
+                    self._punch_to(addr, low_ttl=low and addr not in self.heard)
                     due[addr] = now + step
             if scan_list:
                 n = 4 if scan_first else max(1, int(round(len(scan_list) * tick / scan_period)))
                 for _ in range(n):
-                    self._punch_to(scan_list[scan_i])
+                    self._punch_to(scan_list[scan_i], low_ttl=low)
                     scan_i += 1
                     if scan_i >= len(scan_list):
                         scan_i = 0
@@ -276,17 +313,13 @@ class GameSocket(asyncio.DatagramProtocol):
             self.send(proto.pk_punch(self.tag, self.side, proto.F_HEARD, self.seq), best)
         return best, kinds.get(best, "reflexive")
 
-    def punch_round(self, scan_every=4):
-        """One punch to every candidate of the last plan and every address heard from (the relay bridge
-        calls this once a second); the predicted ports only every `scan_every`-th round."""
+    def punch_targets(self):
+        """Every endpoint of the last plan (candidates, predicted ports) and every address heard from."""
         cands, scan = self.plan
-        self._rounds += 1
         targets = [(ip, port) for ip, port, _k in cands]
-        if scan and self._rounds % scan_every == 1:
-            targets += [(ip, p) for ip, ports in scan for p in ports]
+        targets += [(ip, p) for ip, ports in scan for p in ports]
         targets += [a for a in self.heard if a not in targets]
-        for addr in targets:
-            self._punch_to(addr)
+        return list(dict.fromkeys(targets))
 
     async def relay_bind(self, relay, timeout=4.0):
         ack = self._wait(proto.U_RELAY_ACK)
@@ -342,22 +375,35 @@ class RelayBridge(asyncio.DatagramProtocol):
 
     The game binds `game_port` and talks to 127.0.0.1:`port` (its T5_NET_PEER). Its packets go out on the
     punched game socket: to the lobby server's relay at first, straight to the opponent's game socket once
-    the direct path works both ways (a punch carrying F_HEARD came from there within the last 2 s; the
-    bridge keeps punching every candidate once a second). Whatever the opponent's game sends arrives on
+    the direct path works both ways (a punch carrying F_HEARD came from there within the last 2 s).
+    Whatever the opponent's game sends arrives on
     the game socket, through the relay or directly, and is handed to the game -- the game always sees one
     peer address, 127.0.0.1:`port`, so it never has to follow anything. The opponent's launcher does the
     same, so each side switches on its own and packets from either path count all the time. When the
     direct path is quiet for 2.5 s the bridge goes back to the relay, which a peer ping every 5 s keeps
-    open (the server sweeps relay sessions idle for 2 minutes)."""
+    open (the server sweeps relay sessions idle for 2 minutes).
+
+    The direct path is tried in bursts: 3 s of punches (the first half second with a low TTL, as in the
+    punch phase) every 40 s, both launchers at the same server time (the match's start time + 35 s, then
+    every 40 s). The silence in between matters: what made the punch phase fail on many routers -- a
+    connection entry left by an early punch, a flood block -- lasts 30 s from the last packet and would
+    never end under a steady trickle."""
 
     SWITCH_FRESH = 2.0
     DIRECT_QUIET = 2.5
-    ROUND = 1.0
+    KEEP_DIRECT = 1.0
     RELAY_KEEPALIVE = 5.0
+    FIRST_BURST = 35.0
+    BURST_PERIOD = 40.0
+    BURST = 3.0
+    BURST_OPEN = 0.5
+    BURST_INTERVAL = 0.05
     TICK = 0.25
 
-    def __init__(self, gs, relay, on_switch=None):
+    def __init__(self, gs, relay, on_switch=None, first_burst=None):
         self.gs = gs
+        self.next_burst = first_burst if first_burst is not None else time.monotonic() + self.FIRST_BURST
+        self.bursts = 0
         self.relay = tuple(relay)
         self.on_switch = on_switch
         self.upstream = self.relay
@@ -371,8 +417,9 @@ class RelayBridge(asyncio.DatagramProtocol):
         self.stats = {"to_game": 0, "from_game": 0, "direct_in": 0, "relay_in": 0, "strangers": 0}
 
     @classmethod
-    async def open(cls, gs, relay, on_switch=None, game_port=0):
-        self = cls(gs, relay, on_switch)
+    async def open(cls, gs, relay, on_switch=None, game_port=0, first_burst=None):
+        """first_burst: time.monotonic() of the first burst (default: 35 s from now)."""
+        self = cls(gs, relay, on_switch, first_burst)
         loop = asyncio.get_running_loop()
         self.game_port = game_port or free_udp_port()
         self.game = ("127.0.0.1", self.game_port)
@@ -427,23 +474,36 @@ class RelayBridge(asyncio.DatagramProtocol):
 
     async def _run(self):
         gs = self.gs
-        last_round = 0.0
-        last_keep = time.monotonic()
+        last_keep = last_direct = time.monotonic()
+        burst_t0 = None
+        due = {}
         while not self.closed:
-            await asyncio.sleep(self.TICK)
+            await asyncio.sleep(self.BURST_INTERVAL if burst_t0 is not None else self.TICK)
             now = time.monotonic()
             if self.upstream == self.relay:
-                if now - last_round >= self.ROUND:
-                    gs.punch_round()
-                    last_round = now
+                if burst_t0 is None and now >= self.next_burst:
+                    burst_t0, due = now, {}
+                    self.bursts += 1
+                    while self.next_burst <= now:
+                        self.next_burst += self.BURST_PERIOD
+                if burst_t0 is not None:
+                    low = now - burst_t0 < self.BURST_OPEN
+                    for addr in gs.punch_targets():
+                        if due.get(addr, 0.0) <= now:
+                            gs._punch_to(addr, low_ttl=low and addr not in gs.heard)
+                            due[addr] = now + self.BURST_INTERVAL
+                    if now - burst_t0 >= self.BURST:
+                        burst_t0 = None
                 fresh = [a for a, t in gs.last_ok.items() if now - t < self.SWITCH_FRESH and a != self.relay]
                 if fresh:
+                    burst_t0 = None
                     self._switch(max(fresh, key=lambda a: gs.last_ok[a]))
+                    last_direct = now
             else:
                 up = self.upstream
-                if now - last_round >= self.ROUND:
+                if now - last_direct >= self.KEEP_DIRECT:
                     gs._punch_to(up)                  # answered with F_HEARD: the path still works both ways
-                    last_round = now
+                    last_direct = now
                 if now - gs.last_rx.get(up, 0.0) > self.DIRECT_QUIET:
                     self._switch(None)
             if now - last_keep >= self.RELAY_KEEPALIVE:

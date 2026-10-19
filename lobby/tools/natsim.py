@@ -18,6 +18,10 @@ NAT types (RFC 4787 terms):
     symrand     like symmetric, random ports (CGNAT-like; port prediction cannot help)
     port-guard  "port" with a flood guard: an address that sends more than 20 unsolicited packets in
                 2 s is blocked for 30 s (consumer routers' DoS / port-scan protection)
+    port-poison "port" on a Linux-style router whose WAN side takes unsolicited UDP: a punch that arrives
+                before this side sent anything toward its sender leaves a connection entry behind (30 s,
+                refreshed by every further punch), so this side's own packets toward that sender must
+                leave from another port -- which the other side's port-restricted NAT then drops
 A home may also have a router that answers UPnP/NAT-PMP/PCP (mapping=True): the client's mapping
 request then makes a static port forward on the NAT (endpoint-independent filtering for that port).
 
@@ -57,6 +61,7 @@ TYPES = {
     "symmetric": dict(mapping="apdm", filtering="apdf", alloc="sequential"),
     "symrand": dict(mapping="apdm", filtering="apdf", alloc="random"),
     "port-guard": dict(mapping="eim", filtering="apdf", alloc="preserve", guard=True),
+    "port-poison": dict(mapping="eim", filtering="apdf", alloc="preserve", poison=True),
 }
 BASIC = ("full", "restricted", "port", "symmetric")
 
@@ -120,6 +125,13 @@ class Tree:
             home = HOMES.get(id(asyncio.get_running_loop()))
             return [home.private_ip] if home else []
         self.client.local_ipv4s = sim_local
+
+        async def sim_server_rtt(server, *a, **kw):      # (the real one pings past the simulated network)
+            home = HOMES.get(id(asyncio.get_running_loop()))
+            if home is None:
+                return None
+            return 2 * home.nat.net.server_ms + home.nat.net.server_jitter
+        self.client.server_rtt = sim_server_rtt
         if hasattr(self.nat, "local_ipv4s"):
             self.nat.local_ipv4s = sim_local
 
@@ -129,8 +141,10 @@ HOMES = {}            # id(client loop) -> Home
 
 # ============================================================================ the simulated internet
 class Net:
-    def __init__(self, rng, server_ms=75.0, server_jitter=20.0, home_ms=8.0, home_jitter=6.0, loss=0.02):
+    def __init__(self, rng, server_ms=75.0, server_jitter=20.0, home_ms=8.0, home_jitter=6.0, loss=0.02,
+                 tcp_rto=0.03):
         self.rng = rng
+        self.tcp_rto = tcp_rto
         self.server_ms, self.server_jitter = server_ms, server_jitter
         self.home_ms, self.home_jitter = home_ms, home_jitter
         self.loss = loss
@@ -143,6 +157,15 @@ class Net:
             if to_server:
                 return (self.server_ms + self.rng.uniform(0, self.server_jitter)) / 1000.0
             return (self.home_ms + self.rng.uniform(0, self.home_jitter)) / 1000.0
+
+    def tcp_delay(self):
+        """One way on the control channel: like UDP to the server, and now and then a lost segment that TCP
+        sends again after its retransmission timeout (everything behind it waits too)."""
+        with self.lock:
+            d = (self.server_ms + self.rng.uniform(0, self.server_jitter)) / 1000.0
+            if self.rng.random() < self.tcp_rto:
+                d += self.rng.uniform(0.25, 1.0)
+            return d
 
     def rand(self):
         with self.lock:
@@ -197,11 +220,12 @@ def wire():
 
 
 class Mapping:
-    __slots__ = ("key", "int_port", "ext_port", "sock", "eps", "ips", "last_out", "static")
+    __slots__ = ("key", "int_port", "ext_port", "sock", "eps", "ips", "replied", "last_out", "static")
 
     def __init__(self, key, int_port, ext_port, sock, static=False):
         self.key, self.int_port, self.ext_port, self.sock = key, int_port, ext_port, sock
-        self.eps, self.ips = set(), set()
+        self.eps, self.ips = {}, {}         # remote endpoint / address -> last packet of that flow
+        self.replied = set()                # remote endpoints that answered (a "replied" connection entry)
         self.last_out = time.monotonic()
         self.static = static
 
@@ -210,10 +234,13 @@ class Nat:
     """One home router. Runs on the home client's event loop (all calls from that thread)."""
 
     def __init__(self, loop, net, public_ip, private_ip, mapping="eim", filtering="apdf", alloc="preserve",
-                 guard=False, timeout=120.0, hops=1):
+                 guard=False, poison=False, timeout=120.0, hops=1):
         self.loop, self.net = loop, net
         self.public_ip, self.private_ip = public_ip, private_ip
         self.mapping, self.filtering, self.alloc, self.guard = mapping, filtering, alloc, guard
+        self.poison = poison
+        self.poisoned = {}                  # (ext port, remote endpoint) -> until (port-poison)
+        self.events = []                    # (time, what, ...) for -v
         self.timeout = timeout
         self.hops = hops                    # TTL needed to leave this home (1 = the router is the first hop)
         self.maps = {}                      # key -> Mapping
@@ -245,9 +272,25 @@ class Nat:
         m = self._mapping_for(int_port, dst)
         if m is None:
             return
-        m.eps.add(dst)
-        m.ips.add(dst[0])
-        m.last_out = time.monotonic()
+        if self.poison and not m.static:
+            m2 = self.maps.get((int_port, dst))
+            if m2 is not None and not self._fresh(m2, dst):
+                self._drop(m2)                                          # its (unreplied) entry timed out
+                m2 = None
+            if m2 is None and not self._fresh(m, dst) and self.poisoned.get((m.ext_port, dst), 0) > time.monotonic():
+                m2 = self._new_mapping((int_port, dst), int_port)       # the port toward dst is taken
+                self.stats["poisoned_flows"] += 1
+                self.events.append((round(time.time() % 1000, 3), "poisoned_flow", dst, ttl))
+            if m2 is not None:
+                m = m2
+        now = time.monotonic()
+        if dst not in m.eps and dst[0] != SERVER_IP:
+            self.events.append((round(time.time() % 1000, 3), "first_out", dst, ttl, data[4] if len(data) > 4 else None))
+        if not self._fresh(m, dst):
+            m.replied.discard(dst)          # a new connection entry
+        m.eps[dst] = now
+        m.ips[dst[0]] = now
+        m.last_out = now
         to_server = dst[0] == SERVER_IP
         if ttl is not None and not to_server and ttl < 8:
             # left the home, died on the way: the mapping exists now, the peer never sees it
@@ -376,12 +419,20 @@ class Nat:
                 return
             self._inbound(m, data, src)
 
+    UNREPLIED = 30.0     # Linux conntrack: a UDP flow nobody answered lives 30 s, an answered one 120 s
+    REPLIED = 120.0
+
+    def _fresh(self, m, dst):
+        t = m.eps.get(dst)
+        return t is not None and time.monotonic() - t < (self.REPLIED if dst in m.replied else self.UNREPLIED)
+
     def _allowed(self, m, src):
         if m.static or self.filtering == "eif":
             return True
         if self.filtering == "adf":
-            return src[0] in m.ips
-        return src in m.eps
+            t = m.ips.get(src[0])
+            return t is not None and time.monotonic() - t < self.REPLIED
+        return self._fresh(m, src)
 
     def _inbound(self, m, data, src):
         now = time.monotonic()
@@ -395,6 +446,10 @@ class Nat:
             return
         if not self._allowed(m, src):
             self.stats["filtered"] += 1
+            if self.poison:
+                if (m.ext_port, src) not in self.poisoned:
+                    self.events.append((round(time.time() % 1000, 3), "poison_in", src, data[4] if len(data) > 4 else None))
+                self.poisoned[(m.ext_port, src)] = now + 30.0
             if self.guard:
                 q = self.unsolicited[src[0]]
                 q.append(now)
@@ -408,6 +463,9 @@ class Nat:
         if recv is None:
             self.stats["no_receiver"] += 1
             return
+        if src in m.eps:
+            m.eps[src] = now
+            m.replied.add(src)
         delay = 0.0
         if src[0] == SERVER_IP:
             delay = self.net.one_way(True)
@@ -660,8 +718,7 @@ class Sim:
         public_ip = f"127.{10 + n // 250}.{n % 250}.1"
         private_ip = f"192.168.{n % 250}.10"
         net = Net(random.Random(self.rng.random()), **self.net_cfg)
-        proxy = await TcpDelayProxy(("127.0.0.1", self.srv.port),
-                                    lambda: net.one_way(True) or (net.server_ms / 1000.0)).start()
+        proxy = await TcpDelayProxy(("127.0.0.1", self.srv.port), net.tcp_delay).start()
         kw = {}
         if mapping_router is not None and _accepts(tree.client.LobbyClient, "port_mapping"):
             kw["port_mapping"] = bool(mapping_router)
@@ -719,6 +776,11 @@ class Sim:
             ta, tb = evs[0]["ticket"], evs[1]["ticket"]
             res["path"] = ta.path if ta.path == tb.path else f"{ta.path}/{tb.path}"
             res["rtt"] = round(ta.rtt_ms, 1)
+            t0s = [(h.client.match or {}).get("punch_t0") for h in (a, b)]
+            if all(t0s):
+                res["skew_ms"] = round(1000 * (t0s[0] - t0s[1]), 1)
+            res["offsets"] = [None if h.client.__dict__.get("clock_offset") is None
+                              else round(1000 * h.client.clock_offset, 1) for h in (a, b)]
             tag = hashlib.sha1(ta.match_id.encode()).digest()[:8]
             await asyncio.sleep(0.05 + self.rng.random() * 0.6)       # the game takes over the port
             ga, gb = StubGame(a, ta, tag, self.srv.udp.port), StubGame(b, tb, tag, self.srv.udp.port)
@@ -731,12 +793,20 @@ class Sim:
             srcs = set(ga.srcs) | set(gb.srcs)
             res["game_via"] = "relay" if any(s[0] == SERVER_IP for s in srcs) and not any(
                 s[0] != SERVER_IP for s in srcs) else ("direct" if srcs else "-")
+            if self.verbose and ta.path == "relay":
+                for h, tk in ((a, ta), (b, tb)):
+                    br = getattr(h.client, "_bridge", None)
+                    print("   bridge", tk.peer, br and (br.bursts, br.path, br.stats, dict(br.gs.last_ok),
+                                                     len(br.gs.punch_targets())), flush=True)
             ups = [list(getattr(h.client, "upgrades", None) or []) for h in (a, b)]
             if any(ups):
                 res["upgrades"] = ups
                 res["upgraded"] = all(u and u[-1][1] == "direct" for u in ups)
             if self.verbose:
                 print(res, a.nat.stats, b.nat.stats, flush=True)
+                if res.get("path") == "relay":
+                    print("   A", a.nat.public_ip, a.nat.events[:6])
+                    print("   B", b.nat.public_ip, b.nat.events[:6])
             return res
         except Exception as e:     # noqa: BLE001
             res["error"] = f"{type(e).__name__}: {e}"
@@ -830,7 +900,8 @@ def main(argv=None):
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--map-a", action="store_true", help="home A's router answers UPnP/NAT-PMP/PCP")
     ap.add_argument("--map-b", action="store_true")
-    ap.add_argument("--loss", type=float, default=0.02)
+    ap.add_argument("--loss", type=float, default=0.02, help="UDP loss on every leg")
+    ap.add_argument("--tcp-rto", type=float, default=0.03, help="share of control messages delayed by a TCP resend")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--play", type=float, default=2.0, help="seconds the stub games play a relayed match")
     ap.add_argument("--json", default="")
@@ -845,7 +916,7 @@ def main(argv=None):
     else:
         types = a.types.split(",")
         pairs = [(x, y) for i, x in enumerate(types) for y in types[i:]]
-    sim = Sim(trees, a.server, rng_seed=a.seed, verbose=a.verbose, net_cfg={"loss": a.loss})
+    sim = Sim(trees, a.server, rng_seed=a.seed, verbose=a.verbose, net_cfg={"loss": a.loss, "tcp_rto": a.tcp_rto})
     sim.play_seconds = a.play
     sim.start_server()
     loop = trees["new"].proto.new_event_loop()

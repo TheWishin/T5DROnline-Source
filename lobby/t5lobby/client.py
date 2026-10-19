@@ -139,6 +139,7 @@ class LobbyClient:
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
         self._bridge = None          # RelayBridge of the running relayed match
         self.upgrades = []           # (match, path) every switch of a relay bridge, for tools and tests
+        self.clock_offset = None     # server time - this PC's time (seconds), for the punch's common start
         self._closing = False
 
     # ================================================================ thread plumbing
@@ -457,7 +458,7 @@ class LobbyClient:
         if msg["path"] == "relay":
             peer = (self.server_ip, int(msg["relay_port"]))
             if self.match.get("bridge") and self._bridge is None:
-                b = await self._open_bridge(msg["match"], peer)
+                b = await self._open_bridge(msg["match"], peer, msg.get("start_time"))
                 if b is not None:
                     gs = None
                     peer, local_port = ("127.0.0.1", b.port), b.game_port
@@ -571,13 +572,22 @@ class LobbyClient:
                     scan.append((str(sc["ip"]), [int(p) for p in sc["ports"]][:64]))
                 except (KeyError, TypeError, ValueError):
                     continue
-            start_in = min(3.0, max(0.0, float(plan.get("start_in", 0)) / 1000.0))
+            start_in = float(plan.get("start_in", 0)) / 1000.0
+            if self.clock_offset is not None and isinstance(plan.get("start_at"), (int, float)):
+                at = float(plan["start_at"]) - self.clock_offset - time.time()
+                if -5.0 < at < 5.0:
+                    start_in = at            # the same moment as the opponent, however late this message came
             window = min(20.0, max(1.0, float(plan.get("window", msg.get("timeout", 3.0)))))
+            ttl_open = min(2.0, max(0.0, float(plan.get("ttl_open", 0.0))))
+            late = max(0.0, -start_in)       # the opponent started this much earlier: keep to its schedule
             self._status(mid, "punch", t("Connecting to your opponent..."))
-            if start_in:
-                await asyncio.sleep(start_in)
-            got = await gs.punch(cands, timeout=window, interval=float(plan.get("interval", 0.05)), scan=scan,
-                                 slow_start=float(plan.get("slow_start", 0.6)))
+            if start_in > 0:
+                await asyncio.sleep(min(3.0, start_in))
+            if self.match is not None:
+                self.match["punch_t0"] = time.time()
+            got = await gs.punch(cands, timeout=max(1.0, window - late), interval=float(plan.get("interval", 0.05)),
+                                 scan=scan, slow_start=float(plan.get("slow_start", 0.6)),
+                                 ttl_open=max(0.0, ttl_open - late))
         else:
             self._status(mid, "punch", t("Connecting to your opponent..."))
             got = await gs.punch(cands, timeout=float(msg.get("timeout", 3.0)))
@@ -614,7 +624,7 @@ class LobbyClient:
         await self._send({"t": "nat_result", "match": mid, "phase": phase, "ok": True, "peer": list(relay), "kind": "relay",
                           "rtt_ms": round(rtt, 3), "jitter_ms": round(jitter, 3)})
 
-    async def _open_bridge(self, mid, relay):
+    async def _open_bridge(self, mid, relay, start_time=None):
         """Relay play through this launcher (RelayBridge): the game gets a local port and 127.0.0.1 as its
         peer; the punched socket stays here, on the relay until the direct path works."""
         gs, self._gs = self._gs, None
@@ -626,8 +636,14 @@ class LobbyClient:
             self._emit({"t": "nat_upgrade", "match": mid, "path": path, "text": text})
             if self._server_nat2():
                 self._tasks.append(asyncio.ensure_future(self._report_upgrade(mid, path, addr)))
+        first = None
+        if self.clock_offset is not None and isinstance(start_time, (int, float)):
+            # the same server time on both PCs: the match's start + 35 s
+            first = time.monotonic() + (float(start_time) + RelayBridge.FIRST_BURST - self.clock_offset - time.time())
+            if not time.monotonic() + 5.0 < first < time.monotonic() + 120.0:
+                first = None
         try:
-            self._bridge = await RelayBridge.open(gs, relay, on_switch=switched)
+            self._bridge = await RelayBridge.open(gs, relay, on_switch=switched, first_burst=first)
         except OSError:
             self._gs = gs
             return None
@@ -719,7 +735,27 @@ class LobbyClient:
         await self._measure_server()
         self._start_keepalive()
         self._start_port_mapper()
+        if self.nat2:
+            self._tasks.append(asyncio.ensure_future(self._clock_sync()))
         return self.me
+
+    async def _clock_sync(self, n=3):
+        """The server's clock against ours (the ping that answers with the server's time, the fastest of n):
+        a planned punch starts at a server time, so a message that TCP had to send twice still starts on time."""
+        best = None
+        for _ in range(n):
+            t0 = time.time()
+            try:
+                r = await self._request({"t": "ping"}, 5.0)
+            except (LobbyError, ConnectionError, OSError):
+                return
+            t1 = time.time()
+            st = r.get("time")
+            if isinstance(st, (int, float)) and (best is None or t1 - t0 < best[0]):
+                best = (t1 - t0, float(st) - (t0 + t1) / 2.0)
+            await asyncio.sleep(0.05)
+        if best is not None:
+            self.clock_offset = best[1]
 
     # ---------------------------------------------------------------- credentials
     def password_ok(self):

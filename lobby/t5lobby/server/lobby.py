@@ -1974,6 +1974,7 @@ class LobbyServer:
         # Both start together: the message reaches each player about half its round trip after it leaves.
         one_way = [min(400.0, max(5.0, (getattr(p, "server_rtt", None) or 150.0) / 2.0)) for p in m.players]
         go = max(one_way) + 60.0
+        t_go = time.time() + go / 1000.0          # (server clock; a client that synced its clock starts then)
         plan_log = []
         for side, p in enumerate(m.players):
             o = 1 - side
@@ -1998,8 +1999,13 @@ class LobbyServer:
                     scan = [{"ip": o_ip, "ports": preds[o] + [o_port]}]
                 else:
                     cands.append({"ip": o_ip, "port": o_port, "kind": "public"})
-                msg["plan"] = {"start_in": round(go - one_way[side]), "window": window, "interval": 0.05,
-                               "slow_start": 0.6, "scan": scan}
+                # Both new: the first half second's punches only open each side's own NAT (low TTL), so
+                # neither router sees an unsolicited punch before it sent its own. An older peer starts at
+                # once with full punches anyway.
+                msg["plan"] = {"start_in": round(go - one_way[side]), "start_at": round(t_go, 3),
+                               "window": window, "interval": 0.05,
+                               "slow_start": 0.6, "ttl_open": self.cfg.punch_ttl_open if all(new) else 0.0,
+                               "scan": scan}
             else:
                 cands.append({"ip": o_ip, "port": o_port, "kind": "public"})
                 cands.extend({"ip": o_ip, "port": port, "kind": "public"} for port in preds[o][:8])

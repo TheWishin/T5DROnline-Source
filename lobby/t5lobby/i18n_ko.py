@@ -475,6 +475,17 @@ MESSAGES = {
     "in the game.":
         "화면은 창 크기에 맞춰지며, 선명도는 내부 해상도에 따라 달라집니다. 창 가장자리를 끌어 크기를 바꿀 수도 있습니"
         "다. 게임에서 Alt+Enter 또는 F11로 테두리 없는 전체 화면을 전환합니다.",
+    "Unlocks": "잠금 해제",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "모든 스테이지 잠금 해제 (Tekken 5 스테이지, Arcade를 클리어하지 않아도)",
+    "Unlock all customization items (free in the item shop)":
+        "모든 커스터마이즈 아이템 잠금 해제 (ITEM SHOP에서 무료)",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "오프라인 전용입니다 (Arcade, VS, Practice 등). 세이브는 바뀌지 않습니다. 무료로 받은 아이템은 계속 "
+        "내 것이 됩니다 (세이브를 먼저 save-backups에 백업합니다). 온라인에서는 두 플레이어가 항상 같은 "
+        "스테이지와 기본 코스튬을 씁니다.",
     "Sound and start": "소리 및 시작",
     "Mute sound": "소리 끄기",
     "Start minimized, without taking focus (for testing)": "최소화 상태로 포커스 없이 시작 (테스트용)",
@@ -520,10 +531,11 @@ MESSAGES = {
     "Keyboard": "키보드",
     "Xbox controller": "Xbox 컨트롤러",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "키보드와 첫 번째 XInput 컨트롤러는 둘 다 플레이어 1을 조작합니다 (합쳐짐). 키보드는 게임 창에 포커스가 있을 "
-        "때만 적용됩니다. 게임 안의 버튼 배치는 게임의 Options 메뉴에서 바꿀 수 있습니다.",
+        "때만 적용됩니다. 게임 자체의 Options 메뉴에서 오프라인 플레이용 버튼 배치를 바꿀 수 있습니다. 온라인 "
+        "게임은 런처의 버튼 설정만 사용합니다.",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -773,6 +785,12 @@ MESSAGES = {
     "you cannot add yourself": "자기 자신은 추가할 수 없습니다",
     "you blocked that player; unblock them first": "그 플레이어를 차단했습니다. 먼저 차단을 해제하세요",
     "your friends list is full ({max})": "친구 목록이 가득 찼습니다 ({max})",
+    "your last invite to that friend ended a moment ago; try again in {seconds} s":
+        "이 친구에게 보낸 마지막 초대가 방금 끝났습니다. {seconds}초 후에 다시 시도하세요",
+    "your last challenge to that player ended a moment ago; try again in {seconds} s":
+        "이 플레이어에게 보낸 마지막 도전이 방금 끝났습니다. {seconds}초 후에 다시 시도하세요",
+    "too many friend requests from this internet address today; try again tomorrow":
+        "오늘 이 인터넷 주소에서 보낸 친구 요청이 너무 많습니다. 내일 다시 시도하세요",
     "you can send {count} friend requests a day; try again tomorrow":
         "친구 요청은 하루에 {count}개까지 보낼 수 있습니다. 내일 다시 시도하세요",
     "{count} of your friend requests are waiting for an answer; cancel some first":
@@ -921,6 +939,8 @@ MESSAGES = {
     "Online: the files of the last match": "온라인: 지난 매치의 파일",
     "controls.ini (your button settings)": "controls.ini (버튼 설정)",
     "Desync dumps (game state numbers, binary)": "디싱크 덤프 (게임 상태 수치, 바이너리)",
+    "The last replay (the inputs of the last online session, without names)":
+        "최신 리플레이(마지막 온라인 세션의 입력, 이름 없음)",
     "could not be cleaned of private data": "개인 정보를 지울 수 없음",
     "no room left in the size limit": "크기 한도에 남은 공간 없음",
     "could not be read": "읽을 수 없음",
@@ -1523,6 +1543,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "결과를 보냈습니다. 상대의 보고를 기다리는 중...",
     "Rematch offered; waiting for your opponent...": "Rematch를 신청했습니다. 상대를 기다리는 중...",
     "(other version)": "(다른 버전)",
+    "other version": "다른 버전",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "검색 중... (Ranked 대기 {ranked}명, Quick Match {quick}명)",
@@ -1796,7 +1817,7 @@ MESSAGES = {
         "철자를 확인하세요: 친구는 계정 이름으로 추가합니다.",
     "in a match": "매치 중",
     "offline": "오프라인",
-    "(older launcher: no invites)": "(구버전 런처: 초대 불가)",
+    "older launcher: no invites": "구버전 런처: 초대 불가",
     "Friends ({count})": "친구 ({count})",
     "offline, last seen {when}": "오프라인 ({when})",
     "Friends need an account. Log in with one to add friends and invite them.":
@@ -1833,4 +1854,70 @@ MESSAGES = {
     "{name} wants to be your friend: see the Friends tab.": "{name}님이 친구 요청을 보냈습니다: 친구 탭을 확인하세요.",
     "{name} accepted your friend request.": "{name}님이 친구 요청을 수락했습니다.",
     "{name} declined your friend request.": "{name}님이 친구 요청을 거절했습니다.",
+
+    # ---- launcher/replays_ui.py, launcher/t5dr_launcher.pyw (Replays tab), problem_report.py
+    "Replays":
+        "리플레이",
+    "Every online match is saved here. Watch plays it back in the game exactly as it was played: the same inputs frame by frame, checked against the live match while it plays.":
+        "모든 온라인 대전이 여기에 저장됩니다. 보기를 누르면 플레이했던 그대로 게임에서 재생합니다: 같은 입력을 프레임 단위로 재현하고, 재생하는 동안 실제 대전과 대조합니다.",
+    "Date":
+        "날짜",
+    "Fighters":
+        "캐릭터",
+    "Netcode":
+        "넷코드",
+    "WATCH":
+        "보기",
+    "Stop replay":
+        "리플레이 중지",
+    "Delete":
+        "삭제",
+    "Open replays folder":
+        "리플레이 폴더 열기",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "리플레이 재생 중: START(Enter)로 일시정지/계속, SELECT(Tab)로 리플레이를 끝냅니다. "
+        "재대전은 같은 세션의 앞선 대전 다음에 재생됩니다: 앞선 대전이 남긴 "
+        "상태에서 시작하기 때문입니다.",
+    "Save online matches as replays":
+        "온라인 대전을 리플레이로 저장",
+    "Keep the players' names in replays":
+        "리플레이에 플레이어 이름 남기기",
+    "Rollback":
+        "Rollback",
+    "Lockstep":
+        "Lockstep",
+    "(name not saved)":
+        "(이름 저장 안 됨)",
+    "{matches} match(es) in {files} file(s) in {folder}":
+        "{folder}에 파일 {files}개, 대전 {matches}개",
+    "No replays yet. Play an online match: it is saved here.":
+        "아직 리플레이가 없습니다. 온라인 대전을 하면 여기에 저장됩니다.",
+    "not finished":
+        "끝나지 않음",
+    "won {mine}-{theirs}":
+        "승리 {mine}-{theirs}",
+    "lost {mine}-{theirs}":
+        "패배 {mine}-{theirs}",
+    "Close the running game first (Stop game on the Play tab).":
+        "먼저 실행 중인 게임을 닫으세요(오프라인 플레이 탭의 게임 중지).",
+    "Build the game first (Build tab).":
+        "먼저 게임을 빌드하세요(빌드 탭).",
+    "This replay cannot be played: {why}":
+        "이 리플레이는 재생할 수 없습니다: {why}",
+    "Recorded with another version of the game: it may not play back the same.":
+        "다른 버전의 게임으로 녹화되었습니다: 똑같이 재생되지 않을 수 있습니다.",
+    "Playing {fighters} ({when})...":
+        "{fighters} 재생 중({when})...",
+    "The replay ended before the end of the match.":
+        "대전이 끝나기 전에 리플레이가 끝났습니다.",
+    "Replay over: identical to the live match ({checks} checks, same result).":
+        "리플레이 종료: 실제 대전과 똑같습니다(대조 {checks}회, 같은 결과).",
+    "Replay over, but it went a different way from frame {frame} on (the game or its version differs from the one that played it).":
+        "리플레이 종료, 하지만 {frame} 프레임부터 다르게 진행되었습니다(게임 또는 그 버전이 대전한 것과 다릅니다).",
+    "Replay over.":
+        "리플레이 종료.",
+    "Delete this replay file? It holds {n} match(es) against the same opponent.":
+        "이 리플레이 파일을 삭제할까요? 같은 상대와의 대전 {n}개가 들어 있습니다.",
 }

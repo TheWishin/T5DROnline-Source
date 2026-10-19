@@ -479,6 +479,17 @@ MESSAGES = {
     "in the game.":
         "画面はウィンドウに合わせて拡大縮小され、鮮明さは内部解像度で決まります。ウィンドウの端をドラッグしてサイズを"
         "変えることもできます。ゲーム中は Alt+Enter または F11 でボーダーレス全画面に切り替わります。",
+    "Unlocks": "アンロック",
+    "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
+        "全ステージをアンロック（Tekken 5 のステージ、Arcade をクリアしなくても）",
+    "Unlock all customization items (free in the item shop)":
+        "全カスタマイズアイテムをアンロック（ITEM SHOP で無料）",
+    "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
+    "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
+    "same stages and the default costumes.":
+        "オフライン専用です（Arcade、VS、Practice など）。セーブは変更されません。無料で手に入れたアイテムはそのまま"
+        "自分のものになります（先にセーブを save-backups にバックアップします）。オンラインでは両プレイヤーが常に"
+        "同じステージとデフォルトのコスチュームになります。",
     "Sound and start": "サウンドと起動",
     "Mute sound": "ミュート",
     "Start minimized, without taking focus (for testing)": "最小化して起動、フォーカスを奪わない（テスト用）",
@@ -524,11 +535,11 @@ MESSAGES = {
     "Keyboard": "キーボード",
     "Xbox controller": "Xboxコントローラー",
     "Keyboard and the first XInput controller both drive player 1 (they are combined). "
-    "The keyboard only counts while the game window has focus. Button layout inside the "
-    "game can be changed in its own Options menu.":
+    "The keyboard only counts while the game window has focus. The game's own Options menu can change "
+    "the button layout for offline play; online games use the launcher's buttons only.":
         "キーボードと1台目の XInput コントローラーはどちらもプレイヤー1を操作します（合成されます）。キーボードはゲー"
-        "ムウィンドウにフォーカスがあるときだけ有効です。ゲーム内のボタン配置はゲームの Options メニューで変更できます"
-        "。",
+        "ムウィンドウにフォーカスがあるときだけ有効です。ゲーム自体の Options メニューでオフラインプレイ用のボタン配置を"
+        "変更できます。オンライン対戦ではランチャーのボタン設定だけが使われます。",
     "In this window, on the Online tab, a controller or arcade stick works without mouse "
     "or keyboard: Cross / A accepts a match or rematch and starts a search, Circle / B "
     "declines, leaves or stops the search. It only counts while this window is in front, "
@@ -784,6 +795,12 @@ MESSAGES = {
     "you cannot add yourself": "自分自身は追加できません",
     "you blocked that player; unblock them first": "そのプレイヤーをブロックしています。先にブロックを解除してください",
     "your friends list is full ({max})": "フレンドリストがいっぱいです（{max}）",
+    "your last invite to that friend ended a moment ago; try again in {seconds} s":
+        "このフレンドへの前回の招待は終わったばかりです。{seconds} 秒後にもう一度試してください",
+    "your last challenge to that player ended a moment ago; try again in {seconds} s":
+        "このプレイヤーへの前回の対戦申し込みは終わったばかりです。{seconds} 秒後にもう一度試してください",
+    "too many friend requests from this internet address today; try again tomorrow":
+        "このインターネットアドレスからの今日のフレンド申請が多すぎます。明日もう一度試してください",
     "you can send {count} friend requests a day; try again tomorrow":
         "フレンド申請は1日 {count} 件までです。明日もう一度試してください",
     "{count} of your friend requests are waiting for an answer; cancel some first":
@@ -937,6 +954,8 @@ MESSAGES = {
     "Online: the files of the last match": "オンライン：前回の対戦のファイル",
     "controls.ini (your button settings)": "controls.ini（ボタン設定）",
     "Desync dumps (game state numbers, binary)": "同期ズレのダンプ（ゲーム状態の数値、バイナリ）",
+    "The last replay (the inputs of the last online session, without names)":
+        "最新のリプレイ（最後のオンラインセッションの入力、名前なし）",
     "could not be cleaned of private data": "個人情報を取り除けませんでした",
     "no room left in the size limit": "サイズ上限に空きがありません",
     "could not be read": "読み込めませんでした",
@@ -1544,6 +1563,7 @@ MESSAGES = {
     "Result sent; waiting for your opponent's report...": "結果を送信しました。相手の報告を待っています...",
     "Rematch offered; waiting for your opponent...": "Rematch を申し込みました。相手を待っています...",
     "(other version)": "（別バージョン）",
+    "other version": "別バージョン",
     "ranked": "Ranked",
     "Searching... ({ranked} in the ranked queue, {quick} quick)":
         "検索中...（Ranked 待ち {ranked} 人、Quick Match {quick} 人）",
@@ -1827,7 +1847,7 @@ MESSAGES = {
         "つづりを確認してください：フレンドはアカウント名で追加します。",
     "in a match": "対戦中",
     "offline": "オフライン",
-    "(older launcher: no invites)": "（古いランチャー：招待不可）",
+    "older launcher: no invites": "古いランチャー：招待不可",
     "Friends ({count})": "フレンド（{count}）",
     "offline, last seen {when}": "オフライン（{when}）",
     "Friends need an account. Log in with one to add friends and invite them.":
@@ -1865,4 +1885,69 @@ MESSAGES = {
         "{name} さんからフレンド申請が届きました：フレンドタブを見てください。",
     "{name} accepted your friend request.": "{name} さんがフレンド申請を承認しました。",
     "{name} declined your friend request.": "{name} さんがフレンド申請を断りました。",
+
+    # ---- launcher/replays_ui.py, launcher/t5dr_launcher.pyw (Replays tab), problem_report.py
+    "Replays":
+        "リプレイ",
+    "Every online match is saved here. Watch plays it back in the game exactly as it was played: the same inputs frame by frame, checked against the live match while it plays.":
+        "オンライン対戦はすべてここに保存されます。「見る」を押すと、プレイされたとおりにゲーム内で再生します：同じ入力を1フレームずつ再現し、再生中にライブの対戦と照合します。",
+    "Date":
+        "日付",
+    "Fighters":
+        "キャラクター",
+    "Netcode":
+        "ネットコード",
+    "WATCH":
+        "見る",
+    "Stop replay":
+        "リプレイを停止",
+    "Delete":
+        "削除",
+    "Open replays folder":
+        "リプレイフォルダーを開く",
+    "While a replay plays: START (Enter) pauses and goes on, SELECT (Tab) ends the replay. A "
+    "rematch is played after the matches before it in the same session: it starts from what they "
+    "left.":
+        "リプレイ再生中：START（Enter）で一時停止／再開、SELECT（Tab）でリプレイを終了します。"
+        "再戦は同じセッションのそれ以前の対戦の後に再生されます：その対戦が残した状態から始まるためです。",
+    "Save online matches as replays":
+        "オンライン対戦をリプレイとして保存する",
+    "Keep the players' names in replays":
+        "リプレイにプレイヤー名を残す",
+    "Rollback":
+        "Rollback",
+    "Lockstep":
+        "Lockstep",
+    "(name not saved)":
+        "（名前は保存されていません）",
+    "{matches} match(es) in {files} file(s) in {folder}":
+        "{folder} に {files} ファイル、{matches} 試合",
+    "No replays yet. Play an online match: it is saved here.":
+        "リプレイはまだありません。オンライン対戦をプレイすると、ここに保存されます。",
+    "not finished":
+        "未終了",
+    "won {mine}-{theirs}":
+        "勝ち {mine}-{theirs}",
+    "lost {mine}-{theirs}":
+        "負け {mine}-{theirs}",
+    "Close the running game first (Stop game on the Play tab).":
+        "まず起動中のゲームを閉じてください（オフラインプレイタブの「ゲームを停止」）。",
+    "Build the game first (Build tab).":
+        "まずゲームをビルドしてください（ビルドタブ）。",
+    "This replay cannot be played: {why}":
+        "このリプレイは再生できません：{why}",
+    "Recorded with another version of the game: it may not play back the same.":
+        "別のバージョンのゲームで記録されています：同じようには再生されない可能性があります。",
+    "Playing {fighters} ({when})...":
+        "{fighters} を再生中（{when}）...",
+    "The replay ended before the end of the match.":
+        "対戦の終わりより前にリプレイが終了しました。",
+    "Replay over: identical to the live match ({checks} checks, same result).":
+        "リプレイ終了：ライブの対戦と完全に一致しました（照合 {checks} 回、同じ結果）。",
+    "Replay over, but it went a different way from frame {frame} on (the game or its version differs from the one that played it).":
+        "リプレイ終了。ただしフレーム {frame} から違う展開になりました（ゲームまたはそのバージョンが対戦時のものと異なります）。",
+    "Replay over.":
+        "リプレイ終了。",
+    "Delete this replay file? It holds {n} match(es) against the same opponent.":
+        "このリプレイファイルを削除しますか？同じ相手との {n} 試合が入っています。",
 }

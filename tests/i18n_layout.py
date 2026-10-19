@@ -1,6 +1,7 @@
-"""Cut-off check for the launcher in every language, at 100 % and 150 % display scaling, with withdrawn windows.
+"""Cut-off check for the launcher in every language, at 100 %, 133 % and 150 % display scaling, with withdrawn
+windows.
 
-    python tests/i18n_layout.py [es ko ...] [--scale 100|150]   # list what is cut off, compared with English
+    python tests/i18n_layout.py [en es ko ...] [--scale 100|133|150]   # list what is cut off
 
 tests/test_i18n.py runs the same walk for every language. Nothing is put on the screen: Tk computes no geometry for
 the children of a withdrawn window, so everything is judged from requested sizes and measured texts --
@@ -8,10 +9,15 @@ the children of a withdrawn window, so everything is judged from requested sizes
 * a text wider than the widget that shows it: fixed-width labels and buttons, Treeview headings and cells,
   Combobox choices, canvas texts;
 * the window: the natural width of the launcher's tabs (and of the Controls, report and update windows)
-  against the window's width.
+  against the window's width;
+* the Settings tab, which is taller than the window from 133 % on and scrolls (VScroll): all of it inside the
+  scrolled region, the area as wide as its content, every control in it with the wheel and focus handling, and
+  its bottom reachable (the walk scrolls there).
 
-English is the yardstick: a language is checked for what is cut off where English is not (or clearly more
-than English), so the few places that are already tight in English are not counted against a translation.
+English is checked as it is (nothing cut off at all); the other languages against English (nothing cut off
+where English is not), which comes to the same now that English has nothing cut off. The data the Online tab is
+filled with has the widest texts each column can get: a placement rank, a player and a room of another version,
+friends that cannot be invited, the longest reasons a void game has.
 """
 import importlib.machinery
 import importlib.util
@@ -35,7 +41,7 @@ from tkinter import ttk  # noqa: E402
 from t5lobby import i18n  # noqa: E402
 
 LANGS = tuple(i18n.LANGUAGES)
-SCALES = (100, 150)
+SCALES = (100, 133, 150)
 SCREEN_H = 1080                      # the launcher's size is checked as on a 1920 x 1080 screen
 
 
@@ -56,6 +62,35 @@ def _font(w, suffix=""):
         return tkfont.Font(root=w, font=f)
     except tk.TclError:
         return tkfont.nametofont("TkDefaultFont", root=w)
+
+
+def scroll_problems(area):
+    """What keeps part of a VScroll area (launcher/t5dr_launcher.pyw) out of reach: a scrolled region shorter than
+    the content, an area narrower than it, a control without the wheel / focus handling."""
+    out = []
+    area.refresh()
+    inner, canvas = area.inner, area.canvas
+    region = [float(v) for v in str(canvas.cget("scrollregion")).split()] or [0, 0, 0, 0]
+    if region[3] - region[1] < inner.winfo_reqheight():
+        out.append(("scroll", str(canvas), "height", inner.winfo_reqheight(), region[3] - region[1], ""))
+    if int(canvas.cget("width")) < inner.winfo_reqwidth():
+        out.append(("scroll", str(canvas), "width", inner.winfo_reqwidth(), int(canvas.cget("width")), ""))
+
+    def walk(w):
+        if w.winfo_class() in FOCUSABLE and area.tag not in w.bindtags():
+            try:
+                text = _text(w)
+            except tk.TclError:              # (an entry, a table, a text box)
+                text = w.winfo_class()
+            out.append(("scroll", str(w), "wheel", 0, 0, text))
+        for c in w.winfo_children():
+            walk(c)
+    walk(inner)
+    return out
+
+
+FOCUSABLE = ("TButton", "Button", "TCheckbutton", "TRadiobutton", "TEntry", "Entry", "Text", "Treeview",
+             "TCombobox", "TScale", "TSpinbox")
 
 
 def _text(w):
@@ -205,7 +240,11 @@ class Client:
             {"name": "Rival_Long_Name", "status": "online", "activity": "queue", "rank": "Lord of War", "tier": 31},
             {"name": "Bob", "status": "in_match", "rank": "2nd Dan", "tier": 11, "invite": "update"},
             {"name": "Old", "status": "online", "activity": "idle", "invite": "version", "rank": "1st Dan", "tier": 10},
-            {"name": "Zed", "status": "offline", "last_seen": 1792350300, "rank": "Beginner", "tier": 0}],
+            {"name": "Zed", "status": "offline", "last_seen": 1792350300, "rank": "Beginner", "tier": 0},
+            {"name": "Mika", "status": "online", "activity": "match", "rank": "Beginner", "tier": 0,
+             "placement": [4, 5]},
+            {"name": "Nina", "status": "online", "activity": "room", "rank": "Dragon Lord", "tier": 32,
+             "provisional": True}],
         "incoming": [{"name": "NewFriend_123"}],
         "outgoing": [{"name": "Somebody_Else"}]}
 
@@ -239,7 +278,9 @@ class Client:
                              "opp_char": "lee", "score": [2, 1], "delta": 12.0, "ranked": True, "status": st,
                              "reason": rs, "set": None}
                             for r, st, rs in (("won", "confirmed", None), ("lost", "forfeit", "quit"),
-                                              ("draw", "void", "desync"), ("lost", "disputed", "disputed"))]}
+                                              ("draw", "void", "desync"), ("lost", "disputed", "disputed"),
+                                              ("draw", "void", "connection"), ("lost", "forfeit", "crash_repeat"),
+                                              ("lost", "onesided", "no_report_repeat"))]}
 
 
 PLAYERS = [
@@ -250,11 +291,17 @@ PLAYERS = [
     {"id": "p3", "name": "Bob", "guest": False, "rating": 1612, "record": [30, 12, 1], "status": "match",
      "build": "b1", "rtt": 140.0, "rank": "2nd Dan", "tier": 11, "provisional": True, "main": "lee"},
     {"id": "p4", "name": "Q", "guest": False, "rating": 1612, "record": [0, 0, 0], "status": "queue", "build": "b1",
-     "rtt": 40.0, "rank": "Beginner", "tier": 0, "provisional": True, "main": "random"},
+     "rtt": 40.0, "rank": "Beginner", "tier": 0, "provisional": True, "main": "random", "placement": [4, 5]},
+    {"id": "p6", "name": "Nina", "guest": False, "rating": 1500, "record": [1, 1, 0], "status": "room", "build": "b1",
+     "rtt": 60.0, "rank": "Dragon Lord", "tier": 32, "provisional": True, "main": "lee"},
     {"id": "p5", "name": "Old", "guest": True, "record": [1, 0, 0], "status": "playing", "build": "other", "rtt": 80.0}]
 ROOMS = [{"id": "r1", "name": "Room of Rival", "owner": {"name": "Rival_Long_Name"}, "status": "open", "build": "b1",
           "ranked": True},
-         {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False}]
+         {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False},
+         {"id": "r3", "name": "Old room", "owner": {"name": "Old"}, "status": "playing", "build": "other",
+          "ranked": True}]
+
+
 def tournament():
     """A running double-elimination tournament of four as the server shows it (the real bracket engine): a set
     decided, one being played, one called, a disqualification -- every word the Tournaments page draws."""
@@ -368,8 +415,11 @@ class Walk:
         top = top or app
         top.update_idletasks()
         self.screens.append(name)
-        for kind, w, col, need, have, text in problems(top):
-            self.cut[(name, kind, w, col)] = (need, have, text)
+        area = getattr(app, "settings_scroll", None) if top is app else None
+        for kind, w, col, need, have, text in problems(top) + (scroll_problems(area) if area else []):
+            key = (name, kind, w, col)                 # the widest text of a column counts
+            if key not in self.cut or need > self.cut[key][0]:
+                self.cut[key] = (need, have, text)
         if top is app:
             self.cut[(name, "width", "", "")] = (app.nb.winfo_reqwidth(), app.winfo_width() - 24, "")
         cat = i18n.catalog(self.lang)
@@ -380,6 +430,15 @@ class Walk:
         for key in app.tab_keys:
             app.nb.select(app.tabs[key])
             self.screen("tab " + key)
+            if key == "settings":            # its bottom: Unlocks, the Controls table and its notes
+                area = app.settings_scroll
+                area.refresh()
+                area.scroll_to(10 ** 6)       # (what the wheel does, as far down as it goes)
+                if area.canvas.yview()[1] < 0.999:
+                    self.cut[("tab settings (bottom)", "scroll", str(area.canvas), "bottom")] = (
+                        1000, int(area.canvas.yview()[1] * 1000), "")
+                self.screen("tab settings (bottom)")
+                area.scroll_to(0)
         app._show_prereqs([
             {"id": "python", "name": "Python 3.10+", "ok": True, "detail": "3.12.10 at C:\\Py\\python.exe",
              "needed_for": "", "install": None},
@@ -499,8 +558,17 @@ class Walk:
         up.win.destroy()
 
 
-def compare(walk, english):
-    """What `walk` has cut off that the English walk at the same scale has not (or clearly less)."""
+class Nothing:
+    """A yardstick with nothing cut off: compare(walk, NOTHING) is everything `walk` has cut off."""
+    cut = {}
+
+
+NOTHING = Nothing()
+
+
+def compare(walk, english=NOTHING):
+    """What `walk` has cut off that the English walk at the same scale has not (or clearly less); without an
+    English walk, everything it has cut off."""
     out = []
     for key, (need, have, text) in sorted(walk.cut.items()):
         screen, kind, w, col = key
@@ -514,15 +582,15 @@ def compare(walk, english):
 
 
 def main(argv):
-    langs = [a for a in argv if a in LANGS] or [x for x in LANGS if x != "en"]
+    langs = [a for a in argv if a in LANGS] or list(LANGS)
     scales = [int(argv[argv.index("--scale") + 1])] if "--scale" in argv else SCALES
     bad = 0
     for scale in scales:
         english = Walk("en", scale).run()
         for lang in langs:
             t0 = time.time()
-            w = Walk(lang, scale).run()
-            lines = compare(w, english) + [f"missing text: {m!r}" for m in w.missing] + [
+            w = english if lang == "en" else Walk(lang, scale).run()
+            lines = compare(w, NOTHING if lang == "en" else english) + [f"missing text: {m!r}" for m in w.missing] + [
                 f"{s}: English left: {e}" for s, e in w.english.items() if e] + [f"on screen: {s}" for s in w.shown]
             print(f"{lang} {scale} %: {len(lines)} problems ({time.time() - t0:.1f} s)")
             for x in lines:

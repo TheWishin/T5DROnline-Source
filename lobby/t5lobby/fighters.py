@@ -63,14 +63,19 @@ class Table:
     def valid_stage(self, key):
         return key == RANDOM or key in self._s
 
-    def resolve(self, p1, p2, stage, seed):
+    def stage_pool(self, old_stages=False):
+        """Stages drawn at random: the ones the stage select offers, plus the Tekken 5 stages ("t5": ids 0-13
+        and 15) when the server enables them for a match (docs/RANKED.md "Characters and stages")."""
+        return [x["key"] for x in self.stages if old_stages or not x.get("t5")]
+
+    def resolve(self, p1, p2, stage, seed, old_stages=False):
         """Turn 'random' into concrete keys, the same way on every machine (seeded).
         -> (p1 key, p2 key, stage key)."""
         rng = random.Random(int(seed) & 0xFFFFFFFF)
         pool = [x["key"] for x in self.selectable()]
         p1 = p1 if p1 in self._f else rng.choice(pool)
         p2 = p2 if p2 in self._f else rng.choice(pool)
-        stage = stage if stage in self._s else rng.choice([x["key"] for x in self.stages])
+        stage = stage if stage in self._s else rng.choice(self.stage_pool(old_stages))
         return p1, p2, stage
 
     def fight_env(self, p1, p2, stage, rounds=3):

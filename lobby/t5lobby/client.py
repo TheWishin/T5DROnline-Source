@@ -68,11 +68,20 @@ from .tour_client import TourCalls
 CLIENT_NAME = "t5lobby-client/0.1"
 
 
+def _ip_literal(host):
+    try:
+        ipaddress.ip_address(str(host))
+        return True
+    except ValueError:
+        return False
+
+
 class LobbyClient(TourCalls):
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, tournaments=False):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
+                 tournaments=False):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -102,9 +111,11 @@ class LobbyClient(TourCalls):
         server lists (docs/ONLINE.md "Regional relays") and use the one it picks for a relayed match; False
         behaves like a 1.1.0 client there (only the lobby server's own relay). friends: the friends list and
         invites (docs/ONLINE.md "Friends and invites") with a server that has them; False behaves like a 1.1.1 client (the
-        server then sends none of their messages). tournaments: take part in the server's tournaments
-        (docs/TOURNAMENTS.md; the calls are in tour_client.py): the server then sends tour_call ("Your tournament
-        set is ready") and the other tour_* events. Off by default (the launcher turns it on)."""
+        server then sends none of their messages). old_stages: this client knows the Tekken 5 stage keys
+        (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its matches; False behaves like a
+        1.1.1 client (tests). tournaments: take part in the server's tournaments (docs/TOURNAMENTS.md; the calls
+        are in tour_client.py): the server then sends tour_call ("Your tournament set is ready") and the other
+        tour_* events. Off by default (the launcher turns it on)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -120,6 +131,7 @@ class LobbyClient(TourCalls):
         self.blind_ready = blind_ready
         self.ingame_pick = ingame_pick
         self.sets = sets
+        self.old_stages = old_stages
         self.notices = {}            # id -> {"text", "expires"}: server notices showing now
         self.friends = friends
         self.friend_list = None      # the last `friends` message (friend_status merged in), None before the first
@@ -252,6 +264,7 @@ class LobbyClient(TourCalls):
             self.welcome = await self._request({"t": "hello", "proto": proto.PROTO_VERSION,
                                                 "client": CLIENT_NAME, "build": self.build.as_wire(),
                                                 "caps": ["delta", "notices"] + (["blind_ready"] if self.blind_ready else [])
+                                                + (["old_stages"] if self.old_stages else [])
                                                 + (["ingame_pick"] if self.ingame_pick else [])
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])
@@ -461,8 +474,36 @@ class LobbyClient(TourCalls):
         """The server's list of regional relays changed: measure the new list."""
         if self.welcome is not None and isinstance(msg.get("relays"), list):
             self.welcome["relays"] = msg["relays"]
-            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
+            self._measure_relays_soon()
         return False
+
+    # Measuring the relays sends UDP pings to the addresses a server names. One measurement at a time, the next one
+    # at least RELAY_MEASURE_GAP s after the last (pushes in between are folded into it): a server -- any server a
+    # player adds -- must not make this PC ping whatever it likes, as often as it likes, by sending `relays` again
+    # and again (security review 2; each push used to start a measurement of up to 32 addresses at once).
+    RELAY_MEASURE_GAP = 5.0
+
+    def _measure_relays_soon(self):
+        task = getattr(self, "_relay_task", None)
+        if task is not None and not task.done():
+            self._relay_again = True
+            return
+        self._relay_again = False
+        self._relay_task = asyncio.ensure_future(self._measure_relays_paced())
+        self._tasks = [x for x in self._tasks if not x.done()]
+        self._tasks.append(self._relay_task)
+
+    async def _measure_relays_paced(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            wait = getattr(self, "_relay_last", -1e9) + self.RELAY_MEASURE_GAP - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._relay_again = False
+            self._relay_last = loop.time()
+            await self._measure_relays()
+            if not self._relay_again:
+                return
 
     async def _on_match_cancel(self, msg):
         if self.match and self.match["match"] == msg["match"]:
@@ -827,14 +868,17 @@ class LobbyClient(TourCalls):
         when a match needs one. A relay that does not answer is left out (never chosen for this player)."""
         if not self._server_relays():
             return
-        lst = [r for r in self.welcome.get("relays") or () if isinstance(r, dict) and r.get("id") and r.get("host")]
+        # (a relay is an address the server resolved: a name here would be looked up -- with the loop waiting -- and
+        # a port outside 1..65535 would end the measurement)
+        lst = [r for r in self.welcome.get("relays") or () if isinstance(r, dict) and r.get("id") and r.get("host")
+               and _ip_literal(r["host"]) and isinstance(r.get("port"), int) and 0 < r["port"] < 65536]
         if not lst and not self.relay_rtts:
             return                                  # (no regional relays on this server: nothing to say)
 
         async def one(r):
             try:
                 return r["id"], await server_rtt(self.relay_address(r))
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 return r.get("id"), None
         got = await asyncio.gather(*(one(r) for r in lst[:32]))
         rtts = {rid: round(ms, 2) for rid, ms in got if ms is not None}
@@ -867,7 +911,7 @@ class LobbyClient(TourCalls):
             await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
         await self._measure_server()
         if self._server_relays():
-            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
+            self._measure_relays_soon()
         self._start_keepalive()
         self._start_port_mapper()
         if self.nat2:

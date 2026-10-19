@@ -703,7 +703,7 @@ class OnlineView:
         ttk.Button(tools, text=t("Profile"), style="Card.Small.TButton", command=tab._profile_of_selected).pack(
             side="left", padx=(px(6), 0))
         fr, tab.tv_players = self.tree(pc, ("player", "rank", "rating", "record", "main", "status", "ping"),
-                                       (130, 150, 76, 80, 86, 110, 68), height=6)
+                                       (130, 168, 70, 80, 80, 110, 62), height=6)   # rank: "Beginner (placement 4/5)"
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_players.bind("<Double-1>", lambda _e: tab._profile_of_selected())
         tab.tv_players.bind("<Return>", lambda _e: tab._profile_of_selected())
@@ -721,7 +721,7 @@ class OnlineView:
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.actions[key], tab.action_text[key] = b, label
-        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 140, 70), height=2)
+        fr, tab.tv_rooms = self.tree(rc, ("room", "owner", "state", "ping"), (190, 140, 210, 70), height=2)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
@@ -739,7 +739,7 @@ class OnlineView:
         row = self.body(cc)
         row.grid(row=2, column=0, sticky="we", pady=(px(8), 0))
         row.columnconfigure(0, weight=1)
-        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=10)   # (it grows with the card)
+        ce = ttk.Entry(row, textvariable=tab.chat_var, style="Card.TEntry", width=8)    # (it grows with the card)
         ce.grid(row=0, column=0, sticky="we")
         ce.bind("<Return>", lambda _e: tab.do_chat())
         ttk.Button(row, text=t("Send"), style="Card.TButton", command=tab.do_chat).grid(row=0, column=1,
@@ -816,7 +816,7 @@ class OnlineView:
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.friend_actions[key] = b
-        fr, tab.tv_friends = self.tree(fc, ("player", "rank", "status"), (150, 150, 200), height=8)
+        fr, tab.tv_friends = self.tree(fc, ("player", "rank", "status"), (130, 168, 226), height=8)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_friends.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
         tab.tv_friends.bind("<Double-1>", lambda _e: tab._profile_of_friend())
@@ -850,7 +850,7 @@ class OnlineView:
         rc.rowconfigure(1, weight=1)
         head, tools = self.section_head(rc, t("Requests").upper(), tab.requests_count_var)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        fr, tab.tv_requests = self.tree(rc, ("player", "request"), (120, 170), height=5, image_col=False)
+        fr, tab.tv_requests = self.tree(rc, ("player", "request"), (120, 180), height=5, image_col=False)
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_requests.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
         row = self.body(rc)

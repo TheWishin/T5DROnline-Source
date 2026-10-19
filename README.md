@@ -158,6 +158,19 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   it can also be on in the other offline modes, and online (only your own
   inputs). **F2** in the game switches it. It only reads the game, so it never
   changes a match. More in [docs/TRAINING.md](docs/TRAINING.md).
+- **Settings** -> **Unlocks** (offline play; both Off by default):
+  - **Unlock all stages**: the Tekken 5 stages (the old ones, normally earned
+    after about 50 fights, a few Arcade runs) are there in Arcade, VS, Practice
+    and the rest, without clearing Arcade. Your save is not changed: switched off, the
+    game is as before.
+  - **Unlock all customization items**: everything in **ITEM SHOP & EQUIP**
+    (after picking a fighter in Arcade, Ghost or Survival) costs 0 Fight Money.
+    What you take stays in your save like a bought item, also after switching
+    it off; the launcher backs up your save once before the first game with it
+    (in `save-backups` in the game's folder; copy it back to undo).
+  - Online play does not use either: there both players always have the same
+    stages to pick from and the default costumes, whatever their saves and
+    settings (the lobby picks the stage).
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.
@@ -225,7 +238,8 @@ Keyboard (default) and Xbox controller:
   - Two players on one keyboard: `[keys1] preset = tekken` and
     `[keys2] preset = numpad`.
   - `1+2 = O` -- one key for two buttons.
-- The game's own Options menu can also change the button layout.
+- The game's own Options menu can also change the button layout, for offline
+  play only (online games use a fresh save of their own, see "Online").
 - A test zip made before 2026-10-16 evening has only the keyboard and Xbox pads.
   `controls.ini` and DirectInput came later.
 
@@ -262,6 +276,12 @@ Good to know:
   same, otherwise Auto. Ranked matches always use 2. If a match stutters on a
   slow PC, one player can switch to delay netcode: Settings -> "Advanced:
   extra settings" -> `T5_RB_MODE=off`.
+- Online games keep a save of their own (`gamedata-online` in the game's
+  folder), the same fresh one on both PCs: what you set in the game's own
+  **OPTIONS** (button layout, round time, difficulty) and your unlocks apply
+  offline only, so both players always play the same game. Set your buttons in
+  the launcher (Settings -> Set up controllers); they work online too. Your own
+  save is never touched by online play.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
 - **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
@@ -280,6 +300,19 @@ Good to know:
   "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
   with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
+
+### Replays
+
+Every online match is saved as a replay (a few KB, in `native\replays`). The
+**Replays** tab lists them with date, fighters, result and opponent; **Watch**
+plays the match again in the game, exactly as it happened: the same inputs
+frame by frame, checked against the live match while it plays (the tab says
+"identical to the live match" at the end). While it plays, **START** (Enter)
+pauses, **SELECT** (Tab) ends it. A rematch is shown after the matches before
+it in the same session (a rematch starts from what the match before it left).
+The tab can switch recording off or leave the players' names out. A
+replay plays only with the game version that recorded it. Details:
+[docs/REPLAYS.md](docs/REPLAYS.md).
 
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
 the terms screen it says "A network error occurred" and goes back to the title.
@@ -323,7 +356,8 @@ to an issue at https://github.com/TheWishin/T5DROnline/issues. You can add a few
 words about what happened in the window.
 
 The zip holds the newest game logs, `build.log` when the build was the problem,
-the launcher's log, the files of your last online match, your `controls.ini`,
+the launcher's log, the files of your last online match, your newest replay
+(inputs only, the players' names taken out), your `controls.ini`,
 desync dumps if there are any, and `system.txt`: Windows version, processor,
 graphics card and driver, memory, screens (refresh rate, scaling), the release
 version and build id, and the settings you use. The window lists everything

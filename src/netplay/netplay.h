@@ -160,6 +160,11 @@ void     session_end(const char* why);
 bool     session_begin();
 uint32_t sessions();                             /* sessions begun in this process */
 
+/* ---- replays (src/netplay/replay.h, docs/REPLAYS.md) ----------------------- */
+bool     replaying();                            /* T5_NET_MODE=replay: local mode fed by T5_REPLAY_FILE */
+uint32_t barriers();                             /* scene_barrier() calls so far in this session */
+void     rec_pump();                             /* recording: hand the frames whose inputs are final to the replay */
+
 } // namespace np
 
 /* Game-side entry point (t5_hooks.cpp), C linkage so any part of the port can

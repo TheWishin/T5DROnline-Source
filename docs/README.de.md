@@ -133,6 +133,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
+| Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
 
 **BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -159,6 +160,21 @@ Sprachen gleich.
   den anderen Offline-Modi und online (dort nur deine eigenen Eingaben). **F2**
   im Spiel schaltet sie um. Sie liest das Spiel nur und ändert nie ein Match.
   Mehr in [TRAINING.md](TRAINING.md) (englisch).
+- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; beides
+  ist anfangs aus):
+  - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach
+    etwa 50 Kämpfen verdient, ein paar Arcade-Durchgängen) gibt es in Arcade,
+    VS, Practice und den anderen Modi, ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird
+    nicht verändert: Ausgeschaltet ist das Spiel wie vorher.
+  - **Alle Customize-Items freischalten**: Alles im **ITEM SHOP & EQUIP** (nach
+    der Kämpferwahl in Arcade, Ghost oder Survival) kostet 0 Fight Money. Was du
+    dir nimmst, bleibt in deinem Spielstand wie ein gekauftes Item, auch nach
+    dem Ausschalten; der Launcher sichert deinen Spielstand vor dem ersten Spiel
+    damit einmal (im Ordner `save-backups` im Spielordner; zum Rückgängigmachen
+    zurückkopieren).
+  - Online wird beides nicht benutzt: Dort haben beide Spieler immer dieselben
+    Stages zur Wahl und die Standard-Kostüme, egal was in ihren Spielständen
+    und Einstellungen steht (die Stage wählt die Lobby).
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.
@@ -228,7 +244,8 @@ Tastatur (Standard) und Xbox-Controller:
   - Zwei Spieler an einer Tastatur: `[keys1] preset = tekken` und
     `[keys2] preset = numpad`.
   - `1+2 = O` — eine Taste für zwei Knöpfe.
-- Das Options-Menü des Spiels kann die Knopfbelegung auch ändern.
+- Das Options-Menü des Spiels kann die Knopfbelegung auch ändern, nur für das
+  Spielen offline (Online-Spiele haben einen eigenen frischen Spielstand, siehe "Online").
 - Eine Test-Zip von vor dem Abend des 2026-10-16 kennt nur Tastatur und
   Xbox-Pads. `controls.ini` und DirectInput kamen später.
 
@@ -266,6 +283,13 @@ Gut zu wissen:
   dasselbe gewählt hat, sonst Auto. Ranked-Matches nutzen immer 2. Ruckelt ein
   Match auf einem langsamen PC, kann ein Spieler auf Delay-Netcode umschalten:
   Settings -> "Advanced: extra settings" -> `T5_RB_MODE=off`.
+- Online-Spiele haben einen eigenen Spielstand (`gamedata-online` im
+  Spielordner), auf beiden PCs derselbe frische: Was du in den **OPTIONS** des
+  Spiels einstellst (Tastenbelegung, Rundenzeit, Schwierigkeit) und deine
+  Freischaltungen gelten nur offline, damit beide Spieler immer dasselbe Spiel
+  spielen. Stell deine Tasten im Launcher ein (Settings -> Set up
+  controllers); die gelten auch online. Dein eigener Spielstand wird beim
+  Online-Spielen nie angefasst.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.
@@ -288,6 +312,19 @@ Gut zu wissen:
   (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf
   deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
+
+### Replays
+
+Jedes Online-Match wird als Replay gespeichert (ein paar KB, in
+`native\replays`). Der Reiter **Replays** zeigt sie mit Datum, Kämpfern,
+Ergebnis und Gegner; **Ansehen** spielt das Match im Spiel noch einmal ab,
+genau so, wie es war: dieselben Eingaben Bild für Bild, während des Abspielens
+mit dem Live-Match verglichen (am Ende steht im Reiter "identisch mit dem
+Live-Match"). Während es läuft, pausiert **START** (Enter), **SELECT** (Tab)
+beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
+gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
+weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
+Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error
@@ -336,7 +373,8 @@ https://github.com/TheWishin/T5DROnline/issues. Im Fenster kannst du ein paar
 Worte dazu schreiben, was passiert ist.
 
 Im Zip sind die neuesten Spiel-Logs, `build.log` wenn das Bauen das Problem war,
-das Log des Launchers, die Dateien deines letzten Online-Matches, deine
+das Log des Launchers, die Dateien deines letzten Online-Matches, dein neuestes
+Replay (nur Eingaben, ohne die Namen der Spieler), deine
 `controls.ini`, Desync-Dumps (falls es welche gibt) und `system.txt`:
 Windows-Version, Prozessor, Grafikkarte samt Treiber, Arbeitsspeicher, Bildschirme
 (Bildwiederholrate, Skalierung), Release-Version und Build-ID und deine

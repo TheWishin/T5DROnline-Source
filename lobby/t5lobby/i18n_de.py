@@ -848,6 +848,12 @@ MESSAGES = {
     "you blocked that player; unblock them first":
         "Du hast diesen Spieler blockiert; hebe die Blockierung zuerst auf",
     "your friends list is full ({max})": "Deine Freundesliste ist voll ({max})",
+    "your last invite to that friend ended a moment ago; try again in {seconds} s":
+        "Deine letzte Einladung an diesen Freund ist gerade erst zu Ende; versuch es in {seconds} s wieder",
+    "your last challenge to that player ended a moment ago; try again in {seconds} s":
+        "Deine letzte Herausforderung an diesen Spieler ist gerade erst zu Ende; versuch es in {seconds} s wieder",
+    "too many friend requests from this internet address today; try again tomorrow":
+        "Zu viele Freundschaftsanfragen von dieser Internetadresse heute; versuche es morgen wieder",
     "you can send {count} friend requests a day; try again tomorrow":
         "Du kannst {count} Freundschaftsanfragen am Tag senden; versuche es morgen wieder",
     "{count} of your friend requests are waiting for an answer; cancel some first":

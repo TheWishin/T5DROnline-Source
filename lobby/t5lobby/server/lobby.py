@@ -1737,8 +1737,9 @@ class LobbyServer:
             raise LobbyError(proto.E_RATE, "one challenge at a time")
         if sum(1 for c in self.challenges.values() if c.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has challenges pending")
-        self._retry_wait(("challenge", self._block_key(p), self._block_key(q)),
-                         "your last challenge to that player ended a moment ago")
+        wait = self._retry_left(("challenge", self._block_key(p), self._block_key(q)))
+        if wait:
+            raise LobbyError(proto.E_RATE, f"your last challenge to that player ended a moment ago; try again in {wait} s")
         p.last_challenge = now
         c = Challenge(p, q)
         self.challenges[c.id] = c
@@ -3365,7 +3366,9 @@ class LobbyServer:
         now = time.monotonic()
         if now - p.last_invite < 2.0 or any(i.src is p for i in self.invites.values()):
             raise LobbyError(proto.E_RATE, "one invite at a time")
-        self._retry_wait(("invite", p.account_id, q.account_id), "your last invite to that friend ended a moment ago")
+        wait = self._retry_left(("invite", p.account_id, q.account_id))
+        if wait:
+            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s")
         if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has invites pending")
         p.last_invite = now
@@ -3448,10 +3451,10 @@ class LobbyServer:
             self.retry_after = {k: v for k, v in self.retry_after.items() if v > now}
         self.retry_after[key] = now + self.cfg.invite_retry_seconds
 
-    def _retry_wait(self, key, what):
+    def _retry_left(self, key):
+        """Whole seconds until the same two may ask again (0: now)."""
         left = self.retry_after.get(key, 0.0) - time.monotonic()
-        if left > 0:
-            raise LobbyError(proto.E_RATE, f"{what}; try again in {math.ceil(left)} s")
+        return math.ceil(left) if left > 0 else 0
 
     def _end_invite(self, inv, state):
         """accepted | declined | cancelled | expired: both sides are told (invite_update)."""

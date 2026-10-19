@@ -863,7 +863,33 @@ picked, same winner and state hash, 0 mismatching frames.
 restart stays a mode change.
 
 **Results** (this PC, 2026-10-19, runs in build/selrestart/runs):
-RESULTS_PLACEHOLDER
+- The old restart (`T5_DF_SELECT_RESTART=inplace`, or main): the 4th restart
+  broke the game in every run -- the one-game probe 3 of 3, `--offline` (run
+  pf_inplace), and a rollback pair (inplace_rb: both games at the same abort,
+  `bad_guest_call` + `null_write`).
+- The fix, one game, the driver picking both sides and "idle" at the stage
+  panel (the mirror probe's way): 60 restarts in a row, no fault (run f1).
+- `--offline --aborts 60 --abort-plan 2:10 --matches 4 --rematch-every 2
+  --mash` (final_off): 70 of 70 aborted sessions (60 in a row, then a match and
+  a rematch, 10 more, a match and a rematch), every select screen restarted,
+  4 of 4 matches with a result, no fault line.
+- Rollback pair, the same plan, the joiner started again after the first 60
+  (`--fresh-after-aborts join`: a game with 60 restarts against a fresh one)
+  (final_rb): 70 of 70 aborted sessions in both games, 4 of 4 matches (two of
+  them rematches) on both PCs with the same fighters, winner and state hash,
+  0 mismatching frames in 28 sync checks, 672 rollbacks (mashing).
+- Lockstep pair (`T5_RB_MODE=off`, the host started again after the first 60)
+  (final_ls): the same, 70 of 70, 4 of 4, 0 mismatching frames.
+- Before the merge with main 1.1.2: rollback pairs pr_rb1 (50 + 4 matches) and
+  pr_rb2 (50, fresh joiner, mashing), lockstep pr_ls1 (50 + 4, mashing),
+  offline pf_off8 (20 aborts between 6 matches): all OK, 0 mismatching frames.
+
+An aborted session takes 2.2-9 s in the harness (its own random waits
+included); the restart itself 45-52 frames. Seen once in these runs and not a
+restart: a select screen entered from the title after a fight that stayed at
+select phase 1 for good (offline, a heavily loaded PC, pf_off2); the same wait
+is in a main-build log without any restart (build/bo3/runs/e3/p2, 42 s) --
+left for its own investigation.
 
 ## Rematches between two real PCs (rematch-fix, 2026-10-18)
 

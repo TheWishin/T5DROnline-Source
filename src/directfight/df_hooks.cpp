@@ -182,8 +182,8 @@ int g_startvs = -1; uint32_t g_title_frame = UINT32_MAX; bool g_startvs_done = f
 constexpr uint32_t kFnStartGame = 0x0004E9DC;
 /* T5_DF_SHOT=f1,f2,...: frame-exact screenshots through the live renderer's LD_SURF_DUMP_GATE.
  * An entry "+n" is n frames after FIGHT START of the first match (the frame
- * numbers from boot differ with loading times; from the fight start they
- * show the same game frame in every run -- tools/stage_blur_tour.py). */
+ * numbers from boot differ with loading times; counted from the fight start
+ * they name the same moment of the fight in every run). */
 std::vector<uint32_t> g_shot_frames;
 std::vector<uint32_t> g_shot_rel;
 std::string g_shot_gate;

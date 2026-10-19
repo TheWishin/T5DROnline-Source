@@ -125,6 +125,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Online input delay | Online-Input-Delay |
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
+| Stage blur / glow | Stage-Unschärfe / Leuchten |
 
 **BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -138,6 +139,11 @@ Sprachen gleich.
   Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
   auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
   jeder Spieler selbst wählen.
+- **Settings** -> **Stage blur / glow** (Stage-Unschärfe / Leuchten): Manche
+  Stages machen das ganze Bild weich (der neblige Sumpf und drei weitere) oder
+  lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
+  der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
+  das Leuchten. Online kann jeder Spieler selbst wählen.
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.

@@ -3,6 +3,18 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.2 (not released yet)
+
+### Picture
+- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
+  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
+  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
+  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
+  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
+  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
+  shows those stages sharp and without the glow. It only changes your picture; online, both
+  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
+
 ## v1.1.1 (2026-10-19)
 
 **Better connections, smoother rollback, PlayStation pads without Steam.** Both players need 1.1.1

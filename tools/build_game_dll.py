@@ -74,6 +74,59 @@ def pgo_gen_libs(llvm):
             os.path.join(sdk[-1], "um", "x64", "kernel32.lib")]
 
 
+def is_spu_record(name):
+    """Profile records of the lifted SPU code (and the other C sources of the DLL)."""
+    return ("_spu_func_" in name or name.endswith("_spu_recomp_register") or name == "t5dr_spu_register_all"
+            or name.split(":", 1)[0] in ("spu_recomp.c", "spu_dispatch_mt.c", "spu_workloads.c", "t5dr_game_dll.c"))
+
+
+def prepare_profiles(profile, obj, llvm):
+    """{"ppu": .profdata, "spu": .profdata} for clang from the profile's text form (tools/gamedll/
+    t5dr_lifted.proftext; an indexed .profdata is turned into text first), or {} when it cannot be used.
+
+    The lifted PPU code and the lifted SPU code get a profile each: LLVM sorts counts into hot and cold
+    against the whole profile, and the sound core's inner loops (some 10^11 counts) would make most of
+    the game's PPU code "cold" -- optimised for size, with the guest-memory helpers no longer inlined."""
+    pd = os.path.join(llvm, "llvm-profdata.exe")
+    if not os.path.exists(pd):
+        print(f"no llvm-profdata.exe in {llvm}: building without the profile (same game, a little slower)", flush=True)
+        return {}
+    text = profile
+    if not profile.endswith(".proftext"):
+        text = os.path.join(obj, "pgo_in.proftext")
+        subprocess.run([pd, "merge", "--text", "-o", text, profile], check=True, creationflags=NO_WINDOW)
+    with open(text, "rb") as f:
+        data = f.read()
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import profile_check                        # noqa: E402 -- names, hashes and counts only
+    problems = profile_check.check(data)
+    if problems:
+        print(f"the profile {profile} is not usable ({problems[0]}): building without it", flush=True)
+        return {}
+    lines = data.decode("ascii").replace("\r\n", "\n").split("\n")
+    head, recs, i = [], {"ppu": [], "spu": []}, 0
+    while i < len(lines) and (lines[i].startswith((":", "#")) or not lines[i]):
+        head.append(lines[i])
+        i += 1
+    while i < len(lines):
+        if not lines[i]:
+            i += 1
+            continue
+        n = int(lines[i + 4])
+        recs["spu" if is_spu_record(lines[i]) else "ppu"].append("\n".join(lines[i:i + 6 + n]))
+        i += 6 + n
+    out = {}
+    for kind, rs in recs.items():
+        if not rs:
+            continue
+        t = os.path.join(obj, f"pgo_{kind}.proftext")
+        with open(t, "w", newline="\n") as f:
+            f.write("\n".join(head + [r + "\n" for r in rs]))
+        out[kind] = os.path.join(obj, f"pgo_{kind}.profdata")
+        subprocess.run([pd, "merge", "-o", out[kind], t], check=True, creationflags=NO_WINDOW)
+    return out
+
+
 def find_llvm(arg):
     for d in ([arg] if arg else []) + [os.path.join(ROOT, "toolchain", "llvm", "bin"),
                                        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "LLVM", "bin")]:
@@ -98,10 +151,12 @@ def main():
                          "support it, else none), x86-64-v3, native, none")
     ap.add_argument("--copt", action="append", default=[],
                     help="extra compile option for every lifted source (experiments; repeat for more)")
+    ap.add_argument("--ldopt", action="append", default=[], help="extra lld-link option (experiments; repeat for more)")
     ap.add_argument("--lto", choices=["", "thin"], default="", help="ThinLTO across the lifted sources")
-    ap.add_argument("--pgo-gen", action="store_true",
+    ap.add_argument("--pgo-gen", nargs="?", const="fe", default="", choices=["fe", "ir"],
                     help="developer only: instrumented training DLL (clang_rt.profile + the Windows SDK's ucrt/kernel32 "
-                         "import libraries); see tools/pgo_train.py")
+                         "import libraries); see tools/pgo_train.py. fe (default): clang's front-end "
+                         "instrumentation, ir: LLVM IR instrumentation")
     ap.add_argument("--profile", default="",
                     help="profile (.profdata) for the lifted code: 'none', a file, or empty = the shipped "
                          "tools/gamedll/t5dr_lifted.profdata when present")
@@ -143,20 +198,26 @@ def main():
     print(f"lifted PPU code: -march={march}{why}", flush=True)
     profile = a.profile
     if not profile:
-        shipped = os.path.join(GDIR, "t5dr_lifted.profdata")
+        shipped = os.path.join(GDIR, "t5dr_lifted.proftext")
         profile = shipped if os.path.exists(shipped) else "none"
     opt_opts = list(a.copt)
+    use_opts = {"ppu": [], "spu": []}
     if a.pgo_gen:
         # counters only: no value profiling (indirect-call targets, sizes), so the profile holds nothing else
-        opt_opts += ["/clang:-fprofile-instr-generate", "-mllvm", "-enable-value-profiling=false"]
+        if a.pgo_gen == "ir":
+            opt_opts += ["/clang:-fprofile-generate", "-mllvm", "-disable-vp=true"]
+        else:
+            opt_opts += ["/clang:-fprofile-instr-generate", "-mllvm", "-enable-value-profiling=false"]
     elif profile != "none":
-        profile = os.path.abspath(profile)
-        opt_opts += [f"/clang:-fprofile-instr-use={profile}", "-Wno-profile-instr-unprofiled",
-                     "-Wno-profile-instr-out-of-date", "-Wno-profile-instr-missing"]
+        for kind, path in prepare_profiles(os.path.abspath(profile), obj, llvm).items():
+            use_opts[kind] = [f"/clang:-fprofile-instr-use={path}", "-Wno-profile-instr-unprofiled",
+                              "-Wno-profile-instr-out-of-date", "-Wno-profile-instr-missing"]
     if a.lto:
         opt_opts += ["-flto=thin"]
     if opt_opts:
         print("lifted code options: " + " ".join(opt_opts), flush=True)
+    if use_opts["ppu"] or use_opts["spu"]:
+        print("profile-guided optimisation: " + profile, flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -175,7 +236,7 @@ def main():
     # (the options and the profile's content count too: a new profile recompiles everything)
     stamp_path = os.path.join(obj, "march.txt")
     stamp_key = " ".join([march] + opt_opts)
-    if not a.pgo_gen and profile != "none":
+    if use_opts["ppu"] or use_opts["spu"]:
         with open(profile, "rb") as f:
             stamp_key += " profile-sha1=" + hashlib.sha1(f.read()).hexdigest()
     try:
@@ -207,7 +268,7 @@ def main():
         if os.path.basename(src) == "t5dr_game_dll.c":
             cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
         elif os.path.basename(src) != "pgo_train.c":
-            cmd += opt_opts
+            cmd += opt_opts + use_opts["spu" if is_c else "ppu"]
         cmd += ["-c", src, "/Fo" + o]
         t = time.time()
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -245,6 +306,7 @@ def main():
     link += [o for _, o in res] + [os.path.abspath(a.host_lib), ucrt]
     if a.lto:
         link += [f"/opt:lldltojobs={a.jobs}"]
+    link += a.ldopt
     if a.pgo_gen:
         link += pgo_gen_libs(llvm)
     r = subprocess.run(link, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",

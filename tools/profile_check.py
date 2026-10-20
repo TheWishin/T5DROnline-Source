@@ -56,8 +56,10 @@ def check(data):
         lines.pop()
     found = []
     i, records, names = 0, 0, set()
-    if lines and lines[0] == ":fe":                    # optional header: front-end instrumentation
+    if lines[:1] == [":fe"]:                           # optional header: front-end instrumentation
         i = 1
+    elif lines[:2] == ["# IR level Instrumentation Flag", ":ir"]:     # LLVM IR instrumentation
+        i = 2
 
     def bad(msg):
         found.append(f"line {i + 1}: {msg}")

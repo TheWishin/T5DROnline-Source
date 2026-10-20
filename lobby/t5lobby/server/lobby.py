@@ -58,12 +58,12 @@ log = logging.getLogger("t5lobby")
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
-                  "tournaments", "spectate"))
+                  "tournaments", "spectate", "game_fallback"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays", "friends", "tournaments", "spectate"]
+            "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -304,6 +304,7 @@ class Match:
         self.nat_info = [None, None]         # client's nat_local message
         self.results = [None, None]          # nat_result (punch or relay phase)
         self.punch_retry = False             # the one second chance of a side that failed while the other made it
+        self.fallback = False                # the games could not connect directly: moved onto the relay (nat_fallback)
         self.nat_plan = None                 # what the punch phase was told (log, tests)
         self.upgraded = None                 # a relayed match that moved onto the direct path: its round trip
         self.relay = None
@@ -527,7 +528,7 @@ class LobbyServer(SpectateMixin):
             "matches_cancelled", "matches_direct", "matches_lan", "matches_relay", "results_confirmed",
             "results_disputed", "results_onesided", "results_void", "chat_lines", "blocks_made", "lag_checks",
             "lag_more", "lag_leaves", "notices_sent", "sets_confirmed", "sets_forfeit", "sets_void",
-            "set_replays", "punch_retries", "punch_predicted", "relay_upgrades", "relay_regional",
+            "set_replays", "punch_retries", "punch_predicted", "relay_upgrades", "relay_regional", "game_fallbacks",
             "relay_fallbacks", "friend_requests", "friendships_made", "friendships_ended", "invites_sent",
             "invites_accepted"), 0)
         self._last_lobby = None    # the last lobby list sent: deltas are computed against it
@@ -2304,6 +2305,8 @@ class LobbyServer(SpectateMixin):
         bridge = self.cfg.relay_upgrade and all("nat2" in getattr(p.conn, "caps", ()) for p in m.players)
         for side, p in enumerate(m.players):
             msg = {"t": "nat_relay", "match": m.id, "udp_port": self.udp.port, "reason": why, "bridge": bridge}
+            if m.fallback:
+                msg["fallback"] = True             # (the launcher handed its game socket to the game: it opens a new one)
             if node is not None:
                 # (only clients with the "relays" cap get here: both measured the node)
                 msg.update(relay=m.relay_info, relay_token=m.relay.tokens[side].hex())
@@ -2403,6 +2406,40 @@ class LobbyServer(SpectateMixin):
         m.players[1 - m.side(p)].send({"t": "nat_peer_punching", "match": m.id})
         return None
 
+    async def h_nat_fallback(self, conn, msg):
+        """A game on the direct path heard nothing at all from its opponent (docs/NETPLAY.md "When Windows Firewall
+        blocks the game"): the launchers' punch got through, but something on one PC drops what arrives for the game
+        itself -- a firewall that blocks t5dr.exe completely (Windows' own lets replies in; others do not), or a
+        router that forgot the punched mapping. The match moves onto the relay: both launchers bind a new socket to
+        it and keep it (the relay bridge), so the games only talk to 127.0.0.1, and both games start the match's
+        session again. Once per match, only before any result, within T5L_GAME_FALLBACK seconds of its start, and
+        only between two clients with the "game_fallback" cap (an older one never gets a second match_start)."""
+        p = conn.player
+        m = p.match if p is not None else None
+        if m is None or m.id != msg.get("match"):
+            return {"t": "nat_fallback", "ok": False, "why": "no such match"}
+        why = None
+        if m.state != "playing" or m.path not in ("direct", "lan") or m.continued:
+            why = "not a new direct match"
+        elif m.fallback:
+            why = "already on the relay"
+        elif self.cfg.game_fallback <= 0 or time.time() - m.started > self.cfg.game_fallback:
+            why = "too late"
+        elif any(r is not None for r in getattr(m, "reports", [None, None]) or ()):
+            why = "a result is in"
+        elif not all("game_fallback" in getattr(q.conn, "caps", ()) for q in m.players) or not self.cfg.relay:
+            why = "not supported"
+        if why is not None:
+            log.info("match %s: side %d asked for the relay (its game heard nothing): no -- %s", m.id, m.side(p), why)
+            return {"t": "nat_fallback", "match": m.id, "ok": False, "why": why}
+        m.fallback = True
+        self._count("game_fallbacks")
+        log.info("match %s: side %d's game heard nothing from its opponent on the direct path: the relay", m.id,
+                 m.side(p))
+        self.note("game_fallback", match=m.id, side=m.side(p))
+        self._start_relay(m, "the games could not connect directly")
+        return {"t": "nat_fallback", "match": m.id, "ok": True}
+
     async def h_nat_upgrade(self, conn, msg):
         """A relayed match moved onto the direct path (or back): the clients' RelayBridges found it while the
         games played. For the log and the counters only -- the relay session stays as the way back."""
@@ -2473,13 +2510,14 @@ class LobbyServer(SpectateMixin):
     # ------------------------------------------------------------------ matches: play and results
     def _start_match(self, m, path):
         self._cancel_timers(m)
+        again = m.fallback and m.state == "relay"     # the same match once more, on the relay (h_nat_fallback)
         m.state = "playing"
         m.path = path
         m.rtt = max(r["rtt"] for r in m.results)
         m.jitter = max(r["jitter"] for r in m.results)
         m.delay = proto.suggest_delay(m.rtt, m.jitter)
         m.started = time.time()
-        if m.set is not None:
+        if m.set is not None and not again:
             m.set.games += 1
         seed = int.from_bytes(m.tag[:4], "big")
         m.pick = self._pick_seconds(m)
@@ -2494,8 +2532,9 @@ class LobbyServer(SpectateMixin):
         if m.set is not None and m.set.rated:
             self._save_set(m.set)
         self.dirty = True
-        self._count("matches_" + path)
-        self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay)
+        if not again:
+            self._count("matches_" + path)
+        self.note("match_start", match=m.id, path=path, rtt=m.rtt, delay=m.delay, **({"fallback": True} if again else {}))
         log.info("match %s starts: %s, rtt %.1f ms, delay %d, %s vs %s on %s", m.id, path, m.rtt, m.delay,
                  m.chars[0], m.chars[1], m.stage)
 

@@ -2050,4 +2050,15 @@ MESSAGES = {
         "ce match a déjà {count} spectateurs",
     "the server cannot show more matches right now":
         "le serveur ne peut pas montrer plus de matchs pour l'instant",
+    # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
+    "Firewall":
+        "Pare-feu",
+    "How to fix":
+        "Comment corriger",
+    "Windows Firewall blocks {program} on this network. Matches still connect, but some only "
+    "through a relay, with more lag.":
+        "Le pare-feu Windows bloque {program} sur ce réseau. Les matchs se connectent quand même, "
+        "mais certains seulement via un relais, avec plus de lag.",
+    "A firewall seems to block T5DR Online's network traffic on this PC.":
+        "Un pare-feu semble bloquer le trafic réseau de T5DR Online sur ce PC.",
 }

@@ -34,6 +34,7 @@ for p in (LOBBY, os.path.join(LOBBY, "tests")):          # appended: lobby/run.p
     if p not in sys.path:
         sys.path.append(p)
 os.environ["T5_PAD_NAV"] = "0"                   # never this PC's controllers
+os.environ["T5_FW_CHECK"] = "0"                  # never this PC's firewall (the hint's check: test_firewall.py)
 
 try:
     import tkinter as tk

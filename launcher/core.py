@@ -409,6 +409,12 @@ def _safe_cid(p):
 
 # --------------------------------------------------------------------------- build state
 
+def game_exe(out):
+    """The exact t5dr.exe GameRun starts for this build output (run_game.game_command): what a firewall rule
+    names (the Online tab's firewall hint, t5lobby.fwcheck)."""
+    return os.path.abspath(run_game.game_command(out)[0][0])
+
+
 def game_state(out):
     """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
     exe = os.path.join(out, "build", "cmake", "t5dr.exe")

@@ -2014,4 +2014,14 @@ MESSAGES = {
         "この対戦にはすでに {count} 人の観戦者がいます",
     "the server cannot show more matches right now":
         "サーバーは今これ以上の対戦を表示できません",
+    # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
+    "Firewall":
+        "ファイアウォール",
+    "How to fix":
+        "解決方法",
+    "Windows Firewall blocks {program} on this network. Matches still connect, but some only "
+    "through a relay, with more lag.":
+        "Windows ファイアウォールがこのネットワークで {program} をブロックしています。対戦は接続できますが、一部は中継経由になり、ラグが大きくなります。",
+    "A firewall seems to block T5DR Online's network traffic on this PC.":
+        "ファイアウォールがこの PC で T5DR Online の通信をブロックしているようです。",
 }

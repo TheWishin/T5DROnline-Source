@@ -276,7 +276,9 @@ Gut zu wissen:
   Verbindung erfährt jeder PC die IP-Adresse des anderen.
 - Kabel ist besser als WLAN.
 - Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
-  dürfen. Erlaube es für **private Netzwerke**.
+  dürfen. Erlaube es für **private Netzwerke**. Auf Abbrechen geklickt? Matches
+  kommen trotzdem zustande, manche nur über das Relay; der Online-Tab zeigt dann
+  eine Firewall-Zeile mit **So behebst du es**.
 - Netcode: Rollback wie bei Tekken 6 Native Online. Das Input-Delay folgt dem
   Ping: 1 Frame bis etwa 60 ms, darüber 2. **Settings -> Online input delay**
   kann es auf 0, 1 oder 2 Frames festlegen; das gilt nur, wenn der Gegner

@@ -1984,4 +1984,14 @@ MESSAGES = {
         "이 매치에는 이미 관전자가 {count}명 있습니다",
     "the server cannot show more matches right now":
         "서버가 지금은 더 많은 매치를 보여줄 수 없습니다",
+    # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
+    "Firewall":
+        "방화벽",
+    "How to fix":
+        "해결 방법",
+    "Windows Firewall blocks {program} on this network. Matches still connect, but some only "
+    "through a relay, with more lag.":
+        "Windows 방화벽이 이 네트워크에서 {program}을(를) 차단하고 있습니다. 매치는 연결되지만, 일부는 릴레이를 거쳐서만 연결되어 렉이 더 큽니다.",
+    "A firewall seems to block T5DR Online's network traffic on this PC.":
+        "방화벽이 이 PC에서 T5DR Online의 네트워크 통신을 차단하는 것 같습니다.",
 }

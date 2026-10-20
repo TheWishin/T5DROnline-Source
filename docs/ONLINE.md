@@ -319,10 +319,21 @@ packets/s, ~85 kbit/s); at most 100 relay sessions. A session closes when its
 match ends (result, cancel or the 3 h limit); one left idle for 120 s after its
 match is gone is swept up.
 
+A game that hears nothing on the direct path (1.1.3, cap `game_fallback`): the
+launchers' sockets reached each other, but a firewall on one PC drops what
+arrives for `t5dr.exe` itself. After 15 s of "nothing arrived yet" in its log
+the launcher sends `nat_fallback`; the server moves the running match onto the
+relay (`nat_relay` with `fallback: true`: both launchers bind a new socket with
+the match's token, keep it as the relay bridge) and sends a second
+`match_start` for the same match -- the games start its session again, talking
+only to 127.0.0.1. Once per match, within `T5L_GAME_FALLBACK` seconds of the
+start, before any result (docs/NETPLAY.md "When Windows Firewall blocks the
+game").
+
 Not handled: UDP blocked entirely (the match is cancelled with
-`udp_unreachable` and the player is told to check the firewall); IPv6 (the
-netplay layer is IPv4-only too); two symmetric NATs with random ports and no
-router forward on either side (relay).
+`udp_unreachable` and the player is told to check the firewall; the Online tab
+shows its firewall hint); IPv6 (the netplay layer is IPv4-only too); two
+symmetric NATs with random ports and no router forward on either side (relay).
 
 ### Regional relays
 
@@ -553,6 +564,7 @@ Client to server:
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
+| `nat_fallback` | `match` (`game_fallback` cap on both clients) | `nat_fallback {match, ok, why}`: this player's game heard nothing at all on the direct path; ok -> both get `nat_relay` (`fallback: true`) and a second `match_start` for the same match on the relay. Refused (`why`): not a new direct match, already on the relay, too late (`T5L_GAME_FALLBACK`), a result is in, not supported |
 | `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}` |
 | `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
 | `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
@@ -576,7 +588,7 @@ Server to client (pushed):
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
 | `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, wait_peer, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
 | `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
-| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token) |
+| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token); `fallback: true` when a running direct match moves onto the relay (`nat_fallback`: the launcher opens a new socket, its game holds the old one) |
 | `relays` | `relays [{id, name, host, port}]`: the regional relays changed (clients with the `relays` cap measure them again) |
 | `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `relay {id, name, host, port}` (a regional relay), `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
@@ -726,7 +738,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_RELAY_CHECK_SECONDS` / `T5L_RELAY_DEAD_SECONDS` | `5` / `20` | health check of every node, and the silence after which a node gets no new matches |
 | relay node: `T5L_RELAY_SECRET_FILE`, `T5L_RELAY_ID`, `T5L_RELAY_CENTRAL`, `T5L_RELAY_BIND_SECONDS` | `60` (the last) | `python run.py relay`: its secret, its id in relays.json, the central server's address(es) (optional), how long a session's bind tokens work |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
-| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 6, 90 s | (the punch window was 3 s up to 1.1.0) |
+| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 10, 90 s | (the punch window was 3 s up to 1.1.0; the relay setup 6 s up to 1.1.2 -- shorter than a client's own bind + measure) |
+| `T5L_GAME_FALLBACK` | `90` | seconds after a direct match's start in which a game that heard nothing at all (a firewall blocking it) may move the match onto the relay (`nat_fallback`; `0` = off) |
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |

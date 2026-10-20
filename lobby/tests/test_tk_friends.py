@@ -136,6 +136,7 @@ class TkFriendsTest(TkBase):
         self.pump(lambda: not tab.view._bar_on and tab.invite is None)                 # the question is gone
         self.assertIn("The invite from Rival ended.", tab.status_var.get())
         time.sleep(2.1)                                           # (one invite per 2 s)
+        self.s.call(lambda: self.s.srv.retry_after.clear())       # (and after taking it back: T5L_INVITE_RETRY_SECONDS)
         self.other.invite("Ranker")
         self.pump(lambda: self.bar_button("Decline") is not None)
         self.bar_button("Decline").invoke()
@@ -163,6 +164,7 @@ class TkFriendsTest(TkBase):
         tab.actions["room"].invoke()
         self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
         time.sleep(2.1)
+        self.s.call(lambda: self.s.srv.retry_after.clear())       # (after a no: T5L_INVITE_RETRY_SECONDS)
         tab.friend_actions["invite_room"].invoke()
         ev = expect(self.other, "invited")
         self.assertEqual(ev["kind"], "room")
@@ -233,6 +235,32 @@ class TkDiscordTest(TkBase):
         self.app.settings["discord_presence"] = False             # turned off in Settings
         self.pump(lambda: self.fake.activities[-1] is None)
         self.assertIsNone(tab.presence)
+
+    def test_server_text_never_reaches_the_discord_status(self):
+        # (security review 2) the status is public on the player's Discord profile; the fighter keys and the set score
+        # come from the lobby server -- any server a player adds. An unknown key went there as it came.
+        import types
+        tab = self.tab
+        tab.server_var.set(self.s.addr)
+        tab.do_login("guest")
+        self.pump(lambda: tab.client is not None and tab.client.me is not None)
+        saved = tab.driver
+        try:
+            tab.driver = types.SimpleNamespace(ticket=object())
+            for fight, wins in ((("visit evil.example for free coins", "jin"), [1, 0]), ((["x"], "jin"), [1, 0]),
+                                (("lili", "asuka"), ["<b>9</b>", 0]), (("lili", "asuka"), [True, 0])):
+                tab._match_info = {"match": "m1", "ranked": True, "slot": 0, "fight": fight,
+                                   "set": {"rated": True, "wins": wins}}
+                details = tab._presence_wanted()["details"]
+                self.assertNotIn("evil", details)
+                self.assertNotIn("<b>", details)
+                self.assertNotIn("True", details)
+            tab._match_info = {"match": "m1", "ranked": True, "slot": 1, "fight": ("lili", "asuka"),
+                               "set": {"rated": True, "wins": [2, 1]}}
+            self.assertEqual(tab._presence_wanted()["details"], "In match: Asuka vs Lili (Ranked, Set 1-2)")
+        finally:
+            tab.driver = saved
+            tab._match_info = None
 
     def test_off_by_default(self):
         tab = self.tab

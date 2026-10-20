@@ -400,7 +400,7 @@ def game_link(t_host, t_join, timeout=5.0):
     try:
         for t in (t_host, t_join):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.1)
             socks.append(s)
@@ -641,6 +641,39 @@ class ChoiceTest(Regional):
             del self.nodes["ase"]
             extra.stop()
 
+    def test_relay_pushes_do_not_make_the_client_a_pinger(self):
+        # (security review 2) every `relays` message started a measurement of up to 32 addresses the server named, at
+        # once: a server could make the launcher ping whatever it likes as often as it likes. Now one at a time, the next
+        # one RELAY_MEASURE_GAP after the last, and only IP literals with a real port (no name lookups).
+        import socket as socketmod
+        a = self.player("Alice", 0)
+        self.measured(a, ["usw", "usc"])
+        sink = socketmod.socket(socketmod.AF_INET, socketmod.SOCK_DGRAM)
+        sink.bind(("127.0.0.1", 0))
+        sink.settimeout(0.2)
+        port = sink.getsockname()[1]
+        try:
+            lst = [{"id": "x1", "name": "X", "host": "127.0.0.1", "port": port},
+                   {"id": "x2", "name": "Y", "host": "relay.invalid", "port": port},
+                   {"id": "x3", "name": "Z", "host": "127.0.0.1", "port": 70000}]
+            def push():
+                pl = self.s.srv.by_name["alice"]
+                for _ in range(200):
+                    pl.conn.send({"t": "relays", "relays": lst})
+            self.s.call(push)
+            got = 0
+            t_end = time.monotonic() + 7.0                 # (the next measurement waits out the gap after login)
+            while time.monotonic() < t_end:
+                try:
+                    sink.recvfrom(64)
+                    got += 1
+                except OSError:
+                    pass
+            self.assertGreater(got, 0)                       # measured, once ...
+            self.assertLessEqual(got, 5)                     # ... not 200 times (5 pings per measurement)
+        finally:
+            sink.close()
+
     def test_a_new_secret_is_picked_up(self):
         sf = os.path.join(self.tmp, "relay.secret")
         with open(sf, "w") as f:
@@ -779,7 +812,7 @@ class UpgradeFromRegionalTest(Regional):
             socks = []
             for t_ in (host, join):
                 k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                k.bind(("0.0.0.0", t_.local_port))
+                k.bind((util.GAME_IP, t_.local_port))
                 k.settimeout(0.05)
                 socks.append(k)
             relayed_before = None

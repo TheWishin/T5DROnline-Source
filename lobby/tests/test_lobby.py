@@ -30,7 +30,7 @@ def game_link(t_host, t_join):
     try:
         for t in (t_host, t_join):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.2)
             socks.append(s)
@@ -239,7 +239,7 @@ class MatchTest(Base):
         x.bind(("127.0.0.1", 0))
         x.settimeout(0.3)
         h = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        h.bind(("0.0.0.0", ta.local_port))
+        h.bind((util.GAME_IP, ta.local_port))
         h.settimeout(0.3)
         try:
             for _ in range(5):
@@ -325,6 +325,10 @@ class MatchTest(Base):
         b.answer_challenge(cid, accept=False)
         self.assertEqual(expect(a, "challenge_update")["state"], "declined")
         time.sleep(2.1)                                # one challenge per 2 s
+        with self.assertRaises(LobbyError) as e:       # ... and after a no, not the same player for a while
+            a.challenge(bob_id)
+        self.assertIn("try again in", e.exception.msg)
+        self.s.call(lambda: self.s.srv.retry_after.clear())     # (T5L_INVITE_RETRY_SECONDS later)
         cid = a.challenge(bob_id)
         expect(b, "challenged")
         b.answer_challenge(cid, accept=True)
@@ -334,6 +338,23 @@ class MatchTest(Base):
         expect(a, "match_start")
         expect(b, "match_start")
 
+    def test_no_challenge_spam(self):
+        # (security review 2) challenge, take it back, challenge ... put "X challenges you" (with A as its answer) up
+        # on anybody's screen every 2 s: the challenger's own cancel holds the next one to that player back too
+        a = self.c("Alice")
+        b = self.c("Bob")
+        c = self.c("Cid")
+        cid = a.challenge(b.me["id"])
+        expect(b, "challenged")
+        a.cancel_challenge(cid)
+        self.assertEqual(expect(b, "challenge_update")["state"], "cancelled")
+        time.sleep(2.1)
+        with self.assertRaises(LobbyError) as e:
+            a.challenge(b.me["id"])
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        cid = a.challenge(c.me["id"])                  # someone else: fine
+        expect(c, "challenged")
+
     def test_share_socket_handover(self):
         if os.name != "nt":
             self.skipTest("WSADuplicateSocket is Windows only")
@@ -341,7 +362,7 @@ class MatchTest(Base):
         ta, tb = self.start_quick(a, b)
         self.assertIn("T5_NET_SOCKET_FILE", ta.game_env())
         peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        peer.bind(("0.0.0.0", tb.local_port))
+        peer.bind((util.GAME_IP, tb.local_port))
         peer.settimeout(5)
         path = os.path.join(tempfile.mkdtemp(), "sock.hex")
         code = ("import os,socket,sys,time\n"

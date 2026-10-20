@@ -327,7 +327,10 @@ accounts and ranking stay on the one central server.
 of both players' round trips to the relay. A client with the `relays` cap gets the list of nodes in
 `welcome` (`relays: [{id, name, host, port}]`), measures its UDP round trip to each (SPING, as to the
 server) in the background after login and every 5 minutes between matches, and reports it
-(`relay_rtt {rtts: {id: ms}}`); its round trip to the server itself is its `udp_rtt`. When a match
+(`relay_rtt {rtts: {id: ms}}`); its round trip to the server itself is its `udp_rtt`. A changed list
+(`relays` pushed by the server) is measured again, one measurement at a time and at most one per 5 s, and
+only entries with an IP address and a port 1-65535 are pinged: a server cannot make the launcher send
+pings wherever and as often as it likes (1.1.2). When a match
 needs a relay, the server takes the relay with the smallest sum -- its own one is a candidate like
 any other (a tie goes to it) -- among the nodes that are up and that both players reached. A pair
 with an older client gets the server's own relay, exactly as before (an older client binds to the
@@ -408,7 +411,10 @@ with **Accept (A)** / **Decline (B)**. **One click starts it**: a casual match b
 you said yes already); for a room invite they join your room and the room's match starts at once. An invite waits 60
 seconds, then runs out; your button reads **Cancel the invite** meanwhile. An invite ends when either of you starts
 another match, leaves, or logs out. Only casual matches: ranked comes from the ranked queue (or a ranked room, which
-a room invite can be).
+a room invite can be -- then the room's match keeps its ready check, which says "ranked": the invite named only the
+room, and a ranked room's match is rated). After a **Decline** (or when you take your own invite back) you can invite
+that friend again after 30 seconds; challenges work the same way. Friend requests: asking again within a day of
+taking a request back puts it in their list without the "wants to be your friend" message.
 
 **Limits** (against spam, all in `server/config.py`):
 
@@ -417,10 +423,12 @@ a room invite can be).
 | friends per account | 100 | `T5L_MAX_FRIENDS` |
 | friend requests an account sends per 24 hours (answered or not) | 20 | `T5L_FRIEND_REQUESTS_DAY` |
 | requests waiting for an answer, sent by one account, and to one account | 30 | `T5L_FRIEND_PENDING` |
+| friend requests from one internet address per 24 hours, all its accounts together | 60 | `T5L_FRIEND_REQUESTS_ADDRESS` |
 | an unanswered request runs out after | 14 days | `T5L_FRIEND_REQUEST_DAYS` |
 | after a decline, the same request again only after | 7 days | `T5L_FRIEND_RETRY_DAYS` |
 | an invite waits for an answer | 60 s | `T5L_INVITE_SECONDS` |
 | invites | one at a time per player, one per 2 s, at most 3 waiting for one player | |
+| after a declined or taken-back invite (or challenge), the same two again only after | 30 s | `T5L_INVITE_RETRY_SECONDS` |
 
 The requests and invites also count against the usual per-connection limits (2 requests a second, burst 20).
 
@@ -709,6 +717,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_STRICT_RANGE` / `T5L_PAIR_COOLDOWN` / `T5L_MAX_BLOCKS` | `150` / `30` / `200` | strict matchmaking range, same-opponent cooldown (s), blocks per player |
 | `T5L_MAX_FRIENDS` / `T5L_FRIEND_REQUESTS_DAY` / `T5L_FRIEND_PENDING` | `100` / `20` / `30` | friends per account, requests sent per 24 h, requests waiting per sender and per receiver ("Friends and invites") |
 | `T5L_FRIEND_REQUEST_DAYS` / `T5L_FRIEND_RETRY_DAYS` / `T5L_INVITE_SECONDS` | `14` / `7` / `60` | an unanswered request runs out; a declined one may be repeated after; an invite waits |
+| `T5L_INVITE_RETRY_SECONDS` | `30` | after a declined (or taken-back) invite or challenge, the same player asks the same player again only after this (0 = off) |
+| `T5L_FRIEND_REQUESTS_ADDRESS` | `60` | friend requests per 24 h from one internet address, all its accounts together (0 = no limit) |
 | `T5L_LAG_TOLERANCE` / `T5L_LAG_WAIT` | `1` / `6` | post-game lag check: extra frames allowed, seconds to wait for the second report |
 | `T5L_ACCEPT_ONESIDED` | `1` | count a lone result report when the other player left |
 | `T5L_LOG_LEVEL` | `INFO` | |

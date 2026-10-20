@@ -8,8 +8,9 @@
 LIVE_FILE is the stream a player's game writes (T5_REPLAY_LIVE, e.g. a pair run of
 tools/fight_flow_test.py with --env1 T5_REPLAY_LIVE=...). Each spectator gets its own copy of
 it, fed the way the launcher feeds one from the lobby: every --chunk seconds whatever is new,
-cut at arbitrary bytes. Spectator 1 starts as soon as the stream has its session and first
-match; every further one --late seconds after the one before it (a viewer who joins late: it
+cut at arbitrary bytes. Spectator 1 starts as soon as the stream file exists (its game boots
+and waits for the session and the first fight, like the launcher's); every further one --late
+seconds after the one before it (a viewer who joins late: it
 gets everything from the session's start at once and plays from there). Each spectator's game
 compares every recorded hash and result with its own and writes its verdict (T5_REPLAY_RESULT);
 the tool prints them side by side, with each spectator's delay behind the live game.
@@ -66,17 +67,15 @@ def run_spectator(a, k, ready_at, results):
     stop = threading.Event()
     th = threading.Thread(target=feed, args=(a.live, copy, a.chunk, stop), daemon=True)
     th.start()
-    # the launcher starts the game once its copy has the session and the first match
+    # the launcher starts the game at once (Watch): it boots while the players' games load, and waits for the
+    # session and the first fight; here once the copy has the magic
     t0 = time.time()
     while time.time() - t0 < 60:
-        p = spectate.LiveParser()
         try:
-            with open(copy, "rb") as f:
-                p.feed(f.read())
+            if os.path.getsize(copy) >= len(spectate.MAGIC):
+                break
         except OSError:
             pass
-        if p.ready:
-            break
         time.sleep(0.2)
     res = os.path.join(d, "verdict.json")
     for fn in ("verdict.json", "verdict.json.tmp", "status.json"):
@@ -136,20 +135,17 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
     while True:
-        p = spectate.LiveParser()
         try:
-            with open(a.live, "rb") as f:
-                p.feed(f.read())
+            if os.path.getsize(a.live) >= len(spectate.MAGIC):
+                break
         except OSError:
             pass
-        if p.ready:
-            break
         if time.time() - t0 > a.wait:
-            print("the live stream never got its session and first match", flush=True)
+            print("the live stream never began", flush=True)
             return 2
         time.sleep(0.5)
     ready_at = time.time()
-    print(f"live stream ready after {ready_at - t0:.0f} s: {a.live}", flush=True)
+    print(f"live stream began after {ready_at - t0:.0f} s: {a.live}", flush=True)
     results = {}
     ths = [threading.Thread(target=run_spectator, args=(a, k, ready_at, results)) for k in range(1, a.spectators + 1)]
     for th in ths:

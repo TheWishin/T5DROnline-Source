@@ -190,8 +190,8 @@ def patch_digest():
 CODE_VERSION = 4   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
                    # 4: lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext)
 
-# The lifted code's profile for profile-guided optimisation (docs/RENDER_PERF.md "Profile-guided
-# optimisation"): text, split into a PPU and an SPU part and turned into clang's format at compile time.
+# The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
+# four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).
 PGO_PROFILE = os.path.join(ROOT, "tools", "gamedll", "t5dr_lifted.proftext")
 
 

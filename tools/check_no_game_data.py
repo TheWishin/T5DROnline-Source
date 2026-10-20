@@ -201,7 +201,7 @@ def check_content(path, b):
     found = []
     clean = path.split(" @")[0]
     if clean == profile_check.PROFILE_PATH:
-        # The lifted code's PGO profile (docs/RENDER_PERF.md "Profile-guided optimisation"): 7,000+ lifted
+        # The lifted code's PGO profile (docs/BUILD_PERF.md): 7,000+ lifted
         # function names and over 1 MiB, so the generic checks below would refuse it. It is accepted at this
         # one path only when it is nothing but function names, structural hashes and execution counts.
         return ["PGO profile: " + p for p in profile_check.check(b)]

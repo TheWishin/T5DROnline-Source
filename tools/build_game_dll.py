@@ -18,7 +18,7 @@ The lifted code is compiled with the shipped PGO profile (tools/gamedll/t5dr_lif
 function names and execution counts, made by tools/pgo_train.py), split into four parts and turned
 into clang's format with llvm-profdata.exe from the same folder as clang-cl; without it, or with a
 profile that tools/profile_check.py refuses, the DLL is built without (the same game, a little
-slower). docs/RENDER_PERF.md "Profile-guided optimisation of the lifted code".
+slower). docs/BUILD_PERF.md.
 """
 import argparse
 import glob

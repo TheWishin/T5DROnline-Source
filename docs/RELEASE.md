@@ -173,9 +173,8 @@ runtime:
   zipped** -- all shipped in `toolchain/llvm`. Plus the bundled Python.
   Since branch `cpu-build-opt` also `llvm-profdata.exe` (6.4 MB, 2.7 MB
   zipped): it turns the shipped PGO profile `tools/gamedll/t5dr_lifted.proftext`
-  into clang's format at compile time (docs/RENDER_PERF.md "Profile-guided
-  optimisation of the lifted code"); without it the DLL is built without the
-  profile.
+  into clang's format at compile time (docs/BUILD_PERF.md); without it the
+  DLL is built without the profile.
 
   Costs/risks: every read of `vm_base`/`vm_inline_ok` in the inline load
   path is one extra load through the import slot, and calls into the runtime

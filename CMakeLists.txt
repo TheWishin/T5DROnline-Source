@@ -172,8 +172,8 @@ endif()
 if(SPU_SOURCES)
     set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_SPU_COPTS})
 endif()
-# Profile-guided optimisation of the lifted code (clang front-end profiles, docs/RENDER_PERF.md
-# "Profile-guided optimisation"): one .profdata per part -- T5DR_PGO for the lifted PPU code,
+# Profile-guided optimisation of the lifted code (clang front-end profiles, docs/BUILD_PERF.md):
+# one .profdata per part -- T5DR_PGO for the lifted PPU code,
 # T5DR_PGO_SND for the SPU sound core, T5DR_PGO_SKIN for the skinning jobs, T5DR_PGO_SPU for the other
 # SPU sources. tools/build_game.py makes them from the shipped tools/gamedll/t5dr_lifted.proftext
 # (build_game_dll.prepare_profiles). T5DR_PGO=gen builds an instrumented t5dr.exe (T5_PERF_LOG=...

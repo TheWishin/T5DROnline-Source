@@ -181,7 +181,7 @@ existing draft or half-published release gets its files and notes; a published
 release that already has the *same* zip only gets its notes refreshed; a
 published release with a *different* zip is never overwritten (yank it first).
 
-What the zip ships, pinned: LLVM 23.1.3 (clang-cl, lld-link, clang's headers),
+What the zip ships, pinned: LLVM 23.1.3 (clang-cl, lld-link, llvm-profdata, clang's headers),
 CPython 3.12.10 with Tcl/Tk 8.6 and pycryptodome 4.0.0, ps3recomp `f17bcd3` +
 our patches, and the runtime host built by clang-cl 23.1.3 against the runner
 image's MSVC libraries and Windows SDK (static C runtime), and the starter `T5DR Online.exe`
@@ -359,7 +359,7 @@ Result on 2026-10-18 (Defender engine 1.1.26090.9, signatures from that day): th
 | Ours: `T5DR Online.exe`, `runtime/t5dr.exe` | 2 | no (until a signing service is set up) |
 | Bundled CPython 3.12.10 (`python/`) | 37 (38 with `tix84.dll`, which is unsigned and unused) | yes, by the Python Software Foundation or Microsoft |
 | pycryptodome (`python/Lib/site-packages/Crypto`) | 43 `.pyd` | no. Only AES is used |
-| LLVM (`toolchain/llvm/bin`: `clang-cl.exe`, `lld-link.exe`) | 2, 190 MB | no |
+| LLVM (`toolchain/llvm/bin`: `clang-cl.exe`, `lld-link.exe`, `llvm-profdata.exe`) | 3, 196 MB | no |
 
 VirusTotal opens a zip and shows its members, so every one of these is judged, and so is the zip.
 `t5dr_game.dll` is not in the zip. The player's PC builds it from their own game, so VirusTotal never

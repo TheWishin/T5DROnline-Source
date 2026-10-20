@@ -42,7 +42,12 @@ class Config:
     punch_ttl_open: float = 0.5     # T5L_PUNCH_TTL_OPEN: seconds of low-TTL punches that only open each side's own NAT
     predict_ports: int = 24         # T5L_PREDICT_PORTS: ports tried after a symmetric NAT's last one (0 = no prediction)
     relay_upgrade: bool = True      # T5L_RELAY_UPGRADE: two new clients on the relay move onto the direct path when it works
-    relay_timeout: float = 6.0      # T5L_RELAY_TIMEOUT: seconds to set up the relay path
+    relay_timeout: float = 10.0     # T5L_RELAY_TIMEOUT: seconds to set up the relay path (1.1.2: 6 -- shorter than a
+                                    # client's own steps: bind up to 4 s, then measure up to 4.25 s; a slow PC's relay
+                                    # was cancelled as "not even through the relay", natsim with two firewalls)
+    game_fallback: float = 90.0     # T5L_GAME_FALLBACK: seconds after a direct match's start in which a game that heard
+                                    # nothing at all from its opponent (a firewall blocking it) may move the match onto
+                                    # the relay (clients with the "game_fallback" cap; 0 = off)
     result_timeout: float = 90.0    # T5L_RESULT_TIMEOUT: wait for the second result report
     match_timeout: float = 3 * 3600.0  # T5L_MATCH_TIMEOUT: a match without results is dropped after this
     accept_onesided: bool = True    # T5L_ACCEPT_ONESIDED: a lone report counts when the other player left the lobby
@@ -72,6 +77,12 @@ class Config:
     set_replays: int = 2            # T5L_SET_REPLAYS: games without a winner (desync, draw, too short) played again
                                     # per set; one more and the set is void
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
+    # rooms (docs/ONLINE.md "Rooms"): community rooms take turns, private rooms need a password or an invite code
+    room_max_size: int = 8          # T5L_ROOM_MAX_SIZE: most players a community room may hold (2 = no community rooms)
+    room_next_seconds: float = 8.0  # T5L_ROOM_NEXT_SECONDS: a community room's pause between a result and its next match
+    room_guesses: int = 5           # T5L_ROOM_GUESSES: wrong room passwords / invite codes a player may try (twice that
+    room_guess_seconds: float = 30.0  # per address, 4x per room), then one more per T5L_ROOM_GUESS_SECONDS (address 2x,
+                                    # room 3x as often)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
     ingame_pick: int = 30           # T5L_INGAME_PICK: seconds to pick the character on the game's own select screen
                                     # (when both players' launchers and games can; 0 = off: the launcher's character)
@@ -79,6 +90,27 @@ class Config:
                                     # (when both clients announce "old_stages"; docs/RANKED.md "Characters and stages")
     ranked_input_delay: int = 2     # T5L_RANKED_INPUT_DELAY: rollback input delay of ranked matches, frames (fixed: the
                                     # players' own setting -- auto / 0 / 1 / 2 -- applies to other matches; -1 = theirs)
+    # community tournaments (docs/TOURNAMENTS.md)
+    tour_organizers: str = "any"    # T5L_TOUR_ORGANIZERS: who may create one: any (every account), none, or a comma list
+                                    # of account names
+    tour_admins: list = field(default_factory=list)   # T5L_TOUR_ADMINS: account names that may run every tournament
+                                    # (both on top of the hosts and admins added with `t5lobby-admin tour-host`)
+    tour_max_hosts: int = 20        # T5L_TOUR_MAX_HOSTS: hosts `t5lobby-admin tour-host add` accepts (admins: no limit)
+    tour_host_hint: str = ""        # T5L_TOUR_HOST_HINT: what the launcher shows a player who may not create
+                                    # tournaments (how to become a host here); empty: the launcher's own text
+    tour_rated: bool = False        # T5L_TOUR_RATED: tournament sets change the rating (once per set, like a ranked set)
+    tour_noshow: float = 300.0      # T5L_TOUR_NOSHOW: seconds to accept a called set; who has not is a no-show (out)
+    tour_retries: int = 2           # T5L_TOUR_RETRIES: a set that ended without a result is called again this often
+                                    # (its score kept), then it waits for the organizer
+    tour_max_open: int = 20         # T5L_TOUR_MAX_OPEN: tournaments not finished yet, on the whole server
+    tour_per_organizer: int = 2     # T5L_TOUR_PER_ORGANIZER: ... per organizer (T5L_TOUR_ADMINS have no limit)
+    tour_max_days: float = 14.0     # T5L_TOUR_MAX_DAYS: a tournament starts at most this far ahead
+    tour_keep_days: float = 7.0     # T5L_TOUR_KEEP_DAYS: finished tournaments stay in the list this long
+    tour_tick: float = 0.5          # T5L_TOUR_TICK: seconds between looks at start times and no-shows
+    tour_blamed_voids: int = 1      # T5L_TOUR_BLAMED_VOIDS: games of one set a player may end without a result by their
+                                    # own doing (a crash) and still have the set called again; the next one loses it
+    tour_get_rate: float = 2.0      # T5L_TOUR_GET_RATE / _BURST: tour_get requests per second per connection (a 64-player
+    tour_get_burst: int = 10        # bracket is ~60 KB), after a burst of this many
     # matchmaking extras and the post-game lag check (docs/RANKED.md, Tekken 6 style options)
     strict_range: float = 150.0     # T5L_STRICT_RANGE: ranked "strict matchmaking" pairs within this many rating points
     # The queues pair players whose estimated ping (the best relay path: docs/RANKED.md "Matchmaking") fits a window
@@ -100,6 +132,12 @@ class Config:
     friend_request_days: float = 14.0  # T5L_FRIEND_REQUEST_DAYS: an unanswered request runs out after this
     friend_retry_days: float = 7.0  # T5L_FRIEND_RETRY_DAYS: after a decline, the same request again only after this
     invite_seconds: float = 60.0    # T5L_INVITE_SECONDS: an invite to a match or a room waits this long for an answer
+    # spectating live matches (docs/SPECTATE.md)
+    max_spectators: int = 8         # T5L_MAX_SPECTATORS: spectators per match
+    max_streams: int = 50           # T5L_MAX_STREAMS: matches being watched at the same time, the whole server
+    spectate_buffer_kb: int = 2048  # T5L_SPECTATE_BUFFER_KB: a session's stream kept from its start (compressed; ~3 h)
+    spectate_rate_kb: int = 16      # T5L_SPECTATE_RATE_KB: KB/s a streamer may upload (a match needs well under 1)
+    spectate_idle: float = 90.0     # T5L_SPECTATE_IDLE: a stream with no new data this long, its match over, ends
     invite_retry_seconds: float = 30.0  # T5L_INVITE_RETRY_SECONDS: after a declined (or taken back) invite or challenge,
                                     # the same player asks the same player again only after this (0 = off)
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"

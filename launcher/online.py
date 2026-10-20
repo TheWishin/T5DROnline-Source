@@ -12,6 +12,8 @@ The contract the launcher offers the online code:
                               (core.GameRun) or None if it could not start
     - app.game                the running GameRun or None (.running(), .stop(), .fps, .log_path)
     - app.set_status(text)    one line in the launcher's status bar
+    - app.game_exe()          (optional) the exact t5dr.exe start_game() runs: the firewall hint checks
+                              Windows Firewall's rules for this path (t5lobby.fwcheck)
 * `OnlineTab.on_show()` is called whenever the tab is selected (logs in with a saved login
   the first time, starts reading the controller), `OnlineTab.on_close()` when the launcher exits
   (closes the game it started, leaves the lobby, stops the controller thread).

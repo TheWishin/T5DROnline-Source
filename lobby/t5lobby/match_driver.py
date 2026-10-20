@@ -65,7 +65,7 @@ import threading
 import time
 import urllib.parse
 
-from . import fighters, proto, ranks
+from . import fighters, proto, ranks, spectate
 from .handover import MatchTicket, read_result_file
 from .i18n import N_, t, translate_message
 
@@ -78,6 +78,8 @@ RE_OVER = re.compile(r"\[netplay\] frame (\d+): match (\d+) over, P1 (\d+) - P2 
 RE_LOST = re.compile(r"\[netplay\] (no input from the peer .*peer lost|peer lost \((\w+)\))")
 RE_FAIL = re.compile(r"\[netplay\] cannot connect \((\w+)\)")
 RE_CONNECTED = re.compile(r"\[netplay\] connected \(")
+# the handshake waits and not one datagram has reached the game's port (src/netplay/netplay_core.cpp tick_thread)
+RE_NOTHING = re.compile(r"\[netplay\] waiting for the opponent's game to answer \((\d+)s, nothing arrived yet\)")
 RE_BUILD = re.compile(r"\[netplay\] (the peer runs a different build|cannot connect \(build_mismatch\))")
 RE_SPEED = re.compile(r"\[netplay\] speed: [\d.]+ fps, this PC ([\d.]+) fps")
 # netplay logs one such line per 600 lockstep frames: overall speed, this PC's own speed without the
@@ -87,6 +89,12 @@ RE_WAIT = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps wit
 RE_FPS = re.compile(r"^\[fps\] ([\d.]+) ")
 # a persistent game starts a netplay session per opponent (src/netplay/t5_hooks.cpp)
 RE_SESSION = re.compile(r"\[netplay\] session (\d+) set up")
+# A game on the direct path that has waited this long for its opponent with nothing at all arriving on its port
+# (the launchers' punch got through, so the opponent is there: a firewall drops what comes for the game) moves the
+# match onto the relay (LobbyClient.nat_fallback; docs/NETPLAY.md "When Windows Firewall blocks the game"); the
+# result of that game is not reported while the server answers (a second match_start, a new ticket).
+FALLBACK_NOTHING_SECONDS = 15
+FALLBACK_WAIT_SECONDS = 20.0
 # how long a game may take to take a control command (persistent mode): a running one, a booting one
 CTL_ACK_SECONDS = 10.0
 CTL_ACK_BOOT_SECONDS = 90.0
@@ -130,6 +138,7 @@ class GameLog:
         self.pos = 0
         self.partial = ""
         self.mismatches = 0          # netplay's cumulative mismatch count (sync check lines)
+        self.syncs = 0               # sync check lines (one per 600 compared frames)
         self.desync_lines = 0        # DESYNC lines (the first 10 mismatches are logged one by one)
         self.last_frame = 0
         self.overs = []              # (frame, n, p1 rounds, p2 rounds)
@@ -138,6 +147,11 @@ class GameLog:
         self.sessions = 0
         self.lost_reason = None      # "peer lost (<reason>)"
         self.fail_reason = None      # "cannot connect (<reason>)"
+        self.fail_nothing = False    # ... and not one packet arrived on the game's port: a firewall blocking the game?
+        self.nothing_s = 0           # the session's handshake has waited this long with nothing arriving at all
+        self.nothing_line = 0        # ... said on this line of the log (lines: netplay lines read so far)
+        self.connected_line = 0      # the line of the last "connected"
+        self.lines = 0
         self.connected = False
         self.crashed = False
         self.build_mismatch = False
@@ -172,8 +186,10 @@ class GameLog:
             return
         if "[netplay]" not in ln:
             return
+        self.lines += 1
         m = RE_SYNC.search(ln)
         if m:
+            self.syncs += 1
             self.last_frame = max(self.last_frame, int(m.group(1)))
             self.mismatches = max(self.mismatches, int(m.group(2)))
             return
@@ -195,6 +211,8 @@ class GameLog:
             self.session_lost = 0
             self.build_mismatch = False
             self.fail_reason = None
+            self.fail_nothing = False
+            self.nothing_s = 0
             return
         m = RE_LOST.search(ln)
         if m:
@@ -213,11 +231,18 @@ class GameLog:
             return
         if RE_CONNECTED.search(ln):
             self.connected = True
+            self.connected_line = self.lines
+        m = RE_NOTHING.search(ln)
+        if m:
+            self.nothing_s = int(m.group(1))
+            self.nothing_line = self.lines
         if RE_BUILD.search(ln):
             self.build_mismatch = True
         m = RE_FAIL.search(ln)
         if m:
             self.fail_reason = m.group(1)
+            # netplay_core.cpp's no_peer line: "(<peer>; nothing arrived)" -- not one datagram on the game's port
+            self.fail_nothing = m.group(1) == "no_peer" and "nothing arrived" in ln
 
     def sustained_fps(self):
         """This PC's speed from the log: netplay's own measure in lockstep (time waiting for the
@@ -354,6 +379,13 @@ class MatchDriver:
         self.launch = launch
         self.workdir = os.path.abspath(workdir)
         os.makedirs(self.workdir, exist_ok=True)
+        if getattr(client, "spectate", False):
+            # the live streams of this player's sessions, and the ones this player watches (docs/SPECTATE.md)
+            if not client.live_dir:
+                client.live_dir = os.path.join(self.workdir, "live")
+            if not client.watch_dir:
+                client.watch_dir = os.path.join(self.workdir, "live")
+            spectate.prune(client.live_dir)
         self.table = table or fighters.table()
         if mode == "auto":
             mode = "persistent" if game_supports_control(game_files) else "process"
@@ -376,6 +408,8 @@ class MatchDriver:
         self.game_state = None       # last "state" from it
         self.df_status = None        # the whole last status
         self.saw_fight = False       # this match's fight was seen in the status file
+        self.play_mark = None        # (speed lines, sync lines) of the game log when it was seen (_watch_playing)
+        self.playing_sent = None     # the match whose fight this launcher reported as played (game_playing)
         self.fight_chars = None      # [P1 id, P2 id] the game fought this match with (status file at FIGHT START)
         self.fight_buttons = None    # [P1, P2] their confirm buttons = costumes (1-4, 0 = default), from the same
         self.t_over = None           # when the status said the fight is over (no result file yet)
@@ -394,6 +428,9 @@ class MatchDriver:
         self.ctl_failures = 0        # persistent games that died or did not answer
         self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
                                      # in the log -- the last session's "peer lost" -- are not this match's)
+        self.fallback_asked = set()  # matches whose game heard nothing on the direct path: the relay was asked for
+        self.watch_from = 0          # netplay log lines (GameLog.lines) before this match's session began
+        self.fallback_wait = None    # (match, until): nothing of that game is reported while the server answers
 
     # ------------------------------------------------------------------ helpers
     def note(self, kind, **kw):
@@ -455,6 +492,12 @@ class MatchDriver:
             env["T5_RB_NET_DELAY"] = str(int(ticket.input_delay))
         elif self.input_delay:
             env["T5_RB_NET_DELAY"] = str(self.input_delay)
+        # Spectating (docs/SPECTATE.md): the session's live stream, which the client library sends when somebody
+        # watches (a rematch in the running session goes on writing the file its first match opened)
+        live_dir = getattr(self.client, "live_dir", None)
+        if live_dir and proto.valid_match_id(ev.get("stream")):
+            os.makedirs(live_dir, exist_ok=True)
+            env["T5_REPLAY_LIVE"] = spectate.live_path(live_dir, ev["stream"])
         return env
 
     def fight_line(self, ev):
@@ -549,6 +592,7 @@ class MatchDriver:
             self.mark = self.glog.mark()
             self.reported = False
             self.saw_fight = False
+            self.play_mark = None
             self.fight_chars = None
             self.fight_buttons = None
             self.t_over = None
@@ -563,11 +607,21 @@ class MatchDriver:
                           name=ev["opponent"]["name"]))
             self._call(self.client.game_started, mid)
             return
+        # The same match once more, on the relay (_watch_direct here or on the other PC; LobbyClient.nat_fallback): its
+        # game session starts again through the relay bridge. Whatever the first session writes from now on (its
+        # handshake failing, the opponent lost) is not this match's result: the new one gets a file of its own.
+        # (_watch_ctl's restart of the same ticket in process mode is not this: it has the very same ticket)
+        again = getattr(self.session_ticket, "match_id", None) == mid and isinstance(self.session_ticket, MatchTicket)             and ticket is not self.session_ticket
+        if again:
+            self._discard_result("fallback")
+            self.fallback_asked.add(mid)
+        self.fallback_wait = None
         self.ticket = ticket
         self.session_ticket = ticket
         self.match_ev = ev
         self.reported = False
         self.saw_fight = False
+        self.play_mark = None
         self.fight_chars = None
         self.fight_buttons = None
         self.t_over = None
@@ -579,13 +633,15 @@ class MatchDriver:
             if self.glog is not None:
                 self.glog.poll()
                 self.need_session = self.glog.sessions + 1
+            if again:
+                self.result_path = os.path.join(self.workdir, f"result-{proto.file_safe(mid)}-relay.json")
             self._send_fight(mid, self.match_env(ev, ticket))
         else:
             self.stop_game()
             self.session = mid
             self.df_status, self.df_base = None, 0           # a new game counts its fights from 1
             fmid = proto.file_safe(mid)               # (the client already refuses other ids; a file name stays one)
-            self.result_path = os.path.join(self.workdir, f"result-{fmid}.json")
+            self.result_path = os.path.join(self.workdir, f"result-{fmid}{'-relay' if again else ''}.json")
             self.fight_path = os.path.join(self.workdir, f"fight-{fmid}.txt")
             self.status_path = os.path.join(self.workdir, f"status-{fmid}.json")
             self.game_state = None
@@ -614,6 +670,7 @@ class MatchDriver:
             self.game = game
             self.glog = GameLog(getattr(game, "log_path", None))
         self.mark = self.glog.mark() if self.glog else (0, 0, 0, 0)
+        self.watch_from = self.glog.lines if self.glog else 0
         self.status(t("Playing against {summary}", summary=ticket.summary()))
         self._call(self.client.game_started, mid)
 
@@ -697,6 +754,20 @@ class MatchDriver:
         if not accept and self.mode == "process":
             self.stop_game()
 
+    def _watch_playing(self, t):
+        """Tell the lobby once per match when this game has played its fight for a while: a netplay speed or sync line
+        after FIGHT START (every 600 lockstep frames -- frames that only run with the opponent's inputs). The lobby then
+        refuses a relay fallback for the match (security review 3: asking for one restarted a running match)."""
+        mid = getattr(t, "match_id", None)
+        if not self.saw_fight or self.play_mark is None or self.glog is None or mid is None or self.playing_sent == mid:
+            return
+        self.glog.poll()
+        if len(self.glog.speeds) > self.play_mark[0] or self.glog.syncs > self.play_mark[1]:
+            self.playing_sent = mid
+            fn = getattr(self.client, "game_playing", None)
+            if fn is not None:
+                self._call(fn, mid)
+
     def _call(self, fn, *args):
         if self.async_calls:
             # The thread gets the queue and the call, not the driver: a UI's objects must never be
@@ -712,7 +783,10 @@ class MatchDriver:
         self._watch_state()
         t = self.ticket
         if t is not None and not self.reported:
-            self._check(t)
+            self._watch_playing(t)
+            self._watch_direct(t)
+            if self.fallback_wait is None or time.monotonic() > self.fallback_wait[1]:
+                self._check(t)          # (while the server moves the match onto the relay, this game's end is not it)
         out = []
         try:
             while True:
@@ -746,6 +820,9 @@ class MatchDriver:
         # Only this match's fight counts (the status may still show the previous one for a moment).
         if state == "fight" and self.ticket is not None and k > self.df_base and not self.saw_fight:
             self.saw_fight = True
+            if self.glog is not None:
+                self.glog.poll()
+                self.play_mark = (len(self.glog.speeds), self.glog.syncs)
             # the fighters of this match (with the in-game select: what the players picked)
             if isinstance(st.get("p1"), int) and isinstance(st.get("p2"), int):
                 self.fight_chars = [st["p1"], st["p2"]]
@@ -799,6 +876,7 @@ class MatchDriver:
             else:
                 desync = self._evidence() or 0      # (older games write no count)
             reason = extra.get("reason")
+            self._firewall_suspect(ticket, reason)
             if reason == "quit":
                 # This player closed the game window mid-match (exit code 7): a quit, i.e. a loss.
                 self._report(mid, None, res[1], "quit", desync=desync, reason="quit")
@@ -855,6 +933,7 @@ class MatchDriver:
             # The netplay session could not go on and the game closed itself (no result file?).
             reason = (g.fail_reason or g.lost_reason) if g is not None else None
             reason = reason or EXIT_REASON[code]
+            self._firewall_suspect(ticket, reason)
             self.note("game_closed", code=code, crashed=False)
             self._report(mid, None, None, "disconnect", desync=self._evidence() or 0, reason=reason)
             self.status(t(REASON_TEXT[reason]) if reason in REASON_TEXT
@@ -870,6 +949,38 @@ class MatchDriver:
             self.note("ask_result", match=mid, opponent=ticket.opponent.get("name", "?"), slot=ticket.slot)
         else:
             self.answer("quit")
+
+    def _watch_direct(self, ticket):
+        """A game on the direct (or LAN) path whose handshake has heard nothing at all for FALLBACK_NOTHING_SECONDS:
+        the launchers' sockets reached each other, but nothing reaches the game -- a firewall that blocks t5dr.exe
+        completely (Windows Firewall itself lets the replies to the game's own packets in), a router that dropped
+        the punched mapping. Ask the server once to move the match onto the relay (the relay bridge: the game then
+        talks only to 127.0.0.1), and tell the tab (firewall hint)."""
+        g = self.glog
+        if not isinstance(ticket, MatchTicket) or ticket.path not in ("direct", "lan") or g is None:
+            return
+        mid = ticket.match_id
+        if mid in self.fallback_asked or not self.game_running():
+            return
+        g.poll()
+        if g.nothing_s < FALLBACK_NOTHING_SECONDS or g.nothing_line <= max(self.watch_from, g.connected_line):
+            return                       # (connected since, or the lines were another session's)
+        fn = getattr(self.client, "nat_fallback", None)
+        if fn is None:
+            return
+        self.fallback_asked.add(mid)
+        self.fallback_wait = (mid, time.monotonic() + FALLBACK_WAIT_SECONDS)
+        self.note("firewall_suspect", reason="no_peer", path=ticket.path, fallback=True)
+        self._call(fn, mid)
+
+    def _firewall_suspect(self, ticket, reason):
+        """The game could not connect and not one packet reached its port, though the lobby had found the path
+        (the launcher's punch got through, or the relay was bound): something on this PC drops what arrives for
+        the game -- a firewall that blocks t5dr.exe. The Online tab shows its firewall hint
+        (docs/TROUBLESHOOTING.md "The firewall blocks the game")."""
+        g = self.glog
+        if reason == "no_peer" and g is not None and g.fail_nothing:
+            self.note("firewall_suspect", reason="no_peer", path=getattr(ticket, "path", None))
 
     def answer(self, what):
         """The player's answer when the game closed without a result: won | lost | draw | quit."""

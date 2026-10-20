@@ -555,8 +555,8 @@ on the lobby server, *PC* on the PC that holds the repository (the way the lobby
 `sudo t5lobby-admin ...` on a systemd install (a wrapper that loads `/etc/t5lobby/t5lobby.env`
 and runs as the service user). Elsewhere, use `docker compose exec lobby t5lobby-admin ...`,
 `python lobby/run.py admin ...`, or `python -m t5lobby.server.admin --db FILE ...`. It works on
-the SQLite file directly, which is safe while the server runs. The server polls for bans every
-5 s and kicks the player.
+the SQLite file directly, which is safe while the server runs. The server polls for bans (and
+notices, drains, tournament hosts) every 5 s (`T5L_ADMIN_POLL`) and kicks the player.
 
 | Command | |
 |---|---|
@@ -575,6 +575,7 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 | `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |
 | `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones and the ranked sets finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
 | `release [X.Y.Z] [--clear]` | after the owner has published a release: launchers that report an older one see "T5DR Online X.Y.Z is out ... update the launcher" in their status bar (now and at every login) until `--clear`. Without an argument: what is set |
+| `tour-host add NAME [--admin]`, `tour-host remove NAME`, `tour-hosts` | community tournaments (docs/TOURNAMENTS.md "Who may create tournaments"): `add NAME` makes the account a **tournament host** -- it may create tournaments, with the normal limits, whatever `T5L_TOUR_ORGANIZERS` says; at most `T5L_TOUR_MAX_HOSTS` (20) hosts, beyond that `add` refuses ("remove one first"). `--admin` makes it a **tournament admin** instead, like `T5L_TOUR_ADMINS`: runs every tournament, no limits, takes no host slot. `add` again with or without `--admin` changes the role; `remove` takes it away (their tournaments stay theirs). The account must exist. `tour-hosts` lists hosts, admins (also those of the env file) and "N of 20 host slots used". The server picks a change up within 5 s and tells the player's launcher at once: no restart, no new login |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
 
 ### Status, health, metrics
@@ -586,7 +587,11 @@ The server serves `http://127.0.0.1:7780/` (`T5L_STATUS_HOST`, `T5L_STATUS_PORT`
 - `/metrics` returns the same numbers in Prometheus format (`t5lobby_players_online`,
   `t5lobby_relay_kbit_per_second`, `t5lobby_matches_found_total`, `t5lobby_tls_cert_days_left`, ...).
 
-It shows counts only, no names and no addresses. It stays on loopback. To watch it from
+- `/tournaments` and `/tournaments/<id>` return the community tournaments and their brackets as JSON, read-only,
+  for streamers' overlays (names only; docs/TOURNAMENTS.md "For streamers", with a reverse proxy example that
+  passes only these paths).
+
+Apart from the tournaments, it shows counts only, no names and no addresses. It stays on loopback. To watch it from
 elsewhere, use an SSH tunnel (`ssh -L 7780:127.0.0.1:7780 root@server`), or bind it to a
 private interface and allow only your monitor's address. Every 15 minutes the log gets a
 one-line summary (`T5L_STATUS_LOG_MINUTES`).
@@ -649,7 +654,8 @@ was not finished (its games changed no rating yet). To restart without voiding a
 match has its result (a first-to-3 match takes 2-7 minutes) and the last ranked set is over. A ranked set goes on
 during a drain: its next game starts by itself, so a best-of-3 can take up to three games. (Before 1.1.2 the admin
 tool did not wait for a set between two of its games, when no match runs; with an older server, check as in
-docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain.
+docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain. From 1.1.3 a drain also holds the tournaments: no new
+tournament set starts and the no-show times stand still (docs/TOURNAMENTS.md "The database and restarts").
 
 **Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
 schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with

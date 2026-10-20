@@ -4,6 +4,7 @@ Scrubbing (user names in paths, IP addresses, tokens and passwords), what goes i
 cap, the system information, the launcher log, and the window itself (never shown: the Tk window is
 withdrawn). No game, no network, no real user data: every name, address and token below is made up.
 """
+import datetime
 import hashlib
 import json
 import os
@@ -302,7 +303,8 @@ def fake_native(d, user=FAKE_USER, logs=3, build_exit=None):
                 f"[netplay] joining {PUBLIC_V4}:5{i}000\n", f"[netplay] mode join marker-{i}\n",
                 "[sched] power saving on (this PC has a battery: laptop or handheld): fewer worker threads\n",
                 "[gpu] display: the window's screen is driven by Fake iGPU, the game renders on Fake GPU 9000\n",
-                f"[slow-frames] last 30 s: 1700 frames, {i} slow (over 20.9 ms): CPU {i} | on battery\n"]
+                f"[slow-frames] last 30 s: 1700 frames, {i} slow (over 20.9 ms): CPU {i} | on battery\n",
+                f"[netplay] speed: 47.1 fps, this PC 59.8 fps without the waits for the peer (marker-{i})\n"]
         p = put(os.path.join(out, "logs", f"game-20261018-1{i}0000.log"), "".join(body) * 40)
         t = time.time() - (logs - i) * 100
         os.utime(p, (t, t))
@@ -401,6 +403,105 @@ class Whole(unittest.TestCase):
         self.build(ctx={"build_exit": 2}, enabled={"build": False})           # ... or unticked it
         self.assertNotIn("build.log", self.names())
 
+    def native_with_compile_logs(self, build_exit, n=6, header=None):
+        """A native\\ folder whose last build left n compiler outputs (tools/build_game_dll.py: the whole output
+        of a failed compile in build\\gamedll_obj\\<file>.log), newest first: ppu_recomp_000 ... 00<n-1>."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        out = fake_native(d, build_exit=build_exit)
+        home = f"C:\\Users\\{FAKE_USER}\\Desktop\\T5DR"
+        now = time.time()
+        for i in range(n):
+            name = f"ppu_recomp_{i:03d}.cpp"
+            p = put(os.path.join(out, "build", "gamedll_obj", name + ".log"),
+                    f"# {name}, attempt 1, 2026-10-20 17:06:30\n# exit code 1 after 4.8 s, peak memory 300 MB\n"
+                    f'# "{home}\\toolchain\\llvm\\bin\\clang-cl.exe" /nologo -c {home}\\native\\build\\recomp\\{name}\n'
+                    f"{home}\\native\\build\\recomp\\{name}(192,5): warning: unused [-Wunused-value]\n"
+                    # (a build before -fno-caret-diagnostics: clang quoted the lifted source line, with a caret)
+                    "    ctx->gpr[3] = LIFTED_GAME_CODE(ctx, 0x10);\n"
+                    "    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                    # (LLVM 23 quotes with a line-number gutter)
+                    "  192 |     return x + LIFTED_GAME_CODE;\n"
+                    "      |                ^~~~~~~~~~~~~~~~\n"
+                    "LLVM ERROR: out of memory\n"
+                    "Stack dump:\n0.\tProgram arguments: clang-cl.exe -c ppu.cpp\n"
+                    "  if (r3 == 0) { goto loc_00123456; } // LIFTED_GAME_CODE\n")
+            os.utime(p, (now - 100 * i, now - 100 * i))
+        if header:
+            put(os.path.join(out, "build.log"), header + "\n[compile]\n# exit code 2\n")
+        return out
+
+    def test_compiler_output_of_a_failed_build(self):
+        self.build(ctx={"out": self.native_with_compile_logs(2)})
+        n = self.names()
+        self.assertIn("build.log", n)
+        self.assertEqual([x for x in n if x.startswith("compile/")],
+                         [f"compile/ppu_recomp_{i:03d}.cpp.log" for i in range(report.COMPILE_LOGS)])   # the newest
+        t = self.text("compile/ppu_recomp_000.cpp.log")
+        self.assertIn("LLVM ERROR: out of memory", t)
+        # (security review 3) only diagnostics: never a line of the game's translated code a compiler quoted
+        self.assertNotIn("LIFTED_GAME_CODE", t)
+        self.assertNotIn("^~~~", t)
+        self.assertIn("other line(s) of the compiler's output left out", t)
+        self.assertIn("# ppu_recomp_000.cpp, attempt 1", t)                 # our header lines stay
+        self.assertNotIn(FAKE_USER, t)                                    # scrubbed like every other file
+        self.assertIn("C:\\Users\\<user>\\Desktop\\T5DR\\native\\build\\recomp\\ppu_recomp_000.cpp(192,5)", t)
+        self.assertIn("compile/ppu_recomp_000.cpp.log", self.text("contents.txt"))
+        g = {x.key: x for x in report.discover(self.ctx, "")}
+        self.assertEqual([i.arcname for i in g["build"].items][:2], ["build.log", "compile/ppu_recomp_000.cpp.log"])
+
+    def test_build_log_keeps_no_quoted_game_code(self):
+        # (security review 3) build.log quotes a failed compile ("    | " lines) -- from a build before
+        # -fno-caret-diagnostics with the source lines clang showed -- and an older one the raw compiler output
+        out = self.native_with_compile_logs(2)
+        bl = os.path.join(out, "build.log")
+        with open(bl, "a", encoding="utf-8") as f:
+            f.write("[compile] compiling 22 files\n"
+                    "  ppu_recomp_007.cpp: exit code 1, after 4.8 s\n"
+                    "  error lines:\n"
+                    "    | C:\\T5DR\\native\\build\\recomp\\ppu_recomp_007.cpp(91,3): error: unknown type name 'x'\n"
+                    "    |     x r3 = LIFTED_GAME_CODE_A(ctx);\n"
+                    "    |     ^\n"
+                    "    | ...\n"
+                    "    | LLVM ERROR: out of memory\n"
+                    "C:\\T5DR\\native\\build\\recomp\\ppu_recomp_008.cpp(12,9): warning: unused [-Wunused-value]\n"
+                    "        ctx->gpr[4] + LIFTED_GAME_CODE_B;\n"
+                    "        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+                    "C:\\T5DR\\native\\build\\recomp\\ppu_recomp_009.cpp(2,16): error: use of undeclared identifier\n"
+                    "    2 |     return x + LIFTED_GAME_CODE_C;\n"
+                    "      |                ^~~~~~~~~~~~~~~~~~\n"
+                    "  error lines:\n"
+                    "    | ppu_recomp_010.cpp(9,1): error: expected ';'\n"
+                    "    |     9 |   r3 = LIFTED_GAME_CODE_D\n"
+                    "    |       |                          ^\n"
+                    "[compile] done (lifted PPU code: -march=x86-64-v3 (this processor has AVX2))\n")
+        t = report.build_log_text(bl)
+        self.assertNotIn("LIFTED_GAME_CODE", t)
+        self.assertNotIn("^~~", t)
+        for kept in ("error: unknown type name 'x'", "    | LLVM ERROR: out of memory", "    | ...",
+                     "ppu_recomp_009.cpp(2,16): error: use of undeclared identifier",
+                     "    | ppu_recomp_010.cpp(9,1): error: expected ';'",
+                     "ppu_recomp_008.cpp(12,9): warning: unused", "[compile] compiling 22 files",
+                     "[compile] done (lifted PPU code: -march=x86-64-v3 (this processor has AVX2))"):
+            self.assertIn(kept, t)
+        self.assertIn("line(s) of compiler output left out", t)
+        self.build(ctx={"out": out})
+        self.assertNotIn("LIFTED_GAME_CODE", self.text("build.log"))
+        self.assertIn("unknown type name 'x'", self.text("build.log"))
+
+    def test_no_compiler_output_when_the_build_went_fine(self):
+        self.build(ctx={"out": self.native_with_compile_logs(0)}, enabled={"build": True})
+        self.assertIn("build.log", self.names())
+        self.assertFalse([x for x in self.names() if x.startswith("compile/")])
+
+    def test_compiler_output_of_an_earlier_build_stays_out(self):
+        started = datetime.datetime.fromtimestamp(time.time() - 150)      # logs 0 and 1 are newer, 2..5 older
+        out = self.native_with_compile_logs(2, header=f"# T5DR Online build log, {started:%Y-%m-%d %H:%M:%S}, "
+                                                      "launcher 1.1.3")
+        self.assertEqual([os.path.basename(p) for p in report.compile_logs(out)],
+                         ["ppu_recomp_000.cpp.log", "ppu_recomp_001.cpp.log"])
+        self.assertEqual(report.compile_logs(os.path.join(out, "missing")), [])
+
     def test_nothing_private_is_in_any_text_file(self):
         self.build(note=f"my ip is {PUBLIC_V4_B} and my name is {FAKE_USER}; password={FAKE_PASSWORD}")
         for name in self.z.namelist():
@@ -439,9 +540,12 @@ class Whole(unittest.TestCase):
                      # laptops (patch 0047): power and heat now, the game's power saving, the hybrid display, slow frames
                      "== Power and heat (now) ==", "Power: ", "Power plan: ", "Sensors: ", "[sched] power saving on",
                      "[gpu] display: the window's screen is driven by Fake iGPU", "== How the game ran",
-                     "[slow-frames] last 30 s: 1700 frames"):
+                     "[slow-frames] last 30 s: 1700 frames",
+                     # weak PCs (docs/WEAK_PC.md): Windows' Game Mode / GPU scheduling, the online match's speed
+                     "Windows graphics settings: ", "[netplay] speed: 47.1 fps, this PC 59.8 fps"):
             self.assertIn(want, t)
         self.assertLessEqual(t.count("[slow-frames]"), 4)        # the last few, not all 40 copies
+        self.assertLessEqual(t.count("[netplay] speed:"), 4)
 
     def test_contents_lists_everything_and_what_was_removed(self):
         self.build()
@@ -655,7 +759,8 @@ class SystemInfo(unittest.TestCase):
             info = report.build_info_for(out, {"version": "9.9.9"}, ROOT)
         self.assertEqual(info["code_id"], "aab9cb523c06a67b")
         self.assertRegex(info.get("build_id", ""), r"^[0-9a-f]{16}$")
-        self.assertEqual(info["net"], 3)
+        from t5lobby.buildid import NETPLAY_VERSION
+        self.assertEqual(info["net"], NETPLAY_VERSION)
 
 
 class LauncherLog(unittest.TestCase):

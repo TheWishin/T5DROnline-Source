@@ -20,8 +20,10 @@ install for players or for whoever runs the server.
 - [Handover to the game](#handover-to-the-game)
 - [NAT traversal and the relay](#nat-traversal-and-the-relay) (and [regional relays](#regional-relays))
 - [Ratings, queues, results](#ratings-queues-results)
+- [Rooms](#rooms) (classic, community rooms that take turns, private rooms with a password or an invite code)
 - [Friends and invites](#friends-and-invites)
 - [Discord Rich Presence](#discord-rich-presence)
+- Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
 - [Running your own server](#running-your-own-server)
@@ -49,6 +51,10 @@ lobby/
     discord_rpc.py   optional Discord Rich Presence over the Discord app's local IPC pipe (no SDK)
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
+    tk_tour.py    the Online tab's Tournaments page, bracket canvas, Create window, "Your tournament set is ready"
+    tk_rooms.py   the Online tab's rooms: Create room window, locked-room join, the room's row (line, Sit out,
+                  Room settings, Copy invite code)
+    tour_client.py, tour_text.py  the client's tournament calls; their texts (docs/TOURNAMENTS.md)
     theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
     padnav.py     controller buttons for the tab: XInput, PlayStation (HID) and WinMM readers, the polling
                   thread and its rules
@@ -58,12 +64,14 @@ lobby/
     portmap.py    opt-in UPnP IGD / NAT-PMP port forwarding for "Host for friends"
     server/       python -m t5lobby.server
       lobby.py    players, rooms, queues, challenges, matches, results, bans, status numbers
+      rooms.py    rooms: classic, community (a line that takes turns), private (password / invite code, hidden)
+      tournaments.py, bracket.py  community tournaments: sign-up, calls, sets, organizer actions; the brackets
       udp.py      UDP ping, endpoint registration, NAT probe, relay
       store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans,
                   blocked players, server notices, friends and friend requests; numbered schema migrations
       admin.py    python -m t5lobby.server.admin: status, users, bans, passwords, recovery codes,
                   backups, certificates (accounts_admin.py: the account commands alone)
-      status.py   local HTTP /health, /status, /metrics
+      status.py   local HTTP /health, /status, /metrics, /tournaments (the brackets for streamers)
       backup.py   online SQLite backups, restore
       selfsigned.py  self-signed TLS certificate with the standard library (no openssl)
       host.py     python -m t5lobby.server.host: "Host for friends" on a player's PC
@@ -116,7 +124,8 @@ lobby/
      The *strict* option keeps the gap at 150 points. The same two players are not
      paired again for 30 s after a ranked game.
    - Players who blocked each other are never paired by any of these.
-   - *Rooms*: create one, someone joins; *challenges*: pick a player, they accept.
+   - *Rooms*: create one, someone joins -- also locked with a password or an invite code, or for up to 8
+     players who take turns ([Rooms](#rooms)); *challenges*: pick a player, they accept.
    Players are only ever paired with the **same build id**.
 5. **Ready check.** Both must accept within 15 s (an accepted challenge skips
    it). Whoever declines or times out leaves the queue; the other keeps their
@@ -316,10 +325,21 @@ packets/s, ~85 kbit/s); at most 100 relay sessions. A session closes when its
 match ends (result, cancel or the 3 h limit); one left idle for 120 s after its
 match is gone is swept up.
 
+A game that hears nothing on the direct path (1.1.3, cap `game_fallback`): the
+launchers' sockets reached each other, but a firewall on one PC drops what
+arrives for `t5dr.exe` itself. After 15 s of "nothing arrived yet" in its log
+the launcher sends `nat_fallback`; the server moves the running match onto the
+relay (`nat_relay` with `fallback: true`: both launchers bind a new socket with
+the match's token, keep it as the relay bridge) and sends a second
+`match_start` for the same match -- the games start its session again, talking
+only to 127.0.0.1. Once per match, within `T5L_GAME_FALLBACK` seconds of the
+start, before any result (docs/NETPLAY.md "When Windows Firewall blocks the
+game").
+
 Not handled: UDP blocked entirely (the match is cancelled with
-`udp_unreachable` and the player is told to check the firewall); IPv6 (the
-netplay layer is IPv4-only too); two symmetric NATs with random ports and no
-router forward on either side (relay).
+`udp_unreachable` and the player is told to check the firewall; the Online tab
+shows its firewall hint); IPv6 (the netplay layer is IPv4-only too); two
+symmetric NATs with random ports and no router forward on either side (relay).
 
 ### Regional relays
 
@@ -392,6 +412,98 @@ crashes, desyncs, disputes, minimum match length, strikes, rematches) are in
 grace period -> `forfeit`; winners differ -> decided by the netplay state hash
 when there is one (`resolved`), else `disputed`.
 
+## Rooms
+
+(Code: `server/rooms.py`, `client.py`, the launcher's `tk_rooms.py`. Private and community rooms: 1.1.3, capability
+and feature `private_rooms`.) A room is where players meet by choice instead of by the queue. Three kinds:
+
+**Classic room** (2 players; what every launcher before 1.1.3 makes, and still the default). The match starts when the
+second player joins (with the ready check; right after a friend accepted an invite into it, without one). Afterwards
+the two pick **Rematch** (the running games go on) or one presses Ready again for a new match. Ranked rooms are
+classic rooms.
+
+**Community room** (3 to 8 players, `T5L_ROOM_MAX_SIZE`). The room keeps a **line**, the turn order: the first two in it
+play (with the ready check, always), the others wait in the room. When a match has a result the line moves on by the
+room's rule and the next match starts by itself after `T5L_ROOM_NEXT_SECONDS` (8 s) -- nobody votes for a rematch:
+
+| rule (Create room -> Turns) | after a match |
+|---|---|
+| **Winner stays** (`winner`, default) | the loser goes to the back of the line, the next one plays the winner. No winner (void, draw): both go to the back |
+| **Everyone in turn** (`queue`) | whoever wins, the player who was at the table longer goes to the back and the other plays the next one in line: everyone plays two in a row, against both neighbours in the line (with three players everyone meets everyone) |
+
+Who declines the ready check or lets it run out **sits out**: they stay in the room, the line skips them, they are
+told ("you sit out in the room; press Back in line to play again"). **Sit out** does the same on purpose, **Back in
+line** puts a player at the end of the line again. A connection that cannot be set up puts both players at the back.
+With only two in the line it is the same two again after the pause.
+
+Why this model: rooms already were "the players chose each other" (no queue, a ready check, rematches inside the
+running games); a community room keeps all of that and only adds who plays next. The server decides it (one line per
+room, the same for everyone, shown to every member), so no launcher can skip the line, and an AFK member does not
+stop the room (the ready check finds them). Rematch votes would let two members keep the table for ever, so a
+community room has none.
+
+**Private room** (a classic or a community room). Locked with a **password** (4-64 characters, any script, no space
+at either end) or an **invite code** the server makes (`XXXX-XXXX-XXXX`, ~59 bits, no 0/O/1/I/L). The room list shows
+it locked: its name, host, players and "private", with the lock icon -- or, **hidden**, not at all (its members show
+as "in a room", not which one). Joining needs the password (Join room asks for it, in a masked field) or the code
+(Join room with no room selected asks for one; a hidden room is found by its code alone). A friend's **invite** into
+the room (Friends -> Invite to my room, any member can send one) is the key: the friend joins without the password,
+and no secret is sent to them. Only the room's **members can watch** its match (also not the players' friends);
+locking a room sends the spectators who are not members away. Private and community rooms are **casual** (who plays
+whom is the room's business -- what ranked keeps out). The host's **Room settings...** changes the password, makes
+a new invite code (the old one stops working), removes the lock, hides or shows the room, and **removes a player**:
+not while they play the room's running match; they cannot come back into that room (with the password, the code or an
+invite). When the host leaves, the member who came next is the host (a code room's new host makes a new code).
+
+**Copy invite code** (in the room's row under the rooms list) puts the code into the launcher's own field next to the
+button and selects it there -- nothing goes to the system clipboard by itself; the player presses Ctrl+C when they want
+it (the field does not export its selection either). The code is shown only after that press, and only the host's
+launcher (the one that made it) and launchers that joined with it know it.
+
+**Security** (the patterns of lobby.py's accounts, invites and ready checks):
+
+- The password is kept only as a **salted scrypt hash** (`store.hash_password`, 16-byte salt, on a worker thread behind
+  `T5L_PW_CONCURRENCY`), **in memory** (never in the database), checked with a **constant-time compare**
+  (`hmac.compare_digest`). An invite code is kept only as its HMAC-SHA256 under a key made when the server starts
+  (the index that finds a room by its code); a server restart ends all rooms anyway.
+- **Wrong guesses** (a wrong password, a wrong code, a malformed one) are limited per player (5, then one per
+  `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64) and per room (20, then
+  one per 10 s, for guesses from many addresses together; a friend's invite still works then -- and so does an invite
+  code: a room that is being guessed at can switch to one). A guess is counted
+  before the slow check and given back when it was right, so parallel tries on several connections cannot all pass
+  while the first is hashed. The refusal says how long to wait (`rate_limited` "... try again in N s" with `retry`
+  N, like a held-back invite). Setting a password costs a hash: limited like a password change (per player), and
+  to 10, then one per 6 s, per address.
+- Passwords: Unicode NFC (the same password however it was typed), printable characters only (no control, format or
+  surrogate code points), 4-64 characters, at most 256 bytes of UTF-8. The launcher checks the same rules
+  (`proto.clean_room_password`) before it sends anything.
+- The password is **never logged, never sent to anybody** (the server's log names the room and who guessed wrong,
+  never what was typed), never in the lobby list, a room's view, the status JSON (`/status` counts rooms only), an
+  event or an error message. The launcher sends it once, over the lobby connection, and keeps it nowhere.
+- The controller's early-press guard (`BAR_ARM_S`) covers the room's ready checks and a friend's room invite like any
+  other question; the password and code prompts are keyboard dialogs.
+
+**Older launchers** (no `private_rooms` cap) never see a locked room: the server sends them a lobby list without it
+(two lists, one per kind of launcher, each with its own deltas). A join by id is refused with "private rooms need a
+newer launcher; update it"; a friend's invite still brings them in. Community rooms work for them like any room: they
+get the ready check when it is their turn, and their result card simply has no Rematch button. A new launcher on an
+older server finds no `private_rooms` feature: Create room makes a classic room at once, as before.
+
+| Limit | Default | Variable |
+|---|---|---|
+| most players in a community room | 8 | `T5L_ROOM_MAX_SIZE` |
+| pause between a community room's matches | 8 s | `T5L_ROOM_NEXT_SECONDS` |
+| wrong passwords / codes per player, then one per | 5, 30 s | `T5L_ROOM_GUESSES`, `T5L_ROOM_GUESS_SECONDS` |
+| ... per internet address | 10, then one per 15 s | (2 x the above) |
+| ... per room, all players together | 20, then one per 10 s | (4 x, 3 x as often) |
+
+Tests: `lobby/tests/test_private_rooms.py` (create, join with the right and a wrong password, the limits with their
+wait, kick, password change, hidden vs listed, older launcher and server, the spectating rule, community rooms,
+nothing secret in the log, events or status), `lobby/tests/test_tk_rooms.py` (the launcher: windows, masked prompt,
+the code field, the clipboard untouched), `lobby/tools/room_session.py` (N players with stub games taking turns in a
+private room, the rule checked match by match), e2e `private_room_turns` (three launchers, stub games) and
+`private_room` (a real-game match in a private room, rollback).
+
 ## Friends and invites
 
 (1.1.2; code: `server/lobby.py` "friends", `server/store.py`, `client.py`, the Friends page in `tk_tab.py` /
@@ -462,6 +574,16 @@ update, in one transaction with the version number. A database from a newer serv
 server still opens an upgraded database (tested), so going back to an older release works. Deleting an account
 (admin tool) deletes its friends and requests.
 
+## Spectating
+
+Friends of a player in a match, and anybody for a room's match, can watch it live in their own game, a few
+seconds behind (launcher 1.1.3, cap and feature `spectate`): one player's launcher sends the session's live
+stream (the replay's data) while somebody watches, the server keeps it from the session's start and sends it
+to every spectator. Both players must allow it (Settings -> Spectators; ranked off by default). Messages
+`spec_prefs`, `watch`, `unwatch`, `spec_data`, `spec_fail` (client) and `watching`, `spec_want`, `spec_stop`,
+`spec_data`, `spec_end`, `spectators` (server); `match_start.stream`, friends' `watch`, rooms' `watch`. All of
+it, with the limits and the reasons: [SPECTATE.md](SPECTATE.md).
+
 ## Discord Rich Presence
 
 Optional, **off by default**, and offered only by a launcher that has a Discord application id (see "The application
@@ -522,7 +644,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`, `spectate`, `game_fallback`, `private_rooms`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `private_rooms` cap also `room_limits {max_size, next_seconds}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol") |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -531,8 +653,12 @@ Client to server:
 | `leaderboard` | `limit` | `leaderboard {rows}` |
 | `chat` | `text` (200 chars) | `chat` to everyone |
 | `queue` / `unqueue` | `mode: quick\|ranked`, `char`, `strict` (ranked) | `queued {mode, strict}` |
-| `room_create` | `name`, `ranked` | `room {room}` |
-| `room_join` / `room_leave` / `rematch` | `room` | `room {room}`; two members start a ready check |
+| `room_create` | `name`, `ranked`; with `private_rooms`: `size` (2..`T5L_ROOM_MAX_SIZE`), `rotation: winner\|queue`, `private: password\|code`, `password`, `hidden` | `room {room, code}` (`code`: the invite code, to the host only) |
+| `room_join` | `room`; `password` (a locked room); or `code` (the room id optional) | `room {room}`; a classic room's two members start a ready check, a community room's line its next match. Wrong: `auth_failed` "wrong room password" / "no room has that invite code"; too many: `rate_limited` with `retry` |
+| `room_leave` / `rematch` | (`rematch` without `match`: Ready again; in a community room: back in line) | `room {room}` |
+| `room_lock` | (`private_rooms`, the host) `lock: password\|code\|none`, `password`, `hidden` | `room {room, code}` -- `code` again makes a new invite code (the old one stops working) |
+| `room_kick` | (`private_rooms`, the host) `player` (id) | `room {room}`; refused while they play the room's match; they get `notice room_kicked` and cannot come back |
+| `room_line` | `in: true\|false` (community rooms) | `room {room}`: sit out / back in line |
 | `challenge` | `player` (id) | `challenge {challenge}`; target gets `challenged` |
 | `challenge_reply` | `challenge`, `accept` | accepted: match without ready check |
 | `challenge_cancel` | `challenge` | |
@@ -547,6 +673,7 @@ Client to server:
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
+| `nat_fallback` | `match` (`game_fallback` cap on both clients) | `nat_fallback {match, ok, why}`: this player's game heard nothing at all on the direct path; ok -> both get `nat_relay` (`fallback: true`) and a second `match_start` for the same match on the relay. Refused (`why`): not a new direct match, already on the relay, too late (`T5L_GAME_FALLBACK`), a result is in, not supported |
 | `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, retry, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}`; `retry` (1.1.3): whole seconds until this player may invite that friend again (0 = now) |
 | `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
 | `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
@@ -560,7 +687,7 @@ Server to client (pushed):
 
 | t | fields |
 |---|---|
-| `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]`, `rooms [{id, name, owner, members, ranked, build, status}]`, `queue {quick, ranked}` |
+| `lobby_state` | `players [{id, name, guest, status, rating, rd, record, room, rtt, build, release}]` (`room` null for a hidden room), `rooms [{id, name, owner, members, ranked, build, status, watch, size, rotation, private, lock}]` (a client without `private_rooms` gets no locked room; nobody a hidden one), `queue {quick, ranked}` |
 | `lobby_delta` | only to clients with `caps: ["delta"]`, after one `lobby_state`: `players` (changed or new), `gone` (ids), `rooms` (changed or new), `rooms_gone`, `queue` -- each only when it changed. The client library merges it and emits a complete `lobby_state` |
 | `chat` | `from`, `text`, `time` |
 | `challenged` / `challenge_update` | `challenge`, `from` / `state: accepted\|declined\|cancelled\|expired` |
@@ -570,7 +697,7 @@ Server to client (pushed):
 | `nat_begin` | `match`, `token` (hex, secret), `tag` (hex, shared by both players), `side`, `udp_port`, `udp_port2`, `nat2` (the server plans the punch) |
 | `nat_punch` | `match`, `candidates [{ip, port, kind: local\|mapped\|public}]`, `timeout`; to a `nat2` client also `plan {start_at, start_in, window, interval, slow_start, ttl_open, wait_peer, scan [{ip, ports}]}` (docs/NETPLAY.md "Getting a direct connection"); `retry` on the one second chance |
 | `nat_peer_punching` | `match`: the opponent's planned punch has started (its NAT is open toward us) |
-| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token) |
+| `nat_relay` | `match`, `udp_port`, `reason`, `bridge` (both clients `nat2`: keep the game socket in the launcher and upgrade to the direct path when it works); on a regional relay (both clients `relays`) also `relay {id, name, host, port}` and `relay_token` (hex: bind there with it instead of the match token); `fallback: true` when a running direct match moves onto the relay (`nat_fallback`: the launcher opens a new socket, its game holds the old one) |
 | `relays` | `relays [{id, name, host, port}]`: the regional relays changed (clients with the `relays` cap measure them again) |
 | `match_start` | `match`, `role`, `slot`, `path`, `peer`, `relay_port`, `relay {id, name, host, port}` (a regional relay), `rtt_ms`, `jitter_ms`, `delay`, `rounds`, `ranked`, `build`, `opponent`, `seed`, `fight {p1, p2, stage, rounds, pick}` |
 | `match_cancel` | `match`, `reason: declined\|ready_timeout\|opponent_left\|udp_unreachable\|no_connection\|relay_full`, `you` (true = because of you) |
@@ -585,6 +712,7 @@ Server to client (pushed):
 | `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires` |
 | `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind`; to the inviter also `retry` (1.1.3): whole seconds until the next invite to that friend (30 after a no or a take-back, else 0) |
 | `kicked` | `reason` |
+| `room` | `room`: this player's room as its members see it -- the list entry plus `size`, `rotation`, `lock`, `hidden`, `owner_id`, `players [{brief, state: playing\|line\|away}]`, `line` (ids in turn order), `playing` (ids), `next {at, players}` (a community room's countdown, server time), `watch` (this member may watch its match). Pushed when it changes; never a password or a code |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
 `auth_failed`, `name_taken`, `bad_name`, `not_allowed`, `not_found`, `busy`,
@@ -626,6 +754,9 @@ Answers are never larger than requests (no amplification). The game's packets
 - **No secrets in the repository.** All server settings come from `T5L_*`
   environment variables; the database and any TLS key stay outside the repo
   (`lobby/.gitignore` blocks `*.db`, `*.pem`, `*.key`).
+- **Room passwords** (private rooms): a salted scrypt hash in memory only, a constant-time check, wrong guesses
+  limited per player, address and room with the wait in the refusal, never logged or sent to anybody
+  ([Rooms](#rooms), "Security").
 - **Passwords**: scrypt (N = 2^14, r = 8, p = 1), 16-byte random salt per
   account, constant-time comparison, never logged or stored in clear. The
   launcher does not save them. The CLI reads them from an environment variable,
@@ -720,7 +851,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_RELAY_CHECK_SECONDS` / `T5L_RELAY_DEAD_SECONDS` | `5` / `20` | health check of every node, and the silence after which a node gets no new matches |
 | relay node: `T5L_RELAY_SECRET_FILE`, `T5L_RELAY_ID`, `T5L_RELAY_CENTRAL`, `T5L_RELAY_BIND_SECONDS` | `60` (the last) | `python run.py relay`: its secret, its id in relays.json, the central server's address(es) (optional), how long a session's bind tokens work |
 | `T5L_MAX_CLIENTS` / `T5L_MAX_PER_IP` | `500` / `8` | connection caps (raise MAX_PER_IP for LAN parties behind one router) |
-| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 6, 90 s | (the punch window was 3 s up to 1.1.0) |
+| `T5L_READY_TIMEOUT`, `T5L_PUNCH_TIMEOUT`, `T5L_RELAY_TIMEOUT`, `T5L_RESULT_TIMEOUT` | 15, 6, 10, 90 s | (the punch window was 3 s up to 1.1.0; the relay setup 6 s up to 1.1.2 -- shorter than a client's own bind + measure) |
+| `T5L_GAME_FALLBACK` | `90` | seconds after a direct match's start in which a game that heard nothing at all (a firewall blocking it) may move the match onto the relay (`nat_fallback`; `0` = off) |
 | `T5L_PUNCH_TTL_OPEN` / `T5L_PREDICT_PORTS` / `T5L_RELAY_UPGRADE` | `0.5` / `24` / `1` | low-TTL opening of each side's own NAT (s), ports tried after a symmetric NAT's last one, relayed matches of two new clients move onto the direct path when it works (docs/NETPLAY.md "Getting a direct connection") |
 | `T5L_BLIND_READY` | `1` | queue matches show only the ping until both accepted |
 | `T5L_INGAME_PICK` | `30` | seconds to pick the fighter on the game's own select screen (both clients must be able to); `0` = the launchers' characters |
@@ -741,7 +873,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_LOBBY_INTERVAL` | `0.3` | seconds between lobby list updates (at most) |
 | `T5L_UDP_CTL_PPS` | `5000` | server-addressed UDP packets per second, all senders together |
 | `T5L_NAME_BLOCKLIST` | | file with extra words refused in new names |
-| `T5L_STATUS_HOST` / `T5L_STATUS_PORT` | `127.0.0.1` / `7780` | HTTP /health, /status, /metrics; `0` = off |
+| `T5L_STATUS_HOST` / `T5L_STATUS_PORT` | `127.0.0.1` / `7780` | HTTP /health, /status, /metrics, /tournaments; `0` = off |
+| `T5L_TOUR_*` | | tournaments: who may organize, the no-show time, limits, rated or not (docs/TOURNAMENTS.md "Server settings") |
 | `T5L_STATUS_LOG_MINUTES` | `15` | a one-line status in the log |
 | `T5L_BACKUP_DIR`, `T5L_BACKUP_HOURS`, `T5L_BACKUP_KEEP` | , `24`, `14` | automatic online database backups |
 | `T5L_ADMIN_POLL` | `5` | seconds until bans made with the admin tool take effect |

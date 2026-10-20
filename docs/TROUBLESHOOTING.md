@@ -153,6 +153,26 @@ changes, press **Cancel**, then **BUILD GAME** again. If it happens again,
 send `native\build.log` (**Report a problem...**) and look at
 [SmartScreen and antivirus](#smartscreen-and-antivirus).
 
+### The build fails at "Compile"
+
+"Compile" runs one compiler per processor, but only as many as fit in the free
+memory (about 1 GB each; one needs at most about 0.6 GB). Since 1.1.3 a file
+that fails is compiled once more at the end, alone, and the build goes on if
+that works (a lack of memory or an antivirus scan can make one attempt fail).
+What the log shows:
+
+- `jobs: 8 -- 12 processors, only 9.7 GB free memory: ...`: how many compilers
+  run at once and why.
+- `[2/22] ppu_recomp_002.cpp: 5.7 s FAILED (exit code 1)`, then the compiler's
+  error lines and its last lines, then `full output: ...\gamedll_obj\<file>.log`.
+- `compiled on the second try`: it worked; nothing to do.
+
+If it fails twice, close other programs and press **BUILD GAME** again. If it
+fails again, press **Report a problem...**: the report includes the compiler's
+messages for the files that failed (`file(line,col): error: ...`, never a line of
+the game's code: the compiler does not quote it, and the report keeps only those
+message lines of the compiler's output and of build.log).
+
 ### Which folder? (a warning in the Build tab)
 
 Any folder you can write to works, on any drive (tested: `D:\`), also with
@@ -756,14 +776,56 @@ Closing the game ends the session with that opponent.
 The first time a game starts a match, Windows Firewall shows "Do you want to
 allow public and private networks to access this app?" for `t5dr.exe`
 (publisher "unknown": the program is not signed). Click **Allow**. The window can
-open behind the (minimized) game window or only flash on the taskbar; look for
-it if the match does not start. Windows asks once per folder the program runs
-from, so a new release extracted to a new folder asks again. If you clicked
-Cancel, Windows keeps blocking incoming packets for that program: open Windows
-Security > Firewall & network protection > Allow an app through firewall and
-tick `t5dr.exe` for private networks. The launcher does not need administrator
+open behind the (minimized) game window or only flash on the taskbar. Windows
+asks once per folder the program runs from, so a new release extracted to a new
+folder asks again. It may ask about the launcher too (`python\pythonw.exe` or
+`T5DR Online.exe`): allow it as well. The launcher does not need administrator
 rights, and neither does the game. Windows itself asks for them only if you
-change the firewall. (We did not test a match with the firewall left blocking.)
+change the firewall.
+
+If you clicked Cancel (or never answered), the match still starts: Windows then
+blocks only packets the game did not ask for, and lets in every reply to the
+game's own packets -- both games send first, so they still meet. We tested it
+(1.1.3, with the firewall's behaviour emulated in the game and the launcher,
+never by changing this PC's firewall): one side blocked, both sides blocked,
+blocked behind every kind of home router -- every match connected, directly or
+through a relay. What you lose: a direct connection that needs the other side's
+packet to arrive first. Then the match goes through a relay server, with more
+lag. The Online tab tells you when the firewall blocks the game: see below.
+
+### The firewall blocks the game
+
+The Online tab shows a line marked **FIREWALL** with a **How to fix** link when
+
+- Windows Firewall has a rule that blocks `t5dr.exe` (or the launcher) on the
+  network you are on -- usually because Cancel was clicked when Windows asked;
+  the line names the program. The launcher only *reads* the firewall's rules
+  for the exact `t5dr.exe` it starts; it never changes them and never asks for
+  administrator rights. Or
+- a match showed it: this PC's UDP never reached the lobby server, or the game
+  on a direct connection heard nothing at all from the other game (a firewall
+  that blocks the game completely -- some antivirus firewalls do). The launcher
+  then moves that match onto the relay by itself (both games start the match
+  again; it takes about 20 seconds) instead of failing with "could not be
+  reached".
+
+Matches still connect either way, but some only through a relay (more lag). To
+fix it:
+
+1. Open **Windows Security** > **Firewall & network protection** > **Allow an
+   app through firewall**, click **Change settings**, find `t5dr` (and
+   `pythonw` / `T5DR Online`) and tick **Private** (and **Public** if you play on
+   a network Windows calls public). Windows asks for administrator rights here:
+   that is Windows, not the launcher.
+2. Still blocked? A Cancel on Windows' question leaves **block rules**, which win
+   over the tick above: open **Windows Defender Firewall with Advanced Security**
+   (Start, type `wf.msc`), **Inbound Rules**, sort by **Name**, and delete (or
+   set to **Allow**) every `t5dr` rule with a red block sign whose **Program** is
+   your `t5dr.exe` (the folder of this release: `native\build\cmake\t5dr.exe`).
+3. Another firewall (Norton, Kaspersky, ESET, Bitdefender, a company network):
+   allow `t5dr.exe` and the launcher in its settings.
+4. Back in the launcher, the line goes away the next time the Online tab is
+   shown (or click **Dismiss**).
 
 ### "Lobby: ..." or "Lobby error: ..." when you log in
 
@@ -780,7 +842,7 @@ friend's server (README, "Online"). **(untested)**
 | "Nobody accepted in time." | One of you did not click Accept within 15 seconds. Search again. |
 | "No UDP connection to the lobby server (firewall?)." | UDP 7781/7782 to the server is blocked. Allow `t5dr.exe` (and, if Windows asks, the launcher's `python\pythonw.exe`) through the firewall, or leave the VPN. |
 | "Could not connect the two PCs, not even through the relay." | Neither a direct connection nor the lobby's relay worked. Same checks; then try again. |
-| "Your opponent's game could not be reached (firewall or router?)." | The game on the other side did not answer. They may have closed it, or their firewall prompt is still open. |
+| "Your opponent's game could not be reached (firewall or router?)." | The game on the other side did not answer. They may have closed it, or their game crashed. A firewall alone no longer causes this between two 1.1.3 launchers: a game that hears nothing on a direct connection gets the relay ([The firewall blocks the game](#the-firewall-blocks-the-game)). |
 | "Your opponent's game is a different build." | You do not run the same release. See below. |
 | "Your opponent closed the game." / "The connection to your opponent's game was lost." | The match ended early. It is not counted as a win for the one who left. |
 
@@ -822,6 +884,15 @@ Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 2026-10-17 (two games on one PC with other test programs running). Earlier notes
 said 30-45 fps; that was fixed by later work. On a weaker PC:
 
+- **Fights at 40-50 fps** on an older or slower processor, or a laptop: the
+  game needs one fast processor core for its own frame. Until 1.1.2 a frame
+  that was a little too slow also waited for the next screen refresh, so a
+  PC that could do 50-55 fps showed 30-45; since 1.1.3 such a frame is shown
+  as soon as it is ready (`PS3_LATE_FLIP=0` in the extra settings brings back
+  the old way). What to check, in a list you can follow step by step:
+  [docs/WEAK_PC.md "Player checklist"](WEAK_PC.md#player-checklist). A
+  Vulkan renderer would not help here: the graphics calls are about 5 % of a
+  frame ([why](WEAK_PC.md#d3d12-or-vulkan)).
 - **Weak graphics card** (laptop, integrated graphics): in the launcher,
   **Settings** -> **Internal resolution** -> **Lower**, or **Lowest** if that
   is not enough. The 3D scene gets softer, the HUD stays sharp; the game
@@ -877,6 +948,25 @@ not (on every PC, power saving or not).
   power a lot.
 - **Internal resolution Lower or Lowest** on integrated graphics: less work
   for the graphics leaves more of the shared power budget to the processor.
+  Above Native the graphics work grows with the pixels: on integrated graphics
+  1080p takes about 2.6 times Native's GPU time per frame, 1440p 4 times, 4K
+  8-9 times (docs/RENDER_PERF.md "GPU time on integrated graphics"); Native or
+  1080p is the sensible choice there. With power saving on (on by itself with
+  integrated graphics), the shadow map and the sun's glow stay at their PS3
+  size above Native -- shadow edges then look as they do at Native.
+- **4K (or 1440p) on integrated graphics** with a 1080p screen: this game's
+  3D scene at 4K is 6144 x 4320 pixels, and on an APU the graphics share the
+  processor's memory and power -- so the busy graphics also slow the game's
+  own work (a long "game" time in `[slow-frames]`, not the graphics' own
+  time). Choose **1080p**, or **Auto (matches the screen)**, which picks
+  1080p there (since 1.1.3; Settings also says "4K (3x) on integrated
+  graphics: try 1080p (1.5x) for 60 fps."). On a 1080p screen 1080p still
+  looks sharp. docs/RENDER_PERF.md "4K on integrated graphics".
+- **The log says `power saving off (PS3_LAPTOP=0 ...)` although Settings
+  shows Auto**: a `PS3_LAPTOP=0` line in Settings -> "Advanced: extra
+  settings" (it wins over the choice; since 1.1.3 Settings says so), or a
+  `PS3_LAPTOP` variable in Windows' environment (since 1.1.3 Auto overrules
+  that one).
 - **Two graphics chips** (NVIDIA Optimus, AMD switchable graphics): the game
   picks the fast chip. The screen is still driven by the integrated chip and
   every picture is copied across; the log says `[gpu] display: ... hybrid
@@ -885,13 +975,23 @@ not (on every PC, power saving or not).
   performance".
 - Keep the air vents free; a laptop stand helps. Some laptops have a "fan
   boost" or performance key in their own control app.
+- **Intel processors with performance and efficiency cores** (12th gen and
+  newer, Core Ultra) and **Ryzen processors with two core groups** (7900X,
+  7950X, ...): since 1.1.3 the game keeps its main threads on the
+  performance cores, or in one core group, by itself. The game log's
+  `[sched] processors:` and `[sched] placement:` lines say what it found and
+  where the threads run. Do not limit the game to some cores in Task Manager
+  or tools like Process Lasso: it then gets only those (`[sched] processors:
+  4 logical ... (of 16)`).
 
 **What the log says.** Every 30 seconds with slow frames the game log has a
 line like
 
     [slow-frames] last 30 s: 1702 frames, 214 slow (over 20.9 ms): CPU 201 (game 187, render translation 9,
-    vblank thread late 5), GPU 9, present 4; ... vblank clock 59.94 Hz | on battery (battery 61 %),
-    power plan "Balanced", processor clock limit 2100 of 3800 MHz (held back: heat or the power plan)
+    vblank thread late 5), GPU 9, present 4; 380 late for their vblank, shown when translated; ...
+    vblank clock 54.10 Hz; other programs 3.1 of 8 logical processors busy, the game 2.4 (of 8 it may
+    use) | on battery (battery 61 %), power plan "Balanced", processor clock limit 2100 of 3800 MHz
+    (held back: heat or the power plan)
 
 - **CPU** slow frames: the processor was too slow for the frame -- power
   saving, the charger, the power mode, closing programs.
@@ -903,6 +1003,22 @@ line like
 - "processor clock limit ... (held back ...)" means Windows says the
   processor may not run at its full speed right now: heat, the power plan, or
   the battery.
+- "late for their vblank, shown when translated" (1.1.3): frames that took
+  longer than one screen refresh and were shown as soon as they were ready;
+  with many of them the `vblank clock` goes below 59.9 Hz -- the game ran a
+  bit slower than 60 instead of dropping to 30-45.
+- "other programs X of Y logical processors busy" (1.1.3): what the rest of
+  the PC used at the same time. A large X: close programs.
+- "game part ... main thread running A, waiting for the renderer C, for
+  other game threads D" (1.1.3): what the game's own frame was made of. C large: the game waited for the graphics (counted as GPU).
+  A large with C near 0: the processor's work itself was slow.
+- "GPU busy X ms a frame (Y % of the time)" (1.1.3): the graphics' own time.
+  Near 100 %: the line ends with "GPU-bound" -- a lower Internal resolution
+  helps. On integrated graphics already 50 % and more slow the processor
+  ("integrated graphics busy ..." at the end of the line).
+- "processors at X GHz on average (Y % of their Z)" (1.1.3): the real clock
+  while playing; well below 100 % on an APU while the graphics are busy, or
+  on a laptop that is hot or on battery.
 
 **Report a problem** (launcher) puts the power source, power plan, power
 mode, processor clock limit and (where Windows has one) the temperature

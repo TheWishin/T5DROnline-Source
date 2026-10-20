@@ -96,6 +96,16 @@ def login(ctx, p, how="guest", timeout=20):
     return ok
 
 
+def create_room(p):
+    """Create room the way a player does: the button, and -- on a server with private rooms (1.1.3, tk_rooms.py) --
+    Create in its window with what it offers first (an open room for two)."""
+    p.press("room")
+    ui = getattr(p.tab, "rooms_ui", None)
+    w = getattr(ui, "window", None)
+    if w is not None:
+        w.create_button.invoke()
+
+
 def latest(p, t, since):
     ev = p.events_of(t, since)
     return ev[-1] if ev else None

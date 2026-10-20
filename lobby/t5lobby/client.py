@@ -8,6 +8,8 @@ notice, ...) plus the client's own:
 
     {"t": "match_start", "ticket": MatchTicket, ...}   both players are connected: start the game
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
+                                           (udp_blocked: true -- the server never answered this PC's UDP)
+    {"t": "nat_fallback", "match": id, "ok": bool}   the answer to nat_fallback() (the relay's own events follow)
     {"t": "nat_upgrade", "match": id, "path": "direct"|"relay", "text": ...}   a relayed match moved onto
                                            the direct path (or back to the relay); see RelayBridge
     {"t": "relay_rtts", "rtts": {id: ms}}  round trips to the server's regional relays were measured
@@ -30,6 +32,10 @@ notice, ...) plus the client's own:
     {"t": "friend_update", "name", "state": "accepted"|"declined"}   the answer to this player's request
     {"t": "invited", "invite", "from", "kind": "casual"|"room", "room", "expires"}   a friend invites this player
                                            (answer_invite: one call starts the match or joins the room)
+    {"t": "room", "room": {...}}           this player's room as a member sees it (private_rooms=True, servers from
+                                           1.1.3): its line, who plays, the next match, its lock (never a password
+                                           or a code); also in .my_room. .room_code: the invite code of that room
+                                           when this launcher knows it (made it, or joined with it)
     {"t": "invite_update", "invite", "state": "accepted"|"declined"|"cancelled"|"expired", "name", "kind", "retry"}
                                            "retry" (to the inviter; servers from 1.1.3): whole seconds until this
                                            player may invite that friend again (a no or a take-back holds the next
@@ -66,8 +72,10 @@ import time
 from . import proto
 from .handover import MatchTicket
 from .i18n import t
-from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
+from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt, test_inbound_mode
 from .proto import LobbyError
+from .tour_client import TourCalls
+from .spectate import ClientMixin as SpectateClientMixin
 
 CLIENT_NAME = "t5lobby-client/0.1"
 _RETRY_TEXT = re.compile(r"your last invite to that friend ended a moment ago; try again in (\d{1,5}) s")
@@ -88,11 +96,13 @@ def _ip_literal(host):
         return False
 
 
-class LobbyClient:
+class LobbyClient(TourCalls, SpectateClientMixin):
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
+                 tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
+                 private_rooms=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -124,7 +134,19 @@ class LobbyClient:
         invites (docs/ONLINE.md "Friends and invites") with a server that has them; False behaves like a 1.1.1 client (the
         server then sends none of their messages). old_stages: this client knows the Tekken 5 stage keys
         (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its matches; False behaves like a
-        1.1.1 client (tests)."""
+        1.1.1 client (tests). tournaments: take part in the server's tournaments (docs/TOURNAMENTS.md; the calls
+        are in tour_client.py): the server then sends tour_call ("Your tournament set is ready") and the other
+        tour_* events. Off by default (the launcher turns it on).
+        spectate: watch live matches and let this player's be watched (docs/SPECTATE.md, spectate.ClientMixin);
+        live_dir: where this player's games write their live streams (the match driver sets it), watch_dir: where
+        a watched stream goes. Off by default: the server then sends none of its messages (the launcher turns
+        it on).
+        test_inbound: testing only -- "stateful" / "block": this launcher's UDP sockets behave as if Windows
+        Firewall blocked the launcher (nat.InboundFilter; docs/NETPLAY.md "When Windows Firewall blocks the
+        game"). None: T5_NET_TEST_INBOUND from the environment; "" off.
+        private_rooms: rooms for more than two players who take turns, rooms locked with a password or an invite
+        code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
+        locked room for it)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -134,6 +156,7 @@ class LobbyClient:
         self.auto_ready = auto_ready
         self.handover = handover
         self.block_direct = block_direct
+        self.test_inbound = test_inbound_mode(test_inbound) or ""
         self.request_timeout = request_timeout
         self.reconnect_window = reconnect
         self.plain_passwords = plain_passwords
@@ -146,6 +169,9 @@ class LobbyClient:
         self.friend_list = None      # the last `friends` message (friend_status merged in), None before the first
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
+        self.private_rooms = private_rooms
+        self.my_room = None          # this player's room as its members see it (the last `room` message)
+        self.room_code = None        # its invite code, when this launcher knows it (never sent to anyone but the server)
 
         self.events = queue.Queue()
         self.session = None          # "remember me" token from a password login (store it, not the password)
@@ -181,12 +207,14 @@ class LobbyClient:
         self.relay_bridge = relay_bridge
         self.relays = relays
         self.relay_rtts = {}         # regional relay id -> ms, as last measured and reported
+        self.tournaments = tournaments
         self._mapper = None          # portmap.GamePortMapper (port_mapping=True)
         self._router_factory = None  # tests / NAT simulator: a fake router for the mapper
         self._bridge = None          # RelayBridge of the running relayed match
         self.upgrades = []           # (match, path) every switch of a relay bridge, for tools and tests
         self.clock_offset = None     # server time - this PC's time (seconds), for the punch's common start
         self._closing = False
+        self._spec_init(spectate, live_dir, watch_dir)
 
     # ================================================================ thread plumbing
     def _ensure_loop(self):
@@ -278,7 +306,11 @@ class LobbyClient:
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])
                                                 + (["relays"] if self.relays else [])
-                                                + (["friends"] if self.friends else [])})
+                                                + (["friends"] if self.friends else [])
+                                                + (["tournaments"] if self.tournaments else [])
+                                                + (["spectate"] if self.spectate else [])
+                                                + (["private_rooms"] if self.private_rooms else [])
+                                                + (["game_fallback"] if self._can_fallback() else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -289,6 +321,11 @@ class LobbyClient:
             self._closing = closing
             raise
         return self.welcome
+
+    def _can_fallback(self):
+        """A game that hears nothing on the direct path can be moved onto the relay (nat_fallback): only through the
+        relay bridge, which keeps the network on this launcher's socket and gives the game 127.0.0.1."""
+        return bool(self.nat2 and self.relay_bridge and self.handover == "port")
 
     async def _send(self, msg):
         if not self.connected:
@@ -368,6 +405,7 @@ class LobbyClient:
                     continue
                 self.me = r["you"]
                 self._start_keepalive()
+                await self._spec_after_login()
                 self._emit({"t": "reconnected"})
                 return
         finally:
@@ -399,7 +437,8 @@ class LobbyClient:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
                      "leaderboard", "bye", "profile", "history", "passwd_ok", "recovered", "recovery_codes",
-                     "rematch", "blocked", "unblocked", "blocks", "set_next", "friend_added", "invite_sent"):
+                     "rematch", "blocked", "unblocked", "blocks", "set_next", "friend_added", "invite_sent",
+                     "tour_list", "tour"):
                 return
         handler = getattr(self, "_on_" + t, None)
         if handler is not None:
@@ -418,6 +457,23 @@ class LobbyClient:
             for p in self.players:
                 if p["id"] == self.me["id"]:
                     self.me = p
+            if self.me.get("status") in ("idle", "queue"):
+                self.my_room = self.room_code = None     # (left it, or removed from it)
+
+    async def _on_room(self, msg):
+        """This player's room (a reply to create / join / lock, or a member's update): its view, and the invite code
+        when the server handed one over (to the host only)."""
+        r = msg.get("room") if isinstance(msg.get("room"), dict) else None
+        if r is None:
+            return
+        if self.my_room is not None and self.my_room.get("id") != r.get("id"):
+            self.room_code = None
+        self.my_room = r
+        code = msg.get("code")
+        if isinstance(code, str) and code:
+            self.room_code = code
+        elif r.get("lock") != "code":
+            self.room_code = None
 
     async def _on_kicked(self, msg):
         self._kicked = True
@@ -476,6 +532,8 @@ class LobbyClient:
         for f in (self.friend_list or {}).get("friends") or ():
             if f.get("name") == msg.get("name"):
                 f.update({k: msg.get(k) for k in ("status", "activity", "invite")})
+                if "watch" in msg:
+                    f["watch"] = bool(msg["watch"])     # (spectating: a server and client with the cap)
         if "retry" in msg:
             self._note_invite_wait(msg.get("name"), msg.get("retry"))
 
@@ -510,7 +568,9 @@ class LobbyClient:
         if left <= 0:
             self.invite_waits.pop(str(name).lower(), None)
             return 0
-        return math.ceil(left)
+        # (a millisecond off: "now + N - now" is N plus a rounding error when the clock has not moved, which ceil()
+        # made N + 1 -- test_friends saw 86401 for a day now and then)
+        return max(1, math.ceil(left - 0.001))
 
     async def _on_relays(self, msg):
         """The server's list of regional relays changed: measure the new list."""
@@ -577,10 +637,25 @@ class LobbyClient:
         return False
 
     async def _on_nat_relay(self, msg):
-        if not self._gs or not self.match or self.match["match"] != msg["match"]:
+        if not self.match or self.match["match"] != msg["match"]:
+            return False
+        if not self._gs:
+            if not (msg.get("fallback") and self.match.get("udp")):
+                return False
+            # The games could not connect directly (nat_fallback): the game holds the old socket's port, so the
+            # relay gets a new one -- any free port, bound with the match's token like the first.
+            self._nat_phase(self._nat_relay_again(msg))
             return False
         self._nat_phase(self._nat_relay(msg))
         return False
+
+    async def _nat_relay_again(self, msg):
+        u = self.match["udp"]
+        gs = await GameSocket.open(0, tuple(u["server"]), u["port2"], bytes.fromhex(u["token"]), bytes.fromhex(u["tag"]),
+                                   u["side"], block_direct=self.block_direct, inbound=self.test_inbound)
+        self._gs = gs
+        self.match["state"] = "nat"
+        await self._nat_relay(msg)
 
     async def _on_match_start(self, msg):
         gs = self._gs
@@ -657,8 +732,8 @@ class LobbyClient:
         except (LobbyError, ConnectionError, OSError):
             pass
 
-    def _status(self, mid, phase, text):
-        self._emit({"t": "nat_status", "match": mid, "phase": phase, "text": text})
+    def _status(self, mid, phase, text, **extra):
+        self._emit(dict({"t": "nat_status", "match": mid, "phase": phase, "text": text}, **extra))
 
     def _server_nat2(self):
         return bool(self.nat2 and self.welcome and "nat2" in (self.welcome.get("caps") or ()))
@@ -690,8 +765,12 @@ class LobbyClient:
         gs = await GameSocket.open(self.game_port, (self.server_ip, int(msg["udp_port"])),
                                    int(msg.get("udp_port2") or 0), bytes.fromhex(msg["token"]),
                                    bytes.fromhex(msg["tag"]), int(msg["side"]),
-                                   block_direct=self.block_direct, keep_dup=self.handover == "share")
+                                   block_direct=self.block_direct, keep_dup=self.handover == "share",
+                                   inbound=self.test_inbound)
         self._gs = gs
+        # what a second game socket needs if the match must move onto the relay later (nat_fallback)
+        self.match["udp"] = {"server": (self.server_ip, int(msg["udp_port"])), "port2": int(msg.get("udp_port2") or 0),
+                             "token": msg["token"], "tag": msg["tag"], "side": int(msg["side"])}
         v2 = self.nat2 and bool(msg.get("nat2"))
         self.match["peer_open"] = asyncio.Event()    # set by nat_peer_punching (the opponent started)
         # Before the socket sends anything: a forward made now usually carries its outgoing packets too, so
@@ -699,7 +778,8 @@ class LobbyClient:
         mapped = await self._map_port(gs.port) if v2 or self.port_mapping else None
         reg = await gs.register()
         if reg is None:
-            self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"))
+            # (udp_blocked: nothing came back from the server -- the Online tab's firewall hint)
+            self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"), udp_blocked=True)
             return
         public, probe = reg
         nat = "unknown" if probe is None else ("eim" if probe[1] == public[1] else "symmetric")
@@ -894,7 +974,8 @@ class LobbyClient:
             return
         try:
             rtt = await server_rtt(self.relay_address({"id": "main", "host": self.server_ip,
-                                                       "port": int(self.welcome["udp_port"])}))
+                                                       "port": int(self.welcome["udp_port"])}),
+                                   **({"inbound": self.test_inbound} if self.test_inbound else {}))
         except OSError:
             rtt = None
         if rtt is not None:
@@ -919,7 +1000,8 @@ class LobbyClient:
 
         async def one(r):
             try:
-                return r["id"], await server_rtt(self.relay_address(r))
+                return r["id"], await server_rtt(self.relay_address(r),
+                                                 **({"inbound": self.test_inbound} if self.test_inbound else {}))
             except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 return r.get("id"), None
         got = await asyncio.gather(*(one(r) for r in lst[:32]))
@@ -958,6 +1040,7 @@ class LobbyClient:
         self._start_port_mapper()
         if self.nat2:
             self._tasks.append(asyncio.ensure_future(self._clock_sync()))
+        await self._spec_after_login()
         return self.me
 
     async def _clock_sync(self, n=3):
@@ -1159,6 +1242,23 @@ class LobbyClient:
         running games. -> {"state": waiting|started, "in": seconds}"""
         return self._call({"t": "set_next", "match": match_id, "keep": bool(keep)})
 
+    def nat_fallback(self, match_id):
+        """This player's game is on the direct path and has heard nothing at all from its opponent's (a firewall
+        that blocks the game, docs/NETPLAY.md "When Windows Firewall blocks the game"): ask the server to move the
+        match onto the relay. Both launchers then get nat_relay + a second match_start for the same match (a new
+        ticket: the games start its session again, through the relay bridge). -> True when the server agreed."""
+        if not (self._can_fallback() and self.welcome and "game_fallback" in (self.welcome.get("caps") or ())):
+            return False
+        r = self._call({"t": "nat_fallback", "match": match_id})
+        return bool(r.get("ok"))
+
+    def game_playing(self, match_id):
+        """This player's game has played this match's fight for a while (600 lockstep frames: the netplay's first speed
+        or sync line after FIGHT START), so the two games hear each other: the server refuses a relay fallback from then
+        on (a game that heard nothing never gets there). Sent once per match, no answer."""
+        if self.welcome and "game_fallback" in (self.welcome.get("features") or ()):
+            self._fire({"t": "game_started", "match": match_id, "playing": True})
+
     def report_lag(self, match_id, frames, waited_ms, pc_fps=None, fps=None):
         """The game's own numbers for a finished match: frames played, milliseconds spent waiting for
         the opponent's input, this PC's speed without those waits. Both players then get `lag_check`.
@@ -1176,14 +1276,75 @@ class LobbyClient:
     def cancel_queue(self):
         return self._call({"t": "unqueue"})
 
-    def create_room(self, name=None, ranked=False):
-        return self._call({"t": "room_create", "name": name, "ranked": ranked})["room"]
+    def create_room(self, name=None, ranked=False, size=2, rotation="winner", private=None, password=None,
+                    hidden=False):
+        """A room. size 2 = a classic room; 3.. = a community room whose members take turns (rotation "winner":
+        winner stays, "queue": everyone in turn). private "password" (with `password`) or "code" (the server makes
+        an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
+        The password goes to the server only, over this connection; nothing here keeps or logs it."""
+        msg = {"t": "room_create", "name": name, "ranked": ranked}
+        if size != 2 or private or hidden:
+            if not self.private_rooms_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no private rooms")
+            msg.update(size=size, rotation=rotation, hidden=bool(hidden))
+            if private:
+                msg["private"] = private
+            if private == "password":
+                msg["password"] = password
+        r = self._call(msg)
+        if r.get("code"):
+            self.room_code = r["code"]
+        return r["room"]
 
-    def join_room(self, room_id):
-        return self._call({"t": "room_join", "room": room_id})["room"]
+    def join_room(self, room_id=None, password=None, code=None):
+        """Join a room: by its id (an open room; a locked one with `password`) or with an invite `code` (the room id
+        is optional then: a hidden room is found by its code)."""
+        msg = {"t": "room_join", "room": room_id}
+        if password is not None:
+            msg["password"] = password
+        if code is not None:
+            msg["code"] = code
+        r = self._call(msg)["room"]
+        if code is not None:
+            raw = "".join(ch for ch in str(code).upper() if ch.isalnum())
+            self.room_code = "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+        return r
 
     def leave_room(self):
-        return self._call({"t": "room_leave"})
+        r = self._call({"t": "room_leave"})
+        self.my_room = self.room_code = None
+        return r
+
+    def room_lock(self, lock=None, password=None, hidden=None):
+        """The room's host: lock "password" (with `password`), "code" (a new invite code: the old one stops working;
+        .room_code has the new one), "none" (open); hidden True / False (None: unchanged). -> the room."""
+        msg = {"t": "room_lock"}
+        if lock is not None:
+            msg["lock"] = lock
+        if lock == "password":
+            msg["password"] = password
+        if hidden is not None:
+            msg["hidden"] = bool(hidden)
+        r = self._call(msg)
+        if r.get("code"):
+            self.room_code = r["code"]
+        elif lock in ("password", "none"):
+            self.room_code = None
+        return r["room"]
+
+    def room_kick(self, player_id):
+        """The room's host removes a member (not while they play); they cannot come back into this room."""
+        return self._call({"t": "room_kick", "player": player_id})["room"]
+
+    def room_line(self, back=True):
+        """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
+        return self._call({"t": "room_line", "in": bool(back)})["room"]
+
+    def private_rooms_ok(self):
+        """Does the server have private and community rooms (and this client asked for them)?"""
+        w = self.welcome or {}
+        return bool(self.private_rooms and "private_rooms" in (w.get("features") or ())
+                    and "private_rooms" in (w.get("caps") or ()))
 
     def rematch(self, match_id=None, accept=True, keep=False):
         """Rooms: rematch() starts the next match in the room. After any other match: the finished
@@ -1263,6 +1424,7 @@ class LobbyClient:
                     pass
             await self._drop_game_socket()
             await self._drop_bridge()
+            await self._spec_shutdown()
             if self._mapper is not None:
                 await asyncio.get_running_loop().run_in_executor(None, self._mapper.unmap)
             for task in self._tasks:

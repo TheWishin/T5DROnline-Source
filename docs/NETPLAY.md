@@ -242,6 +242,10 @@ sender's setting (0xFF = auto). A v2 peer is refused like any other build
 (`build_mismatch`); the lobby's build id includes the version
 (`lobby/t5lobby/buildid.py` NETPLAY_VERSION 3).
 
+**Protocol v4** (costumes-online, 1.1.3): the COSTUME packet below. A v3 game
+never sends one and the stage confirm waits for it, so a v3 peer is a
+different build (`build_mismatch`, NETPLAY_VERSION 4).
+
 Tested (two games on this PC through `tools/rollback_net_test.py`'s proxy,
 direct fight, 3 % loss, +-5 ms jitter; `build/lat/netruns/`), one match each (Asuka vs Lili,
 stage 20, 2 rounds), 8 logical processors per game:
@@ -372,6 +376,19 @@ session's own socket and key:
   acknowledges it, and acknowledges a received pick three times (never at
   once: two sides answering each other would not stop). `t5_netplay_pick_send()`
   / `t5_netplay_pick_peer()`.
+- **COSTUME packets** (type 7, docs/DIRECTFIGHT.md "Custom costumes online"):
+  `{hash, total, offset, len, ack_mask, ack_hash}` + up to 1,024 bytes -- a
+  piece of the sender's custom costume table (at most 9,283 bytes, so at most
+  10 pieces; len 0 = an acknowledgement only), which pieces of the receiver's
+  table the sender holds, and that table's FNV-1a hash once the sender has all
+  of it and the hash matched. Sent by the network thread from the moment both
+  are connected: up to three missing pieces every 100 ms until the peer
+  acknowledges the whole table by its hash; each received piece is
+  acknowledged three times. A table is taken once, when its pieces add up to
+  its hash; malformed pieces (above the bound, between pieces, of the wrong
+  length or longer than the packet) are dropped; a restarted peer process
+  starts both tables over. `t5_netplay_costume_set()` /
+  `t5_netplay_costume_peer()`; tests/c/netplay_fuzz.cpp checks all of it.
 - **A paused lockstep** between two matches of a session: `t5_netplay_pause()`
   makes the next frame a sync point (a scene barrier; under rollback every
   input before it is confirmed first), then the lockstep (or the rollback loop,
@@ -487,6 +504,7 @@ How a session starts, survives trouble, and ends when it cannot go on
 | Other build | A peer with another `T5_NET_BUILD`, or another netplay protocol version (older builds), is refused at the first HELLO, and told so (REJECT) -> `build_mismatch` within a second or two of boot, on both sides. A HELLO of another protocol version counts only when it proves it is the opponent's (the match key's tag, or without a key the address the lobby named; since 1.1.2 -- before, one 6-byte packet from anybody who found the port ended the session) |
 | Packets | With `T5_NET_KEY` (the lobby's per-match secret, sent only over the lobby's TCP channel) every packet ends in a SipHash-2-4 tag; without it the key comes from `T5_NET_MATCH` + `T5_NET_SEED` when both are set, else packets are unauthenticated (direct-IP play). Packets with a wrong tag, an unknown session or another peer process's nonce are dropped |
 | Who is the peer | The first authenticated HELLO (unauthenticated: only from the IP in `T5_NET_PEER` when it is given); after the handshake only that process (session id + nonce + tag) |
+| A firewall blocks the game | Windows Firewall (Cancel on its question, a block rule) drops only unsolicited packets: both games send first, the replies get in, the handshake works. A game that hears nothing at all on the direct path (a firewall that drops even replies, a router that forgot the punched mapping): its log says `nothing arrived yet`, and after 15 s the launcher moves the match onto the relay (`nat_fallback`, "When Windows Firewall blocks the game" below) |
 | Lobby could not connect the two PCs directly | The relay: the lobby server's own, or for two 1.1.1 launchers whichever relay (the lobby server's or a regional relay-only server) has the smallest sum of both players' round trips (docs/ONLINE.md "Regional relays"); between two 1.1.1 launchers the match moves onto the direct path as soon as it works ("Getting a direct connection" below) |
 | NAT rebinding / new relay mapping | The peer's packets arrive from a new address: they still prove who sent them, so the game answers there from then on ("the peer's address changed ... following it") -- but only for a packet that carries something new (a newer PING clock, inputs, hashes or scene changes not seen yet, a newer acknowledgement), or any packet once the known address has been quiet for 1 s. The tag proves who made a packet, not that it is new: before 1.1.2 a recorded packet played back from another address moved the session there ("old packet of the opponent's ... dropped" now). Test: `tests/test_netplay_fuzz.py` (`tests/c/netplay_fuzz.cpp`, which also fuzzes the parser under AddressSanitizer) |
 | Short outage / loss / jitter | Lockstep stalls and resumes; resends every 15 ms; nothing is lost while the outage is shorter than `T5_NET_TIMEOUT` |
@@ -714,6 +732,159 @@ regional relay: the match moves onto the direct path when a burst gets through
 (`lobby/tests/test_relays.py` UpgradeFromRegionalTest). Older launchers keep the central relay. Two
 real games through a regional relay on this PC (`lobby/tools/relay_e2e.py --exe`, simulated round trips,
 the path ~130 ms): 4,270 frames of rollback through both relay bridges, 0 mismatching, result confirmed.
+
+## When Windows Firewall blocks the game (1.1.3)
+
+Branch firewall-fallback, 2026-10-20. Until 1.1.2 the docs said: "We did not test a match with the firewall left
+blocking." This section is that test, and what it changed.
+
+**What Windows does.** When someone clicks Cancel on Windows' question ("allow public and private networks to access
+this app?"), or never answers it, or a rule blocks `t5dr.exe`, Windows Firewall drops every *unsolicited* inbound
+packet for that program. It still lets in the replies to the program's own packets: the firewall is stateful, and a
+UDP datagram from an address:port the socket has sent to belongs to that flow. Both games send first (HELLO every
+100 ms to `T5_NET_PEER`, from boot), and so do both launchers in the punch (low-TTL opening, then full punches), so
+in most cases the two sides still meet. What a blocked side loses: a path that needs the other side's packet to
+arrive first -- a punch from a port this side never sent to (a NAT with random ports on the other side), the
+netplay following the opponent to a new address (NAT rebinding mid-match), a router forward of the game port (the
+forward opens the router, not the PC).
+
+**The test switch** (the real firewall is never touched; `netsh` is never asked to change anything):
+
+- Game: `T5_NET_TEST_INBOUND=stateful|block` (`src/netplay/netplay_core.cpp`, `test_inbound_pass`), on the session's
+  socket. `stateful`: a datagram from an address:port this socket has not sent to is dropped before the netplay sees
+  it -- Windows for a blocked program. `block`: everything not from 127.0.0.1 is dropped, replies too -- stricter than
+  Windows Firewall (some third-party firewalls and antivirus "network shields"); the launcher's relay bridge on
+  127.0.0.1 still gets through. The log says `TEST: inbound firewall emulated (...)`, the first drops per address, and
+  the count at the session's end.
+- Launcher: the same two modes on the lobby client's UDP sockets (`LobbyClient(test_inbound=...)`, default
+  `T5_NET_TEST_INBOUND` from the environment; `nat.InboundFilter`): registration, punch, relay, the relay bridge's
+  socket to the network, the RTT pings.
+- Stub game (`lobby/tools/stub_game.py`), the NAT simulator (`natsim.py --fw-a/--fw-b stateful|block[:game|launcher]`:
+  a firewall on home A's / B's PC for both programs or one) and the e2e runner (`Player.set_firewall(game, launcher)`;
+  for `block` the shaper's proxy sits on 127.0.0.2, so the opponent is "not this PC" while the games bind 127.0.0.1).
+
+**Measured, NAT simulator** (lobby code of this branch, real lobby server with relay, stub games; the seven NAT types
+of "Getting a direct connection"; one-sided runs over all 49 ordered pairs so the firewall sits on each type once,
+two-sided over the 28 pairs; "game link ok" = both stub games got their packets through on the path the lobby chose):
+
+| firewall | matches | direct | relay | relay after the game heard nothing | no connection | game link ok |
+|---|---|---|---|---|---|---|
+| none (reference; 28 pairs x 20) | 560 | 447 | 113 | - | 0 | 560 |
+| A stateful, game and launcher (49 ordered pairs x 20) | 980 | 749 | 231 | 0 | 0 | 980 |
+| A stateful, game only (49 x 10) | 490 | 396 | 94 | 0 | 0 | 489 (1) |
+| A and B stateful, game and launcher (28 x 20) | 560 | 410 | 148 | 2 | 0 | 560 |
+| A block, game only -- 1.1.2 behaviour, no fallback (49 x 10) | 489 | 392 | 97 | - | 0 | **97** |
+| A block, game only (49 x 10) | 490 | 0 | 95 | 395 | 0 | 490 |
+| A and B block, games only (28 x 10) | 280 | 0 | 54 | 226 | 0 | 280 |
+| A block, game and launcher (3 pairs x 5) | 9 | 0 | 0 | - | 9 (2) | 0 |
+
+(1) one relayed trial whose stub games got too few packets through in their 2 s on the loaded PC (not a drop: the
+emulated firewall dropped nothing in it). (2) Nothing reaches the launcher either: the lobby server's UDP answers never
+arrive, the match is cancelled; the Online tab shows its hint. The rows "none", "A stateful" and "1.1.2 behaviour" ran
+with the branch's first state (switch, no fallback, relay setup 6 s), the others with the final code; the simulator's
+own login timeouts under load (a few per run) are left out. Raw results: build/fwhint/natsim/r1, r2 (not committed).
+
+- **Stateful (what Windows does), one side or both: every match connected**, directly or through the relay. Two
+  pairs lose their direct path when the firewall sits on the cone side: full + symmetric-random and restricted +
+  symmetric-random (100 % direct without a firewall, relay with it: the random-port side's punches come from a port
+  the blocked side never sent to). Every other pair has the same direct share with and without the firewall.
+- **Found on the way: two symmetric NATs with both firewalls blocking.** The punch can open several pairs of
+  mappings at once (each side walks the other's predicted ports); each launcher hands its game the pair it confirmed
+  first, and the two may differ. Without a firewall the netplay follows the opponent to the other address and nobody
+  notices; with both firewalls blocking, each game drops the other's packets (they come from an address it never
+  sent to) and hears nothing: in the loaded first run 4 of 7 such direct matches had no game link. The fallback below
+  moves them onto the relay.
+- **Block (stricter than Windows) on the game: before this branch every direct match failed** (392 of 392 in the
+  one-sided run; the lobby saw a working path -- the launchers' sockets -- and the game gave up after 60 s with "Your
+  opponent's game could not be reached"); relayed matches worked (the bridge talks to the game on 127.0.0.1). With the
+  fallback, all connect.
+- Both programs blocked completely: UDP never reaches the lobby server, the match is cancelled with
+  `udp_unreachable` (no relay can help: the launcher cannot send anything either) -- the Online tab shows its hint.
+- Router forward (`--map-a`) and a blocked firewall on the same side: the forward no longer brings
+  symmetric-random pairs onto the direct path (relay instead); the others stay direct.
+- The few "no connection" trials in the loaded runs (other agents' games and builds on the PC, 12 trials in parallel)
+  had setups of 13-25 s: the relay setup ran out of time (`T5L_RELAY_TIMEOUT` 6 s against a client's own bind up to
+  4 s + measure up to 4.25 s). The server now gives it 10 s; reruns of those pairs: 0 failures.
+
+**Measured, real games** (`tools/e2e/run.py --only net_firewall`, two `t5dr.exe` of this branch through the local lobby,
+persistent games, rollback, one round; the cases also run with stub games: `firewall_stub`):
+
+| case | firewall A (game, launcher) | firewall B | the punch | lobby's path | played on | result | mismatching frames | same hash |
+|---|---|---|---|---|---|---|---|---|
+| one side blocked | stateful, stateful | -, - | ok | direct | direct | confirmed | 0 / 0 | yes |
+| both sides blocked | stateful, stateful | stateful, stateful | ok | direct | direct | confirmed | 0 / 0 | yes |
+| both blocked, no direct path (symmetric NATs) | stateful, stateful | stateful, stateful | fails | relay | relay | confirmed | 0 / 0 | yes |
+| one game blocked completely, no direct path | block, - | -, - | fails | relay | relay (bridge) | confirmed | 0 / 0 | yes |
+| one game blocked completely, direct path found | block, - | -, - | ok | direct | relay after the fallback | confirmed | 0 / 0 | yes |
+
+Every case connected; none ended with "could not be reached". The fallback case: the game logged 15 s of "nothing
+arrived yet", the launcher asked for the relay, both persistent games started session 6 of the same match through
+the bridges (`connected (join, P2) ... peer 127.0.0.1:...`), the fight began about 25 s later than on a working path
+(queue to result 68-80 s against 52-57 s). In the game logs of the stateful cases the host drops the joiner's first
+HELLO ("this socket never sent there") and connects 0.1 s later, when its own HELLO has gone out -- the effect the
+switch emulates. Runs: the first build of the branch (all five, 128 checks), the final build after merging main's
+`T5_NET_BIND` (cases 1, 3, 4, 5 in run game2; cases 1 and 2 again in game3 -- in game2 the "both sides blocked" match was
+voided as a desync: the two games left the fight intro on different frames (frame 231: one hashed the intro value,
+the other a fight state) and stayed apart; the emulated firewall had dropped nothing in that match, it is not a
+network effect -- reported separately), the stub games (`firewall_stub`, five of five), and with
+`T5_NET_TEST_INBOUND=stateful` for every launcher and stub game the existing `relay_regional_stub` (regional relay nodes
+from relays.json, the closest by RTT sum, then the next when one dies), `relay_e2e_tool` and `relay_upgrade_stub`
+(relay -> direct through the bridges): all PASS. The e2e quick suite (27 scenarios) passes on the final code.
+
+**The fallback: a game that hears nothing gets the relay** (cap `game_fallback` on both clients and the server;
+`T5L_GAME_FALLBACK`, default 90 s). While the handshake waits, the game's log says every 5 s whether anything at all
+has arrived on its port (`waiting for the opponent's game to answer (15s, nothing arrived yet)`). The match driver
+(`match_driver._watch_direct`) watches it on a direct or LAN path: 15 s of nothing means the launchers reached each
+other but something drops what comes for the game. It shows the firewall hint and sends `nat_fallback`; the server
+(`h_nat_fallback`: once per match, before any result, within the window, and not once either launcher has said its
+game played the fight for a while -- `game_started {playing}`, sent at the game's first netplay speed or sync line after
+FIGHT START, 600 lockstep frames that only run with the opponent's inputs; before 1.1.3's security review a player
+losing round 1 could ask for the relay and both games began the match again) moves the running match onto the relay --
+`nat_relay` with `fallback: true`, both launchers bind a new socket with the match's token (the game holds the old
+port), keep it as the relay bridge, and get a second `match_start` for the same match. Both drivers start the
+match's game session again (persistent game: a new session; a game that does not take the command within 10 s is
+restarted in process mode), each with a result file of its own (whatever the first session writes later is not this
+match's result). The games then talk only to 127.0.0.1; the bridge still tries the direct path at +35 s, through the
+launcher. In the e2e run the fight began ~25 s later than on a working path. Older clients never get a second
+`match_start`; a 1.1.3 client against an older server does not ask.
+
+**With the other 1.1.3 features.** Custom costumes: the new session exchanges both costume tables again (COSTUME
+packets, at most 1,064 bytes with the tag, through the relay's 2,048-byte limit; the first session's tables are
+gone with it), so the fight after the move has both customizations. Tournament sets: the same game of the set,
+played again on the relay (the set's game count is not raised; `_start_match`'s `again`). Spectators: the same
+stream id, so the same live file -- a session that never shook hands leaves nothing but the magic in it, the new
+one goes on from there, and the server keeps the stream while the match is on its way to the relay
+(docs/SPECTATE.md "When the match moves onto the relay"). e2e `int_fw_costumes`: one game blocked completely,
+costumes on both sides, a spectator watching from the start.
+
+**The hint** (`lobby/t5lobby/fwcheck.py`, `tk_tab.fw_hint_text`): the Online tab reads Windows Firewall's rules for the
+exact `t5dr.exe` the launcher starts (`core.game_exe` = `run_game.game_command`) and for its own process
+(`GetModuleFileNameW`: `pythonw.exe`, or `T5DR Online.exe` with the in-process stub), when the tab is shown and after
+each match (at most every 30 s), on a worker thread. Source: the firewall's own store in the registry
+(`HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy`: `FirewallRules`, each profile's
+`EnableFirewall` / `DoNotAllowExceptions` / `DisableNotifications`; Group Policy's
+`HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall` on top), readable by every user: 0.2 s for 1,856 rules here.
+`netsh advfirewall firewall show rule name=all verbose` was the first idea; on this PC it ran for more than two
+minutes, printed 1.9 MB and labels every field in the Windows language ("Aktion: Blockieren"). `netsh` is used only
+for the current network's profile: the heading of `show currentprofile` compared with the headings of `show
+privateprofile` / `publicprofile` / `domainprofile`, so the language does not matter (about a second; without it every
+profile with the firewall on counts). A program counts as blocked by an enabled inbound Block rule for its path (UDP
+or any protocol; a block wins over an allow, as in Windows), "Block all incoming connections", or no allow rule while
+Windows' notifications are off. The hint also comes up when a match showed it: the lobby server never answered this PC's UDP
+(`udp_unreachable` blamed on this PC, or the launcher's registration got no answer: `nat_status` with `udp_blocked`),
+or the game heard nothing (the fallback above, or a `no_peer` whose log line says `nothing arrived`). One line: "Windows
+Firewall blocks t5dr.exe on this network. Matches still connect, but some only through a relay, with more lag." /
+"A firewall seems to block T5DR Online's network traffic on this PC." with **How to fix** (TROUBLESHOOTING.md "The
+firewall blocks the game" in the public repository) and Dismiss. Nothing is changed, no administrator rights are
+asked for; "Report a problem" includes the check's result. `T5_FW_CHECK=0` switches the check off (the tests).
+
+**Limits.** The firewall's behaviour is emulated, not Windows' own (this PC's firewall is off and stays untouched);
+the emulation follows the documented stateful model per remote address and port. Third-party firewalls keep their
+own rules: the hint sees them only through what a match shows. A NAT rebinding mid-match behind a blocked firewall is
+not followed (the new address never sent to). Spectating or anything else that would have another PC send to a game
+first needs the relay with a blocked firewall. Two symmetric NATs with both firewalls blocking can still lose 15 s to
+the fallback (a consistent choice of the punched pair would avoid it: the other side would have to say in its
+F_HEARD where it saw this side -- a punch format change).
 
 ## What had to be made deterministic
 

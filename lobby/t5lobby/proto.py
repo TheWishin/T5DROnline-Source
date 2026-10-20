@@ -228,6 +228,44 @@ def parse_hostport(spec, default_port=DEFAULT_PORT):
     return spec, default_port
 
 
+# ---------------------------------------------------------------------------- private rooms
+# docs/ONLINE.md "Rooms". The rules a room password follows and the invite codes' alphabet, shared by the server
+# (server/rooms.py) and the launcher (it checks a password before sending it).
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"     # no 0/O, 1/I/L: read off a screen, typed back (~59 bits)
+CODE_LEN = 12
+ROOM_PW_MIN, ROOM_PW_MAX, ROOM_PW_MAX_BYTES = 4, 64, 256
+
+
+def clean_room_password(pw):
+    """The room password as it is hashed (Unicode NFC: any script, the same however it was typed), or None when it
+    cannot be one: 4-64 characters, printable only (no control or format characters), no space at either end, at
+    most 256 bytes of UTF-8. Never says what it was."""
+    import unicodedata
+    if not isinstance(pw, str) or len(pw) > ROOM_PW_MAX * 4:
+        return None
+    pw = unicodedata.normalize("NFC", pw)
+    if not ROOM_PW_MIN <= len(pw) <= ROOM_PW_MAX or len(pw.encode("utf-8", "replace")) > ROOM_PW_MAX_BYTES:
+        return None
+    if pw != pw.strip() or not all(ch.isprintable() for ch in pw):
+        return None
+    return pw
+
+
+def normalize_room_code(code):
+    """'k7qf-m2px 9tzr' -> 'K7QFM2PX9TZR'; None when it cannot be an invite code."""
+    if not isinstance(code, str) or len(code) > 64:
+        return None
+    s = "".join(ch for ch in code.upper() if ch.isalnum())
+    return s if len(s) == CODE_LEN and all(ch in CODE_ALPHABET for ch in s) else None
+
+
+def new_room_code():
+    """A fresh invite code, XXXX-XXXX-XXXX."""
+    import secrets
+    raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
+    return "-".join(raw[i:i + 4] for i in range(0, CODE_LEN, 4))
+
+
 # ---------------------------------------------------------------------------- UDP
 
 UDP_MAGIC = b"T5LB"

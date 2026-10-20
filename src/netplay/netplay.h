@@ -175,6 +175,10 @@ void  set_local_inject(bool on, uint16_t buttons);
  * every 100 ms until the peer acknowledges it; the peer's pick once it came. */
 void  pick_set(uint32_t key, uint32_t val);
 bool  pick_peer(uint32_t key, uint32_t* val);
+/* custom costumes (docs/DIRECTFIGHT.md "Custom costumes online"): this player's table, the peer's once all here */
+void  costume_set(const uint8_t* p, size_t n);
+bool  costume_local_set();
+bool  costume_peer(uint8_t* out, size_t cap, size_t* n);
 /* T5_NET_SCRIPT_FIGHT=1 (tests): the scripted local input (T5_NET_SCRIPT) applies
  * only while the direct-fight driver is in a fight, so it never presses
  * anything in the menus direct fight drives between matches. */
@@ -198,6 +202,7 @@ uint32_t sessions();                             /* sessions begun in this proce
 
 /* ---- replays (src/netplay/replay.h, docs/REPLAYS.md) ----------------------- */
 bool     replaying();                            /* T5_NET_MODE=replay: local mode fed by T5_REPLAY_FILE */
+void     replay_session_known();                 /* a live stream's SESSION came after configure() (replay.cpp) */
 uint32_t barriers();                             /* scene_barrier() calls so far in this session */
 void     rec_pump();                             /* recording: hand the frames whose inputs are final to the replay */
 
@@ -248,6 +253,9 @@ extern "C" int         t5_netplay_persistent(void);
  * next frame, a sync point; t5_netplay_start() resumes it at the next fight). */
 extern "C" void        t5_netplay_pick_send(unsigned key, unsigned pick);
 extern "C" int         t5_netplay_pick_peer(unsigned key, unsigned* pick);
+extern "C" void        t5_netplay_costume_set(const unsigned char* p, unsigned n);
+extern "C" int         t5_netplay_costume_local_set(void);
+extern "C" int         t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n);
 extern "C" int         t5_netplay_connected(void);
 extern "C" void        t5_netplay_pause(void);
 extern "C" int         t5_netplay_paused(void);

@@ -18,6 +18,12 @@ or simply the wrapper `t5lobby-admin`; Docker: `docker compose exec lobby t5lobb
     ban-ip ADDRESS|CIDR [--days D | --hours H] [--reason TEXT]   (guests have no account: ban the address)
     unban-ip ADDRESS|CIDR
     bans                                 banned accounts and addresses
+    tour-host add NAME [--admin]         the account may create tournaments (a host; at most T5L_TOUR_MAX_HOSTS,
+                                         default 20) -- with --admin it runs every tournament, like T5L_TOUR_ADMINS
+                                         (no limits, not counted). Again with or without --admin: changes the role
+    tour-host remove NAME                no longer a host or admin (their tournaments stay theirs)
+    tour-hosts                           the hosts and admins, and how many host slots are used
+                                         (the server picks changes up within T5L_ADMIN_POLL seconds)
     reset-password NAME [--password-env VAR]   new password from env VAR, else a random one is printed;
                                          ends the account's remembered logins
     recovery-codes NAME                  a new set of recovery codes (printed once; the old ones stop working)
@@ -139,6 +145,11 @@ def cmd_status(a):
           f"{r['bytes_total'] / 1e6:.1f} MB since start{'  (relay only)' if r['force_relay'] else ''}")
     for line in relay_lines(st):
         print(line)
+    tr = st.get("tournaments")
+    if tr:          # (docs/TOURNAMENTS.md)
+        by = tr.get("by_state") or {}
+        print(f"tournaments {by.get('running', 0)} running, {by.get('signup', 0) + by.get('checkin', 0)} open for "
+              f"sign-up, {tr.get('sets_playing', 0)} sets being played")
     print(f"accounts  {db.get('accounts', '?')} ({db.get('accounts_seen_24h', '?')} seen in 24 h), "
           f"banned {db.get('accounts_banned', 0)}, address bans {db.get('ip_bans', 0)}")
     tls = st.get("tls")
@@ -300,6 +311,73 @@ def cmd_bans(a):
         print(f"account  {r['name']:<17} until {_fmt_t(r['banned_until']):<18} {r['ban_reason'] or ''}")
     for b in st.ip_bans():
         print(f"address  {b['net']:<17} until {_fmt_t(b['until']):<18} {b['reason'] or ''}")
+    return 0
+
+
+def _tour_hosts(a):
+    """(store, the tournaments module): the tour_hosts table made if this database has none yet (as the server's
+    start does; a 1.1.2 server ignores it), rows of deleted accounts dropped."""
+    from . import tournaments
+    st = _open(a)
+    tournaments.migrate(st.db)
+    tournaments.prune_hosts(st)
+    return st, tournaments
+
+
+def _max_hosts():
+    from .config import Config
+    try:
+        return int(os.environ.get("T5L_TOUR_MAX_HOSTS", Config.tour_max_hosts))
+    except ValueError:
+        sys.exit("T5L_TOUR_MAX_HOSTS is not a number")
+
+
+def cmd_tour_host(a):
+    st, T = _tour_hosts(a)
+    r = st.account(a.name)
+    if r is None:
+        sys.exit(f"no account named {a.name!r}: the player registers one in the launcher first (guests cannot host)")
+    hosts = T.db_hosts(st)
+    had = hosts.get(r["id"], (None, None))[1]
+    if a.action == "remove":
+        if a.admin:
+            sys.exit("--admin goes with add (remove takes the role away, host or admin)")
+        if not T.remove_host(st, r["id"]):
+            print(f"{r['name']} is not a tournament host or admin (T5L_TOUR_ADMINS / T5L_TOUR_ORGANIZERS in the env "
+                  "file are separate)")
+            return 1
+        print(f"{r['name']} is no longer a tournament {had} (within a few seconds; the tournaments they made stay "
+              "theirs)")
+        return 0
+    role = "admin" if a.admin else "host"
+    if had == role:
+        print(f"{r['name']} is a tournament {role} already")
+        return 0
+    used = sum(1 for _n, x in hosts.values() if x == "host")
+    limit = _max_hosts()
+    if role == "host" and used >= limit:
+        sys.exit(f"all {limit} host slots are used: remove one first (tour-host remove NAME; tour-hosts lists them), "
+                 "or raise T5L_TOUR_MAX_HOSTS")
+    T.set_host(st, r["id"], r["name"], role)
+    used += (role == "host") - (had == "host")
+    what = "may create tournaments" if role == "host" else "runs every tournament (no limits)"
+    print(f"{r['name']} is now a tournament {role}{f' (was {had})' if had else ''}: {what}, within a few seconds "
+          f"-- also online, no new login needed. {used} of {limit} host slots used")
+    return 0
+
+
+def cmd_tour_hosts(a):
+    st, T = _tour_hosts(a)
+    rows = st._x("SELECT account_id, role, added FROM tour_hosts ORDER BY role, added").fetchall()
+    names = T.db_hosts(st)
+    for r in rows:
+        print(f"{r['role']:<7}{names[r['account_id']][0]:<17} added {_fmt_t(r['added'])}")
+    for name in [x for x in os.environ.get("T5L_TOUR_ADMINS", "").split(",") if x.strip()]:
+        print(f"{'admin':<7}{name.strip():<17} T5L_TOUR_ADMINS (env file)")
+    org = os.environ.get("T5L_TOUR_ORGANIZERS", "any").strip() or "any"
+    used = sum(1 for _n, x in names.values() if x == "host")
+    print(f"{used} of {_max_hosts()} host slots used; T5L_TOUR_ORGANIZERS={org}"
+          + ("  (every account may create tournaments anyway)" if org.lower() in ("any", "all", "1", "yes") else ""))
     return 0
 
 
@@ -573,6 +651,11 @@ def main(argv=None):
     duration(p)
     add("unban-ip", cmd_unban_ip, "lift an address ban").add_argument("net")
     add("bans", cmd_bans, "list bans")
+    p = add("tour-host", cmd_tour_host, "add or remove a tournament host (or admin)")
+    p.add_argument("action", choices=("add", "remove"))
+    p.add_argument("name")
+    p.add_argument("--admin", action="store_true", help="a tournament admin: runs every tournament, no limits")
+    add("tour-hosts", cmd_tour_hosts, "list the tournament hosts and admins")
     p = add("reset-password", cmd_reset_password, "set a new password")
     p.add_argument("name")
     p.add_argument("--password-env", metavar="VAR", help="take the new password from this environment variable")
@@ -632,7 +715,7 @@ def main(argv=None):
     p.add_argument("--note")
     a = ap.parse_args(argv)
     if getattr(a, "name", None) and a.cmd in ("ban", "unban", "user", "reset-password", "reset-rating",
-                                               "delete-user", "recovery-codes", "logout-all") \
+                                               "delete-user", "recovery-codes", "logout-all", "tour-host") \
             and not valid_name(a.name):
         sys.exit(f"{a.name!r} is not a valid player name")
     return a.fn(a) or 0

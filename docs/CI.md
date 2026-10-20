@@ -112,7 +112,9 @@ real time windows, which is why it is not in the per-push tier.
    against the scalar reference); `spu_mfc_slots` and `spu_lockline_peer`
    link `spu_workload.c` and `spurs_job.c` (patch 0002); plus shufb, SPU
    helpers, numeric semantics, lock-line coherence, RSX texture layout and
-   primitives. A test that prints "nothing to compare" fails.
+   primitives; `spu_int_sse` and `spu_near_float_sse` check patch 0064's x86
+   byte permutes and SPU_NEAR_FLOAT ops bit for bit against the code they
+   replaced. A test that prints "nothing to compare" fails.
    `tests/shim/pthread.h` gives the POSIX-only ones the four pthread calls
    they use. **`spu_mfc_slots` is our adapted copy of the upstream test**
    (`tests/c/test_spu_mfc_slots_ci.c`, header lists every change): upstream

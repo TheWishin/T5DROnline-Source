@@ -3,7 +3,8 @@
 1. `admin drain --wait` also waits for a ranked set between two of its games (no match runs then, but a restart
    voids the set and the game already won)
 2. going back to 1.1.1 after the upgrade, deleting accounts there, then 1.1.2 again: a new account that gets a deleted
-   one's id does not inherit its friends or friend requests; the 1.1.1 server opens the upgraded database
+   one's id does not inherit its friends or friend requests; the 1.1.1 server opens the upgraded database; the 1.1.2
+   server starts on a 1.1.3 database with tournament hosts (`t5lobby-admin tour-host`)
 3. `admin release X.Y.Z`: launchers of an older release are told to update (a notice they can show), newer ones not
 """
 import contextlib
@@ -187,6 +188,99 @@ class RollbackTest(unittest.TestCase):
         st = Store(self.db)
         self.assertEqual(st.schema_version(), 1)
         self.assertEqual(st.friend_ids(ids["Ann"]), {ids["Ben"], ids["Dot"]})   # untouched by the old server
+        st.close()
+
+    def test_the_v112_server_starts_on_a_database_with_tournament_hosts(self):
+        """Rollback 1.1.3 -> 1.1.2 after `t5lobby-admin tour-host add`: 1.1.2 knows no tournament tables (tour_hosts
+        among them), starts, takes logins, leaves them alone; back on 1.1.3 the hosts are there."""
+        import asyncio
+        from test_friends import _old_tree
+        from t5lobby import proto
+        from t5lobby.server import tournaments
+        from t5lobby.server.store import hash_password
+        _c, olds, _st = _old_tree(self, os.environ.get("T5L_COMPAT_SERVER_112", "v1.1.2"))
+        st = Store(self.db)
+        st.create_account("Ann", hash_password("pw-ann-x", n=1 << 10))
+        tournaments.migrate(st.db)
+        tournaments.set_host(st, st.account("Ann")["id"], "Ann", "admin")
+        st.close()
+        loop = proto.new_event_loop()
+        srv = olds.LobbyServer(olds.Config(**dict(util.FAST, db=self.db)))
+        ready = threading.Event()
+
+        def run():
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(srv.start())
+            ready.set()
+            loop.run_forever()
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        try:
+            self.assertTrue(ready.wait(10))
+            c = client(type("S", (), {"addr": f"127.0.0.1:{srv.port}"})(), "Ann", password="pw-ann-x")
+            self.assertFalse(c.me["guest"])
+            c.close()
+        finally:
+            asyncio.run_coroutine_threadsafe(srv.stop(), loop).result(10)
+            loop.call_soon_threadsafe(loop.stop)
+            th.join(10)
+            loop.close()
+        st = Store(self.db)
+        self.assertEqual(tournaments.db_hosts(st), {st.account("Ann")["id"]: ("Ann", "admin")})
+        self.assertEqual(tournaments.migrate(st.db), [])
+        st.close()
+
+
+class AccountIdTest(unittest.TestCase):
+    """A deleted account's id is never given to a new account (everything is stored by account id: history, pair
+    counts, friends, blocks, tournament entries, a tournament's organizer)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.db = os.path.join(self.dir, "t5lobby.db")
+
+    def test_the_newest_accounts_id_is_not_given_again(self):
+        st = Store(self.db)
+        for n in ("Ann", "Ben", "Cat"):
+            st.create_account(n, "pw-hash")
+        cat = st.account("Cat")["id"]
+        self.assertTrue(st.delete_account("Cat"))
+        self.assertEqual(st.create_account("Dot", "pw-hash")["id"], cat + 1)
+        st.close()
+        st = Store(self.db)                                           # (kept in the database: also after a restart)
+        self.assertTrue(st.delete_account("Dot"))
+        self.assertEqual(st.create_account("Eve", "pw-hash")["id"], cat + 2)
+        st.close()
+
+    def test_purge_inactive_too(self):
+        st = Store(self.db)
+        for n in ("Ann", "Ben"):
+            st.create_account(n, "pw-hash")
+        ben = st.account("Ben")["id"]
+        st.db.execute("UPDATE accounts SET created = 1, last_seen = NULL WHERE name = 'Ben'")
+        self.assertEqual(st.purge_inactive_accounts(30), 1)
+        self.assertEqual(st.create_account("Cid", "pw-hash")["id"], ben + 1)
+        st.close()
+
+    def test_without_deletions_ids_are_as_before(self):
+        st = Store(self.db)
+        ids = [st.create_account(n, "pw-hash")["id"] for n in ("Ann", "Ben", "Cat")]
+        self.assertEqual(ids, [1, 2, 3])
+        self.assertIsNone(st.create_account("ann", "pw-hash"))         # (the name rule is unchanged)
+        st.close()
+
+    def test_a_deleted_organizers_tournament_is_not_run_by_a_newcomer(self):
+        from t5lobby.server import tournaments
+        st = Store(self.db)
+        org = st.create_account("Org", "pw-hash")["id"]
+        tournaments.migrate(st.db)
+        st.db.execute("INSERT INTO tournaments (id, name, organizer_id, organizer_name, format, set_wins, max_players, "
+                      "start_time, seeding, state, created, seed) VALUES ('t1', 'Cup', ?, 'Org', 'single', 2, 8, ?, "
+                      "'random', 'signup', ?, 1)", (org, time.time() + 600, time.time()))
+        st.delete_account("Org")
+        new = st.create_account("Newcomer", "pw-hash")["id"]
+        self.assertNotEqual(new, org)
         st.close()
 
 

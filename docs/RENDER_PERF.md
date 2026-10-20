@@ -8,6 +8,9 @@ fits in a vblank only when `game CPU + translation + present` stays under
 16.7 ms. Patch 0023 cuts the translation and removes the first-fight hitch.
 Every change has a switch; all are on by default.
 
+(Compiler settings for the game's own CPU per frame -- profile-guided
+optimisation of the lifted code, and what else was tried: docs/BUILD_PERF.md.)
+
 ## What changed
 
 | Change | Switch (default on) | Effect per fight frame |
@@ -895,3 +898,1323 @@ joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
 Not tried: a real laptop, handheld or APU (this PC has none), the game's
 fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
 none here; `system.txt` then says so).
+
+## GPU time on integrated graphics (patch 0051, branch `igpu-perf`)
+
+The 780M player (Zen 4 APU, 65 W mini PC) stayed slower than RPCS3 at 1080p
+and 4K after the CPU pass (patch 0047). On an APU the graphics share the
+processor's memory, so what costs memory bandwidth and shader time on the GPU
+also costs the CPU. This pass measures where the GPU time of a fight goes and
+makes the expensive parts cheaper without changing the picture.
+
+### Measuring: GPU time per pass
+
+`RSX_GPU_PASSES=1` puts a GPU timestamp at every boundary of GPU work in a
+command list -- a draw pass (render target and zeta bound), a clear, a copy,
+the depth snapshot of the shadow map, the stage filter's guest-size view, the
+present -- labelled with what starts there, and every 600 frames prints
+
+    [gpu-pass] 600 frames, 21.66 ms GPU per frame in 1.0 lists; per frame: | pass 0x017F0000
+    6144x4320 rgba8 z 0x02330000: 15.92 ms (3.0x, 599 draws) | guest view 0x017F0000 2048x1440
+    rgba8: 2.42 ms (1.0x) | pass 0x003A0000 3840x2160 rgba8 z 0x00740000: 1.20 ms ...
+
+(no CPU wait: the results are read once their fence has passed; off by
+default). Measured on this PC's integrated graphics -- the Ryzen 9 7950X's
+Radeon (RDNA2, 2 compute units, the 780M's driver family and memory model,
+about a sixth of a 780M's shader throughput) with `RSX_ADAPTER=radeon`, while
+the screen hangs off the RTX 3090 -- in a direct fight (Lili vs Asuka, P1
+pressing buttons, `tools/fight_bench.py --polite`), the last two 600-frame
+windows after FIGHT START. The GPU's own clock moves with its temperature and
+the load of the PC (16-31 of 32 processors busy with other agents' games), so
+the unchanged 3D pass varies by ~10 % between runs; the column in brackets is
+everything but the 3D pass, which is what changed.
+
+Where it went before (ms of GPU per frame):
+
+| stage | step | whole frame | 3D pass (2048 x 1440 x scale^2) | guest-size view (0043) | display buffers (downsample + HUD) | present to a 1280 x 720 window | shadow map + its depth snapshot | glow (stage 20) |
+|---|---|---|---|---|---|---|---|---|
+| 20 | Native | 2.42 | 1.81 | -- | 0.29 | 0.13 | 0.06 | 0.09 |
+| 20 | 1080p | 6.98 | 3.98 | 1.36 | 0.62 | 0.47 | 0.13 | 0.31 |
+| 20 | 1440p | 10.13 | 6.58 | 1.43 | 0.99 | 0.43 | 0.23 | 0.36 |
+| 20 | 4K | 25.05 | 14.67 | 4.44 | 2.74 | 1.84 | 0.43 | 0.74 |
+| 34 | 1080p | 6.60 | 3.99 | 1.26 | 0.68 | 0.43 | 0.13 | -- |
+| 34 | 4K | 24.32 | 14.88 | 4.67 | 2.41 | 1.68 | 0.49 | -- |
+| 27 | 4K | 21.44 | 18.20 | -- | 1.11 | 1.48 | 0.47 | -- |
+
+- **The 3D pass is 60-85 % of every frame**: the game's own shading of its
+  supersampled 2048 x 1440 picture (600 draws), times the scale squared. It is
+  what Internal resolution buys; nothing outside the game's shaders makes it
+  cheaper without drawing fewer pixels.
+- **The guest-size view of patch 0043** (the stage blur and glow kernels read
+  the scaled 3D target box-filtered to the PS3's size) was the next item: 19-20 %
+  of a 1080p-4K frame on the blur and glow stages. Its loop with per-texel
+  bounds and weights was shader-bound, not bandwidth-bound.
+- **The present** filters a picture larger than the window with n x n taps
+  (patch 0038): 1.5-1.8 ms at 4K into a 1280 x 720 window.
+- Small: the shadow map pass and the compute copy of its depth (0.06 ms at
+  Native, 0.4-0.5 ms at 4K, where the map is 1536 x 1536), the glow buffers,
+  clears (fast clears, 0.01-0.1 ms). The display-buffer passes (the game's
+  downsample of the 3D picture plus 14-17 HUD draws) cost their pixels; the HUD's
+  overdraw is a few draws. Not there at all in a fight: feedback copies (a draw
+  sampling its own target), texture uploads, surface copies.
+- Formats: every target of a fight is RGBA8 (no FP16 target is drawn), depth is
+  `D32_FLOAT_S8X24` -- on AMD a 32-bit depth plane and a separate stencil plane,
+  so a narrower format would save nothing there.
+
+### What changed
+
+| change | picture | switch |
+|---|---|---|
+| Guest-size view: its own unrolled path per Internal resolution step instead of the loop -- 1.5x (1080p): the loop's 2 x 2 texels and weights in the loop's order; 2x, 3x, 4x: the whole host texels unrolled (bit-identical everywhere), or on AMD pairs of texels with one bilinear tap halfway between their centres: 2x one tap instead of 4, 3x four taps weighted 4:2:2:1 instead of 9, 4x four instead of 16 | identical: max difference 0 on AMD and NVIDIA (below) | `RSX_GVIEW_FAST=0` (the loop) / `1` (unrolled) / `2` (pairs) |
+| Present at an exact integer ratio (4K or 1440p internal in a window or screen of a half or a third): the same pairs on AMD -- 2x one tap instead of 4, 3x four instead of 9, 4x four instead of 16. Any other ratio, and other GPUs: the n x n taps as before | identical on AMD at 2x and 3x; 4x within one level in 0.005 % of the pixels | `RSX_PRESENT_FAST=1/0` |
+| **With power saving** (patch 0047; on by itself on integrated graphics): above native, targets smaller than the canvas -- the 512 x 512 shadow map and the 128 x 128 glow buffers -- keep their guest size, as they do below native; the glow then needs no guest-size view | shadow edges as at Native; glow as at Native | `RSX_SMALL_TARGETS_NATIVE=1/0` |
+| `RSX_GPU_PASSES=1` per-pass timestamps; `RSX_FAST_SELFCHECK=1` makes every guest-size view and the present twice from the same input at a frame-exact surface dump (`LD_SURF_DUMP`), the new path and the old, and writes both; the surface dump also writes the frame's backbuffer | -- | -- |
+
+Bilinear pairs are exact in arithmetic (tests/test_igpu_filters.py checks every
+tap layout against the box on random textures) and were bit-identical on AMD's
+texture units, but NVIDIA's rounded 0.1-4.5 % of the pixels one level
+differently (max 1 of 255), so the pairs are AMD's default and other GPUs get
+the unrolled loads, which do the loop's arithmetic.
+
+**Same picture.** `RSX_FAST_SELFCHECK=1` in fights on stages 20 and 34 at
+1080p, 1440p and 4K (into 1280 x 720 and 960 x 540 windows: present ratios 1.5,
+2, 3 and 4), every guest-size view of the frame (3D target, display buffers,
+glow buffers, shadow map) and the backbuffer, new path against old on the same
+input: **max difference 0, SSIM 1.000000** in every image, on the integrated
+Radeon (pairs) and on the RTX 3090 (unrolled loads). Smoke quick passes.
+
+### Results
+
+The same runs after the change (power saving off: what a desktop GPU gets; and
+the default on integrated graphics, where power saving turns itself on), ms of
+GPU per frame, everything but the 3D pass in brackets:
+
+| stage | step | before | after, power saving off | after, integrated graphics default (power saving on) |
+|---|---|---|---|---|
+| 20 | 1080p | 6.98 (3.00) | 6.47 (2.68) | 5.98 (2.28) |
+| 20 | 1440p | 10.13 (3.41) | 10.00 (2.82) | 9.20 (2.37) |
+| 20 | 4K | 25.05 (10.18) | 22.19 (6.91) | 21.66 (5.74) |
+| 34 | 1080p | 6.60 (2.61) | 6.30 (2.32) | 5.53 (2.17) |
+| 34 | 1440p | 9.75 (3.08) | 9.86 (2.33) | 8.63 (2.17) |
+| 34 | 4K | 24.32 (9.22) | 19.25 (5.50) | 19.35 (4.71) |
+| 27 | 1440p | 8.08 (0.90) | 7.37 (0.92) | 7.97 (0.70) |
+| 27 | 4K | 21.44 (3.02) | (load-bound run) | 18.38 (1.31) |
+| 20 / 34 / 27 | Native | 2.42 / 2.43 / 2.35 | (no change: nothing is scaled) | 2.63 / 2.45 / 2.35 |
+
+Per pass at 4K: the guest-size view 4.4-4.7 -> 1.7-2.4 ms, the present into a
+1280 x 720 window 1.5-1.8 -> 0.4-0.7 ms, with power saving the shadow map and
+its snapshot 0.4-0.5 -> 0.06 ms and the glow 0.74 -> 0.10 ms. At 1440p the view
+1.3-1.4 -> 0.6-0.9 ms and the present 0.4 -> 0.2-0.3 ms; at 1080p the view
+1.3 -> 1.0 ms. Everything around the 3D pass now costs 17-40 % less GPU time
+at 1440p and 4K (30-49 % with power saving), the whole frame 8-21 % at 4K.
+
+**What this means for a 780M.** Its 12 RDNA3 compute units do about six times
+this GPU's work, so a fight frame takes it roughly 0.4 ms at Native, 1 ms at
+1080p, 1.5 ms at 1440p and 3.5 ms at 4K (estimated from these runs, not
+measured on a 780M): the GPU was not what held that PC below 60 -- the CPU side
+was (patch 0047). What this pass saves there is memory traffic the GPU no longer
+puts on the shared bus at 1440p and 4K. For integrated graphics Native or 1080p
+stays the sensible step.
+
+**Online**: host pixels only, nothing the game reads changes, so the two PCs
+of a match may differ. Rollback pair (default settings, one match of two rounds), host at 4K on the RTX 3090 with per-pass timestamps and the AMD paths forced on (`RSX_GVIEW_FAST=2 RSX_PRESENT_FAST=1`), joiner at 1080p with power saving (shadow map and glow at guest size), the joiner's game suspended for 60 ms every 0.2-0.6 s (`--stutter 60`: deep rollbacks), a direct connection (after this PC's restart the test proxy got no replies from the games): sync through frame 4199 0 mismatching on both sides, the same result hash `40ab59479a3c405c`, 158 / 277 rollbacks (605 / 1,474 frames re-simulated), no decode error or abort. Before the restart a pair through the proxy (RTT 50 ms, 3 % loss) with the joiner rendering on the integrated Radeon at 1440p stayed in sync through frame 2999 (0 mismatching) before the overloaded PC slowed the host to 1-2 fps.
+
+**A GPU hang on the integrated Radeon, not this patch.** After this PC was
+restarted, with 16-18 other games running and only 3.6 of its 31 GB free, a
+game rendering on the integrated Radeon at 1080p stopped twice with
+`DXGI_ERROR_DEVICE_HUNG` near the title screen. DRED (`[dred]` lines in the
+log) puts both hangs in one of the game's own command lists, at its first
+clear (`last=0`: not even the clear finished) or among its indexed draws
+(`last=8`), neither one of this patch's passes (those are non-indexed draws and
+copies at the end of a frame). An A/B on that GPU at 1080p, same build, same
+load, interleaved, two games at a time at below-normal priority, boot -> title
+-> direct fight -> 40 s of fighting, stages 20 and 26:
+
+| build | runs | reached the fight | hung | other games running | free memory |
+|---|---|---|---|---|---|
+| 0051, every path off (`RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`) | 24 | 24 | 0 | 3-10 | 9.0-15.7 GB |
+| 0051, default | 24 | 24 | 0 | 2-10 | 9.3-17.3 GB |
+| main without 0051 | 24 | 24 | 0 | 1-10 | 9.4-17.1 GB |
+
+So the hang did not come back in 72 runs, with or without the patch; with
+the GPU stopping at a frame's first clear under heavy memory pressure it looks
+like the integrated GPU's memory being paged out by Windows, not anything the
+game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
+still turns every change of this patch off.
+
+## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
+
+Why some players had 40-50 fps, and whether a Vulkan renderer would help:
+[WEAK_PC.md](WEAK_PC.md). In short: the limit is the speed of the core that
+runs the game's main thread, and a frame whose game part ran past its vblank
+used to wait for the next one (33.4 ms for a frame of 18-20). Now the first
+tick a frame misses waits for it, up to one period, and fires as soon as the
+walker has translated the frame (`PS3_LATE_FLIP=0` = the old way): a slowed
+game went from 40 to 49-50 fps and from 30 to 43-44 fps, a rollback pair with
+one slow PC from 32 to 46 fps, in sync; a 60 fps PC is unchanged. The D3D12
+calls are 0.7-1.0 ms of a frame (frame log columns `ph_desc_us`,
+`ph_cbcopy_us`, `ph_api_us`, `ph_post_us`), the same on NVIDIA and on the
+integrated Radeon.
+
+## 4K on integrated graphics (patch 0063, branch `igpu-4k-stall`)
+
+Player report on 1.1.2: an AMD Radeon 780M mini PC (Zen 4, 8 cores / 16
+threads, on AC), a 1920 x 1080 screen at 59 Hz, Internal resolution **4K** in
+every run. Fights at 32-38 fps in borderless fullscreen, 40-47 in a large
+window and 43-57 in a 1280 x 720 window -- "much higher even though the
+internal resolution was unchanged". Power saving Auto or Off "made no
+difference". The `[slow-frames]` lines of the fights:
+
+| run (player's logs) | fps | median per frame: game / translation / GPU wait / present ms | slow frames classed GPU |
+|---|---|---|---|
+| borderless 1920 x 1080 | 32-38 | 13.8-15.9 / 4.6-5.2 / 0.0 / 0.6-0.9 | 24-199 of ~1,000 |
+| borderless (second run) | 32-40 | 14.4-14.5 / 4.9-5.2 / 0.0 / 0.7-0.8 | 55-94 |
+| window 1848 x 1040 | 40-47 | 13.2-13.3 / 5.0-5.1 / 0.0 / 0.9-1.0 | 0 |
+| window 1280 x 720 | 43-57 | 11.1-11.3 / 3.6-3.9 / 0.0 / 1.0-1.3 | 0-54 |
+
+In menus the same runs had a game part of 2.6-3.9 ms. On this PC a fight's
+game part is 5-6 ms (a quiet 7950X), so the question was: does the game's main
+thread wait for the GPU inside its "game" part, which `[slow-frames]` would
+then wrongly call CPU?
+
+### Where the game thread waits: nowhere on the GPU
+
+What Tekken 5 DR's main thread does in a frame (`PS3_SCHED_TRACE`, every
+main-thread syscall and HLE call over 20 us, against the release and flip
+times of the frame log; `build/igpu4k/scripts/trace_frames.py`):
+
+- release (the vblank tick completes the flip and the GCM pump runs the flip
+  and user-command handlers) -> the main thread takes the semaphore the user
+  handler posted (already posted: 0.0x ms) -> game logic, the skinning job
+  chain kick (~5.5 ms after release on this PC) -> it waits for the skinning
+  (1.3 ms of SPURS jobs) and the draw request manager thread (a cond and an
+  lwmutex) -> `cellGcmSetUserCommand` + `SetFlip`: the frame's commands are
+  flushed and the walker starts translating them;
+- the FIFO walker does **not** run during the game part: the game flushes its
+  frame once, at the end. Labels, the back-end semaphore, `GET_REPORT` and the
+  reference register are written by the walker when it walks them (on the
+  CPU, not after the GPU), the flip completes on the vblank after the walker
+  reached it -- no readback, no fence wait, no label poll in the game part;
+- the main thread's blocked time inside the game part is **0.4-0.6 ms a
+  frame** (cond wait 0.25-0.28, lwmutex 0.17-0.21, the user-command semaphore
+  0.06), NVIDIA 4K and integrated Radeon 1440p alike; the rest of the game part
+  it runs.
+
+Only one wait in the whole frame depends on the GPU: with one command
+allocator the walker could record nothing of frame N+1 until the GPU had
+finished frame N (`ld_begin_recording`). That shows as **translation** and
+`GPU wait`, and `[slow-frames]` already classes those frames GPU -- on this
+PC's 2-CU Radeon at 4K it is 12-18 ms of a 28-31 ms frame. On the player's PC
+`GPU wait` was 0.0 in the median: the GPU was not slower than the game part,
+the game part itself was long.
+
+### What makes the game part long on an APU
+
+The game part is the main thread's own CPU work (and its helper threads'),
+running while the GPU draws the previous frame. On integrated graphics the
+GPU and the processor share one memory and one power budget, so a busy GPU
+slows the processor's work. Measured on this PC: two games at once on the two
+halves of the 7950X (game A on logical processors 0-15 = 8 cores / 16 threads,
+the player's layout, NVIDIA, Native), game B on 16-31 either rendering 4K on
+the integrated Radeon (GPU busy 83-86 %) or Native on the NVIDIA (60 fps, more
+CPU work than the 35 fps iGPU game). Game A's processor time per frame
+(`fight_bench.py`), two interleaved rounds:
+
+| neighbour on the other CCD | A's main thread ms/frame | A's walker (ticker) ms/frame | other load |
+|---|---|---|---|
+| integrated Radeon at 4K (round 1 / 2) | 8.27 / 9.93 | 4.46 / 5.23 | 20.6 / 26.8 |
+| NVIDIA at Native (round 1 / 2) | 7.35 / 8.24 | 4.22 / 4.89 | 18.4 / 27.1 |
+
++12-21 % on the main thread, +5-7 % on the walker, from a 2-CU GPU working
+next door, while the processors' clock stayed at 4.6 GHz (`processors at ...`
+in `[slow-frames]`). The 780M has six times the compute units on the same
+kind of memory; at 4K -- whose 3D pass in this game is **6144 x 4320**, the
+supersampled 2048 x 1440 target times three -- it can take far more of the
+memory's bandwidth, and its 65 W are shared with the cores. That is the most
+likely reading of the 780M's long game part (no 780M here to measure it on):
+the game's own work, slowed by the GPU's load, not a wait. It would also
+explain the window sizes: whatever the output costs the GPU (the downscale,
+the compositor) adds to that load. The player's logs agree: `GPU wait` 0.0 in the median but up to
+199 GPU-classed frames per 30 s, i.e. the GPU needed about as long as the
+whole CPU frame.
+
+### Recording the next frame while the GPU draws: slower on integrated graphics
+
+The one real stall (the walker waiting for the GPU before it records) can be
+removed: patch 0063 gives the renderer **two frames in flight** --
+`RSX_FRAMES_IN_FLIGHT=2`: two command allocators, two sets of upload, vertex,
+index and constant rings and of the shader-visible descriptor rings; a slot
+is waited for only when it comes round again, retired textures move with
+their slot, everything else the CPU writes for the GPU already rotated
+(present descriptors per backbuffer, the overlay's 8 slots). Nothing the guest
+sees changes (labels, reports, flips stay walker-time). On the integrated
+Radeon at 4K, interleaved A/B, `RSX_GPU_PASSES=1`:
+
+| ms of GPU per frame | one frame in flight | two frames in flight |
+|---|---|---|
+| 3D pass 6144 x 4320 | 15.8-16.5 | 18.0-18.2 |
+| guest-size view (stage filter) | 1.84-1.96 | 4.20-4.25 |
+| display buffers 3840 x 2160 (each of two) | 1.22-1.29 | 2.52-2.54 |
+| shadow map pass | 0.36-0.39 | 1.29-1.33 |
+| whole frame | 23.5-24.5 | 31.7-32.0 |
+| fps | 34.8 / 37.5 | 31.0 / 31.8 |
+
+The overlap saves the 4 ms the GPU used to idle, and the walker's work (texture
+hashing, vertex decoding into the upload rings, constant copies) now runs
+while the GPU draws -- on one memory that costs the GPU 8 ms a frame. So the
+default stays one frame in flight (`RSX_FRAMES_IN_FLIGHT=2` is there for a
+discrete GPU slower than the game, where there is no shared memory; not
+measured: this PC's RTX 3090 is never the limit). The frame-latency queue
+stays at 1.
+
+### Present and composition
+
+The swap chain is flip model (`FLIP_DISCARD`, two buffers, frame-latency
+waitable, max latency 1, tearing flag where Windows has it) at exactly the
+client area's size, resized with the window; in borderless fullscreen that is
+the monitor's size, which is what Windows needs for independent flip (no
+desktop composition). A picture larger than the window goes through one
+downscale pass, patch 0051's bilinear pairs on AMD (2x: one tap per pixel,
+3x: four): 1.5 ms at 4K into 1920 x 1080 on the 2-CU Radeon, essentially one
+read of the 33 MB 4K picture -- it cannot get much cheaper without a smaller
+picture. Not checked
+here: whether the 780M's borderless window really got independent flip (this
+PC's screen hangs off the RTX 3090, and test windows stay minimised).
+
+### What changed (patch 0063 + launcher)
+
+| change | why | switch |
+|---|---|---|
+| `[slow-frames]` splits the game part: `game part 14.1 ms on average: main thread running 13.5, waiting for the renderer 0.0, for other game threads 0.6 (its processor time 12.9 ms a frame)` -- every blocking lv2 call and the flip wait time themselves on the main thread (one thread-local test elsewhere), counted only between the release and the flip request; a semaphore posted from a GCM handler, or a sleep while the walker has commands left (a label/fence poll), is a wait for the renderer | the 780M log said "CPU, game" and could not say whether that was work or waiting. A renderer wait inside the game part now counts as GPU for the slow frame | -- |
+| `GPU busy 17.2 ms a frame (62 % of the time, integrated graphics)`: GPU timestamps (two per command list, read after their fence: no wait) are on by default | GPU time without `PS3_FRAMELOG` | `RSX_GPU_TIME=0` |
+| `processors at 3.42 GHz on average (76 % of their 4.50)` (PDH "% Processor Performance", English counter names) | on an APU the clock drops while the GPU is busy; the old "clock limit" only says what the power plan allows | `PS3_CLOCK_SAMPLE=0` |
+| verdict at the end of the line: `GPU-bound: the graphics need 22.9 ms a frame ...` (GPU busy >= 85 % or most slow frames GPU) or `integrated graphics busy 64 % of the time: they share the processor's power and memory ...` (>= 50 %); a present that blocked while the GPU was >= 85 % busy is a GPU frame | the launcher and the problem report read it | -- |
+| `PS3_INTERNAL_RES=auto`: the step that matches the window's screen, at most 1080p on integrated graphics (`[display] internal resolution 1080p (1.5x) from PS3_INTERNAL_RES=auto (screen 2560x1440, integrated graphics: at most 1080p)`) | a choice for the launcher's Auto | -- |
+| `RSX_FRAMES_IN_FLIGHT=2` (above) | off by default | `RSX_FRAMES_IN_FLIGHT` |
+| `power saving off (PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its extra settings or in Windows' environment)` | the player's four logs all said `PS3_LAPTOP=0` although Auto was tried | -- |
+| Launcher: Power saving **Auto** is sent as `PS3_LAPTOP=auto` (was: nothing), so a variable left in Windows' environment cannot overrule it; Settings names an Extra-settings line that does (`Extra settings below set PS3_LAPTOP=0: that wins over this choice.`) | the launcher itself was right (Auto = unset); the game got `=0` from Off, the Extra settings box or the environment | -- |
+| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default | -- |
+| Launcher: on integrated graphics (from the last game log's `[gpu] adapter`), a step larger than the screen gets `4K (3x) on integrated graphics: try 1080p (1.5x) for 60 fps.`; after a game whose log says GPU-bound / integrated graphics busy, the Play tab says so | the 780M player's case | -- |
+| Problem report: `system.txt` gets "What the log says about speed" (GPU-bound windows, integrated graphics busy, Internal resolution above the screen on integrated graphics); `[slow-frames]` lines are kept whole (1,800 characters) | -- | -- |
+
+### Results
+
+`tools/fight_bench.py --polite` (Lili vs Asuka, stage 20 -- the heaviest per
+pixel, P1 pressing buttons, window fight start +24..42 s), Internal resolution
+4K, `PS3_LAPTOP=0` as in the player's logs, the swap chain as for a 1920 x 1080
+borderless window or a 1280 x 720 window (`RSX_TEST_CLIENT_SIZE`; the game
+window minimised). "Before" is main (1.1.2's runtime, 0001..0053), "after"
+this branch (0051 + 0059 + 0063). Other agents' games and builds kept 19-30 of
+the 32 processors busy, so the CPU-bound NVIDIA numbers move with that load;
+the iGPU runs are GPU-bound. Medians per frame over the last 15 s:
+
+| GPU, picture | build | fps | game part ms | translation ms (GPU wait) | GPU ms per frame | other load |
+|---|---|---|---|---|---|---|
+| integrated Radeon, 4K into 1920 x 1080 | before | 30.1-32.5 (4 runs) | 7.4-8.4 | 17.1-21.7 (12.3-17.9) | 26.6-27.6 | 21-29 |
+| integrated Radeon, 4K into 1920 x 1080 | after | 33.6-35.3 (3 runs; a 4th at 24.5 under 30 of 32 busy) | 8.5-13.7 | 15.3-19.3 (10.4-15.5) | 24.0-24.3 | 20-29 |
+| integrated Radeon, 4K into 1280 x 720 | before | 25.4-25.5 | 8.6-9.4 | 21.5-27.4 (16.9-23.0) | 34.3-34.7 | 26-30 |
+| integrated Radeon, 4K into 1280 x 720 | after | 28.3-28.5 | 10.8-14.3 | 20.2-24.0 (15.3-19.4) | 30.0-30.4 | 26-29 |
+| integrated Radeon, 4K, power saving on (Auto on an APU) | after | 25.0 | 11.7 | 14.3 (9.8) | 22.7 | 28 |
+| integrated Radeon, **Auto** (-> 1080p), power saving on | after | **59.7** | 9.3 | 3.9 (0.0) | **6.4** | 24 |
+| integrated Radeon, 1080p | before | 50.1 | 11.2 | 4.3 (0.0) | 7.7 | 27 |
+| RTX 3090, 4K into 1920 x 1080 | before | 57.3-59.9 (5 runs) | 8.3-10.2 | 4.1-4.8 | 1.5-2.1 | 20-29 |
+| RTX 3090, 4K into 1920 x 1080 | after | 54.2-59.9 (5 runs; 24.8 once at 30 of 32 busy) | 8.3-12.4 | 4.2-5.1 | 1.2-1.6 | 19-30 |
+
+- On this 2-CU Radeon 4K is GPU-bound in both builds; after: 9-12 % less GPU
+  time per frame (0051's cheaper filters) and 9-12 % more fps. The 4K -> 720p
+  window costs this GPU more than 4K -> 1080p (30 vs 24 ms); on the player's
+  780M the 720p window was the fastest -- not reproduced here.
+- **What helps an APU at 4K is a smaller picture**: Auto (1080p on integrated
+  graphics) runs the same fight at 59.7 fps with 6.4 ms of GPU per frame.
+- RTX 3090: unchanged within the load's noise (pairs at the same load: 59.9 /
+  59.8, 58.0 / 57.3); the main thread's processor time per frame is the same
+  in both builds (8.2 / 7.8, 9.0 / 8.9 ms), so the wait accounting costs
+  nothing measurable.
+- The new line on the integrated Radeon at 4K (one window): `game part 9.1 ms
+  on average: main thread running 8.6, waiting for the renderer 0.0, for
+  other game threads 0.6 (its processor time 8.3 ms a frame); GPU busy 22.9 ms a frame (84 % of
+  the time, integrated graphics) ... | GPU-bound: the graphics need 22.9 ms a
+  frame (integrated graphics) -- a lower Internal resolution is what helps`.
+
+**Online and the picture.** Only timing and host pixels change, so the two PCs of a match
+may differ. Rollback pair (RTT 50 +-5 ms, 3 % loss, delay 1, one match of two rounds, Lili vs
+Asuka on stage 20): host on the RTX 3090 at 4K with two frames in flight, joiner on the
+integrated Radeon with Auto (-> 1080p) and power saving: `sync through frame 6599: 0
+mismatching` on both sides, the same result hash `6921d865e3a4381f`, 57.2 fps (an earlier
+build of the branch: 0 mismatching, hash `dcb35942ae7c6184`). Lockstep pair, both on the RTX
+3090 at Native, host two frames in flight, joiner one, frame-exact surface dumps at netplay
+frames 300/900/1500 (`T5_NET_SHOT` + `LD_SURF_DUMP`): the shadow maps identical, the 3D target
+and the display buffers different only in the background crowd and the water splashes -- a
+control pair with the same settings on both sides differs there as well (those effects are
+not part of the state a pair keeps equal). The default, one frame in flight, records the same
+commands as before; patch 0063 adds two timestamps to each command list. Smoke quick: PASS
+(80 checks; 3 fps WARN from the other games on the PC).
+## Translation CPU (patch 0062, branch `xlat-cpu`)
+
+The weak-PC study ([WEAK_PC.md](WEAK_PC.md)) left the render translation at
+2.2-3.8 ms of every fight frame, on the frame's critical path, with the D3D12
+calls 0.7-1.0 ms of it. Patch 0062 cuts the translation by about a quarter and
+the D3D12 recording by half, without changing a pixel.
+
+### Who waits for whom
+
+| thread | per fight frame |
+|---|---|
+| main (the game) | the frame's logic, the skinning job list (on the SPURS workers), the command buffer; then **one** flush (`put`) and the flip request, then it waits for the flip |
+| ticker | the vblank clock; walks the command stream from that flush to the flip marker and records the D3D12 command list: the **translation**; the flip completes at the tick (at once for a late frame, 0059); after the flip handlers, submit and Present |
+| rsx-vertex (1-3) | each draw's vertex fetch and decode, handed over by the walker; drained before the submit |
+
+Game and translation are in series by design: once its flip completed the
+game may rewrite its vertex buffers, textures and programs ("Is the handover
+wait necessary?" above). Nothing else serializes them: the walker's CPU time
+per frame is the translation's wall time (median 2.14 vs 2.23 ms, frame log
+`fifo_cpu_us` and `xlat_us`), so the walker does nothing before the frame's
+single flush and never waits inside the translation (the vertex workers keep
+up; submit and Present come after the flip, off the critical path). The
+threading stays as it is; the lever is the walker's own CPU per frame.
+
+### Where the walker's time went
+
+ETW/WPR needs an administrator, so `tools/thread_profile.py` samples the
+ticker thread itself: 2,000 times a second it suspends the thread, reads its
+instruction pointer and the top of its stack, and resumes it; samples in a
+kernel wait are left out; addresses map to functions through the linker map,
+or to source lines with a build that has a PDB (`llvm-symbolizer
+--inlining`, see the tool). Fight Lili vs Asuka on stage 20, frame log on;
+share of the ticker's busy samples before the patch:
+
+| where | share |
+|---|---|
+| FIFO walk and method dispatch (`gcm_rsx_process_fifo_unlocked`, `rsx_dispatch_method_block`, `rsx_live_draw_method_block`, `gcm_io2ea`): the stream is mostly short method blocks -- 47 % of them one word, 44 % four (the vertex program, re-uploaded for every draw, one instruction per block) -- each walked, looked up and branched per word | 27 % |
+| display driver (`nvwgf2umx.dll`), D3D12 runtime and kernel submit: 14 state calls and one 16-descriptor table copy per draw (11,650 and 830 a frame), plus ~40 heap-start queries a draw | 24 % |
+| byte-wise FNV over ~170 bytes a draw for the PSO key and 192 bytes for a diagnostic descriptor signature | 7.5 % |
+| texture mutation hash (126 textures, 3.7 MB a frame, read from memory) | 7.4 % |
+| `QueryPerformanceCounter` (the frame log's phase timers: both builds pay it in every number below) | 4.6 % |
+| vertex job hand-off (`ld_vjob_submit`) | 4.6 % |
+| vertex-constant block copies (8 KB a draw when the constants changed) | 2.9 % |
+| everything else in a draw: layout, texture and sampler slots, surfaces, pixel constants | ~22 % |
+
+### What changed
+
+| change | switch (default on) | effect |
+|---|---|---|
+| **D3D12 state only when it changes.** The draw remembers what the open command list has bound (descriptor heaps, root signature, PSO, root CBVs, descriptor tables, render targets, viewport, scissor, stencil reference, topology, vertex and index buffer views) and records only what differs. Forgotten at every command-list reset and right before every other pass that records pipeline state on the list (surface copies, depth snapshots, the stage-blur guest-size view, the present copy, the training overlay) | `RSX_STATE_CACHE=0` | state calls 11,650 -> ~1,900 a frame |
+| **Descriptor tables reused.** A draw whose 16 texture slots equal those of a table already in the descriptor ring gets that table again (a 64-entry memo by slots), as long as nothing was written into the CPU-side SRV heap since (a refreshed texture or a re-made surface keeps its slot but gets a new descriptor; every such write bumps a generation) and the ring did not start over. The sampler table checks the previous call's table first. The heaps' start handles are read once | `RSX_STATE_CACHE=0` | table copies 830 -> ~170 a frame |
+| **One vertex and one index buffer view for the whole ring.** A draw's vertices start at a multiple of their stride in the upload ring (a few bytes of padding), so one view per stride serves every draw through `BaseVertexLocation`, and one index view through `StartIndexLocation` | `RSX_RING_VIEWS=0` | view calls 1,660 -> ~30 a frame |
+| Pixel-constant block reused when the next draw's constants and alpha reference are the same bytes | `RSX_STATE_CACHE=0` | |
+| The sampled render targets' transitions in one `ResourceBarrier` call each way (was one call per surface) | -- | |
+| **PSO key memo.** The key stays the byte-wise FNV it was, so the PSO cache, the pipeline library and the prewarm file keep their names; its inputs are first looked up in a 256-entry memo and compared in full | `RSX_STATE_CACHE=0` | PSO lookup phase 0.25-0.30 -> 0.12-0.15 ms |
+| The recent-draw ring's descriptor signature (diagnostics only) is a word hash instead of byte-wise FNV | -- | |
+| **Span dispatch.** A block of incrementing words that all land in registers of one kind (plain state, the transform program window, the transform constant window) is handled as one span: exactly the register stores, write counts and program and constant updates the per-word loop made (`tests/c/xlat_dispatch_test.c` compares both on random streams), without its table lookup and branches per word; a one-word state block is two stores | `RSX_DISPATCH_SPANS=0` | |
+| **Header runs in the FIFO walker.** After a method block the fast path takes the next headers itself while each is another plain subchannel-0 block within one IO page and carries no method the walker acts on (reference, labels, reports, semaphores): the same bookkeeping per header as the loop's top (budget, ring position, trace ring), without its flip, branch and probe checks | `PS3_GCM_HEADER_RUN=0` | |
+| A locked compare-exchange per draw for two debug flags is a plain load; the draw-CSV hook returns at once without `RSX_DRAW_CSV` | -- | |
+| `[xlat-stats]` lines next to `[render-stats]` (`RSX_HITCH_LOG=1`): per frame the draws, state calls made and skipped (by kind), tables copied and reused, PSO key memo hits, textures hashed and their megabytes | -- | |
+
+Nothing here reads or writes guest memory differently, and no command is
+skipped: the GPU receives the same draws with the same bound state.
+
+### Results
+
+Paired runs: the old build (series to 0059, `weakpc-fps`) and the new one at
+the same time, one on each CCD half (logical processors 0-15 / 16-31, 8 cores
+with SMT each), halves swapped for the second repetition;
+`tools/fight_bench.py --polite`, direct fight Lili vs Asuka, P1 attacking,
+window fight start +24..42 s (~1,070 frames), frame log medians and p99 per
+run, mean of the two runs. Other programs kept 14-30 of the 32 processors busy
+(the absolute numbers are higher than on a quiet PC, which is why the pairs
+run side by side); stage 27 ran below 60 fps in its loaded repetition in both
+builds.
+
+| stage, internal resolution | walker CPU per frame, median: before -> after | p99 | D3D12 recording, median | p99 | submit / Present call (both builds) |
+|---|---|---|---|---|---|
+| 20 (scrapyard, 835 draws), Native | 3.19 -> 2.56 ms (-20 %) | 5.16 -> 4.32 | 0.78 -> 0.43 (-45 %) | 1.24 -> 0.75 | 0.13-0.14 / 0.23-0.25 |
+| 20, 1080p | 3.66 -> 2.63 (-28 %) | 4.95 -> 3.87 | 0.90 -> 0.45 (-51 %) | 1.24 -> 0.64 | 0.14-0.16 / 0.25-0.28 |
+| 27 (550 draws), Native | 3.43 -> 2.73 (-20 %) | 4.66 -> 4.02 | 0.73 -> 0.36 (-51 %) | 1.04 -> 0.53 | 0.20-0.22 / 0.33-0.34 |
+| 27, 1080p | 2.99 -> 2.29 (-23 %) | 3.99 -> 3.25 | 0.72 -> 0.34 (-53 %) | 1.10 -> 0.52 | 0.17 / 0.30-0.31 |
+| 34 (misty swamp, 745 draws), Native | 3.18 -> 2.46 (-23 %) | 4.05 -> 3.31 | 0.79 -> 0.40 (-50 %) | 1.04 -> 0.55 | 0.12-0.13 / 0.22-0.23 |
+| 34, 1080p | 2.95 -> 2.15 (-27 %) | 4.02 -> 3.14 | 0.73 -> 0.34 (-53 %) | 1.09 -> 0.53 | 0.11 / 0.20 |
+| **all** | **3.23 -> 2.47 ms (-24 %)** | **4.47 -> 3.65 (-18 %)** | **0.78 -> 0.39 (-50 %)** | **1.12 -> 0.59 (-48 %)** | 0.15 / 0.27 |
+
+Each of the 12 pairs: walker CPU 0.69-0.89x, D3D12 recording 0.45-0.62x of
+the old build's. The translation's wall time (`xlat_us`) fell the same:
+3.21 -> 2.44 ms median, 5.06 -> 3.75 ms p99. The ticker thread's whole CPU
+time per frame (walk, vblank clock, submit, Present; thread times, not the
+frame log) 3.92 -> 3.15 ms. Submit (one `ExecuteCommandLists`) and the
+Present call are per frame, not per draw, and stay as they were. The internal
+resolution does not change the CPU side (the same draws).
+
+On the weak-PC stand-ins of [WEAK_PC.md](WEAK_PC.md) a translation of
+2.3-3.8 ms becomes ~1.8-2.9 ms: 0.5-0.9 ms more of every frame for the game
+part, about what a 3-5 % faster core would give.
+
+### Same picture
+
+Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off --fight
+<p1>,<p2>,<stage>,1`): the old build as host and the new one as joiner run the
+same game frames, and at lockstep frames 300, 900 and 1500 both dump every live
+surface (`T5_NET_SHOT` with `LD_SURF_DUMP`: the two display buffers, the 3D
+target, the shadow map, the glow buffers), compared byte for byte. Stages 20,
+27 and 34 at Native and 1080p, Lili vs Asuka and Jack-5 vs Bryan; 34 old/new
+pairs and 12 controls (old/old, new/new). Two things differ between any two
+games, whatever their builds: the stages' animated parts (puddles on 20, the
+background waterfall of 27, the water and mist of 34) follow a counter of the
+frames each game ran since it started, which differs by 1-40 frames when one
+loaded faster; and Lili's ribbon (cloth the game simulates outside the state a
+match keeps equal) and the odd splash.
+
+- **Pairs whose counters matched: every surface byte-identical** -- stage 27
+  1080p and stage 34 1080p (12 of 12 surfaces each), stage 20 Native (all but
+  Lili's ribbon in two shots; the ribbon also differed in 2 of 4 old/old
+  pairs); with intermediate builds of this patch also stage 20 Native (18 of
+  18) and stage 27 Native (12 of 12).
+- Pairs whose counters differed: fighters (but Lili's ribbon), HUD, shadow map
+  and glow buffers identical; the animated stage parts differ as they do in
+  old/old pairs.
+- A new/new pair with matching counters: identical but for one splash.
+
+All 46 pairs stayed in lockstep sync (0 mismatching frames).
+
+### Online
+
+The patch changes only how the host draws, never guest memory or the command
+stream, so the two players may run either build: a rollback pair, old build as
+host, new one as joiner, RTT 150 ms +-5, 3 % loss, one match of two rounds
+(`tools/rollback_net_test.py --fight 26,33,20,2 --mode1 default --mode2
+default`): sync through frame 4199 with 0 mismatching frames on both sides,
+the same result hash `a1f87325795b0036`, 576 / 553 rollbacks, no decode error
+or abort. The 46 lockstep pairs above: 0 mismatching frames.
+
+Also checked: smoke quick PASS on the new build (two fps WARNs from the other
+games on the PC), `tests/` (709 OK, with `tests/test_xlat_cpu.py`: the span
+dispatch against the per-word loop on 200,000 random blocks; three
+deliberately broken copies of the span code all failed it), the whole series
+applies in name order on a fresh tree (`tools/prepare_ps3recomp.py`).
+
+### What is left
+
+- The texture mutation hash: ~0.2 ms a frame (126 textures, 3.7 MB read from
+  memory every frame; memory-bound, a faster hash would not help). Only
+  knowing which guest pages were written would; Windows' write watch belongs
+  to the rollback.
+- The display driver: ~0.4 ms in the ~2,700 calls a frame that remain (830
+  draws and the state that really changes: vertex constants ~520, PSO ~275,
+  descriptor tables ~890).
+- The command walk: ~0.5 ms for tens of thousands of short method blocks a
+  frame, now a few nanoseconds each.
+- The frame log's own phase timers (`PS3_FRAMELOG`) cost ~0.15 ms of every
+  number above, in both builds; a player's game does not run them.
+## The game thread's own time (patch 0061, branch `game-thread-cpu`)
+
+[WEAK_PC.md](WEAK_PC.md) found that one core's speed limits the players at
+40-50 fps: the game's main thread needs 5-6 ms per fight frame here and
+8-10 ms on slow or shared cores, and a frame is that plus the translation.
+This branch is the main thread's own time: the lifted code and the runtime
+services it calls every frame (the build -- PGO/LTO -- and the translation
+are other branches).
+
+### How it was measured
+
+- **A sampling profiler that needs no admin rights**: the runtime's own
+  `PS3_HOST_PROF=<file>`, extended. `PS3_HOST_PROF_WHO=main` samples only the
+  threads whose name contains `main` (the game's main thread),
+  `PS3_HOST_PROF_DEPTH=48` keeps each sample's whole host stack (x64 unwind
+  tables), `PS3_HOST_PROF_AT=a,b` is the window in seconds after start,
+  `PS3_HOST_PROF_US` the period (1 ms). `tools/host_prof.py PROFILE --map
+  t5dr.map [--busy] [--focus NAME --callers]` gives self and inclusive time
+  per function (a lifted function is `func_<guest address>`), the samples by
+  kind (lifted code, guest memory helpers, indirect calls, HLE calls, lv2
+  syscalls, netplay/rollback, system calls) and, for a sample stopped in a
+  system DLL, the export it stopped in and the runtime function that called
+  it. `--busy` leaves out the samples blocked in a wait.
+- **Per displayed frame**: `PS3_GAME_THREAD_LOG=<file>` writes one line per
+  flip request of the game; `tools/game_thread_times.py` turns it into the
+  main thread's CPU time per frame (its thread cycles between two flip
+  requests: the frame's work, re-simulated frames and snapshots included,
+  waits left out) and the game part in wall time (the frame's release -> its
+  flip request), median, p90, p99. `tools/fight_bench.py` sets it and prints
+  the bench window's numbers.
+
+The fight is `tools/fight_bench.py`'s (Lili vs Asuka, stage 20, P1 pressing
+buttons, window fight start +20..60 s). Other agents' builds and games kept
+8-31 of the 32 processors busy during the work, so single runs move by 10-20 %;
+before/after numbers are paired runs (both games at the same time on the two
+CCD halves, swapped every round), shares of a profile are within one run.
+
+### Where the main thread's time went
+
+Offline fight, 16 logical processors, series to 0059. The main thread was
+busy ~5.4 ms of each 16.7 ms frame (the rest it waits for its flip):
+
+| what | share of the busy time | ms per frame |
+|---|---|---|
+| lifted code (the game) | 58 % | 3.1 |
+| **lwmutex lock/unlock: two kernel calls per pair even when the lock was free** (`NtWaitForSingleObject` with a zero timeout, `NtReleaseSemaphore`: the lwmutex was a kernel semaphore) | **32 %** | **1.7** |
+| VMX float helpers (`vmx_vmaddfp`, `vmx_vaddfp`, ... out of line) | 5 % | 0.27 |
+| HLE dispatch (`ps3_hle_call`): a scan of every registered handler per call, with an out-of-line `std::atomic` load per entry; the GCM pump's three locked instructions; the breadcrumb lookup | 2.5 % (8.7 % once the lwmutex calls were gone) | 0.14 |
+| indirect calls (`ps3_indirect_call`, the fast path) | 1.7 % | 0.09 |
+| everything else (lv2 syscalls, out-of-line guest memory, timers) | < 1 % | |
+
+The lifted code's profile is flat: the 30 hottest functions together are a
+quarter of the busy time (share of the busy time before -> with 0061; the
+shares grow as the total shrinks):
+
+| function (guest address) | before | 0061 | function | before | 0061 | function | before | 0061 |
+|---|---|---|---|---|---|---|---|---|
+| 0x355C70 | 3.8 % | 4.6 % | 0x36A758 | 0.8 % | 0.9 % | 0x1551B0 | 0.6 % | 1.0 % |
+| 0x355B34 | 2.2 % | 3.1 % | 0x36A7C8 | 0.7 % | 0.9 % | 0x397AF8 | 0.5 % | 0.5 % |
+| 0x36AFB8 | 1.8 % | 2.3 % | 0x3A6A40 | 0.7 % | 0.8 % | 0x391728 | 0.5 % | 1.0 % |
+| 0x35375C | 1.6 % | 2.1 % | 0x391A4C | 0.7 % | 0.8 % | 0x36991C | 0.5 % | 0.5 % |
+| 0x3ADEC4 | 1.5 % | 2.5 % | 0x36A9E0 | 0.7 % | 0.6 % | 0x283CD0 | 0.5 % | 0.9 % |
+| 0x07CB14 | 1.4 % | 1.2 % | 0x3524C4 | 0.7 % | 0.7 % | 0x35C230 | 0.5 % | 0.8 % |
+| 0x36A8F4 | 0.9 % | 0.9 % | 0x0C5044 | 0.6 % | 0.5 % | 0x369430 | 0.4 % | 0.5 % |
+| 0x3520D0 | 0.9 % | 1.1 % | 0x2B29A0 | 0.4 % | 0.5 % | 0x36AE60 | 0.4 % | 0.6 % |
+| 0x354160 | 0.9 % | 1.4 % | 0x3694E8 | 0.4 % | 0.3 % | 0x351EBC | 0.4 % | 0.7 % |
+| 0x3596C4 | 0.8 % | 1.0 % | 0x0F66CC | 0.4 % | 0.5 % | 0x389788 | 0.4 % | 0.3 % |
+
+The top ones are the draw packet writers (`0x355C70` and `0x355B34`, the
+16-byte packet moves: byte loops with the guest registers in memory and two
+reservation-bitmap checks per store), the draw-list append `0x354160`, and
+the vector math around `0x36A758`..`0x36AFB8`; by subtree the fighters' model
+draw (`0x387324`, 15 %) and the scene update (`0x10BD8`, 18 %).
+
+Online (rollback, the default, at RTT 100 ms, 8 logical processors each),
+on top of that:
+
+| what | share of the busy time | |
+|---|---|---|
+| **indirect calls on the full path**: the rollback layer installs `ps3_icall_hook` for the session, and with a hook every indirect call took `ps3_indirect_call_impl` -- a dozen environment probes and the uncached 3 MB hash lookup | **7 %** (5.5 % in it, 1.3 % in the hook) | |
+| rollback snapshots (`state_commit`) | 11-12 % | 0.49-0.60 ms per commit, ~2.2 commits per frame, 160-330 pages (0.6-1.3 MB) each; of a commit 0.27-0.35 ms is `GetWriteWatch` (the kernel's walk over the 105 MB state, 27,000 pages, and its TLB shootdowns: 0.14 ms with no other thread running, 0.27 ms with six, in a stand-alone test; one call or seven, with or without a separate reset: the same) and 0.17-0.27 ms the two page copies. About 90 % of it is the early commit, which runs while the frame waits for its translation; the commit at the frame boundary, on the critical path, is ~0.08 ms per frame |
+| state hashes | 0.1 % | the gameplay hash (`rb::state_game_hash`, ~25 KB) ~7 us per frame |
+| re-simulation | | 1.7-2.2 ms per re-simulated frame, 0.2-0.4 ms per displayed frame on average at RTT 100 |
+
+### What changed (ps3recomp patch 0061)
+
+| change | switch | effect |
+|---|---|---|
+| **lwmutex without a kernel call while it is free** (`runtime/ppu/ppu_lwm_fast.h`): an atomic word per lwmutex; a locker that finds it held sleeps on a condition variable; an unlock with waiters hands the lock to one of them (it stays locked, as the semaphore's release to a waiting thread did and as the PS3's kernel does). Any thread may unlock, a timed-out lock takes nothing, unlocking a free lock leaves it free -- as before. The guest's owner/recursion words are written as before | `PS3_LWM_FAST=0` | the 32 % above (1.7 ms of kernel calls per frame here), and the same on every thread that takes lwmutexes (the draw thread, the sound threads) |
+| **The indirect-call fast path with a hook installed**: the hook is consulted there, with the same target, at the same point and with the same one-shot bypass as on the full path (which now only sees unregistered or null targets and the diagnostics) | `PS3_ICALL_HOOK_FAST=0` | the 7 % of the online busy time above |
+| HLE dispatch: the registered handlers by index (rebuilt when one is added; the first registration of a NID still wins), the GCM pump returns at once when nothing is pending, the call-site memo of the breadcrumb 64 -> 1024 entries | -- | HLE dispatch 8.7 % -> 3.6 % of the busy time |
+| `-mcx16` for the runtime and `src/` (CMake, clang only): the MSVC STL gives every `<atomic>` function `target("cx16")`, and clang never inlines a function with target features its caller lacks -- every `std::atomic` load, store and compare-exchange in the runtime was an out-of-line call. Every x64 CPU Windows 10/11 runs on has CMPXCHG16B. The lifted code keeps its options | -- | the calls become the instructions they wrap |
+| Profiler: `PS3_HOST_PROF_WHO=<name>`, `PS3_HOST_PROF_DEPTH`, `PS3_HOST_PROF_US`; `PS3_GAME_THREAD_LOG` | off unless set | measurements only |
+
+Tried and left out: forcing the VMX float helpers inline made the functions
+that use them slower (13.8 % -> 16.2 % of the busy time; register pressure in
+the large lifted functions). The lifter is unchanged: the hot lifted loops
+(guest registers kept in `ctx`, two reservation-bitmap checks per store) would
+need register promotion and alias information, not a clearly safe change.
+The snapshot's copies could be halved (a shadow of page pointers), but nine
+tenths of them run in the flip wait already, and `GetWriteWatch`'s cost is
+the kernel's, the same for every call shape.
+
+Nothing here changes what the game computes: no lifted code, no guest-visible
+value, no floating point; the lwmutex keeps mutual exclusion and hands a
+contended lock on in turn, only faster when nobody waits.
+
+### Results
+
+Per displayed frame, the game's main thread, ms. "CPU" is its thread time
+(its own work), "game part" the wall time from the frame's release to its
+flip request (what the frame's translation waits for: the work plus the
+waits for the draw thread and the skinning jobs). Paired runs, the two
+builds at the same time, swapped every round; "before" is the series to 0059
+with the measuring tools only, "0061" the final build. Ranges are the
+rounds, the value in brackets their median.
+
+Offline fight, 8 logical processors each (4 cores / 8 threads, the two
+halves of the second CCD), 4 rounds, 12-17 other processors busy:
+
+| | before | 0061 |
+|---|---|---|
+| CPU, median | 6.11-7.32 (6.27) | **4.52-5.49 (4.56)** |
+| CPU, p99 | 7.31-8.94 (8.07) | **5.73-6.88 (6.06)** |
+| game part, median | 6.21-8.40 (6.56) | **5.48-7.49 (5.64)** |
+| game part, p99 | 8.64-13.57 (9.95) | **7.58-12.93 (8.87)** |
+| draw thread CPU (`NU::Draw::RequestManager`) | 3.0-3.5 | 2.7-3.1 |
+
+On 16 logical processors (8 rounds, 14-24 other processors busy) the CPU
+median went 5.98-8.07 (7.2) -> 4.87-6.19 (5.7). The game part gains less
+than the CPU: with its own work done sooner, the main thread waits longer for
+the draw thread (`sys_cond_wait`, 0.37 -> 0.56 ms per frame) -- that thread
+is the next limit (lifted code, 92 % of its time).
+
+Online, rollback (the default) at RTT 100 ms +-5, 3 % loss, one match per
+run, host and joiner on 8 logical processors each, 2 rounds (host / joiner
+values together), 17-23 other processors busy:
+
+| | before | 0061 |
+|---|---|---|
+| CPU, median | 9.04-10.77 | **5.95-6.70** |
+| CPU, p99 | 17.8-20.1 | **11.9-13.7** |
+| game part, median | 8.8-11.9 | **6.5-7.3** |
+| game part, p99 | 17.9-22.4 | **12.6-14.9** |
+| displayed frame time, p99 | 24.9-29.7 | **22.6-23.1** |
+| match fps | 54.9-58.0 | **57.5-58.8** |
+
+A slower PC by the test hooks of patch 0059 (+10 ms game, +2 ms
+translation, 8 logical processors, offline): 41.8 -> 44.0 fps. That stand-in
+adds a fixed 10 ms, so it understates the gain: on a core half as fast, the
+kernel calls and the dispatch overhead that are gone took twice as long.
+
+### Same game
+
+Nothing of what the game computes changed, and two PCs with and without
+0061 play each other. Proof (`tools/rollback_net_test.py`, three matches per
+run: Asuka vs Lili stage 20, then Lili vs Dragunov stage 24 and its rematch;
+RTT 100 / 3 % loss for rollback, RTT 30 / 1 % loss for lockstep):
+
+| pair (host / joiner) | mode | frames compared per side | result |
+|---|---|---|---|
+| 0061 / 0061 (twice) | rollback | 16,200 | 0 mismatching frames, the same three result hashes on both PCs |
+| 0061 / 0061 (twice) | lockstep | 16,200 | the same |
+| 0061 / main (twice), main / 0061 | rollback | 16,200 | the same |
+| 0061 / main, main / 0061 (twice) | lockstep | 16,200 | the same |
+
+"main" is main's own build (series to 0053, its CMake) from the same lift.
+Of each "twice", one run used the build before the lock moved into its own
+header (the same code).
+The rollback runs had 450-1,870 rollbacks per side (up to 7,378 re-simulated
+frames). The online measurements above were in sync too. Smoke quick PASS
+(one fps WARN under load in practice-select, as before), `tests/` OK,
+`tests/test_lwm_fast.py` runs the lock's own stress test (8 threads, every
+lock path, hand-over, timeouts, unlock by another thread).
+
+### What is left
+
+The main thread is now ~83 % lifted code. Its profile is flat (the 30
+hottest functions are a third of the busy time); the biggest single items are the
+draw packet writers and the out-of-line VMX helpers (7 %). Online, the
+snapshots (11-12 % of the busy time, nine tenths of it in the flip wait) and
+re-simulation (1.7-2.2 ms per re-simulated frame) remain; hashing is under
+0.1 ms a frame in both modes (lockstep: the netplay frame start, hash
+included, ~10 us). The draw thread's wait is the next step for the game
+part.
+## SPU side on weak PCs (patch 0064, branch `spu-perf`)
+
+Players on 4-core / 4-thread laptops (i5-7300HQ) see ~40 fps in fights.
+The game's SPU work runs as lifted SPU code on host threads: the **sound
+core** (`bnuscore`, one thread, a 5.33 ms tick 187.5 times a second) and the
+SPURS **skinning jobs** (`skin1x`/`skin4x`, ~390 jobs per fight frame on the
+walker `spurs-chain` and the `spurs-job` workers, then the small `jcsignal`
+job that wakes the game). Before this patch, on 4 logical processors, that
+was ~47 % of all the game's CPU time: the sound core alone took 60-65 % of a
+processor -- more than the game's main thread (~45 %) -- and the skinning
+~9 ms of CPU per frame.
+
+### Where the time went
+
+Measured with `tools/thread_sampler.py` (new: samples a thread's
+instruction pointer and resolves it with `llvm-symbolizer` against an exe
+built with line tables, inlined helpers included), `SPU_PROF=1` (new, below)
+and a `PS3_SCHED_TRACE`:
+
+- **Sound core**: half of its time in the SPU_NEAR_FLOAT float ops
+  (`spu_fa`/`fs`/`fm`/`fma`, ~22 instructions per operation for the SPU's
+  zero and extended-range rules); ~8 % in the two hooks every transfer
+  between lifted functions called (`yz_lockstep_tick`,
+  `spu_task_launch_check`: calls and env-cached switches); the local-store
+  accessors' debug hook (one load and a branch, but a call the compiler cannot
+  see into, so the register file was reloaded from memory after every
+  local-store access); a debug scan of every DMA PUT for a crash in another
+  title (`POISON-DMA`).
+- **Skinning jobs**: `spu_rotqby` was a quarter of a job -- on x86 the byte
+  rotates, shifts and the `cwd` family were scalar byte loops of 90-200
+  instructions; every job ends in a halt, and MSVC's `longjmp` unwinds the
+  frames it skips (~0.8 us of a ~25 us job); the POISON scan.
+- **The game waiting**: the main thread kicks the chain, works ~3.5 ms, then
+  blocks until the list is done. On 4 processors it blocked on ~60 % of
+  fight frames, 1.3 ms at the median, 2.8 ms at p90, its processor idle
+  meanwhile. The SPU threads themselves sleep properly (no spinning: the
+  sound core waits on its event queue, the job threads on events/condition
+  variables); kick -> first job 0.03-0.5 ms.
+
+### What changed
+
+| change | switch | effect |
+|---|---|---|
+| x86 forms of the byte permutes: `rotqby`, `rotqbyi`, `shlqby`, `shlqbyi`, `rotqbybi`, `shlqbybi`, `rotqmby`, `rotqmbyi`, `rotqmbybi` are one `pshufb` with an index built from the SPU byte arithmetic; `cbd/chd/cwd/cdd` and the x forms a compare + blend; `fsm/fsmh/fsmb` a compare; `shufb` without its three byte swaps (16 -> 6 instructions) | compile-time (`SPU_SCALAR_HELPERS` = the loops) | skinning job ~25 -> ~10 us |
+| SPU_NEAR_FLOAT ops in about half the instructions: exponent tests on `abs(x)` as signed compares; no test of the operands for exponent 255 (an Inf/NaN operand always gives an Inf/NaN result, which sends the vector to the exact path as before); the exact path a cold call that returns in a register | -- | sound core -30 % |
+| Lifted images are compiled with `SPU_LS_NO_HOOKS`: no debug hooks in `spu_ls_read128/write128` (the runtime's own accessors keep them) | CMake / `build_game_dll.py` define | the compiler keeps SPU registers in host registers across loads |
+| The per-transfer hooks inline: with none of their diagnostics armed they are the stack-reset check (only with entries registered), the step count and the LS-0 job end | `SPU_LOCKSTEP`, `SPU_EXITTRACE`, ... arm the old path | sound core ~-8 % |
+| The halt landing pad's `longjmp` does not unwind (the jmp_buf's Frame set to 0; the unwinding jump stays when user shadow stacks (CET) are on) | `PS3_SPU_HALT_UNWIND=1` | ~0.8 us per job |
+| The POISON-DMA scan of every PUT is off | `SPU_POISON_DMA=1` | ~3 % of a job |
+| **The waiting PPU thread runs jobs**: a thread about to block in `sys_event_queue_receive` on a queue SPURS attached first takes jobs from the open job list, like one more worker, and blocks only for the jobs still running elsewhere; a batch is opened without workers too (2-3 processors) | `SPURS_JOB_HELP=0` | on 4 processors the main thread ran ~3 jobs per frame and blocked 0.00-0.01 ms (was 0.65-1.2 ms per frame) |
+| Diagnostics: `SPU_PROF=1` (per job binary jobs/time per walk, list wall time, kick -> start, the waiting thread's jobs and blocked time, every 600 walks), `SPURS_JOB_HASH=1` (FNV hash of every byte the jobs PUT, one `[spu-hash]` line per walk), `SPU_SELFCHECK` (compile the lifted SPU code with it: every rewritten helper also runs the code it replaced and counts differences) | off | -- |
+
+Thread counts are unchanged (they come from 0027/0047: on 4 processors the
+walker and one worker, 8 job threads from 16); with the waiting game thread
+helping, a third thread takes jobs exactly when the game would otherwise sit
+idle. Priorities unchanged.
+
+### Results
+
+Paired runs, `tools/fight_bench.py --polite` (Lili vs Asuka, stage 20,
+window fight start +24..42 s), before = main's series plus the `SPU_PROF`/
+`SPURS_JOB_HASH` instrumentation with `SPURS_JOB_HELP=0`, after = 0064,
+started together on two halves (4 processors: 8-11 / 12-15, 16: 0-15 /
+16-31), the halves swapped every round. Other agents' games kept 16-26
+processors busy, so the fps are this PC under load -- a weaker PC -- not a
+quiet 7950X. Median (range) over the rounds:
+
+| | runs | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU ms per frame | sound core: share of a processor (ms per 5.33 ms tick) | skinning: CPU ms per frame (threads) | main thread ms per frame |
+|---|---|---|---|---|---|---|---|---|
+| 4 processors, before | 4 | 38.5 (37.3-45.1) | 893 | 37.6 | 47.5 | 64 % (3.39) | 8.79 (2) | 8.8 |
+| 4 processors, after | 4 | **55.6** (46.9-57.4) | 378 | 32.6 | **31.5** | **36 %** (1.92) | **3.32** (2) | 8.8 |
+| 4, power saving (`PS3_LAPTOP=1`), before | 2 | 50.4 (41.5-59.2) | 525 | 34.0 | 43.1 | 58 % (3.10) | 9.24 (2) | 8.4 |
+| 4, power saving, after | 2 | **58.0** (57.1-58.8) | 330 | 30.5 | **30.9** | **35 %** (1.86) | **3.22** (2) | 8.3 |
+| 16 processors, before | 2 | 59.96 | 182 | 19.0 | 35.7 | 52 % (2.78) | 8.84 (8) | 6.9 |
+| 16 processors, after | 2 | 59.95 | 185 | 18.9 | **28.6** | **33 %** (1.76) | **3.93** (8) | 7.3 |
+
+**The pool stage (stage id 30: the poolside with the crowd dancing round the
+pool; a player on a 4-core i5-7300HQ laptop: "55-60 fps, but on stages with
+lots of 3D models like the pool stage it drops considerably").** The crowd is
+skinned in the same job list: ~420 jobs a fight frame against ~390 on stage
+20, so 7 % more skinning, and the list ran longer than the game's own work
+before it waited -- on 4 processors it blocked 1.0-1.6 ms a frame (2.3 ms in
+one earlier run) where stage 20 blocked 0.65-1.2. Same paired setup, `--fight
+lil,ask,30,3`, 27-30 other processors busy (so these fps are a much weaker
+PC than this one):
+
+| pool stage, 4 processors | runs | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU ms per frame | sound core | skinning CPU ms per frame | skinning job (us) | list wall time | game thread blocked per frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| before | 4 + 2 | 31.9 (20.8-42.2); 37.4 with `SPU_PROF` | 975; 903 | 53.4; 44.3 | 55.1; 48.7 | 65 % | 10.8 | 28.2-30.2 | 6.0-6.8 ms | 1.0-1.6 ms |
+| after | 4 + 2 | **41.0** (38.3-44.6); **52.9** with `SPU_PROF` | 754; 437 | 46.1; 35.7 | **34.4; 30.9** | **36 %** | **3.9** | **10.0-11.4** | **2.3-2.4 ms** | **0.01 ms** (ran 2-5 jobs itself) |
+
+On a CPU with half this one's speed per core the before list would take
+~12 ms of the frame on two threads (24 ms of CPU) while the game's own work
+before the wait is ~7 ms: ~5 ms of every pool frame spent waiting -- and the sound core alone
+would need ~1.3 processors (more than its 5.33 ms tick). After: ~8 ms of CPU
+over three threads, done before the game needs it, and the sound core ~0.7
+of a processor.
+
+Per job and per frame (`SPU_PROF=1`, one 600-walk window per run):
+
+| | skinning job (us) | jobs per frame | skinning CPU per frame | list wall time | game thread: jobs run / blocked per frame |
+|---|---|---|---|---|---|
+| 4 processors, before | 26.4-26.7 | 391 | 10.3-10.5 ms | 5.6 ms | 0 / 0.65-1.22 ms (0.4-0.7 waits) |
+| 4 processors, after | 9.9-10.6 | 390 | 3.9-4.2 ms | 2.3-2.6 ms | 2.6-3.1 / 0.00-0.01 ms |
+| 16 processors, before | 24.2-24.4 | 390 | 9.4-9.5 ms | 1.3-1.6 ms | 0 / 0 |
+| 16 processors, after | 9.5-10.0 | 390 | 3.7-3.9 ms | 0.7-0.8 ms | 0 / 0 |
+
+The `jcsignal` job is 20-28 us either way (its time is the event it sends).
+The SPU threads' context switches fell from ~1,050 to ~750 a second (4
+processors). One "after" run in ~36 had the sound core at 95 % of a processor
+from its boot on (late audio blocks during the title). Hunted afterwards with
+72 boots, 3 at a time on this loaded PC: new and old build 36 each, 4, 8 and
+16 processors, power saving on and off, `SPU_PROF=1`, the sound core's CPU
+logged every second from boot (a watcher would have sampled it with
+`tools/thread_sampler.py` above 75 % for 3 s):
+
+| build | runs | sound core, fight window: median (max) | highest 1-s share from boot | seconds above 75 % | runs with late audio blocks (blocks) |
+|---|---|---|---|---|---|
+| new | 36 | 37 % (42 %) | 55 % | 0 of 2,167 | 4 (70) |
+| old | 36 | 66 % (71 %) | 83 % | 66 of 2,176 | 21 (709) |
+
+It never came back (with the 16 earlier checks: 1 in ~88 boots of the new
+build). In the outlier run itself the job lists and the waiting game thread
+looked like every other run (10.4-10.6 us per job, 0.00-0.01 ms blocked), and
+the sound core was already hot before the first skinning list ran; the
+job-help path only touches threads waiting on a queue SPURS attached (queue 1),
+never the sound core (it waits on its own queue, 5). Most likely the PC (its
+processors were shared with 25-30 others' processes); if a player's
+`[cellAudio] sound glitches` lines ever show it, `tools/thread_sampler.py
+--threads spu` on that game names the code.
+
+### The same results, bit for bit
+
+- The helpers against the code they replace, exactly: `tests/run_ps3recomp_tests.py`
+  `spu_int_sse` (every shift count and position, every fsm selector, shufb
+  with and without special selectors: 3.9 M checks) and `spu_near_float_sse`
+  (the 0041 code copied in; every pair of operand exponents plus 3 M random
+  vectors biased to zero/denormal/overflow/cancellation: 19.3 M checks).
+- In the game: a `SPU_SELFCHECK` build ran boot, title, select and a fight --
+  **5.86 billion** helper calls on real data (sound core fa/fs/fm/fma/fnms
+  2.8 G, shufb 2.0 G, rotqby 0.57 G, ...), **0 differences**.
+- Lockstep pairs, new host against a before joiner (two pairs, three
+  `T5_NET_SHOT` frame dumps each, all six surfaces): 0 mismatching frames
+  and the same result hash; 3 of the 6 shots byte-identical in every surface,
+  one more identical except Lili's hair strands (secondary motion). The
+  others differ the way two games of the *same* build differ: the fight
+  camera is not kept equal between two games (two same-build pairs, old/old
+  and new/new: 0 of 6 shots identical). Likewise `SPURS_JOB_HASH`: 4,498 of
+  6,792 and 3,957 of 6,854 skinning walks gave the same hash on both sides
+  (~3.2 M jobs' output byte-identical); the same-build pairs, whose cameras
+  had drifted apart, matched 0 walks.
+- Rollback pairs (RTT 150, 3 % loss, 500-570 rollbacks a side): new/new,
+  new host/before joiner and before host/new joiner, 0 mismatching frames,
+  the same result hash both sides; lockstep new/new the same.
+- Nothing here reaches game state: the skinned vertices are only drawn, and
+  the sound core's samples and replies are the same bits; the game thread
+  running jobs changes which thread computes them, not what.
+- Smoke quick PASS (audio PASS: 0 % silent blocks in fights); `tests/` OK.
+
+### Not done
+
+- The SPU_NEAR_FLOAT operand tests (zero for a denormal operand) are still
+  done on every operand; values that come straight from another float op
+  are already flushed. Knowing that needs the lifter (~10 % of the sound core
+  at most: an experiment without them took 10-15 % off).
+- Job staging (copying the 17 KB binary and clearing the job's regions per
+  job, ~12 % of a job) and the 8-byte guest-memory copy loops (~5 %).
+- Not tried on a real 4-core laptop or an APU.
+## Thread placement (patch 0065, branch `sched-perf`)
+
+Player report: an i5-7300HQ laptop (4 cores, 4 threads, no SMT) plays fights
+at about 40 fps. This section is the study of where the game's threads run,
+at which priority and how many of them there are -- on that CPU and on kinds
+this PC does not have (Intel hybrid) or has only in part (two CCDs, SMT).
+
+**Result:** on 4 processors slowed to a ~40 fps stand-in, fights run 8.6 %
+faster (39.6 -> 43.0 fps, faster in 8 of 8 paired rounds, p99 35.9 -> 34.0
+ms, a third fewer late audio blocks), on the pool stage (id 30, its crowd
+of party guests) 22 % faster (8 of 8): one more skinning thread and the
+game's own threads one step above its helpers. On all 32 processors of this
+busy PC the game held 59.95 fps where it had dropped to 42-54. Hybrid CPUs get the performance cores
+for the frame's threads, two-CCD Ryzens keep them on one CCD, the main thread
+and the translation never share a core; the log says all of it.
+
+### The threads of a fight
+
+`tools/fight_bench.py`, 4 cores / 4 threads (affinity 0x55), the PC busy with
+other programs (39 fps): CPU per frame of every thread and how it waits.
+Priorities are relative to the process class (+1 above normal, +2 highest).
+
+| thread | what it does | CPU per frame | priority before -> 0065 | how it waits |
+|---|---|---|---|---|
+| `spu` | the SPU sound core (lifted DSP), 187.5 ticks a second | 15.4 ms (0.6 of a core, fixed per second) | +2 | its mailbox: condition variable (10 ms re-poll) |
+| `main` | the game's main PPU thread: game logic, kicks the skinning, builds the RSX commands | 8.5 ms | +1 -> +2 | lv2 cond / semaphore / event queue (its helper threads, the skinning), the flip (WaitOnAddress, 0047) |
+| `ticker` | vblank clock, FIFO walk = render translation, present | 4.4 ms | +2 | high-resolution timer + FIFO kick event, polls the last 250 us before a tick |
+| `spurs-chain` | the skinning job chain's walker; takes jobs itself | 4.1 ms | +1 | an event per chain |
+| `spurs-job` (1 on 4 cores; 0065: 2) | skinning jobs | 3.6 ms | +1 | condition variable per job list |
+| `NU::Draw::RequestManager` | game thread (lv2 priority 1001): the main thread hands it draw work and waits for it | 3.4 ms | +1 -> +2 | lv2 cond |
+| `rsx-vertex` | vertex fetch for the translation | 2.8 ms | +1 | 300 PAUSEs, then WaitOnAddress |
+| `pad sampler` | 1 ms pad / keyboard sampling (tap latch) | 2.5 ms with the bench's script file; 1-3 % of a core with a real pad | +2 | high-resolution timer |
+| `bnusCoreUpdateThread`, `CnuSound2Thread`, `bnusCoreDecoder*` | the game's sound threads | 0.3 ms | +1 -> +2 | lv2 waits |
+| `audio-mix` | cellAudio mixer | 0.07 ms | time-critical | high-resolution timer to the next block |
+| `keyread`, `NU::File::RequestManager`, `NU::System::RenderDuration`, `NU::Draw::Geometry::RequestManager`, `particle` | game threads (lv2 1000-1001) | ~0 | +1 -> +2 | lv2 waits |
+| loaders: `ZsAread`, `TNUD::ASync`, `decoder`, `data check`, http | lv2 priority >= 1002 | 0 | 0 | semaphores |
+| `audio-device`, PSO writer, prewarm, replay writer, pad hot-plug | background | ~0 | -1 (EcoQoS with power saving) | events, timers |
+| `netplay-rx`, `netplay-tick` (online) | receive inputs, keepalives | ~0 | 0 -> +2 / +1 | `recvfrom`, 50 ms sleep |
+| D3D12 driver threads | | 0.07 ms | -- | -- |
+
+Nothing spins in a fight on a small CPU: sub-millisecond sleeps use the timer
+below 24 logical processors (0047), the flip wait sleeps until the flip, the
+vertex worker's 300 PAUSEs bridge two draws of one walk. A trace
+(`PS3_SCHED_TRACE`, 4 processors, PC busy) shows the frame's critical path:
+in its game part the main thread waits ~26 ms of a 40 ms frame in lv2
+`sys_cond_wait` for `NU::Draw::RequestManager` and ~8 ms for an lwmutex that
+thread holds -- the two hand the frame back and forth -- then the skinning
+and the translation; the sound core runs beside them.
+
+### What the scheduler did, CPU by CPU (before 0065)
+
+**(a) 4 cores / 4 threads.** CPU budget 4 (affinity mask): 2 SPURS job
+threads (walker + 1 worker), 1 vertex worker, sub-ms sleeps on the timer, no
+ideal processors. Oversubscribed? On this PC's ~5 GHz cores the game uses
+1.5-1.8 of its 4 processors; on cores 2-2.5x slower the same work is 3.5-4.5
+processors -- yes, on the player's PC every thread competes. The workers ran
+at +1, the same level as the main thread and the game's own threads; the
+translation (+2) was above them. Making the workers lower is the obvious fix
+and it is wrong: at below normal -15 % (4 of 4 rounds), at normal -6 % -- the
+main thread waits for the skinning, and lower workers then lose their
+processor to every other program. Raising the main thread alone did nothing
+(+0.1 %): it waits for its helper threads. What helped: one more job thread,
+and the main thread *with* the game's other threads one step up.
+
+**(b) Intel hybrid.** EfficiencyClass (`GetSystemCpuSetInformation`) was read
+only to rank cores for the opt-in `PS3_SCHED_CPUS=fast` and
+`PS3_SCHED_IDEAL=1` (which ranked the whole PC, not the affinity mask).
+Nothing kept the main thread or the translation off the efficiency cores:
+Windows' Thread Director decides, and with the performance cores busy (our
+own workers among them) it moves threads to the E-cores. EcoQoS: the process
+opts out of power throttling (EXECUTION_SPEED off), and only background
+threads (audio device, PSO writer, trace) get EcoQoS, with power saving --
+none of the frame's threads. That part was right.
+
+**(c) Two CCDs (7950X).** Nothing by default: the main thread, the
+translation and the game's threads wherever Windows put them, their
+hand-offs (cond signals, the command buffer, the flip) crossing between the
+two caches.
+
+**(d) SMT.** Nothing kept the main thread and the translation apart; Windows
+prefers an idle core, but its default ideal processors can put both on one
+core's two threads.
+
+### What changed
+
+`runtime/platform/host_sched_plan.h` (new: pure functions over the processor
+table, unit-tested) makes one plan at start; `host_sched.c` applies it to each
+thread as it starts.
+
+| change | for | switch |
+|---|---|---|
+| **The game's own threads one step up**: the main thread and every guest thread of lv2 priority < 1002 (draw request managers, sound threads; their order among themselves stays the PS3's) +1 -> +2, above the SPURS and vertex workers (+1); the translation and the sound core stay +2 | everyone | `PS3_SCHED_PRIO_MAIN`, `_PPU`, `_PPUHI` (=1: before) |
+| **SPURS job threads**: half the logical processors or one per core but the main thread's, whichever is more -- 3 instead of 2 on 4 cores without SMT, 5 instead of 3 on 6c/6t; SMT CPUs unchanged | CPUs without SMT | `SPURS_JOB_THREADS` |
+| **Performance cores only** for the main thread, the game's threads, the translation, the sound core and the vertex worker (the translation waits for it): a CPU set (`SetThreadSelectedCpuSets`) of the processors with the highest EfficiencyClass. The skinning workers may use every core (hundreds of small jobs dealt out as they finish) but a low-power island's | Intel 12th gen and later, Core Ultra | `PS3_SCHED_PLACE=0` |
+| **One cache group**: with several last-level caches the main thread, the game's threads, the translation and the sound core stay in the group with the larger L3 when the sizes differ (X3D's V-Cache CCD), else the one holding the best-ranked core -- if it has 6 cores or more (Ryzen 3000's 4-core CCXs do not). Workers on both | two-CCD Ryzens; Core Ultra (its low-power island stays out) | `PS3_SCHED_PLACE=0` |
+| **Ideal processors**: main thread, translation and sound core on three different physical cores, best-ranked first (CPPC preferred cores, Turbo Boost Max), processor 0's core last (it takes most device interrupts and DPCs; on a CPU that ranks no core, like the i5-7300HQ, "by number" put the main thread there) | everyone | `PS3_SCHED_IDEAL=0` |
+| The frame's threads and workers say "never EcoQoS" for themselves (`ThreadPowerThrottling`, EXECUTION_SPEED off) besides the process-wide opt-out | hybrids, an older Windows where the process opt-out fails | `PS3_SCHED_THROTTLE=0` |
+| The vertex workers go through `host_sched` (`PS3_SCHED_PRIO_VERTEX`, CPU set) | -- | -- |
+| Online: the netplay receive thread at +2 (was normal: an input packet could wait a time slice behind the game's threads), the tick thread +1, both named | online | -- |
+| `[sched] processors:` / `[sched] placement:` lines and one line each for the main thread, the translation and the sound core (priority, ideal processor, CPU set, EcoQoS, whether Windows took each); the problem report keeps them | everyone | -- |
+
+This PC limited to 4 cores / 4 threads (0x5500):
+
+    [sched] processors: 4 logical, 4 cores (of 32), no SMT, small; one core type; one cache group
+    [sched] placement: game thread, translation, sound core on any processor, ideal LP 10 / 8 / 14; game's other threads anywhere
+    [sched] placement: workers anywhere; SPURS 3 at a time, vertex workers 1; priorities: game +2, translation +2, sound +2, workers +1/+1
+    [sched] game thread 'main': priority +2, ideal processor LP 10 (ok), CPU set none, EcoQoS never (ok)
+
+All 32 processors:
+
+    [sched] processors: 32 logical, 16 cores (of 32), SMT; one core type; 2 cache groups, the game in group 0 (LP 0-15, 8 cores: best-ranked core)
+    [sched] placement: game thread, translation, sound core on LP 0-15 (one cache group), ideal LP 6 / 10 / 4; game's other threads the same
+    [sched] placement: workers anywhere; SPURS 12 at a time, vertex workers 3; priorities: game +2, translation +2, sound +2, workers +1/+1
+
+A 12700H as the unit test builds it: the frame on the P-cores LP 0-11, ideal
+LP 2 / 4 / 6 (core 2 its favoured core, processor 0's core last), vertex
+fetch on LP 0-11, skinning anywhere.
+
+Tried and dropped:
+
+- Workers off the game's cores (a CPU set without the main thread's and the
+  translation's cores, both their threads, from 6 cores with SMT): on 6c/12t
+  and 8c/16t the game took 8-13 % more CPU per frame (35.7 -> 40.3 and 35.2
+  -> 38.0 ms), the translation got 0.2-0.6 ms longer and context switches
+  went up; other programs' load was higher in 7 of those 8 runs (most
+  likely they moved onto the freed cores) and the workers crowded the rest. The ideal processors keep the main thread and the
+  translation apart without it.
+- The workers in the CCD too, sized from it (8 job threads, 1 vertex worker
+  instead of 12 / 3 at 32 processors): the translation 2.7 -> 3.6 ms.
+- The translation waiting for a vertex worker's last job by WaitOnAddress
+  instead of spinning: translation 2.9 -> 4.7 ms in a paired round under
+  load (the wake-up came later than the spin noticed the job).
+
+### How it was measured
+
+`tools/slow_core.py` (new): slower processors on this PC. One busy process per
+logical processor of a mask, each pinned to its processor at time-critical
+priority (above every thread of a game started below normal), all taking
+their processor for the first part of each 4 ms period on the same clock --
+the game keeps all its processors for the rest, every thread slowed alike
+(`--busy 40` takes ~30-35 % of the time; Windows' timers wake late). Not
+exact: a thread frozen for 2 ms can hold a lock another thread needs, which a
+slow core does not do.
+
+Paired runs: two configurations at the same time on two 4-processor masks, 4
+cores without SMT each, swapped every round, each with its own slow_core
+`--busy 40`; fps over fight start +24..42 s. First the two CCDs (0x55 /
+0x550000), then -- another agent's pinned games loaded CCD1 -- both on CCD0
+(0x55 / 0x5500). Other agents' games kept 11-31 of the 32 processors busy (a
+round starts once at most 22 are busy and at most 2 compilers run, or after
+4 minutes). The mask alone moved fps by 5-20 % from round to round
+(processor 0, in 0x55, was the slower side in most rounds), so only the
+geometric mean over swapped rounds compares two configurations.
+
+### Results
+
+4 cores / 4 threads, slow_core `--busy 40` (fights at 30-55 fps), Lili vs Asuka on stage 20 unless the row says otherwise:
+
+| B against A | masks | rounds | B faster in | fps B / A |
+|---|---|---|---|---|
+| SPURS workers below normal (-1) against +1 (before 0065) | CCDs | 4 | 0 | -15.0 % |
+| SPURS workers normal (0) against +1 | CCDs | 4 | 1 | -5.7 % |
+| 3 SPURS job threads against 2 (before 0065) | CCDs | 4 | 4 | +9.4 % |
+| main thread +2 alone | CCDs | 4 | 3 | +0.1 % |
+| 0065 draft with 2 job threads against 3 | CCD0 | 6 | 2 | -4.5 % |
+| 0065 draft without ideal processors | CCD0 | 6 | 3 | +0.4 % |
+| 0065 draft with the game's threads +2 | CCD0 | 6 | 3 | +3.5 %; late audio blocks 917 -> 102 |
+| **0065 against before** | CCD0 | 8 | **8** | **+8.6 %**: 39.6 -> 43.0 fps (mean), p99 35.9 -> 34.0 ms, 42.0 -> 40.7 ms CPU per frame, late audio blocks 324 -> 216 |
+| **0065 against before, the pool stage** (id 30: the crowd of party guests around the pool, the stage a 4c/4t player saw drop) | CCD0 | 8 | **8** | **+22.3 %**: 34.8 -> 41.0 fps (mean; the six rounds at 40-58 fps 41.9 -> 48.6), p99 36.4 -> 33.0 ms, 45.2 -> 41.4 ms CPU per frame |
+| the same without slow_core (the other agents' load only: 28 of 32 processors busy) | CCD0 | 6 | **6** | **+19.8 %**: 31.3 -> 36.8 fps (mean), p99 88 -> 54 ms, 51.3 -> 48.3 ms CPU per frame |
+
+Bigger CPUs, without slow_core (the CPU per frame of the whole game and of
+the walker, `fifo_cpu_us`, are means over the runs):
+
+| CPU (affinity) | how | fps before -> 0065 | p99 ms | CPU ms per frame | walker ms | other programs (processors) |
+|---|---|---|---|---|---|---|
+| 8c/16t (0x0F0F0F0F / 0xF0F0F0F0: 4 cores of each CCD, so no cache group of 6) | paired, swapped, 5 rounds | 59.10 -> 59.89 (lowest 57.7 -> 59.7) | 24.0 -> 19.0 | 37.5 -> 37.4 | 3.08 -> 2.98 | 18 |
+| all 32 (7950X: the frame's threads on CCD0, workers on both) | one game at a time, alternating, 4 runs each | 48.7 -> 59.95 (every 0065 run 59.95) | 37.7 -> 18.5 | 55.4 -> 48.5 | 3.97 -> 3.75 | 16-29 |
+
+(A sixth 8c/16t round ran while this branch's exe was being linked -- both games froze for 4 s -- and is left out.)
+
+Online: a rollback pair (RTT 150 +-5 ms, 3 % loss, host on 4c/8t, joiner on
+4c/4t) and a lockstep pair (RTT 30, 1 % loss, the masks swapped), one match
+each: sync through frame 4199 0 mismatching frames on both sides of both
+pairs, the same result hash (rollback `7756e4de9093d63d`, 559 / 581 rollbacks,
+57-58 fps; lockstep `89e1a56b4f15809b`), no decode error or abort. Priorities
+and placement are timing only: they never reach the game state.
+
+### Not done
+
+- No hybrid CPU here: (b) is unit-tested only (`tests/c/sched_plan_test.c`:
+  12700H, 1215U, 13900K, Core Ultra 155H / 125H with the low-power island,
+  7950X, 7950X3D, 7800X3D, 3700X, 4c/4t, 2c/4t, 4c/8t, 6c/6t, 6c/12t, masks
+  across CCDs, processor 0 ranked first, 4,000 random tables against the
+  rules every plan must keep). (c) and (d) ran on this 7950X under other
+  agents' load (tables above); a two-CCD Ryzen on its own was not tried.
+- A real i5-7300HQ: the slow_core stand-in slows every thread alike; a real
+  Kaby Lake core is also slower per clock in the translation's hashing and the
+  lifted code, which this cannot model. Its power saving (on by itself: a
+  mobile processor) was off in these runs; at 4 processors it only stops the
+  ticker's 250 us poll and puts background threads on EcoQoS.
+
+## Combined 1.1.3 vs 1.1.2 (branch `perf-combined`)
+
+The owner's goal: 60 fps on weak PCs. The reference player has an i5-7300HQ
+laptop (4 cores, 4 threads, no SMT) with a GTX 1050 Ti at 720p Native: on
+1.1.2 most stages ran at 55-60 fps, the pool stage (id 30, the crowd of
+party guests) dropped a lot. The 1.1.3 patches above were each measured
+alone. This section measures them together, against 1.1.2, and estimates
+what is left on that laptop.
+
+**Result.**
+
+- On this PC, 4 cores with one thread each, the same fights at the same
+  time: 1.1.3 needs **38-48 % less CPU per frame** for the whole game than
+  1.1.2, the SPU side 57-65 % less, the main thread 8-23 % less; the
+  frame's critical path (game part + translation) is **36-51 % shorter**.
+  Pool stage: 52 -> 60 fps on the 4 cores, 29 -> 53 fps with the cores
+  slowed.
+- PGO (cpu-build-opt) on top: the main thread 2-10 % less CPU, the game
+  part 7-9 % shorter; the frame rate moved within the noise; the draw
+  thread gained nothing.
+- **The i5-7300HQ (estimate): 1.1.3 with PGO runs the pool stage at about
+  58-60 fps** (most likely ~59.7), stage 20 at 59-60. That is close, but not
+  a locked 60: 1-5 % of the frames (up to ~22 % with the pessimistic
+  assumptions) still run 1-5 ms past their 16.7 ms. A locked 60 on the pool
+  stage needs the critical path about 15 % shorter (28 % in the pessimistic
+  case).
+- **What is left is one core's speed**, on two threads in series: the main
+  thread's own work (the game's code, ~55 % of the critical path), the
+  render translation (~30 %), and the main thread waiting for the game's
+  draw thread (~20 %). The SPU side is off the critical path now (the main
+  thread never waits for the skinning), and so is the GPU.
+
+### The three builds
+
+All three are built the way a player's game is (docs/RELEASE.md): a
+runtime `t5dr.exe` compiled with `-DT5DR_GAME_DLL=ON` and the lifted code
+compiled into `t5dr_game.dll` by that version's `tools/build_game_dll.py`,
+x86-64-v3 (the i5-7300HQ has AVX2 as well), LLVM 23.1.3, from one lift (the
+lifter is the same in both versions, sha1 `6bb0bf00`).
+
+| | source | game DLL |
+|---|---|---|
+| A, 1.1.2 | tag `v1.1.2` (8eb6972): series to 0053 | 45.7 MB |
+| B, 1.1.3 | integration-113 caa7158: + 0051, 0059, 0061, 0062, 0063, 0064, 0065 | 44.3 MB |
+| C, 1.1.3 + PGO | B's `t5dr.exe`; the DLL built with cpu-build-opt's tool and its shipped profile (`tools/gamedll/t5dr_lifted.proftext`, four parts) | 36.9 MB |
+
+integration-113 has moved on since (cpu-build-opt merged with this same
+profile file; review-113's 0063 change moves the processor clock's first
+PDH query off the vblank thread -- a one-time 0.3-0.4 s freeze ~30 s after
+start, which came before the measuring window in every run here; security
+review 3's `-fno-caret-diagnostics`, which gives the same objects). None of
+it changes the numbers below.
+
+### How it was measured
+
+- `tools/fight_bench.py` (a copy that also takes the latency probe
+  `PS3_LATENCY_LOG` for every build), `--polite` (below normal, muted), Lili
+  vs Asuka, P1 attacking, window fight start +24..42 s, Native, a warm
+  shader cache per build (`RSX_SHADER_CACHE_DIR`; a player's cache is warm
+  after the first fight).
+- **All three builds at the same time**, each on its own 4 cores with one
+  logical processor per core (a 4c/4t CPU): 0x5500 (cores 4-7, CCD0),
+  0x550000 (8-11) and 0x55000000 (12-15, CCD1); processor 0's core stays
+  out. Round r puts build i on group (i + r) mod 3, so every build visits
+  every group, and each round is a paired comparison of all three.
+- **Slowed**: `tools/slow_core.py --busy 50` on each group (it took 33-43 %
+  of the time under this load).
+- The four conditions (stage 30, stage 30 slowed, stage 20, stage 20
+  slowed) took turns round by round, 6 rounds each.
+- The PC was shared the whole time: other agents' games, builds and test
+  harnesses kept 16-31 of the 32 processors busy, and the SMT sibling of
+  each test core was mostly 77-100 % busy (sampled in every round from the
+  fourth on; 41-61 % in one sample before). The tables keep
+  the rounds where other programs (without this bench's own games and
+  slow_core) used at most 22.5 processors; the rest are listed at the end.
+- A slowdown matched to the laptop (`--busy 38`, ~28 % taken) was started
+  after the batch, but the PC stayed at 28-31 busy processors (slow_core
+  itself then took only 12-30 %); it is left out.
+
+Columns, per displayed frame, median over the rounds:
+
+- fps and p99 frame time from the presents (as everywhere in this file);
+- **frames late**: game frames (the main thread's frame start to the next,
+  probe event B) longer than 17.5 ms, i.e. past their 16.7 ms vblank (the
+  presents jitter around the vblank, so their own times do not show this);
+- main thread: its CPU time (thread times; with 0064 it also runs a few
+  skinning jobs);
+- **game part** (B -> flip request F) and **translation** (F -> walker
+  reached the flip X): in series, together the frame's critical path;
+- SPU: CPU of the sound core thread (`spu`) + the skinning threads
+  (`spurs-chain`, `spurs-job`);
+- draw thread: `NU::Draw::RequestManager`, the game thread the main thread
+  hands draw work to;
+- game CPU: all the game's threads (with ~1.5 ms of the bench's own pad
+  script sampler).
+
+### Results
+
+Pool stage (30), 4 cores, 3 rounds, other programs 18-21 processors:
+
+| build | fps | p99 ms | frames late | main thread CPU ms | game part ms | translation ms | SPU CPU ms (sound + skinning) | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.1.2 | 52.2 | 43.6 | 17 % | 6.09 | 10.52 | 3.11 | 18.7 (9.9 + 8.9) | 3.00 | 36.0 |
+| 1.1.3 | **59.7** | 22.4 | 1 % | 5.09 | 6.20 | 2.78 | 8.5 (5.5 + 3.0) | 2.55 | 23.0 |
+| 1.1.3 + PGO | **59.7** | 21.6 | 1 % | 4.54 | 5.91 | 2.72 | 8.2 (5.2 + 3.0) | 2.84 | 22.7 |
+
+Pool stage, 4 cores slowed, 4 rounds, other programs 16-22 processors:
+
+| build | fps | p99 ms | frames late | main thread CPU ms | game part ms | translation ms | SPU CPU ms (sound + skinning) | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.1.2 | 29.0 | 51.0 | 100 % | 6.52 | 21.40 | 6.86 | 26.5 (18.0 + 8.5) | 3.07 | 45.6 |
+| 1.1.3 | **52.6** | 29.6 | 56 % | 5.92 | 13.07 | 4.50 | 9.3 (6.3 + 3.1) | 2.97 | 25.0 |
+| 1.1.3 + PGO | **52.6** | 25.8 | 67 % | 5.64 | 12.46 | 4.71 | 9.5 (6.3 + 3.2) | 2.93 | 25.9 |
+
+Stage 20 (scrapyard), 4 cores, 3 rounds, other programs 18-21 processors:
+
+| build | fps | p99 ms | frames late | main thread CPU ms | game part ms | translation ms | SPU CPU ms (sound + skinning) | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.1.2 | 45.4 | 48.0 | 52 % | 7.49 | 13.80 | 3.34 | 19.1 (12.6 + 8.1) | 2.93 | 37.7 |
+| 1.1.3 | **60.0** | 20.4 | 1 % | 5.95 | 7.36 | 2.84 | 8.1 (5.3 + 2.5) | 2.90 | 23.9 |
+| 1.1.3 + PGO | **60.0** | 20.0 | 1 % | 5.42 | 6.70 | 2.81 | 8.1 (5.3 + 2.6) | 3.11 | 24.2 |
+
+Stage 20, 4 cores slowed, 3 rounds, other programs 19-22 processors:
+
+| build | fps | p99 ms | frames late | main thread CPU ms | game part ms | translation ms | SPU CPU ms (sound + skinning) | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|---|---|
+| 1.1.2 | 20.4 | 82.9 | 100 % | 8.18 | 32.90 | 6.81 | 29.1 (21.0 + 7.7) | 3.50 | 51.9 |
+| 1.1.3 | **46.2** | 58.8 | 80 % | 6.56 | 15.34 | 2.92 | 10.6 (7.9 + 3.1) | 3.02 | 27.9 |
+| 1.1.3 + PGO | **49.7** | 30.7 | 75 % | 6.44 | 12.68 | 4.63 | 9.0 (6.8 + 2.2) | 2.95 | 25.3 |
+
+Paired ratios (geometric mean over the rounds of each table; in brackets
+the rounds in which the newer build was better):
+
+| | stage 30 | stage 30 slowed | stage 20 | stage 20 slowed |
+|---|---|---|---|---|
+| 1.1.3 / 1.1.2: fps | 1.16x (3/3) | 1.84x (4/4) | 1.48x (3/3) | 2.16x (3/3) |
+| main thread CPU | 0.83x (3/3) | 0.92x (4/4) | 0.84x (3/3) | 0.77x (3/3) |
+| game part + translation | 0.64x (3/3) | 0.62x (4/4) | 0.53x (3/3) | 0.49x (3/3) |
+| SPU CPU | 0.43x (3/3) | 0.35x (4/4) | 0.38x (3/3) | 0.36x (3/3) |
+| game CPU | 0.62x (3/3) | 0.54x (4/4) | 0.60x (3/3) | 0.52x (3/3) |
+| PGO / 1.1.3: main thread CPU | 0.90x (3/3) | 0.92x (3/4) | 0.92x (3/3) | 0.98x (2/3) |
+| game part | 0.92x (3/3) | 0.93x (3/4) | 0.92x (3/3) | 0.91x (3/3) |
+| draw thread CPU | 1.09x (0/3) | 1.02x (2/4) | 1.03x (1/3) | 0.95x (1/3) |
+| fps | 1.00x (2/3) | 1.01x (3/4) | 1.00x (3/3) | 1.07x (3/3) |
+
+How the single patches add up:
+
+- 0064 said SPU -40 %: together -57..-65 % (sound core 9.9-12.6 -> 5.3-5.5
+  ms, skinning 8-9 -> 2.5-3.0 ms per frame).
+- 0061 said game thread -27 % (4c/8t, quieter): the main thread's CPU
+  here -16..-23 % (-8 % in one slowed set), on cores whose SMT siblings were
+  busy.
+- 0062 said translation -24 %: -12..-22 % on the 4 cores; slowed, 1.1.2's
+  translation was also held up by its other threads, so -31..-42 %.
+- 0059 shows in the slowed runs: 1.1.2's late frames waited for the next
+  vblank (every frame late, 29 fps), 1.1.3's are shown when translated.
+- 0065 and the SPU change show most where other programs compete (next
+  paragraph).
+- PGO said main thread -4..-6 %: -2..-10 % here.
+
+**1.1.2 suffers more from other programs than a player's 1.1.2 does.**
+With the game below normal (`--polite`), 1.1.2's main and draw threads run
+at +1, one step below other programs' normal threads; 0065 put them at +2,
+level with them. So under this PC's load 1.1.2's game part is stretched by
+waits for its own helper threads (here 10.5-13.8 ms of game part for 6-7.5
+ms of main thread CPU; 1.1.3: 6-7.4 for 5-6), and in the rounds left out of
+the tables (other programs 24-28.5 processors) 1.1.2 fell to 13-41 fps
+where 1.1.3 kept 21-60. A player's game runs at normal priority, so the fps
+ratios above are larger than a player sees on an idle PC; the CPU ratios
+carry over. A quick 1.1.2 run on stage 20 with 17 busy processors (not
+paired) held 59.95 fps.
+
+### The i5-7300HQ
+
+The laptop's cores are taken as 0.55-0.60 of this PC's (the owner's
+figure). The test cores here were not quiet ones: their SMT siblings were
+mostly 77-100 % busy, which [WEAK_PC.md](WEAK_PC.md) measured as +45 % game part
+and +60 % translation with fully busy siblings. So a test core was about
+0.7 of a quiet core (0.65-0.8), a slowed one 0.7 x (1 - 0.33..0.43) = 0.40-0.47.
+The laptop (0.55-0.60, no SMT, nothing else running) lies between the two
+conditions.
+
+The estimate replays every measured frame on the laptop: its game part and
+translation (the critical path; in series by design, everything in them is
+the game's CPU work or waits for its other threads) scaled by
+e / s (e = the test core's speed, s = the laptop's), on the 59.94 Hz clock
+with each version's rule (1.1.2: a game part past its tick waits for the
+next tick; 1.1.3: a late frame is shown when translated, ~0.8 ms later as
+measured). Replayed at the measured speed it gives the measured fps within
+1 % for 1.1.3 in three of the four sets, 3-13 % too high in the stage 20
+slowed set and 2-9 % too high for 1.1.2: it leaves out stalls longer than a
+frame, so it is a little optimistic. The whole
+game's CPU per frame, scaled the same way, checks the 4 cores' capacity.
+
+| stage | build | laptop fps, s = 0.55 / 0.60 (from the 4-core runs) | (from the slowed runs) | frames late | critical path on the laptop: median / slowest 5 % | 4 laptop cores busy |
+|---|---|---|---|---|---|---|
+| 30 | 1.1.3 | 59.3 / 59.6 | 59.1 / 59.6 | 2-10 % | 11.2 / 16.6 ms | 40-48 % |
+| 30 | 1.1.3 + PGO | **59.7 / 59.8** | **59.5 / 59.8** | 1-5 % | 10.6 / 15.2 ms | 40-49 % |
+| 20 | 1.1.3 | 59.8 / 59.8 | 59.3 / 59.7 | 1-7 % | 12.4 / 15.5 ms | 42-53 % |
+| 20 | 1.1.3 + PGO | 59.8 / 59.9 | 59.1 / 59.7 | 1-9 % | 12.1 / 15.1 ms | 42-48 % |
+
+(e = 0.7. With e = 0.65 every 1.1.3 row is 59.5-59.9 fps with at most 3 %
+late. With e = 0.8, the pessimistic end: pool stage 1.1.3 57.2-58.9 fps and
+9-27 % late, + PGO 58.0-59.5 fps and 5-22 % late.)
+
+- **Does 1.1.3 reach 60 fps on stage 30 there? Nearly.** The average comes
+  to 58-60 fps (with PGO most likely ~59.7); the median frame needs ~11 of
+  its 16.7 ms, but the slowest 1-10 % of frames (1-5 % with PGO; up to
+  ~25 % with the pessimistic numbers) run 1-5 ms late -- seen as small hitches rather than
+  as a lower frame rate. A locked 60 (99 % of pool frames in time, 1 ms
+  spare) needs the critical path ~15 % shorter (e = 0.7, s = 0.575; ~28 %
+  at e = 0.8, s = 0.55): 1.3-2.5 ms per frame in today's terms here
+  (median 8.7 ms, p99 15.0 ms with PGO).
+- 1.1.2 on the same model comes out at 29-49 fps -- below the 55-60 the
+  player saw on most stages, because 1.1.2's frames here carry the waits
+  described above. What does carry over: 1.1.2 needs 36-38 ms of CPU per
+  frame here, 63-72 % of the laptop's 4 cores before anything else runs,
+  so the pool stage's extra skinning (~420 jobs a frame against ~390) had
+  nowhere to go; 1.1.3 leaves more than half of the 4 cores free.
+- Not modelled: Kaby Lake's lower speed per clock is in the 0.55-0.60;
+  slow_core freezes threads ~1.7 ms at a time, which a slow core does not;
+  the laptop's power saving (`PS3_LAPTOP` Auto turns it on for a mobile
+  processor) was off here -- at 4 processors 0064 measured it slightly
+  faster (58.0 against 55.6 fps); programs running beside the game on the
+  laptop take from the same 4 cores.
+- The GPU is not the limit: the RTX 3090 needs 0.4 ms per frame here at
+  Native; a GTX 1050 Ti is several times slower, still a few ms, and it
+  draws beside the next frame's CPU work.
+
+### What is left
+
+1.1.3 + PGO, pool stage, 4 cores (the laptop needs ~1.2x these, e/s =
+0.7/0.575), from the probe and 1.1.3's `[slow-frames]` split of the game
+part:
+
+| part of the critical path | per frame here | share |
+|---|---|---|
+| main thread running: the game's own code (lifted PPU code ~83 %), its own CPU 4.5-4.7 ms | 4.9 ms | ~55 % |
+| main thread waiting for other game threads: the draw thread `NU::Draw::RequestManager` (lv2 cond / lwmutex hand-offs; the draw thread itself 2.6-3.1 ms CPU) | 1.7 ms | ~20 % |
+| main thread waiting for the renderer | 0.0 ms | -- |
+| translation (walker) | 2.7 ms | ~30 % |
+| SPU (skinning, sound core) | 0 on the critical path: the main thread runs open jobs instead of waiting (0064); the sound core has its own thread, 5.2-5.5 ms CPU per frame (~1/3 of a core here, ~0.4 of a laptop core) | -- |
+
+The next steps, by size:
+
+1. The main thread's own code. The profile is flat (RENDER_PERF "The game
+   thread's own time"); the build options are used up (docs/BUILD_PERF.md:
+   every guest store is a relaxed atomic plus a reservation check, so the
+   PPU registers are reloaded after every store). A lifter change there is
+   the big lever left.
+2. The hand-off with the draw thread: ~1.7 ms of waiting per frame. The
+   draw thread is lifted code as well and got nothing from PGO (0.95-1.09x
+   of 1.1.3's CPU): give its functions their own share of the profile, or
+   find where the two threads wait for each other (`PS3_SCHED_TRACE`).
+3. The translation, ~2.7 ms: per 0062's "What is left" the command walk
+   ~0.5 ms, the display driver ~0.4 ms, the texture hash ~0.2 ms.
+
+Local evidence: `build/perfcomb/` (git-ignored: `runs/`, `scripts/bench.py`
+for the rounds, `scripts/estimate.py` for the replay model,
+`scripts/summ.py` / `mdtable.py` for the tables).

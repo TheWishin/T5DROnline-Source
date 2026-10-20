@@ -262,6 +262,28 @@ class PadTabTest(PadTabBase):
         tab._pad_tick()
         self.assertEqual(hits, ["yes"])
 
+    def test_a_press_from_before_the_question_does_not_answer_it(self):
+        # (security review 2) A pressed for what was on screen -- a search, a menu -- must not accept a challenge or
+        # a friend's invite that came up in the same moment: only a press made BAR_ARM_S after the question counts
+        from t5lobby import tk_tab as tk_tab_mod
+        tab = self.tab
+        self.login_guest()
+        hits = []
+        self.run_pad(0.5)
+        shown = self.clock.t
+        tab.show_bar("X challenges you", [("Accept", lambda: hits.append("yes"), "cross"),
+                                          ("Decline", lambda: hits.append("no"), "circle")])
+        self.nav.events.put(padnav.PadEvent("cross", shown - 0.05, "fake:0", "A"))     # pressed just before
+        tab._pad_tick()
+        self.nav.events.put(padnav.PadEvent("cross", shown + 0.1, "fake:0", "A"))      # too soon to have read it
+        tab._pad_tick()
+        self.assertEqual(hits, [])
+        self.assertIn("Accept (A)", self.bar_texts())
+        self.clock.t = shown + tk_tab_mod.BAR_ARM_S + 0.05
+        self.nav.events.put(padnav.PadEvent("cross", self.clock.t, "fake:0", "A"))     # a press after reading it
+        tab._pad_tick()
+        self.assertEqual(hits, ["yes"])
+
     def test_questions_without_a_pad_answer_are_left_to_the_player(self):
         tab = self.tab
         self.found_match()

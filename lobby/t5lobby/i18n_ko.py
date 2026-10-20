@@ -786,6 +786,12 @@ MESSAGES = {
     "you cannot add yourself": "자기 자신은 추가할 수 없습니다",
     "you blocked that player; unblock them first": "그 플레이어를 차단했습니다. 먼저 차단을 해제하세요",
     "your friends list is full ({max})": "친구 목록이 가득 찼습니다 ({max})",
+    "your last invite to that friend ended a moment ago; try again in {seconds} s":
+        "이 친구에게 보낸 마지막 초대가 방금 끝났습니다. {seconds}초 후에 다시 시도하세요",
+    "your last challenge to that player ended a moment ago; try again in {seconds} s":
+        "이 플레이어에게 보낸 마지막 도전이 방금 끝났습니다. {seconds}초 후에 다시 시도하세요",
+    "too many friend requests from this internet address today; try again tomorrow":
+        "오늘 이 인터넷 주소에서 보낸 친구 요청이 너무 많습니다. 내일 다시 시도하세요",
     "you can send {count} friend requests a day; try again tomorrow":
         "친구 요청은 하루에 {count}개까지 보낼 수 있습니다. 내일 다시 시도하세요",
     "{count} of your friend requests are waiting for an answer; cancel some first":

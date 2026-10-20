@@ -606,10 +606,10 @@ index 5f134a1..ce4b9ba 100644
   * a handheld's processor stays below its thermal and power limit. PS3_LAPTOP=1
 diff --git a/runtime/platform/host_sched_plan.h b/runtime/platform/host_sched_plan.h
 new file mode 100644
-index 0000000..fb547de
+index 0000000..94b698f
 --- /dev/null
 +++ b/runtime/platform/host_sched_plan.h
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,346 @@
 +/*
 + * ps3recomp - where the runtime's threads run (t5dr patch 0065, thread placement).
 + *
@@ -640,8 +640,8 @@ index 0000000..fb547de
 + *    Smaller groups (Ryzen 3000's 4-core CCXs) are not enough for the frame's
 + *    threads; nothing is restricted then.
 + *  - The game thread and the translation get ideal processors on two
-+ *    different physical cores, the best-ranked first, and the sound core a
-+ *    third. With SMT and at least HSP_RESERVE_MIN_CORES cores the workers are
++ *    different physical cores, the best-ranked first (processor 0's core,
++ *    which takes most interrupts, last), and the sound core a third. With SMT and at least HSP_RESERVE_MIN_CORES cores the workers are
 + *    kept off those two cores, so neither shares its core with a busy sibling.
 + *
 + * Pool sizes: SPURS job threads (the chain walker included) half the logical
@@ -753,24 +753,37 @@ index 0000000..fb547de
 +    return cores;
 +}
 +
++/* For the ideal processors: the core of logical processor 0 ranks last among
++ * cores of its class. Windows sends most device interrupts and DPCs (network,
++ * USB, storage, the timer) to processor 0, and on a CPU that ranks no core
++ * above another (most laptops; the i5-7300HQ) the game thread would land
++ * there by number (docs/RENDER_PERF.md "Thread placement"). */
++static inline int hsp_better_ideal(const hsp_cpu* a, const hsp_cpu* b, int core0)
++{
++    if (a->eff != b->eff) return a->eff > b->eff;
++    if ((a->core == core0) != (b->core == core0)) return b->core == core0;
++    return hsp_better(a, b);
++}
++
 +/* Up to `max` logical processors, one per physical core, best core first, from `lps`. */
 +static inline int hsp_rank(const hsp_cpu* c, int n, uint64_t lps, int* out, int max)
 +{
-+    int k = 0;
++    int k = 0, core0 = -1;
++    for (int i = 0; i < n; i++) if (c[i].lp == 0) core0 = c[i].core;
 +    for (int i = 0; i < n && k < max; i++) {
 +        if (c[i].lp >= 64 || !((lps >> c[i].lp) & 1u)) continue;
 +        int slot = -1;
 +        for (int j = 0; j < k; j++)
 +            if (c[out[j]].core == c[i].core) { slot = j; break; }
 +        if (slot >= 0) {                          /* the core's best processor stands for it */
-+            if (hsp_better(&c[i], &c[out[slot]])) out[slot] = i;
++            if (hsp_better_ideal(&c[i], &c[out[slot]], core0)) out[slot] = i;
 +            continue;
 +        }
 +        out[k++] = i;
 +    }
 +    for (int i = 1; i < k; i++) {                 /* insertion sort, best first */
 +        int v = out[i], j = i - 1;
-+        while (j >= 0 && hsp_better(&c[v], &c[out[j]])) { out[j + 1] = out[j]; j--; }
++        while (j >= 0 && hsp_better_ideal(&c[v], &c[out[j]], core0)) { out[j + 1] = out[j]; j--; }
 +        out[j + 1] = v;
 +    }
 +    return k;

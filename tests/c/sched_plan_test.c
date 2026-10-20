@@ -143,6 +143,9 @@ static void test_4c4t(void)        /* i5-7300HQ: the player's laptop */
     CHECK(p.lps == 4 && p.cores == 4 && !p.smt && !p.hybrid && p.groups == 1 && p.small, "4c/4t: %d %d", p.lps, p.cores);
     for (int k = 0; k < HSP_KINDS; k++) CHECK(p.set[k] == 0, "4c/4t: no CPU sets (kind %d)", k);
     CHECK(p.reserved == 0, "4c/4t: nothing reserved");
+    /* no core ranked above another: processor 0 (interrupts) last */
+    CHECK(p.ideal[HSP_MAIN] == 1 && p.ideal[HSP_TICKER] == 2 && p.ideal[HSP_SPU] == 3,
+          "4c/4t: ideal 1/2/3, processor 0 last, got %d/%d/%d", p.ideal[HSP_MAIN], p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
     CHECK(p.spurs_threads == 3, "4c/4t: 3 job threads (one per core but the game thread's), got %d", p.spurs_threads);
     CHECK(p.vertex_threads == 1 && p.vertex_spin == 300, "4c/4t: vertex %d spin %d", p.vertex_threads, p.vertex_spin);
     hsp_plan l = plan("4c/4t laptop", &t, all_of(&t), 0, 1);
@@ -157,6 +160,7 @@ static void test_2c4t(void)
     CHECK(p.lps == 4 && p.cores == 2 && p.smt && p.small, "2c/4t");
     CHECK(p.spurs_threads == 2, "2c/4t: 2 job threads, got %d", p.spurs_threads);
     CHECK(p.reserved == 0 && p.set[HSP_SPURS] == 0, "2c/4t: too few cores to reserve any");
+    CHECK(p.ideal[HSP_MAIN] == 2 && p.ideal[HSP_TICKER] == 0, "2c/4t: the game thread off processor 0's core");
 }
 
 static void test_4c8t(void)        /* i7-7700HQ */
@@ -206,9 +210,12 @@ static void test_12700h(void)      /* 6 P-cores with HT + 8 E-cores, one L3 */
     CHECK(p.hybrid && p.p_cores == 6 && p.p_lps == 12 && p.e_cores == 8 && p.top_eff == 1, "12700H kinds");
     CHECK(p.set[HSP_MAIN] == pc, "12700H: frame on the P-cores: 0x%llx", (unsigned long long)p.set[HSP_MAIN]);
     CHECK(p.ideal[HSP_MAIN] == 2, "12700H: the favoured core first, got %d", p.ideal[HSP_MAIN]);
+    CHECK(p.ideal[HSP_TICKER] == 4 && p.ideal[HSP_SPU] == 6, "12700H: then P-cores by number, processor 0's last: %d %d",
+          p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
     CHECK(eff_of(&t, p.ideal[HSP_TICKER]) == 1 && eff_of(&t, p.ideal[HSP_SPU]) == 1, "12700H: ideal on P-cores");
     CHECK((p.set[HSP_SPURS] & ec) == ec, "12700H: workers may use every E-core");
-    CHECK(p.reserved != 0 && (p.reserved & ec) == 0, "12700H: two P-cores reserved");
+    CHECK(p.reserved == 0x3Cull, "12700H: the two P-cores of the game thread and the translation reserved, got 0x%llx",
+          (unsigned long long)p.reserved);
     CHECK(p.spurs_threads == 12, "12700H: 12, got %d", p.spurs_threads);
     hsp_plan l = plan("12700H laptop", &t, all_of(&t), 0, 1);
     CHECK(l.spurs_threads == 6 && l.vertex_threads == 1, "12700H power saving: 6 / 1, got %d / %d",
@@ -220,6 +227,23 @@ static void test_12700h(void)      /* 6 P-cores with HT + 8 E-cores, one L3 */
     hsp_plan m = plan("12700H mixed mask", &t, ec | 0x5ull, 0, 0);
     CHECK(m.hybrid && m.set[HSP_MAIN] == 0x5ull, "12700H mixed mask: the two P threads, got 0x%llx",
           (unsigned long long)m.set[HSP_MAIN]);
+}
+
+static void test_core0(void)       /* processor 0's core is ranked best by the firmware */
+{
+    table t = { 0 };
+    add(&t, 8, 2, 0, 0, 0, 32768);
+    rank_core(&t, 0, 9);
+    rank_core(&t, 6, 5);
+    hsp_plan p = plan("core0 best", &t, all_of(&t), 0, 0);
+    CHECK(p.ideal[HSP_MAIN] == 6 && core_of(&t, p.ideal[HSP_TICKER]) != 0 && core_of(&t, p.ideal[HSP_SPU]) != 0,
+          "core 0 last even when ranked first: %d %d %d", p.ideal[HSP_MAIN], p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
+    /* hybrid with processor 0 on the only P-core: the class wins */
+    table h = { 0 };
+    add(&h, 1, 2, 1, 0, 0, 12288);
+    add(&h, 4, 1, 0, 0, 0, 12288);
+    hsp_plan q = plan("1P+4E", &h, all_of(&h), 0, 0);
+    CHECK(q.ideal[HSP_MAIN] == 0 || q.ideal[HSP_MAIN] == 1, "one P-core: the game thread there, got %d", q.ideal[HSP_MAIN]);
 }
 
 static void test_13900k(void)      /* 8P/16 + 16E */
@@ -366,6 +390,7 @@ int main(void)
     test_6c12t();
     test_6c6t();
     test_12700h();
+    test_core0();
     test_13900k();
     test_meteor_lake();
     test_7950x();

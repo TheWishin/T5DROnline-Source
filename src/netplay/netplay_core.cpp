@@ -470,6 +470,7 @@ void player_input(PadInput* in)
 std::atomic<bool> g_local_inject_on{ false };
 std::atomic<uint16_t> g_local_inject{ 0 };
 std::atomic<bool> g_script_gate{ true };
+std::atomic<uint16_t> g_test_buttons{ 0 };   /* set_test_buttons (T5_TEST_SKIP_PRESS) */
 
 /* The local player's input for (effective) frame f. */
 PadInput sample_local(uint32_t f)
@@ -481,6 +482,7 @@ PadInput sample_local(uint32_t f)
     if (s.localpad) player_input(&in);
     if (g_script_gate.load()) in.buttons |= script_mask(s.script, f);
     in.buttons |= s.padfile.poll(f);
+    in.buttons |= g_test_buttons.load(std::memory_order_relaxed);
     return in;
 }
 
@@ -2237,6 +2239,7 @@ bool pick_peer(uint32_t key, uint32_t* val)
 }
 void set_script_gate(bool on) { g_script_gate = on; }
 void set_no_start(bool on) { g_no_start = on; }
+void set_test_buttons(uint16_t buttons) { g_test_buttons = buttons; }
 
 /* Custom costumes: this player's table for the session (once; later calls change nothing). */
 void costume_set(const uint8_t* p, size_t n)

@@ -186,8 +186,11 @@ void  set_script_gate(bool on);
 /* No pause online (docs/NETPLAY.md "No pause online"): while on, this PC's
  * devices never put START into the local input (device_input). The test inputs
  * (T5_NET_SCRIPT, T5_NET_PADFILE) are left as they are; t5_hooks.cpp takes START
- * out of both players' inputs at the frame, whatever sent it. */
+ * out of both players' inputs at the frame, whatever sent it. t5_hooks.cpp turns
+ * it off while the game shows an intro or KO replay START can skip (no_pause.h). */
 void  set_no_start(bool on);
+/* Tests (T5_TEST_SKIP_PRESS): buttons added to this PC's player's samples, like a script. */
+void  set_test_buttons(uint16_t buttons);
 
 /* ---- sessions in a persistent game (T5_CTL_DIR; docs/DIRECTFIGHT.md) -------
  * One process, many opponents. session_end() says BYE (if connected), closes

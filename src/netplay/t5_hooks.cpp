@@ -576,22 +576,43 @@ bool g_directfight = false;    /* T5_FIGHT / T5_FIGHT_FILE / persistent game / r
 constexpr uint32_t kRoundState = 0x1009322C;
 np::NoPauseRule g_np_rule;
 uint32_t g_np_cut[2], g_np_kept; /* this match: live frames whose START was taken out (per player), kept */
+uint32_t g_np_skip;              /* ... and live frames the rule pressed START in (both players had, in a skip part) */
 bool     g_np_noted = false;
+unsigned g_np_who_noted = 0;     /* the presses last noted (skip part << 2 | who) */
+uint32_t g_np_live = UINT32_MAX; /* start_gate: the last live boundary */
+uint32_t g_np_part_frames = 0;   /* ... the live frames in the skip part so far */
+unsigned g_np_part_live = 0;     /* ... and that part */
+uint32_t g_np_test_press[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };   /* T5_TEST_SKIP_PRESS, per part */
 
-void no_pause_reset() { g_np_rule.reset(); }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
+void no_pause_reset() { g_np_rule.reset(); g_np_live = UINT32_MAX; }   /* frame 0: the frames are numbered anew (the tally stays for its report) */
+
+np::NoPauseRule::State np_state_now()
+{
+    return { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(), rd32(kRoundState) };
+}
 
 /* in[] = frame f's inputs, game memory = the state at f's boundary. live: the
  * frame is played for the first time (counts for the log only). */
 void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
 {
     if (!g_directfight) return;   /* offline and menu-driven test sessions: START as ever */
-    const np::NoPauseRule::State st = { t5_df_game_mode() != 0, rd32(0x1008F070u), rd8(kMatchOver) != 0, t5_df_mode_next(),
-                                        rd32(kRoundState) };
-    const bool allowed = g_np_rule.record(f, st);
+    const np::NoPauseRule::State st = np_state_now();
+    const np::NoPauseRule::Verdict v = g_np_rule.record(f, st, in);
     const bool any = ((in[0].buttons | in[1].buttons) & np::NoPauseRule::kStart) != 0;
-    const unsigned cut = np::NoPauseRule::apply(allowed, in);
-    if (!live || !any) return;
-    if (allowed) { g_np_kept++; return; }
+    const unsigned cut = np::NoPauseRule::apply(v, in);
+    if (!live) return;
+    if (v == np::NoPauseRule::kPress) g_np_skip++;
+    /* the skip parts: who has pressed START so far (live frames: under rollback a press may still be a
+     * prediction that a re-simulation takes back -- the game state is what counts, and it is compared) */
+    const unsigned part = g_np_rule.part_at(f), who = g_np_rule.pressed_at(f), key = part << 2 | who;
+    if (who && key != g_np_who_noted)
+        np::note("frame %u: %s (round state %u): START pressed by %s", f,
+                 part == np::NoPauseRule::kIntro ? "the intro" : "after the round", st.round,
+                 who == 3 ? "both players -- skipped" : who == 1 ? "P1 (skipped once P2 presses it too)"
+                                                                 : "P2 (skipped once P1 presses it too)");
+    g_np_who_noted = who ? key : 0;
+    if (!any || v == np::NoPauseRule::kPress) return;
+    if (v == np::NoPauseRule::kKeep) { g_np_kept++; return; }
     if (cut & 1) g_np_cut[0]++;
     if (cut & 2) g_np_cut[1]++;
     if (!g_np_noted) {
@@ -601,14 +622,35 @@ void no_pause_rule(uint32_t f, np::PadInput in[2], bool live)
     }
 }
 
+/* This PC's START goes out (netplay_core.cpp pad_into) only while the game shows
+ * a skip part at the live boundary whose sample is taken now -- elsewhere the
+ * rule takes it out anyway, and sending it would only make the peer mispredict.
+ * T5_TEST_SKIP_PRESS=N[:M] (tests): this PC's player presses START for 3 frames
+ * N frames into every intro and M frames (default N) into every part after a
+ * round (a scripted press, not filtered; -1 = never). */
+void start_gate(uint32_t f)
+{
+    if (!g_directfight || (g_np_live != UINT32_MAX && f <= g_np_live)) return;   /* live boundaries only (not a re-simulation) */
+    g_np_live = f;
+    const unsigned part = np::NoPauseRule::part_of(np_state_now());
+    np::set_no_start(part == np::NoPauseRule::kNone);
+    g_np_part_frames = part && part == g_np_part_live ? g_np_part_frames + 1 : part ? 1 : 0;
+    g_np_part_live = part;
+    const uint32_t n = g_np_test_press[part];
+    if (g_np_test_press[1] != UINT32_MAX || g_np_test_press[2] != UINT32_MAX)
+        np::set_test_buttons(part && n != UINT32_MAX && g_np_part_frames > n && g_np_part_frames <= n + 3
+                             ? np::NoPauseRule::kStart : 0);
+}
+
 /* the tally since the last one: at a match's end (the fight), and at the next
  * sync point after it (the KO replay and win pose: the post-match skip) */
 void no_pause_report(uint32_t f, const char* what)
 {
-    if (!g_directfight || (!g_np_cut[0] && !g_np_cut[1] && !g_np_kept && strcmp(what, "the match"))) return;
+    if (!g_directfight || (!g_np_cut[0] && !g_np_cut[1] && !g_np_kept && !g_np_skip && strcmp(what, "the match"))) return;
     np::note("frame %u: no pause online, %s: START taken out on %u frame(s) of P1's input and %u of P2's, kept on %u "
-             "(the post-match skip)", f, what, g_np_cut[0], g_np_cut[1], g_np_kept);
-    g_np_cut[0] = g_np_cut[1] = g_np_kept = 0;
+             "(the post-match skip), skipped on %u (both players pressed)", f, what, g_np_cut[0], g_np_cut[1], g_np_kept,
+             g_np_skip);
+    g_np_cut[0] = g_np_cut[1] = g_np_kept = g_np_skip = 0;
     g_np_noted = false;
 }
 
@@ -1485,6 +1527,7 @@ void on_frame_start(ppu_context* ctx)
          * docs/ROLLBACK.md section 30). */
         const double load_ms = drain_wait(f);
         side_drain(f);   /* the geometry manager parked too (a snapshot or restore beside it hung the present) */
+        start_gate(f);   /* this PC's START out only in a skip part (the live sample is taken in the boundary) */
         uint32_t run = rb::net::on_boundary(f, scene, in);
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
@@ -1605,6 +1648,7 @@ void on_frame_start(ppu_context* ctx)
      * a press there made the peer roll back into the fight's loading, which
      * then never finished). The rollback loop applies the same rule from its
      * first frame on; in lockstep it only matters for that first boundary. */
+    start_gate(f);   /* this PC's START out only in a skip part */
     np::begin_frame(f, h, in, g_directfight && intro_input_now());
     no_pause_rule(f, in, true);
     g_cur[0] = in[0];
@@ -1831,7 +1875,13 @@ void read_session_env()
     LeaveCriticalSection(&g_result_cs);
     { const char* f1 = t5_env("T5_FIGHT"); const char* f2 = t5_env("T5_FIGHT_FILE");
       g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent || np::replaying(); }   /* (a replay is a direct fight) */
-    np::set_no_start(g_directfight);   /* no pause online: this PC's START stays home (no_pause_rule) */
+    np::set_no_start(g_directfight);   /* no pause online: this PC's START stays home (no_pause_rule) -- out only in a skip part (start_gate) */
+    g_np_part_frames = 0; g_np_live = UINT32_MAX;
+    if (const char* tp = t5_env("T5_TEST_SKIP_PRESS")) {   /* tests: see start_gate */
+        const int n = atoi(tp); const char* c = strchr(tp, ':'); const int m = c ? atoi(c + 1) : n;
+        g_np_test_press[1] = n < 0 ? UINT32_MAX : (uint32_t)n; g_np_test_press[2] = m < 0 ? UINT32_MAX : (uint32_t)m;
+        np::note("test: this player presses START %d frames into every intro and %d after every round (-1 = never)", n, m);
+    }
     g_rounds = 0;
     if (const char* r = t5_env("T5_NET_ROUNDS")) {
         g_rounds = atoi(r);

@@ -1,11 +1,14 @@
-"""No pause online (docs/NETPLAY.md "No pause online", src/netplay/no_pause.h).
+"""No pause online and the skips by both players' START (docs/NETPLAY.md "No pause online", "Skipping intros
+and replays online"; src/netplay/no_pause.h).
 
 * tests/c/no_pause_test.cpp is the rule on its own against a model of the game: the window after a
   decision, slot symmetry, and two PCs in lockstep, under rollback (late inputs, predictions,
   re-simulations) and in a replay -- the same inputs reach both games, the pause menu never opens,
-  the post-match skip by START still works. Built with clang-cl; skipped without a C++ compiler.
+  the post-match skip by START still works, intros, round replays and the way to the next round are
+  skipped once both players pressed START and never by one player alone. Built with clang-cl; skipped without a C++ compiler.
 * The source checks: every place in src/netplay/t5_hooks.cpp that hands a frame's inputs to the
-  game runs the rule first, and the local devices' START is taken out before it is sent."""
+  game runs the rule first, and the local devices' START is taken out before it is sent except in a
+  skip part."""
 import os
 import re
 import shutil
@@ -50,7 +53,7 @@ class RuleModel(unittest.TestCase):
         out = r.stdout[-3000:] + r.stderr[-2000:]
         self.assertEqual(r.returncode, 0, out)
         self.assertRegex(r.stdout, r"(?m)^PASS \d+ checks$", out)
-        for part in ("window ok", "symmetry ok", "lockstep, rollback, replay ok"):
+        for part in ("window ok", "parts ok", "symmetry ok", "lockstep, rollback, replay ok"):
             self.assertIn(part, r.stdout)
 
 
@@ -80,6 +83,14 @@ class Source(unittest.TestCase):
             self.assertIn("pad_into(d, in);", body(sig), sig)
         hooks = read("src/netplay/t5_hooks.cpp")
         self.assertIn("np::set_no_start(g_directfight);", hooks)
+        # START leaves this PC only while the live boundary shows a skip part, decided at every live boundary
+        # before this PC's sample is taken (the rollback loop's boundary, lockstep's begin_frame)
+        gate = hooks[hooks.index("void start_gate("):]
+        gate = gate[:gate.index("\n}\n")]
+        self.assertIn("np::set_no_start(part == np::NoPauseRule::kNone);", gate)
+        self.assertIn("part_of(np_state_now())", gate)
+        self.assertRegex(hooks, r"start_gate\(f\);[^\n]*\n\s*uint32_t run = rb::net::on_boundary\(f, scene, in\);")
+        self.assertRegex(hooks, r"start_gate\(f\);[^\n]*\n\s*np::begin_frame\(f, h, in,")
 
     def test_rule_is_the_same_for_both_slots(self):
         """the rule's inputs: the frame, what the game shows, the two inputs -- nothing about which PC
@@ -87,7 +98,8 @@ class Source(unittest.TestCase):
         hdr = read("src/netplay/no_pause.h")
         code = re.sub(r"/\*.*?\*/", "", hdr, flags=re.S)
         self.assertNotRegex(code, r"local_slot|slot|Mode::|enabled\(|replaying\(")
-        self.assertIn("static unsigned apply(bool allowed, PadInput in[2])", hdr)
+        self.assertIn("static unsigned apply(Verdict v, PadInput in[2])", hdr)
+        self.assertIn("Verdict record(uint32_t f, const State& st, const PadInput in[2])", hdr)
 
 
 if __name__ == "__main__":

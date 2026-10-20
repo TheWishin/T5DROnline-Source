@@ -1848,6 +1848,8 @@ MESSAGES = {
     "With a controller: A accepts, B declines.": "Mit Controller: A nimmt an, B lehnt ab.",
     "Online nobody can pause the fight: Start does not open the pause menu.":
         "Online kann niemand den Kampf pausieren: Start öffnet kein Pausenmenü.",
+    "Intros and the replay after a round are skipped once both players have pressed Start.":
+        "Intros und die Wiederholung nach einer Runde werden übersprungen, sobald beide Spieler Start gedrückt haben.",
     "Lobby": "Lobby",
     "Leaderboard": "Rangliste",
     "Profile": "Profil",

@@ -203,7 +203,16 @@ class Session:
     def exchange(self, frames, fail=None, fail_at=None):
         """`frames` frames of input exchange with per-frame hashes. -> 'ok' | 'lost' | fail."""
         last_heard = time.time()
-        for _ in range(frames):
+        # Like the real game, the frames start with the opponent's first input: until then a peer that is there (its
+        # HELLOs come) is waited for, up to T5_NET_START_TIMEOUT (the real game's start_timeout).
+        started = self.frame > 0
+        t_wait = time.time()
+        start_timeout = float(self.env.get("T5_NET_START_TIMEOUT", "120") or 120)
+        done = 0
+        while done < frames:
+            if not started and time.time() - t_wait > start_timeout:
+                log(f"peer lost (start_timeout): no input from the opponent's game within {start_timeout:.0f}s")
+                return "lost"
             f = self.frame
             if fail_at is not None and f >= fail_at:
                 if fail == "vanish":
@@ -221,14 +230,16 @@ class Session:
                     break
                 if data[:4] == MAGIC and data[4] == INPUT and len(data) >= 16:
                     last_heard = time.time()
+                    started = True
                     rf, rh = struct.unpack_from("!II", data, 8)
                     if rh != self.hash(rf):
                         self.mismatches += 1
                         if self.mismatches <= 10:
                             log(f"DESYNC at frame {rf}: local state hash {self.hash(rf):016x}, peer {rh:016x}")
                 elif data[:4] == MAGIC and data[4] == HELLO:
-                    last_heard = time.time()      # (the opponent's game is there, still in its handshake: like the
-                    if self.mode == "host":      # real game, a live peer is waited for, not counted as lost)
+                    if not started:
+                        last_heard = time.time()  # (the opponent's game is there, still in its handshake)
+                    if self.mode == "host":
                         self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
                 elif data[:4] == MAGIC and data[4] == BYE:
                     log("peer lost (peer_quit): the opponent left (its game was closed)")
@@ -237,6 +248,9 @@ class Session:
                 log(f"no input from the peer for {min(self.timeout, 5.0):.0f}s -- peer lost, continuing with "
                     f"P{2 if self.mode == 'host' else 1} idle")
                 return "lost"
+            if not started:
+                continue
+            done += 1
             self.frame += 1
             if self.frame % 60 == 0:
                 log(f"sync check through frame {self.frame - 1}: {self.mismatches} mismatching frame(s)"

@@ -33,6 +33,7 @@ for sub in ("tools", "lobby", "launcher", "tests"):
     if p not in sys.path:
         sys.path.insert(0, p)
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
 
 import tkinter as tk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
@@ -428,6 +429,12 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        from t5lobby import fwcheck
+        tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
+                                       paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})
+        tab._fw_update()
+        self.screen("online firewall hint")
+        tab.dismiss_fw_hint()
         tab.client.me["status"] = "queue"
         tab.cfg["last_search"] = "ranked"
         tab.strict_var.set(1)

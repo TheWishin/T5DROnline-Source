@@ -31,6 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for sub in ("tools", "lobby", "launcher"):
     sys.path.insert(0, os.path.join(ROOT, sub))
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
 
 import core  # noqa: E402,F401  (imported now: it puts tools/ on the path, and other test modules import run late)
 import i18n_extract as x   # noqa: E402

@@ -372,8 +372,8 @@ when the menu opens and back to 0 when it closes, together with `0x1008F0B4`/`B8
 `0x100996B4` 1 -> 3. `tools/fight_flow_test.py` and `tools/pick_flow_test.py` take
 `--mash-start N` (with `--mash`: about every N-th mashed input is START, alone or with an attack);
 they watch that word (`T5_DF_WATCH`) and fail the run if the menu ever opens, and print how many
-START frames the rule took out of each player's input and kept (the post-match skip) from the
-games' `no pause online` log lines. `--net-timeout S` gives the games more slack on a PC busy with
+START frames the rule took out of each player's input and kept (round replays and the match end;
+the game's log line calls both "the post-match skip") from the games' `no pause online` log lines. `--net-timeout S` gives the games more slack on a PC busy with
 other games. The log says `frame N: START taken out of P1's input (no pause online; ...)` once
 per match and the tally at its end and at the next sync point (`no pause online, the match: ...`,
 `after the last match: ...`). The tally counts live frames; under rollback those include

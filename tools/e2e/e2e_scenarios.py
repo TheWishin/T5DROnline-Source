@@ -1528,7 +1528,7 @@ def net_dualsense(ctx):
                 leave(ctx, p)
             ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "both can search again")
         mid = queue_match(ctx, *((a, b) if k == 0 else (b, a)), "quick")
-        if not wait_fight(ctx, mid, (a, b), timeout=180):
+        if not wait_fight(ctx, mid, (a, b), timeout=300):          # (a busy PC boots slowly)
             raise Abort(f"{label}: no fight")
         col = 0 if a.matches[mid].get("slot") == 0 else 1
         peer0 = frames_pressed(logs["rival"], col, DS_MASK)
@@ -1695,7 +1695,7 @@ def net_rebind(ctx):
     login(ctx, a)
     login(ctx, b)
     mid = queue_match(ctx, a, b, "quick")
-    if not wait_fight(ctx, mid, (a, b), timeout=180):
+    if not wait_fight(ctx, mid, (a, b), timeout=300):          # (a busy PC boots slowly)
         raise Abort("no fight")
     km.start()
     pm.start()

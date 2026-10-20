@@ -1351,6 +1351,37 @@ def _start_ev(p, mid):
     return {}
 
 
+def _same_protocol(ctx, p):
+    """Does player p's (older) lobby code speak this tree's netplay protocol (buildid.NETPLAY_VERSION)? From 1.1.3 on
+    (protocol v4: costumes online) an older release computes another build id: the lobby never pairs it with a
+    newer one -- like another build (version_lobby)."""
+    import importlib
+    from t5lobby import buildid
+    mod = type(p.client).__module__.rsplit(".", 1)[0]
+    try:
+        old = importlib.import_module(mod + ".buildid").NETPLAY_VERSION
+    except (ImportError, AttributeError):
+        return True
+    return old == buildid.NETPLAY_VERSION
+
+
+def _never_paired(ctx, a, b, label, seconds=15):
+    """Both search; an older protocol on one side: no match within `seconds`, then both cancel."""
+    t = time.time()
+    a.press("quick")
+    ctx.sleep(0.3)
+    b.press("quick")
+    ctx.sleep(seconds)
+    ctx.check(f"{label}: never paired (another netplay protocol = another build)",
+              not latest(a, "match_found", t) and not latest(b, "match_found", t))
+    for p in (a, b):
+        try:
+            p.press("cancel")
+        except RuntimeError:
+            pass
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 15, f"{label}: both can search again")
+
+
 def regional_case(ctx, a, b, label, expect, expect_rtt, real=True):
     """The punch fails (block_direct, kept on: the relay bridge's bursts fail too, the match stays relayed), so the
     lobby needs a relay: the regional one with the smallest sum of both players' measured round trips (expect:
@@ -1451,6 +1482,9 @@ def relay_old_client(ctx):
     ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(b.client).__module__.startswith("t5lobby_v110"),
               type(b.client).__module__)
     ctx.wait(lambda: len(a.client.relay_rtts or {}) >= 2, 20, "the 1.1.1 player measured both relays")
+    if not _same_protocol(ctx, b):
+        _never_paired(ctx, a, b, "1.1.0 + this release")
+        return
     regional_case(ctx, a, b, "1.1.0 + 1.1.1: the lobby's own relay", "main", 150)
 
 
@@ -1471,7 +1505,10 @@ def relay_regional_stub(ctx):
     login(ctx, c)
     ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(c.client).__module__.startswith("t5lobby_v110"),
               type(c.client).__module__)
-    regional_case(ctx, a, c, "stub: 1.1.0 + 1.1.1: the lobby's own relay", "main", 150, real=False)
+    if _same_protocol(ctx, c):
+        regional_case(ctx, a, c, "stub: 1.1.0 + 1.1.1: the lobby's own relay", "main", 150, real=False)
+    else:
+        _never_paired(ctx, a, c, "stub: 1.1.0 + this release")
     _relay_dead(ctx, "usc")
     regional_case(ctx, a, b, "stub: usc down: usw", "usw", 160, real=False)
 
@@ -3274,6 +3311,9 @@ def old_client_111(ctx):
     ctx.wait(lambda: a.action_on("quick"), 30, "the 1.1.1 player is free again")
     c = ctx.player("E2E New112")
     login(ctx, c)
+    if not _same_protocol(ctx, a):
+        _never_paired(ctx, a, c, "1.1.1 + this release")
+        return
     mid = queue_match(ctx, a, c, "quick")
     if not wait_fight(ctx, mid, (a, c), timeout=150):
         raise Abort("no fight")

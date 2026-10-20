@@ -96,8 +96,11 @@ OUR_FILES = [
     "lobby/run.py", "lobby/servers.json",
 ]
 # Shipped when present (player docs; the players' README section links them).
+# (every doc the READMEs link: tools/make_public_repo.py calls them "in the release zip", so they ship --
+# tests/test_release_tools.py ZipDocs; README.de.md's developer list links CI.md and RELEASE.md too)
 OUR_OPTIONAL_FILES = ["CHANGELOG.md", "docs/TROUBLESHOOTING.md", "docs/README.de.md", "docs/ONLINE.md",
-                      "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md"]
+                      "docs/RANKED.md", "docs/controls.ini", "docs/HOSTING.md", "docs/TRAINING.md", "docs/REPLAYS.md",
+                      "docs/SPECTATE.md", "docs/TOURNAMENTS.md", "docs/WEAK_PC.md", "docs/RELEASE.md", "docs/CI.md"]
 # lobby/t5lobby/*.py is the client side (Online tab, match driver). lobby/t5lobby/server/ ships too:
 # the Online tab's "Host for friends" runs a lobby server from the zip (lobby/run.py host); the
 # Windows deploy scripts stay in the repository: script files in a game download get flagged

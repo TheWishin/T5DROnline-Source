@@ -712,14 +712,56 @@ Closing the game ends the session with that opponent.
 The first time a game starts a match, Windows Firewall shows "Do you want to
 allow public and private networks to access this app?" for `t5dr.exe`
 (publisher "unknown": the program is not signed). Click **Allow**. The window can
-open behind the (minimized) game window or only flash on the taskbar; look for
-it if the match does not start. Windows asks once per folder the program runs
-from, so a new release extracted to a new folder asks again. If you clicked
-Cancel, Windows keeps blocking incoming packets for that program: open Windows
-Security > Firewall & network protection > Allow an app through firewall and
-tick `t5dr.exe` for private networks. The launcher does not need administrator
+open behind the (minimized) game window or only flash on the taskbar. Windows
+asks once per folder the program runs from, so a new release extracted to a new
+folder asks again. It may ask about the launcher too (`python\pythonw.exe` or
+`T5DR Online.exe`): allow it as well. The launcher does not need administrator
 rights, and neither does the game. Windows itself asks for them only if you
-change the firewall. (We did not test a match with the firewall left blocking.)
+change the firewall.
+
+If you clicked Cancel (or never answered), the match still starts: Windows then
+blocks only packets the game did not ask for, and lets in every reply to the
+game's own packets -- both games send first, so they still meet. We tested it
+(1.1.3, with the firewall's behaviour emulated in the game and the launcher,
+never by changing this PC's firewall): one side blocked, both sides blocked,
+blocked behind every kind of home router -- every match connected, directly or
+through a relay. What you lose: a direct connection that needs the other side's
+packet to arrive first. Then the match goes through a relay server, with more
+lag. The Online tab tells you when the firewall blocks the game: see below.
+
+### The firewall blocks the game
+
+The Online tab shows a line marked **FIREWALL** with a **How to fix** link when
+
+- Windows Firewall has a rule that blocks `t5dr.exe` (or the launcher) on the
+  network you are on -- usually because Cancel was clicked when Windows asked;
+  the line names the program. The launcher only *reads* the firewall's rules
+  for the exact `t5dr.exe` it starts; it never changes them and never asks for
+  administrator rights. Or
+- a match showed it: this PC's UDP never reached the lobby server, or the game
+  on a direct connection heard nothing at all from the other game (a firewall
+  that blocks the game completely -- some antivirus firewalls do). The launcher
+  then moves that match onto the relay by itself (both games start the match
+  again; it takes about 20 seconds) instead of failing with "could not be
+  reached".
+
+Matches still connect either way, but some only through a relay (more lag). To
+fix it:
+
+1. Open **Windows Security** > **Firewall & network protection** > **Allow an
+   app through firewall**, click **Change settings**, find `t5dr` (and
+   `pythonw` / `T5DR Online`) and tick **Private** (and **Public** if you play on
+   a network Windows calls public). Windows asks for administrator rights here:
+   that is Windows, not the launcher.
+2. Still blocked? A Cancel on Windows' question leaves **block rules**, which win
+   over the tick above: open **Windows Defender Firewall with Advanced Security**
+   (Start, type `wf.msc`), **Inbound Rules**, sort by **Name**, and delete (or
+   set to **Allow**) every `t5dr` rule with a red block sign whose **Program** is
+   your `t5dr.exe` (the folder of this release: `native\build\cmake\t5dr.exe`).
+3. Another firewall (Norton, Kaspersky, ESET, Bitdefender, a company network):
+   allow `t5dr.exe` and the launcher in its settings.
+4. Back in the launcher, the line goes away the next time the Online tab is
+   shown (or click **Dismiss**).
 
 ### "Lobby: ..." or "Lobby error: ..." when you log in
 
@@ -736,7 +778,7 @@ friend's server (README, "Online"). **(untested)**
 | "Nobody accepted in time." | One of you did not click Accept within 15 seconds. Search again. |
 | "No UDP connection to the lobby server (firewall?)." | UDP 7781/7782 to the server is blocked. Allow `t5dr.exe` (and, if Windows asks, the launcher's `python\pythonw.exe`) through the firewall, or leave the VPN. |
 | "Could not connect the two PCs, not even through the relay." | Neither a direct connection nor the lobby's relay worked. Same checks; then try again. |
-| "Your opponent's game could not be reached (firewall or router?)." | The game on the other side did not answer. They may have closed it, or their firewall prompt is still open. |
+| "Your opponent's game could not be reached (firewall or router?)." | The game on the other side did not answer. They may have closed it, or their game crashed. A firewall alone no longer causes this between two 1.1.3 launchers: a game that hears nothing on a direct connection gets the relay ([The firewall blocks the game](#the-firewall-blocks-the-game)). |
 | "Your opponent's game is a different build." | You do not run the same release. See below. |
 | "Your opponent closed the game." / "The connection to your opponent's game was lost." | The match ended early. It is not counted as a win for the one who left. |
 

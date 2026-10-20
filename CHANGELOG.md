@@ -3,6 +3,28 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Online
+- **Matches connect when Windows Firewall blocks the game.** Clicking Cancel when Windows asks whether
+  `t5dr.exe` may use the network no longer worries anyone: Windows still lets in the replies to the game's own
+  packets, so both games meet. Tested with the firewall's behaviour emulated in the game and the launcher (this
+  PC's firewall was never changed): one side blocked, both sides blocked, behind every kind of home router in
+  the NAT simulator -- every match connected; only some that would have been direct now go through a relay.
+- **A game that hears nothing gets the relay.** When a firewall blocks the game completely (some antivirus
+  firewalls drop even the replies), the lobby used to find a direct connection that only the launchers could
+  use, and the game gave up after a minute: "Your opponent's game could not be reached". Now, after 15 seconds of
+  silence, the launcher moves the match onto the relay through itself (the game then only talks to this PC) and
+  both games start the match again -- about 20 seconds later the fight begins. Needs the new lobby server and
+  1.1.3 launchers on both sides; older ones behave as before.
+- **Firewall hint on the Online tab.** When Windows Firewall blocks `t5dr.exe` (or the launcher) on your
+  network, or a match showed that a firewall drops its packets, the Online tab says so in one line, with a
+  **How to fix** link (TROUBLESHOOTING.md, "The firewall blocks the game"). The launcher only reads the
+  firewall's rules for the exact `t5dr.exe` it starts; it never changes them and never asks for administrator
+  rights. In all seven languages.
+- The relay gets 10 seconds to come up instead of 6 (a slow PC's relay was cancelled as "not even through the
+  relay" before it had finished measuring).
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new

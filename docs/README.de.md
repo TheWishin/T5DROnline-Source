@@ -356,6 +356,20 @@ Gut zu wissen:
   Auswahl im Spiel; der Turnierbaum (Single oder Double Elimination) füllt sich
   von selbst. Jeder mit Konto kann mit **Anlegen...** ein Turnier ausrichten.
   Mehr in [TOURNAMENTS.md](TOURNAMENTS.md) (auf Englisch).
+- **Private Räume und Community-Räume** (ab 1.1.3): **Raum erstellen** fragt,
+  wie viele Spieler (2 bis 8) und wer beitreten darf: alle, mit Passwort oder
+  mit Einladungscode; der Raum lässt sich auch in der Raumliste verstecken.
+  Andere wählen ihn aus und drücken **Raum beitreten** (das fragt nach dem
+  Passwort), oder sie geben den Einladungscode bei **Raum beitreten** ein, ohne
+  einen Raum auszuwählen. Den Code teilst du mit **Einladungscode kopieren**: Er
+  erscheint im Feld neben dem Knopf, dort drückst du Strg+C. In einem Raum für 3
+  oder mehr wechselt ihr euch ab, ein Match nach dem anderen, nach **Gewinner
+  bleibt** oder **Alle der Reihe nach**; **Aussetzen** überspringt deine Runden.
+  Der Gastgeber kann in **Raum-Einstellungen...** das Passwort ändern und einen
+  Spieler entfernen. Einen Freund, den du in deinen Raum einlädst, fragt
+  niemand nach dem Passwort. Die Matches eines privaten Raums können nur seine Spieler
+  zuschauen. Diese Räume sind casual. Mehr in [ONLINE.md](ONLINE.md) „Rooms“
+  (auf Englisch).
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 ### Replays

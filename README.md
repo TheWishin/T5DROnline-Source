@@ -329,6 +329,17 @@ Good to know:
   or 5, played like casual sets with the in-game select; the bracket (single or
   double elimination) fills in by itself. Anyone with an account can organize
   one with **Create...**. See [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
+- **Private and community rooms** (from 1.1.3): **Create room** asks how many
+  players (2 to 8) and who can join: anybody, a password or an invite code; it
+  can also hide the room from the list. Others select it and press **Join
+  room** (it asks for the password), or type the invite code into **Join room**
+  with no room selected. Share the code with **Copy invite code**: it appears in
+  the field next to the button, press Ctrl+C there. In a room for 3 or more you
+  take turns, one match after another, by **Winner stays** or **Everyone in
+  turn**; **Sit out** skips your turns. The host can change the password and
+  remove a player in **Room settings...**. A friend you invite to your room needs
+  no password. Only a private room's players can watch its matches. These rooms are
+  casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 ### Replays

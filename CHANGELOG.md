@@ -6,6 +6,20 @@ part is in the README's status table.
 ## v1.1.3 (not released yet)
 
 ### Online
+- **Private rooms and community rooms.** **Create room** now asks how many players (2 to 8) and who can join:
+  anybody, a **password** or an **invite code** the server makes; it can also hide the room from the room list. A
+  locked room shows in the list with a lock and "private"; **Join room** asks for its password, and with no room
+  selected it takes an invite code (a hidden room is found by its code). **Copy invite code** puts the code into a
+  field next to the button for you to copy (Ctrl+C) -- the launcher never puts anything on your clipboard by
+  itself. A friend's **Invite to my room** lets them in without the password. In a room for 3 or more the players
+  take turns: the first two in line play, the next match starts by itself, by the room's rule -- **Winner stays** or
+  **Everyone in turn**; **Sit out** skips your turns, and whoever lets a ready check run out sits out until they
+  press **Back in line**. The host's **Room settings...** changes the password, makes a new code, hides the room or
+  **removes a player** (who cannot come back into it). Only the room's players can watch a private room's match.
+  Private and community rooms are casual. The server keeps only a salted hash of the password, in memory; wrong
+  guesses are limited per player, per address and per room, and the password is never logged or shown to anyone.
+  Older launchers do not see private rooms (and keep working as before in open ones). Texts in all languages.
+  docs/ONLINE.md "Rooms".
 - **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments (running,
   open for sign-up, finished). Anyone with an account can create one: single or double elimination, sets of best
   of 3 or 5, a start time, 8 to 64 players, an optional check-in window, random seeding or by rating. Players sign

@@ -453,6 +453,7 @@ class OnlineUiWalk(unittest.TestCase):
 
         # a room, a challenge, a game that closed without a result
         tab.actions["room"].invoke()
+        tab.rooms_ui.window.create_button.invoke()           # (Create room's window: an open room for two)
         self.pump(lambda: self.status_of("kaze") == "room", 10, "room")
         self.shot("in_own_room")
         lee.auto_ready = False

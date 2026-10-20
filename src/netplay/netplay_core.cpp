@@ -390,11 +390,19 @@ uint16_t script_mask(const std::vector<ScriptEvent>& ev, uint32_t f)
     return m;
 }
 
+/* No pause online (set_no_start): in a direct-fight session START never leaves
+ * this PC's devices -- whatever the controls map to it (the pad's START, the
+ * keyboard's Enter, a remap or macro in controls.ini) arrives here as the START
+ * bit. */
+std::atomic<bool> g_no_start{ false };
+
 /* One port's HostPadData into *in (nothing when the port had nothing). */
 void pad_into(const HostPadData& d, PadInput* in)
 {
     if (d.len == 0) return;
-    in->buttons |= (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    uint16_t b = (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    if (g_no_start.load(std::memory_order_relaxed)) b &= (uint16_t)~B_START;
+    in->buttons |= b;
     in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
     in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
 }
@@ -1833,6 +1841,7 @@ bool pick_peer(uint32_t key, uint32_t* val)
     return true;
 }
 void set_script_gate(bool on) { g_script_gate = on; }
+void set_no_start(bool on) { g_no_start = on; }
 
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
 

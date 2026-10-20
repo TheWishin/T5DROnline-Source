@@ -1,11 +1,13 @@
 # Tekken 5: Dark Resurrection Online — native Windows-Version
 
 Tekken 5: Dark Resurrection (PS3, PlayStation-Network-Version), das nativ unter
-Windows läuft. Es wird rekompiliert, nicht emuliert. Online-Spiel mit Freunden
-ist in Arbeit.
+Windows läuft. Es wird rekompiliert, nicht emuliert. Online gespielt wird über
+die eigene Lobby des Launchers, wie bei Tekken 6 Native Online.
 
 English: [../README.md](../README.md)
 
+<!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
+(docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
 **Release 1.1.1 (2026-10-19).** Lade
 `T5DR-Online-1.1.1.zip` von https://github.com/TheWishin/T5DROnline/releases
 
@@ -31,7 +33,7 @@ nicht mit Alt+F4.
   Online-Reiter des Launchers anmelden (oder als Gast spielen), Gegner finden,
   und das Spiel startet direkt im Kampf. Siehe "Online".
 
-## Stand (2026-10-17)
+## Stand (2026-10-19)
 
 Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).
 Online wurde zwischen zwei echten PCs über das Internet getestet
@@ -40,17 +42,22 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Bereich | Stand |
 |---|---|
 | Start | Funktioniert. Startet, öffnet das Fenster, erreicht Titel, Menüs, Charakterwahl und Kämpfe. |
-| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Schwächere PCs sind noch nicht gemessen. |
+| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Schwächere PCs sind noch nicht gemessen. |
+| Laptops, Handhelds | **Stromsparen** (Launcher-Einstellungen; Auto schaltet es ein bei Akku, Energiesparplan, mobilem Prozessor oder integrierter Grafik): weniger Hilfs-Threads, kein aktives Warten, online dasselbe Spiel. Noch nicht auf einem echten Laptop oder Handheld ausprobiert. |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
-| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. |
+| Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3 (Settings -> Stage blur / glow schaltet sie aus). |
+| Freischaltungen | Offline, in den Launcher-Einstellungen -> Unlocks (beides anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben immer einen eigenen frischen Spielstand, auf beiden PCs derselbe. |
 | Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Siehe [TRAINING.md](TRAINING.md) (englisch). |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). |
-| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. |
+| Freunde, Einladungen | Mit Konto fügst du auf der Seite **Freunde** im Online-Reiter Freunde mit ihrem Namen hinzu und siehst, wer online ist, sucht oder im Match ist. **Einladen** zu einem lockeren Match oder in deinen Raum: ein Klick auf Annehmen startet es. |
+| Replays | Jedes Online-Match wird gespeichert (ein paar KB). Der Reiter **Replays** spielt es im Spiel noch einmal ab und prüft, dass es mit dem Live-Match identisch ist. |
+| Launcher | Englisch und sechs Übersetzungen: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, ohne abgeschnittene Texte bei 100 % und 150 % Anzeige-Skalierung. Der Einstellungen-Reiter scrollt. Aktualisiert sich selbst. |
+| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. Ein stehengebliebener Hilfsprozess hält das Bauen nicht mehr bei "Translate code" an. |
 
 ## Voraussetzungen
 
@@ -98,7 +105,8 @@ nur den Code aus deiner Kopie.
    Dauer: etwa 90 Sekunden auf dem Entwicklungs-PC (16 Kerne). Auf einem
    normalen PC erwarten wir ein paar Minuten (Schätzung, nicht gemessen).
    **Cancel** ist ungefährlich: BUILD GAME macht dort weiter, wo es aufgehört hat.
-6. Reiter **Play**: Gib einen Namen ein (freiwillig) und klicke auf **PLAY**.
+6. Reiter **Play offline**: Gib einen Namen ein (freiwillig) und klicke auf **PLAY OFFLINE** (Arcade, Versus,
+   Practice ... an diesem PC). Für Matches über das Internet nimm den Reiter **Play online**.
 
 Alles, was das Bauen erzeugt, bleibt im Ordner `native` neben dem Launcher. Das
 sind Spieldaten. Gib sie nicht weiter. Zum Deinstallieren löschst du den ganzen
@@ -122,7 +130,8 @@ heißen. Im deutschen Launcher heißen sie:
 
 | Englisch | Deutsch |
 |---|---|
-| Build, Play, Settings (Reiter) | Bauen, Spielen, Einstellungen |
+| Build, Play offline, Play online, Settings (Reiter) | Bauen, Offline spielen, Online spielen, Einstellungen |
+| PLAY OFFLINE | OFFLINE SPIELEN |
 | Cancel | Abbrechen |
 | Stop game | Spiel stoppen |
 | Open saves folder | Speicherordner öffnen |
@@ -133,16 +142,28 @@ heißen. Im deutschen Launcher heißen sie:
 | Advanced: extra settings | Erweitert: zusätzliche Einstellungen |
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
+| Power saving (laptops, handhelds) | Stromsparen (Laptops, Handhelds) |
 | Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
 
-**BUILD GAME**, **PLAY**, **Quick Match** und **Ranked-Match** heißen in beiden
+**BUILD GAME**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
 
 ## Spielen
 
-- Das Spiel öffnet ein eigenes Fenster. Es zeichnet in 1280 x 720 und skaliert auf
-  das Fenster. Unter **Settings** gibt es Fenstergrößen, maximiert, randlos
-  (experimentell: noch nicht mit dem echten Spielfenster getestet) und Stumm.
+- Das Spiel öffnet ein eigenes Fenster und skaliert sein Bild auf das Fenster.
+  Unter **Settings** gibt es Fenstergrößen, maximiert, randloses Vollbild und
+  Stumm. Der Einstellungen-Reiter ist höher als das Fenster: scrolle ihn mit
+  dem Mausrad oder der Bildlaufleiste.
+- **Settings** -> **Internal resolution** (interne Auflösung) stellt ein, wie
+  scharf das Bild ist, wie bei einem Emulator: Native ist das 1280 x 720 der
+  PS3; 1080p, 1440p und 4K zeichnen das Spiel größer (scharf auf großen
+  Bildschirmen, mehr Arbeit für die Grafikkarte: der Launcher nennt die Stufe,
+  die zu deinem Bildschirm passt); Lower und Lowest zeichnen die 3D-Szene
+  kleiner für schwache Grafikkarten (Laptops, integrierte Grafik), das HUD
+  bleibt scharf. Es ändert nur das Bild, der andere Spieler online braucht
+  also nicht dieselbe Einstellung. Fallen Kämpfe unter 60 fps, geh eine Stufe
+  herunter. Mehr in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#low-frame-rate)
+  (englisch).
 - **Settings** -> **VSync**: An (flüssig, Standard) oder Aus (geringste
   Verzögerung, das Bild kann reißen). Das Spiel läuft immer mit 60 fps, wie
   auf der PS3, deshalb gibt es keine Einstellung für die Bildrate. Online kann
@@ -152,6 +173,16 @@ Sprachen gleich.
   lassen die Sonne leuchten (der Schrottplatz). An (Standard) sieht aus wie auf
   der PS3, bei jeder internen Auflösung; Aus zeigt diese Stages scharf, ohne
   das Leuchten. Online kann jeder Spieler selbst wählen.
+- **Settings** -> **Power saving (laptops, handhelds)** (Stromsparen): Auto
+  (Standard) schaltet es ein bei Akkubetrieb, Stromsparmodus oder dem
+  Energiesparplan, einem mobilen Prozessor oder integrierter Grafik; mit An und
+  Aus entscheidest du selbst. Das Spiel nutzt dann weniger Hilfs-Threads und
+  wartet nie aktiv, so bleibt der Prozessor kühler und hält seinen Takt; im
+  Fenstertitel steht "power saving". Das Spiel selbst ist dasselbe, online
+  braucht der andere Spieler also nicht dieselbe Einstellung. Noch nicht auf
+  einem echten Laptop oder Handheld ausprobiert; siehe
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md#game-speeds-up-or-slows-down-on-a-laptop-or-handheld)
+  (englisch).
 - **Settings** -> **Trainings-Anzeige**: Im Practice-Modus zeigt das Spiel deine
   letzten Eingaben (Richtungen als Pfeile, 1 2 3 4 für die Knöpfe, jede mit der
   Zahl der Frames, die sie gehalten wurde) und nach jedem Schlagabtausch den
@@ -277,8 +308,13 @@ Tastatur (Standard) und Xbox-Controller:
 Gut zu wissen:
 
 - Die beiden PCs schicken sich die Controller-Eingaben direkt zu. Lassen die
-  Router das nicht zu, leitet der Lobby-Server sie weiter. Bei einer direkten
-  Verbindung erfährt jeder PC die IP-Adresse des anderen.
+  Router das nicht zu, leitet ein Relay-Server sie weiter (die Lobby nimmt den,
+  der für euch beide am nächsten liegt). Bei einer direkten Verbindung erfährt
+  jeder PC die IP-Adresse des anderen.
+- Quick- und Ranked-Suche suchen zuerst einen Gegner mit niedrigem Ping und
+  erweitern die Suche, während du wartest: jeder Ping nach 30 Sekunden (Quick)
+  oder 60 Sekunden (Ranked). Der Ping, den ein gefundenes Match zeigt, rechnet
+  den nächsten Relay-Server mit ein.
 - Kabel ist besser als WLAN.
 - Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
   dürfen. Erlaube es für **private Netzwerke**.
@@ -295,6 +331,10 @@ Gut zu wissen:
   spielen. Stell deine Tasten im Launcher ein (Settings -> Set up
   controllers); die gelten auch online. Dein eigener Spielstand wird beim
   Online-Spielen nie angefasst.
+- Einen Online-Kampf kann niemand pausieren (ab 1.1.2): **Start** öffnet dort
+  für keinen der beiden Spieler das Pausenmenü. Das Replay nach einer Runde
+  überspringt Start weiterhin. Wer ein Match abbrechen will, schließt das Spiel
+  (zweimal Esc): Das zählt wie bisher als Niederlage.
 - Ranked nutzt eine Glicko-2-Wertung mit den Rang-Namen aus Tekken 5. Verlassen
   oder Verbindungsabbruch zählt als Niederlage. Ein Desync macht das Match
   ungültig.
@@ -304,10 +344,6 @@ Gut zu wissen:
   einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
   seiner Seite startet es. Wer einen Spieler blockiert, beendet die
   Freundschaft.
-- **Discord** (freiwillig, standardmäßig aus): Settings -> Discord zeigt „In der
-  Lobby“, „Sucht ein Ranked-Match“ oder dein Match („Im Match: Jin vs Kazuya
-  (Ranked-Set 1-0)“) mit Zeit in deinem Discord-Status, über die Discord-App auf
-  deinem PC.
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 ### Replays
@@ -343,7 +379,7 @@ Der Launcher bietet neue Versionen an; klicke auf **Update**.
   Das dauert ein paar Sekunden plus den Download.
 - Dein Ordner `native` (entpacktes Spiel, Speicherstände, Logs) und deine
   Einstellungen bleiben, wie sie sind.
-- Wenn die neue Version den Spielcode ändert, steht im Reiter Play **Build the
+- Wenn die neue Version den Spielcode ändert, steht im Reiter Play offline **Build the
   game once (about 2 minutes)**. Klicke auf **BUILD GAME**. Nur der Code wird neu
   gebaut.
 - Der Launcher aktualisiert nie, solange das Spiel, ein Build oder ein
@@ -357,13 +393,13 @@ oder wenn das Update immer wieder scheitert):
 2. Kopiere deinen alten Ordner `native` hinein. So bleiben das entpackte Spiel
    und deine Speicherstände erhalten.
 3. Starte den Launcher. Wenn die neue Version den Spielcode ändert, sagt dir das
-   der Reiter Play. Klicke dann nochmal auf **BUILD GAME**. Nur der Code wird neu
+   der Reiter Play offline. Klicke dann nochmal auf **BUILD GAME**. Nur der Code wird neu
    gebaut.
 
 ## Fehler melden
 
-**Probleme? Klicke auf "Report a problem"** (Reiter Play; auch im Reiter Build und
-im Reiter Online nach einem Match). Der Launcher macht EINE Zip-Datei auf deinem
+**Probleme? Klicke auf "Report a problem"** (Reiter Play offline; auch im Reiter Build und
+im Reiter Play online nach einem Match). Der Launcher macht EINE Zip-Datei auf deinem
 Desktop und öffnet den Ordner. Schicke das Zip der Person, die dir das Spiel
 gegeben hat, oder hänge es an ein Issue unter
 https://github.com/TheWishin/T5DROnline/issues. Im Fenster kannst du ein paar
@@ -429,7 +465,7 @@ Schlüsseldaten von github.com zu laden (siehe Danksagung).
 **Warum warnt Windows vor dem Launcher?** `T5DR Online.exe` ist ein winziges,
 nicht signiertes Startprogramm. Eine Code-Signatur ist noch nicht eingerichtet.
 
-**Wo sind meine Speicherstände?** In `native\gamedata`. Im Reiter Play gibt es den
+**Wo sind meine Speicherstände?** In `native\gamedata`. Im Reiter Play offline gibt es den
 Knopf **Open saves folder**. Sichere den Ordner, bevor du experimentierst.
 
 **Kommt der PSN-Onlinemodus zurück?** Nein. Die Server gibt es nicht mehr.

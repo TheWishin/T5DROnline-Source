@@ -1,5 +1,6 @@
 """The release tooling that runs without the game or a toolchain: CHANGELOG sections
-for release notes (tools/release_notes.py), version strings (package_release.py),
+for release notes (tools/release_notes.py) and whether one is ready for players
+(release_preflight.py), version strings (package_release.py),
 unpacking the pinned LLVM archive (tools/fetch_llvm.py, on a small fake archive)
 and the PE import reader of tools/smoke_release.py."""
 import io
@@ -68,6 +69,45 @@ class ChangelogSection(unittest.TestCase):
     def test_empty_and_missing(self):
         self.assertEqual(notes.find_section(CHANGELOG, "0.0.9"), "")
         self.assertIsNone(notes.find_section(CHANGELOG, "9.9.9"))
+
+
+class ChangelogReadyForPlayers(unittest.TestCase):
+    """tools/release_preflight.py step 7: the launcher's update offer shows the notes as plain text, so a
+    placeholder comment or an undated heading must not be tagged."""
+
+    def test_dated_sections_without_comments_are_ready(self):
+        pf = load_tool("release_preflight")
+        for v in ("0.2.0-rc.1", "0.1.0-preview", "0.1.0", "9.9.9"):        # 9.9.9: missing is step 1's job
+            self.assertEqual(pf.changelog_leftovers(v, CHANGELOG), [], v)
+
+    def test_placeholders_and_a_missing_date(self):
+        pf = load_tool("release_preflight")
+        text = ("## v1.2.0 (not released yet)\n\n**Big.** Both players need it<!-- PENDING x: patch -->.\n\n"
+                "### Online\n- one\n<!-- PENDING y: its entry\n### Controllers\n-->\n- two <!-- unclosed\n\n"
+                "## v1.1.0 (2026-10-19)\n\n- old <!-- not this section -->\n")
+        left = pf.changelog_leftovers("1.2.0", text)
+        self.assertEqual(left[0], "heading without a release date: ## v1.2.0 (not released yet)")
+        self.assertEqual(left[1:], ["comment: <!-- PENDING x: patch -->",
+                                    "comment: <!-- PENDING y: its entry ### Controllers -->",
+                                    "comment: <!-- unclosed -->"])
+        self.assertEqual(pf.changelog_leftovers("1.1.0", text), ["comment: <!-- not this section -->"])
+
+    def test_readme_release_lines(self):
+        pf = load_tool("release_preflight")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "docs"))
+            put(os.path.join(d, "README.md"), "# T\n\n**Release 1.1.1 (2026-10-19).** Download\n"
+                                              "`T5DR-Online-1.1.1.zip` from https://example.invalid\n\n"
+                                              "1. Download `T5DR-Online-<version>.zip`.\n")
+            put(os.path.join(d, "docs", "README.de.md"), "**Release 1.2.0 (2026-11-01).** Lade\n"
+                                                         "`T5DR-Online-1.2.0.zip` von ...\n")
+            self.assertEqual(pf.readme_leftovers("1.2.0", d),
+                             ["README.md: the release line names 1.1.1, not 1.2.0"])
+            self.assertEqual(pf.readme_leftovers("1.1.1", d),
+                             ["docs/README.de.md: the release line names 1.2.0, not 1.1.1"])
+            put(os.path.join(d, "README.md"), "**Release 1.2.0 (2026-11-01).** `T5DR-Online-1.1.9.zip`\n")
+            self.assertEqual(pf.readme_leftovers("1.2.0", d),
+                             ["README.md: the release line names 1.1.9, not 1.2.0"])     # the zip name too
 
 
 class DisplayPath(unittest.TestCase):

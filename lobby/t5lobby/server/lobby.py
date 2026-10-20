@@ -504,6 +504,7 @@ class LobbyServer:
         self.recent = {}           # match id -> finished Match, kept rematch_window seconds for a rematch
         self.pair_last = {}        # frozenset of two player keys -> monotonic time their last ranked game ended
         self.notices_by_id = {}    # active server notices (admin tool): id -> row
+        self.latest_release = ""   # `admin release X.Y.Z`: launchers of an older release are told to update
         self.table = fighters.table()
         self.rules = ranks.RankRules(placement=self.cfg.placement, placement_cap=self.cfg.placement_cap,
                                      hysteresis=self.cfg.hysteresis, shield=self.cfg.shield,
@@ -560,6 +561,7 @@ class LobbyServer:
         self.store.defer_commits(loop.call_soon)
         self.reload_bans()
         self.notices_by_id = {n["id"]: n for n in self.store.active_notices()}
+        self.latest_release = self.store.get_flag("release") or ""
         # TLS: on Python 3.11+ the handshake starts only after the address checks in _accept (bans, rate,
         # per-address and pre-login caps), with its own timeout. Before, every connection got a 60 s
         # handshake that no limit counted: a slowloris could hold any number of sockets that way.
@@ -826,7 +828,7 @@ class LobbyServer:
                 raise LobbyError(proto.E_RATE, "slow down")
             reply = await fn(conn, msg)
         except LobbyError as e:
-            conn.send({"t": "error", "code": e.code, "msg": e.msg, "re": rid})
+            conn.send(dict(e.extra, t="error", code=e.code, msg=e.msg, re=rid))
             if e.code in (proto.E_PROTO, proto.E_VERSION) and t == "hello":
                 return False
             return True
@@ -1527,7 +1529,9 @@ class LobbyServer:
                             continue
                         if (a.strict or b.strict) and dr > self.cfg.strict_range:
                             continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
-                        score = dr / window + (ping / limit if limit < math.inf else ping / 1000.0)
+                        # (max: T5L_PING_START 0 makes a window of 0 ms at first -- a pair with an estimate of 0 fits it,
+                        # and 0 / 0 stopped the whole matchmaker every tick while that pair waited)
+                        score = dr / window + (ping / max(limit, 1.0) if limit < math.inf else ping / 1000.0)
                     else:
                         score = ping                     # quick: the closest one within the window
                     if best_score is None or score < best_score:
@@ -3135,7 +3139,8 @@ class LobbyServer:
         q = self.by_account.get(row["id"])
         status, activity = self._presence_of(q)
         d = {"name": row["name"], "status": status, "activity": activity, "since": row["since"],
-             "last_seen": row["last_seen"], "invite": self._invitable(viewer, q)}
+             "last_seen": row["last_seen"], "invite": self._invitable(viewer, q),
+             "retry": self._invite_retry_left(viewer, row["id"])}
         if q is not None:
             d["rating"] = round(q.rating.r)
             d.update(q.rank_info())
@@ -3332,7 +3337,7 @@ class LobbyServer:
             for w in watchers:
                 if aid in w.friends:
                     w.send({"t": "friend_status", "name": name, "status": st, "activity": act,
-                            "invite": self._invitable(w, q)})
+                            "invite": self._invitable(w, q), "retry": self._invite_retry_left(w, aid)})
 
     # ------------------------------------------------------------------ invites (friends)
     async def h_invite(self, conn, msg):
@@ -3369,11 +3374,15 @@ class LobbyServer:
             raise LobbyError(proto.E_BUSY, "that friend is busy right now")
         self._set_free(q, requester=p)
         now = time.monotonic()
-        if now - p.last_invite < 2.0 or any(i.src is p for i in self.invites.values()):
+        if any(i.src is p for i in self.invites.values()):
             raise LobbyError(proto.E_RATE, "one invite at a time")
         wait = self._retry_left(("invite", p.account_id, q.account_id))
         if wait:
-            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s")
+            # (retry: the launcher shows the wait on its invite buttons, counting down from the server's number)
+            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s",
+                             retry=wait)
+        if now - p.last_invite < 2.0:           # the last one ended already: only too soon (any friend)
+            raise LobbyError(proto.E_RATE, "wait a moment before inviting again")
         if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has invites pending")
         p.last_invite = now
@@ -3461,6 +3470,15 @@ class LobbyServer:
         left = self.retry_after.get(key, 0.0) - time.monotonic()
         return math.ceil(left) if left > 0 else 0
 
+    def _invite_retry_left(self, viewer, friend):
+        """Whole seconds until `viewer` may invite `friend` (a player, or an account id) again (0: now). Sent as
+        `retry` in friends / friend_status / invite_update and with the refusal: the server is the authority, the
+        launcher only counts its number down."""
+        if viewer is None or viewer.account_id is None:
+            return 0
+        aid = friend.account_id if isinstance(friend, Player) else friend
+        return self._retry_left(("invite", viewer.account_id, aid)) if aid is not None else 0
+
     def _end_invite(self, inv, state):
         """accepted | declined | cancelled | expired: both sides are told (invite_update)."""
         if self.invites.pop(inv.id, None) is None:
@@ -3469,8 +3487,12 @@ class LobbyServer:
             inv.timer.cancel()
         for q, other in ((inv.src, inv.dst), (inv.dst, inv.src)):
             if self._can(q, "friends"):
-                q.send({"t": "invite_update", "invite": inv.id, "state": state, "name": other.name,
-                        "kind": inv.kind})
+                ev = {"t": "invite_update", "invite": inv.id, "state": state, "name": other.name, "kind": inv.kind}
+                if q is inv.src:
+                    # a no or a take-back holds the inviter's next invite to this friend back (_retry_later): say
+                    # for how long, so the launcher can count it down on its invite buttons
+                    ev["retry"] = self._invite_retry_left(q, other)
+                q.send(ev)
 
     # ------------------------------------------------------------------ sets
     def _end_set(self, gs, reason, by=None):
@@ -3828,6 +3850,56 @@ class LobbyServer:
             msg = self._notice_msg(n, p.conn)
             if msg:
                 p.conn.send(msg)
+        if self._outdated(p, self.latest_release):
+            p.conn.send(self._update_msg(p, self.latest_release))
+
+    # ------------------------------------------------------------------ "update your launcher" (admin release)
+    # Players on different game builds are never paired (queue, rooms, challenges, invites): after a release, an
+    # older launcher waits in a queue nobody it can play is in. Once the owner has published a release, `admin
+    # release X.Y.Z` says so (never before: an unpublished release must not be announced), and every launcher
+    # that says it is an older release gets a notice of its own that stays in its status bar -- a message every
+    # launcher since 1.0 shows (server_notice; a plain notice for the oldest). `admin release --clear` takes it
+    # down. The release a launcher reports is informational (the build id decides pairing): no trust needed.
+    UPDATE_NOTICE_ID = -1          # admin notices count up from 1; launchers sort their notices by id
+
+    @staticmethod
+    def release_key(text):
+        """'1.1.2' / 'v1.1.2-rc1' -> (1, 1, 2, 0); anything else (dev builds, nothing) -> None."""
+        head = str(text or "").strip().lower().lstrip("v").split("-")[0].split("+")[0]
+        parts = head.split(".")
+        if not 1 <= len(parts) <= 4 or not all(x.isdigit() and len(x) <= 6 for x in parts):
+            return None
+        return tuple(int(x) for x in parts) + (0,) * (4 - len(parts))
+
+    def _outdated(self, p, latest):
+        new, mine = self.release_key(latest), self.release_key(getattr(p, "release", ""))
+        return new is not None and mine is not None and mine < new
+
+    def _update_msg(self, p, latest, cleared=False):
+        text = (f"T5DR Online {latest} is out. Players on it cannot play against your {p.release}: update the "
+                "launcher (it offers the update when it starts, or press \"Check for updates\").")
+        if "notices" in p.conn.caps:
+            return {"t": "server_notice", "id": self.UPDATE_NOTICE_ID, "text": text, "expires": 0,
+                    "cleared": cleared}
+        return None if cleared else {"t": "notice", "code": "update", "msg": text}
+
+    def poll_release(self):
+        """`admin release` changed the newest release: tell the launchers online that are older now (or that the
+        notice is over)."""
+        rel = self.store.get_flag("release") or ""
+        if rel == self.latest_release:
+            return
+        before, self.latest_release = self.latest_release, rel
+        log.info("newest release: %s", rel or "(none)")
+        for p in self.players.values():
+            if p.conn is None or p.conn.closed:
+                continue
+            if self._outdated(p, rel):
+                p.conn.send(self._update_msg(p, rel))
+            elif self._outdated(p, before):
+                msg = self._update_msg(p, before, cleared=True)
+                if msg:
+                    p.conn.send(msg)
 
     def poll_notices(self):
         """A notice made with `admin notice` is picked up within T5L_ADMIN_POLL seconds and sent to
@@ -3983,6 +4055,7 @@ class LobbyServer:
             await asyncio.sleep(self.cfg.admin_poll)
             try:
                 self.poll_notices()
+                self.poll_release()
                 self.reload_bans()
                 self.set_draining(bool(self.store.get_flag("drain")))
                 banned = self.store.banned_account_ids()

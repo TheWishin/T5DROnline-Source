@@ -14,12 +14,18 @@ here first (0.1.5-preview's first run stopped at the binary check). Steps, in or
      runs tools/check_binaries.py and the zip scan
   5. the zip's smoke test with a bare PATH (smoke_release.py --no-gui)
   6. the repo's unit tests (python -m unittest discover -s tests)
+  7. ready for players: the changelog section has a release date in its heading and no HTML comments
+     (placeholders, notes for the release; the launcher's update offer shows the notes as plain text,
+     comments included, and the zip ships CHANGELOG.md), and the release line of README.md and
+     docs/README.de.md names this version. Listed after step 1 already, failed only here, so a dry run
+     with placeholders still runs every other step.
 
 Needs the MSVC environment for step 4 (it re-runs itself inside vcvars64.bat when cl/link are
 not on PATH). Exit code 0 = safe to tag. Work files go to build/preflight/ (removed unless --keep).
 """
 import argparse
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -37,6 +43,42 @@ def rmtree(path):
         func(p)
     if os.path.exists(path):
         shutil.rmtree(path, onerror=onerror)
+
+
+def changelog_leftovers(ver, text):
+    """What in the CHANGELOG section of `ver` must not reach players: a heading without the release date
+    (YYYY-MM-DD) and every HTML comment. [] when the section is ready (or missing: step 1 reports that)."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from release_notes import find_section
+    head = re.search(r"^##\s+\[?[vV]?" + re.escape(ver) + r"(?![0-9A-Za-z.\-]).*$", text, re.M)
+    body = find_section(text, ver)
+    if head is None or body is None:
+        return []
+    out = []
+    if not re.search(r"\b\d{4}-\d{2}-\d{2}\b", head.group(0)):
+        out.append(f"heading without a release date: {head.group(0).strip()}")
+    for c in re.findall(r"<!--(.*?)(?:-->|\Z)", body, re.S):
+        c = " ".join(c.split())
+        out.append("comment: <!-- " + (c[:100] + " ..." if len(c) > 100 else c) + " -->")
+    return out
+
+
+def readme_leftovers(ver, root=ROOT):
+    """The READMEs (README.md, docs/README.de.md) whose release line ("**Release X (date).**" and the zip name
+    T5DR-Online-X.zip) does not name `ver` yet (docs/RELEASING.md "Cutting a release", step 2)."""
+    out = []
+    for rel in ("README.md", "docs/README.de.md"):
+        try:
+            with open(os.path.join(root, *rel.split("/")), encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        named = (re.findall(r"^\*\*Release ([0-9][\w.\-]*) ", text, re.M)
+                 + re.findall(r"T5DR-Online-([0-9][\w.\-]*)\.zip", text))
+        wrong = sorted({v for v in named if v != ver})
+        if wrong or not named:
+            out.append(f"{rel}: the release line names {', '.join(wrong) or 'no version'}, not {ver}")
+    return out
 
 
 def step(title, cmd, **kw):
@@ -73,6 +115,10 @@ def main():
         print("PREFLIGHT FAILED: commit everything first; uncommitted or untracked:\n  " + "\n  ".join(dirty[:20]))
         sys.exit(1)
     step("1. changelog section", [py, "tools/release_notes.py", "--version", ver, "--check"])
+    with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+        leftovers = changelog_leftovers(ver, f.read()) + readme_leftovers(ver)
+    if leftovers:
+        print("   not ready for players yet (step 7 fails on it):\n     " + "\n     ".join(leftovers), flush=True)
     step("2a. guard: index", [py, "tools/check_no_game_data.py"])
     last = subprocess.run(["git", "describe", "--tags", "--abbrev=0"], cwd=ROOT, capture_output=True,
                           text=True).stdout.strip()
@@ -92,6 +138,12 @@ def main():
     step("5. zip smoke test (bare PATH)", [py, "tools/smoke_release.py", zipf, "--version", ver,
                                            "--work", os.path.join(work, "smoke"), "--no-gui"])
     step("6. unit tests", [py, "-m", "unittest", "discover", "-s", "tests"])
+    print("\n== 7. ready for players (changelog: release date, no HTML comments; README release lines)", flush=True)
+    if leftovers:
+        print("   " + "\n   ".join(leftovers))
+        print("\nPREFLIGHT FAILED at: 7. ready for players (date the heading, fill in or remove every comment, "
+              "put the version into both README release lines)", flush=True)
+        sys.exit(1)
     print(f"\nPREFLIGHT OK for {ver}: safe to tag v{ver}", flush=True)
     if not a.keep:
         rmtree(work)

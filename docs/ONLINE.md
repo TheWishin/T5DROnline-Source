@@ -142,6 +142,11 @@ lobby/
    the launcher. A rematch goes back to the select screen the same way; in a
    ranked set only the first game is picked, the rest keep those fighters
    (docs/RANKED.md "Character select in the game").
+   **No pause** (1.1.2): neither player can pause the fight -- both games take START out of
+   both players' inputs (docs/NETPLAY.md "No pause online"). START still skips the replay
+   after a round, and the games skip the last replay and the win pose by themselves. Quitting a
+   match is closing the game (Esc twice, Alt+F4, the window's X), which counts as a loss
+   (forfeit) as before; the launcher's Leave / Leave set after a game works as before.
 9. **Result.** After the game both launchers report the winner (from the
    game's result file, or the player answers "I won / I lost") and, after an
    in-game pick, the fighters. The server reconciles the two reports and
@@ -414,7 +419,12 @@ seconds, then runs out; your button reads **Cancel the invite** meanwhile. An in
 another match, leaves, or logs out. Only casual matches: ranked comes from the ranked queue (or a ranked room, which
 a room invite can be -- then the room's match keeps its ready check, which says "ranked": the invite named only the
 room, and a ranked room's match is rated). After a **Decline** (or when you take your own invite back) you can invite
-that friend again after 30 seconds; challenges work the same way. Friend requests: asking again within a day of
+that friend again after 30 seconds; challenges work the same way. Meanwhile both invite buttons are off for that
+friend and the one you would use (in a room: **Invite to my room**) counts the seconds down -- "Invite in 27 s"
+(1.1.3). The seconds are the server's (`retry` in `invite_update`, in the friends list and `friend_status`, and with
+the refusal of an invite sent anyway); the launcher only counts them down, and the server still refuses an invite
+it holds back. An older server says the wait only in its refusal, so there the countdown starts after a refused try.
+Friend requests: asking again within a day of
 taking a request back puts it in their list without the "wants to be your friend" message.
 
 **Limits** (against spam, all in `server/config.py`):
@@ -454,7 +464,9 @@ server still opens an upgraded database (tested), so going back to an older rele
 
 ## Discord Rich Presence
 
-Optional, **off by default**: launcher **Settings -> Discord -> "Show what I play in my Discord status"**. Then the
+Optional, **off by default**, and offered only by a launcher that has a Discord application id (see "The application
+id" below; the 1.1.2 release has none yet, so its Settings show no Discord box): launcher **Settings -> Discord ->
+"Show what I play in my Discord status"**. Then the
 player's Discord status reads "Playing T5DR Online" with one of
 
 | State | Discord shows |
@@ -476,8 +488,8 @@ When Discord starts later, or restarts, the status appears by itself.
 
 **The application id.** Discord names the game after a Discord *application*, which the person who ships the launcher
 creates once. The id is a config value: `application_id` in `lobby/t5lobby/data/discord.json` (shipped with the
-release; empty = Rich Presence does nothing and Settings says so), overridden per player by `"discord_app_id"` in
-launcher.json, and by the environment variable `T5_DISCORD_APP_ID`.
+release; empty = no Rich Presence, and Settings does not show the Discord box at all), overridden per player by
+`"discord_app_id"` in launcher.json, and by the environment variable `T5_DISCORD_APP_ID` (either one shows the box).
 
 Creating the application (the owner, once, about 5 minutes; nobody else can do this for you):
 
@@ -535,11 +547,11 @@ Client to server:
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
-| `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}` |
+| `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, retry, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}`; `retry` (1.1.3): whole seconds until this player may invite that friend again (0 = now) |
 | `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
 | `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
 | `friend_cancel` / `friend_remove` | `name` | `ok` (take back a request / end a friendship) |
-| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited` |
+| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited`. Held back after a no or a take-back (`T5L_INVITE_RETRY_SECONDS`): `error` `rate_limited` "... try again in N s" with `retry` N (1.1.3) |
 | `invite_answer` | `invite`, `accept` | accepted: casual -> `match_found` (origin `invite`, no ready check) for both; room -> `room {room}` and the room's match starts (origin `invite`, no ready check) |
 | `invite_cancel` | `invite` | `ok`; both get `invite_update` |
 | `logout` | | `bye`, connection closed |
@@ -568,10 +580,10 @@ Server to client (pushed):
 | `server_notice` | `id`, `text`, `expires`, `cleared` -- a message from the admin tool (clients without the `notices` cap get a `notice` instead) |
 | `notice` | `code`, `msg` (never contains an IP address) |
 | `friends` | clients with the `friends` cap: the whole list (as the `friends` reply) after login and whenever it changed |
-| `friend_status` | `name`, `status`, `activity`, `invite`: a friend came online, went into a match, went offline ... |
+| `friend_status` | `name`, `status`, `activity`, `invite`, `retry` (1.1.3, as in `friends`): a friend came online, went into a match, went offline ... |
 | `friend_request` / `friend_update` | someone asks you; the answer to your request (`state: accepted\|declined`) |
 | `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires` |
-| `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind` |
+| `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind`; to the inviter also `retry` (1.1.3): whole seconds until the next invite to that friend (30 after a no or a take-back, else 0) |
 | `kicked` | `reason` |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,

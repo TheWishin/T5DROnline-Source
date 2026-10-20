@@ -173,6 +173,11 @@ class OnlineTab:
         self.last_result = None
         self.profile_name = None
         self._auto_tried = False
+        self._relogin_at = None          # monotonic time of the next try of the saved login after a lost connection
+        self._relogin_until = 0.0        # ... tried until then (a server restart takes seconds, an outage longer)
+        self._relogin_n = 0
+        self._login_busy = False         # a login is on its way (no automatic one beside it)
+        self._kicked = False             # removed by the server (ban, kick): no automatic login after that
         self.ask_string = theme.ask_string           # dialogs (tests replace them)
         self.ask_yes_no = theme.ask_yes_no
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
@@ -458,6 +463,8 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._tick_set()
+        self._invite_wait_tick()
+        self._relogin_tick()
         self._presence_tick()
         self._show_notice()
         self._pad_tick()
@@ -522,6 +529,9 @@ class OnlineTab:
                                    os.path.join(out, "build", "cmake", "t5dr_game.dll")])
 
     def do_login(self, mode, session=None):
+        if mode != "session":
+            self._relogin_at = None                 # the player logs in by hand
+        self._kicked = False
         name, pw = self.name_var.get().strip(), self.pw_var.get()
         server = self.server_var.get().strip() or DEFAULT_SERVER
         build, err = self._build_info()
@@ -537,6 +547,7 @@ class OnlineTab:
         self._save_cfg()
         self.status(t("Connecting to {server}...", server=server))
         client = self._new_client(server, build)
+        refused = {}                     # (set by the worker: the server said the saved login is no good)
 
         def work():
             w = client.connect()
@@ -545,12 +556,18 @@ class OnlineTab:
             elif mode == "account":
                 me = client.login(name, pw, remember=remember)
             elif mode == "session":
-                me = client.login_session(session)
+                try:
+                    me = client.login_session(session)
+                except LobbyError as e:
+                    refused["auth"] = e.code == proto.E_AUTH
+                    raise
             else:
                 me = client.register(name, pw, remember=remember)
             return w, me
 
         def done(r):
+            self._login_busy = False
+            self._relogin_at = None
             w, me = r
             self.client = client
             self.pw_var.set("")
@@ -575,7 +592,11 @@ class OnlineTab:
                 self.show_codes(client.recovery_codes, first=True)
 
         def failed():
-            if mode == "session":
+            self._login_busy = False
+            # Only the server's "no" ends the saved login. A server that cannot be reached (restarting for an
+            # update, an outage, no internet) leaves it: it works again once the server is back.
+            if mode == "session" and refused.get("auth"):
+                self._relogin_at = None
                 self._remember_session(None, None)
                 self.status(t("Your saved login has expired; log in with your password."))
 
@@ -585,6 +606,7 @@ class OnlineTab:
             except Exception:
                 client.close()
                 raise
+        self._login_busy = True
         self.call(work_guarded, then=done, fail=failed)
 
     def _confirm_password(self, pw):
@@ -597,6 +619,35 @@ class OnlineTab:
             self.status(t("The two passwords differ."), error=True)
             return False
         return True
+
+    # A lost connection that the client could not resume (the server restarted -- an update -- and forgot the
+    # session, or it was away too long): with a saved login for this server the tab logs in again by itself, as
+    # at the launcher's start, so a restart does not leave every account player at the login screen. First try
+    # after RELOGIN_FIRST s, then every RELOGIN_EVERY s for RELOGIN_FOR s; never while a fight is on (the game
+    # plays on without the lobby; logging in again restarts the match driver), never after a kick or a ban, and
+    # it stops when the player logs in or out by hand or the server says the saved login is no good.
+    RELOGIN_FIRST, RELOGIN_EVERY, RELOGIN_FOR = 3.0, 10.0, 600.0
+
+    def _start_relogin(self):
+        self._relogin_n = 0
+        self._relogin_until = time.monotonic() + self.RELOGIN_FOR
+        self._relogin_at = time.monotonic() + self.RELOGIN_FIRST
+
+    def _relogin_tick(self):
+        if self._relogin_at is None or time.monotonic() < self._relogin_at or self._login_busy:
+            return
+        s = self._saved_session()
+        if self.client is not None or s is None or self._kicked or time.monotonic() > self._relogin_until:
+            self._relogin_at = None
+            return
+        drv = self.driver
+        if drv is not None and drv.game_running() and drv.game_state not in (None, "over", "neutral"):
+            self._relogin_at = time.monotonic() + 2.0          # a fight is on: after it
+            return
+        self._relogin_n += 1
+        self._relogin_at = time.monotonic() + self.RELOGIN_EVERY
+        self.name_var.set(s.get("name", self.name_var.get()))
+        self.do_login("session", session=s["token"])
 
     def try_saved_login(self):
         """Log in with the remembered login for this server, once, when the tab is first shown."""
@@ -631,6 +682,7 @@ class OnlineTab:
         return self.app.start_game(env)
 
     def do_logout(self):
+        self._relogin_at = None
         forget = False
         if self.client and self.client.session:
             forget = self.ask_yes_no(t("Log out"), t("Also forget the saved login on this PC?\n\n"
@@ -941,6 +993,11 @@ class OnlineTab:
         my_room = next((r for r in getattr(self.client, "rooms", None) or [] if me.get("id") in (r.get("members") or [])),
                        None)
         pending = self.outgoing_invite is not None
+        # after a no (or a take-back) the server holds the next invite to this friend back: both invite buttons
+        # off, one counting down the seconds the server said (_invite_wait_tick redraws it every second)
+        wait = 0 if pending else self._invite_wait(f)
+        self._invite_wait_shown = (f.get("name") if f else None, wait)
+        free = free and not wait
         kind, _name = self._selected_request() if ok else (None, None)
         on = {"add": ok, "remove": f is not None,
               "invite": ok and (pending or (free and me.get("status") in ("idle", "queue"))),
@@ -952,12 +1009,40 @@ class OnlineTab:
                 b.configure(state="normal" if on.get(key) else "disabled")
             except tk.TclError:
                 pass
-        text = t("Cancel the invite") if pending else t("Invite to a match")
+        texts = {"invite": t("Cancel the invite") if pending else t("Invite to a match"),
+                 "invite_room": t("Invite to my room")}
+        if wait:
+            # the seconds go on the button this player would use now: the room's while in a room, else the match's
+            # (only one of the two can be on; the short text keeps the page as wide as before in every language)
+            texts["invite_room" if me.get("status") == "room" else "invite"] = t("Invite in {seconds} s",
+                                                                                 seconds=wait)
+        for key, text in texts.items():
+            try:
+                if key in acts and str(acts[key].cget("text")) != text:
+                    acts[key].configure(text=text)
+            except tk.TclError:
+                pass
+
+    def _invite_wait(self, f):
+        """Seconds until the server takes an invite to friend `f` again (0: now) -- the server's number, counted
+        down by the client (LobbyClient.invite_wait); never a guess of ours."""
+        c = self.client
+        fn = getattr(c, "invite_wait", None) if c is not None else None
+        if f is None or fn is None:
+            return 0
         try:
-            if str(acts["invite"].cget("text")) != text:
-                acts["invite"].configure(text=text)
-        except tk.TclError:
-            pass
+            return int(fn(f.get("name")) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _invite_wait_tick(self):
+        """Every poll: redraw the invite buttons when the selected friend's wait shows another second (or ends)."""
+        if not getattr(self, "friend_actions", None):
+            return
+        f = self._selected_friend() if self._friends_ok() else None
+        wait = 0 if self.outgoing_invite is not None else self._invite_wait(f)
+        if (f.get("name") if f else None, wait) != getattr(self, "_invite_wait_shown", None):
+            self._set_friend_actions()
 
     def do_add_friend(self):
         name = self.friend_name_var.get().strip()
@@ -1358,7 +1443,11 @@ class OnlineTab:
             self._reset_lobby_view()
             self.me_var.set(t("Not connected."))
             self._set_account_view(False)
+            if not self._kicked and self._saved_session():
+                self._start_relogin()
         elif kind == "kicked":
+            self._kicked = True
+            self._relogin_at = None
             self.status(t("Removed from the lobby: {reason}", reason=translate_message(ev.get("reason"))))
         self.view.after_event(ev)
         if c is not None:

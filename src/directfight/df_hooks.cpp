@@ -214,6 +214,15 @@ bool autosave_running()
     return false;
 }
 
+/* A kernel semaphore with a thread parked on it and no token: the thread has
+ * nothing to do until someone posts (df_fight.cpp select_load_check) */
+bool sem_parked(uint32_t id)
+{
+    if (id == 0 || id > 64) return false;
+    const df_sys_semaphore_info& m = g_sys_semaphores[id - 1];
+    return m.active && *(volatile const int32_t*)&m.value == 0 && *(volatile const int32_t*)&m.waiters > 0;
+}
+
 /* A reset or leave that waits too long (df_fight.cpp stuck_check): what the
  * mode manager is at and where every guest thread last entered the kernel */
 void stuck_dump(uint32_t f)

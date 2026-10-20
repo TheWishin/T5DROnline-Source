@@ -405,8 +405,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "“En el lobby”, “Buscando Ranked” o tu partida (personajes, marcador del set Ranked) con un temporizador, a "
         "través de la app de Discord en esta PC. Sin Discord abierto no pasa nada.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Esta copia aún no tiene un ID de aplicación de Discord, así que por ahora no hace nada.",
     "Power saving (laptops, handhelds)": "Ahorro de energía (laptops, handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -852,6 +850,7 @@ MESSAGES = {
     "create a room first, then invite": "primero crea una sala y luego invita",
     "that friend is busy right now": "ese amigo está ocupado ahora",
     "one invite at a time": "una invitación a la vez",
+    "wait a moment before inviting again": "espera un momento antes de volver a invitar",
     "that player has invites pending": "ese jugador tiene invitaciones pendientes",
     "that invite is over": "esa invitación terminó",
     "the invite is no longer possible": "la invitación ya no es posible",
@@ -1535,6 +1534,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "El juego se abre directo en la pelea.",
     "The result comes back here: rematch or next game.": "El resultado vuelve aquí: Rematch o siguiente partida.",
     "With a controller: A accepts, B declines.": "Con control: A acepta, B rechaza.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "En línea nadie puede pausar el combate: Start no abre el menú de pausa.",
     "Lobby": "Lobby",
     "Leaderboard": "Clasificación",
     "Profile": "Perfil",
@@ -1659,6 +1660,7 @@ MESSAGES = {
     "Friends": "Amigos",
     "Invite to a match": "Invitar a una partida",
     "Invite to my room": "Invitar a mi sala",
+    "Invite in {seconds} s": "Invitar en {seconds} s",
     "Remove": "Quitar",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Invita a un amigo conectado: con un clic de su lado empieza una partida casual o entra a tu sala.",

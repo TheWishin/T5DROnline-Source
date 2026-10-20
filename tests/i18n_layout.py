@@ -470,6 +470,19 @@ class Walk:
         tab.nb.select(tab.friends_page)
         tab.on_event({"t": "friends"})
         self.screen("online friends")
+        # after a no: the invite button counts the server's wait down (three digits: a server may hold longer) --
+        # the match's, or in a room the room's
+        tab.client.invite_wait = lambda name: 120 if name == "Rival_Long_Name" else 0
+        tab.tv_friends.selection_set("f:Rival_Long_Name")
+        tab._set_friend_actions()
+        self.screen("online friends, invite held back")
+        tab.client.me["status"] = "room"
+        tab._set_friend_actions()
+        self.screen("online friends, room invite held back")
+        tab.client.me["status"] = "idle"
+        tab.client.invite_wait = lambda name: 0
+        tab.tv_friends.selection_remove(*tab.tv_friends.selection())
+        tab._set_friend_actions()
         tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
         self.screen("online friend's invite")
         tab.hide_bar()

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 import zlib
 
@@ -48,11 +49,11 @@ def fnv_digest(frames):
 
 
 def make_file(path, inputs, matches, bars=(), hashes=(), rollback=True, slot=0, names=("A", "B"),
-              build="b1", created="2026-10-19T12:00:00Z", version=2):
+              build="b1", created="2026-10-19T12:00:00Z", version=2, delay=2, rb_delay=1):
     """A replay file written by Python (the same layout as replay.cpp's)."""
     n = len(inputs[0])
     b = bytearray(b"T5RP")
-    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, 2, 1, 7, 7, n, 60)
+    b += struct.pack("<IIIIiIIII", version, 1 if rollback else 0, slot, delay, rb_delay, 7, 7, n, 60)
     if version >= 2:
         b += struct.pack("<I", max(0, n - 1))            # the last frame the recording game ran: all of them here
     b += struct.pack("<I", len(matches))
@@ -145,6 +146,41 @@ class PythonSideTest(unittest.TestCase):
         self.assertFalse(rematch.complete)
         self.assertEqual((first.fighters, first.won, first.score, first.opponent), ("Lili vs Jin", True, (2, 1), "Host"))
         self.assertEqual(replays.newest(self.tmp) is not None, True)
+
+    def test_a_strange_header_skips_that_file_not_the_list(self):
+        """review-112: list_replays() promised to skip files it cannot read, but a header line that is JSON and
+        not what the game writes raised out of it (IndexError for a side of 2, AttributeError for a match that
+        is no object, ValueError for a side that is no number, OSError on Windows for a date before 1970) -- and
+        the Replays tab then showed nothing at all."""
+        make_file(os.path.join(self.tmp, "good" + replays.EXT), sample_inputs(20),
+                  [{"start": 0, "end": 10, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])
+        for name, header in (("side", {"slot": 2, "matches": [{"names": ["a", "b"], "score": [1, 2]}]}),
+                             ("matchobj", {"slot": 0, "matches": [5]}),
+                             ("sidetext", {"slot": "x", "matches": [{}]}),
+                             ("names", {"slot": 0, "matches": [{"names": 7}]})):
+            with open(os.path.join(self.tmp, name + replays.EXT), "wb") as f:
+                f.write(replays.MAGIC + json.dumps(header).encode() + b"\n" + zlib.compress(b"x"))
+        with open(os.path.join(self.tmp, "old" + replays.EXT), "wb") as f:     # listed, with an unknown date
+            f.write(replays.MAGIC + json.dumps({"slot": 0, "matches": [{"started": "0001-01-01T00:00:00Z"}]}).encode()
+                    + b"\n")
+        rows = replays.list_replays(self.tmp)
+        self.assertEqual(sorted(os.path.basename(e.path) for e in rows), ["good" + replays.EXT, "old" + replays.EXT])
+        self.assertIsNone([e for e in rows if e.path.endswith("old" + replays.EXT)][0].when)
+
+    def test_prune_and_newest_survive_a_file_that_goes_meanwhile(self):
+        """review-112: prune() (run while the launcher starts) and newest() took each file's time after listing the
+        folder; a file deleted in between (the Replays tab's Delete, a second launcher pruning at the same moment)
+        raised FileNotFoundError -- and the launcher did not open."""
+        for k in range(3):
+            make_file(os.path.join(self.tmp, f"r{k}" + replays.EXT), sample_inputs(10),
+                      [{"start": 0, "end": 5, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])
+            os.utime(os.path.join(self.tmp, f"r{k}" + replays.EXT), (1000 + k, 1000 + k))
+        real = replays.glob.glob
+        gone = os.path.join(self.tmp, "gone" + replays.EXT)
+        with mock.patch.object(replays.glob, "glob", lambda pat: real(pat) + [gone]):
+            self.assertEqual(os.path.basename(replays.newest(self.tmp)), "r2" + replays.EXT)
+            self.assertEqual(replays.prune(self.tmp, keep=2), 1)
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["r1" + replays.EXT, "r2" + replays.EXT])
 
     def test_playback_env(self):
         p = os.path.join(self.tmp, "a" + replays.EXT)
@@ -466,6 +502,31 @@ class GameCodeTest(unittest.TestCase):
             self.assertIn("ERROR " + why, out)
         code, out = self.run_exe("read", os.path.join(self.tmp, "missing" + replays.EXT))
         self.assertIn("ERROR the file cannot be opened", out)
+
+    def test_a_header_the_playback_cannot_use_is_refused(self):
+        """review-112: a damaged or hand-made file with a player side other than 0/1, an input delay outside
+        0..30, or a match with a character / stage id the game does not have must be refused with a reason --
+        the playback indexes the two players by the side and fills its input ring up to the delay (memory
+        outside both), and an unknown character left the playback waiting at the title for ever."""
+        ins = sample_inputs(60)
+        good = [{"start": 0, "end": 50, "p1": 1, "p2": 2, "stage": 20, "winner": 0}]
+        cases = {"broken header (player side)": dict(slot=2),
+                 "broken header (input delay)": dict(delay=31),
+                 "broken header (input delay) ": dict(rb_delay=200),
+                 "broken match table": dict(matches=[dict(good[0], p2=36)]),
+                 "broken match table ": dict(matches=[dict(good[0], stage=35)])}
+        for why, kw in cases.items():
+            p = os.path.join(self.tmp, "hdr" + replays.EXT)
+            make_file(p, ins, kw.pop("matches", good), **kw)
+            code, out = self.run_exe("read", p)
+            self.assertEqual(code, 2, (why, out))
+            self.assertIn("ERROR " + why.strip(), out)
+        # the edges still play: side 1, delay 30, rollback delay unknown (-1), random stage, the last character
+        p = os.path.join(self.tmp, "edge" + replays.EXT)
+        make_file(p, ins, [dict(good[0], p1=35, stage=-1)], slot=1, delay=30, rb_delay=-1)
+        code, out = self.run_exe("read", p)
+        self.assertEqual(code, 0, out)
+        self.assertIn("SLOT 1 DELAY 30", out)
 
     def test_a_slower_load_renumbers_the_frames(self):
         """A sync point this game reaches later than the recording continues at its own frame; the recorded

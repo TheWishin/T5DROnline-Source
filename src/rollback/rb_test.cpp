@@ -338,7 +338,7 @@ void test_on_frame(ppu_context* ctx)
         logline("F %u real %u dt %.2f cyc %.1fM dirty %u commit %.2f hash %016llX vb %llu last %llu clk %llu tick %u anim %u cnt %u round %u-%u over %u timer %u reset %u", f, frame(), dt_ms, dcyc / 1e6, nre, commit_ms,
                 (unsigned long long)state_hash(), (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
                 (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
-                vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
+                vm_base[0x100900D1], vm_base[0x100909A1], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
         if (g_have_snap && f == g_snap_frame + g_resim && g_rollbacks < g_rollbacks_max) {
             /* ROLLBACK: restore the boundary of P = g_snap_frame, re-simulate P..f-1 */
             for (size_t ri = 0; ri < kSaveN; ri++)
@@ -408,7 +408,7 @@ void test_on_frame(ppu_context* ctx)
             (unsigned long long)state_hash(), !known ? "unknown" : match ? "MATCH" : "MISMATCH", gmatch ? "MATCH" : "MISMATCH",
             (unsigned long long)rd64(0x106D4D90), (unsigned long long)rd64(0x106D4DA0),
             (unsigned long long)rd64(kFrameClock), rd32(0x1008EB9C), rd32(0x100900D4), rd32(0x1006404C),
-            vm_base[0x1008EBDA], vm_base[0x1008EBDB], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
+            vm_base[0x100900D1], vm_base[0x100909A1], vm_base[0x1008EBD5], rd32(0x1008F054), rd32(kRingResetFlag));
     if (!match && counted) note("resim frame %u: hash %016llX, original %016llX -> %s", f, (unsigned long long)state_hash(),
                      (unsigned long long)(known ? g_hist_hash[f % kHist] : 0), known ? "MISMATCH" : "unknown");
     if (g_resim_left == 0) {

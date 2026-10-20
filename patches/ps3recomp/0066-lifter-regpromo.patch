@@ -1,0 +1,1435 @@
+diff --git a/tools/ppu_lifter.py b/tools/ppu_lifter.py
+index 7606dbd..59e22ce 100644
+--- a/tools/ppu_lifter.py
++++ b/tools/ppu_lifter.py
+@@ -825,6 +825,379 @@ def _fuse_cr(body_lines: list[str]) -> list[str]:
+     return out
+ 
+ 
++# ---------------------------------------------------------------------------
++# Register promotion (--regpromo; post-pass over one function's final body)
++#
++# The lifted code keeps every guest register in the context struct, and
++# `ctx` points at memory the compiler must assume any guest store, fence or
++# call can change. So a value written to ctx->gpr[n] is stored, and read back
++# from memory after every guest store in between: the hot copy loops reload
++# their pointers and counter from ctx after each byte they move.
++#
++# This pass keeps the guest GPRs, FPRs, CR, XER and CTR a function uses in C
++# locals instead, which the compiler can hold in host registers. ctx is the
++# only place anything outside the function reads them, and nothing outside
++# runs except at an ESCAPE: a call (direct, indirect, HLE, syscall, any line
++# that hands `ctx` to a function), a return or trampoline hand-off, or the
++# end of the body. So:
++#   - entry: every promoted local is loaded from ctx;
++#   - before an escape: every local that may differ from ctx (written on some
++#     path since ctx was last brought up to date: a may-"dirty" dataflow over
++#     the body's labels and gotos) is stored back -- ctx then holds exactly
++#     what the unpromoted code would have left in it;
++#   - after a call-like escape: every local is loaded again (the callee may
++#     have changed anything); the compiler drops the loads nobody uses.
++# Lines that pass `ctx` along are kept VERBATIM (they read and write ctx
++# itself, which is up to date around them). The fields nothing promotes (LR,
++# VRs, VSCR, FPSCR, the reservation) stay in ctx everywhere; other threads
++# write a thread's reserve_addr, and nothing else reads or writes the promoted
++# fields of a running thread's context (diagnostic dumps aside).
++#
++# Guest memory accesses, their order and their values are unchanged; only
++# where the register values live between two escapes changes. The pass is a
++# strict recognizer of the lifter's own line shapes: a function with any line
++# it does not understand is emitted unchanged (counted in the lift summary).
++# ---------------------------------------------------------------------------
++REGPROMO_DEFAULT = False
++
++# Types as in ppu_context (HEADER_PREAMBLE): a local must have its field's type
++# exactly, so every expression that reads or writes it computes the same.
++_RP_TYPE = {"g": "uint64_t", "f": "double", "cr": "uint32_t", "xer": "uint32_t", "ctr": "uint64_t"}
++# ctx fields that stay in memory (read and written in place).
++_RP_KEEP = frozenset(("lr", "vr", "vscr", "fpscr", "reserve_addr", "reserve_value",
++                      "reserve_valid", "cia", "vrsave", "thread_id"))
++_RP_CTX_RE = re.compile(r"\bctx\b(?:(?P<arrow>->)(?P<field>[A-Za-z_]\w*)(?:\[(?P<idx>[^\]]*)\])?)?")
++_RP_LABEL_RE = re.compile(r"^(loc_[0-9A-F]{8}):(?:\s*;)?$")
++_RP_GOTO_RE = re.compile(r"\bgoto\s+(loc_[0-9A-F]{8})\s*;")
++_RP_TRAMP = r"\{ g_trampoline_fn = \(void\(\*\)\(void\*\)\)(?P<fn>[A-Za-z_]\w*); return; \}"
++_RP_KIND_RES = (
++    ("goto", re.compile(r"^goto (?P<lab>loc_[0-9A-F]{8});$")),
++    ("cgoto", re.compile(r"^if \((?P<cond>.*)\) goto (?P<lab>loc_[0-9A-F]{8});$")),
++    ("ret", re.compile(r"^return;$")),
++    ("tramp", re.compile(r"^" + _RP_TRAMP + r"$")),
++    ("cret", re.compile(r"^if \((?P<cond>.*)\) return;$")),
++    ("ctramp", re.compile(r"^if \((?P<cond>.*)\) " + _RP_TRAMP + r"$")),
++)
++_RP_SWITCH_RE = re.compile(
++    r"^switch \(\(uint32_t\)ctx->ctr\) \{ (?:case 0x[0-9A-F]{8}u: (?:goto loc_[0-9A-F]{8};|"
++    + _RP_TRAMP + r"))+ default: ps3_indirect_call\(ctx\); return; \} return;$")
++# Anything that transfers control or could leave the line some other way than
++# falling through, outside the shapes above: such a line makes the function
++# keep its unpromoted body.
++_RP_BAD_RE = re.compile(r"\b(?:goto|return|switch|case|default|break|continue|while|do|"
++                        r"asm|__asm__|__asm|__try|__except|__finally|__leave|throw|try|catch|"
++                        r"setjmp|longjmp|_setjmp|g_trampoline_fn)\b")
++# Functions a line without `ctx` may call: none of them can reach the context
++# of the thread running the lifted code except through g_active_ctx, which
++# the runtime uses for the reservation (not promoted) and for diagnostics.
++_RP_CALL_OK_RE = re.compile(r"^(?:vm_\w+|VM_\w+|ppc_\w+|ppu_\w+|vmx_\w+|memcpy|memset|memmove|fabs|"
++                            r"fabsf|sqrt|__builtin_\w+|__atomic_\w+|PPU_FENCE|for|if|sizeof|void|"
++                            r"u?int(?:8|16|32|64)_t|float|double|int|unsigned|char|long|short|"
++                            r"_byteswap_\w+|_mm_\w+|_rotl\w*|_rotr\w*)$")
++_RP_STATS = Counter()
++
++
++def _rp_split_comments(line: str):
++    """[(is_comment, text)] pieces of a line; None when a comment is left open
++    or a // or string literal makes the split unsafe."""
++    parts, pos = [], 0
++    while True:
++        k = line.find("/*", pos)
++        if k < 0:
++            parts.append((False, line[pos:]))
++            break
++        e = line.find("*/", k + 2)
++        if e < 0:
++            return None
++        parts.append((False, line[pos:k]))
++        parts.append((True, line[k:e + 2]))
++        pos = e + 2
++    code = "".join(t for c, t in parts if not c)
++    if "//" in code or '"' in code or "'" in code:
++        return None
++    return parts
++
++
++def _rp_balanced(code: str) -> bool:
++    depth = {"(": 0, "[": 0, "{": 0}
++    close = {")": "(", "]": "[", "}": "{"}
++    for ch in code:
++        if ch in depth:
++            depth[ch] += 1
++        elif ch in close:
++            depth[close[ch]] -= 1
++            if depth[close[ch]] < 0:
++                return False
++    return all(v == 0 for v in depth.values())
++
++
++def _rp_scan(code: str):
++    """Promotable occurrences in one code fragment: (refs, writes, bare, ok).
++    refs/writes are sets of keys 'gN', 'fN', 'cr', 'xer', 'ctr'; a write is
++    an occurrence that is assigned, incremented/decremented or has its
++    address taken (over-approximate: a key counted as written when it is not
++    only costs a store)."""
++    refs, writes, bare = set(), set(), False
++    for m in _RP_CTX_RE.finditer(code):
++        if not m.group("arrow"):
++            bare = True
++            continue
++        fld, idx = m.group("field"), m.group("idx")
++        if fld in ("gpr", "fpr"):
++            if idx is None or not idx.isdigit() or int(idx) > 31:
++                return None
++            key = ("g" if fld == "gpr" else "f") + str(int(idx))
++        elif fld in ("cr", "xer", "ctr"):
++            if idx is not None:
++                return None
++            key = fld
++        elif fld in _RP_KEEP:
++            continue
++        else:
++            return None
++        refs.add(key)
++        before = code[:m.start()].rstrip()
++        after = code[m.end():].lstrip()
++        # `&` right before the field takes its address -- unless what precedes the
++        # `&` ends an operand, which makes it a binary AND (`a & ctx->gpr[n]`).
++        amp = before.endswith("&") and not before.endswith("&&")
++        if amp:
++            prev = before[:-1].rstrip()
++            amp = not (prev and (prev[-1].isalnum() or prev[-1] in "_)]"))
++        if amp or before.endswith(("++", "--")):
++            writes.add(key)
++        elif after.startswith(("++", "--")):
++            writes.add(key)
++        elif re.match(r"(?:[-+*/%&|^]|<<|>>)?=(?!=)", after):
++            writes.add(key)
++    return refs, writes, bare
++
++
++def _rp_local(key: str) -> str:
++    return f"_pr_{key}"
++
++
++def _rp_field(key: str) -> str:
++    if key[0] in "gf" and key[1:].isdigit():
++        return f"ctx->{'gpr' if key[0] == 'g' else 'fpr'}[{key[1:]}]"
++    return f"ctx->{key}"
++
++
++def _rp_rewrite(code: str) -> str:
++    def sub(m):
++        if not m.group("arrow"):
++            return m.group(0)
++        fld, idx = m.group("field"), m.group("idx")
++        if fld in ("gpr", "fpr"):
++            return _rp_local(("g" if fld == "gpr" else "f") + str(int(idx)))
++        if fld in ("cr", "xer", "ctr"):
++            return _rp_local(fld)
++        return m.group(0)
++    return _RP_CTX_RE.sub(sub, code)
++
++
++def _rp_rewrite_line(parts) -> str:
++    return "".join(t if c else _rp_rewrite(t) for c, t in parts)
++
++
++def _rp_key_order(key: str):
++    kind = 0 if key[0] == "g" and key[1:].isdigit() else 1 if key[0] == "f" and key[1:].isdigit() else 2
++    return (kind, int(key[1:]) if kind < 2 else ("cr", "xer", "ctr").index(key))
++
++
++def _regpromo(body: list[str]):
++    """Register promotion of one function body (lines without the signature
++    and closing brace). Returns the new body, or None when the function keeps
++    its unpromoted form (_RP_STATS says why)."""
++    if any("_pr_" in ln for ln in body):
++        _RP_STATS["kept: _pr_ name in body"] += 1
++        return None
++    n = len(body)
++    info = []            # per line: (kind, parts, refs, writes, extra)
++    labels = {}
++    promoted = set()
++    for i, raw in enumerate(body):
++        s = raw.strip()
++        lm = _RP_LABEL_RE.match(s) or _RP_LABEL_RE.match(re.sub(r"\s*/\*.*?\*/\s*$", "", s))
++        if lm:
++            if lm.group(1) in labels:
++                _RP_STATS["kept: duplicate label"] += 1
++                return None
++            labels[lm.group(1)] = i
++            info.append(("label", None, set(), set(), None))
++            continue
++        parts = _rp_split_comments(raw)
++        if parts is None:
++            _RP_STATS["kept: comment/literal"] += 1
++            return None
++        code = "".join(t for c, t in parts if not c).strip()
++        if not _rp_balanced(code):
++            _RP_STATS["kept: unbalanced line"] += 1
++            return None
++        if re.search(r"\bloc_[0-9A-F]{8}\s*:(?!:)", code):
++            _RP_STATS["kept: label inside a line"] += 1
++            return None
++        if code in ("", ";"):
++            info.append(("nop", parts, set(), set(), None))
++            continue
++        sc = _rp_scan(code)
++        if sc is None:
++            _RP_STATS["kept: unknown ctx field"] += 1
++            return None
++        refs, writes, bare = sc
++        gotos = _RP_GOTO_RE.findall(code)
++        if len(re.findall(r"\bgoto\b", code)) != len(gotos):
++            _RP_STATS["kept: goto shape"] += 1
++            return None
++        if bare:
++            if re.search(r"\bswitch\b", code):
++                if not _RP_SWITCH_RE.match(code):
++                    _RP_STATS["kept: switch shape"] += 1
++                    return None
++                info.append(("switch", parts, set(), set(), gotos))
++                continue
++            if gotos or re.search(r"\b(?:case|default|break|continue|while|do|asm|__asm__|__asm|"
++                                  r"__try|__except|__finally|__leave|throw|try|catch|setjmp|"
++                                  r"longjmp|_setjmp)\b", code):
++                _RP_STATS["kept: control flow in a call line"] += 1
++                return None
++            # A line that hands ctx to a function is kept verbatim around a
++            # full write-back; it falls through unless it ends in a plain return.
++            ends = bool(re.search(r"(?:^|;)\s*return;$", code)) and "{" not in code and "if" not in code
++            info.append(("opaque", parts, set(), set(), not ends))
++            continue
++        kind = None
++        for kname, kre in _RP_KIND_RES:
++            km = kre.match(code)
++            if km:
++                kind = kname
++                break
++        if kind is None:
++            if _RP_BAD_RE.search(code):
++                _RP_STATS["kept: control flow shape"] += 1
++                return None
++            for cm in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", code):
++                if not _RP_CALL_OK_RE.match(cm.group(1)):
++                    _RP_STATS[f"kept: call to {cm.group(1)}"] += 1
++                    return None
++            info.append(("pure", parts, refs, writes, None))
++            promoted |= refs
++            continue
++        cond = km.groupdict().get("cond")
++        if cond is not None:
++            if not _rp_balanced(cond) or _RP_BAD_RE.search(cond):
++                _RP_STATS["kept: condition shape"] += 1
++                return None
++            for cm in re.finditer(r"\b([A-Za-z_]\w*)\s*\(", cond):
++                if not _RP_CALL_OK_RE.match(cm.group(1)):
++                    _RP_STATS[f"kept: call to {cm.group(1)}"] += 1
++                    return None
++        elif refs:
++            _RP_STATS["kept: registers in a jump"] += 1
++            return None
++        info.append((kind, parts, refs, writes, km))
++        promoted |= refs
++    for k in info:
++        if k[0] in ("goto", "cgoto") and k[4].group("lab") not in labels:
++            _RP_STATS["kept: goto to a missing label"] += 1
++            return None
++        if k[0] == "switch" and any(g not in labels for g in k[4]):
++            _RP_STATS["kept: goto to a missing label"] += 1
++            return None
++    if not promoted:
++        _RP_STATS["unchanged: no register use to promote"] += 1
++        return None
++
++    keys = sorted(promoted, key=_rp_key_order)
++    bit = {k: 1 << j for j, k in enumerate(keys)}
++    allmask = (1 << len(keys)) - 1
++
++    def mask(ks):
++        m = 0
++        for k in ks:
++            m |= bit.get(k, 0)
++        return m
++
++    # May-dirty dataflow: din[i] = keys that may differ from ctx when line i starts.
++    din = [None] * (n + 1)
++    din[0] = 0
++    work = [0]
++    while work:
++        i = work.pop()
++        d = din[i]
++        if i == n:
++            continue
++        kind, parts, refs, writes, extra = info[i]
++        outs = []
++        if kind in ("label", "nop"):
++            outs.append((i + 1, d))
++        elif kind == "pure":
++            outs.append((i + 1, d | mask(writes)))
++        elif kind == "goto":
++            outs.append((labels[extra.group("lab")], d))
++        elif kind == "cgoto":
++            dw = d | mask(writes)
++            outs += [(labels[extra.group("lab")], dw), (i + 1, dw)]
++        elif kind in ("cret", "ctramp"):
++            outs.append((i + 1, d | mask(writes)))
++        elif kind == "opaque":
++            if extra:
++                outs.append((i + 1, 0))
++        elif kind == "switch":
++            outs += [(labels[g], 0) for g in extra]
++        # ret / tramp: no successor
++        for j, dj in outs:
++            if din[j] is None or (din[j] | dj) != din[j]:
++                din[j] = dj if din[j] is None else (din[j] | dj)
++                work.append(j)
++
++    def flush(m):
++        return " ".join(f"{_rp_field(k)} = {_rp_local(k)};" for k in keys if m & bit[k])
++
++    reload_all = " ".join(f"{_rp_local(k)} = {_rp_field(k)};" for k in keys)
++    out = []
++    for t in ("g", "f", "cr", "xer", "ctr"):
++        ks = [k for k in keys if (k[0] == t and k[1:].isdigit()) or k == t]
++        if ks:
++            ty = _RP_TYPE[t]
++            out.append(f"    {ty} " + ", ".join(f"{_rp_local(k)} = {_rp_field(k)}" for k in ks) + ";")
++    for i, raw in enumerate(body):
++        kind, parts, refs, writes, extra = info[i]
++        ind = raw[:len(raw) - len(raw.lstrip())]
++        d = din[i]
++        if d is None:        # unreachable from the entry: no write-back can be needed
++            d = 0
++        if kind in ("label", "nop", "goto"):
++            out.append(raw)
++        elif kind in ("pure", "cgoto"):
++            out.append(_rp_rewrite_line(parts))
++        elif kind in ("ret", "tramp", "cret", "ctramp"):
++            comments = " ".join(t for c, t in parts if c)
++            fl = flush(d | mask(writes))
++            fl = (fl + " ") if fl else ""
++            if kind == "ret":
++                txt = f"{{ {fl}return; }}" if fl else "return;"
++            elif kind == "tramp":
++                txt = f"{{ {fl}g_trampoline_fn = (void(*)(void*)){extra.group('fn')}; return; }}"
++            elif kind == "cret":
++                txt = f"if ({_rp_rewrite(extra.group('cond'))}) {{ {fl}return; }}"
++            else:
++                txt = (f"if ({_rp_rewrite(extra.group('cond'))}) {{ {fl}g_trampoline_fn = "
++                       f"(void(*)(void*)){extra.group('fn')}; return; }}")
++            out.append(ind + txt + (("  " + comments) if comments else ""))
++        elif kind in ("opaque", "switch"):
++            fl = flush(d)
++            if fl:
++                out.append(ind + fl)
++            out.append(raw)
++            if kind == "opaque" and extra:
++                out.append(ind + reload_all)
++    if din[n]:
++        out.append("    " + flush(din[n]))
++    _RP_STATS["promoted"] += 1
++    return out
++
++
+ @dataclass
+ class LiftedFunction:
+     """A single lifted C function."""
+@@ -3974,8 +4347,8 @@ class PPULifter:
+             lines.append(f"/* {label} */")
+         weak = "__attribute__((weak)) " if getattr(self, "weak_emit", False) else ""
+         lines.append(f"void {weak}{func.name}(ppu_context* ctx) {{")
+-        for bline in _fuse_cr(func.body_lines):
+-            lines.append(f"    {bline}" if not bline.endswith(":") else bline)
++        body = [f"    {bline}" if not bline.endswith(":") else bline
++                for bline in _fuse_cr(func.body_lines)]
+ 
+         # If a function doesn't end with blr/b/bctr (a return or unconditional
+         # branch), PPC execution falls through to the next address. The lifter
+@@ -4003,12 +4376,17 @@ class PPULifter:
+                     if nxt.start_addr == func.fallthrough_to:
+                         target = nxt.name
+             if target:
+-                lines.append(f"        {{ g_trampoline_fn = (void(*)(void*)){target}; return; }}")
++                body.append(f"        {{ g_trampoline_fn = (void(*)(void*)){target}; return; }}")
+             else:
+                 print(f"  WARNING: {func.name} has no continuation at "
+                       f"0x{func.fallthrough_to:08X}; emitting halt", flush=True)
+-                lines.append(f"        /* missing continuation 0x{func.fallthrough_to:08X}: halt */ return;")
++                body.append(f"        /* missing continuation 0x{func.fallthrough_to:08X}: halt */ return;")
+ 
++        if getattr(self, "regpromo", REGPROMO_DEFAULT) and func.start_addr not in getattr(self, "regpromo_skip", ()):
++            body = _regpromo(body) or body
++        elif getattr(self, "regpromo", REGPROMO_DEFAULT):
++            _RP_STATS["kept: --regpromo-skip"] += 1
++        lines += body
+         lines.append("}")
+         lines.append("")
+         return lines
+@@ -5056,6 +5434,13 @@ def main() -> None:
+                              "instead of its literal .lib.stub trampoline, and "
+                              "split out as its own 0x20-byte function so direct "
+                              "calls to it dispatch to the HLE handler.")
++    parser.add_argument("--regpromo", choices=("on", "off"), default=None,
++                        help="keep the guest GPRs/FPRs/CR/XER/CTR a lifted function uses in C locals "
++                             "between calls and returns (written back to the context only there); "
++                             f"default {'on' if REGPROMO_DEFAULT else 'off'}")
++    parser.add_argument("--regpromo-skip", metavar="FILE", default=None,
++                        help="guest function addresses (hex, one per line, # comments) that keep the "
++                             "unpromoted body -- e.g. functions whose host prologue a runtime patches")
+     args = parser.parse_args()
+ 
+     # Load firmware-import stubs (addr -> NID) up front; applied to func_bounds
+@@ -5512,6 +5897,13 @@ def main() -> None:
+     lifter.hle_stub_nids = hle_stubs
+     lifter.function_entries = _func_entries
+     lifter.jump_tables = jt_dispatchers
++    lifter.regpromo = REGPROMO_DEFAULT if args.regpromo is None else args.regpromo == "on"
++    if args.regpromo_skip:
++        with open(args.regpromo_skip) as _sf:
++            lifter.regpromo_skip = {int(_t, 16) for _ln in _sf
++                                    for _t in [_ln.split("#", 1)[0].strip()] if _t}
++    print(f"  register promotion: {'on' if lifter.regpromo else 'off'}"
++          + (f" ({len(lifter.regpromo_skip)} functions skipped)" if args.regpromo_skip else ""))
+ 
+     # Optional: load a recovered-name map (from Ghidra analysis) to annotate
+     # generated functions with meaningful names as comments.
+@@ -5603,6 +5995,11 @@ def main() -> None:
+               f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
+     print(f"  {len(lifter.functions)} functions lifted")
+     print(f"  {len(lifter.call_targets)} unique call targets")
++    if lifter.regpromo:
++        print(f"  register promotion: {_RP_STATS['promoted']} functions promoted")
++        for _k, _v in sorted(_RP_STATS.items(), key=lambda kv: -kv[1]):
++            if _k != "promoted":
++                print(f"    {_v:6d}  {_k}")
+     peak = _peak_memory_bytes()
+     if peak:
+         print(f"  peak memory of the lifter process: {peak >> 20} MB")
+diff --git a/tools/regpromo_diff.py b/tools/regpromo_diff.py
+new file mode 100644
+index 0000000..279d3c6
+--- /dev/null
++++ b/tools/regpromo_diff.py
+@@ -0,0 +1,443 @@
++#!/usr/bin/env python3
++"""Differential test of the lifter's register promotion (--regpromo).
++
++    python tools/regpromo_diff.py --old LIFT_DIR --new LIFT_DIR (--funcs FILE | --addr A,B,... |
++                                  --sample N | --all) [--iters N] [--march x86-64-v3|none] [--work DIR]
++
++Takes the same functions from two lifts of the same image -- one made without
++register promotion, one with -- and runs both versions of every function on
++the same random inputs in one harness, comparing everything they leave
++behind:
++
++  * the whole ppu_context after the function returns (every register, LR,
++    CTR, XER, FPSCR, VSCR, the vector registers, the reservation);
++  * guest memory (a 64 KB sandbox every guest address is folded into);
++  * the event trace: every vm_read*/vm_write* with its address and value, every
++    store-conditional, every call out of the function (direct, indirect, HLE,
++    syscall, trampoline) together with a hash of the WHOLE context at that
++    moment -- so a register that was not written back before a call, or not
++    reloaded after it, shows up at the call it went wrong at.
++
++Calls out of the function go to stubs that act like a callee: they change the
++volatile registers, a non-volatile one now and then, CR/XER/CTR/LR, a vector
++register, a memory word, and sometimes leave a trampoline to drain -- as a
++function of the context hash, so a difference anywhere before the call changes
++what comes after it. A run stops after --events events (loops on random
++counters); a stopped run is compared by its trace and memory (the promoted
++version's registers live in locals until the next call, so its context is not
++expected to be current then).
++
++Inputs: per function and iteration a seed; registers drawn from a mix of
++zero, -1, small, sign/zero-extended 32-bit, sandbox pointers and random
++64-bit values; FPRs from normal, denormal, zero, infinite and NaN encodings;
++random CR, XER (SO/OV/CA and the byte count), CTR mostly small; random memory.
++
++The harness is compiled with clang-cl and the lifted code's own options
++(/O2 /Ob2, -ffp-contract=off, -march). Exit status 0 = no difference.
++Game-derived code stays in --work (never commit it).
++"""
++import argparse
++import os
++import random
++import re
++import subprocess
++import sys
++import time
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++sys.path.insert(0, TOOLS)
++
++FUNC_DEF_RE = re.compile(r"^(?:__attribute__\(\(weak\)\) )?void (?:__attribute__\(\(weak\)\) )?"
++                         r"(?P<name>(?:[A-Za-z_]\w*?)?func_(?P<addr>[0-9A-F]{8}))\(ppu_context\* ctx\) \{$")
++
++
++def read_lift(d):
++    """{addr: function text} and the preamble of the first chunk, from a lift directory."""
++    funcs, preamble = {}, None
++    names = sorted(n for n in os.listdir(d) if re.match(r".*_\d{3}\.cpp$", n) or n.endswith(".c"))
++    for n in names:
++        with open(os.path.join(d, n), encoding="latin-1") as f:
++            lines = f.read().split("\n")
++        i = 0
++        while i < len(lines):
++            m = FUNC_DEF_RE.match(lines[i])
++            if not m:
++                i += 1
++                continue
++            if preamble is None:
++                k = i
++                while k > 0 and lines[k - 1].startswith("/* ") and lines[k - 1].endswith(" */"):
++                    k -= 1          # a recovered-name comment above the first function
++                preamble = "\n".join(lines[:k])
++            j = i + 1
++            while lines[j] != "}":
++                j += 1
++            funcs[int(m.group("addr"), 16)] = (m.group("name"), "\n".join(lines[i:j + 1]))
++            i = j + 1
++    return funcs, preamble
++
++
++def header_text(d):
++    """The lift's ppu_recomp.h without its function declarations, raw guest accesses
++    folded into the sandbox."""
++    with open(os.path.join(d, "ppu_recomp.h"), encoding="latin-1") as f:
++        return harness_header(f.read())
++
++
++def harness_header(text):
++    """A generated header's text for the harness: no function declarations (the
++    harness defines its own callee stubs), raw guest accesses folded into the sandbox."""
++    out = []
++    for ln in text.splitlines():
++        if re.match(r"^void (?:[A-Za-z_]\w*?)?func_[0-9A-F]{8}\(ppu_context\* ctx\);(?: /\* external \*/)?$", ln):
++            continue
++        out.append(ln)
++    txt = "\n".join(out)
++    n = txt.count("VM_BASE + (uint32_t)(ea)")
++    if n < 2:
++        sys.exit("ppu_recomp.h: the raw access macros are not where this tool expects them")
++    return txt.replace("VM_BASE + (uint32_t)(ea)", "VM_BASE + HARN_EA(ea)")
++
++
++RUNTIME = r"""
++/* ---- harness runtime ---------------------------------------------------- */
++#include <setjmp.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <windows.h>
++#define HMEM 0x10000u
++static uint8_t g_mem[HMEM + 64];
++static uint8_t g_mem_a[HMEM + 64];
++extern "C" { uint8_t* vm_base = g_mem; int vm_inline_ok = 0; uint32_t ppu_vm_size = 0;
++             uint32_t ppu_hle_inject_base = 0; int vm_store_inline_ok = 0; unsigned char* vm_coh_bitmap = 0;
++             void vm_store_coh_notify(uint32_t ea) { (void)ea; } }
++static uint64_t g_tr, g_ev, g_ev_limit = 20000, g_tb;
++static jmp_buf g_jb;
++static inline uint64_t mix(uint64_t h, uint64_t v) {
++    h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
++    h *= 0xFF51AFD7ED558CCDull; return h ^ (h >> 33); }
++static int g_verbose;
++/* Single-precision signalling NaNs (exponent all ones, quiet bit clear) in the data are
++ * quieted unless HARN_SNAN=keep: C's float<->double conversions leave an sNaN's quiet bit to
++ * the optimizer (LLVM folds fptrunc(fpext(x)) to x), so lfs -> stfs of one can differ between
++ * two compilations of the SAME source; that class is measured on its own (--snan keep). */
++static int g_quiet_snan = 1;
++static inline uint32_t qs32(uint32_t w) { return (g_quiet_snan && (w & 0x7FC00000u) == 0x7F800000u && (w & 0x003FFFFFu)) ? (w | 0x00400000u) : w; }
++static inline uint64_t qs64(uint64_t v) { return ((uint64_t)qs32((uint32_t)(v >> 32)) << 32) | qs32((uint32_t)v); }
++static void ev(uint64_t a, uint64_t b) { g_tr = mix(mix(g_tr, a), b);
++    if (g_verbose) printf("  ev %llu %09llX %016llX\n", (unsigned long long)g_ev, (unsigned long long)a, (unsigned long long)b);
++    if (++g_ev > g_ev_limit) longjmp(g_jb, 1); }
++#define HEA(a) ((uint32_t)(a) & (HMEM - 1))
++extern "C" uint8_t vm_read8(uint64_t a) { uint8_t v = g_mem[HEA(a)]; ev(0x100000000ull | (uint32_t)a, v); return v; }
++extern "C" uint16_t vm_read16(uint64_t a) { uint16_t v; memcpy(&v, g_mem + HEA(a), 2); v = __builtin_bswap16(v); ev(0x110000000ull | (uint32_t)a, v); return v; }
++extern "C" uint32_t vm_read32(uint64_t a) { uint32_t v; memcpy(&v, g_mem + HEA(a), 4); v = qs32(__builtin_bswap32(v)); ev(0x120000000ull | (uint32_t)a, v); return v; }
++extern "C" uint64_t vm_read64(uint64_t a) { uint64_t v; memcpy(&v, g_mem + HEA(a), 8); v = __builtin_bswap64(v); ev(0x130000000ull | (uint32_t)a, v); return v; }
++extern "C" void vm_write8(uint64_t a, uint8_t v) { ev(0x200000000ull | (uint32_t)a, v); g_mem[HEA(a)] = v; }
++extern "C" void vm_write16(uint64_t a, uint16_t v) { ev(0x210000000ull | (uint32_t)a, v); v = __builtin_bswap16(v); memcpy(g_mem + HEA(a), &v, 2); }
++extern "C" void vm_write32(uint64_t a, uint32_t v) { ev(0x220000000ull | (uint32_t)a, v); v = __builtin_bswap32(v); memcpy(g_mem + HEA(a), &v, 4); }
++extern "C" void vm_write64(uint64_t a, uint64_t v) { ev(0x230000000ull | (uint32_t)a, v); v = __builtin_bswap64(v); memcpy(g_mem + HEA(a), &v, 8); }
++extern "C" int ppu_stwcx32(uint64_t a, uint32_t expected, uint32_t val) {
++    uint32_t cur; memcpy(&cur, g_mem + HEA(a), 4); cur = __builtin_bswap32(cur);
++    int ok = cur == expected; ev(0x300000000ull | (uint32_t)a, ((uint64_t)val << 1) | (uint64_t)ok);
++    if (ok) { val = __builtin_bswap32(val); memcpy(g_mem + HEA(a), &val, 4); } return ok; }
++extern "C" int ppu_stdcx64(uint64_t a, uint64_t expected, uint64_t val) {
++    uint64_t cur; memcpy(&cur, g_mem + HEA(a), 8); cur = __builtin_bswap64(cur);
++    int ok = cur == expected; ev(0x310000000ull | (uint32_t)a, mix(val, (uint64_t)ok));
++    if (ok) { val = __builtin_bswap64(val); memcpy(g_mem + HEA(a), &val, 8); } return ok; }
++extern "C" void ppu_resv_line_note(uint64_t a) { ev(0x400000000ull | (uint32_t)a, 0); }
++extern "C" uint64_t ppu_timebase_now(void) { g_tb += 0x1235; ev(0x500000000ull, g_tb); return g_tb; }
++extern "C" PPU_THREAD_LOCAL void (*g_trampoline_fn)(void*) = 0;
++
++static uint64_t ctx_hash(const ppu_context* c) {
++    const uint8_t* p = (const uint8_t*)c; uint64_t h = 0x12345;
++    for (size_t i = 0; i + 8 <= sizeof(*c); i += 8) { uint64_t w; memcpy(&w, p + i, 8); h = mix(h, w); }
++    return h; }
++static void harn_tramp(void* c);
++/* A callee: changes registers, memory and maybe leaves a trampoline, as a function of
++ * everything seen so far (the trace includes the whole context right now). */
++static __attribute__((noinline)) void harn_effect(ppu_context* ctx, uint64_t tag) {
++    ev(tag, ctx_hash(ctx));
++    uint64_t h = g_tr, h2 = mix(h, 7);
++    ctx->gpr[3] = qs64(h); ctx->gpr[4] = qs64(h >> 7); ctx->gpr[0] = qs64(~h); ctx->gpr[11] = qs64(h * 3); ctx->gpr[12] = qs64(h ^ 0x55);
++    ctx->gpr[5 + (h2 & 3)] = qs64(h2);
++    if (h & 1) ctx->gpr[14 + (h >> 8) % 18] = qs64(ctx->gpr[14 + (h >> 8) % 18] ^ h2);
++    if ((h >> 3) & 1) ctx->gpr[1] += 0;     /* the stack pointer stays */
++    uint64_t fb = (h2 & 0x800FFFFFFFFFFFFFull) | (((h2 >> 52) % 3 == 0) ? 0x7FF0000000000000ull : 0x3FF0000000000000ull);
++    fb = qs64(fb); memcpy(&ctx->fpr[1], &fb, 8);
++    if ((h2 >> 9) & 1) { uint64_t fb2 = qs64(mix(h2, 9)); memcpy(&ctx->fpr[(h2 >> 20) % 32], &fb2, 8); }
++    ctx->cr ^= (uint32_t)(h >> 32); ctx->xer ^= (uint32_t)(h2 & 0xE000007Fu); ctx->ctr = h >> 3;
++    ctx->lr = (uint32_t)h2;
++    ctx->vr[(h >> 12) % 32].d[0] ^= h2;
++    if ((h >> 40) % 4 == 0) vm_write64(h2 & ~7ull, qs64(h));
++    if ((h >> 44) % 8 == 0) g_trampoline_fn = harn_tramp;
++}
++static void harn_tramp(void* c) { harn_effect((ppu_context*)c, 0x800000000ull); }
++static __attribute__((noinline)) void harn_call(ppu_context* ctx, uint32_t addr) { harn_effect(ctx, 0x700000000ull | addr); }
++extern "C" void ps3_indirect_call(ppu_context* ctx) { harn_effect(ctx, 0x900000000ull | (uint32_t)ctx->ctr); }
++extern "C" void ps3_indirect_call_to(ppu_context* ctx, uint32_t t) { harn_effect(ctx, 0xA00000000ull | t); }
++extern "C" void ps3_hle_call(unsigned int nid, ppu_context* ctx) { harn_effect(ctx, 0xB00000000ull | nid); }
++extern "C" void lv2_syscall(ppu_context* ctx) { harn_effect(ctx, 0xC00000000ull | (uint32_t)ctx->gpr[11]); }
++"""
++
++DRIVER = r"""
++/* ---- driver -------------------------------------------------------------- */
++static uint64_t g_rs;
++static uint64_t rnd(void) { g_rs ^= g_rs << 13; g_rs ^= g_rs >> 7; g_rs ^= g_rs << 17; return g_rs * 0x2545F4914F6CDD1Dull; }
++static uint64_t pick64(void) {
++    switch (rnd() % 12) {
++    case 0: return 0; case 1: return ~0ull; case 2: return rnd() % 64; case 3: return (uint64_t)(int64_t)(int32_t)rnd();
++    case 4: return (uint32_t)rnd(); case 5: return 0x10000 + (rnd() & 0xFFF0); case 6: return 0x80000000ull;
++    case 7: return (uint64_t)(int64_t)(int8_t)rnd(); case 8: return 0x7FFFFFFFull; case 9: return 1ull << (rnd() % 64);
++    default: return rnd(); } }
++static uint64_t pickf(void) {
++    switch (rnd() % 10) {
++    case 0: return 0; case 1: return 0x8000000000000000ull; case 2: return 0x7FF0000000000000ull;
++    case 3: return 0xFFF0000000000000ull; case 4: return 0x7FF8000000000000ull | (rnd() & 0xFFFF);
++    case 5: return 0x7FF0000000000001ull | (rnd() & 0x7FFFF); case 6: return rnd() & 0x000FFFFFFFFFFFFFull;
++    case 7: { double d = (double)(int32_t)rnd(); uint64_t u; memcpy(&u, &d, 8); return u; }
++    case 8: { double d = (double)(int32_t)rnd() / 65536.0; uint64_t u; memcpy(&u, &d, 8); return u; }
++    default: return rnd(); } }
++static void gen_input(uint64_t seed, ppu_context* c) {
++    g_rs = seed | 1; for (int i = 0; i < 4; i++) rnd();
++    memset(c, 0, sizeof(*c));
++    for (int i = 0; i < 32; i++) c->gpr[i] = qs64(pick64());
++    c->gpr[1] = 0x8000 + (rnd() & 0x7FF0);
++    for (int i = 0; i < 32; i++) { uint64_t u = qs64(pickf()); memcpy(&c->fpr[i], &u, 8); }
++    for (int i = 0; i < 32; i++) { c->vr[i].d[0] = rnd(); c->vr[i].d[1] = rnd();
++        for (int j = 0; j < 4; j++) c->vr[i].w[j] = __builtin_bswap32(qs32(__builtin_bswap32(c->vr[i].w[j]))); }
++    c->cr = (uint32_t)rnd(); c->xer = (uint32_t)rnd() & 0xE000007Fu;
++    c->ctr = (rnd() % 4) ? rnd() % 40 : pick64(); c->lr = (uint32_t)rnd();
++    c->fpscr = (uint32_t)rnd() & 0xFFFFF0FFu; c->vscr = (rnd() & 1) ? 0x10000u : 0;
++    c->cia = (uint32_t)rnd(); c->thread_id = 1;
++    c->reserve_addr = (rnd() & 1) ? (uint32_t)c->gpr[3 + rnd() % 8] : (uint32_t)rnd();
++    c->reserve_value = (uint32_t)rnd(); c->reserve_valid = (int)(rnd() & 1); c->vrsave = (uint32_t)rnd();
++}
++static void fill_mem(uint64_t seed) {
++    uint64_t s = seed ^ 0xA5A5A5A5DEADBEEFull;
++    for (size_t i = 0; i < sizeof(g_mem); i += 8) { s ^= s << 13; s ^= s >> 7; s ^= s << 17;
++        uint64_t be = __builtin_bswap64(qs64(s)); memcpy(g_mem + i, &be, 8); }
++}
++static ppu_context g_init, g_a, g_b;
++static volatile LONG64 g_beat;
++static DWORD WINAPI watchdog(LPVOID) {
++    LONG64 last = -1; int still = 0;
++    for (;;) { Sleep(1000); LONG64 b = g_beat; if (b == last) { if (++still >= 20) { printf("STUCK\n"); fflush(stdout); ExitProcess(3); } } else { still = 0; last = b; } } }
++static const char* field_of(size_t off) {
++    static char buf[64];
++    if (off < 256) { snprintf(buf, sizeof buf, "gpr[%zu]", off / 8); return buf; }
++    if (off < 512) { snprintf(buf, sizeof buf, "fpr[%zu]", (off - 256) / 8); return buf; }
++    if (off < 1024) { snprintf(buf, sizeof buf, "vr[%zu]", (off - 512) / 16); return buf; }
++    if (off == offsetof(ppu_context, cr)) return "cr";
++    if (off >= offsetof(ppu_context, lr) && off < offsetof(ppu_context, lr) + 8) return "lr";
++    if (off >= offsetof(ppu_context, ctr) && off < offsetof(ppu_context, ctr) + 8) return "ctr";
++    if (off == offsetof(ppu_context, xer)) return "xer";
++    if (off == offsetof(ppu_context, fpscr)) return "fpscr";
++    if (off == offsetof(ppu_context, vscr)) return "vscr";
++    snprintf(buf, sizeof buf, "+0x%zX", off); return buf; }
++int main(int argc, char** argv) {
++    int start = argc > 1 ? atoi(argv[1]) : 0;
++    long iters = argc > 2 ? atol(argv[2]) : 10000;
++    if (argc > 3) g_ev_limit = strtoull(argv[3], 0, 10);
++    long only = argc > 4 ? atol(argv[4]) : -1;    /* replay one input of function `start` with every event printed */
++    if (only < 0) CreateThread(0, 0, watchdog, 0, 0, 0);
++    { const char* e = getenv("HARN_SNAN"); g_quiet_snan = !(e && !strcmp(e, "keep")); }
++    long total_bad = 0;
++    for (int fi = start; fi < (only >= 0 ? start + 1 : NFN); fi++) {
++        printf("F %d %08X\n", fi, g_fns[fi].addr); fflush(stdout);
++        long bad = 0, aborted = 0, calls = 0;
++        for (long k = (only >= 0 ? only : 0); k < (only >= 0 ? only + 1 : iters); k++) {
++            g_beat++;
++            uint64_t seed = mix(g_fns[fi].addr, (uint64_t)k);
++            gen_input(seed, &g_init);
++            /* the unpromoted function */
++            memcpy(&g_a, &g_init, sizeof g_a); fill_mem(seed); g_tr = 0; g_ev = 0; g_tb = 0; g_trampoline_fn = 0;
++            volatile int ab_a = 0;
++            g_verbose = only >= 0; if (g_verbose) printf("old:\n");
++            if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;
++            uint64_t tr_a = g_tr, ev_a = g_ev; void (*tf_a)(void*) = g_trampoline_fn;
++            memcpy(g_mem_a, g_mem, sizeof g_mem);
++            /* the promoted function */
++            memcpy(&g_b, &g_init, sizeof g_b); fill_mem(seed); g_tr = 0; g_ev = 0; g_tb = 0; g_trampoline_fn = 0;
++            volatile int ab_b = 0;
++            if (g_verbose) printf("new:\n");
++            if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;
++            g_verbose = 0;
++            uint64_t tr_b = g_tr, ev_b = g_ev; void (*tf_b)(void*) = g_trampoline_fn;
++            g_trampoline_fn = 0;
++            aborted += ab_a;
++            int diff = ab_a != ab_b || tr_a != tr_b || ev_a != ev_b || tf_a != tf_b ||
++                       memcmp(g_mem_a, g_mem, sizeof g_mem) != 0 ||
++                       (!ab_a && memcmp(&g_a, &g_b, sizeof g_a) != 0);
++            if (diff) {
++                if (bad < 5) {
++                    printf("DIFF %08X input %ld: aborted %d/%d events %llu/%llu trace %s tramp %s mem %s",
++                           g_fns[fi].addr, k, ab_a, ab_b, (unsigned long long)ev_a, (unsigned long long)ev_b,
++                           tr_a == tr_b ? "same" : "DIFFERENT", tf_a == tf_b ? "same" : "DIFFERENT",
++                           memcmp(g_mem_a, g_mem, sizeof g_mem) ? "DIFFERENT" : "same");
++                    if (!ab_a && !ab_b) {
++                        const uint8_t* pa = (const uint8_t*)&g_a; const uint8_t* pb = (const uint8_t*)&g_b;
++                        const char* last = "";
++                        for (size_t o = 0; o < sizeof g_a; o++) if (pa[o] != pb[o]) {
++                            const char* f = field_of(o); if (strcmp(f, last)) { printf(" ctx.%s", f); last = f; } }
++                    }
++                    printf("\n");
++                }
++                bad++;
++            }
++        }
++        printf("R %08X iters %ld aborted %ld diff %ld\n", g_fns[fi].addr, iters, aborted, bad); fflush(stdout);
++        total_bad += bad;
++    }
++    printf("DONE %ld\n", total_bad);
++    return total_bad ? 1 : 0;
++}
++"""
++
++
++def harness_source(header, preamble, pairs):
++    """C++ for one harness: pairs = [(addr, old_text, new_text, old_name)]."""
++    pre = preamble.replace("#define PPU_INLINE_STORES 1", "/* (harness: out-of-line guest stores) */")
++    if '#include "ppu_recomp.h"' not in pre:
++        sys.exit("chunk preamble: no #include \"ppu_recomp.h\"")
++    pre = pre.replace('#include "ppu_recomp.h"', "/* ppu_recomp.h (harness copy) above */")
++    out = ["/* regpromo_diff harness -- generated; holds lifted game code: do not commit */",
++           "#define PPU_NO_INLINE_LOADS 1", "#define HARN_EA(ea) ((uint32_t)(ea) & 0xFFFFu)", "#include <stddef.h>",
++           header, pre, RUNTIME]
++    callees = set()
++    for addr, o, n, name in pairs:
++        callees |= set(re.findall(r"\b((?:[A-Za-z_]\w*?)?func_[0-9A-F]{8})\b", o + "\n" + n))
++    for c in sorted(callees):
++        a = re.search(r"func_([0-9A-F]{8})$", c).group(1)
++        out.append(f"static __attribute__((noinline)) void {c}(ppu_context* ctx) {{ harn_call(ctx, 0x{a}u); }}")
++    tbl = []
++    for addr, o, n, name in pairs:
++        for tag, txt in (("old", o), ("new", n)):
++            first, rest = txt.split("\n", 1)
++            out.append(f"__attribute__((noinline)) void harn_{tag}_{addr:08X}(ppu_context* ctx) {{")
++            out.append(rest)
++        tbl.append(f"    {{ 0x{addr:08X}u, harn_old_{addr:08X}, harn_new_{addr:08X} }},")
++    out.append("struct HarnFn { uint32_t addr; void (*o)(ppu_context*); void (*n)(ppu_context*); };")
++    out.append("static const HarnFn g_fns[] = {")
++    out += tbl
++    out.append("};")
++    out.append(f"#define NFN {len(pairs)}")
++    out.append(DRIVER)
++    return "\n".join(out)
++
++
++def find_clang():
++    for d in (os.environ.get("T5DR_LLVM_BIN"), r"C:\Program Files\LLVM\bin"):
++        if d and os.path.exists(os.path.join(d, "clang-cl.exe")):
++            return os.path.join(d, "clang-cl.exe")
++    return "clang-cl"
++
++
++def compile_harness(src, exe, march):
++    from msvc_env import environ
++    cmd = [find_clang(), "/nologo", "/O2", "/Ob2", "/DNDEBUG", "-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-",
++           "/GS-", "/clang:-ffp-contract=off", "-Wno-unused-value", "-Wno-parentheses-equality",
++           "-Wno-unused-function", "-Wno-unused-label", "-Wno-unknown-pragmas",
++           "-I" + os.path.join(ROOT, "runtime", "ppu"), src, "/Fe:" + exe]
++    if march != "none":
++        cmd.insert(5, f"/clang:-march={march}")
++    t0 = time.time()
++    r = subprocess.run(cmd, env=environ(), capture_output=True, text=True, encoding="utf-8", errors="replace")
++    if r.returncode:
++        print(r.stdout[-6000:], r.stderr[-6000:])
++        sys.exit(f"harness compile failed ({src})")
++    return time.time() - t0
++
++
++def run_harness(exe, n, iters, events, log, snan="quiet"):
++    """Run every function; a stuck one is skipped. Returns (functions, diffs, stuck list)."""
++    start, total_diff, stuck, done = 0, 0, [], 0
++    with open(log, "a", encoding="utf-8") as lf:
++        while start < n:
++            env = dict(os.environ, HARN_SNAN=snan)
++            p = subprocess.run([exe, str(start), str(iters), str(events)], capture_output=True, text=True,
++                               encoding="utf-8", errors="replace", timeout=None, env=env)
++            cur = None
++            for ln in p.stdout.splitlines():
++                lf.write(ln + "\n")
++                if ln.startswith("F "):
++                    cur = int(ln.split()[1])
++                elif ln.startswith("R "):
++                    done += 1
++                    total_diff += int(ln.split()[-1])
++                elif ln.startswith("DIFF"):
++                    print(ln, flush=True)
++            if p.returncode in (0, 1) and "DONE" in p.stdout:
++                break
++            if cur is None:
++                sys.exit(f"harness failed to start: {p.returncode} {p.stderr[-2000:]}")
++            stuck.append(cur)
++            print(f"  function #{cur} stuck or crashed (exit {p.returncode}); going on with the next", flush=True)
++            start = cur + 1
++    return done, total_diff, stuck
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--old", required=True, help="lift without register promotion")
++    ap.add_argument("--new", required=True, help="lift with register promotion")
++    sel = ap.add_mutually_exclusive_group(required=True)
++    sel.add_argument("--funcs", help="file of guest addresses (hex, first token per line, # comments)")
++    sel.add_argument("--addr", help="comma-separated guest addresses")
++    sel.add_argument("--sample", type=int, help="this many functions at random (--seed)")
++    sel.add_argument("--all", action="store_true", help="every function both lifts have")
++    ap.add_argument("--seed", type=int, default=1)
++    ap.add_argument("--iters", type=int, default=10000, help="random inputs per function")
++    ap.add_argument("--events", type=int, default=20000, help="events before a run is stopped")
++    ap.add_argument("--batch", type=int, default=400, help="functions per harness executable")
++    ap.add_argument("--march", default="x86-64-v3", help="x86-64-v3 (as most players) or none (baseline)")
++    ap.add_argument("--work", default=os.path.join(ROOT, "scratch", "regpromo_diff"))
++    ap.add_argument("--snan", choices=("quiet", "keep"), default="quiet",
++                    help="quiet: no single-precision signalling NaN in the data (default); keep: measure that class")
++    a = ap.parse_args()
++
++    old, old_pre = read_lift(a.old)
++    new, _ = read_lift(a.new)
++    common = sorted(set(old) & set(new))
++    if a.funcs:
++        with open(a.funcs) as f:
++            want = [int(t.split()[0], 16) for t in (ln.split("#", 1)[0].strip() for ln in f) if t]
++    elif a.addr:
++        want = [int(t, 16) for t in a.addr.split(",") if t.strip()]
++    elif a.sample:
++        want = random.Random(a.seed).sample(common, min(a.sample, len(common)))
++    else:
++        want = common
++    missing = [w for w in want if w not in old or w not in new]
++    if missing:
++        print(f"not in both lifts (skipped): {', '.join(f'{m:08X}' for m in missing[:20])}")
++    pairs = [(w, old[w][1], new[w][1], old[w][0]) for w in want if w in old and w in new]
++    same = sum(1 for p in pairs if p[1] == p[2])
++    print(f"{len(pairs)} functions ({same} identical in both lifts), {a.iters} inputs each, -march={a.march}",
++          flush=True)
++    os.makedirs(a.work, exist_ok=True)
++    header = header_text(a.old)
++    log = os.path.join(a.work, "regpromo_diff.log")
++    t0 = time.time()
++    n_done = n_diff = 0
++    stuck_all = []
++    for b in range(0, len(pairs), a.batch):
++        chunk = pairs[b:b + a.batch]
++        src = os.path.join(a.work, f"harness_{b // a.batch:03d}.cpp")
++        exe = os.path.join(a.work, f"harness_{b // a.batch:03d}.exe")
++        with open(src, "w", encoding="latin-1") as f:
++            f.write(harness_source(header, old_pre, chunk))
++        ct = compile_harness(src, exe, a.march)
++        d, x, st = run_harness(exe, len(chunk), a.iters, a.events, log, a.snan)
++        n_done += d
++        n_diff += x
++        stuck_all += [chunk[s][0] for s in st]
++        print(f"  batch {b // a.batch}: {d} functions, {x} differing runs (compile {ct:.0f} s, "
++              f"{time.time() - t0:.0f} s so far)", flush=True)
++    print(f"RESULT: {n_done} functions x {a.iters} inputs = {n_done * a.iters} runs, {n_diff} differing; "
++          f"stuck/crashed: {', '.join(f'{s:08X}' for s in stuck_all) or 'none'}")
++    sys.exit(1 if n_diff or stuck_all else 0)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/test_ppu_lift.py b/tools/test_ppu_lift.py
+index 096fc3a..21d4948 100644
+--- a/tools/test_ppu_lift.py
++++ b/tools/test_ppu_lift.py
+@@ -42,7 +42,7 @@ sys.path.insert(0, TOOLS)
+ 
+ import ppu_disasm                    # noqa: E402
+ from ppu_lifter import (PPULifter, LiftedFunction,          # noqa: E402
+-                        FENCE_PREAMBLE, HEADER_PREAMBLE)
++                        FENCE_PREAMBLE, HEADER_PREAMBLE, _regpromo)
+ 
+ MASK64 = (1 << 64) - 1
+ MASK32 = (1 << 32) - 1
+@@ -804,8 +804,26 @@ def check_barrier_lowering():
+ # C driver generation
+ # ---------------------------------------------------------------------------
+ 
+-def emit_c(path):
++def emit_c(path, regpromo=False):
++    """regpromo: every case's statement runs as a lifted function of its own
++    whose body went through the register-promotion pass (--regpromo), so each
++    instruction's lowering is checked against the reference with its guest
++    registers in C locals, loaded at entry and written back at the return."""
+     lifter = PPULifter()
++    rp_fns = []
++    rp_kept = [0]
++
++    def place(code):
++        if not regpromo:
++            return code
++        body = _regpromo(["    " + code, "    return;"])
++        if body is None:
++            rp_kept[0] += 1
++            return code
++        name = f"conf_rp_{len(rp_fns)}"
++        rp_fns.append(f"static void {name}(ppu_context* ctx) {{\n" + "\n".join(body) + "\n}")
++        return f"{name}(ctx);"
++
+     dummy = LiftedFunction(name="conf", start_addr=0, end_addr=0x10000)
+     pre = lifter._preamble_lines()
+     # Replace the generated-header include with the real (small) context
+@@ -879,6 +897,8 @@ static void check_fpr(const char* name, int reg, uint64_t got, uint64_t want) {
+ #include <stdlib.h>   /* MSVC _byteswap_* */
+ static uint8_t g_vm_stub[65536];
+ extern "C" { uint8_t* vm_base = g_vm_stub; }
++"""
++        + _raw_access_block() + """
+ #define VMOFF(a) ((uint32_t)(a) & 0xFFFFu)
+ /* Trap guard. A "may_trap" case exists to prove lifted code does NOT fault --
+  * e.g. divw by zero must be lowered to a defined result, not a hardware trap.
+@@ -930,6 +950,7 @@ extern "C" void vm_write32(uint64_t a, uint32_t v) { v = CONF_BSWAP32(v); memcpy
+ extern "C" uint64_t vm_read64(uint64_t a) { uint64_t v; memcpy(&v, g_vm_stub + VMOFF(a), 8); return CONF_BSWAP64(v); }
+ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy(g_vm_stub + VMOFF(a), &v, 8); }
+ """)
++    main_at = len(out)
+     out.append("int main(void) {")
+     out.append("    ppu_context* ctx = &g_ctx;")
+     n_encoding_skipped = 0
+@@ -962,7 +983,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+                        f"memcpy(g_vm_stub + VMOFF(0x{addr:X}), _m, {len(blob)}); }}")
+         for reg, bits in c["in_fpr"].items():
+             out.append(f"      {{ uint64_t _b = 0x{bits:016X}ULL; memcpy(&ctx->fpr[{reg}], &_b, 8); }}")
+-        body = [f"        {code}"]
++        body = [f"        {place(code)}"]
+         for reg, val, mask in c["expects"]:
+             body.append(f'        check_reg("{nm}", {reg}, ctx->gpr[{reg}], '
+                         f"0x{val:016X}ULL, 0x{mask:016X}ULL);")
+@@ -1018,7 +1039,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+             vc_hex = ", ".join(f"0x{b:02X}" for b in c["vc_bytes"])
+             out.append(f"      {{ uint8_t _vc[16] = {{ {vc_hex} }}; "
+                         f"memcpy(&ctx->vr[{c['vc_reg']}], _vc, 16); }}")
+-        out.append(f"      {code}")
++        out.append(f"      {place(code)}")
+         out.append(f"      {{ uint8_t _want[16] = {{ {want_hex} }}; "
+                     f'check_vr("{nm}", (const uint8_t*)&ctx->vr[{c["vd_reg"]}], _want); }}')
+         out.append("    }")
+@@ -1049,7 +1070,7 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+                                "g_vm_stub[0x220+k] = (uint8_t)(0xA0+k); }")
+                     out.append(f"      ctx->gpr[0]=0x1000; ctx->gpr[3]=0x200; "
+                                f"ctx->gpr[4]={ea if ra == 0 else ea-0x200};")
+-                    out.append(f"      {code}")
++                    out.append(f"      {place(code)}")
+                     if load:
+                         want = ",".join(str(0xA0+lane+k) for k in range(width))
+                         out.append(f"      const uint8_t want[] = {{{want}}};")
+@@ -1071,6 +1092,10 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+     return g_fail ? 1 : 0;
+ }
+ """)
++    if regpromo:
++        out[main_at:main_at] = rp_fns
++        print(f"  register promotion: {len(rp_fns)} cases run as promoted functions, "
++              f"{rp_kept[0]} kept unpromoted by the pass")
+     text = "\n".join(out)
+     with open(path, "w") as f:
+         f.write(text)
+@@ -1096,9 +1121,30 @@ extern "C" void vm_write64(uint64_t a, uint64_t v) { v = CONF_BSWAP64(v); memcpy
+ 
+ # ---------------------------------------------------------------------------
+ 
++def _raw_access_block():
++    """VM_RAW_LD/VM_RAW_ST and vm_raw_ld16/st16 as the generated header has them: the
++    vector and byte-reversed accesses use them, and this driver includes the
++    runtime's ppu_context.h instead of a generated header."""
++    a = HEADER_PREAMBLE.index("#define VM_RAW_LD(")
++    b = HEADER_PREAMBLE.index("extern int      vm_inline_ok;")
++    return "#ifndef VM_BASE\n#define VM_BASE vm_base\n#endif\n" + HEADER_PREAMBLE[a:b]
++
++
++def _clang_cl():
++    """clang-cl, which the lifted code is built with: the FP helpers (ppu_fp_det.h)
++    need its builtins and inline assembly, and plain cl cannot compile them."""
++    for d in (os.environ.get("T5DR_LLVM_BIN"),
++              os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "LLVM", "bin")):
++        if d and os.path.exists(os.path.join(d, "clang-cl.exe")):
++            return os.path.join(d, "clang-cl.exe")
++    return shutil.which("clang-cl")
++
++
+ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--emit", action="store_true", help="only write the C file")
++    ap.add_argument("--regpromo", action="store_true",
++                    help="run every case through the register-promotion pass (ppu_lifter --regpromo)")
+     args = ap.parse_args()
+ 
+     decode_ok = check_decode_and_lift()
+@@ -1108,11 +1154,14 @@ def main():
+     cpath = os.path.join(ROOT, "scratch", "ppu_conformance.cpp")   # preamble is C++ (extern "C")
+     epath = os.path.join(ROOT, "scratch", "ppu_conformance.exe"
+                          if os.name == "nt" else "ppu_conformance")
+-    decode_ok = emit_c(cpath) and decode_ok
++    if args.regpromo:
++        cpath = cpath.replace("ppu_conformance", "ppu_conformance_regpromo")
++        epath = epath.replace("ppu_conformance", "ppu_conformance_regpromo")
++    decode_ok = emit_c(cpath, regpromo=args.regpromo) and decode_ok
+     if args.emit:
+         sys.exit(0 if decode_ok else 1)
+ 
+-    log = os.path.join(ROOT, "scratch", "ppu_conformance.log")
++    log = os.path.join(ROOT, "scratch", "ppu_conformance%s.log" % ("_regpromo" if args.regpromo else ""))
+ 
+     # The generated driver has to be COMPILED AND RUN to be worth anything:
+     # decoding and lifting alone never executes a single lifted statement, and
+@@ -1132,7 +1181,11 @@ def main():
+             f.write("@echo off\n")
+             f.write(f'call "{vcvars}" >nul 2>nul\n')
+             f.write(f'cd /d "{ROOT}"\n')
+-            f.write(f'cl /nologo /O1 /W3 /I runtime\\ppu /Fe:"{epath}" "{cpath}" > "{log}" 2>&1\n')
++            cc = _clang_cl()
++            if cc:
++                f.write(f'"{cc}" /nologo /O1 -std:c++17 -w /I runtime\\ppu /Fe:"{epath}" "{cpath}" > "{log}" 2>&1\n')
++            else:
++                f.write(f'cl /nologo /O1 /W3 /I runtime\\ppu /Fe:"{epath}" "{cpath}" > "{log}" 2>&1\n')
+             f.write("if errorlevel 1 exit /b 2\n")
+             f.write(f'"{epath}" >> "{log}" 2>&1\n')
+         rc = subprocess.run(["cmd", "/c", bat], cwd=ROOT).returncode
+@@ -1155,7 +1208,7 @@ def main():
+                 with open(log, "a") as f:
+                     rc = subprocess.run([epath], cwd=ROOT, stdout=f,
+                                         stderr=subprocess.STDOUT).returncode
+-    tail = open(log).read() if os.path.exists(log) else ""
++    tail = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else ""
+     fails = [ln for ln in tail.splitlines() if ln.startswith("FAIL")]
+     for ln in fails[:40]:
+         print(ln)
+diff --git a/tools/test_ppu_regpromo.py b/tools/test_ppu_regpromo.py
+new file mode 100644
+index 0000000..45c84ab
+--- /dev/null
++++ b/tools/test_ppu_regpromo.py
+@@ -0,0 +1,359 @@
++#!/usr/bin/env python3
++"""Tests of the lifter's register promotion (ppu_lifter.py --regpromo, _regpromo).
++
++    python tools/test_ppu_regpromo.py [--funcs N] [--iters N] [--seed S] [--keep DIR]
++
++1. The shape of the output: what is written back where (returns, trampolines,
++   calls, conditional exits, switch dispatch, the end of the body, merges at
++   labels), and which bodies the pass refuses (kept unpromoted).
++2. Random lifted-style functions -- every line shape the lifter emits for
++   Tekken 5 DR (integer, carry, compare, record forms, rotates, loads/stores,
++   FP loads/stores/arithmetic, vector moves, store-conditional, calls direct /
++   indirect / syscall / conditional, mtfsf, labels, gotos forward and back,
++   conditional returns and trampolines, CTR loops, jump-table switches,
++   callee-save snapshots) -- compiled twice in one harness, without and with
++   the pass, and run on random inputs (tools/regpromo_diff.py): the context,
++   guest memory and the trace of every guest access and call must be equal.
++
++No game code is involved; exit status 0 = all checks passed. Needs clang-cl and
++the MSVC environment (msvc_env.py) for part 2 on Windows; elsewhere part 2 is
++skipped.
++"""
++import argparse
++import os
++import random
++import re
++import sys
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++sys.path.insert(0, TOOLS)
++
++import ppu_lifter                                 # noqa: E402
++from ppu_lifter import _regpromo, _RP_STATS, PPULifter, HEADER_PREAMBLE   # noqa: E402
++
++FAILS = []
++
++
++def check(cond, what):
++    if cond:
++        print(f"ok   {what}")
++    else:
++        print(f"FAIL {what}")
++        FAILS.append(what)
++
++
++def norm(lines):
++    return [ln.strip() for ln in lines]
++
++
++# ---------------------------------------------------------------------------
++# 1. shapes
++# ---------------------------------------------------------------------------
++
++def shapes():
++    # a counted copy loop: everything in locals, written back once at the return
++    body = ["    ctx->gpr[3] = ctx->gpr[3] + (int64_t)(0x20);",
++            "    ctx->ctr = ctx->gpr[0];",
++            "loc_00001000:",
++            "    ctx->gpr[11] = vm_read8(ctx->gpr[4] + 0x0);",
++            "    vm_write8(ctx->gpr[3] + 0x0, ctx->gpr[11]);",
++            "    ctx->gpr[3] = ctx->gpr[3] + (int64_t)(1);",
++            "    if ((--ctx->ctr != 0)) goto loc_00001000;",
++            "    return;"]
++    out = norm(_regpromo(body))
++    check(out[0] == "uint64_t _pr_g0 = ctx->gpr[0], _pr_g3 = ctx->gpr[3], _pr_g4 = ctx->gpr[4], "
++                    "_pr_g11 = ctx->gpr[11];" and out[1] == "uint64_t _pr_ctr = ctx->ctr;",
++          "locals declared and loaded at entry, in register order")
++    check("if ((--_pr_ctr != 0)) goto loc_00001000;" in out, "loop condition uses the local CTR")
++    check(not any("ctx->gpr" in ln for ln in out[2:-1]), "no context access inside the loop")
++    check(out[-1] == "{ ctx->gpr[3] = _pr_g3; ctx->gpr[11] = _pr_g11; ctx->ctr = _pr_ctr; return; }",
++          "return writes back exactly the registers written (r3, r11, CTR), not r0/r4")
++
++    # a call: dirty registers before it, every promoted register reloaded after it
++    body = ["    ctx->gpr[3] = ctx->gpr[31] | ctx->gpr[31];",
++            "    ctx->lr = 0x00002004; func_00003000(ctx); DRAIN_TRAMPOLINE(ctx);",
++            "    ctx->gpr[30] = ctx->gpr[3] + (int64_t)(1);",
++            "    return;"]
++    out = norm(_regpromo(body))
++    i = out.index("ctx->lr = 0x00002004; func_00003000(ctx); DRAIN_TRAMPOLINE(ctx);")
++    check(out[i - 1] == "ctx->gpr[3] = _pr_g3;", "only the written r3 is stored before the call")
++    check(out[i + 1] == "_pr_g3 = ctx->gpr[3]; _pr_g30 = ctx->gpr[30]; _pr_g31 = ctx->gpr[31];",
++          "every promoted register is reloaded after the call")
++    check(out[-1] == "{ ctx->gpr[30] = _pr_g30; return; }", "after the call only r30 is dirty at the return")
++
++    # conditional exits write back inside the branch; the fall-through keeps the locals
++    body = ["    ctx->gpr[5] = ctx->gpr[6] + (int64_t)(2);",
++            "    { int64_t a = (int64_t)ctx->gpr[5]; int64_t b = (int64_t)0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }",
++            "    if (((ctx->cr >> 29) & 1)) return;",
++            "    if ((!((ctx->cr >> 30) & 1))) { g_trampoline_fn = (void(*)(void*))func_00004000; return; }",
++            "    ctx->gpr[7] = ctx->gpr[5];",
++            "    { g_trampoline_fn = (void(*)(void*))func_00005000; return; }"]
++    out = norm(_regpromo(body))
++    check("if (((_pr_cr >> 29) & 1)) { ctx->gpr[5] = _pr_g5; ctx->cr = _pr_cr; return; }" in out,
++          "conditional return writes back in its branch")
++    check("if ((!((_pr_cr >> 30) & 1))) { ctx->gpr[5] = _pr_g5; ctx->cr = _pr_cr; g_trampoline_fn = "
++          "(void(*)(void*))func_00004000; return; }" in out, "conditional trampoline writes back before the hand-off")
++    check(out[-1] == "{ ctx->gpr[5] = _pr_g5; ctx->gpr[7] = _pr_g7; ctx->cr = _pr_cr; g_trampoline_fn = "
++                     "(void(*)(void*))func_00005000; return; }", "trampoline at the end writes back r5, r7, CR")
++
++    # a merge: a register written on one path only is written back after the label
++    body = ["    if (((ctx->cr >> 2) & 1)) goto loc_00006010;",
++            "    ctx->gpr[9] = vm_read32(ctx->gpr[3] + 0x4);",
++            "loc_00006010:",
++            "    ctx->gpr[3] = vm_read32(ctx->gpr[3] + 0x8);",
++            "    return;"]
++    out = norm(_regpromo(body))
++    check(out[-1] == "{ ctx->gpr[3] = _pr_g3; ctx->gpr[9] = _pr_g9; return; }",
++          "a register dirty on one incoming path is written back after the merge")
++
++    # a loop back edge carries dirtiness to the loop head
++    body = ["loc_00007000:",
++            "    ctx->lr = 0x00007004; func_00008000(ctx); DRAIN_TRAMPOLINE(ctx);",
++            "    ctx->gpr[14] = ctx->gpr[14] + (int64_t)(1);",
++            "    ctx->gpr[15] = vm_read32(ctx->gpr[14] + 0x0);",
++            "    { uint64_t a = (uint64_t)ctx->gpr[15]; uint64_t b = (uint64_t)0x0; uint32_t cr_val = ((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << 28)) | (cr_val << 28); }",
++            "    if ((!((ctx->cr >> 29) & 1))) goto loc_00007000;",
++            "    return;"]
++    out = norm(_regpromo(body))
++    i = out.index("ctx->lr = 0x00007004; func_00008000(ctx); DRAIN_TRAMPOLINE(ctx);")
++    check(out[i - 1] == "ctx->gpr[14] = _pr_g14; ctx->gpr[15] = _pr_g15; ctx->cr = _pr_cr;",
++          "the call at the loop head writes back what the previous iteration changed")
++
++    # the jump-table switch reads ctx->ctr itself: written back before it, kept verbatim
++    sw = ("switch ((uint32_t)ctx->ctr) { case 0x00009010u: goto loc_00009010;case 0x00009018u: goto "
++          "loc_00009018; default: ps3_indirect_call(ctx); return; } return;")
++    body = ["    ctx->ctr = ctx->gpr[0] + ctx->gpr[11];", "    " + sw,
++            "loc_00009010:", "    ctx->gpr[3] = (int64_t)(int32_t)(1);", "    return;",
++            "loc_00009018:", "    ctx->gpr[3] = (int64_t)(int32_t)(2);", "    return;"]
++    out = norm(_regpromo(body))
++    i = out.index(sw)
++    check(out[i - 1] == "ctx->ctr = _pr_ctr;", "switch: CTR written back before the dispatch reads it")
++    check(out[i + 2] == "_pr_g3 = (int64_t)(int32_t)(1);" and "{ ctx->gpr[3] = _pr_g3; return; }" in out,
++          "switch cases start clean")
++
++    # falling off the end of the body is a return
++    out = norm(_regpromo(["    ctx->gpr[3] = ctx->gpr[4];", "loc_0000A004: ; /* branch into undecoded region */"]))
++    check(out[-1] == "ctx->gpr[3] = _pr_g3;", "the end of the body writes back")
++
++    # a line that ends in an unconditional return gets no reload after it
++    out = norm(_regpromo(["    ctx->gpr[3] = ctx->gpr[4];", "    ps3_indirect_call(ctx); return;"]))
++    check(out[-1] == "ps3_indirect_call(ctx); return;" and out[-2] == "ctx->gpr[3] = _pr_g3;",
++          "call-and-return: write-back before, nothing after")
++
++    # address-taken fields count as written
++    out = norm(_regpromo(["    ctx->gpr[3] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[4], 2);",
++                          "    { uint64_t tmp = vm_read64(ctx->gpr[1] + 0x8); memcpy(&ctx->fpr[1], &tmp, 8); }",
++                          "    return;"]))
++    check(out[-1] == "{ ctx->gpr[3] = _pr_g3; ctx->fpr[1] = _pr_f1; ctx->xer = _pr_xer; return; }",
++          "&ctx->xer and memcpy(&ctx->fpr[n]) write back XER and the FPR")
++
++    # refusals: the function keeps its unpromoted body
++    for what, bad in (
++            ("unknown context field", ["    ctx->gpr[3] = ctx->msr;", "    return;"]),
++            ("computed register index", ["    ctx->gpr[3] = ctx->gpr[ctx->gpr[4] & 31];", "    return;"]),
++            ("call to an unknown function", ["    ctx->gpr[3] = mystery(ctx->gpr[4]);", "    return;"]),
++            ("goto inside a call line", ["    ctx->gpr[3] = 1;", "    if (x) { func_00001000(ctx); goto loc_00001000; }",
++                                         "loc_00001000:", "    return;"]),
++            ("goto to a missing label", ["    ctx->gpr[3] = 1;", "    goto loc_0000FFFF;"]),
++            ("a while loop", ["    while (ctx->gpr[3]) ctx->gpr[3]--;", "    return;"]),
++            ("a // comment", ["    ctx->gpr[3] = 1; // x", "    return;"]),
++            ("a name that collides", ["    uint64_t _pr_g3 = 0;", "    ctx->gpr[3] = 1;", "    return;"]),
++            ("an unknown switch", ["    switch (ctx->gpr[3]) { case 1: break; }", "    return;"]),
++            ("register in a goto line", ["    ctx->gpr[3] = 1;", "loc_00001000:", "    goto loc_00001000; ctx->gpr[3] = 2;"])):
++        check(_regpromo(bad) is None, f"refused: {what}")
++    check(_regpromo(["    ps3_hle_call(0x12345678u, ctx); return;  /* import stub */"]) is None,
++          "nothing to promote in an import stub")
++
++
++# ---------------------------------------------------------------------------
++# 2. random lifted-style functions, both forms run against each other
++# ---------------------------------------------------------------------------
++
++GPRS = [0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 28, 29, 30, 31]
++FPRS = [0, 1, 2, 3, 13, 31]
++
++
++def stmt(r, pc):
++    g = lambda: r.choice([x for x in GPRS if x != 1])   # noqa: E731 -- r1 is the stack pointer
++    a = lambda: r.choice(GPRS)                          # noqa: E731
++    f = lambda: r.choice(FPRS)                          # noqa: E731
++    s = r.choice([28, 24, 20, 16, 12, 8, 4, 0])
++    off = r.choice(["0x0", "0x4", "0x8", "-0x10", "0x1C", "0x80"])
++    pool = [
++        lambda: f"ctx->gpr[{g()}] = ctx->gpr[{a()}] + (int64_t)({r.randint(-40, 40)});",
++        lambda: f"ctx->gpr[{g()}] = ctx->gpr[{a()}] | ctx->gpr[{a()}];",
++        lambda: f"ctx->gpr[{g()}] = ctx->gpr[{a()}] - ctx->gpr[{a()}];",
++        lambda: f"ctx->gpr[{g()}] = ppc_rldicl(ctx->gpr[{a()}], {r.randint(0, 63)}, {r.randint(0, 63)});",
++        lambda: f"ctx->gpr[{g()}] = ppc_rlw64(ctx->gpr[{a()}], {r.randint(0, 31)}, {r.randint(0, 31)}, {r.randint(0, 31)}, ctx->gpr[{a()}], 1);",
++        lambda: f"ctx->gpr[{g()}] = (int64_t)(int32_t)(0x{r.randint(0, 0xFFFF):X});",
++        lambda: f"ctx->gpr[{g()}] = vm_read32(ctx->gpr[{a()}] + {off});",
++        lambda: f"ctx->gpr[{g()}] = vm_read64(ctx->gpr[1] + {off});",
++        lambda: f"ctx->gpr[{g()}] = vm_read8(ctx->gpr[{a()}] + {off});",
++        lambda: f"vm_write32(ctx->gpr[{a()}] + {off}, ctx->gpr[{a()}]);",
++        lambda: f"vm_write64(ctx->gpr[1] + {off}, ctx->gpr[{a()}]);",
++        lambda: f"vm_write16(ctx->gpr[{a()}] + {off}, ctx->gpr[{a()}]);",
++        lambda: (f"{{ int64_t a = (int64_t)ctx->gpr[{a()}]; int64_t b = (int64_t)ctx->gpr[{a()}]; uint32_t cr_val = "
++                 f"((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << {s})) | (cr_val << {s}); }}"),
++        lambda: (f"{{ uint64_t a = (uint32_t)ctx->gpr[{a()}]; uint64_t b = (uint64_t)0x{r.randint(0, 9)}; uint32_t cr_val = "
++                 f"((a < b) ? 8 : (a > b) ? 4 : 2) | ((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & ~(0xFu << {s})) | (cr_val << {s}); }}"),
++        lambda: (f"{{ uint64_t _a = ctx->gpr[{a()}]; uint64_t _r = _a + (uint64_t)(int64_t)({r.randint(-9, 9)}); ctx->gpr[{g()}] = _r; "
++                 f"ctx->xer = (ctx->xer & ~(1u << 29)) | ((_r < _a) ? (1u << 29) : 0u); }}"),
++        lambda: (lambda d, x, y: f"{{ uint64_t ca = (ctx->xer >> 29) & 1; uint64_t result = ctx->gpr[{x}] + ctx->gpr[{y}] + ca; "
++                 f"ctx->xer = (ctx->xer & ~(1u << 29)) | ((result < ctx->gpr[{x}] || (ca && result == ctx->gpr[{x}])) ? (1u << 29) : 0); "
++                 f"ctx->gpr[{d}] = result; }}")(g(), a(), a()),
++        lambda: f"ctx->gpr[{g()}] = ppc_sraw(&ctx->xer, (int32_t)ctx->gpr[{a()}], {r.randint(0, 31)});",
++        lambda: f"ctx->gpr[{g()}] = (uint64_t)ppc_srad(&ctx->xer, (int64_t)ctx->gpr[{a()}], {r.randint(0, 63)});",
++        lambda: (lambda d: f"ctx->gpr[{d}] = ctx->gpr[{a()}] & ctx->gpr[{a()}]; {{ int64_t _r = (int64_t)ctx->gpr[{d}]; uint32_t _c = "
++                 f"(_r < 0) ? 8u : (_r > 0) ? 4u : 2u; _c |= (uint32_t)((ctx->xer >> 31) & 1u); ctx->cr = (ctx->cr & 0x0FFFFFFFu) | (_c << 28); }}")(g()),
++        lambda: (lambda d, x, y: f"{{ const uint64_t _a = ctx->gpr[{x}], _b = ctx->gpr[{y}]; (void)_b; ctx->gpr[{d}] = ctx->gpr[{x}] + ctx->gpr[{y}]; "
++                 f"{{ const uint64_t _r = ctx->gpr[{d}]; (void)_r; const uint32_t _ov = (uint32_t)((((_a ^ _r) & (_b ^ _r)) >> 63)); "
++                 f"ctx->xer = (ctx->xer & ~0x40000000u) | (_ov << 30) | (_ov << 31); }} }}")(g(), a(), a()),
++        lambda: f"ctx->ctr = ctx->gpr[{a()}];",
++        lambda: f"ctx->ctr = (int64_t)(int32_t)({r.randint(1, 6)});",
++        lambda: f"ctx->gpr[{g()}] = ctx->ctr;",
++        lambda: f"ctx->gpr[{g()}] = ctx->cr;",
++        lambda: f"ctx->cr = (uint32_t)ctx->gpr[{a()}];",
++        lambda: f"ctx->gpr[{g()}] = ctx->lr;",
++        lambda: f"ctx->lr = ctx->gpr[{a()}];",
++        lambda: f"ctx->xer = (uint32_t)ctx->gpr[{a()}] & 0xE000007Fu;",
++        lambda: f"ctx->gpr[{g()}] = ctx->xer;",
++        lambda: f"{{ uint32_t tmp = vm_read32(ctx->gpr[{a()}] + {off}); float ftmp; memcpy(&ftmp, &tmp, 4); ctx->fpr[{f()}] = ftmp; }}",
++        lambda: f"{{ float ftmp = (float)ctx->fpr[{f()}]; uint32_t tmp; memcpy(&tmp, &ftmp, 4); vm_write32(ctx->gpr[{a()}] + {off}, tmp); }}",
++        lambda: f"{{ uint64_t tmp = vm_read64(ctx->gpr[{a()}] + {off}); memcpy(&ctx->fpr[{f()}], &tmp, 8); }}",
++        lambda: f"{{ uint64_t tmp; memcpy(&tmp, &ctx->fpr[{f()}], 8); vm_write64(ctx->gpr[{a()}] + {off}, tmp); }}",
++        lambda: f"ctx->fpr[{f()}] = ppu_fadd(ctx->fpr[{f()}], ctx->fpr[{f()}]);",
++        lambda: f"ctx->fpr[{f()}] = ppu_fp_single(ppu_fmul(ctx->fpr[{f()}], ctx->fpr[{f()}]));",
++        lambda: f"ctx->fpr[{f()}] = ppu_fmadd_core(ctx->fpr[{f()}], ctx->fpr[{f()}], ctx->fpr[{f()}], 0, 1);",
++        lambda: f"ctx->fpr[{f()}] = ppu_frsp(ctx->fpr[{f()}]);",
++        lambda: f"ctx->fpr[{f()}] = ctx->fpr[{f()}];",
++        lambda: f"{{ int64_t iv = (int32_t)ppu_f2i32(ctx->fpr[{f()}], 0); memcpy(&ctx->fpr[{f()}], &iv, 8); }}",
++        lambda: (f"{{ double a = ctx->fpr[{f()}]; double b = ctx->fpr[{f()}]; uint32_t cr_val = (a != a || b != b) ? 1 : "
++                 f"(a < b) ? 8 : (a > b) ? 4 : 2; ctx->cr = (ctx->cr & ~(0xFu << {s})) | (cr_val << {s}); }}"),
++        lambda: f"{{ uint64_t ea = (ctx->gpr[{a()}]) & ~0xFULL; vm_raw_ld16(&ctx->vr[{r.randint(0, 3)}], ea); }}",
++        lambda: f"{{ uint64_t ea = (ctx->gpr[{a()}]) & ~0xFULL; vm_raw_st16(ea, &ctx->vr[{r.randint(0, 3)}]); }}",
++        lambda: f"vmx_vaddfp(&ctx->vr[{r.randint(0, 3)}], &ctx->vr[{r.randint(0, 3)}], &ctx->vr[{r.randint(0, 3)}], ctx->vscr);",
++        lambda: (f"{{ uint64_t ea = ctx->gpr[{a()}]; int _sc = (ctx->reserve_addr == (uint32_t)ea) && ppu_stwcx32(ea, "
++                 f"(uint32_t)ctx->reserve_value, (uint32_t)ctx->gpr[{a()}]); ctx->cr = (ctx->cr & ~0xF0000000u) | "
++                 f"(_sc ? (2u << 28) : 0u) | ((ctx->xer >> 31) << 28); ctx->reserve_addr = 0; }}"),
++        lambda: "/* nop */;",
++        (lambda: (lambda d, x: f"ctx->gpr[{d}] = (uint32_t)ctx->gpr[{x}] ? __builtin_clz((uint32_t)ctx->gpr[{x}]) : 32;")(g(), a())),
++        # lines that hand ctx on
++        lambda: f"ctx->lr = 0x{pc + 4:08X}; func_{r.choice([0x10000, 0x20000, 0x30000]):08X}(ctx); DRAIN_TRAMPOLINE(ctx);",
++        lambda: f"ctx->lr = 0x{pc + 4:08X}; ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx);",
++        lambda: "lv2_syscall(ctx);",
++        lambda: "ctx->ctr = (uint32_t)ctx->lr; ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx);",
++        lambda: f"ctx->lr = 0x{pc + 4:08X}; if (((ctx->cr >> {r.randint(0, 31)}) & 1)) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); }}",
++        lambda: f"if (((ctx->cr >> {r.randint(0, 31)}) & 1)) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); return; }}",
++        lambda: f"{{ uint64_t _v; memcpy(&_v, &ctx->fpr[{f()}], 8); ppu_mtfsf(ctx, 0xFFu, (uint32_t)_v); }}",
++    ]
++    return r.choice(pool)()
++
++
++def random_function(r, base):
++    nblk = r.randint(1, 7)
++    labels = [base + 0x100 * i for i in range(nblk)]
++    body = []
++    cs = r.sample([14, 28, 29, 30, 31], r.randint(0, 2))
++    for n in cs:
++        body.append(f"    uint64_t _cs_{n} = ctx->gpr[{n}];")
++    pc = base
++    for i, lab in enumerate(labels):
++        if i or r.random() < 0.3:
++            body.append(f"loc_{lab:08X}:")
++        reg = r.choice([x for x in GPRS if x != 1])
++        body.append(f"    ctx->gpr[{reg}] = vm_read32(ctx->gpr[{r.choice(GPRS)}] + 0x10);")  # an event per block: loops end
++        for _ in range(r.randint(1, 9)):
++            body.append("    " + stmt(r, pc))
++            pc += 4
++        for n in cs:
++            if r.random() < 0.2:
++                body.append(f"    ctx->gpr[{n}] = _cs_{n};")
++        t = r.random()
++        tgt = r.choice(labels)
++        bit = r.randint(0, 31)
++        if t < 0.15:
++            body.append(f"    goto loc_{tgt:08X};")
++        elif t < 0.35:
++            body.append(f"    if ({'!' if r.random() < 0.5 else ''}((ctx->cr >> {bit}) & 1)) goto loc_{tgt:08X};")
++        elif t < 0.45:
++            body.append(f"    if ((--ctx->ctr != 0)) goto loc_{tgt:08X};")
++        elif t < 0.52:
++            body.append("    return;")
++        elif t < 0.6:
++            body.append(f"    if (((ctx->cr >> {bit}) & 1)) return;")
++        elif t < 0.65:
++            body.append(f"    {{ g_trampoline_fn = (void(*)(void*))func_{0x40000 + i:08X}; return; }}")
++        elif t < 0.72:
++            body.append(f"    if ((!((ctx->cr >> {bit}) & 1))) {{ g_trampoline_fn = (void(*)(void*))func_{0x50000 + i:08X}; return; }}")
++        elif t < 0.77:
++            cases = r.sample(labels, min(len(labels), r.randint(1, 3)))
++            arms = "".join(f"case 0x{c:08X}u: goto loc_{c:08X};" for c in cases)
++            body.append(f"    switch ((uint32_t)ctx->ctr) {{ {arms} default: ps3_indirect_call(ctx); return; }} return;")
++        # else: fall through into the next block (or off the end)
++    for i, lab in enumerate(labels):
++        if f"loc_{lab:08X}:" not in body and any(f"loc_{lab:08X};" in ln for ln in body):
++            body.append(f"    loc_{lab:08X}: ; /* branch into undecoded region */")
++    return body
++
++
++def fuzz(nfuncs, iters, seed, keep):
++    import regpromo_diff as rd
++    try:
++        from msvc_env import find_vcvars
++    except ImportError:
++        find_vcvars = None
++    if os.name == "nt" and not (find_vcvars and find_vcvars()):
++        print("SKIPPED part 2: no MSVC environment for clang-cl")
++        return
++    r = random.Random(seed)
++    lifter = PPULifter()
++    preamble = "\n".join(lifter._preamble_lines())
++    header = rd.harness_header(HEADER_PREAMBLE)
++    pairs = []
++    refused = 0
++    for k in range(nfuncs):
++        base = 0x100000 + k * 0x1000
++        body = random_function(r, base)
++        new = _regpromo(body)
++        if new is None:
++            refused += 1
++            print("refused:\n" + "\n".join(body))
++            continue
++        old_txt = f"void func_{base:08X}(ppu_context* ctx) {{\n" + "\n".join(body) + "\n}"
++        new_txt = f"void func_{base:08X}(ppu_context* ctx) {{\n" + "\n".join(new) + "\n}"
++        pairs.append((base, old_txt, new_txt, f"func_{base:08X}"))
++    check(refused == 0, f"the pass accepts every random lifted-style function ({nfuncs - refused}/{nfuncs})")
++    work = keep or os.path.join(os.path.dirname(TOOLS), "scratch", "regpromo_fuzz")
++    os.makedirs(work, exist_ok=True)
++    src, exe = os.path.join(work, "fuzz.cpp"), os.path.join(work, "fuzz.exe")
++    with open(src, "w", encoding="utf-8") as f:
++        f.write(rd.harness_source(header, preamble, pairs))
++    for march in ("x86-64-v3", "none"):
++        rd.compile_harness(src, exe, march)
++        for snan in ("quiet",):
++            log = os.path.join(work, f"fuzz_{march}.log")
++            if os.path.exists(log):
++                os.remove(log)
++            done, diff, stuck = rd.run_harness(exe, len(pairs), iters, 4000, log, snan)
++            check(done == len(pairs) and diff == 0 and not stuck,
++                  f"random functions, -march={march}: {done} functions x {iters} inputs, "
++                  f"{diff} differing runs, {len(stuck)} stuck (log {log})")
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--funcs", type=int, default=150)
++    ap.add_argument("--iters", type=int, default=1500)
++    ap.add_argument("--seed", type=int, default=20261020)
++    ap.add_argument("--keep", default="", help="work directory for the harness")
++    ap.add_argument("--shapes-only", action="store_true")
++    a = ap.parse_args()
++    shapes()
++    if not a.shapes_only:
++        fuzz(a.funcs, a.iters, a.seed, a.keep)
++    print(f"\n{'all checks passed' if not FAILS else str(len(FAILS)) + ' FAILED'}")
++    sys.exit(1 if FAILS else 0)
++
++
++if __name__ == "__main__":
++    main()

@@ -26,6 +26,10 @@ import subprocess
 import sys
 import time
 
+# Every game of the session talks over 127.0.0.1: bind there, not on every interface (no Windows Firewall prompt;
+# docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins. (set_session.py, imported below, does the same.)
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOBBY = os.path.dirname(HERE)
 ROOT = os.path.dirname(LOBBY)

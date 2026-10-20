@@ -3,7 +3,10 @@
 
     python tools/thread_profile.py --pid PID [--thread ticker] [--secs 10]
                                    [--rate 2000] [--map build/cmake/t5dr.map]
-                                   [--top 40] [--json FILE]
+                                   [--top 40] [--json FILE] [--raw FILE]
+
+ETW/WPR would need an administrator; this needs only the game's own
+process (patch 0062's study, docs/RENDER_PERF.md "Translation CPU").
 
 Suspends the named thread of the game (default: `ticker`, which walks the RSX
 command stream and records the D3D12 command lists) about --rate times a
@@ -24,6 +27,13 @@ the stack can show up), good enough to see which of our functions spend the
 time in the driver.
 
 Run it next to tools/fight_bench.py (--pid of the game it started).
+
+Line level: build the runtime's C files with debug info (CMAKE_C_FLAGS_RELEASE
+"/O2 /Ob2 /DNDEBUG /Z7", CMAKE_EXE_LINKER_FLAGS_RELEASE "/INCREMENTAL:NO
+/DEBUG" in a build directory of its own: same code, plus a PDB), profile that
+exe with --raw, and feed the RVAs (0x140000000 + rva) to
+`llvm-symbolizer --obj=t5dr.exe --inlining`: every sample then names the
+inlined function and source line it was in.
 """
 import argparse
 import bisect

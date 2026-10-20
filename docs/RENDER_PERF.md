@@ -909,3 +909,158 @@ one slow PC from 32 to 46 fps, in sync; a 60 fps PC is unchanged. The D3D12
 calls are 0.7-1.0 ms of a frame (frame log columns `ph_desc_us`,
 `ph_cbcopy_us`, `ph_api_us`, `ph_post_us`), the same on NVIDIA and on the
 integrated Radeon.
+
+## Translation CPU (patch 0062, branch `xlat-cpu`)
+
+The weak-PC study ([WEAK_PC.md](WEAK_PC.md)) left the render translation at
+2.2-3.8 ms of every fight frame, on the frame's critical path, with the D3D12
+calls 0.7-1.0 ms of it. Patch 0062 cuts the translation by about a quarter and
+the D3D12 recording by half, without changing a pixel.
+
+### Who waits for whom
+
+| thread | per fight frame |
+|---|---|
+| main (the game) | the frame's logic, the skinning job list (on the SPURS workers), the command buffer; then **one** flush (`put`) and the flip request, then it waits for the flip |
+| ticker | the vblank clock; walks the command stream from that flush to the flip marker and records the D3D12 command list: the **translation**; the flip completes at the tick (at once for a late frame, 0059); after the flip handlers, submit and Present |
+| rsx-vertex (1-3) | each draw's vertex fetch and decode, handed over by the walker; drained before the submit |
+
+Game and translation are in series by design: once its flip completed the
+game may rewrite its vertex buffers, textures and programs ("Is the handover
+wait necessary?" above). Nothing else serializes them: the walker's CPU time
+per frame is the translation's wall time (median 2.14 vs 2.23 ms, frame log
+`fifo_cpu_us` and `xlat_us`), so the walker does nothing before the frame's
+single flush and never waits inside the translation (the vertex workers keep
+up; submit and Present come after the flip, off the critical path). The
+threading stays as it is; the lever is the walker's own CPU per frame.
+
+### Where the walker's time went
+
+ETW/WPR needs an administrator, so `tools/thread_profile.py` samples the
+ticker thread itself: 2,000 times a second it suspends the thread, reads its
+instruction pointer and the top of its stack, and resumes it; samples in a
+kernel wait are left out; addresses map to functions through the linker map,
+or to source lines with a build that has a PDB (`llvm-symbolizer
+--inlining`, see the tool). Fight Lili vs Asuka on stage 20, frame log on;
+share of the ticker's busy samples before the patch:
+
+| where | share |
+|---|---|
+| FIFO walk and method dispatch (`gcm_rsx_process_fifo_unlocked`, `rsx_dispatch_method_block`, `rsx_live_draw_method_block`, `gcm_io2ea`): the stream is mostly short method blocks -- 47 % of them one word, 44 % four (the vertex program, re-uploaded for every draw, one instruction per block) -- each walked, looked up and branched per word | 27 % |
+| display driver (`nvwgf2umx.dll`), D3D12 runtime and kernel submit: 14 state calls and one 16-descriptor table copy per draw (11,650 and 830 a frame), plus ~40 heap-start queries a draw | 24 % |
+| byte-wise FNV over ~170 bytes a draw for the PSO key and 192 bytes for a diagnostic descriptor signature | 7.5 % |
+| texture mutation hash (126 textures, 3.7 MB a frame, read from memory) | 7.4 % |
+| `QueryPerformanceCounter` (the frame log's phase timers: both builds pay it in every number below) | 4.6 % |
+| vertex job hand-off (`ld_vjob_submit`) | 4.6 % |
+| vertex-constant block copies (8 KB a draw when the constants changed) | 2.9 % |
+| everything else in a draw: layout, texture and sampler slots, surfaces, pixel constants | ~22 % |
+
+### What changed
+
+| change | switch (default on) | effect |
+|---|---|---|
+| **D3D12 state only when it changes.** The draw remembers what the open command list has bound (descriptor heaps, root signature, PSO, root CBVs, descriptor tables, render targets, viewport, scissor, stencil reference, topology, vertex and index buffer views) and records only what differs. Forgotten at every command-list reset and right before every other pass that records pipeline state on the list (surface copies, depth snapshots, the stage-blur guest-size view, the present copy, the training overlay) | `RSX_STATE_CACHE=0` | state calls 11,650 -> ~1,900 a frame |
+| **Descriptor tables reused.** A draw whose 16 texture slots equal those of a table already in the descriptor ring gets that table again (a 64-entry memo by slots), as long as nothing was written into the CPU-side SRV heap since (a refreshed texture or a re-made surface keeps its slot but gets a new descriptor; every such write bumps a generation) and the ring did not start over. The sampler table checks the previous call's table first. The heaps' start handles are read once | `RSX_STATE_CACHE=0` | table copies 830 -> ~170 a frame |
+| **One vertex and one index buffer view for the whole ring.** A draw's vertices start at a multiple of their stride in the upload ring (a few bytes of padding), so one view per stride serves every draw through `BaseVertexLocation`, and one index view through `StartIndexLocation` | `RSX_RING_VIEWS=0` | view calls 1,660 -> ~30 a frame |
+| Pixel-constant block reused when the next draw's constants and alpha reference are the same bytes | `RSX_STATE_CACHE=0` | |
+| The sampled render targets' transitions in one `ResourceBarrier` call each way (was one call per surface) | -- | |
+| **PSO key memo.** The key stays the byte-wise FNV it was, so the PSO cache, the pipeline library and the prewarm file keep their names; its inputs are first looked up in a 256-entry memo and compared in full | `RSX_STATE_CACHE=0` | PSO lookup phase 0.25-0.30 -> 0.12-0.15 ms |
+| The recent-draw ring's descriptor signature (diagnostics only) is a word hash instead of byte-wise FNV | -- | |
+| **Span dispatch.** A block of incrementing words that all land in registers of one kind (plain state, the transform program window, the transform constant window) is handled as one span: exactly the register stores, write counts and program and constant updates the per-word loop made (`tests/c/xlat_dispatch_test.c` compares both on random streams), without its table lookup and branches per word; a one-word state block is two stores | `RSX_DISPATCH_SPANS=0` | |
+| **Header runs in the FIFO walker.** After a method block the fast path takes the next headers itself while each is another plain subchannel-0 block within one IO page and carries no method the walker acts on (reference, labels, reports, semaphores): the same bookkeeping per header as the loop's top (budget, ring position, trace ring), without its flip, branch and probe checks | `PS3_GCM_HEADER_RUN=0` | |
+| A locked compare-exchange per draw for two debug flags is a plain load; the draw-CSV hook returns at once without `RSX_DRAW_CSV` | -- | |
+| `[xlat-stats]` lines next to `[render-stats]` (`RSX_HITCH_LOG=1`): per frame the draws, state calls made and skipped (by kind), tables copied and reused, PSO key memo hits, textures hashed and their megabytes | -- | |
+
+Nothing here reads or writes guest memory differently, and no command is
+skipped: the GPU receives the same draws with the same bound state.
+
+### Results
+
+Paired runs: the old build (series to 0059, `weakpc-fps`) and the new one at
+the same time, one on each CCD half (logical processors 0-15 / 16-31, 8 cores
+with SMT each), halves swapped for the second repetition;
+`tools/fight_bench.py --polite`, direct fight Lili vs Asuka, P1 attacking,
+window fight start +24..42 s (~1,070 frames), frame log medians and p99 per
+run, mean of the two runs. Other programs kept 14-30 of the 32 processors busy
+(the absolute numbers are higher than on a quiet PC, which is why the pairs
+run side by side); stage 27 ran below 60 fps in its loaded repetition in both
+builds.
+
+| stage, internal resolution | walker CPU per frame, median: before -> after | p99 | D3D12 recording, median | p99 | submit / Present call (both builds) |
+|---|---|---|---|---|---|
+| 20 (scrapyard, 835 draws), Native | 3.19 -> 2.56 ms (-20 %) | 5.16 -> 4.32 | 0.78 -> 0.43 (-45 %) | 1.24 -> 0.75 | 0.13-0.14 / 0.23-0.25 |
+| 20, 1080p | 3.66 -> 2.63 (-28 %) | 4.95 -> 3.87 | 0.90 -> 0.45 (-51 %) | 1.24 -> 0.64 | 0.14-0.16 / 0.25-0.28 |
+| 27 (550 draws), Native | 3.43 -> 2.73 (-20 %) | 4.66 -> 4.02 | 0.73 -> 0.36 (-51 %) | 1.04 -> 0.53 | 0.20-0.22 / 0.33-0.34 |
+| 27, 1080p | 2.99 -> 2.29 (-23 %) | 3.99 -> 3.25 | 0.72 -> 0.34 (-53 %) | 1.10 -> 0.52 | 0.17 / 0.30-0.31 |
+| 34 (misty swamp, 745 draws), Native | 3.18 -> 2.46 (-23 %) | 4.05 -> 3.31 | 0.79 -> 0.40 (-50 %) | 1.04 -> 0.55 | 0.12-0.13 / 0.22-0.23 |
+| 34, 1080p | 2.95 -> 2.15 (-27 %) | 4.02 -> 3.14 | 0.73 -> 0.34 (-53 %) | 1.09 -> 0.53 | 0.11 / 0.20 |
+| **all** | **3.23 -> 2.47 ms (-24 %)** | **4.47 -> 3.65 (-18 %)** | **0.78 -> 0.39 (-50 %)** | **1.12 -> 0.59 (-48 %)** | 0.15 / 0.27 |
+
+Each of the 12 pairs: walker CPU 0.69-0.89x, D3D12 recording 0.45-0.62x of
+the old build's. The translation's wall time (`xlat_us`) fell the same:
+3.21 -> 2.44 ms median, 5.06 -> 3.75 ms p99. The ticker thread's whole CPU
+time per frame (walk, vblank clock, submit, Present; thread times, not the
+frame log) 3.92 -> 3.15 ms. Submit (one `ExecuteCommandLists`) and the
+Present call are per frame, not per draw, and stay as they were. The internal
+resolution does not change the CPU side (the same draws).
+
+On the weak-PC stand-ins of [WEAK_PC.md](WEAK_PC.md) a translation of
+2.3-3.8 ms becomes ~1.8-2.9 ms: 0.5-0.9 ms more of every frame for the game
+part, about what a 3-5 % faster core would give.
+
+### Same picture
+
+Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off --fight
+<p1>,<p2>,<stage>,1`): the old build as host and the new one as joiner run the
+same game frames, and at lockstep frames 300, 900 and 1500 both dump every live
+surface (`T5_NET_SHOT` with `LD_SURF_DUMP`: the two display buffers, the 3D
+target, the shadow map, the glow buffers), compared byte for byte. Stages 20,
+27 and 34 at Native and 1080p, Lili vs Asuka and Jack-5 vs Bryan; 34 old/new
+pairs and 12 controls (old/old, new/new). Two things differ between any two
+games, whatever their builds: the stages' animated parts (puddles on 20, the
+background waterfall of 27, the water and mist of 34) follow a counter of the
+frames each game ran since it started, which differs by 1-40 frames when one
+loaded faster; and Lili's ribbon (cloth the game simulates outside the state a
+match keeps equal) and the odd splash.
+
+- **Pairs whose counters matched: every surface byte-identical** -- stage 27
+  1080p and stage 34 1080p (12 of 12 surfaces each), stage 20 Native (all but
+  Lili's ribbon in two shots; the ribbon also differed in 2 of 4 old/old
+  pairs); with intermediate builds of this patch also stage 20 Native (18 of
+  18) and stage 27 Native (12 of 12).
+- Pairs whose counters differed: fighters (but Lili's ribbon), HUD, shadow map
+  and glow buffers identical; the animated stage parts differ as they do in
+  old/old pairs.
+- A new/new pair with matching counters: identical but for one splash.
+
+All 46 pairs stayed in lockstep sync (0 mismatching frames).
+
+### Online
+
+The patch changes only how the host draws, never guest memory or the command
+stream, so the two players may run either build: a rollback pair, old build as
+host, new one as joiner, RTT 150 ms +-5, 3 % loss, one match of two rounds
+(`tools/rollback_net_test.py --fight 26,33,20,2 --mode1 default --mode2
+default`): sync through frame 4199 with 0 mismatching frames on both sides,
+the same result hash `a1f87325795b0036`, 576 / 553 rollbacks, no decode error
+or abort. The 46 lockstep pairs above: 0 mismatching frames.
+
+Also checked: smoke quick PASS on the new build (two fps WARNs from the other
+games on the PC), `tests/` (709 OK, with `tests/test_xlat_cpu.py`: the span
+dispatch against the per-word loop on 200,000 random blocks; three
+deliberately broken copies of the span code all failed it), the whole series
+applies in name order on a fresh tree (`tools/prepare_ps3recomp.py`).
+
+### What is left
+
+- The texture mutation hash: ~0.2 ms a frame (126 textures, 3.7 MB read from
+  memory every frame; memory-bound, a faster hash would not help). Only
+  knowing which guest pages were written would; Windows' write watch belongs
+  to the rollback.
+- The display driver: ~0.4 ms in the ~2,700 calls a frame that remain (830
+  draws and the state that really changes: vertex constants ~520, PSO ~275,
+  descriptor tables ~890).
+- The command walk: ~0.5 ms for tens of thousands of short method blocks a
+  frame, now a few nanoseconds each.
+- The frame log's own phase timers (`PS3_FRAMELOG`) cost ~0.15 ms of every
+  number above, in both builds; a player's game does not run them.

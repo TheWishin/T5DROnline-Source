@@ -15,6 +15,15 @@ part is in the README's status table.
   still never runs faster than 60. `PS3_LATE_FLIP=0` (extra settings) is the old way.
   Why those PCs are slow (one processor core's speed, not the graphics API -- no Vulkan
   needed) and a checklist for players: docs/WEAK_PC.md.
+- **Less processor time for the picture** (ps3recomp patch 0062). Turning the game's PS3
+  drawing commands into D3D12 takes about a quarter less CPU in fights (3.2 -> 2.5 ms a
+  frame, median of paired runs on the development PC under load; the D3D12 calls 0.8 ->
+  0.4 ms), the same picture to the pixel. The game waits for this work every frame, so a
+  slower processor gets 0.5-1 ms more of each frame for the game itself. State the
+  graphics card already has is no longer sent again, descriptor tables are reused, and
+  the command stream is read in runs instead of word by word. `RSX_STATE_CACHE=0`,
+  `RSX_RING_VIEWS=0`, `RSX_DISPATCH_SPANS=0`, `PS3_GCM_HEADER_RUN=0` (extra settings)
+  switch the parts off. docs/RENDER_PERF.md "Translation CPU".
 - **Problem reports say more about slow fights.** The game log's `[slow-frames]` lines name
   the frames shown late and what other programs used of the processor; a frame that only
   waited for its own translation is no longer blamed on the vblank thread. `system.txt`

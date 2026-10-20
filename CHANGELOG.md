@@ -33,6 +33,14 @@ part is in the README's status table.
   every translated function was run old against new on millions of random inputs, and old and new builds played
   each other online frame for frame in sync. The first build after updating translates the game code again (about
   25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
+- **Cheaper memory writes in the game code.** Every time the game's code writes to memory, the PC checks twice
+  whether one of the PS3's helper processors is watching that spot. That check went through a detour to the main
+  program each time; now the game code keeps the answer table at hand and needs one quick look instead of
+  several steps. In paired runs on 4 cores the main thread needs 5-7 % less CPU per frame, the drawing thread
+  15-25 % less, and a frame's critical path is 5-8 % shorter (pool stage and stage 20) -- more room for a locked
+  60 fps on 4-core laptops. The game computes exactly what it did: every translated function ran old check
+  against new on random inputs, the check was tested under threads, and the old and new builds played each
+  other online in sync. docs/RENDER_PERF.md "Lifted code: the guest store's reservation check".
 
 ### Building the game
 - **Press BUILD GAME once after updating** (1.1.4 has a new code ID: 1.1.3 and 1.1.4 builds never meet online).

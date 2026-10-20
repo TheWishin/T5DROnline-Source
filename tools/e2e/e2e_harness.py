@@ -1159,8 +1159,41 @@ class Run:
                     setattr(dialogs, n, lambda *a, _n=n, _v=v, **kw: (log(f"dialog stubbed: {name}.{_n} {a[:2]}"), _v)[1])
         except ImportError:
             pass
+        self._old_lobby_loopback(name)
         log(f"lobby package {ref} loaded as {name} (from {base})")
         return name
+
+    @staticmethod
+    def _old_lobby_loopback(name):
+        """Test shim: T5_NET_BIND=127.0.0.1 (no firewall prompts for test games) is honoured by this tree's nat.py
+        (bind_ip, local_ipv4s), not by an older release's. Its client would offer this PC's LAN address and the lobby
+        would hand the games that address, which a game bound to loopback never hears ("no_peer"). So the older
+        package's game socket binds there too and offers only that address -- a PC whose one address is loopback;
+        nothing else of the old code changes."""
+        bind = os.environ.get("T5_NET_BIND", "").strip()
+        if not bind or bind == "0.0.0.0":
+            return
+        import importlib
+        nat = importlib.import_module(name + ".nat")
+        pr = importlib.import_module(name + ".proto")
+
+        def open_udp_socket(port=0):
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.bind((bind, port))
+            except OSError:
+                if not port:
+                    s.close()
+                    raise
+                s.bind((bind, 0))
+            pr.disable_udp_connreset(s)
+            s.setblocking(False)
+            return s
+        nat.open_udp_socket = open_udp_socket
+        nat.local_ipv4s = lambda target_ip: [bind]
+        client = importlib.import_module(name + ".client")
+        if hasattr(client, "local_ipv4s"):
+            client.local_ipv4s = nat.local_ipv4s
 
     def tk_root(self):
         """The one Tk root of the run: withdrawn and fully transparent. Every Toplevel is withdrawn and

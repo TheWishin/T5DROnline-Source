@@ -3,8 +3,8 @@ docs/RENDER_PERF.md "Overlap: the present and the D3D12 calls", branch xlat-over
 
 * The patch changes only the renderer's host side (libs/video, the ticker's pacing statistics in boot_main):
   nothing it adds writes guest memory, so two players of a match may run different builds.
-* RSX_XLAT_OVERLAP switches it (0 off, 1 the present on the renderer thread, 2 also the command-list calls;
-  default 2, 1 with power saving).
+* RSX_XLAT_OVERLAP switches it (0 off, 1 the present on the renderer thread, 2 also the command-list calls,
+  the default).
 * Every command-list method the translation calls through the recorder (LDL) is recorded and replayed; the
   methods it may not record (Close, Reset, SetName) are only reached with the real list.
 * tests/c/xlat_ring_test.c, built against the patched runtime source (rsx_record_ring.h): calls recorded on one
@@ -51,7 +51,7 @@ class Patch(unittest.TestCase):
     def test_switch(self):
         add = self.added()
         self.assertIn('getenv("RSX_XLAT_OVERLAP")', add)
-        self.assertIn("host_sched_laptop() ? 1 : 2", add)   # power saving: the present only
+        self.assertIn("e && *e == '0' ? 0 : e && *e == '1' ? 1 : 2", add)   # default 2, 1 = the present only
 
     def test_every_recorded_method_is_replayed(self):
         add = self.added()

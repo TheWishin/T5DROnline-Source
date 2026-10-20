@@ -2027,7 +2027,42 @@ PAIRED_PLACEHOLDER
 
 ### Same picture, same game
 
-SAME_PLACEHOLDER
+**Pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off`, Jack-5 vs Bryan, Native): the
+game of the series to 0065 as host and this branch as joiner run the same game frames, and at lockstep frames
+300, 900 and 1500 both dump every live surface and the backbuffer (`T5_NET_SHOT` + `LD_SURF_DUMP`), compared
+byte for byte (`build/xlatov/scripts/paircmp.py`). As in 0062's check, the stages' animated parts follow the
+frames each game ran since it started, so only pairs whose two renderer frame counters matched can be identical:
+
+| stage | pair (host / joiner) | counters | result |
+|---|---|---|---|
+| 30 (pool) | old / new | equal | **15 of 15 identical** (3 shots x 4 surfaces + backbuffer) |
+| 30 | old / old (control) | equal | 15 of 15 identical |
+| 34 (misty swamp: stage blur, depth snapshot, compute) | old / new | equal | **15 of 15 identical** |
+| 34 | old / old | equal | 15 of 15 identical |
+| 20 (glow) | old / old | equal | 21 of 21 identical |
+| 20 | old / new, twice | 1 apart | 9 of 21: shadow map and glow buffers identical, the animated puddles 0.3-2 % of the pixels apart |
+| 30 | new / new | 1 apart | 3 of 15: shadow maps identical, the pool's water apart -- the same as any two games one frame apart |
+STAGE20_MORE
+
+**Same game.** Rollback pairs (RTT 150 +-5 ms, 3 % loss, delay 6, two matches: Asuka vs Lili on stage 20, then
+on the pool stage; host on 0x00FF0000, joiner on 0x55000000) and lockstep pairs (RTT 30, 1 % loss), new/new and
+both cross directions (old host / new joiner, new host / old joiner):
+
+| pair | mode | frames compared per side | rollbacks per side | result |
+|---|---|---|---|---|
+| new / new | rollback | 10,800 | 1,316-1,378 | 0 mismatching, the same two result hashes on both PCs |
+| old / new | rollback | 10,800 | 1,317-1,373 | the same |
+| new / old | rollback | 10,800 | 1,319-1,376 | the same |
+| new / new, old / new, new / old | lockstep | 10,800-11,400 | -- | 0 mismatching, the same hashes |
+
+Nothing the patch adds writes guest memory (`tests/test_xlat_overlap.py` checks the patch), so two players may
+run either build. `tests/c/xlat_ring_test.c` (built against the patched source by the test): 300,000 random calls
+of all 30 recorded methods with every array size the translation passes, NULL pointers, render-target ranges,
+clears with and without rects, plus presents and both syncs, through a 16 KB ring (it wraps thousands of times and
+fills); every call reaches the replaying thread once, in order, with its arguments (the two logs byte-identical);
+copies of the ring with a lost root constant, a render-target list recorded as one handle and a lost copy box
+fail it, one that never publishes hangs (the test's timeout reports it). Smoke quick: exit 0
+(PASS, two fps WARNs with 7 other games and 4 compilers running). `tests/` 788 OK.
 
 ### Not done
 

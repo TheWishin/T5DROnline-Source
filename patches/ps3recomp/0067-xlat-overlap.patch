@@ -15,7 +15,7 @@ index 604551b..5ade0f4 100644
      gcm_rsx_process_fifo_unlocked();
      if (work) QueryThreadCycleTime(GetCurrentThread(), &c1);
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index e98e889..1e2263c 100644
+index e98e889..fc8d758 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -122,6 +122,10 @@ void rsx_live_draw_note_resolve(u32 sl, u32 sa, u32 dl, u32 da)
@@ -881,7 +881,7 @@ index e98e889..1e2263c 100644
 + * window's own thread for those), then puts the present into the renderer
 + * thread's ring and returns: the flip completes and the game runs its next
 + * frame while the frame is submitted and presented. With 2 the walker also
-+ * records every command-list call through the ring (the recorder above), so
++ * records every command-list call through the ring (rsx_record_ring.h), so
 + * the display driver's time per call (~2,000-2,700 calls a fight frame) is
 + * spent on the renderer thread, beside the walk, not in it.
 + *
@@ -913,11 +913,11 @@ index e98e889..1e2263c 100644
 +int rsx_live_draw_xlat_overlap(void)
 +{
 +    if (g_xo_on < 0) {
-+        /* 2 by default; 1 with power saving (host_sched_laptop): the recorded
-+         * calls cost the renderer thread ~2 ms of processor time and hundreds
-+         * of wake-ups a second for ~0.2-0.4 ms off the translation */
++        /* 2 by default (power saving too: the renderer thread sleeps between
++         * its batches, ~0.3 ms of processor time and ~100 wake-ups a second
++         * more than 1) */
 +        const char* e = getenv("RSX_XLAT_OVERLAP");
-+        g_xo_on = e && *e == '0' ? 0 : e && *e == '1' ? 1 : e && *e == '2' ? 2 : host_sched_laptop() ? 1 : 2;
++        g_xo_on = e && *e == '0' ? 0 : e && *e == '1' ? 1 : 2;
 +        if (g_xo_on) {
 +            g_rq_on_present = ld_xo_present;
 +            HANDLE t = ld_rq_alloc() ? CreateThread(NULL, 512 * 1024, ld_xo_main, NULL, 0, NULL) : NULL;
@@ -1047,14 +1047,14 @@ index e98e889..1e2263c 100644
      ld_vertex_diag_emit("shutdown", 1);
      ld_present_measure_dump();
 diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
-index a8c2d66..aced038 100644
+index a8c2d66..c78f6a0 100644
 --- a/libs/video/rsx_live_draw.h
 +++ b/libs/video/rsx_live_draw.h
 @@ -112,6 +112,26 @@ void rsx_live_draw_flush(void);
  /* Present the given display buffer id (called from the flip path). */
  void rsx_live_draw_present(u32 buffer_id);
  
-+/* Patch 0067 (RSX_XLAT_OVERLAP: 2 default, 1 with power saving, 0 off):
++/* Patch 0067 (RSX_XLAT_OVERLAP: 2 default, 1 the present only, 0 off):
 + * rsx_live_draw_present finishes every guest-memory read of the frame on the
 + * calling thread (the queued vertex fetches) and hands the rest -- the present
 + * copy, the command list's submit and DXGI Present -- to the renderer thread,
@@ -1079,10 +1079,10 @@ index a8c2d66..aced038 100644
  void rsx_live_draw_set_movie_mode(int on);
 diff --git a/libs/video/rsx_record_ring.h b/libs/video/rsx_record_ring.h
 new file mode 100644
-index 0000000..d4932fe
+index 0000000..e14ee34
 --- /dev/null
 +++ b/libs/video/rsx_record_ring.h
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,566 @@
 +/*
 + * ps3recomp - the renderer thread's work ring (patch 0067, RSX_XLAT_OVERLAP).
 + *
@@ -1198,9 +1198,19 @@ index 0000000..d4932fe
 +       RQ_STENCILREF, RQ_BLENDF, RQ_TOPO, RQ_VBS, RQ_IB, RQ_DRAW, RQ_DRAWIDX, RQ_CLEARRT, RQ_CLEARDS, RQ_GCBV,
 +       RQ_GSRV, RQ_G32S, RQ_G32, RQ_DISPATCH };
 +
-+/* A sleeping renderer thread is woken every 16 packets (a wake-up is a
-+ * system call; the thread then takes the whole backlog), at a present and
-+ * before the walker waits for it. */
++/* A sleeping renderer thread is woken every LD_RQ_WAKE_EVERY packets, at a
++ * present and before the walker waits for it: it then takes the whole backlog
++ * in one go and sleeps again (LD_RQ_SPIN pauses first). A wake-up is a system
++ * call on the walker and a context switch: ~10 a fight frame this way. Woken
++ * every 16 packets with a 300-pause spin, the thread took ~2 ms of processor
++ * time a frame -- on 4 slowed processors, where every thread competes, more
++ * than the walk saved. */
++#ifndef LD_RQ_WAKE_EVERY
++#define LD_RQ_WAKE_EVERY 256u
++#endif
++#ifndef LD_RQ_SPIN
++#define LD_RQ_SPIN 0
++#endif
 +static uint32_t g_rq_unwoken;
 +static void ld_rq_wake(void)
 +{
@@ -1214,7 +1224,7 @@ index 0000000..d4932fe
 +     * present's or a wait's, which check with a full fence -- and its sleep is
 +     * a WaitOnAddress on g_rq_w, which does not sleep once the store landed */
 +    __atomic_store_n(&g_rq_w, g_rq_wl, __ATOMIC_RELEASE);
-+    if (__atomic_load_n(&g_rq_sleep, __ATOMIC_RELAXED) && ++g_rq_unwoken >= 16) ld_rq_wake();
++    if (__atomic_load_n(&g_rq_sleep, __ATOMIC_RELAXED) && ++g_rq_unwoken >= LD_RQ_WAKE_EVERY) ld_rq_wake();
 +}
 +/* Room for one packet of `payload` bytes; returns where its arguments go.
 + * The caller fills them and publishes (ld_rq_publish). */
@@ -1588,8 +1598,8 @@ index 0000000..d4932fe
 +}
 +
 +/* The renderer thread's loop: replays every packet into the list `list()`
-+ * returns (the real command list), in order; spins briefly when the ring is
-+ * empty, then sleeps until the walker wakes it. Returns once g_rq_stop is set
++ * returns (the real command list), in order; sleeps when the ring is empty
++ * until the walker wakes it. Returns once g_rq_stop is set
 + * and the ring is empty (tests; the renderer thread never stops). */
 +static volatile LONG g_rq_stop;
 +static void ld_rq_consume(ID3D12GraphicsCommandList* (*list)(void))
@@ -1600,9 +1610,7 @@ index 0000000..d4932fe
 +        LONGLONG w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
 +        if (r == w) {
 +            if (g_rq_stop) return;
-+            /* the walk records a call every few microseconds: wait a little
-+             * before sleeping (a WaitOnAddress wake-up costs more than that) */
-+            for (int k = 0; k < 300 && r == w; k++) {
++            for (int k = 0; k < LD_RQ_SPIN && r == w; k++) {
 +                _mm_pause();
 +                w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
 +            }

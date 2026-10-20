@@ -201,5 +201,10 @@ players' live stream byte for byte (75,582 and 96,398 bytes, plus the END record
 the stream (its game booted before the session was known), spectator 2 60 s later -- both identical, 70
 hashes, 20 of 20 sync points, both results the same.
 
+**After merging main d222992** (the review's replay header checks, which now guard the live SESSION and
+MATCH records too; 0053; no pause online), with at most 2 games at a time: a rollback pair (persistent, a
+rematch, stage 27) wrote its live stream, then two spectators played it fed at about the live rate, the
+second 30 s later (run s6a): both identical, 72 hashes, 3 of 3 sync points, both results the same.
+
 Tests: `lobby/tests/test_spectate.py` (13), `tests/test_replays.py`
 `test_live_stream_plays_like_the_file` (the game's writer and reader against Python's parser).

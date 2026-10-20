@@ -376,8 +376,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "'로비에서 대기 중', 'Ranked 검색 중' 또는 내 매치(캐릭터, Ranked 세트 점수)를 시간과 함께 이 PC의 Discord "
         "앱으로 표시합니다. Discord가 실행 중이 아니면 아무 일도 일어나지 않습니다.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "이 사본에는 아직 Discord 애플리케이션 ID가 없어 지금은 아무 효과가 없습니다.",
     "Power saving (laptops, handhelds)": "절전 (노트북, 휴대용 PC)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -808,6 +806,7 @@ MESSAGES = {
     "create a room first, then invite": "먼저 방을 만든 뒤 초대하세요",
     "that friend is busy right now": "그 친구는 지금 바쁩니다",
     "one invite at a time": "초대는 한 번에 하나만",
+    "wait a moment before inviting again": "잠시 기다린 뒤 다시 초대하세요",
     "that player has invites pending": "그 플레이어에게 대기 중인 초대가 있습니다",
     "that invite is over": "그 초대는 끝났습니다",
     "the invite is no longer possible": "더 이상 초대할 수 없습니다",
@@ -1478,6 +1477,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "게임이 바로 대전 화면으로 열립니다.",
     "The result comes back here: rematch or next game.": "결과는 여기로 돌아옵니다: Rematch 또는 다음 경기.",
     "With a controller: A accepts, B declines.": "컨트롤러: A 수락, B 거절.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "온라인에서는 누구도 대전을 일시정지할 수 없습니다. Start로 일시정지 메뉴가 열리지 않습니다.",
     "Lobby": "로비",
     "Leaderboard": "순위표",
     "Profile": "프로필",
@@ -1598,6 +1599,7 @@ MESSAGES = {
     "Friends": "친구",
     "Invite to a match": "매치에 초대",
     "Invite to my room": "내 방에 초대",
+    "Invite in {seconds} s": "{seconds}초 후 초대",
     "Remove": "삭제",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "접속 중인 친구를 초대하세요: 상대가 한 번 클릭하면 일반 매치가 시작되거나 내 방으로 들어옵니다.",

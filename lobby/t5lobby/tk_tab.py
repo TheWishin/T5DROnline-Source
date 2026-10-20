@@ -461,6 +461,7 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._tick_set()
+        self._invite_wait_tick()
         self._relogin_tick()
         self._presence_tick()
         self._show_notice()
@@ -990,6 +991,11 @@ class OnlineTab:
         my_room = next((r for r in getattr(self.client, "rooms", None) or [] if me.get("id") in (r.get("members") or [])),
                        None)
         pending = self.outgoing_invite is not None
+        # after a no (or a take-back) the server holds the next invite to this friend back: both invite buttons
+        # off, one counting down the seconds the server said (_invite_wait_tick redraws it every second)
+        wait = 0 if pending else self._invite_wait(f)
+        self._invite_wait_shown = (f.get("name") if f else None, wait)
+        free = free and not wait
         kind, _name = self._selected_request() if ok else (None, None)
         on = {"add": ok, "remove": f is not None,
               "invite": ok and (pending or (free and me.get("status") in ("idle", "queue"))),
@@ -1001,12 +1007,40 @@ class OnlineTab:
                 b.configure(state="normal" if on.get(key) else "disabled")
             except tk.TclError:
                 pass
-        text = t("Cancel the invite") if pending else t("Invite to a match")
+        texts = {"invite": t("Cancel the invite") if pending else t("Invite to a match"),
+                 "invite_room": t("Invite to my room")}
+        if wait:
+            # the seconds go on the button this player would use now: the room's while in a room, else the match's
+            # (only one of the two can be on; the short text keeps the page as wide as before in every language)
+            texts["invite_room" if me.get("status") == "room" else "invite"] = t("Invite in {seconds} s",
+                                                                                 seconds=wait)
+        for key, text in texts.items():
+            try:
+                if key in acts and str(acts[key].cget("text")) != text:
+                    acts[key].configure(text=text)
+            except tk.TclError:
+                pass
+
+    def _invite_wait(self, f):
+        """Seconds until the server takes an invite to friend `f` again (0: now) -- the server's number, counted
+        down by the client (LobbyClient.invite_wait); never a guess of ours."""
+        c = self.client
+        fn = getattr(c, "invite_wait", None) if c is not None else None
+        if f is None or fn is None:
+            return 0
         try:
-            if str(acts["invite"].cget("text")) != text:
-                acts["invite"].configure(text=text)
-        except tk.TclError:
-            pass
+            return int(fn(f.get("name")) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _invite_wait_tick(self):
+        """Every poll: redraw the invite buttons when the selected friend's wait shows another second (or ends)."""
+        if not getattr(self, "friend_actions", None):
+            return
+        f = self._selected_friend() if self._friends_ok() else None
+        wait = 0 if self.outgoing_invite is not None else self._invite_wait(f)
+        if (f.get("name") if f else None, wait) != getattr(self, "_invite_wait_shown", None):
+            self._set_friend_actions()
 
     def do_add_friend(self):
         name = self.friend_name_var.get().strip()

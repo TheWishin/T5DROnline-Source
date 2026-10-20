@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 import util  # noqa: F401
-from util import client, expect
+from util import ServerThread, client, expect
 
 from test_discord import APP, FakeDiscord
 from test_tk_tab import TkBase, tk
@@ -144,8 +144,18 @@ class TkFriendsTest(TkBase):
         self.assertEqual(states, ["cancelled", "declined"])
         self.assertEqual(self.app.games, [])
 
+    def short_hold(self, seconds):
+        """A server that holds an invite back `seconds` after a no (T5L_INVITE_RETRY_SECONDS; 30 by default)."""
+        self.s.stop()
+        self.s = ServerThread(invite_retry_seconds=seconds).start()
+
+    def invite_buttons(self):
+        acts = self.tab.friend_actions
+        return [(str(acts[k].cget("text")), str(acts[k].cget("state"))) for k in ("invite", "invite_room")]
+
     def test_invite_a_friend_from_the_page(self):
         tab = self.tab
+        self.short_hold(2.5)
         self.login()
         self.rival()
         self.befriend()
@@ -159,18 +169,65 @@ class TkFriendsTest(TkBase):
         self.pump(lambda: str(tab.friend_actions["invite"].cget("text")) == "Cancel the invite")
         self.other.answer_invite(ev["invite"], False)
         self.pump(lambda: "Rival declined your invite." in tab.status_var.get())
-        self.pump(lambda: str(tab.friend_actions["invite"].cget("text")) == "Invite to a match")
+        # held back after the no (the server's seconds, counted down), then free again
+        self.assertIn(self.invite_buttons(), ([("Invite in 3 s", "disabled"), ("Invite to my room", "disabled")],
+                                              [("Invite in 2 s", "disabled"), ("Invite to my room", "disabled")]))
+        self.pump(lambda: str(tab.friend_actions["invite"].cget("text")) == "Invite to a match", timeout=6)
+        self.assertEqual(str(tab.friend_actions["invite"].cget("state")), "normal")
         # to the room: the friend joins it with one click and the match starts
         tab.actions["room"].invoke()
         self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
-        time.sleep(2.1)
-        self.s.call(lambda: self.s.srv.retry_after.clear())       # (after a no: T5L_INVITE_RETRY_SECONDS)
         tab.friend_actions["invite_room"].invoke()
         ev = expect(self.other, "invited")
         self.assertEqual(ev["kind"], "room")
         self.other.answer_invite(ev["invite"], True)
         self.pump(lambda: len(self.app.games) == 1)
         self.assertEqual(self.app.games[0].env["T5_NET_MODE"], "host")      # the room's owner is P1
+
+    def test_the_invite_buttons_count_the_wait_down(self):
+        # (1.1.3) After a no the lobby holds the next invite to that friend back (T5L_INVITE_RETRY_SECONDS) and used to
+        # say so only in the status line, after the next click. Both invite buttons are off now, and the one this
+        # player would use (in a room: the room's) counts down the seconds the server said -- per friend, also when
+        # the invite was taken back, and from the refusal when an invite went out anyway (the server stays the
+        # authority).
+        tab = self.tab
+        self.login()
+        self.rival()
+        self.befriend()
+        third = client(self.s, "Third", password="third-pw1", register=True)
+        self.addCleanup(third.close)
+        third.add_friend("Ranker")
+        self.pump(lambda: "in:Third" in texts(tab.tv_requests))
+        tab.tv_requests.selection_set("in:Third")
+        self.pump(lambda: str(tab.friend_actions["accept"].cget("state")) == "normal")
+        tab.friend_actions["accept"].invoke()
+        self.pump(lambda: "f:Third" in texts(tab.tv_friends))
+        tab.actions["room"].invoke()                                       # in a room: both invite buttons count
+        tab.tv_friends.selection_set("f:Rival")
+        self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
+        tab.friend_actions["invite_room"].invoke()
+        ev = expect(self.other, "invited")
+        self.pump(lambda: str(tab.friend_actions["invite"].cget("text")) == "Cancel the invite")
+        tab.friend_actions["invite"].invoke()                              # taken back: held back as well
+        self.pump(lambda: str(tab.friend_actions["invite_room"].cget("text")).startswith("Invite in "))
+        self.assertIn(self.invite_buttons(), ([("Invite to a match", "disabled"), ("Invite in 30 s", "disabled")],
+                                              [("Invite to a match", "disabled"), ("Invite in 29 s", "disabled")]))
+        first = tab.client.invite_wait("Rival")
+        self.pump(lambda: tab.client.invite_wait("Rival") < first, timeout=3)
+        self.pump(lambda: self.invite_buttons()[1][0] == f"Invite in {tab.client.invite_wait('Rival')} s")
+        tab.tv_friends.selection_set("f:Third")                            # another friend: free
+        self.pump(lambda: self.invite_buttons() == [("Invite to a match", "disabled"), ("Invite to my room", "normal")])
+        tab.tv_friends.selection_set("f:Rival")
+        self.pump(lambda: self.invite_buttons()[1][1] == "disabled")
+        # a launcher that missed the update (or a stale list): the server refuses, says the seconds, the buttons follow
+        tab.client.invite_waits.clear()
+        self.pump(lambda: self.invite_buttons()[1] == ("Invite to my room", "normal"))
+        time.sleep(2.1)                                                    # (one invite per 2 s)
+        tab.friend_actions["invite_room"].invoke()
+        self.pump(lambda: "try again in" in tab.status_var.get())
+        self.pump(lambda: self.invite_buttons()[1][1] == "disabled" and self.invite_buttons()[1][0].startswith("Invite in 2"))
+        self.assertIsNone(self.other.next_event(0.3, ("invited",)))       # no second question on Rival's screen
+        self.assertEqual(ev["kind"], "room")
 
     def test_a_guest_and_a_server_without_friends(self):
         tab = self.tab

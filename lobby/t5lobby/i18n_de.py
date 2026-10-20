@@ -415,8 +415,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "„In der Lobby“, „Sucht ein Ranked-Match“ oder dein Match (Kämpfer, Stand im Ranked-Set) mit Zeit, über die "
         "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
     "Power saving (laptops, handhelds)": "Stromsparen (Laptops, Handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -883,6 +881,7 @@ MESSAGES = {
     "create a room first, then invite": "Erstelle zuerst einen Raum, dann lade ein",
     "that friend is busy right now": "Dieser Freund ist gerade beschäftigt",
     "one invite at a time": "Immer nur eine Einladung",
+    "wait a moment before inviting again": "Warte einen Moment, bevor du wieder einlädst",
     "that player has invites pending": "Dieser Spieler hat noch offene Einladungen",
     "that invite is over": "Diese Einladung ist vorbei",
     "the invite is no longer possible": "Die Einladung ist nicht mehr möglich",
@@ -1620,6 +1619,8 @@ MESSAGES = {
     "The result comes back here: rematch or next game.":
         "Das Ergebnis kommt hierher zurück: Rematch oder nächstes Spiel.",
     "With a controller: A accepts, B declines.": "Mit Controller: A nimmt an, B lehnt ab.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "Online kann niemand den Kampf pausieren: Start öffnet kein Pausenmenü.",
     "Lobby": "Lobby",
     "Leaderboard": "Rangliste",
     "Profile": "Profil",
@@ -1747,6 +1748,7 @@ MESSAGES = {
     "Friends": "Freunde",
     "Invite to a match": "Zum Match einladen",
     "Invite to my room": "In den Raum einladen",
+    "Invite in {seconds} s": "Einladen in {seconds} s",
     "Remove": "Entfernen",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Lade einen Freund ein, der online ist: Ein Klick auf seiner Seite startet ein Casual-Match oder holt ihn "

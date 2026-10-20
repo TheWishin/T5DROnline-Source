@@ -67,7 +67,7 @@ from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, winfront
+from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, tklist, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -157,10 +157,23 @@ def online_dir():
     return d
 
 
-def rank_text(p):
+def rank_text(p, plates=False):
+    """The RANK cell of a list. With the game's rank plates in the row (plates=True) only what the plate does
+    not say: a placement, a provisional rank."""
     if p.get("guest"):
         return t("guest")
+    if plates and ranks.display_name(p):
+        if p.get("placement"):
+            n, k = p["placement"]
+            return t("placement {done}/{total}", done=n, total=k)
+        return t("(provisional)") if p.get("provisional") else ""
     return ranks.label(p)
+
+
+def _reselect(tv):
+    """After an in-place update: tell the list's selection handlers again (the selected row may have changed)."""
+    if tv.selection():
+        tv.event_generate("<<TreeviewSelect>>")
 
 
 def _controls_path_for(settings):
@@ -1055,29 +1068,28 @@ class OnlineTab:
         friends = fl.get("friends") or []
         incoming, outgoing = fl.get("incoming") or [], fl.get("outgoing") or []
         order = {"online": 0, "in_match": 1}
-        keep = (self.tv_friends.selection(), self.tv_requests.selection())
         self.friend_rows = {}
-        self.tv_friends.delete(*self.tv_friends.get_children())
+        rows = []
+        plates = self.view.plates_on()
         for f in sorted(friends, key=lambda f: (order.get(f.get("status"), 2), f["name"].lower())):
             iid = "f:" + f["name"]
             self.friend_rows[iid] = f
-            self.tv_friends.insert("", "end", iid=iid, values=(f["name"], rank_text(f), self._friend_state_text(f)),
-                                   image=self.view.friend_image(f.get("status")),
-                                   tags=() if f.get("status") != "offline" else ("closed",))
-        self.tv_requests.delete(*self.tv_requests.get_children())
+            rows.append((iid, (f["name"], rank_text(f, plates), self._friend_state_text(f)),
+                         self.view.friend_image(f.get("status"), f),
+                         () if f.get("status") != "offline" else ("closed",)))
+        tklist.sync(self.tv_friends, rows)
+        rows = []
         for r in incoming:
             iid = "in:" + r["name"]
             self.friend_rows[iid] = r
-            self.tv_requests.insert("", "end", iid=iid, values=(r["name"], t("wants to be your friend")))
+            rows.append((iid, (r["name"], t("wants to be your friend")), None, ()))
         for r in outgoing:
             iid = "out:" + r["name"]
             self.friend_rows[iid] = r
-            self.tv_requests.insert("", "end", iid=iid, values=(r["name"], t("asked: waiting for an answer")),
-                                    tags=("closed",))
-        for tv, sel in zip((self.tv_friends, self.tv_requests), keep):
-            for iid in sel:
-                if tv.exists(iid):
-                    tv.selection_set(iid)
+            rows.append((iid, (r["name"], t("asked: waiting for an answer")), None, ("closed",)))
+        tklist.sync(self.tv_requests, rows)
+        for tv in (self.tv_friends, self.tv_requests):
+            _reselect(tv)
         online = sum(1 for f in friends if f.get("status") != "offline")
         self.friends_count_var.set(t("{online} online · {count} of {max}", online=online, count=len(friends),
                                      max=fl.get("max") or 100) if friends else "")
@@ -1363,16 +1375,27 @@ class OnlineTab:
     def load_leaderboard(self):
         if not self.client:
             return
+        self.call(self.client.leaderboard, 50, then=self._show_board)
 
-        def done(rows):
-            self.tv_board.delete(*self.tv_board.get_children())
-            for r in rows:
-                self.tv_board.insert("", "end", iid="lb:" + r["name"], values=(
-                    r["place"], r["name"] + ("  *" if r.get("online") else ""),
-                    r["rank"] + ("?" if r.get("provisional") else ""), r["rating"],
-                    _record((r["wins"], r["losses"])), self.table.fighter_name(r["main"]) if r.get("main") else ""),
-                    image=self.view.rank_image(r))
-        self.call(self.client.leaderboard, 50, then=done)
+    def _show_board(self, rows):
+        self._last_board = rows
+        plates = self.view.plates_on()
+        tklist.sync(self.tv_board, [("lb:" + r["name"], (
+            r["place"], r["name"] + ("  *" if r.get("online") else ""),
+            (t("(provisional)") if r.get("provisional") else "") if plates else
+            ranks.display_name(r) + ("?" if r.get("provisional") else ""), r["rating"],
+            _record((r["wins"], r["losses"])), self.table.fighter_name(r["main"]) if r.get("main") else ""),
+            self.view.rank_image(r), ()) for r in rows])
+        self.view.show_empty(self.tv_board, not rows)
+
+    def art_ready(self):
+        """The game's rank plates became available (rank_art.py): show them in the lists."""
+        if getattr(self, "_last_lobby", None) and self.client:
+            self._fill_lists(self._last_lobby)
+        if getattr(self, "_last_board", None) and self.client:
+            self._show_board(self._last_board)
+        if self.client:
+            self._fill_friends()
 
     def _profile_of_selected(self):
         sel = self.tv_players.selection()
@@ -1693,12 +1716,13 @@ class OnlineTab:
             self.status(t("Rematch offered; waiting for your opponent..."))
 
     def _fill_lists(self, ev):
+        self._last_lobby = ev
         me = self.client.me if self.client else None
         mine = self.client.build.build_id if self.client else None
         my_rtt = (self.client.server_rtt if self.client else None) or 0.0
-        keep = self.tv_players.selection()
-        self.tv_players.delete(*self.tv_players.get_children())
+        rows = []
         rtt_of = {}
+        plates = self.view.plates_on()
         for p in ev.get("players", []):
             # another version: that is what matters (no challenge either way), not what they are doing
             status = _word(STATUS_TEXT, p["status"]) if p["build"] == mine else t("other version")
@@ -1710,14 +1734,10 @@ class OnlineTab:
             name = p["name"] + (self._you_suffix() if me and p["id"] == me["id"] else "")
             main = self.table.fighter_name(p.get("main")) if p.get("main") else ""
             tags = ("me",) if me and p["id"] == me["id"] else ("other",) if p["build"] != mine else ()
-            self.tv_players.insert("", "end", iid=p["id"], values=(name, rank_text(p), rating,
-                                                                   _record(rec), main, status, ping),
-                                   image=self.view.ping_image(ms), tags=tags)
-        for iid in keep:
-            if self.tv_players.exists(iid):
-                self.tv_players.selection_set(iid)
-        keep = self.tv_rooms.selection()
-        self.tv_rooms.delete(*self.tv_rooms.get_children())
+            rows.append((p["id"], (name, rank_text(p, plates), rating, _record(rec), main, status, ping),
+                         self.view.player_image(ms, p), tags))
+        tklist.sync(self.tv_players, rows)
+        rows = []
         for r in ev.get("rooms", []):
             state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)
                              + ([t("(other version)")] if r["build"] != mine else [])
@@ -1725,12 +1745,10 @@ class OnlineTab:
             # the lock: nobody can join it now -- or only with its password / invite code
             closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
             ms = rtt_of.get(r["owner"].get("id"))
-            self.tv_rooms.insert("", "end", iid=r["id"], values=(r["name"], r["owner"]["name"], state,
-                                                                 "" if ms is None else f"~{ms:.0f} ms"),
-                                 image=self.view.room_image(closed), tags=("closed",) if closed else ())
-        for iid in keep:
-            if self.tv_rooms.exists(iid):
-                self.tv_rooms.selection_set(iid)
+            rows.append((r["id"], (r["name"], r["owner"]["name"], state, "" if ms is None else f"~{ms:.0f} ms"),
+                         self.view.room_image(closed), ("closed",) if closed else ()))
+        tklist.sync(self.tv_rooms, rows)
+        _reselect(self.tv_rooms)
         q = ev.get("queue", {})
         if self.client and self.client.me and self.client.me.get("status") == "queue":
             self.status(t("Searching... ({ranked} in the ranked queue, {quick} quick)", ranked=q.get("ranked", 0),

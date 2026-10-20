@@ -1768,6 +1768,12 @@ MESSAGES = {
     "Dismiss": "閉じる",
     "Use a controller here": "ここでコントローラーを使う",
     "none open": "募集中のルームなし",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "今はほかに誰もオンラインにいません。Ranked 対戦と Quick Match は誰かが来るまで探し続けます。",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "募集中のルームはありません。ルームを作ると、フレンドが入って交代で対戦できます。",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "まだ Ranked の結果がある人はいません。Ranked セットに勝って一番乗りしよう。",
     "In your room “{name}”. Waiting for a second player...":
         "自分のルーム「{name}」。2人目のプレイヤーを待っています...",
     "In the room “{name}”. The match starts when you are both ready.":

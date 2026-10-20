@@ -1769,6 +1769,12 @@ MESSAGES = {
     "Dismiss": "Ocultar",
     "Use a controller here": "Usar um controle aqui",
     "none open": "nenhuma aberta",
+    "Nobody else is online right now. Ranked match and Quick match keep looking until someone comes.":
+        "Ninguém mais está online agora. Partida Ranked e Quick Match continuam procurando até alguém chegar.",
+    "No rooms open. Create one: friends can join it and play in turn.":
+        "Nenhuma sala aberta. Crie uma: seus amigos podem entrar e jogar em rodízio.",
+    "Nobody has a ranked result yet. Win a ranked set to be the first.":
+        "Ninguém tem resultado ranqueado ainda. Vença um set ranqueado e seja o primeiro.",
     "In your room “{name}”. Waiting for a second player...": "Na sua sala “{name}”. Esperando um segundo jogador...",
     "In the room “{name}”. The match starts when you are both ready.":
         "Na sala “{name}”. A partida começa quando os dois estiverem prontos.",

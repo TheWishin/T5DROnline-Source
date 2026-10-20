@@ -2482,72 +2482,87 @@ as before; the command list gets the same calls in the same order.
 
 **Interleaved A/B (the cleanest measure on a busy PC).** One game, `RSX_XLAT_OVERLAP_AB=8`: the frames switch
 every 8 between the patch and "everything on the walker" (exactly the old path), so both kinds share the game, the
-stage, the load and the processors; each line compares 1,000 fight frames of each kind. Four processors (0x550000,
-four cores of CCD1, one thread each), Lili vs Asuka, with and without `slow_core --busy 40`; 24-31 of the 32
-processors were busy with other agents' games and compilers, so even the runs without slow_core are a slow PC
-(43-55 fps). Means of the lines per run (2-3 lines of 1,000 + 1,000 frames each), ms:
+stage, the load and the processors; each line compares 1,000 fight frames of each kind. Four processors (four
+cores, one thread each), Lili vs Asuka. "slow_core 72" (`tools/slow_core.py --busy 72`) is the weak-PC stand-in:
+every thread of the game slowed alike to 37-52 fps, the 4 processors saturated (every thread competes, like the
+i5-7300HQ's, whose cores are ~2.2-2.5 times slower than this 7950X's). Medians of the windows, before -> after, ms:
 
-| run | walker CPU per frame | translation (flush -> flip reached) | frame time, median | frame time, mean | frames over 17.5 ms |
+| build, run | windows | walker CPU per frame | translation | frame time, median | frames over 17.5 ms |
 |---|---|---|---|---|---|
-| pool stage (30), slow_core 40, mode 2 | 3.21 -> 3.03 | 5.44 -> 4.94 | 22.85 -> **21.03** | 23.77 -> 23.19 | 1,677 -> 1,557 (-7 %) |
-| pool stage, no slow_core, mode 2 | 2.45 -> 2.28 | 4.13 -> 3.94 | 17.51 -> **17.05** | 18.48 -> 17.84 | 1,287 -> 1,052 (-18 %) |
-| stage 20, slow_core 40, mode 2 | 2.20 -> 1.95 | 2.14 -> 1.89 | 16.84 -> 16.76 | 18.11 -> 18.23 | 1,009 -> 868 (-14 %) |
-| stage 20, no slow_core, mode 2 | 3.12 -> 2.75 | 5.10 -> 4.56 | 21.00 -> **19.86** | 22.72 -> 20.59 | 1,825 -> 1,635 (-10 %) |
-| pool stage, slow_core 40, mode 1 (present only) | 3.34 -> 3.31 | 5.95 -> 5.87 | 23.00 -> **22.10** | 24.27 -> 23.26 | 1,910 -> 1,847 (-3 %) |
+| **1.1.4 (with 0066)**, pool stage, slow_core 72 (39 fps) | 2 | 2.73 -> 2.43, 2.48 -> 2.25 | 7.94 -> 7.60, 7.63 -> 7.35 | 24.56 -> **23.53**, 24.32 -> **23.41** | 978 -> 950, 924 -> 878 |
+| **1.1.4**, stage 20, slow_core 72 (51 fps) | 3 | -0.32..-0.36 | -0.32..-0.36 | 20.06 -> **19.09**, 19.02 -> **16.91**, 20.31 -> **19.64** | 766 -> 604, 585 -> 434, 779 -> 686 |
+| 1.1.3 base, pool stage, slow_core 72 (46 fps), two masks | 4 | -0.19..-0.26 | -0.2..-2.3 | 23.85 -> 23.01, 20.55 -> 19.97, 24.08 -> 23.27, 19.96 -> 19.37 | -2..-21 % |
+| 1.1.3 base, stage 20, slow_core 72 (46 fps), two masks | 4 | -0.21..-0.30 | -0.5..-2.3 | 23.88 -> 23.05, 20.96 -> 20.10, 24.17 -> 23.43, 20.08 -> 19.36 | -1..-23 % |
+| 1.1.3 base, pool / stage 20 without slow_core (60 fps) | 6 | -0.14..-0.21 | -0.14..-0.21 | 16.68 = 16.68 (every frame on time either way) | 0-9 -> 0-8 |
 
-- The present on the renderer thread (mode 1) leaves the translation as it was and takes ~1 ms off the median of
-  frames that miss their vblank: a late frame was released ~2 ms after it was translated, now ~0.2 ms.
-- Recording the calls through the renderer thread (mode 2) also takes 0.2-0.5 ms off the translation itself
-  (the walker's processor time 0.15-0.4 ms): the display driver's time for ~2,000-2,700 calls a frame, less the
-  packets' cost. Together: the median frame 0.5-1.8 ms shorter where the frames are late, 7-18 % fewer frames over
-  17.5 ms; a frame that already made its vblank (stage 20 slowed, median at 16.8) gains nothing in fps.
-- Earlier A/B lines of mode 2 against mode 1 (the same diagnostic with an earlier build): translation 4.30 ->
-  4.10 and 4.26 -> 4.06 ms (pool stage, slowed), 6.03 -> 5.61 under heavier load with the frame median 29.58 ->
-  29.25.
-- The renderer thread's processor time: ~0.3-0.4 ms a frame in mode 1 (the present), ~2 ms in mode 2 (the calls,
-  its short spins between them and the wake-ups: ~700-1,400 context switches a second) -- the reason power saving
-  keeps mode 1.
+- The frame median is 0.6-1.0 ms shorter (up to 2.1) wherever frames miss their vblank, 3-26 % fewer frames over
+  17.5 ms; at 60 fps nothing changes but the headroom (translation -0.15-0.2 ms).
+- Two parts: the present on the renderer thread (mode 1) leaves the translation as it was and releases a late
+  frame ~0.2 ms after it was translated instead of ~2 ms (A/B mode 1 against 0, pool stage slowed: frame median
+  24.40 -> 23.62 and 21.60 -> 20.58, frames over 17.5 ms 983 -> 960 and 927 -> 887); recording the calls through the
+  renderer thread (mode 2) takes 0.2-0.4 ms more off the walker -- the display driver's time for ~2,000-2,700 calls
+  a frame, less the packets' (A/B mode 2 against 1: translation 4.30 -> 4.10, 4.26 -> 4.06, 6.03 -> 5.61 ms).
+- The renderer thread's processor time: ~0.3 ms a frame with mode 1, ~0.5 ms with mode 2 (~150 context switches a
+  second). The first version of mode 2 woke the thread every 16 calls and let it spin 300 pauses between them:
+  ~2 ms a frame and 700-1,400 switches a second, and on saturated 4 processors (slow_core 60) paired runs lost what
+  the walk gained (pool stage 53.9 -> 52.4 fps); woken every 256 calls with no spin it gains there (rows above).
 
-PAIRED_PLACEHOLDER
+**Paired runs against integration-114** (the same `t5dr_game.dll` with 0066 for both runtimes; `tools/fight_bench.py`
+on 0x55 / 0x5500, masks swapped every round, slow_core 72 on each; the PC was busy with other agents' games -- up to
+5 others and 2 compilers -- so the stand-in ran at 17-48 fps and the mask moved fps by up to 30 %; fps geometric mean
+over the rounds, p99 median of the rounds):
+
+| stage | rounds | integration-114 | + 0067 | faster in | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| pool (30), slow_core 72 | 4 | 27.2 fps, p99 101.9 ms | **27.4 fps, p99 81.7 ms** | 3 of 4 | 1,903 -> 1,965 |
+| 20, slow_core 72 | 4 | 36.0 fps, p99 42.8 ms | **37.5 fps (+4.4 %), p99 35.4 ms** | 2 of 4 | 2,306 -> 2,522 |
+| pool, no slow_core | 2 | 59.85 fps, p99 22.8 ms | 59.91 fps, p99 22.4 ms | 2 of 2 | 588 -> 564 |
+
+Earlier paired sets on the 1.1.3 base (quieter PC): pool stage slow_core 40 56.1 -> 57.6 fps (+2.8 %, 3 of 4), slow_core
+72 42.5 -> 45.4 (+6.8 %, 3 of 4, p99 32.1 -> 27.9 ms); stage 20 slow_core 72 40.2 -> 42.5 (+5.6 %, p99 31.2 -> 28.2).
+Paired runs on this PC cannot resolve a 3 % change against the other programs' load; the A/B above can.
 
 ### Same picture, same game
 
 **Pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off`, Jack-5 vs Bryan, Native): the
-game of the series to 0065 as host and this branch as joiner run the same game frames, and at lockstep frames
-300, 900 and 1500 both dump every live surface and the backbuffer (`T5_NET_SHOT` + `LD_SURF_DUMP`), compared
-byte for byte (`build/xlatov/scripts/paircmp.py`). As in 0062's check, the stages' animated parts follow the
-frames each game ran since it started, so only pairs whose two renderer frame counters matched can be identical:
+old runtime as host and this branch as joiner run the same game frames, and at lockstep frames 300, 900 and 1500
+both dump every live surface and the backbuffer (`T5_NET_SHOT` + `LD_SURF_DUMP`), compared byte for byte
+(`build/xlatov/scripts/paircmp.py`). As in 0062's check, the stages' animated parts follow the frames each game ran
+since it started, so only pairs whose two renderer frame counters matched can be identical; a pair whose counters
+differed was run again:
 
-| stage | pair (host / joiner) | counters | result |
-|---|---|---|---|
-| 30 (pool) | old / new | equal | **15 of 15 identical** (3 shots x 4 surfaces + backbuffer) |
-| 30 | old / old (control) | equal | 15 of 15 identical |
-| 34 (misty swamp: stage blur, depth snapshot, compute) | old / new | equal | **15 of 15 identical** |
-| 34 | old / old | equal | 15 of 15 identical |
-| 20 (glow) | old / old | equal | 21 of 21 identical |
-| 20 | old / new, twice | 1 apart | 9 of 21: shadow map and glow buffers identical, the animated puddles 0.3-2 % of the pixels apart |
-| 30 | new / new | 1 apart | 3 of 15: shadow maps identical, the pool's water apart -- the same as any two games one frame apart |
-STAGE20_MORE
+| base | stage | pair (host / joiner) | counters | result |
+|---|---|---|---|---|
+| **1.1.4** (integration-114, same game DLL) | 30 (pool) | old / new | equal | **15 of 15 identical** (3 shots x 4 surfaces + backbuffer) |
+| **1.1.4** | 20 (glow) | old / new | equal on the 7th try | **21 of 21 identical** (6 surfaces + backbuffer x 3) |
+| 1.1.4 | 20 | old / new, 6 tries | 1-6 apart | 9 of 21: shadow map and glow buffers identical, the animated puddles apart |
+| 1.1.3 | 30 | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 34 (stage blur, depth snapshot, compute) | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 20 | old / old | equal | 21 of 21 identical |
+| 1.1.3 | 30 | new / new | 1 apart | 3 of 15: shadow maps identical, the pool's water apart -- as any two games a frame apart |
 
 **Same game.** Rollback pairs (RTT 150 +-5 ms, 3 % loss, delay 6, two matches: Asuka vs Lili on stage 20, then
-on the pool stage; host on 0x00FF0000, joiner on 0x55000000) and lockstep pairs (RTT 30, 1 % loss), new/new and
-both cross directions (old host / new joiner, new host / old joiner):
+on the pool stage; host on 0x00FF0000, joiner on 0x55000000) and lockstep pairs (RTT 30, 1 % loss); "old" = the
+integration-114 runtime with the same `t5dr_game.dll` (the same code ID):
 
-| pair | mode | frames compared per side | rollbacks per side | result |
-|---|---|---|---|---|
-| new / new | rollback | 10,800 | 1,316-1,378 | 0 mismatching, the same two result hashes on both PCs |
-| old / new | rollback | 10,800 | 1,317-1,373 | the same |
-| new / old | rollback | 10,800 | 1,319-1,376 | the same |
-| new / new, old / new, new / old | lockstep | 10,800-11,400 | -- | 0 mismatching, the same hashes |
+| base | pair (host / joiner) | mode | frames compared per side | rollbacks per side | result |
+|---|---|---|---|---|---|
+| **1.1.4** | new / new | rollback | 10,800 | 1,277-1,370 | 0 mismatching, the same two result hashes on both PCs |
+| **1.1.4** | old / new | rollback | 10,800 | 1,306-1,375 | the same |
+| **1.1.4** | new / new, new / old | lockstep | 10,800-11,400 | -- | 0 mismatching, the same hashes |
+| **1.1.4** | e2e `cross_build_pair` (lobby, a match + 2 rematches, this build / integration-114) | rollback, lockstep | -- | -- | PASS, 72 checks each, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | rollback | 10,800 | 1,316-1,378 | 0 mismatching, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | lockstep | 10,800-11,400 | -- | the same |
 
-Nothing the patch adds writes guest memory (`tests/test_xlat_overlap.py` checks the patch), so two players may
-run either build. `tests/c/xlat_ring_test.c` (built against the patched source by the test): 300,000 random calls
-of all 30 recorded methods with every array size the translation passes, NULL pointers, render-target ranges,
-clears with and without rects, plus presents and both syncs, through a 16 KB ring (it wraps thousands of times and
-fills); every call reaches the replaying thread once, in order, with its arguments (the two logs byte-identical);
-copies of the ring with a lost root constant, a render-target list recorded as one handle and a lost copy box
-fail it, one that never publishes hangs (the test's timeout reports it). Smoke quick: exit 0
-(PASS, two fps WARNs with 7 other games and 4 compilers running). `tests/` 788 OK.
+Nothing the patch adds writes guest memory (`tests/test_xlat_overlap.py` checks the patch): what the game computes
+cannot change, so the code ID stays (no CODE_VERSION bump) and two players may run either build.
+`tests/c/xlat_ring_test.c` (built against the patched source by the test): 300,000 random calls of all 30 recorded
+methods with every array size the translation passes, NULL pointers, render-target ranges, clears with and without
+rects, plus presents and both syncs, through a 16 KB ring (it wraps thousands of times and fills); every call
+reaches the replaying thread once, in order, with its arguments (the two logs byte-identical); copies of the ring
+with a lost root constant, a render-target list recorded as one handle and a lost copy box fail it, one that never
+publishes hangs (the test's timeout reports it). Smoke quick on the final build: exit 0 (81 PASS, two fps WARNs with
+7 other games running). `tests/` 809 OK; `tools/prepare_ps3recomp.py` applies all 50 patches.
 
 ### Not done
 

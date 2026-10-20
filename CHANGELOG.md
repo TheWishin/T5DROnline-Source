@@ -33,6 +33,13 @@ part is in the README's status table.
   every translated function was run old against new on millions of random inputs, and old and new builds played
   each other online frame for frame in sync. The first build after updating translates the game code again (about
   25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
+- **Weak PCs: the frame goes to the graphics card beside the game's next frame.** A frame used to be translated for
+  the graphics card, then sent and shown, and only then could the game start its next one. Now the sending and
+  showing -- and the graphics driver's work while a frame is translated -- run on a thread of their own, beside the
+  game. On a 4-core PC slowed to 40-50 fps a frame that misses 60 comes about 1 ms sooner (pool stage: median frame
+  24.6 -> 23.5 ms; stage 20: 20.1 -> 19.1 ms) and 3-26 % fewer frames are slow; a PC that already runs at 60 only
+  gains headroom. The picture and the game are exactly the same: builds with and without it play each other in sync.
+  `RSX_XLAT_OVERLAP=0` (Extra settings) turns it off. docs/RENDER_PERF.md "Overlap: the present and the D3D12 calls".
 
 ### Building the game
 - **Press BUILD GAME once after updating** (1.1.4 has a new code ID: 1.1.3 and 1.1.4 builds never meet online).

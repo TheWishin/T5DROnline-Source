@@ -64,6 +64,17 @@ def log(msg):
     print(f"[netplay] {msg}", flush=True)
 
 
+def bind_ip(env):
+    """T5_NET_BIND when it is an IPv4 address, else 127.0.0.1: a stub game only ever plays on this PC, so it
+    never binds every interface (no Windows Firewall prompt; the real game: src/netplay/net_bind.h)."""
+    v = (env.get("T5_NET_BIND") or "").strip()
+    try:
+        socket.inet_pton(socket.AF_INET, v)
+        return v
+    except OSError:
+        return "127.0.0.1"
+
+
 class InboundFirewall:
     """T5_NET_TEST_INBOUND on one socket (tests only): what a firewall that blocks the game lets through.
     A dropped datagram reads as "nothing arrived" (socket.timeout), as with the real firewall."""
@@ -135,7 +146,7 @@ class Session:
 
     def open(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.bind(("0.0.0.0", self.port))
+        s.bind((bind_ip(self.env), self.port))
         if os.name == "nt":
             sys.path.insert(0, LOBBY)
             from t5lobby.proto import disable_udp_connreset

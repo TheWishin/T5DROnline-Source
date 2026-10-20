@@ -21,12 +21,27 @@ here instead: RelayBridge carries the game's packets (the game talks to it on
 moves the match onto it as soon as it works both ways.
 """
 import asyncio
+import ipaddress
 import os
 import socket
 import statistics
 import time
 
 from . import proto
+
+def bind_ip():
+    """The address the game socket binds: every interface ("0.0.0.0"), or T5_NET_BIND when it is an IPv4
+    address. Only test tools set it (127.0.0.1: two players on this PC, nothing reaches the network, no
+    Windows Firewall prompt; the game reads the same variable, src/netplay/net_bind.h). A player's launcher
+    never sets it."""
+    v = os.environ.get("T5_NET_BIND", "").strip()
+    if not v:
+        return "0.0.0.0"
+    try:
+        return str(ipaddress.IPv4Address(v))
+    except ValueError:
+        return "0.0.0.0"
+
 
 KIND_RANK = {"local": 0, "mapped": 1, "public": 1, "reflexive": 2, "predicted": 2, "relay": 3}
 
@@ -80,6 +95,8 @@ def make_inbound_filter(mode):
 
 def local_ipv4s(target_ip):
     """This PC's IPv4 addresses worth offering to a peer behind the same router."""
+    if bind_ip() != "0.0.0.0":
+        return [bind_ip()]          # T5_NET_BIND: the game socket is reachable only there
     out = []
 
     def add(ip):
@@ -105,15 +122,16 @@ def local_ipv4s(target_ip):
 
 
 def open_udp_socket(port=0):
-    """Bind a UDP socket on all interfaces; falls back to any free port when `port` is taken."""
+    """Bind a UDP socket on all interfaces (T5_NET_BIND: that address, see bind_ip); falls back to any free
+    port when `port` is taken."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.bind(("0.0.0.0", port))
+        s.bind((bind_ip(), port))
     except OSError:
         if not port:
             s.close()
             raise
-        s.bind(("0.0.0.0", 0))
+        s.bind((bind_ip(), 0))
     proto.disable_udp_connreset(s)
     s.setblocking(False)
     return s
@@ -431,7 +449,7 @@ def free_udp_port():
     """A UDP port that is free on this PC right now (for the game behind a relay bridge)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.bind(("0.0.0.0", 0))
+        s.bind((bind_ip(), 0))
         return s.getsockname()[1]
     finally:
         s.close()

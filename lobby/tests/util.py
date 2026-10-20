@@ -15,6 +15,11 @@ os.environ.setdefault("T5_PAD_NAV", "0")
 os.environ["T5_PORTMAP"] = "0"
 # The Online tab's firewall hint does not read this PC's Windows Firewall (test_firewall.py feeds the check its data).
 os.environ.setdefault("T5_FW_CHECK", "0")
+# Every test player is on this PC: game sockets (the lobby client's, t5lobby/nat.py bind_ip, and the tests'
+# stand-ins for the game) bind 127.0.0.1, not every interface -- no Windows Firewall prompt
+# (docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+GAME_IP = os.environ["T5_NET_BIND"]
 
 from t5lobby import proto  # noqa: E402
 from t5lobby.buildid import BuildInfo  # noqa: E402

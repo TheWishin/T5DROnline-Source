@@ -36,6 +36,10 @@ import sys
 import threading
 import time
 
+# Both games of a local pair talk over 127.0.0.1: bind there, not on every interface (no Windows Firewall
+# prompt for each build folder's t5dr.exe; docs/NETPLAY.md "Bind address"). An explicit T5_NET_BIND wins.
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 LOBBY = os.path.join(ROOT, "lobby")
@@ -636,9 +640,7 @@ class Player:
         st["nickname"] = name
         st["background"] = True
         st["input_delay"] = input_delay
-        # T5_NET_BIND: every local test game binds loopback only (no firewall question, nothing reachable from
-        # the network; a game without the switch ignores it)
-        lines = ["PS3_AUDIO_MUTE=1", "PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0", "T5_NET_DESYNC_DUMP=1", "T5_NET_BIND=127.0.0.1",
+        lines = ["PS3_AUDIO_MUTE=1", "PAD_NO_KEYBOARD=1", "T5_NET_LOCALPAD=0", "T5_NET_DESYNC_DUMP=1",
                  f"RSX_SHADER_CACHE_DIR={ctx.run.shader_cache}", f"PS3_TITLE=T5DR e2e {name}"]
         if kind == "real":
             # the in-game select (ingame-select): this player's pad file, the cursor cell in the log

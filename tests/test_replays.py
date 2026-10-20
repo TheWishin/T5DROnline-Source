@@ -427,7 +427,8 @@ class GameCodeTest(unittest.TestCase):
         """Spectating (docs/SPECTATE.md): the live stream written next to the replay holds the same session --
         Python's parser reads it whole, and the game's growing-file playback gives the same inputs, fight
         lines and sync points as the replay file."""
-        sys.path.insert(0, os.path.join(ROOT, "lobby"))
+        if os.path.join(ROOT, "lobby") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "lobby"))     # (appended: lobby/run.py must not shadow tools/smoke/run.py)
         from t5lobby import spectate
         d = tempfile.mkdtemp(dir=self.tmp)
         live = os.path.join(d, "live.t5live")

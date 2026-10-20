@@ -11,19 +11,24 @@ import tkinter as tk
 from tkinter import ttk
 
 from . import spectate, theme
-from .i18n import N_, t
+from .i18n import t
 from .theme import C
 
-END_TEXT = {
-    "over": N_("The live match is over."),
-    "not_allowed": N_("The players turned spectators off."),
-    "stopped": N_("The match data stopped coming."),
-    "unavailable": N_("The match data stopped coming."),
-    "too_long": N_("This session is too long to watch from its start."),
-    "your_match": N_("Your own match is starting."),
-    "damaged": N_("The match data was damaged."),
-    "left": N_("You stopped watching."),
-}
+def end_text(reason):
+    """Why no more of the match comes (the server's spec_end reasons), for the Spectating card."""
+    if reason == "over":
+        return t("The live match is over.")
+    if reason == "not_allowed":
+        return t("The players turned spectators off.")
+    if reason == "too_long":
+        return t("This session is too long to watch from its start.")
+    if reason == "your_match":
+        return t("Your own match is starting.")
+    if reason == "damaged":
+        return t("The match data was damaged.")
+    if reason == "left":
+        return t("You stopped watching.")
+    return t("The match data stopped coming.")      # stopped, unavailable, anything else
 
 
 class Spectating:
@@ -131,7 +136,7 @@ class Spectating:
         elif st in ("waiting", "starting"):
             lines.append(t("It plays from the start of the players' session, a few seconds behind."))
         if w.get("end"):
-            lines.append(t(END_TEXT.get(w["end"], END_TEXT["stopped"])))
+            lines.append(end_text(w["end"]))
         self.detail.configure(text="  ".join(lines))
         self.button.configure(text=t("Close") if st == "over" else t("Stop watching"))
 

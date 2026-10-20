@@ -25,31 +25,10 @@ index aae1d81..1ae47e9 100644
          if (total > cores - 1) total = cores - 1;      /* leave the PPU a core */
          if (total > JC_POOL_MAX + 1) total = JC_POOL_MAX + 1;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 25ac5a9..2c1c38c 100644
+index 25ac5a9..68bca88 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -7040,6 +7040,12 @@ static volatile LONG64 g_vj_published, g_vj_claimed, g_vj_completed;
- static LONG64 g_vj_drain_base;
- static volatile LONG g_vj_sleepers;
- static int g_vj_spin = 2000;          /* idle PAUSE spins before a worker sleeps */
-+/* Patch 0065: on a small CPU (host_sched_small) the walker sleeps on
-+ * g_vj_completed after a short spin when a worker still runs a job it needs,
-+ * instead of spinning (20,000 PAUSEs, then SwitchToThread) on the processor
-+ * that worker may be waiting for. */
-+static volatile LONG g_vj_drain_waiting;
-+static u32 g_vj_drain_spin = 20000;
- static int g_vj_threads = -1;            /* -1 not started, 0 off */
- static u8* g_vj_arena; static u32 g_vj_arena_used;
- static ld_vscratch g_vj_walker_scratch;
-@@ -7179,6 +7185,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
-         if (InterlockedCompareExchange64(&g_vj_claimed, c + 1, c) == c) {
-             ld_vjob_run(&g_vjobs[(u64)c % LD_VJOB_CAP], s);
-             InterlockedIncrement64(&g_vj_completed);
-+            if (g_vj_drain_waiting) WakeByAddressAll((PVOID)&g_vj_completed);
-             return 1;
-         }
-     }
-@@ -7187,7 +7194,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
+@@ -7187,7 +7187,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
  static DWORD WINAPI ld_vworker_main(LPVOID arg)
  {
      ld_vscratch* s = (ld_vscratch*)arg;
@@ -58,7 +37,7 @@ index 25ac5a9..2c1c38c 100644
      for (;;) {
          if (ld_vjob_try_run(s)) continue;
          /* idle: spin briefly (draws arrive every few microseconds while a
-@@ -7226,15 +7233,17 @@ static int ld_vjob_enabled(void)
+@@ -7226,13 +7226,14 @@ static int ld_vjob_enabled(void)
       * translation time (patch 0047: walk 3.0-3.6 ms with one, 3.4-3.5 with
       * two; was 3 and 2,000 from 12, 2 from 8). */
      const int cpus = host_sched_cpus();
@@ -70,17 +49,14 @@ index 25ac5a9..2c1c38c 100644
 -     * walk (0.25 of a processor at 32, measured). */
 -    if (host_sched_laptop()) { n = 1; g_vj_spin = 300; }
 +     * walk (0.25 of a processor at 32, measured). Patch 0065: the counts come
-+     * from host_sched_plan.h (the processors the frame stays on; no idle spin
-+     * on 4 cores or fewer). */
++     * from host_sched_plan.h (the processors the frame stays on: one CCD of a
++     * two-CCD Ryzen). */
 +    int n = host_sched_default_threads(HS_ROLE_VERTEX);
 +    g_vj_spin = host_sched_vertex_spin();
      { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
      { const char* t = getenv("RSX_VERTEX_SPIN"); if (t) g_vj_spin = atoi(t) < 0 ? 0 : atoi(t); }
-+    if (host_sched_small()) g_vj_drain_spin = 2000;
      if (n < 1) return 0;
-     if (n > 16) n = 16;
-     g_vj_arena = (u8*)malloc(LD_VJOB_ARENA);
-@@ -7243,7 +7252,7 @@ static int ld_vjob_enabled(void)
+@@ -7243,7 +7244,7 @@ static int ld_vjob_enabled(void)
      int started = 0;
      for (int i = 0; i < n; i++) {
          HANDLE h = CreateThread(NULL, 256 * 1024, ld_vworker_main, &scratch[i], 0, NULL);
@@ -89,21 +65,6 @@ index 25ac5a9..2c1c38c 100644
      }
      g_vj_threads = started;
      fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors%s; "
-@@ -7259,7 +7268,13 @@ static void ld_vjob_drain(void)
-     if (g_vj_completed == g_vj_published) { g_vj_drain_base = g_vj_published; g_vj_arena_used = 0; return; }
-     while (ld_vjob_try_run(&g_vj_walker_scratch)) {}
-     for (u32 spins = 0; g_vj_completed < g_vj_published; spins++) {
--        if (spins < 20000) _mm_pause(); else SwitchToThread();
-+        if (spins < g_vj_drain_spin) { _mm_pause(); continue; }
-+        if (g_vj_drain_spin >= 20000) { SwitchToThread(); continue; }
-+        LONG64 seen = g_vj_completed;
-+        InterlockedExchange(&g_vj_drain_waiting, 1);
-+        if (g_vj_completed == seen && seen < g_vj_published)
-+            WaitOnAddress(&g_vj_completed, &seen, sizeof seen, 1);
-+        InterlockedExchange(&g_vj_drain_waiting, 0);
-     }
-     g_vj_drain_base = g_vj_published;
-     g_vj_arena_used = 0;
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
 index 0ee0df5..edfbd4e 100644
 --- a/runtime/platform/host_sched.c

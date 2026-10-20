@@ -388,8 +388,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "“En el lobby”, “Buscando Ranked” o tu partida (personajes, marcador del set Ranked) con un temporizador, a "
         "través de la app de Discord en esta PC. Sin Discord abierto no pasa nada.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Esta copia aún no tiene un ID de aplicación de Discord, así que por ahora no hace nada.",
     "Power saving (laptops, handhelds)": "Ahorro de energía (laptops, handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -835,6 +833,7 @@ MESSAGES = {
     "create a room first, then invite": "primero crea una sala y luego invita",
     "that friend is busy right now": "ese amigo está ocupado ahora",
     "one invite at a time": "una invitación a la vez",
+    "wait a moment before inviting again": "espera un momento antes de volver a invitar",
     "that player has invites pending": "ese jugador tiene invitaciones pendientes",
     "that invite is over": "esa invitación terminó",
     "the invite is no longer possible": "la invitación ya no es posible",

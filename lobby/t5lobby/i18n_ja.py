@@ -379,8 +379,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "「ロビーで待機中」「Ranked 検索中」、または対戦（キャラクター、Ranked セットのスコア）を経過時間つきで、この"
         "PCの Discord アプリを通じて表示します。Discord が起動していなければ何も起きません。",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "このコピーにはまだ Discord のアプリケーションIDがないため、今は何も起きません。",
     "Power saving (laptops, handhelds)": "省電力（ノートPC、携帯型PC）",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -818,6 +816,7 @@ MESSAGES = {
     "create a room first, then invite": "先にルームを作成してから招待してください",
     "that friend is busy right now": "そのフレンドは今取り込み中です",
     "one invite at a time": "招待は一度に1つだけです",
+    "wait a moment before inviting again": "少し待ってから、もう一度招待してください",
     "that player has invites pending": "そのプレイヤーには保留中の招待があります",
     "that invite is over": "その招待は終了しています",
     "the invite is no longer possible": "この招待はもうできません",

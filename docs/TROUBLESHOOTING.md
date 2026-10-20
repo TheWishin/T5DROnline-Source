@@ -421,9 +421,9 @@ the log says `Windows Media Foundation (mfplat.dll) is not installed`. Before
 this version `t5dr.exe` did not start at all there. Tested by simulating the
 missing DLL (`PS3_TEST_NO_MEDIA_FOUNDATION=1`), not on a real N edition.
 
-**White screen at the intro movie, START does nothing** (1.1.2 and older, rare: seen
+**White screen at the intro movie, START does nothing** (1.1.1 and older, rare: seen
 on a PC short of memory and processors). The video decoder did not answer, so the
-game waited for it for ever. Since 1.1.3 the decoder is started while the game boots,
+game waited for it for ever. Since 1.1.2 the decoder is started while the game boots,
 and if it still does not answer within 5 seconds the movie goes on black with its
 sound: START skips it, and the game goes on as usual. The log then says
 `the H.264 decoder has not answered for ... ms`. Later movies try the decoder again.
@@ -823,7 +823,7 @@ or a mini PC with an AMD/Intel APU (processor and graphics on one chip, e.g.
 Radeon 780M) the processor and the graphics share one power budget (15-65
 W), so everything the processor wastes is taken from both. On 8-core
 processors with 16 threads the game used to busy-wait on several threads,
-which slowed its own main thread on the same cores; since 1.1.3 it does
+which slowed its own main thread on the same cores; since 1.1.2 it does
 not (on every PC, power saving or not).
 
 - **Power saving** (launcher **Settings -> Power saving**, default **Auto**):

@@ -471,6 +471,32 @@ class InviteTest(Base):
             b.answer_invite(r["invite"], True)
         self.assertIn("that invite is over", e.exception.msg)
 
+    def test_inviting_again_too_soon_says_wait(self):
+        """An invite less than 2 s after the last one, which is over already (declined): the answer names the rate
+        limit, not "one invite at a time" (there is none waiting). While one waits, that one is the answer; the same
+        friend again after a no gets the longer hold with its seconds."""
+        a, b = self.friends()
+        c = self.acc("Cid")
+        self.befriend(a, c)
+        drain(a)
+        r = a.invite("Bob")
+        expect(b, "invited")
+        with self.assertRaises(LobbyError) as e:                          # one waits
+            a.invite("Cid")
+        self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "one invite at a time"))
+        b.answer_invite(r["invite"], False)
+        self.assertEqual(expect(a, "invite_update")["state"], "declined")
+        with self.assertRaises(LobbyError) as e:                          # Bob said no: his hold, with seconds
+            a.invite("Bob")
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        self.assertIn("your last invite to that friend ended a moment ago; try again in", e.exception.msg)
+        with self.assertRaises(LobbyError) as e:                          # none waits, but too soon
+            a.invite("Cid")
+        self.assertEqual((e.exception.code, e.exception.msg), (proto.E_RATE, "wait a moment before inviting again"))
+        time.sleep(2.1)
+        a.invite("Cid")                                                   # later it goes
+        expect(c, "invited")
+
     def test_no_invite_spam(self):
         # (security review 2) invite, take it back, invite ... put the question (with A as its answer) up on the
         # friend's screen every 2 s; and so did inviting again right after a no

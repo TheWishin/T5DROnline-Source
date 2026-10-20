@@ -66,6 +66,14 @@ lobby features need the lobby server updated; older launchers keep working with 
   front, never sends anything to the pad and never keeps it from the game.
 - **The game window comes forward when a match starts** after you clicked Accept or Rematch in the
   launcher, so the keyboard works without clicking into the game first (pads always worked).
+- **Every button gets its own key or button, also on the keyboard** (Settings -> Set up controllers...):
+  L1, R1, L2, R2, L3, R3, Start and Select, the four attack buttons and every Tekken combo (1+2, 3+4,
+  1+3, 2+4, 1+2+3+4 ...), on a pad, a stick or the keyboard. The keyboard is now in that window like a
+  controller (click its row): press the key for a button, start from a keyboard layout (arrows + A S Z
+  X, WASD + U I J K, or the number pad), choose which player it is. A key or button that did something
+  else is taken from there and the window says so; the game's own keys (Esc, F11, F2) are refused.
+  Online the bound buttons arrive as what you set (owner: "R2 and L2 should have their own binds
+  too").
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the

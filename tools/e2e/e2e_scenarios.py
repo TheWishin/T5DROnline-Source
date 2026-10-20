@@ -1567,6 +1567,217 @@ def net_dualsense(ctx):
                  f"{fg.front}/{fg.samples}")
 
 
+# ------------------------------------------------------------------ own buttons for L2, R2 and the combos (1.1.2)
+# Owner: "keybinds must work, also in online gameplay -- R2 and L2 should have their own binds too". One player on
+# a remapped keyboard (the launcher's Controls editor writes [keys1]: L2 = Q, R2 = E, 1+2 = O; Q was L1), one on a
+# remapped DualSense ([dinput.054C:0CE6]: its L1 button is L2, R1 is R2, the touchpad click is 1+2). The keys come
+# from PS3_KEYS_FAKE (patch 0052: the game window is never in front here), the pad from PS3_PAD_HID_FAKE.
+BIT = {"L1": 0x0400, "R1": 0x0800, "L2": 0x0100, "R2": 0x0200, "1+2": 0x9000}
+REBIND_KEYS = (("L2", "Q"), ("R2", "E"), ("1+2", "O"))
+REBIND_PAD = (("L2", "B5"), ("R2", "B6"), ("1+2", "B14"))           # the pad's L1, R1, touchpad click
+PAD_PRESS = {"L2": {"l1"}, "R2": {"r1"}, "1+2": {"touchpad"}}
+
+
+def write_rebinds(p, keys=False, pad=False):
+    """The player's controls.ini, written by the launcher's own editor (launcher/controls_edit.py) where the game
+    reads it; XInput off (a pad plugged into this PC must not play along)."""
+    import controls_edit as ce
+    from t5lobby.padmap import DINPUT, KEYS1
+    path = ce.controls_path(p.out, {})
+    ed = ce.ControlsEditor.load(path)
+    if keys:
+        kb = ce.DeviceRef(KEYS1, 0, 0, 0)
+        for key, src in REBIND_KEYS:
+            ed.bind(kb, ce.SCOPE_KIND, key, [src])
+    if pad:
+        ds = ce.DeviceRef(DINPUT, 1, 0x054C, 0x0CE6)
+        for key, src in REBIND_PAD:
+            ed.bind(ds, ce.SCOPE_MODEL, key, [src])
+    ed.doc.set_value("general", "xinput", "0")
+    ed.save()
+    return path
+
+
+class KeyMasher:
+    """Presses the bound keys in turn by rewriting the PS3_KEYS_FAKE file (60-120 ms each, 80-160 ms apart)."""
+
+    def __init__(self, path, seed=3):
+        import random
+        self.path, self.rnd = path, random.Random(seed)
+        self.presses = {k: 0 for k, _ in REBIND_KEYS}
+        self.stop_ev = self.thread = None
+        self._write("")
+
+    def _write(self, text):
+        with open(self.path, "w") as f:
+            f.write(text)
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.08, 0.16)):
+            key, src = rnd.choice(REBIND_KEYS)
+            self._write(src + (" RIGHT" if rnd.random() < 0.3 else ""))
+            self.presses[key] += 1
+            if self.stop_ev.wait(rnd.uniform(0.06, 0.12)):
+                break
+            self._write("")
+        self._write("")
+
+    def start(self):
+        import threading
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="key-masher", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        if self.thread is not None:
+            self.stop_ev.set()
+            self.thread.join(2)
+            self.thread = None
+
+
+class PadRebindMasher(HidMasher):
+    """The DualSense presses its L1, R1 and touchpad click in turn (the remapped buttons)."""
+
+    def __init__(self, path, seed=5):
+        super().__init__(path, seed)
+        self.counts = {k: 0 for k in PAD_PRESS}
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.08, 0.16)):
+            key = rnd.choice(sorted(PAD_PRESS))
+            self._write(self.phr.PadState(buttons=PAD_PRESS[key], hat=2 if rnd.random() < 0.3 else None))
+            self.counts[key] += 1
+            self.presses += 1
+            if self.stop_ev.wait(rnd.uniform(0.06, 0.12)):
+                break
+            self._write(self.phr.PadState())
+        self._write(self.phr.PadState())
+
+
+def frames_with_mask(path, col, mask, confirmed_only=True):
+    """Frames whose input in `col` holds all of `mask`."""
+    n = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = RE_FRAME.match(ln)
+                if m and not (confirmed_only and m.group(4) == "P") and (int(m.group(2 + col), 16) & mask) == mask:
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+def _rebind_counts(path, col, confirmed_only=True):
+    return {k: frames_with_mask(path, col, b, confirmed_only) for k, b in BIT.items()}
+
+
+@scenario("net_rebind", "6 netcode", game=True, suites=("game", "net"),
+          desc="own buttons for L2, R2 and the 1+2 combo, set in the launcher's Controls editor: one player on a "
+               "remapped keyboard, the other on a remapped DualSense; the bound buttons reach the other PC as L2, R2 "
+               "and 1+2 (and never as what those keys and buttons were before), in sync")
+def net_rebind(ctx):
+    game_server(ctx)
+    keys_file = os.path.join(ctx.dir, "keys.txt")
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    km = KeyMasher(keys_file, seed=ctx.run.seed)
+    pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
+    logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("keys", "pad")}
+    a = ctx.player("E2E Keys", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_DEVICES": "0",
+                                                  "T5_NET_LOG": logs["keys"]})
+    b = ctx.player("E2E PadMap", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}",
+                                                    "T5_NET_LOG": logs["pad"]})
+    ini_a, ini_b = write_rebinds(a, keys=True), write_rebinds(b, pad=True)
+    ctx.note(f"{a.name}: {ini_a}: " + " | ".join(l for l in open(ini_a).read().splitlines() if "=" in l))
+    ctx.note(f"{b.name}: {ini_b}: " + " | ".join(l for l in open(ini_b).read().splitlines() if "=" in l))
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=180):
+        raise Abort("no fight")
+    km.start()
+    pm.start()
+    try:
+        wait_results(ctx, mid, (a, b))
+    finally:
+        km.stop()
+        pm.stop()
+    match_row(ctx, mid, (a, b), "confirmed", "remapped keyboard vs remapped pad")
+    ctx.check("the keyboard player's game reads the keys from PS3_KEYS_FAKE",
+              bool(log_line(a, r"PS3_KEYS_FAKE")), log_line(a, r"\[pad\] keyboard"))
+    ca = 0 if a.matches[mid].get("slot") == 0 else 1
+    for who, peer, col, sent, label in ((a, b, ca, km.presses, "keyboard (Q E O)"),
+                                        (b, a, 1 - ca, pm.counts, "DualSense (L1 R1 touchpad)")):
+        theirs = _rebind_counts(logs["pad" if who is a else "keys"], col)
+        own = _rebind_counts(logs["keys" if who is a else "pad"], col, confirmed_only=False)
+        ctx.check(f"{who.name}'s {label}: L2, R2 and 1+2 arrive on the other PC",
+                  all(theirs[k] >= 5 for k in ("L2", "R2", "1+2")) and all(sent[k] >= 3 for k in sent),
+                  f"sent {sent}; frames on the other PC {theirs}; on this PC {own}")
+        ctx.check(f"{who.name}'s {label}: never what those buttons were before (L1 / R1)",
+                  theirs["L1"] == 0 and theirs["R1"] == 0, f"frames with L1 {theirs['L1']}, R1 {theirs['R1']}")
+        ctx.note(f"{who.name} (P{col + 1}): sent {sent}; other PC frames {theirs}; own frames {own}")
+
+
+@scenario("offline_rebind", "8 launcher", game=True, suites=("game",),
+          desc="offline: the same remapped keyboard (Q E O = L2 R2 1+2) and DualSense (L1 R1 touchpad = L2 R2 1+2), "
+               "set in the launcher's Controls editor: the game's own pad reads get L2, R2 and 1+2")
+def offline_rebind(ctx):
+    keys_file = os.path.join(ctx.dir, "keys.txt")
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    reads = os.path.join(ctx.dir, "reads.log")
+    km = KeyMasher(keys_file, seed=ctx.run.seed)
+    pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
+    a = ctx.player("E2E Offline", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_HID_FAKE":
+                                                     f"dualsense,bt,{hid}", "PS3_PAD_READ_LOG": reads,
+                                                     "PS3_PAD_FILE": ""})
+    write_rebinds(a, keys=True, pad=True)
+    g = a.app.start_game({})                        # Play offline: the launcher's own start, no netplay
+    if g is None:
+        raise Abort("the game did not start")
+
+    def title_reads():
+        try:
+            with open(reads, encoding="utf-8", errors="replace") as f:
+                return sum(1 for ln in f if ln.rstrip().endswith(" G"))
+        except OSError:
+            return 0
+    if not ctx.wait(lambda: title_reads() > 100, 120, "the game reads its pads (title)"):
+        raise Abort("no pad reads")
+    port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'") or ""
+    ctx.check("offline, the DualSense is player 1 (nothing else on port 1)", "port 1 (player 1)" in port_line,
+              port_line)
+    t0 = time.perf_counter_ns()
+    km.start()
+    ctx.sleep(6)
+    km.stop()
+    t1 = time.perf_counter_ns()
+    pm.start()
+    ctx.sleep(6)
+    pm.stop()
+    t2 = time.perf_counter_ns()
+    ctx.sleep(1)
+    got = {"keys": {k: 0 for k in BIT}, "pad": {k: 0 for k in BIT}}
+    with open(reads, encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            parts = ln.split()
+            if len(parts) != 5 or parts[4] != "G" or parts[1] != "1":
+                continue
+            t, b = int(parts[0]), int(parts[2], 16)
+            who = "keys" if t0 <= t < t1 else "pad" if t1 <= t < t2 else None
+            if who:
+                for k, m in BIT.items():
+                    got[who][k] += (b & m) == m
+    for who, sent in (("keys", km.presses), ("pad", pm.counts)):
+        ctx.check(f"offline {who}: the game reads L2, R2 and 1+2", all(got[who][k] >= 3 for k in ("L2", "R2", "1+2")),
+                  f"sent {sent}; reads holding them {got[who]}")
+        ctx.check(f"offline {who}: never L1 / R1 (what the keys and buttons were before)",
+                  got[who]["L1"] == 0 and got[who]["R1"] == 0, got[who])
+    ctx.note(f"offline reads: keyboard {got['keys']} (sent {km.presses}), pad {got['pad']} (sent {pm.counts})")
+    g.stop()
+
+
 # ============================================================================== 7. failures
 def _two(ctx, n1, n2, **kw):
     game_server(ctx, **kw)

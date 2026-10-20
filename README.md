@@ -213,13 +213,15 @@ Keyboard (default) and Xbox controller:
   stops (DualShock 4 and DualSense too, also over Bluetooth after Steam or
   DS4Windows used them). Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
-- **Pad, arcade stick or hitbox: set the buttons in the launcher.** Open
+- **Pad, arcade stick, hitbox or keyboard: set the buttons in the launcher.** Open
   **Settings** and click **Set up controllers...**. The window lists the
-  controllers Windows sees, one row per player, and lights the row when you
-  press a button (the row also names the game button it is). Pick a controller
-  (or just press a button on it), then click **Set up all buttons**: it asks
-  "Press the button for 1 (Left Punch)..." and goes on with 2, 3, 4, 1+2, 3+4,
-  1+3, 2+4, 1+2+3+4, Start and Select. **Skip** keeps a button as it is,
+  controllers Windows sees and the keyboard, one row per player, and lights the
+  row when you press a button (the row also names the game button it is). Pick a
+  controller (or just press a button on it; the keyboard: click its row), then
+  click **Set up all buttons**: it asks "Press the button for 1 (Left Punch)..."
+  and goes on with 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, L1, R1, L2, R2, L3, R3,
+  Start and Select -- every button of the PS3 pad and every Tekken combo can
+  have a key or button of its own, also online. **Skip** keeps a button as it is,
   **Clear** gives it no button. **Set selected** sets one row (also the other
   macros: 1+4, 2+3, 1+2+3 and so on), **Set up directions** is for sticks that
   send their directions as buttons. **Layout** starts from a ready layout: Xbox,
@@ -233,7 +235,7 @@ Keyboard (default) and Xbox controller:
   Triangle clears it, Start saves, Circle closes (the controller's buttons as
   your `controls.ini` has them). This works only while that window is in front;
   untick "Move through this window with the controller" to only test buttons.
-- The keyboard and everything else is set in `controls.ini`. The documented
+- Everything else is set in `controls.ini`. The documented
   sample with every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.
   Examples (from the sample):

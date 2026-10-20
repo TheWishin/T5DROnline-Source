@@ -495,8 +495,10 @@ not focused. The keyboard works only while the game window has the focus.
 ### The buttons are wrong, or I want other buttons
 
 Use the launcher: **Settings** -> **Set up controllers...** (see the README,
-"Controls"). It writes `native\controls.ini` for you and keeps what is already in
-that file. The rest of this section is for editing the file by hand.
+"Controls"), for pads, sticks and the keyboard (click the keyboard's row). Every
+PS3 button (L1 R1 L2 R2 L3 R3 Start Select) and every Tekken combo can have a key
+or button of its own. It writes `native\controls.ini` for you and keeps what is
+already in that file. The rest of this section is for editing the file by hand.
 
 Make `native\controls.ini` (the sample with every default and all key names is
 [controls.ini](controls.ini)) and restart the game. To see the raw button names

@@ -116,13 +116,14 @@ def prepare_profiles(profile, obj, llvm):
         recs["spu" if is_spu_record(lines[i]) else "ppu"].append("\n".join(lines[i:i + 6 + n]))
         i += 6 + n
     out = {}
+    tag = hashlib.sha1(data).hexdigest()[:10]    # a new profile is a new file name: CMake rebuilds what uses it
     for kind, rs in recs.items():
         if not rs:
             continue
-        t = os.path.join(obj, f"pgo_{kind}.proftext")
+        t = os.path.join(obj, f"pgo_{kind}_{tag}.proftext")
         with open(t, "w", newline="\n") as f:
             f.write("\n".join(head + [r + "\n" for r in rs]))
-        out[kind] = os.path.join(obj, f"pgo_{kind}.profdata")
+        out[kind] = os.path.join(obj, f"pgo_{kind}_{tag}.profdata")
         subprocess.run([pd, "merge", "-o", out[kind], t], check=True, creationflags=NO_WINDOW)
     return out
 

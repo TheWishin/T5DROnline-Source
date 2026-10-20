@@ -149,7 +149,9 @@ if(_lifted_arch STREQUAL "auto")
         endif()
     endif()
 endif()
-set(_lifted_opts /clang:-ffp-contract=off)
+# /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
+# registers in its context, not in local arrays, so a cookie guards nothing there.
+set(_lifted_opts /clang:-ffp-contract=off /GS-)
 if(NOT _lifted_arch STREQUAL "none")
     list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
 endif()
@@ -170,11 +172,14 @@ endif()
 if(SPU_SOURCES)
     set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_SPU_COPTS})
 endif()
-# Profile-guided optimisation of the lifted PPU code (clang): T5DR_PGO=gen builds
-# an instrumented t5dr.exe (T5_PERF_LOG=... T5_PGO_WRITE_AT=<frames> writes
-# default.profraw at that flip; merge with llvm-profdata), T5DR_PGO=<file.profdata>
-# builds with the profile.
+# Profile-guided optimisation of the lifted code (clang front-end profiles, docs/RENDER_PERF.md
+# "Profile-guided optimisation"): T5DR_PGO=<file.profdata> for the lifted PPU code and T5DR_PGO_SPU for
+# the lifted SPU code -- tools/build_game.py makes both from the shipped tools/gamedll/t5dr_lifted.proftext
+# (build_game_dll.prepare_profiles). T5DR_PGO=gen builds an instrumented t5dr.exe (T5_PERF_LOG=...
+# T5_PGO_WRITE_AT=<frames> writes default.profraw at that flip; merge with llvm-profdata); the
+# supported way to train is the game DLL (tools/pgo_train.py).
 set(T5DR_PGO "" CACHE STRING "gen, or a .profdata for the lifted PPU code")
+set(T5DR_PGO_SPU "" CACHE STRING ".profdata for the lifted SPU code")
 if(T5DR_PGO STREQUAL "gen")
     set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS /clang:-fprofile-instr-generate)
     get_filename_component(_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -183,7 +188,13 @@ if(T5DR_PGO STREQUAL "gen")
     set(T5DR_PGO_RT "${_prof_rt}")
 elseif(T5DR_PGO)
     set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
-        "/clang:-fprofile-instr-use=${T5DR_PGO}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+        "/clang:-fprofile-instr-use=${T5DR_PGO}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
+        -Wno-profile-instr-missing)
+endif()
+if(T5DR_PGO_SPU AND SPU_SOURCES AND NOT T5DR_PGO STREQUAL "gen")
+    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
+        "/clang:-fprofile-instr-use=${T5DR_PGO_SPU}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
+        -Wno-profile-instr-missing)
 endif()
 
 add_executable(t5dr

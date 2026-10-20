@@ -102,12 +102,24 @@ void  note(const char* fmt, ...);
  *   lost_reason()  non-null once a connected peer is gone: "peer_quit",
  *                  "peer_timeout" (silent for T5_NET_TIMEOUT), "peer_stalled"
  *                  (alive but no input for T5_NET_TIMEOUT), "start_timeout"
- *                  (never reached the start of the match), "peer_restarted"
+ *                  (never reached the start of the match), "peer_restarted",
+ *                  "peer_load_timeout" (the peer's loading took too long and it
+ *                  ended the match) -- or this side's own end: "load_timeout"
+ *                  (give_up())
  * Either way the lockstep waits return (neutral peer input); the hooks end the
  * match. */
 const char* failure();
 const char* lost_reason();
 bool  connected();
+/* Loading (docs/NETPLAY.md "Slow loading"): while this PC's main thread holds a
+ * frame for its loaders (t5_hooks.cpp drain_wait), every PING says so
+ * (PING_LOADING) and the peer's stall limits (T5_NET_TIMEOUT in its waits for
+ * our input or scene change) do not count that time. A load that takes longer
+ * than load_timeout_s() for one frame ends the session from this side:
+ * give_up("load_timeout", ...) -- BYE with the reason (the peer: "peer_load_timeout"). */
+void     set_loading(bool on);
+int      load_timeout_s();                   /* T5_NET_LOAD_TIMEOUT, seconds (default 120; 0 = never) */
+void     give_up(const char* reason, const char* fmt, ...);
 /* Per match: mismatching frames counted from frame f on (the match's sync
  * point), the frames whose hashes were compared, this PC's own speed. */
 void     match_begin(uint32_t f);
@@ -129,6 +141,11 @@ PadInput rb_local(uint32_t f);                   /* the local input decided for 
 bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f, if it has arrived */
 uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */
 uint32_t rb_wait_remote(uint32_t f, uint32_t ms);/* wait up to ms for the peer's input for frame f; returns rb_remote_contig() */
+/* wait for the peer's input for frame f as long as the session lives: no new
+ * input and no loading report for T5_NET_TIMEOUT = "peer_stalled", before the
+ * peer's start T5_NET_START_TIMEOUT = "start_timeout" (as the lockstep's
+ * begin_frame); returns rb_remote_contig() */
+uint32_t rb_wait_input(uint32_t f);
 void     rb_push_hash(uint32_t f, uint64_t h);   /* the FINAL state hash of frame f (all inputs before it confirmed) */
 /* frames.log line for a live frame of the rollback loop: "f I <p1> <p2> <hash> R|P C|U"
  * (R = remote input confirmed, P = predicted; C = the hash is final/confirmed) */

@@ -888,7 +888,12 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
     const uint32_t need = (scene_flag || warm || select) ? f + 1 : (f > g_maxpred ? f - g_maxpred : 0);
     if (rc < need && !np::rb_peer_lost()) {
         LARGE_INTEGER t0; QueryPerformanceCounter(&t0);
-        rc = np::rb_wait_remote(need - 1, 2000);
+        /* until the input is here or the session is lost -- never a prediction
+         * past the window or inside a lockstep window because the peer was slow
+         * (it was: 2 s, then on; a PC holding its frames for slow loads made the
+         * other run frames the windows keep clear of rollbacks; docs/NETPLAY.md
+         * "Slow loading") */
+        rc = np::rb_wait_input(need - 1);
         const double ms = ms_since(t0);
         g_st.stalls++; g_st.stall_ms += ms; if (warm || select) g_st.stall_ms_lock += ms;
         LATLOG('T', "%u %.2f", f, ms);   /* PS3_LATENCY_LOG: boundary f waited for the peer's input (ms) */

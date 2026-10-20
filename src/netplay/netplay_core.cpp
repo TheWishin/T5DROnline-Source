@@ -18,6 +18,10 @@
  *                   T5_NET_TIMEOUT); 0 = wait forever)
  *   T5_NET_START_TIMEOUT    seconds to wait at the start of the match for a peer that is
  *                   connected and alive but still loading (default 120)
+ *   T5_NET_LOAD_TIMEOUT     seconds one frame may wait for this PC's loaders during a session
+ *                   (t5_hooks.cpp drain_wait) before this side ends the match ("load_timeout");
+ *                   default 120, 0 = never. While it waits, every PING says so (PING_LOADING) and
+ *                   the peer's T5_NET_TIMEOUT stall limits leave that time out
  *   T5_NET_KEY      match secret (the lobby's): every packet carries a SipHash-2-4 tag
  *                   under it; without it the key comes from T5_NET_MATCH + T5_NET_SEED when
  *                   both are given, else packets are not authenticated
@@ -103,6 +107,9 @@ struct HelloExt { uint32_t build; uint32_t seed; uint32_t flags; };   /* follows
 struct PingExt  { uint8_t flags; uint32_t frame; uint32_t t_us; uint32_t echo_us; uint32_t hold_us; uint8_t rbd; };
 constexpr uint8_t PING_STARTED = 1;    /* the sender's lockstep has begun (frame 0 ran) */
 constexpr uint8_t PING_ROLLBACK = 2;   /* the sender offers rollback (as in its HELLO; the first HELLOs may predate the offer) */
+constexpr uint8_t PING_LOADING = 4;    /* the sender's main thread holds its frame for its loaders (set_loading) */
+/* BYE may carry one byte after the header: why the sender leaves (none: it quit) */
+constexpr uint8_t BYE_QUIT = 0, BYE_LOAD_TIMEOUT = 1;
 struct RejectExt { uint8_t why; };
 /* key: the match the pick is for (both games derive it from the lobby's match id);
  * pick: the sender's pick (0 = none yet; packed by the direct-fight code); ack: the
@@ -228,6 +235,9 @@ struct Session {
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
     int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
+    int load_timeout_s = 120;          /* T5_NET_LOAD_TIMEOUT: one frame's wait for this PC's loaders (0 = none) */
+    bool loading = false;              /* this PC's main thread waits for its loaders (PING_LOADING) */
+    ULONGLONG peer_loading_ms = 0;     /* when a PING last said the peer is loading */
     bool keyed = false;                /* packets carry a SipHash tag under `key` */
     uint8_t key[16] = {};
     bool env_peer = false;             /* T5_NET_PEER given (lobby): unauthenticated hellos only from its IP */
@@ -525,7 +535,8 @@ void send_ping_locked()
     State& s = S();
     const uint64_t now = qpc_us();
     struct { Hdr h; PingExt x; } p = { make_hdr(PKT_PING), { (uint8_t)((s.started ? PING_STARTED : 0) |
-                                                                      (s.rb_offer ? PING_ROLLBACK : 0)), s.local_hash_max,
+                                                                      (s.rb_offer ? PING_ROLLBACK : 0) |
+                                                                      (s.loading ? PING_LOADING : 0)), s.local_hash_max,
                                                             (uint32_t)now, s.peer_ping_us,
                                                             s.peer_ping_us ? (uint32_t)(now - s.peer_ping_rx_us) : 0u,
                                                             (uint8_t)(s.mode == Mode::Host && s.rb_decided >= 0 ? s.rb_decided : 0xFF) } };
@@ -692,6 +703,45 @@ void lose_locked(const char* reason, const char* fmt, ...)
     note("peer lost (%s): %s", reason, buf);
     SetEvent(s.rx_event);
 }
+
+/* The peer said within the last 1.5 s (PINGs every 200 ms) that its main thread
+ * holds its frame for its loaders. */
+bool peer_loading_locked(ULONGLONG now)
+{
+    const State& s = S();
+    return s.peer_loading_ms && now - s.peer_loading_ms < 1500;
+}
+
+/* The clock of a stall limit (T5_NET_TIMEOUT, T5_NET_START_TIMEOUT) in a wait
+ * for the peer: it does not run while the peer says it is loading. A peer that
+ * waits for its loaders cannot send the next frame's input before they are done
+ * (t5_hooks.cpp drain_wait: going on without them put the two PCs' loadings a
+ * frame apart, docs/NETPLAY.md "Slow loading"); it ends the match itself when
+ * one frame's loads take longer than its T5_NET_LOAD_TIMEOUT. */
+struct StallClock {
+    ULONGLONG start, last, held = 0;
+    uint32_t contig = UINT32_MAX;      /* (progress(): the peer's inputs and start seen so far) */
+    bool started = false;
+    explicit StallClock(ULONGLONG now) : start(now), last(now) {}
+    ULONGLONG ms_locked(ULONGLONG now)     /* time of the wait so far, the peer's loading left out */
+    {
+        if (peer_loading_locked(now)) held += now - last;
+        last = now;
+        return now - start - held;
+    }
+    /* For a wait for one frame's input: the clock starts again whenever the peer
+     * shows progress -- new inputs in order, or its lockstep beginning (the limit
+     * then changes from T5_NET_START_TIMEOUT to T5_NET_TIMEOUT: a peer that took
+     * 60 s to start must not count as stalled for 60 s at once). */
+    void progress_locked(const State& s, ULONGLONG now)
+    {
+        if (s.remote_contig != contig || s.peer_started != started) {
+            if (contig != UINT32_MAX) { start = last = now; held = 0; }
+            contig = s.remote_contig;
+            started = s.peer_started;
+        }
+    }
+};
 
 void connect_locked()
 {
@@ -922,13 +972,18 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     s.packets_in++;
     s.last_rx_ms = GetTickCount64();
     if (h->type == PKT_BYE) {
-        lose_locked("peer_quit", "the opponent left (its game was closed)");
+        const uint8_t why = n >= (int)(sizeof(Hdr) + 1) ? *(const uint8_t*)(h + 1) : BYE_QUIT;
+        if (why == BYE_LOAD_TIMEOUT)
+            lose_locked("peer_load_timeout", "the opponent's game ended the match: its loading took too long");
+        else
+            lose_locked("peer_quit", "the opponent left (its game was closed)");
         return;
     }
     if (h->type == PKT_PING) {
         if (n >= (int)(sizeof(Hdr) + sizeof(PingExt))) {
             PingExt x; memcpy(&x, h + 1, sizeof x);
             if (x.flags & PING_STARTED) s.peer_started = true;
+            if (x.flags & PING_LOADING) s.peer_loading_ms = GetTickCount64();
             if (!s.started) s.rb_peer = (x.flags & PING_ROLLBACK) != 0;   /* settled before lockstep begins */
             s.peer_frame = x.frame;
             const uint64_t now = qpc_us();
@@ -1048,7 +1103,13 @@ DWORD WINAPI tick_thread(LPVOID)
                     fail_locked("no_peer", "no answer from the opponent's game within %d s (%s)", s.connect_timeout_s,
                                 s.peer_known ? addr_str(s.peer).c_str() : "its address is not known");
             } else {
-                if (now - s.last_send_ms >= kPingMs) send_ping_locked();
+                if (now - s.last_send_ms >= kPingMs) {
+                    /* (while the main thread holds a frame for its loaders it sends
+                     * nothing: our inputs ride along, so a lost packet costs the
+                     * peer no extra wait once our frame goes on) */
+                    if (s.loading) send_inputs_locked();
+                    send_ping_locked();
+                }
                 if (((s.pick_key && s.pick_acked != s.pick_key) || s.pick_acks_owed > 0) && now - s.pick_sent_ms >= 100) {
                     if (s.pick_acks_owed > 0) s.pick_acks_owed--;
                     send_pick_locked();
@@ -1127,6 +1188,7 @@ void configure()
     s.connect_timeout_s = std::max(60, 2 * s.timeout_s);
     if (const char* v = env("T5_NET_CONNECT_TIMEOUT")) s.connect_timeout_s = atoi(v);
     if (const char* v = env("T5_NET_START_TIMEOUT")) s.start_timeout_s = atoi(v);
+    if (const char* v = env("T5_NET_LOAD_TIMEOUT")) s.load_timeout_s = std::max(0, atoi(v));
     if (const char* v = env("T5_NET_LOCALPAD")) s.localpad = atoi(v) != 0;
     if (const char* v = env("T5_NET_LOCAL_LAG")) {
         s.local_lag = (uint32_t)std::max(0, std::min(8, atoi(v)));
@@ -1367,6 +1429,7 @@ uint32_t scene_barrier(uint32_t f)
         send_inputs_locked();
     }
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
+    StallClock stall(t0);   /* (the time the peer says it waits for its loaders is not a stall) */
     uint32_t peer_f = f;
     for (;;) {
         {
@@ -1381,11 +1444,13 @@ uint32_t scene_barrier(uint32_t f)
             }
             ULONGLONG now = GetTickCount64();
             if (now - s.last_send_ms >= 15) send_inputs_locked();
+            const ULONGLONG stalled = stall.ms_locked(now);
             if (now - last_note >= 1000) {
                 last_note = now;
-                note("scene change %u at frame %u: waiting for the peer to get there (%llus)", k, f, (now - t0) / 1000);
+                note("scene change %u at frame %u: waiting for the peer to get there (%llus%s)", k, f, (now - t0) / 1000,
+                     peer_loading_locked(now) ? "; its game is loading" : "");
             }
-            if (s.timeout_s > 0 && now - t0 >= (ULONGLONG)s.timeout_s * 1000) {
+            if (s.timeout_s > 0 && stalled >= (ULONGLONG)s.timeout_s * 1000) {
                 lose_locked("peer_stalled", "the opponent's game never reached scene change %u (%d s)", k, s.timeout_s);
                 break;
             }
@@ -1418,7 +1483,8 @@ const char* lost_reason()
     State& s = S();
     std::lock_guard<std::mutex> lk(s.mu);
     if (!s.fail_reason.empty() || !s.peer_lost) return nullptr;
-    static const char* const kReasons[] = { "peer_quit", "peer_timeout", "peer_stalled", "start_timeout", "peer_restarted" };
+    static const char* const kReasons[] = { "peer_quit", "peer_timeout", "peer_stalled", "start_timeout", "peer_restarted",
+                                            "peer_load_timeout", "load_timeout" };
     for (const char* r : kReasons) if (s.lost_reason == r) return r;
     return "peer_lost";
 }
@@ -1450,6 +1516,37 @@ double local_fps()
 }
 
 void bye() { say_bye(); }
+
+void set_loading(bool on)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.loading == on) return;
+    s.loading = on;
+    if (on && s.connected && !s.peer_lost && s.sock != INVALID_SOCKET) send_ping_locked();   /* the peer knows at once */
+}
+
+int load_timeout_s() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.load_timeout_s; }
+
+/* This side ends the session: the session counts as lost here with that reason
+ * and check_session() ends the match (result file "reason"; the persistent game
+ * stays open, a game started for one match closes with exit code 3). For
+ * "load_timeout" (this PC's loading took too long) the peer is told why first
+ * (BYE + reason: "peer_load_timeout" there); for anything else it learns it as
+ * from the stall limits (silence once the session is closed). */
+void give_up(const char* reason, const char* fmt, ...)
+{
+    State& s = S();
+    char buf[512];
+    va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.mode == Mode::Off || s.peer_lost || !s.fail_reason.empty()) return;   /* no session, or over already */
+    if (!strcmp(reason, "load_timeout") && s.connected && s.sock != INVALID_SOCKET) {
+        struct { Hdr h; uint8_t why; } p = { make_hdr(PKT_BYE), BYE_LOAD_TIMEOUT };
+        for (int i = 0; i < 3; i++) send_raw(&p, sizeof p);
+    }
+    lose_locked(reason, "%s", buf);
+}
 
 void set_stuck_handler(void (*fn)(const char* reason))
 {
@@ -1561,6 +1658,7 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
         s.remote.hash[f % kRing] = state_hash; s.remote.hash_tag[f % kRing] = f + 1;
     } else {
         ULONGLONG t0 = GetTickCount64(), last_note = t0;
+        StallClock stall(t0);
         const uint64_t w0 = qpc_us();
         for (;;) {
             {
@@ -1573,15 +1671,19 @@ void begin_frame(uint32_t f, uint64_t state_hash, PadInput out[2], bool neutral_
                 /* At the start of the match the peer may still be loading: as
                  * long as it is alive (its keepalives arrive; silence is the tick
                  * thread's peer_timeout) it gets T5_NET_START_TIMEOUT. Once it
-                 * plays, a stall of T5_NET_TIMEOUT ends the match. */
+                 * plays, a stall of T5_NET_TIMEOUT ends the match -- not
+                 * counting the time its PINGs say it waits for its loaders. */
                 const bool at_start = !s.peer_started;
                 const int limit = at_start ? s.start_timeout_s : s.timeout_s;
+                stall.progress_locked(s, now);
+                const ULONGLONG stalled = stall.ms_locked(now);
                 if (now - last_note >= 1000) {
                     last_note = now;
-                    note("frame %u: waiting for the peer's input (%llus; peer has our inputs up to %u%s)",
-                         f, (now - t0) / 1000, s.peer_ack, at_start ? "; it has not started the match yet" : "");
+                    note("frame %u: waiting for the peer's input (%llus; peer has our inputs up to %u%s%s)",
+                         f, (now - t0) / 1000, s.peer_ack, at_start ? "; it has not started the match yet" : "",
+                         peer_loading_locked(now) ? "; its game is loading" : "");
                 }
-                if (limit > 0 && now - t0 >= (ULONGLONG)limit * 1000) {
+                if (limit > 0 && stalled >= (ULONGLONG)limit * 1000) {
                     if (at_start)
                         lose_locked("start_timeout", "the opponent's game did not reach the start of the match within %d s", limit);
                     else
@@ -1726,6 +1828,58 @@ uint32_t rb_wait_remote(uint32_t f, uint32_t ms)
             if (now - t0 >= ms) return s.remote_contig;
             if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000 && s.last_rx_ms) {
                 lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
+                return s.remote_contig;
+            }
+        }
+        WaitForSingleObject(s.rx_event, 2);
+    }
+}
+
+/* The rollback loop's lockstep waits (a scene change, the windows after a load or
+ * at a rematch's select screen) and the end of its prediction window: the frame
+ * does not run before the peer's input is here. It used to give up after 2 s and
+ * run on a prediction -- beyond the prediction window, into frames the lockstep
+ * windows keep clear of rollbacks; a slow PC (its loaders, docs/NETPLAY.md "Slow
+ * loading") made that happen. Now it waits like the lockstep's begin_frame: until
+ * the input comes or the session is lost -- the tick thread's peer_timeout
+ * (silence), a BYE, or no input for T5_NET_TIMEOUT (T5_NET_START_TIMEOUT before
+ * the peer's lockstep began) that the peer's loading does not explain
+ * ("peer_stalled"). */
+uint32_t rb_wait_input(uint32_t f)
+{
+    State& s = S();
+    if (s.replay) return 0x7FFFFFFFu;
+    const ULONGLONG t0 = GetTickCount64();
+    ULONGLONG last_note = t0;
+    StallClock stall(t0);
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            if (s.mode == Mode::Local && s.local_lag) {   /* (as rb_wait_remote) */
+                if (f + 1 > s.local_release) s.local_release = f + 1;
+                return std::min(s.remote_contig, local_horizon_locked(s));
+            }
+            if (s.remote_contig > f || s.peer_lost || s.mode == Mode::Local) return s.remote_contig;
+            const ULONGLONG now = GetTickCount64();
+            if (now - s.last_send_ms >= 15) send_inputs_locked();
+            if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000 && s.last_rx_ms) {
+                lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
+                return s.remote_contig;
+            }
+            stall.progress_locked(s, now);
+            const ULONGLONG stalled = stall.ms_locked(now);
+            if (now - last_note >= 5000) {
+                last_note = now;
+                note("rollback: waiting for the peer's input for frame %u (%llus; peer has our inputs up to %u%s%s)", f,
+                     (now - t0) / 1000, s.peer_ack, s.peer_started ? "" : "; it has not started the match yet",
+                     peer_loading_locked(now) ? "; its game is loading" : "");
+            }
+            const int limit = s.peer_started ? s.timeout_s : s.start_timeout_s;
+            if (limit > 0 && stalled >= (ULONGLONG)limit * 1000) {
+                if (s.peer_started)
+                    lose_locked("peer_stalled", "no input from the opponent for %d s at frame %u", limit, f);
+                else
+                    lose_locked("start_timeout", "the opponent's game did not reach the start of the match within %d s", limit);
                 return s.remote_contig;
             }
         }

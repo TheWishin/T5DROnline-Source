@@ -28,6 +28,10 @@ import sys
 import threading
 import time
 
+# Every player of this tool is on this PC: game sockets (the lobby client's, t5lobby/nat.py bind_ip, and this
+# tool's stand-ins for the game) bind 127.0.0.1 -- no Windows Firewall prompt (docs/NETPLAY.md "Bind address").
+os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOBBY = os.path.dirname(HERE)
 
@@ -205,7 +209,7 @@ def run_relay(port, k, seconds, proc):
     socks = []
     for t in tickets:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.bind(("0.0.0.0", t.local_port))
+        s.bind((os.environ["T5_NET_BIND"], t.local_port))
         s.setblocking(False)
         socks.append((s, t.peer))
     payload = b"T5NP" + os.urandom(176)                       # 180 bytes, like netplay's input packets

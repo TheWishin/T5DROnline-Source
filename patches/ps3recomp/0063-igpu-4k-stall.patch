@@ -65,7 +65,7 @@ index b34bdc2..f706a50 100644
  }
  
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 2fe417b..002337a 100644
+index 2fe417b..22fe00c 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -88,6 +88,7 @@ void rsx_pf_guest_flip(void)
@@ -317,7 +317,33 @@ index 2fe417b..002337a 100644
          /*
           * The replay-proven renderer recycles this upload ring mid-frame.
           * Live used to drop every remaining draw instead, which discarded
-@@ -10963,6 +11120,37 @@ static float ld_res_parse(const char* e, int* ok)
+@@ -10896,9 +11053,12 @@ static int make_depth_snapshot_pipeline(void)
+  * PC display: a swap chain that follows the window's client size, a scaled and
+  * letterboxed present blit, vsync on/off and exclusive fullscreen.
+  *   PS3_INTERNAL_RES=<step>   internal resolution, rsx_internal_res_scale()
+- *                             (aliases PS3_RES_SCALE, PS3_RENDER_SCALE;
+- *                             RSX_GPU_TIME=1 or PS3_FRAMELOG measure the GPU
+- *                             time per frame)
++ *                             (aliases PS3_RES_SCALE, PS3_RENDER_SCALE; GPU
++ *                             timestamps are on by default since patch 0063
++ *                             for [slow-frames]' GPU busy, RSX_GPU_TIME=1
++ *                             also prints [gpu-time], =0 turns them off)
++ *   RSX_FRAMES_IN_FLIGHT=2    (patch 0063) record the next frame while the
++ *                             GPU still draws this one; default 1
+  *   PS3_VSYNC=0               present without waiting for vblank (tearing
+  *                             allowed when the OS supports it)
+  *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
+@@ -10935,6 +11095,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+  *   PS3_INTERNAL_RES = lowest | lower | native | 1080p | 1440p | 4k
+  *                      (0.5x / 0.75x / 1x = 720p / 1.5x / 2x / 3x)
+  *                      or a factor 0.25..4, or an output height (360..2880)
++ *                      or auto (patch 0063, ld_res_auto: the step that
++ *                      matches the window's screen, at most 1080p on
++ *                      integrated graphics)
+  *
+  * The launcher's Settings -> Internal resolution writes it. The two older
+  * switches are aliases read the same way: PS3_RES_SCALE (patch 0010, higher
+@@ -10963,6 +11126,37 @@ static float ld_res_parse(const char* e, int* ok)
  }
  
  static const char* g_ld_res_source = "default";
@@ -355,7 +381,7 @@ index 2fe417b..002337a 100644
  
  float rsx_internal_res_scale(void)
  {
-@@ -10971,7 +11159,12 @@ float rsx_internal_res_scale(void)
+@@ -10971,7 +11165,12 @@ float rsx_internal_res_scale(void)
      float s = 1.0f;
      int ok = 0;
      const char* e = getenv("PS3_INTERNAL_RES");
@@ -369,7 +395,7 @@ index 2fe417b..002337a 100644
          s = ld_res_parse(e, &ok);
          g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
          if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
-@@ -10995,8 +11188,10 @@ float rsx_internal_res_scale(void)
+@@ -10995,8 +11194,10 @@ float rsx_internal_res_scale(void)
  const char* rsx_internal_res_label(void)
  {
      static char label[48];
@@ -381,7 +407,7 @@ index 2fe417b..002337a 100644
          if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
          else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
          else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
-@@ -11707,12 +11902,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11707,12 +11908,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
      D3D12_RANGE rr = {0, 0};
      g.upload->lpVtbl->Map(g.upload, 0, &rr, (void**)&g.upload_mapped);
  
@@ -400,7 +426,7 @@ index 2fe417b..002337a 100644
      g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
          D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.ib);
      g.ib->lpVtbl->Map(g.ib, 0, &rr, (void**)&g.ib_mapped);
-@@ -11766,6 +11965,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11766,6 +11971,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          def.MaxLOD = D3D12_FLOAT32_MAX; def.MaxAnisotropy = 1;
          g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
      }
@@ -408,7 +434,7 @@ index 2fe417b..002337a 100644
  
      /* depth */
      D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
-@@ -12161,6 +12361,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -12161,6 +12367,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          return;
      }
  
@@ -433,10 +459,18 @@ index 5560090..a8c2d66 100644
  
  #ifdef __cplusplus
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index b36e3fb..cb6bf40 100644
+index b36e3fb..dab2ab2 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
-@@ -153,6 +153,15 @@ const char* host_sched_laptop_why(void)
+@@ -57,6 +57,7 @@
+  *                             flip status sleeps as asked instead of waiting
+  *                             for the flip [waits for the flip]
+  *   PS3_SLOW_FRAMES=0         (boot_main.cpp) no [slow-frames] summary lines
++ *   PS3_CLOCK_SAMPLE=0        (patch 0063) no "processors at X GHz" (PDH) in them
+  *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
+  *                             when cellGcmSetUserCommand advances put [wake]
+  *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
+@@ -153,6 +154,15 @@ const char* host_sched_laptop_why(void)
  #ifndef _WIN32
  static int hs_lap_detect(char* why, unsigned n) { if (n) why[0] = 0; return 0; }
  void host_sched_note_gpu(int integrated, const char* name) { (void)integrated; (void)name; }
@@ -452,7 +486,7 @@ index b36e3fb..cb6bf40 100644
  #include <unistd.h>
  
  void    host_sched_thread_name(const char* name) { (void)name; }
-@@ -381,6 +390,8 @@ static hs_rec* s_tr;
+@@ -381,6 +391,8 @@ static hs_rec* s_tr;
  static volatile LONG s_tr_head;
  static FILE* s_tr_file;
  static __declspec(thread) uint16_t t_tag;    /* guest tid, or 0x100 + role */
@@ -461,7 +495,18 @@ index b36e3fb..cb6bf40 100644
  
  static DWORD WINAPI hs_trace_flusher(LPVOID unused)
  {
-@@ -627,6 +638,11 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -589,7 +601,9 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+                 host_sched_laptop_why());
+     else
+         fprintf(stderr, "[sched] power saving off (%s)\n",
+-                s_lap_cfg == 0 ? "PS3_LAPTOP=0" : "no battery, no mobile processor; integrated graphics are checked when the renderer starts");
++                s_lap_cfg == 0 ? "PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its "
++                                 "extra settings or in Windows' environment"   /* patch 0063: say where to look */
++                               : "no battery, no mobile processor; integrated graphics are checked when the renderer starts");
+     { char pw[256]; int thr = 0;
+       if (host_sched_power_text(pw, sizeof pw, &thr)) fprintf(stderr, "[power] %s\n", pw); }
+     fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
+@@ -627,6 +641,11 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
      host_sched_process_init();
      if (role < 0 || role >= HS_ROLE_COUNT) role = HS_ROLE_BACKGROUND;
      t_tag = (role == HS_ROLE_PPU || role == HS_ROLE_MAIN) ? 0 : (uint16_t)(0x100 + role);
@@ -473,7 +518,7 @@ index b36e3fb..cb6bf40 100644
  
      if (p_SetThreadDescription && name && *name) {
          wchar_t w[64];
-@@ -961,11 +977,92 @@ int host_sched_load_text(char* buf, int len)
+@@ -961,11 +980,92 @@ int host_sched_load_text(char* buf, int len)
      return ok;
  }
  
@@ -613,18 +658,36 @@ index 31b7a69..a3d79a4 100644
  }
  #endif
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index e755453..607ad13 100644
+index e755453..56d2483 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
-@@ -443,6 +443,7 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+@@ -441,8 +441,24 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+  * waiting for GPU fences or the frame-latency queue), or the present (the
+  * present call itself: a display path through another GPU, a compositor).
   * The vblank clock's rate is in the line too: above 60 Hz the game would run
-  * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines. */
+- * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines. */
++ * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines.
++ *
++ * Patch 0063 adds (docs/RENDER_PERF.md "4K on integrated graphics"):
++ *   ...; game part 14.1 ms on average: main thread running 13.5 (processor
++ *   time 12.9), waiting for the renderer 0.0, for other game threads 0.6;
++ *   GPU busy 17.2 ms a frame (62 % of the time, integrated graphics); ...;
++ *   processors at 3.42 GHz on average (76 % of their 4.50) | ... | verdict
++ * -- the game part split by the main thread's own waits (host_sched.h
++ * HS_WAIT_*: what the renderer signals counts as GPU for a slow frame), the
++ * GPU's own time per frame (timestamps), the processors' real clock, and a
++ * verdict the launcher and the problem report read: "GPU-bound: ..." (GPU
++ * busy >= 85 % of the time, or most slow frames GPU), or on integrated
++ * graphics busy >= 50 % "integrated graphics busy N % of the time: ..." (one
++ * memory and one power budget: a busy GPU slows the game's own CPU work, the
++ * long "game" part of the 780M report -- not a wait). A present that blocked
++ * while the GPU was >= 85 % busy is a GPU frame too (DXGI's queue was full). */
  extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
 +extern "C" double rsx_live_draw_gpu_ms(void);
  extern "C" volatile long long g_rsx_pf[];
  extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
  enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
-@@ -455,6 +456,14 @@ struct SlowFrames {
+@@ -455,6 +471,14 @@ struct SlowFrames {
      long long gpu0 = 0, pres0 = 0;
      unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
      unsigned n_late = 0;   /* patch 0059: frames released at once after missing their vblank */
@@ -639,7 +702,7 @@ index e755453..607ad13 100644
      double worst = 0; const char* worst_why = "";
      float c_game[CAP], c_xlat[CAP], c_gpu[CAP], c_pres[CAP];
      double t_window = 0;
-@@ -485,7 +494,32 @@ struct SlowFrames {
+@@ -485,7 +509,32 @@ struct SlowFrames {
          const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
          const double iv = t_prev > 0 ? (t1 - t_prev) * ms : 0.0;
          t_prev = t1;
@@ -673,7 +736,7 @@ index e755453..607ad13 100644
          if (frames < CAP) {
              c_game[frames] = (float)game; c_xlat[frames] = (float)xlat;
              c_gpu[frames] = (float)gpu; c_pres[frames] = (float)pres;
-@@ -495,7 +529,14 @@ struct SlowFrames {
+@@ -495,7 +544,14 @@ struct SlowFrames {
          if (iv > 1.25 * per_ms && iv < 1000.0) {
              slow++;
              const char* why;
@@ -688,7 +751,7 @@ index e755453..607ad13 100644
              else if (pres >= 4.0)                   { n_pres++; why = "present"; }
              else if (late_release * ms > 2.0)       { n_tick++; why = "CPU, vblank thread late"; }
              else if (game >= xlat)                  { n_game++; why = "CPU, game"; }
-@@ -512,16 +553,58 @@ struct SlowFrames {
+@@ -512,16 +568,58 @@ struct SlowFrames {
           * frames that missed their vblank but were released when translated (PS3_LATE_FLIP) */
          char ld[96] = "";
          host_sched_load_text(ld, sizeof ld);

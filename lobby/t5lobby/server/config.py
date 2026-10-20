@@ -43,6 +43,9 @@ class Config:
     predict_ports: int = 24         # T5L_PREDICT_PORTS: ports tried after a symmetric NAT's last one (0 = no prediction)
     relay_upgrade: bool = True      # T5L_RELAY_UPGRADE: two new clients on the relay move onto the direct path when it works
     relay_timeout: float = 6.0      # T5L_RELAY_TIMEOUT: seconds to set up the relay path
+    game_fallback: float = 90.0     # T5L_GAME_FALLBACK: seconds after a direct match's start in which a game that heard
+                                    # nothing at all from its opponent (a firewall blocking it) may move the match onto
+                                    # the relay (clients with the "game_fallback" cap; 0 = off)
     result_timeout: float = 90.0    # T5L_RESULT_TIMEOUT: wait for the second result report
     match_timeout: float = 3 * 3600.0  # T5L_MATCH_TIMEOUT: a match without results is dropped after this
     accept_onesided: bool = True    # T5L_ACCEPT_ONESIDED: a lone report counts when the other player left the lobby

@@ -13,6 +13,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 os.environ.setdefault("T5_PAD_NAV", "0")
 # Never ask the router of the PC that runs the tests for a port forward (port mapping tests use fakes).
 os.environ["T5_PORTMAP"] = "0"
+# The Online tab's firewall hint does not read this PC's Windows Firewall (test_firewall.py feeds the check its data).
+os.environ.setdefault("T5_FW_CHECK", "0")
 
 from t5lobby import proto  # noqa: E402
 from t5lobby.buildid import BuildInfo  # noqa: E402

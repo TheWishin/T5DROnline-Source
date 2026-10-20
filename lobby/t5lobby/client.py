@@ -8,6 +8,7 @@ notice, ...) plus the client's own:
 
     {"t": "match_start", "ticket": MatchTicket, ...}   both players are connected: start the game
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
+    {"t": "nat_fallback", "match": id, "ok": bool}   the answer to nat_fallback() (the relay's own events follow)
     {"t": "nat_upgrade", "match": id, "path": "direct"|"relay", "text": ...}   a relayed match moved onto
                                            the direct path (or back to the relay); see RelayBridge
     {"t": "relay_rtts", "rtts": {id: ms}}  round trips to the server's regional relays were measured
@@ -269,7 +270,8 @@ class LobbyClient:
                                                 + (["sets"] if self.sets else [])
                                                 + (["nat2"] if self.nat2 else [])
                                                 + (["relays"] if self.relays else [])
-                                                + (["friends"] if self.friends else [])})
+                                                + (["friends"] if self.friends else [])
+                                                + (["game_fallback"] if self._can_fallback() else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -280,6 +282,11 @@ class LobbyClient:
             self._closing = closing
             raise
         return self.welcome
+
+    def _can_fallback(self):
+        """A game that hears nothing on the direct path can be moved onto the relay (nat_fallback): only through the
+        relay bridge, which keeps the network on this launcher's socket and gives the game 127.0.0.1."""
+        return bool(self.nat2 and self.relay_bridge and self.handover == "port")
 
     async def _send(self, msg):
         if not self.connected:
@@ -533,10 +540,25 @@ class LobbyClient:
         return False
 
     async def _on_nat_relay(self, msg):
-        if not self._gs or not self.match or self.match["match"] != msg["match"]:
+        if not self.match or self.match["match"] != msg["match"]:
+            return False
+        if not self._gs:
+            if not (msg.get("fallback") and self.match.get("udp")):
+                return False
+            # The games could not connect directly (nat_fallback): the game holds the old socket's port, so the
+            # relay gets a new one -- any free port, bound with the match's token like the first.
+            self._nat_phase(self._nat_relay_again(msg))
             return False
         self._nat_phase(self._nat_relay(msg))
         return False
+
+    async def _nat_relay_again(self, msg):
+        u = self.match["udp"]
+        gs = await GameSocket.open(0, tuple(u["server"]), u["port2"], bytes.fromhex(u["token"]), bytes.fromhex(u["tag"]),
+                                   u["side"], block_direct=self.block_direct, inbound=self.test_inbound)
+        self._gs = gs
+        self.match["state"] = "nat"
+        await self._nat_relay(msg)
 
     async def _on_match_start(self, msg):
         gs = self._gs
@@ -649,6 +671,9 @@ class LobbyClient:
                                    block_direct=self.block_direct, keep_dup=self.handover == "share",
                                    inbound=self.test_inbound)
         self._gs = gs
+        # what a second game socket needs if the match must move onto the relay later (nat_fallback)
+        self.match["udp"] = {"server": (self.server_ip, int(msg["udp_port"])), "port2": int(msg.get("udp_port2") or 0),
+                             "token": msg["token"], "tag": msg["tag"], "side": int(msg["side"])}
         v2 = self.nat2 and bool(msg.get("nat2"))
         self.match["peer_open"] = asyncio.Event()    # set by nat_peer_punching (the opponent started)
         # Before the socket sends anything: a forward made now usually carries its outgoing packets too, so
@@ -1104,6 +1129,16 @@ class LobbyClient:
         when this player's game still runs connected to the opponent's, so the next game continues in the
         running games. -> {"state": waiting|started, "in": seconds}"""
         return self._call({"t": "set_next", "match": match_id, "keep": bool(keep)})
+
+    def nat_fallback(self, match_id):
+        """This player's game is on the direct path and has heard nothing at all from its opponent's (a firewall
+        that blocks the game, docs/NETPLAY.md "When Windows Firewall blocks the game"): ask the server to move the
+        match onto the relay. Both launchers then get nat_relay + a second match_start for the same match (a new
+        ticket: the games start its session again, through the relay bridge). -> True when the server agreed."""
+        if not (self._can_fallback() and self.welcome and "game_fallback" in (self.welcome.get("caps") or ())):
+            return False
+        r = self._call({"t": "nat_fallback", "match": match_id})
+        return bool(r.get("ok"))
 
     def report_lag(self, match_id, frames, waited_ms, pc_fps=None, fps=None):
         """The game's own numbers for a finished match: frames played, milliseconds spent waiting for

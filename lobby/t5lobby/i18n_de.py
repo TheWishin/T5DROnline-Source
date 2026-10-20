@@ -1853,4 +1853,15 @@ MESSAGES = {
     "Replay over.": "Replay zu Ende.",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "Diese Replay-Datei löschen? Sie enthält {n} Match(es) gegen denselben Gegner.",
+    # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
+    "Firewall":
+        "Firewall",
+    "How to fix":
+        "So behebst du es",
+    "Windows Firewall blocks {program} on this network. Matches still connect, but some only "
+    "through a relay, with more lag.":
+        "Die Windows-Firewall blockiert {program} in diesem Netzwerk. Matches kommen trotzdem "
+        "zustande, manche aber nur über ein Relay, mit mehr Lag.",
+    "A firewall seems to block T5DR Online's network traffic on this PC.":
+        "Eine Firewall scheint den Netzwerkverkehr von T5DR Online auf diesem PC zu blockieren.",
 }

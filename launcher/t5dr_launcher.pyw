@@ -1001,6 +1001,10 @@ class App(tk.Tk):
     def game_state(self):
         return getattr(self, "_game_state", {"ok": False, "text": ""})
 
+    def game_exe(self):
+        """The t5dr.exe start_game() runs (the Online tab's firewall hint checks the rules for exactly this path)."""
+        return core.game_exe(self.settings.out_dir)
+
     def refresh_game_state(self):
         def work():
             st = core.game_state(self.settings.out_dir)

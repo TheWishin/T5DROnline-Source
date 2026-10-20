@@ -1090,8 +1090,11 @@ DWORD WINAPI tick_thread(LPVOID)
                 if ((s.mode == Mode::Join || s.peer_known) && now - s.last_hello_ms >= 100) send_hello_locked();
                 if (now - s.last_wait_note >= 5000) {
                     s.last_wait_note = now;
+                    /* "nothing arrived yet": not one datagram on this port -- after a while on a path the lobby
+                     * found working, the launcher moves the match onto the relay (match_driver _watch_direct) */
                     if (now - s.init_ms >= 4000)
-                        note("waiting for the opponent's game to answer (%llus)...", (now - s.init_ms) / 1000);
+                        note("waiting for the opponent's game to answer (%llus, %s)...", (now - s.init_ms) / 1000,
+                             s.rx_datagrams.load() ? "packets arrive" : "nothing arrived yet");
                 }
                 if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000) {
                     /* "nothing arrived": not one datagram on this port, from anybody -- the opponent's packets

@@ -884,8 +884,21 @@ class OnlineView:
             row=0, column=1, sticky="w")
         self.note_frame = note
         tab.notice_var.trace_add("write", lambda *_: self._show_notice())
+        # the firewall hint (tk_tab.fw_hint_text): one line, "How to fix" (the TROUBLESHOOTING section), Dismiss
+        fw = self.card(box, "Note.TFrame", 6)
+        fw.columnconfigure(1, weight=1)
+        ttk.Label(fw, text=t("Firewall").upper(), style="Note.Caps.TLabel").grid(row=0, column=0, sticky="nw",
+                                                                                padx=(0, px(10)))
+        self.wrap(ttk.Label(fw, textvariable=tab.fw_hint_var, style="Note.TLabel", justify="left"), box, 300).grid(
+            row=0, column=1, sticky="w")
+        tab.fw_fix_btn = ttk.Button(fw, text=t("How to fix"), style="Note.Link.TButton", command=tab.open_fw_help)
+        tab.fw_fix_btn.grid(row=0, column=2, sticky="e", padx=(px(8), 0))
+        ttk.Button(fw, text=t("Dismiss"), style="Note.Ghost.TButton", command=tab.dismiss_fw_hint).grid(
+            row=0, column=3, sticky="e")
+        self.fw_frame = fw
+        tab.fw_hint_var.trace_add("write", lambda *_: self._show_fw_hint())
         st = ttk.Frame(box)
-        st.grid(row=3, column=0, sticky="we", pady=(px(8), 0))
+        st.grid(row=4, column=0, sticky="we", pady=(px(8), 0))
         st.columnconfigure(0, weight=1)
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
@@ -934,6 +947,13 @@ class OnlineView:
             self.note_frame.grid(row=2, column=0, sticky="we", pady=(self.px(8), 0))
         else:
             self.note_frame.grid_forget()
+
+    def _show_fw_hint(self):
+        if self.tab.fw_hint_var.get():
+            self.fw_frame.grid(row=3, column=0, sticky="we", pady=(self.px(8), 0))
+            self._on_resize()
+        else:
+            self.fw_frame.grid_forget()
 
     def show_error(self, text):
         msg = friendly_error(text)

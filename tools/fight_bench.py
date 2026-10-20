@@ -473,7 +473,8 @@ def main():
            "priority": a.priority or ("below" if a.polite else "normal"), "ecoqos": a.ecoqos,
            "hog": a.hog, "hog_cpus": a.hog_cpus, "hog_priority": a.hog_priority if a.hog else "",
            "p50": pct(dts, 50), "p95": pct(dts, 95), "p99": pct(dts, 99), "max": max(dts) if dts else 0.0,
-           "over_17_5": sum(d > 17.5 for d in dts), "env": a.env, "exe": os.path.abspath(a.exe), "out": out}
+           "over_17_5": sum(d > 17.5 for d in dts), "env": a.env, "exe": os.path.abspath(a.exe), "out": out,
+           "window_qpc": [lo, hi], "qpc_frequency": freq}
     print("cpus=%s frames=%d fps=%.2f frame ms p50=%.2f p95=%.2f p99=%.2f max=%.1f, over 17.5 ms: %d" % (
         res["cpus"], len(dts), fps, res["p50"], res["p95"], res["p99"], res["max"], res["over_17_5"]))
     split = renderer_split(w)

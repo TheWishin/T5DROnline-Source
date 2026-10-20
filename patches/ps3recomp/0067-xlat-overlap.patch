@@ -1,0 +1,1664 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 604551b..5ade0f4 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1859,6 +1859,11 @@ void cellGcm_rsx_process_fifo(void)
+     QueryPerformanceCounter(&pf0);
+     /* thread cycles only for a pass with words to walk (a syscall each) */
+     const int work = !s_flip_hold && vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != s_fifo_getoff;
++    /* Patch 0067: the previous frame's present may still run on the renderer
++     * thread (it overlaps the game's next frame); the walk records into the
++     * same command list, so it waits for it first -- in practice it finished
++     * long ago (the game part of a frame takes milliseconds). */
++    if (work) rsx_live_draw_sync();
+     if (work) QueryThreadCycleTime(GetCurrentThread(), &c0);
+     gcm_rsx_process_fifo_unlocked();
+     if (work) QueryThreadCycleTime(GetCurrentThread(), &c1);
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index e98e889..fae6491 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -122,6 +122,10 @@ void rsx_live_draw_note_resolve(u32 sl, u32 sa, u32 dl, u32 da)
+ { (void)sl; (void)sa; (void)dl; (void)da; }
+ void rsx_live_draw_flush(void) {}
+ void rsx_live_draw_present(u32 b) { (void)b; }
++void rsx_live_draw_sync(void) {}
++unsigned rsx_live_draw_present_async(void) { return 0; }
++int  rsx_live_draw_xlat_overlap(void) { return 0; }
++void rsx_live_draw_xo_info(long long* e, unsigned* d, long long* w) { *e = 0; *d = 0; *w = 0; }
+ int  rsx_live_draw_dwm_vblank(long long* v, long long* p) { (void)v; (void)p; return 0; }
+ int  rsx_live_draw_display_lockable(void) { return 0; }
+ void rsx_live_draw_set_display_lock(int on) { (void)on; }
+@@ -818,6 +822,479 @@ static LONGLONG ld_pf_qpc(void)
+     return v.QuadPart;
+ }
+ 
++/* ---- Patch 0067: the renderer's own thread (RSX_XLAT_OVERLAP) -----------------
++ *
++ * The walker (the ticker thread) hands work to the renderer thread through one
++ * byte ring, in order: the frame's present (always, unless RSX_XLAT_OVERLAP=0)
++ * and, with RSX_XLAT_OVERLAP=2, every command-list call the translation
++ * records -- the walker records into a recorder object with the command
++ * list's own interface (g_rq_proxy), which copies each call into the ring, and
++ * the renderer thread makes the real call while the walker goes on with the
++ * next draw. The rest of the design is next to rsx_live_draw_present.
++ *
++ * Who owns the real command list: the renderer thread while the ring holds
++ * work; the walker otherwise. ld_xo_sync (the walker) waits until the ring is
++ * empty -- the renderer thread has made every call and finished the present --
++ * and ld_own_enter/leave keep the walker on the real list around the code that
++ * closes, submits or resets it or waits for the GPU (ld_flush,
++ * ld_begin_recording, the present when it runs on the walker): that code sees
++ * every call recorded before it executed. On the renderer thread ld_xo_sync and
++ * the ownership calls do nothing. */
++static volatile LONGLONG g_xo_wait_ticks;     /* spent in ld_xo_sync (cumulative)  */
++static volatile LONGLONG g_xo_end_qpc;        /* the last handed-off present returned */
++static volatile LONG g_xo_done;               /* handed-off presents finished      */
++static u64 g_xo_waits, g_xo_waits_long;
++static __declspec(thread) int t_ld_render;    /* this is the renderer thread */
++static __declspec(thread) int t_ld_stream;    /* this thread records through the ring */
++static __declspec(thread) int t_ld_own;       /* ... but owns the real list right now */
++
++#define LD_RQ_BYTES (4u << 20)
++static u8* g_rq_buf;
++static volatile LONGLONG g_rq_w, g_rq_r;      /* bytes written / consumed (monotonic) */
++static LONGLONG g_rq_wl;                      /* the walker's write position (published or not) */
++static volatile LONG g_rq_sleep;              /* the renderer thread waits for g_rq_w */
++static volatile LONG g_rq_waiter;             /* a thread waits for g_rq_r */
++static u64 g_rq_packets, g_rq_full_waits;
++static u64 g_xo_async, g_xo_inline;           /* presents handed off / made on the walker */
++
++static void ld_rq_wake(void);
++/* Wait until the renderer thread has consumed the ring up to `upto`. */
++static void ld_rq_wait(LONGLONG upto)
++{
++    LONGLONG r = __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE);
++    if (r - upto >= 0) return;
++    const LONGLONG t0 = ld_pf_qpc();
++    ULONGLONG warn = GetTickCount64() + 2000;
++    while ((r = __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE)) - upto < 0) {
++        if (__atomic_load_n(&g_rq_sleep, __ATOMIC_SEQ_CST)) ld_rq_wake();
++        InterlockedExchange(&g_rq_waiter, 1);
++        if (__atomic_load_n(&g_rq_r, __ATOMIC_SEQ_CST) == r)
++            WaitOnAddress((volatile VOID*)&g_rq_r, &r, sizeof r, 2);
++        if (GetTickCount64() > warn) {   /* a hung Present: say so, keep waiting */
++            static int n;
++            if (n++ < 4) fprintf(stderr, "[xlat-overlap] the renderer thread has not finished its work for 2 s\n");
++            warn = GetTickCount64() + 10000;
++        }
++    }
++    const LONGLONG dt = ld_pf_qpc() - t0;
++    g_xo_wait_ticks += dt;
++    g_xo_waits++;
++    if (g_ld_qpc_frequency > 0 && dt * 1000 > g_ld_qpc_frequency) g_xo_waits_long++;   /* > 1 ms */
++}
++/* Everything handed to the renderer thread done: the walker owns the list. */
++static void ld_xo_sync(void) { if (!t_ld_render) ld_rq_wait(g_rq_wl); }
++/* The last present handed off done (calls the walker recorded after it may
++ * still be queued: they keep their order behind it). */
++static LONGLONG g_xo_present_end;             /* the ring position after the last PRESENT */
++static void ld_xo_sync_present(void) { if (!t_ld_render) ld_rq_wait(g_xo_present_end); }
++void rsx_live_draw_sync(void) { ld_xo_sync_present(); }
++static void ld_own_enter(void) { if (t_ld_render) return; ld_xo_sync(); t_ld_own++; }
++static void ld_own_leave(void) { if (t_ld_render) return; t_ld_own--; }
++
++/* A packet: header, then the call's arguments (and the arrays they point at)
++ * by value; 16-byte aligned; never across the ring's end (a WRAP packet
++ * fills the tail). */
++typedef struct { u32 op, bytes; } ld_rq_hdr;
++enum { RQ_WRAP = 0, RQ_PRESENT, RQ_BARRIER, RQ_COPYTEX, RQ_COPYRES, RQ_COPYBUF, RQ_GTABLE, RQ_CTABLE, RQ_PSO,
++       RQ_HEAPS, RQ_GROOTSIG, RQ_CROOTSIG, RQ_RESOLVEQ, RQ_ENDQ, RQ_BEGINQ, RQ_VIEWPORTS, RQ_SCISSORS, RQ_RTS,
++       RQ_STENCILREF, RQ_BLENDF, RQ_TOPO, RQ_VBS, RQ_IB, RQ_DRAW, RQ_DRAWIDX, RQ_CLEARRT, RQ_CLEARDS, RQ_GCBV,
++       RQ_GSRV, RQ_G32S, RQ_G32, RQ_DISPATCH };
++
++/* A sleeping renderer thread is woken every 16 packets (a wake-up is a
++ * system call; the thread then takes the whole backlog), at a present and
++ * before the walker waits for it. */
++static u32 g_rq_unwoken;
++static void ld_rq_wake(void)
++{
++    g_rq_unwoken = 0;
++    WakeByAddressSingle((PVOID)&g_rq_w);
++}
++static void ld_rq_publish(void)
++{
++    /* a plain store and load per packet; a wake-up this misses (the renderer
++     * thread going to sleep at this moment) comes with the next ones, the
++     * present's or a wait's, which check with a full fence -- and its sleep is
++     * a WaitOnAddress on g_rq_w, which does not sleep once the store landed */
++    __atomic_store_n(&g_rq_w, g_rq_wl, __ATOMIC_RELEASE);
++    if (__atomic_load_n(&g_rq_sleep, __ATOMIC_RELAXED) && ++g_rq_unwoken >= 16) ld_rq_wake();
++}
++/* Room for one packet of `payload` bytes; returns where its arguments go.
++ * The caller fills them and publishes (ld_rq_publish). */
++static u8* ld_rq_put(u32 op, u32 payload)
++{
++    const u32 need = (u32)((sizeof(ld_rq_hdr) + payload + 15u) & ~15u);
++    u32 off = (u32)(g_rq_wl % LD_RQ_BYTES);
++    const u32 tail = off + need > LD_RQ_BYTES ? LD_RQ_BYTES - off : 0;
++    for (;;) {   /* room for the tail filler and the packet: the renderer thread is a ring behind */
++        LONGLONG r = __atomic_load_n(&g_rq_r, __ATOMIC_ACQUIRE);
++        if (g_rq_wl + tail + need - r <= (LONGLONG)LD_RQ_BYTES) break;
++        ld_rq_publish();
++        ld_rq_wake();
++        g_rq_full_waits++;
++        InterlockedExchange(&g_rq_waiter, 1);
++        if (__atomic_load_n(&g_rq_r, __ATOMIC_SEQ_CST) == r)
++            WaitOnAddress((volatile VOID*)&g_rq_r, &r, sizeof r, 2);
++    }
++    if (tail) {
++        ld_rq_hdr* t = (ld_rq_hdr*)(g_rq_buf + off);
++        t->op = RQ_WRAP; t->bytes = tail;
++        g_rq_wl += tail;
++        off = 0;
++    }
++    ld_rq_hdr* h = (ld_rq_hdr*)(g_rq_buf + off);
++    h->op = op; h->bytes = need;
++    g_rq_wl += need;
++    g_rq_packets++;
++    return (u8*)(h + 1);
++}
++
++/* The recorder: ID3D12GraphicsCommandList's methods the translation records
++ * on the walker, each one packet. Any other method stops the game with a
++ * message (a call this table does not know could not keep its order). */
++typedef struct { CONST_VTBL ID3D12GraphicsCommandListVtbl* lpVtbl; } ld_rq_proxy_t;
++static ID3D12GraphicsCommandListVtbl g_rq_vtbl;
++static ld_rq_proxy_t g_rq_proxy = { &g_rq_vtbl };
++
++typedef struct { UINT n, pad[3]; D3D12_RESOURCE_BARRIER b[1]; } rq_barrier;
++static void STDMETHODCALLTYPE rq_ResourceBarrier(ID3D12GraphicsCommandList* l, UINT n, const D3D12_RESOURCE_BARRIER* b)
++{
++    (void)l;
++    rq_barrier* a = (rq_barrier*)ld_rq_put(RQ_BARRIER, (u32)(offsetof(rq_barrier, b) + n * sizeof *b));
++    a->n = n; memcpy(a->b, b, n * sizeof *b);
++    ld_rq_publish();
++}
++typedef struct { D3D12_TEXTURE_COPY_LOCATION dst, src; D3D12_BOX box; UINT x, y, z, has_box; } rq_copytex;
++static void STDMETHODCALLTYPE rq_CopyTextureRegion(ID3D12GraphicsCommandList* l, const D3D12_TEXTURE_COPY_LOCATION* d,
++                                                   UINT x, UINT y, UINT z, const D3D12_TEXTURE_COPY_LOCATION* s,
++                                                   const D3D12_BOX* box)
++{
++    (void)l;
++    rq_copytex* a = (rq_copytex*)ld_rq_put(RQ_COPYTEX, sizeof(rq_copytex));
++    a->dst = *d; a->src = *s; a->x = x; a->y = y; a->z = z;
++    a->has_box = box != NULL;
++    if (box) a->box = *box;
++    ld_rq_publish();
++}
++typedef struct { ID3D12Resource *d, *s; UINT64 doff, soff, n; } rq_copy;
++static void STDMETHODCALLTYPE rq_CopyResource(ID3D12GraphicsCommandList* l, ID3D12Resource* d, ID3D12Resource* s)
++{
++    (void)l;
++    rq_copy* a = (rq_copy*)ld_rq_put(RQ_COPYRES, sizeof(rq_copy));
++    a->d = d; a->s = s;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_CopyBufferRegion(ID3D12GraphicsCommandList* l, ID3D12Resource* d, UINT64 doff,
++                                                  ID3D12Resource* s, UINT64 soff, UINT64 n)
++{
++    (void)l;
++    rq_copy* a = (rq_copy*)ld_rq_put(RQ_COPYBUF, sizeof(rq_copy));
++    a->d = d; a->s = s; a->doff = doff; a->soff = soff; a->n = n;
++    ld_rq_publish();
++}
++typedef struct { UINT i; D3D12_GPU_DESCRIPTOR_HANDLE h; } rq_table;
++static void STDMETHODCALLTYPE rq_SetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* l, UINT i, D3D12_GPU_DESCRIPTOR_HANDLE h)
++{
++    (void)l;
++    rq_table* a = (rq_table*)ld_rq_put(RQ_GTABLE, sizeof(rq_table));
++    a->i = i; a->h = h;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_SetComputeRootDescriptorTable(ID3D12GraphicsCommandList* l, UINT i, D3D12_GPU_DESCRIPTOR_HANDLE h)
++{
++    (void)l;
++    rq_table* a = (rq_table*)ld_rq_put(RQ_CTABLE, sizeof(rq_table));
++    a->i = i; a->h = h;
++    ld_rq_publish();
++}
++typedef struct { void* p; } rq_ptr;
++static void STDMETHODCALLTYPE rq_SetPipelineState(ID3D12GraphicsCommandList* l, ID3D12PipelineState* p)
++{
++    (void)l;
++    ((rq_ptr*)ld_rq_put(RQ_PSO, sizeof(rq_ptr)))->p = p;
++    ld_rq_publish();
++}
++typedef struct { UINT n; ID3D12DescriptorHeap* h[2]; } rq_heaps;
++static void STDMETHODCALLTYPE rq_SetDescriptorHeaps(ID3D12GraphicsCommandList* l, UINT n, ID3D12DescriptorHeap* const* h)
++{
++    (void)l;
++    rq_heaps* a = (rq_heaps*)ld_rq_put(RQ_HEAPS, sizeof(rq_heaps));
++    a->n = n > 2 ? 2 : n;     /* D3D12 binds at most one CBV/SRV/UAV and one sampler heap */
++    for (UINT i = 0; i < a->n; i++) a->h[i] = h[i];
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_SetGraphicsRootSignature(ID3D12GraphicsCommandList* l, ID3D12RootSignature* p)
++{
++    (void)l;
++    ((rq_ptr*)ld_rq_put(RQ_GROOTSIG, sizeof(rq_ptr)))->p = p;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_SetComputeRootSignature(ID3D12GraphicsCommandList* l, ID3D12RootSignature* p)
++{
++    (void)l;
++    ((rq_ptr*)ld_rq_put(RQ_CROOTSIG, sizeof(rq_ptr)))->p = p;
++    ld_rq_publish();
++}
++typedef struct { ID3D12QueryHeap* h; D3D12_QUERY_TYPE t; UINT i, n; ID3D12Resource* d; UINT64 off; } rq_query;
++static void STDMETHODCALLTYPE rq_ResolveQueryData(ID3D12GraphicsCommandList* l, ID3D12QueryHeap* h, D3D12_QUERY_TYPE t,
++                                                  UINT i, UINT n, ID3D12Resource* d, UINT64 off)
++{
++    (void)l;
++    rq_query* a = (rq_query*)ld_rq_put(RQ_RESOLVEQ, sizeof(rq_query));
++    a->h = h; a->t = t; a->i = i; a->n = n; a->d = d; a->off = off;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_EndQuery(ID3D12GraphicsCommandList* l, ID3D12QueryHeap* h, D3D12_QUERY_TYPE t, UINT i)
++{
++    (void)l;
++    rq_query* a = (rq_query*)ld_rq_put(RQ_ENDQ, sizeof(rq_query));
++    a->h = h; a->t = t; a->i = i;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_BeginQuery(ID3D12GraphicsCommandList* l, ID3D12QueryHeap* h, D3D12_QUERY_TYPE t, UINT i)
++{
++    (void)l;
++    rq_query* a = (rq_query*)ld_rq_put(RQ_BEGINQ, sizeof(rq_query));
++    a->h = h; a->t = t; a->i = i;
++    ld_rq_publish();
++}
++typedef struct { UINT n, pad[3]; D3D12_VIEWPORT v[1]; } rq_viewports;
++static void STDMETHODCALLTYPE rq_RSSetViewports(ID3D12GraphicsCommandList* l, UINT n, const D3D12_VIEWPORT* v)
++{
++    (void)l;
++    rq_viewports* a = (rq_viewports*)ld_rq_put(RQ_VIEWPORTS, (u32)(offsetof(rq_viewports, v) + n * sizeof *v));
++    a->n = n; memcpy(a->v, v, n * sizeof *v);
++    ld_rq_publish();
++}
++typedef struct { UINT n, pad[3]; D3D12_RECT r[1]; } rq_rects;
++static void STDMETHODCALLTYPE rq_RSSetScissorRects(ID3D12GraphicsCommandList* l, UINT n, const D3D12_RECT* r)
++{
++    (void)l;
++    rq_rects* a = (rq_rects*)ld_rq_put(RQ_SCISSORS, (u32)(offsetof(rq_rects, r) + n * sizeof *r));
++    a->n = n; memcpy(a->r, r, n * sizeof *r);
++    ld_rq_publish();
++}
++typedef struct { UINT n, range, has_ds; D3D12_CPU_DESCRIPTOR_HANDLE ds; D3D12_CPU_DESCRIPTOR_HANDLE rt[8]; } rq_rts;
++static void STDMETHODCALLTYPE rq_OMSetRenderTargets(ID3D12GraphicsCommandList* l, UINT n, const D3D12_CPU_DESCRIPTOR_HANDLE* rt,
++                                                    BOOL range, const D3D12_CPU_DESCRIPTOR_HANDLE* ds)
++{
++    (void)l;
++    rq_rts* a = (rq_rts*)ld_rq_put(RQ_RTS, sizeof(rq_rts));
++    a->n = n > 8 ? 8 : n;
++    a->range = range ? 1u : 0u;
++    a->has_ds = ds != NULL;
++    if (ds) a->ds = *ds;
++    const UINT k = a->n ? (range ? 1u : a->n) : 0u;   /* a range is one handle */
++    for (UINT i = 0; i < k; i++) a->rt[i] = rt[i];
++    ld_rq_publish();
++}
++typedef struct { UINT v; } rq_u32;
++static void STDMETHODCALLTYPE rq_OMSetStencilRef(ID3D12GraphicsCommandList* l, UINT v)
++{
++    (void)l;
++    ((rq_u32*)ld_rq_put(RQ_STENCILREF, sizeof(rq_u32)))->v = v;
++    ld_rq_publish();
++}
++typedef struct { FLOAT f[4]; } rq_f4;
++static void STDMETHODCALLTYPE rq_OMSetBlendFactor(ID3D12GraphicsCommandList* l, const FLOAT f[4])
++{
++    (void)l;
++    memcpy(((rq_f4*)ld_rq_put(RQ_BLENDF, sizeof(rq_f4)))->f, f, sizeof(FLOAT) * 4);
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_IASetPrimitiveTopology(ID3D12GraphicsCommandList* l, D3D12_PRIMITIVE_TOPOLOGY t)
++{
++    (void)l;
++    ((rq_u32*)ld_rq_put(RQ_TOPO, sizeof(rq_u32)))->v = (UINT)t;
++    ld_rq_publish();
++}
++typedef struct { UINT start, n, has, pad; D3D12_VERTEX_BUFFER_VIEW v[1]; } rq_vbs;
++static void STDMETHODCALLTYPE rq_IASetVertexBuffers(ID3D12GraphicsCommandList* l, UINT start, UINT n,
++                                                    const D3D12_VERTEX_BUFFER_VIEW* v)
++{
++    (void)l;
++    rq_vbs* a = (rq_vbs*)ld_rq_put(RQ_VBS, (u32)(offsetof(rq_vbs, v) + (v ? n : 0) * sizeof *v));
++    a->start = start; a->n = n; a->has = v != NULL;
++    if (v) memcpy(a->v, v, n * sizeof *v);
++    ld_rq_publish();
++}
++typedef struct { UINT has; D3D12_INDEX_BUFFER_VIEW v; } rq_ib;
++static void STDMETHODCALLTYPE rq_IASetIndexBuffer(ID3D12GraphicsCommandList* l, const D3D12_INDEX_BUFFER_VIEW* v)
++{
++    (void)l;
++    rq_ib* a = (rq_ib*)ld_rq_put(RQ_IB, sizeof(rq_ib));
++    a->has = v != NULL;
++    if (v) a->v = *v;
++    ld_rq_publish();
++}
++typedef struct { UINT a0, a1, a2; INT b; UINT a3; } rq_draw;
++static void STDMETHODCALLTYPE rq_DrawInstanced(ID3D12GraphicsCommandList* l, UINT v, UINT n, UINT sv, UINT si)
++{
++    (void)l;
++    rq_draw* a = (rq_draw*)ld_rq_put(RQ_DRAW, sizeof(rq_draw));
++    a->a0 = v; a->a1 = n; a->a2 = sv; a->a3 = si;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_DrawIndexedInstanced(ID3D12GraphicsCommandList* l, UINT ic, UINT n, UINT si, INT bv, UINT sinst)
++{
++    (void)l;
++    rq_draw* a = (rq_draw*)ld_rq_put(RQ_DRAWIDX, sizeof(rq_draw));
++    a->a0 = ic; a->a1 = n; a->a2 = si; a->b = bv; a->a3 = sinst;
++    ld_rq_publish();
++}
++typedef struct { D3D12_CPU_DESCRIPTOR_HANDLE h; FLOAT c[4]; D3D12_CLEAR_FLAGS fl; FLOAT d; UINT st, n; D3D12_RECT r[1]; } rq_clear;
++static void STDMETHODCALLTYPE rq_ClearRenderTargetView(ID3D12GraphicsCommandList* l, D3D12_CPU_DESCRIPTOR_HANDLE h,
++                                                       const FLOAT c[4], UINT n, const D3D12_RECT* r)
++{
++    (void)l;
++    rq_clear* a = (rq_clear*)ld_rq_put(RQ_CLEARRT, (u32)(offsetof(rq_clear, r) + (r ? n : 0) * sizeof *r));
++    a->h = h; memcpy(a->c, c, sizeof a->c);
++    a->n = r ? n : 0;
++    if (r) memcpy(a->r, r, n * sizeof *r);
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_ClearDepthStencilView(ID3D12GraphicsCommandList* l, D3D12_CPU_DESCRIPTOR_HANDLE h,
++                                                       D3D12_CLEAR_FLAGS fl, FLOAT d, UINT8 st, UINT n, const D3D12_RECT* r)
++{
++    (void)l;
++    rq_clear* a = (rq_clear*)ld_rq_put(RQ_CLEARDS, (u32)(offsetof(rq_clear, r) + (r ? n : 0) * sizeof *r));
++    a->h = h; a->fl = fl; a->d = d; a->st = st;
++    a->n = r ? n : 0;
++    if (r) memcpy(a->r, r, n * sizeof *r);
++    ld_rq_publish();
++}
++typedef struct { UINT i; D3D12_GPU_VIRTUAL_ADDRESS va; } rq_va;
++static void STDMETHODCALLTYPE rq_SetGraphicsRootConstantBufferView(ID3D12GraphicsCommandList* l, UINT i, D3D12_GPU_VIRTUAL_ADDRESS va)
++{
++    (void)l;
++    rq_va* a = (rq_va*)ld_rq_put(RQ_GCBV, sizeof(rq_va));
++    a->i = i; a->va = va;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_SetGraphicsRootShaderResourceView(ID3D12GraphicsCommandList* l, UINT i, D3D12_GPU_VIRTUAL_ADDRESS va)
++{
++    (void)l;
++    rq_va* a = (rq_va*)ld_rq_put(RQ_GSRV, sizeof(rq_va));
++    a->i = i; a->va = va;
++    ld_rq_publish();
++}
++typedef struct { UINT i, n, off, pad; UINT v[1]; } rq_32s;
++static void STDMETHODCALLTYPE rq_SetGraphicsRoot32BitConstants(ID3D12GraphicsCommandList* l, UINT i, UINT n, const void* src, UINT off)
++{
++    (void)l;
++    rq_32s* a = (rq_32s*)ld_rq_put(RQ_G32S, (u32)(offsetof(rq_32s, v) + n * sizeof(UINT)));
++    a->i = i; a->n = n; a->off = off; memcpy(a->v, src, n * sizeof(UINT));
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_SetGraphicsRoot32BitConstant(ID3D12GraphicsCommandList* l, UINT i, UINT v, UINT off)
++{
++    (void)l;
++    rq_32s* a = (rq_32s*)ld_rq_put(RQ_G32, (u32)(offsetof(rq_32s, v) + sizeof(UINT)));
++    a->i = i; a->n = 1; a->off = off; a->v[0] = v;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_Dispatch(ID3D12GraphicsCommandList* l, UINT x, UINT y, UINT z)
++{
++    (void)l;
++    rq_draw* a = (rq_draw*)ld_rq_put(RQ_DISPATCH, sizeof(rq_draw));
++    a->a0 = x; a->a1 = y; a->a2 = z;
++    ld_rq_publish();
++}
++static void STDMETHODCALLTYPE rq_unexpected(void* self)
++{
++    (void)self;
++    fprintf(stderr, "[xlat-overlap] a command-list call the recorder does not know: stopping "
++                    "(RSX_XLAT_OVERLAP=1 records on the translation thread)\n");
++    fflush(stderr);
++    abort();
++}
++static void ld_rq_init_vtbl(void)
++{
++    void** slot = (void**)&g_rq_vtbl;
++    for (size_t i = 0; i < sizeof g_rq_vtbl / sizeof(void*); i++) slot[i] = (void*)rq_unexpected;
++    g_rq_vtbl.ResourceBarrier = rq_ResourceBarrier;
++    g_rq_vtbl.CopyTextureRegion = rq_CopyTextureRegion;
++    g_rq_vtbl.CopyResource = rq_CopyResource;
++    g_rq_vtbl.CopyBufferRegion = rq_CopyBufferRegion;
++    g_rq_vtbl.SetGraphicsRootDescriptorTable = rq_SetGraphicsRootDescriptorTable;
++    g_rq_vtbl.SetComputeRootDescriptorTable = rq_SetComputeRootDescriptorTable;
++    g_rq_vtbl.SetPipelineState = rq_SetPipelineState;
++    g_rq_vtbl.SetDescriptorHeaps = rq_SetDescriptorHeaps;
++    g_rq_vtbl.SetGraphicsRootSignature = rq_SetGraphicsRootSignature;
++    g_rq_vtbl.SetComputeRootSignature = rq_SetComputeRootSignature;
++    g_rq_vtbl.ResolveQueryData = rq_ResolveQueryData;
++    g_rq_vtbl.EndQuery = rq_EndQuery;
++    g_rq_vtbl.BeginQuery = rq_BeginQuery;
++    g_rq_vtbl.RSSetViewports = rq_RSSetViewports;
++    g_rq_vtbl.RSSetScissorRects = rq_RSSetScissorRects;
++    g_rq_vtbl.OMSetRenderTargets = rq_OMSetRenderTargets;
++    g_rq_vtbl.OMSetStencilRef = rq_OMSetStencilRef;
++    g_rq_vtbl.OMSetBlendFactor = rq_OMSetBlendFactor;
++    g_rq_vtbl.IASetPrimitiveTopology = rq_IASetPrimitiveTopology;
++    g_rq_vtbl.IASetVertexBuffers = rq_IASetVertexBuffers;
++    g_rq_vtbl.IASetIndexBuffer = rq_IASetIndexBuffer;
++    g_rq_vtbl.DrawInstanced = rq_DrawInstanced;
++    g_rq_vtbl.DrawIndexedInstanced = rq_DrawIndexedInstanced;
++    g_rq_vtbl.ClearRenderTargetView = rq_ClearRenderTargetView;
++    g_rq_vtbl.ClearDepthStencilView = rq_ClearDepthStencilView;
++    g_rq_vtbl.SetGraphicsRootConstantBufferView = rq_SetGraphicsRootConstantBufferView;
++    g_rq_vtbl.SetGraphicsRootShaderResourceView = rq_SetGraphicsRootShaderResourceView;
++    g_rq_vtbl.SetGraphicsRoot32BitConstants = rq_SetGraphicsRoot32BitConstants;
++    g_rq_vtbl.SetGraphicsRoot32BitConstant = rq_SetGraphicsRoot32BitConstant;
++    g_rq_vtbl.Dispatch = rq_Dispatch;
++}
++/* The command list this thread records into: the recorder on the walker while
++ * it streams (and does not own the list), the real list everywhere else. */
++#define LDL ((t_ld_stream && !t_ld_own) ? (ID3D12GraphicsCommandList*)&g_rq_proxy : g.list)
++
++/* The renderer thread: the real call of one packet. */
++static void ld_present_body(u32 buffer_id, int display_synced);
++static void ld_rq_replay(const ld_rq_hdr* h)
++{
++    ID3D12GraphicsCommandList* L = g.list;   /* the renderer thread: the real list */
++    const void* p = h + 1;
++    switch (h->op) {
++    case RQ_PRESENT:
++        ld_present_body(((const rq_u32*)p)->v, 1);
++        g_xo_end_qpc = ld_pf_qpc();
++        InterlockedIncrement(&g_xo_done);
++        break;
++    case RQ_BARRIER: { const rq_barrier* a = (const rq_barrier*)p; L->lpVtbl->ResourceBarrier(L, a->n, a->b); break; }
++    case RQ_COPYTEX: { const rq_copytex* a = (const rq_copytex*)p;
++        L->lpVtbl->CopyTextureRegion(L, &a->dst, a->x, a->y, a->z, &a->src, a->has_box ? &a->box : NULL); break; }
++    case RQ_COPYRES: { const rq_copy* a = (const rq_copy*)p; L->lpVtbl->CopyResource(L, a->d, a->s); break; }
++    case RQ_COPYBUF: { const rq_copy* a = (const rq_copy*)p; L->lpVtbl->CopyBufferRegion(L, a->d, a->doff, a->s, a->soff, a->n); break; }
++    case RQ_GTABLE: { const rq_table* a = (const rq_table*)p; L->lpVtbl->SetGraphicsRootDescriptorTable(L, a->i, a->h); break; }
++    case RQ_CTABLE: { const rq_table* a = (const rq_table*)p; L->lpVtbl->SetComputeRootDescriptorTable(L, a->i, a->h); break; }
++    case RQ_PSO: L->lpVtbl->SetPipelineState(L, (ID3D12PipelineState*)((const rq_ptr*)p)->p); break;
++    case RQ_HEAPS: { const rq_heaps* a = (const rq_heaps*)p; L->lpVtbl->SetDescriptorHeaps(L, a->n, a->h); break; }
++    case RQ_GROOTSIG: L->lpVtbl->SetGraphicsRootSignature(L, (ID3D12RootSignature*)((const rq_ptr*)p)->p); break;
++    case RQ_CROOTSIG: L->lpVtbl->SetComputeRootSignature(L, (ID3D12RootSignature*)((const rq_ptr*)p)->p); break;
++    case RQ_RESOLVEQ: { const rq_query* a = (const rq_query*)p; L->lpVtbl->ResolveQueryData(L, a->h, a->t, a->i, a->n, a->d, a->off); break; }
++    case RQ_ENDQ: { const rq_query* a = (const rq_query*)p; L->lpVtbl->EndQuery(L, a->h, a->t, a->i); break; }
++    case RQ_BEGINQ: { const rq_query* a = (const rq_query*)p; L->lpVtbl->BeginQuery(L, a->h, a->t, a->i); break; }
++    case RQ_VIEWPORTS: { const rq_viewports* a = (const rq_viewports*)p; L->lpVtbl->RSSetViewports(L, a->n, a->v); break; }
++    case RQ_SCISSORS: { const rq_rects* a = (const rq_rects*)p; L->lpVtbl->RSSetScissorRects(L, a->n, a->r); break; }
++    case RQ_RTS: { const rq_rts* a = (const rq_rts*)p;
++        L->lpVtbl->OMSetRenderTargets(L, a->n, a->n ? a->rt : NULL, a->range ? TRUE : FALSE, a->has_ds ? &a->ds : NULL); break; }
++    case RQ_STENCILREF: L->lpVtbl->OMSetStencilRef(L, ((const rq_u32*)p)->v); break;
++    case RQ_BLENDF: L->lpVtbl->OMSetBlendFactor(L, ((const rq_f4*)p)->f); break;
++    case RQ_TOPO: L->lpVtbl->IASetPrimitiveTopology(L, (D3D12_PRIMITIVE_TOPOLOGY)((const rq_u32*)p)->v); break;
++    case RQ_VBS: { const rq_vbs* a = (const rq_vbs*)p; L->lpVtbl->IASetVertexBuffers(L, a->start, a->n, a->has ? a->v : NULL); break; }
++    case RQ_IB: { const rq_ib* a = (const rq_ib*)p; L->lpVtbl->IASetIndexBuffer(L, a->has ? &a->v : NULL); break; }
++    case RQ_DRAW: { const rq_draw* a = (const rq_draw*)p; L->lpVtbl->DrawInstanced(L, a->a0, a->a1, a->a2, a->a3); break; }
++    case RQ_DRAWIDX: { const rq_draw* a = (const rq_draw*)p; L->lpVtbl->DrawIndexedInstanced(L, a->a0, a->a1, a->a2, a->b, a->a3); break; }
++    case RQ_CLEARRT: { const rq_clear* a = (const rq_clear*)p; L->lpVtbl->ClearRenderTargetView(L, a->h, a->c, a->n, a->n ? a->r : NULL); break; }
++    case RQ_CLEARDS: { const rq_clear* a = (const rq_clear*)p;
++        L->lpVtbl->ClearDepthStencilView(L, a->h, a->fl, a->d, (UINT8)a->st, a->n, a->n ? a->r : NULL); break; }
++    case RQ_GCBV: { const rq_va* a = (const rq_va*)p; L->lpVtbl->SetGraphicsRootConstantBufferView(L, a->i, a->va); break; }
++    case RQ_GSRV: { const rq_va* a = (const rq_va*)p; L->lpVtbl->SetGraphicsRootShaderResourceView(L, a->i, a->va); break; }
++    case RQ_G32S: { const rq_32s* a = (const rq_32s*)p; L->lpVtbl->SetGraphicsRoot32BitConstants(L, a->i, a->n, a->v, a->off); break; }
++    case RQ_G32: { const rq_32s* a = (const rq_32s*)p; L->lpVtbl->SetGraphicsRoot32BitConstant(L, a->i, a->v[0], a->off); break; }
++    case RQ_DISPATCH: { const rq_draw* a = (const rq_draw*)p; L->lpVtbl->Dispatch(L, a->a0, a->a1, a->a2); break; }
++    default: break;   /* RQ_WRAP: the ring's tail */
++    }
++}
++
+ /* GPU time per frame (RSX_GPU_TIME=1, on with PS3_FRAMELOG): a timestamp
+  * query at the start and at the end of every command list submitted; the
+  * frame log's gpu_us column is the GPU time of the lists that finished since
+@@ -2932,7 +3409,7 @@ static void ld_gt_begin(void)
+     if (g_gt.on <= 0) return;
+     if (g_gt.head - g_gt.tail >= LD_GT_SLOTS) ld_gt_harvest();
+     if (g_gt.head - g_gt.tail >= LD_GT_SLOTS) return;
+-    g.list->lpVtbl->EndQuery(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * (g_gt.head % LD_GT_SLOTS));
++    LDL->lpVtbl->EndQuery(LDL, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * (g_gt.head % LD_GT_SLOTS));
+     g_gt.open = 1;
+ }
+ /* Before Close: stamp the end and resolve both into the readback slot.
+@@ -2942,8 +3419,8 @@ static u32 ld_gt_end(void)
+     if (!g_gt.open) return 0;
+     g_gt.open = 0;
+     const u32 k = g_gt.head % LD_GT_SLOTS;
+-    g.list->lpVtbl->EndQuery(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k + 1);
+-    g.list->lpVtbl->ResolveQueryData(g.list, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k, 2,
++    LDL->lpVtbl->EndQuery(LDL, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k + 1);
++    LDL->lpVtbl->ResolveQueryData(LDL, g_gt.heap, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k, 2,
+                                      g_gt.rb, 16ull * k);
+     g_gt.fence[k] = 0;
+     g_gt.head++;
+@@ -3045,7 +3522,7 @@ static void ld_gp_mark(u32 kind, u32 a, u32 b, u32 w, u32 h, int fp16, u32 mrt)
+     if (g_gp.pend_head != g_gp.pend_tail &&                          /* never over results not read yet */
+         g_gp.head - g_gp.pend_start[g_gp.pend_tail % GP_LISTS] >= GP_CAP - 2) return;
+     const u32 i = (u32)(g_gp.head % GP_CAP);
+-    g.list->lpVtbl->EndQuery(g.list, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i);
++    LDL->lpVtbl->EndQuery(LDL, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i);
+     gp_label* L = &g_gp.lab[i];
+     L->kind = (u8)kind; L->a = a; L->b = b; L->w = w; L->h = h; L->fp16 = (u8)fp16; L->mrt = (u8)mrt;
+     g_gp.draws[i] = 0;
+@@ -3073,11 +3550,11 @@ static int ld_gp_list_end(void)
+     const u64 s = g_gp.list_start, n = g_gp.head - s;
+     const u32 i0 = (u32)(s % GP_CAP);
+     if (i0 + n <= GP_CAP) {
+-        g.list->lpVtbl->ResolveQueryData(g.list, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i0, (UINT)n, g_gp.rb, 8ull * i0);
++        LDL->lpVtbl->ResolveQueryData(LDL, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i0, (UINT)n, g_gp.rb, 8ull * i0);
+     } else {
+         const u32 n1 = GP_CAP - i0;
+-        g.list->lpVtbl->ResolveQueryData(g.list, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i0, n1, g_gp.rb, 8ull * i0);
+-        g.list->lpVtbl->ResolveQueryData(g.list, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, (UINT)(n - n1), g_gp.rb, 0);
++        LDL->lpVtbl->ResolveQueryData(LDL, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, i0, n1, g_gp.rb, 8ull * i0);
++        LDL->lpVtbl->ResolveQueryData(LDL, g_gp.heap, D3D12_QUERY_TYPE_TIMESTAMP, 0, (UINT)(n - n1), g_gp.rb, 0);
+     }
+     const u32 k = g_gp.pend_head % GP_LISTS;
+     g_gp.pend_start[k] = s; g_gp.pend_n[k] = n; g_gp.pend_fence[k] = 0;
+@@ -3180,7 +3657,17 @@ static int ld_async_present(void)
+     if (v < 0) { const char* e = getenv("RSX_ASYNC_PRESENT"); v = (e && *e == '0') ? 0 : 1; }
+     return v;
+ }
++static void ld_begin_recording_owned(void);
++/* Patch 0067: resetting the list (and waiting for the GPU before it) needs the
++ * real list: the walker takes it over from the renderer thread first. */
+ static void ld_begin_recording(void)
++{
++    if (!g_ld_lazy_reset) return;
++    ld_own_enter();
++    ld_begin_recording_owned();
++    ld_own_leave();
++}
++static void ld_begin_recording_owned(void)
+ {
+     if (!g_ld_lazy_reset) return;
+     g_ld_lazy_reset = 0;
+@@ -3219,7 +3706,7 @@ static void ld_begin_recording(void)
+     g.n_retired_textures = 0;
+     }
+     g.alloc->lpVtbl->Reset(g.alloc);
+-    g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    LDL->lpVtbl->Reset(LDL, g.alloc, NULL);
+     ld_bound_invalidate();
+     ld_gt_begin();
+     ld_gp_list_begin();
+@@ -3230,9 +3717,19 @@ static void ld_begin_recording(void)
+ }
+ 
+ static void ld_vjob_drain(void);
++static void ld_flush_owned(ld_flush_reason reason);
++/* Patch 0067: Close, ExecuteCommandLists, the fence wait and Reset on the real
++ * list, after every call the walker recorded before (ld_own_enter waits for
++ * the renderer thread to have made them). */
+ static void ld_flush(ld_flush_reason reason)
+ {
+     ld_vjob_drain();      /* the list about to run reads what the jobs write */
++    ld_own_enter();
++    ld_flush_owned(reason);
++    ld_own_leave();
++}
++static void ld_flush_owned(ld_flush_reason reason)
++{
+     ld_begin_recording();
+     if (reason != LD_FLUSH_PRESENT)
+         g_pf.flushes++;
+@@ -3245,7 +3742,7 @@ static void ld_flush(ld_flush_reason reason)
+ #endif
+     const u32 gt_slot = ld_gt_end();
+     const int gp_slot = ld_gp_list_end();
+-    const HRESULT close_hr = g.list->lpVtbl->Close(g.list);
++    const HRESULT close_hr = LDL->lpVtbl->Close(LDL);
+     if (FAILED(close_hr)) {
+         fprintf(stderr,
+                 "[d3d-fail] command-list Close hr=0x%08lX frame=%u\n",
+@@ -3303,7 +3800,7 @@ static void ld_flush(ld_flush_reason reason)
+     g.n_retired_textures = 0;
+     ld_slots_release_all();   /* patch 0063: the wait above covered every slot */
+     g.alloc->lpVtbl->Reset(g.alloc);
+-    g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
++    LDL->lpVtbl->Reset(LDL, g.alloc, NULL);
+     ld_bound_invalidate();
+     ld_gt_begin();
+     ld_gp_list_begin();
+@@ -3323,6 +3820,7 @@ static void ld_flush(ld_flush_reason reason)
+  * at the call site by RSX_FENCE_SYNC. */
+ void rsx_live_draw_flush(void)
+ {
++    ld_xo_sync();   /* patch 0067: a present in flight owns the renderer */
+     if (g.ready) ld_flush(LD_FLUSH_GUEST_REFERENCE);
+ }
+ 
+@@ -3620,7 +4118,7 @@ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t*
+         dst.pResource = tex; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+         dst.SubresourceIndex = m;
+         ld_gp_mark(GP_UPLOAD, 0, 0, lv[m].w, lv[m].h, 0, 0);
+-        g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++        LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+         g.upload_used = start + pitch * lv[m].rows;
+ #if defined(YZ_PERF_PROFILE)
+         g_ld_profile.total.texture_upload_bytes +=
+@@ -3633,7 +4131,7 @@ static ID3D12Resource* create_texture_mipped(DXGI_FORMAT fmt, const tex_level_t*
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     return tex;
+ }
+ 
+@@ -3678,8 +4176,8 @@ static ID3D12Resource* create_texture_cube(
+             dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+             dst.SubresourceIndex = face * n_mips + mip;
+             ld_gp_mark(GP_UPLOAD, 0, 0, level->w, level->h, 0, 0);
+-            g.list->lpVtbl->CopyTextureRegion(
+-                g.list, &dst, 0, 0, 0, &src, NULL);
++            LDL->lpVtbl->CopyTextureRegion(
++                LDL, &dst, 0, 0, 0, &src, NULL);
+             g.upload_used = start + pitch * level->rows;
+ #if defined(YZ_PERF_PROFILE)
+             g_ld_profile.total.texture_upload_bytes +=
+@@ -3694,7 +4192,7 @@ static ID3D12Resource* create_texture_cube(
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     return tex;
+ }
+ 
+@@ -4530,7 +5028,7 @@ static ID3D12Resource* decode_vertex_texture(
+         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+         b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+         b.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+-        g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++        LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+         if (out_hash) *out_hash = hash;
+     }
+     return tex;
+@@ -4790,13 +5288,13 @@ static u32 surface_feedback_srv(u32 slot)
+     b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+     b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+     ld_gp_mark(GP_FEEDBACK, s->offset, 0, s->pw, s->ph, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT, 0);
+-    g.list->lpVtbl->ResourceBarrier(g.list, fresh ? 1 : 2, b);
+-    g.list->lpVtbl->CopyResource(g.list, s->fb_tex, s->tex);
++    LDL->lpVtbl->ResourceBarrier(LDL, fresh ? 1 : 2, b);
++    LDL->lpVtbl->CopyResource(LDL, s->fb_tex, s->tex);
+     b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+     return SRV_FEEDBACK_BASE + slot;
+ }
+ 
+@@ -4940,16 +5438,16 @@ static int ld_surface_copy(u32 si, u32 sx, u32 sy, u32 di, u32 dx, u32 dy, u32 w
+         if (dt + (box.bottom - box.top) > D->ph) box.bottom = box.top + D->ph - dt;
+         b[0].Transition.pResource = S->tex; b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+         b[1].Transition.pResource = D->tex; b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+         D3D12_TEXTURE_COPY_LOCATION s = {0}, d = {0};
+         s.pResource = S->tex; s.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+         d.pResource = D->tex; d.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+-        g.list->lpVtbl->CopyTextureRegion(g.list, &d, dl, dt, 0, &s, &box);
++        LDL->lpVtbl->CopyTextureRegion(LDL, &d, dl, dt, 0, &s, &box);
+         for (int k = 0; k < 2; k++) {
+             b[k].Transition.StateBefore = b[k].Transition.StateAfter;
+             b[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+         }
+-        g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++        LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+         return 1;
+     }
+     if (g.srv_ring_used + 1u > SRV_RING_TABLES) {
+@@ -4968,7 +5466,7 @@ static int ld_surface_copy(u32 si, u32 sx, u32 sy, u32 di, u32 dx, u32 dy, u32 w
+                                          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+     b[0].Transition.pResource = S->tex;
+     b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, b);
+     /* Viewport over the whole source texture in destination pixels: uv is then
+      * the source coordinate of every destination pixel; the scissor keeps the
+      * destination rect. */
+@@ -4979,19 +5477,19 @@ static int ld_surface_copy(u32 si, u32 sx, u32 sy, u32 di, u32 dx, u32 dy, u32 w
+     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(LD_SWAP_BUFFERS + di);
+     ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+-    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
+-    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ld_copy.rootsig);
+-    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
+-    g.list->lpVtbl->SetPipelineState(g.list, D->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
++    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
++    LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_copy.rootsig);
++    LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
++    LDL->lpVtbl->SetPipelineState(LDL, D->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
+                                                  ? g_ld_copy.pso_rgba16f : g_ld_copy.pso_rgba8);
+-    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
+-    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+-    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+-    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    LDL->lpVtbl->RSSetViewports(LDL, 1, &vp);
++    LDL->lpVtbl->RSSetScissorRects(LDL, 1, &sc);
++    LDL->lpVtbl->IASetPrimitiveTopology(LDL, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    LDL->lpVtbl->DrawInstanced(LDL, 3, 1, 0, 0);
+     b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+     b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, b);
+     { static u32 n = 0;
+       if (n++ < 8)
+           fprintf(stderr, "[res] scaled copy surface %u (x%.3g) -> %u (x%.3g), guest %ux%u\n",
+@@ -5331,8 +5829,8 @@ static u32 zdepth_get(u32 location, u32 offset, u32 rt_w, u32 rt_h, float scale)
+         srv_write_zdepth(SRV_ZDEPTH_BASE + slot, z->snapshot);
+         uav_write_zdepth(UAV_ZDEPTH_BASE + slot, z->snapshot);
+     }
+-    g.list->lpVtbl->ClearDepthStencilView(
+-        g.list, dsv_handle(1 + slot),
++    LDL->lpVtbl->ClearDepthStencilView(
++        LDL, dsv_handle(1 + slot),
+         D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+         1.0f, 0, 0, NULL);
+     z->cleared = 1;
+@@ -5388,27 +5886,27 @@ static int zdepth_snapshot(u32 slot)
+             D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+         nbar++;
+     }
+-    g.list->lpVtbl->ResourceBarrier(g.list, nbar, bars);
++    LDL->lpVtbl->ResourceBarrier(LDL, nbar, bars);
+ 
+     ld_gp_mark(GP_DEPTHSNAP, z->offset, 0, ld_pxs(z->snapshot_w, z->scale), ld_pxs(z->snapshot_h, z->scale), 0, 0);
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+     ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+-    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+-    g.list->lpVtbl->SetPipelineState(g.list, g.depth_snapshot_pso);
+-    g.list->lpVtbl->SetComputeRootSignature(
+-        g.list, g.depth_snapshot_rootsig);
+-    g.list->lpVtbl->SetComputeRootDescriptorTable(
+-        g.list, 0, source_table);
+-    g.list->lpVtbl->SetComputeRootDescriptorTable(
+-        g.list, 1, destination_table);
+-    g.list->lpVtbl->Dispatch(
+-        g.list, (ld_pxs(z->snapshot_w, z->scale) + 7u) / 8u,
++    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    LDL->lpVtbl->SetPipelineState(LDL, g.depth_snapshot_pso);
++    LDL->lpVtbl->SetComputeRootSignature(
++        LDL, g.depth_snapshot_rootsig);
++    LDL->lpVtbl->SetComputeRootDescriptorTable(
++        LDL, 0, source_table);
++    LDL->lpVtbl->SetComputeRootDescriptorTable(
++        LDL, 1, destination_table);
++    LDL->lpVtbl->Dispatch(
++        LDL, (ld_pxs(z->snapshot_w, z->scale) + 7u) / 8u,
+         (ld_pxs(z->snapshot_h, z->scale) + 7u) / 8u, 1);
+ 
+     D3D12_RESOURCE_BARRIER uav_done = {0};
+     uav_done.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+     uav_done.UAV.pResource = z->snapshot;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &uav_done);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &uav_done);
+ 
+     D3D12_RESOURCE_BARRIER done[2] = {0};
+     done[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+@@ -5426,7 +5924,7 @@ static int zdepth_snapshot(u32 slot)
+         D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+     done[1].Transition.StateAfter =
+         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, done);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, done);
+     z->snapshot_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+     z->snapshot_valid = 1;
+     z->had_write = 0;
+@@ -8705,8 +9203,8 @@ static void ld_movie_overlay_begin(void)
+     ld_flush(LD_FLUSH_MOVIE);
+     const float transparent[4] = {0, 0, 0, 0};
+     for (u32 i = 0; i < g.n_surfaces; i++) {
+-        g.list->lpVtbl->ClearRenderTargetView(
+-            g.list, rtv_handle(LD_SWAP_BUFFERS + i), transparent, 0, NULL);
++        LDL->lpVtbl->ClearRenderTargetView(
++            LDL, rtv_handle(LD_SWAP_BUFFERS + i), transparent, 0, NULL);
+         ld_surface_note_write(i, LD_SURFACE_WRITE_OTHER);
+     }
+     if (g.n_surfaces) ld_flush(LD_FLUSH_MOVIE);
+@@ -8738,7 +9236,7 @@ static void ld_movie_capture_overlay(void)
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+ 
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+     src.pResource = rt;
+@@ -8750,11 +9248,11 @@ static void ld_movie_capture_overlay(void)
+     dst.PlacedFootprint.Footprint.Height = g.height;
+     dst.PlacedFootprint.Footprint.Depth = 1;
+     dst.PlacedFootprint.Footprint.RowPitch = g.movie_overlay_pitch;
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+ 
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     ld_flush(LD_FLUSH_MOVIE);
+ 
+     const SIZE_T rb_size = (SIZE_T)g.movie_overlay_pitch * g.height;
+@@ -9890,7 +10388,7 @@ static void ld_gview_selfcheck(const char* dir)
+             b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+             b.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+             b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-            g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++            LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+             surface_t view = *s;
+             view.tex = s->gv_tex; view.pw = s->w; view.ph = s->h;
+             char path[MAX_PATH * 2];
+@@ -9899,7 +10397,7 @@ static void ld_gview_selfcheck(const char* dir)
+             ld_dump_surface_ppm(path, &view);          /* flushes: the list is new afterwards */
+             b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+             b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+-            g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++            LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+         }
+         s->gv_gen = ~s->last_write_generation;
+     }
+@@ -9975,7 +10473,7 @@ static u32 ld_guest_view_srv(u32 slot)
+     b[1].Transition.pResource = s->gv_tex;
+     b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+     b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+     ld_gp_mark(GP_GUESTVIEW, s->offset, 0, s->w, s->h, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT, 0);
+     /* RSX_GVIEW_FAST=0: the loop for every factor (patch 0043's shader), for comparisons */
+     const float k[5] = { (float)s->pw / (float)s->w, (float)s->ph / (float)s->h, (float)s->pw, (float)s->ph,
+@@ -9984,23 +10482,23 @@ static u32 ld_guest_view_srv(u32 slot)
+     const D3D12_RECT sc = { 0, 0, (LONG)s->w, (LONG)s->h };
+     ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+-    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
+-    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ld_gview.rootsig);
+-    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
+-    g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 1, 5, k, 0);
+-    g.list->lpVtbl->SetPipelineState(g.list, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
++    LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
++    LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
++    LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ld_gview.rootsig);
++    LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
++    LDL->lpVtbl->SetGraphicsRoot32BitConstants(LDL, 1, 5, k, 0);
++    LDL->lpVtbl->SetPipelineState(LDL, s->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT
+                                                  ? g_ld_gview.pso_rgba16f : g_ld_gview.pso_rgba8);
+-    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
+-    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+-    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+-    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    LDL->lpVtbl->RSSetViewports(LDL, 1, &vp);
++    LDL->lpVtbl->RSSetScissorRects(LDL, 1, &sc);
++    LDL->lpVtbl->IASetPrimitiveTopology(LDL, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    LDL->lpVtbl->DrawInstanced(LDL, 3, 1, 0, 0);
+     for (int i = 0; i < 2; i++) {
+         const D3D12_RESOURCE_STATES before = b[i].Transition.StateBefore;
+         b[i].Transition.StateBefore = b[i].Transition.StateAfter;
+         b[i].Transition.StateAfter = before;
+     }
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+ #if !defined(YZ_PERF_CLEAN)
+     s->gv_gen = s->last_write_generation;
+ #endif
+@@ -10728,7 +11226,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         bars[k].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+     }
+     if (n_surf_used)
+-        g.list->lpVtbl->ResourceBarrier(g.list, n_surf_used, bars);
++        LDL->lpVtbl->ResourceBarrier(LDL, n_surf_used, bars);
+     D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(LD_SWAP_BUFFERS + target);
+     D3D12_CPU_DESCRIPTOR_HANDLE dsv; int have_dsv = 0;
+     if (g.depth) {
+@@ -10737,8 +11235,8 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         if (current_zslot) {
+             zdepth_t* z = &g.zdepths[current_zslot - 1];
+             if (!z->cleared) {
+-                g.list->lpVtbl->ClearDepthStencilView(
+-                    g.list, dsv,
++                LDL->lpVtbl->ClearDepthStencilView(
++                    LDL, dsv,
+                     D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+                     1.0f, 0, 0, NULL);
+                 z->cleared = 1;
+@@ -10746,7 +11244,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+                 g_ld_stats.implicit_depth_clears++;
+             }
+         } else if (!g.depth_cleared) {
+-            g.list->lpVtbl->ClearDepthStencilView(g.list, dsv,
++            LDL->lpVtbl->ClearDepthStencilView(LDL, dsv,
+                 D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, NULL);
+             g.depth_cleared = 1;
+             g_ld_stats.implicit_depth_clears++;
+@@ -10765,7 +11263,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         for (u32 r = 0; same && r < n_mrt; r++)
+             same = B->rtv[r] == rtvs[r].ptr;
+         if (!same) {
+-            g.list->lpVtbl->OMSetRenderTargets(g.list, n_mrt, rtvs, FALSE,
++            LDL->lpVtbl->OMSetRenderTargets(LDL, n_mrt, rtvs, FALSE,
+                                                have_dsv ? &dsv : NULL);
+             B->rt_valid = 1; g_ld_api_set++; g_ld_api_by[0]++; B->n_rtv = n_mrt; B->has_dsv = have_dsv;
+             B->dsv = have_dsv ? dsv.ptr : 0;
+@@ -10774,7 +11272,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     }
+     if (!cache || !B->heaps) {
+         ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
+-        g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
++        LDL->lpVtbl->SetDescriptorHeaps(LDL, 2, heaps);
+         B->heaps = 1; g_ld_api_set++; g_ld_api_by[1]++;
+     }
+     const D3D12_GPU_DESCRIPTOR_HANDLE table = srv_table_memo(slots);
+@@ -10826,11 +11324,11 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+      * reset, forgets it). Root arguments stay bound across draws while the
+      * root signature does not change. */
+     if (!cache || B->pso != pso) {
+-        g.list->lpVtbl->SetPipelineState(g.list, pso);
++        LDL->lpVtbl->SetPipelineState(LDL, pso);
+         B->pso = pso; g_ld_api_set++; g_ld_api_by[2]++;
+     }
+     if (!cache || B->rootsig != g.rootsig_x) {
+-        g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x);
++        LDL->lpVtbl->SetGraphicsRootSignature(LDL, g.rootsig_x);
+         B->rootsig = g.rootsig_x; g_ld_api_set++; g_ld_api_by[3]++;
+         B->cbv0 = B->cbv4 = ~(D3D12_GPU_VIRTUAL_ADDRESS)0;
+         B->t1.ptr = B->t2.ptr = B->t3.ptr = ~(u64)0;
+@@ -10838,28 +11336,28 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     {
+         const D3D12_GPU_VIRTUAL_ADDRESS a0 = ld_gpu_va(g.cb, &g_ld_va_cb) + cb_offset;
+         if (!cache || B->cbv0 != a0) {
+-            g.list->lpVtbl->SetGraphicsRootConstantBufferView(g.list, 0, a0);
++            LDL->lpVtbl->SetGraphicsRootConstantBufferView(LDL, 0, a0);
+             B->cbv0 = a0; g_ld_api_set++; g_ld_api_by[4]++;
+         }
+     }
+     if (ld_fp_constants_buffered()) {
+         const D3D12_GPU_VIRTUAL_ADDRESS a4 = ld_gpu_va(g.ps_cb, &g_ld_va_ps_cb) + ps_cb_offset;
+         if (!cache || B->cbv4 != a4) {
+-            g.list->lpVtbl->SetGraphicsRootConstantBufferView(g.list, 4, a4);
++            LDL->lpVtbl->SetGraphicsRootConstantBufferView(LDL, 4, a4);
+             B->cbv4 = a4; g_ld_api_set++; g_ld_api_by[5]++;
+         }
+     }
+     if (!cache || B->t1.ptr != table.ptr) {
+-        g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 1, table);
++        LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 1, table);
+         B->t1 = table; g_ld_api_set++; g_ld_api_by[6]++;
+     }
+     if (!cache || B->t2.ptr != stbl.ptr) {
+-        g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 2, stbl);
++        LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 2, stbl);
+         B->t2 = stbl; g_ld_api_set++; g_ld_api_by[7]++;
+     }
+     if (vtex_mask && (!cache || B->t3.ptr != vtex_table.ptr)) {
+-        g.list->lpVtbl->SetGraphicsRootDescriptorTable(
+-            g.list, 3, vtex_table);
++        LDL->lpVtbl->SetGraphicsRootDescriptorTable(
++            LDL, 3, vtex_table);
+         B->t3 = vtex_table; g_ld_api_set++; g_ld_api_by[8]++;
+     }
+     if (!cb_reuse) {
+@@ -10923,18 +11421,18 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         }
+     }
+     if (!cache || !B->vp_valid || memcmp(&B->vp, &dvp, sizeof(dvp)) != 0) {
+-        g.list->lpVtbl->RSSetViewports(g.list, 1, &dvp);
++        LDL->lpVtbl->RSSetViewports(LDL, 1, &dvp);
+         B->vp = dvp; g_ld_api_set++; g_ld_api_by[9]++; B->vp_valid = 1;
+     }
+     if (!cache || !B->sc_valid || memcmp(&B->sc, &sc, sizeof(sc)) != 0) {
+-        g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
++        LDL->lpVtbl->RSSetScissorRects(LDL, 1, &sc);
+         B->sc = sc; g_ld_api_set++; g_ld_api_by[10]++; B->sc_valid = 1;
+     }
+     /* Dynamic stencil reference (kept out of the PSO key on purpose). */
+     {
+         const UINT sref = rsx_dsp_reg(&g.rsx, M_STENCIL_FUNC_REF) & 0xFFu;
+         if (!cache || !B->sref_valid || B->sref != sref) {
+-            g.list->lpVtbl->OMSetStencilRef(g.list, sref);
++            LDL->lpVtbl->OMSetStencilRef(LDL, sref);
+             B->sref = sref; g_ld_api_set++; g_ld_api_by[11]++; B->sref_valid = 1;
+         }
+     }
+@@ -10947,12 +11445,12 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     vbv.StrideInBytes = vertex_stride;
+     vbv.SizeInBytes = ring_vb ? (u32)g_ld_vb_cap : (u32)draw_vb_bytes;   /* (0063: the slot's ring) */
+     if (vertex_stride && (!cache || !B->vbv_valid || memcmp(&B->vbv, &vbv, sizeof(vbv)) != 0)) {
+-        g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv);
++        LDL->lpVtbl->IASetVertexBuffers(LDL, 0, 1, &vbv);
+         B->vbv = vbv; g_ld_api_set++; g_ld_api_by[12]++; B->vbv_valid = 1;
+     }
+     g_ld_api_considered += 11u + (u32)ld_fp_constants_buffered() + (vtex_mask != 0) + (vertex_stride != 0);
+     if (!cache || !B->topo_valid) {
+-        g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++        LDL->lpVtbl->IASetPrimitiveTopology(LDL, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+         B->topo_valid = 1; g_ld_api_set++; g_ld_api_by[13]++;
+     }
+     {
+@@ -10994,14 +11492,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         ibv.SizeInBytes = ring_ib ? (u32)g_ld_ib_cap : (u32)draw_ib_bytes;   /* (0063: the slot's ring) */
+         ibv.Format = DXGI_FORMAT_R32_UINT;
+         if (!cache || !B->ibv_valid || memcmp(&B->ibv, &ibv, sizeof(ibv)) != 0) {
+-            g.list->lpVtbl->IASetIndexBuffer(g.list, &ibv);
++            LDL->lpVtbl->IASetIndexBuffer(LDL, &ibv);
+             B->ibv = ibv; g_ld_api_set++; g_ld_api_by[14]++; B->ibv_valid = 1;
+         }
+-        g.list->lpVtbl->DrawIndexedInstanced(
+-            g.list, n_tri, 1, ring_ib ? g.ib_used / 4u : 0u, base_vertex, 0);
++        LDL->lpVtbl->DrawIndexedInstanced(
++            LDL, n_tri, 1, ring_ib ? g.ib_used / 4u : 0u, base_vertex, 0);
+         g_ld_api_considered++;
+     } else {
+-        g.list->lpVtbl->DrawInstanced(g.list, n_tri, 1, (UINT)base_vertex, 0);
++        LDL->lpVtbl->DrawInstanced(LDL, n_tri, 1, (UINT)base_vertex, 0);
+     }
+     ld_gp_note_draw();
+     LD_PF_PHASE(ph_api_ticks);
+@@ -11038,7 +11536,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         bars[k].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     }
+     if (n_surf_used)
+-        g.list->lpVtbl->ResourceBarrier(g.list, n_surf_used, bars);
++        LDL->lpVtbl->ResourceBarrier(LDL, n_surf_used, bars);
+     /* A guest-side failure can occur before the next flip even though useful
+      * orphanage draws have already reached internal world targets.  Preserve
+      * a few progressively later surface snapshots directly from the draw
+@@ -11159,7 +11657,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+           if (ct) { col[0] = 1.0f; col[1] = 0.0f; col[2] = 1.0f; col[3] = 1.0f; } }
+         ld_gp_mark(GP_CLEAR, g.surfaces[target].offset, 0, g.surfaces[target].pw, g.surfaces[target].ph,
+                    g.surfaces[target].fmt == DXGI_FORMAT_R16G16B16A16_FLOAT, 0);
+-        g.list->lpVtbl->ClearRenderTargetView(g.list, rtv, col, 0, NULL);
++        LDL->lpVtbl->ClearRenderTargetView(LDL, rtv, col, 0, NULL);
+         ld_surface_note_write(target, LD_SURFACE_WRITE_CLEAR);
+         g.surfaces[target].post_buffer = 0;
+     }
+@@ -11183,7 +11681,7 @@ static void sink_clear_impl(void* user, const rsx_dispatch* r, u32 mask)
+             const float cd = (float)(zs >> 8) / 16777215.0f;
+             ld_gp_mark(GP_ZCLEAR, sf.zeta_offset, 0, ld_pxs(sf.clip_w, g.surfaces[target].scale),
+                        ld_pxs(sf.clip_h, g.surfaces[target].scale), 0, 0);
+-            g.list->lpVtbl->ClearDepthStencilView(g.list, dsv,
++            LDL->lpVtbl->ClearDepthStencilView(LDL, dsv,
+                 clear_flags, zs ? cd : 1.0f, (UINT8)(zs & 0xFFu), 0, NULL);
+         }
+         if (zslot) {
+@@ -11836,7 +12334,7 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+     src.pResource = bb; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+     dst.pResource = rb; dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+@@ -11845,10 +12343,10 @@ static void ld_test_backbuffer_shot(ID3D12Resource* bb)
+     dst.PlacedFootprint.Footprint.Height = height;
+     dst.PlacedFootprint.Footprint.Depth = 1;
+     dst.PlacedFootprint.Footprint.RowPitch = pitch;
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+     ld_flush(LD_FLUSH_READBACK);
+     u8* px = NULL;
+     D3D12_RANGE rr = {0, (SIZE_T)pitch * height};
+@@ -11880,7 +12378,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     ld_gp_mark(GP_PRESENT, 0, 0, (u32)bd.Width, bd.Height, 0, 0);
+     if (!g_ldp.pso || !g_ldp.heap || !aw || !ah ||
+         (sd.Width == bd.Width && sd.Height == bd.Height && sd.Format == bd.Format)) {
+-        g.list->lpVtbl->CopyResource(g.list, bb, src);
++        LDL->lpVtbl->CopyResource(LDL, bb, src);
+         return;
+     }
+     const float bw = (float)bd.Width, bh = (float)bd.Height;
+@@ -11901,7 +12399,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     b[1].Transition.pResource = bb;
+     b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+ 
+     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+@@ -11919,13 +12417,13 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+     const D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_handle(bbi);
+     if (vw + 0.5f < bw || vh + 0.5f < bh) {
+         static const float black[4] = { 0, 0, 0, 1 };
+-        g.list->lpVtbl->ClearRenderTargetView(g.list, rtv, black, 0, NULL);
++        LDL->lpVtbl->ClearRenderTargetView(LDL, rtv, black, 0, NULL);
+     }
+     ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
+-    g.list->lpVtbl->OMSetRenderTargets(g.list, 1, &rtv, FALSE, NULL);
+-    g.list->lpVtbl->SetDescriptorHeaps(g.list, 1, &g_ldp.heap);
+-    g.list->lpVtbl->SetGraphicsRootSignature(g.list, g_ldp.rootsig);
+-    g.list->lpVtbl->SetGraphicsRootDescriptorTable(g.list, 0, gpu);
++    LDL->lpVtbl->OMSetRenderTargets(LDL, 1, &rtv, FALSE, NULL);
++    LDL->lpVtbl->SetDescriptorHeaps(LDL, 1, &g_ldp.heap);
++    LDL->lpVtbl->SetGraphicsRootSignature(LDL, g_ldp.rootsig);
++    LDL->lpVtbl->SetGraphicsRootDescriptorTable(LDL, 0, gpu);
+     {
+         /* downscale taps: n per axis = the source/window ratio rounded up (max 4) */
+         const float rx = (float)sd.Width / vw, ry = (float)sd.Height / vh;
+@@ -11939,7 +12437,7 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+         const int exact = ld_present_fast() && taps > 1.0f && rx == taps && ry == taps &&
+                           vp.TopLeftX == (float)(LONG)vp.TopLeftX && vp.TopLeftY == (float)(LONG)vp.TopLeftY;
+         const float k[4] = { 1.0f / (vw * taps), 1.0f / (vh * taps), taps, exact ? 1.0f : 0.0f };
+-        g.list->lpVtbl->SetGraphicsRoot32BitConstants(g.list, 1, 4, k, 0);
++        LDL->lpVtbl->SetGraphicsRoot32BitConstants(LDL, 1, 4, k, 0);
+         static float last_taps = -1.0f;
+         if (taps != last_taps) {
+             last_taps = taps;
+@@ -11951,18 +12449,18 @@ static void ld_present_copy(ID3D12Resource* bb, u32 bbi, ID3D12Resource* src, u3
+                                 : g_ldp.filter_point ? "point" : "bilinear");
+         }
+     }
+-    g.list->lpVtbl->SetPipelineState(g.list, g_ldp.pso);
+-    g.list->lpVtbl->RSSetViewports(g.list, 1, &vp);
+-    g.list->lpVtbl->RSSetScissorRects(g.list, 1, &sc);
+-    g.list->lpVtbl->IASetPrimitiveTopology(g.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+-    g.list->lpVtbl->DrawInstanced(g.list, 3, 1, 0, 0);
++    LDL->lpVtbl->SetPipelineState(LDL, g_ldp.pso);
++    LDL->lpVtbl->RSSetViewports(LDL, 1, &vp);
++    LDL->lpVtbl->RSSetScissorRects(LDL, 1, &sc);
++    LDL->lpVtbl->IASetPrimitiveTopology(LDL, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++    LDL->lpVtbl->DrawInstanced(LDL, 3, 1, 0, 0);
+ 
+     for (int i = 0; i < 2; i++) {
+         const D3D12_RESOURCE_STATES t = b[i].Transition.StateBefore;
+         b[i].Transition.StateBefore = b[i].Transition.StateAfter;
+         b[i].Transition.StateAfter = t;
+     }
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, b);
+ }
+ 
+ float rsx_live_draw_get_res_scale(void) { return g_ld_res_scale; }
+@@ -12122,7 +12620,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     g.dev->lpVtbl->CreateCommandList(g.dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, g.alloc, NULL,
+                                      &IID_ID3D12GraphicsCommandList, (void**)&g.list);
+     if (g.queue) g.queue->lpVtbl->SetName(g.queue, L"rsx-live-queue");
+-    if (g.list) g.list->lpVtbl->SetName(g.list, L"rsx-live-list");
++    if (g.list) LDL->lpVtbl->SetName(LDL, L"rsx-live-list");
+     g.dev->lpVtbl->CreateFence(g.dev, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void**)&g.fence);
+     g.fence_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+     ld_gt_init();
+@@ -12350,6 +12848,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+ 
+     g.ready = 1;
+     g.enabled = 1;
++    rsx_live_draw_xlat_overlap();   /* patch 0067: the renderer thread; this (the walker's) thread records */
+     return 0;
+ }
+ 
+@@ -12369,6 +12868,7 @@ void rsx_live_draw_seed_transform_constants(const u32* words, u32 count)
+ void rsx_live_draw_set_display_buffer(
+     u32 buffer_id, u32 location, u32 offset, u32 pitch, u32 width, u32 height)
+ {
++    ld_xo_sync_present();   /* patch 0067: the present in flight reads the display buffers */
+     if (buffer_id >= 8) return;
+     display_buffer_t* display = &g.display_buffers[buffer_id];
+     display->location = location;
+@@ -12483,6 +12983,7 @@ void rsx_live_draw_method(u32 method, u32 arg)
+ 
+ void rsx_live_draw_set_movie_mode(int on)
+ {
++    ld_xo_sync();   /* patch 0067: a present in flight owns the renderer */
+     if (g.ready) ld_begin_recording();
+     static unsigned long long suppressed_at_start = 0;
+     const int composite = ld_movie_composite_ui_enabled();
+@@ -12516,8 +13017,8 @@ void rsx_live_draw_set_movie_mode(int on)
+             ld_flush(LD_FLUSH_MOVIE);
+             const float black[4] = {0, 0, 0, 1};
+             for (u32 i = 0; i < g.n_surfaces; i++) {
+-                g.list->lpVtbl->ClearRenderTargetView(
+-                    g.list, rtv_handle(LD_SWAP_BUFFERS + i), black, 0, NULL);
++                LDL->lpVtbl->ClearRenderTargetView(
++                    LDL, rtv_handle(LD_SWAP_BUFFERS + i), black, 0, NULL);
+                 ld_surface_note_write(i, LD_SURFACE_WRITE_OTHER);
+             }
+             if (g.n_surfaces) ld_flush(LD_FLUSH_MOVIE);
+@@ -12659,6 +13160,7 @@ void rsx_live_draw_dump_present_samples(void)
+  * movie mode on (so guest draws don't touch g.list). */
+ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+ {
++    ld_xo_sync();   /* patch 0067: a present in flight owns the renderer */
+     if (g.ready) ld_begin_recording();
+     const int composite = ld_movie_composite_ui_enabled();
+     const int serialized = composite || g_ld_debug_layer_enabled;
+@@ -12738,7 +13240,7 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+ 
+     D3D12_TEXTURE_COPY_LOCATION dst = {0}, src = {0};
+     dst.pResource = bb; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
+@@ -12750,11 +13252,11 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+     src.PlacedFootprint.Footprint.Height = h;
+     src.PlacedFootprint.Footprint.Depth = 1;
+     src.PlacedFootprint.Footprint.RowPitch = pitch;
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+ 
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+ 
+     ld_flush(LD_FLUSH_MOVIE_PRESENT);
+     {
+@@ -12841,7 +13343,7 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+ 
+     D3D12_TEXTURE_COPY_LOCATION src = {0}, dst = {0};
+     src.pResource = rt; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; src.SubresourceIndex = 0;
+@@ -12851,11 +13353,11 @@ static u64 ld_dump_surface_ppm(const char* path, const surface_t* surface)
+     dst.PlacedFootprint.Footprint.Height = height;
+     dst.PlacedFootprint.Footprint.Depth = 1;
+     dst.PlacedFootprint.Footprint.RowPitch = pitch;
+-    g.list->lpVtbl->CopyTextureRegion(g.list, &dst, 0, 0, 0, &src, NULL);
++    LDL->lpVtbl->CopyTextureRegion(LDL, &dst, 0, 0, 0, &src, NULL);
+ 
+     b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+     b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 1, &b);
++    LDL->lpVtbl->ResourceBarrier(LDL, 1, &b);
+ 
+     ld_flush(LD_FLUSH_READBACK);                   /* copy completes on the GPU */
+ 
+@@ -12972,6 +13474,7 @@ static void ld_parity_capture_surface(
+ int rsx_live_draw_debug_dump_surface(
+     u32 location, u32 offset, const char* path)
+ {
++    ld_xo_sync();   /* patch 0067: a present in flight owns the renderer */
+     if (!g.ready || !path || !path[0]) return -1;
+     for (u32 i = 0; i < g.n_surfaces; i++) {
+         const surface_t* surface = &g.surfaces[i];
+@@ -13096,7 +13599,11 @@ static void ld_vertex_diag_emit(const char* reason, int dump_surface)
+     fflush(stderr);
+ }
+ 
+-void rsx_live_draw_present(u32 buffer_id)
++/* The present itself: on the caller's thread, or (patch 0067) on the present
++ * thread after rsx_live_draw_present handed the frame off -- with the
++ * guest-memory reads and the display's size/fullscreen sync (display_synced)
++ * done already. */
++static void ld_present_body(u32 buffer_id, int display_synced)
+ {
+     if (!g.ready) return;
+     ld_begin_recording();
+@@ -13328,7 +13835,7 @@ void rsx_live_draw_present(u32 buffer_id)
+           last_present_target = target;
+       } }
+     ID3D12Resource* srcimg = presented_surface->tex;
+-    ld_display_sync();
++    if (!display_synced) ld_display_sync();   /* patch 0067: the hand-off did it, on the window's thread */
+     if (!g_ld_lock_mode) ld_wait_frame_latency();
+     const u32 bbi = g.swap->lpVtbl->GetCurrentBackBufferIndex(g.swap);
+     ID3D12Resource* bb = g.backbuf[bbi];
+@@ -13344,7 +13851,7 @@ void rsx_live_draw_present(u32 buffer_id)
+     bar[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+     bar[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+     bar[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, bar);
+ 
+     if (g_ld_bb_shot_path[0] && getenv("RSX_FAST_SELFCHECK")) {
+         /* the old n x n taps first, read back; then the frame's own present below */
+@@ -13372,7 +13879,7 @@ void rsx_live_draw_present(u32 buffer_id)
+     bar[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+     bar[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+     bar[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+-    g.list->lpVtbl->ResourceBarrier(g.list, 2, bar);
++    LDL->lpVtbl->ResourceBarrier(LDL, 2, bar);
+ 
+     const LONGLONG pf_present_begin = ld_pf_qpc();
+     ld_flush(LD_FLUSH_PRESENT);
+@@ -14323,8 +14830,218 @@ void rsx_live_draw_present(u32 buffer_id)
+      * clear/demote a tracked zeta (sink_clear does that above). */
+ }
+ 
++/* ---- Patch 0067: the present overlaps the game's next frame -----------------
++ *
++ * A frame's critical path was: the game's commands (one flush per frame) ->
++ * the walker translates them (ticker thread) -> rsx_live_draw_present on the
++ * same thread: vertex-job drain, present copy, command-list Close +
++ * ExecuteCommandLists, DXGI Present -> the vblank tick completes the flip and
++ * releases the game. For a frame that missed its vblank (PS3_LATE_FLIP fires
++ * the tick as soon as the frame is translated) the present -- 0.5 ms at the
++ * median, 1.4-1.9 ms at p90-p99 on 4 slowed processors -- sat between the end
++ * of the translation and the game's next frame.
++ *
++ * Now (RSX_XLAT_OVERLAP=1 or 2, default 2) the walker does the part that reads
++ * guest memory -- every queued vertex fetch is drained, as the present's flush
++ * did before -- and the display's size/fullscreen sync (DXGI may need the
++ * window's own thread for those), then puts the present into the renderer
++ * thread's ring and returns: the flip completes and the game runs its next
++ * frame while the frame is submitted and presented. With 2 the walker also
++ * records every command-list call through the ring (the recorder above), so
++ * the display driver's time per call (~2,000-2,700 calls a fight frame) is
++ * spent on the renderer thread, beside the walk, not in it.
++ *
++ * Nothing the guest sees changes: the walker writes every label, report,
++ * reference and `get` of the frame when it walks them, before the flip, as
++ * before; no guest memory is read after the hand-off (the present copies host
++ * surfaces; packets carry host values); the command list gets the same calls in
++ * the same order. The renderer thread owns the renderer while the ring holds
++ * work: the walker's next walk (cellGcmSys), a mid-frame flush, a display
++ * buffer registration, shutdown -- every entry that touches the renderer --
++ * waits in ld_xo_sync first. Exclusive fullscreen presents on the walker as
++ * before (DXGI sends that window messages). RSX_XLAT_OVERLAP=0: everything on
++ * the walker, as before. */
++static int g_xo_on = -1;          /* 0 off, 1 present only, 2 present + recorded calls */
++static unsigned g_xo_last_async;  /* the last present's hand-off number, 0 = on the caller */
++
++static DWORD WINAPI ld_xo_main(LPVOID unused)
++{
++    (void)unused;
++    /* the renderer's placement (hybrid: performance cores) and never EcoQoS;
++     * the priority the present had on the ticker */
++    host_sched_thread_start(HS_ROLE_VERTEX, 0, "rsx-render");
++    if (host_sched_enabled()) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
++    t_ld_render = 1;
++    LONGLONG r = 0;
++    for (;;) {
++        LONGLONG w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
++        if (r == w) {
++            /* the walk records a call every few microseconds: wait a little
++             * before sleeping (WaitOnAddress wake-ups cost more than that) */
++            for (int k = 0; k < 300 && r == w; k++) {
++                _mm_pause();
++                w = __atomic_load_n(&g_rq_w, __ATOMIC_ACQUIRE);
++            }
++            if (r == w) {
++                __atomic_store_n(&g_rq_sleep, 1, __ATOMIC_SEQ_CST);
++                w = __atomic_load_n(&g_rq_w, __ATOMIC_SEQ_CST);
++                if (r == w) WaitOnAddress((volatile VOID*)&g_rq_w, &r, sizeof r, 100);
++                __atomic_store_n(&g_rq_sleep, 0, __ATOMIC_SEQ_CST);
++                continue;
++            }
++        }
++        while (r != w) {
++            const ld_rq_hdr* h = (const ld_rq_hdr*)(g_rq_buf + (u32)(r % LD_RQ_BYTES));
++            ld_rq_replay(h);
++            r += h->bytes;
++            /* consumed: room for the walker, and the end of a sync wait */
++            __atomic_store_n(&g_rq_r, r, __ATOMIC_SEQ_CST);
++            if (h->op == RQ_PRESENT && __atomic_load_n(&g_rq_waiter, __ATOMIC_SEQ_CST)) {
++                InterlockedExchange(&g_rq_waiter, 0);
++                WakeByAddressAll((PVOID)&g_rq_r);
++            }
++        }
++        if (__atomic_load_n(&g_rq_waiter, __ATOMIC_SEQ_CST)) {   /* caught up: a sync or a full ring */
++            InterlockedExchange(&g_rq_waiter, 0);
++            WakeByAddressAll((PVOID)&g_rq_r);
++        }
++    }
++    return 0;
++}
++
++int rsx_live_draw_xlat_overlap(void)
++{
++    if (g_xo_on < 0) {
++        /* 2 by default; 1 with power saving (host_sched_laptop): the recorded
++         * calls cost the renderer thread ~2 ms of processor time and hundreds
++         * of wake-ups a second for ~0.2-0.4 ms off the translation */
++        const char* e = getenv("RSX_XLAT_OVERLAP");
++        g_xo_on = e && *e == '0' ? 0 : e && *e == '1' ? 1 : e && *e == '2' ? 2 : host_sched_laptop() ? 1 : 2;
++        if (g_xo_on) {
++            g_rq_buf = (u8*)VirtualAlloc(NULL, LD_RQ_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
++            HANDLE t = g_rq_buf ? CreateThread(NULL, 512 * 1024, ld_xo_main, NULL, 0, NULL) : NULL;
++            if (t) CloseHandle(t);
++            else {
++                fprintf(stderr, "[xlat-overlap] no renderer thread (error %lu): everything stays on the "
++                                "translation thread\n", (unsigned long)GetLastError());
++                g_xo_on = 0;
++            }
++        }
++        if (g_xo_on == 2) { ld_rq_init_vtbl(); t_ld_stream = 1; }   /* this thread is the walker */
++        fprintf(stderr, g_xo_on == 2 ? "[xlat-overlap] the D3D12 calls and the present on the renderer thread, the "
++                                       "game's next frame overlaps them (RSX_XLAT_OVERLAP=1: the present only, 0: off)\n"
++                      : g_xo_on == 1 ? "[xlat-overlap] the present on the renderer thread, the game's next frame "
++                                       "overlaps it (RSX_XLAT_OVERLAP=1; 2: also the D3D12 calls, 0: off)\n"
++                                     : "[xlat-overlap] off (RSX_XLAT_OVERLAP=0): frames are recorded and presented "
++                                       "on the translation thread\n");
++    }
++    return g_xo_on;
++}
++
++/* RSX_XLAT_OVERLAP_AB=N (measurement): the frames switch every N frames
++ * between this mode and the one before it -- with 1, the present on the walker
++ * (as RSX_XLAT_OVERLAP=0) or handed off; with 2, the command-list calls
++ * recorded on the list (as 1) or through the renderer thread -- and every
++ * 1,000 frames of each kind one line compares them: the walker's processor
++ * time, the translation (flush -> flip reached) and the frame time (release
++ * -> next release), medians, and the frames over 17.5 ms. The same game under
++ * the same load, frames interleaved: differences of a tenth of a millisecond
++ * show, which paired runs on a busy PC cannot resolve. Switching is safe here:
++ * the ring holds nothing after this present, and the next walk waits for it. */
++static int g_xo_ab = -1, g_xo_ab_alt;
++static void ld_xo_ab(void)
++{
++    static long long cyc0, xl0, rel0, q0; static unsigned long long tsc0;
++    static float c[2][1000], x[2][1000], f[2][1000]; static u32 n[2], nf[2], nlate[2], nfr; static int alt0 = -1;
++    if (g_xo_ab < 0) { const char* e = getenv("RSX_XLAT_OVERLAP_AB"); g_xo_ab = e && g_xo_on ? atoi(e) : 0; }
++    if (g_xo_ab <= 0) return;
++    const long long cyc = g_rsx_pf[RSX_PF_FIFO_CYC], xl = g_rsx_pf[RSX_PF_XLAT_TICKS];
++    const long long rel = g_rsx_pf[RSX_PF_FLIPDONE_QPC], q = ld_pf_qpc();
++    const unsigned long long tsc = __rdtsc();
++    const int m = g_xo_ab_alt;
++    if (q0 && n[m] < 1000) { c[m][n[m]] = (float)(cyc - cyc0); x[m][n[m]] = (float)(xl - xl0); n[m]++; }
++    /* the frame before this one ended at this frame's release; its present was alt0's */
++    if (q0 && alt0 >= 0 && rel0 && rel > rel0 && nf[alt0] < 1000) {
++        f[alt0][nf[alt0]] = (float)(rel - rel0);
++        if ((double)(rel - rel0) * 1000.0 > 17.5 * (double)g_ld_qpc_frequency) nlate[alt0]++;
++        nf[alt0]++;
++    }
++    if (!q0) { q0 = q; tsc0 = tsc; }
++    cyc0 = cyc; xl0 = xl; rel0 = rel; alt0 = m;
++    if (++nfr % (u32)g_xo_ab == 0) g_xo_ab_alt = !g_xo_ab_alt;
++    if (g_xo_on == 2) t_ld_stream = !g_xo_ab_alt;
++    if (n[0] >= 1000 && n[1] >= 1000 && nf[0] >= 1000 && nf[1] >= 1000) {
++        const double us_per_tsc = (double)(q - q0) * 1e6 / (double)g_ld_qpc_frequency / (double)(tsc - tsc0);
++        const double us_per_qpc = 1e6 / (double)g_ld_qpc_frequency;
++        double med[2][3], mean[2];
++        for (int k = 0; k < 2; k++) {
++            double sum = 0;
++            for (u32 i = 0; i < 1000; i++) sum += f[k][i];
++            mean[k] = sum / 1000.0 * us_per_qpc / 1000.0;
++            for (int j = 0; j < 3; j++) {
++                float* a = j == 0 ? c[k] : j == 1 ? x[k] : f[k];
++                for (u32 i = 1; i < 1000; i++) {   /* insertion sort: 1,000 values a line */
++                    const float v = a[i]; u32 p = i;
++                    while (p && a[p - 1] > v) { a[p] = a[p - 1]; p--; }
++                    a[p] = v;
++                }
++                med[k][j] = (double)a[500] * (j ? us_per_qpc : us_per_tsc) / 1000.0;
++            }
++        }
++        fprintf(stderr, "[xlat-overlap] A/B every %d frames, 1000 frames each, %s / %s: walker processor time %.3f / %.3f ms, "
++                        "translation %.3f / %.3f ms, frame %.3f / %.3f ms (mean %.3f / %.3f), over 17.5 ms %u / %u\n",
++                g_xo_ab, g_xo_on == 2 ? "recorded on the list" : "present on the walker",
++                g_xo_on == 2 ? "through the renderer thread" : "present handed off",
++                med[1][0], med[0][0], med[1][1], med[0][1], med[1][2], med[0][2], mean[1], mean[0], nlate[1], nlate[0]);
++        n[0] = n[1] = nf[0] = nf[1] = nlate[0] = nlate[1] = 0;
++    }
++}
++
++void rsx_live_draw_present(u32 buffer_id)
++{
++    if (!g.ready) return;
++    g_xo_last_async = 0;
++    if (!g_xo_on) { ld_present_body(buffer_id, 0); return; }
++    ld_vjob_drain();                  /* the frame's last guest-memory reads: before its flip completes */
++    ld_display_sync();                /* resize / fullscreen switch: here, on the window's thread (it
++                                         takes the list over from the renderer thread when it flushes) */
++    if (g_ldp.fs_exclusive || (g_xo_on == 1 && g_xo_ab > 0 && g_xo_ab_alt)) {
++        g_xo_inline++;
++        ld_own_enter();
++        ld_present_body(buffer_id, 1);
++        ld_own_leave();
++        ld_xo_ab();
++        return;
++    }
++    ((rq_u32*)ld_rq_put(RQ_PRESENT, sizeof(rq_u32)))->v = buffer_id;
++    g_xo_present_end = g_rq_wl;
++    g_xo_async++;
++    g_xo_last_async = (unsigned)g_xo_async;
++    ld_rq_publish();
++    if (__atomic_load_n(&g_rq_sleep, __ATOMIC_SEQ_CST)) ld_rq_wake();
++    ld_xo_ab();
++    { static int hl = -1; if (hl < 0) hl = getenv("RSX_HITCH_LOG") ? 1 : 0;
++      if (hl && (g_xo_async % 600u) == 0)
++          fprintf(stderr, "[xlat-overlap] presents handed off %llu, on this thread %llu; packets %.0f a frame, "
++                          "ring full %llu times; waits for the renderer thread %llu (%llu over 1 ms, %.1f ms in all)\n",
++                  (unsigned long long)g_xo_async, (unsigned long long)g_xo_inline,
++                  (double)g_rq_packets / (double)(g_xo_async + g_xo_inline), (unsigned long long)g_rq_full_waits,
++                  (unsigned long long)g_xo_waits, (unsigned long long)g_xo_waits_long,
++                  g_ld_qpc_frequency > 0 ? (double)g_xo_wait_ticks * 1000.0 / (double)g_ld_qpc_frequency : 0.0); }
++}
++
++unsigned rsx_live_draw_present_async(void) { return g_xo_last_async; }
++
++void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks)
++{
++    *end_qpc = g_xo_end_qpc;
++    *done = (unsigned)g_xo_done;
++    *wait_ticks = g_xo_wait_ticks;
++}
++
+ void rsx_live_draw_shutdown(void)
+ {
++    ld_xo_sync();
+     if (!g.ready) return;
+     ld_vertex_diag_emit("shutdown", 1);
+     ld_present_measure_dump();
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index a8c2d66..aced038 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -112,6 +112,26 @@ void rsx_live_draw_flush(void);
+ /* Present the given display buffer id (called from the flip path). */
+ void rsx_live_draw_present(u32 buffer_id);
+ 
++/* Patch 0067 (RSX_XLAT_OVERLAP: 2 default, 1 with power saving, 0 off):
++ * rsx_live_draw_present finishes every guest-memory read of the frame on the
++ * calling thread (the queued vertex fetches) and hands the rest -- the present
++ * copy, the command list's submit and DXGI Present -- to the renderer thread,
++ * so the flip can complete (and the game start its next frame) while the GPU
++ * work is submitted; with 2 the walker also records every command-list call
++ * through that thread. rsx_live_draw_sync waits until the last handed-off
++ * present is done; the FIFO walker calls it before it walks the next
++ * commands, and every other entry that touches the renderer's state waits
++ * for the renderer thread itself. rsx_live_draw_xlat_overlap: the mode.
++ * rsx_live_draw_present_async: the last present's hand-off number (1, 2, ...;
++ * it is done once xo_info's `done` reaches it), 0 = it ran on the caller.
++ * rsx_live_draw_xo_info: when the last handed-off present returned (QPC), how
++ * many have, and the QPC ticks callers spent in rsx_live_draw_sync waiting for
++ * one (cumulative). */
++void rsx_live_draw_sync(void);
++unsigned rsx_live_draw_present_async(void);
++int  rsx_live_draw_xlat_overlap(void);
++void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks);
++
+ /* Movie playback: while on, the guest method stream is ignored so a host-decoded
+  * movie can own the window without the guest's draws racing g.list. */
+ void rsx_live_draw_set_movie_mode(int on);
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index b555dea..bad848a 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -460,6 +460,9 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+  * while the GPU was >= 85 % busy is a GPU frame too (DXGI's queue was full). */
+ extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
+ extern "C" double rsx_live_draw_gpu_ms(void);
++/* Patch 0067: presents handed to the renderer's present thread (rsx_live_draw.h) */
++extern "C" unsigned rsx_live_draw_present_async(void);
++extern "C" void rsx_live_draw_xo_info(long long* end_qpc, unsigned* done, long long* wait_ticks);
+ extern "C" volatile long long g_rsx_pf[];
+ extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
+ enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
+@@ -470,6 +473,7 @@ struct SlowFrames {
+     double qpf = 1, period = 0;
+     double t_release = 0, late_release = 0, t_prev = 0;
+     long long gpu0 = 0, pres0 = 0;
++    long long xo_wait0 = 0;   /* patch 0067: ticks the walker waited for the present thread */
+     unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
+     unsigned n_late = 0;   /* patch 0059: frames released at once after missing their vblank */
+     /* patch 0063: the game part split (the main thread's waits and processor
+@@ -503,8 +507,13 @@ struct SlowFrames {
+         long long g = 0, p = 0;
+         rsx_live_draw_wait_totals(&g, &p);
+         const double ms = 1000.0 / qpf;
+-        const double gpu = (double)(g - gpu0) * ms, pres = (t1 - t0) * ms;
+-        gpu0 = g; pres0 = p;
++        /* patch 0067: with the present on its own thread this thread only hands
++         * the frame off; what a slow present (a full GPU queue, a slow display
++         * path) still costs the frame is the walker's wait for that thread */
++        long long xo_end = 0, xo_wait = 0; unsigned xo_done = 0;
++        rsx_live_draw_xo_info(&xo_end, &xo_done, &xo_wait);
++        const double gpu = (double)(g - gpu0) * ms, pres = (t1 - t0) * ms + (double)(xo_wait - xo_wait0) * ms;
++        gpu0 = g; pres0 = p; xo_wait0 = xo_wait;
+         const double flip = (double)g_rsx_pf[PF_GUEST_FLIP_QPC];
+         const double game = flip > t_release && t_release > 0 ? (flip - t_release) * ms : 0.0;
+         const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
+@@ -805,6 +814,30 @@ struct DisplayLock {
+         *next_tick += err;
+     }
+     void on_release(double t) { t_release = t; lead_at_release = lead; }
++    /* Patch 0067: a present handed to the present thread returns later --
++     * after the next frame's release when the frame was late -- so its cost
++     * (this frame's release -> its Present returned) is taken when it is done */
++    unsigned pend_job = 0;
++    double pend_rel = 0, pend_lead = 0;
++    void defer_present(unsigned job)
++    {
++        pend_job = 0;
++        if (!on || t_release <= 0 || !per) { t_release = 0; return; }
++        pend_job = job; pend_rel = t_release; pend_lead = lead_at_release;
++        t_release = 0;
++    }
++    void poll_async(void)
++    {
++        if (!pend_job) return;
++        long long end = 0, wait = 0; unsigned done = 0;
++        rsx_live_draw_xo_info(&end, &done, &wait);
++        if ((int)(done - pend_job) < 0) return;
++        pend_job = 0;
++        const double keep = t_release, keep_lead = lead_at_release;   /* a release since then */
++        t_release = pend_rel; lead_at_release = pend_lead;
++        on_present((double)end);
++        t_release = keep; lead_at_release = keep_lead;
++    }
+     void on_present(double t)
+     {
+         if (!on || t_release <= 0 || !per) return;
+@@ -936,8 +969,9 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+             present_guest_frame();
+             cellGcm_note_presented();
+             last_flip = cellGcm_flip_request_count();
+-            LARGE_INTEGER t; QueryPerformanceCounter(&t);
+-            lock.on_present((double)t.QuadPart);
++            const unsigned job = rsx_live_draw_present_async();   /* patch 0067 */
++            if (job) lock.defer_present(job);
++            else { LARGE_INTEGER t; QueryPerformanceCounter(&t); lock.on_present((double)t.QuadPart); }
+         }
+     };
+     timeBeginPeriod(1);   /* the kick wait below must be able to sleep ~1 ms */
+@@ -960,6 +994,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+          * ceiling when nothing kicks, and drains on demand when something
+          * does. */
+         g_rsx_next_tick_qpc = (long long)(hold_until > 0 ? hold_until : next_tick);
++        lock.poll_async();   /* patch 0067: a handed-off present that has returned */
+         QueryPerformanceCounter(&vb_now);
+         { const double us = ((hold_until > 0 ? hold_until : next_tick) - (double)vb_now.QuadPart) * 1e6 /
+                             (double)vb_freq.QuadPart;

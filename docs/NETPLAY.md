@@ -1376,7 +1376,42 @@ GetTickCount, timeouts, "going on" in src/netplay, src/rollback, src/directfight
 | `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | unchanged |
 | `df_fight.cpp` pick clock (30 s), Select = random | this player's own pick | no: decided on one PC and sent to the other | unchanged |
 
-<!-- slow-loading-proof -->
+**What was tested** (this PC, 32 logical processors, other agents' games running; two games of
+one pair at a time, below-normal, persistent games, both players mashing with motion inputs,
+1 round, `--net-timeout 20` as the lobby; runs in build/drain). The slow side ran on two logical
+processors (`--cpus1/2 0xC0000000`) with one of: a slow disk, harsh (`PS3_TEST_FS_DELAY=20:3000`)
+or moderate (`10:1500`); or starved loaders -- three busy processes on its two processors and its
+low-priority guest threads (ZsAread 1002, decoder 1003) at `THREAD_PRIORITY_IDLE`
+(`PS3_SCHED_PRIO_PPULO=-15`), so they run on Windows' starvation boosts only: the e2e run's
+pattern (1-3 fps while loading, the decoder busy, "going on" from frame 8 on). Matches after the
+first are rematches (`--pattern NRRR`): a new session re-enters the select screen from the title,
+which on such a PC can stall at phase 1 (the select-stall bug, its own branch).
+
+| run | build | mode | slow side | what | matches | result |
+|---|---|---|---|---|---|---|
+| repro1 | old (main df72a78) | rollback | joiner, harsh disk | Asuka vs Wang 26 | 1 | **DESYNC**: drain gave up from frame 1 on (49 frames, 52.7 s), loads ended at 194 / 204, intros 233 / 237, 2,575 / 1,601 mismatching frames, different final hashes |
+| G1c | old | rollback | joiner, starved loaders | Asuka vs Wang 26 | 1 | drain gave up on the slow side only (22 frames, 25.7 s; the other side's longest wait 152 ms), loads ended at 194 / 196; this match happened to stay in sync -- with a final hash different from the fixed build's same match (2,205 frames against 1,948): when the loading ended still depended on the clock |
+| fix2 | fixed | rollback | joiner, harsh disk | Nina vs Law 27; Steve vs Hwoarang 25 | 1 + 1 | match 1 in sync (frame 1 waited 20.9 s for the loads, the peer waited with "its game is loading"); match 2 never started: the joiner's select screen from the title stalled at phase 1 (select-stall), the host ended after 120 s -- no desync |
+| A | fixed | rollback | joiner, harsh disk | stages 26, 32, 18, 27 | 4 | 4/4, 0 mismatching frames, same hashes; 16 frames waited >= 2 s for loads (longest 47.5 s) |
+| C | fixed | rollback | host, moderate disk | stages 23, 34, 20, 17 | 4 | 4/4, 0 mismatching, same hashes; 14 long waits (longest 24.2 s) |
+| E | fixed | rollback | joiner, moderate disk | stages 30, 21, 26, 31 | 4 | 4/4, 0 mismatching, same hashes; 13 long waits (longest 23.9 s) |
+| G2c | fixed | rollback | joiner, starved loaders | stages 26, 32, 18, 27 | 4 | 4/4, 0 mismatching; 29 long waits (longest 5.3 s); the same four final hashes, frame counts, winners and load-end frames (194, 2449, 4614, 6687) as run A |
+| B | fixed | lockstep | host, harsh disk | stages 26, 28, 31, 34 | 4 | 4/4, 0 mismatching, same hashes; 16 long waits (longest 47.5 s) |
+| D | fixed | lockstep | joiner, moderate disk | stages 28, 20, 17, 25 | 4 | 4/4, 0 mismatching, same hashes; 16 long waits (longest 23.9 s) |
+| F | fixed | lockstep | host, moderate disk | stages 26, 22, 32, 19 | 4 | 4/4, 0 mismatching, same hashes; 13 long waits (longest 23.8 s) |
+| G3c | fixed | lockstep | host, starved loaders | stages 26, 28, 31, 34 | 4 | 4/4, 0 mismatching; the same final hashes and load-end frames as run B |
+| hold_rb / hold_ls | fixed | rollback / lockstep | joiner / host: `T5_TEST_DRAIN_HOLD=35000` (frame 5 held 35 s, longer than `T5_NET_TIMEOUT` 20) | 2 + 2 | all in sync; the peer waited 35 s ("its game is loading") instead of ending with `peer_stalled` |
+| lto_rb / lto_ls | fixed | rollback / lockstep | joiner / host: frame 5 held 40 s, `T5_NET_LOAD_TIMEOUT=25` | 1 + 1 | the match ends cleanly after 25 s: "LOADING TOOK TOO LONG", result `load_timeout` there, `peer_load_timeout` on the other side at once (BYE), 0 mismatching frames |
+
+In total on the fixed build: rollback 17 fought matches (34,098 frames per side), lockstep 16
+(31,574), on 15 different stages, the slow side as host and as joiner in both modes: 0 mismatching
+frames, every result (winner, score, frames, hash) the same on both PCs, and in every match the
+loading ended in the same frame on both PCs (no "scene change ... here at frame X, peer at Y"
+line). Two different kinds of slow PC gave the identical match, frame for frame (A = G2c,
+B = G3c). Also: smoke quick PASS (82 checks, 2 fps WARN with 8 other games running),
+tests/ 634 OK (9 skipped), lobby/tests 571 OK, the game-data guard (index and
+`--history df72a78..HEAD`) exit 0; tests/c/netplay_fuzz.cpp checks PING_LOADING, the BYE
+reasons, give_up() and the stall clock (a mutation of the clock's restart fails it).
 
 ## Limits and next steps
 

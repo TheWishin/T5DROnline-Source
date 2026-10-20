@@ -6,8 +6,8 @@ part is in the README's status table.
 ## v1.1.2 (not released yet)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2
-(the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047, 0048 and
-0053). The launcher offers the update itself; after it, press **BUILD GAME** once.
+(the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047, 0048,
+0052 and 0053). The launcher offers the update itself; after it, press **BUILD GAME** once.
 
 ### Online
 - **Match scores are the real round counts.** The game reported the winner right, but the
@@ -60,10 +60,31 @@ part is in the README's status table.
   be reached (an update, an outage). Now the launcher keeps it and logs you in again by itself once the server is
   back (not during a fight, and not after you logged out).
 
-<!-- PENDING DualSense/binds (branch pad-online: DualSense in the launcher and the Online tab, binds): its entry
-here, with the heading:
 ### Controllers
--->
+- **A pad that works offline now works online too.** Online, the game takes your input from the
+  controller you press, whatever player port it has. Before, online play read player port 1 only, so
+  a DualSense behind another controller -- a virtual Xbox pad from DS4Windows or DSX, a handheld's
+  built-in pad, a second pad -- got port 2 and did nothing online, while it still played offline
+  (player report: "my DualSense works only in offline mode"). A controller you don't press never
+  takes over. If you set player 1's controller in `controls.ini` (`[port1] device = ...`), that one
+  stays the only one. Both netcodes, in sync (docs/NETPLAY.md "Which controller plays online").
+- **The launcher sees DualShock 4, DualSense and DualSense Edge** -- also over Bluetooth after Steam
+  or DS4Windows used them, when it saw nothing from them before. The Online tab's A / B buttons work
+  with them, and **Settings -> Set up controllers...** lists them, so you can set their buttons and
+  which player they are. The launcher reads them like the game does, only while its window is in
+  front, never sends anything to the pad and never keeps it from the game.
+- **The game window comes forward when a match starts** after you clicked Accept or Rematch in the
+  launcher, so the keyboard works without clicking into the game first (pads always worked).
+- **Every button gets its own key or button, also on the keyboard** (Settings -> Set up controllers...):
+  L1, R1, L2, R2, L3, R3, Start and Select, the four attack buttons and every Tekken combo (1+2, 3+4,
+  1+3, 2+4, 1+2+3+4 ...), on a pad, a stick or the keyboard. The keyboard is now in that window like a
+  controller (click its row): press the key for a button, start from a keyboard layout (arrows + A S Z
+  X, WASD + U I J K, or the number pad), choose which player it is. A key or button that did something
+  else is taken from there and the window says so; the game's own keys (Esc, F11, F2) are refused.
+  Online the bound buttons arrive as what you set (owner: "R2 and L2 should have their own binds
+  too").
+- The Controls window no longer keeps the launcher busy while it is open (it kept re-selecting its
+  controller row).
 
 ### Launcher
 - **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français, besides

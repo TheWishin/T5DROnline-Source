@@ -26,7 +26,7 @@ if _LOBBY not in sys.path:
     sys.path.insert(0, _LOBBY)
 
 from t5lobby import padmap  # noqa: E402
-from t5lobby.padmap import DINPUT, XINPUT  # noqa: E402
+from t5lobby.padmap import DINPUT, KEYS, KEYS1, KEYS2, XINPUT  # noqa: E402
 
 try:    # the launcher's languages (lobby/t5lobby/i18n.py), when this copy has them
     from t5lobby.i18n import N_, t  # noqa: E402,F401
@@ -303,7 +303,8 @@ SLOT_BY_KEY = {s.key: s for s in SLOTS}
 SLOT_BY_MASK = {s.mask: s for s in SLOTS}
 assert all(s.mask for s in SLOTS) and len(SLOT_BY_MASK) == len(SLOTS)
 ATTACK_KEYS = tuple(s.key for s in SLOTS if s.group == "attack")
-GUIDED_BUTTONS = ("1", "2", "3", "4", "1+2", "3+4", "1+3", "2+4", "1+2+3+4", "START", "SELECT")
+GUIDED_BUTTONS = ("1", "2", "3", "4", "1+2", "3+4", "1+3", "2+4", "1+2+3+4", "L1", "R1", "L2", "R2", "L3", "R3",
+                  "START", "SELECT")
 GUIDED_DIRECTIONS = ("UP", "DOWN", "LEFT", "RIGHT")
 
 
@@ -366,7 +367,26 @@ RECIPES = (
                        "as 8-way d-pad presses; left+right (up+down) at once cancel.")},
            {XINPUT: _spec("standard", "tekken", port={"stick": "dpad", "socd": "neutral"}),
             DINPUT: _spec("ps", "tekken", port={"stick": "dpad", "socd": "neutral"})}),
+    # the keyboard's layouts (k_keys_classic / k_keys_tekken / k_keys_numpad in the runtime)
+    Recipe("keys_classic", {KEYS1: N_("Keyboard: arrows and A S Z X"), KEYS2: N_("Keyboard: arrows and A S Z X")},
+           {KEYS1: N_("Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is "
+                      "Start, Tab is Select."),
+            KEYS2: N_("Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is "
+                      "Start, Tab is Select.")},
+           {KEYS1: _spec("classic"), KEYS2: _spec("classic")}),
+    Recipe("keys_tekken", {KEYS1: N_("Keyboard: WASD and U I J K"), KEYS2: N_("Keyboard: WASD and U I J K")},
+           {KEYS1: N_("W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, "
+                      "Enter is Start, Backspace is Select."),
+            KEYS2: N_("W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, "
+                      "Enter is Start, Backspace is Select.")},
+           {KEYS1: _spec("tekken"), KEYS2: _spec("tekken")}),
+    Recipe("keys_numpad", {KEYS1: N_("Keyboard: arrows and number pad"), KEYS2: N_("Keyboard: arrows and number pad")},
+           {KEYS1: N_("Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on)."),
+            KEYS2: N_("Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).")},
+           {KEYS1: _spec("numpad"), KEYS2: _spec("numpad")}),
 )
+# Keys the game window itself uses: never a game button (the Controls screen says so and waits for another).
+GAME_KEYS = {"ESC": N_("Esc (leaves the game)"), "F11": N_("F11 (fullscreen)"), "F2": N_("F2 (training overlay)")}
 RECIPE_BY_ID = {r.id: r for r in RECIPES}
 
 
@@ -397,6 +417,8 @@ def recipe_pairs(kind, spec):
 
 def describe_source(kind, src):
     """A source name as the screen shows it. The file keeps the raw name; this is for reading."""
+    if kind in KEYS:
+        return src
     if kind == XINPUT:
         names = {"DUP": "D-pad up", "DDOWN": "D-pad down", "DLEFT": "D-pad left", "DRIGHT": "D-pad right",
                  "LUP": "left stick up", "LDOWN": "left stick down", "LLEFT": "left stick left",
@@ -563,8 +585,11 @@ class ControlsEditor:
         return list(self.table(dev).sources_exactly(padmap.target_mask(key)))
 
     def layers(self, dev):
-        """[(scope, section name)] from the least to the most specific; the later ones win."""
+        """[(scope, section name)] from the least to the most specific; the later ones win. A keyboard player
+        has one: [keys1] / [keys2]."""
         out = [(SCOPE_KIND, dev.kind)]
+        if dev.kind in KEYS:
+            return out
         if dev.kind == DINPUT and dev.vid:
             out.append((SCOPE_MODEL, f"dinput.{dev.vid:04X}:{dev.pid:04X}"))
         if dev.port >= 0:
@@ -799,10 +824,10 @@ class ControlsEditor:
                 self.doc.remove_lines(self._managed_indices(other))
                 self.doc.prune_section(other)
                 over.append(other)
-        if not spec.macros and dev.port >= 0 and self.doc.get(f"port{dev.port + 1}", "macros"):
+        if dev.kind not in KEYS and not spec.macros and dev.port >= 0 and self.doc.get(f"port{dev.port + 1}", "macros"):
             self.doc.remove_key(f"port{dev.port + 1}", "macros")
         self._override_note(over, recipe_title(r, dev.kind))
-        if dev.port >= 0:
+        if dev.port >= 0 and dev.kind not in KEYS:
             for k, v in spec.port.items():
                 self.doc.set_value(f"port{dev.port + 1}", k, v)
         self._touch()
@@ -819,13 +844,14 @@ class ControlsEditor:
         preset (`shared`: the section of all pads of the kind too), and its port goes back to the default
         stick mode and SOCD. Comments, `[general]` and device pins stay."""
         self._prepare()
-        names = [n for sc, n in self.layers(dev) if sc != SCOPE_KIND or shared]
+        keys = dev.kind in KEYS                         # a keyboard player: its one section; its port is the pads'
+        names = [n for sc, n in self.layers(dev) if sc != SCOPE_KIND or shared or keys]
         removed = 0
         for n in names:
             removed += len(self._managed_indices(n))
             self.doc.remove_lines(self._managed_indices(n))
             self.doc.prune_section(n)
-        if dev.port >= 0:
+        if dev.port >= 0 and not keys:
             port = f"port{dev.port + 1}"
             general = (self.doc.get("general", "socd") or "neutral").lower()
             default = {"stick": "analog", "socd": "neutral" if general in ("", "neutral") else general}
@@ -845,6 +871,33 @@ class ControlsEditor:
         self._prepare()
         self.doc.set_value(f"port{port + 1}", key, value)
         self._touch()
+
+    def keyboard_pinned(self, kind):
+        """The port set for a keyboard player ([general] keyboard / keyboard2), 0-based; None: the default."""
+        v = (self.doc.get("general", "keyboard" if kind == KEYS1 else "keyboard2") or "").strip()
+        return int(v) - 1 if v.isdigit() and 1 <= int(v) <= padmap.MAX_PORTS else None
+
+    def assign_keyboard(self, kind, port):
+        """The keyboard player `kind` drives player `port` (0-based); None: its default (keys1: player 1, keys2:
+        player 2)."""
+        self._prepare()
+        key = "keyboard" if kind == KEYS1 else "keyboard2"
+        if port is None:
+            self.doc.remove_key("general", key)
+            self.doc.prune_section("general")
+        else:
+            self.doc.set_value("general", key, str(port + 1))
+        self._touch()
+
+    def key_conflicts(self, dev, src):
+        """Game buttons the key `src` also presses for the other keyboard player (both read one keyboard)."""
+        if dev.kind not in KEYS:
+            return []
+        other = KEYS2 if dev.kind == KEYS1 else KEYS1
+        c = self.controls()
+        if c.keyboard_port(other) < 0:
+            return []
+        return [mask_text(m) for s, m in c.table(other).binds if s == src]
 
     def assign_port(self, spec, port):
         """Pin the controller `spec` (e.g. dinput:0F0D:00EE, xinput:0) to player `port` (0-based); None: automatic

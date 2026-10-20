@@ -30,22 +30,24 @@
 #include <string.h>
 #include "df.h"
 
-/* libs/input/cellPad.c (patch 0009): the local input for a PS3 port, host-endian
+/* src/netplay/local_pad.cpp: this PC's player's controller -- online the one pressed last, on any port
+ * (docs/NETPLAY.md "Which controller plays online") -- in cellPad_sample_local's layout, host-endian
  * (len, then button[] as cellPadGetData lays it out). */
 struct DfHostPad { int32_t len; uint16_t button[64]; };
-extern "C" int32_t cellPad_sample_local(uint32_t port_no, DfHostPad* out);
+extern "C" int32_t t5_local_player_pad(void* out);
 
 namespace df {
 
 /* The local player's pad for the select screen: d-pad and left stick as
  * directions (opposite directions cancel), the four face buttons, Select. Read
  * through the runtime's pad layer (controls.ini, sticks, keyboard, PS3_PAD_FILE),
- * one read per frame with its own tap latch. */
+ * one read per frame with its own tap latch; the same controller netplay takes
+ * the player's input from. */
 uint16_t pick_read_local_pad()
 {
     DfHostPad d;
     memset(&d, 0, sizeof d);
-    if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
+    if (t5_local_player_pad(&d) != 0 || d.len == 0) return 0;
     uint16_t b = (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
     const unsigned lx = d.button[6] & 0xFF, ly = d.button[7] & 0xFF;
     if (lx < 64) b |= B_LEFT; else if (lx > 191) b |= B_RIGHT;

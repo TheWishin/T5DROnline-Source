@@ -69,9 +69,15 @@ class Source(unittest.TestCase):
 
     def test_local_devices_never_send_start(self):
         core = read("src/netplay/netplay_core.cpp")
-        body = core[core.index("void device_input("):]
-        body = body[:body.index("\n}\n")]
-        self.assertRegex(body, r"if \(g_no_start\.load\([^)]*\)\) b &= \(uint16_t\)~B_START;")
+
+        def body(sig):
+            b = core[core.index(sig):]
+            return b[:b.index("\n}\n")]
+        # every local sample (a port: device_input; the online player's controller: player_input, local_pad.cpp)
+        # goes through pad_into, which drops START
+        self.assertRegex(body("void pad_into("), r"if \(g_no_start\.load\([^)]*\)\) b &= \(uint16_t\)~B_START;")
+        for sig in ("void device_input(", "void player_input("):
+            self.assertIn("pad_into(d, in);", body(sig), sig)
         hooks = read("src/netplay/t5_hooks.cpp")
         self.assertIn("np::set_no_start(g_directfight);", hooks)
 

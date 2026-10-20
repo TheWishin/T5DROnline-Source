@@ -186,6 +186,42 @@ class RuntimeParserTest(unittest.TestCase):
                            f"bits {[hex(x) for x in bits]} axes {axes}; want {[hex(x) for x in wbits]} {waxes}")
         self.assertFalse(bad, f"{len(bad)} of {len(cases)} reports parsed wrong:\n" + "\n".join(bad[:8]))
 
+    def test_the_launcher_parses_like_the_game(self):
+        # lobby/t5lobby/padnav.py reads these pads too (the Online tab's and the Controls window's controller
+        # navigation, 1.1.2): the same reports must give the same buttons, hat, stick directions and CRC verdict.
+        lobby = os.path.join(ROOT, "lobby")
+        if lobby not in sys.path:
+            sys.path.append(lobby)          # (appended: lobby/run.py must not shadow tools/smoke/run.py, test_smoke)
+        from t5lobby import padnav
+        names = ("X", "Y", "Z", "RX", "RY", "RZ", "S0", "S1")
+        modes = {0: None, 1: "usb", 2: "bt-simple", 3: "bt-ext", 4: "usb", 5: "bt-simple", 6: "bt-ext"}
+        rnd = random.Random(7)
+        cases = []
+        for model, mode in (("ds4", "usb"), ("ds4", "bt-simple"), ("ds4", "bt-ext"), ("ds4", "bt-audio"),
+                            ("dualsense", "usb"), ("dualsense", "bt-simple"), ("dualsense", "bt-ext"),
+                            ("edge", "usb"), ("edge", "bt-simple"), ("edge", "bt-ext")):
+            for i in range(200):
+                rep = bytearray(phr.padded(model, mode, phr.report(model, mode, phr.PadState.random(rnd), counter=i,
+                                                                   seed=rnd.randrange(1 << 30))))
+                if i % 17 == 0:
+                    rep[rnd.randrange(1, 40)] ^= 1 << rnd.randrange(8)       # some damaged ones (CRC)
+                cases.append((model, 0 if mode == "usb" else 1, bytes(rep)))
+        got = self.run_vectors(cases)
+        bad = []
+        for (model, bt, rep), (psr, crc, bits, _axes) in zip(cases, got):
+            held = set()
+            for cid in range(160):
+                if bits[cid // 32] >> (cid % 32) & 1:
+                    held.add(f"B{cid + 1}" if cid < 128 else
+                             "HAT_" + ("UP", "RIGHT", "DOWN", "LEFT")[(cid - 128) % 4] if cid < 144 else
+                             names[(cid - 144) // 2] + ("-" if (cid - 144) % 2 else "+"))
+            want = (modes[psr], held if psr else None, {1: True, 0: False, -1: None}[crc])
+            mode, lheld = padnav.ps_parse(model, bool(bt), rep)
+            mine = (mode, lheld, padnav.ps_crc_ok(model, rep))
+            if mine != want:
+                bad.append(f"{model} bt={bt} {rep[:12].hex()}: launcher {mine}, game {want}")
+        self.assertFalse(bad, f"{len(bad)} of {len(cases)} differ:\n" + "\n".join(bad[:6]))
+
     def test_damaged_and_foreign_reports(self):
         s = phr.PadState(buttons={"cross"})
         rep = bytearray(phr.padded("dualsense", "bt-ext", phr.report("dualsense", "bt-ext", s)))

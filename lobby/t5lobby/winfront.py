@@ -10,6 +10,12 @@ Windows only lets the foreground program (here: the game, which the launcher sta
 foreground to another window. The launcher's thread joins the foreground thread's input for the moment of
 the switch (AttachThreadInput), which is what makes SetForegroundWindow take; if Windows still refuses,
 the launcher's taskbar button flashes instead.
+
+The other way round (raise_game_window): when a match starts in the game that is already running (a
+rematch, the next opponent) while the launcher is in front -- the player just clicked Accept or Rematch
+there -- the game's window comes to the front, as it does when the launcher starts the game. The game reads
+the keyboard only while its window has the focus (pads work either way), so a keyboard player would
+otherwise press keys into the launcher. tk_tab.OnlineTab._game_forward decides.
 """
 import ctypes
 import os
@@ -41,6 +47,12 @@ def raise_window(widget):
     hwnd = padnav.toplevel_hwnd(top)
     if not hwnd:
         return False
+    return _raise_hwnd(hwnd)
+
+
+def _raise_hwnd(hwnd):
+    """Restore a top-level window if minimized and make it the foreground window (see the top). -> True when it is
+    the foreground window afterwards."""
     try:
         user32 = ctypes.WinDLL("user32")
         kernel32 = ctypes.WinDLL("kernel32")
@@ -75,3 +87,33 @@ def raise_window(widget):
         return False
     except (AttributeError, OSError):
         return False
+
+
+def find_process_window(pid, prefix="ps3recomp"):
+    """The game's top-level window (its window class starts with "ps3recomp"), or None."""
+    if os.name != "nt" or not pid:
+        return None
+    try:
+        user32 = ctypes.WinDLL("user32")
+        found = []
+        proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        def cb(hwnd, _):
+            p = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(p))
+            if p.value == pid:
+                cls = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(ctypes.c_void_p(hwnd), cls, 64)
+                if cls.value.startswith(prefix):
+                    found.append(hwnd)
+            return True
+        user32.EnumWindows(proc(cb), 0)
+        return found[0] if found else None
+    except (AttributeError, OSError):
+        return None
+
+
+def raise_game_window(pid):
+    """The game's window (process `pid`) to the front. -> True when it is the foreground window afterwards."""
+    hwnd = find_process_window(pid)
+    return bool(hwnd) and _raise_hwnd(hwnd)

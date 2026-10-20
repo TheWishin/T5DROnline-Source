@@ -286,6 +286,7 @@ void sound_install()
     }
     sndheap_install();
     calltrace_install();
+    shadowtrace_install();   /* T5_RB_SHADOW_TRACE=1 (diagnostics, rb_shadowtrace.cpp) */
     note("sound in re-simulated frames: %s", g_mode == SoundMode::Resim ? "resim (update runs, starts deduplicated, library tick once per displayed frame)"
                                             : g_mode == SoundMode::Skip ? "skip (sound update off)" : "raw (everything runs again)");
 }

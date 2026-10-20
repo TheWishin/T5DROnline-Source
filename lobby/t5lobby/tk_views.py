@@ -401,6 +401,10 @@ class OnlineView:
                 row=i + 1, column=1, sticky="w", pady=px(2))
         ttk.Label(how, text=t("With a controller: A accepts, B declines."), style="Card.Faint.TLabel").grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(px(8), 0))
+        # docs/NETPLAY.md "No pause online": the game takes START out of both players' inputs in a fight
+        self.wrap(ttk.Label(how, text=t("Online nobody can pause the fight: Start does not open the pause menu."),
+                            style="Card.Faint.TLabel", justify="left"), how, 60).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(px(2), 0))
         self._mode_changed(save=False)
         return scr
 

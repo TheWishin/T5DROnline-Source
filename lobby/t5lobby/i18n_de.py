@@ -1620,6 +1620,8 @@ MESSAGES = {
     "The result comes back here: rematch or next game.":
         "Das Ergebnis kommt hierher zurück: Rematch oder nächstes Spiel.",
     "With a controller: A accepts, B declines.": "Mit Controller: A nimmt an, B lehnt ab.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "Online kann niemand den Kampf pausieren: Start öffnet kein Pausenmenü.",
     "Lobby": "Lobby",
     "Leaderboard": "Rangliste",
     "Profile": "Profil",

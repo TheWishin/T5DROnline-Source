@@ -3,6 +3,15 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Fixes
+- **The intro movie can no longer freeze on a white screen.** On a busy PC the video decoder
+  sometimes never answered, and the intro stayed white with START doing nothing. The decoder
+  now starts while the game boots, uses 4 threads instead of one per processor, and if it
+  still does not answer within 5 seconds the movie goes on black with its sound (START skips
+  it). Later movies try the decoder again.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new
@@ -19,6 +28,12 @@ lobby features need the lobby server updated; older launchers keep working with 
   left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
 
 ### Online
+- **No more pausing online.** Pressing Start in an online fight opened the pause menu in both
+  games, so one player could freeze the other in the middle of a combo. Now neither player can
+  pause an online fight -- also not with a changed game: both games take Start out of both
+  players' inputs, the same way on both PCs, so the match stays in sync. Start still skips the
+  replay after a round, the games still skip the replay and win pose at the end of a match, and
+  offline Start pauses as before. To quit a match, close the game (counts as a loss, as before).
 - **Opponents nearby first.** The ping shown when a match is found is now the best path the
   two of you can get, through the nearest relay server: two players in California see about
   50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents
@@ -47,9 +62,25 @@ lobby features need the lobby server updated; older launchers keep working with 
   unlocks always count as on a fresh save online. Your own save is never touched by online play;
   the game's own OPTIONS (button layout, round time, volumes) apply offline only -- set the
   buttons in the launcher, they work online as before.
+- **No more voided matches at the start of a fight on stage 27** (the stage with the crowd of
+  fighters behind the ring). The desync check also compared a value that belongs to the picture,
+  not the fight: the size of the box the fighters' shadow is drawn in. In about one match in 30
+  it came out a hair different on the two PCs for the first few frames of the fight, and the
+  lobby voided the match although the fight itself was the same on both. That value is no
+  longer compared; everything the fight depends on still is (docs/NETPLAY.md "Stage 27: the
+  shadow box at the fight's start").
 - **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.
+- **No more frozen character select before the next match.** On a busy PC the select screen
+  for a new opponent or a character change could stay frozen while loading, for good, until the
+  game was closed ("Rematch / character select hangs"). When the game started, it noted its
+  state at the title screen while the title was still reading a file, and after a fight it put
+  that note back, so the game's file reader waited for a read that never came. The note now
+  leaves the file reader out and is taken only once the title has finished loading. If a select
+  screen ever stops loading anyway, the game closes itself after 10 seconds and the launcher
+  starts a fresh one for the match, instead of a frozen screen (docs/DIRECTFIGHT.md "Select
+  stall after a fight").
 
 ### Training
 - **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the

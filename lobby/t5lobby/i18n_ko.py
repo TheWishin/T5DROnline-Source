@@ -1083,6 +1083,10 @@ MESSAGES = {
     "Your opponent's game did not get to the fight.": "상대 게임이 대전까지 가지 못했습니다.",
     "Your opponent's game was restarted; the match cannot go on.":
         "상대 게임이 다시 시작되어 매치를 계속할 수 없습니다.",
+    "Loading the fight took too long on this PC (slow disk or a busy PC?); the match was stopped.":
+        "이 PC에서 대전 로딩이 너무 오래 걸렸습니다 (느린 디스크 또는 바쁜 PC?). 대전이 중단되었습니다.",
+    "Loading the fight took too long on your opponent's PC; the match was stopped.":
+        "상대 PC에서 대전 로딩이 너무 오래 걸렸습니다. 대전이 중단되었습니다.",
     "Your opponent's game could not be reached (firewall or router?).":
         "상대 게임에 연결할 수 없습니다 (방화벽 또는 공유기?).",
     "Your opponent's game is a different build.": "상대 게임의 빌드가 다릅니다.",

@@ -127,8 +127,9 @@ PadInput rb_local(uint32_t f);                   /* the local input decided for 
 bool     rb_remote(uint32_t f, PadInput* out);   /* the peer's input for frame f, if it has arrived */
 uint32_t rb_remote_contig();                     /* the peer's inputs are known for every frame < this */
 uint32_t rb_wait_remote(uint32_t f, uint32_t ms);/* wait up to ms for the peer's input for frame f; returns rb_remote_contig() */
-/* wait for the peer's input for frame f as long as the session lives: no input
- * and no loading report for T5_NET_TIMEOUT = "peer_stalled" (as the lockstep's
+/* wait for the peer's input for frame f as long as the session lives: no new
+ * input and no loading report for T5_NET_TIMEOUT = "peer_stalled", before the
+ * peer's start T5_NET_START_TIMEOUT = "start_timeout" (as the lockstep's
  * begin_frame); returns rb_remote_contig() */
 uint32_t rb_wait_input(uint32_t f);
 void     rb_push_hash(uint32_t f, uint64_t h);   /* the FINAL state hash of frame f (all inputs before it confirmed) */

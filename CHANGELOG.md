@@ -69,6 +69,19 @@ lobby features need the lobby server updated; older launchers keep working with 
   lobby voided the match although the fight itself was the same on both. That value is no
   longer compared; everything the fight depends on still is (docs/NETPLAY.md "Stage 27: the
   shadow box at the fight's start").
+- **A slow PC no longer desyncs the whole match.** Online, each frame waits until the game's
+  loading threads are done, so a load finishes in the same frame on both PCs. That wait gave up
+  after 2 seconds: on a PC with a slow disk or a very busy CPU the game then went on with its
+  loads still running, the fight's intro ended a frame earlier or later than on the other PC,
+  and every frame of the fight was apart (the match was voided). Now the frame waits as long as
+  the loading takes, and the other game waits for it (it knows the opponent is loading, so it
+  does not give up on it). A load that really hangs ends the match after 2 minutes with
+  "Loading the fight took too long" instead of a desync. Three more places that gave up after a
+  fixed time and could part the two games now wait or end the match cleanly: with rollback a game
+  no longer runs ahead on guessed input beyond its limit while the opponent is slow, the step before the
+  character select waits for the title's autosave however long it takes, and a pick that never
+  comes from the opponent ends the match instead of a guessed fighter (docs/NETPLAY.md "Slow
+  loading").
 - **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
   turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
   each was played in sync in both netcode modes.

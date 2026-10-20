@@ -1125,6 +1125,11 @@ MESSAGES = {
     "Your opponent's game did not get to the fight.": "Le jeu de ton adversaire n'est pas arrivé jusqu'au combat.",
     "Your opponent's game was restarted; the match cannot go on.":
         "Le jeu de ton adversaire a redémarré ; le match ne peut pas continuer.",
+    "Loading the fight took too long on this PC (slow disk or a busy PC?); the match was stopped.":
+        "Le chargement du combat a pris trop de temps sur ce PC (disque lent ou PC trop occupé ?) ; le match "
+        "a été arrêté.",
+    "Loading the fight took too long on your opponent's PC; the match was stopped.":
+        "Le chargement du combat a pris trop de temps sur le PC de ton adversaire ; le match a été arrêté.",
     "Your opponent's game could not be reached (firewall or router?).":
         "Impossible de joindre le jeu de ton adversaire (pare-feu ou routeur ?).",
     "Your opponent's game is a different build.": "Le jeu de ton adversaire est une autre build.",

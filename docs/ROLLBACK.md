@@ -1362,6 +1362,16 @@ most of the match in them. Now:
 - A bug: a phase change set `g_lock_until = f + lock`, shortening a running
   warm-up or load window; the host of q150 rolled back across match 2's loads
   and came out two phases apart. Windows only ever extend now.
+- **A window (and the end of the prediction window) waits for the input as
+  long as the session lives** (load-drain-sync, 1.1.2). The boundary waited at
+  most 2 s (`np::rb_wait_remote(need - 1, 2000)`) and then ran the frame on a
+  prediction anyway: past the 8-frame window and inside the windows that keep
+  rollbacks off loads and a rematch's select screen, whenever the peer was
+  slow -- a peer that now holds its frames for slow loads (NETPLAY.md "Slow
+  loading") would make that common. `np::rb_wait_input` waits like the
+  lockstep's begin_frame: until the input is here, or the session is lost
+  (silence, BYE, or `T5_NET_TIMEOUT` with no new input and no loading report:
+  `peer_stalled`; before the peer started `T5_NET_START_TIMEOUT`: `start_timeout`).
 
 ## 23. A race with the vblank handler (patch 0029)
 
@@ -2191,8 +2201,9 @@ the whole fight heap 1 MB apart, every pointer in the fight state with it. On
 an idle PC the autosave finishes within the title's 30 frames (F9 passed this
 cycle); under load (F11: the host thread started 30 frames after its
 creation) it does not. Fix (`df_fight.cpp` Ph::Title): start VS waits until no
-`savedata_autosave` thread is alive (at most 10 s), then the boot state goes
-back and start VS runs as before. A desync of this kind needs no rollback at
+`savedata_autosave` thread is alive (at most 10 s until 1.1.2; now as long as
+it takes, a hung one is the stuck check's: NETPLAY.md "Slow loading"), then the
+boot state goes back and start VS runs as before. A desync of this kind needs no rollback at
 all; it fits the "desync in match 2 with no rollback before it" reports
 (the dev notes), not proven.
 

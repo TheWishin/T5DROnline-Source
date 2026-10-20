@@ -1854,12 +1854,16 @@ uint32_t rb_wait_input(uint32_t f)
             const ULONGLONG stalled = stall.ms_locked(now);
             if (now - last_note >= 5000) {
                 last_note = now;
-                note("frame %u: waiting for the peer's input (%llus; peer has our inputs up to %u%s)", f + 1,
-                     (now - t0) / 1000, s.peer_ack, peer_loading_locked(now) ? "; its game is loading" : "");
+                note("rollback: waiting for the peer's input for frame %u (%llus; peer has our inputs up to %u%s%s)", f,
+                     (now - t0) / 1000, s.peer_ack, s.peer_started ? "" : "; it has not started the match yet",
+                     peer_loading_locked(now) ? "; its game is loading" : "");
             }
             const int limit = s.peer_started ? s.timeout_s : s.start_timeout_s;
             if (limit > 0 && stalled >= (ULONGLONG)limit * 1000) {
-                lose_locked("peer_stalled", "no input from the opponent for %d s at frame %u", limit, f);
+                if (s.peer_started)
+                    lose_locked("peer_stalled", "no input from the opponent for %d s at frame %u", limit, f);
+                else
+                    lose_locked("start_timeout", "the opponent's game did not reach the start of the match within %d s", limit);
                 return s.remote_contig;
             }
         }

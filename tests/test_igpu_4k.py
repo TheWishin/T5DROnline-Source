@@ -66,11 +66,15 @@ class Launcher(unittest.TestCase):
         self.assertEqual(core.igpu_res_better("4k", (2560, 1440), True), "1080p")      # 1440p screen: 1080p cap
         self.assertEqual(core.igpu_res_better("1440p", (1920, 1080), True), "1080p")
         self.assertEqual(core.igpu_res_better("1080p", (1366, 768), True), "native")
+        # 1.1.4: above Auto's step, not only above the screen (a busy built-in GPU slows the processor too)
+        self.assertEqual(core.igpu_res_better("1440p", (2560, 1440), True), "1080p")
+        self.assertEqual(core.igpu_res_better("4k", None, True), "1080p")             # Auto: at most 1080p
         for key, screen, igpu in (("4k", (1920, 1080), False),      # a discrete card: no hint
                                   ("1080p", (1920, 1080), True),    # matches the screen
                                   ("native", (1280, 720), True),
                                   ("auto", (1920, 1080), True),     # Auto never goes above the screen
-                                  ("4k", None, True)):
+                                  ("1080p", (2560, 1440), True),    # Auto's own step
+                                  ("1080p", None, True)):
             self.assertIsNone(core.igpu_res_better(key, screen, igpu), (key, screen, igpu))
 
     def test_auto_step(self):

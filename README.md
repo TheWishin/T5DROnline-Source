@@ -46,7 +46,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Since 1.1.3 the game's own work and the translation of its drawing take about a quarter less processor time per fight frame, and a PC a little too slow for 60 fps runs fights at 45-55 fps instead of 30-45 (measured with slowed test games; real weak PCs are not measured yet). |
 | Laptops, handhelds | **Power saving** (launcher Settings; Auto turns it on with a battery, a power-saving plan, a mobile processor or integrated graphics): fewer helper threads, no busy waiting, the same game online. Not tried on a real laptop or handheld yet. |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
-| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
+| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution when Settings -> Stage blur / glow is On (Off, sharp and without the glow, is the default since 1.1.4). |
 | Unlocks, costumes | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games use a fresh save of their own, the same on both PCs; only your custom costume comes from your own save, and both players see both costumes (1.1.3). |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). |
 | Music, sound effects, movies | Work. |
@@ -156,17 +156,21 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   3D scene smaller for weak graphics cards (laptops, integrated graphics), the
   HUD stays sharp. **Auto** picks the step that matches your screen, at most
   1080p on integrated graphics (they share the processor's memory and power,
-  so a larger picture slows the whole game there). It only changes the
-  picture, so the other player online does not need the same setting. If
-  fights drop below 60 fps, go one step down. More in
+  so a larger picture slows the whole game there). Since 1.1.4 Auto is the
+  default on integrated graphics (from the second game on: the launcher reads
+  the first game's log to know); a step you choose stays, and above Auto's step
+  Settings and the Play offline tab say that it slows the processor too. It only
+  changes the picture, so the other player online does not need the same
+  setting. If fights drop below 60 fps, go one step down. More in
   [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
 - **Settings** -> **Stage blur / glow**: some stages soften the whole picture
-  (the misty swamp, and three more) or let the sun glow (the scrapyard). On
-  (default) looks as on the PS3, at every internal resolution; Off shows those
-  stages sharp, without the glow. Online, each player can choose their own.
+  (the misty swamp, and three more) or let the sun glow (the scrapyard). Off
+  (the default since 1.1.4, also for players of older versions once) shows
+  those stages sharp, without the glow; On looks as on the PS3, at every
+  internal resolution. Online, each player can choose their own.
 - **Settings** -> **Power saving (laptops, handhelds)**: Auto (default) turns
   it on with a battery, battery saver or the Power saver plan, a mobile
   processor or integrated graphics; On and Off decide yourself. The game then

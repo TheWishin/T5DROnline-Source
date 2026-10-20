@@ -524,7 +524,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "Desactivado (menor latencia, puede haber tearing)",
     "The game always runs at 60 fps, like on the PS3.": "El juego siempre corre a 60 fps, como en la PS3.",
     "Stage blur / glow": "Desenfoque / brillo de escenarios",
-    "On (default)": "Activado (predeterminado)",
+    "Off (default)": "Desactivado (predeterminado)",
     "Off": "Desactivado",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2078,8 +2078,12 @@ MESSAGES = {
         "El juego elige al arrancar el nivel que corresponde a tu pantalla, como mucho 1080p con gráficos integrados (comparten la memoria y la energía del procesador).",
     "On this PC: {step}.":
         "En este PC: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "{step} con gráficos integrados: prueba {better} para 60 fps.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "{step} con gráficos integrados: una GPU integrada ocupada también frena el procesador (comparten su energía y su memoria). Para 60 fps elige Auto en Ajustes -> Resolución interna: aquí {better}.",
+    "Auto is the default on integrated graphics.":
+        "Con gráficos integrados, Auto es el valor predeterminado.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "Tu procesador funcionó a {ghz} GHz ({percent} % de su velocidad normal): pon el modo de energía de Windows en Mejor rendimiento.",
     "Extra settings below set {setting}: that wins over this choice.":
         "Los ajustes extra de abajo ponen {setting}: eso manda sobre esta opción.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

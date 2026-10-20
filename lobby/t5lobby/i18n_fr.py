@@ -527,7 +527,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "Désactivée (latence minimale, déchirures possibles)",
     "The game always runs at 60 fps, like on the PS3.": "Le jeu tourne toujours à 60 fps, comme sur PS3.",
     "Stage blur / glow": "Flou / halo des stages",
-    "On (default)": "Activé (par défaut)",
+    "Off (default)": "Désactivé (par défaut)",
     "Off": "Désactivé",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2100,8 +2100,12 @@ MESSAGES = {
         "Le jeu choisit au démarrage le niveau qui correspond à ton écran, au plus 1080p avec une puce graphique intégrée (elle partage la mémoire et l'énergie du processeur).",
     "On this PC: {step}.":
         "Sur ce PC : {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "{step} avec une puce graphique intégrée : essaie {better} pour 60 fps.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "{step} avec une puce graphique intégrée : une puce graphique occupée ralentit aussi le processeur (ils partagent son énergie et sa mémoire). Pour 60 fps, choisis Auto dans Paramètres -> Résolution interne : ici {better}.",
+    "Auto is the default on integrated graphics.":
+        "Avec une puce graphique intégrée, Auto est le réglage par défaut.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "Ton processeur a tourné à {ghz} GHz ({percent} % de sa vitesse normale) : règle le mode d'alimentation de Windows sur Meilleures performances.",
     "Extra settings below set {setting}: that wins over this choice.":
         "Les réglages supplémentaires ci-dessous mettent {setting} : cela l'emporte sur ce choix.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

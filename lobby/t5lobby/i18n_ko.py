@@ -511,7 +511,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "끄기 (최소 지연, 화면 찢김 가능)",
     "The game always runs at 60 fps, like on the PS3.": "게임은 PS3처럼 항상 60fps로 동작합니다.",
     "Stage blur / glow": "스테이지 블러 / 빛 번짐",
-    "On (default)": "켜기 (기본)",
+    "Off (default)": "끄기 (기본)",
     "Off": "끄기",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2032,8 +2032,12 @@ MESSAGES = {
         "게임이 시작할 때 화면에 맞는 단계를 고릅니다. 내장 그래픽에서는 최대 1080p (프로세서와 메모리, 전력을 함께 쓰기 때문).",
     "On this PC: {step}.":
         "이 PC에서: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "내장 그래픽에서 {step}: 60 fps를 위해 {better}를 써 보세요.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "내장 그래픽에서 {step}: 내장 GPU가 바쁘면 프로세서도 느려집니다 (전력과 메모리를 함께 씁니다). 60 fps를 위해 설정 -> 내부 해상도에서 자동을 고르세요: 여기서는 {better}.",
+    "Auto is the default on integrated graphics.":
+        "내장 그래픽에서는 자동이 기본입니다.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "프로세서가 {ghz} GHz (정상 속도의 {percent} %)로 동작했습니다: Windows 전원 모드를 최고 성능으로 설정하세요.",
     "Extra settings below set {setting}: that wins over this choice.":
         "아래 추가 설정이 {setting}을(를) 정합니다: 이 선택보다 우선합니다.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

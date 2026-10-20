@@ -520,7 +520,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "Desligado (menor latência, pode ter tearing)",
     "The game always runs at 60 fps, like on the PS3.": "O jogo sempre roda a 60 fps, como no PS3.",
     "Stage blur / glow": "Desfoque / brilho dos cenários",
-    "On (default)": "Ligado (padrão)",
+    "Off (default)": "Desligado (padrão)",
     "Off": "Desligado",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2063,8 +2063,12 @@ MESSAGES = {
         "O jogo escolhe ao iniciar o nível que combina com a sua tela, no máximo 1080p com gráficos integrados (eles dividem a memória e a energia do processador).",
     "On this PC: {step}.":
         "Neste PC: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "{step} com gráficos integrados: tente {better} para 60 fps.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "{step} com gráficos integrados: uma GPU integrada ocupada também deixa o processador mais lento (eles dividem a energia e a memória). Para 60 fps, escolha Auto em Configurações -> Resolução interna: aqui {better}.",
+    "Auto is the default on integrated graphics.":
+        "Com gráficos integrados, Auto é o padrão.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "Seu processador rodou a {ghz} GHz ({percent} % da velocidade normal): coloque o modo de energia do Windows em Melhor desempenho.",
     "Extra settings below set {setting}: that wins over this choice.":
         "As configurações extras abaixo definem {setting}: isso vale no lugar desta escolha.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

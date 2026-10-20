@@ -726,6 +726,16 @@ agents' games): stage 34 at 4K 1.80 ms before, 1.43 after, 2.47 Off; stage 20
 at 4K 2.11 / 1.71 / 1.83; stage 34 at Native 0.67 / 0.43 -- within the spread
 of these runs, nothing measurable.
 
+**Off by default (1.1.4, the owner's call).** The launcher's default is Off
+(`PS3_STAGE_BLUR=0`); a launcher.json of 1.1.3 or older, which stores every
+default and so says "on", is set to Off once (`settings_version` 1), and On
+chosen in Settings stays from then on. The runtime without the variable still
+draws On. Cost on this PC's integrated Radeon (stage 20, the glow's blur passes;
+two rounds each, the same runs as [1.1.4: Auto by default on integrated
+graphics](#114-auto-by-default-on-integrated-graphics-and-the-processors-clock-branch-igpu-114)):
+4K 23.3 / 23.6 ms of GPU a frame On, 20.6 / 21.6 Off, 37.4 / 35.5 fps against
+40.6 / 38.5; Auto (1080p) 6.7 / 6.5 against 5.7 / 5.5 ms, ~60 fps either way.
+
 **Online:** host pixels only -- the patch reads no guest memory and changes no
 command, so the two players may choose differently. Rollback pairs (the online
 default, `tools/rollback_net_test.py --mode1 default --mode2 default`) with one
@@ -1193,7 +1203,7 @@ PC's screen hangs off the RTX 3090, and test windows stay minimised).
 | `RSX_FRAMES_IN_FLIGHT=2` (above) | off by default | `RSX_FRAMES_IN_FLIGHT` |
 | `power saving off (PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its extra settings or in Windows' environment)` | the player's four logs all said `PS3_LAPTOP=0` although Auto was tried | -- |
 | Launcher: Power saving **Auto** is sent as `PS3_LAPTOP=auto` (was: nothing), so a variable left in Windows' environment cannot overrule it; Settings names an Extra-settings line that does (`Extra settings below set PS3_LAPTOP=0: that wins over this choice.`) | the launcher itself was right (Auto = unset); the game got `=0` from Off, the Extra settings box or the environment | -- |
-| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default | -- |
+| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default (1.1.4: the default on integrated graphics, below) | -- |
 | Launcher: on integrated graphics (from the last game log's `[gpu] adapter`), a step larger than the screen gets `4K (3x) on integrated graphics: try 1080p (1.5x) for 60 fps.`; after a game whose log says GPU-bound / integrated graphics busy, the Play tab says so | the 780M player's case | -- |
 | Problem report: `system.txt` gets "What the log says about speed" (GPU-bound windows, integrated graphics busy, Internal resolution above the screen on integrated graphics); `[slow-frames]` lines are kept whole (1,800 characters) | -- | -- |
 
@@ -1249,6 +1259,73 @@ control pair with the same settings on both sides differs there as well (those e
 not part of the state a pair keeps equal). The default, one frame in flight, records the same
 commands as before; patch 0063 adds two timestamps to each command list. Smoke quick: PASS
 (80 checks; 3 fps WARN from the other games on the PC).
+### 1.1.4: Auto by default on integrated graphics, and the processor's clock (branch `igpu-114`)
+
+Player report on 1.1.3, the same 780M mini PC (8 cores / 16 threads, on AC),
+online fights, Internal resolution **4K** set by the player: `[slow-frames]`
+GPU busy 61 % of the time, GPU wait 0.0 (the graphics were not the limit),
+game part 12.0 ms + translation 3.6 ms a frame, 6-10 % of the frames late
+(55-59 fps), `processors at 2.26 GHz on average (81 % of their 2.79)`, power
+plan "Balanced". Neither 0063 verdict fired (GPU-bound needs 85 % busy, the
+integrated-graphics one 10 % slow frames), so 1.1.3's Play tab said nothing.
+What the line does show: on an APU the busy GPU takes its share of the one
+power budget, the cores clock down, and the game's one-core critical path
+(game part + translation, ~15.6 ms) misses 16.7 ms now and then.
+
+What changed (launcher only; the runtime is the same):
+
+| change | how |
+|---|---|
+| **Auto is the default on integrated graphics** | `Settings.internal_res_choice`: the step the player picked, else Auto when the newest game log's `[gpu] adapter` says integrated (`last_gpu`), else Native (a discrete card, or the first game, before there is a log). A click in Settings sets `internal_res_set` in launcher.json. A launcher.json of 1.1.3 or older stores every default, so there only a step other than Native counts as chosen (`settings_version` 1, migrated once) |
+| **Above Auto's step on integrated graphics: a warning, after every game** | `igpu_res_better` now compares with Auto's step (the screen's, at most 1080p; was: the screen), so 1440p on a 1440p screen counts too. Settings shows it in the warning colour (was a muted line), and the Play offline tab after every game on integrated graphics, GPU-bound or not: "4K (3x) on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: 1080p (1.5x) here." (the GPU-bound / busy notes of 0063 otherwise) |
+| **The processor's clock, once** | `clock_hint`: the `[slow-frames]` windows with 10 or more and 5 % or more late frames, on AC power (the power text of the line, as in `[power]`), averaging under 90 % of the normal clock -> once (`clock_hint_shown`): "Your processor ran at 2.26 GHz (81 % of its normal speed): set Windows power mode to Best performance." The launcher changes no Windows setting itself |
+| Stage blur / glow **Off** by default | the owner's call; [Stage blur and glow](#stage-blur-and-glow-patch-0043-branch-stage-blur) |
+
+Measured on this PC's integrated Radeon (the 7950X's 2 CUs, `RSX_ADAPTER=radeon`),
+integration-114's build with patch 0066 (the runtime of 1302912), `tools/fight_bench.py --polite
+--fight lil,ask,<stage>,3 --secs 70 --skip 10`, P1 pressing buttons, the swap
+chain as for a 1920 x 1080 window, `PS3_LAPTOP=auto` as the launcher sends it
+(power saving on by itself on integrated graphics), two interleaved rounds;
+other agents' games and builds kept 12-25 of the 32 processors busy. "late" =
+frames over 20.9 ms in the window (fight start +10 s .. +70 s); GPU ms =
+median per frame (timestamps); GPU busy and the clock from the fight's
+`[slow-frames]` line (printed every 30 s only with 1 % late frames or more):
+
+| stage | Internal resolution | fps (round 1 / 2) | late frames | GPU ms a frame | GPU busy | game part ms | processors' clock | other load |
+|---|---|---|---|---|---|---|---|---|
+| pool (30) | 4K | 55.4 / 46.5 | 6.4 / 61 % | 15.1 / 16.4 | 80 / 69 % | 4.7 / 10.2 | 108 / 101 % | 13 / 29 |
+| pool (30) | **Auto** (1080p) | **59.6 / 59.6** | 2.5 / 3.5 % | 4.5 / 4.8 | 26 / 28 % | 5.9 / 7.4 | 105 / 100 % | 20 / 27 |
+| 20 | 4K | 37.4 / 35.5 | 100 / 100 % | 23.3 / 23.6 | 88 / 85 % | 6.7 / 8.2 | 105 / 102 % | 22 / 26 |
+| 20 | **Auto** (1080p) | **59.9 / 57.9** | 0.4 / 0.6 % | 6.7 / 6.5 | ~40 % (no line: under 1 % late) | 5.6 / 6.7 | -- | 20 / 24 |
+| 20, stage blur Off | 4K | 40.6 / 38.5 | 99 / 99 % | 20.6 / 21.6 | 85 / 85 % | 7.7 / 8.4 | 103 / 102 % | 25 / 26 |
+| 20, stage blur Off | Auto (1080p) | 59.7 / 59.8 | 1.8 / 1.5 % | 5.7 / 5.5 | 36 / 36 % | 7.4 / 6.7 | 100 / 101 % | 27 / 25 |
+
+- **The pool stage at 4K is the player's case**: 55 fps with 6.4 % late
+  frames and the GPU 80 % busy at a quiet moment (the 780M: 55-59 fps, 6-10 %
+  late, 61 % busy), and under more load from other programs (29 of 32 busy)
+  46.5 fps, 61 % late, the game part up from 4.7 to 10.2 ms -- the line then
+  ends `integrated graphics busy 69 % of the time`, as 0063 meant it to.
+  Auto (1080p) holds 59.6 fps with the GPU a quarter busy.
+- Stage 20 at 4K is GPU-bound on this 2-CU Radeon (`GPU-bound: the graphics
+  need 24.1 ms a frame`); Auto: 58-60 fps on 6.5 ms of GPU.
+- **The clock does not move here**: the 7950X's cores stayed at 100-108 % of
+  their 4.50 GHz with the integrated GPU busy, because a 170 W desktop chip
+  has power to spare for 2 CUs; the 780M's 65 W are shared with a GPU of 12
+  CUs. So the clock note was checked with the player's own line (tests) and
+  never fires on this PC (it needs under 90 %); the clock column is there to
+  show what a desktop APU reports.
+- Stage blur Off at 4K: 2.3-2.7 ms less GPU a frame on stage 20 (-10 %, the
+  glow's blur passes), +8 % fps while GPU-bound; at 1080p 0.9-1.0 ms (-15 %).
+  The other stages without a filter: no difference.
+- The first two runs of this build (stage 30 and 20, Auto, fresh run
+  folders) ended at the fight's start in `DXGI_ERROR_DEVICE_HUNG` on the
+  integrated Radeon, each right after the audio device had stopped consuming
+  for 200 ms twice (`audio device lost ... 0x800705B4`): a stall of the whole
+  PC, it seems. The same build then ran 14 times on it without a hang (the 12
+  above, Native and Auto on stage 20), four other builds (1.1.3's, two other
+  1.1.4 builds, igpu4k's) once each; not reproduced, noted here in case a
+  player reports it.
+
 ## Translation CPU (patch 0062, branch `xlat-cpu`)
 
 The weak-PC study ([WEAK_PC.md](WEAK_PC.md)) left the render translation at

@@ -557,7 +557,7 @@ MESSAGES = {
     "Off (lowest latency, may tear)": "Aus (geringste Verzögerung, Bild kann reißen)",
     "The game always runs at 60 fps, like on the PS3.": "Das Spiel läuft immer mit 60 fps, wie auf der PS3.",
     "Stage blur / glow": "Stage-Unschärfe / Leuchten",
-    "On (default)": "An (Standard)",
+    "Off (default)": "Aus (Standard)",
     "Off": "Aus",
     "Some stages blur the picture (the misty swamp) or let the sun glow. Off shows them sharp, "
     "without the glow. Only your picture changes: online, both players can choose differently.":
@@ -2171,8 +2171,12 @@ MESSAGES = {
         "Das Spiel wählt beim Start die Stufe, die zu deinem Bildschirm passt, mit integrierter Grafik höchstens 1080p (sie teilt sich Speicher und Strom mit dem Prozessor).",
     "On this PC: {step}.":
         "Auf diesem PC: {step}.",
-    "{step} on integrated graphics: try {better} for 60 fps.":
-        "{step} mit integrierter Grafik: probier {better} für 60 fps.",
+    "{step} on integrated graphics: a busy built-in GPU slows the processor too (they share its power and memory). For 60 fps choose Auto in Settings -> Internal resolution: {better} here.":
+        "{step} mit integrierter Grafik: eine ausgelastete eingebaute GPU bremst auch den Prozessor (sie teilen sich Strom und Speicher). Für 60 fps wähle Auto unter Einstellungen -> Interne Auflösung: hier {better}.",
+    "Auto is the default on integrated graphics.":
+        "Mit integrierter Grafik ist Auto der Standard.",
+    "Your processor ran at {ghz} GHz ({percent} % of its normal speed): set Windows power mode to Best performance.":
+        "Dein Prozessor lief mit {ghz} GHz ({percent} % seiner normalen Geschwindigkeit): stell den Energiemodus von Windows auf Beste Leistung.",
     "Extra settings below set {setting}: that wins over this choice.":
         "Die zusätzlichen Einstellungen unten setzen {setting}: das gilt statt dieser Auswahl.",
     "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":

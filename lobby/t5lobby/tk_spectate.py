@@ -68,15 +68,10 @@ class Spectating:
         return bool(c is not None and getattr(c, "me", None) and callable(has) and has())
 
     # ------------------------------------------------------------------ UI pieces
-    def friend_button(self, tools, px):
-        b = ttk.Button(tools, text=t("Watch"), style="Card.Small.TButton", state="disabled",
-                       command=self.watch_friend)
-        b.pack(side="left", padx=(px(6), 0))
-        return b
-
-    def room_button(self, tools, px):
-        b = ttk.Button(tools, text=t("Watch"), style="Card.Small.TButton", state="disabled", command=self.watch_room)
-        b.pack(side="left", padx=(px(6), 0))
+    def friend_button(self, row, px):
+        """The friends list's Watch, at the left of the row below the list."""
+        b = ttk.Button(row, text=t("Watch"), style="Card.Small.TButton", state="disabled", command=self.watch_friend)
+        b.grid(row=0, column=0, sticky="nw", padx=(0, px(10)))
         return b
 
     def build_card(self, view, card):

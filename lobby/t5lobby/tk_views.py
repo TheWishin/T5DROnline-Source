@@ -810,7 +810,6 @@ class OnlineView:
         tab.friend_actions = {}
         for key, label, cmd in (("invite", t("Invite to a match"), lambda: tab.do_invite("casual")),
                                 ("invite_room", t("Invite to my room"), lambda: tab.do_invite("room")),
-                                ("watch", t("Watch"), tab.spec.watch_friend),       # (a friend in a match)
                                 ("remove", t("Remove"), tab.do_remove_friend)):
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
@@ -819,9 +818,14 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_friends.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
         tab.tv_friends.bind("<Double-1>", lambda _e: tab._profile_of_friend())
-        self.wrap(ttk.Label(fc, style="Card.Faint.TLabel", justify="left", text=t(
+        # below the list, not in the tools above it: that row is as wide as the card already (150 %, de/fr/pt-BR)
+        row = self.body(fc)
+        row.grid(row=2, column=0, sticky="we", pady=(px(6), 0))
+        row.columnconfigure(1, weight=1)
+        tab.friend_actions["watch"] = tab.spec.friend_button(row, px)     # a friend in a match (tk_spectate.py)
+        self.wrap(ttk.Label(row, style="Card.Faint.TLabel", justify="left", text=t(
             "Invite a friend who is online: one click on their side starts a casual match, or brings them into "
-            "your room.")), fc, 30).grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+            "your room.")), fc, 160).grid(row=0, column=1, sticky="w")
 
         side = ttk.Frame(page)
         side.grid(row=1, column=1, sticky="nsew", padx=(px(10), 0))

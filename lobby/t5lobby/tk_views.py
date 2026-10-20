@@ -24,7 +24,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme
+from . import i18n, proto, ranks, theme, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag
 from .theme import C
@@ -174,6 +174,7 @@ class OnlineView:
         self.ring = None
         self.bar_spinner = None
         self.set_ring = None               # the countdown to a ranked set's next game (result card)
+        self.ring_source = None            # () -> (seconds left, total) for the ring when it is not the ready check
         self.set_ring_total = 1.0
         self._build()
         tab.set_var.trace_add("write", lambda *_: self.refresh())
@@ -486,16 +487,20 @@ class OnlineView:
         board = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        tours = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
         nb.add(prof, text=t("Profile"))
         nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
+        nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
         tab.friends_page = friends
+        tab.tours_page = tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)
         self._build_profile_page(prof)
         self._build_friends_page(friends)
+        tk_tour.build_page(self, tours)              # tournaments: list, bracket (tk_tour.py)
         return scr
 
     def _build_profile(self, scr):
@@ -537,8 +542,9 @@ class OnlineView:
         self.tab.bar = self._build_bar(card)
         self.st_match = self._build_match(card)
         self.st_result = self._build_result(card)
+        self.st_watch = self.tab.spec.build_card(self, card)       # spectating (tk_spectate.py)
         self.stages = {"play": self.st_play, "search": self.st_search, "bar": self.tab.bar,
-                       "match": self.st_match, "result": self.st_result}
+                       "match": self.st_match, "result": self.st_result, "watch": self.st_watch}
 
     def _build_play(self, card):
         tab, px = self.tab, self.px
@@ -714,9 +720,10 @@ class OnlineView:
         self.rooms_count = tk.StringVar(page, value="")
         head, tools = self.section_head(rc, t("Rooms").upper(), self.rooms_count)
         head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
-        for key, label, cmd in (("room", t("Create room"), lambda: tab.call(tab.client.create_room, None)),
+        for key, label, cmd in (("room", t("Create room"), tab.rooms_ui.create),
                                 ("join", t("Join room"), tab.do_join),
-                                ("leave", t("Leave room"), lambda: tab.call(tab.client.leave_room))):
+                                ("leave", t("Leave room"), lambda: tab.call(tab.client.leave_room)),
+                                ("watch_room", t("Watch"), tab.spec.watch_room)):    # (spectating its match)
             b = ttk.Button(tools, text=label, style="Card.Small.TButton", state="disabled", command=cmd)
             b.pack(side="left", padx=(px(6), 0))
             tab.actions[key], tab.action_text[key] = b, label
@@ -724,6 +731,8 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_rooms.bind("<Double-1>", lambda _e: tab.do_join() if str(tab.actions["join"].cget("state")) ==
                           "normal" else None)
+        tab.tv_rooms.bind("<<TreeviewSelect>>", lambda _e: tab.spec.set_actions(), add="+")
+        tab.rooms_ui.build(rc, px, self)    # this player's room under the list (tk_rooms.py), shown while in one
 
         cc = self.card(page, pad=12)
         cc.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(px(10), 0))
@@ -819,9 +828,14 @@ class OnlineView:
         fr.grid(row=1, column=0, sticky="nsew")
         tab.tv_friends.bind("<<TreeviewSelect>>", lambda _e: tab._set_friend_actions())
         tab.tv_friends.bind("<Double-1>", lambda _e: tab._profile_of_friend())
-        self.wrap(ttk.Label(fc, style="Card.Faint.TLabel", justify="left", text=t(
+        # below the list, not in the tools above it: that row is as wide as the card already (150 %, de/fr/pt-BR)
+        row = self.body(fc)
+        row.grid(row=2, column=0, sticky="we", pady=(px(6), 0))
+        row.columnconfigure(1, weight=1)
+        tab.friend_actions["watch"] = tab.spec.friend_button(row, px)     # a friend in a match (tk_spectate.py)
+        self.wrap(ttk.Label(row, style="Card.Faint.TLabel", justify="left", text=t(
             "Invite a friend who is online: one click on their side starts a casual match, or brings them into "
-            "your room.")), fc, 30).grid(row=2, column=0, sticky="w", pady=(px(6), 0))
+            "your room.")), fc, 160).grid(row=0, column=1, sticky="w")
 
         side = ttk.Frame(page)
         side.grid(row=1, column=1, sticky="nsew", padx=(px(10), 0))
@@ -888,8 +902,21 @@ class OnlineView:
             row=0, column=1, sticky="w")
         self.note_frame = note
         tab.notice_var.trace_add("write", lambda *_: self._show_notice())
+        # the firewall hint (tk_tab.fw_hint_text): one line, "How to fix" (the TROUBLESHOOTING section), Dismiss
+        fw = self.card(box, "Note.TFrame", 6)
+        fw.columnconfigure(1, weight=1)
+        ttk.Label(fw, text=t("Firewall").upper(), style="Note.Caps.TLabel").grid(row=0, column=0, sticky="nw",
+                                                                                padx=(0, px(10)))
+        self.wrap(ttk.Label(fw, textvariable=tab.fw_hint_var, style="Note.TLabel", justify="left"), box, 300).grid(
+            row=0, column=1, sticky="w")
+        tab.fw_fix_btn = ttk.Button(fw, text=t("How to fix"), style="Note.Link.TButton", command=tab.open_fw_help)
+        tab.fw_fix_btn.grid(row=0, column=2, sticky="e", padx=(px(8), 0))
+        ttk.Button(fw, text=t("Dismiss"), style="Note.Ghost.TButton", command=tab.dismiss_fw_hint).grid(
+            row=0, column=3, sticky="e")
+        self.fw_frame = fw
+        tab.fw_hint_var.trace_add("write", lambda *_: self._show_fw_hint())
         st = ttk.Frame(box)
-        st.grid(row=3, column=0, sticky="we", pady=(px(8), 0))
+        st.grid(row=4, column=0, sticky="we", pady=(px(8), 0))
         st.columnconfigure(0, weight=1)
         self.status_label = self.wrap(ttk.Label(st, textvariable=tab.status_var, style="Muted.TLabel",
                                                 justify="left"), box, 340)
@@ -938,6 +965,13 @@ class OnlineView:
             self.note_frame.grid(row=2, column=0, sticky="we", pady=(self.px(8), 0))
         else:
             self.note_frame.grid_forget()
+
+    def _show_fw_hint(self):
+        if self.tab.fw_hint_var.get():
+            self.fw_frame.grid(row=3, column=0, sticky="we", pady=(self.px(8), 0))
+            self._on_resize()
+        else:
+            self.fw_frame.grid_forget()
 
     def show_error(self, text):
         msg = friendly_error(text)
@@ -996,7 +1030,13 @@ class OnlineView:
             for r in rooms:
                 if me and me.get("id") in (r.get("members") or []):
                     room = r
-            if room is not None:
+            mine = tab.rooms_ui.mine()                     # (a hidden room is in no list: the room's own view)
+            if mine is not None:
+                room = mine
+            if room is not None and room.get("size", 2) > 2:
+                text = t("In the room “{name}”: {count}/{size} players, taking turns.", name=room["name"],
+                         count=len(room.get("members") or []), size=room["size"])
+            elif room is not None:
                 text = (t("In your room “{name}”. Waiting for a second player...", name=room["name"])
                         if len(room.get("members") or []) < 2 else
                         t("In the room “{name}”. The match starts when you are both ready.", name=room["name"]))
@@ -1093,6 +1133,8 @@ class OnlineView:
         drv = tab.driver
         if drv is not None and drv.ticket is not None:
             return "match"
+        if tab.spec.active:
+            return "watch"
         me = tab.client.me or {}
         if me.get("status") == "queue":
             return "search"
@@ -1132,6 +1174,8 @@ class OnlineView:
             self._update_search()
         elif stage == "result":
             self._render_result_card()
+        elif stage == "watch":
+            self.tab.spec.update_card()
         self._ensure_anim()
 
     def tick(self):
@@ -1228,9 +1272,12 @@ class OnlineView:
             self.m_set.grid_forget()
         opp = ev.get("opponent") or (getattr(drv.ticket, "opponent", None) if drv and drv.ticket else None) or {}
         ranked = ev.get("ranked")
-        self.m_pill.configure(text=(t("RANKED") if ranked else t("CASUAL")) + (
-            "  ·  " + t("rematch").upper() if ev.get("origin") == "rematch" else ""),
-                              style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
+        if (ev.get("set") or {}).get("tournament"):
+            self.m_pill.configure(text=t("TOURNAMENT"), style="Card.PillGold.TLabel")
+        else:
+            self.m_pill.configure(text=(t("RANKED") if ranked else t("CASUAL")) + (
+                "  ·  " + t("rematch").upper() if ev.get("origin") == "rematch" else ""),
+                                  style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
         state = {"title": t("The game is starting..."), "select": t("Character select"),
                  "pick": t("Pick your fighter in the game"), "pick_wait": t("Your opponent is picking"),
                  "stage": t("Stage select"), "loading": t("Loading the fight..."), "fight": t("Fight!"),
@@ -1272,6 +1319,8 @@ class OnlineView:
     # --- the bar: questions, found match, result + rematch
     def _bar_kind_now(self):
         tab = self.tab
+        if getattr(tab, "tours", None) is not None and tab.tours.showing_call():
+            return "tour_call"              # "Your tournament set is ready" (tk_tour.py)
         if tab.rematch_bar is not None or getattr(tab, "set_bar", None) is not None:
             return "result"                 # (a ranked set between two games: the result, the countdown, Leave set)
         if tab.challenge is not None:
@@ -1292,7 +1341,8 @@ class OnlineView:
         sig = (kind, id(tab.match), (self.revealed or {}).get("name"), tab.ready_sent, tab.challenge,
                (getattr(tab, "invite", None) or {}).get("invite"),
                tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None,
-               tab.set_var.get(), id(tab.set_bar))
+               tab.set_var.get(), id(tab.set_bar),
+               str((tab.tours.call or {}).get("accepted")) + str(id(tab.tours.call)) if kind == "tour_call" else None)
         if sig == self._bar_sig:
             return
         self._bar_sig = sig
@@ -1300,6 +1350,7 @@ class OnlineView:
         for w in self.bar_visual.winfo_children():
             w.destroy()
         self.ring = None
+        self.ring_source = None
         self.bar_spinner = None
         self.set_ring = None
         show_text = kind == "question"
@@ -1311,6 +1362,8 @@ class OnlineView:
             self._visual_challenge(self.bar_visual)
         elif kind == "invite":
             self._visual_invite(self.bar_visual)
+        elif kind == "tour_call":
+            tk_tour.visual_call(self, self.bar_visual)
         elif kind == "result":
             self._visual_result(self.bar_visual)
             # (a ranked set's countdown to its next game is the strip on the card; bar_text keeps the same line)
@@ -1399,8 +1452,11 @@ class OnlineView:
         tab = self.tab
         if self.ring is None:
             return
-        total = float((tab.match or {}).get("ready_timeout") or 15)
-        left = max(0.0, (tab.ready_deadline or 0) - time.monotonic()) if tab.ready_deadline else 0.0
+        if self.ring_source is not None:
+            left, total = self.ring_source()
+        else:
+            total = float((tab.match or {}).get("ready_timeout") or 15)
+            left = max(0.0, (tab.ready_deadline or 0) - time.monotonic()) if tab.ready_deadline else 0.0
         try:
             self.ring.set(left, total)
         except tk.TclError:
@@ -1446,7 +1502,11 @@ class OnlineView:
             row=0, column=0, columnspan=2, sticky="w", pady=(0, px(8)))
         if inv.get("from"):
             self._opponent_row(left, inv["from"], 1)
-        if inv.get("kind") == "room":
+        if inv.get("kind") == "room" and (inv.get("room") or {}).get("private"):
+            # (the invite is the key: no password is asked -- docs/ONLINE.md "Rooms")
+            text = t("invites you to the private room “{room}”. Accept to join it without its password.",
+                     room=(inv.get("room") or {}).get("name") or "?")
+        elif inv.get("kind") == "room":
             text = t("invites you to the room “{room}”. Accept to join it; the match starts at once.",
                      room=(inv.get("room") or {}).get("name") or "?")
         else:
@@ -1491,7 +1551,9 @@ class OnlineView:
         ttk.Label(banner, text=title, style=pre + "Huge.TLabel", foreground=col).grid(row=0, column=0, rowspan=2,
                                                                                        sticky="w")
         se = info.get("set_end")
-        if se:
+        if se and se.get("tournament"):
+            sub = t("Tournament set vs {name}", name=info["opp"]) if info.get("opp") else t("Tournament set")
+        elif se:
             sub = t("Ranked set vs {name}", name=info["opp"]) if info.get("opp") else t("Ranked set")
         elif info.get("opp"):
             sub = (t("Ranked match vs {name}", name=info["opp"]) if info.get("ranked")
@@ -1589,7 +1651,8 @@ class OnlineView:
         strip = self.card(v, "Tile.TFrame", 10)
         strip.grid(row=row, column=0, sticky="we", pady=(px(10), 0))
         strip.columnconfigure(2, weight=1)
-        ttk.Label(strip, text=t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
+        ttk.Label(strip, text=t("TOURNAMENT SET · BEST OF {best}", best=best) if info.get("tournament") else
+                  t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w")
         d, gap = px(12), px(6)
         dots = tk.Canvas(strip, width=best * (d + gap), height=d + 2, bg=C["raised"], highlightthickness=0,

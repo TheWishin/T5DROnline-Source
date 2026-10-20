@@ -8,8 +8,8 @@ English: [../README.md](../README.md)
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
-**Release 1.1.1 (2026-10-19).** Lade
-`T5DR-Online-1.1.1.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.2 (2026-10-20).** Lade
+`T5DR-Online-1.1.2.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das
@@ -317,7 +317,9 @@ Gut zu wissen:
   den nächsten Relay-Server mit ein.
 - Kabel ist besser als WLAN.
 - Beim ersten Mal fragt die Windows-Firewall, ob das Spiel und Python ins Netz
-  dürfen. Erlaube es für **private Netzwerke**.
+  dürfen. Erlaube es für **private Netzwerke**. Auf Abbrechen geklickt? Matches
+  kommen trotzdem zustande, manche nur über das Relay; der Online-Tab zeigt dann
+  eine Firewall-Zeile mit **So behebst du es**.
 - Netcode: Rollback wie bei Tekken 6 Native Online. Das Input-Delay folgt dem
   Ping: 1 Frame bis etwa 60 ms, darüber 2. **Settings -> Online input delay**
   kann es auf 0, 1 oder 2 Frames festlegen; das gilt nur, wenn der Gegner
@@ -344,6 +346,30 @@ Gut zu wissen:
   einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
   seiner Seite startet es. Wer einen Spieler blockiert, beendet die
   Freundschaft.
+- **Deine eigenen Kostüme online** (ab 1.1.3): was du offline im Item-Shop
+  gekauft und angezogen hast, sehen du und dein Gegner auch im Online-Match.
+- **Turniere** (mit Konto, ab 1.1.3): Die Seite **Turniere** im Online-Reiter
+  zeigt die Turniere des Servers. **Anmelden** (und **Einchecken**, wenn das
+  Turnier danach fragt); ist dein Set dran, zeigt der Reiter „Dein Turnier-Set
+  ist bereit“: **Annehmen** innerhalb von 5 Minuten, dann startet das Spiel von
+  selbst. Sets gehen über Best of 3 oder 5 und laufen wie lockere Sets mit der
+  Auswahl im Spiel; der Turnierbaum (Single oder Double Elimination) füllt sich
+  von selbst. Jeder mit Konto kann mit **Anlegen...** ein Turnier ausrichten.
+  Mehr in [TOURNAMENTS.md](TOURNAMENTS.md) (auf Englisch).
+- **Private Räume und Community-Räume** (ab 1.1.3): **Raum erstellen** fragt,
+  wie viele Spieler (2 bis 8) und wer beitreten darf: alle, mit Passwort oder
+  mit Einladungscode; der Raum lässt sich auch in der Raumliste verstecken.
+  Andere wählen ihn aus und drücken **Raum beitreten** (das fragt nach dem
+  Passwort), oder sie geben den Einladungscode bei **Raum beitreten** ein, ohne
+  einen Raum auszuwählen. Den Code teilst du mit **Einladungscode kopieren**: Er
+  erscheint im Feld neben dem Knopf, dort drückst du Strg+C. In einem Raum für 3
+  oder mehr wechselt ihr euch ab, ein Match nach dem anderen, nach **Gewinner
+  bleibt** oder **Alle der Reihe nach**; **Aussetzen** überspringt deine Runden.
+  Der Gastgeber kann in **Raum-Einstellungen...** das Passwort ändern und einen
+  Spieler entfernen. Einen Freund, den du in deinen Raum einlädst, fragt
+  niemand nach dem Passwort. Die Matches eines privaten Raums können nur seine
+  Spieler zuschauen. Diese Räume sind casual. Mehr in [ONLINE.md](ONLINE.md)
+  „Rooms“ (auf Englisch).
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 ### Replays
@@ -358,6 +384,19 @@ beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
 gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
 weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
 Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
+
+### Zuschauen
+
+Ein Freund im Match, das Match eines Raums oder ein Turnier-Set lässt sich live
+ansehen: **Zuschauen** auf der Freunde-Seite (unter der Liste), in der Raumliste
+oder über dem Turnierbaum (vorher das Set anklicken).
+Dein Spiel zeigt das Match ein paar Sekunden später, genau so, wie es gespielt
+wird (dieselben Eingaben, beim Abspielen geprüft). Wann immer du dazukommst,
+läuft die Session der Spieler von ihrem Anfang an (ein Rematch hängt von den
+Matches davor ab). Settings -> Zuschauer: „Freunde und Raumbesucher dürfen meine
+Online-Matches ansehen“ (an) und „Auch meine Ranked-Matches“ (aus); ein Match
+wird nur angesehen, wenn beide Spieler es erlauben. Die eigenen Kostüme beider
+Spieler sehen auch die Zuschauer. Mehr in [SPECTATE.md](SPECTATE.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error

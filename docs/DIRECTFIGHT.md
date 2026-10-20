@@ -25,6 +25,9 @@ T5_HUD_NAMES=<P1 name>|<P2 name>                     names under the health bars
 T5_HUD_RANKS=<P1 tier>,<P2 tier>                     rank badges, 0-36 in the game's order (0 Beginner, 10 1st Dan, ...)
 T5_CTL_DIR=<dir>                                     persistent game: every match is a control command (below)
 T5_DF_PICK=<seconds>                                 pick=<seconds> for fight lines without one (tests)
+T5_COSTUME_SAVE=<SYS-DATA>|0                         netplay: this player's own save, its customization goes to the opponent
+                                                     ("Custom costumes online"; the launcher sets it); offline tests: P1's
+T5_COSTUME_SAVE2=<SYS-DATA>                          offline tests: P2's customization
 ```
 
 - `p1`, `p2`: character id 0-35, 3-letter code or name prefix (table below).
@@ -1109,6 +1112,147 @@ a run on any FIFO stall in the game logs.
 
 Results: see docs/ROLLBACK.md section 31 (the cycle runs).
 
+## Custom costumes online (costumes-online, 1.1.3)
+
+Player request: "unlock all customs and custom skin with the equipment" online.
+Offline the item shop (ITEM SHOP & EQUIP after picking a fighter in Arcade,
+Ghost or Survival) dresses each character; online both fighters always wore
+their default costumes: the direct-fight driver starts VS with the start-VS
+routine, not through the VS menu, so neither side has a profile, and an online
+game plays on a save of its own anyway (docs "Unlocks", patch 0044). Now each
+player fights online in the customization of their own offline save, the same
+on both PCs, under rollback and lockstep.
+
+**Where the game keeps a customization.**
+
+- *The save:* the system save the title loads (`NPUB30009-SYSNET`, file
+  SYS-DATA, 0x218C0 bytes; in memory at 0x10684960). At SYS-DATA + 0x820 +
+  c * 0x108 the block of character c, where c is the game's *item character
+  index* (Lili 31, Heihachi 13, Kazuya 14; not the T5_FIGHT id): three costumes
+  of 0x58 bytes -- +0x00 32 u16 parts bought (item id, in the order bought,
+  0 = none), +0x40 4 u16 the part worn per category (HEAD, FACE, BODY up,
+  BODY down; 0xFFFF none), +0x48 3 u32 the colours bought (a bit per colour of
+  COLOR1..3), +0x54 3 u8 the colour worn (0xFF none), +0x57 0.
+  `src/directfight/costume_logic.h` has the layout.
+- *The fight:* each side's VS custom data (0x106C9934 + side * 0x1F4, also
+  name and rank of the HUD) starts with the same 0x108 bytes for the fighter
+  it plays. Offline the select screen's confirm builds it from the side's
+  profile (0x2A77B0, profile pointers 0x106C9E38[side]); online there is no
+  profile and it is zeros (the default costumes). The fight's loading reads it
+  for the models: writing a block there between the select and the loading
+  dresses the fighter (cos1 of the Unlocks work; here runs o5/o6: Lili's Lace
+  Hairband and the item on her back, Heihachi's Topknot and belt, Kazuya's long
+  hair and shoulder piece).
+- *Which block:* the fighter object (*(0x10091AB0)[side]) +0x40 holds the item
+  character index the game itself uses (0x2A77B0 reads it). The game mode's
+  set-up fills it: it is 0 at the select screen and at the game mode's first
+  frame and set at FIGHT START (the game mode's phase 7), before the models
+  load.
+
+**How a match gets both players' customizations.**
+
+1. *This player's table.* At the first select of a netplay session the driver
+   reads the player's own save, `T5_COSTUME_SAVE` = the offline save's
+   `NPUB30009-SYSNET/SYS-DATA` (the launcher names it for every game started
+   for online play, `launcher/core.py costume_env`; `T5_COSTUME_SAVE=0` in the
+   extra environment sends none), and keeps the blocks in which something is
+   worn as a wire table: `"T5CO"`, version 1, a count, then per character its
+   index and the 0x108 bytes, indices increasing -- at most 8 + 35 * 0x109 =
+   9,283 bytes. Fight Money, names and the rest of the save stay on the PC.
+2. *The handshake.* Netplay sends the table to the opponent from the moment
+   the session is connected (COSTUME packets, protocol v4, docs/NETPLAY.md): in
+   pieces of 1,024 bytes, every 100 ms until the opponent acknowledges the
+   whole table by its FNV-1a hash; the opponent's table arrives the same way and
+   is taken once, when its pieces add up to its hash. Anything else (a table
+   above the bound, a malformed piece) is dropped by the parser; a table that
+   is not a well-formed wire table counts as empty. Both PCs then hold the same
+   two tables byte for byte -- this PC uses for its own player exactly the
+   bytes it sent, never the save again. A new session (another opponent) sends
+   again; rematches use the session's tables.
+3. *No fight without both.* The stage panel is not confirmed before the
+   opponent's table is here ("waiting for the opponent's costume table" every
+   5 s), so neither game reaches the game mode without both tables. In practice
+   the table is there long before: the exchange takes a few round trips at the
+   start of the session.
+4. *FIGHT START.* At the same frame as the rest of the fight's set-up (before
+   `t5_netplay_start()`, lockstep frame 0), each side's VS custom data gets the
+   block of the character it fights with from that player's table -- when the
+   table has one and it passes the check both PCs make (below); otherwise the
+   zero block the game has there online today (the default costumes). Both PCs
+   log the same line: `costumes written: P1 item char 31 (...): custom, P2 item
+   char 13 (...): custom; blocks hash 3BB3...`, and read the blocks back once
+   the loading is over (`blocks hash ... after the loading`).
+
+**The check** (`costume::block_valid`, the same code and data on both PCs):
+every bought part an item of that character (the game's own price table
+*(0x10076724)[c], static data), a compact list without repeats; every worn
+part none or bought; every worn colour none or one bought (index < 32); the
+spare byte 0. One failure anywhere and the whole block is not used: that
+character fights in the default costume, on both PCs. So a damaged or forged
+save cannot make one PC load something the other does not, nor send the
+game's model code an item id the character does not have.
+
+**Why it cannot desync.** The blocks are written before lockstep frame 0 and
+never change during the fight; both PCs write the same bytes for both sides
+(the same tables, the same fighters, the same check); the VS custom data is
+outside the netplay state hash and the rollback state never restores past
+FIGHT START. Whatever an item changes in the match (the models; any item
+move) is then the same on both PCs. Items with a gameplay effect, if T5 has
+any, would be a question for ranked fairness, not for sync (open).
+
+**Mirrors and costumes.** A block holds all three costumes of the character;
+the costume a player fights in is still the confirm button (and, in a mirror
+of one costume, the game's rule that P2 gets the other costume): a
+customization shows when the player customized that costume offline.
+
+**Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
+replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
+(replay)`, the players' blocks hash); a playback that wrote other blocks counts a setup problem. **The relay
+fallback** (docs/NETPLAY.md): the session started again exchanges both tables again.
+
+**Test hooks:** offline direct fight reads `T5_COSTUME_SAVE` for P1 and
+`T5_COSTUME_SAVE2` for P2; `T5_DF_SHOT=++n` takes a picture n frames after
+every FIGHT START (each match of a session; `+n` stays the first match only).
+`tests/c/costume_test.cpp` (tests/test_costumes.py): the save's blocks, the
+wire table (round trip, every malformed one refused whole), the check;
+`tests/c/netplay_fuzz.cpp`: the COSTUME parser (shuffled and repeated pieces,
+a wrong hash, malformed pieces, acknowledgements, a restarted peer, random
+packets).
+
+**Results** (this PC, runs in build/costume/runs). Test saves: the Unlocks
+work's Lili (Lace Hairband 0x33, item 0x34, COLOR1 1 on costume 1), and
+Heihachi (Topknot 0x03, belt 0x0D, COLOR1 1) and Kazuya (Long Hair 0x03,
+shoulder piece 0x0D) bought in the item shop with free items and taken from the
+VS custom data; host's save A = Lili + Kazuya, joiner's save B = Heihachi +
+Lili. Both games on their own online save (`PS3_SAVEDATA_DIR`), replays
+recorded (`T5_REPLAY_DIR`), `fight_flow_test.py --flow persistent --pattern
+NRNRR --mash` (a new session, a rematch, a new session, two rematches),
+pictures at `T5_DF_SHOT=++450,++900`. The matches: Kazuya (A) vs Lili (B), both
+custom; a Lili mirror, both custom; Heihachi vs Kazuya, neither customized by
+its player; Lili (A) vs Heihachi (B) twice.
+
+| run (build) | matches | costumes written (the same line on both PCs) | sync |
+|---|---|---|---|
+| fin6_rb (rollback; final head: main 4852277 + select-stall + this branch) | 5/5 confirmed, same winner and hash on both PCs | as listed, `custom` / `nothing customized` | 34 checks, 0 mismatching frames, 242 rollbacks |
+| fin6_ls (lockstep, same build; B's Heihachi block made invalid: a part worn but not bought) | 5/5 | as listed, Heihachi "a part worn but not bought" -> default on both PCs | 32 checks, 0 mismatching |
+| fin5_rb / fin4_ls (rollback / lockstep after the select-stall merge, before main 4852277) | 5/5 each | the same lines and blocks hashes | 34 / 34 checks, 0 mismatching; 692 rollbacks |
+| fin3_play (`replay_play.py`: fin3_rb's two recorded sessions played back) | 5/5 identical to the live match | the playback wrote the recorded blocks (`custom (replay)`, the live hashes) | 63 + hashes compared, 0 different |
+| pick_rb (in-game select, rollback, `pick_flow_test.py`) | 3/3 | Kazuya vs Lili, Lili vs Heihachi, Heihachi vs Lili (Circle) | 0 mismatching |
+
+The blocks hashes are the same in every run of a pattern (3C3F.., 3BB3..,
+5BE5.., 80FD.. or CBAB.. with the invalid block), and so are the match hashes of
+the runs with the same netcode. One lockstep run before the select-stall merge
+(fin3_ls) hung both games at select phase 1 after the title (match 3): the
+reader state of the boot-state copy, fixed by select-stall ("Select stall after
+a fight"); with it merged no run hung.
+
+The pictures of both PCs show the same costumes at the same moment
+(`side/shot01*`: the host's Kazuya with his long hair and shoulder piece
+against the joiner's Lili with the hairband; `side/shot07*`: Lili against
+Heihachi with Topknot and belt, in lockstep the invalid Heihachi in his default
+costume on both). Offline (runs o5, o6): the same items, the default costumes
+unchanged where nothing is customized.
+
 ## Known transient mismatches
 
 **Devil Jin and Mokujin desync online (found by ingame-select, 2026-10-18;
@@ -1272,41 +1416,15 @@ mismatching frames. What a player sets in the game's OPTIONS (button layout,
 difficulty, round time, volumes) therefore applies offline only; buttons for
 online play are set in the launcher (controls.ini), which works below netplay.
 
-**Customization online today:** none, on either PC: the direct-fight driver
-starts VS with 0x4E9DC, not through the VS menu (0x572CC -> 0x1F99BC, which
-copies the save's profile for both sides and sets their profile pointers
-0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom data and
-both fighters wear their default costumes on both PCs (traced in t_df_items).
-
-**Plan: each player's custom costume online (not in 1.1.2).** Checked by
-hand (run cos1, one game): the fight reads its costumes from the VS custom
-data -- with no profile, as online, Lili's costume block is zeros; the Lace
-Hairband written into it between the select confirm and the fight's loading
-(bought list +0x00 and worn HEAD +0x40 of costume 1) is on her in the fight's
-intro. So:
-
-1. The launcher reads the player's own save (SYS-DATA, profile +0x400): for
-   every character the 0x108-byte costume block at +0x820 + c * 0x108 (only
-   the non-empty ones; Fight Money and names stay out) and announces a cap
-   `costumes` with its queue/ready message.
-2. The lobby server, when both clients have the cap (and a server setting,
-   say `T5L_COSTUMES`, allows it; ranked too only if the items are cosmetic),
-   sends both players' blocks to both in `match_start` (`fight.costumes`,
-   size-checked, at most 35 x 0x108 bytes per player). Both PCs then hold the
-   same bytes from the same message: nothing to agree on over the netplay
-   link, and locked set games, rematches and the in-game select need nothing
-   extra.
-3. The launcher writes them to a file named on the fight line; at FIGHT START
-   (before `t5_netplay_start()` and the fight's loading) the driver writes,
-   for each side, the block of the fighter it fights with (the item
-   character index: the fighter object +0x40, as 0x2A77B0 reads it) into that
-   side's VS custom data. Both PCs load the same item models for both sides.
-4. The VS custom data is outside the netplay hash and does not change during
-   a fight; anything the items change in the match (item models, an item
-   move) is the same on both PCs. Proof wanted: rollback and lockstep pairs
-   with costumes on both sides and mirrors, 0 mismatching frames, frame dumps
-   of both PCs showing the same costumes. Still open: whether any item has a
-   gameplay effect (T5 item moves) -- it decides ranked, not determinism.
+**Customization online (1.1.2: none; 1.1.3: each player's own):** the
+direct-fight driver starts VS with 0x4E9DC, not through the VS menu (0x572CC ->
+0x1F99BC, which copies the save's profile for both sides and sets their profile
+pointers 0x106C9E38[side]); with the pointers at 0, 0x2A77B0 builds no custom
+data and both fighters wore their default costumes on both PCs (traced in
+t_df_items). Writing a block into the VS custom data between the select confirm
+and the fight's loading dresses the fighter (run cos1: the Lace Hairband in the
+fight's intro) -- the way 1.1.3 shows each player's customization online, see
+"Custom costumes online".
 
 ## Character ids
 
@@ -1371,6 +1489,10 @@ host/join pair started with `T5_NET_START=external`.
 - `src/directfight/df_pick.cpp`: the in-game select's helpers (the local pad
   for the select screen, the name plates as hints, the PICK value, model ids);
   its phases are in `df_fight.cpp`.
+- `src/directfight/df_costume.cpp`, `costume_logic.h`: custom costumes online
+  (the player's table from the save, the opponent's from netplay, the check,
+  the blocks written at FIGHT START); `netplay_core.cpp`: COSTUME packets
+  (`t5_netplay_costume_set/peer`).
 - `src/netplay/t5_hooks.cpp`: `t5_netplay_inject(port, on, buttons)` and
   `t5_netplay_enabled()`, `t5_netplay_start()` (netplay's); for a persistent
   game `t5_netplay_session_begin/end`, `t5_netplay_take_session_lost`; for the
@@ -1382,7 +1504,8 @@ host/join pair started with `T5_NET_START=external`.
 - Tests: `tools/pick_flow_test.py` (the in-game select, two games, scripted
   picks; `--aborts`/`--offline`: sessions that end at the select screen, "Select
   restarts"), `tools/fight_flow_test.py` (pairs, many matches, rematch or
-  persistent flow, `--mash`, `--fresh-at`), `tools/reset_cycle_test.py` (one
+  persistent flow, `--mash`, `--fresh-at`; compares the costume blocks both
+  games wrote), `tools/reset_cycle_test.py` (one
   persistent game through every way a session ends), `tools/dryrun_online.py
   --mode persistent --new-opponent` (through a lobby, Accept-to-FIGHT times),
   `lobby/tests/test_driver_persistent.py`.

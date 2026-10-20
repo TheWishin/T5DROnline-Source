@@ -512,7 +512,7 @@ class Theme:
         return self._element_names
 
     # backgrounds buttons sit on (their corners are blended into it): the page, cards, the error banner
-    BUTTON_GROUNDS = (("", "bg"), ("Card.", "surface"), ("Err.", "err_bg"))
+    BUTTON_GROUNDS = (("", "bg"), ("Card.", "surface"), ("Err.", "err_bg"), ("Note.", "note_bg"))
 
     def _button_family(self, name, fill, hover, pressed, disabled, ring_col, line=None):
         """Rounded button elements (one per background) with their states, and their layouts."""

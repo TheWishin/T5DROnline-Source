@@ -1,0 +1,1057 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 4b5e6b2..604551b 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -708,8 +708,10 @@ void cellGcmSetWaitFlip(void)
+     }
+     const ULONGLONG t_end = GetTickCount64() + 64;
+     HANDLE ev = (HANDLE)gcm_flip_event();
++    const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
+     while (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING && GetTickCount64() < t_end)
+         WaitForSingleObject(ev, 2);
++    host_sched_main_wait_end(HS_WAIT_FLIP, mw0);
+     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+ }
+ 
+@@ -796,6 +798,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
+     u32 waiting = CELL_GCM_FLIP_STATUS_WAITING;
+     if (s_flip_status != waiting) return 1;            /* done meanwhile: the poll sees it now */
+     const ULONGLONG t_end = GetTickCount64() + 20;
++    const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
+     InterlockedIncrement(&s_flip_waiters);
+     while (s_flip_status == waiting) {
+         const ULONGLONG now = GetTickCount64();
+@@ -803,6 +806,7 @@ static int gcm_usleep_flip_wait(uint64_t usec)
+         WaitOnAddress((volatile VOID*)&s_flip_status, &waiting, sizeof waiting, (DWORD)(t_end - now));
+     }
+     InterlockedDecrement(&s_flip_waiters);
++    host_sched_main_wait_end(HS_WAIT_FLIP, mw0);
+     return 1;
+ }
+ static int gcm_flip_wait_on(void)
+@@ -812,9 +816,18 @@ static int gcm_flip_wait_on(void)
+     return on;
+ }
+ 
++/* Patch 0063: the walker has commands it has not walked (a main-thread sleep
++ * now is a label or fence poll: a wait for the renderer). */
++static u32 s_fifo_getoff;   /* tentative: defined below */
++static int gcm_rsx_busy(void)
++{
++    return vm_read32(GCM_CONTROL_GUEST_ADDR + 0) != s_fifo_getoff;
++}
++
+ /* NID: 0xE315A0B2 */
+ u32 cellGcmGetFlipStatus(void)
+ {
++    if (!g_host_sched_rsx_busy) g_host_sched_rsx_busy = gcm_rsx_busy;
+     if (gcm_flip_wait_on()) {
+         if (!g_host_sched_usleep_hook) g_host_sched_usleep_hook = gcm_usleep_flip_wait;
+         t_flip_polled = s_flip_status == CELL_GCM_FLIP_STATUS_WAITING;
+@@ -905,6 +918,7 @@ void ppu_gcm_pump(void)
+     if (!*(volatile LONG*)&s_gcm_pending && !*(volatile LONG64*)&s_user_pending) return;
+ #endif
+     if (!GCM_PUMP_TRY_ENTER()) return;
++    host_sched_gcm_handler(1);   /* patch 0063: what the handlers post is the renderer's */
+     long p = (long)GCM_PENDING_TAKE();
+     u64 user = GCM_USER_PENDING_TAKE();
+     /* GCM_PUMP_DBG=1: how often each guest handler is actually delivered. */
+@@ -943,6 +957,7 @@ void ppu_gcm_pump(void)
+             g_ps3_guest_caller(s_user_handler_opd, (uint64_t)cmd, 0, 0, 0, 0, 0, 0, 0);
+         rsx_pf_stamp(RSX_PF_USERCMD_QPC);
+     }
++    host_sched_gcm_handler(0);
+     GCM_PUMP_LEAVE();
+ }
+ 
+diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
+index 924e2ee..77ae549 100644
+--- a/libs/video/rsx_live_draw.c
++++ b/libs/video/rsx_live_draw.c
+@@ -55,6 +55,7 @@ void rsx_pf_stamp(int slot)
+ void rsx_pf_guest_flip(void)
+ {
+     rsx_pf_stamp(RSX_PF_GUEST_FLIP_QPC);
++    host_sched_main_flip_requested();   /* patch 0063: the game part ends */
+     static int state = -1;
+     static FILE* f;
+     if (state < 0) {
+@@ -88,6 +89,7 @@ void rsx_pf_guest_flip(void)
+ void rsx_pf_stamp(int slot) { (void)slot; }
+ void rsx_pf_guest_flip(void) {}
+ void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
++double rsx_live_draw_gpu_ms(void) { return -1.0; }
+ int  rsx_live_draw_display_hybrid(void) { return -1; }
+ #endif
+ 
+@@ -2269,6 +2271,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+ static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
+ static void ld_tex_release(ID3D12Resource* r);   /* texture pool, below */
+ 
++/* ---- frames in flight (patch 0063, RSX_FRAMES_IN_FLIGHT) --------------------
++ * One command allocator and one set of per-frame rings meant that the walker
++ * could record nothing of frame N+1 until the GPU had finished frame N: on a
++ * GPU slower than the game (integrated graphics at a high Internal
++ * resolution) every frame was game + GPU + the rest of the translation, in
++ * series. With two slots -- an allocator, the upload/vertex/index/constant
++ * rings and the shader-visible descriptor rings each -- frame N+1 is recorded
++ * into the other slot while the GPU still runs frame N, and a slot is only
++ * waited for when it comes round again (frame N+2). Nothing the guest sees
++ * changes: labels, reports, the flip and the user command are written by the
++ * walker as it reaches them, as before, and the game's memory is copied into
++ * the rings at translation time, so the GPU never reads guest memory. What
++ * the GPU of the frame in flight still uses is never touched: textures and
++ * surfaces replaced meanwhile are released only after that slot's fence (the
++ * retired list moves with the slot), every other buffer the CPU writes for
++ * the GPU (present descriptors per backbuffer, the overlay's 8 slots) already
++ * rotates, and a flush that waits for the GPU waits for all of it.
++ * RSX_FRAMES_IN_FLIGHT=2 turns it on; the default stays one slot: on
++ * integrated graphics (one memory for the processor and the GPU) recording
++ * the next frame while the GPU draws made the GPU's passes slower by more
++ * than the overlap saved (4K on the 7950X's Radeon: 23.5 -> 31.8 ms of GPU
++ * per frame, 35-37 -> 31-32 fps; docs/RENDER_PERF.md "4K on integrated
++ * graphics"). A discrete GPU slower than the game is where it can help. */
++#define LD_SLOTS_MAX 2
++typedef struct {
++    ID3D12CommandAllocator* alloc;
++    ID3D12Resource *upload, *vb, *ib, *cb, *ps_cb;
++    u8 *upload_mapped, *vb_mapped, *cb_mapped, *ps_cb_mapped;
++    u32* ib_mapped;
++    ID3D12DescriptorHeap *srv_heap, *smp_heap;
++    u64 fence;                         /* the last list recorded in this slot */
++    ID3D12Resource** retired;          /* released once `fence` has passed */
++    u32 n_retired;
++} ld_slot_t;
++static ld_slot_t g_ld_slot[LD_SLOTS_MAX];
++static u32 g_ld_nslots = 1, g_ld_cur = 0;
++static u64 g_ld_vb_cap, g_ld_ib_cap;  /* per slot (half the old ring each with 2 slots) */
++static u64 g_ld_overlap_waits;         /* begin-recording waits for a slot (frames) */
++static int ld_frames_in_flight_cfg(void)
++{
++    static int v = -1;
++    if (v < 0) {
++        const char* e = getenv("RSX_FRAMES_IN_FLIGHT");
++        v = e && *e == '2' ? 2 : 1;   /* default 1: on integrated graphics 2 was slower (RENDER_PERF.md) */
++        { const char* a = getenv("RSX_ASYNC_PRESENT"); if (a && *a == '0') v = 1; }
++    }
++    return v;
++}
++static void ld_slot_load(u32 i)
++{
++    ld_slot_t* s = &g_ld_slot[i];
++    g.alloc = s->alloc;
++    g.upload = s->upload; g.upload_mapped = s->upload_mapped;
++    g.vb = s->vb; g.vb_mapped = s->vb_mapped;
++    g.ib = s->ib; g.ib_mapped = s->ib_mapped;
++    g.cb = s->cb; g.cb_mapped = s->cb_mapped;
++    g.ps_cb = s->ps_cb; g.ps_cb_mapped = s->ps_cb_mapped;
++    g.srv_heap = s->srv_heap; g.smp_heap = s->smp_heap;
++}
++/* Every slot's retired textures, after a wait for everything submitted. */
++static void ld_slots_release_all(void)
++{
++    for (u32 k = 0; k < g_ld_nslots; k++) {
++        ld_slot_t* s = &g_ld_slot[k];
++        for (u32 i = 0; i < s->n_retired; i++) ld_tex_release(s->retired[i]);
++        s->n_retired = 0;
++    }
++}
++/* At init, after slot 0's rings and heaps (g.*) exist: slot 0 = those, slot 1
++ * a second set like them. hp = an upload heap, hd / shd = the shader-visible
++ * SRV and sampler ring descriptions. Any failure: one slot, as before. */
++static void ld_slots_init(const D3D12_HEAP_PROPERTIES* hp, D3D12_RESOURCE_DESC* bd,
++                          const D3D12_DESCRIPTOR_HEAP_DESC* hd, const D3D12_DESCRIPTOR_HEAP_DESC* shd)
++{
++    ld_slot_t* s0 = &g_ld_slot[0];
++    s0->alloc = g.alloc;
++    s0->upload = g.upload; s0->upload_mapped = g.upload_mapped;
++    s0->vb = g.vb; s0->vb_mapped = g.vb_mapped;
++    s0->ib = g.ib; s0->ib_mapped = g.ib_mapped;
++    s0->cb = g.cb; s0->cb_mapped = g.cb_mapped;
++    s0->ps_cb = g.ps_cb; s0->ps_cb_mapped = g.ps_cb_mapped;
++    s0->srv_heap = g.srv_heap; s0->smp_heap = g.smp_heap;
++    g_ld_nslots = 1; g_ld_cur = 0;
++    if (ld_frames_in_flight_cfg() < 2) {
++        return;   /* the default: no line */
++    }
++    ld_slot_t* s1 = &g_ld_slot[1];
++    D3D12_RANGE rr = {0, 0};
++    int ok = SUCCEEDED(g.dev->lpVtbl->CreateCommandAllocator(g.dev, D3D12_COMMAND_LIST_TYPE_DIRECT,
++                           &IID_ID3D12CommandAllocator, (void**)&s1->alloc));
++    struct { ID3D12Resource** r; void** m; u64 w; } bufs[5] = {
++        { &s1->upload, (void**)&s1->upload_mapped, UPLOAD_SIZE },
++        { &s1->vb, (void**)&s1->vb_mapped, g_ld_vb_cap },
++        { &s1->ib, (void**)&s1->ib_mapped, g_ld_ib_cap },
++        { &s1->cb, (void**)&s1->cb_mapped, CB_RING_BYTES },
++        { &s1->ps_cb, (void**)&s1->ps_cb_mapped, PS_CB_RING_BYTES } };
++    for (int i = 0; ok && i < 5; i++) {
++        bd->Width = bufs[i].w;
++        ok = SUCCEEDED(g.dev->lpVtbl->CreateCommittedResource(g.dev, hp, D3D12_HEAP_FLAG_NONE, bd,
++                           D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)bufs[i].r)) &&
++             SUCCEEDED((*bufs[i].r)->lpVtbl->Map(*bufs[i].r, 0, &rr, bufs[i].m));
++    }
++    ok = ok && SUCCEEDED(g.dev->lpVtbl->CreateDescriptorHeap(g.dev, hd, &IID_ID3D12DescriptorHeap,
++                                                             (void**)&s1->srv_heap));
++    ok = ok && SUCCEEDED(g.dev->lpVtbl->CreateDescriptorHeap(g.dev, shd, &IID_ID3D12DescriptorHeap,
++                                                             (void**)&s1->smp_heap));
++    for (u32 k = 0; ok && k < 2; k++) {
++        g_ld_slot[k].retired = (ID3D12Resource**)calloc(MAX_RETIRED_TEXTURES, sizeof(ID3D12Resource*));
++        ok = g_ld_slot[k].retired != NULL;
++    }
++    if (!ok) {
++        fprintf(stderr, "[pacing] frames in flight: 1 (the second set of rings could not be created)\n");
++        return;   /* the half-size vertex/index rings of slot 0 stay: still far above a frame's use */
++    }
++    g_ld_nslots = 2;
++    fprintf(stderr, "[pacing] frames in flight: 2 (the next frame is recorded while the GPU draws this one; "
++                    "RSX_FRAMES_IN_FLIGHT)\n");
++}
++
+ /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
+  * flip-model chain with a frame-latency waitable object, max frame latency 1
+  * by default: at most one presented frame waits for the display, so a flip
+@@ -2598,6 +2719,14 @@ static void ld_check_display_adapter(HWND hwnd)
+         fprintf(stderr, "[gpu] display: no adapter output found for the window's screen (a remote or virtual display?)\n");
+ }
+ int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
++/* Patch 0063: GPU time of every command list finished so far (ms), from the
++ * timestamps; < 0 when they are off. Renderer thread (the ticker). */
++double rsx_live_draw_gpu_ms(void)
++{
++    if (g_gt.on <= 0) return -1.0;
++    ld_gt_harvest();
++    return (double)g_gt.done_ticks * g_gt.us_per_tick / 1000.0;
++}
+ void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
+ {
+     *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
+@@ -2767,9 +2896,11 @@ static void ld_gt_init(void)
+ {
+     if (g_gt.on >= 0) return;
+     g_gt.on = 0;
++    /* Patch 0063: on by default (two timestamps per command list, read once
++     * their fence passed: no wait) -- [slow-frames] reports how busy the GPU
++     * is; RSX_GPU_TIME=0 turns them off. */
+     const char* e = getenv("RSX_GPU_TIME");
+-    const char* fl = getenv("PS3_FRAMELOG");
+-    if (!((e && *e && *e != '0') || (!e && fl && *fl))) return;
++    if (e && *e == '0') return;
+     UINT64 freq = 0;
+     if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
+     D3D12_QUERY_HEAP_DESC qd = {0};
+@@ -3053,6 +3184,30 @@ static void ld_begin_recording(void)
+ {
+     if (!g_ld_lazy_reset) return;
+     g_ld_lazy_reset = 0;
++    if (g_ld_nslots > 1) {
++        /* patch 0063: the textures retired while the frame just submitted was
++         * recorded stay until its slot comes round again */
++        ld_slot_t* done = &g_ld_slot[g_ld_cur];
++        for (u32 i = 0; i < g.n_retired_textures; i++) {
++            if (done->n_retired >= MAX_RETIRED_TEXTURES) {   /* never in practice: wait, then free */
++                ld_wait_fence(g.fence_value, "retire-queue");
++                ld_slots_release_all();
++            }
++            done->retired[done->n_retired++] = g.retired_textures[i];
++        }
++        g.n_retired_textures = 0;
++        g_ld_cur = (g_ld_cur + 1) % g_ld_nslots;
++        ld_slot_t* s = &g_ld_slot[g_ld_cur];
++        if (s->fence && g.fence->lpVtbl->GetCompletedValue(g.fence) < s->fence) {
++            const LONGLONG w0 = ld_pf_qpc();
++            ld_wait_fence(s->fence, "begin-recording");
++            g_pf.flush_wait_ticks += ld_pf_qpc() - w0;
++            g_ld_overlap_waits++;
++        }
++        for (u32 i = 0; i < s->n_retired; i++) ld_tex_release(s->retired[i]);
++        s->n_retired = 0;
++        ld_slot_load(g_ld_cur);
++    } else {
+     const u64 v = g.fence_value;
+     if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
+         const LONGLONG w0 = ld_pf_qpc();
+@@ -3062,6 +3217,7 @@ static void ld_begin_recording(void)
+     for (u32 i = 0; i < g.n_retired_textures; i++)
+         ld_tex_release(g.retired_textures[i]);
+     g.n_retired_textures = 0;
++    }
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
+     ld_bound_invalidate();
+@@ -3103,6 +3259,7 @@ static void ld_flush(ld_flush_reason reason)
+     ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
+     g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
+     const u64 v = ++g.fence_value;
++    g_ld_slot[g_ld_cur].fence = v;   /* patch 0063: the slot's last list */
+     ld_gt_submitted(gt_slot, v);
+     ld_gp_submitted(gp_slot, v);
+     const HRESULT signal_hr =
+@@ -3144,6 +3301,7 @@ static void ld_flush(ld_flush_reason reason)
+     for (u32 i = 0; i < g.n_retired_textures; i++)
+         ld_tex_release(g.retired_textures[i]);
+     g.n_retired_textures = 0;
++    ld_slots_release_all();   /* patch 0063: the wait above covered every slot */
+     g.alloc->lpVtbl->Reset(g.alloc);
+     g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
+     ld_bound_invalidate();
+@@ -7828,10 +7986,10 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+     if (!n_idx) return -2;
+     const u64 vb_bytes = n * layout->stride;
+     const u64 ib_bytes = n_idx * sizeof(u32);
+-    if (vb_bytes > VERT_BUFFER_SIZE || ib_bytes > INDEX_BUFFER_SIZE) return -3;
++    if (vb_bytes > g_ld_vb_cap || ib_bytes > g_ld_ib_cap) return -3;
+     ld_vb_align(layout->stride);
+-    if ((u64)g.vb_used + vb_bytes > VERT_BUFFER_SIZE ||
+-        (u64)g.ib_used + ib_bytes > INDEX_BUFFER_SIZE) {
++    if ((u64)g.vb_used + vb_bytes > g_ld_vb_cap ||
++        (u64)g.ib_used + ib_bytes > g_ld_ib_cap) {
+         ld_flush(LD_FLUSH_VERTEX_RING);       /* drains the jobs first */
+         g.vb_used = 0;
+         g.ib_used = 0;
+@@ -10013,15 +10171,15 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         ? (const void*)dc.compact_verts : (const void*)dc.verts;
+     draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
+     draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
+-    const u64 vb_capacity = VERT_BUFFER_SIZE;
+-    if (draw_vb_bytes > vb_capacity || draw_ib_bytes > INDEX_BUFFER_SIZE) {
++    const u64 vb_capacity = g_ld_vb_cap;
++    if (draw_vb_bytes > vb_capacity || draw_ib_bytes > g_ld_ib_cap) {
+         live_draw_csv_emit(prim, n_tri, "drop_vbring_oversize");
+         g_ld_stats.group_drop_ring++;
+         return;
+     }
+     ld_vb_align(vertex_stride);
+     if ((u64)g.vb_used + draw_vb_bytes > vb_capacity ||
+-        (u64)g.ib_used + draw_ib_bytes > INDEX_BUFFER_SIZE) {
++        (u64)g.ib_used + draw_ib_bytes > g_ld_ib_cap) {
+         /*
+          * The replay-proven renderer recycles this upload ring mid-frame.
+          * Live used to drop every remaining draw instead, which discarded
+@@ -10787,7 +10945,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     const INT base_vertex = ring_vb ? (INT)(g.vb_used / vertex_stride) : 0;
+     vbv.BufferLocation = ld_gpu_va(g.vb, &g_ld_va_vb) + (ring_vb ? 0 : g.vb_used);
+     vbv.StrideInBytes = vertex_stride;
+-    vbv.SizeInBytes = ring_vb ? VERT_BUFFER_SIZE : (u32)draw_vb_bytes;
++    vbv.SizeInBytes = ring_vb ? (u32)g_ld_vb_cap : (u32)draw_vb_bytes;   /* (0063: the slot's ring) */
+     if (vertex_stride && (!cache || !B->vbv_valid || memcmp(&B->vbv, &vbv, sizeof(vbv)) != 0)) {
+         g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv);
+         B->vbv = vbv; g_ld_api_set++; g_ld_api_by[12]++; B->vbv_valid = 1;
+@@ -10833,7 +10991,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         D3D12_INDEX_BUFFER_VIEW ibv;
+         const int ring_ib = ld_ring_views_on() && (g.ib_used & 3u) == 0;
+         ibv.BufferLocation = ld_gpu_va(g.ib, &g_ld_va_ib) + (ring_ib ? 0 : g.ib_used);
+-        ibv.SizeInBytes = ring_ib ? INDEX_BUFFER_SIZE : (u32)draw_ib_bytes;
++        ibv.SizeInBytes = ring_ib ? (u32)g_ld_ib_cap : (u32)draw_ib_bytes;   /* (0063: the slot's ring) */
+         ibv.Format = DXGI_FORMAT_R32_UINT;
+         if (!cache || !B->ibv_valid || memcmp(&B->ibv, &ibv, sizeof(ibv)) != 0) {
+             g.list->lpVtbl->IASetIndexBuffer(g.list, &ibv);
+@@ -11218,9 +11376,12 @@ static int make_depth_snapshot_pipeline(void)
+  * PC display: a swap chain that follows the window's client size, a scaled and
+  * letterboxed present blit, vsync on/off and exclusive fullscreen.
+  *   PS3_INTERNAL_RES=<step>   internal resolution, rsx_internal_res_scale()
+- *                             (aliases PS3_RES_SCALE, PS3_RENDER_SCALE;
+- *                             RSX_GPU_TIME=1 or PS3_FRAMELOG measure the GPU
+- *                             time per frame)
++ *                             (aliases PS3_RES_SCALE, PS3_RENDER_SCALE; GPU
++ *                             timestamps are on by default since patch 0063
++ *                             for [slow-frames]' GPU busy, RSX_GPU_TIME=1
++ *                             also prints [gpu-time], =0 turns them off)
++ *   RSX_FRAMES_IN_FLIGHT=2    (patch 0063) record the next frame while the
++ *                             GPU still draws this one; default 1
+  *   PS3_VSYNC=0               present without waiting for vblank (tearing
+  *                             allowed when the OS supports it)
+  *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
+@@ -11257,6 +11418,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+  *   PS3_INTERNAL_RES = lowest | lower | native | 1080p | 1440p | 4k
+  *                      (0.5x / 0.75x / 1x = 720p / 1.5x / 2x / 3x)
+  *                      or a factor 0.25..4, or an output height (360..2880)
++ *                      or auto (patch 0063, ld_res_auto: the step that
++ *                      matches the window's screen, at most 1080p on
++ *                      integrated graphics)
+  *
+  * The launcher's Settings -> Internal resolution writes it. The two older
+  * switches are aliases read the same way: PS3_RES_SCALE (patch 0010, higher
+@@ -11285,6 +11449,37 @@ static float ld_res_parse(const char* e, int* ok)
+ }
+ 
+ static const char* g_ld_res_source = "default";
++static char g_ld_res_auto_why[160];
++
++/* Patch 0063: PS3_INTERNAL_RES=auto -- the highest step whose picture fits the
++ * screen the game window is on (like the launcher's "matches your screen"),
++ * at most 1080p on integrated graphics: there the GPU shares the processor's
++ * memory and power, and 1440p/4K slow the game's own CPU work as well
++ * (docs/RENDER_PERF.md "4K on integrated graphics"). *known = 0 while the
++ * adapter is not known yet (then the answer is not final). */
++static float ld_res_auto(int* known)
++{
++    const int igpu = host_sched_gpu_integrated();
++    *known = igpu >= 0;
++    MONITORINFO mi;
++    memset(&mi, 0, sizeof mi);
++    mi.cbSize = sizeof mi;
++    HMONITOR mon = MonitorFromWindow(g_ld_main_hwnd ? g_ld_main_hwnd : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
++    long w = 1920, h = 1080;
++    if (mon && GetMonitorInfoA(mon, &mi)) {
++        w = mi.rcMonitor.right - mi.rcMonitor.left;
++        h = mi.rcMonitor.bottom - mi.rcMonitor.top;
++    }
++    static const float steps[] = { 1.5f, 2.0f, 3.0f };
++    float s = 1.0f;
++    for (u32 i = 0; i < sizeof steps / sizeof steps[0]; i++)
++        if (1280.0f * steps[i] <= (float)w + 8.0f && 720.0f * steps[i] <= (float)h + 8.0f) s = steps[i];
++    const float matched = s;
++    if (igpu == 1 && s > 1.5f) s = 1.5f;
++    snprintf(g_ld_res_auto_why, sizeof g_ld_res_auto_why, "PS3_INTERNAL_RES=auto (screen %ldx%ld%s)", w, h,
++             igpu == 1 && matched > s ? ", integrated graphics: at most 1080p" : igpu == 1 ? ", integrated graphics" : "");
++    return s;
++}
+ 
+ float rsx_internal_res_scale(void)
+ {
+@@ -11293,7 +11488,12 @@ float rsx_internal_res_scale(void)
+     float s = 1.0f;
+     int ok = 0;
+     const char* e = getenv("PS3_INTERNAL_RES");
+-    if (e && e[0]) {
++    if (e && e[0] && _stricmp(e, "auto") == 0) {
++        int known = 0;
++        s = ld_res_auto(&known);
++        g_ld_res_source = g_ld_res_auto_why;
++        if (!known) return s;            /* the window's title asked before the device existed: not final */
++    } else if (e && e[0]) {
+         s = ld_res_parse(e, &ok);
+         g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
+         if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
+@@ -11317,8 +11517,10 @@ float rsx_internal_res_scale(void)
+ const char* rsx_internal_res_label(void)
+ {
+     static char label[48];
++    static float label_s = 0.0f;
+     const float s = rsx_internal_res_scale();
+-    if (!label[0]) {
++    if (!label[0] || label_s != s) {   /* patch 0063: auto may settle after the first call */
++        label_s = s;
+         if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
+         else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
+         else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
+@@ -12030,12 +12232,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+     D3D12_RANGE rr = {0, 0};
+     g.upload->lpVtbl->Map(g.upload, 0, &rr, (void**)&g.upload_mapped);
+ 
+-    bd.Width = VERT_BUFFER_SIZE;
++    /* patch 0063: with two frames in flight each slot gets half the vertex
++     * and index rings (a fight frame uses a few MB of them) */
++    g_ld_vb_cap = ld_frames_in_flight_cfg() > 1 ? VERT_BUFFER_SIZE / 2 : VERT_BUFFER_SIZE;
++    g_ld_ib_cap = ld_frames_in_flight_cfg() > 1 ? INDEX_BUFFER_SIZE / 2 : INDEX_BUFFER_SIZE;
++    bd.Width = g_ld_vb_cap;
+     g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
+         D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.vb);
+     g.vb->lpVtbl->Map(g.vb, 0, &rr, (void**)&g.vb_mapped);
+ 
+-    bd.Width = INDEX_BUFFER_SIZE;
++    bd.Width = g_ld_ib_cap;
+     g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
+         D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.ib);
+     g.ib->lpVtbl->Map(g.ib, 0, &rr, (void**)&g.ib_mapped);
+@@ -12089,6 +12295,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+         def.MaxLOD = D3D12_FLOAT32_MAX; def.MaxAnisotropy = 1;
+         g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
+     }
++    ld_slots_init(&hp, &bd, &hd, &shd);
+ 
+     /* depth */
+     D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
+@@ -12484,6 +12691,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+         return;
+     }
+ 
++    /* patch 0063: the composite path's upload buffer is one for all frames;
++     * the frame in flight may still copy from it */
++    if (composite && g_ld_nslots > 1 && g.fence->lpVtbl->GetCompletedValue(g.fence) < g.fence_value)
++        ld_wait_fence(g.fence_value, "movie");
+     u8* host_upload = composite ? g.movie_upload_mapped : g.upload_mapped;
+     for (u32 y = 0; y < h; y++) {
+         u8* dstrow = host_upload + (size_t)y * pitch;
+diff --git a/libs/video/rsx_live_draw.h b/libs/video/rsx_live_draw.h
+index 5560090..a8c2d66 100644
+--- a/libs/video/rsx_live_draw.h
++++ b/libs/video/rsx_live_draw.h
+@@ -220,6 +220,8 @@ void rsx_pf_guest_flip(void);
+  * and DXGI Present), cumulative; and whether the window's screen is driven by
+  * another adapter than the one rendering (1), the same (0), unknown (-1). */
+ void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
++/* Patch 0063: GPU time of all finished command lists (ms, timestamps); < 0 = off. */
++double rsx_live_draw_gpu_ms(void);
+ int  rsx_live_draw_display_hybrid(void);
+ 
+ #ifdef __cplusplus
+diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
+index b36e3fb..f8da20c 100644
+--- a/runtime/platform/host_sched.c
++++ b/runtime/platform/host_sched.c
+@@ -57,6 +57,7 @@
+  *                             flip status sleeps as asked instead of waiting
+  *                             for the flip [waits for the flip]
+  *   PS3_SLOW_FRAMES=0         (boot_main.cpp) no [slow-frames] summary lines
++ *   PS3_CLOCK_SAMPLE=0        (patch 0063) no "processors at X GHz" (PDH) in them
+  *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
+  *                             when cellGcmSetUserCommand advances put [wake]
+  *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
+@@ -153,6 +154,17 @@ const char* host_sched_laptop_why(void)
+ #ifndef _WIN32
+ static int hs_lap_detect(char* why, unsigned n) { if (n) why[0] = 0; return 0; }
+ void host_sched_note_gpu(int integrated, const char* name) { (void)integrated; (void)name; }
++int (*volatile g_host_sched_rsx_busy)(void) = 0;
++int64_t host_sched_main_wait_begin(void) { return 0; }
++void    host_sched_main_wait_end(int kind, int64_t t0) { (void)kind; (void)t0; }
++void    host_sched_main_released(void) {}
++void    host_sched_main_flip_requested(void) {}
++void    host_sched_main_waits(int64_t out[HS_WAIT_KINDS]) { for (int i = 0; i < HS_WAIT_KINDS; i++) out[i] = 0; }
++int     host_sched_main_cpu(uint64_t* t100ns) { (void)t100ns; return 0; }
++void    host_sched_gcm_handler(int enter) { (void)enter; }
++int     host_sched_in_gcm_handler(void) { return 0; }
++int     host_sched_gpu_integrated(void) { return -1; }
++int     host_sched_clock_text(char* buf, int len) { if (len > 0) buf[0] = 0; return 0; }
+ #include <unistd.h>
+ 
+ void    host_sched_thread_name(const char* name) { (void)name; }
+@@ -381,6 +393,8 @@ static hs_rec* s_tr;
+ static volatile LONG s_tr_head;
+ static FILE* s_tr_file;
+ static __declspec(thread) uint16_t t_tag;    /* guest tid, or 0x100 + role */
++static HANDLE s_main_thread;                 /* patch 0063: the guest's main thread */
++static __declspec(thread) int t_is_main;
+ 
+ static DWORD WINAPI hs_trace_flusher(LPVOID unused)
+ {
+@@ -589,7 +603,9 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+                 host_sched_laptop_why());
+     else
+         fprintf(stderr, "[sched] power saving off (%s)\n",
+-                s_lap_cfg == 0 ? "PS3_LAPTOP=0" : "no battery, no mobile processor; integrated graphics are checked when the renderer starts");
++                s_lap_cfg == 0 ? "PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its "
++                                 "extra settings or in Windows' environment"   /* patch 0063: say where to look */
++                               : "no battery, no mobile processor; integrated graphics are checked when the renderer starts");
+     { char pw[256]; int thr = 0;
+       if (host_sched_power_text(pw, sizeof pw, &thr)) fprintf(stderr, "[power] %s\n", pw); }
+     fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
+@@ -627,6 +643,11 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+     host_sched_process_init();
+     if (role < 0 || role >= HS_ROLE_COUNT) role = HS_ROLE_BACKGROUND;
+     t_tag = (role == HS_ROLE_PPU || role == HS_ROLE_MAIN) ? 0 : (uint16_t)(0x100 + role);
++    if (role == HS_ROLE_MAIN && !s_main_thread) {   /* patch 0063: [slow-frames] reads its times */
++        t_is_main = 1;
++        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s_main_thread,
++                        THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0);
++    }
+ 
+     if (p_SetThreadDescription && name && *name) {
+         wchar_t w[64];
+@@ -961,11 +982,105 @@ int host_sched_load_text(char* buf, int len)
+     return ok;
+ }
+ 
++
++/* ---- the game's main thread (patch 0063, host_sched.h) ------------------------ */
++static __declspec(thread) int t_in_gcm_handler;
++static volatile LONG64 s_main_wait[HS_WAIT_KINDS];
++static volatile LONG64 s_release_qpc;   /* the frame's release; 0 after its flip request */
++static volatile int s_gpu_integrated = -1;
++int (*volatile g_host_sched_rsx_busy)(void) = 0;
++
++int64_t host_sched_main_wait_begin(void)
++{
++    if (!t_is_main) return 0;
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    return q.QuadPart;
++}
++void host_sched_main_wait_end(int kind, int64_t t0)
++{
++    if (!t0 || kind < 0 || kind >= HS_WAIT_KINDS) return;
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    if (kind != HS_WAIT_FLIP) {           /* only inside the game part (release -> flip request) */
++        const int64_t r = InterlockedCompareExchange64(&s_release_qpc, 0, 0);
++        if (!r) return;
++        if (t0 < r) t0 = r;
++    }
++    if (q.QuadPart > t0) InterlockedExchangeAdd64(&s_main_wait[kind], q.QuadPart - t0);
++}
++void host_sched_main_released(void)
++{
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    InterlockedExchange64(&s_release_qpc, q.QuadPart);
++}
++void host_sched_main_flip_requested(void) { InterlockedExchange64(&s_release_qpc, 0); }
++void host_sched_main_waits(int64_t out[HS_WAIT_KINDS])
++{
++    for (int i = 0; i < HS_WAIT_KINDS; i++) out[i] = InterlockedCompareExchange64(&s_main_wait[i], 0, 0);
++}
++int host_sched_main_cpu(uint64_t* t100ns)
++{
++    FILETIME c, e, k, u;
++    if (!s_main_thread || !GetThreadTimes(s_main_thread, &c, &e, &k, &u)) return 0;
++    *t100ns = (((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime) +
++              (((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime);
++    return 1;
++}
++void host_sched_gcm_handler(int enter) { t_in_gcm_handler += enter ? 1 : -1; }
++int  host_sched_in_gcm_handler(void) { return t_in_gcm_handler > 0; }
++int  host_sched_gpu_integrated(void) { return s_gpu_integrated; }
++
++/* PDH, loaded on first use (no link dependency): the processors' real clock. */
++typedef LONG (WINAPI *pfn_PdhOpenQueryW)(LPCWSTR, DWORD_PTR, HANDLE*);
++typedef LONG (WINAPI *pfn_PdhAddEnglishCounterW)(HANDLE, LPCWSTR, DWORD_PTR, HANDLE*);
++typedef LONG (WINAPI *pfn_PdhCollectQueryData)(HANDLE);
++typedef struct { DWORD CStatus; DWORD pad; double doubleValue; } hs_pdh_value;
++typedef LONG (WINAPI *pfn_PdhGetFormattedCounterValue)(HANDLE, DWORD, LPDWORD, hs_pdh_value*);
++int host_sched_clock_text(char* buf, int len)
++{
++    static int state = -1;            /* -1 untried, 0 unavailable, 1 first sample taken, 2 ready */
++    static HANDLE q, c_perf, c_freq;
++    static pfn_PdhCollectQueryData collect;
++    static pfn_PdhGetFormattedCounterValue value;
++    if (!buf || len <= 0) return 0;
++    buf[0] = 0;
++    if (state < 0) {
++        state = 0;
++        const char* e = getenv("PS3_CLOCK_SAMPLE");
++        if (e && *e == '0') return 0;
++        HMODULE m = LoadLibraryA("pdh.dll");
++        if (!m) return 0;
++        pfn_PdhOpenQueryW open = (pfn_PdhOpenQueryW)(void*)GetProcAddress(m, "PdhOpenQueryW");
++        pfn_PdhAddEnglishCounterW add = (pfn_PdhAddEnglishCounterW)(void*)GetProcAddress(m, "PdhAddEnglishCounterW");
++        collect = (pfn_PdhCollectQueryData)(void*)GetProcAddress(m, "PdhCollectQueryData");
++        value = (pfn_PdhGetFormattedCounterValue)(void*)GetProcAddress(m, "PdhGetFormattedCounterValue");
++        if (!open || !add || !collect || !value || open(NULL, 0, &q) != 0) return 0;
++        if (add(q, L"\\Processor Information(_Total)\\% Processor Performance", 0, &c_perf) != 0 ||
++            add(q, L"\\Processor Information(_Total)\\Processor Frequency", 0, &c_freq) != 0)
++            return 0;
++        collect(q);
++        state = 1;
++        return 0;
++    }
++    if (state == 0) return 0;
++    if (collect(q) != 0) return 0;
++    hs_pdh_value vp, vf;
++    if (value(c_perf, 0x200 /* PDH_FMT_DOUBLE */, NULL, &vp) != 0 || vp.CStatus > 1 ||
++        value(c_freq, 0x200, NULL, &vf) != 0 || vf.CStatus > 1 || vf.doubleValue <= 0)
++        return 0;
++    snprintf(buf, (size_t)len, "processors at %.2f GHz on average (%.0f %% of their %.2f)",
++             vp.doubleValue * vf.doubleValue / 100000.0, vp.doubleValue, vf.doubleValue / 1000.0);
++    return 1;
++}
++
+ /* The renderer's adapter (rsx_live_draw.c, after the device exists): integrated
+  * graphics turn power saving on in auto mode -- an APU shares one power budget
+  * between its CPU and GPU cores. */
+ void host_sched_note_gpu(int integrated, const char* name)
+ {
++    s_gpu_integrated = integrated ? 1 : 0;
+     if (s_lap < 0) hs_lap_init();
+     if (!integrated || s_lap || s_lap_cfg != 2) return;
+     snprintf(s_lap_why, sizeof s_lap_why, "integrated graphics (%s) share the processor's power budget",
+diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
+index 31b7a69..2aca3c2 100644
+--- a/runtime/platform/host_sched.h
++++ b/runtime/platform/host_sched.h
+@@ -148,6 +148,46 @@ int64_t host_sched_qpc(void);
+  * the previous call (GetSystemTimes / GetProcessTimes); 0 on the first call. */
+ int host_sched_load_text(char* buf, int len);
+ 
++/* ---- the game's main thread: its waits and its processor time (patch 0063) ----
++ * A frame's game part (vblank release -> flip request) is the guest's main
++ * thread. [slow-frames] splits it into running and waiting, and the waits by
++ * what they wait for:
++ *   HS_WAIT_RSX   something the renderer signals: a semaphore last posted
++ *                 from a GCM handler (the user command / flip / vblank
++ *                 handler runs when the walker reaches it), or a sleep while
++ *                 the walker still has commands of this frame to translate
++ *                 (a label or fence poll)
++ *   HS_WAIT_GAME  the game's other threads (lwmutex, lwcond, mutex, cond,
++ *                 event queues, semaphores, plain sleeps): skinning jobs, the
++ *                 draw request manager, loaders
++ *   HS_WAIT_FLIP  the wait for the flip itself (after the flip request; not
++ *                 part of the game part)
++ * A blocking call brackets its wait with host_sched_main_wait_begin() /
++ * host_sched_main_wait_end(kind, t0): one thread-local test on other threads. */
++enum { HS_WAIT_RSX = 0, HS_WAIT_GAME, HS_WAIT_FLIP, HS_WAIT_KINDS };
++int64_t host_sched_main_wait_begin(void);
++void    host_sched_main_wait_end(int kind, int64_t t0);
++/* Only the part of a wait inside the game part counts (the rollback netcode
++ * polls the flip with plain usleeps after its flip request): the ticker marks
++ * the release, the main thread its flip request. */
++void    host_sched_main_released(void);
++void    host_sched_main_flip_requested(void);
++void    host_sched_main_waits(int64_t out[HS_WAIT_KINDS]);   /* totals, QPC ticks */
++/* The main thread's processor time (user + kernel, 100 ns units); 0 = unknown. */
++int     host_sched_main_cpu(uint64_t* t100ns);
++/* GCM handler delivery (cellGcmSys.c ppu_gcm_pump): a semaphore posted inside
++ * is one the renderer signals. */
++void    host_sched_gcm_handler(int enter);
++int     host_sched_in_gcm_handler(void);
++/* Set by cellGcmSys: 1 while the FIFO walker has commands it has not walked. */
++extern int (*volatile g_host_sched_rsx_busy)(void);
++/* The renderer's adapter is integrated graphics (host_sched_note_gpu); -1 = not known yet. */
++int     host_sched_gpu_integrated(void);
++/* "processors at 3.42 GHz on average (76 % of their 4.50)" since the previous
++ * call (PDH "% Processor Performance": the real clock, turbo and power limits
++ * included -- on an APU it drops while the GPU is busy); 0 when unavailable. */
++int     host_sched_clock_text(char* buf, int len);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index e8db428..b555dea 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -441,8 +441,25 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+  * waiting for GPU fences or the frame-latency queue), or the present (the
+  * present call itself: a display path through another GPU, a compositor).
+  * The vblank clock's rate is in the line too: above 60 Hz the game would run
+- * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines. */
++ * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines.
++ *
++ * Patch 0063 adds (docs/RENDER_PERF.md "4K on integrated graphics"):
++ *   ...; game part 14.1 ms on average: main thread running 13.5, waiting
++ *   for the renderer 0.0, for other game threads 0.6 (its processor time
++ *   12.9 ms a frame);
++ *   GPU busy 17.2 ms a frame (62 % of the time, integrated graphics); ...;
++ *   processors at 3.42 GHz on average (76 % of their 4.50) | ... | verdict
++ * -- the game part split by the main thread's own waits (host_sched.h
++ * HS_WAIT_*: what the renderer signals counts as GPU for a slow frame), the
++ * GPU's own time per frame (timestamps), the processors' real clock, and a
++ * verdict the launcher and the problem report read: "GPU-bound: ..." (GPU
++ * busy >= 85 % of the time, or most slow frames GPU), or on integrated
++ * graphics busy >= 50 % "integrated graphics busy N % of the time: ..." (one
++ * memory and one power budget: a busy GPU slows the game's own CPU work, the
++ * long "game" part of the 780M report -- not a wait). A present that blocked
++ * while the GPU was >= 85 % busy is a GPU frame too (DXGI's queue was full). */
+ extern "C" void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks);
++extern "C" double rsx_live_draw_gpu_ms(void);
+ extern "C" volatile long long g_rsx_pf[];
+ extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
+ enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
+@@ -455,6 +472,14 @@ struct SlowFrames {
+     long long gpu0 = 0, pres0 = 0;
+     unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
+     unsigned n_late = 0;   /* patch 0059: frames released at once after missing their vblank */
++    /* patch 0063: the game part split (the main thread's waits and processor
++     * time, host_sched.h), how busy the GPU is (timestamps), the waits the
++     * GPU caused wherever they happened */
++    int64_t mw0[HS_WAIT_KINDS] = {0}, mw_prev_rsx = 0;
++    uint64_t mcpu0 = 0; int mcpu_ok = 0;
++    double gpu_ms0 = -1, game_sum = 0, gpu_ema = 0, gpu_ema_t = 0, gpu_ema_ms = -1;
++    unsigned n_gpart = 0;
++    unsigned n_gpu_rsx = 0, n_gpu_queue = 0;
+     double worst = 0; const char* worst_why = "";
+     float c_game[CAP], c_xlat[CAP], c_gpu[CAP], c_pres[CAP];
+     double t_window = 0;
+@@ -485,7 +510,32 @@ struct SlowFrames {
+         const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
+         const double iv = t_prev > 0 ? (t1 - t_prev) * ms : 0.0;
+         t_prev = t1;
+-        if (t_window <= 0) { t_window = t1; ticks = 0; }   /* the boot's ticks are not this window's */
++        /* patch 0063: the main thread's waits for the renderer in this frame
++         * (a semaphore a GCM handler posts, a label/fence poll): GPU-dependent
++         * time inside the game part */
++        int64_t mw[HS_WAIT_KINDS];
++        host_sched_main_waits(mw);
++        const double rsx_wait = (double)(mw[HS_WAIT_RSX] - mw_prev_rsx) * ms;
++        mw_prev_rsx = mw[HS_WAIT_RSX];
++        /* how busy the GPU was over the last ~half second (timestamps) */
++        const double gms = rsx_live_draw_gpu_ms();
++        if (gms >= 0) {
++            if (gpu_ema_ms >= 0 && t1 > gpu_ema_t) {
++                const double frac = (gms - gpu_ema_ms) / ((t1 - gpu_ema_t) * ms);
++                if ((t1 - gpu_ema_t) * ms >= 100.0) {
++                    gpu_ema = gpu_ema * 0.7 + (frac < 0 ? 0 : frac > 1.5 ? 1.5 : frac) * 0.3;
++                    gpu_ema_ms = gms; gpu_ema_t = t1;
++                }
++            } else { gpu_ema_ms = gms; gpu_ema_t = t1; }
++        }
++        if (t_window <= 0) {   /* the boot's ticks are not this window's */
++            t_window = t1; ticks = 0;
++            for (int k = 0; k < HS_WAIT_KINDS; k++) mw0[k] = mw[k];
++            mcpu_ok = host_sched_main_cpu(&mcpu0);
++            gpu_ms0 = gms;
++            game_sum = 0; n_gpart = 0;
++        }
++        if (game > 0 && game < 1000.0) { game_sum += game; n_gpart++; }
+         if (frames < CAP) {
+             c_game[frames] = (float)game; c_xlat[frames] = (float)xlat;
+             c_gpu[frames] = (float)gpu; c_pres[frames] = (float)pres;
+@@ -495,7 +545,14 @@ struct SlowFrames {
+         if (iv > 1.25 * per_ms && iv < 1000.0) {
+             slow++;
+             const char* why;
++            /* patch 0063: GPU = the CPU waited for the GPU for 30 % of the frame
++             * or more -- for a fence (renderer), inside the game part for
++             * something the renderer signals (rsx_wait), or in a present that
++             * blocked because the GPU still had the frames before it queued
++             * (GPU busy >= 85 % of the time) */
+             if (gpu >= 0.3 * iv)                    { n_gpu++;  why = "GPU"; }
++            else if (gpu + rsx_wait >= 0.3 * iv)    { n_gpu++;  n_gpu_rsx++; why = "GPU"; }
++            else if (pres >= 4.0 && gpu_ema >= 0.85) { n_gpu++; n_gpu_queue++; why = "GPU"; }
+             else if (pres >= 4.0)                   { n_pres++; why = "present"; }
+             else if (late_release * ms > 2.0)       { n_tick++; why = "CPU, vblank thread late"; }
+             else if (game >= xlat)                  { n_game++; why = "CPU, game"; }
+@@ -512,16 +569,58 @@ struct SlowFrames {
+          * frames that missed their vblank but were released when translated (PS3_LATE_FLIP) */
+         char ld[96] = "";
+         host_sched_load_text(ld, sizeof ld);
++        /* patch 0063: the game part split, the GPU's busy time, the processors' real clock */
++        char split[320] = "", gpu_txt[200] = "", clk[96] = "", verdict[320] = "";
++        {
++            int64_t mw[HS_WAIT_KINDS];
++            host_sched_main_waits(mw);
++            uint64_t mcpu = 0;
++            const int cpu_ok = mcpu_ok && host_sched_main_cpu(&mcpu);
++            const double fr = frames ? (double)frames : 1.0;
++            const double w_rsx = (double)(mw[HS_WAIT_RSX] - mw0[HS_WAIT_RSX]) * ms / fr;
++            const double w_game = (double)(mw[HS_WAIT_GAME] - mw0[HS_WAIT_GAME]) * ms / fr;
++            const double gp = n_gpart ? game_sum / n_gpart : 0.0;
++            if (gp > 0) {
++                const double run = gp - w_rsx - w_game > 0 ? gp - w_rsx - w_game : 0.0;
++                if (cpu_ok)
++                    snprintf(split, sizeof split, "; game part %.1f ms on average: main thread running %.1f, "
++                             "waiting for the renderer %.1f, for other game threads %.1f (its processor time "
++                             "%.1f ms a frame)", gp, run, w_rsx, w_game, (double)(mcpu - mcpu0) / 1e4 / fr);
++                else
++                    snprintf(split, sizeof split, "; game part %.1f ms on average: main thread running %.1f, "
++                             "waiting for the renderer %.1f, for other game threads %.1f", gp, run, w_rsx, w_game);
++            }
++            const double gms = rsx_live_draw_gpu_ms();
++            const double busy = gms >= 0 && gpu_ms0 >= 0 && span > 0 ? (gms - gpu_ms0) / (span * 1000.0) : -1.0;
++            const int igpu = host_sched_gpu_integrated() == 1;
++            if (busy >= 0)
++                snprintf(gpu_txt, sizeof gpu_txt, "; GPU busy %.1f ms a frame (%.0f %% of the time%s)",
++                         (gms - gpu_ms0) / fr, busy * 100.0, igpu ? ", integrated graphics" : "");
++            host_sched_clock_text(clk, sizeof clk);
++            const int slowish = slow * 10 >= frames && slow >= 10;
++            if (slowish && (busy >= 0.85 || n_gpu * 2 >= slow))
++                snprintf(verdict, sizeof verdict, " | GPU-bound: the graphics need %.1f ms a frame%s -- a lower "
++                         "Internal resolution is what helps", busy >= 0 ? (gms - gpu_ms0) / fr : 0.0,
++                         igpu ? " (integrated graphics)" : "");
++            else if (slowish && igpu && busy >= 0.5)
++                snprintf(verdict, sizeof verdict, " | integrated graphics busy %.0f %% of the time: they share the "
++                         "processor's power and memory, so a lower Internal resolution also speeds up the game's "
++                         "own work", busy * 100.0);
++            for (int k = 0; k < HS_WAIT_KINDS; k++) mw0[k] = mw[k];
++            mcpu0 = mcpu; mcpu_ok = cpu_ok;
++            gpu_ms0 = gms; game_sum = 0; n_gpart = 0;
++        }
+         fprintf(stderr, "[slow-frames] last %.0f s: %u frames, %u slow (over %.1f ms): CPU %u (game %u, render "
+                         "translation %u, vblank thread late %u), GPU %u, present %u; %u late for their vblank, "
+                         "shown when translated; median per frame: game %.1f ms, "
+-                        "translation %.1f, GPU wait %.1f, present %.1f; worst %.1f ms (%s); vblank clock %.2f Hz%s"
+-                        "%s%s | %s\n",
++                        "translation %.1f, GPU wait %.1f, present %.1f%s%s; worst %.1f ms (%s); vblank clock %.2f Hz%s"
++                        "%s%s%s%s | %s%s\n",
+                 span, frames, slow, 1.25 * per_ms, n_game + n_xlat + n_tick, n_game, n_xlat, n_tick, n_gpu, n_pres,
+-                n_late, median(c_game, n), median(c_xlat, n), median(c_gpu, n), median(c_pres, n), worst,
+-                slow ? worst_why : "-", (double)ticks / span, (double)ticks / span > 60.05 ? " (FASTER than 60)" : "",
+-                ld[0] ? "; " : "", ld, pw[0] ? pw : "power state unknown");
++                n_late, median(c_game, n), median(c_xlat, n), median(c_gpu, n), median(c_pres, n), split, gpu_txt,
++                worst, slow ? worst_why : "-", (double)ticks / span, (double)ticks / span > 60.05 ? " (FASTER than 60)" : "",
++                ld[0] ? "; " : "", ld, clk[0] ? "; " : "", clk, pw[0] ? pw : "power state unknown", verdict);
+         frames = slow = n_game = n_xlat = n_tick = n_gpu = n_pres = ticks = n_late = 0;
++        n_gpu_rsx = n_gpu_queue = 0;
+         worst = 0; worst_why = ""; t_window = t1;
+     }
+ };
+@@ -933,6 +1032,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                     const double due = (double)g_rsx_pf[PF_FLIP_QPC] > next_tick ? (double)g_rsx_pf[PF_FLIP_QPC] : next_tick;
+                     lock.on_release(now);
+                     s_slow.on_release(now, now > due ? now - due : 0.0);
++                    host_sched_main_released();   /* patch 0063: the game part's waits from here */
+                 }
+                 if (present_due) present_guest_frame();
+             }
+diff --git a/runtime/syscalls/sys_cond.c b/runtime/syscalls/sys_cond.c
+index 3661d02..23474a6 100644
+--- a/runtime/syscalls/sys_cond.c
++++ b/runtime/syscalls/sys_cond.c
+@@ -7,6 +7,7 @@
+  */
+ #include "sys_cond.h"
+ #include "../memory/vm.h"
++#include "../platform/host_sched.h"   /* patch 0063: the main thread's waits */
+ #include <string.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -157,6 +158,7 @@ int64_t sys_cond_wait(ppu_context* ctx)
+ 
+     int32_t result = CELL_OK;
+ #ifdef _WIN32
++    const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
+     ULONGLONG start = GetTickCount64();
+     uint64_t duration = (timeout + 999) / 1000;
+     while (!waiter.signalled) {
+@@ -172,6 +174,7 @@ int64_t sys_cond_wait(ppu_context* ctx)
+             result = (int32_t)CELL_EFAULT; break;
+         }
+     }
++    host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+ #else
+     struct timespec deadline;
+     if (timeout) {
+diff --git a/runtime/syscalls/sys_event.c b/runtime/syscalls/sys_event.c
+index bb3bb51..b002ac7 100644
+--- a/runtime/syscalls/sys_event.c
++++ b/runtime/syscalls/sys_event.c
+@@ -474,9 +474,11 @@ int64_t sys_event_queue_receive(ppu_context* ctx)
+ 
+     if (timeout_us == 0) {
+         if (q->count == 0) host_sched_trace_tid(HS_EV_EQ_RECV0, queue_id, (uint32_t)ctx->thread_id);
++        const int64_t mw0 = q->count == 0 ? host_sched_main_wait_begin() : 0;   /* patch 0063 */
+         while (q->count == 0 && q->active && !q->cancelled) {
+             SleepConditionVariableCS(&q->not_empty, &q->lock, INFINITE);
+         }
++        host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+         host_sched_trace_tid(HS_EV_EQ_RECV1, queue_id, (uint32_t)ctx->thread_id);
+         if (q->count == 0 && q->cancelled) {
+             LeaveCriticalSection(&q->lock);
+@@ -496,14 +498,17 @@ int64_t sys_event_queue_receive(ppu_context* ctx)
+         }
+     } else {
+         DWORD ms = (DWORD)(timeout_us / 1000);
++        const int64_t mw0 = q->count == 0 ? host_sched_main_wait_begin() : 0;   /* patch 0063 */
+         while (q->count == 0 && q->active && !q->cancelled) {
+             if (!SleepConditionVariableCS(&q->not_empty, &q->lock, ms)) {
+                 if (GetLastError() == ERROR_TIMEOUT) {
++                    host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+                     LeaveCriticalSection(&q->lock);
+                     return (int64_t)(int32_t)CELL_ETIMEDOUT;
+                 }
+             }
+         }
++        host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+     }
+ 
+     if (q->count == 0 && q->cancelled) {
+diff --git a/runtime/syscalls/sys_lwsync.c b/runtime/syscalls/sys_lwsync.c
+index d2b3d4a..cf9d9a8 100644
+--- a/runtime/syscalls/sys_lwsync.c
++++ b/runtime/syscalls/sys_lwsync.c
+@@ -123,10 +123,12 @@ static void awake(waiter* w)
+  * the caller dequeues the waiter if it is still queued. Returns 1 if woken. */
+ static int sleep_on(waiter* w, uint64_t timeout_us)
+ {
++    const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
+     if (!timeout_us) {
+         host_sched_trace_tid(HS_EV_LWC_WAIT0, 0, (uint32_t)w->tid);
+         while (!w->woken) SleepConditionVariableSRW(&w->cv, &s_lock, INFINITE, 0);
+         host_sched_trace_tid(HS_EV_LWC_WAIT1, 0, (uint32_t)w->tid);
++        host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+         return 1;
+     }
+     LARGE_INTEGER f, t0, t;
+@@ -135,10 +137,11 @@ static int sleep_on(waiter* w, uint64_t timeout_us)
+     while (!w->woken) {
+         QueryPerformanceCounter(&t);
+         const uint64_t el = (uint64_t)(t.QuadPart - t0.QuadPart) * 1000000ull / (uint64_t)f.QuadPart;
+-        if (el >= timeout_us) return 0;
++        if (el >= timeout_us) { host_sched_main_wait_end(HS_WAIT_GAME, mw0); return 0; }
+         const uint64_t ms = (timeout_us - el + 999) / 1000;
+         SleepConditionVariableSRW(&w->cv, &s_lock, (DWORD)(ms ? ms : 1), 0);
+     }
++    host_sched_main_wait_end(HS_WAIT_GAME, mw0);
+     return 1;
+ }
+ 
+diff --git a/runtime/syscalls/sys_mutex.c b/runtime/syscalls/sys_mutex.c
+index a8906eb..5f6ac69 100644
+--- a/runtime/syscalls/sys_mutex.c
++++ b/runtime/syscalls/sys_mutex.c
+@@ -4,6 +4,7 @@
+ 
+ #include "sys_mutex.h"
+ #include "../platform/darwin_compat.h"
++#include "../platform/host_sched.h"   /* patch 0063: the main thread's waits */
+ #include "sys_timer.h"   /* lv2_usec_deadline: sub-ms timed waits */
+ #include "../memory/vm.h"
+ #include <string.h>
+@@ -198,7 +199,11 @@ int64_t sys_mutex_lock(ppu_context* ctx)
+ #ifdef _WIN32
+     if (timeout_us == 0) {
+         /* Infinite wait */
+-        EnterCriticalSection(&m->cs);
++        if (!TryEnterCriticalSection(&m->cs)) {
++            const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
++            EnterCriticalSection(&m->cs);
++            host_sched_main_wait_end(HS_WAIT_GAME, mw0);
++        }
+     } else {
+         /* Timed lock via TryEnterCriticalSection to a QPC deadline. The old
+          * GetTickCount/Sleep(1) loop measured elapsed time in ~15.6 ms ticks
+diff --git a/runtime/syscalls/sys_semaphore.c b/runtime/syscalls/sys_semaphore.c
+index 143d96c..0d99e08 100644
+--- a/runtime/syscalls/sys_semaphore.c
++++ b/runtime/syscalls/sys_semaphore.c
+@@ -422,7 +422,9 @@ static int64_t sys_semaphore_wait_impl(ppu_context* ctx)
+ 
+         /* Bounded slices keep timed waits on the QPC deadline. */
+         DWORD ms = (timeout_us == 0) ? INFINITE : 1;
++        const int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
+         WaitForSingleObject(s->sem_handle, ms);
++        host_sched_main_wait_end(s->rsx_posted ? HS_WAIT_RSX : HS_WAIT_GAME, mw0);
+ 
+         EnterCriticalSection(&s->value_lock);
+         if (s->waiters > 0) s->waiters--;
+@@ -558,6 +560,7 @@ int64_t sys_semaphore_post(ppu_context* ctx)
+ 
+ #ifdef _WIN32
+     host_sched_trace_tid(HS_EV_SEM_POST, sem_id, (uint32_t)ctx->thread_id);
++    s->rsx_posted = host_sched_in_gcm_handler();   /* patch 0063 */
+     EnterCriticalSection(&s->value_lock);
+     if (s->value + count > s->max_value) {
+         if (getenv("PS3_SEMTRACE")) { static int _n=0; if(__atomic_fetch_add(&_n, 1, __ATOMIC_RELAXED)<6)
+diff --git a/runtime/syscalls/sys_semaphore.h b/runtime/syscalls/sys_semaphore.h
+index 38f7b65..de9a11d 100644
+--- a/runtime/syscalls/sys_semaphore.h
++++ b/runtime/syscalls/sys_semaphore.h
+@@ -34,6 +34,7 @@ typedef struct sys_semaphore_info {
+     int32_t  value;      /* current count; the single source of truth */
+     int32_t  max_value;
+     int32_t  waiters;    /* threads currently parked in wait() */
++    int32_t  rsx_posted; /* patch 0063: last posted from a GCM handler (the renderer's) */
+ 
+ #ifdef _WIN32
+     HANDLE   sem_handle;
+diff --git a/runtime/syscalls/sys_timer.c b/runtime/syscalls/sys_timer.c
+index e9ffc11..f721d13 100644
+--- a/runtime/syscalls/sys_timer.c
++++ b/runtime/syscalls/sys_timer.c
+@@ -215,6 +215,8 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+ 
+ #ifdef _WIN32
+     host_sched_trace_tid(HS_EV_USLEEP0, (uint32_t)usec, (uint32_t)ctx->thread_id);
++    int64_t mw0 = host_sched_main_wait_begin();   /* patch 0063 */
++    const int mw_kind = mw0 && g_host_sched_rsx_busy && g_host_sched_rsx_busy() ? HS_WAIT_RSX : HS_WAIT_GAME;
+     /* A cached high-resolution timer per thread (host_sched.c): exact to the
+      * due time whatever the timer resolution, and no kernel objects created
+      * per call. The block below is the fallback (PS3_SCHED=0 / _TIMER=0). */
+@@ -232,7 +234,9 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+             Sleep((DWORD)(usec / 1000));
+         }
+     } else if (usec > 0 && g_host_sched_usleep_hook && g_host_sched_usleep_hook(usec)) {
+-        /* taken over: the guest polls the flip status (cellGcmSys.c, patch 0047) */
++        /* taken over: the guest polls the flip status (cellGcmSys.c, patch 0047);
++         * that wait counts itself as HS_WAIT_FLIP */
++        mw0 = 0;
+     } else if (usec > 0) {
+         /* Sub-millisecond sleep. Sleep()/waitable timers round up to the
+          * ~0.5-1 ms scheduler quantum, far too coarse for a guest that relies
+@@ -254,6 +258,7 @@ int64_t sys_timer_usleep(ppu_context* ctx)
+         } while (qpc_now.QuadPart < qpc_deadline);
+         }
+     }
++    host_sched_main_wait_end(mw_kind, mw0);
+     host_sched_trace_tid(HS_EV_USLEEP1, (uint32_t)usec, (uint32_t)ctx->thread_id);
+ #else
+     if (usec > 0) {

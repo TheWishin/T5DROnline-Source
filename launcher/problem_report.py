@@ -11,6 +11,8 @@ What goes in (each part only when it exists):
   report.txt     what the player wrote in "What happened?"
   logs/          the newest game log(s) and the frame logs next to them
   build.log      when the build is the problem
+  compile/       with a failed build.log: the compiler's whole output of each file that failed in the last
+                 build (native\\build\\gamedll_obj\\*.log, tools/build_game_dll.py), the newest few
   launcher.log   the launcher's own log
   online/        the lobby/online files of the last match (result, status, fight line, control files)
   controls.ini   when there is one
@@ -622,6 +624,19 @@ def power_plan_info():
     return text
 
 
+def graphics_settings_info():
+    """Windows' Game Mode and hardware-accelerated GPU scheduling (HAGS), read only: two settings
+    players change when a game runs at 40-50 fps (docs/WEAK_PC.md). 'default' = never set by hand."""
+    wr = _winreg()
+    if wr is None:
+        return "?"
+    gm = _reg(r"Software\Microsoft\GameBar", "AutoGameModeEnabled", root=wr.HKEY_CURRENT_USER)
+    hags = _reg(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers", "HwSchMode")
+    gm_t = "default (on)" if gm is None else ("on" if gm else "off")
+    hags_t = "default (the driver's choice)" if hags is None else {1: "off", 2: "on"}.get(hags, str(hags))
+    return f"Game Mode {gm_t}; hardware-accelerated GPU scheduling {hags_t}"
+
+
 def power_source_info():
     """AC or battery, the charge, battery saver; 'desktop' when there is no battery."""
     if os.name != "nt":
@@ -739,13 +754,14 @@ def _gb(n):
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
                             r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
-                            r"power saving|on AC|on battery|power source)")
+                            r"power saving|on AC|on battery|power source|internal resolution|frames in flight)")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
-# late frames); the last few of each kind go into system.txt.
-GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches)")
+# late frames; online, the match's speed against this PC's own -- a slow opponent's PC makes both
+# games slow, docs/WEAK_PC.md); the last few of each kind go into system.txt.
+GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches|netplay\] speed:)")
 
 
-def facts_from_log(path, limit=12):
+def facts_from_log(path, limit=16):
     """The few start-up lines of a game log that say what the game found on this PC."""
     out = []
     try:
@@ -773,10 +789,52 @@ def run_lines_from_log(path, keep=4, limit=64 * 1024 * 1024):
                 m = GAME_LOG_RUN.match(line)
                 if m:
                     q = last.setdefault(m.group(0), collections.deque(maxlen=keep))
-                    q.append(line.rstrip()[:600])
+                    q.append(line.rstrip()[:1800])     # patch 0063 made [slow-frames] longer (split, GPU, verdict)
     except OSError:
         pass
     return [ln for q in last.values() for ln in q]
+
+
+# Patch 0063: what the [slow-frames] lines and the start-up facts say about speed, in one or two plain lines for
+# whoever reads the report (docs/RENDER_PERF.md "4K on integrated graphics").
+SLOW_VERDICT_GPU = re.compile(r"\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
+SLOW_VERDICT_IGPU = re.compile(r"\| integrated graphics busy ([0-9]+) % of the time")
+FACT_GPU = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?\b(integrated|dedicated)\)")
+FACT_RES = re.compile(r"^\[display\] internal resolution (.+?) \(([0-9.]+)x\)")
+
+
+def speed_diagnosis(run_lines, facts, screens=()):
+    """Plain lines: GPU-bound windows, integrated graphics slowing the processor, an internal resolution above the
+    screen on integrated graphics. [] when none applies."""
+    slow = [ln for ln in run_lines if ln.startswith("[slow-frames]")]
+    gpu = [SLOW_VERDICT_GPU.search(ln) for ln in slow]
+    igpu = [SLOW_VERDICT_IGPU.search(ln) for ln in slow]
+    out = []
+    n_gpu, n_igpu = sum(1 for m in gpu if m), sum(1 for m in igpu if m)
+    if n_gpu:
+        need = max(float(m.group(1)) for m in gpu if m)
+        out.append(f"GPU-bound in {n_gpu} of the last {len(slow)} [slow-frames] windows (the graphics needed up to "
+                   f"{need:.1f} ms a frame): a lower Internal resolution is what helps.")
+    if n_igpu:
+        busy = max(int(m.group(1)) for m in igpu if m)
+        out.append(f"Integrated graphics busy up to {busy} % of the time in {n_igpu} of the last {len(slow)} windows: "
+                   "they share the processor's memory and power, so the game's own work (the 'game' part) slows "
+                   "down too; a lower Internal resolution helps.")
+    integrated = res = None
+    for ln in facts:
+        m = FACT_GPU.match(ln)
+        if m:
+            integrated = m.group(2) == "integrated"
+        m = FACT_RES.match(ln)
+        if m:
+            res = (m.group(1), float(m.group(2)))
+    if integrated and res and screens:
+        w, h = max(screens)
+        if 1280 * res[1] > w + 8 or 720 * res[1] > h + 8:
+            better = "1080p" if w >= 1912 and h >= 1072 else "Native (720p)"
+            out.append(f"Internal resolution {res[0]} on integrated graphics with a {w} x {h} screen: the picture is "
+                       f"larger than the screen; {better} would match it.")
+    return out
 
 
 def system_text(ctx, now=None, game_log=None):
@@ -795,7 +853,8 @@ def system_text(ctx, now=None, game_log=None):
           f"Prebuilt runtime: {rel.get('prebuilt_host', '?')}",
           f"Source commit: {rel.get('commit') or '?'}   ps3recomp: {rel.get('ps3recomp', '?')}",
           f"Launcher Python: {platform.python_version()} ({platform.architecture()[0]})", ""]
-    L += ["== This PC ==", f"Windows: {windows_version()}", f"Processor: {cpu_info()}", f"Memory: {memory_info()}"]
+    L += ["== This PC ==", f"Windows: {windows_version()}", f"Processor: {cpu_info()}", f"Memory: {memory_info()}",
+          f"Windows graphics settings: {graphics_settings_info()}"]
     gpus = gpu_info()
     for g in gpus or [("?", "?", "?", None)]:
         L.append(f"Graphics: {g[0]}, driver {g[1]} ({g[2]})" + (f", {_gb(g[3])} video memory" if g[3] else ""))
@@ -829,6 +888,9 @@ def system_text(ctx, now=None, game_log=None):
         run = run_lines_from_log(game_log)
         if run:
             L += ["", f"== How the game ran ({os.path.basename(game_log)}) ==", *run]
+        diag = speed_diagnosis(run, facts or [], [(d["width"], d["height"]) for d in (display_info() or [])])
+        if diag:
+            L += ["", "== What the log says about speed ==", *diag]
     return "\n".join(L) + "\n"
 
 
@@ -1043,6 +1105,25 @@ def last_build_failed(out_dir):
     return not (m and m[-1] == "0")
 
 
+COMPILE_LOGS = 4                 # at most this many compiler outputs (one per failed file)
+
+
+def compile_logs(out_dir, n=COMPILE_LOGS):
+    """The compiler's whole output of each file that failed in the last build (tools/build_game_dll.py writes
+    native\\build\\gamedll_obj\\<file>.log and removes them when it starts), newest first. A log older than
+    the start of the last build (build.log's first line) belongs to an earlier one and stays out."""
+    logs = _newest(os.path.join(out_dir, "build", "gamedll_obj", "*.log"))
+    try:
+        with open(os.path.join(out_dir, "build.log"), encoding="utf-8", errors="replace") as f:
+            m = re.search(r"build log, (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", f.readline())
+        start = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() if m else None
+    except (OSError, ValueError):
+        start = None
+    if start is not None:
+        logs = [p for p in logs if os.path.getmtime(p) >= start - 5]
+    return logs[:n]
+
+
 def online_files(out_dir):
     """The files of the last online match: the newest match id's result/status/fight files, the
     reported results, the control channel's two files."""
@@ -1083,8 +1164,11 @@ def discover(ctx, note="", now=None):
     bl = os.path.join(out, "build.log")
     if os.path.isfile(bl):
         failed = ctx.build_problem if ctx.build_problem is not None else last_build_failed(out)
+        items = [Item("build.log", bl, limit=4 << 20)]
+        if failed:          # the compiler's own words: build.log shows only an excerpt of them
+            items += [Item("compile/" + os.path.basename(p), p, limit=512 << 10) for p in compile_logs(out)]
         groups.append(Group("build", "Build log" + ("" if failed else " (the last build went fine)"),
-                            [Item("build.log", bl, limit=4 << 20)], default_on=bool(failed)))
+                            items, default_on=bool(failed)))
     on = online_files(out)
     oitems = [Item("online/" + p[len(os.path.join(out, "logs", "online")) + 1:].replace("\\", "/"), p, limit=64 << 10)
               for p in on]

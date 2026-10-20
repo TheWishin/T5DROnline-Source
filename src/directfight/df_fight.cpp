@@ -69,7 +69,8 @@ extern "C" void t5_netplay_pause(void);
 /* replays (src/netplay/replay.cpp, docs/REPLAYS.md): this match's setup goes into the recording at FIGHT
  * START; a playback takes every match's line from the file and checks the setup against it */
 extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const int btn[2], const int model[2], int stage,
-                                      int rounds, int pick, const char* name1, const char* name2);
+                                      int rounds, int pick, const char* name1, const char* name2,
+                                      const unsigned char* costumes);
 extern "C" int  t5_replay_fight_line(unsigned match, char* buf, int size);
 
 namespace df {
@@ -305,6 +306,10 @@ bool g_pending_cmd = false;      /* a "fight" waiting to be set up (persistent g
 /* The match is played over netplay: always with T5_NET_MODE; in a persistent
  * game only while a session is set up. */
 bool session_netplay() { return netplay_on() && (!g_ctl || g_session); }
+
+/* custom costumes (df_costume.cpp): exchanged with the opponent in a netplay session, read from the file in a
+ * replay (nothing to exchange), from T5_COSTUME_SAVE(2) offline */
+CostumeMode costume_mode() { return g_replay ? CostumeMode::Replay : session_netplay() ? CostumeMode::Net : CostumeMode::Offline; }
 
 void write_text(const std::string& path, const std::string& text)
 {
@@ -579,6 +584,7 @@ void begin_select(uint32_t f)
         note("player %d: %s (id %d) -> cell %d, color %d", p + 1, kName[g_cfg.chr[p]], g_cfg.chr[p], c, g_cfg.color[p]);
     }
     note("stage %d, rounds %d", g_cfg.stage, g_cfg.rounds);
+    costume_session(f, costume_mode());
     /* (a replay: the recorded picks are driven like a lobby's; pick= stays for the pause between matches) */
     if (g_cfg.pick > 0 && !g_replay && pick_begin(f)) return;
     /* the same fighter as in the session's last fight keeps its costume (a
@@ -1494,6 +1500,13 @@ void fight_on_frame(uint32_t f)
          * (both players' records done), and the panel only writes the word. */
         if (g_cfg.stage >= 0 && rd32(kStageId) != (uint32_t)g_cfg.stage) wr32(kStageId, (uint32_t)g_cfg.stage);
         if (rd32(kSelectState) >= 4) break;                 /* stage confirmed, the mode switch follows */
+        /* custom costumes: no fight before the opponent's table is here (both PCs
+         * write both tables at the game mode's start; df_costume.cpp) */
+        if (!costume_ready(costume_mode())) {
+            costume_session(f, costume_mode());             /* (set already, or netplay was not up at the select) */
+            if ((f - g_ph_frame) % 300 == 0 && f > g_ph_frame) note("frame %u: waiting for the opponent's costume table", f);
+            break;
+        }
         if (f >= g_ph_frame + g_stage_wait && press_idle(0) && press_idle(1) && ((f - g_ph_frame - g_stage_wait) % 30) == 0) {
             for (int p = 0; p < 2; p++) if (drives(p)) press(p, B_CROSS, f);   /* confirm whatever stage the panel shows */
         }
@@ -1533,9 +1546,11 @@ void fight_on_frame(uint32_t f)
         note("frame %u: FIGHT START match %u%s%s: %s vs %s, stage %d (field 0x%X), rounds %u, game type %u",
              f, g_match, g_cfg.match.empty() ? "" : " id ", g_cfg.match.c_str(), kName[g_cfg.chr[0]], kName[g_cfg.chr[1]],
              g_cfg.stage, rd32(kStageId), rd8(kRoundsToWin), rd32(kConfig));
+        /* each player's custom costume, both sides, the same on both PCs (df_costume.cpp); a replay's from its file */
+        costume_apply(f, costume_mode(), g_match);
         /* the replay: what this match is (recording), or the check that it is the recorded one (playback) */
         t5_replay_fight_start(g_match, g_cfg.chr, g_cfg.btn, g_models, g_cfg.stage, g_cfg.rounds, g_cfg.pick,
-                              g_cfg.names[0].c_str(), g_cfg.names[1].c_str());
+                              g_cfg.names[0].c_str(), g_cfg.names[1].c_str(), costume_written());
         if (session_netplay()) { t5_netplay_start(); note("frame %u: t5_netplay_start() called (lockstep frame 0 is the next frame)", f); }
         set_phase(Ph::Fight, "fight", f);
         break;
@@ -1552,6 +1567,7 @@ void fight_on_frame(uint32_t f)
             /* only once lockstep runs: then inject() is this PC's exchanged input (before, it would be the
              * hooks' own override of the game's pad read, which the release below could not clear) */
             const bool intro = rd32(kSelectState) <= 12;
+            if (rd32(kSelectState) >= 11) costume_check(f);   /* once: the loading is over, the costumes the same */
             if (!g_held && session_netplay() && t5_netplay_lockstep_active() && intro != g_intro_hold) {
                 g_intro_hold = intro;
                 for (int p = 0; p < 2; p++) inject(p, intro, 0);

@@ -1214,6 +1214,15 @@ uint16_t replay_pad()
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
 }
 
+/* SELECT while a live stream's data is awaited */
+bool replay_quit_poll()
+{
+    const uint16_t b = replay_pad(), press = (uint16_t)(b & ~g_rp.prev);
+    g_rp.prev = b;
+    if (press & kPadSelect) g_rp.quit = true;
+    return g_rp.quit;
+}
+
 /* the frame semaphore's tokens, taken without waiting (they piled up during a pause) */
 void replay_take_tokens(ppu_context* ctx)
 {
@@ -1249,7 +1258,12 @@ int64_t replay_frame_wait(ppu_context* ctx)
         QueryPerformanceFrequency(&r.qf);
         np::note("replay: START pauses, SELECT ends the replay");
     }
-    if (!rp::play_frame(g_frame)) { replay_end("the replay is over"); return g_orig_wait(ctx); }
+    if (!rp::play_frame(g_frame)) { replay_end(rp::play_live() ? "the live match is over" : "the replay is over"); return g_orig_wait(ctx); }
+    if (rp::play_live()) {   /* spectating: the data for the next frames must be here (a short buffer) */
+        const int w = rp::play_live_wait(g_frame, replay_quit_poll);
+        if (w == 0) { replay_end("ended by the viewer (SELECT)"); return g_orig_wait(ctx); }
+        if (w == 2) replay_take_tokens(ctx);   /* no burst of frames after the wait */
+    }
     const uint16_t b = replay_pad(), press = (uint16_t)(b & ~r.prev);
     r.prev = b;
     if (press & kPadSelect) r.quit = true;

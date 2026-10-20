@@ -89,7 +89,7 @@ DEFAULTS = {
     "out": "",                 # empty: <package folder>/native
     "nickname": "",
     "display": "window",       # window | window1080 | window1440 | maximized | borderless
-    "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k, PS3_INTERNAL_RES
+    "internal_res": "native",  # internal resolution: lowest | lower | native | 1080p | 1440p | 4k | auto, PS3_INTERNAL_RES
     "vsync": "on",             # on | off (PS3_VSYNC=0): only how pictures reach the screen; the game stays at 60 fps
     "stage_blur": "on",        # on | off (PS3_STAGE_BLUR=0): the blur / glow some stages put on the picture
     "input_delay": "auto",     # online input delay: auto (by ping) | 0 | 1 | 2 frames, T5_RB_NET_DELAY
@@ -106,6 +106,8 @@ DEFAULTS = {
     "low_priority": False,     # build at below-normal priority: the PC stays responsive, the build is slower
     "replays": True,           # online matches are saved as replays in <out>/replays (T5_REPLAY_DIR, docs/REPLAYS.md)
     "replay_names": True,      # ... with the players' lobby names in them (off: T5_REPLAY_NAMES=0)
+    "spectators": True,        # online: friends and room visitors may watch this player's matches (docs/SPECTATE.md)
+    "spectators_ranked": False,  # ... the ranked ones too (both players must allow it)
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
@@ -183,8 +185,10 @@ class Settings(dict):
             env["PS3_INTERNAL_RES"] = self["internal_res"]
         if self["vsync"] == "off":
             env["PS3_VSYNC"] = "0"
-        if self["power_saving"] in ("on", "off"):       # auto: the game decides (PS3_LAPTOP unset)
-            env["PS3_LAPTOP"] = "1" if self["power_saving"] == "on" else "0"
+        # Auto goes to the game as PS3_LAPTOP=auto (the game decides): a PS3_LAPTOP left in Windows' environment
+        # must not overrule the choice made here (1.1.2: a player's logs said "PS3_LAPTOP=0" with Auto chosen).
+        # Extra settings still win over it (power_saving_override says so in Settings).
+        env["PS3_LAPTOP"] = {"on": "1", "off": "0"}.get(self["power_saving"], "auto")
         if self["stage_blur"] == "off":
             env["PS3_STAGE_BLUR"] = "0"
         if self["display"] == "borderless":
@@ -406,6 +410,12 @@ def _safe_cid(p):
 
 
 # --------------------------------------------------------------------------- build state
+
+def game_exe(out):
+    """The exact t5dr.exe GameRun starts for this build output (run_game.game_command): what a firewall rule
+    names (the Online tab's firewall hint, t5lobby.fwcheck)."""
+    return os.path.abspath(run_game.game_command(out)[0][0])
+
 
 def game_state(out):
     """What the Play tab shows: dict(built, ok, text, needs_rebuild, elf_sha1)."""
@@ -676,6 +686,20 @@ def backup_saves_once(out_dir, tag):
         return None
 
 
+COSTUME_ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE")
+
+
+def costume_env(out_dir, env_over):
+    """Custom costumes online (docs/DIRECTFIGHT.md "Custom costumes online"): a game started for netplay sends
+    its player's customization to the opponent -- the blocks of the player's own save (the system save the
+    game loads offline, <out>/gamedata/.../NPUB30009-SYSNET/SYS-DATA), read by the game itself. An online game
+    plays on a save of its own, so it is named here. T5_COSTUME_SAVE=0 in the extra environment sends none
+    (the opponent then sees the default costumes, as before 1.1.3)."""
+    if not any(env_over.get(k) for k in COSTUME_ONLINE_ENV) or "T5_COSTUME_SAVE" in env_over:
+        return
+    env_over["T5_COSTUME_SAVE"] = os.path.join(saves_dir(out_dir), "NPUB30009-SYSNET", "SYS-DATA")
+
+
 class GameRun:
     """The running game: its process, log file and the last fps line."""
 
@@ -702,6 +726,7 @@ class GameRun:
             env_over.setdefault("PS3_SAVEDATA_DIR", online_saves_env(self.out))
         elif env_over.get("T5_UNLOCK_ITEMS"):
             backup_saves_once(self.out, "free-items")
+        costume_env(self.out, env_over)
         cmd, env, cwd = run_game.game_command(self.out, env_over)
         if not os.path.exists(cmd[0]):
             raise FileNotFoundError(t("t5dr.exe is not built yet"))
@@ -786,8 +811,12 @@ INTERNAL_RES = {          # key: (English label, t(label) where it is shown; fac
     "1080p": (N_("1080p (1.5x)"), 1.5),
     "1440p": (N_("1440p (2x)"), 2.0),
     "4k": (N_("4K (3x)"), 3.0),
+    # Patch 0063: the game picks the step that matches its screen, at most 1080p on integrated graphics
+    # (PS3_INTERNAL_RES=auto). A choice next to the others; Native stays the default.
+    "auto": (N_("Auto (matches the screen)"), None),
 }
 INTERNAL_RES_LABELS = {k: v[0] for k, v in INTERNAL_RES.items()}
+INTERNAL_RES_STEPS = [k for k, v in INTERNAL_RES.items() if v[1]]     # the fixed steps (not auto)
 OLD_RENDER_SCALES = {"1": "native", "0.75": "lower", "0.5": "lowest"}
 
 # Short hint per step: what it costs, in pixels the graphics card draws relative to Native (what
@@ -805,6 +834,8 @@ INTERNAL_RES_HINTS = {   # English; t(hint) where it is shown
                 "If fights drop below 60 fps, go one step down."),
     "4k": N_("3840 x 2160: 9x the pixels of Native. For very strong graphics cards "
              "(an RTX 3090 needs 1-2 ms of a 16.7 ms frame). If fights drop below 60 fps, go one step down."),
+    "auto": N_("The game picks the step that matches your screen when it starts, at most 1080p on integrated "
+               "graphics (they share the processor's memory and power)."),
 }
 
 
@@ -928,9 +959,111 @@ def internal_res_for_screen(width, height):
     (a suggestion for the player; the game never picks it by itself)."""
     best = "native"
     for key, (_label, f) in INTERNAL_RES.items():
-        if f > 1.0 and 1280 * f <= width + 8 and 720 * f <= height + 8:
+        if f and f > 1.0 and 1280 * f <= width + 8 and 720 * f <= height + 8:
             best = key
     return best
+
+
+def internal_res_auto(width, height, integrated):
+    """The step PS3_INTERNAL_RES=auto picks (ps3recomp patch 0063): the one that matches the screen, at most
+    1080p on integrated graphics."""
+    step = internal_res_for_screen(width, height)
+    if integrated and INTERNAL_RES[step][1] > 1.5:
+        step = "1080p"
+    return step
+
+
+# The game log says which graphics chip the game rendered on ("[gpu] adapter: NAME (vendor ..., integrated)",
+# patch 0047); the launcher cannot ask the driver itself before the game runs.
+GPU_LINE = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?\b(integrated|dedicated)\)")
+
+
+def last_gpu(out_dir, logs=None):
+    """(adapter name, integrated) from the newest game log that names its graphics chip, or None."""
+    paths = logs if logs is not None else sorted(glob.glob(os.path.join(out_dir, "logs", "game-*.log")),
+                                                 reverse=True)[:5]
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for n, line in enumerate(f):
+                    if n > 3000:
+                        break
+                    m = GPU_LINE.match(line)
+                    if m:
+                        return m.group(1), m.group(2) == "integrated"
+        except OSError:
+            continue
+    return None
+
+
+def igpu_res_better(key, screen, integrated):
+    """Settings -> Internal resolution: on integrated graphics, a step whose picture is larger than the screen
+    costs the GPU work nobody sees and -- with one memory for processor and GPU -- slows the game's own work
+    too (docs/RENDER_PERF.md "4K on integrated graphics"). The step to suggest instead (the Settings tab says
+    "4K on integrated graphics: try 1080p for 60 fps"), or None."""
+    if not integrated or not screen or key not in INTERNAL_RES or not INTERNAL_RES[key][1]:
+        return None
+    f = INTERNAL_RES[key][1]
+    if 1280 * f <= screen[0] + 8 and 720 * f <= screen[1] + 8:
+        return None
+    return internal_res_auto(screen[0], screen[1], True)
+
+
+# [slow-frames] (ps3recomp patches 0047, 0059, 0063) ends with a verdict when a 30 s window was GPU-bound, or the
+# integrated graphics were busy enough to slow the processor as well.
+SLOW_GPU_BOUND = re.compile(r"^\[slow-frames\].*\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
+SLOW_IGPU_BUSY = re.compile(r"^\[slow-frames\].*\| integrated graphics busy ([0-9]+) % of the time")
+
+
+def speed_hint(lines):
+    """One sentence for the Play tab after a game, from its [slow-frames] lines: the graphics were the limit."""
+    gpu = igpu = 0
+    for line in lines:
+        if SLOW_GPU_BOUND.match(line):
+            gpu += 1
+        elif SLOW_IGPU_BUSY.match(line):
+            igpu += 1
+    if gpu:
+        return t("Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower "
+                 "Internal resolution in Settings.")
+    if igpu:
+        return t("Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor "
+                 "too. A lower Internal resolution in Settings helps.")
+    return None
+
+
+def slow_frame_lines(path, limit=64 * 1024 * 1024):
+    """The [slow-frames] lines of a game log."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            read = 0
+            for line in f:
+                read += len(line)
+                if read > limit:
+                    break
+                if line.startswith("[slow-frames]"):
+                    out.append(line.rstrip())
+    except OSError:
+        pass
+    return out
+
+
+# Settings a line of Extra settings overrides (env_overrides applies them last).
+SETTING_ENV = {"power_saving": "PS3_LAPTOP", "internal_res": "PS3_INTERNAL_RES", "vsync": "PS3_VSYNC",
+               "stage_blur": "PS3_STAGE_BLUR"}
+
+
+def extra_env_override(settings, key):
+    """'NAME=VALUE' when Extra settings set the variable the setting `key` controls, else None."""
+    name = SETTING_ENV.get(key)
+    for line in (settings.get("extra_env") or "").splitlines():
+        line = line.strip()
+        if name and line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            if k.strip() == name:
+                return f"{name}={v.strip()}"
+    return None
 
 
 def screen_size(point=None):

@@ -40,6 +40,8 @@
  *                   pressed for that many frames (default 6), then emptied.
  *   T5_NET_SCRIPT2  local mode only: scripted input for P2.
  *   T5_NET_LOG      per-frame log file: frame, both inputs, state hash.
+ *   T5_NET_TEST_INBOUND  tests only: stateful | block -- Windows Firewall blocking t5dr.exe,
+ *                   emulated on the session's socket (test_inbound_pass below)
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -56,6 +58,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -74,8 +77,11 @@ constexpr uint32_t kMagic    = 0x504E3554u;   /* "T5NP" little-endian */
  * authentication tag, PING and REJECT exist. A v1 peer is a different build.
  * v3 (latency branch): PING carries a time stamp and the echo of the peer's
  * (round-trip time), PING and INPUT carry the rollback input delay the host
- * picked for the match, HELLO the sender's input delay setting (auto/0/1/2). */
-constexpr uint8_t  kVersion  = 3;
+ * picked for the match, HELLO the sender's input delay setting (auto/0/1/2).
+ * v4 (costumes-online): COSTUME -- each player's custom costume table, sent at
+ * the start of the session; a v3 game would never send one (and the stage
+ * confirm waits for it), so it is a different build. */
+constexpr uint8_t  kVersion  = 4;
 constexpr uint32_t kRing     = 1024;          /* frames of history kept */
 constexpr uint32_t kMaxBatch = 64;            /* inputs per packet */
 constexpr uint32_t kHashes   = 8;             /* recent hashes per packet */
@@ -89,8 +95,10 @@ constexpr int      kMaxDelay = 30;            /* input delay frames, at most (T5
  * scene changes. BYE: leaving. PING: keepalive with the sender's progress.
  * REJECT: "I am in another session / a different build" (fail fast).
  * PICK: the character a player picked on the game's own select screen
- * (in-game select, docs/DIRECTFIGHT.md "Character select in the game"). */
-enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6 };
+ * (in-game select, docs/DIRECTFIGHT.md "Character select in the game").
+ * COSTUME: a piece of the sender's custom costume table and how much of the
+ * receiver's it holds (docs/DIRECTFIGHT.md "Custom costumes online"). */
+enum : uint8_t { PKT_HELLO = 1, PKT_INPUT = 2, PKT_BYE = 3, PKT_PING = 4, PKT_REJECT = 5, PKT_PICK = 6, PKT_COSTUME = 7 };
 enum : uint8_t { REJ_BUILD = 1, REJ_SESSION = 2 };
 
 #pragma pack(push, 1)
@@ -115,6 +123,12 @@ struct RejectExt { uint8_t why; };
  * pick: the sender's pick (0 = none yet; packed by the direct-fight code); ack: the
  * key of the peer's pick the sender holds -- the peer stops resending there */
 struct PickExt  { uint32_t key; uint32_t pick; uint32_t ack; };
+/* COSTUME: hash/total describe the sender's whole table (FNV-1a 32, bytes); offset/len the
+ * piece that follows (len 0: an acknowledgement only); ack_mask the pieces of the receiver's
+ * table the sender holds, ack_hash that table's hash once the sender has all of it (else 0). */
+struct CostumeExt { uint32_t hash; uint16_t total; uint16_t offset; uint16_t len; uint16_t ack_mask; uint32_t ack_hash; };
+constexpr uint32_t kCostumeMax   = 10240;   /* a table, at most (src/directfight/costume_logic.h: 9,283) */
+constexpr uint32_t kCostumeChunk = 1024;    /* a piece: at most 10, one bit each in ack_mask */
 constexpr uint32_t kHelloRollback = 1u;
 constexpr int      kRbAuto = 0xFF;    /* T5_RB_NET_DELAY=auto: the input delay follows the measured round trip */
 #pragma pack(pop)
@@ -232,6 +246,21 @@ struct Session {
     uint32_t peer_pick_key = 0, peer_pick_val = 0;
     int pick_acks_owed = 0;
     ULONGLONG pick_sent_ms = 0;
+    /* Custom costumes: this player's table (sent in pieces every 100 ms until
+     * the peer confirms all of it with its hash) and the peer's (put together,
+     * taken once its hash is right). Read by the direct-fight code. */
+    std::vector<uint8_t> cos_local;
+    bool cos_local_set = false;
+    uint32_t cos_local_hash = 0;
+    uint16_t cos_acked = 0;            /* pieces of ours the peer holds */
+    bool cos_peer_has_ours = false;    /* ... all of them, hash checked */
+    std::vector<uint8_t> cos_peer;
+    uint32_t cos_peer_hash = 0;
+    uint16_t cos_peer_total = 0, cos_peer_mask = 0;
+    bool cos_peer_done = false;
+    int cos_acks_owed = 0;
+    uint32_t cos_next = 0;
+    ULONGLONG cos_sent_ms = 0;
 
     int connect_timeout_s = 60;        /* T5_NET_CONNECT_TIMEOUT: handshake deadline from init (0 = none) */
     int start_timeout_s = 120;         /* T5_NET_START_TIMEOUT: wait for a live peer to reach the match start */
@@ -290,6 +319,7 @@ struct State : Session {
     std::once_flag once;
     std::mutex mu;                     /* guards the session fields and the socket */
     std::atomic<SOCKET> sock{ INVALID_SOCKET };   /* closed and replaced between sessions (rx_thread follows) */
+    std::atomic<uint64_t> rx_datagrams{ 0 };      /* datagrams the session's socket got, valid or not (no_peer's line) */
     bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
     /* T5_NET_LOCAL_LAG=n (local mode, tests: tools/rb_equiv_test.py --lag): the
      * second player's input of frame t is known only from the live boundary
@@ -486,6 +516,73 @@ bool same_addr(const sockaddr_in& a, const sockaddr_in& b)
     return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
 }
 
+/* T5_NET_TEST_INBOUND (tests only; docs/NETPLAY.md "When Windows Firewall blocks the game"): Windows
+ * Firewall emulated on this socket, so a blocked t5dr.exe can be tested without touching the real one.
+ *   stateful  a datagram from an address:port this socket has not sent anything to is dropped. That is
+ *             what Windows does for a program it blocks (Cancel on its question, or a block rule): the
+ *             program's own packets go out, and only the replies to them get in (UDP flows are stateful).
+ *   block     every datagram not from 127.0.0.1 is dropped, replies too (stricter than Windows: a firewall
+ *             that blocks the program completely; the launcher's relay bridge on 127.0.0.1 still gets
+ *             through). Local tests put their "internet" on other loopback addresses (natsim 127.x.y.1,
+ *             the e2e shaper 127.0.0.2).
+ * Read when a session's socket opens (a persistent game: for every opponent); the drops are counted (the
+ * session's end line) and the first ones from each address are logged. */
+struct TestInbound {
+    std::mutex mu;
+    SOCKET sock = INVALID_SOCKET;      /* the socket this state belongs to: a new session's socket starts empty */
+    int mode = 0;                      /* 0 off, 1 stateful, 2 block */
+    std::set<uint64_t> sent;           /* address:port this socket sent to */
+    std::set<uint64_t> logged;         /* sources whose drop was logged */
+    uint64_t dropped = 0;
+};
+TestInbound& TI() { static TestInbound t; return t; }
+
+uint64_t ti_key(const sockaddr_in& a) { return ((uint64_t)a.sin_addr.s_addr << 16) | a.sin_port; }
+
+void test_inbound_open(SOCKET sk)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    t.sock = sk; t.sent.clear(); t.logged.clear(); t.dropped = 0; t.mode = 0;
+    const char* v = env("T5_NET_TEST_INBOUND");
+    if (!v || !_stricmp(v, "off") || !strcmp(v, "0")) return;
+    if (!_stricmp(v, "stateful")) t.mode = 1;
+    else if (!_stricmp(v, "block")) t.mode = 2;
+    else { note("T5_NET_TEST_INBOUND=%s: expected stateful or block -- ignored", v); return; }
+    note("TEST: inbound firewall emulated (%s): %s", v, t.mode == 1
+         ? "only replies to this socket's own packets get in (Windows Firewall blocking t5dr.exe)"
+         : "nothing but 127.0.0.1 gets in");
+}
+
+void test_inbound_sent(SOCKET sk, const sockaddr_in& to)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    if (t.mode == 1 && sk == t.sock) t.sent.insert(ti_key(to));
+}
+
+/* false: the emulated firewall drops this datagram (it never reaches the netplay) */
+bool test_inbound_pass(SOCKET sk, const sockaddr_in& from)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    if (t.mode == 0 || sk != t.sock) return true;
+    const bool ok = t.mode == 1 ? t.sent.count(ti_key(from)) != 0 : from.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    if (ok) return true;
+    t.dropped++;
+    if (t.logged.size() < 8 && t.logged.insert(ti_key(from)).second)
+        note("TEST: inbound firewall dropped a packet from %s (%s)", addr_str(from).c_str(),
+             t.mode == 1 ? "this socket never sent there" : "not 127.0.0.1");
+    return false;
+}
+
+uint64_t test_inbound_dropped()
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    return t.dropped;
+}
+
 /* Send to `to` (default: the peer). Appends the authentication tag when keyed. */
 void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
 {
@@ -509,7 +606,9 @@ void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
         memcpy(buf + n, &t, kTag);
         n += kTag;
     }
-    sendto(s.sock, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
+    const SOCKET sk = s.sock.load();
+    test_inbound_sent(sk, *to);
+    sendto(sk, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
     s.packets_out++;
 }
 void send_raw(const void* p, int n) { send_to(p, n); }
@@ -551,6 +650,95 @@ void send_pick_locked()
     struct { Hdr h; PickExt x; } p = { make_hdr(PKT_PICK), { s.pick_key, s.pick_val, s.peer_pick_key } };
     send_raw(&p, sizeof p);
     s.pick_sent_ms = GetTickCount64();
+}
+
+/* Custom costumes: FNV-1a 32 of a table; the pieces a table of n bytes has. */
+uint32_t cos_hash(const uint8_t* p, size_t n)
+{
+    uint32_t h = 0x811C9DC5u;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x01000193u; }
+    return h;
+}
+uint32_t cos_pieces(uint32_t n) { return n ? (n + kCostumeChunk - 1) / kCostumeChunk : 0; }
+
+/* Piece `k` of our table (k < 0: no data, the acknowledgement of the peer's alone). */
+void send_costume_locked(int k)
+{
+    State& s = S();
+    struct { Hdr h; CostumeExt x; uint8_t data[kCostumeChunk]; } p;
+    p.h = make_hdr(PKT_COSTUME);
+    const uint32_t total = s.cos_local_set ? (uint32_t)s.cos_local.size() : 0;
+    uint32_t off = 0, len = 0;
+    if (k >= 0 && (uint32_t)k < cos_pieces(total)) {
+        off = (uint32_t)k * kCostumeChunk;
+        len = std::min<uint32_t>(kCostumeChunk, total - off);
+        memcpy(p.data, s.cos_local.data() + off, len);
+    }
+    p.x = { s.cos_local_set ? s.cos_local_hash : 0u, (uint16_t)total, (uint16_t)off, (uint16_t)len, s.cos_peer_mask,
+            s.cos_peer_done ? s.cos_peer_hash : 0u };
+    send_raw(&p, (int)(sizeof p.h + sizeof p.x + len));
+    s.cos_sent_ms = GetTickCount64();
+}
+
+/* Every 100 ms while connected: up to three pieces the peer does not hold yet,
+ * else an acknowledgement still owed. */
+void costume_tick_locked(ULONGLONG now)
+{
+    State& s = S();
+    if (now - s.cos_sent_ms < 100) return;
+    if (s.cos_local_set && !s.cos_peer_has_ours) {
+        const uint32_t np_ = cos_pieces((uint32_t)s.cos_local.size());
+        int sent = 0;
+        for (uint32_t i = 0; i < np_ && sent < 3; i++) {
+            const uint32_t k = (s.cos_next + i) % np_;
+            if ((s.cos_acked >> k) & 1) continue;
+            send_costume_locked((int)k);
+            sent++;
+            s.cos_next = k + 1;
+        }
+        if (!sent) send_costume_locked(0);   /* every piece acknowledged but not the whole: the peer started over */
+        if (s.cos_acks_owed > 0) s.cos_acks_owed--;
+    } else if (s.cos_acks_owed > 0) {
+        s.cos_acks_owed--;
+        send_costume_locked(-1);
+    }
+}
+
+/* A COSTUME packet from the peer (session and nonce checked). */
+void costume_rx_locked(const CostumeExt& x, const uint8_t* data, int avail)
+{
+    State& s = S();
+    if (s.cos_local_set) {
+        if (x.ack_hash && x.ack_hash == s.cos_local_hash) {
+            if (!s.cos_peer_has_ours) note("the opponent has this player's costume table (%u bytes)", (unsigned)s.cos_local.size());
+            s.cos_peer_has_ours = true;
+        } else if (!s.cos_peer_has_ours) {
+            s.cos_acked = x.ack_mask;
+        }
+    }
+    if (x.len == 0) return;                                  /* an acknowledgement only */
+    const uint32_t total = x.total, off = x.offset, len = x.len;
+    if (total == 0 || total > kCostumeMax || off % kCostumeChunk || off >= total ||
+        len != std::min<uint32_t>(kCostumeChunk, total - off) || (int)len > avail)
+        return;                                              /* not a piece of a table */
+    s.cos_acks_owed = 3;
+    if (s.cos_peer_done) return;                             /* ours already; the ack goes out with the next packets */
+    if (x.hash != s.cos_peer_hash || total != s.cos_peer_total || s.cos_peer.size() != total) {
+        s.cos_peer.assign(total, 0);                         /* another table (the first, or the peer's game restarted) */
+        s.cos_peer_hash = x.hash; s.cos_peer_total = (uint16_t)total; s.cos_peer_mask = 0;
+    }
+    memcpy(s.cos_peer.data() + off, data, len);
+    s.cos_peer_mask |= (uint16_t)(1u << (off / kCostumeChunk));
+    const uint32_t all = (1u << cos_pieces(total)) - 1;
+    if (s.cos_peer_mask == all) {
+        if (cos_hash(s.cos_peer.data(), total) == s.cos_peer_hash) {
+            s.cos_peer_done = true;
+            note("the opponent's costume table is here (%u bytes, hash %08X)", total, s.cos_peer_hash);
+        } else {
+            note("the opponent's costume table did not match its hash -- asking for it again");
+            s.cos_peer_mask = 0;
+        }
+    }
 }
 
 /* The round trip so far: the median of the PING echo samples, else the
@@ -751,6 +939,13 @@ void connect_locked()
     s.last_rx_ms = GetTickCount64();
     note("connected (%s), delay %d, peer %s%s", s.mode == Mode::Host ? "host, P1" : "join, P2", s.delay,
          addr_str(s.peer).c_str(), s.keyed ? ", packets authenticated" : "");
+    if (rp::recording()) {
+        /* the live stream's SESSION (spectators): what frame 0 will record (t5_hooks rec_start) -- the host's
+         * seed and delay, rollback when both offer it (rb_net.cpp enabled(): offered, negotiated, from frame <= 1) */
+        uint32_t rb_start = 0;
+        if (const char* v = getenv("T5_RB_NET_START")) rb_start = (uint32_t)atoi(!strncmp(v, "frame:", 6) ? v + 6 : v);
+        rp::rec_session_known(s.seed ? s.seed : s.session, s.rb_offer && s.rb_peer && rb_start <= 1, s.delay);
+    }
     SetEvent(s.rx_event);
 }
 
@@ -783,6 +978,8 @@ void forget_peer_locked()
     s.peer_ack = 0;
     s.peer_started = false;
     s.rb_peer = false;
+    s.cos_acked = 0; s.cos_peer_has_ours = false;           /* a new process: our table again, its own anew */
+    s.cos_peer.clear(); s.cos_peer_hash = 0; s.cos_peer_total = 0; s.cos_peer_mask = 0; s.cos_peer_done = false;
 }
 
 /* A HELLO in another netplay protocol version ends the handshake (build_mismatch) only when it
@@ -1013,6 +1210,14 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
         SetEvent(s.rx_event);
         return;
     }
+    if (h->type == PKT_COSTUME) {
+        if (n >= (int)(sizeof(Hdr) + sizeof(CostumeExt))) {
+            CostumeExt x; memcpy(&x, h + 1, sizeof x);
+            costume_rx_locked(x, p + sizeof(Hdr) + sizeof(CostumeExt), n - (int)(sizeof(Hdr) + sizeof(CostumeExt)));
+        }
+        SetEvent(s.rx_event);
+        return;
+    }
     if (h->type != PKT_INPUT) return;
     if (n < (int)(sizeof(Hdr) + sizeof(InputHdr))) return;
     const InputHdr* ih = (const InputHdr*)(h + 1);
@@ -1056,7 +1261,11 @@ DWORD WINAPI rx_thread(LPVOID)
         sockaddr_in from{}; int fl = sizeof from;
         int n = recvfrom(sk, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
         if (n > 0) {
-            if (sk == s.sock.load()) handle_packet(buf, n, from);   /* not a late packet of a closed session */
+            if (!test_inbound_pass(sk, from)) continue;          /* T5_NET_TEST_INBOUND: the "firewall" took it */
+            if (sk == s.sock.load()) {                           /* not a late packet of a closed session */
+                s.rx_datagrams++;
+                handle_packet(buf, n, from);
+            }
             continue;
         }
         if (n == SOCKET_ERROR) {
@@ -1096,12 +1305,20 @@ DWORD WINAPI tick_thread(LPVOID)
                 if ((s.mode == Mode::Join || s.peer_known) && now - s.last_hello_ms >= 100) send_hello_locked();
                 if (now - s.last_wait_note >= 5000) {
                     s.last_wait_note = now;
+                    /* "nothing arrived yet": not one datagram on this port -- after a while on a path the lobby
+                     * found working, the launcher moves the match onto the relay (match_driver _watch_direct) */
                     if (now - s.init_ms >= 4000)
-                        note("waiting for the opponent's game to answer (%llus)...", (now - s.init_ms) / 1000);
+                        note("waiting for the opponent's game to answer (%llus, %s)...", (now - s.init_ms) / 1000,
+                             s.rx_datagrams.load() ? "packets arrive" : "nothing arrived yet");
                 }
-                if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000)
-                    fail_locked("no_peer", "no answer from the opponent's game within %d s (%s)", s.connect_timeout_s,
-                                s.peer_known ? addr_str(s.peer).c_str() : "its address is not known");
+                if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000) {
+                    /* "nothing arrived": not one datagram on this port, from anybody -- the opponent's packets
+                     * were dropped before the game (a firewall blocking t5dr.exe completely), or it never sent */
+                    const uint64_t got = s.rx_datagrams.load();
+                    fail_locked("no_peer", "no answer from the opponent's game within %d s (%s; %s)", s.connect_timeout_s,
+                                s.peer_known ? addr_str(s.peer).c_str() : "its address is not known",
+                                got ? "packets arrived, none completed the handshake" : "nothing arrived");
+                }
             } else {
                 if (now - s.last_send_ms >= kPingMs) {
                     /* (while the main thread holds a frame for its loaders it sends
@@ -1114,6 +1331,7 @@ DWORD WINAPI tick_thread(LPVOID)
                     if (s.pick_acks_owed > 0) s.pick_acks_owed--;
                     send_pick_locked();
                 }
+                costume_tick_locked(now);
                 if (s.timeout_s > 0 && now - s.last_rx_ms >= (ULONGLONG)s.timeout_s * 1000)
                     lose_locked("peer_timeout", "nothing from the opponent's game for %d s", s.timeout_s);
             }
@@ -1285,6 +1503,8 @@ void configure()
     }
     { sockaddr_in got{}; int len = sizeof got;
       if (getsockname(sk, (sockaddr*)&got, &len) == 0) port = ntohs(got.sin_port); }
+    s.rx_datagrams = 0;
+    test_inbound_open(sk);
     s.sock = sk;
     if (s.mode == Mode::Join) {
         const char* peer = env("T5_NET_PEER");
@@ -1420,14 +1640,18 @@ uint32_t scene_barrier(uint32_t f)
     init();
     State& s = S();
     uint32_t k;
+    bool replay;
     {
         std::lock_guard<std::mutex> lk(s.mu);
         k = s.nbar++;
         s.local_bar[k % kBarriers] = f + 1;
-        if (s.replay) return rp::play_barrier(k, f);   /* where the recorded session went on */
-        if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
-        send_inputs_locked();
+        replay = s.replay;
+        if (!replay) {
+            if (s.mode == Mode::Local || s.mode == Mode::Off || s.peer_lost) return f;
+            send_inputs_locked();
+        }
     }
+    if (replay) return rp::play_barrier(k, f);   /* where the recorded session went on (live: it may wait for it, unlocked) */
     ULONGLONG t0 = GetTickCount64(), last_note = t0;
     StallClock stall(t0);   /* (the time the peer says it waits for its loaders is not a stall) */
     uint32_t peer_f = f;
@@ -1997,6 +2221,31 @@ bool pick_peer(uint32_t key, uint32_t* val)
 void set_script_gate(bool on) { g_script_gate = on; }
 void set_no_start(bool on) { g_no_start = on; }
 
+/* Custom costumes: this player's table for the session (once; later calls change nothing). */
+void costume_set(const uint8_t* p, size_t n)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (s.cos_local_set || s.mode == Mode::Off) return;
+    if (n > kCostumeMax) n = 0;
+    s.cos_local.assign(p, p + n);
+    s.cos_local_hash = cos_hash(s.cos_local.data(), s.cos_local.size());
+    s.cos_local_set = true;
+    s.cos_acked = 0; s.cos_next = 0;
+    if (s.connected && !s.peer_lost) send_costume_locked(0);
+}
+bool costume_local_set() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.cos_local_set; }
+/* The peer's table, once all of it is here: copied to out (when cap allows), its size in *n. */
+bool costume_peer(uint8_t* out, size_t cap, size_t* n)
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.cos_peer_done) return false;
+    if (n) *n = s.cos_peer.size();
+    if (out && cap >= s.cos_peer.size()) memcpy(out, s.cos_peer.data(), s.cos_peer.size());
+    return true;
+}
+
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
 
 void session_end(const char* why)
@@ -2012,6 +2261,8 @@ void session_end(const char* why)
     rp::rec_session_end(why);
     note("session %u ends (%s): %llu packets in, %llu out, %u mismatching frame(s)", s.sessions, why ? why : "",
          (unsigned long long)s.packets_in, (unsigned long long)s.packets_out, s.mismatches);
+    if (const uint64_t dropped = test_inbound_dropped())
+        note("TEST: the emulated inbound firewall dropped %llu datagram(s) in this session", (unsigned long long)dropped);
     const SOCKET sk = s.sock.exchange(INVALID_SOCKET);
     if (sk != INVALID_SOCKET) closesocket(sk);         /* frees the UDP port for the launcher's next punch */
     static const Session kFresh{};
@@ -2036,6 +2287,24 @@ bool session_begin()
 uint32_t sessions() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.sessions; }
 
 bool replaying() { return S().replay; }
+
+/* Spectating (replay.cpp live_load): the game started before the players' handshake, so configure() set up
+ * the playback without the session; its parameters now, before the first fight's select screen. A
+ * lockstep session takes back the rollback offer the game made at its start (play_rollback() said
+ * rollback while it was unknown). */
+void replay_session_known()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.replay) return;
+    s.slot = rp::play_slot();
+    s.delay = rp::play_delay();
+    s.seed = rp::play_session_seed();
+    s.session = rp::play_match_seed();
+    if (!rp::play_rollback()) s.rb_offer = false;
+    note("replay: the live session: playing back as P%d, delay %d, %s", s.slot + 1, s.delay,
+         rp::play_rollback() ? "rollback" : "lockstep");
+}
 uint32_t barriers() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.nbar; }
 void rec_pump() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); rec_pump_locked(); }
 
@@ -2063,3 +2332,14 @@ extern "C" const char* t5_env(const char* key)
 extern "C" void t5_netplay_pick_send(unsigned key, unsigned pick) { np::pick_set(key, pick); }
 extern "C" int  t5_netplay_pick_peer(unsigned key, unsigned* pick) { return np::pick_peer(key, pick) ? 1 : 0; }
 extern "C" int  t5_netplay_connected(void) { return np::connected() ? 1 : 0; }
+
+/* Custom costumes (src/directfight/df_costume.cpp) */
+extern "C" void t5_netplay_costume_set(const unsigned char* p, unsigned n) { np::costume_set(p, n); }
+extern "C" int  t5_netplay_costume_local_set(void) { return np::costume_local_set() ? 1 : 0; }
+extern "C" int  t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n)
+{
+    size_t m = 0;
+    if (!np::costume_peer(out, cap, &m)) return 0;
+    if (n) *n = (unsigned)m;
+    return 1;
+}

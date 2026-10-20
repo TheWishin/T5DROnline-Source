@@ -239,9 +239,10 @@ class Proxy:
     def __init__(self, shaper, a_port, b_port):
         self.shaper = shaper
         self.real = {"a": ("127.0.0.1", a_port), "b": ("127.0.0.1", b_port)}
-        self.sa = self._sock()
-        self.sb = self._sock()
-        self.sr = self._sock()          # shaper.replay: copies of real packets come from here (another address)
+        self.ip = shaper.ip                  # where the stand-ins live (127.0.0.2: "not this PC" for the firewall tests)
+        self.sa = self._sock(self.ip)
+        self.sb = self._sock(self.ip)
+        self.sr = self._sock(self.ip)        # shaper.replay: copies of real packets come from here (another address)
         self.ports = {a_port: self.sa.getsockname()[1], b_port: self.sb.getsockname()[1]}
         self.queue = []
         self.seq = 0
@@ -252,9 +253,9 @@ class Proxy:
         self.thread.start()
 
     @staticmethod
-    def _sock():
+    def _sock(ip="127.0.0.1"):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.bind(("127.0.0.1", 0))
+        s.bind((ip, 0))
         if IS_WIN:
             try:
                 s.ioctl(socket.SIO_UDP_CONNRESET, False)
@@ -476,9 +477,16 @@ class Shaper:
         self.replay = 0                 # every n-th packet also played back from another address (0: off)
         self.proxies = {}
         self.build_override = {}     # player name -> T5_NET_BUILD to hand that player's game (mismatch tests)
+        # The proxy's own address: what the games see as the opponent's. 127.0.0.2 for the firewall cases --
+        # T5_NET_TEST_INBOUND=block lets in nothing but 127.0.0.1 (the relay bridge), as if the opponent were on
+        # another PC (every address of 127/8 is this PC; the games bind 127.0.0.1 and still reach it).
+        self.ip = "127.0.0.1"
 
-    def set(self, rtt=0.0, jitter=0.0, loss=0.0, on=True):
+    def set(self, rtt=0.0, jitter=0.0, loss=0.0, on=True, ip="127.0.0.1"):
         self.on, self.rtt, self.jitter, self.loss, self.cut = on, float(rtt), float(jitter), float(loss), False
+        if ip != self.ip:
+            self.close()             # (the next session gets a proxy on the new address)
+            self.ip = ip
 
     def describe(self):
         if not self.on:
@@ -500,7 +508,7 @@ class Shaper:
         if px is None:
             px = self.proxies[key] = Proxy(self, key[0], key[1])
             log(f"shaper: proxy for ports {key[0]}<->{key[1]}: {self.describe()}")
-        env["T5_NET_PEER"] = f"127.0.0.1:{px.stand_in(pport)}"
+        env["T5_NET_PEER"] = f"{px.ip}:{px.stand_in(pport)}"
         env["T5_NET_RTT_MS"] = f"{self.rtt:.1f}"
         env["T5_NET_DELAY"] = str(proto.suggest_delay(self.rtt, self.jitter))
         return env
@@ -657,6 +665,9 @@ class Player:
         self.statuses = []        # (time, status text)
         self.matches = {}         # match id -> what this player saw of it
         self.app = E2EApp(self)
+        # Windows Firewall blocking this player's game / launcher, emulated (T5_NET_TEST_INBOUND, set_firewall())
+        self.fw_game = None
+        self.fw_launcher = None
         self.mash_gap = mash_gap
         self.start_every = start_every     # mash scripts with START about every n-th input (no pause online, 1.1.2)
         self.devices = bool(devices)
@@ -801,6 +812,8 @@ class Player:
                     kw = {"start_every": me.start_every} if me.start_every else {}
                     env["T5_NET_SCRIPT"] = fight_flow_test.mash_script(
                         os.path.join(me.dir, f"mash-{ev.get('match')}.txt"), seed, gap=me.mash_gap, **kw)
+                if me.fw_game:
+                    env["T5_NET_TEST_INBOUND"] = me.fw_game      # (a session without it: the firewall is off again)
                 return me.ctx.shaper.rewrite(me, env)
             d.match_env = match_env
         tab._make_driver = make_driver
@@ -813,7 +826,16 @@ class Player:
         if stage and self.kind == "real" and ev.get("t") == "match_start" and isinstance(ev.get("fight"), dict)                 and ev["fight"].get("stage") != stage:
             ev["fight"] = dict(ev["fight"], stage=stage, lobby_stage=ev["fight"].get("stage"))
 
+    def set_firewall(self, game=None, launcher=None):
+        """Windows Firewall blocking this player's game and/or launcher, emulated from the next match on:
+        "stateful" (only replies get in: Windows for a blocked program) / "block" (nothing but 127.0.0.1) / None."""
+        self.fw_game, self.fw_launcher = game, launcher
+        if self.tab.client is not None and hasattr(self.tab.client, "test_inbound"):
+            self.tab.client.test_inbound = launcher or ""
+
     def client_made(self, c):
+        if self.fw_launcher is not None and hasattr(c, "test_inbound"):
+            c.test_inbound = self.fw_launcher       # (else T5_NET_TEST_INBOUND of the run's environment, if any)
         if self.ctx.block_direct.get(self.name):
             c.block_direct = True
         routes = self.ctx.relay_routes.get(self.name)

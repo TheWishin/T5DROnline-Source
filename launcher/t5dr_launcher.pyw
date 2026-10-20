@@ -477,7 +477,8 @@ class App(tk.Tk):
         self.stop_btn = ttk.Button(row, text=t("Stop game"), command=self.stop_game, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
         self.run_var = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.run_var, style="H2.TLabel").pack(anchor="w", pady=(14, 4))
+        ttk.Label(box, textvariable=self.run_var, style="H2.TLabel", wraplength=820, justify="left").pack(
+            anchor="w", pady=(14, 4))   # wraps: an exit reason or the speed note (patch 0063) is a sentence
         links = ttk.Frame(box)
         links.pack(anchor="w", pady=(4, 0))
         ttk.Button(links, text=t("Open newest game log"), command=self.open_game_log).pack(side="left")
@@ -588,7 +589,7 @@ class App(tk.Tk):
         self.env_text = tk.Text(other, height=3, width=44, font=("Consolas", 9))
         self.env_text.insert("1.0", self.settings["extra_env"])
         self.env_text.pack(anchor="w", fill="x")
-        self.env_text.bind("<FocusOut>", lambda _e: self.save_settings())
+        self.env_text.bind("<FocusOut>", lambda _e: (self.save_settings(), self._power_saving_changed(save=False)))
 
         # One "Internal resolution" like an emulator's (PS3_INTERNAL_RES, docs/RENDER_PERF.md
         # "Internal resolution"): below Native for weak graphics cards, above for big screens.
@@ -597,7 +598,7 @@ class App(tk.Tk):
         self.internal_res_var = tk.StringVar(value=self.settings["internal_res"]
                                              if self.settings["internal_res"] in core.INTERNAL_RES else "native")
         keys = list(core.INTERNAL_RES)
-        for part in (keys[:3], keys[3:]):
+        for part in (keys[:3], keys[3:6], keys[6:]):      # Lowest..Native / 1080p..4K / Auto
             row = ttk.Frame(gfx)
             row.pack(anchor="w")
             for key in part:
@@ -641,6 +642,21 @@ class App(tk.Tk):
             ttk.Label(dc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
                 "\"In lobby\", \"Searching ranked\" or your match (fighters, ranked set score) with a timer, through "
                 "the Discord app on this PC. Without Discord running nothing happens.")).pack(anchor="w", pady=(2, 0))
+
+        # Spectators (docs/SPECTATE.md): who may watch this player's online matches, live, a few seconds late
+        spc = ttk.LabelFrame(right, text="  " + t("Spectators") + "  ", padding=(12, 6))
+        spc.pack(fill="x", pady=(6, 0))
+        self.spectators_var = tk.BooleanVar(value=bool(self.settings.get("spectators", True)))
+        self.spectators_ranked_var = tk.BooleanVar(value=bool(self.settings.get("spectators_ranked", False)))
+        ttk.Checkbutton(spc, text=t("Friends and room visitors may watch my online matches"),
+                        variable=self.spectators_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(spc, text=t("Also my ranked matches"), variable=self.spectators_ranked_var,
+                        style=self.wrap_style("TCheckbutton", 440), command=self.save_settings).pack(anchor="w",
+                                                                                                    pady=(4, 0))
+        ttk.Label(spc, style="Muted.TLabel", wraplength=300, justify="left", text=t(
+            "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
+            "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
 
         # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
         # never changes the save for them. An online game answers as a fresh save does, on both PCs.
@@ -1004,6 +1020,10 @@ class App(tk.Tk):
     def game_state(self):
         return getattr(self, "_game_state", {"ok": False, "text": ""})
 
+    def game_exe(self):
+        """The t5dr.exe start_game() runs (the Online tab's firewall hint checks the rules for exactly this path)."""
+        return core.game_exe(self.settings.out_dir)
+
     def refresh_game_state(self):
         def work():
             st = core.game_state(self.settings.out_dir)
@@ -1040,10 +1060,18 @@ class App(tk.Tk):
         key = self.internal_res_var.get()
         text = t(core.INTERNAL_RES_HINTS.get(key, ""))
         size = core.screen_size(core.window_center(self._hwnd()))
+        gpu = core.last_gpu(self.settings.out_dir)      # (name, integrated) from the last game log, or None
         if size:
             match = core.internal_res_for_screen(*size)
             text += "\n" + t("Your screen: {width} x {height}. In fullscreen, {step} matches it.",
                              width=size[0], height=size[1], step=t(core.INTERNAL_RES[match][0]))
+            if key == "auto" and gpu:
+                text += "\n" + t("On this PC: {step}.", step=t(core.INTERNAL_RES[core.internal_res_auto(
+                    size[0], size[1], gpu[1])][0]))
+            better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
+            if better:
+                text += "\n" + t("{step} on integrated graphics: try {better} for 60 fps.",
+                                 step=t(core.INTERNAL_RES[key][0]), better=t(core.INTERNAL_RES[better][0]))
         self.internal_res_hint.configure(text=text)
         if save:
             self.save_settings()
@@ -1072,6 +1100,9 @@ class App(tk.Tk):
 
     def _power_saving_changed(self, save=True):
         _on, text = self.power_saving_text()
+        over = core.extra_env_override(self.settings, "power_saving")
+        if over:      # Extra settings are applied last: they decide, whatever is chosen here
+            text += "\n" + t("Extra settings below set {setting}: that wins over this choice.", setting=over)
         self.power_hint.configure(text=t(
             "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, "
             "so the game holds 60 fps longer. The game itself is the same, online too.") + "\n" + text)
@@ -1097,6 +1128,9 @@ class App(tk.Tk):
             self.settings["router_ports"] = bool(self.router_ports_var.get())
         if hasattr(self, "discord_var"):
             self.settings["discord_presence"] = bool(self.discord_var.get())
+        if hasattr(self, "spectators_var"):
+            self.settings["spectators"] = bool(self.spectators_var.get())
+            self.settings["spectators_ranked"] = bool(self.spectators_ranked_var.get())
         self.settings["mute"] = bool(self.mute_var.get())
         self.settings["background"] = bool(self.bg_var.get())
         self.settings["extra_env"] = self.env_text.get("1.0", "end").strip()
@@ -1215,9 +1249,13 @@ class App(tk.Tk):
             elif self._run_shown:
                 self._run_shown = False
                 why = core.explain_exit(self.game.proc.returncode, self.game.last_lines)
+                # patch 0063: the game log's [slow-frames] verdicts -- the graphics were the limit
+                speed = core.speed_hint(core.slow_frame_lines(self.game.log_path)) if self.game.log_path else None
                 core.log(f"game ended: exit code {self.game.proc.returncode}" + (", explained to the player"
-                                                                               if why else ""))
-                self.run_var.set((why + " " + t("Click Report a problem.")) if why else t("The game closed."))
+                                                                               if why else "")
+                         + (", speed hint shown" if speed else ""))
+                self.run_var.set((why + " " + t("Click Report a problem.")) if why else
+                                 (t("The game closed.") + (" " + speed if speed else "")))
                 self._update_play_buttons()
         self.after(150, self._tick)
 

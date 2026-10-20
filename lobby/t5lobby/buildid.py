@@ -16,7 +16,8 @@ import json
 import os
 from dataclasses import dataclass, field
 
-NETPLAY_VERSION = 3    # src/netplay kVersion; raise together with it (3: round trip + rollback input delay in PING/INPUT)
+NETPLAY_VERSION = 4    # src/netplay kVersion; raise together with it (3: round trip + rollback input delay in PING/INPUT;
+                       # 4: COSTUME, each player's custom costume table at the start of a session)
 
 
 def sha1_file(path, chunk=1 << 20):

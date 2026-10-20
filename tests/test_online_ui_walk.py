@@ -34,6 +34,7 @@ for p in (LOBBY, os.path.join(LOBBY, "tests")):          # appended: lobby/run.p
     if p not in sys.path:
         sys.path.append(p)
 os.environ["T5_PAD_NAV"] = "0"                   # never this PC's controllers
+os.environ["T5_FW_CHECK"] = "0"                  # never this PC's firewall (the hint's check: test_firewall.py)
 
 try:
     import tkinter as tk
@@ -452,6 +453,7 @@ class OnlineUiWalk(unittest.TestCase):
 
         # a room, a challenge, a game that closed without a result
         tab.actions["room"].invoke()
+        tab.rooms_ui.window.create_button.invoke()           # (Create room's window: an open room for two)
         self.pump(lambda: self.status_of("kaze") == "room", 10, "room")
         self.shot("in_own_room")
         lee.auto_ready = False

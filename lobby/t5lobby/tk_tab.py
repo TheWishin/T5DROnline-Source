@@ -34,10 +34,20 @@ Discord Rich Presence (optional, launcher Settings, off by default): t5lobby.dis
 "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer in the player's Discord status,
 through the Discord app on this PC; without Discord running it does nothing.
 
+Firewall hint (docs/TROUBLESHOOTING.md "The firewall blocks the game"): a read-only look at Windows Firewall's rules
+for the exact t5dr.exe the launcher starts and for the launcher itself (t5lobby.fwcheck, on a worker thread when the tab
+is shown and after matches), and what matches showed (this PC's UDP never reached the lobby server, or a game on the
+direct path heard nothing at all from its opponent), put one short line with "How to fix" (the TROUBLESHOOTING
+section on the web) under the tab. Nothing is ever changed and no administrator rights are asked for.
+
 Ranked sets (docs/RANKED.md "Ranked sets"): a ranked set is best of 3 and rated once at its end. One label
 shows where it stands ("Set 1-0 -- game 2 of 3", t5lobby.sets.status_text); between two games the bar
 counts down to the next game (it starts by itself) and offers "Leave set" (a loss); the set's result and
 its one rating change come with set_end (t5lobby.sets.result_text).
+
+Tournaments (docs/TOURNAMENTS.md, tk_tour.py): a Tournaments page (list, sign-up, check-in, the bracket, the
+organizer's buttons) and the card "Your tournament set is ready" with Accept (A); the set itself plays like a set
+above.
 
     python -m t5lobby.tk_tab --server 127.0.0.1:7781     # standalone window, stub game (testing)
 """
@@ -51,13 +61,13 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
-from . import discord_rpc, fighters, lag, padmap, padnav, proto, ranks, servers, sets
+from . import discord_rpc, fighters, fwcheck, lag, padmap, padnav, proto, ranks, servers, sets
 from .buildid import BuildInfo
 from .client import LobbyClient
 from .i18n import N_, stamp, t, translate_message
 from .match_driver import MatchDriver, fps_from_logs, game_supports_pick
 from .proto import DEFAULT_PORT, LobbyError
-from . import theme, tk_views, winfront
+from . import theme, tk_rooms, tk_spectate, tk_tour, tk_views, winfront
 from .ranks import record_label as _record
 
 AVAILABLE = True
@@ -86,7 +96,8 @@ CANCEL_TEXT = {"declined": N_("Match declined."), "ready_timeout": N_("Nobody ac
                "opponent_left": N_("Your opponent left."),
                "udp_unreachable": N_("No UDP connection to the lobby server (firewall?)."),
                "no_connection": N_("Could not connect the two PCs, not even through the relay."),
-               "relay_full": N_("The lobby server's relay is full; try again in a moment.")}
+               "relay_full": N_("The lobby server's relay is full; try again in a moment."),
+               "organizer": N_("The organizer decided the set.")}
 CHALLENGE_TEXT = {"declined": N_("Challenge declined."), "cancelled": N_("Challenge cancelled."),
                   "expired": N_("Challenge expired.")}
 # A friend's state in the Friends list: the lobby status when online (STATUS_TEXT), else these.
@@ -101,6 +112,10 @@ PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B 
 # for what was there before -- A for a search, a menu -- must not answer a challenge or an invite that popped up in
 # the same moment (security review 2: a challenger or a friend could time one against a player using the pad).
 BAR_ARM_S = 0.4
+# The firewall hint's "How to fix": the TROUBLESHOOTING section in the public repository (tools/make_public_repo.py
+# copies docs/TROUBLESHOOTING.md there; the release zip has the same file under docs\).
+FW_HELP_URL = "https://github.com/TheWishin/T5DROnline/blob/main/TROUBLESHOOTING.md#the-firewall-blocks-the-game"
+FW_CHECK_GAP_S = 30.0   # the firewall's rules are read again at most this often (tab shown, a match ended)
 
 
 def _word(table, key):
@@ -122,6 +137,15 @@ def _work(results, key, fn, args):
         results.put((key, False, lobby_error_text(e)))
     except Exception as e:   # noqa: BLE001 -- shown to the player, not swallowed
         results.put((key, False, t("Lobby error: {error}", error=e)))
+
+
+def _fw_work(q, check, exe):
+    """Worker thread body for OnlineTab.check_firewall (a module function: it must not reference the tab)."""
+    try:
+        st = check(exe)
+    except Exception as e:      # noqa: BLE001 -- a hint must never break the tab
+        st = fwcheck.Status("unknown", detail=f"{type(e).__name__}: {e}")
+    q.put(st)
 
 
 def online_dir():
@@ -209,7 +233,17 @@ class OnlineTab:
         self.bar_spec = []               # (button, text, controller button) of the bar's buttons
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
+        self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
+        self.rooms_ui = tk_rooms.RoomsUI(self)     # private and community rooms (docs/ONLINE.md "Rooms")
         self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
+        self.tours = tk_tour.TourController(self)    # tournaments: the page, the calls (docs/TOURNAMENTS.md)
+        self.fw_check = fwcheck.check    # the read-only firewall check (tests replace it)
+        self.fw_status = None            # fwcheck.Status of the last check (None: not checked yet)
+        self.fw_seen = None              # what a match showed: "udp" (no UDP to the server) / "no_peer" (nothing arrived)
+        self.fw_dismissed = ""           # the hint text the player dismissed (a new text shows again)
+        self.fw_q = queue.Queue()        # results of the worker thread
+        self._fw_busy = False
+        self._fw_checked = -1e9
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -284,6 +318,7 @@ class OnlineTab:
         self.prof_text = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.notice_var = tk.StringVar(value="")          # a message from the server's admin, until it ends
+        self.fw_hint_var = tk.StringVar(value="")         # the firewall hint (empty: hidden)
         # controller: A / Cross accepts, B / Circle declines (padnav.py, docs/ONLINE.md)
         self.pad_var = tk.IntVar(value=1 if self.cfg.get("pad", True) else 0)
         self.pad_info_var = tk.StringVar(value="")
@@ -313,8 +348,10 @@ class OnlineTab:
             "leave": me and st == "room" and not busy,
             "challenge": me and st in ("idle", "queue") and not busy,
         }
+        on.update(self.rooms_ui.set_actions(me, st, busy))
         for k, b in self.actions.items():
-            b.configure(state="normal" if on[k] else "disabled")
+            b.configure(state="normal" if on.get(k) else "disabled")
+        self.spec.set_actions(busy)
         connected = self.client is not None
         for b in (self.b_guest, self.b_login, self.b_register, self.b_forgot):
             b.configure(state="disabled" if connected else "normal")
@@ -461,17 +498,99 @@ class OnlineTab:
         if self.driver is not None:
             for n in self.driver.poll():
                 self.on_driver(n)
+        try:
+            while True:
+                self._fw_result(self.fw_q.get_nowait())
+        except queue.Empty:
+            pass
         self._tick_ready()
         self._tick_set()
+        self.tours.tick()
         self._invite_wait_tick()
         self._relogin_tick()
         self._presence_tick()
         self._show_notice()
         self._pad_tick()
+        self.spec.poll()
+        self.rooms_ui.tick()
         self.view.tick()
         try:
             self._after = self.parent.after(100, self._poll)
         except tk.TclError:
+            pass
+
+    # ------------------------------------------------------------------ the firewall hint
+    def _game_exe(self):
+        """The exact t5dr.exe the launcher starts (the app's game_exe(), else the build folder's)."""
+        fn = getattr(self.app, "game_exe", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:   # noqa: BLE001
+                pass
+        return os.path.join(getattr(self.app.settings, "out_dir", "") or os.getcwd(), "build", "cmake", "t5dr.exe")
+
+    def check_firewall(self, force=False):
+        """Read Windows Firewall's rules again (worker thread; at most every FW_CHECK_GAP_S unless forced)."""
+        now = time.monotonic()
+        if self._fw_busy or (not force and now - self._fw_checked < FW_CHECK_GAP_S):
+            return
+        if os.environ.get("T5_FW_CHECK", "1") == "0" and self.fw_check is fwcheck.check:
+            return                          # (tests: never this PC's real firewall)
+        self._fw_busy = True
+        self._fw_checked = now
+        threading.Thread(target=_fw_work, args=(self.fw_q, self.fw_check, self._game_exe()), daemon=True,
+                         name="fwcheck").start()
+
+    def _fw_result(self, st):
+        self._fw_busy = False
+        if st is None:
+            return
+        old = self.fw_status
+        self.fw_status = st
+        if old is None or (old.state, old.blocked) != (st.state, st.blocked):
+            _launcher_log(f"firewall check: {st.state}, blocked {st.blocked or 'nothing'}, programs {st.programs}, "
+                          f"network profile {st.profiles or 'unknown'} ({st.detail})")
+        self._fw_update()
+
+    def _fw_saw(self, what):
+        """A match showed a firewall's work: `what` = "udp" (this PC's UDP never reached the lobby server) or
+        "no_peer" (the game on the direct path heard nothing at all from its opponent)."""
+        if self.fw_seen != what:
+            self.fw_seen = what
+            _launcher_log(f"firewall hint: a match showed {what}")
+        self.check_firewall(force=True)
+        self._fw_update()
+
+    def fw_hint_text(self):
+        st = self.fw_status
+        if st is not None and st.state == "blocked" and st.blocked:
+            names = []
+            for who in st.blocked:
+                path = self._game_exe() if who == "game" else (st.paths or {}).get(who) or ""
+                names.append(os.path.basename(path) or who)
+            return t("Windows Firewall blocks {program} on this network. Matches still connect, but some only "
+                     "through a relay, with more lag.", program=", ".join(names))
+        if self.fw_seen:
+            return t("A firewall seems to block T5DR Online's network traffic on this PC.")
+        return ""
+
+    def _fw_update(self):
+        text = self.fw_hint_text()
+        if text and text == self.fw_dismissed:
+            text = ""
+        if text != self.fw_hint_var.get():
+            self.fw_hint_var.set(text)
+
+    def dismiss_fw_hint(self):
+        self.fw_dismissed = self.fw_hint_text()
+        self._fw_update()
+
+    def open_fw_help(self):
+        import webbrowser
+        try:
+            webbrowser.open(FW_HELP_URL)
+        except Exception:       # noqa: BLE001 -- no browser on this PC
             pass
 
     # ------------------------------------------------------------------ login / account
@@ -510,7 +629,10 @@ class OnlineTab:
                         ingame_pick=self._game_can_pick(),
                         sets=bool(self.cfg.get("sets", True)),   # online.json "sets": false: no ranked sets
                         # launcher Settings -> "Open the game's port on my router" (docs/NETPLAY.md)
-                        port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)))
+                        port_mapping=bool(getattr(self.app, "settings", {}).get("router_ports", True)),
+                        tournaments=True,
+                        **self.spec.client_kw())
+        self.spec.new_client(c)
         # this PC's game speed from its last online match (the lobby warns / keeps slow PCs out of ranked);
         # before the first one, from the newest game log (offline play)
         try:
@@ -719,11 +841,14 @@ class OnlineTab:
         self.set_var.set("")
         self.lag = None
         self.notice_var.set("")
+        self.tours.reset()
         self.view.reset()
         self.hide_bar()
         self.match_var.set("")
         self.tv_players.delete(*self.tv_players.get_children())
         self.tv_rooms.delete(*self.tv_rooms.get_children())
+        self.rooms_ui.close_window()
+        self.rooms_ui.refresh()
 
     def do_passwd(self):
         title = t("Change password")
@@ -826,11 +951,7 @@ class OnlineTab:
         return t("Searching for an opponent (ranked: similar rank and a good connection)...")
 
     def do_join(self):
-        sel = self.tv_rooms.selection()
-        if not sel:
-            self.status(t("Select a room first."))
-            return
-        self.call(self.client.join_room, sel[0])
+        self.rooms_ui.join_selected()         # (a locked room asks for its password or code: tk_rooms.py)
 
     def do_challenge(self):
         sel = self.tv_players.selection()
@@ -1009,6 +1130,7 @@ class OnlineTab:
                 b.configure(state="normal" if on.get(key) else "disabled")
             except tk.TclError:
                 pass
+        self.spec.set_actions(busy)
         texts = {"invite": t("Cancel the invite") if pending else t("Invite to a match"),
                  "invite_room": t("Invite to my room")}
         if wait:
@@ -1109,7 +1231,10 @@ class OnlineTab:
         """A friend invites this player: the question in the bar, Accept (A) starts it with one click."""
         frm = ev.get("from") or {}
         self.invite = ev
-        if ev.get("kind") == "room":
+        if ev.get("kind") == "room" and (ev.get("room") or {}).get("private"):
+            text = t("{name} ({rank}) invites you to the private room “{room}”", name=frm.get("name"),
+                     rank=rank_text(frm), room=(ev.get("room") or {}).get("name") or "?")
+        elif ev.get("kind") == "room":
             text = t("{name} ({rank}) invites you to the room “{room}”", name=frm.get("name"), rank=rank_text(frm),
                      room=(ev.get("room") or {}).get("name") or "?")
         else:
@@ -1221,9 +1346,13 @@ class OnlineTab:
     def _on_subtab(self):
         try:
             sel = self.nb.select()
-            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile
+            tab = self.nb.index(sel) if sel else None      # 0 lobby, 1 leaderboard, 2 profile, 3 friends, 4 tournaments
         except tk.TclError:
             return                                         # (the tabs are being destroyed)
+        if sel and sel == str(getattr(self, "tours_page", "")):
+            self.tours.shown()
+        else:
+            self.tours.page_shown = False
         if tab == 1:
             self.load_leaderboard()
         elif tab == 2 and self.client and self.profile_name is None:
@@ -1320,6 +1449,11 @@ class OnlineTab:
     def on_event(self, ev):
         kind = ev["t"]
         c = self.client
+        if kind.startswith("tour_") or kind == "match_found":
+            self.tours.on_event(ev)                        # tournaments (tk_tour.py)
+        if self.spec.on_event(ev):
+            return
+        self.rooms_ui.on_event(ev)
         if kind == "lobby_state":
             self._fill_lists(ev)
             self._show_me()
@@ -1389,12 +1523,16 @@ class OnlineTab:
             self._show_notice()
         elif kind in ("nat_status", "nat_upgrade"):
             self.status(ev["text"])
+            if ev.get("udp_blocked"):
+                self._fw_saw("udp")          # no answer from the lobby server over UDP: a firewall on this PC?
         elif kind == "match_cancel":
             self.match = None
             self.ready_deadline = None
             self.hide_bar()
             self.status(_word(CANCEL_TEXT, ev["reason"]) if ev["reason"] in CANCEL_TEXT
                         else t("Match cancelled ({reason}).", reason=ev["reason"]))
+            if ev.get("reason") == "udp_unreachable" and ev.get("you"):
+                self._fw_saw("udp")          # this PC's UDP never reached the lobby server
         elif kind == "match_start":
             self.hide_bar()
             self.ready_deadline = None
@@ -1404,8 +1542,12 @@ class OnlineTab:
             self.set_var.set(sets.status_text(ev.get("set"), ev.get("slot") or 0))
             f = ev.get("fight") or {}
             delay = ev.get("delay") or 0
-            self._match_head = (t("Ranked match vs {name}", name=ev["opponent"]["name"]) if ev.get("ranked")
-                                else t("Casual match vs {name}", name=ev["opponent"]["name"]))
+            if (ev.get("set") or {}).get("tournament"):
+                self._match_head = t("Tournament set vs {name}", name=ev["opponent"]["name"])
+            elif ev.get("ranked"):
+                self._match_head = t("Ranked match vs {name}", name=ev["opponent"]["name"])
+            else:
+                self._match_head = t("Casual match vs {name}", name=ev["opponent"]["name"])
             regional = (ev.get("relay") or {}).get("name") if ev.get("path") == "relay" else None
             self._match_tail = t("ping {ms} ms ({how}), input delay {frames} frames ({delay_ms} ms)",
                                  ms=f"{ev.get('rtt_ms', 0):.0f}",
@@ -1425,6 +1567,7 @@ class OnlineTab:
                                 "fight": None if f.get("pick") else (f.get("p1"), f.get("p2")), "set": ev.get("set")}
         elif kind == "match_result":
             self._show_result(ev)
+            self.check_firewall()            # (Windows may have asked about the game during the match)
         elif kind == "rematch":
             if ev.get("state") == "declined":
                 self.rematch_bar = None
@@ -1460,6 +1603,8 @@ class OnlineTab:
             self._save_cfg()
         if k == "status":
             self.status(n["text"])
+        elif k == "firewall_suspect":
+            self._fw_saw(n.get("reason") or "no_peer")    # the game heard nothing at all from its opponent
         elif k == "game_state":
             if n.get("state") in ("pick", "loading", "fight"):
                 self._game_forward(n.get("match"))
@@ -1574,9 +1719,11 @@ class OnlineTab:
         keep = self.tv_rooms.selection()
         self.tv_rooms.delete(*self.tv_rooms.get_children())
         for r in ev.get("rooms", []):
-            state = (_word(ROOM_STATE_TEXT, r["status"]) + (" " + t("(other version)") if r["build"] != mine else "")
-                     + (" " + t("ranked") if r["ranked"] else ""))
-            closed = r["status"] != "open" or r["build"] != mine      # the lock: nobody can join it now
+            state = " ".join([_word(ROOM_STATE_TEXT, r["status"])] + self.rooms_ui.list_state(r)
+                             + ([t("(other version)")] if r["build"] != mine else [])
+                             + ([t("ranked")] if r["ranked"] else []))
+            # the lock: nobody can join it now -- or only with its password / invite code
+            closed = r["status"] != "open" or r["build"] != mine or bool(r.get("private"))
             ms = rtt_of.get(r["owner"].get("id"))
             self.tv_rooms.insert("", "end", iid=r["id"], values=(r["name"], r["owner"]["name"], state,
                                                                  "" if ms is None else f"~{ms:.0f} ms"),
@@ -1641,6 +1788,8 @@ class OnlineTab:
             # a ranked set is over: its result and its one rating change, on the last game's result card
             self.set_bar = None
             text = sets.result_text(ev)
+            if ev.get("tournament") and ev.get("status") not in ("confirmed", "forfeit"):
+                text = t("The set has no result; the tournament calls it again or its organizer decides")
             w = ev.get("wins") or [0, 0]
             self.set_var.set(t("Set {mine}-{theirs}", mine=w[0], theirs=w[1]))
             self.status(text + ".")
@@ -1719,9 +1868,15 @@ class OnlineTab:
             self.bar_text.set(self._set_bar_text())
 
     def _leave_set(self):
-        if not self.ask_yes_no(t("Leave the ranked set"),
-                               t("Leave this ranked set?\n\nLeaving a ranked set counts as losing it."),
-                               parent=self.parent):
+        info = self.set_bar[0] if self.set_bar is not None else {}
+        if info.get("tournament"):
+            ok = self.ask_yes_no(t("Leave the tournament set"),
+                                 t("Leave this tournament set?\n\nYou lose the set."), parent=self.parent)
+        else:
+            ok = self.ask_yes_no(t("Leave the ranked set"),
+                                 t("Leave this ranked set?\n\nLeaving a ranked set counts as losing it."),
+                                 parent=self.parent)
+        if not ok:
             return
         self.hide_bar()
         self.set_bar = None
@@ -1937,6 +2092,10 @@ class OnlineTab:
         add("Encrypted connection", lambda: bool(c and c.tls))
         add("Ping to the server (ms)", lambda: f"{c.server_rtt:.0f}" if c and c.server_rtt else "?")
         add("Game mode setting", lambda: self.cfg.get("game_mode", "auto"))
+        add("Windows Firewall", lambda: "not checked" if self.fw_status is None else
+            f"{self.fw_status.state}, blocks {', '.join(self.fw_status.blocked) or 'nothing'}, programs "
+            f"{self.fw_status.programs}, network profile {self.fw_status.profiles or 'unknown'}"
+            + (f", a match showed {self.fw_seen}" if self.fw_seen else ""))
         d = self.driver
         if d is not None:
             add("Match driver mode", lambda: d.mode)
@@ -1956,6 +2115,7 @@ class OnlineTab:
 
     # ------------------------------------------------------------------ launcher hooks
     def on_show(self):
+        self.check_firewall()
         self.start_pad()
         if self.client:
             self._set_actions()

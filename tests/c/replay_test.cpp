@@ -4,11 +4,15 @@
  * reads files back the way a playback does, and prints what it read, so Python's reader
  * (launcher/replays.py) and the game's can be checked against each other.
  *
- *   replay_test write <dir> <frames> <seed>   records a session of two matches into <dir>, prints
+ *   replay_test write <dir> <frames> <seed> [live]  records a session of two matches into <dir> (and
+ *                                             the live stream into [live]), prints
  *                                             "FILE <path>" and "DIGEST <hex>" (FNV-1a of every input)
  *   replay_test read <file>                    plays it the way the game does: "DIGEST", "MATCH", "LINE",
  *                                             "BARRIER" lines, or "ERROR <why>" (exit code 2)
  *   replay_test map <file> <frame> ...          the playback frame numbering after the sync points
+ *   replay_test restart <dir> <frames> <seed> <live>   the relay fallback: a session that ends before its
+ *                                             handshake, then the same match's session again on the same live
+ *                                             file ("SIZE1 <bytes the first left>"), then as write
  */
 #include <windows.h>
 #include <stdarg.h>
@@ -17,6 +21,8 @@
 #include <string>
 
 #include "../../src/netplay/replay.h"
+
+extern "C" int t5_replay_costumes(unsigned match, unsigned char* out);
 
 /* the netplay core's log line (netplay_core.cpp); here to stdout */
 namespace np {
@@ -28,7 +34,10 @@ void note(const char* fmt, ...)
     printf("\n");
     va_end(ap);
 }
+void replay_session_known() { printf("SESSIONKNOWN\n"); }   /* (a live stream's session after the start) */
 }
+/* the session environment (netplay_core.cpp): here the process's */
+extern "C" const char* t5_env(const char* key) { return getenv(key); }
 
 static uint64_t fnv(uint64_t h, uint32_t v)
 {
@@ -44,19 +53,24 @@ static uint64_t digest_in(uint64_t h, const np::PadInput& in)
 static uint32_t g_x = 1;
 static uint32_t rnd() { g_x ^= g_x << 13; g_x ^= g_x >> 17; g_x ^= g_x << 5; return g_x; }
 
-static int do_write(const char* dir, uint32_t frames, uint32_t seed)
+static int do_write(const char* dir, uint32_t frames, uint32_t seed, const char* live)
 {
     _putenv_s("T5_REPLAY_DIR", dir);
     _putenv_s("T5_REPLAY_HASH_EVERY", "30");
+    if (live) _putenv_s("T5_REPLAY_LIVE", live);   /* the live stream too (spectating) */
     g_x = seed | 1;
     rp::rec_session_begin(1, "test-build-id", 0x1234ABCD);
     if (!rp::recording()) { printf("ERROR not recording\n"); return 2; }
+    if (live) rp::rec_session_known(0x1234ABCD, true, 2);   /* (the handshake: the live SESSION) */
     rp::rec_start(0x1234ABCD, true, 2);
     rp::rec_rollback_delay(1);
     rp::Fight ft;
     ft.chr[0] = 9; ft.chr[1] = 33; ft.btn[0] = 2; ft.btn[1] = 4; ft.model[0] = 0x1B; ft.model[1] = 0x4E;
     ft.stage = 27; ft.rounds = 2; ft.pick = 30; ft.names[0] = "Alpha One"; ft.names[1] = "B\xC3\xA9ta";
+    ft.costumes = true;                            /* format 3: the custom costume blocks of the match */
+    for (int i = 0; i < 0x108; i++) ft.cos[0][i] = (uint8_t)(i * 13 + 1);
     rp::rec_fight(ft);
+    ft.costumes = false;
     rp::rec_match_begin(0);
     uint64_t dg = 1469598103934665603ull;
     np::PadInput held[2] = { np::kNeutral, np::kNeutral };
@@ -128,6 +142,15 @@ static int do_read(const char* file, int argc, char** argv, bool map)
         if (!rp::play_fight_line(m, &line)) break;
         printf("LINE %u %s\n", m, line.c_str());
     }
+    for (uint32_t m = 1; m < 10; m++) {
+        unsigned char cos[2 * 0x108];
+        std::string ln;
+        if (!rp::play_fight_line(m, &ln)) break;
+        if (!t5_replay_costumes(m, cos)) { printf("COSTUMES %u none\n", m); continue; }
+        uint64_t h = 1469598103934665603ull;
+        for (unsigned char v : cos) { h ^= v; h *= 1099511628211ull; }
+        printf("COSTUMES %u %016llx\n", m, (unsigned long long)h);
+    }
     for (uint32_t k = 0;; k++) {
         uint64_t clock = 0; uint32_t c[3] = {};
         const bool st = rp::play_barrier_state(k, &clock, c);
@@ -139,10 +162,29 @@ static int do_read(const char* file, int argc, char** argv, bool map)
     return 0;
 }
 
+/* The relay fallback (docs/NETPLAY.md "When Windows Firewall blocks the game"): the match's first session never
+ * shakes hands, the launcher starts it again with the same live stream (file) -- the first must leave nothing but
+ * the magic there, so the stream an uploader already read on goes on byte for byte. */
+static int do_restart(const char* dir, uint32_t frames, uint32_t seed, const char* live)
+{
+    _putenv_s("T5_REPLAY_DIR", dir);
+    _putenv_s("T5_REPLAY_LIVE", live);
+    rp::rec_session_begin(0, "test-build-id", 0x0BADF00D);
+    if (!rp::recording()) { printf("ERROR not recording\n"); return 2; }
+    rp::rec_session_end("no_peer");
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExA(live, GetFileExInfoStandard, &a)) { printf("ERROR no live file\n"); return 2; }
+    printf("SIZE1 %lu\n", a.nFileSizeLow);
+    return do_write(dir, frames, seed, live);
+}
+
 int main(int argc, char** argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    if (argc >= 5 && !strcmp(argv[1], "write")) return do_write(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0));
+    if (argc >= 5 && !strcmp(argv[1], "write"))
+        return do_write(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argc >= 6 ? argv[5] : nullptr);
+    if (argc >= 6 && !strcmp(argv[1], "restart"))
+        return do_restart(argv[2], (uint32_t)atoi(argv[3]), (uint32_t)strtoul(argv[4], nullptr, 0), argv[5]);
     if (argc >= 3 && !strcmp(argv[1], "read")) return do_read(argv[2], 0, nullptr, false);
     if (argc >= 3 && !strcmp(argv[1], "map")) return do_read(argv[2], argc - 3, argv + 3, true);
     printf("usage: replay_test write <dir> <frames> <seed> | read <file> | map <file> k:f ...\n");

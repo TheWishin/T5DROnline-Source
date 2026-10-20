@@ -33,6 +33,7 @@ for sub in ("tools", "lobby", "launcher", "tests"):
     if p not in sys.path:
         sys.path.insert(0, p)
 os.environ.setdefault("T5_PAD_NAV", "0")        # no controller thread in the Online tab
+os.environ.setdefault("T5_FW_CHECK", "0")       # the Online tab's firewall hint never reads this PC's firewall
 
 import tkinter as tk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
@@ -146,7 +147,8 @@ def problems(root, slack=2):
                 need = f.measure(longest) + 26
                 if need > w.winfo_reqwidth() + slack:
                     out.append(("combo", str(w), "", need, w.winfo_reqwidth(), longest))
-        elif managed and cls == "Canvas":
+        elif managed and cls == "Canvas" and not str(w.cget("xscrollcommand")):
+            # (a canvas that scrolls -- the tournament bracket -- shows more than its width on purpose)
             try:
                 cw, ch = int(float(w.cget("width"))), int(float(w.cget("height")))
             except (tk.TclError, ValueError):
@@ -228,6 +230,14 @@ class Client:
     class build:
         build_id = "b1"
 
+    my_room = None
+    room_code = None
+    clock_offset = 0.0
+    welcome = {"room_limits": {"max_size": 8, "next_seconds": 8}}
+
+    def private_rooms_ok(self):
+        return True
+
     def __init__(self):
         self.me = {"id": "p1", "name": "Me", "guest": False, "rating": 1500, "record": [3, 2, 0], "status": "idle",
                    "main": "jin", "tier": 31, "rank": "Lord of War", "provisional": False}
@@ -262,6 +272,12 @@ class Client:
                 for i, (nm, rk, tier) in enumerate((("Rival_Long_Name", "Lord of War", 31), ("Bob", "2nd Dan", 11),
                                                     ("Ccc", "Beginner", 0)))]
 
+    def tour_list(self):
+        return {"rows": [TOUR], "can_create": True, "rated": False}
+
+    def tour_get(self, tid):
+        return TOUR
+
     def profile(self, name, n):
         return {"name": "Me", "account": True, "rank": "Lord of War", "tier": 31, "rating": 1612, "rd": 61,
                 "provisional": False, "place": 3, "record": [30, 12, 1], "ranked_games": 43,
@@ -292,7 +308,54 @@ ROOMS = [{"id": "r1", "name": "Room of Rival", "owner": {"name": "Rival_Long_Nam
           "ranked": True},
          {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False},
          {"id": "r3", "name": "Old room", "owner": {"name": "Old"}, "status": "playing", "build": "other",
-          "ranked": True}]
+          "ranked": True},
+         # a private community room (docs/ONLINE.md "Rooms"): "open 7/8 private"
+         {"id": "r4", "name": "Friday Night Community", "owner": {"name": "Rival_Long_Name"}, "status": "open",
+          "build": "b1", "ranked": False, "size": 8, "rotation": "queue", "private": True, "lock": "password",
+          "members": ["p2", "p3", "p4", "p6", "x1", "x2", "x3"]}]
+_LONG = ("Rival_Long_Name", "Somebody_Else16", "NewFriend_12345", "Another_Player_", "Fifth_Long_Name", "Sixth_Long_Name",
+         "Seventh_Long_Nm")
+# this player's room, as its members see it (tk_rooms.py): eight players, the longest line, a code, hidden
+MY_ROOM = {"id": "r5", "name": "Friday Night Community", "size": 8, "rotation": "winner", "lock": "code",
+           "hidden": True, "owner_id": "p1", "private": True, "status": "playing", "ranked": False, "build": "b1",
+           "members": ["p1"] + [f"x{i}" for i in range(7)],
+           "players": [{"id": "p1", "name": "Me", "state": "line"}] +
+                      [{"id": f"x{i}", "name": n, "state": "away" if i == 6 else "playing" if i < 2 else "line"}
+                       for i, n in enumerate(_LONG)],
+           "line": ["x0", "x1", "p1", "x2", "x3", "x4", "x5"], "playing": ["x0", "x1"], "next": None, "watch": True}
+
+
+def tournament():
+    """A running double-elimination tournament of four as the server shows it (the real bracket engine): a set
+    decided, one being played, one called, a disqualification -- every word the Tournaments page draws."""
+    import time as _time
+    from t5lobby.server import tournaments as T
+    from t5lobby.server.bracket import Bracket
+    mgr = T.TourManager.__new__(T.TourManager)
+    mgr.live, mgr.view_cache = {}, {}
+    t = T.Tournament(id="t1", name="Friday Night Cup", organizer_name="Organizer_Long", format="double", set_wins=2,
+                     max_players=16, start_time=_time.time() - 900, checkin_minutes=15, seeding="rating",
+                     state="running", started=_time.time() - 600, rated=True)
+    for i, n in enumerate(("Me", "Rival_Long_Name", "Bob", "Old"), 1):
+        t.entrants[i] = T.Entrant(i, n, 0.0, checked_in=1.0, seed=i, dq="no_show" if n == "Old" else None)
+    b = t.bracket = Bracket.build("double", [1, 2, 3, 4])
+    b.report("W1-1", 0, [2, 1])
+    b.sets["W1-2"].data = {"live": "playing"}
+    b.sets["L1-1"].data = {"live": "attention", "why": "disputed"}
+    d = mgr.full(t)
+    d["you"] = {"entrant": True, "checked_in": True, "seed": 1, "set": "W2-1", "build_ok": True}
+    d["can_manage"] = True
+    return d
+
+
+TOUR = tournament()
+TOUR_CALL = {"t": "tour_call", "tournament": {"id": "t1", "name": "Friday Night Cup"},
+             "set": {"id": "L2-1", "bracket": "L", "round": 2, "index": 1, "format": "double", "rounds": 2,
+                     "losers_rounds": 2},
+             "best_of": 3, "wins_needed": 2, "side": 0, "score": [1, 0], "replay": True,
+             "opponent": {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lord of War",
+                          "tier": 31}, "opponent_online": False, "deadline": 287.0, "noshow": 300.0,
+             "accepted": [False, False]}
 RIVAL = {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lord of War", "provisional": False,
          "tier": 31}
 
@@ -428,6 +491,12 @@ class Walk:
         tab._set_account_view(True)
         tab.on_event({"t": "lobby_state", "players": PLAYERS, "rooms": ROOMS, "queue": {"ranked": 3, "quick": 1}})
         self.screen("online lobby")
+        from t5lobby import fwcheck
+        tab.fw_status = fwcheck.Status("blocked", ["game", "launcher"],
+                                       paths={"launcher": r"C:\T5DR Online\python\pythonw.exe"})
+        tab._fw_update()
+        self.screen("online firewall hint")
+        tab.dismiss_fw_hint()
         tab.client.me["status"] = "queue"
         tab.cfg["last_search"] = "ranked"
         tab.strict_var.set(1)
@@ -485,6 +554,50 @@ class Walk:
         tab._set_friend_actions()
         tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
         self.screen("online friend's invite")
+        tab.hide_bar()
+        tab.on_event({"t": "invited", "invite": "i2", "kind": "room", "from": RIVAL,
+                      "room": {"name": "Friday Night Community", "private": True}})
+        self.screen("online friend's invite, private room")
+        tab.hide_bar()
+        # this player's room (tk_rooms.py): the row under the rooms list, the code in its field, the next match; the
+        # Create room and Room settings windows (withdrawn)
+        tab.nb.select(0)
+        tab.client.me["status"] = "room"
+        tab.client.my_room, tab.client.room_code = MY_ROOM, "ABCD-EFGH-JKMN"
+        tab.on_event({"t": "room", "room": MY_ROOM})
+        tab.rooms_ui.copy_code()
+        self.screen("online my room")
+        tab.client.my_room = dict(MY_ROOM, playing=[], next={"at": time.time() + 8, "players": ["x0", "x1"]})
+        tab.on_event({"t": "room", "room": tab.client.my_room})
+        self.screen("online my room, next match")
+        saved = tab.new_window
+
+        def hidden(parent):
+            w = tk.Toplevel(parent)
+            w.withdraw()
+            return w
+        tab.new_window = hidden
+        tab.rooms_ui.create()
+        self.screen("create room window", tab.rooms_ui.window)
+        tab.rooms_ui.settings()
+        self.screen("room settings window", tab.rooms_ui.window)
+        tab.rooms_ui.close_window()
+        tab.new_window = saved
+        tab.client.me["status"] = "idle"
+        tab.client.my_room = tab.client.room_code = None
+        tab.rooms_ui.refresh()
+        # tournaments (tk_tour.py): the list, a bracket, the call card -- with the Friends page emptied first, so that
+        # its own (known, German) width does not hide what this page needs
+        tab.client.friend_list = {"max": 100, "friends": [], "incoming": [], "outgoing": []}
+        tab.on_event({"t": "friends"})
+        tab.nb.select(tab.tours_page)
+        tab.tours.rows, tab.tours.selected, tab.tours.detail = [TOUR], TOUR["id"], TOUR
+        tab.tours.render_list()
+        tab.tours.select_set("L1-1")
+        self.screen("online tournaments")
+        tab.tours.on_event(TOUR_CALL)
+        self.screen("online tournament call")
+        tab.tours.call = None
         tab.hide_bar()
 
     def _windows(self, d):

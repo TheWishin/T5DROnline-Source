@@ -19,7 +19,7 @@ import time
 import urllib.error
 import zipfile
 
-from e2e_flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
+from e2e_flows import (accept, close_window, create_room, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
                    leave, log_has, login, match_row, parse_segment, profile, queue_match, rematch,
                    server_says, started_both, wait_fight, wait_results, STUB_MATCH_SECONDS)
 import core                                  # launcher/core.py (on the path through e2e_harness)
@@ -676,7 +676,7 @@ def room_flow(ctx):
     login(ctx, b)
     a.set_char("bryan")
     b.set_char("xiaoyu")
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Create room")
     ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed for the other player")
     rid = b.tab.tv_rooms.get_children()[0]
@@ -730,7 +730,7 @@ def room_leave(ctx):
     b = ctx.player("E2E Tia", kind="stub")
     login(ctx, a)
     login(ctx, b)
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "room listed")
     rid = b.tab.tv_rooms.get_children()[0]
     t = time.time()
@@ -1171,6 +1171,157 @@ def relay_upgrade_stub(ctx):
     login(ctx, c)
     ctx.check("the 1.1.0-style client logged in without nat2", c.client is not None and not c.client.nat2)
     relay_upgrade_case(ctx, c, b, "stub: 1.1.0 client on the relay", expect=False, real=False)
+
+
+# ------------------------------------------------------------------ the firewall blocks the game (1.1.3)
+# Windows Firewall emulated, never touched (T5_NET_TEST_INBOUND in the game, LobbyClient.test_inbound in the launcher;
+# docs/NETPLAY.md "When Windows Firewall blocks the game"). "stateful" is what Windows does for a program it blocks
+# (Cancel on its question): its own packets go out, only the replies get in. "block" lets nothing in but 127.0.0.1 --
+# stricter than Windows (some third-party firewalls); the proxy then sits on 127.0.0.2 so the games' opponent is "not
+# this PC". A punch blocked on both launchers (block_direct) stands in for two NATs no punch gets through
+# (symmetric with random ports): the natsim matrix has the real NAT types (lobby/tools/natsim.py --fw-a/--fw-b).
+FW_CASES = [
+    # label, A (game, launcher), B (game, launcher), punch fails, proxy address, path the match must play on
+    ("one side blocked", ("stateful", "stateful"), (None, None), False, "127.0.0.1", "direct"),
+    ("both sides blocked", ("stateful", "stateful"), ("stateful", "stateful"), False, "127.0.0.1", "direct"),
+    ("both blocked, no direct path (symmetric NATs)", ("stateful", "stateful"), ("stateful", "stateful"), True,
+     "127.0.0.1", "relay"),
+    ("one game blocked completely, no direct path", ("block", None), (None, None), True, "127.0.0.2", "relay"),
+    ("one game blocked completely, direct path found", ("block", None), (None, None), False, "127.0.0.2",
+     "fallback"),
+]
+RE_FW_EMULATED = r"TEST: inbound firewall emulated \((stateful|block)\)"
+RE_FW_DROP = r"TEST: inbound firewall dropped"
+
+
+def _fw_count(p, pattern):
+    rx = re.compile(pattern)
+    n = 0
+    for g in p.games:
+        try:
+            with open(g.log_path, encoding="utf-8", errors="replace") as f:
+                n += sum(1 for ln in f if rx.search(ln))
+        except (OSError, TypeError):
+            pass
+    return n
+
+
+def fw_case(ctx, a, b, label, fa, fb, punch_fails, ip, expect, real=True):
+    """One match with the emulated firewall(s): it must play on `expect` ("direct", "relay", or "fallback": the
+    direct path first, then -- the game hears nothing -- the relay), confirmed on both PCs, in sync, and never end
+    with "could not be reached"."""
+    ctx.shaper.set(0, 0, 0, on=True, ip=ip)
+    a.set_firewall(*fa)
+    b.set_firewall(*fb)
+    for p in (a, b):
+        p.client.block_direct = punch_fails
+    since = time.time()
+    emu0 = {p.name: _fw_count(p, RE_FW_EMULATED) for p in (a, b)}
+    drop0 = {p.name: _fw_count(p, RE_FW_DROP) for p in (a, b)}
+    t0 = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    first_path = a.matches[mid].get("path")
+    if expect == "fallback":
+        ctx.check(f"{label}: the lobby found the direct path", first_path in ("direct", "lan"), first_path)
+        ok = ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2,
+                      90, f"{label}: the match moves onto the relay (a second match_start on both PCs)")
+        if not ok:
+            for p in (a, b):
+                ctx.note(f"{label}: {p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-6:]}")
+        path = a.events_of("match_start", since)[-1].get("path") if ok else first_path
+        ctx.check(f"{label}: relay after the fallback", path == "relay", path)
+        ctx.check(f"{label}: the launcher whose game heard nothing showed the firewall hint",
+                  bool(a.tab.fw_hint_var.get()), repr(a.tab.fw_hint_var.get()))
+    else:
+        path = first_path
+        ok = path == expect or (expect == "direct" and path == "lan")
+        ctx.check(f"{label}: path {expect}", ok, path)
+    if real:
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            for p in (a, b):
+                ctx.note(f"{label}: {p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-8:]}")
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b), floor=45.0)
+    else:
+        wait_results(ctx, mid, (a, b), timeout=120)
+        st = [p.matches.get(mid, {}).get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        rf = [p.result_file(mid) or {} for p in (a, b)]
+        ctx.check(f"{label}: both stub games: same winner, 0 mismatching frames",
+                  rf[0].get("winner") == rf[1].get("winner") and not rf[0].get("desync") and not rf[1].get("desync"),
+                  f"winner {rf[0].get('winner')}/{rf[1].get('winner')}, desync {rf[0].get('desync')}/{rf[1].get('desync')}")
+        row = {"match": mid, "label": label, "status": st[0], "path": path}
+    secs = round(time.time() - t0, 1)
+    for p, fw in ((a, fa), (b, fb)):
+        if fw[0]:
+            n = _fw_count(p, RE_FW_EMULATED) - emu0[p.name]
+            ctx.check(f"{label}: {p.name}'s game ran with the emulated firewall ({fw[0]})", n >= 1, f"{n} session(s)")
+        if fw[1]:
+            ctx.check(f"{label}: {p.name}'s launcher ran with the emulated firewall ({fw[1]})",
+                      getattr(p.client, "test_inbound", None) == fw[1], getattr(p.client, "test_inbound", None))
+    drops = {p.name: _fw_count(p, RE_FW_DROP) - drop0[p.name] for p in (a, b)}
+    for p in (a, b):
+        ctx.check(f"{label}: {p.name} never saw \"could not be reached\"",
+                  not p.saw_status(r"could not be reached", since), [x for ts, x in p.statuses if ts >= since][-3:])
+    ctx.note(f"FWROW | {label} | A {fa} B {fb} | punch {'blocked' if punch_fails else 'ok'} | first path {first_path} "
+             f"| played on {path} | {row.get('status')} | {secs} s from queue to result | game drop lines {drops}")
+    ctx.matches.append(dict(row, firewall={"a": fa, "b": fb, "punch_fails": punch_fails, "played_on": path,
+                                           "first_path": first_path, "seconds": secs, "drop_lines": drops}))
+    for p in (a, b):
+        p.set_firewall(None, None)
+        p.client.block_direct = False
+        leave(ctx, p)
+    ctx.shaper.set(0, 0, 0, on=False)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, f"{label}: free for the next pairing")
+    ctx.sleep(1.0)
+    return row
+
+
+def _fw_cases(ctx, a, b, real):
+    only = os.environ.get("E2E_FW_CASES")              # (a subset: "1,3,5")
+    picked = [c for i, c in enumerate(FW_CASES, 1) if not only or str(i) in only.split(",")]
+    for c in picked:
+        try:
+            fw_case(ctx, a, b, *c, real=real)
+        except Abort as e:
+            ctx.check(f"{c[0]}: completed", False, str(e))
+            for p in (a, b):
+                p.set_firewall(None, None)
+                p.client.block_direct = False
+                leave(ctx, p)
+            ctx.shaper.set(0, 0, 0, on=False)
+            ctx.sleep(5)
+
+
+@scenario("net_firewall", "6 netcode", game=True, suites=("game", "net"),
+          desc="Windows Firewall blocking the game (emulated, T5_NET_TEST_INBOUND): one side, both sides, both without a "
+               "direct path (relay), a game blocked completely (relay bridge; the fallback when the direct path was found)")
+def net_firewall(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    game_server(ctx)
+    a = ctx.player("E2E FwA")
+    b = ctx.player("E2E FwB")
+    login(ctx, a)
+    login(ctx, b)
+    _fw_cases(ctx, a, b, real=True)
+
+
+@scenario("firewall_stub", "6 netcode", suites=("lobby", "net"),
+          desc="the net_firewall cases with stub games (the same emulated firewall in lobby/tools/stub_game.py)")
+def firewall_stub(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    stub_server(ctx)
+    a = ctx.player("E2E FwsA", kind="stub", env={"T5_STUB_SECONDS": 3})
+    b = ctx.player("E2E FwsB", kind="stub", env={"T5_STUB_SECONDS": 3})
+    login(ctx, a)
+    login(ctx, b)
+    _fw_cases(ctx, a, b, real=False)
 
 
 # ------------------------------------------------------------------ regional relays (1.1.1)
@@ -1946,7 +2097,7 @@ def version_lobby(ctx):
     login(ctx, c)
     ctx.wait(lambda: any("other version" in str(c.tab.tv_players.item(i, "values")) for i in c.tab.tv_players.get_children()),
              10, "the lobby list marks the other build")
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: len(c.tab.tv_rooms.get_children()) == 1, 10, "room listed")
     ctx.check("the room list marks the other build", "other version" in str(c.tab.tv_rooms.item(
         c.tab.tv_rooms.get_children()[0], "values")))
@@ -3299,3 +3450,588 @@ def net_start_mash(ctx):
         ctx.check(f"{p.name}'s game took START out of both players' inputs in every match (no pause)",
                   len(cut) >= len(rows) and all(x > 0 and y > 0 for x, y in cut[:len(rows)]), cut)
     ctx.note(f"fight frames per match: {[(r[a.name]['result_file'] or {}).get('frames') for r in rows]}")
+
+
+# ============================================================================== 12. spectating (docs/SPECTATE.md)
+def _frame_times(p):
+    """The last whole-run frame-time line of p's games (rb_net.cpp report), its recording cost lines and its live
+    stream's end line."""
+    from e2e_flows import _whole
+    ft, cost, live = None, [], []
+    rx = re.compile(r"frame times, whole run p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) ms; while fighting \((\d+) frames\) "
+                    r"p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) ms")
+    for ln in _whole(p):
+        m = rx.search(ln)
+        if m:
+            ft = {"p50": float(m.group(1)), "p95": float(m.group(2)), "p99": float(m.group(3)),
+                  "fight_frames": int(m.group(4)), "fight_p50": float(m.group(5)), "fight_p95": float(m.group(6)),
+                  "fight_p99": float(m.group(7))}
+        m = re.search(r"recording cost the frame ([\d.]+) us on average, ([\d.]+) us at most", ln)
+        if m:
+            cost.append((float(m.group(1)), float(m.group(2))))
+        if "live stream" in ln and "ended" in ln:
+            live.append(ln.split("] ", 1)[-1].strip())
+    return ft, cost, live
+
+
+def _verdict(p):
+    from e2e_harness import read_json
+    return read_json(os.path.join(p.out, "logs", "online", "watch-verdict.json"))
+
+
+def _friend_watch(p, name):
+    return any(f["name"] == name and f.get("watch") for f in (p.client.friend_list or {}).get("friends") or ())
+
+
+def _spectate_case(ctx, watched, games=True):
+    """A room match and a rematch in the running games (rollback), Ava (P1, the room's host) vs Bo. watched: Vi
+    (Ava's friend) watches from the start through the Friends page, Wu (a guest) joins 60 s later through the
+    Rooms list -- 4 games. Not watched: the same two players, the same mashing, no spectators and no live
+    stream at all (launchers without the cap) -- the frame times to compare. games=False: watched, but the two
+    spectators' launchers only receive the stream (no game on this PC): the players' PC does exactly what it
+    does with spectators elsewhere, and the received files must be the players' file byte for byte.
+    (At most 4 games at once.)"""
+    if "spectate" not in features():
+        raise Skip("this tree has no spectating")
+    game_server(ctx)
+    a = ctx.player("E2E Ava", char="steve", password="ava-pw-1")
+    b = ctx.player("E2E Bo", char="hwoarang")
+    v = w = None
+    if watched:
+        v = ctx.player("E2E Vi", password="vi-pw-1")
+        w = ctx.player("E2E Wu")
+        if not games:
+            for p in (v, w):
+                p.tab.spec._start_game = lambda path: None        # the stream only (their games would be on other PCs)
+    else:
+        for p in (a, b):
+            p.tab.spec.client_kw = lambda: {"spectate": False}      # like an older launcher: no live stream at all
+    login(ctx, a, "register")
+    login(ctx, b)
+    if watched:
+        login(ctx, v, "register")
+        login(ctx, w)
+    a.set_char("steve")
+    b.set_char("hwoarang")
+    if watched:
+        a.call(a.client.add_friend, "E2E Vi")
+        ctx.wait(lambda: any(r["name"] == "E2E Ava" for r in (v.client.friend_list or {}).get("incoming") or ()), 15,
+                 "Vi gets Ava's friend request")
+        v.call(v.client.answer_friend, "E2E Ava", True)
+        ctx.wait(lambda: any(f["name"] == "E2E Ava" for f in (v.client.friend_list or {}).get("friends") or ()), 15,
+                 "Vi and Ava are friends")
+    create_room(a)
+    ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Ava creates a room")
+    ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed")
+    rid = b.tab.tv_rooms.get_children()[0]
+    t = time.time()
+    b.tab.tv_rooms.selection_set(rid)
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    sa = latest(a, "match_start", t) or {}
+    if not watched:
+        ctx.check("no stream id (no live stream)", "stream" not in sa, sa.get("stream"))
+    else:
+        ctx.check("the match has a stream id", sa.get("stream") == mid, sa.get("stream"))
+        # Vi watches from the start: Friends -> Ava -> Watch
+        ctx.wait(lambda: _friend_watch(v, "E2E Ava"), 30, "Vi's friends list: Ava can be watched")
+        v.tab._fill_friends()
+        v.tab.tv_friends.selection_set("f:E2E Ava")
+        v.tab._set_friend_actions()
+        ctx.require("Vi's Watch button is on", str(v.tab.friend_actions["watch"].cget("state")) == "normal")
+        v.tab.friend_actions["watch"].invoke()
+        t_v = time.time()
+        ctx.wait(lambda: v.tab.spec.w is not None, 15, "Vi watches (the Spectating card)")
+        if games:
+            ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts at once (it waits for the data)")
+        ctx.wait(lambda: a.events_of("spectators", t_v), 15, "Ava is told somebody watches")
+    wait_fight(ctx, mid, (a, b), timeout=180)
+    if watched:
+        if games:
+            ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "playing", 120, "Vi's game plays the match")
+        else:
+            ctx.wait(lambda: (v.client.spec_watch or {}).get("ready"), 60, "Vi receives the session and its first match")
+        # Wu joins late: Rooms -> Ava's room -> Watch
+        ctx.sleep(max(0.0, 60.0 - (time.time() - t_v)))
+        ctx.wait(lambda: any(r.get("watch") for r in w.client.rooms), 10, "the room's match can be watched")
+        w.tab.tv_rooms.selection_set(rid)
+        w.tab.spec.set_actions()
+        ctx.require("Wu's Watch button is on", str(w.tab.actions["watch_room"].cget("state")) == "normal")
+        w.tab.actions["watch_room"].invoke()
+        ctx.note(f"Wu joins {time.time() - t_v:.0f} s after Vi")
+        if games:
+            ctx.wait(lambda: (w.tab.spec.w or {}).get("game") is not None, 30, "Wu's game starts (from the session's start)")
+        else:
+            ctx.wait(lambda: (w.client.spec_watch or {}).get("ready"), 60, "Wu receives the stream from the session's start")
+    wait_results(ctx, mid, (a, b))
+    mid2 = rematch(ctx, a, b)                  # (at once: the rematch window runs)
+    ctx.check("the rematch continues the session", a.matches[mid2].get("cont"))
+    rows = [match_row(ctx, mid, (a, b), "confirmed", "match 1")]
+    wait_fight(ctx, mid2, (a, b), timeout=120)
+    wait_results(ctx, mid2, (a, b))
+    rows.append(match_row(ctx, mid2, (a, b), "confirmed", "rematch"))
+    leave(ctx, a)                               # the set ends: the players' session (and its stream) ends
+    if watched and not games:
+        ctx.wait(lambda: all((p.tab.spec.w or {}).get("state") == "over" for p in (v, w)), 300,
+                 "the stream ends for both spectators")
+        with open(os.path.join(a.out, "logs", "online", "live", f"live-{mid}.t5live"), "rb") as f:
+            src = f.read()
+        for p, label in ((v, "Vi"), (w, "Wu")):
+            with open(os.path.join(p.out, "logs", "online", "live", f"watch-{mid}.t5live"), "rb") as f:
+                got = f.read()
+            ctx.check(f"{label}'s file is the players' live stream byte for byte (and an END)",
+                      got[:len(src)] == src and len(got) > len(src), f"{len(got)} / {len(src)} bytes")
+        ctx.note(f"the live stream: {len(src)} bytes for the session")
+    elif watched:
+        ctx.wait(lambda: all((p.tab.spec.w or {}).get("state") == "over" for p in (v, w)), 900,
+                 "both spectators' games end at the end of the stream")
+        for p, label in ((v, "Vi (from the start)"), (w, "Wu (60 s late)")):
+            vd = _verdict(p) or {}
+            ms = vd.get("matches") or []
+            ctx.check(f"{label}: identical to the live game", vd.get("identical") is True,
+                      f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+                      f"{vd.get('uncompared')} uncompared, sync points {vd.get('sync_points')}/"
+                      f"{vd.get('sync_points_recorded')}, setup problems {vd.get('setup_problems')}")
+            ctx.check(f"{label}: both matches played, the same results", len(ms) == 2 and all(m.get("same") for m in ms),
+                      [(m.get("winner"), m.get("hash"), m.get("same")) for m in ms])
+            ctx.note(f"{label}: delay avg {vd.get('delay_avg')} s, max {vd.get('delay_max')} s; {vd.get('stalls')} waits "
+                     f"({vd.get('stall_seconds')} s); {vd.get('received_bytes')} bytes for {vd.get('received_frames')} "
+                     f"frames; end {vd.get('end')!r} / {vd.get('stream_end')!r}")
+        fv, fw = _verdict(v) or {}, _verdict(w) or {}
+        ctx.check("both spectators saw the same final hashes", bool(fv.get("matches")) and
+                  [m.get("hash") for m in fv.get("matches") or []] == [m.get("hash") for m in fw.get("matches") or []],
+                  [m.get("hash") for m in fv.get("matches") or []])
+        ctx.check("Vi watched a few seconds behind", isinstance(fv.get("delay_avg"), (int, float)) and
+                  0 < fv["delay_avg"] < 12, fv.get("delay_avg"))
+    for p in (a, b):
+        ft, cost, live = _frame_times(p)
+        ctx.note(f"{p.name}: frame times {ft}; recording cost (avg us, max us) {cost[-3:]}; live {live[-1:]}")
+    for r in rows:
+        ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
+                                                f"{r[n]['result_file'].get('desync')}" for n in r
+                                                if isinstance(r[n], dict) and "result_file" in r[n]))
+
+
+@scenario("spectate_live", "12 spectating", game=True, suites=("game",),
+          desc="a room match and a rematch in the running games (rollback); a friend watches from the start "
+               "(Friends: Watch), a guest joins 60 s late (Rooms: Watch); both spectators' games play the "
+               "session with every recorded hash and result the same, a few seconds behind")
+def spectate_live(ctx):
+    _spectate_case(ctx, True)
+
+
+@scenario("spectate_baseline", "12 spectating", game=True, suites=("game",),
+          desc="the same two players and the same match without spectators or live stream: the frame times to "
+               "compare with spectate_live")
+def spectate_baseline(ctx):
+    _spectate_case(ctx, False)
+
+
+@scenario("spectate_stream", "12 spectating", game=True, suites=("game",),
+          desc="watched by two spectators whose launchers only receive (no spectator games on this PC): the "
+               "players' frame times with spectators, to compare with spectate_baseline; the received files are "
+               "the players' stream byte for byte")
+def spectate_stream(ctx):
+    _spectate_case(ctx, True, games=False)
+
+
+# ============================================================================== 13. 1.1.3 together
+# Tournaments + custom costumes + spectating + the relay fallback in one run (the 1.1.3 integration): a tournament
+# set with both players in their custom costumes and a spectator watching it from the bracket, in rollback and in
+# lockstep; a match whose one game hears nothing (T5_NET_TEST_INBOUND=block) moving onto the relay, with costumes
+# and a spectator who was already watching.
+RE_COSTUMES = re.compile(r"\[df\] frame \d+: costumes written: (.*); blocks hash ([0-9A-F]{16})")
+
+
+def _costume_saves():
+    """Two offline saves with custom costumes (the system save's SYS-DATA; game data -- never in the repository):
+    E2E_COSTUME_A (Kazuya and Lili customized) and E2E_COSTUME_B (Heihachi and Lili)."""
+    a, b = os.environ.get("E2E_COSTUME_A"), os.environ.get("E2E_COSTUME_B")
+    if not (a and b and os.path.isfile(a) and os.path.isfile(b)):
+        raise Skip("no costume saves: E2E_COSTUME_A / E2E_COSTUME_B name two SYS-DATA files with customizations")
+    return a, b
+
+
+def _costume_lines(p):
+    """Every "costumes written" line of p's games, in order: [(what each side got, blocks hash)]."""
+    from e2e_flows import _whole
+    out = []
+    for ln in _whole(p):
+        m = RE_COSTUMES.search(ln)
+        if m:
+            out.append((re.sub(r" \(fighter 0x[0-9A-F]+\)", "", m.group(1)), m.group(2)))
+    return out
+
+
+def _costume_checks(ctx, label, a, b, spectators=(), n_matches=None):
+    """Both players' games wrote the same costume blocks at every FIGHT START, both sides custom; every spectator's
+    game wrote the very same blocks (from the stream) for every match it played."""
+    la, lb = _costume_lines(a), _costume_lines(b)
+    ctx.check(f"{label}: both PCs wrote the same costume blocks at every FIGHT START", bool(la) and la == lb,
+              f"{a.name}: {la} / {b.name}: {lb}")
+    if n_matches is not None:
+        ctx.check(f"{label}: costumes written for each of the {n_matches} match(es)", len(la) == n_matches, len(la))
+    ctx.check(f"{label}: both fighters in their own custom costumes", bool(la) and
+              all(t.count(": custom") == 2 for t, _h in la), [t for t, _h in la])
+    for v in spectators:
+        lv = _costume_lines(v)
+        ctx.check(f"{label}: {v.name}'s game wrote the players' costume blocks for every match (from the stream)",
+                  bool(lv) and [h for _t, h in lv] == [h for _t, h in la], f"{[h for _t, h in lv]} / "
+                                                                            f"{[h for _t, h in la]}")
+        ctx.check(f"{label}: {v.name} sees both custom costumes", bool(lv) and
+                  all(t.count("custom (replay)") == 2 for t, _h in lv), [t for t, _h in lv])
+    ctx.note(f"{label}: costumes {la}")
+    return la
+
+
+def _spectator_verdict(ctx, label, v, n_matches=None):
+    vd = _verdict(v) or {}
+    ms = vd.get("matches") or []
+    ctx.check(f"{label}: {v.name}'s game identical to the live games", vd.get("identical") is True,
+              f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+              f"{vd.get('uncompared')} uncompared, sync points {vd.get('sync_points')}/{vd.get('sync_points_recorded')}, "
+              f"setup problems {vd.get('setup_problems')}")
+    ctx.check(f"{label}: {v.name}: every match played, the same results", bool(ms) and all(m.get("same") for m in ms)
+              and (n_matches is None or len(ms) == n_matches), [(m.get("winner"), m.get("hash"), m.get("same"))
+                                                                for m in ms])
+    ctx.check(f"{label}: {v.name}: no setup problem (fighters, stage, costume blocks)", vd.get("setup_problems") == 0,
+              vd.get("setup_problems"))
+    ctx.note(f"{label}: {v.name}: {vd.get('hashes_compared')} hashes, delay avg {vd.get('delay_avg')} s, max "
+             f"{vd.get('delay_max')} s, {vd.get('received_frames')} frames, end {vd.get('end')!r} / "
+             f"{vd.get('stream_end')!r}")
+    return vd
+
+
+def _tour_watch_case(ctx, lockstep=False, slow=None):
+    """A two-player single-elimination tournament (best of 3): Ava (Kazuya, her customized save) vs Bo (Lili, his),
+    both in their custom costumes; Vi watches the set from the Tournaments page (bracket -> the set -> Watch) and
+    her game shows the whole set with both costumes, identical to the players' games. lockstep: T5_RB_MODE=off on
+    every game (3 games at once). slow: Bo's game made slower ({PS3_TEST_SLOW_GAME_US, PS3_TEST_SLOW_XLAT_US}, patch
+    0059's test hooks, docs/WEAK_PC.md): its late frames are shown when ready -- the spectator must stay identical."""
+    if not {"tournaments", "spectate"} <= features():
+        raise Skip("this tree has no tournaments or no spectating")
+    sa, sb = _costume_saves()
+    game_server(ctx, T5L_TOUR_NOSHOW=300, T5L_TOUR_TICK=0.2)
+    env = {"T5_RB_MODE": "off"} if lockstep else {}
+    a = ctx.player("E2E Ava", char="kazuya", password="ava-pw-1", env=dict(env, T5_COSTUME_SAVE=sa))
+    b = ctx.player("E2E Bo", char="lili", password="bo-pw-1", env=dict(env, T5_COSTUME_SAVE=sb, **(slow or {})))
+    v = ctx.player("E2E Vi", password="vi-pw-1", env=env)
+    for p in (a, b, v):
+        login(ctx, p, "register")
+    a.set_char("kazuya")
+    b.set_char("lili")
+    t = a.client.tour_create("E2E Cup", fmt="single", set_wins=2, start=time.time() + 600, max_players=8)
+    tid = t["id"]
+    for p in (a, b):
+        p.client.tour_join(tid)
+    since = time.time()
+    a.client.tour_admin(tid, "start")
+    for p in (a, b):
+        ctx.wait(lambda p=p: p.bar_button("Accept") is not None, 30, f"{p.name}: the set is called (Accept)")
+        p.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 90,
+                    "the set's first game starts on both PCs"):
+        raise Abort("the tournament set did not start")
+    ev = latest(a, "match_start", since)
+    mid = ev["match"]
+    tset = (ev.get("set") or {}).get("tournament") or {}
+    ctx.check("game 1 is the tournament set's", tset.get("id") == tid, tset)
+    sid = tset.get("set")
+    # Vi: Online tab -> Tournaments -> E2E Cup -> the set in the bracket -> Watch
+    tab = v.tab
+    tab.nb.select(tab.tours_page)
+    tab._on_subtab()
+    tab.tours.select(tid)
+    ctx.wait(lambda: sid in getattr(tab.tours.bracket, "boxes", {}), 30, "Vi sees the bracket")
+    tab.tours.select_set(sid)
+    if not ctx.wait(lambda: str(tab.tours.page["watch"].cget("state")) == "normal", 60,
+                    "Vi's Watch button for the set is on (its game is being played, both allow spectators)"):
+        raise Abort("the set cannot be watched")
+    tab.tours.page["watch"].invoke()
+    t_v = time.time()
+    ctx.wait(lambda: (tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts at once (it waits for the data)")
+    ctx.check("the Spectating card says TOURNAMENT", (tab.spec.w or {}).get("tournament", {}).get("set") == sid,
+              (tab.spec.w or {}).get("tournament"))
+    ctx.wait(lambda: a.events_of("spectators", t_v), 20, "Ava is told somebody watches")
+    rows, mids = [], [mid]
+    for k in range(3):
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort(f"game {k + 1}: no fight")
+        wait_results(ctx, mid, (a, b))
+        rows.append(match_row(ctx, mid, (a, b), "confirmed", f"game {k + 1}"))
+        t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
+        ended = ctx.wait(lambda: a.events_of("set_end", since) or (latest(a, "match_start", t_res - 0.5) and
+                                                                   latest(b, "match_start", t_res - 0.5)), 60,
+                         f"game {k + 1}: the set ends or its next game starts", fail=False)
+        if not ended:
+            raise Abort("neither the end of the set nor its next game")
+        if a.events_of("set_end", since):
+            break
+        nxt = latest(a, "match_start", t_res - 0.5)["match"]
+        ctx.check(f"game {k + 2}: continues in the running games (the same session, the same stream)",
+                  a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
+        mid = nxt
+        mids.append(mid)
+    ctx.wait(lambda: a.events_of("set_end", since) and b.events_of("set_end", since), 30, "the set ends on both PCs")
+    se = latest(a, "set_end", since) or {}
+    ctx.note(f"set: {se.get('wins')} in {se.get('games')} game(s), {se.get('status')}")
+    full = {}
+    ok = ctx.wait(lambda: (full.update(a.client.tour_get(tid)) or True) and full.get("state") == "finished", 60,
+                  "the tournament is finished", fail=False)
+    row = next((s for s in (full.get("bracket") or {}).get("sets") or () if s["id"] == sid), {})
+    ctx.check("the bracket has the set's result from its games", ok and row.get("state") == "done" and
+              row.get("reason") is None and full.get("champion") in ("E2E Ava", "E2E Bo"),
+              f"{row.get('state')} {row.get('score')} {row.get('reason')}, champion {full.get('champion')}")
+    ctx.wait(lambda: (tab.spec.w or {}).get("state") == "over", 600, "Vi's game ends at the end of the stream")
+    _spectator_verdict(ctx, "tournament set", v, n_matches=len(mids))
+    _costume_checks(ctx, "tournament set", a, b, (v,), n_matches=len(mids))
+    if slow:
+        from e2e_flows import _whole
+        lines = _whole(b)
+        late = [int(m.group(1)) for m in (re.search(r"\[slow-frames\].* (\d+) late for their vblank", ln) for ln in lines)
+                if m]
+        ctx.check("Bo's slowed game showed frames late for their vblank when ready (patch 0059)",
+                  any(n > 0 for n in late) and any("PS3_TEST_SLOW_GAME_US" in ln for ln in lines), late)
+        fps = [r[n]["result_file"].get("fps") for r in rows for n in r if n == "E2E Bo" and isinstance(r[n], dict)
+               and "result_file" in r[n]]
+        ctx.note(f"Bo's game slowed by {slow}: late frames per [slow-frames] window {late}; fps per game {fps}")
+    for r in rows:
+        ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
+                                                f"{r[n]['result_file'].get('desync')}, hash "
+                                                f"{r[n]['result_file'].get('hash')}" for n in r
+                                                if isinstance(r[n], dict) and "result_file" in r[n]))
+        ctx.matches.append(r)
+
+
+@scenario("int_tour_watch", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="a tournament set (best of 3, rollback) with both players in their custom costumes, watched from the "
+               "bracket (Tournaments: Watch): every game confirmed in sync, the spectator's game identical and showing "
+               "both costumes")
+def int_tour_watch(ctx):
+    _tour_watch_case(ctx)
+
+
+@scenario("int_tour_watch_ls", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="int_tour_watch in lockstep (T5_RB_MODE=off on every game)")
+def int_tour_watch_ls(ctx):
+    _tour_watch_case(ctx, lockstep=True)
+
+
+@scenario("int_tour_watch_slow", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="int_tour_watch (rollback) with one player's game slowed (PS3_TEST_SLOW_GAME_US=10000, "
+               "PS3_TEST_SLOW_XLAT_US=2000): its late frames are shown when ready (patch 0059); every game in sync, the "
+               "spectator identical with both costumes")
+def int_tour_watch_slow(ctx):
+    _tour_watch_case(ctx, slow={"PS3_TEST_SLOW_GAME_US": "10000", "PS3_TEST_SLOW_XLAT_US": "2000"})
+
+
+@scenario("int_fw_costumes", "13 integration 1.1.3", game=True, suites=("game", "net"),
+          desc="one game blocked completely (T5_NET_TEST_INBOUND=block), the lobby found the direct path: after 15 s of "
+               "silence the match moves onto the relay; both costume tables go through the relay, a spectator who "
+               "watched from the start gets the session started again on the same stream")
+def int_fw_costumes(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter") or "spectate" not in features():
+        raise Skip("this tree has no firewall fallback or no spectating")
+    sa, sb = _costume_saves()
+    game_server(ctx)
+    a = ctx.player("E2E FwAva", char="kazuya", password="fwava-pw-1", env={"T5_COSTUME_SAVE": sa})
+    b = ctx.player("E2E FwBo", char="lili", env={"T5_COSTUME_SAVE": sb})
+    v = ctx.player("E2E FwVi", password="fwvi-pw-1")
+    login(ctx, a, "register")
+    login(ctx, b)
+    login(ctx, v, "register")
+    a.set_char("kazuya")
+    b.set_char("lili")
+    a.call(a.client.add_friend, "E2E FwVi")
+    ctx.wait(lambda: any(r["name"] == "E2E FwAva" for r in (v.client.friend_list or {}).get("incoming") or ()), 15,
+             "Vi gets Ava's friend request")
+    v.call(v.client.answer_friend, "E2E FwAva", True)
+    ctx.wait(lambda: any(f["name"] == "E2E FwAva" for f in (v.client.friend_list or {}).get("friends") or ()), 15,
+             "Vi and Ava are friends")
+    ctx.shaper.set(0, 0, 0, on=True, ip="127.0.0.2")       # the "internet" between the games: not 127.0.0.1
+    a.set_firewall("block", None)                          # Ava's game hears nothing but 127.0.0.1
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    first = latest(a, "match_start", since) or {}
+    ctx.check("the lobby found the direct path first", first.get("path") in ("direct", "lan"), first.get("path"))
+    # Vi watches at once: Friends -> Ava -> Watch (before the fallback)
+    ctx.wait(lambda: _friend_watch(v, "E2E FwAva"), 30, "Vi's friends list: Ava can be watched")
+    v.tab._fill_friends()
+    v.tab.tv_friends.selection_set("f:E2E FwAva")
+    v.tab._set_friend_actions()
+    if str(v.tab.friend_actions["watch"].cget("state")) == "normal":
+        v.tab.friend_actions["watch"].invoke()
+        ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts (it waits for the data)")
+        t_watch = time.time()
+    else:
+        t_watch = None
+        ctx.check("Vi could watch before the fallback", False, "the Watch button stayed off")
+    ok = ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2,
+                  120, "the match moves onto the relay (a second match_start on both PCs)")
+    if not ok:
+        for p in (a, b):
+            ctx.note(f"{p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-8:]}")
+        raise Abort("no relay fallback")
+    second = a.events_of("match_start", since)[-1]
+    ctx.check("relay after the fallback, the same match and stream", second.get("path") == "relay" and
+              second.get("match") == mid and second.get("stream") == first.get("stream"),
+              f"{second.get('path')} {second.get('match')} {second.get('stream')}")
+    ctx.check("Ava's launcher shows the firewall hint", bool(a.tab.fw_hint_var.get()), repr(a.tab.fw_hint_var.get()))
+    if not wait_fight(ctx, mid, (a, b), timeout=240):
+        raise Abort("no fight after the fallback")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "fallback match")
+    ctx.matches.append(row)
+    ctx.check("Ava's game ran with the emulated firewall (block)", _fw_count(a, RE_FW_EMULATED) >= 1,
+              _fw_count(a, RE_FW_EMULATED))
+    for p in (a, b):
+        ctx.check(f"{p.name} never saw \"could not be reached\"", not p.saw_status(r"could not be reached", since),
+                  [x for ts, x in p.statuses if ts >= since][-3:])
+    # the costume tables went through the relay: the same blocks on both PCs, both custom
+    _costume_checks(ctx, "fallback match", a, b, (v,) if t_watch else (), n_matches=1)
+    for p in (a, b):
+        lines = [ln for ln in log_lines(p) if "costume table" in ln or "live stream" in ln]
+        ctx.note(f"{p.name}: {lines[-8:]}")
+    leave(ctx, a)
+    leave(ctx, b)
+    if t_watch:
+        ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "over", 600, "Vi's game ends at the end of the stream")
+        _spectator_verdict(ctx, "fallback match", v, n_matches=1)
+    a.set_firewall(None, None)
+    ctx.shaper.set(0, 0, 0, on=False)
+
+
+# ============================================================================== 14. private and community rooms (1.1.3)
+# docs/ONLINE.md "Rooms": a room locked with a password or an invite code, made in the launcher's Create room window;
+# a community room whose members take turns.
+PRIVATE_PW = "E2E Kuma Night 5"
+
+
+def _need_private_rooms():
+    if "private_rooms" not in features():
+        raise Skip("this tree has no private rooms")
+
+
+def _create_room_window(p, size=2, access="Anybody", password="", hidden=False, rotation="Winner stays"):
+    """The launcher's Create room window (tk_rooms.py), filled in like a player would, then Create."""
+    from t5lobby.i18n import t
+    p.press("room")
+    w = p.tab.rooms_ui.window
+    if w is None:
+        raise Abort(f"{p.name}: Create room opened no window (a server without private rooms?)")
+    w.vars["size"].set(str(size))
+    w.vars["rotation"].set(t(rotation))
+    w.vars["access"].set(t(access))
+    w.vars["password"].set(password)
+    w.vars["hidden"].set(1 if hidden else 0)
+    w.create_button.invoke()
+
+
+@scenario("private_room", "14 private rooms", game=True, suites=("game",),
+          desc="a room locked with a password (the Create room window): listed as locked, a wrong password refused, "
+               "the right one lets the second player in; one real match in it (rollback) confirmed and in sync; the "
+               "password nowhere in the server's log")
+def private_room(ctx):
+    _need_private_rooms()
+    srv = game_server(ctx)
+    a = ctx.player("E2E Pia", char="jin")
+    b = ctx.player("E2E Rex", char="paul")
+    login(ctx, a)
+    login(ctx, b)
+    a.set_char("jin")
+    b.set_char("paul")
+    _create_room_window(a, access="Private (password)", password=PRIVATE_PW)
+    ctx.wait(lambda: (a.client.my_room or {}).get("lock") == "password", 10, "the private room is made")
+    rid = a.client.my_room["id"]
+    ctx.wait(lambda: b.tab.tv_rooms.exists(rid), 10, "the room is listed for the other player")
+    vals, tags = b.tab.tv_rooms.item(rid, "values"), b.tab.tv_rooms.item(rid, "tags")
+    ctx.check("listed as locked: 'private' and the lock icon", "private" in str(vals[2]) and "closed" in tags,
+              f"{vals} {tags}")
+    asked = []
+    b.tab.ask_string = lambda *a_, **k: asked.append(k.get("show")) or "not the password"
+    b.tab.tv_rooms.selection_set(rid)
+    t0 = time.time()
+    b.press("join")
+    ctx.wait(lambda: b.saw_status("wrong room password", t0), 10, "a wrong password is refused")
+    ctx.check("the password is asked in a masked field", asked == ["*"], asked)
+    ctx.check("nobody got in with it", (b.me or {}).get("status") == "idle" and
+              len((a.client.my_room or {}).get("members") or ()) == 1, b.me)
+    b.tab.ask_string = lambda *a_, **k: PRIVATE_PW
+    t = time.time()
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    ctx.check("the room's match: ready check, opponent named", a.matches[mid].get("ready_check") and
+              a.matches[mid].get("opponent_at_found") == "E2E Rex")
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    wait_fight(ctx, mid, (a, b), timeout=150)
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "private room match")
+    fps_check(ctx, row, (a, b))
+    if ctx.run.netcode == "rollback":
+        ctx.check("played with rollback", all((row.get(p.name) or {}).get("mode") == "rollback" for p in (a, b)),
+                  [(row.get(p.name) or {}).get("mode") for p in (a, b)])
+    text = srv.log_text()
+    ctx.check("the password is nowhere in the server's log", PRIVATE_PW not in text and "Kuma Night" not in text,
+              "found" if PRIVATE_PW in text else "")
+    leave(ctx, a)
+    leave(ctx, b)
+
+
+@scenario("private_room_turns", "14 private rooms", suites=("quick", "lobby"),
+          desc="a hidden room for 3 with an invite code (stub games): Copy invite code fills the launcher's field, "
+               "never the clipboard; the others join with the code and nothing selected; three matches by 'winner "
+               "stays'; no rematch vote")
+def private_room_turns(ctx):
+    _need_private_rooms()
+    stub_server(ctx, T5L_ROOM_NEXT_SECONDS=2)
+    a, b, c = (ctx.player(n, kind="stub") for n in ("E2E Ivy", "E2E Jon", "E2E Kai"))
+    for p in (a, b, c):
+        login(ctx, p)
+    _create_room_window(a, size=3, access="Private (invite code)", hidden=True)
+    ctx.wait(lambda: a.client.room_code, 10, "the room and its invite code")
+    ctx.check("before Copy invite code the field is empty", a.tab.rooms_ui.code_var.get() == "")
+    clip_before = ctx.run.root.clipboard_get()
+    a.press("room_code")
+    code = a.tab.rooms_ui.code_var.get()
+    ctx.check("Copy invite code puts the code into the launcher's own field", code == a.client.room_code, code)
+    ctx.check("... and nothing into the clipboard", ctx.run.root.clipboard_get() == clip_before)
+    ctx.sleep(1.0)
+    ctx.check("a hidden room is in nobody's list", not b.tab.tv_rooms.get_children() and
+              not c.tab.tv_rooms.get_children())
+    for p in (b, c):
+        p.tab.tv_rooms.selection_remove(*p.tab.tv_rooms.selection())
+        p.tab.ask_string = lambda *a_, **k: code            # (typed in from what the host shared)
+        p.press("join")
+        ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == a.client.my_room["id"], 10, f"{p.name} joins")
+    line = ["E2E Ivy", "E2E Jon", "E2E Kai"]
+    for k in range(3):
+        t = time.time()
+        ctx.wait(lambda: sum(1 for p in (a, b, c) if latest(p, "match_found", t)) == 2, 30, f"room match {k + 1}")
+        two = [p for p in (a, b, c) if latest(p, "match_found", t)]
+        mid = latest(two[0], "match_found", t)["match"]
+        names = sorted(p.name for p in two)
+        ctx.check(f"match {k + 1}: the first two of the line play ({line[:2]})", names == sorted(line[:2]), names)
+        for p in two:
+            accept(ctx, p, mid)
+        wait_results(ctx, mid, two, STUB_MATCH_SECONDS)
+        m = two[0].matches[mid]
+        ctx.check(f"match {k + 1}: confirmed, no rematch vote", m.get("status") == "confirmed" and
+                  not m.get("rematch_window"), f"{m.get('status')} {m.get('rematch_window')}")
+        p1 = two[0].name if m.get("slot") == 0 else two[1].name
+        p2 = two[1].name if p1 == two[0].name else two[0].name
+        winner = (p1, p2)[m["winner"]] if m.get("winner") is not None else None
+        loser = p2 if winner == p1 else p1
+        if winner is not None:                               # winner stays: the loser to the back of the line
+            line.remove(loser)
+            line.append(loser)
+            line.remove(winner)
+            line.insert(0, winner)
+        ctx.note(f"match {k + 1}: {p1} vs {p2}, winner {winner}; line now {line}")
+    for p in (a, b, c):
+        p.press("leave") if p.action_on("leave") else None

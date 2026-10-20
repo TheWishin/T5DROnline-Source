@@ -41,6 +41,9 @@ Knobs for tests (all optional):
     T5_CTL_DIR        persistent mode (docs/RANKED.md, "Game control channel"): boot to
                       idle, then run every "fight" command from <dir>/cmd.json with its env;
                       "idle" ends the session, "quit" exits
+    T5_NET_TEST_INBOUND  stateful | block: Windows Firewall blocking the game, emulated on the session's
+                      socket like the real game does it (src/netplay/netplay_core.cpp test_inbound_pass):
+                      only replies to this socket's own packets get in / nothing but 127.0.0.1
 
 Exit code 0 = every match connected and finished.
 """
@@ -70,6 +73,37 @@ def bind_ip(env):
         return v
     except OSError:
         return "127.0.0.1"
+
+
+class InboundFirewall:
+    """T5_NET_TEST_INBOUND on one socket (tests only): what a firewall that blocks the game lets through.
+    A dropped datagram reads as "nothing arrived" (socket.timeout), as with the real firewall."""
+
+    def __init__(self, sock, mode):
+        self.sock, self.mode = sock, mode
+        self.sent = set()
+        self.dropped = 0
+        self.logged = set()
+        log(f"TEST: inbound firewall emulated ({mode})")
+
+    def sendto(self, data, addr):
+        if self.mode == "stateful":
+            self.sent.add((addr[0], int(addr[1])))
+        return self.sock.sendto(data, addr)
+
+    def recvfrom(self, n):
+        data, src = self.sock.recvfrom(n)
+        ok = (src[0], src[1]) in self.sent if self.mode == "stateful" else src[0] == "127.0.0.1"
+        if ok:
+            return data, src
+        self.dropped += 1
+        if len(self.logged) < 8 and src not in self.logged:
+            self.logged.add(src)
+            log(f"TEST: inbound firewall dropped a packet from {src[0]}:{src[1]}")
+        raise socket.timeout("dropped by the emulated firewall")
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
 
 
 def replace(tmp, path):
@@ -118,7 +152,8 @@ class Session:
             from t5lobby.proto import disable_udp_connreset
             disable_udp_connreset(s)
         s.settimeout(0.05)
-        self.sock = s
+        mode = (self.env.get("T5_NET_TEST_INBOUND") or "").strip().lower()
+        self.sock = InboundFirewall(s, mode) if mode in ("stateful", "block") else s
         log(f"mode {self.mode}, delay {self.delay}" + (f", lobby match {self.env['T5_NET_MATCH']}"
                                                          if self.env.get("T5_NET_MATCH") else ""))
         if self.env.get("T5_FIGHT"):
@@ -132,10 +167,17 @@ class Session:
             self.sock = None
 
     def connect(self):
-        t_end = time.time() + self.timeout
+        t0 = time.time()
+        t_end = t0 + self.timeout
         last = 0.0
+        last_note = t0
+        arrived = 0
         target = self.peer
         while time.time() < t_end:
+            if time.time() - last_note >= 5.0:
+                last_note = time.time()       # (like the game: the launcher looks for "nothing arrived yet")
+                log(f"waiting for the opponent's game to answer ({int(last_note - t0)}s, "
+                    f"{'packets arrive' if arrived else 'nothing arrived yet'})...")
             if target is not None and time.time() - last >= 0.1:
                 self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 1 if self.mode == "join" else 0]) + b"\0" * 4,
                                  target)
@@ -144,6 +186,7 @@ class Session:
                 data, src = self.sock.recvfrom(2048)
             except (socket.timeout, ConnectionResetError):
                 continue
+            arrived += 1
             if data[:4] != MAGIC or data[4] != HELLO:
                 continue
             if self.mode == "host":
@@ -157,7 +200,8 @@ class Session:
                 self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 1]) + b"\0" * 4, src)
                 break
         else:
-            log(f"no peer within {self.timeout:.0f}s")
+            fw = f", the emulated firewall dropped {self.sock.dropped}" if isinstance(self.sock, InboundFirewall) else ""
+            log(f"no peer within {self.timeout:.0f}s{fw}")
             return False
         log(f"connected ({self.mode}, P{1 if self.mode == 'host' else 2}), delay {self.delay}")
         log(f"lockstep starts: frame 0, delay {self.delay}")
@@ -170,7 +214,16 @@ class Session:
     def exchange(self, frames, fail=None, fail_at=None):
         """`frames` frames of input exchange with per-frame hashes. -> 'ok' | 'lost' | fail."""
         last_heard = time.time()
-        for _ in range(frames):
+        # Like the real game, the frames start with the opponent's first input: until then a peer that is there (its
+        # HELLOs come) is waited for, up to T5_NET_START_TIMEOUT (the real game's start_timeout).
+        started = self.frame > 0
+        t_wait = time.time()
+        start_timeout = float(self.env.get("T5_NET_START_TIMEOUT", "120") or 120)
+        done = 0
+        while done < frames:
+            if not started and time.time() - t_wait > start_timeout:
+                log(f"peer lost (start_timeout): no input from the opponent's game within {start_timeout:.0f}s")
+                return "lost"
             f = self.frame
             if fail_at is not None and f >= fail_at:
                 if fail == "vanish":
@@ -188,13 +241,17 @@ class Session:
                     break
                 if data[:4] == MAGIC and data[4] == INPUT and len(data) >= 16:
                     last_heard = time.time()
+                    started = True
                     rf, rh = struct.unpack_from("!II", data, 8)
                     if rh != self.hash(rf):
                         self.mismatches += 1
                         if self.mismatches <= 10:
                             log(f"DESYNC at frame {rf}: local state hash {self.hash(rf):016x}, peer {rh:016x}")
-                elif data[:4] == MAGIC and data[4] == HELLO and self.mode == "host":
-                    self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
+                elif data[:4] == MAGIC and data[4] == HELLO:
+                    if not started:
+                        last_heard = time.time()  # (the opponent's game is there, still in its handshake)
+                    if self.mode == "host":
+                        self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
                 elif data[:4] == MAGIC and data[4] == BYE:
                     log("peer lost (peer_quit): the opponent left (its game was closed)")
                     return "peer_quit"
@@ -202,6 +259,9 @@ class Session:
                 log(f"no input from the peer for {min(self.timeout, 5.0):.0f}s -- peer lost, continuing with "
                     f"P{2 if self.mode == 'host' else 1} idle")
                 return "lost"
+            if not started:
+                continue
+            done += 1
             self.frame += 1
             if self.frame % 60 == 0:
                 log(f"sync check through frame {self.frame - 1}: {self.mismatches} mismatching frame(s)"

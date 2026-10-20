@@ -6,8 +6,8 @@ launcher's own lobby, like Tekken 6 Native Online.
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in docs/README.de.md. -->
-**Release 1.1.1 (2026-10-19).** Download
-`T5DR-Online-1.1.1.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.2 (2026-10-20).** Download
+`T5DR-Online-1.1.2.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
 **Online works:** tested between two players' PCs over the internet (direct
@@ -48,7 +48,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
 | Unlocks | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games always use a fresh save of their own, the same on both PCs. |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
@@ -150,9 +150,12 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   game larger (sharp on big screens, more work for the graphics card: the
   launcher names the step that matches your screen); Lower and Lowest draw the
   3D scene smaller for weak graphics cards (laptops, integrated graphics), the
-  HUD stays sharp. It only changes the picture, so the other player online
-  does not need the same setting. If fights drop below 60 fps, go one step
-  down. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
+  HUD stays sharp. **Auto** picks the step that matches your screen, at most
+  1080p on integrated graphics (they share the processor's memory and power,
+  so a larger picture slows the whole game there). It only changes the
+  picture, so the other player online does not need the same setting. If
+  fights drop below 60 fps, go one step down. More in
+  [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.
@@ -295,7 +298,9 @@ Good to know:
   (ranked). The ping shown for a found match counts the nearest relay server.
 - A cable is better than Wi-Fi.
 - The first time, Windows Firewall asks whether the game and Python may use the
-  network. Allow it for **private networks**.
+  network. Allow it for **private networks**. Clicked Cancel? Matches still
+  connect, some only through the relay; the Online tab shows a firewall line
+  with **How to fix**.
 - Netcode: rollback, like Tekken 6 Native Online. Input delay follows the ping:
   1 frame up to about 60 ms, 2 above. **Settings -> Online input delay** can
   fix it at 0, 1 or 2 frames; it counts only when your opponent picked the
@@ -318,6 +323,26 @@ Good to know:
   searching or in a match. **Invite to a match** (or to your room) asks them;
   one click on **Accept** on their side starts it. Blocking a player ends the
   friendship.
+- **Your custom costumes online** (from 1.1.3): what you bought and put on in
+  the item shop offline shows in online matches, for you and your opponent.
+- **Tournaments** (accounts, from 1.1.3): the Online tab's **Tournaments** page
+  lists the server's tournaments. **Sign up** (and **Check in** when it asks),
+  and when your set is ready the tab shows "Your tournament set is ready":
+  **Accept** within 5 minutes and the game starts by itself. Sets are best of 3
+  or 5, played like casual sets with the in-game select; the bracket (single or
+  double elimination) fills in by itself. Anyone with an account can organize
+  one with **Create...**. See [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
+- **Private and community rooms** (from 1.1.3): **Create room** asks how many
+  players (2 to 8) and who can join: anybody, a password or an invite code; it
+  can also hide the room from the list. Others select it and press **Join
+  room** (it asks for the password), or type the invite code into **Join room**
+  with no room selected. Share the code with **Copy invite code**: it appears in
+  the field next to the button, press Ctrl+C there. In a room for 3 or more you
+  take turns, one match after another, by **Winner stays** or **Everyone in
+  turn**; **Sit out** skips your turns. The host can change the password and
+  remove a player in **Room settings...**. A friend you invite to your room needs
+  no password. Only a private room's players can watch its matches. These rooms
+  are casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 ### Replays
@@ -332,6 +357,18 @@ it in the same session (a rematch starts from what the match before it left).
 The tab can switch recording off or leave the players' names out. A
 replay plays only with the game version that recorded it. Details:
 [docs/REPLAYS.md](docs/REPLAYS.md).
+
+### Spectating
+
+A friend in a match, any room's match or a tournament set can be watched live:
+**Watch** on the Friends page (below the list), in the Rooms list, or above a
+tournament's bracket (click the set first). Your game shows the match a
+few seconds behind, exactly as it is played (the same inputs, checked while it
+plays). Whenever you join, it plays the players' session from its start (a
+rematch depends on the matches before it). Settings -> Spectators: "Friends and
+room visitors may watch my online matches" (on) and "Also my ranked matches"
+(off); a match is watched only when both players allow it. Both players' custom
+costumes show for the spectators too. Details: [docs/SPECTATE.md](docs/SPECTATE.md).
 
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
 the terms screen it says "A network error occurred" and goes back to the title.
@@ -498,6 +535,8 @@ Where to read on:
 - `docs/TRAINING.md` — the training overlay (input display, frame data) and the
   runtime's overlay layer it draws with.
 - `docs/TROUBLESHOOTING.md` — fixes for players.
+- `docs/WEAK_PC.md` — why some PCs run fights at 40-50 fps (causes, what the logs
+  show, measurements, D3D12 vs Vulkan) and a checklist to paste to players.
 - `CHANGELOG.md` — what landed, by day.
 
 **Never commit anything game-derived.** The repository is public.

@@ -381,19 +381,6 @@ Gut zu wissen:
   „Rooms“ (auf Englisch).
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
-### Replays
-
-Jedes Online-Match wird als Replay gespeichert (ein paar KB, in
-`native\replays`). Der Reiter **Replays** zeigt sie mit Datum, Kämpfern,
-Ergebnis und Gegner; **Ansehen** spielt das Match im Spiel noch einmal ab,
-genau so, wie es war: dieselben Eingaben Bild für Bild, während des Abspielens
-mit dem Live-Match verglichen (am Ende steht im Reiter "identisch mit dem
-Live-Match"). Während es läuft, pausiert **START** (Enter), **SELECT** (Tab)
-beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
-gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
-weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
-Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
-
 ### Zuschauen
 
 Ein Freund im Match, das Match eines Raums oder ein Turnier-Set lässt sich live
@@ -406,6 +393,19 @@ Matches davor ab). Settings -> Zuschauer: „Freunde und Raumbesucher dürfen me
 Online-Matches ansehen“ (an) und „Auch meine Ranked-Matches“ (aus); ein Match
 wird nur angesehen, wenn beide Spieler es erlauben. Die eigenen Kostüme beider
 Spieler sehen auch die Zuschauer. Mehr in [SPECTATE.md](SPECTATE.md) (auf Englisch).
+
+### Replays
+
+Jedes Online-Match wird als Replay gespeichert (ein paar KB, in
+`native\replays`). Der Reiter **Replays** zeigt sie mit Datum, Kämpfern,
+Ergebnis und Gegner; **Ansehen** spielt das Match im Spiel noch einmal ab,
+genau so, wie es war: dieselben Eingaben Bild für Bild, während des Abspielens
+mit dem Live-Match verglichen (am Ende steht im Reiter "identisch mit dem
+Live-Match"). Während es läuft, pausiert **START** (Enter), **SELECT** (Tab)
+beendet es. Ein Rematch wird nach den Matches davor in derselben Sitzung
+gezeigt (ein Rematch beginnt dort, wo das Match davor aufgehört hat). Im Reiter kannst du die Aufnahme ausschalten oder die Namen der Spieler
+weglassen. Ein Replay läuft nur mit der Spielversion, die es aufgenommen hat.
+Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error

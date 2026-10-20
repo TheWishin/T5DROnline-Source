@@ -2530,11 +2530,14 @@ def _friend_watch(p, name):
     return any(f["name"] == name and f.get("watch") for f in (p.client.friend_list or {}).get("friends") or ())
 
 
-def _spectate_case(ctx, watched):
+def _spectate_case(ctx, watched, games=True):
     """A room match and a rematch in the running games (rollback), Ava (P1, the room's host) vs Bo. watched: Vi
     (Ava's friend) watches from the start through the Friends page, Wu (a guest) joins 60 s later through the
     Rooms list -- 4 games. Not watched: the same two players, the same mashing, no spectators and no live
-    stream at all (launchers without the cap) -- the frame times to compare. (At most 4 games at once.)"""
+    stream at all (launchers without the cap) -- the frame times to compare. games=False: watched, but the two
+    spectators' launchers only receive the stream (no game on this PC): the players' PC does exactly what it
+    does with spectators elsewhere, and the received files must be the players' file byte for byte.
+    (At most 4 games at once.)"""
     if "spectate" not in features():
         raise Skip("this tree has no spectating")
     game_server(ctx)
@@ -2544,6 +2547,9 @@ def _spectate_case(ctx, watched):
     if watched:
         v = ctx.player("E2E Vi", password="vi-pw-1")
         w = ctx.player("E2E Wu")
+        if not games:
+            for p in (v, w):
+                p.tab.spec._start_game = lambda path: None        # the stream only (their games would be on other PCs)
     else:
         for p in (a, b):
             p.tab.spec.client_kw = lambda: {"spectate": False}      # like an older launcher: no live stream at all
@@ -2586,11 +2592,15 @@ def _spectate_case(ctx, watched):
         v.tab.friend_actions["watch"].invoke()
         t_v = time.time()
         ctx.wait(lambda: v.tab.spec.w is not None, 15, "Vi watches (the Spectating card)")
-        ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts at once (it waits for the data)")
+        if games:
+            ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts at once (it waits for the data)")
         ctx.wait(lambda: a.events_of("spectators", t_v), 15, "Ava is told somebody watches")
     wait_fight(ctx, mid, (a, b), timeout=180)
     if watched:
-        ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "playing", 120, "Vi's game plays the match")
+        if games:
+            ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "playing", 120, "Vi's game plays the match")
+        else:
+            ctx.wait(lambda: (v.client.spec_watch or {}).get("ready"), 60, "Vi receives the session and its first match")
         # Wu joins late: Rooms -> Ava's room -> Watch
         ctx.sleep(max(0.0, 60.0 - (time.time() - t_v)))
         ctx.wait(lambda: any(r.get("watch") for r in w.client.rooms), 10, "the room's match can be watched")
@@ -2599,7 +2609,10 @@ def _spectate_case(ctx, watched):
         ctx.require("Wu's Watch button is on", str(w.tab.actions["watch_room"].cget("state")) == "normal")
         w.tab.actions["watch_room"].invoke()
         ctx.note(f"Wu joins {time.time() - t_v:.0f} s after Vi")
-        ctx.wait(lambda: (w.tab.spec.w or {}).get("game") is not None, 30, "Wu's game starts (from the session's start)")
+        if games:
+            ctx.wait(lambda: (w.tab.spec.w or {}).get("game") is not None, 30, "Wu's game starts (from the session's start)")
+        else:
+            ctx.wait(lambda: (w.client.spec_watch or {}).get("ready"), 60, "Wu receives the stream from the session's start")
     wait_results(ctx, mid, (a, b))
     mid2 = rematch(ctx, a, b)                  # (at once: the rematch window runs)
     ctx.check("the rematch continues the session", a.matches[mid2].get("cont"))
@@ -2608,7 +2621,18 @@ def _spectate_case(ctx, watched):
     wait_results(ctx, mid2, (a, b))
     rows.append(match_row(ctx, mid2, (a, b), "confirmed", "rematch"))
     leave(ctx, a)                               # the set ends: the players' session (and its stream) ends
-    if watched:
+    if watched and not games:
+        ctx.wait(lambda: all((p.tab.spec.w or {}).get("state") == "over" for p in (v, w)), 300,
+                 "the stream ends for both spectators")
+        with open(os.path.join(a.out, "logs", "online", "live", f"live-{mid}.t5live"), "rb") as f:
+            src = f.read()
+        for p, label in ((v, "Vi"), (w, "Wu")):
+            with open(os.path.join(p.out, "logs", "online", "live", f"watch-{mid}.t5live"), "rb") as f:
+                got = f.read()
+            ctx.check(f"{label}'s file is the players' live stream byte for byte (and an END)",
+                      got[:len(src)] == src and len(got) > len(src), f"{len(got)} / {len(src)} bytes")
+        ctx.note(f"the live stream: {len(src)} bytes for the session")
+    elif watched:
         ctx.wait(lambda: all((p.tab.spec.w or {}).get("state") == "over" for p in (v, w)), 900,
                  "both spectators' games end at the end of the stream")
         for p, label in ((v, "Vi (from the start)"), (w, "Wu (60 s late)")):
@@ -2651,3 +2675,11 @@ def spectate_live(ctx):
                "compare with spectate_live")
 def spectate_baseline(ctx):
     _spectate_case(ctx, False)
+
+
+@scenario("spectate_stream", "12 spectating", game=True, suites=("game",),
+          desc="watched by two spectators whose launchers only receive (no spectator games on this PC): the "
+               "players' frame times with spectators, to compare with spectate_baseline; the received files are "
+               "the players' stream byte for byte")
+def spectate_stream(ctx):
+    _spectate_case(ctx, True, games=False)

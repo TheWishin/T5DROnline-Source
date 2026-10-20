@@ -13,6 +13,12 @@ intrin.h) plus the few declarations in tools/gamedll/include are enough, and it
 links against two import libraries made from our own .def files (t5dr.exe's
 exports, ucrtbase.dll's C functions). clang-cl, lld-link and clang's headers are
 redistributable (Apache-2.0 WITH LLVM-exception).
+
+The lifted code is compiled with the shipped PGO profile (tools/gamedll/t5dr_lifted.proftext:
+function names and execution counts, made by tools/pgo_train.py), split into four parts and turned
+into clang's format with llvm-profdata.exe from the same folder as clang-cl; without it, or with a
+profile that tools/profile_check.py refuses, the DLL is built without (the same game, a little
+slower). docs/RENDER_PERF.md "Profile-guided optimisation of the lifted code".
 """
 import argparse
 import glob
@@ -181,8 +187,9 @@ def main():
                          "import libraries); see tools/pgo_train.py. fe (default): clang's front-end "
                          "instrumentation, ir: LLVM IR instrumentation")
     ap.add_argument("--profile", default="",
-                    help="profile (.profdata) for the lifted code: 'none', a file, or empty = the shipped "
-                         "tools/gamedll/t5dr_lifted.profdata when present")
+                    help="PGO profile of the lifted code (text .proftext or LLVM .profdata): 'none', a file, or "
+                         "empty = the shipped tools/gamedll/t5dr_lifted.proftext (docs/RENDER_PERF.md \"Profile-guided "
+                         "optimisation of the lifted code\")")
     a = ap.parse_args()
 
     llvm = find_llvm(a.llvm)

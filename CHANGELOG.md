@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Speed
+- **The game needs less processor time per frame** (branch cpu-build-opt; build settings only, the game
+  plays exactly the same). BUILD GAME now compiles the game code with a profile of where a fight spends
+  its time (profile-guided optimisation, `tools/gamedll/t5dr_lifted.proftext`): measured on 2 cores /
+  4 threads, the game's main thread needs about 6-8 % less CPU per frame and the sound processor about
+  10 % less. That matters on PCs that are just too slow for a steady 60 fps. The build itself got ~15 %
+  faster and the game DLL 17 % smaller. The profile holds only function names and counts, no game
+  data; the release ships LLVM's `llvm-profdata.exe` to read it. Players with and without the profile,
+  with and without AVX2, play each other in sync (rollback and lockstep pairs, 0 different frames).
+  After the update press **BUILD GAME** once. docs/RENDER_PERF.md "Profile-guided optimisation of the
+  lifted code".
+
 ## v1.1.2 (2026-10-20)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2

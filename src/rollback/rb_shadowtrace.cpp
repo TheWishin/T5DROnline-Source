@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 
 #include "ppu_recomp.h"
 #include "rb.h"
@@ -66,6 +67,26 @@ void shadowtrace_boundary(uint32_t f, bool resim)
 {
     static uint32_t to = 0;
     if (!g_log) return;
+    {   /* T5_RB_SHADOW_DUMP=f1,f2,...: the fighters' skeleton arrays ([sk+0x10] now, [sk+0x14] the
+         * previous frame's copy, 27 x 0x90 bytes each) at those boundaries, raw (pose_f<f>_P<n>_{cur,prev}.bin) */
+        static std::string dump_at; static bool rd = false;
+        if (!rd) { rd = true; if (const char* e = getenv("T5_RB_SHADOW_DUMP")) dump_at = std::string(",") + e + ","; }
+        char key[16]; snprintf(key, sizeof key, ",%u,", f);
+        if (!resim && !dump_at.empty() && dump_at.find(key) != std::string::npos) {
+            for (int i = 0; i < 2; i++) {
+                const uint32_t fb = r32(0x10091AB0u + 4 * i), sk = fb ? r32(fb + 0x8A4) : 0;
+                if (!sk) continue;
+                const uint32_t arr[2] = { r32(sk + 0x10), r32(sk + 0x14) };
+                for (int k = 0; k < 2; k++) {
+                    if (!arr[k]) continue;
+                    char path[64]; snprintf(path, sizeof path, "pose_f%u_P%d_%s.bin", f, i + 1, k ? "prev" : "cur");
+                    if (FILE* fp = fopen(path, "wb")) { fwrite(vm_base + arr[k], 1, 27 * 0x90, fp); fclose(fp); }
+                }
+                char path[64]; snprintf(path, sizeof path, "pose_f%u_P%d_sk.bin", f, i + 1);
+                if (FILE* fp = fopen(path, "wb")) { fwrite(vm_base + sk, 1, 0x100, fp); fclose(fp); }
+            }
+        }
+    }
     if (!to) { const char* e = getenv("T5_RB_SHADOW_TRACE_TO"); to = e && *e ? (uint32_t)atoi(e) : 400; }
     if (f > to) return;
     fprintf(g_log, "B %u %d ph %u r %016llx %016llx %016llx %016llx", f, resim ? 1 : 0, r32(0x1008F070u),

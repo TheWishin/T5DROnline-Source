@@ -68,6 +68,14 @@ from .spectate import ClientMixin as SpectateClientMixin
 CLIENT_NAME = "t5lobby-client/0.1"
 
 
+def _ip_literal(host):
+    try:
+        ipaddress.ip_address(str(host))
+        return True
+    except ValueError:
+        return False
+
+
 class LobbyClient(SpectateClientMixin):
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
@@ -470,8 +478,36 @@ class LobbyClient(SpectateClientMixin):
         """The server's list of regional relays changed: measure the new list."""
         if self.welcome is not None and isinstance(msg.get("relays"), list):
             self.welcome["relays"] = msg["relays"]
-            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
+            self._measure_relays_soon()
         return False
+
+    # Measuring the relays sends UDP pings to the addresses a server names. One measurement at a time, the next one
+    # at least RELAY_MEASURE_GAP s after the last (pushes in between are folded into it): a server -- any server a
+    # player adds -- must not make this PC ping whatever it likes, as often as it likes, by sending `relays` again
+    # and again (security review 2; each push used to start a measurement of up to 32 addresses at once).
+    RELAY_MEASURE_GAP = 5.0
+
+    def _measure_relays_soon(self):
+        task = getattr(self, "_relay_task", None)
+        if task is not None and not task.done():
+            self._relay_again = True
+            return
+        self._relay_again = False
+        self._relay_task = asyncio.ensure_future(self._measure_relays_paced())
+        self._tasks = [x for x in self._tasks if not x.done()]
+        self._tasks.append(self._relay_task)
+
+    async def _measure_relays_paced(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            wait = getattr(self, "_relay_last", -1e9) + self.RELAY_MEASURE_GAP - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._relay_again = False
+            self._relay_last = loop.time()
+            await self._measure_relays()
+            if not self._relay_again:
+                return
 
     async def _on_match_cancel(self, msg):
         if self.match and self.match["match"] == msg["match"]:
@@ -836,14 +872,17 @@ class LobbyClient(SpectateClientMixin):
         when a match needs one. A relay that does not answer is left out (never chosen for this player)."""
         if not self._server_relays():
             return
-        lst = [r for r in self.welcome.get("relays") or () if isinstance(r, dict) and r.get("id") and r.get("host")]
+        # (a relay is an address the server resolved: a name here would be looked up -- with the loop waiting -- and
+        # a port outside 1..65535 would end the measurement)
+        lst = [r for r in self.welcome.get("relays") or () if isinstance(r, dict) and r.get("id") and r.get("host")
+               and _ip_literal(r["host"]) and isinstance(r.get("port"), int) and 0 < r["port"] < 65536]
         if not lst and not self.relay_rtts:
             return                                  # (no regional relays on this server: nothing to say)
 
         async def one(r):
             try:
                 return r["id"], await server_rtt(self.relay_address(r))
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 return r.get("id"), None
         got = await asyncio.gather(*(one(r) for r in lst[:32]))
         rtts = {rid: round(ms, 2) for rid, ms in got if ms is not None}
@@ -876,7 +915,7 @@ class LobbyClient(SpectateClientMixin):
             await self._safe(self._send({"t": "perf", "fps": self.perf_fps}))
         await self._measure_server()
         if self._server_relays():
-            self._tasks.append(asyncio.ensure_future(self._measure_relays()))
+            self._measure_relays_soon()
         self._start_keepalive()
         self._start_port_mapper()
         if self.nat2:

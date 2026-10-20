@@ -644,6 +644,21 @@ def online_saves_dir(out_dir):
     return os.path.join(out_dir, "gamedata-online", "dev_hdd0", "home", "00000001", "savedata")
 
 
+# patches/ps3recomp/0044 ignores a PS3_SAVEDATA_DIR of this many bytes or more -- and then the online game would read
+# and write the player's offline save (./gamedata): its OPTIONS differ from the other PC's fresh save, every frame
+# mismatches (docs/NETPLAY.md, run c2). The same folder relative to the game's working directory (the output folder:
+# run_game.game_command) is never that long (security review 2).
+SAVEDATA_DIR_MAX = 1024 - 64
+ONLINE_SAVES_REL = "./gamedata-online/dev_hdd0/home/00000001/savedata"
+
+
+def online_saves_env(out_dir):
+    """The PS3_SAVEDATA_DIR value for an online game in `out_dir`: its absolute folder, or the relative one when the
+    absolute one is too long for the runtime."""
+    path = online_saves_dir(out_dir)
+    return path if len(path.encode("utf-8")) < SAVEDATA_DIR_MAX else ONLINE_SAVES_REL
+
+
 def backup_saves_once(out_dir, tag):
     """Copy the save folder to <out>/save-backups/<tag>-<time>/ the first time a feature that changes what the
     save keeps is used (free items: what is taken stays in the save). Copying it back undoes it. Only once per
@@ -686,7 +701,7 @@ class GameRun:
             # An online game keeps a save of its own (patches/ps3recomp/0044): both PCs start from the same
             # fresh save -- the game copies its own OPTIONS (round time, difficulty, ...) and unlocks into the
             # match state -- and the player's offline save is never read or written by it.
-            env_over.setdefault("PS3_SAVEDATA_DIR", online_saves_dir(self.out))
+            env_over.setdefault("PS3_SAVEDATA_DIR", online_saves_env(self.out))
         elif env_over.get("T5_UNLOCK_ITEMS"):
             backup_saves_once(self.out, "free-items")
         cmd, env, cwd = run_game.game_command(self.out, env_over)

@@ -95,6 +95,8 @@ class Config:
     max_friends: int = 100          # T5L_MAX_FRIENDS: friends per account
     friend_requests_day: int = 20   # T5L_FRIEND_REQUESTS_DAY: friend requests an account may send per 24 h
     friend_pending: int = 30        # T5L_FRIEND_PENDING: requests waiting for an answer, per sender and per receiver
+    friend_requests_address: int = 60  # T5L_FRIEND_REQUESTS_ADDRESS: friend requests per 24 h from one internet address,
+                                    # all its accounts together (0 = no limit)
     friend_request_days: float = 14.0  # T5L_FRIEND_REQUEST_DAYS: an unanswered request runs out after this
     friend_retry_days: float = 7.0  # T5L_FRIEND_RETRY_DAYS: after a decline, the same request again only after this
     invite_seconds: float = 60.0    # T5L_INVITE_SECONDS: an invite to a match or a room waits this long for an answer
@@ -104,6 +106,8 @@ class Config:
     spectate_buffer_kb: int = 2048  # T5L_SPECTATE_BUFFER_KB: a session's stream kept from its start (compressed; ~3 h)
     spectate_rate_kb: int = 16      # T5L_SPECTATE_RATE_KB: KB/s a streamer may upload (a match needs well under 1)
     spectate_idle: float = 90.0     # T5L_SPECTATE_IDLE: a stream with no new data this long, its match over, ends
+    invite_retry_seconds: float = 30.0  # T5L_INVITE_RETRY_SECONDS: after a declined (or taken back) invite or challenge,
+                                    # the same player asks the same player again only after this (0 = off)
     lag_tolerance: float = 1.0      # T5L_LAG_TOLERANCE: extra frames of waiting before the lag check says "more than the ping explains"
     lag_wait: float = 6.0           # T5L_LAG_WAIT: seconds to wait for the second player's lag report
     # PC speed (docs/RANKED.md "Slow PCs"): lockstep plays at the slower PC's speed

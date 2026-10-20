@@ -97,6 +97,10 @@ FRIEND_INVITE_TEXT = {"update": N_("older launcher: no invites"), "version": N_(
 PATH_TEXT = {"direct": N_("direct"), "lan": N_("local network"), "relay": N_("via the lobby server's relay")}
 PAD_STALE_S = 1.0       # a controller press this old by the time the tab sees it (a dialog held the loop) is dropped
 PAD_COOLDOWN_S = 0.6    # after a controller action the next one waits (A and B hit together do only one thing)
+# A question's controller buttons (Accept (A) ...) take only presses made this long after it came up: a press meant
+# for what was there before -- A for a search, a menu -- must not answer a challenge or an invite that popped up in
+# the same moment (security review 2: a challenger or a friend could time one against a player using the pad).
+BAR_ARM_S = 0.4
 
 
 def _word(table, key):
@@ -199,6 +203,7 @@ class OnlineTab:
         self._pad_gen = -1
         self._pad_until = 0.0            # no controller action before this (pad clock)
         self.spec = tk_spectate.Spectating(self)   # watching live matches (docs/SPECTATE.md)
+        self._bar_t = -1e9               # when the question bar's buttons last changed (pad clock): BAR_ARM_S
         self._build_ui()
         self._after = self.parent.after(100, self._poll)
 
@@ -378,6 +383,8 @@ class OnlineTab:
             self.bar_spec.append((b, label, pad))
             if pad:
                 self.bar_pad[pad] = cmd
+        if self.bar_pad:
+            self._bar_t = (self.pad.clock if self.pad is not None else time.monotonic)()
         self.view.show_bar()
         self._pad_relabel()
 
@@ -1069,13 +1076,16 @@ class OnlineTab:
             slot = info.get("slot") or 0
             fight = info.get("fight")
             fighters = None
-            if fight and all(x and x != fighters_random() for x in fight):
+            # Only fighters of our own table and whole-number scores: the status is public on the player's Discord
+            # profile, and a lobby server (any server a player adds) sent the keys -- an unknown key used to go there
+            # as it came, any text up to 128 characters (security review 2).
+            if fight and len(fight) == 2 and all(isinstance(x, str) and self.table.fighter(x) for x in fight):
                 names = [self.table.fighter_name(x) for x in fight]
                 fighters = (names[0], names[1]) if slot == 0 else (names[1], names[0])
-            st = info.get("set") or {}
+            st = info.get("set") if isinstance(info.get("set"), dict) else {}
             score = None
-            if st.get("rated"):
-                w = st.get("wins") or [0, 0]
+            w = st.get("wins")
+            if st.get("rated") and isinstance(w, (list, tuple)) and len(w) == 2 and                     all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v < 100 for v in w):
                 score = (w[0], w[1]) if slot == 0 else (w[1], w[0])
             spec = dict(kind="match", ranked=info.get("ranked"), fighters=fighters, set_score=score)
         elif c.me.get("status") == "queue":
@@ -1791,6 +1801,8 @@ class OnlineTab:
         act = self._pad_plan().get(ev.button)
         if act is None:
             return
+        if act[0] is None and ev.t < self._bar_t + BAR_ARM_S:
+            return                  # a question's button, pressed before the question was there to be read
         self._pad_until = now + PAD_COOLDOWN_S
         act[1]()
 

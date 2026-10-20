@@ -187,9 +187,10 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 4   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
-                   # 4: lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
-                   # 4: lifted PPU code with register promotion (ps3recomp patch 0066)
+CODE_VERSION = 5   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+                   # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
+                   # 5 (1.1.4): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
+                   # -fno-finite-loops (build_game_dll.py)
 
 # The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
 # four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).

@@ -159,7 +159,9 @@ endif()
 # the objects are the same (tools/build_game_dll.py does the same for the player's build).
 # /GS-: no stack cookies in the lifted code (as tools/build_game_dll.py builds it): it keeps the PPU's
 # registers in its context, not in local arrays, so a cookie guards nothing there.
-set(_lifted_opts /clang:-ffp-contract=off /clang:-fno-caret-diagnostics /GS-)
+# -fno-finite-loops: a guest `b .` (a deliberate hang) stays a hang -- C++ lets the compiler assume every loop ends
+# and remove the way into it (tools/build_game_dll.py PPU_LOOPS).
+set(_lifted_opts /clang:-ffp-contract=off /clang:-fno-caret-diagnostics /GS- /clang:-fno-finite-loops)
 if(NOT _lifted_arch STREQUAL "none")
     list(APPEND _lifted_opts "/clang:-march=${_lifted_arch}")
 endif()

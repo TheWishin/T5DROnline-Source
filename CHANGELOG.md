@@ -34,6 +34,13 @@ part is in the README's status table.
   each other online frame for frame in sync. The first build after updating translates the game code again (about
   25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
 
+### Building the game
+- **Press BUILD GAME once after updating** (1.1.4 has a new code ID: 1.1.3 and 1.1.4 builds never meet online).
+  The game code is now compiled so that a place where the game deliberately stops for good stays that way: the
+  compiler was allowed to assume such an endless loop never happens and, in one function, turned the way into it
+  into a call through a pointer that may be empty. The speed profile of 1.1.3 still fits the new translation (0 of
+  its functions out of date), so it is used as it is.
+
 ### Online
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,

@@ -367,9 +367,9 @@ Gut zu wissen:
   bleibt** oder **Alle der Reihe nach**; **Aussetzen** überspringt deine Runden.
   Der Gastgeber kann in **Raum-Einstellungen...** das Passwort ändern und einen
   Spieler entfernen. Einen Freund, den du in deinen Raum einlädst, fragt
-  niemand nach dem Passwort. Die Matches eines privaten Raums können nur seine Spieler
-  zuschauen. Diese Räume sind casual. Mehr in [ONLINE.md](ONLINE.md) „Rooms“
-  (auf Englisch).
+  niemand nach dem Passwort. Die Matches eines privaten Raums können nur seine
+  Spieler zuschauen. Diese Räume sind casual. Mehr in [ONLINE.md](ONLINE.md)
+  „Rooms“ (auf Englisch).
 - Mehr in [ONLINE.md](ONLINE.md) und [RANKED.md](RANKED.md) (auf Englisch).
 
 ### Replays

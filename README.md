@@ -338,8 +338,8 @@ Good to know:
   take turns, one match after another, by **Winner stays** or **Everyone in
   turn**; **Sit out** skips your turns. The host can change the password and
   remove a player in **Room settings...**. A friend you invite to your room needs
-  no password. Only a private room's players can watch its matches. These rooms are
-  casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
+  no password. Only a private room's players can watch its matches. These rooms
+  are casual. See [docs/ONLINE.md](docs/ONLINE.md) "Rooms".
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 ### Replays

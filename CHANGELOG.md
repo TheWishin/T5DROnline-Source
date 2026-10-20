@@ -6,6 +6,16 @@ part is in the README's status table.
 ## v1.1.3 (not released yet)
 
 ### Picture and speed
+- **The game's own work per fight frame is about a quarter smaller** (ps3recomp patch 0061).
+  Its main thread made two Windows kernel calls for every lock and unlock of the game's
+  light-weight mutexes, even when nobody else wanted the lock: about a third of its work in a
+  fight. Those locks now cost a few instructions while they are free (a contended one is
+  still handed on in turn). Online with rollback, every virtual call of the game went through
+  a slow path; not any more. Measured on 4 cores / 8 threads: the main thread's work per
+  frame 6.3 -> 4.6 ms offline and 9-11 -> 6-6.7 ms online (rollback, 100 ms), the worst online
+  frames 25-30 -> 23 ms. It matters on PCs that are close to the 60 fps line. The game
+  computes exactly the same: PCs with and without it play each other in sync.
+  `PS3_LWM_FAST=0` / `PS3_ICALL_HOOK_FAST=0` (extra settings) are the old ways.
 - **A PC that is a bit too slow for 60 fps now runs fights at 45-55 instead of 30-45**
   (ps3recomp patch 0059). The game shows a frame on a screen refresh, as on the PS3; a
   frame that took a little longer than one refresh waited for the next one, so a fight

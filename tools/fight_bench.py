@@ -38,7 +38,9 @@ the game's processors) at --hog-priority (default below normal); --ecoqos puts
 the game under EcoQoS (Windows' efficiency mode: lower clocks, like a slower
 or power-limited processor) for the whole run. The renderer's split per frame
 (draws, walker CPU, translation, D3D12 recording, present, GPU) comes from the
-frame log.
+frame log. The game's main thread per frame (its CPU time and the game part,
+release -> flip request; median and p99) comes from PS3_GAME_THREAD_LOG
+(ps3recomp patch 0061; older builds leave it out).
 """
 import argparse
 import csv

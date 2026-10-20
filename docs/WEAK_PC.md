@@ -29,6 +29,12 @@ at the end can be pasted to players as it is.
   small Radeon: 28 fps; Native and 1080p: 60).
 - The game logs now say which case a player has (`[slow-frames]`, below), and
   Report a problem carries it.
+- **Patch 0061 made the main thread's own work smaller**: every lock and unlock
+  of the game's light-weight mutexes was two Windows kernel calls, even with
+  nobody else waiting -- about a third of its work in a fight. Measured on 4
+  cores / 8 threads: CPU per frame 6.3 -> 4.6 ms (median), online with
+  rollback 9-11 -> 6-6.7 ms (docs/RENDER_PERF.md "The game thread's own
+  time").
 
 ## How a fight frame is built
 
@@ -72,7 +78,7 @@ waited for the walk now counts as translation, not "vblank thread late".
 
 | cause | plausible for a steady 40-50? | what the log shows | measured here | verdict / what helps |
 |---|---|---|---|---|
-| **Slow CPU cores** (old/low-clock CPU, laptop at low clocks, Zen 2 handheld) | **yes -- the main cause** | `[slow-frames]` "CPU N (game N ...)", median game 13-17 ms; many "late for their vblank"; `vblank clock` below 59.9 (0059: the clock follows the frames) | stand-in by test hooks: game part 15.5 ms -> 40 fps before, 49-50 after 0059; 18 ms -> 30 / 43-44 | patch 0059; power mode / charger; close programs (they take the shared core) |
+| **Slow CPU cores** (old/low-clock CPU, laptop at low clocks, Zen 2 handheld) | **yes -- the main cause** | `[slow-frames]` "CPU N (game N ...)", median game 13-17 ms; many "late for their vblank"; `vblank clock` below 59.9 (0059: the clock follows the frames) | stand-in by test hooks: game part 15.5 ms -> 40 fps before, 49-50 after 0059; 18 ms -> 30 / 43-44 | patch 0059; patch 0061 (the main thread's own work per fight frame about a quarter smaller, [RENDER_PERF.md](RENDER_PERF.md#the-game-threads-own-time-patch-0061-branch-game-thread-cpu)); power mode / charger; close programs (they take the shared core) |
 | **Few cores** (4-6 logical processors) | no, at a fast core | `[sched] CPU budget: 4 logical processors` | 2c/4t, 4c/4t, 3c/6t, 6c/6t, 4c/8t, 6c/12t, 8c/16t: 59.95 fps each; game part 8.1 ms at 2c/4t vs 5.1-5.9 at 8c/16t | patch 0027/0047 size the pools; nothing to set |
 | **SMT sibling busy** (another program on the other thread of the game's core) | yes, adds to a slow core | game median up, "other programs N busy" | 4c/4t with the siblings busy: game part 6.5-7.1 -> 9.8-10.3 ms, translation 2.3 -> 3.7 ms (+45-60 %) -- still 60 here | close programs; a slower core with busy siblings drops below 60 |
 | **SPU / SPURS job threads competing** | no | spurs-job / spu threads in fight_bench | skinning wait 0.7 ms at 4 processors (patch 0027); job threads 0.5 of a core at 32 | fixed in 0027 |

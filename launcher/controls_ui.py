@@ -700,6 +700,10 @@ class ControlsDialog:
     def _select_row(self):
         for iid, key in self._rows.items():
             if key is not None and key == self.chosen:
+                if tuple(self.tv_players.selection()) == (iid,):
+                    return          # already: selecting it again queues another <<TreeviewSelect>>, whose handler
+                                    # selects it again -- an endless event chain (a busy Tk thread, update() never
+                                    # returned)
                 self._selecting = True
                 try:
                     self.tv_players.selection_set(iid)

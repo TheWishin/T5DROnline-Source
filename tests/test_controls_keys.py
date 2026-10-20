@@ -208,6 +208,20 @@ class DialogKeysTest(tcu.DialogBase):
         d.do_save()
         self.assertRegex(self.saved(), r"(?m)^keyboard = 2\r?$")
 
+    def test_the_window_goes_idle(self):
+        # The player list's <<TreeviewSelect>> used to select the chosen row again, which queued the next
+        # <<TreeviewSelect>>: an endless event chain while the window was open (Tk's update() never returned).
+        import _tkinter
+        kb, pad = self.keyboard(), tcu.FakePad()
+        d = self.open(pad, kb)
+        for step in (lambda: None, lambda: self.choose(KEYS1), lambda: d.begin(["1+2"]), d.cap_stop,
+                     lambda: self.choose(pad.key)):
+            step()
+            n = 0
+            while self.root.tk.dooneevent(_tkinter.DONT_WAIT) and n < 5000:
+                n += 1
+            self.assertLess(n, 5000, "Tk's event queue never empties")
+
     def test_a_pad_still_binds_every_button(self):
         pad = tcu.FakePad()
         d = self.open(pad)

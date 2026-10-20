@@ -1515,6 +1515,9 @@ def net_dualsense(ctx):
     hid = os.path.join(ctx.dir, "dualsense-bt.txt")
     masher = HidMasher(hid, seed=ctx.run.seed)
     logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("pad", "rival")}
+    for _f in logs.values():               # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
     a = ctx.player("E2E Pad", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}", "T5_NET_LOG": logs["pad"],
                                                  "PS3_PAD_READ_LOG": os.path.join(ctx.dir, "reads-pad.log")})
     b = ctx.player("E2E Rival", env={"T5_NET_LOG": logs["rival"]})
@@ -1685,6 +1688,9 @@ def net_rebind(ctx):
     km = KeyMasher(keys_file, seed=ctx.run.seed)
     pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
     logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("keys", "pad")}
+    for _f in logs.values():               # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
     a = ctx.player("E2E Keys", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_DEVICES": "0",
                                                   "T5_NET_LOG": logs["keys"]})
     b = ctx.player("E2E PadMap", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}",
@@ -1727,6 +1733,9 @@ def offline_rebind(ctx):
     keys_file = os.path.join(ctx.dir, "keys.txt")
     hid = os.path.join(ctx.dir, "dualsense-bt.txt")
     reads = os.path.join(ctx.dir, "reads.log")
+    for _f in (keys_file, hid, reads):           # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
     km = KeyMasher(keys_file, seed=ctx.run.seed)
     pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
     a = ctx.player("E2E Offline", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_HID_FAKE":

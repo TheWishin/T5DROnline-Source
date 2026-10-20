@@ -4,6 +4,7 @@ Scrubbing (user names in paths, IP addresses, tokens and passwords), what goes i
 cap, the system information, the launcher log, and the window itself (never shown: the Tk window is
 withdrawn). No game, no network, no real user data: every name, address and token below is made up.
 """
+import datetime
 import hashlib
 import json
 import os
@@ -401,6 +402,53 @@ class Whole(unittest.TestCase):
         self.assertIn("build.log", self.names())
         self.build(ctx={"build_exit": 2}, enabled={"build": False})           # ... or unticked it
         self.assertNotIn("build.log", self.names())
+
+    def native_with_compile_logs(self, build_exit, n=6, header=None):
+        """A native\\ folder whose last build left n compiler outputs (tools/build_game_dll.py: the whole output
+        of a failed compile in build\\gamedll_obj\\<file>.log), newest first: ppu_recomp_000 ... 00<n-1>."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        out = fake_native(d, build_exit=build_exit)
+        home = f"C:\\Users\\{FAKE_USER}\\Desktop\\T5DR"
+        now = time.time()
+        for i in range(n):
+            name = f"ppu_recomp_{i:03d}.cpp"
+            p = put(os.path.join(out, "build", "gamedll_obj", name + ".log"),
+                    f"# {name}, attempt 1, 2026-10-20 17:06:30\n# exit code 1 after 4.8 s, peak memory 300 MB\n"
+                    f'# "{home}\\toolchain\\llvm\\bin\\clang-cl.exe" /nologo -c {home}\\native\\build\\recomp\\{name}\n'
+                    f"{home}\\native\\build\\recomp\\{name}(192,5): warning: unused [-Wunused-value]\n"
+                    "LLVM ERROR: out of memory\n")
+            os.utime(p, (now - 100 * i, now - 100 * i))
+        if header:
+            put(os.path.join(out, "build.log"), header + "\n[compile]\n# exit code 2\n")
+        return out
+
+    def test_compiler_output_of_a_failed_build(self):
+        self.build(ctx={"out": self.native_with_compile_logs(2)})
+        n = self.names()
+        self.assertIn("build.log", n)
+        self.assertEqual([x for x in n if x.startswith("compile/")],
+                         [f"compile/ppu_recomp_{i:03d}.cpp.log" for i in range(report.COMPILE_LOGS)])   # the newest
+        t = self.text("compile/ppu_recomp_000.cpp.log")
+        self.assertIn("LLVM ERROR: out of memory", t)
+        self.assertNotIn(FAKE_USER, t)                                    # scrubbed like every other file
+        self.assertIn("C:\\Users\\<user>\\Desktop\\T5DR\\native\\build\\recomp\\ppu_recomp_000.cpp(192,5)", t)
+        self.assertIn("compile/ppu_recomp_000.cpp.log", self.text("contents.txt"))
+        g = {x.key: x for x in report.discover(self.ctx, "")}
+        self.assertEqual([i.arcname for i in g["build"].items][:2], ["build.log", "compile/ppu_recomp_000.cpp.log"])
+
+    def test_no_compiler_output_when_the_build_went_fine(self):
+        self.build(ctx={"out": self.native_with_compile_logs(0)}, enabled={"build": True})
+        self.assertIn("build.log", self.names())
+        self.assertFalse([x for x in self.names() if x.startswith("compile/")])
+
+    def test_compiler_output_of_an_earlier_build_stays_out(self):
+        started = datetime.datetime.fromtimestamp(time.time() - 150)      # logs 0 and 1 are newer, 2..5 older
+        out = self.native_with_compile_logs(2, header=f"# T5DR Online build log, {started:%Y-%m-%d %H:%M:%S}, "
+                                                      "launcher 1.1.3")
+        self.assertEqual([os.path.basename(p) for p in report.compile_logs(out)],
+                         ["ppu_recomp_000.cpp.log", "ppu_recomp_001.cpp.log"])
+        self.assertEqual(report.compile_logs(os.path.join(out, "missing")), [])
 
     def test_nothing_private_is_in_any_text_file(self):
         self.build(note=f"my ip is {PUBLIC_V4_B} and my name is {FAKE_USER}; password={FAKE_PASSWORD}")

@@ -217,6 +217,12 @@ last server's memory: its running game is void (`server_restart`, like every mat
 again with the score it had** (from the set's own row in `sets`) -- the players log in again and accept. A set that
 was called gets a fresh no-show time. A restart does not count as one of the set's retries.
 
+**`admin drain`** (before a restart, docs/HOSTING.md) holds the tournaments too: no tournament starts, no new set is
+called, a called set does not start even when both accepted, and the no-show times stand still -- nobody is
+disqualified for the drain. The sets being played go on to their end (a tournament set is saved in `sets`, so
+`drain --wait` waits for it between two games as for a ranked set). `drain --off` lets the clocks go on where they
+stood and calls the open sets; a restart calls every open set again with a fresh no-show time.
+
 ## Protocol
 
 Clients announce `tournaments` in `hello.caps`; the server lists `tournaments` in `welcome.features` and adds

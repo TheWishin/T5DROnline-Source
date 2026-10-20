@@ -234,6 +234,7 @@ class TourManager:
         self.view_cache = {}            # tournament id -> (rev, time, the part of full() every viewer gets)
         self.created_from = {}          # tournament id -> address key it was created from (memory only: the limit per
                                         # internet address; never written to the database)
+        self.drain_since = None         # `admin drain` on since (time.time()): the no-show clocks stand still
         self._task = None
         self.handlers = {"tour_list": self.h_list, "tour_get": self.h_get, "tour_create": self.h_create,
                          "tour_join": self.h_join, "tour_leave": self.h_leave, "tour_checkin": self.h_checkin,
@@ -299,8 +300,8 @@ class TourManager:
         for s in t.bracket.sets.values():
             d = s.data
             live = d.get("live")
-            if s.state != "open" or live not in ("called", "playing"):
-                continue
+            if s.state != "open" or live == "attention":
+                continue                        # (an open set nobody called yet -- a drain -- is called now too)
             if live == "playing":
                 row = self.store.set_row(d["lobby_set"]) if d.get("lobby_set") else None
                 if row and isinstance(row.get("score"), list) and len(row["score"]) == 2:
@@ -877,13 +878,17 @@ class TourManager:
         self._after(t, before)
 
     # ---------------------------------------------------------------- calling sets
+    def _draining(self):
+        return bool(getattr(self.srv, "draining", False))
+
     def _call_open(self, t):
         if t.state != "running":
             return
         now = self._now()
-        for s in t.bracket.open_sets():
-            if not s.data.get("live"):
-                self._call(t, s, now)
+        if not self._draining():                # (admin drain: the next sets are called when it ends or after the
+            for s in t.bracket.open_sets():     # restart: _resume)
+                if not s.data.get("live"):
+                    self._call(t, s, now)
         self._save(t, [])
 
     def _call(self, t, s, now, quiet=False):
@@ -954,8 +959,8 @@ class TourManager:
 
     def _maybe_start(self, t, s):
         d = s.data
-        if d.get("live") != "called" or d.get("accepted") != [True, True]:
-            return
+        if d.get("live") != "called" or d.get("accepted") != [True, True] or self._draining():
+            return                                      # (admin drain: no new match before the restart)
         ps = [self._player(aid, t.name_of(aid)) for aid in s.p]
         if not all(self._free(p) for p in ps):
             return                                      # (the tick tries again; the no-show time still runs)
@@ -1108,17 +1113,41 @@ class TourManager:
             except Exception:
                 log.exception("tournaments")
 
+    # `admin drain` (before a restart: no new matches, the running ones finish): a tournament starts no new set --
+    # no start, no new calls, no set of a call starts -- and the no-show clocks of the called sets stand still. The
+    # sets being played go on to their end (like ranked sets). Drain off: the clocks go on where they stood and the
+    # open sets are called; a restart instead calls every open set again with a fresh no-show time (_resume).
+    def _drain_tick(self, now):
+        draining = self._draining()
+        if draining and self.drain_since is None:
+            self.drain_since = now
+            log.info("tournaments: drain on, no new set starts")
+        elif not draining and self.drain_since is not None:
+            paused, self.drain_since = now - self.drain_since, None
+            for t in self.tours.values():
+                if t.state != "running" or t.bracket is None:
+                    continue
+                for s in t.bracket.open_sets():
+                    d = s.data
+                    if d.get("live") == "called":
+                        d["deadline"] = float(d.get("deadline") or now) + paused
+                        t.bracket.dirty.add(s.id)
+                        self._send_calls(t, s)
+                self._call_open(t)
+        return draining
+
     def tick(self, now=None):
         now = self._now() if now is None else now
+        draining = self._drain_tick(now)
         for t in list(self.tours.values()):
             if t.state == "signup" and t.checkin_minutes and now >= t.checkin_opens():
                 t.state = "checkin"
                 self._save(t, [])
                 for e in t.entrants.values():
                     self._notice(t, e.aid, "checkin_open", minutes=t.checkin_minutes)
-            if t.state in ("signup", "checkin") and now >= t.start_time:
+            if t.state in ("signup", "checkin") and now >= t.start_time and not draining:
                 self._start(t)
-            if t.state == "running":
+            if t.state == "running" and not draining:
                 for s in list(t.bracket.open_sets()):
                     d = s.data
                     if d.get("live") != "called" or t.state != "running":

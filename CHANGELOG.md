@@ -25,6 +25,8 @@ part is in the README's status table.
   account does); a second crash of one player's game in a set loses the set (`T5L_TOUR_BLAMED_VOIDS`); the
   organizer limit counts per internet address too and spares the admins; tournament names cannot pass for the
   server; a player disqualified before the start stays out; `tour_get` has its own rate limit.
+- `admin drain` holds the tournaments as well: no tournament starts and no new set starts before the restart, and the
+  no-show times stand still (nobody is disqualified for the drain); the sets being played finish.
 
 ## v1.1.2 (not released yet)
 

@@ -653,7 +653,8 @@ was not finished (its games changed no rating yet). To restart without voiding a
 match has its result (a first-to-3 match takes 2-7 minutes) and the last ranked set is over. A ranked set goes on
 during a drain: its next game starts by itself, so a best-of-3 can take up to three games. (Before 1.1.2 the admin
 tool did not wait for a set between two of its games, when no match runs; with an older server, check as in
-docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain.
+docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain. From 1.1.3 a drain also holds the tournaments: no new
+tournament set starts and the no-show times stand still (docs/TOURNAMENTS.md "The database and restarts").
 
 **Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
 schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with

@@ -814,6 +814,44 @@ class OwnSetTest(TourBase):
         self.assertEqual(self.winner_name(tid, "W1-1"), "Ben")
 
 
+class DrainTest(TourBase):
+    server_cfg = {"tour_noshow": 2.0}
+
+    def drain(self, on):
+        self.s.call(lambda: self.s.srv.set_draining(on))
+
+    def test_a_drain_holds_the_start_and_the_no_show_clock(self):
+        # `admin drain` (before a restart): no new match -- a tournament neither starts nor starts a set, and nobody is
+        # disqualified as a no-show for the drain (the clocks stand still); drain off: the tournament goes on
+        self.f.accept = {n: False for n in self.names}
+        self.drain(True)
+        tid = self.create(start_in=0.3, wait=False)
+        time.sleep(1.0)
+        self.assertEqual(self.tour(tid).state, "signup")                      # its start time passed: held
+        self.drain(False)
+        self.wait_state(tid, "running")
+        self.f.run(lambda: self.f.last("Ann", "tour_call") is not None)
+        self.drain(True)
+        self.f.accept = {n: True for n in self.names}                         # all accept during the drain ...
+        self.f.run(lambda: self.bset(tid, "W1-1").data.get("accepted") == [True, True], 10)
+        time.sleep(3.0)                                                      # ... longer than the no-show time
+        self.f.pump()
+        for sid in ("W1-1", "W1-2"):
+            s = self.bset(tid, sid)
+            self.assertEqual((s.state, s.data.get("live")), ("open", "called"), sid)   # no set started, no no-show
+        self.assertEqual([e.dq for e in self.tour(tid).entrants.values()], [None] * 4)
+        self.drain(False)                                                     # the clocks go on: the sets start
+        self.wait_state(tid, "finished")
+        self.assertEqual([e.dq for e in self.tour(tid).entrants.values()], [None] * 4)
+
+    def test_a_set_being_played_finishes_during_a_drain(self):
+        tid = self.create(players=("Ann", "Ben"))
+        self.f.run(lambda: self.bset(tid, "W1-1").data.get("live") == "playing")
+        self.drain(True)
+        self.wait_state(tid, "finished")                                      # (the set's next game starts by itself)
+        self.assertEqual(self.bset(tid, "W1-1").score, [2, 0])
+
+
 class BlamedVoidTest(TourBase):
     def test_crashing_twice_loses_the_set(self):
         # a game ended by one player's own doing (a crash) called the set again with its score: a losing player could

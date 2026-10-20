@@ -70,6 +70,18 @@ small JPEG), `<shot>.png` (full-size frames the scenario asked for).
 | `save_reload` | full | fresh profile, the OPTIONS round trip (leaving with a changed setting saves), quit, second boot on the same gamedata loads the save; OPTIONS > DELETE SAVE DATA then deletes one of the two saves through the system's save data list (patch 0033) |
 | `idle_attract` | full | 10 min with no input: title and attract demo cycle by themselves |
 
+The title is reached the same way in every test (`Game.wait_title`): after the
+intro movie's decoder opens, the suite waits for its first picture (or patch
+0053's line that the movie goes on without pictures; up to 12 s), then taps
+START until the movie has closed (up to 30 s) and the title movie opens. The
+`reach.title` detail says what happened: the time to the first picture and the
+number of presses, or "the decoder gave no picture" (the 1.1.2 intro hang,
+fixed by patch 0053) or "not skipped after N presses".
+
+`no-hang` looks at the gaps between `[fps]` lines up to the moment the suite
+starts stopping the game; on a busy PC the kill itself took 10-11 s and used to
+read as a hang right after the last check.
+
 Fights are reached by tapping CROSS (both pads in VS) and START every second
 until a dumped frame shows the fight HUD: CROSS confirms the fighter, GAME
 START and the stage; START skips the VS splash and the intros (CROSS does

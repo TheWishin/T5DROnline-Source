@@ -3,6 +3,15 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Fixes
+- **The intro movie can no longer freeze on a white screen.** On a busy PC the video decoder
+  sometimes never answered, and the intro stayed white with START doing nothing. The decoder
+  now starts while the game boots, uses 2 threads instead of one per processor, and if it
+  still does not answer within 5 seconds the movie goes on black with its sound (START skips
+  it). Later movies try the decoder again.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new

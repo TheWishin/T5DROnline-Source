@@ -122,6 +122,9 @@ class Patch0053(unittest.TestCase):
         self.assertIn("n = e && *e ? atoi(e) : 2;", p)                 # 2 decoding threads
         self.assertIn("if (id == CELL_SYSMODULE_VDEC) cellVdec_module_loaded();", p)
         self.assertIn("CoIncrementMTAUsage", p)                        # the MTA outlives the prewarm thread
+        # a full picture queue does not hold AUDONE back once the title stopped taking pictures
+        self.assertIn("#define VDEC_PICS_MAX    16", p)
+        self.assertIn("age_ms(now_ms(), v->t_last_take) < VDEC_TAKE_STALL_MS", p)
         # the stalled worker is replaced, never reused
         self.assertIn("v->epoch++;", p)
         self.assertIn("if (!mf_leave(v, epoch)) return retire(v, mf, &c, &pl);", p)

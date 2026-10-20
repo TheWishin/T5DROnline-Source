@@ -1,8 +1,8 @@
 diff --git a/libs/codec/cellVdec.c b/libs/codec/cellVdec.c
-index 6831e44..12fd32c 100644
+index 6831e44..b4d2ff6 100644
 --- a/libs/codec/cellVdec.c
 +++ b/libs/codec/cellVdec.c
-@@ -22,6 +22,26 @@
+@@ -22,6 +22,31 @@
   * Guest memory: the title's work memory (CellVdecResource.memAddr) holds a
   * ring of picture items, 0x200 bytes each: the CellVdecPicItem at +0 and the
   * CellVdecAvcInfo / Mpeg2Info its picInfo points to at +0x80.
@@ -23,13 +23,36 @@ index 6831e44..12fd32c 100644
 + *    old thread, should it ever return, frees its decoder and ends. The next
 + *    sequence tries Media Foundation again (a fresh decoder is made ahead);
 + *  - a decoder that answers but gives no picture for PS3_VDEC_STALL_MS after
-+ *    the sequence's first AU (2+ AUs in) is treated the same way.
++ *    the sequence's first AU (2+ AUs in) is treated the same way;
++ *  - the decoder no longer waits for a full picture queue (8) to drain when the
++ *    title has not taken a picture for 250 ms: it decodes on, up to 16. START
++ *    pressed while the decoder was 8 pictures ahead hung the movie -- the
++ *    title's skip waits for the AUDONE of its last AU before it takes the
++ *    pictures (a decoder made ahead of time is ahead right away).
 + * Test hooks: PS3_VDEC_TEST_STALL=ms (the first AU's decoder call sleeps that
 + * long), PS3_VDEC_TEST_NOPIC=1 (the decoder's pictures are dropped).
   */
  
  #include "cellVdec.h"
-@@ -90,6 +110,15 @@ typedef struct {
+@@ -39,6 +64,8 @@
+ #define VDEC_MAX         4
+ #define VDEC_CMDS        64        /* queued AUs before DecodeAu answers BUSY */
+ #define VDEC_PICS        8         /* pictures held before the decoder stalls */
++#define VDEC_PICS_MAX    16        /* ... unless the title stopped taking them (patch 0053) */
++#define VDEC_TAKE_STALL_MS 250
+ #define VDEC_ITEMS       16
+ #define VDEC_ITEM_BYTES  0x200
+ #define VDEC_MEM_SIZE    0x100000
+@@ -68,7 +95,7 @@ typedef struct {
+     int seq;                   /* 0 dormant, 1 running, 2 ending */
+     VdecCmd cmds[VDEC_CMDS];
+     int c_head, c_count;
+-    VdecPic pics[VDEC_PICS];
++    VdecPic pics[VDEC_PICS_MAX];
+     int p_head, p_count;
+     u32 item_next;
+     u32 frc;                   /* CELL_VDEC_AVC_FRC_* */
+@@ -90,6 +117,16 @@ typedef struct {
      u32 aus, pics_out, pics_taken;
      u64 t_first;
      double dec_ms, conv_ms;
@@ -41,11 +64,12 @@ index 6831e44..12fd32c 100644
 +    int resume;                /* the replacement worker finishes `cur` first */
 +    int stalled;               /* this sequence: blank pictures, no Media Foundation */
 +    u64 t_first_dec;           /* ms this sequence's first AU reached the worker */
++    u64 t_last_take;           /* ms the title last took a picture (or the sequence began) */
 +    u32 seq_aus, seq_pics;     /* this sequence's AUs done and pictures out */
  } Vdec;
  
  static SRWLOCK g_lock = SRWLOCK_INIT;
-@@ -105,6 +134,10 @@ static Vdec* get(u32 h) { return (h < VDEC_MAX && s_vdec[h].in_use && !s_vdec[h]
+@@ -105,6 +142,10 @@ static Vdec* get(u32 h) { return (h < VDEC_MAX && s_vdec[h].in_use && !s_vdec[h]
  
  static u64 now_ms(void) { return (u64)GetTickCount64(); }
  
@@ -56,7 +80,7 @@ index 6831e44..12fd32c 100644
  static double now_hp_ms(void)
  {
      LARGE_INTEGER f, c;
-@@ -115,6 +148,23 @@ static double now_hp_ms(void)
+@@ -115,6 +156,23 @@ static double now_hp_ms(void)
  
  static void convert(const u8* nv12, u32 w, u32 h, u32 fmt, u32 matrix, u8 alpha, u8* dst);
  
@@ -80,7 +104,7 @@ index 6831e44..12fd32c 100644
  static u32 pic_bytes(u32 fmt, u32 w, u32 h)
  {
      return fmt <= 1 ? w * h * 4 : fmt == 2 ? w * h * 2 : w * h * 3 / 2;
-@@ -151,6 +201,9 @@ static void piclist_add(PicList* l, u8* nv12, u32 w, u32 h, u64 pts, u64 dts, u6
+@@ -151,6 +209,9 @@ static void piclist_add(PicList* l, u8* nv12, u32 w, u32 h, u64 pts, u64 dts, u6
  
  static void on_mf_frame(void* user, const MfH264Frame* f)
  {
@@ -90,15 +114,36 @@ index 6831e44..12fd32c 100644
      PicList* l = (PicList*)user;
      const u32 w = f->width & ~1u, h = f->height & ~1u;
      u8* buf = (u8*)malloc((size_t)w * h * 3 / 2);
-@@ -203,6 +256,7 @@ static void deliver(Vdec* v, PicList* l, int gen)
-         v->pics[(v->p_head + v->p_count) % VDEC_PICS] = *p;
+@@ -193,16 +254,26 @@ static void deliver(Vdec* v, PicList* l, int gen)
+             v->conv_ms += now_hp_ms() - t0;
+         }
+         lock();
+-        while (v->in_use && !v->closing && v->gen == gen && v->p_count >= VDEC_PICS) wait_cv(50);
++        /* VDEC_PICS pace the decoder to the title. But when the title has not
++         * taken a picture for VDEC_TAKE_STALL_MS, decode on, up to
++         * VDEC_PICS_MAX (patch 0053): skipping a movie, Tekken 5 DR stops
++         * taking pictures and waits for the AUDONE of the AU it submitted
++         * last -- a decoder held here by a full queue never sends it and the
++         * movie hung on its first frames (START pressed while the decoder was
++         * 8 pictures ahead). */
++        while (v->in_use && !v->closing && v->gen == gen && v->p_count >= VDEC_PICS &&
++               (v->p_count >= VDEC_PICS_MAX || age_ms(now_ms(), v->t_last_take) < VDEC_TAKE_STALL_MS))
++            wait_cv(50);
+         if (!v->in_use || v->closing || v->gen != gen) {
+             unlock();
+             for (int j = i; j < l->n; j++) free_pic(&l->list[j]);
+             l->n = 0;
+             return;
+         }
+-        v->pics[(v->p_head + v->p_count) % VDEC_PICS] = *p;
++        v->pics[(v->p_head + v->p_count) % VDEC_PICS_MAX] = *p;
          v->p_count++;
          v->pics_out++;
 +        v->seq_pics++;
          v->last_w = p->w; v->last_h = p->h;
          const u32 n = v->pics_out;
          unlock();
-@@ -218,50 +272,149 @@ static void deliver(Vdec* v, PicList* l, int gen)
+@@ -218,50 +289,149 @@ static void deliver(Vdec* v, PicList* l, int gen)
      l->n = 0;
  }
  
@@ -267,7 +312,7 @@ index 6831e44..12fd32c 100644
              deliver(v, &pl, gen);
              lock();
              if (v->seq == 2) v->seq = 0;
-@@ -270,17 +423,76 @@ static DWORD WINAPI vdec_worker(LPVOID arg)
+@@ -270,17 +440,76 @@ static DWORD WINAPI vdec_worker(LPVOID arg)
                     v->handle, v->aus, v->pics_out);
              notify(v, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK);
              break;
@@ -349,7 +394,7 @@ index 6831e44..12fd32c 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -315,9 +527,11 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+@@ -315,9 +544,11 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
      Vdec* v = &s_vdec[i];
      HANDLE th = v->thread; DWORD tid = v->thread_id; int gen = v->gen;
      MfH264* mf = v->mf; const int mf_failed = v->mf_failed;
@@ -361,7 +406,7 @@ index 6831e44..12fd32c 100644
      v->in_use = 1;
      v->handle = (u32)i;
      v->codec = codec;
-@@ -329,9 +543,15 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+@@ -329,9 +560,15 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
      v->frc = 3;   /* 30000/1001 until told otherwise */
      v->t_first = now_ms();
      if (!v->thread) {
@@ -378,16 +423,45 @@ index 6831e44..12fd32c 100644
      unlock();
      vm_write32(handle, (u32)i);
      printf("[cellVdec] Open(codec %u, profile 0x%X, mem 0x%08X+0x%X) -> handle %d\n",
-@@ -390,6 +610,9 @@ s64 cellVdecStartSeq(u32 handle)
+@@ -343,7 +580,7 @@ s64 cellVdecOpenEx(u32 type, u32 res, u32 cb, u32 handle) { return cellVdecOpen(
+ 
+ static void drop_pictures(Vdec* v)
+ {
+-    for (int i = 0; i < v->p_count; i++) free_pic(&v->pics[(v->p_head + i) % VDEC_PICS]);
++    for (int i = 0; i < v->p_count; i++) free_pic(&v->pics[(v->p_head + i) % VDEC_PICS_MAX]);
+     v->p_head = v->p_count = 0;
+ }
+ 
+@@ -390,6 +627,10 @@ s64 cellVdecStartSeq(u32 handle)
      v->gen++;
      drop_pictures(v);
      v->seq = 1;
 +    v->stalled = 0;
 +    v->t_first_dec = 0;
++    v->t_last_take = now_ms();
 +    v->seq_aus = v->seq_pics = 0;
      push_cmd(v, CMD_START, NULL, 0, 0, 0, 0);
      unlock();
      printf("[cellVdec] StartSeq(%u)\n", handle);
+@@ -489,7 +730,7 @@ s64 cellVdecGetPicItem(u32 handle, u32 picItem)
+     if (!v) { unlock(); return VERR(CELL_VDEC_ERROR_ARG); }
+     VdecPic* p = NULL;
+     for (int i = 0; i < v->p_count; i++) {
+-        VdecPic* q = &v->pics[(v->p_head + i) % VDEC_PICS];
++        VdecPic* q = &v->pics[(v->p_head + i) % VDEC_PICS_MAX];
+         if (!q->item_given) { p = q; break; }
+     }
+     if (!p) { unlock(); return VERR(CELL_VDEC_ERROR_EMPTY); }
+@@ -571,7 +812,8 @@ s64 cellVdecGetPicture(u32 handle, u32 format, u32 outBuff)
+     if (!v) { unlock(); return VERR(CELL_VDEC_ERROR_ARG); }
+     if (v->p_count == 0) { unlock(); return VERR(CELL_VDEC_ERROR_EMPTY); }
+     VdecPic p = v->pics[v->p_head];
+-    v->p_head = (v->p_head + 1) % VDEC_PICS;
++    v->p_head = (v->p_head + 1) % VDEC_PICS_MAX;
++    v->t_last_take = now_ms();
+     v->p_count--;
+     v->pics_taken++;
+     v->pref_valid = 1;
 diff --git a/libs/codec/cellVdec.h b/libs/codec/cellVdec.h
 index ac24ce9..ea5713f 100644
 --- a/libs/codec/cellVdec.h

@@ -3,6 +3,17 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.4 (not released yet)
+
+### Speed
+- **Faster game code, the same game.** The build now translates the game's code so that the PS3's registers stay
+  in the PC's registers between calls instead of being written to memory and read back after almost every step.
+  On 4 cores under load the game's main thread needs ~7 % less CPU per frame and its drawing thread ~18 % less
+  (pool stage and stage 20: +3 to +13 % fps in paired runs on a busy PC). The game computes exactly what it did:
+  every translated function was run old against new on millions of random inputs, and old and new builds played
+  each other online frame for frame in sync. The first build after updating translates the game code again (about
+  25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
+
 ## v1.1.3 (not released yet)
 
 ### Online

@@ -31,6 +31,9 @@ Friends (docs/ONLINE.md "Friends and invites", accounts only, clients with the "
 accepts, a list with who is online / in a match / offline (pushed as it changes), invites to a casual match or
 to the inviter's room that one click accepts. A block ends a friendship.
 
+Rooms -- classic two-player rooms, community rooms whose members take turns, private rooms with a password or an invite
+code (docs/ONLINE.md "Rooms") -- live in rooms.py (RoomsMixin).
+
 Community tournaments (docs/TOURNAMENTS.md) live in tournaments.py (brackets: bracket.py); this module only calls
 its hooks (self.tours) and plays its sets as TourSets, the best-of set machinery below.
 """
@@ -49,6 +52,7 @@ from ..proto import LobbyError
 from .config import Config
 from .ratelimit import BanList, KeyedBuckets, TokenBucket
 from .relays import MAIN as RELAY_MAIN, MAX_RELAYS, RelayPool
+from .rooms import Room, RoomsMixin  # noqa: F401 -- (Room: lobby.Room for tools and tests)
 from .spectating import SpectateMixin
 from .store import COUNTED, SET_COUNTED, Store, check_password, hash_password
 from .udp import UdpService
@@ -58,12 +62,12 @@ log = logging.getLogger("t5lobby")
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
-                  "tournaments", "spectate", "game_fallback"))
+                  "tournaments", "spectate", "game_fallback", "private_rooms"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback"]
+            "nat2", "relays", "friends", "tournaments", "spectate", "game_fallback", "private_rooms"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -135,7 +139,8 @@ class Player:
     def public(self):
         d = {"id": self.id, "name": self.name, "guest": self.guest, "status": self.status,
              "rating": round(self.rating.r), "rd": round(self.rating.rd),
-             "record": self.record, "room": self.room.id if self.room else None,
+             # (a hidden room is nobody's business: its members show as "in a room", not which one)
+             "record": self.record, "room": self.room.id if self.room and not self.room.hidden else None,
              "rtt": None if self.rtt_shown is None else round(self.rtt_shown, 1),
              "build": self.build_id, "release": self.release, "char": self.char, "main": self.main}
         d.update(self.rank_info())
@@ -154,26 +159,6 @@ class Player:
     def send(self, msg):
         if self.conn is not None:
             self.conn.send(msg)
-
-
-class Room:
-    def __init__(self, owner, name, ranked):
-        self.id = "r" + _rid()
-        self.name = name
-        self.owner = owner
-        self.members = [owner]
-        self.ranked = ranked
-        self.match = None
-        self.set = None                 # the room's running set (rematches in the room keep it)
-        self.build_id = owner.build_id
-        self.watch = False              # its match can be watched (spectating.py, set before each lobby list)
-
-    def public(self):
-        return {"id": self.id, "name": self.name, "owner": self.owner.brief(),
-                "members": [p.id for p in self.members], "ranked": self.ranked,
-                "build": self.build_id,
-                "status": "playing" if self.match else ("full" if len(self.members) >= 2 else "open"),
-                "watch": self.watch}
 
 
 class _ConnOf:
@@ -477,7 +462,7 @@ class Conn:
 
 # =============================================================================== server
 
-class LobbyServer(SpectateMixin):
+class LobbyServer(SpectateMixin, RoomsMixin):
     def __init__(self, cfg=None):
         self.cfg = cfg or Config.from_env()
         self.store = Store(self.cfg.db)
@@ -508,6 +493,7 @@ class LobbyServer(SpectateMixin):
         # runs, and a logged-in account with its own password could otherwise keep the hashing busy for everyone
         self.pw_ops = KeyedBuckets(rate=1 / 20.0, burst=3)
         self.chat_rate = KeyedBuckets(rate=1.0, burst=5)          # chat lines per player
+        self._rooms_init()         # private rooms: the invite-code index, wrong-guess limits (rooms.py)
         self.bans = BanList()
         self.dirty = True
         self.tcp = None
@@ -802,7 +788,8 @@ class LobbyServer(SpectateMixin):
     # ------------------------------------------------------------------ dispatch
     PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
-    STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "set_char", "udp_rtt", "perf",
+    STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "room_lock", "room_kick",
+                       "room_line", "set_char", "udp_rtt", "perf",
                        "relay_rtt",
                        "challenge", "challenge_cancel", "block", "unblock", "leave_set",
                        "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",
@@ -900,7 +887,10 @@ class LobbyServer(SpectateMixin):
                 **({"friend_limits": {"max": self.cfg.max_friends, "per_day": self.cfg.friend_requests_day,
                                       "invite_seconds": self.cfg.invite_seconds}}
                    if "friends" in conn.caps else {}),
-                **({"tournaments": self.tours.welcome()} if "tournaments" in conn.caps else {})}
+                **({"tournaments": self.tours.welcome()} if "tournaments" in conn.caps else {}),
+                # rooms: the most players a community room may hold, the pause between its matches
+                **({"room_limits": {"max_size": self.cfg.room_max_size, "next_seconds": self.cfg.room_next_seconds}}
+                   if "private_rooms" in conn.caps else {})}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -1280,7 +1270,7 @@ class LobbyServer(SpectateMixin):
 
     async def h_lobby(self, conn, msg):
         conn.need_full = True       # the next broadcast is whole again: deltas follow the broadcasts
-        return self._snapshot(full="delta" in conn.caps)
+        return self._snapshot(full="delta" in conn.caps, conn=conn)
 
     async def h_leaderboard(self, conn, msg):
         key = (max(1, min(100, int(msg.get("limit", 20)))), max(0, min(100000, int(msg.get("offset", 0)))))
@@ -1602,60 +1592,6 @@ class LobbyServer(SpectateMixin):
                 log.exception("matchmaker")
 
     # ------------------------------------------------------------------ rooms
-    async def h_room_create(self, conn, msg):
-        p = conn.player
-        self._refuse_draining()
-        if p.status != "idle":
-            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
-        ranked = bool(msg.get("ranked", False))
-        if ranked and not self.cfg.ranked_rooms:
-            raise LobbyError(proto.E_NOT_ALLOWED, "ranked matches come from the ranked queue on this server")
-        if ranked and p.guest and not self.cfg.guest_ranked:
-            raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
-        if ranked:
-            self._check_speed(p)
-        self._abandon_set(p)
-        name = proto.clean_text(msg.get("name") or f"{p.name}'s room", 32)
-        r = Room(p, name, ranked)
-        self.rooms[r.id] = r
-        p.room, p.status = r, "room"
-        self.dirty = True
-        return {"t": "room", "room": r.public()}
-
-    async def h_room_join(self, conn, msg):
-        p = conn.player
-        self._refuse_draining()
-        r = self.rooms.get(msg.get("room"))
-        if r is None:
-            raise LobbyError(proto.E_NOT_FOUND, "no such room")
-        if p.status != "idle":
-            raise LobbyError(proto.E_BUSY, f"you are {p.status}")
-        if len(r.members) >= 2:
-            raise LobbyError(proto.E_FULL, "room is full")
-        if r.build_id != p.build_id:
-            raise LobbyError(proto.E_VERSION, "that player runs a different build of the game")
-        if r.ranked and p.guest and not self.cfg.guest_ranked:
-            raise LobbyError(proto.E_NOT_ALLOWED, "ranked needs an account")
-        if r.ranked:
-            self._check_speed(p)
-        if any(self._is_blocked(p, q) for q in r.members):
-            raise LobbyError(proto.E_NOT_ALLOWED, "you cannot join this room")
-        self._abandon_set(p)
-        r.members.append(p)
-        p.room, p.status = r, "room"
-        self.dirty = True
-        reply = {"t": "room", "room": r.public()}
-        asyncio.get_running_loop().call_soon(self._room_start, r)
-        return reply
-
-    async def h_room_leave(self, conn, msg):
-        p = conn.player
-        if p.room is None:
-            raise LobbyError(proto.E_STATE, "not in a room")
-        if p.match is not None:
-            raise LobbyError(proto.E_BUSY, "finish the match first")
-        self._leave_room(p)
-
     async def h_rematch(self, conn, msg):
         """Rooms: start the next match in the room (with a ready check). After any other match:
         `match` = the finished match's id, `accept` (default true), `keep` = true when this
@@ -1666,6 +1602,10 @@ class LobbyServer(SpectateMixin):
             self._refuse_draining()
         if msg.get("match") is None:
             r = p.room
+            if r is not None and r.community and r.id in self.rooms:
+                # Ready again in a community room: back in its line; the room starts the next match itself
+                self._room_line(r, p, True)
+                return None
             if r is None or len(r.members) != 2 or r.match is not None:
                 raise LobbyError(proto.E_STATE, "no opponent in the room")
             if r.set is not None and r.set.rated and r.set.state == "active":
@@ -1677,6 +1617,10 @@ class LobbyServer(SpectateMixin):
             raise LobbyError(proto.E_NOT_FOUND, "that match is over; find a new opponent")
         side = prev.side(p)
         other = prev.players[1 - side]
+        if prev.room is not None and prev.room.community:
+            if not msg.get("accept", True):
+                return None                      # (nothing was offered: the room starts its next match itself)
+            raise LobbyError(proto.E_STATE, "the room picks the next match by itself")
         gs = prev.set
         if gs is not None and gs.rated and gs.state == "active":
             # A ranked set goes on by itself (no vote); declining is leaving it.
@@ -1708,46 +1652,10 @@ class LobbyServer(SpectateMixin):
         keep = all(r["keep"] for r in prev.rematch) and prev.path is not None
         m = self.create_match(prev.players[0], prev.players[1], ranked=prev.ranked, origin="rematch",
                               room=prev.room, rematch_of=prev, keep=keep)
+        r = prev.room
+        if r is not None and r.id in self.rooms and r.match is None and m.state != "cancelled":
+            r.match = m                          # (the room shows "playing" during a rematch too)
         return {"t": "rematch", "match": prev.id, "state": "accepted", "next": m.id}
-
-    def _room_start(self, r, invited=False):
-        """Two players in the room: their match, with a ready check -- except right after a friend accepted an
-        invite to the room (origin "invite": both have said yes already)."""
-        if r.id not in self.rooms or len(r.members) != 2 or r.match is not None or self.draining:
-            return
-        if any(not q.online or q.match is not None for q in r.members):
-            return
-        gs = r.set if r.set is not None and r.set.state == "active" and \
-            {id(q) for q in r.set.players} == {id(q) for q in r.members} else None
-        r.match = self.create_match(r.members[0], r.members[1], ranked=r.ranked,
-                                    origin="invite" if invited else "room", room=r, game_set=gs)
-
-    def _leave_room(self, p):
-        r = p.room
-        if r is None:
-            return
-        for inv in [i for i in self.invites.values() if i.room is r and i.src is p]:
-            self._end_invite(inv, "cancelled")           # (an invite to a room its owner left)
-        p.room = None
-        if p.status == "room":
-            p.status = "idle"
-        if p in r.members:
-            r.members.remove(p)
-        if r.match is not None and r.match.state not in ("playing", "done"):
-            self.cancel_match(r.match, "opponent_left", by=p)
-        if r.set is not None and r.set.state == "active" and r.set.current is None:
-            self._decline_recent(r.set, p)
-            self._end_set(r.set, "left", by=p)
-        if not r.members:
-            self.rooms.pop(r.id, None)
-        elif r.owner is p:
-            r.owner = r.members[0]
-            for q in r.members:
-                q.send({"t": "room", "room": r.public()})
-        else:
-            for q in r.members:
-                q.send({"t": "room", "room": r.public()})
-        self.dirty = True
 
     # ------------------------------------------------------------------ challenges
     async def h_challenge(self, conn, msg):
@@ -1979,7 +1887,7 @@ class LobbyServer(SpectateMixin):
             elif (m.origin == "queue" and m.queue_mode and by is not None and p is not by and p.online
                   and p.status == "idle"):
                 self._enqueue(p, m.queue_mode, m.queue_since[side])   # keeps its place in the queue
-        if m.room is not None:
+        if m.room is not None and m.room.match is m:
             m.room.match = None
         self.matches.pop(m.id, None)
         gs = m.set
@@ -2007,6 +1915,8 @@ class LobbyServer(SpectateMixin):
         self.counters["matches_cancelled"] += 1
         self.note("match_cancel", match=m.id, reason=reason)
         log.info("match %s cancelled: %s", m.id, reason)
+        if m.room is not None:
+            self._room_match_cancelled(m.room, m, reason, by)    # (community rooms: who sits out, the next match)
         self.dirty = True
 
     def _release(self, m, keep_relay=False):
@@ -3042,7 +2952,8 @@ class LobbyServer(SpectateMixin):
                     "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
                     "set": m.set.info() if m.set is not None else None,
                     "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online
-                    and not set_going and getattr(m.set, "tour", None) is None else 0})
+                    and not set_going and getattr(m.set, "tour", None) is None
+                    and not (m.room is not None and m.room.community) else 0})
             if not p.online and p.match is None:
                 if set_going and self._between_set_games(p):
                     self._set_dropped(gs, p)           # lost the lobby during the game: the set waits a while
@@ -3051,7 +2962,9 @@ class LobbyServer(SpectateMixin):
         if gs is not None and gs.outcome is not None:
             self._announce_set_end(gs, "decided")
         if m.room is not None:
-            m.room.match = None
+            if m.room.match is m:
+                m.room.match = None
+            self._room_match_over(m.room, m, status, winner)     # (community rooms: the line moves on)
         self._count("results_" + status)
         self.note("match_result", match=m.id, status=status, winner=winner, reason=reason)
         log.info("match %s %s%s: winner %s score %s", m.id, status, f" ({reason})" if reason else "", winner, score)
@@ -3439,8 +3352,10 @@ class LobbyServer(SpectateMixin):
             room = p.room
             if room is None:
                 raise LobbyError(proto.E_STATE, "create a room first, then invite")
-            if len(room.members) >= 2 or room.match is not None:
+            if len(room.members) >= room.size or (not room.community and room.match is not None):
                 raise LobbyError(proto.E_FULL, "room is full")
+            if self._block_key(q) in room.kicked:
+                raise LobbyError(proto.E_NOT_ALLOWED, "the room's host removed that player from this room")
         elif p.status not in ("idle", "queue"):
             raise LobbyError(proto.E_BUSY, f"you are {p.status}")
         self._set_free(p)
@@ -3465,7 +3380,9 @@ class LobbyServer(SpectateMixin):
         inv.timer = asyncio.get_running_loop().call_later(self.cfg.invite_seconds, self._end_invite, inv, "expired")
         ev = {"t": "invited", "invite": inv.id, "from": p.brief(), "kind": kind, "expires": self.cfg.invite_seconds}
         if room is not None:
-            ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked}
+            # (a private room: the invite is the key -- the friend joins without the password; no secret is sent)
+            ev["room"] = {"id": room.id, "name": room.name, "ranked": room.ranked, "private": room.private,
+                          "size": room.size}
         q.send(ev)
         self._count("invites_sent")
         log.info("%s invited %s (%s)", p.name, q.name, kind)
@@ -3490,7 +3407,8 @@ class LobbyServer(SpectateMixin):
         if inv.kind == "casual":
             gone = gone or src.status not in ("idle", "queue") or src.match is not None
         else:
-            gone = gone or r.id not in self.rooms or src not in r.members or len(r.members) >= 2 or r.match is not None
+            gone = (gone or r.id not in self.rooms or src not in r.members or len(r.members) >= r.size
+                    or (not r.community and r.match is not None) or self._block_key(p) in r.kicked)
         if gone:
             self._end_invite(inv, "cancelled")
             raise LobbyError(proto.E_BUSY, "the invite is no longer possible")
@@ -3510,15 +3428,13 @@ class LobbyServer(SpectateMixin):
         self._abandon_set(p)
         self._end_invite(inv, "accepted")
         self._leave_queue(p)
-        r.members.append(p)
-        p.room, p.status = r, "room"
-        self.dirty = True
         self._count("invites_accepted")
         # A ranked room keeps its ready check: the invite only named the room (its name is the owner's free text),
         # and a ranked room's match is rated -- with ranked sets a best of 3 that is lost by leaving it. The ready
-        # check says "ranked" and needs a second yes (security review 2).
-        asyncio.get_running_loop().call_soon(self._room_start, r, not r.ranked)
-        return {"t": "room", "room": r.public()}
+        # check says "ranked" and needs a second yes (security review 2). A private room lets the friend in without
+        # its password: the invite from a member is the key. (A community room's matches always have a ready check.)
+        self._room_add(r, p, invited=not r.ranked)
+        return {"t": "room", "room": self._room_view(r, p)}
 
     async def h_invite_cancel(self, conn, msg):
         inv = self.invites.get(msg.get("invite"))
@@ -4017,10 +3933,11 @@ class LobbyServer(SpectateMixin):
     # for everybody cost O(players^2): 46 Mbit/s at 100 players (lobby/tools/load_test.py).
     LEGACY_PLAYERS, LEGACY_ROOMS = 300, 100
 
-    def _snapshot(self, full=False):
+    def _snapshot(self, full=False, conn=None):
         self._spec_refresh_rooms()
         players = [p.public() for p in self.players.values() if p.online]
-        rooms = [r.public() for r in self.rooms.values()]
+        new, old = self._room_lists()           # (a launcher without "private_rooms" never sees a locked room)
+        rooms = list((new if conn is not None and self._can_private(conn) else old).values())
         if not full:
             players, rooms = players[:self.LEGACY_PLAYERS], rooms[:self.LEGACY_ROOMS]
         return {"t": "lobby_state", "players": players, "rooms": rooms,
@@ -4029,42 +3946,48 @@ class LobbyServer(SpectateMixin):
     def _broadcast_lobby(self):
         self._spec_refresh_rooms()
         players = {p.id: p.public() for p in self.players.values() if p.online}
-        rooms = {r.id: r.public() for r in self.rooms.values()}
+        # two room lists: launchers with "private_rooms" see the locked rooms too, older ones do not (rooms.py);
+        # a hidden room is in neither (its members get their room's view on its own: _room_push)
+        views = dict(zip(("new", "old"), self._room_lists()))
         queue = {m: len(q) for m, q in self.queues.items()}
         last = self._last_lobby
-        self._last_lobby = {"players": players, "rooms": rooms, "queue": queue}
-        delta_data = full_data = legacy_data = None
+        self._last_lobby = {"players": players, "rooms": views["new"], "rooms_old": views["old"], "queue": queue}
+        delta_data, full_data, legacy_data = {}, {}, None
         if last is not None:
-            delta = {"t": "lobby_delta"}
             changed = [v for k, v in players.items() if last["players"].get(k) != v]
             gone = [k for k in last["players"] if k not in players]
-            rchanged = [v for k, v in rooms.items() if last["rooms"].get(k) != v]
-            rgone = [k for k in last["rooms"] if k not in rooms]
-            for key, val in (("players", changed), ("gone", gone), ("rooms", rchanged), ("rooms_gone", rgone)):
-                if val:
-                    delta[key] = val
-            if queue != last["queue"]:
-                delta["queue"] = queue
-            if len(delta) > 1:
-                delta_data = proto.encode(delta)
+            for kind, rooms in views.items():
+                before = last["rooms" if kind == "new" else "rooms_old"]
+                delta = {"t": "lobby_delta"}
+                rchanged = [v for k, v in rooms.items() if before.get(k) != v]
+                rgone = [k for k in before if k not in rooms]
+                for key, val in (("players", changed), ("gone", gone), ("rooms", rchanged), ("rooms_gone", rgone)):
+                    if val:
+                        delta[key] = val
+                if queue != last["queue"]:
+                    delta["queue"] = queue
+                if len(delta) > 1:
+                    delta_data[kind] = proto.encode(delta)
         for p in self.players.values():
             c = p.conn
             if c is None or c.closed:
                 continue
+            kind = "new" if "private_rooms" in c.caps else "old"
             if "delta" in c.caps:
                 if c.need_full or last is None:
-                    if full_data is None:
-                        full_data = proto.encode({"t": "lobby_state", "players": list(players.values()),
-                                                  "rooms": list(rooms.values()), "queue": queue})
+                    if kind not in full_data:
+                        full_data[kind] = proto.encode({"t": "lobby_state", "players": list(players.values()),
+                                                        "rooms": list(views[kind].values()), "queue": queue})
                     c.need_full = False
-                    c.send_raw(full_data)
-                elif delta_data is not None:
-                    c.send_raw(delta_data)
+                    c.send_raw(full_data[kind])
+                elif kind in delta_data:
+                    c.send_raw(delta_data[kind])
             else:
                 if legacy_data is None:
                     legacy_data = proto.encode({"t": "lobby_state",
                                                 "players": list(players.values())[:self.LEGACY_PLAYERS],
-                                                "rooms": list(rooms.values())[:self.LEGACY_ROOMS], "queue": queue})
+                                                "rooms": list(views["old"].values())[:self.LEGACY_ROOMS],
+                                                "queue": queue})
                 c.send_raw(legacy_data)
 
     async def _tick_lobby(self):
@@ -4077,6 +4000,10 @@ class LobbyServer(SpectateMixin):
                 self._broadcast_lobby()
             except Exception:
                 log.exception("lobby broadcast")
+            try:
+                self._room_push()                # (each member: its room's view, when it changed)
+            except Exception:
+                log.exception("room views")
             try:
                 self._push_presence()
             except Exception:
@@ -4102,6 +4029,8 @@ class LobbyServer(SpectateMixin):
             self.registrations.prune()
             self.pw_ops.prune()
             self.chat_rate.prune()
+            for b in (self.room_guess, self.room_guess_addr, self.room_guess_room, self.room_pw_addr):
+                b.prune()
             self.bans.prune()
             self.udp.ctl_buckets.prune()
             day = time.monotonic() - 30 * DAY

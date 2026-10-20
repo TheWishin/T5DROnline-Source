@@ -2098,4 +2098,87 @@ MESSAGES = {
         "Les combats étaient sous 60 fps à cause du graphisme (limité par le GPU) : choisis une résolution interne plus basse dans Réglages.",
     "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
         "Les combats étaient sous 60 fps : la puce graphique intégrée était occupée et a aussi ralenti le processeur. Une résolution interne plus basse dans Réglages aide.",
+    # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
+    "private rooms need a newer launcher; update it":
+        "les salons privés demandent un launcher plus récent ; mets-le à jour",
+    "only the room's host can do that": "seul l'hôte du salon peut faire ça",
+    "too many wrong room passwords; try again in {seconds} s":
+        "trop de mots de passe de salon faux ; réessaie dans {seconds} s",
+    "wrong room password": "mot de passe du salon faux",
+    "the room's password changed; try again": "le mot de passe du salon a changé ; réessaie",
+    "no room has that invite code": "aucun salon n'a ce code d'invitation",
+    "rooms hold 2 to {count} players": "un salon accueille de 2 à {count} joueurs",
+    "room passwords are 4-64 characters, no space at either end":
+        "les mots de passe de salon font 4 à 64 caractères, sans espace au début ni à la fin",
+    "private and community rooms are casual (unranked)":
+        "les salons privés et communautaires sont amicaux (pas de Ranked)",
+    "you are in that room": "tu es déjà dans ce salon",
+    "the room's host removed you from this room": "l'hôte t'a retiré de ce salon",
+    "that player is not in your room": "ce joueur n'est pas dans ton salon",
+    "you cannot remove yourself; leave the room instead": "tu ne peux pas te retirer toi-même ; quitte plutôt le salon",
+    "you can remove that player after their match": "tu pourras retirer ce joueur après son match",
+    "only rooms for 3 or more players take turns": "seuls les salons de 3 joueurs ou plus jouent à tour de rôle",
+    "you sit out in the room; press Back in line to play again":
+        "tu passes ton tour dans le salon ; appuie sur Revenir dans la file pour rejouer",
+    "the room picks the next match by itself": "le salon choisit lui-même le match suivant",
+    "the room's host removed that player from this room": "l'hôte a retiré ce joueur de ce salon",
+    "only the room's players can watch its match": "seuls les joueurs du salon peuvent regarder son match",
+    "Anybody": "Tout le monde",
+    "Back in line": "Revenir dans la file",
+    "Back in line: you play when it is your turn.": "De retour dans la file : tu joues quand c'est ton tour.",
+    "Copy invite code": "Copier le code d'invitation",
+    "Create a room": "Créer un salon",
+    "Everyone in turn": "Chacun son tour",
+    "Hide the room from the room list": "Masquer le salon de la liste des salons",
+    "In the room “{name}”: {count}/{size} players, taking turns.":
+        "Dans le salon « {name} » : {count}/{size} joueurs, chacun son tour.",
+    "Invite code": "Code d'invitation",
+    "Line: {names}": "File : {names}",
+    "New invite code": "Nouveau code d'invitation",
+    "Next: {p1} vs {p2} in {seconds} s": "Ensuite : {p1} contre {p2} dans {seconds} s",
+    "No room selected. Join a room with its invite code (XXXX-XXXX-XXXX):":
+        "Aucun salon choisi. Rejoins un salon avec son code d'invitation (XXXX-XXXX-XXXX) :",
+    "Password (4-64 characters):": "Mot de passe (4 à 64 caractères) :",
+    "Players in the room:": "Joueurs dans le salon :",
+    "Players:": "Joueurs :",
+    "Playing: {p1} vs {p2}": "En jeu : {p1} contre {p2}",
+    "Private (invite code)": "Privé (code d'invitation)",
+    "Private (password)": "Privé (mot de passe)",
+    "Remove player": "Retirer le joueur",
+    "Remove {name} from the room? They cannot come back into it.":
+        "Retirer {name} du salon ? Il ne pourra pas revenir.",
+    "Removed {name} from the room.": "{name} a été retiré du salon.",
+    "Room created.": "Salon créé.",
+    "Room created. Press Copy invite code to see the code you can share.":
+        "Salon créé. Appuie sur Copier le code d'invitation pour voir le code à partager.",
+    "Room name (optional):": "Nom du salon (facultatif) :",
+    "Room password": "Mot de passe du salon",
+    "Room passwords are 4-64 characters, with no space at the start or end.":
+        "Les mots de passe de salon font 4 à 64 caractères, sans espace au début ni à la fin.",
+    "Room settings": "Réglages du salon",
+    "Room settings saved.": "Réglages du salon enregistrés.",
+    "Room settings...": "Réglages du salon...",
+    "Sit out": "Passer mon tour",
+    "The invite code is in the field next to the button: select it and press Ctrl+C to copy it.":
+        "Le code d'invitation est dans le champ à côté du bouton : sélectionne-le et appuie sur Ctrl+C pour le copier.",
+    "The room's invite code (XXXX-XXXX-XXXX):": "Code d'invitation du salon (XXXX-XXXX-XXXX) :",
+    "Turns (3 or more players):": "Tours (3 joueurs ou plus) :",
+    "Who can join:": "Qui peut entrer :",
+    "Winner stays": "Le gagnant reste",
+    "You sit out: your turns are skipped until you press Back in line.":
+        "Tu passes ton tour : on te saute jusqu'à ce que tu appuies sur Revenir dans la file.",
+    "Your room: {name}": "Ton salon : {name}",
+    "hidden": "masqué",
+    "invites you to the private room “{room}”. Accept to join it without its password.":
+        "t'invite dans le salon privé « {room} ». Accepte pour y entrer sans son mot de passe.",
+    "private": "privé",
+    "private (invite code)": "privé (code d'invitation)",
+    "private (password)": "privé (mot de passe)",
+    "{count}/{size} players": "{count}/{size} joueurs",
+    "{name} (host)": "{name} (hôte)",
+    "{name} (sitting out)": "{name} (passe son tour)",
+    "{name} ({rank}) invites you to the private room “{room}”":
+        "{name} ({rank}) t'invite dans le salon privé « {room} »",
+    "“{room}” is private. Its password:": "« {room} » est privé. Son mot de passe :",
+    "this server has no private rooms": "ce serveur n'a pas de salons privés",
 }

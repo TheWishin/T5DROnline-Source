@@ -77,6 +77,12 @@ class Config:
     set_replays: int = 2            # T5L_SET_REPLAYS: games without a winner (desync, draw, too short) played again
                                     # per set; one more and the set is void
     ranked_rooms: bool = True       # T5L_RANKED_ROOMS: rooms may be ranked (else only the ranked queue is)
+    # rooms (docs/ONLINE.md "Rooms"): community rooms take turns, private rooms need a password or an invite code
+    room_max_size: int = 8          # T5L_ROOM_MAX_SIZE: most players a community room may hold (2 = no community rooms)
+    room_next_seconds: float = 8.0  # T5L_ROOM_NEXT_SECONDS: a community room's pause between a result and its next match
+    room_guesses: int = 5           # T5L_ROOM_GUESSES: wrong room passwords / invite codes a player may try (twice that
+    room_guess_seconds: float = 30.0  # per address, 4x per room), then one more per T5L_ROOM_GUESS_SECONDS (address 2x,
+                                    # room 3x as often)
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
     ingame_pick: int = 30           # T5L_INGAME_PICK: seconds to pick the character on the game's own select screen
                                     # (when both players' launchers and games can; 0 = off: the launcher's character)

@@ -176,6 +176,7 @@ class TkFriendsTest(TkBase):
         self.assertEqual(str(tab.friend_actions["invite"].cget("state")), "normal")
         # to the room: the friend joins it with one click and the match starts
         tab.actions["room"].invoke()
+        tab.rooms_ui.window.create_button.invoke()                        # (Create room's window: an open room for two)
         self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
         tab.friend_actions["invite_room"].invoke()
         ev = expect(self.other, "invited")
@@ -203,6 +204,7 @@ class TkFriendsTest(TkBase):
         tab.friend_actions["accept"].invoke()
         self.pump(lambda: "f:Third" in texts(tab.tv_friends))
         tab.actions["room"].invoke()                                       # in a room: both invite buttons count
+        tab.rooms_ui.window.create_button.invoke()
         tab.tv_friends.selection_set("f:Rival")
         self.pump(lambda: str(tab.friend_actions["invite_room"].cget("state")) == "normal")
         tab.friend_actions["invite_room"].invoke()

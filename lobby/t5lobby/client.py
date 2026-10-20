@@ -32,6 +32,10 @@ notice, ...) plus the client's own:
     {"t": "friend_update", "name", "state": "accepted"|"declined"}   the answer to this player's request
     {"t": "invited", "invite", "from", "kind": "casual"|"room", "room", "expires"}   a friend invites this player
                                            (answer_invite: one call starts the match or joins the room)
+    {"t": "room", "room": {...}}           this player's room as a member sees it (private_rooms=True, servers from
+                                           1.1.3): its line, who plays, the next match, its lock (never a password
+                                           or a code); also in .my_room. .room_code: the invite code of that room
+                                           when this launcher knows it (made it, or joined with it)
     {"t": "invite_update", "invite", "state": "accepted"|"declined"|"cancelled"|"expired", "name", "kind", "retry"}
                                            "retry" (to the inviter; servers from 1.1.3): whole seconds until this
                                            player may invite that friend again (a no or a take-back holds the next
@@ -97,7 +101,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
                  port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
-                 tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None):
+                 tournaments=False, spectate=False, live_dir=None, watch_dir=None, test_inbound=None,
+                 private_rooms=True):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -138,7 +143,10 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         it on).
         test_inbound: testing only -- "stateful" / "block": this launcher's UDP sockets behave as if Windows
         Firewall blocked the launcher (nat.InboundFilter; docs/NETPLAY.md "When Windows Firewall blocks the
-        game"). None: T5_NET_TEST_INBOUND from the environment; "" off."""
+        game"). None: T5_NET_TEST_INBOUND from the environment; "" off.
+        private_rooms: rooms for more than two players who take turns, rooms locked with a password or an invite
+        code, hidden rooms (docs/ONLINE.md "Rooms"); False behaves like a 1.1.2 client (the server then lists no
+        locked room for it)."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -161,6 +169,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         self.friend_list = None      # the last `friends` message (friend_status merged in), None before the first
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
         self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
+        self.private_rooms = private_rooms
+        self.my_room = None          # this player's room as its members see it (the last `room` message)
+        self.room_code = None        # its invite code, when this launcher knows it (never sent to anyone but the server)
 
         self.events = queue.Queue()
         self.session = None          # "remember me" token from a password login (store it, not the password)
@@ -298,6 +309,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["friends"] if self.friends else [])
                                                 + (["tournaments"] if self.tournaments else [])
                                                 + (["spectate"] if self.spectate else [])
+                                                + (["private_rooms"] if self.private_rooms else [])
                                                 + (["game_fallback"] if self._can_fallback() else [])})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
@@ -445,6 +457,23 @@ class LobbyClient(TourCalls, SpectateClientMixin):
             for p in self.players:
                 if p["id"] == self.me["id"]:
                     self.me = p
+            if self.me.get("status") in ("idle", "queue"):
+                self.my_room = self.room_code = None     # (left it, or removed from it)
+
+    async def _on_room(self, msg):
+        """This player's room (a reply to create / join / lock, or a member's update): its view, and the invite code
+        when the server handed one over (to the host only)."""
+        r = msg.get("room") if isinstance(msg.get("room"), dict) else None
+        if r is None:
+            return
+        if self.my_room is not None and self.my_room.get("id") != r.get("id"):
+            self.room_code = None
+        self.my_room = r
+        code = msg.get("code")
+        if isinstance(code, str) and code:
+            self.room_code = code
+        elif r.get("lock") != "code":
+            self.room_code = None
 
     async def _on_kicked(self, msg):
         self._kicked = True
@@ -539,7 +568,9 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         if left <= 0:
             self.invite_waits.pop(str(name).lower(), None)
             return 0
-        return math.ceil(left)
+        # (a millisecond off: "now + N - now" is N plus a rounding error when the clock has not moved, which ceil()
+        # made N + 1 -- test_friends saw 86401 for a day now and then)
+        return max(1, math.ceil(left - 0.001))
 
     async def _on_relays(self, msg):
         """The server's list of regional relays changed: measure the new list."""
@@ -1238,14 +1269,75 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def cancel_queue(self):
         return self._call({"t": "unqueue"})
 
-    def create_room(self, name=None, ranked=False):
-        return self._call({"t": "room_create", "name": name, "ranked": ranked})["room"]
+    def create_room(self, name=None, ranked=False, size=2, rotation="winner", private=None, password=None,
+                    hidden=False):
+        """A room. size 2 = a classic room; 3.. = a community room whose members take turns (rotation "winner":
+        winner stays, "queue": everyone in turn). private "password" (with `password`) or "code" (the server makes
+        an invite code: .room_code, the reply's "code"); hidden: not in the room list. -> the room (a member's view).
+        The password goes to the server only, over this connection; nothing here keeps or logs it."""
+        msg = {"t": "room_create", "name": name, "ranked": ranked}
+        if size != 2 or private or hidden:
+            if not self.private_rooms_ok():
+                raise LobbyError(proto.E_NOT_ALLOWED, "this server has no private rooms")
+            msg.update(size=size, rotation=rotation, hidden=bool(hidden))
+            if private:
+                msg["private"] = private
+            if private == "password":
+                msg["password"] = password
+        r = self._call(msg)
+        if r.get("code"):
+            self.room_code = r["code"]
+        return r["room"]
 
-    def join_room(self, room_id):
-        return self._call({"t": "room_join", "room": room_id})["room"]
+    def join_room(self, room_id=None, password=None, code=None):
+        """Join a room: by its id (an open room; a locked one with `password`) or with an invite `code` (the room id
+        is optional then: a hidden room is found by its code)."""
+        msg = {"t": "room_join", "room": room_id}
+        if password is not None:
+            msg["password"] = password
+        if code is not None:
+            msg["code"] = code
+        r = self._call(msg)["room"]
+        if code is not None:
+            raw = "".join(ch for ch in str(code).upper() if ch.isalnum())
+            self.room_code = "-".join(raw[i:i + 4] for i in range(0, len(raw), 4))
+        return r
 
     def leave_room(self):
-        return self._call({"t": "room_leave"})
+        r = self._call({"t": "room_leave"})
+        self.my_room = self.room_code = None
+        return r
+
+    def room_lock(self, lock=None, password=None, hidden=None):
+        """The room's host: lock "password" (with `password`), "code" (a new invite code: the old one stops working;
+        .room_code has the new one), "none" (open); hidden True / False (None: unchanged). -> the room."""
+        msg = {"t": "room_lock"}
+        if lock is not None:
+            msg["lock"] = lock
+        if lock == "password":
+            msg["password"] = password
+        if hidden is not None:
+            msg["hidden"] = bool(hidden)
+        r = self._call(msg)
+        if r.get("code"):
+            self.room_code = r["code"]
+        elif lock in ("password", "none"):
+            self.room_code = None
+        return r["room"]
+
+    def room_kick(self, player_id):
+        """The room's host removes a member (not while they play); they cannot come back into this room."""
+        return self._call({"t": "room_kick", "player": player_id})["room"]
+
+    def room_line(self, back=True):
+        """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
+        return self._call({"t": "room_line", "in": bool(back)})["room"]
+
+    def private_rooms_ok(self):
+        """Does the server have private and community rooms (and this client asked for them)?"""
+        w = self.welcome or {}
+        return bool(self.private_rooms and "private_rooms" in (w.get("features") or ())
+                    and "private_rooms" in (w.get("caps") or ()))
 
     def rematch(self, match_id=None, accept=True, keep=False):
         """Rooms: rematch() starts the next match in the room. After any other match: the finished

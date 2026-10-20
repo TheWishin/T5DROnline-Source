@@ -144,6 +144,26 @@ SERVER = (
     N_("this match cannot be watched any more"),
     N_("this match has {count} spectators already"),
     N_("the server cannot show more matches right now"),
+    # private and community rooms (server/rooms.py, 1.1.3: docs/ONLINE.md "Rooms")
+    N_("private rooms need a newer launcher; update it"),
+    N_("only the room's host can do that"),
+    N_("too many wrong room passwords; try again in {seconds} s"),
+    N_("wrong room password"),
+    N_("the room's password changed; try again"),
+    N_("no room has that invite code"),
+    N_("rooms hold 2 to {count} players"),
+    N_("room passwords are 4-64 characters, no space at either end"),
+    N_("private and community rooms are casual (unranked)"),
+    N_("you are in that room"),
+    N_("the room's host removed you from this room"),
+    N_("that player is not in your room"),
+    N_("you cannot remove yourself; leave the room instead"),
+    N_("you can remove that player after their match"),
+    N_("only rooms for 3 or more players take turns"),
+    N_("you sit out in the room; press Back in line to play again"),
+    N_("the room picks the next match by itself"),
+    N_("the room's host removed that player from this room"),
+    N_("only the room's players can watch its match"),
 )
 
 # lobby/t5lobby/server/tournaments.py: errors answering a tournament request (docs/TOURNAMENTS.md)
@@ -207,6 +227,7 @@ CLIENT = (
     N_("message too long"),
     N_("closed"),
     N_("the server sent a malformed match id"),
+    N_("this server has no private rooms"),     # (client.py create_room: a new launcher, an older server)
 )
 
 # tools/build_game.py: the sentence after "ERROR:" in the build log, shown in the Build tab

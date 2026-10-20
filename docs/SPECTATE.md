@@ -9,7 +9,9 @@ the same netcode playback path while it grows.
 
 - **Watch a friend**: Online tab -> Friends -> select a friend who is in a match -> **Watch**
   (below the list). **Watch a room's match**: Lobby -> Rooms -> select a room that is playing ->
-  **Watch**. Your game starts and shows the match; the Spectating card at the top of the tab says
+  **Watch**. A private room's match (locked with a password or an invite code, or hidden: ONLINE.md
+  "Rooms", 1.1.3) only its members can watch -- the players waiting for their turn: **Watch** with no room
+  selected watches your own room's match; the players' friends cannot. Your game starts and shows the match; the Spectating card at the top of the tab says
   how far behind the live match it is. **Stop watching** closes the game. In the game START pauses
   (you fall further behind), SELECT ends it.
 - **Watch a tournament set**: Online tab -> Tournaments -> the tournament -> click the set in the
@@ -144,8 +146,10 @@ count and index is checked (a broken record is skipped or ends the stream).
 | `spectators` | server | `match`, `count` -> the players |
 
 `match_start` has `stream` and friend entries / `friend_status` have `watch` (true: this viewer
-may watch now) for clients with the cap; rooms in the lobby list have `watch` (anybody may).
-Refusals (`watch`): not_allowed (not a friend, not a room, the players do not allow it, blocked),
+may watch now) for clients with the cap; rooms in the lobby list have `watch` (anybody may; a private room's is
+always false there, and its members get their own `watch` in the room's view, the `room` message).
+Refusals (`watch`): not_allowed (not a friend, not a room, not a member of a private room, the players do not
+allow it, blocked; locking a room sends the spectators who are not its members away: `spec_end` not_allowed),
 bad_state (not playing, a player of it), busy (in a match), version_mismatch (another build),
 server_full (the limits). A spectator who gets a match of their own stops watching (`your_match`).
 

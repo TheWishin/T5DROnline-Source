@@ -2169,4 +2169,86 @@ MESSAGES = {
         "Kämpfe liefen langsamer als 60 fps wegen der Grafik (GPU-limitiert): wähle in den Einstellungen eine niedrigere interne Auflösung.",
     "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
         "Kämpfe liefen langsamer als 60 fps: die integrierte Grafik war ausgelastet und hat auch den Prozessor gebremst. Eine niedrigere interne Auflösung in den Einstellungen hilft.",
+    # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
+    "private rooms need a newer launcher; update it": "Private Räume brauchen einen neueren Launcher; aktualisiere ihn",
+    "only the room's host can do that": "Das kann nur der Gastgeber des Raums",
+    "too many wrong room passwords; try again in {seconds} s":
+        "Zu viele falsche Raum-Passwörter; versuche es in {seconds} s wieder",
+    "wrong room password": "Falsches Raum-Passwort",
+    "the room's password changed; try again": "Das Passwort des Raums hat sich geändert; versuche es noch einmal",
+    "no room has that invite code": "Kein Raum hat diesen Einladungscode",
+    "rooms hold 2 to {count} players": "In einen Raum passen 2 bis {count} Spieler",
+    "room passwords are 4-64 characters, no space at either end":
+        "Raum-Passwörter haben 4-64 Zeichen, ohne Leerzeichen am Anfang oder Ende",
+    "private and community rooms are casual (unranked)": "Private und Community-Räume sind casual (nicht ranked)",
+    "you are in that room": "Du bist in diesem Raum",
+    "the room's host removed you from this room": "Der Gastgeber hat dich aus diesem Raum entfernt",
+    "that player is not in your room": "Dieser Spieler ist nicht in deinem Raum",
+    "you cannot remove yourself; leave the room instead":
+        "Du kannst dich nicht selbst entfernen; verlasse den Raum stattdessen",
+    "you can remove that player after their match": "Du kannst diesen Spieler nach seinem Match entfernen",
+    "only rooms for 3 or more players take turns": "Nur Räume für 3 oder mehr Spieler wechseln sich ab",
+    "you sit out in the room; press Back in line to play again":
+        "Du setzt im Raum aus; drücke Wieder anstellen, um wieder zu spielen",
+    "the room picks the next match by itself": "Der Raum wählt das nächste Match selbst",
+    "the room's host removed that player from this room": "Der Gastgeber hat diesen Spieler aus diesem Raum entfernt",
+    "only the room's players can watch its match": "Nur die Spieler des Raums können sein Match zuschauen",
+    "Anybody": "Alle",
+    "Back in line": "Wieder anstellen",
+    "Back in line: you play when it is your turn.": "Wieder angestellt: Du spielst, wenn du dran bist.",
+    "Copy invite code": "Einladungscode kopieren",
+    "Create a room": "Raum erstellen",
+    "Everyone in turn": "Alle der Reihe nach",
+    "Hide the room from the room list": "Raum in der Raumliste verstecken",
+    "In the room “{name}”: {count}/{size} players, taking turns.":
+        "Im Raum „{name}“: {count}/{size} Spieler, ihr wechselt euch ab.",
+    "Invite code": "Einladungscode",
+    "Line: {names}": "Reihe: {names}",
+    "New invite code": "Neuer Einladungscode",
+    "Next: {p1} vs {p2} in {seconds} s": "Als Nächstes: {p1} gegen {p2} in {seconds} s",
+    "No room selected. Join a room with its invite code (XXXX-XXXX-XXXX):":
+        "Kein Raum gewählt. Tritt einem Raum mit seinem Einladungscode bei (XXXX-XXXX-XXXX):",
+    "Password (4-64 characters):": "Passwort (4-64 Zeichen):",
+    "Players in the room:": "Spieler im Raum:",
+    "Players:": "Spieler:",
+    "Playing: {p1} vs {p2}": "Es spielen: {p1} gegen {p2}",
+    "Private (invite code)": "Privat (Einladungscode)",
+    "Private (password)": "Privat (Passwort)",
+    "Remove player": "Spieler entfernen",
+    "Remove {name} from the room? They cannot come back into it.":
+        "{name} aus dem Raum entfernen? Er kann nicht wieder hinein.",
+    "Removed {name} from the room.": "{name} wurde aus dem Raum entfernt.",
+    "Room created.": "Raum erstellt.",
+    "Room created. Press Copy invite code to see the code you can share.":
+        "Raum erstellt. Drücke Einladungscode kopieren, um den Code zum Weitergeben zu sehen.",
+    "Room name (optional):": "Name des Raums (optional):",
+    "Room password": "Raum-Passwort",
+    "Room passwords are 4-64 characters, with no space at the start or end.":
+        "Raum-Passwörter haben 4-64 Zeichen, ohne Leerzeichen am Anfang oder Ende.",
+    "Room settings": "Raum-Einstellungen",
+    "Room settings saved.": "Raum-Einstellungen gespeichert.",
+    "Room settings...": "Raum-Einstellungen...",
+    "Sit out": "Aussetzen",
+    "The invite code is in the field next to the button: select it and press Ctrl+C to copy it.":
+        "Der Einladungscode steht im Feld neben dem Knopf: markiere ihn und drücke Strg+C, um ihn zu kopieren.",
+    "The room's invite code (XXXX-XXXX-XXXX):": "Einladungscode des Raums (XXXX-XXXX-XXXX):",
+    "Turns (3 or more players):": "Reihenfolge (ab 3 Spielern):",
+    "Who can join:": "Wer beitreten kann:",
+    "Winner stays": "Gewinner bleibt",
+    "You sit out: your turns are skipped until you press Back in line.":
+        "Du setzt aus: Deine Runden werden übersprungen, bis du Wieder anstellen drückst.",
+    "Your room: {name}": "Dein Raum: {name}",
+    "hidden": "versteckt",
+    "invites you to the private room “{room}”. Accept to join it without its password.":
+        "lädt dich in den privaten Raum „{room}“ ein. Nimm an, um ohne sein Passwort hineinzukommen.",
+    "private": "privat",
+    "private (invite code)": "privat (Einladungscode)",
+    "private (password)": "privat (Passwort)",
+    "{count}/{size} players": "{count}/{size} Spieler",
+    "{name} (host)": "{name} (Gastgeber)",
+    "{name} (sitting out)": "{name} (setzt aus)",
+    "{name} ({rank}) invites you to the private room “{room}”":
+        "{name} ({rank}) lädt dich in den privaten Raum „{room}“ ein",
+    "“{room}” is private. Its password:": "„{room}“ ist privat. Sein Passwort:",
+    "this server has no private rooms": "Dieser Server hat keine privaten Räume",
 }

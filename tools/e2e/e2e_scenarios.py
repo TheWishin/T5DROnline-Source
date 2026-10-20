@@ -18,7 +18,7 @@ import time
 import urllib.error
 import zipfile
 
-from e2e_flows import (accept, close_window, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
+from e2e_flows import (accept, close_window, create_room, fight_started, found_both, fps_check, game_exit_code, kill_game, latest,
                    leave, log_has, login, match_row, parse_segment, profile, queue_match, rematch,
                    server_says, started_both, wait_fight, wait_results, STUB_MATCH_SECONDS)
 import core                                  # launcher/core.py (on the path through e2e_harness)
@@ -653,7 +653,7 @@ def room_flow(ctx):
     login(ctx, b)
     a.set_char("bryan")
     b.set_char("xiaoyu")
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Create room")
     ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed for the other player")
     rid = b.tab.tv_rooms.get_children()[0]
@@ -707,7 +707,7 @@ def room_leave(ctx):
     b = ctx.player("E2E Tia", kind="stub")
     login(ctx, a)
     login(ctx, b)
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "room listed")
     rid = b.tab.tv_rooms.get_children()[0]
     t = time.time()
@@ -2072,7 +2072,7 @@ def version_lobby(ctx):
     login(ctx, c)
     ctx.wait(lambda: any("other version" in str(c.tab.tv_players.item(i, "values")) for i in c.tab.tv_players.get_children()),
              10, "the lobby list marks the other build")
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: len(c.tab.tv_rooms.get_children()) == 1, 10, "room listed")
     ctx.check("the room list marks the other build", "other version" in str(c.tab.tv_rooms.item(
         c.tab.tv_rooms.get_children()[0], "values")))
@@ -3103,7 +3103,7 @@ def _spectate_case(ctx, watched, games=True):
         v.call(v.client.answer_friend, "E2E Ava", True)
         ctx.wait(lambda: any(f["name"] == "E2E Ava" for f in (v.client.friend_list or {}).get("friends") or ()), 15,
                  "Vi and Ava are friends")
-    a.press("room")
+    create_room(a)
     ctx.wait(lambda: (a.me or {}).get("status") == "room", 10, "Ava creates a room")
     ctx.wait(lambda: len(b.tab.tv_rooms.get_children()) == 1, 10, "the room is listed")
     rid = b.tab.tv_rooms.get_children()[0]
@@ -3486,3 +3486,135 @@ def int_fw_costumes(ctx):
         _spectator_verdict(ctx, "fallback match", v, n_matches=1)
     a.set_firewall(None, None)
     ctx.shaper.set(0, 0, 0, on=False)
+
+
+# ============================================================================== 14. private and community rooms (1.1.3)
+# docs/ONLINE.md "Rooms": a room locked with a password or an invite code, made in the launcher's Create room window;
+# a community room whose members take turns.
+PRIVATE_PW = "E2E Kuma Night 5"
+
+
+def _need_private_rooms():
+    if "private_rooms" not in features():
+        raise Skip("this tree has no private rooms")
+
+
+def _create_room_window(p, size=2, access="Anybody", password="", hidden=False, rotation="Winner stays"):
+    """The launcher's Create room window (tk_rooms.py), filled in like a player would, then Create."""
+    from t5lobby.i18n import t
+    p.press("room")
+    w = p.tab.rooms_ui.window
+    if w is None:
+        raise Abort(f"{p.name}: Create room opened no window (a server without private rooms?)")
+    w.vars["size"].set(str(size))
+    w.vars["rotation"].set(t(rotation))
+    w.vars["access"].set(t(access))
+    w.vars["password"].set(password)
+    w.vars["hidden"].set(1 if hidden else 0)
+    w.create_button.invoke()
+
+
+@scenario("private_room", "14 private rooms", game=True, suites=("game",),
+          desc="a room locked with a password (the Create room window): listed as locked, a wrong password refused, "
+               "the right one lets the second player in; one real match in it (rollback) confirmed and in sync; the "
+               "password nowhere in the server's log")
+def private_room(ctx):
+    _need_private_rooms()
+    srv = game_server(ctx)
+    a = ctx.player("E2E Pia", char="jin")
+    b = ctx.player("E2E Rex", char="paul")
+    login(ctx, a)
+    login(ctx, b)
+    a.set_char("jin")
+    b.set_char("paul")
+    _create_room_window(a, access="Private (password)", password=PRIVATE_PW)
+    ctx.wait(lambda: (a.client.my_room or {}).get("lock") == "password", 10, "the private room is made")
+    rid = a.client.my_room["id"]
+    ctx.wait(lambda: b.tab.tv_rooms.exists(rid), 10, "the room is listed for the other player")
+    vals, tags = b.tab.tv_rooms.item(rid, "values"), b.tab.tv_rooms.item(rid, "tags")
+    ctx.check("listed as locked: 'private' and the lock icon", "private" in str(vals[2]) and "closed" in tags,
+              f"{vals} {tags}")
+    asked = []
+    b.tab.ask_string = lambda *a_, **k: asked.append(k.get("show")) or "not the password"
+    b.tab.tv_rooms.selection_set(rid)
+    t0 = time.time()
+    b.press("join")
+    ctx.wait(lambda: b.saw_status("wrong room password", t0), 10, "a wrong password is refused")
+    ctx.check("the password is asked in a masked field", asked == ["*"], asked)
+    ctx.check("nobody got in with it", (b.me or {}).get("status") == "idle" and
+              len((a.client.my_room or {}).get("members") or ()) == 1, b.me)
+    b.tab.ask_string = lambda *a_, **k: PRIVATE_PW
+    t = time.time()
+    b.press("join")
+    mid = found_both(ctx, a, b, t)
+    ctx.check("the room's match: ready check, opponent named", a.matches[mid].get("ready_check") and
+              a.matches[mid].get("opponent_at_found") == "E2E Rex")
+    accept(ctx, a, mid)
+    accept(ctx, b, mid)
+    started_both(ctx, a, b, mid)
+    wait_fight(ctx, mid, (a, b), timeout=150)
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "private room match")
+    fps_check(ctx, row, (a, b))
+    if ctx.run.netcode == "rollback":
+        ctx.check("played with rollback", all((row.get(p.name) or {}).get("mode") == "rollback" for p in (a, b)),
+                  [(row.get(p.name) or {}).get("mode") for p in (a, b)])
+    text = srv.log_text()
+    ctx.check("the password is nowhere in the server's log", PRIVATE_PW not in text and "Kuma Night" not in text,
+              "found" if PRIVATE_PW in text else "")
+    leave(ctx, a)
+    leave(ctx, b)
+
+
+@scenario("private_room_turns", "14 private rooms", suites=("quick", "lobby"),
+          desc="a hidden room for 3 with an invite code (stub games): Copy invite code fills the launcher's field, "
+               "never the clipboard; the others join with the code and nothing selected; three matches by 'winner "
+               "stays'; no rematch vote")
+def private_room_turns(ctx):
+    _need_private_rooms()
+    stub_server(ctx, T5L_ROOM_NEXT_SECONDS=2)
+    a, b, c = (ctx.player(n, kind="stub") for n in ("E2E Ivy", "E2E Jon", "E2E Kai"))
+    for p in (a, b, c):
+        login(ctx, p)
+    _create_room_window(a, size=3, access="Private (invite code)", hidden=True)
+    ctx.wait(lambda: a.client.room_code, 10, "the room and its invite code")
+    ctx.check("before Copy invite code the field is empty", a.tab.rooms_ui.code_var.get() == "")
+    clip_before = ctx.run.root.clipboard_get()
+    a.press("room_code")
+    code = a.tab.rooms_ui.code_var.get()
+    ctx.check("Copy invite code puts the code into the launcher's own field", code == a.client.room_code, code)
+    ctx.check("... and nothing into the clipboard", ctx.run.root.clipboard_get() == clip_before)
+    ctx.sleep(1.0)
+    ctx.check("a hidden room is in nobody's list", not b.tab.tv_rooms.get_children() and
+              not c.tab.tv_rooms.get_children())
+    for p in (b, c):
+        p.tab.tv_rooms.selection_remove(*p.tab.tv_rooms.selection())
+        p.tab.ask_string = lambda *a_, **k: code            # (typed in from what the host shared)
+        p.press("join")
+        ctx.wait(lambda p=p: (p.client.my_room or {}).get("id") == a.client.my_room["id"], 10, f"{p.name} joins")
+    line = ["E2E Ivy", "E2E Jon", "E2E Kai"]
+    for k in range(3):
+        t = time.time()
+        ctx.wait(lambda: sum(1 for p in (a, b, c) if latest(p, "match_found", t)) == 2, 30, f"room match {k + 1}")
+        two = [p for p in (a, b, c) if latest(p, "match_found", t)]
+        mid = latest(two[0], "match_found", t)["match"]
+        names = sorted(p.name for p in two)
+        ctx.check(f"match {k + 1}: the first two of the line play ({line[:2]})", names == sorted(line[:2]), names)
+        for p in two:
+            accept(ctx, p, mid)
+        wait_results(ctx, mid, two, STUB_MATCH_SECONDS)
+        m = two[0].matches[mid]
+        ctx.check(f"match {k + 1}: confirmed, no rematch vote", m.get("status") == "confirmed" and
+                  not m.get("rematch_window"), f"{m.get('status')} {m.get('rematch_window')}")
+        p1 = two[0].name if m.get("slot") == 0 else two[1].name
+        p2 = two[1].name if p1 == two[0].name else two[0].name
+        winner = (p1, p2)[m["winner"]] if m.get("winner") is not None else None
+        loser = p2 if winner == p1 else p1
+        if winner is not None:                               # winner stays: the loser to the back of the line
+            line.remove(loser)
+            line.append(loser)
+            line.remove(winner)
+            line.insert(0, winner)
+        ctx.note(f"match {k + 1}: {p1} vs {p2}, winner {winner}; line now {line}")
+    for p in (a, b, c):
+        p.press("leave") if p.action_on("leave") else None

@@ -1,5 +1,5 @@
 diff --git a/libs/codec/cellVdec.c b/libs/codec/cellVdec.c
-index 6831e44..4524ce9 100644
+index 6831e44..12fd32c 100644
 --- a/libs/codec/cellVdec.c
 +++ b/libs/codec/cellVdec.c
 @@ -22,6 +22,26 @@
@@ -45,7 +45,18 @@ index 6831e44..4524ce9 100644
  } Vdec;
  
  static SRWLOCK g_lock = SRWLOCK_INIT;
-@@ -115,6 +144,23 @@ static double now_hp_ms(void)
+@@ -105,6 +134,10 @@ static Vdec* get(u32 h) { return (h < VDEC_MAX && s_vdec[h].in_use && !s_vdec[h]
+ 
+ static u64 now_ms(void) { return (u64)GetTickCount64(); }
+ 
++/* A time stamp that is never 0 (0 = none) and an age that never wraps. */
++static u64 stamp_ms(void) { const u64 t = now_ms(); return t ? t : 1; }
++static u64 age_ms(u64 now, u64 since) { return now > since ? now - since : 0; }
++
+ static double now_hp_ms(void)
+ {
+     LARGE_INTEGER f, c;
+@@ -115,6 +148,23 @@ static double now_hp_ms(void)
  
  static void convert(const u8* nv12, u32 w, u32 h, u32 fmt, u32 matrix, u8 alpha, u8* dst);
  
@@ -69,7 +80,7 @@ index 6831e44..4524ce9 100644
  static u32 pic_bytes(u32 fmt, u32 w, u32 h)
  {
      return fmt <= 1 ? w * h * 4 : fmt == 2 ? w * h * 2 : w * h * 3 / 2;
-@@ -151,6 +197,9 @@ static void piclist_add(PicList* l, u8* nv12, u32 w, u32 h, u64 pts, u64 dts, u6
+@@ -151,6 +201,9 @@ static void piclist_add(PicList* l, u8* nv12, u32 w, u32 h, u64 pts, u64 dts, u6
  
  static void on_mf_frame(void* user, const MfH264Frame* f)
  {
@@ -79,7 +90,7 @@ index 6831e44..4524ce9 100644
      PicList* l = (PicList*)user;
      const u32 w = f->width & ~1u, h = f->height & ~1u;
      u8* buf = (u8*)malloc((size_t)w * h * 3 / 2);
-@@ -203,6 +252,7 @@ static void deliver(Vdec* v, PicList* l, int gen)
+@@ -203,6 +256,7 @@ static void deliver(Vdec* v, PicList* l, int gen)
          v->pics[(v->p_head + v->p_count) % VDEC_PICS] = *p;
          v->p_count++;
          v->pics_out++;
@@ -87,7 +98,7 @@ index 6831e44..4524ce9 100644
          v->last_w = p->w; v->last_h = p->h;
          const u32 n = v->pics_out;
          unlock();
-@@ -218,50 +268,149 @@ static void deliver(Vdec* v, PicList* l, int gen)
+@@ -218,50 +272,149 @@ static void deliver(Vdec* v, PicList* l, int gen)
      l->n = 0;
  }
  
@@ -100,7 +111,7 @@ index 6831e44..4524ce9 100644
 +    v->cur = *c;
 +    v->cur.data = NULL;
 +    v->cur_gen = gen;
-+    v->mf_since = now_ms() | 1;
++    v->mf_since = stamp_ms();
 +    unlock();
 +}
 +
@@ -175,7 +186,7 @@ index 6831e44..4524ce9 100644
          const int gen = v->gen;
 +        MfH264* mf = v->mf;
 +        const int use_mf = v->codec == CELL_VDEC_CODEC_TYPE_AVC && !v->mf_failed && !v->stalled;
-+        if (c.type == CMD_DECODE && !v->t_first_dec) v->t_first_dec = now_ms() | 1;
++        if (c.type == CMD_DECODE && !v->t_first_dec) v->t_first_dec = stamp_ms();
          unlock();
  
          switch (c.type) {
@@ -256,7 +267,7 @@ index 6831e44..4524ce9 100644
              deliver(v, &pl, gen);
              lock();
              if (v->seq == 2) v->seq = 0;
-@@ -270,17 +419,76 @@ static DWORD WINAPI vdec_worker(LPVOID arg)
+@@ -270,17 +423,76 @@ static DWORD WINAPI vdec_worker(LPVOID arg)
                     v->handle, v->aus, v->pics_out);
              notify(v, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK);
              break;
@@ -308,7 +319,7 @@ index 6831e44..4524ce9 100644
 +static DWORD WINAPI vdec_watchdog(LPVOID unused)
 +{
 +    (void)unused;
-+    host_sched_thread_start(HS_ROLE_BACKGROUND, 0, "vdec-watchdog");
++    host_sched_thread_start(HS_ROLE_DECODER, 0, "vdec-watchdog");   /* sleeps 250 ms at a time; must not starve */
 +    for (;;) {
 +        Sleep(250);
 +        const unsigned lim = stall_ms();
@@ -317,15 +328,15 @@ index 6831e44..4524ce9 100644
 +        const u64 now = now_ms();
 +        for (int i = 0; i < VDEC_MAX; i++) {
 +            Vdec* v = &s_vdec[i];
-+            if (v->mf_since && now - v->mf_since >= lim) {
-+                replace_worker(v, i, now - v->mf_since);
++            if (v->mf_since && age_ms(now, v->mf_since) >= lim) {
++                replace_worker(v, i, age_ms(now, v->mf_since));
 +            } else if (v->in_use && !v->closing && v->seq == 1 && !v->stalled && !v->mf_failed &&
 +                       v->codec == CELL_VDEC_CODEC_TYPE_AVC && v->t_first_dec && v->seq_aus >= 2 &&
-+                       v->seq_pics == 0 && now - v->t_first_dec >= lim) {
++                       v->seq_pics == 0 && age_ms(now, v->t_first_dec) >= lim) {
 +                v->stalled = 1;
 +                printf("[cellVdec] handle %u: %u AUs in %llu ms and no picture from the H.264 decoder -- "
 +                       "the rest of this movie has no pictures (its sound plays, START skips it)\n",
-+                       v->handle, v->seq_aus, (unsigned long long)(now - v->t_first_dec));
++                       v->handle, v->seq_aus, (unsigned long long)age_ms(now, v->t_first_dec));
 +            }
 +        }
 +        unlock();
@@ -338,7 +349,7 @@ index 6831e44..4524ce9 100644
  }
  
  /* ---------------------------------------------------------------------------
-@@ -315,9 +523,11 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+@@ -315,9 +527,11 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
      Vdec* v = &s_vdec[i];
      HANDLE th = v->thread; DWORD tid = v->thread_id; int gen = v->gen;
      MfH264* mf = v->mf; const int mf_failed = v->mf_failed;
@@ -350,7 +361,7 @@ index 6831e44..4524ce9 100644
      v->in_use = 1;
      v->handle = (u32)i;
      v->codec = codec;
-@@ -329,9 +539,15 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+@@ -329,9 +543,15 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
      v->frc = 3;   /* 30000/1001 until told otherwise */
      v->t_first = now_ms();
      if (!v->thread) {
@@ -367,7 +378,7 @@ index 6831e44..4524ce9 100644
      unlock();
      vm_write32(handle, (u32)i);
      printf("[cellVdec] Open(codec %u, profile 0x%X, mem 0x%08X+0x%X) -> handle %d\n",
-@@ -390,6 +606,9 @@ s64 cellVdecStartSeq(u32 handle)
+@@ -390,6 +610,9 @@ s64 cellVdecStartSeq(u32 handle)
      v->gen++;
      drop_pictures(v);
      v->seq = 1;
@@ -393,7 +404,7 @@ index ac24ce9..ea5713f 100644
  #define CELL_VDEC_ERROR_SEQ            0x80610102
  #define CELL_VDEC_ERROR_BUSY           0x80610103
 diff --git a/libs/codec/mf_h264.cpp b/libs/codec/mf_h264.cpp
-index 7a1c824..d31e133 100644
+index 7a1c824..37305a9 100644
 --- a/libs/codec/mf_h264.cpp
 +++ b/libs/codec/mf_h264.cpp
 @@ -39,6 +39,25 @@ static const GUID kClsidH264Dec =
@@ -456,7 +467,7 @@ index 7a1c824..d31e133 100644
 +
 +static DWORD WINAPI prewarm_thread(LPVOID)
 +{
-+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   /* the game is still booting */
++    /* normal priority: below normal it took up to 10 s on a busy PC */
 +    LARGE_INTEGER f, t0, t1;
 +    QueryPerformanceFrequency(&f);
 +    QueryPerformanceCounter(&t0);

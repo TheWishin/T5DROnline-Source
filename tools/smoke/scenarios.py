@@ -30,7 +30,7 @@ def tests_for(suite):
 def to_title(g, name="title"):
     """Boot, skip the intro movie, land on the title menu (cursor on ARCADE)."""
     ok = g.wait_title()
-    g.expect("title", ok, "intro skipped, title menu reached" if ok else "title menu not reached in 90 s")
+    g.expect("title", ok, getattr(g, "title_detail", "") or ("title menu reached" if ok else "title menu not reached"))
     g.phase(name, "title")
     return ok
 

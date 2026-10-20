@@ -35,7 +35,7 @@ and Français (**Settings** -> **Language**).
   play as a guest) in the launcher's Online tab, find an opponent, and the game
   starts directly in the fight. See "Online".
 
-## Status (2026-10-19)
+## Status (2026-10-20)
 
 Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). Online play was
 tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
@@ -43,23 +43,26 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Area | State |
 |---|---|
 | Start-up | Works. Boots, opens the window, reaches the title, menus, character select and fights. |
-| Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Weaker PCs are not measured yet. |
+| Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Since 1.1.3 the game's own work and the translation of its drawing take about a quarter less processor time per fight frame, and a PC a little too slow for 60 fps runs fights at 45-55 fps instead of 30-45 (measured with slowed test games; real weak PCs are not measured yet). |
 | Laptops, handhelds | **Power saving** (launcher Settings; Auto turns it on with a battery, a power-saving plan, a mobile processor or integrated graphics): fewer helper threads, no busy waiting, the same game online. Not tried on a real laptop or handheld yet. |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
-| Unlocks | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games always use a fresh save of their own, the same on both PCs. |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
+| Unlocks, costumes | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games use a fresh save of their own, the same on both PCs; only your custom costume comes from your own save, and both players see both costumes (1.1.3). |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. Less GPU work at 1080p and above (1.1.3). |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. Matches connect even when a firewall blocks the game: through the relay when nothing else gets through (1.1.3). |
 | Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. |
+| Rooms | Lobby rooms for 2, or community rooms for up to 8 who take turns (winner stays, or everyone in turn); open, with a password or an invite code, or hidden (1.1.3). |
+| Tournaments | Accounts create and join tournaments on the Online tab: single or double elimination, sets of best of 3 or 5, up to 64 players; the server calls each set and the game starts by itself (1.1.3). |
 | Replays | Every online match is saved (a few KB). The **Replays** tab plays it again in the game and checks that it is identical to the live match. |
+| Spectating | **Watch** a friend's match, a room's match or a tournament set live in your own game, a few seconds behind and checked frame by frame; only when both players allow it (Settings -> Spectators) (1.1.3). |
 | Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Updates itself. |
-| Build from your copy | Works on the development PC. A stopped helper process no longer hangs the build at "Translate code". |
+| Build from your copy | Works on the development PC. A stopped helper process no longer hangs the build at "Translate code"; a file that fails to compile gets a second try (1.1.3). |
 
 ## Requirements
 
@@ -78,6 +81,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
   launcher decides this by itself. Only tested on a CPU with AVX2.
 - Speed: fights held 60 fps with 4 CPU threads in our tests (fast desktop
   cores); online against a far-away player (rollback, 150 ms) about 50 fps.
+  A PC a little too slow for 60 fps runs fights at about 45-55 fps since 1.1.3.
   See [Low frame rate](docs/TROUBLESHOOTING.md#low-frame-rate). Weak graphics:
   **Internal resolution** under [Playing](#playing).
 - Any monitor: 60, 120, 144 Hz and more, also slower TVs (50 Hz). The game
@@ -188,9 +192,10 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
     What you take stays in your save like a bought item, also after switching
     it off; the launcher backs up your save once before the first game with it
     (in `save-backups` in the game's folder; copy it back to undo).
-  - Online play does not use either: there both players always have the same
-    stages to pick from and the default costumes, whatever their saves and
-    settings (the lobby picks the stage).
+  - Online play does not use the stage unlock: there both players always have
+    the same stages to pick from (the lobby picks the stage). What you took in
+    the item shop and put on does show online, as your custom costume (from
+    1.1.3; see "Online").
 - **Esc** closes the game. The **Stop game** button does too. In an online
   match press Esc twice: closing the game there (Esc, Alt+F4, the window's X)
   counts as a loss.
@@ -312,7 +317,8 @@ Good to know:
   **OPTIONS** (button layout, round time, difficulty) and your unlocks apply
   offline only, so both players always play the same game. Set your buttons in
   the launcher (Settings -> Set up controllers); they work online too. Your own
-  save is never touched by online play.
+  save is never touched by online play. Only your custom costume is read from
+  it (see below).
 - Nobody can pause an online fight (from 1.1.2): **Start** does not open the
   pause menu there, for either player. It still skips the replay after a round.
   To quit a match, close the game (Esc twice): that counts as a loss, as before.

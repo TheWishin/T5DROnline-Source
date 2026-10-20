@@ -1937,3 +1937,103 @@ and placement are timing only: they never reach the game state.
   lifted code, which this cannot model. Its power saving (on by itself: a
   mobile processor) was off in these runs; at 4 processors it only stops the
   ticker's 250 us poll and puts background threads on EcoQoS.
+## Overlap: the present and the D3D12 calls off the critical path (patch 0067, branch `xlat-overlap`)
+
+The goal is 60 fps on weak 4-core / 4-thread PCs (the i5-7300HQ report), the pool stage (id 30) included. A fight
+frame there is three things in a row: the game's own part (its release -> its flip request), the translation of
+its commands (the walker, on the ticker thread) and the walk from the translated flip to the next release. This
+branch looked for every part of the translation and the present that can run beside the game's next frame
+without changing anything the game sees.
+
+### Where the game and the translation serialize
+
+`PS3_LATENCY_LOG` stamps every frame: F (the game asked for its flip), X (the walker reached it), P (Present
+returned), K (the next frame released). `build/xlatov/scripts/latsplit.py` turns them into a per-frame split.
+Four processors (0x55 / 0x5500: four cores of CCD0, one thread each), `tools/slow_core.py --busy 40` on them,
+Lili vs Asuka on the pool stage, the series to 0065 (medians, p99 in brackets; the PC was busy with other agents'
+games, 14-30 of 32 processors):
+
+| | game part | translation (F -> X) | X -> release | frame |
+|---|---|---|---|---|
+| all frames | 12.0 (37.7) | 4.5 (8.8) | 0.6 (7.7) | 17.8 (51.1) |
+| frames that missed their vblank | 20.6 | 4.9 | 2.5 | |
+
+- **The game flushes once.** A `PS3_SCHED_TRACE` of the pool stage (three frames alike): release -> the
+  skinning kick at +5.7-6.4 ms -> `cellGcmSetUserCommand` at +9.4-12.2 ms and the flip request 5 us later (the
+  only two moves of `put` in the frame) -> the walk +9.4 -> +13.6 ms -> the present -> the user handler -> the
+  release at the vblank, +16.0 ms. The walker cannot start before; walking past `put` -- the "translate while the
+  game builds" idea -- would read words the RSX never sees, and the game rewrites and rewinds them before its
+  flush (above, "Is the handover wait necessary?").
+- **The game waits for the RSX itself.** After its flip request it polls the flip status, and its next frame
+  starts with the semaphores the flip and user handlers post; the user command is the last command of the frame,
+  so on a PS3 its handler runs when the RSX has executed every draw. Releasing the game into its next frame while
+  the translation still reads the frame's vertex buffers (the skinning rewrites them in the next frame),
+  textures, fragment programs and index buffers would need a guard on the game's stores. The lifted code stores
+  straight into guest memory, so the only guard is page protection -- and with it a file read into a protected
+  page fails in the kernel, and a game thread stopped on a page while it holds an lwmutex a GCM handler needs
+  (the handlers run on the walker's thread) would wait for ever. Not done: the flip still completes only after
+  the translation has read and written everything of the frame.
+- **What can move** is everything after the frame's last read of guest memory. That is the queued vertex
+  fetches (drained when the walker reaches the flip) -- after them come the present (present copy, overlay,
+  command list Close + ExecuteCommandLists, DXGI Present: 0.5 ms at the median, 1.4-1.9 ms at p90-p99, and for a
+  late frame it sat between the translation and the release: X -> release 2.5 ms on average) and, during the
+  walk, the D3D12 calls themselves (only host values).
+
+### What changed
+
+| change | switch | effect |
+|---|---|---|
+| **The present on the renderer thread.** When the walker reaches a flip it drains the frame's vertex jobs (the last guest-memory reads), follows a window resize or fullscreen switch (DXGI wants the window's own thread for those) and hands the frame to the new `rsx-render` thread: present copy, overlay, submit, Present, frame log run there while the flip completes and the game starts its next frame. Exclusive fullscreen presents on the walker as before | `RSX_XLAT_OVERLAP=1` (0 = off) | a late frame's X -> release from ~2 ms to ~0.2 ms |
+| **The command-list calls on the renderer thread.** The walker records into an object with the command list's own interface (`libs/video/rsx_record_ring.h`): each call of the 30 methods the translation uses is copied with its arrays into a 4 MB ring, the renderer thread makes the real call while the walker goes on. Close, ExecuteCommandLists, fence waits and Reset (`ld_flush`, `ld_begin_recording`) and a present made on the walker take the real list over first (`ld_own_enter`: the ring is empty, every call made). The renderer thread spins 300 PAUSEs between calls, then sleeps; the walker wakes it every 16 calls, at a present and before it waits | `RSX_XLAT_OVERLAP=2`, the default; 1 with power saving | translation -0.15..0.4 ms; the renderer thread ~2 ms of processor time a frame |
+| The next walk waits for the present (`rsx_live_draw_sync` in `cellGcm_rsx_process_fifo`); a display-buffer registration, a mid-frame flush, shutdown wait for the renderer thread themselves | -- | in fights the walk never waited (1-2 waits per 600 frames) |
+| `[slow-frames]`: the present column is the walker's hand-off plus its waits for the renderer thread; the display lock pairs a handed-off present with the release of its own frame | -- | |
+| `RSX_XLAT_OVERLAP_AB=N`: frames alternate every N between the mode and "everything on the walker"; every 1,000 frames of each kind a line compares the walker's processor time, the translation, the frame time and the frames over 17.5 ms -- the same game under the same load. `RSX_HITCH_LOG=1`: an `[xlat-overlap]` line every 600 presents | measurements only | |
+
+The guest sees nothing new: the walker still writes every label, report, reference and `get` of the frame when it
+walks them, before the flip; the flip completes when the walker reached it and the frame's guest reads are done,
+as before; the command list gets the same calls in the same order.
+
+### Results
+
+**Interleaved A/B (the cleanest measure on a busy PC).** One game, `RSX_XLAT_OVERLAP_AB=8`: the frames switch
+every 8 between the patch and "everything on the walker" (exactly the old path), so both kinds share the game, the
+stage, the load and the processors; each line compares 1,000 fight frames of each kind. Four processors (0x550000,
+four cores of CCD1, one thread each), Lili vs Asuka, with and without `slow_core --busy 40`; 24-31 of the 32
+processors were busy with other agents' games and compilers, so even the runs without slow_core are a slow PC
+(43-55 fps). Means of the lines per run (2-3 lines of 1,000 + 1,000 frames each), ms:
+
+| run | walker CPU per frame | translation (flush -> flip reached) | frame time, median | frame time, mean | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| pool stage (30), slow_core 40, mode 2 | 3.21 -> 3.03 | 5.44 -> 4.94 | 22.85 -> **21.03** | 23.77 -> 23.19 | 1,677 -> 1,557 (-7 %) |
+| pool stage, no slow_core, mode 2 | 2.45 -> 2.28 | 4.13 -> 3.94 | 17.51 -> **17.05** | 18.48 -> 17.84 | 1,287 -> 1,052 (-18 %) |
+| stage 20, slow_core 40, mode 2 | 2.20 -> 1.95 | 2.14 -> 1.89 | 16.84 -> 16.76 | 18.11 -> 18.23 | 1,009 -> 868 (-14 %) |
+| stage 20, no slow_core, mode 2 | 3.12 -> 2.75 | 5.10 -> 4.56 | 21.00 -> **19.86** | 22.72 -> 20.59 | 1,825 -> 1,635 (-10 %) |
+| pool stage, slow_core 40, mode 1 (present only) | 3.34 -> 3.31 | 5.95 -> 5.87 | 23.00 -> **22.10** | 24.27 -> 23.26 | 1,910 -> 1,847 (-3 %) |
+
+- The present on the renderer thread (mode 1) leaves the translation as it was and takes ~1 ms off the median of
+  frames that miss their vblank: a late frame was released ~2 ms after it was translated, now ~0.2 ms.
+- Recording the calls through the renderer thread (mode 2) also takes 0.2-0.5 ms off the translation itself
+  (the walker's processor time 0.15-0.4 ms): the display driver's time for ~2,000-2,700 calls a frame, less the
+  packets' cost. Together: the median frame 0.5-1.8 ms shorter where the frames are late, 7-18 % fewer frames over
+  17.5 ms; a frame that already made its vblank (stage 20 slowed, median at 16.8) gains nothing in fps.
+- Earlier A/B lines of mode 2 against mode 1 (the same diagnostic with an earlier build): translation 4.30 ->
+  4.10 and 4.26 -> 4.06 ms (pool stage, slowed), 6.03 -> 5.61 under heavier load with the frame median 29.58 ->
+  29.25.
+- The renderer thread's processor time: ~0.3-0.4 ms a frame in mode 1 (the present), ~2 ms in mode 2 (the calls,
+  its short spins between them and the wake-ups: ~700-1,400 context switches a second) -- the reason power saving
+  keeps mode 1.
+
+PAIRED_PLACEHOLDER
+
+### Same picture, same game
+
+SAME_PLACEHOLDER
+
+### Not done
+
+- Overlapping the translation with the game's own frame: see above -- the game's single flush and its wait for
+  the user command leave no room without lying to it about the RSX's progress.
+- A second translation thread: the walk, the dispatch and each draw's translation share the register file and the
+  renderer's caches; the D3D12 calls were the separable part, and they are cheap after 0062 (recording them
+  through the ring saves only 0.15-0.4 ms of a 3-4.5 ms translation).
+- Not tried on a real 4-core laptop.

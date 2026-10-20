@@ -276,6 +276,21 @@ def renderer_split(rows):
         out["cbcopy_ms"] = med(num("ph_cbcopy_us")) / 1000.0
     if rows[0].get("game_us") not in (None, ""):
         out["game_ms"] = med(num("game_us")) / 1000.0
+
+    def p99(f):
+        xs = []
+        for r in rows:
+            try:
+                xs.append(f(r))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return pct(xs, 99) / 1000.0 if xs else float("nan")
+    # the slow end of the same columns (frames that also carried texture uploads or PSO builds)
+    out["p99"] = {"fifo_cpu_ms": p99(num("fifo_cpu_us")), "xlat_ms": p99(num("xlat_us")),
+                  "draw_ms": p99(num("draw_us")), "submit_ms": p99(num("present_flush_us")),
+                  "present_ms": p99(num("present_call_us"))}
+    if rows[0].get("ph_desc_us") not in (None, ""):
+        out["p99"]["d3d_ms"] = p99(lambda r: float(r["ph_desc_us"]) + float(r["ph_api_us"]) + float(r["ph_post_us"]))
     return out
 
 
@@ -437,6 +452,11 @@ def main():
               "submit %(submit_ms).2f, present call %(present_ms).2f%(game)s" % dict(
                   split, game=", game (release -> flip) %.2f ms" % split["game_ms"] if "game_ms" in split else "",
                   cb=" + constant copies" if "cbcopy_ms" not in split else ""))
+        q = split["p99"]
+        print("renderer per frame (p99): walker CPU %.2f ms, translation %.2f ms, draw recording %.2f%s, "
+              "submit %.2f, present call %.2f" % (q["fifo_cpu_ms"], q["xlat_ms"], q["draw_ms"],
+                                                   " (D3D12 calls %.2f)" % q["d3d_ms"] if "d3d_ms" in q else "",
+                                                   q["submit_ms"], q["present_ms"]))
     slow = [ln.strip() for ln in open(os.path.join(out, "game.log"), errors="replace") if ln.startswith("[slow-frames]")]
     if slow:
         res["slow_frames"] = slow

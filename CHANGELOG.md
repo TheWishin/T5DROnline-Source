@@ -3,162 +3,162 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.3 (not released yet)
+## v1.1.4 (not released yet)
+
+### Security (hardening)
+- **Friends with the right password always get into a private room.** Somebody guessing a room's password from
+  many internet addresses (a home connection with IPv6 has 256 of them) could keep the room's guess budget used up,
+  and friends who typed the right password were told "try again in N s". Now every network has its own few tries
+  at a room, used before the room's shared budget; guessers elsewhere cannot use them up. Guessing stays as slow as
+  before: a few tries per network and 20 minutes, plus the room's shared budget. The host of a password room sees
+  how many wrong passwords came in the last 10 minutes (never who or from where) and **Room settings -> Turn away
+  the guessers** refuses those networks from then on. Texts in all languages.
+- **Spectator places go to friends and room members first.** About 50 guest connections from a handful of
+  addresses could take every match the server can show. Now one internet address watches at most 2 matches at once
+  (an IPv6 home network 4), guests hold at most half the places of a match and of the server, the last places are
+  kept for friends of the players and members of the match's room or tournament, and at a full match a friend takes
+  the place of the newest guest ("A friend of the players took your place"). Texts in all languages.
+- **Custom costumes are checked against the game's own item shop.** The check of the opponent's costume took any
+  colour number up to 31 and a part in any place. Now both PCs read the item shop's own tables from the game's data
+  (which parts go in HEAD, FACE, BODY up and BODY down for each costume, and how many colours it has) and refuse
+  anything else -- that character then fights in the default costume, on both PCs. Tested in rollback and lockstep
+  with real customizations on both sides, a forged block from one side (default on both PCs) and against a 1.1.3
+  build: both PCs showed the same costumes, 0 desyncs. Both players need 1.1.4 (the lobby pairs equal builds only).
+
+### Speed
+- **Faster game code, the same game.** The build now translates the game's code so that the PS3's registers stay
+  in the PC's registers between calls instead of being written to memory and read back after almost every step.
+  On 4 cores under load the game's main thread needs ~7 % less CPU per frame and its drawing thread ~18 % less
+  (pool stage and stage 20: +3 to +13 % fps in paired runs on a busy PC). The game computes exactly what it did:
+  every translated function was run old against new on millions of random inputs, and old and new builds played
+  each other online frame for frame in sync. The first build after updating translates the game code again (about
+  25 s longer than before). docs/RENDER_PERF.md "Lifted code: register promotion".
+
+### Building the game
+- **Press BUILD GAME once after updating** (1.1.4 has a new code ID: 1.1.3 and 1.1.4 builds never meet online).
+  The game code is now compiled so that a place where the game deliberately stops for good stays that way: the
+  compiler was allowed to assume such an endless loop never happens and, in one function, turned the way into it
+  into a call through a pointer that may be empty. The speed profile of 1.1.3 still fits the new translation (0 of
+  its functions out of date), so it is used as it is.
 
 ### Online
-- **Private rooms and community rooms.** **Create room** now asks how many players (2 to 8) and who can join:
-  anybody, a **password** or an **invite code** the server makes; it can also hide the room from the room list. A
-  locked room shows in the list with a lock and "private"; **Join room** asks for its password, and with no room
-  selected it takes an invite code (a hidden room is found by its code). **Copy invite code** puts the code into a
-  field next to the button for you to copy (Ctrl+C) -- the launcher never puts anything on your clipboard by
-  itself. A friend's **Invite to my room** lets them in without the password. In a room for 3 or more the players
-  take turns: the first two in line play, the next match starts by itself, by the room's rule -- **Winner stays** or
-  **Everyone in turn**; **Sit out** skips your turns, and whoever lets a ready check run out sits out until they
-  press **Back in line**. The host's **Room settings...** changes the password, makes a new code, hides the room or
-  **removes a player** (who cannot come back into it). Only the room's players can watch a private room's match.
-  Private and community rooms are casual. The server keeps only a salted hash of the password, in memory; wrong
-  guesses are limited per player, per address and per room, and the password is never logged or shown to anyone.
-  Older launchers do not see private rooms (and keep working as before in open ones). Texts in all languages.
-  docs/ONLINE.md "Rooms".
-- **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments (running,
-  open for sign-up, finished). Anyone with an account can create one: single or double elimination, sets of best
-  of 3 or 5, a start time, 8 to 64 players, an optional check-in window, random seeding or by rating. Players sign
-  up (and check in); at the start the server draws the bracket and calls each set: "Your tournament set is ready",
-  **Accept** within 5 minutes, and the game starts by itself. A set plays like a casual set with the in-game select,
-  and its results come from the games with all the lobby's rules (quitting or leaving loses the set, desynced games
-  are played again, a crash calls the set again with its score). Who does not accept in time is out. The organizer
-  can report or override a result, reset a set and disqualify a player. The bracket shows live sets and results;
-  the server keeps everything in its database and carries on after a restart. Tournament sets do not change the
-  rating unless the server's owner turns that on. docs/TOURNAMENTS.md.
-- **Your custom costumes online.** Whatever you bought and put on in the item shop (ITEM SHOP & EQUIP:
-  head, face, body, colours) now shows in online matches, for both players: your opponent sees your
-  customization and you see theirs. It comes from your own save (the one you play offline with), is sent
-  to the opponent when the match connects, and both PCs check it the same way -- a damaged save shows the
-  default costume instead, never something only one PC has. Both players need 1.1.3 (the game's netplay
-  changed: protocol 4). Replays show both costumes too. Tested in rollback and lockstep with different
-  costumes on both sides and in mirror matches: both PCs show the same, 0 desyncs.
-- **Matches connect when Windows Firewall blocks the game.** Clicking Cancel when Windows asks whether
-  `t5dr.exe` may use the network no longer worries anyone: Windows still lets in the replies to the game's own
-  packets, so both games meet. Tested with the firewall's behaviour emulated in the game and the launcher (this
-  PC's firewall was never changed): one side blocked, both sides blocked, behind every kind of home router in
-  the NAT simulator -- every match connected; only some that would have been direct now go through a relay.
-- **A game that hears nothing gets the relay.** When a firewall blocks the game completely (some antivirus
-  firewalls drop even the replies), the lobby used to find a direct connection that only the launchers could
-  use, and the game gave up after a minute: "Your opponent's game could not be reached". Now, after 15 seconds of
-  silence, the launcher moves the match onto the relay through itself (the game then only talks to this PC) and
-  both games start the match again -- about 20 seconds later the fight begins. The same happens for two players
-  behind "symmetric" routers who both blocked the game: the punch could hand the two games different paths, and
-  each dropped the other's packets. Needs the new lobby server and 1.1.3 launchers on both sides; older ones behave
-  as before. It works the same in a tournament set (the same game, played on the relay), with custom costumes (both
-  are sent again) and with spectators (they keep watching the match on the relay).
-- **Firewall hint on the Online tab.** When Windows Firewall blocks `t5dr.exe` (or the launcher) on your
-  network, or a match showed that a firewall drops its packets, the Online tab says so in one line, with a
-  **How to fix** link (TROUBLESHOOTING.md, "The firewall blocks the game"). The launcher only reads the
-  firewall's rules for the exact `t5dr.exe` it starts; it never changes them and never asks for administrator
-  rights. In all seven languages.
-- The relay gets 10 seconds to come up instead of 6 (a slow PC's relay was cancelled as "not even through the
-  relay" before it had finished measuring).
+- **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
+  room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
+  although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'
+  session is being watched: you join those spectators, from the session's start as always, and see the rematch
+  with them. Only when both players allow spectators; switching it off in that pause stops the spectators at once,
+  as during a match. A server change: launchers from 1.1.3 on get it once the lobby server is updated.
 
-### Spectating
-- **Watch a live match**: a friend in a match (Friends page: **Watch**, below the list) or any room's match
-  (Rooms: **Watch**). Your own game shows it a few seconds behind, exactly as it is played -- the replay's
-  data, sent while the players play, checked frame by frame while it plays. Whenever you join, it plays
-  the players' session from its start (a rematch depends on the matches before it). The Spectating card
-  on the Online tab says how far behind you are; **Stop watching** closes the game.
-- **Privacy**: Settings -> Spectators. "Friends and room visitors may watch my online matches" is on, "Also
-  my ranked matches" is off; a match can be watched only when both players allow it, and switching it off
-  stops the spectators at once. The players see how many watch. Their games never wait for spectators.
-- **Watch a tournament set**: on the Tournaments page click a set in the bracket while it is played, then
-  **Watch** -- the whole set, game after game, when both its players allow spectators.
-- **Spectators see the custom costumes**: the players' customizations come with the match data, and the
-  spectator's game shows both (checked like a replay: a different costume counts as "not identical").
-- At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
-  matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
+## v1.1.3 (2026-10-20)
 
-### Picture and speed
-- **The game's own work per fight frame is about a quarter smaller** (ps3recomp patch 0061).
-  Its main thread made two Windows kernel calls for every lock and unlock of the game's
-  light-weight mutexes, even when nobody else wanted the lock: about a third of its work in a
-  fight. Those locks now cost a few instructions while they are free (a contended one is
-  still handed on in turn). Online with rollback, every virtual call of the game went through
-  a slow path; not any more. Measured on 4 cores / 8 threads: the main thread's work per
-  frame 6.3 -> 4.6 ms offline and 9-11 -> 6-6.7 ms online (rollback, 100 ms), the worst online
-  frames 25-30 -> 23 ms. It matters on PCs that are close to the 60 fps line. The game
-  computes exactly the same: PCs with and without it play each other in sync.
-  `PS3_LWM_FAST=0` / `PS3_ICALL_HOOK_FAST=0` (extra settings) are the old ways.
-- **A PC that is a bit too slow for 60 fps now runs fights at 45-55 instead of 30-45**
-  (ps3recomp patch 0059). The game shows a frame on a screen refresh, as on the PS3; a
-  frame that took a little longer than one refresh waited for the next one, so a fight
-  frame of 18-20 ms took 33 ms. Now that frame is shown as soon as it is ready. A slowed
-  test game went from 40 to 49-50 fps and from 30 to 43-44 fps; online, a match against
-  such a PC from 32 to 46 fps, in sync. PCs that make 60 already see no change; the game
-  still never runs faster than 60. `PS3_LATE_FLIP=0` (extra settings) is the old way.
-  Why those PCs are slow (one processor core's speed, not the graphics API -- no Vulkan
-  needed) and a checklist for players: docs/WEAK_PC.md.
-- **Less processor time for the picture** (ps3recomp patch 0062). Turning the game's PS3
-  drawing commands into D3D12 takes about a quarter less CPU in fights (3.2 -> 2.5 ms a
-  frame, median of paired runs on the development PC under load; the D3D12 calls 0.8 ->
-  0.4 ms), the same picture to the pixel. The game waits for this work every frame, so a
-  slower processor gets 0.5-1 ms more of each frame for the game itself. State the
-  graphics card already has is no longer sent again, descriptor tables are reused, and
-  the command stream is read in runs instead of word by word. `RSX_STATE_CACHE=0`,
-  `RSX_RING_VIEWS=0`, `RSX_DISPATCH_SPANS=0`, `PS3_GCM_HEADER_RUN=0` (extra settings)
-  switch the parts off. docs/RENDER_PERF.md "Translation CPU".
-- **Problem reports say more about slow fights.** The game log's `[slow-frames]` lines name
-  the frames shown late and what other programs used of the processor; a frame that only
-  waited for its own translation is no longer blamed on the vblank thread. `system.txt`
-  adds Windows' Game Mode and GPU scheduling settings and the online match's speed
-  against this PC's own.
-- **Less GPU work at 1080p, 1440p and 4K** (ps3recomp patch 0051). The stages with a blur or a glow
-  filter a PS3-size copy of the picture (1.1.2); making that copy and shrinking a large picture
-  into a smaller window are now done with fewer texture reads, with exactly the same result.
-  On integrated graphics this cut 17-40 % of the GPU time around the 3D scene at 1440p and 4K.
-  With power saving on (on by itself with integrated graphics) the shadow map and the sun's glow
-  keep the PS3's size above Native as well. The log can show where the GPU time of a frame goes
-  (`RSX_GPU_PASSES=1`).
-- **4K on integrated graphics: the launcher says what helps, the log says why** (ps3recomp
-  patch 0063). A Radeon 780M mini PC ran fights at 32-38 fps at 4K on a 1080p screen. The
-  game was not waiting for the graphics: at 4K this game's 3D scene is 6144 x 4320 pixels,
-  and on a processor with built-in graphics a busy GPU also slows the processor (one memory,
-  one power budget). Settings -> Internal resolution has a new choice, **Auto (matches the
-  screen)**: the step that fits the screen, at most 1080p on integrated graphics (Native
-  stays the default). A test fight on integrated graphics: 4K 33-35 fps, Auto 60. On
-  integrated graphics a step larger than the screen gets a hint ("4K on integrated
-  graphics: try 1080p for 60 fps"), and after a fight the graphics held back the Play tab
-  says so. `[slow-frames]` now splits the game's part of a frame into the main thread's
-  work and its waits, says how busy the GPU was and how fast the processors really ran,
-  and ends with "GPU-bound" when the graphics are the limit; Report a problem sums it up
-  in one line. Power saving **Auto** now always reaches the game: a `PS3_LAPTOP` left in
-  Windows' environment no longer overrules it, and Settings names an Extra-settings line
-  that does.
-- **Fights on 4-core processors run about 9 % faster, and the game's threads are placed
-  for the processor it runs on** (ps3recomp patch 0065). On 4 cores without
-  Hyper-Threading/SMT (laptops like the i5-7300HQ) one more thread skins the fighters and
-  the game's own threads now run above its helper threads: on a slowed 4-core stand-in
-  fights went from 40 to 43 fps (faster in 8 of 8 paired runs), on the pool stage with its
-  crowd 22 % faster (8 of 8), and the sound had fewer late blocks. On Intel processors with performance and efficiency cores (12th gen
-  and newer, Core Ultra) the game's main thread, its helper threads, the picture
-  translation and the sound now stay on the performance cores (efficiency cores are 2-3
-  times slower for them). On Ryzen processors with two core groups (7900X, 7950X, 5900X,
-  ...) those threads stay in one group, the one with the bigger cache on an X3D. The main
-  thread and the translation always get two different cores, processor 0's only when
-  there is no other (it handles most of the PC's interrupts). The game log (and Report a problem) now says where
-  the threads run (`[sched] processors:` / `[sched] placement:` lines).
-  `PS3_SCHED_PLACE=0` (extra settings) is the old placement, `PS3_SCHED_PRIO_MAIN=1
-  PS3_SCHED_PRIO_PPU=1 PS3_SCHED_PRIO_PPUHI=1` the old priorities.
-- **Online: incoming inputs are handled at once** even when the game keeps every
-  processor busy (the receive thread runs above the game's threads).
+**Tournaments, private rooms, watching live matches, your custom costumes online, matches that connect through a blocking firewall, and more speed on slower PCs.** Both players need 1.1.3
+(the lobby pairs equal game builds, and 1.1.3 changes the game: its netplay speaks protocol 4 for the costumes, and
+ps3recomp patches 0051, 0059, 0061, 0062, 0063, 0064 and 0065, and the game is now compiled with a speed profile).
+The launcher offers the update itself; after it, press **BUILD GAME** once. Tournaments, rooms, spectating and the
+firewall fallback need the lobby server updated; older launchers keep working with it and see nothing new.
+
+### Online
+- **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments. Tournament
+  hosts create them: single or double elimination, sets of best of 3 or 5, a start time, a player limit of 8, 16, 32
+  or 64, an optional check-in, seeding at random or by rating. **There are 20 host slots: if you want to host
+  tournaments, DM wishin.** Sign up (and check in); when your set is
+  ready the tab says "Your tournament set is ready": **Accept** within 5 minutes and the game starts by itself. Who
+  does not accept in time is out. Sets play like casual sets with the in-game select, and leaving one loses it. The
+  bracket fills in by itself; the organizer can correct a result, reset a set or disqualify a player. Tournament
+  sets do not change your rating unless the server's owner turns that on.
+- **Private and community rooms.** **Create room** asks how many players (2 to 8) and who can join: anybody, a
+  **password** or an **invite code**; a room can also be hidden from the list. **Join room** asks for the password,
+  or, with no room selected, takes an invite code. **Copy invite code** shows the code in a field to copy (the
+  launcher never touches your clipboard itself). In a room for 3 or more you take turns, by **Winner stays** or
+  **Everyone in turn**; **Sit out** skips your turns. The host's **Room settings...** changes the password or code,
+  hides the room or removes a player. A friend you invite needs no password. Private and community rooms are
+  casual; only their players can watch their matches.
+- **Your custom costumes online.** What you bought and put on in ITEM SHOP & EQUIP (head, face, body, colours) in
+  your own save now shows in online matches, for both players. Both PCs check it the same way: a damaged save shows
+  the default costume, never something only one PC has. Replays and spectators show the costumes too.
+- **Watch live matches.** **Watch** a friend's match (Friends page), any room's match (Rooms) or a tournament set
+  (click it in the bracket). Your game shows it a few seconds behind, exactly as it is played and checked frame by
+  frame; you always see the session from its start, since a rematch depends on the matches before it. The
+  Spectating card says how far behind you are; **Stop watching** closes the game. **Settings -> Spectators**:
+  friends and room visitors may watch your matches (on), ranked matches too (off); a match can be watched only when
+  both players allow it, and the players see how many watch. Their games never wait for spectators.
+- **Matches connect when a firewall blocks the game.** Clicked Cancel when Windows asked whether `t5dr.exe` may use
+  the network? Matches still connect, some through the relay instead of directly. If a firewall drops everything
+  (some antivirus firewalls do), the launcher moves the match onto the relay after 15 seconds of silence and both
+  games start it again, about 20 seconds later, instead of giving up after a minute ("Your opponent's game could not
+  be reached"). This also works in a tournament set, with custom costumes and with spectators watching. When
+  Windows Firewall blocks the game or the launcher, the Online tab says so in one line with a **How to fix** link
+  (the launcher only reads the firewall's rules, it never changes them).
+
+### Speed and picture
+- **Fights on 4-core laptops and on the pool stage run much faster.** The game's sound and the fighters' skinning
+  (the PS3's SPU work) take about half the processor time they took, with exactly the same results: on a busy 4-core
+  test PC fights went from about 39 to 56 fps, and on the pool stage with its crowd from 32 to 41. The game's main
+  thread no longer waits for the skinning to finish.
+- **The game's threads are placed for your processor.** On 4 cores without Hyper-Threading (laptops like the
+  i5-7300HQ) fights run about 9 % faster, on the pool stage 22 %. On Intel processors with performance and
+  efficiency cores (12th gen and newer, Core Ultra) the game stays on the performance cores; on Ryzen processors
+  with two core groups (5900X, 7950X, ...) it stays in one group, the one with the bigger cache on an X3D. Online,
+  the opponent's inputs are handled at once even when the game keeps every processor busy.
+- **BUILD GAME compiles the game with a speed profile** (profile-guided optimisation): about 3-6 % less processor
+  time per frame, also on the pool stage; the build is ~15 % faster and the game file 17 % smaller. Builds with and
+  without the profile play each other in sync. The profile holds only function names and counts, no game data.
+- **A PC a little too slow for 60 fps now runs fights at 45-55 instead of 30-45.** A frame that took a bit longer
+  than one screen refresh waited for the next one; now it is shown as soon as it is ready. Test games went from 40
+  to about 50 fps and from 30 to about 44, online (rollback) from 32 to 46. PCs that make 60 see no change, and the
+  game never runs faster than 60. Why some PCs are slow, and what helps: docs/WEAK_PC.md.
+- **Less processor time per fight frame.** The game's own work is about a quarter smaller (its locks no longer call
+  Windows when nobody else wants them: 6.3 -> 4.6 ms a frame on 4 cores / 8 threads, online 9-11 -> 6-7 ms), and
+  turning the PS3's drawing commands into D3D12 takes about a quarter less too (3.2 -> 2.5 ms). Same game and the
+  same picture: PCs with and without it play each other in sync.
+- **Less GPU work at 1080p, 1440p and 4K**, with exactly the same picture: on integrated graphics 17-40 % less GPU
+  time around the 3D scene at 1440p and 4K.
+- **Internal resolution "Auto (matches the screen)"**: the step that fits your screen, at most 1080p on integrated
+  graphics (Native stays the default). At 4K a processor with built-in graphics slows down as a whole (one memory,
+  one power budget): a test fight on integrated graphics ran 33-35 fps at 4K and 60 with Auto. On integrated
+  graphics a step larger than the screen gets a hint, and after a fight the graphics held back the Play tab says so.
+  Power saving **Auto** now always reaches the game (a `PS3_LAPTOP` left in Windows' environment no longer
+  overrules it).
+- **Report a problem says more about slow fights:** which frames came late and why (the game, its waits, the
+  graphics, other programs), how fast the processor really ran, and Windows' Game Mode and GPU scheduling settings.
+
+### Building the game
+- **A failed "Compile" step gets a second try.** A file that fails is compiled once more at the end, on its own,
+  and the build goes on if that works; fewer compilers run at once when little memory is free. A failure now shows
+  the compiler's error lines in the log, and **Report a problem** adds its full output.
+
+### Security (review 3)
+- **The relay fallback cannot restart a match any more.** Asking for the relay ("my game hears nothing") starts
+  the match's session again; within 90 seconds of its start a player losing the first round could ask for it and
+  both games began the match anew. Once either game has played the fight for a while (ten seconds: frames that
+  only run with the opponent's input), the lobby refuses.
+- **Blocks hold in community rooms.** A friend's invite into a room for 3-8 players brought in a player whom
+  another member had blocked (or who had blocked them), and the room's line could pair the two. The invite and its
+  accept check every member, and the line never pairs two who blocked one another.
+- **No game code in problem reports.** The compiler quoted the lifted source line under each of its messages, and
+  a failed build's log and the report's copy of the compiler's output kept them. The game's code is now compiled
+  with `-fno-caret-diagnostics` (the objects are byte for byte the same), and the report keeps only the compiler's
+  message lines (`file(line,col): error: ...`) of the compile logs and of build.log -- also from builds made before.
+- **A spectator's launcher takes only what it asked for**: a lobby server sending "watching" by itself no longer
+  makes it unpack up to 64 MB into a new file, and a stream of state hashes far out of order (which kept the
+  spectator's game busy for hours) ends the watch as damaged.
 
 ### Servers
-- New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the
-  brackets on the status port (`/tournaments`, `/tournaments/<id>`) for streamers' overlays (docs/TOURNAMENTS.md).
-  The tournament tables are created at the first start (their own schema version). Older launchers see nothing new.
-- Against abuse (security review 2): an organizer who plays does not decide their own sets (a `T5L_TOUR_ADMINS`
-  account does); a second crash of one player's game in a set loses the set (`T5L_TOUR_BLAMED_VOIDS`); the
-  organizer limit counts per internet address too and spares the admins; tournament names cannot pass for the
-  server; a player disqualified before the start stays out; `tour_get` has its own rate limit.
-- `admin drain` holds the tournaments as well: no tournament starts and no new set starts before the restart, and the
-  no-show times stand still (nobody is disqualified for the drain); the sets being played finish.
+- **Tournaments:** settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and read-only
+  JSON of the brackets on the status port (`/tournaments`, `/tournaments/<id>`) for stream overlays
+  (docs/TOURNAMENTS.md). Their tables are created at the first start. An organizer who plays does not decide their
+  own sets (a `T5L_TOUR_ADMINS` account does); a player whose game crashes twice in one set loses the set;
+  `admin drain` also holds the tournaments (no new set starts, no-show times stand still).
+- **Tournament hosts from the console:** `t5lobby-admin tour-host add NAME [--admin]`, `tour-host remove NAME` and
+  `tour-hosts` decide who may create tournaments (`T5L_TOUR_MAX_HOSTS` slots, default 20) and who runs every
+  tournament, on top of `T5L_TOUR_ORGANIZERS` / `T5L_TOUR_ADMINS` and without a restart; an online player's launcher
+  shows **Create** within seconds. `T5L_TOUR_HOST_HINT` is the line players who may not create see instead
+  (docs/TOURNAMENTS.md "Who may create tournaments"). Lobby 1.1.2 still starts on the database.
+- **Rooms and spectating:** `T5L_ROOM_MAX_SIZE` (8; 2 turns community rooms off), `T5L_ROOM_NEXT_SECONDS` and the
+  password guess limits; a room password is kept only as a salted hash, in memory, and never logged.
+  `T5L_MAX_SPECTATORS` (8 per match) and the `T5L_SPECTATE_*` stream limits (docs/SPECTATE.md).
+- **Firewall fallback:** `T5L_GAME_FALLBACK` (90 s after a match's start in which a game that heard nothing is moved
+  onto the relay); the relay gets 10 seconds to come up instead of 6 (`T5L_RELAY_TIMEOUT`).
 
 ## v1.1.2 (2026-10-20)
 

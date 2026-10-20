@@ -120,8 +120,10 @@ def main():
     if leftovers:
         print("   not ready for players yet (step 7 fails on it):\n     " + "\n     ".join(leftovers), flush=True)
     step("2a. guard: index", [py, "tools/check_no_game_data.py"])
-    last = subprocess.run(["git", "describe", "--tags", "--abbrev=0"], cwd=ROOT, capture_output=True,
-                          text=True).stdout.strip()
+    # The last release tag (v...), not any tag: a helper tag on an integration branch (pre-gthread, ...) made this
+    # check only the commits since that helper (1.1.3 prep: 71 files instead of everything since v1.1.2).
+    last = subprocess.run(["git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"], cwd=ROOT,
+                          capture_output=True, text=True).stdout.strip()
     step("2b. guard: commits since " + (last or "the start"),
          [py, "tools/check_no_game_data.py", "--history", f"{last}..HEAD" if last else "HEAD"])
     ps3 = os.path.join(work, "ps3recomp")

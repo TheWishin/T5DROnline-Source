@@ -22,8 +22,11 @@
  *      block of the character it fights with -- the item character index the
  *      game itself uses (fighter object +0x40, as 0x2A77B0 reads it) -- when
  *      that player's table has one and it passes the check both PCs make
- *      (costume::block_valid); otherwise the zero block the game has there
- *      online today (the default costumes). Both PCs write the same bytes for
+ *      (costume::block_valid: the character's items, and -- hardening 1.1.4 --
+ *      each part in its own place and only the colours the costume has, from
+ *      the game's item shop tables, which this PC reads from the game's own
+ *      T55DATA1.BIN once: load_rules); otherwise the zero block the game has
+ *      there online today (the default costumes). Both PCs write the same bytes for
  *      both sides; the bytes' hash is logged, read back once the loading is
  *      over, and the blocks go into the replay (a replay writes them again).
  *
@@ -45,6 +48,8 @@ extern "C" void t5_netplay_costume_set(const unsigned char* p, unsigned n);
 extern "C" int  t5_netplay_costume_local_set(void);
 extern "C" int  t5_netplay_costume_peer(unsigned char* out, unsigned cap, unsigned* n);
 extern "C" int  t5_replay_costumes(unsigned match, unsigned char* out);   /* src/netplay/replay.cpp */
+extern "C" void sys_fs_translate_path(const char* ps3_path, char* host_path, int host_path_size);   /* runtime sys_fs.c */
+unsigned char* rp_zlib_decompress(const unsigned char* data, int len, int* out_len);             /* src/netplay/replay_zlib.cpp */
 
 namespace df {
 
@@ -55,8 +60,82 @@ constexpr uint32_t kCustomStride  = 0x1F4;
 constexpr uint32_t kTocFighters   = 0x0046EE20;   /* -> the two fighter objects (0x2A77B0: +0x40 the item character index) */
 constexpr uint32_t kFighterItemChar = 0x40;
 constexpr uint32_t kItemTables    = 0x10076724;   /* price tables per item character: {s32 id, s32 price} ..., id < 0 ends */
+/* What each costume can wear (costume_logic.h, "What each costume can wear"): the item shop's pack, T55DATA1.BIN entry
+ * kItemPackEntry of the game's data table, read from the game's own file; the models of each item character. */
+constexpr uint32_t kDataToc       = 0x10053FB0;   /* {sector, stored, size, sum, flag, key, ptr} x 2,345, big-endian */
+constexpr uint32_t kDataTocLen    = 2345;
+constexpr uint32_t kItemPackEntry = 208;          /* the shop's resource 0x25 (0x152014) */
+constexpr uint32_t kCharModels    = 0x10052F04;   /* per item character {u32 the models, u16 count, u16, u32} (0x58FD0) */
+constexpr const char* kDataFile   = "/dev_hdd0/game/NPUB30009/USRDIR/T55DATA1.BIN";
 
 bool in_data(uint32_t a, uint32_t len) { return a >= 0x10000000u && a + len <= 0x10760000u && a + len > a; }
+
+/* The tables, read once per process (the same game data on every PC; their hash is logged). Not ok: every customized
+ * block is refused -- the default costume, the same decision on both PCs. */
+costume::Rules g_rules;
+bool g_rules_tried = false;
+std::string g_rules_note;
+
+std::string load_rules()
+{
+    g_rules = costume::Rules();
+    static_assert(kItemPackEntry < kDataTocLen, "an entry of the table");
+    if (!in_data(kDataToc + 28 * kItemPackEntry, 28)) return "the game's data table is not there";
+    const uint32_t a = kDataToc + 28 * kItemPackEntry;
+    const uint32_t sector = rd32(a), stored = rd32(a + 4), size = rd32(a + 8), sum = rd32(a + 12), key = rd32(a + 20);
+    if (!stored || stored > costume::kMaxEntry || !size || size > costume::kMaxEntry) return "the pack's entry is not one";
+    char host[1024] = {};
+    sys_fs_translate_path(kDataFile, host, (int)sizeof host);
+    std::vector<uint8_t> raw(stored);
+    FILE* fp = fopen(host, "rb");
+    if (!fp) return "the game's data file cannot be opened";
+    const bool got = _fseeki64(fp, (long long)sector * 0x800, SEEK_SET) == 0 && fread(raw.data(), 1, stored, fp) == stored;
+    fclose(fp);
+    if (!got) return "the game's data file is too short";
+    std::vector<uint8_t> pack;
+    if (!costume::t55_decode(raw.data(), raw.size(), key, sum, pack)) return "the pack does not match its checksum";
+    if (stored != size) {
+        int n = 0;
+        unsigned char* z = rp_zlib_decompress(pack.data(), (int)pack.size(), &n);
+        const bool ok = z && (uint32_t)n == size;
+        if (ok) pack.assign(z, z + n);
+        free(z);
+        if (!ok) return "the pack does not inflate";
+    }
+    int models[costume::kChars][3];
+    for (int c = 0; c < costume::kChars; c++) {
+        const uint32_t e = kCharModels + 12 * (uint32_t)c;
+        const uint32_t arr = rd32(e), cnt = rd16(e + 4);
+        for (int k = 0; k < 3; k++)
+            models[c][k] = (uint32_t)k < cnt && in_data(arr + 4 * (uint32_t)k, 4) ? (int)rd32(arr + 4 * (uint32_t)k) : -1;
+    }
+    if (!costume::rules_from_pack(pack.data(), pack.size(), models, g_rules)) return "the pack is not the one the game reads";
+    char b[160];
+    snprintf(b, sizeof b, "read from the game's data (%u bytes), hash %016llX", (unsigned)pack.size(),
+             (unsigned long long)costume::rules_hash(g_rules));
+    return b;
+}
+
+const costume::Rules& rules()
+{
+    if (!g_rules_tried) {
+        g_rules_tried = true;
+        g_rules_note = load_rules();
+        note("costume tables: %s%s", g_rules.ok ? "" : "not read -- every customized costume is the default one: ",
+             g_rules_note.c_str());
+    }
+    return g_rules;
+}
+
+costume::Items items_of(int c);
+
+/* The check of one side's block (the same on both PCs); `why` says what failed. */
+bool check(const uint8_t* blk, int c, const char** why)
+{
+    const costume::Rules& r = rules();
+    if (!r.ok) { *why = "the game's item tables could not be read"; return false; }
+    return costume::block_valid(blk, items_of(c), r.c[c], why);
+}
 
 costume::Items items_of(int c)
 {
@@ -189,12 +268,12 @@ void costume_apply(uint32_t f, CostumeMode m, uint32_t match)
             /* the blocks the live match fought in, checked again (a file can be edited) */
             if (!replay) why = "not in the replay";
             else if (block_any(recorded + s * costume::kBlock) && c >= 0) {
-                if (costume::block_valid(recorded + s * costume::kBlock, items_of(c), &why)) { src = recorded + s * costume::kBlock; why = "custom (replay)"; }
+                if (check(recorded + s * costume::kBlock, c, &why)) { src = recorded + s * costume::kBlock; why = "custom (replay)"; }
             }
         } else if (!costume::from_wire(wires[s].data(), wires[s].size(), t)) why = "no table (not a valid one)";
         else if (c < 0) why = "item character unknown";
         else if (t.have[c]) {
-            if (costume::block_valid(t.blk[c], items_of(c), &why)) { src = t.blk[c]; why = "custom"; }
+            if (check(t.blk[c], c, &why)) { src = t.blk[c]; why = "custom"; }
         }
         const uint32_t dst = base + (uint32_t)s * kCustomStride;
         memcpy(vm_base + dst, src, costume::kBlock);     /* big-endian bytes, as in the save */

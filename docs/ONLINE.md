@@ -467,8 +467,22 @@ launcher (the one that made it) and launchers that joined with it know it.
   (`hmac.compare_digest`). An invite code is kept only as its HMAC-SHA256 under a key made when the server starts
   (the index that finds a room by its code); a server restart ends all rooms anyway.
 - **Wrong guesses** (a wrong password, a wrong code, a malformed one) are limited per player (5, then one per
-  `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64) and per room (20, then
-  one per 10 s, for guesses from many addresses together; a friend's invite still works then). A guess is counted
+  `T5L_ROOM_GUESS_SECONDS`, 30 s), per internet address (10, then one per 15 s; IPv6 per /64, and 20 per /56 and 40
+  per /48 around it, so the 256 /64s of one /56 are not 256 budgets) and per room. A room's budget comes in two parts
+  (hardening 1.1.4): every network that guesses -- an IPv4 address, an IPv6 /48 -- has its own lane at that room
+  (`T5L_ROOM_LANE_GUESSES` 3, then one per `T5L_ROOM_LANE_SECONDS`, 20 minutes), spent first; only then comes the
+  room's shared budget (20, then one per 10 s). Guessers from many addresses can use up the shared budget, never
+  another network's lane: a member who types the right password gets in while the room is being guessed at (in
+  1.1.3 the empty shared budget answered everybody "try again in N s"), and a friend's invite and an invite code
+  work as always. Brute force stays bounded per room: the shared budget, plus three guesses per network and 20
+  minutes. The host of a password room sees under the room "Wrong passwords in the last 10 minutes: N (networks: M)"
+  (never who or from where) and **Room settings -> Turn away the guessers** (`room_bar`): from then on every network
+  that typed a wrong password in those 10 minutes is refused at once ("the room's host turned away password guesses
+  from your network; ask the host for an invite"), before its guess costs the room anything, so the shared budget
+  fills up again; members stay, an invite still brings anybody in. Considered and not taken: weighting accounts
+  over the room (accounts cost no more than the addresses they are made from), proof of work per guess (graphics
+  cards are far faster than a launcher; the server pays to check each one), a slower hash (the server's cost, not
+  the guesser's), accounts only (turns guests away and makes guessing no dearer). A guess is counted
   before the slow check and given back when it was right, so parallel tries on several connections cannot all pass
   while the first is hashed. The refusal says how long to wait (`rate_limited` "... try again in N s" with `retry`
   N, like a held-back invite). Setting a password costs a hash: limited like a password change (per player), and

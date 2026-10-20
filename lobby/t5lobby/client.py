@@ -1252,6 +1252,13 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         r = self._call({"t": "nat_fallback", "match": match_id})
         return bool(r.get("ok"))
 
+    def game_playing(self, match_id):
+        """This player's game has played this match's fight for a while (600 lockstep frames: the netplay's first speed
+        or sync line after FIGHT START), so the two games hear each other: the server refuses a relay fallback from then
+        on (a game that heard nothing never gets there). Sent once per match, no answer."""
+        if self.welcome and "game_fallback" in (self.welcome.get("features") or ()):
+            self._fire({"t": "game_started", "match": match_id, "playing": True})
+
     def report_lag(self, match_id, frames, waited_ms, pc_fps=None, fps=None):
         """The game's own numbers for a finished match: frames played, milliseconds spent waiting for
         the opponent's input, this PC's speed without those waits. Both players then get `lag_check`.
@@ -1328,6 +1335,12 @@ class LobbyClient(TourCalls, SpectateClientMixin):
     def room_kick(self, player_id):
         """The room's host removes a member (not while they play); they cannot come back into this room."""
         return self._call({"t": "room_kick", "player": player_id})["room"]
+
+    def room_bar(self):
+        """The room's host (a password room): turn away every network that typed a wrong password in the last 10
+        minutes (the room view's `guesses` counts them). -> (the room, how many networks were turned away now)."""
+        r = self._call({"t": "room_bar"})
+        return r["room"], int(r.get("barred") or 0)
 
     def room_line(self, back=True):
         """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""

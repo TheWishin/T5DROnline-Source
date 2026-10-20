@@ -31,10 +31,20 @@ Security (security-review patterns of lobby.py):
     gate), in memory; checked with a constant-time compare (store.check_password); an invite code only as its HMAC
     under a key made when the server starts (the index that finds a room by its code); neither is ever logged, sent
     to anybody, put in the lobby list, the status JSON, an event or an error message;
-  * wrong passwords / codes: per player, per internet address and per room (token buckets, T5L_ROOM_GUESSES then
-    one per T5L_ROOM_GUESS_SECONDS), counted before the slow check and given back when it was right (parallel
-    attempts on several connections cannot all pass while the first is hashed); the refusal says when to try again
-    (`retry`, whole seconds, like a held-back invite);
+  * wrong passwords / codes: per player and per internet address (IPv6: the /64, and the /56 and /48 around it with
+    2x and 4x the budget, so the 256 /64s of a /56 are not 256 budgets), token buckets (T5L_ROOM_GUESSES then one
+    per T5L_ROOM_GUESS_SECONDS), counted before the slow check and given back when it was right (parallel attempts
+    on several connections cannot all pass while the first is hashed); the refusal says when to try again (`retry`,
+    whole seconds, like a held-back invite);
+  * the room's own budget (hardening 1.1.4): a guess at a room is paid first out of a small lane of the guesser's
+    network (an IPv4 address, an IPv6 /48: T5L_ROOM_LANE_GUESSES, then one per T5L_ROOM_LANE_SECONDS), only then out
+    of the room's shared budget (4x T5L_ROOM_GUESSES, then 3 per T5L_ROOM_GUESS_SECONDS). Guessers from many
+    addresses can use up the shared budget, never another network's lane: a member who types the right password
+    gets in while the room is being guessed at (before, the empty shared budget refused everybody: "try again in
+    N s"). Brute force stays bounded per room: the shared budget plus a few guesses per network and hour;
+  * the host sees the wrong passwords of the last 10 minutes (how many, from how many networks; never who or from
+    where) and can turn those networks away from the room (`room_bar`): their guesses are refused before they cost
+    anything, so the shared budget fills up again;
   * passwords: 4-64 characters after Unicode NFC, any script, printable only (no control or format characters, no
     space at either end), at most 256 bytes of UTF-8;
   * setting a password costs a hash: counted like a password change (pw_ops, per player), and per address.
@@ -48,10 +58,13 @@ Messages (client -> server; docs/ONLINE.md "Protocol reference"):
     room_join   {room, password} | {room?, code}                                           -> room {room}
     room_lock   {lock: password|code|none, password, hidden}   (host)                      -> room {room, code?}
     room_kick   {player}                                       (host)                      -> room {room}
+    room_bar    {}                                             (host, password lock)      -> room {room}, barred
     room_line   {in: true|false}                               (community rooms)          -> room {room}
-server -> client: room {room} (a member's view: line, who plays, the next match), notice room_kicked / room_away.
+server -> client: room {room} (a member's view: line, who plays, the next match; the host's also has `guesses`, the
+wrong passwords of the last 10 minutes), notice room_kicked / room_away.
 """
 import asyncio
+import collections
 import hashlib
 import hmac
 import logging
@@ -69,6 +82,9 @@ log = logging.getLogger("t5lobby")
 ROTATIONS = ("winner", "queue")
 LOCKS = ("password", "code")
 SOON = 1.0                     # seconds before a room's first match once two are in its line
+GUESS_WINDOW = 600.0           # seconds of wrong passwords the host sees (and turns away with room_bar)
+GUESS_MEMORY = 2000            # wrong passwords a room remembers (the oldest go first)
+BARRED_MAX = 4096              # networks one room turns away at most
 
 
 def _rid():
@@ -94,6 +110,8 @@ class Room:
         self.code_key = None            # lock "code": the code's HMAC (the server's index key), never the code
         self.hidden = False             # not in the lobby list at all
         self.kicked = {}                # block key -> name: removed by the host, not let back in
+        self.wrong = collections.deque(maxlen=GUESS_MEMORY)   # (monotonic time, network) of each wrong password
+        self.barred = set()             # networks the host turned away (room_bar): no more guesses at this room
         self.next_timer = None          # community rooms: the countdown to the next match
         self.next_at = None             # ... when it ends (unix time, for the members' view)
         self.sent = {}                  # member id -> the last view pushed to it
@@ -133,8 +151,14 @@ class RoomsMixin:
         g = max(1, self.cfg.room_guesses)
         per = max(1.0, self.cfg.room_guess_seconds)
         self.room_guess = KeyedBuckets(rate=1.0 / per, burst=g)               # per player (account / guest name)
-        self.room_guess_addr = KeyedBuckets(rate=2.0 / per, burst=2 * g)      # per internet address
-        self.room_guess_room = KeyedBuckets(rate=3.0 / per, burst=4 * g)      # per room, everybody together
+        self.room_guess_addr = KeyedBuckets(rate=2.0 / per, burst=2 * g)      # per internet address (IPv6: /64)
+        self.room_guess_n56 = KeyedBuckets(rate=4.0 / per, burst=4 * g)       # IPv6: per /56 (256 /64s)
+        self.room_guess_n48 = KeyedBuckets(rate=8.0 / per, burst=8 * g)       # IPv6: per /48 (65,536 /64s)
+        self.room_guess_room = KeyedBuckets(rate=3.0 / per, burst=4 * g)      # per room, shared by every network
+        # per room and guessing network (IPv4 address / IPv6 /48), spent before the shared budget: guessers from
+        # elsewhere can never use up the tries of a member's network
+        self.room_guess_lane = KeyedBuckets(rate=1.0 / max(1.0, self.cfg.room_lane_seconds),
+                                            burst=max(1, self.cfg.room_lane_guesses))
         # new room passwords hashed per internet address (a guest's own budget starts again with every new name)
         self.room_pw_addr = KeyedBuckets(rate=1.0 / 6.0, burst=10)
 
@@ -185,28 +209,74 @@ class RoomsMixin:
             raise LobbyError(proto.E_RATE, "too many password changes; wait a minute")
         return await self._pw(hash_password, pw, self.cfg.scrypt_n)
 
-    def _guess_keys(self, p, conn, r=None):
+    @staticmethod
+    def _conn_ip(conn):
+        return getattr(conn, "ip", None) or conn.akey
+
+    def _guess_net(self, conn):
+        """The network a guess comes from, for a room's lanes, the host's count and room_bar: an IPv4 address, an
+        IPv6 /48 (proto.address_net)."""
+        return proto.address_net(self._conn_ip(conn))
+
+    def _guess_keys(self, p, conn):
+        """The guesser's own budgets: the player, the address and (IPv6) the /56 and /48 around it."""
         keys = [(self.room_guess, "p:" + self._block_key(p)), (self.room_guess_addr, "ip:" + conn.akey)]
-        if r is not None:
-            keys.append((self.room_guess_room, r.id))
+        ip = self._conn_ip(conn)
+        for b, prefix in ((self.room_guess_n56, 56), (self.room_guess_n48, 48)):
+            k = proto.address_key(ip, prefix)
+            if k != conn.akey:                   # (IPv4: the address is the only level)
+                keys.append((b, f"n{prefix}:{k}"))
         return keys
 
     def _guess_refused(self, keys):
-        wait = max(b.wait(k) for b, k in keys)
+        self._guess_wait(max(b.wait(k) for b, k in keys))
+
+    @staticmethod
+    def _guess_wait(wait):
         if wait > 0:
             sec = max(1, int(wait + 0.999))
             raise LobbyError(proto.E_RATE, f"too many wrong room passwords; try again in {sec} s", retry=sec)
 
-    def _guess_wrong(self, p, r, what):
+    def _guess_room_key(self, r, net):
+        """Which of the room's budgets this guess spends: the guessing network's own lane while it has tries, else the
+        room's shared one; refused (with the wait) when neither has. Guessers elsewhere can empty the shared budget,
+        never this network's lane -- so a member's first tries are always checked."""
+        if net in r.barred:
+            raise LobbyError(proto.E_NOT_ALLOWED, "the room's host turned away password guesses from your network; "
+                                                  "ask the host for an invite")
+        lane = (self.room_guess_lane, f"{r.id}|{net}")
+        shared = (self.room_guess_room, r.id)
+        for b, k in (lane, shared):
+            if b.peek_ok(k):
+                return b, k
+        self._guess_wait(min(lane[0].wait(lane[1]), shared[0].wait(shared[1])))
+
+    def _guess_wrong(self, p, r, what, net=None):
         self._count("room_wrong_guesses")
-        # (who and which room -- never what was typed)
+        if r is not None and net is not None:
+            r.wrong.append((time.monotonic(), net))
+            self.dirty = True                    # (the host's view shows the count)
+        # (who and which room -- never what was typed, never the address)
         log.info("room %s: wrong %s from %s", r.id if r is not None else "?", what, p.name)
+
+    def _room_guesses(self, r):
+        """The host's view of the wrong passwords: how many in the last GUESS_WINDOW seconds and from how many
+        networks (those not turned away), how many networks are turned away, whether the shared budget is used up."""
+        cut = time.monotonic() - GUESS_WINDOW
+        while r.wrong and r.wrong[0][0] < cut:
+            r.wrong.popleft()
+        recent = [n for _t, n in r.wrong if n not in r.barred]
+        return {"wrong": len(recent), "networks": len(set(recent)), "barred": len(r.barred),
+                "busy": not self.room_guess_room.peek_ok(r.id)}
 
     async def _room_check_password(self, r, p, conn, pw):
         """Let p into locked room r with its password, or raise. Constant-time compare (store.check_password); wrong
-        guesses limited per player, address and room."""
-        keys = self._guess_keys(p, conn, r)
-        self._guess_refused(keys)
+        guesses limited per player and address (the guesser's own budgets) and per room (the network's lane, then
+        the room's shared budget)."""
+        own = self._guess_keys(p, conn)
+        self._guess_refused(own)
+        net = self._guess_net(conn)
+        keys = own + [self._guess_room_key(r, net)]
         for b, k in keys:                        # counted before the slow check, given back when it was right
             b.take(k)
         pw = clean_room_password(pw)
@@ -224,7 +294,7 @@ class RoomsMixin:
                 b.give(k)
             raise LobbyError(proto.E_STATE, "the room's password changed; try again")
         if not ok:
-            self._guess_wrong(p, r, "password")
+            self._guess_wrong(p, r, "password", net)
             raise LobbyError(proto.E_AUTH, "wrong room password")
         for b, k in keys:
             b.give(k)
@@ -420,6 +490,24 @@ class RoomsMixin:
         log.info("room %s: %s removed %s", r.id, p.name, q.name)
         return {"t": "room", "room": self._room_view(r, p)}
 
+    async def h_room_bar(self, conn, msg):
+        """The host turns away every network that typed a wrong password into this room in the last 10 minutes: their
+        guesses at this room are refused from now on, before they cost the room's budget anything (members already
+        in the room stay; a friend's invite still brings anybody in). The host never learns who or where they are."""
+        p = conn.player
+        self._need_private_cap(conn)
+        r = self._room_owner(p)
+        if r.lock != "password":
+            raise LobbyError(proto.E_STATE, "only a room with a password counts wrong guesses")
+        cut = time.monotonic() - GUESS_WINDOW
+        new = {n for t, n in r.wrong if t >= cut} - r.barred
+        new = set(sorted(new)[:max(0, BARRED_MAX - len(r.barred))])
+        r.barred |= new
+        self._count("room_bars")
+        log.info("room %s: %s turned away %d network(s) (%d in all)", r.id, p.name, len(new), len(r.barred))
+        self.dirty = True
+        return {"t": "room", "room": self._room_view(r, p), "barred": len(new)}
+
     async def h_room_line(self, conn, msg):
         """Community rooms: `in` false = sit out (stay in the room, skip your turns), true = back in line."""
         p = conn.player
@@ -471,6 +559,8 @@ class RoomsMixin:
             r.match = None
 
     def _room_next_pair(self, r):
+        """The first two free players of the line who have not blocked one another (a block made in the room makes
+        the blocker leave it; this only keeps a pair that got in some other way apart -- security review 3)."""
         free = []
         for q in r.line:
             if not q.online or q.match is not None or q.status != "room" or q.room is not r:
@@ -480,8 +570,10 @@ class RoomsMixin:
             except LobbyError:
                 continue
             free.append(q)
-            if len(free) == 2:
-                return free
+        for i, a in enumerate(free):
+            for b in free[i + 1:]:
+                if not self._is_blocked(a, b):
+                    return [a, b]
         return None
 
     def _room_schedule(self, r, delay=None):
@@ -620,11 +712,14 @@ class RoomsMixin:
                                    ("line" if q in r.line else "away")) for q in r.members],
                   "line": [q.id for q in r.line], "playing": [q.id for q in playing],
                   "next": None, "watch": False})
+        if viewer is r.owner and r.lock == "password":
+            d["guesses"] = self._room_guesses(r)         # (the host only: counts, never who or from where)
         if r.next_at is not None:
             pair = self._room_next_pair(r)
             d["next"] = {"at": round(r.next_at, 1), "players": [q.id for q in pair] if pair else []}
-        if r.match is not None and viewer not in playing and self._can(viewer, "spectate"):
-            d["watch"] = self._spec_refusal(viewer, r.match) is None
+        m = self._spec_room_match(r)                 # (between a match and its rematch: while its stream is alive)
+        if m is not None and viewer not in m.players and self._can(viewer, "spectate"):
+            d["watch"] = self._spec_refusal(viewer, m) is None
         return d
 
     def _room_push(self):

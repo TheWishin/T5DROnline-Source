@@ -374,11 +374,26 @@ class Store:
     def account_by_id(self, aid):
         return self._x("SELECT * FROM accounts WHERE id = ?", (aid,)).fetchone()
 
+    # Account ids are never given twice. Without AUTOINCREMENT, SQLite gives a new row the highest id + 1 -- after the
+    # newest account was deleted (delete-user, purge-inactive), its id again, and with it everything stored by
+    # account id: match and set history, character statistics, pair counts, friends, blocks, tournament entries and
+    # a tournament's organizer rights. The highest id ever used is kept in kv before any deletion; a new account
+    # gets the next one after that.
+    MAX_ID_KEY = "accounts.max_id"
+    _NEXT_ID = ("(SELECT max(COALESCE((SELECT MAX(id) FROM accounts), 0), "
+                "COALESCE((SELECT CAST(value AS INTEGER) FROM kv WHERE key = 'accounts.max_id'), 0)) + 1)")
+
+    def _note_account_ids(self):
+        """Before accounts are deleted: the highest account id so far goes to kv (see MAX_ID_KEY)."""
+        self._x("INSERT OR REPLACE INTO kv (key, value, updated) VALUES (?, " + self._NEXT_ID + " - 1, ?)",
+                (self.MAX_ID_KEY, time.time()))
+
     def create_account(self, name, pw_hash):
         """-> row, or None when the name exists (any case)."""
         try:
             self._x(
-                "INSERT INTO accounts (name, pw, created, rating, rd, vol, name_skel) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO accounts (id, name, pw, created, rating, rd, vol, name_skel) VALUES (" + self._NEXT_ID
+                + ", ?, ?, ?, ?, ?, ?, ?)",
                 (name, pw_hash, time.time(), glicko.DEFAULT_R, glicko.DEFAULT_RD, glicko.DEFAULT_VOL,
                  name_skeleton(name)))
         except sqlite3.IntegrityError:
@@ -714,6 +729,7 @@ class Store:
         row = self.account(name)
         if row is None:
             return False
+        self._note_account_ids()
         self._x("DELETE FROM accounts WHERE id = ?", (row["id"],))
         self._drop_orphans()
         return True
@@ -764,6 +780,7 @@ class Store:
         sql = "DELETE FROM accounts WHERE COALESCE(last_seen, created) < ? AND (banned_until IS NULL OR banned_until < ?)"
         if not include_played:
             sql += " AND games = 0"
+        self._note_account_ids()
         n = self._x(sql, (cut, time.time())).rowcount
         self._drop_orphans()
         return n

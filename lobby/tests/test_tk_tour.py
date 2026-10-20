@@ -1,7 +1,7 @@
 """The Online tab's tournaments (docs/TOURNAMENTS.md, t5lobby/tk_tour.py), driven like a player would against a real
 server, with withdrawn windows: the Tournaments page lists them, Sign up, the card "Your tournament set is ready" with
 Accept, the set's games in the tab's (fake) game, the bracket on its canvas, the Create window, the organizer's
-buttons, and the page in German."""
+buttons, the page in German, and the line for a player who may not create tournaments (tournament hosts)."""
 import os
 import time
 import unittest
@@ -186,6 +186,62 @@ class TkTourCreateTest(TkTourBase):
         self.pump(lambda: self.page_button("start") is not None)    # the organizer's buttons
         self.assertIsNotNone(self.page_button("cancel"))
         self.assertIn("Tournament Night Cup created.", tab.status_var.get())
+
+
+class TkTourHostTest(TkTourBase):
+    """T5L_TOUR_ORGANIZERS=none: a player who may not create tournaments reads why where Create... would be -- the
+    server's T5L_TOUR_HOST_HINT, else the launcher's own line -- until the owner makes them a host (`t5lobby-admin
+    tour-host add NAME`): then the server tells the launcher (tour_access) and Create... is back, no new login."""
+    HINT = "Tournament hosts only: DM wishin for one of the 20 host slots."
+    server_cfg = dict(TOUR, tour_organizers="none", tour_host_hint=HINT)
+
+    def set_host(self, on):
+        from t5lobby.server import tournaments
+
+        def go():
+            st = self.s.srv.store
+            aid = st.account("Tabby")["id"]
+            if on:
+                tournaments.set_host(st, aid, "Tabby", "host")
+            else:
+                tournaments.remove_host(st, aid)
+            self.s.srv.tours.reload_hosts()         # (what the admin poll does every T5L_ADMIN_POLL seconds)
+        self.s.call(go)
+
+    def test_the_hint_and_becoming_a_host(self):
+        tab = self.tab
+        self.login()
+        self.show_page()
+        pg = tab.tours.page
+        self.pump(lambda: pg["hint"].winfo_manager() == "grid")
+        self.assertEqual(str(pg["hint"].cget("text")), self.HINT)          # the server's text, as it is
+        self.assertEqual(pg["create"].winfo_manager(), "")
+        self.set_host(True)
+        self.pump(lambda: pg["create"].winfo_manager() == "pack" and str(pg["create"].cget("state")) == "normal")
+        self.assertEqual(pg["hint"].winfo_manager(), "")
+        self.assertIs(pg["create"].master.pack_slaves()[0], pg["create"])  # (left of Refresh, as before)
+        self.set_host(False)
+        self.pump(lambda: pg["hint"].winfo_manager() == "grid")
+        self.assertEqual(pg["create"].winfo_manager(), "")
+
+
+class TkTourHostFallbackTest(TkTourBase):
+    server_cfg = dict(TOUR, tour_organizers="none")
+
+    def test_the_launchers_own_line(self):
+        tab = self.tab
+        self.login()
+        self.show_page()
+        pg = tab.tours.page
+        self.pump(lambda: pg["hint"].winfo_manager() == "grid")
+        self.assertEqual(str(pg["hint"].cget("text")),
+                         "Only tournament hosts can create tournaments. Ask the server's owner for a host slot.")
+        tab.tours.on_event({"t": "tour_access", "can_create": True})       # (pushed by the server)
+        self.assertEqual(pg["hint"].winfo_manager(), "")
+        self.assertEqual(str(pg["create"].cget("state")), "normal")
+        tab.tours.reset()                                                  # logged out: no line
+        tab.tours.render_list()
+        self.assertEqual(pg["hint"].winfo_manager(), "")
 
 
 class TkTourOrganizerTest(TkTourBase):

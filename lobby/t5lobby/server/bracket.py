@@ -197,6 +197,11 @@ class Bracket:
                         s.known[side] = True
                         s.p[side] = EMPTY if e in self.dq else e
                         self.dirty.add(s.id)
+                elif s.state == "pending" and s.p[side] is not EMPTY and s.p[side] in self.dq:
+                    # disqualified after this side was filled, and the set was put back (reset): EMPTY, as in every
+                    # set filled after the disqualification -- never called again with a disqualified player
+                    s.p[side] = EMPTY
+                    self.dirty.add(s.id)
             if not all(s.known):
                 continue
             if s.p[0] is EMPTY and s.p[1] is EMPTY:

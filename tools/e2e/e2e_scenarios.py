@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -367,8 +368,12 @@ def _set_of(p, mid):
     return (p.matches.get(mid) or {}).get("set") or {}
 
 
-def _set_game(ctx, a, b, mid, label, timeout=240):
+def _set_game(ctx, a, b, mid, label, timeout=None):
     """Play one game of a ranked set to its result; no game of a set changes a rating on its own."""
+    if timeout is None:
+        # 240 s for a game of one round to win; run.py --rounds 3: a bot set's 3-0 took 274 s once (the planned
+        # loser stands still, the winner's random attacks take a while) -- 120 s per round to win, 240 at least
+        timeout = max(240, 120 * int(ctx.run.rounds or 1))
     wait_fight(ctx, mid, (a, b), timeout=150)
     wait_results(ctx, mid, (a, b), timeout)
     return match_row(ctx, mid, (a, b), "confirmed", label)
@@ -386,15 +391,30 @@ def _rated_once(ctx, a, b, mids, ends, label):
                   last is not None and whole is not None and abs(last - whole) < 0.01, f"game {last}, set {whole}")
 
 
+def _server_gap(ctx, mid, nxt):
+    """Seconds from match `mid` confirmed to match `nxt` starting, by the lobby server's log, or None."""
+    import datetime as _dt
+    text = ctx.server.log_text() if ctx.server is not None else ""
+
+    def at(pattern):
+        m = re.search(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) .*" + pattern, text, re.M)
+        return _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S,%f") if m else None
+    t0, t1 = at(rf"match {mid} confirmed"), at(rf"match {nxt} starts")
+    return (t1 - t0).total_seconds() if t0 and t1 else None
+
+
 def _next_set_game(ctx, a, b, mid, label):
     """Between two games: a countdown and "Leave set", no rematch vote; the next game starts by itself."""
     t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
-    ctx.wait(lambda: a.bar_button("Leave set") is not None and b.bar_button("Leave set") is not None, 10,
+    # (from the bar history too: under load the tab may show the set bar and replace it with the next game inside
+    # one late poll, before the runner looks)
+    since = min(p.matches[mid].get("result") or t_res for p in (a, b)) - 2.0
+    ctx.wait(lambda: a.saw_bar("Leave set", since) and b.saw_bar("Leave set", since), 10,
              f"{label}: the set bar counts down and offers Leave set")
     ctx.check(f"{label}: no rematch vote between two games of a set",
-              a.bar_button("Rematch") is None and b.bar_button("Rematch") is None, [a.bar_labels(), b.bar_labels()])
-    ctx.check(f"{label}: the countdown is shown", "starts in" in a.tab.bar_text.get() or "s" in a.tab.bar_text.get(),
-              a.tab.bar_text.get())
+              not a.saw_bar("Rematch", since) and not b.saw_bar("Rematch", since), [a.bar_labels(), b.bar_labels()])
+    shown = (a.saw_bar("Leave set", since) or ("", []))[0]
+    ctx.check(f"{label}: the countdown is shown", "starts in" in shown or "s" in shown, shown)
     since = t_res - 0.5
     ok = ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 40,
                   f"{label}: the next game starts by itself")
@@ -402,8 +422,13 @@ def _next_set_game(ctx, a, b, mid, label):
         raise Abort("the set's next game did not start")
     nxt = latest(a, "match_start", since)["match"]
     dt = a.matches[nxt]["started"] - t_res
+    srv = _server_gap(ctx, mid, nxt)
+    how = "launcher events"
+    if srv is not None:
+        # the lobby's own clock (its log): under load the runner may read the result late and the start on time
+        dt, how = srv, "lobby log"
     ctx.check(f"{label}: started {dt:.1f} s after the result (countdown {SET_NEXT:g} s)", SET_NEXT - 1.0 <= dt <= SET_NEXT + 12,
-              f"{dt:.1f} s")
+              f"{dt:.1f} s ({how})")
     ctx.check(f"{label}: continues in the running games", a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
     if not ((a.matches[mid].get("fight") or {}).get("pick") and getattr(ctx, "manual_pick", False)):
         # (game 1 picked in the game by the scenario: the lock is what it picked, not the lobby's fallback --
@@ -478,7 +503,9 @@ def ranked_set(ctx):
     _play_set(ctx, a, b, mid2, "AA", "set 2 (rematch)")
     prof = profile(ctx, a) or {}
     ctx.check("profile: two ranked sets", prof.get("ranked_games") == 2, f"ranked_games {prof.get('ranked_games')}")
-    t_last = time.time()
+    # the lobby's cooldown runs from the set's last result (server: pair_last), not from here (a profile query and
+    # the set's end screen later, under load several seconds)
+    t_last = max([ts for ts, e in a.events if e.get("t") in ("match_result", "set_end")] or [time.time()])
     leave(ctx, a)
     ctx.wait(lambda: str(a.tab.char_cb.cget("state")) == "readonly", 15, "character unlocked after the set")
     a.set_char("king")
@@ -1328,6 +1355,37 @@ def _start_ev(p, mid):
     return {}
 
 
+def _same_protocol(ctx, p):
+    """Does player p's (older) lobby code speak this tree's netplay protocol (buildid.NETPLAY_VERSION)? From 1.1.3 on
+    (protocol v4: costumes online) an older release computes another build id: the lobby never pairs it with a
+    newer one -- like another build (version_lobby)."""
+    import importlib
+    from t5lobby import buildid
+    mod = type(p.client).__module__.rsplit(".", 1)[0]
+    try:
+        old = importlib.import_module(mod + ".buildid").NETPLAY_VERSION
+    except (ImportError, AttributeError):
+        return True
+    return old == buildid.NETPLAY_VERSION
+
+
+def _never_paired(ctx, a, b, label, seconds=15):
+    """Both search; an older protocol on one side: no match within `seconds`, then both cancel."""
+    t = time.time()
+    a.press("quick")
+    ctx.sleep(0.3)
+    b.press("quick")
+    ctx.sleep(seconds)
+    ctx.check(f"{label}: never paired (another netplay protocol = another build)",
+              not latest(a, "match_found", t) and not latest(b, "match_found", t))
+    for p in (a, b):
+        try:
+            p.press("cancel")
+        except RuntimeError:
+            pass
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 15, f"{label}: both can search again")
+
+
 def regional_case(ctx, a, b, label, expect, expect_rtt, real=True):
     """The punch fails (block_direct, kept on: the relay bridge's bursts fail too, the match stays relayed), so the
     lobby needs a relay: the regional one with the smallest sum of both players' measured round trips (expect:
@@ -1428,6 +1486,9 @@ def relay_old_client(ctx):
     ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(b.client).__module__.startswith("t5lobby_v110"),
               type(b.client).__module__)
     ctx.wait(lambda: len(a.client.relay_rtts or {}) >= 2, 20, "the 1.1.1 player measured both relays")
+    if not _same_protocol(ctx, b):
+        _never_paired(ctx, a, b, "1.1.0 + this release")
+        return
     regional_case(ctx, a, b, "1.1.0 + 1.1.1: the lobby's own relay", "main", 150)
 
 
@@ -1448,7 +1509,10 @@ def relay_regional_stub(ctx):
     login(ctx, c)
     ctx.check("the 1.1.0 player runs the 1.1.0 lobby code", type(c.client).__module__.startswith("t5lobby_v110"),
               type(c.client).__module__)
-    regional_case(ctx, a, c, "stub: 1.1.0 + 1.1.1: the lobby's own relay", "main", 150, real=False)
+    if _same_protocol(ctx, c):
+        regional_case(ctx, a, c, "stub: 1.1.0 + 1.1.1: the lobby's own relay", "main", 150, real=False)
+    else:
+        _never_paired(ctx, a, c, "stub: 1.1.0 + this release")
     _relay_dead(ctx, "usc")
     regional_case(ctx, a, b, "stub: usc down: usw", "usw", 160, real=False)
 
@@ -1462,7 +1526,9 @@ def _relay_tool_run(ctx, real):
     cmd = [sys.executable, tool, "--scenarios", "best,dead,old"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     if real:
-        cmd += ["--exe", ctx.run.exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs")]
+        # (--game-seconds: the tool gives a real match 150 s by default -- too tight next to other agents' games:
+        # an idle fight at 180 ms ran past it once, "no result file", while both games still played)
+        cmd += ["--exe", ctx.run.exe, "--vfs", os.path.join(ctx.run.game_root, "game", "vfs"), "--game-seconds", "300"]
         if ctx.run.netcode == "lockstep":
             env["T5_RB_MODE"] = "off"
     logf = os.path.join(ctx.dir, "relay_e2e.log")
@@ -1470,7 +1536,7 @@ def _relay_tool_run(ctx, real):
         pr = subprocess.Popen(cmd, cwd=harness_root(), env=env, stdout=lf, stderr=subprocess.STDOUT,
                               stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0)
         ctx.run.own(pr)
-        t_end = time.time() + (900 if real else 300)
+        t_end = time.time() + (1500 if real else 300)
         while pr.poll() is None and time.time() < t_end:
             ctx.sleep(1.0)
         if pr.poll() is None:
@@ -3035,6 +3101,401 @@ def bo3_pair_cap(ctx):
               any(ev.get("code") == "pair_cap" for ev in b.events_of("notice", t)))
 
 
+# ============================================================================== 12. 1.1.2
+def _log_has_line(p, pattern):
+    rx = re.compile(pattern)
+    return next((ln for ln in log_lines(p) if rx.search(ln)), None)
+
+
+def _two_matches(ctx, a, b, label, rematches=1):
+    """A quick match and `rematches` rematches in the running games; every one confirmed and in sync."""
+    mid = queue_match(ctx, a, b, "quick")
+    rows = []
+    for k in range(rematches + 1):
+        if k:
+            mid = rematch(ctx, a, b)
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label + (f", rematch {k}" if k else ""))
+        fps_check(ctx, row, (a, b))
+        rows.append(row)
+    return rows
+
+
+@scenario("net_training_online", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="training overlay online (Settings: also online, own inputs) on one side only: the overlay reads "
+               "guest memory only, so the match stays in sync; a match and a rematch")
+def net_training_online(ctx):
+    if "training_online" not in core.DEFAULTS:
+        raise Skip("no training overlay setting in this launcher (training-overlay, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E TrainOn")
+    b = ctx.player("E2E TrainOff")
+    a.app.settings.update(training="frames", training_online=True)
+    b.app.settings.update(training="frames", training_online=False)
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    la, lb = _log_has_line(a, r"\[training\] overlay: .*online: own inputs"), _log_has_line(b, r"online: own inputs")
+    ctx.check("the overlay is on online in one game only", la is not None and lb is None,
+              f"{a.name}: {la!r}; {b.name}: {lb!r}")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "training overlay on one side")
+    fps_check(ctx, row, (a, b))
+    mid = rematch(ctx, a, b)
+    if wait_fight(ctx, mid, (a, b), timeout=150):
+        wait_results(ctx, mid, (a, b))
+        match_row(ctx, mid, (a, b), "confirmed", "training overlay on one side, rematch")
+
+
+@scenario("net_power_saving", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="power saving (PS3_LAPTOP=1: fewer worker threads, no spinning waits) on one side only, off on the "
+               "other: in sync, a match and a rematch")
+def net_power_saving(ctx):
+    if "power_saving" not in core.DEFAULTS:
+        raise Skip("no power saving setting in this launcher (laptop-power-saving, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Laptop")
+    b = ctx.player("E2E Desktop")
+    a.app.settings["power_saving"] = "on"
+    b.app.settings["power_saving"] = "off"
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    la = _log_has_line(a, r"\[sched\] power saving on \(PS3_LAPTOP=1")
+    lb = _log_has_line(b, r"\[sched\] power saving off \(PS3_LAPTOP=0")
+    ctx.check("power saving on in one game (PS3_LAPTOP=1), off in the other (PS3_LAPTOP=0)", la and lb,
+              f"{a.name}: {la!r}; {b.name}: {lb!r}")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "power saving on one side")
+    fps_check(ctx, row, (a, b))
+    mid = rematch(ctx, a, b)
+    if wait_fight(ctx, mid, (a, b), timeout=150):
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", "power saving on one side, rematch")
+        fps_check(ctx, row, (a, b))
+
+
+@scenario("friends_invite", "12 1.1.2", game=True, suites=("game",),
+          desc="friends on the Online tab: A asks B by account name, B accepts the request, A invites B to a casual "
+               "match, B declines once, then accepts with one click: a real match, confirmed")
+def friends_invite(ctx):
+    # (T5L_INVITE_RETRY_SECONDS, security review 2: after a declined invite the same two wait 30 s by default)
+    game_server(ctx, T5L_INVITE_RETRY_SECONDS=5)
+    a = ctx.player("E2E Fran", password="fran-pass-1")
+    b = ctx.player("E2E Finn", password="finn-pass-1")
+    login(ctx, a, "register")
+    login(ctx, b, "register")
+    if not hasattr(a.tab, "do_invite"):
+        raise Skip("no friends on this Online tab (social, 1.1.2)")
+    ctx.wait(lambda: a.tab._friends_ok() and b.tab._friends_ok(), 15, "the Friends page is on for both (accounts)")
+    a.tab.friend_name_var.set(b.name)
+    a.tab.do_add_friend()
+    ctx.wait(lambda: b.tab.tv_requests.exists(f"in:{a.name}"), 20, f"{b.name} sees {a.name}'s friend request")
+    b.tab.tv_requests.selection_set(f"in:{a.name}")
+    b.tab.do_friend_answer(True)
+    fid = f"f:{b.name}"
+    ctx.wait(lambda: a.tab.tv_friends.exists(fid) and (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok", 20,
+             f"{a.name} has {b.name} as a friend, online and free to invite")
+    ctx.check(f"{b.name} has {a.name} as a friend too", b.tab.tv_friends.exists(f"f:{a.name}"))
+    # an invite declined
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: b.bar_button("Decline") is not None, 20, f"{b.name} gets the invite (Accept / Decline in the bar)")
+    ctx.check("the invite names the friend", b.saw_status(re.escape(a.name) + r".*invites you to a casual match", t),
+              b.status_text())
+    b.click("Decline")
+    ctx.wait(lambda: any(e.get("state") == "declined" for e in a.events_of("invite_update", t)), 15,
+             f"{a.name} hears the decline")
+    ctx.check("no match from a declined invite", not a.events_of("match_found", t) and not b.events_of("match_found", t))
+    # an invite accepted: one click starts the casual match
+    ctx.wait(lambda: (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok" and a.tab.outgoing_invite is None, 15,
+             f"{a.name} can invite again")
+    t_decl = time.time()
+    ctx.sleep(2.5)                  # (the lobby takes one invite per 2 s from a player: "one invite at a time")
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: a.saw_status(r"try again in \d+ s", t), 10,
+             "a new invite right after the decline is held back (try again in ... s)")
+    ctx.check("no second invite reached the friend yet", not any(e for e in b.events_of("invited", t)))
+    ctx.sleep(max(0.0, 6.0 - (time.time() - t_decl)))
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: b.bar_button("Accept") is not None, 20, f"{b.name} gets the second invite")
+    b.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", t) and latest(b, "match_start", t), 40,
+                    "the accepted invite starts the match on both PCs (no ready check)"):
+        raise Abort("no match from the invite")
+    mid = latest(a, "match_start", t)["match"]
+    ctx.check("a casual match", not a.matches[mid].get("ranked"), a.matches[mid].get("ranked"))
+    if not wait_fight(ctx, mid, (a, b), timeout=150):
+        raise Abort("no fight")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "invited match")
+    fps_check(ctx, row, (a, b))
+
+
+@scenario("region_matchmaking", "12 1.1.2", suites=("lobby", "net"),
+          desc="region first: two relay nodes (fake relays.json) behind simulated round trips; West1 is paired with "
+               "West2 (est. ~50 ms) although Far (~220 ms) searched first; Far gets West1 only once the ping window "
+               "has grown (80 ms + 20 ms/s)")
+def region_matchmaking(ctx):
+    rtt = {"main": (150, 150, 150), "usw": (20, 30, 200), "usc": (60, 70, 180)}
+    _regional_world(ctx, real=False, rtt=rtt)
+    w1 = ctx.player("E2E West1", kind="stub", env={"T5_STUB_SECONDS": 4})
+    w2 = ctx.player("E2E West2", kind="stub", env={"T5_STUB_SECONDS": 4})
+    far = ctx.player("E2E Far", kind="stub", env={"T5_STUB_SECONDS": 4})
+    for i, p in enumerate((w1, w2, far)):
+        _routed(ctx, p, i)
+        login(ctx, p)
+    ctx.wait(lambda: all(len(p.client.relay_rtts or {}) >= 2 for p in (w1, w2, far)), 20, "all three measured both relays")
+    ctx.note(f"measured relay round trips: { {p.name: p.client.relay_rtts for p in (w1, w2, far)} }")
+    t0 = time.time()
+    far.press("quick")
+    ctx.sleep(0.5)
+    w1.press("quick")
+    ctx.sleep(2.0)
+    w2.press("quick")
+    mid = found_both(ctx, w1, w2, t0, 20)
+    ping = ((latest(w1, "match_found", t0) or {}).get("ping") or {}).get("ms")     # {"ms", "kind": "estimate", "known"}
+    ctx.check("West1 is paired with West2 (near), not with Far who searched first", not latest(far, "match_found", t0),
+              f"estimated ping {ping}")
+    ctx.check("the near pair's estimate is the best relay path (~50 ms)", ping is not None and 30 <= float(ping) <= 100,
+              ping)
+    for p in (w1, w2):
+        accept(ctx, p, mid)
+    started_both(ctx, w1, w2, mid)
+    wait_results(ctx, mid, (w1, w2), timeout=STUB_MATCH_SECONDS + 30)
+    ctx.check("near match confirmed", [p.matches[mid].get("status") for p in (w1, w2)] == ["confirmed", "confirmed"])
+    for p in (w1, w2):
+        leave(ctx, p)
+    ctx.wait(lambda: w1.action_on("quick"), 30, "West1 free again")
+    ctx.check("Far is still searching (nobody near)", not latest(far, "match_found", t0))
+    t1 = time.time()
+    w1.press("quick")
+    mid2 = found_both(ctx, w1, far, t1, 45)
+    waited = (min(ts for ts, e in w1.events if e.get("t") == "match_found" and ts >= t1) - t1)
+    ping2 = ((latest(w1, "match_found", t1) or {}).get("ping") or {}).get("ms")
+    ctx.check("Far gets West1 once the window has grown to its ~220 ms (about 7 s, not at once, not never)",
+              4.0 <= waited <= 20.0, f"after {waited:.1f} s, estimated ping {ping2}")
+    ctx.check("the far pair's estimate is ~220 ms", ping2 is not None and 160 <= float(ping2) <= 300, ping2)
+    for p in (w1, far):
+        accept(ctx, p, mid2)
+    started_both(ctx, w1, far, mid2)
+    wait_results(ctx, mid2, (w1, far), timeout=STUB_MATCH_SECONDS + 30)
+    ctx.check("far match confirmed", [p.matches[mid2].get("status") for p in (w1, far)] == ["confirmed", "confirmed"])
+
+
+@scenario("old_client_111", "12 1.1.2", game=True, suites=("game",),
+          desc="the real 1.1.1 Online tab, client and match driver (git tag v1.1.1) on the 1.1.2 lobby: two 1.1.1 "
+               "launchers play a match and a rematch, then a 1.1.1 launcher plays a 1.1.2 one (same game build)")
+def old_client_111(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Old111a", lobby="v1.1.1")
+    b = ctx.player("E2E Old111b", lobby="v1.1.1")
+    login(ctx, a)
+    login(ctx, b)
+    ctx.check("both run the 1.1.1 lobby code", all(type(p.client).__module__.startswith("t5lobby_v111") for p in (a, b)),
+              [type(p.client).__module__ for p in (a, b)])
+    _two_matches(ctx, a, b, "1.1.1 + 1.1.1")
+    for p in (a, b):
+        leave(ctx, p)
+    ctx.wait(lambda: a.action_on("quick"), 30, "the 1.1.1 player is free again")
+    c = ctx.player("E2E New112")
+    login(ctx, c)
+    if not _same_protocol(ctx, a):
+        _never_paired(ctx, a, c, "1.1.1 + this release")
+        return
+    mid = queue_match(ctx, a, c, "quick")
+    if not wait_fight(ctx, mid, (a, c), timeout=150):
+        raise Abort("no fight")
+    wait_results(ctx, mid, (a, c))
+    row = match_row(ctx, mid, (a, c), "confirmed", "1.1.1 + 1.1.2")
+    fps_check(ctx, row, (a, c))
+
+
+def _stray_packets(seed):
+    """Packets a stranger might send to a game's port before the match starts (netplay hardening, 1.1.2)."""
+    import random
+    import struct
+    r = random.Random(seed)
+
+    def hdr(kind, ver=3):
+        return struct.pack("<IBBBBII", 0x504E3554, kind, ver, 2, 0, r.getrandbits(32), r.getrandbits(32))
+    return [
+        ("foreign-version HELLO, 6 bytes (ended the session before 1.1.2)", b"T5NP" + bytes([1, 2])),
+        ("foreign-version HELLO, full header", hdr(1, ver=2) + bytes(12)),
+        ("HELLO from a stranger", hdr(1) + bytes(12)),
+        ("BYE from a stranger", hdr(3)),
+        ("REJECT from a stranger", hdr(5)),
+        ("PING from a stranger", hdr(4) + bytes(24)),
+        ("garbage", bytes(r.getrandbits(8) for _ in range(64))),
+        ("empty", b""),
+        ("1400 bytes", b"T5NP" + bytes(1396)),
+    ]
+
+
+@scenario("net_stray_packets", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="netplay hardening: strangers' packets to both games' ports until FIGHT START (a 6-byte foreign HELLO, "
+               "HELLO/BYE/REJECT/PING from a stranger, garbage), and copies of the opponent's packets played back from "
+               "another address all match long: the match goes on, in sync")
+def net_stray_packets(ctx):
+    game_server(ctx)
+    a = ctx.player("E2E Stray1")
+    b = ctx.player("E2E Stray2")
+    login(ctx, a)
+    login(ctx, b)
+    ctx.shaper.set(40, 0, 0)
+    ctx.shaper.replay = 9
+    stats0 = ctx.shaper.stats()
+    pkts = _stray_packets(ctx.run.seed)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sent = {"n": 0, "last": 0.0}
+    try:
+        mid = queue_match(ctx, a, b, "quick")
+        ports = [getattr(getattr(p.tab.driver, "ticket", None), "local_port", None) for p in (a, b)]
+        ctx.note(f"game ports {ports}; stray packets from {sock.getsockname()}: {[n for n, _d in pkts]}")
+
+        def spray():
+            now = time.time()
+            if now - sent["last"] >= 0.25:
+                sent["last"] = now
+                for port in ports:
+                    if port:
+                        for _n, data in pkts:
+                            try:
+                                sock.sendto(data, ("127.0.0.1", int(port)))
+                                sent["n"] += 1
+                            except OSError:
+                                pass
+            return all(fight_started(p, mid) for p in (a, b))
+        ok = ctx.wait(spray, 150, f"{mid}: FIGHT START on both PCs, strangers' packets arriving until then")
+        ctx.note(f"{sent['n']} stray packets sent before FIGHT START")
+        if not ok:
+            raise Abort("no fight")
+    finally:
+        sock.close()
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "stray packets before start, replayed packets")
+    fps_check(ctx, row, (a, b))
+    for p in (a, b):
+        seg = p.log_segment(mid)
+        ign = next((ln for ln in seg if "ignored (not the opponent's)" in ln), None)
+        bad = next((ln for ln in seg if re.search(r"build_mismatch|peer lost|cannot connect|rejected", ln)), None)
+        ctx.check(f"{p.name}'s game ignored the foreign HELLO (it arrived: the log says so)", ign is not None,
+                  (ign or "no 'ignored (not the opponent's)' line").strip()[:200])
+        ctx.check(f"{p.name}'s game: no build_mismatch / peer lost / reject", bad is None, (bad or "").strip()[:200])
+    st = ctx.shaper.stats(stats0)
+    dropped = sum(1 for p in (a, b) for ln in p.log_segment(mid) if "old packet of the opponent's" in ln)
+    ctx.check("the games never answered the replayed copies' address (no session moved there)",
+              st["replayed"] > 50 and st["to_replayer"] == 0, f"proxy {st}; 'old packet ... dropped' lines {dropped}")
+    ctx.shaper.replay = 0
+
+
+@scenario("net_unlocks_one_side", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="Settings -> Unlocks (Tekken 5 stages, free items) on one side only: online both games answer as a "
+               "fresh save (patch 0044, gamedata-online), so the match and two rematches stay in sync")
+def net_unlocks_one_side(ctx):
+    if "unlock_stages" not in core.DEFAULTS:
+        raise Skip("no unlock settings in this launcher (unlock-stages, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Unlocked")
+    b = ctx.player("E2E Plain")
+    a.app.settings.update(unlock_stages=True, unlock_items=True)
+    for p in (a, b):
+        p.app.settings.save()
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "unlocks on one side", rematches=2)
+    # (the launcher leaves T5_UNLOCK_* out of an online game's environment: core.UNLOCK_ENV; the game answers as a
+    # fresh save online whatever it is given)
+    la = _log_has_line(a, r"unlock: online game -- unlocks as on a fresh save")
+    lb = _log_has_line(b, r"unlock: online game -- unlocks as on a fresh save")
+    ctx.check("online, both games use the fresh save's unlocks (the unlock settings stay offline)",
+              la is not None and lb is not None,
+              f"{a.name}: {(la or '').strip()[:160]!r}; {b.name}: {(lb or '').strip()[:160]!r}")
+    ctx.note(f"stages fought: {[(r.get('fight') or {}).get('stage') for r in rows]}")
+
+
+@scenario("old_stages_match", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="a lobby with T5L_OLD_STAGES=1: the stage pool has the 15 Tekken 5 stages too; matches until one "
+               "lands on a Tekken 5 stage by the lobby's own draw (forced if six do not), played in sync")
+def old_stages_match(ctx):
+    from t5lobby import fighters
+    t5 = [s["key"] for s in fighters.table().stages if s.get("t5")]
+    if not t5:
+        raise Skip("no Tekken 5 stages in this tree (unlock-stages, 1.1.2)")
+    game_server(ctx, T5L_OLD_STAGES=1)
+    a = ctx.player("E2E OldSt1")
+    b = ctx.player("E2E OldSt2")
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    drawn, k = [], 0
+    while True:
+        if k:
+            mid = rematch(ctx, a, b)
+        stage = (a.matches[mid].get("fight") or {}).get("stage")
+        drawn.append(stage)
+        if not wait_fight(ctx, mid, (a, b), timeout=150):
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", f"old stages on, match {k + 1} ({stage})")
+        fps_check(ctx, row, (a, b))
+        if stage in t5:
+            seg = a.log_segment(mid)
+            ln = next((x for x in seg if "FIGHT START" in x and mid in x), "")
+            ctx.check(f"a Tekken 5 stage drawn by the lobby ({stage}) and fought", bool(ln), ln.strip()[:200])
+            break
+        k += 1
+        if k >= 6:
+            ctx.note(f"six draws without a Tekken 5 stage ({drawn}): the next match is forced onto {t5[0]}")
+            ctx.force_stage = t5[0]
+            mid = rematch(ctx, a, b)
+            if wait_fight(ctx, mid, (a, b), timeout=150):
+                wait_results(ctx, mid, (a, b))
+                match_row(ctx, mid, (a, b), "confirmed", f"old stages, forced {t5[0]}")
+            ctx.force_stage = None
+            break
+    ctx.note(f"stages the lobby drew: {drawn}")
+
+
+@scenario("net_start_mash", "12 1.1.2", game=True, suites=("game", "net"),
+          desc="both players mash START during the fights (about every 4th input, also with an attack): online START "
+               "never pauses -- taken out of both inputs on both PCs alike -- so a match and two rematches finish "
+               "in sync")
+def net_start_mash(ctx):
+    import inspect
+    import fight_flow_test
+    if "start_every" not in inspect.signature(fight_flow_test.mash_script).parameters:
+        raise Skip("no START mashing in this tree's mash scripts (online-no-pause, 1.1.2)")
+    game_server(ctx)
+    a = ctx.player("E2E Pause1", start_every=4, mash_gap=8)
+    b = ctx.player("E2E Pause2", start_every=4, mash_gap=8)
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "START mashed online", rematches=2)
+    rx = re.compile(r"no pause online, the match: START taken out on (\d+) frame\(s\) of P1's input and (\d+) of P2's")
+    for p in (a, b):
+        cut = [tuple(int(x) for x in m.groups()) for ln in log_lines(p) for m in [rx.search(ln)] if m]
+        ctx.check(f"{p.name}'s game took START out of both players' inputs in every match (no pause)",
+                  len(cut) >= len(rows) and all(x > 0 and y > 0 for x, y in cut[:len(rows)]), cut)
+    ctx.note(f"fight frames per match: {[(r[a.name]['result_file'] or {}).get('frames') for r in rows]}")
+
+
 # ============================================================================== 12. spectating (docs/SPECTATE.md)
 def _frame_times(p):
     """The last whole-run frame-time line of p's games (rb_net.cpp report), its recording cost lines and its live
@@ -3076,7 +3537,9 @@ def _spectate_case(ctx, watched, games=True):
     (At most 4 games at once.)"""
     if "spectate" not in features():
         raise Skip("this tree has no spectating")
-    game_server(ctx)
+    # (two rounds to win: the guest joins 60 s after the first spectator, and a one-round match -- in lockstep 54 s
+    # from start to result once -- may be over by then, with nothing live to watch)
+    game_server(ctx, T5L_ROUNDS=max(2, ctx.run.rounds))
     a = ctx.player("E2E Ava", char="steve", password="ava-pw-1")
     b = ctx.player("E2E Bo", char="hwoarang")
     v = w = None
@@ -3618,3 +4081,21 @@ def private_room_turns(ctx):
         ctx.note(f"match {k + 1}: {p1} vs {p2}, winner {winner}; line now {line}")
     for p in (a, b, c):
         p.press("leave") if p.action_on("leave") else None
+
+
+@scenario("cross_build_pair", "13 1.1.3 integration", game=True, suites=("game", "net"),
+          desc="one player on this run's build, the other on another build of the same game code (E2E_OTHER_EXE_DIR: "
+               "its t5dr.exe [+ t5dr_game.dll]); the same code id, so the lobby pairs them: a match and two "
+               "rematches must stay in sync with the same hashes -- the builds simulate the game alike")
+def cross_build_pair(ctx):
+    other = os.environ.get("E2E_OTHER_EXE_DIR")
+    if not other or not os.path.isfile(os.path.join(other, "t5dr.exe")):
+        raise Skip("no other build: E2E_OTHER_EXE_DIR names the folder of another t5dr.exe")
+    game_server(ctx)
+    a = ctx.player("E2E ThisBuild")
+    b = ctx.player("E2E OtherBuild", exe_dir=other)
+    ctx.note(f"{a.name}: {ctx.run.exe}; {b.name}: {other}")
+    login(ctx, a)
+    login(ctx, b)
+    rows = _two_matches(ctx, a, b, "cross-build pair", rematches=2)
+    ctx.note(f"final hashes: {[r[a.name]['result_file'].get('hash') for r in rows]}")

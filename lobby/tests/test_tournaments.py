@@ -6,7 +6,8 @@
 3. calls: "Your tournament set is ready", accepting, the queue held back, no-shows (one, both)
 4. a set's games as the lobby plays them: a quit at 0-0, a desync replay, a crash (called again with its score),
    a dispute (waits for the organizer), ratings (casual unless T5L_TOUR_RATED)
-5. the organizer: report, override, reset, disqualify; T5L_TOUR_ADMINS
+5. the organizer: report, override, reset, disqualify; T5L_TOUR_ADMINS; the hosts and admins of
+   `t5lobby-admin tour-host` (the commands, the rules, picked up by a running server, told to the launcher)
 6. a server restart in the middle of a set: the tournament resumes, the set is called again with its score
 7. the status port's JSON for streamers; an older client gets none of it
 8. end to end: 8 stub clients play a whole double-elimination bracket on a local lobby (grand final reset)
@@ -176,6 +177,35 @@ class BracketTest(unittest.TestCase):
         self.assertNotIn("a", dict(b.standings()))
         with self.assertRaises(BracketError):
             b.disqualify("nobody")
+
+    def test_a_reset_never_brings_back_a_disqualified_player(self):
+        """review-113: a set put back (reset) came back open with a player disqualified since -- the set this player
+        lost by the disqualification, or a walkover that had waited for an opponent -- and the tournament called the
+        disqualified player to play it again (a win then eliminated an innocent opponent)."""
+        b = Bracket.build("single", ["a", "b", "c", "d"])
+        sid = b.disqualify("b")                               # b is in the open W1-2 (b v c): forfeited
+        self.assertEqual(sid, "W1-2")
+        b.forfeit(sid, b.sets[sid].p.index("b"), "dq")
+        self.assertEqual(b.sets[sid].reason, "dq")
+        b.reset(sid)                                          # (the organizer's reset of that forfeit)
+        s = b.sets[sid]
+        self.assertEqual((s.state, s.reason, s.winner_entrant()), ("done", "bye", "c"))
+        for x in b.open_sets():
+            self.assertNotIn("b", x.p)
+        # a walkover decided for a player while the other side was nobody, that player disqualified, the walkover's
+        # source put back and played again: the set must not open with the disqualified player
+        b = Bracket.build("single", list("abcdefgh"))
+        b.double_forfeit("W1-4")                              # (c v f: nobody) -> W2-2 is b's walkover once W1-3 is in
+        b.report("W1-3", 0)
+        self.assertEqual(b.sets["W2-2"].reason, "bye")
+        out = b.sets["W2-2"].winner_entrant()
+        b.disqualify(out)
+        b.reset("W1-4")
+        b.report("W1-4", 0)
+        for s in b.open_sets():
+            self.assertNotIn(out, s.p)
+        self.assertEqual(b.sets["W2-2"].reason, "bye")
+        self.assertEqual(b.sets["W2-2"].winner_entrant(), b.sets["W1-4"].winner_entrant())
 
     def test_reset_and_its_blocker(self):
         b = Bracket.build("single", ["a", "b", "c", "d"])
@@ -717,6 +747,28 @@ class OrganizerTest(TourBase):
         with self.assertRaises(LobbyError):
             self.org.tour_admin(tid, "reset", set="W1-1")
 
+    def test_a_reset_set_never_calls_a_disqualified_player(self):
+        """review-113: the organizer's reset of a set a disqualification decided opened it again with the disqualified
+        player in it and called both to play it (a win then knocked the other one out). Now it is the other player's
+        walkover again; an override (a winner to choose) is refused."""
+        self.f.accept = {n: False for n in self.names}
+        tid = self.create(players=("Ben", "Cat", "Dan", "Eve"))    # Ann organizes, does not play
+        self.f.run(lambda: self.f.last("Ben", "tour_call") is not None)
+        full = self.org.tour_get(tid)
+        c, d = next(s["p"] for s in full["bracket"]["sets"] if s["id"] == "W1-2")
+        self.org.tour_admin(tid, "dq", player=d)
+        self.assertEqual((self.winner_name(tid, "W1-2"), self.bset(tid, "W1-2").reason), (c, "dq"))
+        calls = len(self.f.events(d, "tour_call"))
+        with self.assertRaises(LobbyError):
+            self.org.tour_admin(tid, "override", set="W1-2", winner=0)
+        self.assertEqual(self.bset(tid, "W1-2").reason, "dq")          # (refused before anything changed)
+        self.org.tour_admin(tid, "reset", set="W1-2")
+        s = self.bset(tid, "W1-2")
+        self.assertEqual((s.state, s.reason, self.winner_name(tid, "W1-2")), ("done", "bye", c))
+        self.assertNotEqual(s.data.get("live"), "called")
+        time.sleep(0.5)
+        self.assertEqual(len(self.f.events(d, "tour_call")), calls)    # never called again
+
     def test_withdrawing_in_the_middle_of_a_set(self):
         tid = self.create(players=("Ben", "Cat"))
         self.f.run(lambda: self.bset(tid, "W1-1").data.get("live") == "playing")
@@ -880,6 +932,261 @@ class BlamedVoidTest(TourBase):
         self.assertEqual(s.score, [1, 0])
 
 
+# ============================================================================== 5c. tournament hosts (admin tool)
+def run_admin(*args, env=None):
+    """t5lobby-admin ARGS -> (exit code, what it printed); the T5L_TOUR_* settings it reads only from `env`."""
+    import contextlib
+    import io
+    from unittest import mock
+    from t5lobby.server import admin
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), mock.patch.dict(os.environ, env or {}):
+        for k in ("T5L_TOUR_MAX_HOSTS", "T5L_TOUR_ADMINS", "T5L_TOUR_ORGANIZERS"):
+            if k not in (env or {}):
+                os.environ.pop(k, None)
+        try:
+            rc = admin.main(list(args))
+        except SystemExit as e:
+            rc = e.code if isinstance(e.code, int) else (print(e.code) or 1)
+    return rc, out.getvalue()
+
+
+class HostCommandTest(unittest.TestCase):
+    """`t5lobby-admin tour-host add NAME [--admin]`, `tour-host remove NAME`, `tour-hosts` on the database."""
+
+    def setUp(self):
+        from t5lobby.server.store import Store
+        d = tempfile.mkdtemp(prefix="tourhosts")
+        self.db = os.path.join(d, "t5lobby.db")
+        st = Store(self.db)
+        for n in ("Ann", "Ben", "Cat", "Dan", "Eve"):
+            st.create_account(n, "pw-hash")
+        self.ids = {n: st.account(n)["id"] for n in ("Ann", "Ben", "Cat", "Dan", "Eve")}
+        st.close()
+
+    def admin(self, *args, **env):
+        return run_admin("--db", self.db, *args, env={k: str(v) for k, v in env.items()})
+
+    def hosts(self):
+        from t5lobby.server import tournaments
+        from t5lobby.server.store import Store
+        st = Store(self.db)
+        try:
+            return {name: role for _aid, (name, role) in tournaments.db_hosts(st).items()}
+        finally:
+            st.close()
+
+    def test_add_list_and_remove(self):
+        rc, out = self.admin("tour-host", "add", "ann")                 # (any case: the account's own name is kept)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Ann is now a tournament host", out)
+        self.assertIn("1 of 20 host slots used", out)
+        rc, out = self.admin("tour-host", "add", "Ben", "--admin")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Ben is now a tournament admin", out)
+        self.assertIn("1 of 20 host slots used", out)                   # admins take no host slot
+        self.assertEqual(self.hosts(), {"Ann": "host", "Ben": "admin"})
+        rc, out = self.admin("tour-hosts", T5L_TOUR_ADMINS="wishin", T5L_TOUR_ORGANIZERS="none")
+        self.assertEqual(rc, 0, out)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("admin  Ben"), out)
+        self.assertTrue(lines[1].startswith("host   Ann"), out)
+        self.assertIn("wishin", lines[2])
+        self.assertIn("T5L_TOUR_ADMINS", lines[2])
+        self.assertIn("1 of 20 host slots used; T5L_TOUR_ORGANIZERS=none", out)
+        rc, out = self.admin("tour-host", "add", "Ann")
+        self.assertIn("a tournament host already", out)
+        rc, out = self.admin("tour-host", "remove", "Ann")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Ann is no longer a tournament host", out)
+        rc, out = self.admin("tour-host", "remove", "Ann")
+        self.assertEqual(rc, 1)
+        self.assertIn("not a tournament host or admin", out)
+        self.assertEqual(self.hosts(), {"Ben": "admin"})
+        rc, out = self.admin("tour-host", "remove", "Ben", "--admin")
+        self.assertEqual(rc, 1)
+        self.assertIn("--admin goes with add", out)
+
+    def test_unknown_and_invalid_names(self):
+        rc, out = self.admin("tour-host", "add", "Nobody")
+        self.assertEqual(rc, 1)
+        self.assertIn("no account named 'Nobody'", out)
+        rc, out = self.admin("tour-host", "add", "bad/name")
+        self.assertEqual(rc, 1)
+        self.assertIn("not a valid player name", out)
+        self.assertEqual(self.hosts(), {})
+
+    def test_the_host_limit(self):
+        for n in ("Ann", "Ben"):
+            self.assertEqual(self.admin("tour-host", "add", n, T5L_TOUR_MAX_HOSTS=2)[0], 0)
+        rc, out = self.admin("tour-host", "add", "Cat", T5L_TOUR_MAX_HOSTS=2)
+        self.assertEqual(rc, 1)
+        self.assertIn("all 2 host slots are used: remove one first", out)
+        rc, out = self.admin("tour-host", "add", "Cat", "--admin", T5L_TOUR_MAX_HOSTS=2)
+        self.assertEqual(rc, 0, out)                                    # an admin is not counted
+        rc, out = self.admin("tour-host", "add", "Cat", T5L_TOUR_MAX_HOSTS=2)
+        self.assertEqual(rc, 1, out)                                    # admin -> host needs a slot ...
+        rc, out = self.admin("tour-host", "add", "Ann", "--admin", T5L_TOUR_MAX_HOSTS=2)
+        self.assertIn("Ann is now a tournament admin (was host)", out)  # ... host -> admin frees one
+        self.assertIn("1 of 2 host slots used", out)
+        self.assertEqual(self.admin("tour-host", "add", "Dan", T5L_TOUR_MAX_HOSTS=2)[0], 0)
+        self.assertEqual(self.hosts(), {"Ann": "admin", "Ben": "host", "Cat": "admin", "Dan": "host"})
+        self.assertIn("2 of 20 host slots used", self.admin("tour-hosts")[1])
+
+    def test_a_deleted_account_frees_its_slot_and_a_reused_id_is_no_host(self):
+        from t5lobby.server import tournaments
+        from t5lobby.server.store import Store
+        self.admin("tour-host", "add", "Eve")
+        self.admin("tour-host", "add", "Dan", "--admin")
+        st = Store(self.db)
+        st.delete_account("Eve")
+        # a server without the fixed account ids (1.1.2 after a rollback) gives Dan's id to a newcomer
+        st.db.execute("DELETE FROM accounts WHERE name = 'Dan'")
+        st.db.execute("INSERT INTO accounts (id, name, pw, created, rating, rd, vol) VALUES (?, 'Newcomer', 'x', ?, "
+                      "1500, 350, 0.06)", (self.ids["Dan"], time.time() + 1))
+        self.assertEqual(tournaments.db_hosts(st), {})
+        st.close()
+        rc, out = self.admin("tour-hosts")
+        self.assertIn("0 of 20 host slots used", out)
+        self.assertNotIn("Newcomer", out)
+        st = Store(self.db)
+        self.assertEqual(st._x("SELECT COUNT(*) FROM tour_hosts").fetchone()[0], 0)    # (the rows are gone)
+        st.close()
+
+
+HINT = "Tournament hosts only: DM wishin for one of the 20 host slots."
+
+
+class HostServerTest(TourBase):
+    """The server with T5L_TOUR_ORGANIZERS=none: the hosts and admins of the admin tool, picked up without a restart."""
+    server_cfg = {"tour_organizers": "none", "tour_admins": ["dan"], "admin_poll": 0.2, "tour_per_organizer": 1,
+                  "tour_host_hint": HINT}
+
+    def setUp(self):
+        d = tempfile.mkdtemp(prefix="tourhosts")
+        self.server_cfg = dict(self.server_cfg, db=os.path.join(d, "t5lobby.db"))
+        super().setUp()
+
+    def admin(self, *args):
+        rc, out = run_admin("--db", self.s.cfg.db, *args)
+        self.assertEqual(rc, 0, out)
+        return out
+
+    def access(self, name, n):
+        """The n-th tour_access pushed to `name`."""
+        self.f.run(lambda: len(self.f.events(name, "tour_access")) >= n, 10)
+        return self.f.events(name, "tour_access")[n - 1]
+
+    def test_hosts_create_admins_run_everything_without_a_restart(self):
+        ann, ben, cat = self.org, self.f.c["Ben"], self.f.c["Cat"]
+        lst = ann.tour_list()
+        self.assertFalse(lst["can_create"])                         # `none`: nobody but the admins ...
+        self.assertEqual(lst["create_hint"], HINT)                  # ... and the server says how to become a host
+        self.assertNotIn("create_hint", self.f.c["Dan"].tour_list())       # (T5L_TOUR_ADMINS may create)
+        g = client(self.s, "Guesty", tournaments=True)
+        try:
+            self.assertNotIn("create_hint", g.tour_list())          # (a guest cannot become a host)
+        finally:
+            g.close()
+        with self.assertRaises(LobbyError):
+            ann.tour_create("Ann Cup", start=time.time() + 600)
+        # the owner adds Ann as a host while she is online: she is told within T5L_ADMIN_POLL, no new login
+        self.admin("tour-host", "add", "Ann")
+        self.assertEqual(self.access("Ann", 1), {"t": "tour_access", "can_create": True})
+        self.assertTrue(ann.tour_list()["can_create"])
+        self.assertNotIn("create_hint", ann.tour_list())
+        t = ann.tour_create("Ann Cup", start=time.time() + 600)
+        with self.assertRaises(LobbyError) as cm:                   # a host has the normal limits (here: 1)
+            ann.tour_create("Ann Cup 2", start=time.time() + 600)
+        self.assertIn("you already run 1 tournaments", cm.exception.msg)
+        self.assertFalse(ben.tour_list()["can_create"])             # not a host: still not
+        self.assertEqual(self.f.events("Ben", "tour_access"), [])   # (and told nothing)
+        with self.assertRaises(LobbyError):
+            ben.tour_admin(t["id"], "cancel")
+        # Ben becomes an admin: runs Ann's tournament and is not held by the limits
+        self.admin("tour-host", "add", "Ben", "--admin")
+        self.assertTrue(self.access("Ben", 1)["can_create"])
+        self.assertTrue(ben.tour_get(t["id"])["can_manage"])
+        for n in ("Official Ben Cup", "Ben Cup 2"):
+            ben.tour_create(n, start=time.time() + 600)             # (a reserved name too, like T5L_TOUR_ADMINS)
+        self.assertFalse(cat.tour_get(t["id"])["can_manage"])
+        # removed again: refused at once, the launcher is told
+        self.admin("tour-host", "remove", "Ann")
+        ev = self.access("Ann", 2)
+        self.assertEqual((ev["can_create"], ev["create_hint"]), (False, HINT))
+        with self.assertRaises(LobbyError):
+            ann.tour_create("Ann Cup 3", start=time.time() + 600)
+        self.assertTrue(ann.tour_get(t["id"])["can_manage"])        # her tournament stays hers
+        self.admin("tour-host", "remove", "Ben")
+        self.assertFalse(self.access("Ben", 2)["can_create"])
+        with self.assertRaises(LobbyError):
+            ben.tour_admin(t["id"], "cancel")
+        self.assertEqual(ann.tour_admin(t["id"], "cancel")["state"], "cancelled")
+
+    def test_a_restart_keeps_them(self):
+        self.admin("tour-host", "add", "Cat")
+        self.f.close()
+        self.s.stop()
+        self.s = ServerThread(**dict(TOUR, **self.server_cfg)).start()
+        self.f = Field(self.s, ("Cat",), create=False)
+        self.assertEqual(self.s.call(lambda: dict(self.s.srv.tours.hosts)), {self.account("Cat")["id"]: "host"})
+        self.assertTrue(self.f.c["Cat"].tour_list()["can_create"])
+
+
+class HostRuleTest(unittest.TestCase):
+    """may_organize / _is_admin with the database's hosts and admins and every T5L_TOUR_ORGANIZERS rule (no network)."""
+
+    class P:
+        def __init__(self, aid, name):
+            self.account_id, self.name = aid, name
+
+    def manager(self, **cfg):
+        from t5lobby.server import tournaments
+        from t5lobby.server.config import Config
+        from t5lobby.server.store import Store
+
+        class Srv:
+            pass
+        srv = Srv()
+        srv.cfg = Config(**dict(util.FAST, **cfg))
+        srv.store = Store(":memory:")
+        self.addCleanup(srv.store.close)
+        srv.players = {}
+        for n in ("Ann", "Ben", "Cat", "Dan"):
+            srv.store.create_account(n, "pw-hash")
+        m = tournaments.TourManager(srv)
+        self.ids = {n: srv.store.account(n)["id"] for n in ("Ann", "Ben", "Cat", "Dan")}
+        tournaments.set_host(srv.store, self.ids["Ann"], "Ann", "host")
+        tournaments.set_host(srv.store, self.ids["Ben"], "Ben", "admin")
+        self.assertEqual(m.reload_hosts(), {self.ids["Ann"], self.ids["Ben"]})
+        return m
+
+    def p(self, name):
+        return self.P(self.ids[name], name)
+
+    def test_every_rule(self):
+        for rule, cat in (("none", False), ("any", True), ("Cat", True), ("Dan", False)):
+            m = self.manager(tour_organizers=rule, tour_admins=["dan"])
+            self.assertTrue(m.may_organize(self.p("Ann")), rule)            # a host
+            self.assertTrue(m.may_organize(self.p("Ben")), rule)            # an admin
+            self.assertEqual(m.may_organize(self.p("Cat")), cat, rule)      # nobody special: the rule decides
+            self.assertTrue(m.may_organize(self.p("Dan")), rule)            # T5L_TOUR_ADMINS
+            self.assertEqual([m._is_admin(self.p(n)) for n in ("Ann", "Ben", "Cat", "Dan")],
+                             [False, True, False, True], rule)
+            self.assertFalse(m.may_organize(self.P(None, "Ann")))           # a guest of that name: never
+            self.assertFalse(m._is_admin(self.P(None, "Ben")))
+
+    def test_reload_sees_changes_only(self):
+        from t5lobby.server import tournaments
+        m = self.manager(tour_organizers="none")
+        self.assertEqual(m.reload_hosts(), set())
+        tournaments.remove_host(m.store, self.ids["Ann"])
+        tournaments.set_host(m.store, self.ids["Cat"], "Cat", "admin")
+        self.assertEqual(m.reload_hosts(), {self.ids["Ann"], self.ids["Cat"]})
+        self.assertFalse(m.may_organize(self.p("Ann")))
+        self.assertTrue(m._is_admin(self.p("Cat")))
+
+
 # ============================================================================== 6. a server restart
 class RestartTest(unittest.TestCase):
     def test_a_running_tournament_resumes(self):
@@ -927,9 +1234,9 @@ class RestartTest(unittest.TestCase):
         from t5lobby.server import tournaments
         from t5lobby.server.store import Store
         st = Store(db)
-        self.assertEqual(tournaments.migrate(st.db), [1])
+        self.assertEqual(tournaments.migrate(st.db), [1, 2])
         self.assertEqual(tournaments.migrate(st.db), [])
-        self.assertEqual(st.get_flag(tournaments.SCHEMA_KEY), "1")
+        self.assertEqual(st.get_flag(tournaments.SCHEMA_KEY), "2")
         st.close()
 
 

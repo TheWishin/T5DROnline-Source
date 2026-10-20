@@ -28,6 +28,8 @@ def end_text(reason):
         return t("The match data was damaged.")
     if reason == "left":
         return t("You stopped watching.")
+    if reason == "bumped":
+        return t("A friend of the players took your place: the match has as many spectators as it can take.")
     return t("The match data stopped coming.")      # stopped, unavailable, anything else
 
 
@@ -289,7 +291,8 @@ class Spectating:
                 w["end"] = ev.get("reason") or "over"
                 if w["game"] is None:
                     w["state"] = "over"           # (the game never started: nothing to watch)
-                elif w["end"] in ("your_match", "not_allowed") or (w["state"] == "starting" and not ev.get("ready")):
+                elif w["end"] in ("your_match", "not_allowed", "bumped") or \
+                        (w["state"] == "starting" and not ev.get("ready")):
                     # privacy and the player's own match: at once; a game still waiting for a first fight
                     # that never came has nothing to show (with a fight in the file it plays to its end)
                     if w["game"].running():

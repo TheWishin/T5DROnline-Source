@@ -2,7 +2,7 @@
 the players' privacy setting (on by default, ranked only when both allow ranked), blocks, the limit per match;
 the live stream going from the streamer's file through the server to every spectator's file byte for byte, a
 spectator who joins late getting it from the session's start, a rematch in the running session keeping the
-stream; the server's bounds (piece size, order, rate, buffer); and older launchers that never see any of it."""
+stream (and a room's stream watchable between its match and the rematch); the server's bounds (piece size, order, rate, buffer); and older launchers that never see any of it."""
 import os
 import shutil
 import struct
@@ -336,6 +336,106 @@ class RulesTest(Base):
         self.assertIsNone(self.s.call(lambda: self.s.srv.by_name["vic"].watching))
 
 
+class RoomGapTest(Base):
+    """Between a room's match and its rematch (1.1.4): the players' games keep the netplay session, so the room
+    stays watchable from the Rooms list while the session's stream is alive -- a newcomer joins the spectators
+    already watching and follows the stream into the rematch with them. Same privacy rules; a session nobody
+    watched has no stream to join, and a declined rematch ends the set and with it the room's Watch."""
+
+    def room_entry(self, viewer, rid, pred, timeout=10.0):
+        """The room's entry in viewer's Rooms list once pred(entry) holds."""
+        t_end = time.monotonic() + timeout
+        while time.monotonic() < t_end:
+            for e in viewer.rooms or ():
+                if e["id"] == rid and pred(e):
+                    return e
+            time.sleep(0.05)
+        raise AssertionError(f"room {rid}: {[e for e in viewer.rooms or () if e['id'] == rid]}")
+
+    def room_match(self, watch=True):
+        """Alice and Bob's room match, Xan (nobody's friend) watching it from the Rooms list, then its result from
+        both. -> (alice, bob, xan, room id, Alice's match_start, the live file, Xan's file, the data so far)"""
+        a, b, x = self.acc("Alice"), self.acc("Bob"), self.acc("Xan")
+        rid = a.create_room("Dojo")["id"]
+        b.join_room(rid)
+        sa = expect(a, "match_start", 30)
+        live = spectate.live_path(a.live_dir, sa["stream"])
+        head = spectate.MAGIC + session_rec() + match_rec(0) + inputs_rec(0, 120)
+        self.feed(live, head)
+        path = None
+        if watch:
+            self.room_entry(x, rid, lambda e: e["status"] == "playing" and e.get("watch"))
+            x.watch(room=rid)
+            path = expect(x, "spec_ready", 15)["path"]
+            self.wait_file(path, head)
+        for c in (a, b):
+            c.report_result(0, [1, 0], match_id=sa["match"])
+        for c in (a, b):
+            expect(c, "match_result", 15)
+        return a, b, x, rid, sa, live, path, head
+
+    def test_a_newcomer_between_the_match_and_its_rematch(self):
+        a, b, x, rid, sa, live, xpath, head = self.room_match()
+        y = self.acc("Yul")
+        # the room's entry once the match is over (status no longer "playing"): still watchable
+        e = self.room_entry(y, rid, lambda e: e["status"] != "playing")
+        self.assertTrue(e["watch"])
+        after = match_rec(0, winner=0)                         # the result screen, in the running session
+        self.feed(live, after)
+        r = y.watch(room=rid)
+        self.assertEqual((r["stream"], r["match"], r["spectators"], r["room"]),
+                         (sa["stream"], sa["match"], 2, "Dojo"))
+        ypath = expect(y, "spec_ready", 15)["path"]
+        self.wait_file(ypath, head + after)                    # the session from its start, like any late join
+        self.wait_file(xpath, head + after)
+        # the rematch in the running games: both spectators follow the stream into it
+        a.rematch(sa["match"], True, keep=True)
+        b.rematch(sa["match"], True, keep=True)
+        sa2 = expect(a, "match_start", 20)
+        self.assertEqual(sa2["stream"], sa["stream"])
+        more = match_rec(1) + inputs_rec(120, 120, 5)
+        self.feed(live, more)
+        for path in (xpath, ypath):
+            self.wait_file(path, head + after + more)
+        self.assertEqual(self.s.call(lambda: len(self.s.srv.streams[sa["stream"]].viewers)), 2)
+        self.room_entry(y, rid, lambda e: e["status"] == "playing" and e.get("watch"))
+
+    def test_switching_spectators_off_between_the_match_and_its_rematch(self):
+        a, b, x, rid, sa, live, xpath, head = self.room_match()
+        y = self.acc("Yul")
+        self.room_entry(y, rid, lambda e: e["status"] != "playing" and e.get("watch"))
+        b.set_spectate_prefs(False, False)                     # in the gap too: the spectators stop at once
+        self.assertEqual(expect(x, "spec_end", 10)["reason"], "not_allowed")
+        self.room_entry(y, rid, lambda e: not e.get("watch"))
+        with self.assertRaises(LobbyError) as e:
+            y.watch(room=rid)
+        self.assertEqual(e.exception.code, "bad_state")
+
+    def test_a_declined_rematch_ends_the_watch(self):
+        a, b, x, rid, sa, live, xpath, head = self.room_match()
+        y = self.acc("Yul")
+        self.room_entry(y, rid, lambda e: e["status"] != "playing" and e.get("watch"))
+        b.rematch(sa["match"], False)                          # the set is over, so is the session
+        self.room_entry(y, rid, lambda e: not e.get("watch"))
+        with self.assertRaises(LobbyError) as e:
+            y.watch(room=rid)
+        self.assertEqual(e.exception.code, "bad_state")
+
+    def test_a_session_nobody_watched_has_no_stream_to_join(self):
+        a, b, x, rid, sa, live, _path, _head = self.room_match(watch=False)
+        self.assertFalse(self.room_entry(x, rid, lambda e: e["status"] != "playing")["watch"])
+        with self.assertRaises(LobbyError) as e:
+            x.watch(room=rid)
+        self.assertEqual(e.exception.code, "bad_state")
+        self.assertEqual(self.s.call(lambda: len(self.s.srv.streams)), 0)
+        # the rematch starts: watchable again (a new viewer starts the stream of the running session)
+        a.rematch(sa["match"], True, keep=True)
+        b.rematch(sa["match"], True, keep=True)
+        expect(a, "match_start", 20)
+        self.room_entry(x, rid, lambda e: e["status"] == "playing" and e.get("watch"))
+        self.assertEqual(x.watch(room=rid)["stream"], sa["stream"])
+
+
 class BoundsTest(Base):
     def test_the_streamer_is_bounded(self):
         a, b = self.acc("Alice"), self.acc("Bob")
@@ -399,6 +499,23 @@ class OlderTest(Base):
             self.assertNotIn("watch", f)
 
 
+class UnaskedTest(Base):
+    def test_a_watching_nobody_asked_for_makes_no_file(self):
+        # (security review 3) a server sending `watching` by itself (no watch request) made the launcher open a new file
+        # and unpack up to 64 MB into it from a few KB -- again and again with new stream ids
+        a = self.acc("Alice")
+        sid = "m0123456789ab"
+
+        def push():
+            pl = self.s.srv.by_name["alice"]
+            pl.conn.send({"t": "watching", "stream": sid, "match": sid, "players": [], "began": 0, "spectators": 1})
+            pl.conn.send({"t": "watching", "stream": sid, "match": sid, "players": [], "re": 999})
+        self.s.call(push)
+        time.sleep(1.0)
+        self.assertIsNone(a.spec_watch)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "Alice", "watch", f"watch-{sid}.t5live")))
+
+
 class ParserTest(unittest.TestCase):
     def test_pieces_of_any_size_and_end(self):
         data = spectate.MAGIC + session_rec() + match_rec(0) + inputs_rec(0, 100) + end_rec("x")
@@ -429,6 +546,18 @@ class ParserTest(unittest.TestCase):
         p = spectate.LiveParser()
         p.feed(spectate.MAGIC + inputs_rec(5, 10))             # inputs that do not start where the last ended
         self.assertIsNotNone(p.bad)
+
+    def test_hashes_far_out_of_order(self):
+        # (security review 3) the spectator's game sorts each HASH into place: a hand-made stream of hashes, each one
+        # older than the last, kept it busy for hours. A few frames back (a rollback recorded a frame again) is fine.
+        def hash_rec(f):
+            return rec(spectate.R_HASH, struct.pack("<IQ", f, 0x1234))
+        p = spectate.LiveParser()
+        p.feed(spectate.MAGIC + session_rec() + match_rec(0) + hash_rec(600) + hash_rec(660) + hash_rec(540)
+               + hash_rec(7200) + hash_rec(7200 - spectate.HASH_BACK))
+        self.assertIsNone(p.bad)
+        p.feed(hash_rec(100))
+        self.assertIn("out of order", p.bad or "")
 
     def test_uploader_to_receiver(self):
         d = tempfile.mkdtemp(prefix="t5spec")

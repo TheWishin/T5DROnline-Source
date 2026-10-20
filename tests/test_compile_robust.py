@@ -349,6 +349,9 @@ try:
         rc = 1
     elif name in names("FAKE_CC_ALWAYS_FAIL"):
         print(f"{src}(7,1): error: unknown type name 'broken'")
+        if "/clang:-fno-caret-diagnostics" not in args:   # what clang prints by default: the source line and a caret
+            print("    broken_t r3 = ctx->gpr[3] + SECRET_LIFTED_CODE;")
+            print("    ^")
         print("1 error generated.")
         rc = 1
     else:
@@ -474,6 +477,32 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(os.path.exists(self.out))
         self.assertFalse(os.path.exists(os.path.join(self.obj, "march.txt")))
         self.assert_launcher_safe(out)
+
+    def test_no_source_line_of_the_game_in_any_output(self):
+        # (security review 3) clang quotes the source line under a diagnostic: the lifted code is the game's own, so
+        # every compile runs with -fno-caret-diagnostics and neither the build log nor a compile log holds a line of it
+        rc, out, err = self.run_tool(["--jobs", "2"], FAKE_CC_ALWAYS_FAIL="ppu_recomp_001.cpp")
+        self.assertNotEqual(rc, 0)
+        compiles = [c for c in self.calls() if c.get("role") == "clang-cl" and "args" in c]
+        self.assertTrue(compiles)
+        for c in compiles:
+            self.assertIn("/clang:-fno-caret-diagnostics", c["args"], c.get("name"))
+        with open(os.path.join(self.obj, "ppu_recomp_001.cpp.log"), encoding="utf-8") as f:
+            log = f.read()
+        self.assertIn("error: unknown type name 'broken'", log)
+        for text in (out, err, log):
+            self.assertNotIn("SECRET_LIFTED_CODE", text)
+
+    def test_lifted_ppu_code_keeps_its_hangs(self):
+        # (1.1.4) a guest `b .` is a loop without side effects: -fno-finite-loops keeps clang from assuming it ends
+        # (and from removing the way into it); the lifted PPU C++ only
+        rc, out, err = self.run_tool(["--jobs", "2"])
+        self.assertEqual(rc, 0, out + err)
+        compiles = [c for c in self.calls() if c.get("role") == "clang-cl" and "args" in c and c.get("name")]
+        ppu = [c for c in compiles if c["name"].endswith(".cpp")]
+        self.assertTrue(ppu)
+        for c in compiles:
+            self.assertEqual("/clang:-fno-finite-loops" in c["args"], c["name"].endswith(".cpp"), c["name"])
 
     def test_a_compile_that_hangs_is_stopped_and_compiled_again(self):
         rc, out, err = self.run_tool(["--jobs", "2"], FAKE_CC_HANG_ONCE="ppu_recomp_003.cpp",

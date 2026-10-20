@@ -570,6 +570,12 @@ class Walk:
         tab.client.my_room = dict(MY_ROOM, playing=[], next={"at": time.time() + 8, "players": ["x0", "x1"]})
         tab.on_event({"t": "room", "room": tab.client.my_room})
         self.screen("online my room, next match")
+        # the host of a password room: the wrong passwords line (and, below, the Room settings window with Turn away
+        # the guessers)
+        tab.client.my_room = dict(MY_ROOM, lock="password", guesses={"wrong": 1999, "networks": 1999, "barred": 99,
+                                                                     "busy": True})
+        tab.on_event({"t": "room", "room": tab.client.my_room})
+        self.screen("online my room, wrong passwords")
         saved = tab.new_window
 
         def hidden(parent):
@@ -599,6 +605,12 @@ class Walk:
         self.screen("online tournament call")
         tab.tours.call = None
         tab.hide_bar()
+        # a player who may not create tournaments: the launcher's own line where Create... would be
+        tab.tours.can_create, tab.tours.listed, tab.tours.create_hint = False, True, ""
+        tab.tours.render_list()
+        self.screen("online tournaments, not a host")
+        tab.tours.can_create = True
+        tab.tours.render_list()
 
     def _windows(self, d):
         """The Controls window (fake controllers), the problem report and the update offer: windows of their own,

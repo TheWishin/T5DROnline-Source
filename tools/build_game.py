@@ -187,7 +187,14 @@ def patch_digest():
 
 # Bump when a change to the steps below changes what ends up in t5dr.exe (lifter
 # arguments, SPU handling, compile flags); messages and the like do not count.
-CODE_VERSION = 3   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT
+CODE_VERSION = 5   # 2: sound core lifted with SPU_CORE_EXTRA_FUNCS; 3: sound core with SPU_NEAR_FLOAT;
+                   # 4 (1.1.3): lifted code compiled with the PGO profile (tools/gamedll/t5dr_lifted.proftext);
+                   # 5 (1.1.4): lifted PPU code with register promotion (ps3recomp patch 0066), compiled with
+                   # -fno-finite-loops (build_game_dll.py)
+
+# The lifted code's profile for profile-guided optimisation (docs/BUILD_PERF.md): text, split into
+# four parts and turned into clang's format at compile time (build_game_dll.prepare_profiles).
+PGO_PROFILE = os.path.join(ROOT, "tools", "gamedll", "t5dr_lifted.proftext")
 
 
 def code_id():
@@ -198,6 +205,9 @@ def code_id():
     h.update(patch_digest().encode())
     with open(os.path.join(ROOT, "CMakeLists.txt"), "rb") as f:
         h.update(f.read().replace(b"\r\n", b"\n"))
+    if os.path.exists(PGO_PROFILE):                  # a new profile changes the compiled code
+        with open(PGO_PROFILE, "rb") as f:
+            h.update(b"pgo:" + f.read().replace(b"\r\n", b"\n"))
     if prebuilt_host():
         h.update(sha1(os.path.join(HOST_DIR, "t5dr.exe")).encode())
         gd = os.path.join(ROOT, "tools", "gamedll")
@@ -402,7 +412,11 @@ def step_lift(a):
     # and is redone once (~1 minute).
     lifter = os.path.join(P.tools, "ppu_lifter.py")
     stamp = os.path.join(P.recomp, ".lifter.sha1")
-    lifter_id = sha1(lifter) if os.path.exists(lifter) else ""
+    # Register promotion (ps3recomp patch 0066, the lifter's default): the guest registers a function
+    # uses live in C locals between calls. T5DR_LIFT_REGPROMO=0 lifts without it -- the same results,
+    # only slower; for comparisons. The stamp records it, so switching lifts again.
+    regpromo = os.environ.get("T5DR_LIFT_REGPROMO", "1") != "0"
+    lifter_id = (sha1(lifter) if os.path.exists(lifter) else "") + ("" if regpromo else ":regpromo=off")
     if os.path.exists(os.path.join(P.recomp, "ppu_recomp.h")) and not a.force:
         made_by = open(stamp).read().strip() if os.path.exists(stamp) else None
         if made_by == lifter_id:
@@ -421,7 +435,7 @@ def step_lift(a):
          "--functions", os.path.join(P.analysis, "functions.json"),
          "--hle-stubs", os.path.join(P.analysis, "EBOOT.imports.json"),
          "--code-end", CODE_END, "--max-chunk-lines", "80000",
-         "-o", P.recomp])
+         "-o", P.recomp] + ([] if regpromo else ["--regpromo", "off"]))
     with open(stamp, "w") as f:
         f.write(lifter_id + "\n")
 
@@ -525,11 +539,21 @@ def step_compile(a):
     if not (cmake and ninja):
         fail("CMake and Ninja were not found. Install the Visual Studio component 'C++ CMake tools for Windows'.")
     compiler = [f'-DCMAKE_C_COMPILER="{clang[0]}"', f'-DCMAKE_CXX_COMPILER="{clang[0]}"']
+    # the PGO profile, split into its parts (build_game_dll.prepare_profiles); without llvm-profdata.exe
+    # next to clang-cl the build goes on without it (same game, a little slower)
+    pgo = []
+    if os.path.exists(PGO_PROFILE):
+        import build_game_dll
+        os.makedirs(P.cmake, exist_ok=True)
+        prof = build_game_dll.prepare_profiles(PGO_PROFILE, P.cmake, os.path.dirname(clang[0]))
+        for part, var in (("ppu", "T5DR_PGO"), ("snd", "T5DR_PGO_SND"), ("skin", "T5DR_PGO_SKIN"),
+                          ("spu", "T5DR_PGO_SPU")):
+            pgo.append(f'-D{var}="{prof.get(part, "")}"')
     configure = " ".join([f'"{cmake}"', "-S", f'"{ROOT}"', "-B", f'"{P.cmake}"', "-G", "Ninja",
                           f'-DCMAKE_MAKE_PROGRAM="{ninja}"',
                           "-DCMAKE_BUILD_TYPE=Release", f'-DPS3RECOMP_DIR="{P.deps}"',
                           f'-DRECOMP_DIR="{P.recomp}"', f'-DSPU_DIR="{P.spu}"', f'-DPython3_EXECUTABLE="{PY}"']
-                         + compiler)
+                         + compiler + pgo)
     build = f'"{cmake}" --build "{P.cmake}"'
     cmd = f'call "{vcvars}" >nul && {configure} && {build}'
     print("  >", cmd, flush=True)

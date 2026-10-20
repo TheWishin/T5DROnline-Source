@@ -11,8 +11,8 @@ part is in the README's status table.
   customization and you see theirs. It comes from your own save (the one you play offline with), is sent
   to the opponent when the match connects, and both PCs check it the same way -- a damaged save shows the
   default costume instead, never something only one PC has. Both players need 1.1.3 (the game's netplay
-  changed: protocol 4). Tested in rollback and lockstep with different costumes on both sides and in
-  mirror matches: both PCs show the same, 0 desyncs.
+  changed: protocol 4). Replays show both costumes too. Tested in rollback and lockstep with different
+  costumes on both sides and in mirror matches: both PCs show the same, 0 desyncs.
 
 ## v1.1.2 (not released yet)
 

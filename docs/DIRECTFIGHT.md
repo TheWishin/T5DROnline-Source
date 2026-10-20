@@ -1200,21 +1200,32 @@ wire table (round trip, every malformed one refused whole), the check;
 a wrong hash, malformed pieces, acknowledgements, a restarted peer, random
 packets).
 
-**Results** (this PC, 2026-10-19, main 64ef2f5 with this branch; runs in
-build/costume/runs). Test saves: the Unlocks work's Lili (Lace Hairband 0x33,
-item 0x34, COLOR1 1 on costume 1), and Heihachi (Topknot 0x03, belt 0x0D,
-COLOR1 1) and Kazuya (Long Hair 0x03, shoulder piece 0x0D) bought in the item
-shop with free items and taken from the VS custom data; host's save A = Lili +
-Kazuya, joiner's save B = Heihachi + Lili. Both games on their own online save
-(`PS3_SAVEDATA_DIR`), `fight_flow_test.py --flow persistent --pattern NRNRR
---mash`, pictures at `T5_DF_SHOT=++450,++900`:
+**Results** (this PC, runs in build/costume/runs). Test saves: the Unlocks
+work's Lili (Lace Hairband 0x33, item 0x34, COLOR1 1 on costume 1), and
+Heihachi (Topknot 0x03, belt 0x0D, COLOR1 1) and Kazuya (Long Hair 0x03,
+shoulder piece 0x0D) bought in the item shop with free items and taken from the
+VS custom data; host's save A = Lili + Kazuya, joiner's save B = Heihachi +
+Lili. Both games on their own online save (`PS3_SAVEDATA_DIR`), replays
+recorded (`T5_REPLAY_DIR`), `fight_flow_test.py --flow persistent --pattern
+NRNRR --mash` (a new session, a rematch, a new session, two rematches),
+pictures at `T5_DF_SHOT=++450,++900`. The matches: Kazuya (A) vs Lili (B), both
+custom; a Lili mirror, both custom; Heihachi vs Kazuya, neither customized by
+its player; Lili (A) vs Heihachi (B) twice.
 
-| run | matches | costumes written (the same line on both PCs) | sync |
+| run (build) | matches | costumes written (the same line on both PCs) | sync |
 |---|---|---|---|
-| final_rb (rollback) | 5/5 confirmed, same winner and hash | Kazuya (A) vs Lili (B) custom; Lili mirror, both custom; Heihachi vs Kazuya, neither customized; Lili (A) vs Heihachi (B) twice | 34 checks, 0 mismatching frames, 654 rollbacks |
-| final_ls (lockstep; B's Heihachi block made invalid: a part worn but not bought) | 5/5 | as above, Heihachi "a part worn but not bought" -> default on both PCs | 34 checks, 0 mismatching |
+| fin6_rb (rollback; final head: main 4852277 + select-stall + this branch) | 5/5 confirmed, same winner and hash on both PCs | as listed, `custom` / `nothing customized` | 34 checks, 0 mismatching frames, 242 rollbacks |
+| fin6_ls (lockstep, same build; B's Heihachi block made invalid: a part worn but not bought) | 5/5 | as listed, Heihachi "a part worn but not bought" -> default on both PCs | 32 checks, 0 mismatching |
+| fin5_rb / fin4_ls (rollback / lockstep after the select-stall merge, before main 4852277) | 5/5 each | the same lines and blocks hashes | 34 / 34 checks, 0 mismatching; 692 rollbacks |
+| fin3_play (`replay_play.py`: fin3_rb's two recorded sessions played back) | 5/5 identical to the live match | the playback wrote the recorded blocks (`custom (replay)`, the live hashes) | 63 + hashes compared, 0 different |
 | pick_rb (in-game select, rollback, `pick_flow_test.py`) | 3/3 | Kazuya vs Lili, Lili vs Heihachi, Heihachi vs Lili (Circle) | 0 mismatching |
-| pair_rb / pair_ls (before the merge with main) | 4/4 each | -- | 0 mismatching |
+
+The blocks hashes are the same in every run of a pattern (3C3F.., 3BB3..,
+5BE5.., 80FD.. or CBAB.. with the invalid block), and so are the match hashes of
+the runs with the same netcode. One lockstep run before the select-stall merge
+(fin3_ls) hung both games at select phase 1 after the title (match 3): the
+reader state of the boot-state copy, fixed by select-stall ("Select stall after
+a fight"); with it merged no run hung.
 
 The pictures of both PCs show the same costumes at the same moment
 (`side/shot01*`: the host's Kazuya with his long hair and shoulder piece

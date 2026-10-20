@@ -1,8 +1,8 @@
 diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
-index aae1d81..1ae47e9 100644
+index aae1d81..3131b48 100644
 --- a/libs/spurs/cellSpurs.c
 +++ b/libs/spurs/cellSpurs.c
-@@ -2805,13 +2805,14 @@ static int jl_workers(void)
+@@ -2805,13 +2805,15 @@ static int jl_workers(void)
           * mask, PS3_CPUS), not the machine's: under a 4-CPU mask the machine
           * count started 11 workers on 4 processors. */
          const int cores = host_sched_cpus();
@@ -18,14 +18,15 @@ index aae1d81..1ae47e9 100644
 +         * every extra worker adds wake-ups and cache traffic -- 11 workers
 +         * spent ~25 % more CPU on the same skinning than 2 (measured at 32 and
 +         * 4 processors) -- and on a laptop or an APU that energy comes out of
-+         * the clock speed. Patch 0065: counted on the processors the frame
-+         * stays on (one CCD of a two-CCD Ryzen), host_sched_plan.h. */
++         * the clock speed. Patch 0065: or one per core but the main
++         * thread's, whichever is more (4 cores without SMT: 3), from
++         * host_sched_plan.h. */
 +        int total = host_sched_default_threads(HS_ROLE_SPURS);
          if (e && *e) total = atoi(e);
          if (total > cores - 1) total = cores - 1;      /* leave the PPU a core */
          if (total > JC_POOL_MAX + 1) total = JC_POOL_MAX + 1;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 25ac5a9..68bca88 100644
+index 25ac5a9..24e7e31 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -7187,7 +7187,7 @@ static int ld_vjob_try_run(ld_vscratch* s)
@@ -37,7 +38,7 @@ index 25ac5a9..68bca88 100644
      for (;;) {
          if (ld_vjob_try_run(s)) continue;
          /* idle: spin briefly (draws arrive every few microseconds while a
-@@ -7226,13 +7226,14 @@ static int ld_vjob_enabled(void)
+@@ -7226,13 +7226,13 @@ static int ld_vjob_enabled(void)
       * translation time (patch 0047: walk 3.0-3.6 ms with one, 3.4-3.5 with
       * two; was 3 and 2,000 from 12, 2 from 8). */
      const int cpus = host_sched_cpus();
@@ -49,14 +50,13 @@ index 25ac5a9..68bca88 100644
 -     * walk (0.25 of a processor at 32, measured). */
 -    if (host_sched_laptop()) { n = 1; g_vj_spin = 300; }
 +     * walk (0.25 of a processor at 32, measured). Patch 0065: the counts come
-+     * from host_sched_plan.h (the processors the frame stays on: one CCD of a
-+     * two-CCD Ryzen). */
++     * from host_sched_plan.h, the priority and CPU set from host_sched. */
 +    int n = host_sched_default_threads(HS_ROLE_VERTEX);
 +    g_vj_spin = host_sched_vertex_spin();
      { const char* t = getenv("RSX_VERTEX_THREADS"); if (t) n = atoi(t); }
      { const char* t = getenv("RSX_VERTEX_SPIN"); if (t) g_vj_spin = atoi(t) < 0 ? 0 : atoi(t); }
      if (n < 1) return 0;
-@@ -7243,7 +7244,7 @@ static int ld_vjob_enabled(void)
+@@ -7243,7 +7243,7 @@ static int ld_vjob_enabled(void)
      int started = 0;
      for (int i = 0; i < n; i++) {
          HANDLE h = CreateThread(NULL, 256 * 1024, ld_vworker_main, &scratch[i], 0, NULL);
@@ -66,7 +66,7 @@ index 25ac5a9..68bca88 100644
      g_vj_threads = started;
      fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors%s; "
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index 0ee0df5..b7ee60e 100644
+index 0ee0df5..4488b0c 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -11,10 +11,11 @@
@@ -104,7 +104,7 @@ index 0ee0df5..b7ee60e 100644
   *   PS3_SCHED_THROTTLE=0      leave Windows power throttling (EcoQoS, and the
   *                             Windows 11 rule that drops the 1 ms timer of a
   *                             minimized or occluded window) in charge [opted out]
-@@ -43,10 +50,13 @@
+@@ -43,10 +50,12 @@
   *                             0047), else timer; timer with power saving]
   *   PS3_CPUS=n                pretend the process may use n logical
   *                             processors (the pools below size from the
@@ -117,12 +117,11 @@ index 0ee0df5..b7ee60e 100644
 + *                             more (patch 0065), max 12; power saving max 6],
 + *                             RSX_VERTEX_THREADS [3 from 24, else 1 (2 from 8
 + *                             before patch 0047)], PS3_SCHED_SUBMS) -- see
-+ *                             host_sched_cpus(); patch 0065 counts them on
-+ *                             the CCD the frame stays on (host_sched_plan.h)
++ *                             host_sched_cpus() and host_sched_plan.h
   *   PS3_LAPTOP=1|0|auto       power saving (patch 0047, host_sched.h) [auto:
   *                             on with a battery, battery saver, the Power
   *                             saver plan, a mobile processor or integrated
-@@ -103,6 +113,7 @@
+@@ -103,6 +112,7 @@
   *   and post -> wake is 8-9 us at the median.
   */
  #include "host_sched.h"
@@ -130,7 +129,7 @@ index 0ee0df5..b7ee60e 100644
  #include "../ppu/ppu_fp_det.h"   /* ppu_fp_thread_init: the guest threads' MXCSR (fp_env.c) */
  #include <stdlib.h>
  #include <stdio.h>
-@@ -173,6 +184,25 @@ int host_sched_cpus(void)
+@@ -173,6 +183,24 @@ int host_sched_cpus(void)
      return n > 0 ? (int)n : 1;
  }
  int host_sched_cores(void) { return host_sched_cpus(); }
@@ -152,11 +151,10 @@ index 0ee0df5..b7ee60e 100644
 +    hsp_pools(&p, host_sched_cpus(), 1, host_sched_laptop());
 +    return p.vertex_spin;
 +}
-+int host_sched_small(void) { return hs_plan_nowin()->small; }
  void    host_sched_trace_(int kind, uint32_t arg) { (void)kind; (void)arg; }
  void    host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid) { (void)kind; (void)arg; (void)tid; }
  void host_sched_trace_tag(uint32_t tid) { (void)tid; }
-@@ -191,7 +221,7 @@ int64_t host_sched_qpc(void) { return 0; }
+@@ -191,7 +219,7 @@ int64_t host_sched_qpc(void) { return 0; }
  #include <string.h>
  
  static const char* const k_role_name[HS_ROLE_COUNT] = {
@@ -165,7 +163,7 @@ index 0ee0df5..b7ee60e 100644
  };
  
  /* ---- configuration --------------------------------------------------------- */
-@@ -202,7 +232,8 @@ static int  s_on = 1;              /* PS3_SCHED */
+@@ -202,7 +230,8 @@ static int  s_on = 1;              /* PS3_SCHED */
  static int  s_log = 0;
  static int  s_timer = 1;
  static int  s_ppu_lo = 1002;
@@ -175,7 +173,7 @@ index 0ee0df5..b7ee60e 100644
  static volatile int s_subms = 0;   /* PS3_SCHED_SUBMS: 0 spin, 1 pause, 2 timer */
  static int  s_subms_env = 0;       /* ... set by the environment (power saving leaves it alone) */
  static int64_t s_spin_ticks = 0;
-@@ -240,6 +271,7 @@ static int    s_ncpu = 0;
+@@ -240,6 +269,7 @@ static int    s_ncpu = 0;
  static BYTE   s_fast_llc = 0xFF;
  static int    s_ranked_lp[HS_MAX_CPUS];   /* first LP of each core, fastest first */
  static int    s_nranked = 0;
@@ -183,7 +181,7 @@ index 0ee0df5..b7ee60e 100644
  
  typedef BOOL (WINAPI *pfn_GetSystemCpuSetInformation)(void*, ULONG, PULONG, HANDLE, ULONG);
  typedef BOOL (WINAPI *pfn_SetThreadSelectedCpuSets)(HANDLE, const ULONG*, ULONG);
-@@ -252,7 +284,7 @@ static pfn_SetProcessDefaultCpuSets      p_SetProcessDefaultCpuSets;
+@@ -252,7 +282,7 @@ static pfn_SetProcessDefaultCpuSets      p_SetProcessDefaultCpuSets;
  static pfn_SetThreadDescription          p_SetThreadDescription;
  static pfn_AvSetMmThreadCharacteristicsA p_AvSetMmThreadCharacteristicsA;
  
@@ -192,7 +190,7 @@ index 0ee0df5..b7ee60e 100644
  {
      HMODULE k32 = GetModuleHandleA("kernel32.dll");
      pfn_GetSystemCpuSetInformation get = (pfn_GetSystemCpuSetInformation)(void*)
-@@ -268,15 +300,40 @@ static void hs_topology(void)
+@@ -268,15 +298,40 @@ static void hs_topology(void)
              const hs_cpuset_info* c = (const hs_cpuset_info*)(buf + off);
              if (!c->Size) break;
              if (c->Type == 0 && c->Group == 0) {          /* CpuSetInformation, group 0 */
@@ -233,7 +231,7 @@ index 0ee0df5..b7ee60e 100644
      /* The fast cache group: the one holding the best-ranked core. Ties (a CPU
       * that ranks nothing) fall to the group of logical processor 0. Hybrid
       * parts rank by efficiency class first. */
-@@ -306,6 +363,17 @@ static void hs_topology(void)
+@@ -306,6 +361,17 @@ static void hs_topology(void)
      }
  }
  
@@ -251,7 +249,7 @@ index 0ee0df5..b7ee60e 100644
  /* Resolve a CPU-set spec to CPU set ids. Returns the count; 0 = no constraint. */
  static ULONG hs_cpus(const char* spec, ULONG* ids)
  {
-@@ -373,6 +441,111 @@ int host_sched_cores(void)
+@@ -373,6 +439,106 @@ int host_sched_cores(void)
      return s_bud_cores;
  }
  
@@ -309,7 +307,7 @@ index 0ee0df5..b7ee60e 100644
 +{
 +    hsp_plan p = *hs_plan();
 +    const char* e = getenv("PS3_SCHED_PLACE");
-+    if (e && *e == '0') {                       /* no CCD, no reserved cores */
++    if (e && *e == '0') {
 +        p.hot = -1;
 +        p.set[HSP_SPURS] = p.set[HSP_VERTEX] = 0;
 +        hsp_pools(&p, host_sched_cpus(), host_sched_cores(), host_sched_laptop());
@@ -331,11 +329,6 @@ index 0ee0df5..b7ee60e 100644
 +    return role == HS_ROLE_VERTEX ? p.vertex_threads : role == HS_ROLE_SPURS ? p.spurs_threads : 1;
 +}
 +int host_sched_vertex_spin(void) { return hs_pools_now().vertex_spin; }
-+int host_sched_small(void)
-+{
-+    const char* e = getenv("PS3_SCHED_PLACE");
-+    return e && *e == '0' ? 0 : hs_plan()->small;
-+}
 +
 +/* CPU set ids of the logical processors in m. */
 +static ULONG hs_mask_ids(uint64_t m, ULONG* ids)
@@ -363,7 +356,7 @@ index 0ee0df5..b7ee60e 100644
  /* ---- trace ----------------------------------------------------------------- */
  typedef struct { volatile LONG64 qpc; uint16_t kind, tid; uint32_t arg; } hs_rec;
  #define HS_TRACE_CAP (1u << 22)              /* 4M records, 64 MB */
-@@ -452,6 +625,74 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
+@@ -452,6 +618,73 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
      snprintf(out, cap, "%s", e ? e : def);
  }
  
@@ -420,10 +413,9 @@ index 0ee0df5..b7ee60e 100644
 +    fprintf(stderr, "[sched] placement: game thread, translation, sound core %s, %s; game's other threads %s\n",
 +            crit, ideal, p->set[HSP_GAME] ? "the same" : "anywhere");
 +    char work[128];
-+    if (p->set[HSP_SPURS])
-+        snprintf(work, sizeof work, "on LP %s%s%s%s", hsp_mask_text(p->set[HSP_SPURS], m1, sizeof m1),
-+                 p->reserved ? " (not LP " : "", p->reserved ? hsp_mask_text(p->reserved, m2, sizeof m2) : "",
-+                 p->reserved ? ": the game thread's and translation's cores)" : "");
++    if (p->set[HSP_VERTEX])
++        snprintf(work, sizeof work, "skinning anywhere, vertex fetch on LP %s",
++                 hsp_mask_text(p->set[HSP_VERTEX], m2, sizeof m2));
 +    else
 +        snprintf(work, sizeof work, "anywhere");
 +    fprintf(stderr, "[sched] placement: workers %s; SPURS %d at a time, vertex workers %d; priorities: game %s, "
@@ -438,7 +430,7 @@ index 0ee0df5..b7ee60e 100644
  static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  {
      (void)once; (void)param; (void)ctx;
-@@ -486,7 +727,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -486,7 +719,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  
      s_timer  = env_int("PS3_SCHED_TIMER", 1) != 0;
      s_ppu_lo = env_int("PS3_SCHED_PPU_LO", 1002);
@@ -448,21 +440,7 @@ index 0ee0df5..b7ee60e 100644
      /* Sub-millisecond usleep: the main thread polls the flip with usleep(100)
       * for the rest of every frame, and the SwitchToThread spin keeps it
       * runnable all that time -- free with 32 processors, a whole one taken
-@@ -500,8 +742,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
-      * up, where it is free (the 0027 measurements at 32); power saving never
-      * spins. */
-     s_subms_env = getenv("PS3_SCHED_SUBMS") != NULL;
-+    /* Patch 0065: counted on the processors the frame stays on -- a
-+     * 7950X's game runs on one CCD (16), where a spinning thread sits on a
-+     * sibling of the frame's threads again. */
-     { char sm[16]; env_str("PS3_SCHED_SUBMS", sm, sizeof sm,
--                           host_sched_cpus() >= 24 && !host_sched_laptop() ? "spin" : "timer");
-+                           (s_place ? hs_pools_now().pool_lps : host_sched_cpus()) >= 24 &&
-+                           !host_sched_laptop() ? "spin" : "timer");
-       s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
-     s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
-     if (s_spin_ticks < 0) s_spin_ticks = 0;
-@@ -512,9 +758,20 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -512,9 +746,20 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
       * FIFO drain -- so every link of it goes up one step, the ticker (which
       * drains a whole frame of commands in one go) and the SPU sound core (a
       * 5.33 ms deadline, ~85% of a core) two, the audio mixer (a few us every
@@ -485,7 +463,7 @@ index 0ee0df5..b7ee60e 100644
      s_prio[HS_ROLE_TICKER]     = env_int("PS3_SCHED_PRIO_TICKER",  THREAD_PRIORITY_HIGHEST);
      s_prio[HS_ROLE_SPU]        = env_int("PS3_SCHED_PRIO_SPU",     THREAD_PRIORITY_HIGHEST);
      s_prio[HS_ROLE_SPURS]      = env_int("PS3_SCHED_PRIO_SPURS",   THREAD_PRIORITY_ABOVE_NORMAL);
-@@ -522,8 +779,14 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -522,8 +767,14 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
      s_prio[HS_ROLE_DECODER]    = env_int("PS3_SCHED_PRIO_DECODER", HS_KEEP);
      s_prio[HS_ROLE_TIMER]      = env_int("PS3_SCHED_PRIO_TIMER",   HS_KEEP);
      s_prio[HS_ROLE_BACKGROUND] = env_int("PS3_SCHED_PRIO_BG",      THREAD_PRIORITY_BELOW_NORMAL);
@@ -502,7 +480,7 @@ index 0ee0df5..b7ee60e 100644
      s_prio_ppulo = env_int("PS3_SCHED_PRIO_PPULO", HS_KEEP);
      for (int r = 0; r < HS_ROLE_COUNT; r++) {
          char k[48];
-@@ -595,6 +858,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -595,6 +846,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
              s_ncpu, (unsigned)s_fast_llc);
      for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
      fprintf(stderr, "%c", 10);
@@ -510,7 +488,7 @@ index 0ee0df5..b7ee60e 100644
      return TRUE;
  }
  
-@@ -616,8 +880,6 @@ int64_t host_sched_spin_ticks(void)
+@@ -616,8 +868,6 @@ int64_t host_sched_spin_ticks(void)
  }
  
  /* ---- per thread ---------------------------------------------------------------- */
@@ -519,7 +497,7 @@ index 0ee0df5..b7ee60e 100644
  void host_sched_thread_start(int role, int guest_prio, const char* name)
  {
      /* Every runtime thread that may run guest code starts here: the same SSE
-@@ -654,43 +916,70 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -654,43 +904,70 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
          mm_ok = p_AvSetMmThreadCharacteristicsA(mm, &idx) != NULL;
      }
  
@@ -610,7 +588,7 @@ index 0ee0df5..b7ee60e 100644
  
  /* ---- timers -------------------------------------------------------------------- */
 diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
-index 5f134a1..ce4b9ba 100644
+index 5f134a1..e7ddecd 100644
 --- a/runtime/platform/host_sched.h
 +++ b/runtime/platform/host_sched.h
 @@ -35,6 +35,7 @@ enum host_sched_role {
@@ -621,38 +599,36 @@ index 5f134a1..ce4b9ba 100644
      HS_ROLE_COUNT
  };
  
-@@ -68,6 +69,25 @@ int64_t host_sched_spin_ticks(void);
+@@ -68,6 +69,23 @@ int64_t host_sched_spin_ticks(void);
  int host_sched_cpus(void);
  int host_sched_cores(void);
  
 +/* ---- thread placement (patch 0065, host_sched_plan.h) ---------------------------
 + * Where the frame's threads run: on a hybrid CPU the game thread, the guest
-+ * threads of the frame, the render translation and the sound core get the
-+ * performance cores (CPU sets); with several last-level caches (Ryzen CCDs)
-+ * the frame and its workers stay in one big enough group; the game thread,
-+ * the translation and the sound core get ideal processors on different cores,
-+ * and with SMT and enough cores the workers stay off the game thread's and the
-+ * translation's cores. Printed at start as "[sched] processors:" and
-+ * "[sched] placement:" lines. PS3_SCHED_PLACE=0 = none of it (patch 0047's
-+ * behaviour). The worker pools ask for their default size here:
++ * threads of the frame, the render translation, the sound core and the
++ * vertex-fetch workers get the performance cores (CPU sets); with several
++ * last-level caches (Ryzen CCDs) the frame's threads stay in one big enough
++ * group; the game thread, the translation and the sound core get ideal
++ * processors on different cores (processor 0's last). Printed at start as
++ * "[sched] processors:" and "[sched] placement:" lines. PS3_SCHED_PLACE=0 =
++ * none of it (patch 0047's pool sizes). The worker pools ask for their
++ * default size here:
 + * HS_ROLE_SPURS = jobs of a SPURS job list at once (the chain walker
 + * included), HS_ROLE_VERTEX = vertex-fetch workers; their own overrides
 + * (SPURS_JOB_THREADS, RSX_VERTEX_THREADS) still win. */
 +int host_sched_default_threads(int role);
 +/* PAUSEs an idle vertex-fetch worker spins before it sleeps (RSX_VERTEX_SPIN wins). */
 +int host_sched_vertex_spin(void);
-+/* 1 on a small CPU: 4 physical cores or fewer in the affinity mask (PS3_CPUS: by its count). */
-+int host_sched_small(void);
 +
  /* ---- power saving / laptop mode (patch 0047) ------------------------------------
   * The same game at the same 60 fps with less CPU around it, so a laptop's or
   * a handheld's processor stays below its thermal and power limit. PS3_LAPTOP=1
 diff --git a/runtime/platform/host_sched_plan.h b/runtime/platform/host_sched_plan.h
 new file mode 100644
-index 0000000..0dc040e
+index 0000000..d991aab
 --- /dev/null
 +++ b/runtime/platform/host_sched_plan.h
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,342 @@
 +/*
 + * ps3recomp - where the runtime's threads run (t5dr patch 0065, thread placement).
 + *
@@ -677,20 +653,20 @@ index 0000000..0dc040e
 + *    set of the performance cores -- never an efficiency core, 2-3x slower --
 + *    and so does the vertex-fetch worker the translation waits for. The SPURS
 + *    job workers (skinning: hundreds of small jobs dealt out as they finish)
-+ *    may run on any core.
++ *    may run on any core but a low-power island's.
 + *  - Several last-level caches (Ryzen CCDs/CCXs, Core Ultra's low-power
 + *    island): when one cache group has at least HSP_HOT_MIN_CORES cores, the
-+ *    frame's threads and the workers stay in it -- the one with the larger L3
-+ *    when the sizes differ (X3D), else the one holding the best-ranked core.
-+ *    Smaller groups (Ryzen 3000's 4-core CCXs) are not enough for the frame's
-+ *    threads; nothing is restricted then.
-+ *  - The game thread and the translation get ideal processors on two
-+ *    different physical cores, the best-ranked first (processor 0's core,
-+ *    which takes most interrupts, last), and the sound core a third. With SMT and at least HSP_RESERVE_MIN_CORES cores the workers are
-+ *    kept off those two cores, so neither shares its core with a busy sibling.
++ *    frame's threads stay in it -- the one with the larger L3 when the sizes
++ *    differ (X3D), else the one holding the best-ranked core. Smaller groups
++ *    (Ryzen 3000's 4-core CCXs) are not enough; nothing is restricted then.
++ *  - The game thread, the translation and the sound core get ideal
++ *    processors on three different physical cores (so the game thread and
++ *    the translation never share one), the best-ranked first, processor 0's
++ *    core (which takes most interrupts) last.
++ *  - The workers run anywhere (see hsp_make for what keeping them away cost).
 + *
 + * Pool sizes: SPURS job threads (the chain walker included) half the logical
-+ * processors of their group or one per core but the game thread's, whichever
++ * processors of the mask or one per core but the game thread's, whichever
 + * is more (4 cores without SMT: 3, was 2 -- the main thread waits for the
 + * skinning, docs/RENDER_PERF.md "Thread placement"), at most 12 (6 with power
 + * saving) and at most one fewer than the processors; vertex-fetch workers 3
@@ -704,8 +680,7 @@ index 0000000..0dc040e
 +#include <string.h>
 +
 +#define HSP_MAX                256
-+#define HSP_HOT_MIN_CORES      6   /* a cache group this big holds the frame's threads + workers */
-+#define HSP_RESERVE_MIN_CORES  6   /* SMT: keep workers off the game's two cores from this many cores */
++#define HSP_HOT_MIN_CORES      6   /* a cache group this big holds the frame's threads */
 +#define HSP_SMALL_CORES        4   /* this many physical cores or fewer: a small CPU */
 +
 +typedef struct {
@@ -745,7 +720,6 @@ index 0000000..0dc040e
 +    /* placement */
 +    uint64_t set[HSP_KINDS];       /* logical processors allowed per kind; 0 = no CPU set */
 +    int ideal[HSP_KINDS];          /* ideal logical processor, -1 = none */
-+    uint64_t reserved;             /* logical processors kept free of workers (SMT) */
 +    /* pools */
 +    int pool_lps, pool_cores;      /* logical processors / cores the pools size from */
 +    int spurs_threads;             /* jobs of a list at once, the chain walker included */
@@ -771,18 +745,6 @@ index 0000000..0dc040e
 +    if (a->eff != b->eff) return a->eff > b->eff;
 +    if (a->sched != b->sched) return a->sched > b->sched;
 +    return a->lp < b->lp;
-+}
-+
-+/* Logical processors of the cores (CoreIndex) that hold any processor of `lps`. */
-+static inline uint64_t hsp_core_lps(const hsp_cpu* c, int n, uint64_t allowed, uint64_t lps)
-+{
-+    uint64_t out = 0;
-+    for (int i = 0; i < n; i++) {
-+        if (!hsp_allowed(&c[i], allowed) || !((lps >> c[i].lp) & 1u)) continue;
-+        for (int j = 0; j < n; j++)
-+            if (hsp_allowed(&c[j], allowed) && c[j].core == c[i].core) out |= 1ull << c[j].lp;
-+    }
-+    return out;
 +}
 +
 +static inline int hsp_cores_in(const hsp_cpu* c, int n, uint64_t lps)
@@ -946,40 +908,40 @@ index 0000000..0dc040e
 +            p->ideal[HSP_SPU]    = c[r[2 % nr]].lp;
 +        }
 +    }
-+    /* workers: the hot group, any kind of core; with SMT and enough cores not
-+     * on the game thread's and the translation's cores */
-+    uint64_t wk = grp;
-+    if (p->smt && hsp_cores_in(c, n, wk) >= HSP_RESERVE_MIN_CORES && p->ideal[HSP_MAIN] >= 0) {
-+        uint64_t two = (1ull << p->ideal[HSP_MAIN]) | (1ull << p->ideal[HSP_TICKER]);
-+        p->reserved = hsp_core_lps(c, n, allowed, two);
-+        wk &= ~p->reserved;
++    /* Workers (SPURS job threads, vertex-fetch workers): anywhere, as before.
++     * Keeping them off the game thread's and the translation's cores (a CPU
++     * set without those two cores, tried on 6c/12t and 8c/16t: the game took
++     * 8-13 % more CPU per frame, the translation 0.2-0.6 ms longer, other
++     * programs moved onto the freed cores) and in the CCD (sized from it: one
++     * vertex worker instead of three, the translation 0.9 ms longer) cost
++     * more than it saved -- docs/RENDER_PERF.md "Thread placement". On a
++     * hybrid the vertex-fetch worker stays on the performance cores: the
++     * walker waits for its last job at every flush; the skinning workers
++     * stay out of a cache group without a performance core (Core Ultra's
++     * low-power island: the slowest cores of the chip). */
++    uint64_t wk = 0;
++    for (int i = 0; i < n; i++) {
++        if (!hsp_allowed(&c[i], allowed)) continue;
++        for (int j = 0; j < n; j++)
++            if (hsp_allowed(&c[j], allowed) && c[j].llc == c[i].llc && c[j].eff == top) { wk |= 1ull << c[i].lp; break; }
 +    }
-+    p->set[HSP_SPURS] = wk == all ? 0 : wk;
-+    /* The vertex-fetch worker is on the translation's path (the walker waits
-+     * for its last job at every flush): on a hybrid it stays on performance
-+     * cores too -- the ones left after the reservation, else with the game's. */
-+    {
-+        uint64_t vx = wk;
-+        if (p->hybrid) { vx = wk & crit; if (!vx) vx = crit; }
-+        p->set[HSP_VERTEX] = vx == all ? 0 : vx;
-+    }
++    p->set[HSP_SPURS] = wk == all || !wk ? 0 : wk;
++    p->set[HSP_VERTEX] = p->hybrid ? (crit == all ? 0 : crit) : 0;
 +    hsp_pools(p, budget, 0, laptop);
 +}
 +
 +/* Pools: from the budget (PS3_CPUS: budget logical processors, budget_cores
-+ * cores, 0 = budget), else the group the frame stays in. */
++ * cores, 0 = budget), else the affinity mask. */
 +static inline void hsp_pools(hsp_plan* p, int budget, int budget_cores, int laptop)
 +{
-+    p->pool_lps = budget > 0 ? budget : (p->hot >= 0 ? p->hot_lps : p->lps);
-+    p->pool_cores = budget > 0 ? (budget_cores > 0 ? budget_cores : budget) : (p->hot >= 0 ? p->hot_cores : p->cores);
++    p->pool_lps = budget > 0 ? budget : p->lps;
++    p->pool_cores = budget > 0 ? (budget_cores > 0 ? budget_cores : budget) : p->cores;
 +    {
-+        const int wl = p->set[HSP_SPURS] ? hsp_popcount64(p->set[HSP_SPURS]) : p->pool_lps;
 +        int s = p->pool_lps / 2;
 +        if (p->pool_cores - 1 > s) s = p->pool_cores - 1;   /* a core each but the game thread's */
 +        if (laptop && s > 6) s = 6;
 +        if (s > 12) s = 12;
 +        if (s > p->pool_lps - 1) s = p->pool_lps - 1;   /* leave the game thread a processor */
-+        if (budget <= 0 && s > wl - 1 && wl > 1) s = wl - 1;
 +        if (s < 1) s = 1;
 +        p->spurs_threads = s;
 +    }

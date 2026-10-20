@@ -103,27 +103,15 @@ static void invariants(const char* what, const table* t, uint64_t allowed, const
     }
     CHECK(p->set[HSP_MAIN] == p->set[HSP_TICKER] && p->set[HSP_MAIN] == p->set[HSP_SPU] &&
           p->set[HSP_MAIN] == p->set[HSP_GAME], "%s: the frame's threads have different sets", what);
-    if (!p->hybrid) CHECK(p->set[HSP_SPURS] == p->set[HSP_VERTEX], "%s: worker sets differ", what);
-    else {
-        const uint64_t crit = p->set[HSP_MAIN];
-        CHECK(p->set[HSP_VERTEX] != 0 && (p->set[HSP_VERTEX] & ~crit) == 0, "%s: hybrid, vertex worker off the "
-              "performance cores: 0x%llx", what, (unsigned long long)p->set[HSP_VERTEX]);
-        if ((p->set[HSP_SPURS] & crit) != 0)
-            CHECK((p->set[HSP_VERTEX] & p->reserved) == 0, "%s: hybrid, vertex worker on reserved cores", what);
+    /* workers: the skinning anywhere; the vertex worker with the frame on a hybrid, else anywhere */
+    if (p->set[HSP_SPURS]) {      /* only a low-power island without performance cores is left out */
+        CHECK(p->hybrid && p->groups > 1, "%s: SPURS workers restricted: 0x%llx", what, (unsigned long long)p->set[HSP_SPURS]);
+        CHECK((p->set[HSP_SPURS] & p->set[HSP_MAIN]) == p->set[HSP_MAIN], "%s: SPURS workers kept off P-cores", what);
     }
-    CHECK((p->reserved & p->set[HSP_SPURS]) == 0, "%s: workers may run on reserved LPs", what);
-    if (p->reserved) {
-        CHECK(p->set[HSP_SPURS] != 0, "%s: reserved cores but no worker set", what);
-        CHECK((p->reserved >> p->ideal[HSP_MAIN]) & 1u, "%s: the game thread's core is not reserved", what);
-        CHECK((p->reserved >> p->ideal[HSP_TICKER]) & 1u, "%s: the translation's core is not reserved", what);
-        /* whole cores: both siblings */
-        for (int i = 0; i < t->n; i++)
-            if ((p->reserved >> t->c[i].lp) & 1u)
-                for (int j = 0; j < t->n; j++)
-                    if (t->c[j].core == t->c[i].core && ((in >> t->c[j].lp) & 1u))
-                        CHECK((p->reserved >> t->c[j].lp) & 1u, "%s: LP %d reserved, its sibling %d not", what,
-                              t->c[i].lp, t->c[j].lp);
-    }
+    if (p->hybrid)
+        CHECK(p->set[HSP_VERTEX] == p->set[HSP_MAIN], "%s: hybrid, vertex worker not with the frame on the P-cores", what);
+    else
+        CHECK(p->set[HSP_VERTEX] == 0, "%s: vertex worker restricted on a CPU of one kind", what);
     CHECK(p->spurs_threads >= 1 && p->spurs_threads <= 12, "%s: SPURS %d", what, p->spurs_threads);
     CHECK(p->spurs_threads <= (p->pool_lps > 1 ? p->pool_lps - 1 : 1), "%s: SPURS %d > processors - 1 (%d)", what,
           p->spurs_threads, p->pool_lps);
@@ -149,7 +137,6 @@ static void test_4c4t(void)        /* i5-7300HQ: the player's laptop */
     hsp_plan p = plan("4c/4t", &t, all_of(&t), 0, 0);
     CHECK(p.lps == 4 && p.cores == 4 && !p.smt && !p.hybrid && p.groups == 1 && p.small, "4c/4t: %d %d", p.lps, p.cores);
     for (int k = 0; k < HSP_KINDS; k++) CHECK(p.set[k] == 0, "4c/4t: no CPU sets (kind %d)", k);
-    CHECK(p.reserved == 0, "4c/4t: nothing reserved");
     /* no core ranked above another: processor 0 (interrupts) last */
     CHECK(p.ideal[HSP_MAIN] == 1 && p.ideal[HSP_TICKER] == 2 && p.ideal[HSP_SPU] == 3,
           "4c/4t: ideal 1/2/3, processor 0 last, got %d/%d/%d", p.ideal[HSP_MAIN], p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
@@ -166,7 +153,6 @@ static void test_2c4t(void)
     hsp_plan p = plan("2c/4t", &t, all_of(&t), 0, 0);
     CHECK(p.lps == 4 && p.cores == 2 && p.smt && p.small, "2c/4t");
     CHECK(p.spurs_threads == 2, "2c/4t: 2 job threads, got %d", p.spurs_threads);
-    CHECK(p.reserved == 0 && p.set[HSP_SPURS] == 0, "2c/4t: too few cores to reserve any");
     CHECK(p.ideal[HSP_MAIN] == 2 && p.ideal[HSP_TICKER] == 0, "2c/4t: the game thread off processor 0's core");
 }
 
@@ -177,7 +163,6 @@ static void test_4c8t(void)        /* i7-7700HQ */
     hsp_plan p = plan("4c/8t", &t, all_of(&t), 0, 0);
     CHECK(p.small && p.smt && p.cores == 4, "4c/8t");
     CHECK(p.spurs_threads == 4, "4c/8t: 4, got %d", p.spurs_threads);
-    CHECK(p.reserved == 0, "4c/8t: no reservation below %d cores", HSP_RESERVE_MIN_CORES);
 }
 
 static void test_6c12t(void)       /* i5-12400 / Ryzen 5 7600: SMT, one kind, one cache */
@@ -191,9 +176,6 @@ static void test_6c12t(void)       /* i5-12400 / Ryzen 5 7600: SMT, one kind, on
     CHECK(p.set[HSP_MAIN] == 0, "6c/12t: the frame's threads anywhere");
     CHECK(p.ideal[HSP_MAIN] == 4 && p.ideal[HSP_TICKER] == 8, "6c/12t: best-ranked cores first: %d %d",
           p.ideal[HSP_MAIN], p.ideal[HSP_TICKER]);
-    CHECK(p.reserved == 0x330ull, "6c/12t: the game thread's and translation's cores reserved: 0x%llx",
-          (unsigned long long)p.reserved);
-    CHECK(p.set[HSP_SPURS] == (all_of(&t) & ~0x330ull), "6c/12t: workers on the other 4 cores");
     CHECK(p.spurs_threads == 6, "6c/12t: 6, got %d", p.spurs_threads);
 }
 
@@ -202,7 +184,7 @@ static void test_6c6t(void)
     table t = { 0 };
     add(&t, 6, 1, 0, 0, 0, 9216);
     hsp_plan p = plan("6c/6t", &t, all_of(&t), 0, 0);
-    CHECK(!p.small && !p.smt && p.reserved == 0, "6c/6t: no SMT, nothing to reserve");
+    CHECK(!p.small && !p.smt, "6c/6t");
     CHECK(p.spurs_threads == 5, "6c/6t: 5, got %d", p.spurs_threads);
 }
 
@@ -220,11 +202,8 @@ static void test_12700h(void)      /* 6 P-cores with HT + 8 E-cores, one L3 */
     CHECK(p.ideal[HSP_TICKER] == 4 && p.ideal[HSP_SPU] == 6, "12700H: then P-cores by number, processor 0's last: %d %d",
           p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
     CHECK(eff_of(&t, p.ideal[HSP_TICKER]) == 1 && eff_of(&t, p.ideal[HSP_SPU]) == 1, "12700H: ideal on P-cores");
-    CHECK((p.set[HSP_SPURS] & ec) == ec, "12700H: workers may use every E-core");
-    CHECK(p.set[HSP_VERTEX] == (pc & ~0x3Cull), "12700H: the vertex worker on the other 4 P-cores: 0x%llx",
-          (unsigned long long)p.set[HSP_VERTEX]);
-    CHECK(p.reserved == 0x3Cull, "12700H: the two P-cores of the game thread and the translation reserved, got 0x%llx",
-          (unsigned long long)p.reserved);
+    CHECK(p.set[HSP_SPURS] == 0, "12700H: the skinning workers may use every core");
+    CHECK(p.set[HSP_VERTEX] == pc, "12700H: the vertex worker on the P-cores: 0x%llx", (unsigned long long)p.set[HSP_VERTEX]);
     CHECK(p.spurs_threads == 12, "12700H: 12, got %d", p.spurs_threads);
     hsp_plan l = plan("12700H laptop", &t, all_of(&t), 0, 1);
     CHECK(l.spurs_threads == 6 && l.vertex_threads == 1, "12700H power saving: 6 / 1, got %d / %d",
@@ -255,15 +234,16 @@ static void test_core0(void)       /* processor 0's core is ranked best by the f
     CHECK(q.ideal[HSP_MAIN] == 0 || q.ideal[HSP_MAIN] == 1, "one P-core: the game thread there, got %d", q.ideal[HSP_MAIN]);
 }
 
-static void test_1215u(void)       /* i3-1215U: 2 P-cores with HT + 4 E-cores: both P-cores reserved */
+static void test_1215u(void)       /* i3-1215U: 2 P-cores with HT + 4 E-cores */
 {
     table t = { 0 };
     add(&t, 2, 2, 1, 0, 0, 10240);
     add(&t, 4, 1, 0, 0, 0, 10240);
     hsp_plan p = plan("1215U", &t, all_of(&t), 0, 0);
-    CHECK(p.cores == 6 && p.reserved == 0xFull, "1215U: both P-cores reserved, got 0x%llx", (unsigned long long)p.reserved);
-    CHECK(p.set[HSP_SPURS] == 0xF0ull, "1215U: skinning on the E-cores");
-    CHECK(p.set[HSP_VERTEX] == 0xFull, "1215U: the vertex worker with the game on the P-cores");
+    CHECK(p.cores == 6 && p.hybrid && p.set[HSP_MAIN] == 0xFull, "1215U: the frame on the two P-cores");
+    CHECK(core_of(&t, p.ideal[HSP_MAIN]) != core_of(&t, p.ideal[HSP_TICKER]), "1215U: game thread and translation apart");
+    CHECK(p.set[HSP_SPURS] == 0 && p.set[HSP_VERTEX] == 0xFull, "1215U: skinning anywhere, vertex fetch on the P-cores");
+    CHECK(p.spurs_threads == 5, "1215U: 5 job threads (8 logical / 6 cores), got %d", p.spurs_threads);
 }
 
 static void test_13900k(void)      /* 8P/16 + 16E */
@@ -309,11 +289,10 @@ static void test_7950x(void)       /* two CCDs of 8 cores / 16 threads, 32 MB ea
     CHECK(p.set[HSP_MAIN] == 0xFFFFull, "7950X: the frame on CCD0");
     CHECK(p.ideal[HSP_MAIN] == 6 && p.ideal[HSP_TICKER] == 10 && p.ideal[HSP_SPU] == 4, "7950X: best cores %d %d %d",
           p.ideal[HSP_MAIN], p.ideal[HSP_TICKER], p.ideal[HSP_SPU]);
-    CHECK(p.reserved == 0xCC0ull && p.set[HSP_SPURS] == (0xFFFFull & ~0xCC0ull), "7950X: workers on CCD0 but the "
-          "game's two cores: 0x%llx", (unsigned long long)p.set[HSP_SPURS]);
-    CHECK(p.spurs_threads == 8 && p.vertex_threads == 1, "7950X: 8 / 1, got %d / %d", p.spurs_threads,
-          p.vertex_threads);
-    for (int k = 0; k < HSP_KINDS; k++)
+    CHECK(p.set[HSP_SPURS] == 0 && p.set[HSP_VERTEX] == 0, "7950X: workers on both CCDs");
+    CHECK(p.spurs_threads == 12 && p.vertex_threads == 3 && p.vertex_spin == 2000, "7950X: pools from all 32: 12 / 3, "
+          "got %d / %d", p.spurs_threads, p.vertex_threads);
+    for (int k = HSP_MAIN; k <= HSP_GAME; k++)
         for (int i = 16; i < 32; i++) CHECK(!((p.set[k] >> i) & 1u), "7950X: kind %d may use CCD1 LP %d", k, i);
     /* the best core on CCD1: CCD1 */
     rank_core(&t, 20, 10);
@@ -326,7 +305,6 @@ static void test_7950x(void)       /* two CCDs of 8 cores / 16 threads, 32 MB ea
     CHECK(b.lps == 4 && b.cores == 2 && b.smt && b.spurs_threads == 2, "7950X 0xF: 2c/4t");
     hsp_plan c = plan("7950X across", &t, 0x00FF00FFull, 0, 0);
     CHECK(c.groups == 2 && c.hot < 0, "7950X 4+4 cores: no group big enough");
-    CHECK(c.reserved != 0, "7950X 4+4 cores: 8 cores with SMT, the game's two reserved");
     /* PS3_CPUS=4 on the whole PC: pools from the budget */
     hsp_plan d = plan("7950X PS3_CPUS=4", &t, all_of(&t), 4, 0);
     CHECK(d.pool_lps == 4 && d.spurs_threads == 3, "PS3_CPUS=4: pools from 4, got %d/%d", d.pool_lps, d.spurs_threads);
@@ -354,8 +332,7 @@ static void test_3700x(void)       /* two CCXs of 4 cores: too small to hold the
     add(&t, 4, 2, 0, 1, 0, 16 * 1024);
     hsp_plan p = plan("3700X", &t, all_of(&t), 0, 0);
     CHECK(p.groups == 2 && p.hot < 0 && p.set[HSP_MAIN] == 0, "3700X: nothing restricted");
-    CHECK(p.reserved != 0 && p.spurs_threads == 8, "3700X: SMT, 8 cores: reserved, 8 job threads (got %d)",
-          p.spurs_threads);
+    CHECK(p.spurs_threads == 8, "3700X: 8 job threads (got %d)", p.spurs_threads);
 }
 
 static void test_no_table(void)

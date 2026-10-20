@@ -190,7 +190,7 @@ index 98c28a3..782228f 100644
          const u32 m = (incrementing ? method + i * 4 : method) & 0xFFFFC;
          const u32 v = __builtin_bswap32(be_words[i]);
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 2fe417b..7dfb28b 100644
+index 2fe417b..924e2ee 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -1920,23 +1920,60 @@ static u32 sampler_key(const rsx_dsp_texture* t)
@@ -622,14 +622,14 @@ index 2fe417b..7dfb28b 100644
      h.ptr += (size_t)slot * g.dsv_step;
      return h;
  }
-@@ -5049,6 +5232,7 @@ static int zdepth_snapshot(u32 slot)
-     }
+@@ -5050,6 +5233,7 @@ static int zdepth_snapshot(u32 slot)
      g.list->lpVtbl->ResourceBarrier(g.list, nbar, bars);
  
-+    ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
      ld_gp_mark(GP_DEPTHSNAP, z->offset, 0, ld_pxs(z->snapshot_w, z->scale), ld_pxs(z->snapshot_h, z->scale), 0, 0);
++    ld_bound_invalidate();   /* patch 0062: the pass below records its own state */
      ID3D12DescriptorHeap* heaps[] = {g.srv_heap, g.smp_heap};
      g.list->lpVtbl->SetDescriptorHeaps(g.list, 2, heaps);
+     g.list->lpVtbl->SetPipelineState(g.list, g.depth_snapshot_pso);
 @@ -6276,6 +6460,18 @@ typedef struct {
  } ld_fp_memo;
  static ld_fp_memo* g_ld_fpm;

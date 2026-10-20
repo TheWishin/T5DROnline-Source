@@ -148,6 +148,11 @@ bool  pick_peer(uint32_t key, uint32_t* val);
  * only while the direct-fight driver is in a fight, so it never presses
  * anything in the menus direct fight drives between matches. */
 void  set_script_gate(bool on);
+/* No pause online (docs/NETPLAY.md "No pause online"): while on, this PC's
+ * devices never put START into the local input (device_input). The test inputs
+ * (T5_NET_SCRIPT, T5_NET_PADFILE) are left as they are; t5_hooks.cpp takes START
+ * out of both players' inputs at the frame, whatever sent it. */
+void  set_no_start(bool on);
 
 /* ---- sessions in a persistent game (T5_CTL_DIR; docs/DIRECTFIGHT.md) -------
  * One process, many opponents. session_end() says BYE (if connected), closes

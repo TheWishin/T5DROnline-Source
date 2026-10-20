@@ -1038,6 +1038,7 @@ the GPU stopping at a frame's first clear under heavy memory pressure it looks
 like the integrated GPU's memory being paged out by Windows, not anything the
 game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
 still turns every change of this patch off.
+
 ## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
 
 Why some players had 40-50 fps, and whether a Vulkan renderer would help:
@@ -1051,3 +1052,197 @@ one slow PC from 32 to 46 fps, in sync; a 60 fps PC is unchanged. The D3D12
 calls are 0.7-1.0 ms of a frame (frame log columns `ph_desc_us`,
 `ph_cbcopy_us`, `ph_api_us`, `ph_post_us`), the same on NVIDIA and on the
 integrated Radeon.
+
+## 4K on integrated graphics (patch 0063, branch `igpu-4k-stall`)
+
+Player report on 1.1.2: an AMD Radeon 780M mini PC (Zen 4, 8 cores / 16
+threads, on AC), a 1920 x 1080 screen at 59 Hz, Internal resolution **4K** in
+every run. Fights at 32-38 fps in borderless fullscreen, 40-47 in a large
+window and 43-57 in a 1280 x 720 window -- "much higher even though the
+internal resolution was unchanged". Power saving Auto or Off "made no
+difference". The `[slow-frames]` lines of the fights:
+
+| run (player's logs) | fps | median per frame: game / translation / GPU wait / present ms | slow frames classed GPU |
+|---|---|---|---|
+| borderless 1920 x 1080 | 32-38 | 13.8-15.9 / 4.6-5.2 / 0.0 / 0.6-0.9 | 24-199 of ~1,000 |
+| borderless (second run) | 32-40 | 14.4-14.5 / 4.9-5.2 / 0.0 / 0.7-0.8 | 55-94 |
+| window 1848 x 1040 | 40-47 | 13.2-13.3 / 5.0-5.1 / 0.0 / 0.9-1.0 | 0 |
+| window 1280 x 720 | 43-57 | 11.1-11.3 / 3.6-3.9 / 0.0 / 1.0-1.3 | 0-54 |
+
+In menus the same runs had a game part of 2.6-3.9 ms. On this PC a fight's
+game part is 5-6 ms (a quiet 7950X), so the question was: does the game's main
+thread wait for the GPU inside its "game" part, which `[slow-frames]` would
+then wrongly call CPU?
+
+### Where the game thread waits: nowhere on the GPU
+
+What Tekken 5 DR's main thread does in a frame (`PS3_SCHED_TRACE`, every
+main-thread syscall and HLE call over 20 us, against the release and flip
+times of the frame log; `build/igpu4k/scripts/trace_frames.py`):
+
+- release (the vblank tick completes the flip and the GCM pump runs the flip
+  and user-command handlers) -> the main thread takes the semaphore the user
+  handler posted (already posted: 0.0x ms) -> game logic, the skinning job
+  chain kick (~5.5 ms after release on this PC) -> it waits for the skinning
+  (1.3 ms of SPURS jobs) and the draw request manager thread (a cond and an
+  lwmutex) -> `cellGcmSetUserCommand` + `SetFlip`: the frame's commands are
+  flushed and the walker starts translating them;
+- the FIFO walker does **not** run during the game part: the game flushes its
+  frame once, at the end. Labels, the back-end semaphore, `GET_REPORT` and the
+  reference register are written by the walker when it walks them (on the
+  CPU, not after the GPU), the flip completes on the vblank after the walker
+  reached it -- no readback, no fence wait, no label poll in the game part;
+- the main thread's blocked time inside the game part is **0.4-0.6 ms a
+  frame** (cond wait 0.25-0.28, lwmutex 0.17-0.21, the user-command semaphore
+  0.06), NVIDIA 4K and integrated Radeon 1440p alike; the rest of the game part
+  it runs.
+
+Only one wait in the whole frame depends on the GPU: with one command
+allocator the walker could record nothing of frame N+1 until the GPU had
+finished frame N (`ld_begin_recording`). That shows as **translation** and
+`GPU wait`, and `[slow-frames]` already classes those frames GPU -- on this
+PC's 2-CU Radeon at 4K it is 12-18 ms of a 28-31 ms frame. On the player's PC
+`GPU wait` was 0.0 in the median: the GPU was not slower than the game part,
+the game part itself was long.
+
+### What makes the game part long on an APU
+
+The game part is the main thread's own CPU work (and its helper threads'),
+running while the GPU draws the previous frame. On integrated graphics the
+GPU and the processor share one memory and one power budget, so a busy GPU
+slows the processor's work. Measured on this PC: two games at once on the two
+halves of the 7950X (game A on logical processors 0-15 = 8 cores / 16 threads,
+the player's layout, NVIDIA, Native), game B on 16-31 either rendering 4K on
+the integrated Radeon (GPU busy 83-86 %) or Native on the NVIDIA (60 fps, more
+CPU work than the 35 fps iGPU game). Game A's processor time per frame
+(`fight_bench.py`), two interleaved rounds:
+
+| neighbour on the other CCD | A's main thread ms/frame | A's walker (ticker) ms/frame | other load |
+|---|---|---|---|
+| integrated Radeon at 4K (round 1 / 2) | 8.27 / 9.93 | 4.46 / 5.23 | 20.6 / 26.8 |
+| NVIDIA at Native (round 1 / 2) | 7.35 / 8.24 | 4.22 / 4.89 | 18.4 / 27.1 |
+
++12-21 % on the main thread, +5-7 % on the walker, from a 2-CU GPU working
+next door, while the processors' clock stayed at 4.6 GHz (`processors at ...`
+in `[slow-frames]`). The 780M has six times the compute units on the same
+kind of memory; at 4K -- whose 3D pass in this game is **6144 x 4320**, the
+supersampled 2048 x 1440 target times three -- it can take far more of the
+memory's bandwidth, and its 65 W are shared with the cores. That is the most
+likely reading of the 780M's long game part (no 780M here to measure it on):
+the game's own work, slowed by the GPU's load, not a wait. It would also
+explain the window sizes: whatever the output costs the GPU (the downscale,
+the compositor) adds to that load. The player's logs agree: `GPU wait` 0.0 in the median but up to
+199 GPU-classed frames per 30 s, i.e. the GPU needed about as long as the
+whole CPU frame.
+
+### Recording the next frame while the GPU draws: slower on integrated graphics
+
+The one real stall (the walker waiting for the GPU before it records) can be
+removed: patch 0063 gives the renderer **two frames in flight** --
+`RSX_FRAMES_IN_FLIGHT=2`: two command allocators, two sets of upload, vertex,
+index and constant rings and of the shader-visible descriptor rings; a slot
+is waited for only when it comes round again, retired textures move with
+their slot, everything else the CPU writes for the GPU already rotated
+(present descriptors per backbuffer, the overlay's 8 slots). Nothing the guest
+sees changes (labels, reports, flips stay walker-time). On the integrated
+Radeon at 4K, interleaved A/B, `RSX_GPU_PASSES=1`:
+
+| ms of GPU per frame | one frame in flight | two frames in flight |
+|---|---|---|
+| 3D pass 6144 x 4320 | 15.8-16.5 | 18.0-18.2 |
+| guest-size view (stage filter) | 1.84-1.96 | 4.20-4.25 |
+| display buffers 3840 x 2160 (each of two) | 1.22-1.29 | 2.52-2.54 |
+| shadow map pass | 0.36-0.39 | 1.29-1.33 |
+| whole frame | 23.5-24.5 | 31.7-32.0 |
+| fps | 34.8 / 37.5 | 31.0 / 31.8 |
+
+The overlap saves the 4 ms the GPU used to idle, and the walker's work (texture
+hashing, vertex decoding into the upload rings, constant copies) now runs
+while the GPU draws -- on one memory that costs the GPU 8 ms a frame. So the
+default stays one frame in flight (`RSX_FRAMES_IN_FLIGHT=2` is there for a
+discrete GPU slower than the game, where there is no shared memory; not
+measured: this PC's RTX 3090 is never the limit). The frame-latency queue
+stays at 1.
+
+### Present and composition
+
+The swap chain is flip model (`FLIP_DISCARD`, two buffers, frame-latency
+waitable, max latency 1, tearing flag where Windows has it) at exactly the
+client area's size, resized with the window; in borderless fullscreen that is
+the monitor's size, which is what Windows needs for independent flip (no
+desktop composition). A picture larger than the window goes through one
+downscale pass, patch 0051's bilinear pairs on AMD (2x: one tap per pixel,
+3x: four): 1.5 ms at 4K into 1920 x 1080 on the 2-CU Radeon, essentially one
+read of the 33 MB 4K picture -- it cannot get much cheaper without a smaller
+picture. Not checked
+here: whether the 780M's borderless window really got independent flip (this
+PC's screen hangs off the RTX 3090, and test windows stay minimised).
+
+### What changed (patch 0063 + launcher)
+
+| change | why | switch |
+|---|---|---|
+| `[slow-frames]` splits the game part: `game part 14.1 ms on average: main thread running 13.5, waiting for the renderer 0.0, for other game threads 0.6 (its processor time 12.9 ms a frame)` -- every blocking lv2 call and the flip wait time themselves on the main thread (one thread-local test elsewhere), counted only between the release and the flip request; a semaphore posted from a GCM handler, or a sleep while the walker has commands left (a label/fence poll), is a wait for the renderer | the 780M log said "CPU, game" and could not say whether that was work or waiting. A renderer wait inside the game part now counts as GPU for the slow frame | -- |
+| `GPU busy 17.2 ms a frame (62 % of the time, integrated graphics)`: GPU timestamps (two per command list, read after their fence: no wait) are on by default | GPU time without `PS3_FRAMELOG` | `RSX_GPU_TIME=0` |
+| `processors at 3.42 GHz on average (76 % of their 4.50)` (PDH "% Processor Performance", English counter names) | on an APU the clock drops while the GPU is busy; the old "clock limit" only says what the power plan allows | `PS3_CLOCK_SAMPLE=0` |
+| verdict at the end of the line: `GPU-bound: the graphics need 22.9 ms a frame ...` (GPU busy >= 85 % or most slow frames GPU) or `integrated graphics busy 64 % of the time: they share the processor's power and memory ...` (>= 50 %); a present that blocked while the GPU was >= 85 % busy is a GPU frame | the launcher and the problem report read it | -- |
+| `PS3_INTERNAL_RES=auto`: the step that matches the window's screen, at most 1080p on integrated graphics (`[display] internal resolution 1080p (1.5x) from PS3_INTERNAL_RES=auto (screen 2560x1440, integrated graphics: at most 1080p)`) | a choice for the launcher's Auto | -- |
+| `RSX_FRAMES_IN_FLIGHT=2` (above) | off by default | `RSX_FRAMES_IN_FLIGHT` |
+| `power saving off (PS3_LAPTOP=0: launcher Settings -> Power saving Off, or a PS3_LAPTOP line in its extra settings or in Windows' environment)` | the player's four logs all said `PS3_LAPTOP=0` although Auto was tried | -- |
+| Launcher: Power saving **Auto** is sent as `PS3_LAPTOP=auto` (was: nothing), so a variable left in Windows' environment cannot overrule it; Settings names an Extra-settings line that does (`Extra settings below set PS3_LAPTOP=0: that wins over this choice.`) | the launcher itself was right (Auto = unset); the game got `=0` from Off, the Extra settings box or the environment | -- |
+| Launcher: Internal resolution **Auto (matches the screen)** -- a seventh choice, Native stays the default; with Auto the Settings hint says what it picks on this PC | the owner decides whether it becomes the default | -- |
+| Launcher: on integrated graphics (from the last game log's `[gpu] adapter`), a step larger than the screen gets `4K (3x) on integrated graphics: try 1080p (1.5x) for 60 fps.`; after a game whose log says GPU-bound / integrated graphics busy, the Play tab says so | the 780M player's case | -- |
+| Problem report: `system.txt` gets "What the log says about speed" (GPU-bound windows, integrated graphics busy, Internal resolution above the screen on integrated graphics); `[slow-frames]` lines are kept whole (1,800 characters) | -- | -- |
+
+### Results
+
+`tools/fight_bench.py --polite` (Lili vs Asuka, stage 20 -- the heaviest per
+pixel, P1 pressing buttons, window fight start +24..42 s), Internal resolution
+4K, `PS3_LAPTOP=0` as in the player's logs, the swap chain as for a 1920 x 1080
+borderless window or a 1280 x 720 window (`RSX_TEST_CLIENT_SIZE`; the game
+window minimised). "Before" is main (1.1.2's runtime, 0001..0053), "after"
+this branch (0051 + 0059 + 0063). Other agents' games and builds kept 19-30 of
+the 32 processors busy, so the CPU-bound NVIDIA numbers move with that load;
+the iGPU runs are GPU-bound. Medians per frame over the last 15 s:
+
+| GPU, picture | build | fps | game part ms | translation ms (GPU wait) | GPU ms per frame | other load |
+|---|---|---|---|---|---|---|
+| integrated Radeon, 4K into 1920 x 1080 | before | 30.1-32.5 (4 runs) | 7.4-8.4 | 17.1-21.7 (12.3-17.9) | 26.6-27.6 | 21-29 |
+| integrated Radeon, 4K into 1920 x 1080 | after | 33.6-35.3 (3 runs; a 4th at 24.5 under 30 of 32 busy) | 8.5-13.7 | 15.3-19.3 (10.4-15.5) | 24.0-24.3 | 20-29 |
+| integrated Radeon, 4K into 1280 x 720 | before | 25.4-25.5 | 8.6-9.4 | 21.5-27.4 (16.9-23.0) | 34.3-34.7 | 26-30 |
+| integrated Radeon, 4K into 1280 x 720 | after | 28.3-28.5 | 10.8-14.3 | 20.2-24.0 (15.3-19.4) | 30.0-30.4 | 26-29 |
+| integrated Radeon, 4K, power saving on (Auto on an APU) | after | 25.0 | 11.7 | 14.3 (9.8) | 22.7 | 28 |
+| integrated Radeon, **Auto** (-> 1080p), power saving on | after | **59.7** | 9.3 | 3.9 (0.0) | **6.4** | 24 |
+| integrated Radeon, 1080p | before | 50.1 | 11.2 | 4.3 (0.0) | 7.7 | 27 |
+| RTX 3090, 4K into 1920 x 1080 | before | 57.3-59.9 (5 runs) | 8.3-10.2 | 4.1-4.8 | 1.5-2.1 | 20-29 |
+| RTX 3090, 4K into 1920 x 1080 | after | 54.2-59.9 (5 runs; 24.8 once at 30 of 32 busy) | 8.3-12.4 | 4.2-5.1 | 1.2-1.6 | 19-30 |
+
+- On this 2-CU Radeon 4K is GPU-bound in both builds; after: 9-12 % less GPU
+  time per frame (0051's cheaper filters) and 9-12 % more fps. The 4K -> 720p
+  window costs this GPU more than 4K -> 1080p (30 vs 24 ms); on the player's
+  780M the 720p window was the fastest -- not reproduced here.
+- **What helps an APU at 4K is a smaller picture**: Auto (1080p on integrated
+  graphics) runs the same fight at 59.7 fps with 6.4 ms of GPU per frame.
+- RTX 3090: unchanged within the load's noise (pairs at the same load: 59.9 /
+  59.8, 58.0 / 57.3); the main thread's processor time per frame is the same
+  in both builds (8.2 / 7.8, 9.0 / 8.9 ms), so the wait accounting costs
+  nothing measurable.
+- The new line on the integrated Radeon at 4K (one window): `game part 9.1 ms
+  on average: main thread running 8.6, waiting for the renderer 0.0, for
+  other game threads 0.6 (its processor time 8.3 ms a frame); GPU busy 22.9 ms a frame (84 % of
+  the time, integrated graphics) ... | GPU-bound: the graphics need 22.9 ms a
+  frame (integrated graphics) -- a lower Internal resolution is what helps`.
+
+**Online and the picture.** Only timing and host pixels change, so the two PCs of a match
+may differ. Rollback pair (RTT 50 +-5 ms, 3 % loss, delay 1, one match of two rounds, Lili vs
+Asuka on stage 20): host on the RTX 3090 at 4K with two frames in flight, joiner on the
+integrated Radeon with Auto (-> 1080p) and power saving: `sync through frame 6599: 0
+mismatching` on both sides, the same result hash `6921d865e3a4381f`, 57.2 fps (an earlier
+build of the branch: 0 mismatching, hash `dcb35942ae7c6184`). Lockstep pair, both on the RTX
+3090 at Native, host two frames in flight, joiner one, frame-exact surface dumps at netplay
+frames 300/900/1500 (`T5_NET_SHOT` + `LD_SURF_DUMP`): the shadow maps identical, the 3D target
+and the display buffers different only in the background crowd and the water splashes -- a
+control pair with the same settings on both sides differs there as well (those effects are
+not part of the state a pair keeps equal). The default, one frame in flight, records the same
+commands as before; patch 0063 adds two timestamps to each command list. Smoke quick: PASS
+(80 checks; 3 fps WARN from the other games on the PC).

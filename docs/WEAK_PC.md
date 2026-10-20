@@ -81,7 +81,7 @@ waited for the walk now counts as translation, not "vblank thread late".
 | **Power plan, laptop heat, battery** | yes on laptops/handhelds | `[power]`, `[slow-frames]` "processor clock limit X of Y MHz (held back ...)", "on battery" | EcoQoS on the whole game (Windows' efficiency mode): game part +5-15 %, translation +5-25 % | charger, "Best performance", power saving Auto (0047) |
 | **Display not 60 Hz** (50 Hz TV, 75/144 Hz with VSync) | no | `[pacing] display 50 Hz: slower than the game's 59.94 Hz ...` / `display 144 Hz: vsync on` | simulated 50, 75, 144 Hz: 59.94 fps each; 75 Hz shows frames unevenly (present p95 20.9 ms) but the game keeps its speed | 120 Hz or 60 Hz for the smoothest picture; VRR |
 | **Overlay fps counter on a 144 Hz screen** | a reading, not a cause | -- | -- | the game's own `[fps]` line / the launcher's fps is the game's speed |
-| **iGPU at high Internal resolution** | yes at 1440p/4K | `[slow-frames]` "GPU N", GPU wait ms; `[gpu] adapter: ... integrated` | this PC's 2-CU Radeon: Native 2.5 ms GPU, 60 fps; 1080p 6.3 ms, 60 fps; 4K 32 ms, **28 fps** ("GPU 853 of 854") | Internal resolution Native (or Lower) on integrated graphics |
+| **iGPU at high Internal resolution** | yes at 1440p/4K | `[slow-frames]` "GPU N", GPU wait ms; `[gpu] adapter: ... integrated`; since 0063 "GPU busy N %" and "GPU-bound" / "integrated graphics busy" at the end of the line. A stronger APU (780M) shows a long **game** part instead: the busy GPU slows the CPU work through the shared memory and power (RENDER_PERF.md "4K on integrated graphics") | this PC's 2-CU Radeon: Native 2.5 ms GPU, 60 fps; 1080p 6.3 ms, 60 fps; 4K 24-32 ms, **28-35 fps**; Auto (1080p) 59.7 fps | Internal resolution 1080p or Auto (at most 1080p on integrated graphics), Native/Lower on weak ones |
 | **D3D12 driver overhead per draw** | no | `fifo_cpu_us` / translation median | 830 draws a frame; D3D12 recording 0.57-0.69 ms + submit 0.05-0.09 + present 0.12-0.18 ms, the same on the RTX 3090 and the Radeon | see [D3D12 or Vulkan](#d3d12-or-vulkan) |
 | **PSO compiles** | no (one-time hitches) | `[pso-prewarm] N pipeline(s) created ahead`; `RSX_HITCH_LOG=1` lists misses | first session of a build: 95 misses, 42 compiles, 1.1 s in total, worst frame 0.7 s; second session: 0 compiles | the cache warms itself; only the first fight after a build hitches |
 | **Online: the other player's PC** | **yes** | `[netplay] speed: X fps, this PC Y fps without the waits for the peer` (now in system.txt) | rollback pair, one slow PC: both games at that PC's speed (32 fps before 0059, 46 after) | both games run at the slower PC's speed; the lobby keeps <40 fps PCs out of ranked |
@@ -274,8 +274,8 @@ Paste this to a player who reports 40-50 fps:
 >    Discord video/streaming, recorders and overlays, downloads, updates.
 >    The game needs one fast processor core for itself.
 > 4. **Internal resolution:** on integrated graphics (laptops, mini PCs,
->    handhelds) use **Native** or **Lower**. 1440p and 4K need a real
->    graphics card.
+>    handhelds) use **Auto**, **1080p** or lower -- never more than your
+>    screen. 1440p and 4K need a real graphics card.
 > 5. **Online:** both games always run at the speed of the slower PC. If
 >    you only see 40-50 fps against one opponent, the slow PC may be theirs.
 > 6. **Do not start the game in "efficiency mode"** or at low priority
@@ -293,8 +293,10 @@ For us, in that report (`system.txt`, "How the game ran"):
   charger, other programs; nothing else to set.
 - `other programs X of Y logical processors busy` with X large: background
   programs.
-- `GPU N` and a GPU wait of several ms: Internal resolution too high for
-  the graphics.
+- `GPU N` and a GPU wait of several ms, or "GPU-bound" / "integrated
+  graphics busy" at the end of the line: Internal resolution too high for
+  the graphics. "What the log says about speed" in `system.txt` says it in
+  one line.
 - `processor clock limit A of B MHz (held back ...)`: heat or the power
   plan.
 - `[netplay] speed: 45 fps, this PC 59 fps without the waits for the peer`:

@@ -2045,6 +2045,21 @@ MESSAGES = {
         "Windows ファイアウォールがこのネットワークで {program} をブロックしています。対戦は接続できますが、一部は中継経由になり、ラグが大きくなります。",
     "A firewall seems to block T5DR Online's network traffic on this PC.":
         "ファイアウォールがこの PC で T5DR Online の通信をブロックしているようです。",
+    # patch 0063 (igpu-4k-stall): Internal resolution Auto, integrated-graphics and GPU-bound hints
+    "Auto (matches the screen)":
+        "自動（画面に合わせる）",
+    "The game picks the step that matches your screen when it starts, at most 1080p on integrated graphics (they share the processor's memory and power).":
+        "起動時に画面に合う段階をゲームが選びます。内蔵グラフィックでは最大1080p（プロセッサーとメモリーと電力を共有するため）。",
+    "On this PC: {step}.":
+        "このPCでは：{step}。",
+    "{step} on integrated graphics: try {better} for 60 fps.":
+        "内蔵グラフィックで{step}：60 fpsには{better}を試してください。",
+    "Extra settings below set {setting}: that wins over this choice.":
+        "下の追加設定で{setting}が設定されています：この選択より優先されます。",
+    "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
+        "グラフィックが原因で対戦が60 fpsより遅くなりました（GPUがボトルネック）：設定で内部解像度を下げてください。",
+    "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
+        "対戦が60 fpsより遅くなりました：内蔵グラフィックの負荷が高く、プロセッサーも遅くなりました。設定で内部解像度を下げると改善します。",
     # ---- private and community rooms (lobby/t5lobby/tk_rooms.py; the server's messages: i18n_known.py)
     "private rooms need a newer launcher; update it": "非公開ルームには新しいランチャーが必要です。アップデートしてください",
     "only the room's host can do that": "それができるのはルームのホストだけです",

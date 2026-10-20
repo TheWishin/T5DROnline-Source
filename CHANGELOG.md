@@ -97,6 +97,21 @@ part is in the README's status table.
   With power saving on (on by itself with integrated graphics) the shadow map and the sun's glow
   keep the PS3's size above Native as well. The log can show where the GPU time of a frame goes
   (`RSX_GPU_PASSES=1`).
+- **4K on integrated graphics: the launcher says what helps, the log says why** (ps3recomp
+  patch 0063). A Radeon 780M mini PC ran fights at 32-38 fps at 4K on a 1080p screen. The
+  game was not waiting for the graphics: at 4K this game's 3D scene is 6144 x 4320 pixels,
+  and on a processor with built-in graphics a busy GPU also slows the processor (one memory,
+  one power budget). Settings -> Internal resolution has a new choice, **Auto (matches the
+  screen)**: the step that fits the screen, at most 1080p on integrated graphics (Native
+  stays the default). A test fight on integrated graphics: 4K 33-35 fps, Auto 60. On
+  integrated graphics a step larger than the screen gets a hint ("4K on integrated
+  graphics: try 1080p for 60 fps"), and after a fight the graphics held back the Play tab
+  says so. `[slow-frames]` now splits the game's part of a frame into the main thread's
+  work and its waits, says how busy the GPU was and how fast the processors really ran,
+  and ends with "GPU-bound" when the graphics are the limit; Report a problem sums it up
+  in one line. Power saving **Auto** now always reaches the game: a `PS3_LAPTOP` left in
+  Windows' environment no longer overrules it, and Settings names an Extra-settings line
+  that does.
 
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the

@@ -48,7 +48,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
 | Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
 | Unlocks | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games always use a fresh save of their own, the same on both PCs. |
-| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
+| Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K, or Auto (the screen's step, at most 1080p on integrated graphics) (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
 | Training tools | In Practice: an input display (each player's last inputs with how many frames each was held) and frame data after each exchange (startup, and who can act first: `+3`, `-12`), drawn sharp over the picture at any resolution. Launcher Settings -> Training overlay (Off / Inputs / Inputs + frame data, also in the other offline modes, online only your own inputs), F2 switches it in the game. See [docs/TRAINING.md](docs/TRAINING.md). |
@@ -150,9 +150,12 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   game larger (sharp on big screens, more work for the graphics card: the
   launcher names the step that matches your screen); Lower and Lowest draw the
   3D scene smaller for weak graphics cards (laptops, integrated graphics), the
-  HUD stays sharp. It only changes the picture, so the other player online
-  does not need the same setting. If fights drop below 60 fps, go one step
-  down. More in [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
+  HUD stays sharp. **Auto** picks the step that matches your screen, at most
+  1080p on integrated graphics (they share the processor's memory and power,
+  so a larger picture slows the whole game there). It only changes the
+  picture, so the other player online does not need the same setting. If
+  fights drop below 60 fps, go one step down. More in
+  [Troubleshooting](docs/TROUBLESHOOTING.md#low-frame-rate).
 - **Settings** -> **VSync**: On (smooth, default) or Off (lowest latency, the
   picture may tear). The game always runs at 60 fps, like on the PS3, so there
   is no frame rate setting. Online, each player can choose their own.

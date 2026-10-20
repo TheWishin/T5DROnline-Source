@@ -348,7 +348,13 @@ class SpectateMixin:
         now = time.monotonic()
         for st in list(self.streams.values()):
             idle = now - st.t_data
-            if st.ended is None and not st.eof and idle > self.cfg.spectate_idle:
+            m = st.match
+            set_over = m.state != "playing" and (m.set is None or m.set.state != "active")
+            if st.ended is None and not st.eof and idle > 10 and set_over:
+                # the set is over (no rematch in these games any more): the session's stream is complete; a
+                # persistent game keeps its netplay session open until the next one, so no END would come
+                self._spec_end(st, "over", flush=True)
+            elif st.ended is None and not st.eof and idle > self.cfg.spectate_idle:
                 m = st.match
                 gone = m.state != "playing" or st.streamer.conn is None
                 if gone or idle > 4 * self.cfg.spectate_idle:

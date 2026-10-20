@@ -83,6 +83,8 @@ part is in the README's status table.
   else is taken from there and the window says so; the game's own keys (Esc, F11, F2) are refused.
   Online the bound buttons arrive as what you set (owner: "R2 and L2 should have their own binds
   too").
+- The Controls window no longer keeps the launcher busy while it is open (it kept re-selecting its
+  controller row).
 
 ### Launcher
 - **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français, besides

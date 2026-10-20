@@ -132,7 +132,24 @@ CPU of stage 20 per frame and ~1.8x the time (re-simulated frames: 36 vs 29
 million cycles, 18 vs 10 ms -- it also waits for the crowd's skinning jobs),
 which is why weak PCs drop there first.
 
-STAGE20_TABLE
+**Stage 20** (Lili vs Asuka), same set-up, the first profile (six fights, before
+the pool stage was added), 8 runs side by side, 6-18 processors busy elsewhere:
+
+| median of 8 runs | plain | PGO | per-run ratio (geometric mean) |
+|---|---|---|---|
+| fps | 59.92 | 59.92 | -- |
+| frame time p99 | 19.05 ms | 18.86 ms | -- |
+| main thread CPU per frame | **4.91 ms** | **4.68 ms** | **0.960** (8 of 8 runs lower) |
+| main thread active per frame, median / p99 | 4.69 / 5.85 ms | 4.46 / 5.42 ms | 0.959 (8 of 8) |
+| game part, median / p99 | 8.36 / 10.50 ms | 8.25 / 10.13 ms | 0.987 |
+| translation, median / p99 | 2.95 / 3.89 ms | 3.02 / 3.87 ms | -- |
+| sound core CPU per frame | 8.43 ms | 8.08 ms | 0.954 |
+| draw-request thread CPU per frame | 2.89 ms | 3.11 ms | 1.060 |
+| whole game CPU per frame | 33.7 ms | 33.3 ms | 0.984 |
+
+The translation (the runtime's walker, `t5dr.exe`) is not touched by any of
+this: the runtime is built once by us, and none of the settings above changed
+it.
 
 ## Determinism
 
@@ -141,12 +158,20 @@ or speed per block), never what it computes: `-ffp-contract=off` stays, no
 fast-math or reassociation flag is involved, and the FP helpers of patch 0032
 are unchanged. Proof with `tools/cross_build_test.py` (RTT 50 +-5 ms, 3 % loss,
 three matches each: Asuka vs Lili stage 20, Lili vs Dragunov stage 24, Jin vs
-Kazuya stage 26):
+Kazuya stage 26; on the 0061 runtime the first match is on the pool stage
+instead -- Asuka vs Lili stage 30 -- and the third Jin vs Kazuya stage 20):
 
-PAIR_TABLE
+| runtime | pair (host / joiner) | mode | frames compared | different | results |
+|---|---|---|---|---|---|
+| 1.1.2 | PGO v3 / plain v3 (1.1.2's flags) | rollback (1,223 / 1,067 rollbacks, 1,676 / 1,422 frames re-simulated) | 14,875 | **0** | 3 of 3 equal |
+| 1.1.2 | PGO v3 / plain v3 | lockstep | 14,881 | **0** | 3 of 3 equal |
+| 1.1.2 | PGO baseline as a PC without FMA3 (`PS3_FP_SOFT_FMA=1 PS3_CRT_FMA3=0`) / plain v3 | rollback (713 / 1,468 rollbacks) | 14,815 | **0** | 3 of 3 equal |
+| 0059 + 0061 | PGO v3 (final profile) / plain v3 | rollback (1,400 / 977 rollbacks, 1,931 / 1,178 frames re-simulated) | 14,815 | **0** | 3 of 3 equal |
+| 0059 + 0061 | PGO v3 (final profile) / plain v3 | lockstep | 14,901 | **0** | 3 of 3 equal |
+| 0059 + 0061 | PGO baseline, no FMA3 (final profile) / plain v3 | rollback (1,215 / 1,623 rollbacks) | 14,875 | **0** | 3 of 3 equal |
 
-`tools/fp_audit.py --strict` on the DLLs: no estimate instructions, no x87, no
-MXCSR writes, no C runtime math. (`tools/fp_vectors.py` is not on main; the
+`tools/fp_audit.py --strict` on every DLL of these pairs: no estimate
+instructions, no x87, no MXCSR writes, no C runtime math. (`tools/fp_vectors.py` is not on main; the
 flags touch no FP code path.)
 
 ## The profile file
@@ -188,7 +213,7 @@ one asks players to build again.
 plain 135 s (517 s summed over the files), with the profile 115 s (445 s) --
 cold code is compiled for size, so BUILD GAME's compile gets ~15 % *faster*;
 on a 4-thread PC with half this PC's per-core speed roughly 3.7 instead of 4.3
-minutes. `t5dr_game.dll` 45.7 -> 38.0 MB (11.2 -> 8.7 million instructions).
+minutes. `t5dr_game.dll` 45.7 -> 38.1 MB (11.2 -> 8.8 million instructions).
 
 ## Training a new profile
 

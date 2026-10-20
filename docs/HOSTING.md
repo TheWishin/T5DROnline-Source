@@ -586,7 +586,11 @@ The server serves `http://127.0.0.1:7780/` (`T5L_STATUS_HOST`, `T5L_STATUS_PORT`
 - `/metrics` returns the same numbers in Prometheus format (`t5lobby_players_online`,
   `t5lobby_relay_kbit_per_second`, `t5lobby_matches_found_total`, `t5lobby_tls_cert_days_left`, ...).
 
-It shows counts only, no names and no addresses. It stays on loopback. To watch it from
+- `/tournaments` and `/tournaments/<id>` return the community tournaments and their brackets as JSON, read-only,
+  for streamers' overlays (names only; docs/TOURNAMENTS.md "For streamers", with a reverse proxy example that
+  passes only these paths).
+
+Apart from the tournaments, it shows counts only, no names and no addresses. It stays on loopback. To watch it from
 elsewhere, use an SSH tunnel (`ssh -L 7780:127.0.0.1:7780 root@server`), or bind it to a
 private interface and allow only your monitor's address. Every 15 minutes the log gets a
 one-line summary (`T5L_STATUS_LOG_MINUTES`).
@@ -649,7 +653,8 @@ was not finished (its games changed no rating yet). To restart without voiding a
 match has its result (a first-to-3 match takes 2-7 minutes) and the last ranked set is over. A ranked set goes on
 during a drain: its next game starts by itself, so a best-of-3 can take up to three games. (Before 1.1.2 the admin
 tool did not wait for a set between two of its games, when no match runs; with an older server, check as in
-docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain.
+docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain. From 1.1.3 a drain also holds the tournaments: no new
+tournament set starts and the no-show times stand still (docs/TOURNAMENTS.md "The database and restarts").
 
 **Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
 schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with

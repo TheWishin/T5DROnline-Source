@@ -30,6 +30,9 @@ Around the matches (docs/RANKED.md, "Tekken 6 style options"):
 Friends (docs/ONLINE.md "Friends and invites", accounts only, clients with the "friends" cap): a request the other side
 accepts, a list with who is online / in a match / offline (pushed as it changes), invites to a casual match or
 to the inviter's room that one click accepts. A block ends a friendship.
+
+Community tournaments (docs/TOURNAMENTS.md) live in tournaments.py (brackets: bracket.py); this module only calls
+its hooks (self.tours) and plays its sets as TourSets, the best-of set machinery below.
 """
 import asyncio
 import ipaddress
@@ -53,12 +56,13 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
+                  "tournaments"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
             "blind_ready", "blocks", "strict", "set_lock", "lag_check", "notices", "ranked_sets", "ingame_pick",
-            "nat2", "relays", "friends"]
+            "nat2", "relays", "friends", "tournaments"]
 REPORT_SOURCES = ("game", "manual", "quit", "crash", "disconnect")
 DAY = 86400.0
 
@@ -535,6 +539,10 @@ class LobbyServer:
         self.handshakes = 0        # TLS handshakes in progress
         self.draining = False      # `admin drain`: no new matches, the running ones finish, then restart
         self._last_db_upkeep = time.monotonic()
+        from . import tournaments
+        self.tours = tournaments.TourManager(self)     # community tournaments (docs/TOURNAMENTS.md)
+        self.HEAVY = LobbyServer.HEAVY | tournaments.HEAVY
+        self.STATE = LobbyServer.STATE | tournaments.STATE
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self):
@@ -559,6 +567,7 @@ class LobbyServer:
             log.info("%d ranked set(s) left open by the last server run: void (server_restart)", n)
         self.store.set_flag("drain", None)              # a restart ends a drain (admin.py drain)
         self.store.defer_commits(loop.call_soon)
+        await self.tours.start()                         # (running tournaments resume: docs/TOURNAMENTS.md)
         self.reload_bans()
         self.notices_by_id = {n["id"]: n for n in self.store.active_notices()}
         self.latest_release = self.store.get_flag("release") or ""
@@ -606,6 +615,7 @@ class LobbyServer:
         if self.status_http:
             await self.status_http.stop()
         await self.relays.stop()
+        await self.tours.stop()
         for t in list(self._bg):
             t.cancel()
         self.udp.close()
@@ -819,6 +829,8 @@ class LobbyServer:
         t = msg["t"]
         rid = msg.get("rid")
         fn = getattr(self, "h_" + t, None) if t.isidentifier() else None
+        if fn is None:
+            fn = self.tours.handler(t)                   # tour_* (tournaments.py)
         try:
             if fn is None:
                 raise LobbyError(proto.E_BAD_REQUEST, f"unknown message {t!r}")
@@ -878,7 +890,8 @@ class LobbyServer:
                 # friends: the limits, for the launcher's texts
                 **({"friend_limits": {"max": self.cfg.max_friends, "per_day": self.cfg.friend_requests_day,
                                       "invite_seconds": self.cfg.invite_seconds}}
-                   if "friends" in conn.caps else {})}
+                   if "friends" in conn.caps else {}),
+                **({"tournaments": self.tours.welcome()} if "tournaments" in conn.caps else {})}
 
     async def h_login(self, conn, msg):
         if not conn.helloed:
@@ -1021,6 +1034,7 @@ class LobbyServer:
             reply["recovery_codes"] = codes
         asyncio.get_running_loop().call_soon(self._send_active_notices, p)
         asyncio.get_running_loop().call_soon(self._send_friends, p)
+        asyncio.get_running_loop().call_soon(self.tours.player_online, p)     # a tournament set called for this player
         return reply
 
     def _take_over(self, conn, p, session):
@@ -1147,6 +1161,7 @@ class LobbyServer:
         reply = {"t": "login_ok", "you": p.public(), "token": p.token, "resumed": True}
         asyncio.get_running_loop().call_soon(self._send_active_notices, p)
         asyncio.get_running_loop().call_soon(self._send_friends, p)
+        asyncio.get_running_loop().call_soon(self.tours.player_online, p)
         m = p.match
         if m is not None and m.state == "playing":
             side = m.side(p)
@@ -1818,7 +1833,8 @@ class LobbyServer:
         for inv in [i for i in self.invites.values() if i.src in (host, join) or i.dst in (host, join)]:
             self._end_invite(inv, "cancelled")          # (playing someone else now)
         self._join_set(m, rematch_of, game_set)
-        skip_ready = origin in ("challenge", "rematch", "set", "invite")
+        # (an accepted challenge or invite, a rematch, the next game of a set, a tournament set: accepted already)
+        skip_ready = origin in ("challenge", "rematch", "set", "invite", "tournament")
         est, known, via = self._est_ping(host, join)
         # (`via` stays on this server: which relay the estimate went through would hint where a blind opponent lives)
         ping = {"ms": round(est), "kind": "estimate", "known": known}
@@ -2971,7 +2987,7 @@ class LobbyServer:
                     "fight": {"p1": m.chars[0], "p2": m.chars[1], "stage": m.stage} if m.chars else None,
                     "set": m.set.info() if m.set is not None else None,
                     "rematch_window": self.cfg.rematch_window if p.online and m.players[1 - side].online
-                    and not set_going else 0})
+                    and not set_going and getattr(m.set, "tour", None) is None else 0})
             if not p.online and p.match is None:
                 if set_going and self._between_set_games(p):
                     self._set_dropped(gs, p)           # lost the lobby during the game: the set waits a while
@@ -3559,7 +3575,8 @@ class LobbyServer:
             self._set_schedule_next(gs)
         else:
             culprit = m.players[blame] if blame is not None else None
-            if culprit is not None and reason in self.SET_LEAVE_REASONS and any(gs.wins.values()):
+            if culprit is not None and reason in self.SET_LEAVE_REASONS and (
+                    any(gs.wins.values()) or getattr(gs, "forfeit_at_zero", False)):
                 # quitting (or vanishing) right at the start of a later game is still leaving the set
                 self._set_conclude(gs, "forfeit", winner=gs.other(culprit), reason=reason, blame=culprit)
             else:
@@ -3572,7 +3589,8 @@ class LobbyServer:
         a lag check that found more lag than the ping explains lets a player out for free (h_leave_set)."""
         if reason == "lag" and by is not None:
             self._set_conclude(gs, "void", reason="lag")
-        elif by is not None and reason in ("left", "declined", "disconnect", "no_connection") and any(gs.wins.values()):
+        elif by is not None and reason in ("left", "declined", "disconnect", "no_connection") and (
+                any(gs.wins.values()) or getattr(gs, "forfeit_at_zero", False)):     # (a tournament set: at 0-0 too)
             self._set_conclude(gs, "forfeit", winner=gs.other(by), reason=reason, blame=by)
         else:
             self._set_conclude(gs, "void", reason=reason)
@@ -3583,7 +3601,15 @@ class LobbyServer:
         if gs.outcome is not None:
             return
         changes = None
-        if status in SET_COUNTED and winner is not None:
+        if status in SET_COUNTED and winner is not None and not gs.ranked:
+            # an unrated set (a tournament set, docs/TOURNAMENTS.md): its result counts in the record like a
+            # casual game, once for the set
+            for p in gs.players:
+                won = p is winner
+                p.record[0 if won else 1] += 1
+                if p.account_id is not None:
+                    self.store.add_unranked_game(p.account_id, "win" if won else "loss")
+        elif status in SET_COUNTED and winner is not None:
             a, b = gs.players
             na, nb = glicko.match(a.rating, b.rating, 1.0 if winner is a else 0.0)
             changes = {}
@@ -3613,6 +3639,8 @@ class LobbyServer:
         log.info("set %s %s%s: %s %d-%d %s", gs.id, status, f" ({reason})" if reason else "", gs.players[0].name,
                  *gs.score(), gs.players[1].name)
         self.dirty = True
+        if getattr(gs, "tour", None) is not None:
+            self.tours.set_concluded(gs)                 # the bracket moves on (tournaments.py)
 
     def _save_set(self, gs):
         a, b = gs.players
@@ -3656,7 +3684,8 @@ class LobbyServer:
                 and all(gs.next_keep.get(q.id) for q in (a, b)))
         gs.fresh = False
         room = prev.room if prev is not None and prev.room is not None and prev.room.id in self.rooms else None
-        m = self.create_match(a, b, ranked=True, origin="set", room=room, rematch_of=prev, keep=keep, game_set=gs)
+        m = self.create_match(a, b, ranked=gs.ranked, origin="set", room=room, rematch_of=prev, keep=keep,
+                              game_set=gs)
         if room is not None and m.state != "cancelled":
             room.match = m
 
@@ -3716,16 +3745,18 @@ class LobbyServer:
 
     def _abandon_set(self, p, requester=None):
         """`p` starts something new (queue, room, challenge): the old set is over. Not in the middle of a
-        ranked set: that has to be left on purpose (leave_set), and leaving it is losing it."""
+        ranked set: that has to be left on purpose (leave_set), and leaving it is losing it. Not while a tournament
+        set is called for `p` or being played (tournaments.py, in _set_free)."""
         self._set_free(p, requester)
         gs = p.set
         if gs is not None and gs.state == "active" and gs.current is None:
             self._decline_recent(gs, p)
             self._end_set(gs, "left", by=p)
 
-    @staticmethod
-    def _set_free(p, requester=None):
-        """Refuse something new while `p` is in the middle of a ranked set (that has to be left on purpose)."""
+    def _set_free(self, p, requester=None):
+        """Refuse something new while `p` is in the middle of a ranked set (that has to be left on purpose), or has a
+        tournament set called or running (tournaments.py)."""
+        self.tours.check_free(p, requester)
         gs = p.set
         if gs is not None and gs.rated and gs.state == "active":
             a, b = gs.wins[p.id], gs.wins[gs.other(p).id]
@@ -4126,6 +4157,7 @@ class LobbyServer:
             "db": db,
             "tls": cert_info(self.cfg.tls_cert) if self.sslctx else None,
             "notices": len(self.notices_by_id),
+            "tournaments": self.tours.status(),
             "config": {"accounts": self.cfg.accounts, "guests": self.cfg.guests,
                        "max_clients": self.cfg.max_clients, "pinned_builds": len(self.cfg.builds)},
             "process": process_info(),

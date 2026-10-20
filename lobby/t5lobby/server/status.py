@@ -83,6 +83,8 @@ def prometheus(st):
     g("password_checks_waiting", st.get("password_checks_waiting"), "password hashes waiting for a worker")
     g("draining", int(bool(st.get("draining"))), "1 while admin drain holds back new matches")
     g("rooms", st["rooms"], "open rooms")
+    tours = (st.get("tournaments") or {}).get("by_state") or {}
+    g("tournaments_running", tours.get("running", 0), "tournaments being played (docs/TOURNAMENTS.md)")
     g("matches_running", st["matches"]["running"], "matches being set up or played")
     g("relay_sessions", st["relay"]["sessions"], "relayed matches")
     g("relay_kbit_per_second", st["relay"]["kbit_s"], "relay throughput over the last minute, both directions")
@@ -137,12 +139,18 @@ class StatusHttp:
             parts = head.split(b"\r\n", 1)[0].decode("latin-1").split()
             method, path = (parts + ["", ""])[:2]
             path = path.split("?", 1)[0]
+            cors = False
             if method not in ("GET", "HEAD"):
                 code, ctype, body = 405, "text/plain", "GET only\n"
             elif path in ("/health", "/healthz", "/"):
                 code, ctype, body = 200, "text/plain", "ok\n"
             elif path == "/status":
                 code, ctype, body = 200, "application/json", json.dumps(self.lobby.status(), indent=1) + "\n"
+            elif (path == "/tournaments" or path.startswith("/tournaments/")) and \
+                    getattr(self.lobby, "tours", None) is not None:
+                # the brackets, read-only, for streamers' overlays (docs/TOURNAMENTS.md "For streamers")
+                code, body = self.lobby.tours.http(path)
+                ctype, cors = "application/json", True
             elif path == "/metrics":
                 metrics = getattr(self.lobby, "metrics", None)        # (a relay node has its own)
                 code, ctype, body = 200, "text/plain; version=0.0.4", (
@@ -151,8 +159,10 @@ class StatusHttp:
                 code, ctype, body = 404, "text/plain", "not found\n"
             data = body.encode("utf-8")
             reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed"}[code]
+            # (an overlay in a browser source may read the brackets from another origin)
+            extra = "Access-Control-Allow-Origin: *\r\n" if cors else ""
             writer.write(f"HTTP/1.0 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {len(data)}\r\n"
-                         f"Cache-Control: no-store\r\nConnection: close\r\n\r\n".encode("latin-1")
+                         f"Cache-Control: no-store\r\n{extra}Connection: close\r\n\r\n".encode("latin-1")
                          + (data if method == "GET" else b""))
             await writer.drain()
         except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError,

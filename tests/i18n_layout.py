@@ -146,7 +146,8 @@ def problems(root, slack=2):
                 need = f.measure(longest) + 26
                 if need > w.winfo_reqwidth() + slack:
                     out.append(("combo", str(w), "", need, w.winfo_reqwidth(), longest))
-        elif managed and cls == "Canvas":
+        elif managed and cls == "Canvas" and not str(w.cget("xscrollcommand")):
+            # (a canvas that scrolls -- the tournament bracket -- shows more than its width on purpose)
             try:
                 cw, ch = int(float(w.cget("width"))), int(float(w.cget("height")))
             except (tk.TclError, ValueError):
@@ -262,6 +263,12 @@ class Client:
                 for i, (nm, rk, tier) in enumerate((("Rival_Long_Name", "Lord of War", 31), ("Bob", "2nd Dan", 11),
                                                     ("Ccc", "Beginner", 0)))]
 
+    def tour_list(self):
+        return {"rows": [TOUR], "can_create": True, "rated": False}
+
+    def tour_get(self, tid):
+        return TOUR
+
     def profile(self, name, n):
         return {"name": "Me", "account": True, "rank": "Lord of War", "tier": 31, "rating": 1612, "rd": 61,
                 "provisional": False, "place": 3, "record": [30, 12, 1], "ranked_games": 43,
@@ -293,6 +300,39 @@ ROOMS = [{"id": "r1", "name": "Room of Rival", "owner": {"name": "Rival_Long_Nam
          {"id": "r2", "name": "R2", "owner": {"name": "Bob"}, "status": "full", "build": "b1", "ranked": False},
          {"id": "r3", "name": "Old room", "owner": {"name": "Old"}, "status": "playing", "build": "other",
           "ranked": True}]
+
+
+def tournament():
+    """A running double-elimination tournament of four as the server shows it (the real bracket engine): a set
+    decided, one being played, one called, a disqualification -- every word the Tournaments page draws."""
+    import time as _time
+    from t5lobby.server import tournaments as T
+    from t5lobby.server.bracket import Bracket
+    mgr = T.TourManager.__new__(T.TourManager)
+    mgr.live, mgr.view_cache = {}, {}
+    t = T.Tournament(id="t1", name="Friday Night Cup", organizer_name="Organizer_Long", format="double", set_wins=2,
+                     max_players=16, start_time=_time.time() - 900, checkin_minutes=15, seeding="rating",
+                     state="running", started=_time.time() - 600, rated=True)
+    for i, n in enumerate(("Me", "Rival_Long_Name", "Bob", "Old"), 1):
+        t.entrants[i] = T.Entrant(i, n, 0.0, checked_in=1.0, seed=i, dq="no_show" if n == "Old" else None)
+    b = t.bracket = Bracket.build("double", [1, 2, 3, 4])
+    b.report("W1-1", 0, [2, 1])
+    b.sets["W1-2"].data = {"live": "playing"}
+    b.sets["L1-1"].data = {"live": "attention", "why": "disputed"}
+    d = mgr.full(t)
+    d["you"] = {"entrant": True, "checked_in": True, "seed": 1, "set": "W2-1", "build_ok": True}
+    d["can_manage"] = True
+    return d
+
+
+TOUR = tournament()
+TOUR_CALL = {"t": "tour_call", "tournament": {"id": "t1", "name": "Friday Night Cup"},
+             "set": {"id": "L2-1", "bracket": "L", "round": 2, "index": 1, "format": "double", "rounds": 2,
+                     "losers_rounds": 2},
+             "best_of": 3, "wins_needed": 2, "side": 0, "score": [1, 0], "replay": True,
+             "opponent": {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lord of War",
+                          "tier": 31}, "opponent_online": False, "deadline": 287.0, "noshow": 300.0,
+             "accepted": [False, False]}
 RIVAL = {"name": "Rival_Long_Name", "guest": False, "rating": 1520, "rank": "Lord of War", "provisional": False,
          "tier": 31}
 
@@ -472,6 +512,19 @@ class Walk:
         self.screen("online friends")
         tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
         self.screen("online friend's invite")
+        tab.hide_bar()
+        # tournaments (tk_tour.py): the list, a bracket, the call card -- with the Friends page emptied first, so that
+        # its own (known, German) width does not hide what this page needs
+        tab.client.friend_list = {"max": 100, "friends": [], "incoming": [], "outgoing": []}
+        tab.on_event({"t": "friends"})
+        tab.nb.select(tab.tours_page)
+        tab.tours.rows, tab.tours.selected, tab.tours.detail = [TOUR], TOUR["id"], TOUR
+        tab.tours.render_list()
+        tab.tours.select_set("L1-1")
+        self.screen("online tournaments")
+        tab.tours.on_event(TOUR_CALL)
+        self.screen("online tournament call")
+        tab.tours.call = None
         tab.hide_bar()
 
     def _windows(self, d):

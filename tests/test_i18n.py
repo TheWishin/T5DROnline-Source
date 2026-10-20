@@ -61,6 +61,10 @@ DEV_ONLY = {
     "score is [P1 rounds, P2 rounds]", "chars is [P1 fighter, P2 fighter]", "costumes is [P1 button, P2 button]",
     "fps is a number", "fps out of range",
     "unknown character X", "kind is casual or room",
+    # tournaments (lobby/t5lobby/server/tournaments.py): fields the launcher always sends right
+    "set length, player limit, check-in and start time are numbers",
+    "op is start, cancel, report, override, reset or dq", "the winner is side 0 or 1",
+    "the score is [games side 0, games side 1]",
     "mode is guest, account, register, session or resume",
 }
 
@@ -246,7 +250,7 @@ class CatalogTests(Base):
         files = {os.path.basename(s.split(":")[0].replace("\\", "/")) for s in x.dynamic_sites()}
         self.assertLessEqual(files, {"t5dr_launcher.pyw", "tk_tab.py", "match_driver.py", "handover.py",
                                      "problem_report_ui.py", "controls_ui.py",
-                                     "tk_views.py"})
+                                     "tk_views.py", "tour_text.py"})
 
 
 class EngineTests(German):
@@ -396,6 +400,9 @@ class MessageCoverageTests(German):
         found = [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"LobbyError"}, 1)]
         found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, {"kick"}, 1)]
         found += [(f"lobby.py:{ln}", s, src) for ln, s, src in calls_in(path, set(), 0, keyword="msg")]
+        # tournaments (docs/TOURNAMENTS.md): their own module
+        tours = os.path.join(ROOT, "lobby", "t5lobby", "server", "tournaments.py")
+        found += [(f"tournaments.py:{ln}", s, src) for ln, s, src in calls_in(tours, {"LobbyError"}, 1)]
         found = [f for f in found if not (f[1] is None)]
         self.assertGreater(len(found), 80)
         # (the "msg" of a reply that repeats a LobbyError's own msg is a variable: skipped above)

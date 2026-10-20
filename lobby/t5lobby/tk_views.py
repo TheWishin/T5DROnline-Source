@@ -24,7 +24,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-from . import i18n, proto, ranks, theme
+from . import i18n, proto, ranks, theme, tk_tour
 from .i18n import N_, t
 from .lag import describe_event as describe_lag
 from .theme import C
@@ -174,6 +174,7 @@ class OnlineView:
         self.ring = None
         self.bar_spinner = None
         self.set_ring = None               # the countdown to a ranked set's next game (result card)
+        self.ring_source = None            # () -> (seconds left, total) for the ring when it is not the ready check
         self.set_ring_total = 1.0
         self._build()
         tab.set_var.trace_add("write", lambda *_: self.refresh())
@@ -486,16 +487,20 @@ class OnlineView:
         board = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         prof = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         friends = ttk.Frame(nb, padding=(0, px(10), 0, 0))
+        tours = ttk.Frame(nb, padding=(0, px(10), 0, 0))
         nb.add(lobby, text=t("Lobby"))
         nb.add(board, text=t("Leaderboard"))
         nb.add(prof, text=t("Profile"))
         nb.add(friends, text=t("Friends"))          # (last: the others keep their positions 0, 1, 2)
+        nb.add(tours, text=t("Tournaments"))        # (after Friends: 4)
         tab.friends_page = friends
+        tab.tours_page = tours
         nb.bind("<<NotebookTabChanged>>", lambda _e: tab._on_subtab())
         self._build_lobby_page(lobby)
         self._build_board_page(board)
         self._build_profile_page(prof)
         self._build_friends_page(friends)
+        tk_tour.build_page(self, tours)              # tournaments: list, bracket (tk_tour.py)
         return scr
 
     def _build_profile(self, scr):
@@ -1228,9 +1233,12 @@ class OnlineView:
             self.m_set.grid_forget()
         opp = ev.get("opponent") or (getattr(drv.ticket, "opponent", None) if drv and drv.ticket else None) or {}
         ranked = ev.get("ranked")
-        self.m_pill.configure(text=(t("RANKED") if ranked else t("CASUAL")) + (
-            "  ·  " + t("rematch").upper() if ev.get("origin") == "rematch" else ""),
-                              style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
+        if (ev.get("set") or {}).get("tournament"):
+            self.m_pill.configure(text=t("TOURNAMENT"), style="Card.PillGold.TLabel")
+        else:
+            self.m_pill.configure(text=(t("RANKED") if ranked else t("CASUAL")) + (
+                "  ·  " + t("rematch").upper() if ev.get("origin") == "rematch" else ""),
+                                  style="Card.PillAccent.TLabel" if ranked else "Card.Pill.TLabel")
         state = {"title": t("The game is starting..."), "select": t("Character select"),
                  "pick": t("Pick your fighter in the game"), "pick_wait": t("Your opponent is picking"),
                  "stage": t("Stage select"), "loading": t("Loading the fight..."), "fight": t("Fight!"),
@@ -1272,6 +1280,8 @@ class OnlineView:
     # --- the bar: questions, found match, result + rematch
     def _bar_kind_now(self):
         tab = self.tab
+        if getattr(tab, "tours", None) is not None and tab.tours.showing_call():
+            return "tour_call"              # "Your tournament set is ready" (tk_tour.py)
         if tab.rematch_bar is not None or getattr(tab, "set_bar", None) is not None:
             return "result"                 # (a ranked set between two games: the result, the countdown, Leave set)
         if tab.challenge is not None:
@@ -1292,7 +1302,8 @@ class OnlineView:
         sig = (kind, id(tab.match), (self.revealed or {}).get("name"), tab.ready_sent, tab.challenge,
                (getattr(tab, "invite", None) or {}).get("invite"),
                tab.rematch_bar, lag, id(self.result_info), str(tab.bar_text.get()) if kind == "question" else None,
-               tab.set_var.get(), id(tab.set_bar))
+               tab.set_var.get(), id(tab.set_bar),
+               str((tab.tours.call or {}).get("accepted")) + str(id(tab.tours.call)) if kind == "tour_call" else None)
         if sig == self._bar_sig:
             return
         self._bar_sig = sig
@@ -1300,6 +1311,7 @@ class OnlineView:
         for w in self.bar_visual.winfo_children():
             w.destroy()
         self.ring = None
+        self.ring_source = None
         self.bar_spinner = None
         self.set_ring = None
         show_text = kind == "question"
@@ -1311,6 +1323,8 @@ class OnlineView:
             self._visual_challenge(self.bar_visual)
         elif kind == "invite":
             self._visual_invite(self.bar_visual)
+        elif kind == "tour_call":
+            tk_tour.visual_call(self, self.bar_visual)
         elif kind == "result":
             self._visual_result(self.bar_visual)
             # (a ranked set's countdown to its next game is the strip on the card; bar_text keeps the same line)
@@ -1399,8 +1413,11 @@ class OnlineView:
         tab = self.tab
         if self.ring is None:
             return
-        total = float((tab.match or {}).get("ready_timeout") or 15)
-        left = max(0.0, (tab.ready_deadline or 0) - time.monotonic()) if tab.ready_deadline else 0.0
+        if self.ring_source is not None:
+            left, total = self.ring_source()
+        else:
+            total = float((tab.match or {}).get("ready_timeout") or 15)
+            left = max(0.0, (tab.ready_deadline or 0) - time.monotonic()) if tab.ready_deadline else 0.0
         try:
             self.ring.set(left, total)
         except tk.TclError:
@@ -1491,7 +1508,9 @@ class OnlineView:
         ttk.Label(banner, text=title, style=pre + "Huge.TLabel", foreground=col).grid(row=0, column=0, rowspan=2,
                                                                                        sticky="w")
         se = info.get("set_end")
-        if se:
+        if se and se.get("tournament"):
+            sub = t("Tournament set vs {name}", name=info["opp"]) if info.get("opp") else t("Tournament set")
+        elif se:
             sub = t("Ranked set vs {name}", name=info["opp"]) if info.get("opp") else t("Ranked set")
         elif info.get("opp"):
             sub = (t("Ranked match vs {name}", name=info["opp"]) if info.get("ranked")
@@ -1589,7 +1608,8 @@ class OnlineView:
         strip = self.card(v, "Tile.TFrame", 10)
         strip.grid(row=row, column=0, sticky="we", pady=(px(10), 0))
         strip.columnconfigure(2, weight=1)
-        ttk.Label(strip, text=t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
+        ttk.Label(strip, text=t("TOURNAMENT SET · BEST OF {best}", best=best) if info.get("tournament") else
+                  t("RANKED SET · BEST OF {best}", best=best), style="Tile.Caps.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w")
         d, gap = px(12), px(6)
         dots = tk.Canvas(strip, width=best * (d + gap), height=d + 2, bg=C["raised"], highlightthickness=0,

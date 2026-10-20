@@ -22,6 +22,7 @@ install for players or for whoever runs the server.
 - [Ratings, queues, results](#ratings-queues-results)
 - [Friends and invites](#friends-and-invites)
 - [Discord Rich Presence](#discord-rich-presence)
+- Tournaments: their own page, [TOURNAMENTS.md](TOURNAMENTS.md)
 - [Protocol reference](#protocol-reference)
 - [Security and abuse protection](#security-and-abuse-protection)
 - [Running your own server](#running-your-own-server)
@@ -49,6 +50,8 @@ lobby/
     discord_rpc.py   optional Discord Rich Presence over the Discord app's local IPC pipe (no SDK)
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
+    tk_tour.py    the Online tab's Tournaments page, bracket canvas, Create window, "Your tournament set is ready"
+    tour_client.py, tour_text.py  the client's tournament calls; their texts (docs/TOURNAMENTS.md)
     theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
     padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
     padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
@@ -57,12 +60,13 @@ lobby/
     portmap.py    opt-in UPnP IGD / NAT-PMP port forwarding for "Host for friends"
     server/       python -m t5lobby.server
       lobby.py    players, rooms, queues, challenges, matches, results, bans, status numbers
+      tournaments.py, bracket.py  community tournaments: sign-up, calls, sets, organizer actions; the brackets
       udp.py      UDP ping, endpoint registration, NAT probe, relay
       store.py    SQLite: accounts (scrypt hashes), sessions, recovery codes, ratings, ranks, history, bans,
                   blocked players, server notices, friends and friend requests; numbered schema migrations
       admin.py    python -m t5lobby.server.admin: status, users, bans, passwords, recovery codes,
                   backups, certificates (accounts_admin.py: the account commands alone)
-      status.py   local HTTP /health, /status, /metrics
+      status.py   local HTTP /health, /status, /metrics, /tournaments (the brackets for streamers)
       backup.py   online SQLite backups, restore
       selfsigned.py  self-signed TLS certificate with the standard library (no openssl)
       host.py     python -m t5lobby.server.host: "Host for friends" on a player's PC
@@ -514,7 +518,7 @@ Client to server:
 
 | t | fields | reply / effect |
 |---|---|---|
-| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}` |
+| `hello` | `proto`, `client`, `build: {elf, code, net, release, id}`, `caps` (optional: `delta`, `blind_ready`, `notices`, `ingame_pick`, `sets`, `nat2`, `relays`, `friends`, `tournaments`) | `welcome {server, proto, udp_port, udp_port2, build, accounts, guests, motd, ip, time, ..., caps, relay_only}`; with the `relays` cap also `relays [{id, name, host, port}]` (regional relays); with the `friends` cap also `friend_limits {max, per_day, invite_seconds}`; with the `tournaments` cap also `tournaments {noshow, organizers}` (the `tour_*` messages: docs/TOURNAMENTS.md "Protocol") |
 | `login` | `mode: guest\|account\|register\|resume`, `name`, `password`, `token` | `login_ok {you, token, resumed?}` |
 | `ping` | | `pong {time}` (keepalive; silent clients are dropped after 90 s) |
 | `udp_rtt` | `ms` | the client's UDP ping to the server (lobby list, matchmaking) |
@@ -733,7 +737,8 @@ Settings (environment variables; command-line flags `--host --port --udp-port
 | `T5L_LOBBY_INTERVAL` | `0.3` | seconds between lobby list updates (at most) |
 | `T5L_UDP_CTL_PPS` | `5000` | server-addressed UDP packets per second, all senders together |
 | `T5L_NAME_BLOCKLIST` | | file with extra words refused in new names |
-| `T5L_STATUS_HOST` / `T5L_STATUS_PORT` | `127.0.0.1` / `7780` | HTTP /health, /status, /metrics; `0` = off |
+| `T5L_STATUS_HOST` / `T5L_STATUS_PORT` | `127.0.0.1` / `7780` | HTTP /health, /status, /metrics, /tournaments; `0` = off |
+| `T5L_TOUR_*` | | tournaments: who may organize, the no-show time, limits, rated or not (docs/TOURNAMENTS.md "Server settings") |
 | `T5L_STATUS_LOG_MINUTES` | `15` | a one-line status in the log |
 | `T5L_BACKUP_DIR`, `T5L_BACKUP_HOURS`, `T5L_BACKUP_KEEP` | , `24`, `14` | automatic online database backups |
 | `T5L_ADMIN_POLL` | `5` | seconds until bans made with the admin tool take effect |

@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Sampling profiler for the game's host threads (Windows, no admin rights).
 
-    python tools/thread_sampler.py --pid PID --exe PATH_TO_THAT_EXE
+    python tools/thread_sampler.py --exe PATH_OF_THE_RUNNING_EXE [--pid PID]
                                    [--threads spu,spurs] [--secs 10] [--hz 2000]
                                    [--top 40] [--json FILE]
+
+Without --pid it samples the process whose image is exactly --exe. An exe with
+line tables: configure a separate CMake build with
+    "-DCMAKE_C_FLAGS=/Z7 /clang:-gline-tables-only"
+    "-DCMAKE_EXE_LINKER_FLAGS=/DEBUG /INCREMENTAL:NO /OPT:REF /OPT:ICF"
+(the C sources: the runtime and the lifted SPU code; the code is the same as
+without them) and keep t5dr.pdb next to the exe.
 
 Every 1/hz s it suspends each matching thread of the process for a moment,
 reads its instruction pointer and resumes it (SuspendThread/GetThreadContext,

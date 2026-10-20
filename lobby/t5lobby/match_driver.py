@@ -588,7 +588,8 @@ class MatchDriver:
         # The same match once more, on the relay (_watch_direct here or on the other PC; LobbyClient.nat_fallback): its
         # game session starts again through the relay bridge. Whatever the first session writes from now on (its
         # handshake failing, the opponent lost) is not this match's result: the new one gets a file of its own.
-        again = getattr(self.session_ticket, "match_id", None) == mid and isinstance(self.session_ticket, MatchTicket)
+        # (_watch_ctl's restart of the same ticket in process mode is not this: it has the very same ticket)
+        again = getattr(self.session_ticket, "match_id", None) == mid and isinstance(self.session_ticket, MatchTicket)             and ticket is not self.session_ticket
         if again:
             self._discard_result("fallback")
             self.fallback_asked.add(mid)

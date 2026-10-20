@@ -2386,7 +2386,7 @@ class LobbyServer:
         p = conn.player
         m = p.match if p is not None else None
         if m is None or m.id != msg.get("match"):
-            raise LobbyError(proto.E_STATE, "no such match")
+            return {"t": "nat_fallback", "ok": False, "why": "no such match"}
         why = None
         if m.state != "playing" or m.path not in ("direct", "lan") or m.continued:
             why = "not a new direct match"

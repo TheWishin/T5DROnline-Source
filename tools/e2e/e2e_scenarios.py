@@ -2612,7 +2612,8 @@ def net_power_saving(ctx):
           desc="friends on the Online tab: A asks B by account name, B accepts the request, A invites B to a casual "
                "match, B declines once, then accepts with one click: a real match, confirmed")
 def friends_invite(ctx):
-    game_server(ctx)
+    # (T5L_INVITE_RETRY_SECONDS, security review 2: after a declined invite the same two wait 30 s by default)
+    game_server(ctx, T5L_INVITE_RETRY_SECONDS=5)
     a = ctx.player("E2E Fran", password="fran-pass-1")
     b = ctx.player("E2E Finn", password="finn-pass-1")
     login(ctx, a, "register")
@@ -2643,7 +2644,15 @@ def friends_invite(ctx):
     # an invite accepted: one click starts the casual match
     ctx.wait(lambda: (a.tab.friend_rows.get(fid) or {}).get("invite") == "ok" and a.tab.outgoing_invite is None, 15,
              f"{a.name} can invite again")
+    t_decl = time.time()
     ctx.sleep(2.5)                  # (the lobby takes one invite per 2 s from a player: "one invite at a time")
+    t = time.time()
+    a.tab.tv_friends.selection_set(fid)
+    a.tab.do_invite("casual")
+    ctx.wait(lambda: a.saw_status(r"try again in \d+ s", t), 10,
+             "a new invite right after the decline is held back (try again in ... s)")
+    ctx.check("no second invite reached the friend yet", not any(e for e in b.events_of("invited", t)))
+    ctx.sleep(max(0.0, 6.0 - (time.time() - t_decl)))
     t = time.time()
     a.tab.tv_friends.selection_set(fid)
     a.tab.do_invite("casual")

@@ -1400,3 +1400,188 @@ applies in name order on a fresh tree (`tools/prepare_ps3recomp.py`).
   frame, now a few nanoseconds each.
 - The frame log's own phase timers (`PS3_FRAMELOG`) cost ~0.15 ms of every
   number above, in both builds; a player's game does not run them.
+## The game thread's own time (patch 0061, branch `game-thread-cpu`)
+
+[WEAK_PC.md](WEAK_PC.md) found that one core's speed limits the players at
+40-50 fps: the game's main thread needs 5-6 ms per fight frame here and
+8-10 ms on slow or shared cores, and a frame is that plus the translation.
+This branch is the main thread's own time: the lifted code and the runtime
+services it calls every frame (the build -- PGO/LTO -- and the translation
+are other branches).
+
+### How it was measured
+
+- **A sampling profiler that needs no admin rights**: the runtime's own
+  `PS3_HOST_PROF=<file>`, extended. `PS3_HOST_PROF_WHO=main` samples only the
+  threads whose name contains `main` (the game's main thread),
+  `PS3_HOST_PROF_DEPTH=48` keeps each sample's whole host stack (x64 unwind
+  tables), `PS3_HOST_PROF_AT=a,b` is the window in seconds after start,
+  `PS3_HOST_PROF_US` the period (1 ms). `tools/host_prof.py PROFILE --map
+  t5dr.map [--busy] [--focus NAME --callers]` gives self and inclusive time
+  per function (a lifted function is `func_<guest address>`), the samples by
+  kind (lifted code, guest memory helpers, indirect calls, HLE calls, lv2
+  syscalls, netplay/rollback, system calls) and, for a sample stopped in a
+  system DLL, the export it stopped in and the runtime function that called
+  it. `--busy` leaves out the samples blocked in a wait.
+- **Per displayed frame**: `PS3_GAME_THREAD_LOG=<file>` writes one line per
+  flip request of the game; `tools/game_thread_times.py` turns it into the
+  main thread's CPU time per frame (its thread cycles between two flip
+  requests: the frame's work, re-simulated frames and snapshots included,
+  waits left out) and the game part in wall time (the frame's release -> its
+  flip request), median, p90, p99. `tools/fight_bench.py` sets it and prints
+  the bench window's numbers.
+
+The fight is `tools/fight_bench.py`'s (Lili vs Asuka, stage 20, P1 pressing
+buttons, window fight start +20..60 s). Other agents' builds and games kept
+8-31 of the 32 processors busy during the work, so single runs move by 10-20 %;
+before/after numbers are paired runs (both games at the same time on the two
+CCD halves, swapped every round), shares of a profile are within one run.
+
+### Where the main thread's time went
+
+Offline fight, 16 logical processors, series to 0059. The main thread was
+busy ~5.4 ms of each 16.7 ms frame (the rest it waits for its flip):
+
+| what | share of the busy time | ms per frame |
+|---|---|---|
+| lifted code (the game) | 58 % | 3.1 |
+| **lwmutex lock/unlock: two kernel calls per pair even when the lock was free** (`NtWaitForSingleObject` with a zero timeout, `NtReleaseSemaphore`: the lwmutex was a kernel semaphore) | **32 %** | **1.7** |
+| VMX float helpers (`vmx_vmaddfp`, `vmx_vaddfp`, ... out of line) | 5 % | 0.27 |
+| HLE dispatch (`ps3_hle_call`): a scan of every registered handler per call, with an out-of-line `std::atomic` load per entry; the GCM pump's three locked instructions; the breadcrumb lookup | 2.5 % (8.7 % once the lwmutex calls were gone) | 0.14 |
+| indirect calls (`ps3_indirect_call`, the fast path) | 1.7 % | 0.09 |
+| everything else (lv2 syscalls, out-of-line guest memory, timers) | < 1 % | |
+
+The lifted code's profile is flat: the 30 hottest functions together are a
+quarter of the busy time (share of the busy time before -> with 0061; the
+shares grow as the total shrinks):
+
+| function (guest address) | before | 0061 | function | before | 0061 | function | before | 0061 |
+|---|---|---|---|---|---|---|---|---|
+| 0x355C70 | 3.8 % | 4.6 % | 0x36A758 | 0.8 % | 0.9 % | 0x1551B0 | 0.6 % | 1.0 % |
+| 0x355B34 | 2.2 % | 3.1 % | 0x36A7C8 | 0.7 % | 0.9 % | 0x397AF8 | 0.5 % | 0.5 % |
+| 0x36AFB8 | 1.8 % | 2.3 % | 0x3A6A40 | 0.7 % | 0.8 % | 0x391728 | 0.5 % | 1.0 % |
+| 0x35375C | 1.6 % | 2.1 % | 0x391A4C | 0.7 % | 0.8 % | 0x36991C | 0.5 % | 0.5 % |
+| 0x3ADEC4 | 1.5 % | 2.5 % | 0x36A9E0 | 0.7 % | 0.6 % | 0x283CD0 | 0.5 % | 0.9 % |
+| 0x07CB14 | 1.4 % | 1.2 % | 0x3524C4 | 0.7 % | 0.7 % | 0x35C230 | 0.5 % | 0.8 % |
+| 0x36A8F4 | 0.9 % | 0.9 % | 0x0C5044 | 0.6 % | 0.5 % | 0x369430 | 0.4 % | 0.5 % |
+| 0x3520D0 | 0.9 % | 1.1 % | 0x2B29A0 | 0.4 % | 0.5 % | 0x36AE60 | 0.4 % | 0.6 % |
+| 0x354160 | 0.9 % | 1.4 % | 0x3694E8 | 0.4 % | 0.3 % | 0x351EBC | 0.4 % | 0.7 % |
+| 0x3596C4 | 0.8 % | 1.0 % | 0x0F66CC | 0.4 % | 0.5 % | 0x389788 | 0.4 % | 0.3 % |
+
+The top ones are the draw packet writers (`0x355C70` and `0x355B34`, the
+16-byte packet moves: byte loops with the guest registers in memory and two
+reservation-bitmap checks per store), the draw-list append `0x354160`, and
+the vector math around `0x36A758`..`0x36AFB8`; by subtree the fighters' model
+draw (`0x387324`, 15 %) and the scene update (`0x10BD8`, 18 %).
+
+Online (rollback, the default, at RTT 100 ms, 8 logical processors each),
+on top of that:
+
+| what | share of the busy time | |
+|---|---|---|
+| **indirect calls on the full path**: the rollback layer installs `ps3_icall_hook` for the session, and with a hook every indirect call took `ps3_indirect_call_impl` -- a dozen environment probes and the uncached 3 MB hash lookup | **7 %** (5.5 % in it, 1.3 % in the hook) | |
+| rollback snapshots (`state_commit`) | 11-12 % | 0.49-0.60 ms per commit, ~2.2 commits per frame, 160-330 pages (0.6-1.3 MB) each; of a commit 0.27-0.35 ms is `GetWriteWatch` (the kernel's walk over the 105 MB state, 27,000 pages, and its TLB shootdowns: 0.14 ms with no other thread running, 0.27 ms with six, in a stand-alone test; one call or seven, with or without a separate reset: the same) and 0.17-0.27 ms the two page copies. About 90 % of it is the early commit, which runs while the frame waits for its translation; the commit at the frame boundary, on the critical path, is ~0.08 ms per frame |
+| state hashes | 0.1 % | the gameplay hash (`rb::state_game_hash`, ~25 KB) ~7 us per frame |
+| re-simulation | | 1.7-2.2 ms per re-simulated frame, 0.2-0.4 ms per displayed frame on average at RTT 100 |
+
+### What changed (ps3recomp patch 0061)
+
+| change | switch | effect |
+|---|---|---|
+| **lwmutex without a kernel call while it is free** (`runtime/ppu/ppu_lwm_fast.h`): an atomic word per lwmutex; a locker that finds it held sleeps on a condition variable; an unlock with waiters hands the lock to one of them (it stays locked, as the semaphore's release to a waiting thread did and as the PS3's kernel does). Any thread may unlock, a timed-out lock takes nothing, unlocking a free lock leaves it free -- as before. The guest's owner/recursion words are written as before | `PS3_LWM_FAST=0` | the 32 % above (1.7 ms of kernel calls per frame here), and the same on every thread that takes lwmutexes (the draw thread, the sound threads) |
+| **The indirect-call fast path with a hook installed**: the hook is consulted there, with the same target, at the same point and with the same one-shot bypass as on the full path (which now only sees unregistered or null targets and the diagnostics) | `PS3_ICALL_HOOK_FAST=0` | the 7 % of the online busy time above |
+| HLE dispatch: the registered handlers by index (rebuilt when one is added; the first registration of a NID still wins), the GCM pump returns at once when nothing is pending, the call-site memo of the breadcrumb 64 -> 1024 entries | -- | HLE dispatch 8.7 % -> 3.6 % of the busy time |
+| `-mcx16` for the runtime and `src/` (CMake, clang only): the MSVC STL gives every `<atomic>` function `target("cx16")`, and clang never inlines a function with target features its caller lacks -- every `std::atomic` load, store and compare-exchange in the runtime was an out-of-line call. Every x64 CPU Windows 10/11 runs on has CMPXCHG16B. The lifted code keeps its options | -- | the calls become the instructions they wrap |
+| Profiler: `PS3_HOST_PROF_WHO=<name>`, `PS3_HOST_PROF_DEPTH`, `PS3_HOST_PROF_US`; `PS3_GAME_THREAD_LOG` | off unless set | measurements only |
+
+Tried and left out: forcing the VMX float helpers inline made the functions
+that use them slower (13.8 % -> 16.2 % of the busy time; register pressure in
+the large lifted functions). The lifter is unchanged: the hot lifted loops
+(guest registers kept in `ctx`, two reservation-bitmap checks per store) would
+need register promotion and alias information, not a clearly safe change.
+The snapshot's copies could be halved (a shadow of page pointers), but nine
+tenths of them run in the flip wait already, and `GetWriteWatch`'s cost is
+the kernel's, the same for every call shape.
+
+Nothing here changes what the game computes: no lifted code, no guest-visible
+value, no floating point; the lwmutex keeps mutual exclusion and hands a
+contended lock on in turn, only faster when nobody waits.
+
+### Results
+
+Per displayed frame, the game's main thread, ms. "CPU" is its thread time
+(its own work), "game part" the wall time from the frame's release to its
+flip request (what the frame's translation waits for: the work plus the
+waits for the draw thread and the skinning jobs). Paired runs, the two
+builds at the same time, swapped every round; "before" is the series to 0059
+with the measuring tools only, "0061" the final build. Ranges are the
+rounds, the value in brackets their median.
+
+Offline fight, 8 logical processors each (4 cores / 8 threads, the two
+halves of the second CCD), 4 rounds, 12-17 other processors busy:
+
+| | before | 0061 |
+|---|---|---|
+| CPU, median | 6.11-7.32 (6.27) | **4.52-5.49 (4.56)** |
+| CPU, p99 | 7.31-8.94 (8.07) | **5.73-6.88 (6.06)** |
+| game part, median | 6.21-8.40 (6.56) | **5.48-7.49 (5.64)** |
+| game part, p99 | 8.64-13.57 (9.95) | **7.58-12.93 (8.87)** |
+| draw thread CPU (`NU::Draw::RequestManager`) | 3.0-3.5 | 2.7-3.1 |
+
+On 16 logical processors (8 rounds, 14-24 other processors busy) the CPU
+median went 5.98-8.07 (7.2) -> 4.87-6.19 (5.7). The game part gains less
+than the CPU: with its own work done sooner, the main thread waits longer for
+the draw thread (`sys_cond_wait`, 0.37 -> 0.56 ms per frame) -- that thread
+is the next limit (lifted code, 92 % of its time).
+
+Online, rollback (the default) at RTT 100 ms +-5, 3 % loss, one match per
+run, host and joiner on 8 logical processors each, 2 rounds (host / joiner
+values together), 17-23 other processors busy:
+
+| | before | 0061 |
+|---|---|---|
+| CPU, median | 9.04-10.77 | **5.95-6.70** |
+| CPU, p99 | 17.8-20.1 | **11.9-13.7** |
+| game part, median | 8.8-11.9 | **6.5-7.3** |
+| game part, p99 | 17.9-22.4 | **12.6-14.9** |
+| displayed frame time, p99 | 24.9-29.7 | **22.6-23.1** |
+| match fps | 54.9-58.0 | **57.5-58.8** |
+
+A slower PC by the test hooks of patch 0059 (+10 ms game, +2 ms
+translation, 8 logical processors, offline): 41.8 -> 44.0 fps. That stand-in
+adds a fixed 10 ms, so it understates the gain: on a core half as fast, the
+kernel calls and the dispatch overhead that are gone took twice as long.
+
+### Same game
+
+Nothing of what the game computes changed, and two PCs with and without
+0061 play each other. Proof (`tools/rollback_net_test.py`, three matches per
+run: Asuka vs Lili stage 20, then Lili vs Dragunov stage 24 and its rematch;
+RTT 100 / 3 % loss for rollback, RTT 30 / 1 % loss for lockstep):
+
+| pair (host / joiner) | mode | frames compared per side | result |
+|---|---|---|---|
+| 0061 / 0061 (twice) | rollback | 16,200 | 0 mismatching frames, the same three result hashes on both PCs |
+| 0061 / 0061 (twice) | lockstep | 16,200 | the same |
+| 0061 / main (twice), main / 0061 | rollback | 16,200 | the same |
+| 0061 / main, main / 0061 (twice) | lockstep | 16,200 | the same |
+
+"main" is main's own build (series to 0053, its CMake) from the same lift.
+Of each "twice", one run used the build before the lock moved into its own
+header (the same code).
+The rollback runs had 450-1,870 rollbacks per side (up to 7,378 re-simulated
+frames). The online measurements above were in sync too. Smoke quick PASS
+(one fps WARN under load in practice-select, as before), `tests/` OK,
+`tests/test_lwm_fast.py` runs the lock's own stress test (8 threads, every
+lock path, hand-over, timeouts, unlock by another thread).
+
+### What is left
+
+The main thread is now ~83 % lifted code. Its profile is flat (the 30
+hottest functions are a third of the busy time); the biggest single items are the
+draw packet writers and the out-of-line VMX helpers (7 %). Online, the
+snapshots (11-12 % of the busy time, nine tenths of it in the flip wait) and
+re-simulation (1.7-2.2 ms per re-simulated frame) remain; hashing is under
+0.1 ms a frame in both modes (lockstep: the netplay frame start, hash
+included, ~10 us). The draw thread's wait is the next step for the game
+part.

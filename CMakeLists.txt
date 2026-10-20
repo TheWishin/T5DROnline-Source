@@ -291,3 +291,23 @@ if(WIN32)
     # Every guest call is a host call, so recompiled call chains nest deeply.
     target_link_options(t5dr PRIVATE /STACK:268435456 /MAP:t5dr.map)
 endif()
+
+# clang-cl with the MSVC STL: <atomic> gives every one of its functions
+# target("cx16") (for _InterlockedCompareExchange128), and clang never inlines a
+# function with target features its caller lacks -- so without cx16 every
+# std::atomic load, store or compare-exchange in the runtime and in src/ is an
+# out-of-line call, also inside hot loops (the HLE dispatcher made one per
+# registered handler on every call; docs/RENDER_PERF.md "The game thread's own
+# time"). Every x64 CPU that runs Windows 10/11 has CMPXCHG16B (Windows 8.1
+# already required it), and no code is generated differently except that these
+# calls become the instructions they wrap. The lifted code keeps its options
+# (T5DR_LIFTED_ARCH; x86-64-v3 includes cx16).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_options(ps3recomp_runtime PRIVATE /clang:-mcx16)
+    get_target_property(_t5dr_srcs t5dr SOURCES)
+    if(GAME_SOURCES)
+        list(REMOVE_ITEM _t5dr_srcs ${GAME_SOURCES})
+    endif()
+    list(FILTER _t5dr_srcs INCLUDE REGEX "[.](c|cpp)$")
+    set_property(SOURCE ${_t5dr_srcs} APPEND PROPERTY COMPILE_OPTIONS /clang:-mcx16)
+endif()

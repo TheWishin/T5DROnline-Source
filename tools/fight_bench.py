@@ -38,7 +38,9 @@ the game's processors) at --hog-priority (default below normal); --ecoqos puts
 the game under EcoQoS (Windows' efficiency mode: lower clocks, like a slower
 or power-limited processor) for the whole run. The renderer's split per frame
 (draws, walker CPU, translation, D3D12 recording, present, GPU) comes from the
-frame log.
+frame log. The game's main thread per frame (its CPU time and the game part,
+release -> flip request; median and p99) comes from PS3_GAME_THREAD_LOG
+(ps3recomp patch 0061; older builds leave it out).
 """
 import argparse
 import csv
@@ -240,6 +242,36 @@ def set_ecoqos(pid):
     return ok
 
 
+def game_thread_window(path, lo, hi):
+    """The game's main thread per displayed frame in the QPC window [lo, hi] from
+    PS3_GAME_THREAD_LOG (ps3recomp patch 0061): CPU time (thread cycles between two
+    flip requests) and the game part (release -> flip request), median and p99, ms."""
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return {}
+    if not lines or not lines[0].startswith("#"):
+        return {}
+    hdr = dict(kv.split("=") for kv in lines[0][1:].split())
+    qf, tf = float(hdr["qpc_frequency"]), float(hdr["tsc_frequency"])
+    cpu, part = [], []
+    prev = None
+    for ln in lines[1:]:
+        f = ln.split()
+        if len(f) < 5:
+            continue
+        seq, req, rel, cyc, tid = int(f[0]), int(f[1]), int(f[2]), int(f[3]), int(f[4])
+        if prev and prev[4] == tid and seq == prev[0] + 1 and lo <= req <= hi:
+            cpu.append(1000.0 * (cyc - prev[3]) / tf)
+            if prev[1] <= rel <= req:
+                part.append(1000.0 * (req - rel) / qf)
+        prev = (seq, req, rel, cyc, tid)
+    if not cpu:
+        return {}
+    return {"n": len(cpu), "cpu_p50": pct(cpu, 50), "cpu_p99": pct(cpu, 99), "cpu_mean": sum(cpu) / len(cpu),
+            "part_p50": pct(part, 50) if part else float("nan"), "part_p99": pct(part, 99) if part else float("nan")}
+
+
 def renderer_split(rows):
     """Medians per frame (ms) of the frame log's renderer columns, or {} without them."""
     if not rows or "fifo_cpu_us" not in rows[0]:
@@ -329,6 +361,7 @@ def main():
         "T5_DF_STATUS_FILE": os.path.join(out, "status.json"),
         "PS3_FRAMELOG": os.path.join(out, "frames.csv"),
         "PS3_PAD_FILE": os.path.join(out, "pad.txt"),
+        "PS3_GAME_THREAD_LOG": os.path.join(out, "game_thread.log"),
     })
     if a.polite:
         env["PS3_AUDIO_MUTE"] = "1"
@@ -457,6 +490,11 @@ def main():
               "submit %.2f, present call %.2f" % (q["fifo_cpu_ms"], q["xlat_ms"], q["draw_ms"],
                                                    " (D3D12 calls %.2f)" % q["d3d_ms"] if "d3d_ms" in q else "",
                                                    q["submit_ms"], q["present_ms"]))
+    gt = game_thread_window(os.path.join(out, "game_thread.log"), lo, hi)
+    if gt:
+        res["game_thread"] = gt
+        print("game thread per frame: CPU median %(cpu_p50).2f ms, p99 %(cpu_p99).2f; game part (release -> flip "
+              "request) median %(part_p50).2f ms, p99 %(part_p99).2f (%(n)d frames)" % gt)
     slow = [ln.strip() for ln in open(os.path.join(out, "game.log"), errors="replace") if ln.startswith("[slow-frames]")]
     if slow:
         res["slow_frames"] = slow

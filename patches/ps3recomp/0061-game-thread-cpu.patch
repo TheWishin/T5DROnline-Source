@@ -1,0 +1,633 @@
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index b34bdc2..08c82ea 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -96,6 +96,45 @@ u32 cellGcm_lat_walk_seq(void) { return (u32)s_lat_walk_seq; }
+  * present's flush), only the vblank that completes it is still to come. A
+  * rollback layer may use that time (src/rollback early rollback). */
+ void cellGcm_note_presented(void) { s_presented_seq = s_lat_walk_seq; }
++
++/* PS3_GAME_THREAD_LOG=<file> (patch 0061, for measurements): one line per
++ * in-FIFO flip request, written by the thread that asks for it (the game's
++ * main thread): "seq request_qpc release_qpc cycles tid". release_qpc is when
++ * the frame was released (the previous flip completed, the K event of the
++ * latency log), so request - release is the frame's game part in wall time;
++ * cycles is QueryThreadCycleTime of the asking thread (TSC ticks while it ran:
++ * the difference between two lines is its CPU time for that displayed frame,
++ * re-simulated frames and snapshots included, waits excluded). The header
++ * gives the QPC and TSC rates. tools/game_thread_times.py reads it. */
++static volatile long long s_gt_release_qpc = 0;
++static int s_gt_on = -1;
++#ifdef _WIN32
++#include <intrin.h>   /* __rdtsc */
++static FILE* s_gt_file = NULL;
++static void gt_log_flip(LONG seq)
++{
++    if (s_gt_on == 0) return;
++    if (s_gt_on < 0) {
++        const char* p = getenv("PS3_GAME_THREAD_LOG");
++        s_gt_file = (p && *p) ? fopen(p, "w") : NULL;
++        s_gt_on = s_gt_file ? 1 : 0;
++        if (!s_gt_on) return;
++        LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
++        const unsigned long long t0 = __rdtsc();
++        do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 50 < f.QuadPart);
++        const unsigned long long t1 = __rdtsc();
++        fprintf(s_gt_file, "# qpc_frequency=%lld tsc_frequency=%llu\n", (long long)f.QuadPart,
++                (unsigned long long)((t1 - t0) * (unsigned long long)f.QuadPart / (unsigned long long)(b.QuadPart - a.QuadPart)));
++    }
++    LARGE_INTEGER q; QueryPerformanceCounter(&q);
++    ULONG64 cyc = 0; QueryThreadCycleTime(GetCurrentThread(), &cyc);
++    fprintf(s_gt_file, "%ld %lld %lld %llu %lu\n", (long)seq, (long long)q.QuadPart, (long long)s_gt_release_qpc,
++            (unsigned long long)cyc, (unsigned long)GetCurrentThreadId());
++    if ((seq & 63) == 0) fflush(s_gt_file);
++}
++#else
++static void gt_log_flip(LONG seq) { (void)seq; s_gt_on = 0; }
++#endif
+ static u32  s_debug_level = CELL_GCM_DEBUG_LEVEL0;
+ 
+ /* Display buffers */
+@@ -858,6 +897,13 @@ void cellGcm_request_tick(void)
+  * pending notifications untouched when another pump is active. */
+ void ppu_gcm_pump(void)
+ {
++    /* Every HLE call of every guest thread pumps (ppu_hle.cpp); almost always
++     * nothing is pending, and the claim below is three locked instructions on
++     * cache lines all those threads and the ticker share. Nothing pending =
++     * nothing to deliver, as the claim would have found (patch 0061). */
++#ifdef _WIN32
++    if (!*(volatile LONG*)&s_gcm_pending && !*(volatile LONG64*)&s_user_pending) return;
++#endif
+     if (!GCM_PUMP_TRY_ENTER()) return;
+     long p = (long)GCM_PENDING_TAKE();
+     u64 user = GCM_USER_PENDING_TAKE();
+@@ -880,6 +926,9 @@ void ppu_gcm_pump(void)
+         gcm_flip_wake();
+         rsx_pf_stamp(RSX_PF_FLIPDONE_QPC);
+         lat_log('K', "%u %ld", s_vblank_count, (long)s_lat_walk_seq);   /* the guest's next frame is released */
++#ifdef _WIN32
++        if (s_gt_on) { LARGE_INTEGER gq; QueryPerformanceCounter(&gq); s_gt_release_qpc = gq.QuadPart; }   /* PS3_GAME_THREAD_LOG */
++#endif
+         SetEvent((HANDLE)gcm_flip_event());        /* cellGcmSetWaitFlip */
+         host_sched_trace(HS_EV_FLIP_DONE, 0);
+         if (s_flip_handler_opd && g_ps3_guest_caller) {
+@@ -2669,7 +2718,8 @@ u32 cellGcm_display_buffer_count(void)
+ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
+ {
+     rsx_pf_guest_flip();   /* PS3_FRAMELOG: the guest asked for a flip */
+-    if (in_fifo) { const LONG sq = InterlockedIncrement(&s_lat_req_seq); if (lat_log_enabled()) lat_log_flip_call((unsigned)sq); }
++    if (in_fifo) { const LONG sq = InterlockedIncrement(&s_lat_req_seq); if (lat_log_enabled()) lat_log_flip_call((unsigned)sq);
++                   gt_log_flip(sq); }
+     if (in_fifo) {   /* remember when, for the frame the walker will reach */
+         LARGE_INTEGER q; QueryPerformanceCounter(&q);
+         const unsigned h = __atomic_fetch_add(&s_flip_call_head, 1u, __ATOMIC_RELAXED);
+diff --git a/runtime/ppu/ppu_hle.cpp b/runtime/ppu/ppu_hle.cpp
+index 3453b9d..d0ba231 100644
+--- a/runtime/ppu/ppu_hle.cpp
++++ b/runtime/ppu/ppu_hle.cpp
+@@ -103,6 +103,47 @@ extern "C" void ps3_hle_register_ctx(uint32_t nid, const char* name, hle_ctx_fn
+     }
+ }
+ 
++/* nid -> index of its FIRST registration in g_ctx (the dispatch's linear scan
++ * found the first one), rebuilt when a registration was added; -1 = none.
++ * The scan compared the NID against every registered handler on every HLE
++ * call (patch 0061). Old indexes are never freed: a reader may still hold one. */
++struct HleCtxIndex { uint32_t count, mask; int32_t slot[1]; };
++static std::atomic<const HleCtxIndex*> g_ctx_index{nullptr};
++static std::mutex g_ctx_index_lock;
++static int hle_ctx_find(uint32_t nid)
++{
++    const uint32_t n = g_ctx_count.load(std::memory_order_acquire);
++    const HleCtxIndex* ix = g_ctx_index.load(std::memory_order_acquire);
++    if (__builtin_expect(!ix || ix->count != n, 0)) {
++        std::lock_guard<std::mutex> lk(g_ctx_index_lock);
++        ix = g_ctx_index.load(std::memory_order_acquire);
++        if (!ix || ix->count != n) {
++            uint32_t size = 64;
++            while (size < 4 * n) size <<= 1;
++            HleCtxIndex* nx = (HleCtxIndex*)malloc(sizeof(HleCtxIndex) + (size - 1) * sizeof(int32_t));
++            if (!nx) {   /* no memory: the plain scan */
++                for (uint32_t i = 0; i < n; i++) if (g_ctx[i].nid == nid) return (int)i;
++                return -1;
++            }
++            nx->count = n; nx->mask = size - 1;
++            for (uint32_t i = 0; i < size; i++) nx->slot[i] = -1;
++            for (uint32_t i = 0; i < n; i++) {
++                for (uint32_t h = (g_ctx[i].nid * 2654435761u) & nx->mask;; h = (h + 1) & nx->mask) {
++                    if (nx->slot[h] < 0) { nx->slot[h] = (int32_t)i; break; }
++                    if (g_ctx[nx->slot[h]].nid == g_ctx[i].nid) break;   /* a later registration: the first stays */
++                }
++            }
++            g_ctx_index.store(nx, std::memory_order_release);
++            ix = nx;
++        }
++    }
++    for (uint32_t h = (nid * 2654435761u) & ix->mask;; h = (h + 1) & ix->mask) {
++        const int32_t k = ix->slot[h];
++        if (k < 0) return -1;
++        if (g_ctx[k].nid == nid) return k;
++    }
++}
++
+ /* Is this NID implemented here? Lets a host boot harness that owns its own
+  * import table decide, per import, whether to dispatch into these libraries or
+  * fall back to its own stub -- without calling ps3_hle_call and getting an
+@@ -384,8 +425,8 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
+         }
+     }
+ 
+-    for (uint32_t i = 0; i < g_ctx_count; i++)
+-        if (g_ctx[i].nid == nid) {
++    if (const int ci = hle_ctx_find(nid); ci >= 0)
++        if (const uint32_t i = (uint32_t)ci; true) {
+             ps3_msf("hle:%s", g_ctx[i].name);
+             /* Record the name here too. This loop dispatches every
+              * ps3_hle_register_ctx handler -- which is the whole sysPrxForUser
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index b70c640..c1c45cd 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2391,10 +2391,13 @@ extern "C" uint32_t ppu_prof_resolve_host(void* ra)
+ /* The HLE and lv2 dispatchers stamp every call with its resolved call site (the
+  * watchdog's breadcrumb), a binary search over every lifted function per call.
+  * The call sites are few, so memoise them per thread. */
+-static PPU_THREAD_LOCAL struct { void* ra; uint32_t guest; } s_resolve_memo[64];
++/* 1024 entries (patch 0061): with 64 the import stubs' return addresses
++ * evicted each other and many HLE calls paid the binary search. */
++static PPU_THREAD_LOCAL struct { void* ra; uint32_t guest; } s_resolve_memo[1024];
+ extern "C" uint32_t ppu_prof_resolve_host_cached(void* ra)
+ {
+-    auto& m = s_resolve_memo[((uintptr_t)ra >> 2) & 63];
++    const uintptr_t k = (uintptr_t)ra;
++    auto& m = s_resolve_memo[((k >> 2) ^ (k >> 12)) & 1023];
+     if (m.ra == ra) return m.guest;
+     const uint32_t g = ppu_prof_resolve_host(ra);
+     if (g_inv_n) { m.ra = ra; m.guest = g; }
+@@ -2836,13 +2839,27 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
+ {
+     {   int slow = g_icall_slow;
+         if (__builtin_expect(slow < 0, 0)) slow = icall_slow_init();
+-        /* an installed ps3_icall_hook sees every call: full path */
+-        if (__builtin_expect(!slow && !ps3_icall_hook, 1)) {
++        /* An installed ps3_icall_hook sees every call, here as in the full
++         * path below: with the same target (a registered function: the full
++         * path's null/OPD handling never applies to it), at the same point
++         * (after the explicit target is taken, before the dispatch), with the
++         * same one-shot bypass. It used to send every indirect call to the
++         * full path, and the rollback netcode installs one for the whole
++         * session -- ~7 % of the main thread's busy time online went to the
++         * full path's probes and its uncached lookup (patch 0061).
++         * PS3_ICALL_HOOK_FAST=0: the full path again while a hook is set. */
++        static int hook_fast = -1;
++        if (__builtin_expect(hook_fast < 0, 0)) { const char* e = getenv("PS3_ICALL_HOOK_FAST"); hook_fast = !(e && *e == '0'); }
++        if (__builtin_expect(!slow && (!ps3_icall_hook || hook_fast), 1)) {
+             const uint32_t addr = g_icall_target_set ? g_icall_target : (uint32_t)ctx->ctr;
+             ppu_fn fn = addr ? ppu_lookup_cached(addr) : nullptr;
+             if (__builtin_expect(fn != nullptr && s_icall_depth <= 4000, 1)) {
+                 g_icall_target_set = 0;
+                 g_active_ctx = ctx;
++                if (ps3_icall_hook) {
++                    if (g_icall_nohook) g_icall_nohook = 0;
++                    else if (ps3_icall_hook(ctx, addr)) return;
++                }
+                 s_icall_depth++;
+                 if (g_vcall_sp < 128) g_vcall_stk[g_vcall_sp] = addr;
+                 g_vcall_sp++;
+diff --git a/runtime/ppu/ppu_lwm_fast.h b/runtime/ppu/ppu_lwm_fast.h
+new file mode 100644
+index 0000000..8ec1462
+--- /dev/null
++++ b/runtime/ppu/ppu_lwm_fast.h
+@@ -0,0 +1,84 @@
++/*
++ * ps3recomp - the host side of a guest lwmutex without a system call while it
++ * is free (patch 0061, used by ppu_sysprx.cpp).
++ *
++ * The lwmutex was a binary semaphore: two kernel calls for every lock/unlock
++ * pair (a zero-timeout wait and a release) even when nobody else wanted the
++ * lock -- about a third of a Tekken 5 DR fight frame's work on the game's main
++ * thread. Now one atomic word per lwmutex:
++ *
++ *   st 0 = free, 1 = locked, 2 = locked and maybe waited for
++ *
++ * lock:   0 -> 1 with a compare-exchange. Taken: register as a waiter on the
++ *         contended path (one mutex and condition variable for every lwmutex:
++ *         contention is rare) and sleep until an unlock hands the lock over.
++ * unlock: 1 -> 0 with a compare-exchange. Waiters (st 2): hand the lock to one
++ *         of them -- it stays locked, the waiter returns owning it, as the
++ *         semaphore's release to a waiting thread did and as the PS3's kernel
++ *         hands a contended lwmutex to the next waiter. Nobody waiting: free.
++ *
++ * Kept from the semaphore: any thread may unlock (guest code hands lwmutex
++ * ownership between threads), a timed-out lock takes nothing (ETIMEDOUT for
++ * the caller), and unlocking a free lock leaves it free. Recursion and the
++ * guest-visible owner fields stay with the caller. tests/c/lwm_fast_test.cpp
++ * tests this header alone.
++ */
++#ifndef PS3RECOMP_PPU_LWM_FAST_H
++#define PS3RECOMP_PPU_LWM_FAST_H
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
++#include <stdint.h>
++
++struct LwmFast {
++    std::atomic<int> st{ 0 };   /* 0 free, 1 locked, 2 locked + maybe waiters */
++    int nwait = 0, tokens = 0;  /* under lwm_fast_q().mu: waiters, hand-overs not yet taken */
++};
++
++struct LwmFastQueue { std::mutex mu; std::condition_variable cv; };
++static inline LwmFastQueue& lwm_fast_q() { static LwmFastQueue q; return q; }
++
++#define LWM_FAST_FOREVER 0xFFFFFFFFu
++
++static inline int lwm_fast_try(LwmFast* l)
++{
++    int z = 0;
++    return l->st.compare_exchange_strong(z, 1, std::memory_order_acquire) ? 1 : 0;
++}
++
++/* 1 = acquired, 0 = timed out after `ms` milliseconds (LWM_FAST_FOREVER: no timeout) */
++static inline int lwm_fast_acquire(LwmFast* l, uint32_t ms)
++{
++    if (lwm_fast_try(l)) return 1;
++    LwmFastQueue& q = lwm_fast_q();
++    std::unique_lock<std::mutex> lk(q.mu);
++    if (l->st.exchange(2, std::memory_order_acquire) == 0) return 1;   /* freed meanwhile: ours (the unlock takes the slow path once) */
++    l->nwait++;
++    auto handed = [&] { return l->tokens > 0; };
++    bool got = true;
++    if (ms == LWM_FAST_FOREVER) q.cv.wait(lk, handed);
++    else got = q.cv.wait_for(lk, std::chrono::milliseconds(ms), handed);
++    l->nwait--;
++    if (!got) return 0;                       /* withdrawn: the owner's unlock sees one waiter less */
++    l->tokens--;                              /* handed over: still locked, now ours */
++    if (l->nwait == 0 && l->tokens == 0) l->st.store(1, std::memory_order_relaxed);
++    return 1;
++}
++
++static inline void lwm_fast_release(LwmFast* l)
++{
++    int one = 1;
++    if (l->st.compare_exchange_strong(one, 0, std::memory_order_release)) return;
++    LwmFastQueue& q = lwm_fast_q();
++    std::lock_guard<std::mutex> lk(q.mu);
++    if (l->nwait > l->tokens) {               /* hand the lock to a waiter: it stays locked */
++        l->tokens++;
++        q.cv.notify_all();
++    } else {
++        l->st.store(0, std::memory_order_release);   /* nobody waits (or a free lock released again: harmless) */
++    }
++}
++
++#endif
+diff --git a/runtime/ppu/ppu_sysprx.cpp b/runtime/ppu/ppu_sysprx.cpp
+index 402731c..4c26ec2 100644
+--- a/runtime/ppu/ppu_sysprx.cpp
++++ b/runtime/ppu/ppu_sysprx.cpp
+@@ -123,6 +123,11 @@ static void sys_process_is_stack(ppu_context* ctx)
+ 
+ #if PS3_LWM_REAL
+ static HANDLE lwm_sem(uint32_t addr);   /* fwd (defined below) */
++#include "ppu_lwm_fast.h"                /* the lock without a system call (patch 0061) */
++struct LwmSlot;
++static int lwm_fast(void);
++static LwmSlot* lwm_slot(uint32_t addr);
++static void lwm_fast_release(LwmSlot* sl);
+ #endif
+ static void sys_lwmutex_create(ppu_context* ctx)
+ {
+@@ -142,7 +147,8 @@ static void sys_lwmutex_create(ppu_context* ctx)
+     /* A recreate at a reused address must not inherit a locked slot (e.g. the
+      * previous holder exited while holding). Force the semaphore signaled;
+      * over-release of an already-free sem fails harmlessly at max count 1. */
+-    { HANDLE s = lwm_sem(lwm); if (s) ReleaseSemaphore(s, 1, NULL); }
++    if (lwm_fast()) { LwmSlot* sl = lwm_slot(lwm); if (sl) lwm_fast_release(sl); }
++    else { HANDLE s = lwm_sem(lwm); if (s) ReleaseSemaphore(s, 1, NULL); }
+ #endif
+     ctx->gpr[3] = 0;
+ }
+@@ -163,7 +169,27 @@ static void sys_lwmutex_create(ppu_context* ctx)
+ #define LWM_HASH 65536u
+ static struct LwmSlot { volatile long addr; HANDLE sem;
+     volatile long holder; volatile long long acq_us; volatile long long acq_fences;
+-    volatile unsigned long long acq_cpu_us; } g_lwm[LWM_HASH];
++    volatile unsigned long long acq_cpu_us;
++    LwmFast fast;                   /* PS3_LWM_FAST: the host lock (ppu_lwm_fast.h) */
++} g_lwm[LWM_HASH];
++/* PS3_LWM_FAST (default 1, patch 0061): lock and unlock without a system call
++ * while nobody waits (ppu_lwm_fast.h). The semaphore cost two kernel calls a
++ * lock/unlock pair (NtWaitForSingleObject with a zero timeout,
++ * NtReleaseSemaphore) even when the lock was free -- in a Tekken fight ~30 %
++ * of the main thread's busy time (stack profile, PS3_HOST_PROF_DEPTH). A
++ * contended lock is still handed to a waiter by the unlock; timeouts,
++ * cross-thread unlock and the harmless over-release of a free lock behave as
++ * before. 0 = the semaphore. */
++static int lwm_fast(void)
++{
++    static std::atomic<int> v{ -1 };
++    int f = v.load(std::memory_order_relaxed);
++    if (f < 0) { const char* e = getenv("PS3_LWM_FAST"); f = (e && *e == '0') ? 0 : 1; v.store(f); }
++    return f;
++}
++static int lwm_fast_acquire(LwmSlot* sl, DWORD ms) { return lwm_fast_acquire(&sl->fast, (uint32_t)ms); }   /* INFINITE == LWM_FAST_FOREVER */
++static int lwm_fast_try(LwmSlot* sl) { return lwm_fast_try(&sl->fast); }
++static void lwm_fast_release(LwmSlot* sl) { lwm_fast_release(&sl->fast); }
+ extern "C" { extern volatile long long g_gcm_ref_pub_count;    /* cellGcmSys.c */
+              unsigned long long ppu_thread_cpu_us(unsigned tid);   /* sys_ppu_thread.c */
+              unsigned ppu_thread_prof_pc(unsigned tid); }
+@@ -218,6 +244,21 @@ static HANDLE lwm_sem(uint32_t addr)
+     }
+     return nullptr;   /* table full (raise LWM_HASH) */
+ }
++static LwmSlot* lwm_slot(uint32_t addr)
++{
++    if (!addr) return nullptr;
++    uint32_t h = (addr * 2654435761u) & (LWM_HASH - 1);
++    for (uint32_t i = 0; i < LWM_HASH; i++) {
++        uint32_t idx = (h + i) & (LWM_HASH - 1);
++        long cur = g_lwm[idx].addr;
++        if ((uint32_t)cur == addr) return &g_lwm[idx];
++        if (cur == 0) {
++            if (lwm_sem(addr)) return lwm_slot(addr);   /* claims the slot (and its semaphore) */
++            return nullptr;
++        }
++    }
++    return nullptr;
++}
+ #else
+ static void* lwm_sem(uint32_t) { return nullptr; }
+ #endif
+@@ -236,6 +277,42 @@ static void sys_lwmutex_lock(ppu_context* ctx)
+      * been ignoring r4 and always waiting INFINITE, which defeats that pattern. */
+     uint64_t timeout_us = ctx->gpr[4];
+ #if PS3_LWM_REAL
++    if (lwm_fast()) {
++        LwmSlot* sl = lwm_slot(lwm);
++        if (sl) {
++            if (vm_read32(lwm + LWM_OWNER) == self && vm_read32(lwm + LWM_RECUR) > 0) {
++                vm_write32(lwm + LWM_RECUR, vm_read32(lwm + LWM_RECUR) + 1);
++                ctx->gpr[3] = 0;
++                return;
++            }
++            if (!lwm_fast_try(sl)) {
++                static long _bl = 0; long _b = ++_bl;
++                if (g_nd_inpump || _b <= 40) fprintf(stderr, "[LWM-BLOCK] tid=%llu lwm=0x%08X owner=%u recur=%u tmo=%lluus\n",
++                    (unsigned long long)ctx->thread_id, lwm, vm_read32(lwm + LWM_OWNER), vm_read32(lwm + LWM_RECUR),
++                    (unsigned long long)timeout_us);
++                if (lwm_trace()) { long h = sl->holder; long long held = h ? (lwm_now_us() - sl->acq_us) : 0;
++                    fprintf(stderr, "[LWM-CONVOY] tid=%llu BLOCKs lwm=0x%08X -> held-by-tid=%ld for %lldus (guest-owner=%u)\n",
++                        (unsigned long long)ctx->thread_id, lwm, h, held, vm_read32(lwm + LWM_OWNER)); fflush(stderr); }
++                long long _blk_start = lwm_trace() ? lwm_now_us() : 0;
++                DWORD ms = INFINITE;
++                if (timeout_us) { uint64_t m = (timeout_us + 999) / 1000; ms = m > 0xFFFFFFFEull ? 0xFFFFFFFEu : (DWORD)m; }
++                if (!lwm_fast_acquire(sl, ms)) {
++                    if (lwm_trace()) fprintf(stderr, "[LWM-CONVOY] tid=%llu TIMED-OUT on lwm=0x%08X after %lldus (ETIMEDOUT, retry)\n",
++                        (unsigned long long)ctx->thread_id, lwm, lwm_now_us() - _blk_start);
++                    ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Bu;
++                    return;
++                }
++                if (lwm_trace()) fprintf(stderr, "[LWM-CONVOY] tid=%llu ACQUIRED lwm=0x%08X after waiting %lldus\n",
++                    (unsigned long long)ctx->thread_id, lwm, lwm_now_us() - _blk_start);
++                if (g_nd_inpump || _b <= 40) fprintf(stderr, "[LWM-GOT] tid=%llu lwm=0x%08X\n", (unsigned long long)ctx->thread_id, lwm);
++            }
++            if (lwm_trace()) { sl->holder = (long)self; sl->acq_us = lwm_now_us(); sl->acq_fences = g_gcm_ref_pub_count; sl->acq_cpu_us = ppu_thread_cpu_us(self); }
++        }
++        vm_write32(lwm + LWM_OWNER, self);
++        vm_write32(lwm + LWM_RECUR, 1);
++        ctx->gpr[3] = 0;
++        return;
++    }
+     HANDLE s = lwm_sem(lwm);
+     if (s) {
+         /* Recursive re-lock by the current holder: bump the count, no wait.
+@@ -283,14 +360,15 @@ static void sys_lwmutex_trylock(ppu_context* ctx)
+     uint32_t lwm = (uint32_t)ctx->gpr[3];
+     uint32_t self = LWM_SELF(ctx);
+ #if PS3_LWM_REAL
+-    HANDLE s = lwm_sem(lwm);
+-    if (s) {
++    LwmSlot* fsl = lwm_fast() ? lwm_slot(lwm) : nullptr;
++    HANDLE s = fsl ? nullptr : lwm_sem(lwm);
++    if (fsl || s) {
+         if (vm_read32(lwm + LWM_OWNER) == self && vm_read32(lwm + LWM_RECUR) > 0) {
+             vm_write32(lwm + LWM_RECUR, vm_read32(lwm + LWM_RECUR) + 1);
+             ctx->gpr[3] = 0;
+             return;
+         }
+-        if (WaitForSingleObject(s, 0) != WAIT_OBJECT_0) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Bu; return; } // EBUSY
++        if (fsl ? !lwm_fast_try(fsl) : WaitForSingleObject(s, 0) != WAIT_OBJECT_0) { ctx->gpr[3] = (uint64_t)(int64_t)(int32_t)0x8001000Bu; return; } // EBUSY
+     }
+     if (lwm_trace()) { struct LwmSlot* sl = lwm_find(lwm); if (sl) { sl->holder = (long)self; sl->acq_us = lwm_now_us(); sl->acq_fences = g_gcm_ref_pub_count; sl->acq_cpu_us = ppu_thread_cpu_us(self); } }
+ #endif
+@@ -337,11 +415,16 @@ static void sys_lwmutex_unlock(ppu_context* ctx)
+                 fprintf(stderr, "%s\n", b); fflush(stderr);
+             }
+             sl->holder = 0; } }
++    if (lwm_fast()) {   /* any thread may release; a free lock released again stays free */
++        LwmSlot* sl = lwm_slot(lwm);
++        if (sl) lwm_fast_release(sl);
++    } else {
+     HANDLE s = lwm_sem(lwm);
+     /* Semaphore release works from ANY thread (unlike a CS) -- guest code
+      * hands lwmutex ownership across threads. Over-release (unlock of a free
+      * mutex) fails harmlessly at the max count of 1. */
+     if (s) ReleaseSemaphore(s, 1, NULL);
++    }
+ #endif
+     ctx->gpr[3] = 0;
+ }
+@@ -448,8 +531,9 @@ static void sys_lwcond_wait(ppu_context* ctx)
+     uint32_t lwmutex = vm_read32(lwcond + 0x00);
+     int32_t rc_out = 0;
+ #if PS3_LWM_REAL
+-    HANDLE s = lwm_sem(lwmutex);
+-    if (s) {
++    LwmSlot* fsl = lwm_fast() ? lwm_slot(lwmutex) : nullptr;
++    HANDLE s = fsl ? nullptr : lwm_sem(lwmutex);
++    if (fsl || s) {
+         const bool poll = lwc_poll_mode();
+         if (lwc_log() && s_lwc_logged++ < lwc_log())
+             fprintf(stderr, "[lwcond] wait ea=0x%08X lwm=0x%08X timeout=%llu tid=%u\n", lwcond, lwmutex,
+@@ -463,7 +547,7 @@ static void sys_lwcond_wait(ppu_context* ctx)
+         uint32_t rc  = vm_read32(lwmutex + LWM_RECUR);
+         vm_write32(lwmutex + LWM_RECUR, 0);
+         vm_write32(lwmutex + LWM_OWNER, 0);
+-        ReleaseSemaphore(s, 1, NULL);
++        if (fsl) lwm_fast_release(fsl); else ReleaseSemaphore(s, 1, NULL);
+         if (poll) {
+             Sleep(1);
+         } else {
+@@ -481,7 +565,7 @@ static void sys_lwcond_wait(ppu_context* ctx)
+                 s_lwc_cv.wait(lk, ready);
+             }
+         }
+-        WaitForSingleObject(s, INFINITE);
++        if (fsl) lwm_fast_acquire(fsl, INFINITE); else WaitForSingleObject(s, INFINITE);
+         vm_write32(lwmutex + LWM_OWNER, own);
+         vm_write32(lwmutex + LWM_RECUR, rc ? rc : 1);
+     }
+diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
+index e755453..e8db428 100644
+--- a/runtime/ppu/tests/boot_main.cpp
++++ b/runtime/ppu/tests/boot_main.cpp
+@@ -1510,7 +1510,17 @@ static DWORD WINAPI hang_watchdog(LPVOID)
+  * histogram: one line per (thread, location) with the sample count. A RIP in
+  * this module is printed as an RVA (symbolize with t5dr.map); one elsewhere
+  * as the module name plus the first return address into this module found
+- * on the stack, which says which runtime call is waiting there. */
++ * on the stack, which says which runtime call is waiting there.
++ *
++ * PS3_HOST_PROF_WHO=ticker samples the ticker only; any other value samples
++ * the threads whose description contains it ("main" = the guest's primary
++ * thread, which runs the frame). PS3_HOST_PROF_DEPTH=N (3..64): every sample's
++ * whole host stack, up to N frames, instead of the histogram -- one line per
++ * sample, "S tid n f0 f1 ...": an RVA in this module, or M<k>+offset in module
++ * k of the M lines (tools/host_prof.py turns them into self and inclusive time
++ * per function). PS3_HOST_PROF_US=n samples every n microseconds (default
++ * 1000; below 1000 the sampler spins between samples). */
++typedef HRESULT (WINAPI *hp_GetThreadDescription_fn)(HANDLE, PWSTR*);
+ static DWORD WINAPI host_prof_thread(LPVOID arg)
+ {
+     const char* out_path = (const char*)arg;
+@@ -1535,6 +1545,23 @@ static DWORD WINAPI host_prof_thread(LPVOID arg)
+     int t_start = 40, t_end = 60;
+     { const char* e = getenv("PS3_HOST_PROF_AT"); int a = 0, b = 0;
+       if (e && sscanf(e, "%d,%d", &a, &b) == 2 && b > a) { t_start = a; t_end = b; } }
++    const char* who_s = getenv("PS3_HOST_PROF_WHO");
++    wchar_t who_w[64] = L"";
++    if (who_s && *who_s && strcmp(who_s, "ticker") != 0)
++        MultiByteToWideChar(CP_UTF8, 0, who_s, -1, who_w, 64);
++    hp_GetThreadDescription_fn get_desc = (hp_GetThreadDescription_fn)(void*)
++        GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription");
++    int depth = 0;
++    { const char* e = getenv("PS3_HOST_PROF_DEPTH"); if (e) depth = atoi(e);
++      if (depth < 3) depth = 0;
++      if (depth > 64) depth = 64; }
++    unsigned period_us = 1000;
++    { const char* e = getenv("PS3_HOST_PROF_US"); if (e && atoi(e) >= 50) period_us = (unsigned)atoi(e); }
++    /* stack mode: raw samples, written at the end */
++    uint32_t* raw = NULL; size_t raw_n = 0, raw_cap = 0;
++    HMODULE mods[64]; int nmods = 0;
++    if (depth) { raw_cap = (size_t)16 << 20; raw = (uint32_t*)malloc(raw_cap * sizeof(uint32_t)); if (!raw) depth = 0; }
++    LARGE_INTEGER hp_qf; QueryPerformanceFrequency(&hp_qf);
+     Sleep((DWORD)t_start * 1000);
+     struct Bin { DWORD tid; uint64_t key; uint64_t caller; unsigned n; };
+     const unsigned NB = 1u << 16;
+@@ -1558,6 +1585,16 @@ static DWORD WINAPI host_prof_thread(LPVOID arg)
+                     if (te.th32OwnerProcessID != pid || te.th32ThreadID == me || nth >= 256) continue;
+                     { static int who = -1; if (who < 0) { const char* w = getenv("PS3_HOST_PROF_WHO"); who = (w && !strcmp(w, "ticker")) ? 1 : 0; }
+                       if (who == 1 && te.th32ThreadID != g_ticker_tid) continue; }
++                    if (who_w[0]) {   /* by thread description */
++                        int match = 0;
++                        HANDLE qh = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
++                        if (qh && get_desc) {
++                            PWSTR d = NULL;
++                            if (SUCCEEDED(get_desc(qh, &d)) && d) { match = wcsstr(d, who_w) != NULL; LocalFree(d); }
++                        }
++                        if (qh) CloseHandle(qh);
++                        if (!match) continue;
++                    }
+                     HANDLE th = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
+                                            THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+                     if (th) { ths[nth].tid = te.th32ThreadID; ths[nth].h = th; nth++; }
+@@ -1580,7 +1617,43 @@ static DWORD WINAPI host_prof_thread(LPVOID arg)
+                                        (LPCSTR)rip, &m);
+                     key = 0x8000000000000000ull | (uint64_t)(uintptr_t)m;
+                 }
+-                {
++                if (depth && raw_n + (size_t)depth + 3 < raw_cap) {
++                    /* the whole stack, leaf first */
++                    const size_t hdr = raw_n;
++                    raw[raw_n++] = 0x53000000u;            /* 'S' + frame count, set below */
++                    raw[raw_n++] = ths[i].tid;
++                    CONTEXT uc = ctx;
++                    int got = 0;
++                    for (int d = 0; d < depth && uc.Rip; d++) {
++                        const uintptr_t r = (uintptr_t)uc.Rip;
++                        uint32_t v;
++                        if (r >= lo && r < hi) v = (uint32_t)(r - lo);
++                        else {
++                            HMODULE m = NULL;
++                            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)r, &m);
++                            int k = 0;
++                            while (k < nmods && mods[k] != m) k++;
++                            if (k == nmods && nmods < 63) mods[nmods++] = m;
++                            if (k > 62) k = 63;
++                            const uintptr_t off = m ? r - (uintptr_t)m : 0;
++                            v = 0x80000000u | ((uint32_t)k << 24) | (uint32_t)(off & 0xFFFFFFu);
++                        }
++                        raw[raw_n++] = v; got++;
++                        DWORD64 image = 0;
++                        PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(uc.Rip, &image, NULL);
++                        if (!fe) {
++                            MEMORY_BASIC_INFORMATION mbi;
++                            if (!VirtualQuery((LPCVOID)uc.Rsp, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) break;
++                            uc.Rip = *(DWORD64*)uc.Rsp;
++                            uc.Rsp += 8;
++                        } else {
++                            PVOID hd = NULL; DWORD64 est = 0;
++                            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, uc.Rip, fe, &uc, &hd, &est, NULL);
++                        }
++                    }
++                    raw[hdr] = 0x53000000u | (uint32_t)got;
++                } else if (!depth) {
+                     /* Unwind (x64 unwind tables) to the first two caller
+                      * frames in this module: which runtime call is waiting
+                      * there, or which function a hot leaf is working for. */
+@@ -1605,6 +1678,7 @@ static DWORD WINAPI host_prof_thread(LPVOID arg)
+                 }
+             }
+             ResumeThread(ths[i].h);
++            if (depth) { total++; continue; }
+             uint64_t hsh = (key * 0x9E3779B97F4A7C15ull) ^ (caller * 0xC2B2AE3D27D4EB4Full) ^ ths[i].tid;
+             unsigned slot = (unsigned)(hsh >> 40) & (NB - 1);
+             unsigned probes = 0;
+@@ -1617,7 +1691,41 @@ static DWORD WINAPI host_prof_thread(LPVOID arg)
+             bins[slot].n++;
+             total++;
+         }
+-        Sleep(1);
++        if (period_us >= 1000) Sleep(period_us / 1000);
++        else {   /* spin to the next sample: finer than the 1 ms timer */
++            LARGE_INTEGER a0, a1; QueryPerformanceCounter(&a0);
++            const LONGLONG until = a0.QuadPart + (LONGLONG)period_us * hp_qf.QuadPart / 1000000;
++            do { YieldProcessor(); QueryPerformanceCounter(&a1); } while (a1.QuadPart < until);
++        }
++    }
++    if (depth) {
++        FILE* f = fopen(out_path, "w");
++        if (f) {
++            fprintf(f, "# stacks samples=%llu depth=%d period_us=%u window=%d..%ds image_base=0x%llX\n",
++                    total, depth, period_us, t_start, t_end, (unsigned long long)lo);
++            for (int k = 0; k < nmods; k++) {
++                char path[MAX_PATH] = "?";
++                if (mods[k]) GetModuleFileNameA(mods[k], path, sizeof path);
++                const char* b = strrchr(path, '\\');
++                fprintf(f, "M %d %s\n", k, b ? b + 1 : path);
++            }
++            for (size_t i = 0; i < raw_n;) {
++                const uint32_t n = raw[i] & 0xFFFFFFu;
++                fprintf(f, "S %u %u", raw[i + 1], n);
++                for (uint32_t j = 0; j < n; j++) {
++                    const uint32_t v = raw[i + 2 + j];
++                    if (v & 0x80000000u) fprintf(f, " M%u+%X", (v >> 24) & 0x7Fu, v & 0xFFFFFFu);
++                    else fprintf(f, " %X", v);
++                }
++                fputc('\n', f);
++                i += 2 + n;
++            }
++            fclose(f);
++            fprintf(stderr, "[host-prof] %llu stack samples -> %s\n", total, out_path);
++        }
++        for (int i = 0; i < nth; i++) CloseHandle(ths[i].h);
++        free(raw); free(bins);
++        return 0;
+     }
+     FILE* f = fopen(out_path, "w");
+     if (f) {

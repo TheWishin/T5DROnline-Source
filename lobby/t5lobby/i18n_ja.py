@@ -1116,6 +1116,10 @@ MESSAGES = {
     "Your opponent's game did not get to the fight.": "相手のゲームが対戦開始までたどり着けませんでした。",
     "Your opponent's game was restarted; the match cannot go on.":
         "相手のゲームが再起動されたため、対戦を続けられません。",
+    "Loading the fight took too long on this PC (slow disk or a busy PC?); the match was stopped.":
+        "このPCで対戦の読み込みに時間がかかりすぎました（ディスクが遅いか、PCの負荷が高い？）。対戦は中止されました。",
+    "Loading the fight took too long on your opponent's PC; the match was stopped.":
+        "相手のPCで対戦の読み込みに時間がかかりすぎました。対戦は中止されました。",
     "Your opponent's game could not be reached (firewall or router?).":
         "相手のゲームに接続できませんでした（ファイアウォールかルーター？）。",
     "Your opponent's game is a different build.": "相手のゲームは別のビルドです。",

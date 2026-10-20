@@ -59,6 +59,19 @@ part is in the README's status table.
 - **You stay logged in when the lobby server restarts.** A saved login was forgotten whenever the server could not
   be reached (an update, an outage). Now the launcher keeps it and logs you in again by itself once the server is
   back (not during a fight, and not after you logged out).
+- **A slow PC no longer desyncs the whole match.** Online, each frame waits until the game's
+  loading threads are done, so a load finishes in the same frame on both PCs. That wait gave up
+  after 2 seconds: on a PC with a slow disk or a very busy CPU the game then went on with its
+  loads still running, the fight's intro ended a frame earlier or later than on the other PC,
+  and every frame of the fight was apart (the match was voided). Now the frame waits as long as
+  the loading takes, and the other game waits for it (it knows the opponent is loading, so it
+  does not give up on it). A load that really hangs ends the match after 2 minutes with
+  "Loading the fight took too long" instead of a desync. Three more places that gave up after a
+  fixed time and could part the two games now wait or end the match cleanly: with rollback a game
+  no longer runs ahead on guessed input beyond its limit while the opponent is slow, the step before the
+  character select waits for the title's autosave however long it takes, and a pick that never
+  comes from the opponent ends the match instead of a guessed fighter (docs/NETPLAY.md "Slow
+  loading").
 
 ### Controllers
 - **A pad that works offline now works online too.** Online, the game takes your input from the

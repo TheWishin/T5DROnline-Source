@@ -236,8 +236,13 @@ The flow, per PC (`df_fight.cpp` phases Pick and PickWait, helpers in
    coming up: the driver picks the line's character for this player (the
    launcher's) with the default button ("TIME UP"), and that pick goes to the
    opponent like any other. A game that never sends a pick (but keeps its
-   session alive) is waited for N + 45 s, then its side gets the line's
-   character too.
+   session alive) is waited for N + 90 s, then the session ends
+   (`peer_stalled`). Until 1.1.2 its side got the line's character after
+   N + 45 s -- a guess: an opponent whose select screen came up later than
+   that (a slow PC still loading it) could pick another fighter on its own
+   screen, and the two PCs fought different matches (NETPLAY.md "Slow
+   loading"). A select screen comes up within the stuck check's 60 s of the
+   command, or that game ends itself.
 
 **Mirror matches (1.1.0 blocker, fixed 2026-10-19).** When the second of the
 two sides confirms the model the first one already has, the select screen

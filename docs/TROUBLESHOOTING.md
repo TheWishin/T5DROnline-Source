@@ -153,6 +153,24 @@ changes, press **Cancel**, then **BUILD GAME** again. If it happens again,
 send `native\build.log` (**Report a problem...**) and look at
 [SmartScreen and antivirus](#smartscreen-and-antivirus).
 
+### The build fails at "Compile"
+
+"Compile" runs one compiler per processor, but only as many as fit in the free
+memory (about 1 GB each; one needs at most about 0.6 GB). Since 1.1.3 a file
+that fails is compiled once more at the end, alone, and the build goes on if
+that works (a lack of memory or an antivirus scan can make one attempt fail).
+What the log shows:
+
+- `jobs: 8 -- 12 processors, only 9.7 GB free memory: ...`: how many compilers
+  run at once and why.
+- `[2/22] ppu_recomp_002.cpp: 5.7 s FAILED (exit code 1)`, then the compiler's
+  error lines and its last lines, then `full output: ...\gamedll_obj\<file>.log`.
+- `compiled on the second try`: it worked; nothing to do.
+
+If it fails twice, close other programs and press **BUILD GAME** again. If it
+fails again, press **Report a problem...**: the report includes the compiler's
+full output of the files that failed.
+
 ### Which folder? (a warning in the Build tab)
 
 Any folder you can write to works, on any drive (tested: `D:\`), also with

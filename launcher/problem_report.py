@@ -11,6 +11,8 @@ What goes in (each part only when it exists):
   report.txt     what the player wrote in "What happened?"
   logs/          the newest game log(s) and the frame logs next to them
   build.log      when the build is the problem
+  compile/       with a failed build.log: the compiler's whole output of each file that failed in the last
+                 build (native\\build\\gamedll_obj\\*.log, tools/build_game_dll.py), the newest few
   launcher.log   the launcher's own log
   online/        the lobby/online files of the last match (result, status, fight line, control files)
   controls.ini   when there is one
@@ -1043,6 +1045,25 @@ def last_build_failed(out_dir):
     return not (m and m[-1] == "0")
 
 
+COMPILE_LOGS = 4                 # at most this many compiler outputs (one per failed file)
+
+
+def compile_logs(out_dir, n=COMPILE_LOGS):
+    """The compiler's whole output of each file that failed in the last build (tools/build_game_dll.py writes
+    native\\build\\gamedll_obj\\<file>.log and removes them when it starts), newest first. A log older than
+    the start of the last build (build.log's first line) belongs to an earlier one and stays out."""
+    logs = _newest(os.path.join(out_dir, "build", "gamedll_obj", "*.log"))
+    try:
+        with open(os.path.join(out_dir, "build.log"), encoding="utf-8", errors="replace") as f:
+            m = re.search(r"build log, (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", f.readline())
+        start = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() if m else None
+    except (OSError, ValueError):
+        start = None
+    if start is not None:
+        logs = [p for p in logs if os.path.getmtime(p) >= start - 5]
+    return logs[:n]
+
+
 def online_files(out_dir):
     """The files of the last online match: the newest match id's result/status/fight files, the
     reported results, the control channel's two files."""
@@ -1083,8 +1104,11 @@ def discover(ctx, note="", now=None):
     bl = os.path.join(out, "build.log")
     if os.path.isfile(bl):
         failed = ctx.build_problem if ctx.build_problem is not None else last_build_failed(out)
+        items = [Item("build.log", bl, limit=4 << 20)]
+        if failed:          # the compiler's own words: build.log shows only an excerpt of them
+            items += [Item("compile/" + os.path.basename(p), p, limit=512 << 10) for p in compile_logs(out)]
         groups.append(Group("build", "Build log" + ("" if failed else " (the last build went fine)"),
-                            [Item("build.log", bl, limit=4 << 20)], default_on=bool(failed)))
+                            items, default_on=bool(failed)))
     on = online_files(out)
     oitems = [Item("online/" + p[len(os.path.join(out, "logs", "online")) + 1:].replace("\\", "/"), p, limit=64 << 10)
               for p in on]

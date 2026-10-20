@@ -94,6 +94,11 @@ if(SPU_LIFTED AND EXISTS "${SPU_DIR}/spu_workloads.c")
     set_source_files_properties(${SPU_SOURCES} PROPERTIES
         INCLUDE_DIRECTORIES "${PS3RECOMP_DIR}/runtime/spu"
         COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
+    # The lifted images leave out the local-store debug hooks (SPU_LS_NO_HOOKS in
+    # spu_context.h, ps3recomp patch 0064): diagnostics a release never arms, but
+    # each one made the compiler reload the SPU register file after every
+    # local-store access. Same results; the runtime's own accessors keep them.
+    set_property(SOURCE ${SPU_LIFTED} APPEND PROPERTY COMPILE_DEFINITIONS SPU_LS_NO_HOOKS)
     # The vertex skinning jobs (skin1x/skin4x) only produce vertices to draw,
     # never game state: they use the host's IEEE float ops instead of the exact
     # SPU float emulation (SPU_FAST_FLOAT in spu_helpers.h, ps3recomp patch

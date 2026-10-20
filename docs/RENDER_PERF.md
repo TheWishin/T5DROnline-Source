@@ -1585,3 +1585,154 @@ re-simulation (1.7-2.2 ms per re-simulated frame) remain; hashing is under
 0.1 ms a frame in both modes (lockstep: the netplay frame start, hash
 included, ~10 us). The draw thread's wait is the next step for the game
 part.
+## SPU side on weak PCs (patch 0064, branch `spu-perf`)
+
+Players on 4-core / 4-thread laptops (i5-7300HQ) see ~40 fps in fights.
+The game's SPU work runs as lifted SPU code on host threads: the **sound
+core** (`bnuscore`, one thread, a 5.33 ms tick 187.5 times a second) and the
+SPURS **skinning jobs** (`skin1x`/`skin4x`, ~390 jobs per fight frame on the
+walker `spurs-chain` and the `spurs-job` workers, then the small `jcsignal`
+job that wakes the game). Before this patch, on 4 logical processors, that
+was ~47 % of all the game's CPU time: the sound core alone took 60-65 % of a
+processor -- more than the game's main thread (~45 %) -- and the skinning
+~9 ms of CPU per frame.
+
+### Where the time went
+
+Measured with `tools/thread_sampler.py` (new: samples a thread's
+instruction pointer and resolves it with `llvm-symbolizer` against an exe
+built with line tables, inlined helpers included), `SPU_PROF=1` (new, below)
+and a `PS3_SCHED_TRACE`:
+
+- **Sound core**: half of its time in the SPU_NEAR_FLOAT float ops
+  (`spu_fa`/`fs`/`fm`/`fma`, ~22 instructions per operation for the SPU's
+  zero and extended-range rules); ~8 % in the two hooks every transfer
+  between lifted functions called (`yz_lockstep_tick`,
+  `spu_task_launch_check`: calls and env-cached switches); the local-store
+  accessors' debug hook (one load and a branch, but a call the compiler cannot
+  see into, so the register file was reloaded from memory after every
+  local-store access); a debug scan of every DMA PUT for a crash in another
+  title (`POISON-DMA`).
+- **Skinning jobs**: `spu_rotqby` was a quarter of a job -- on x86 the byte
+  rotates, shifts and the `cwd` family were scalar byte loops of 90-200
+  instructions; every job ends in a halt, and MSVC's `longjmp` unwinds the
+  frames it skips (~0.8 us of a ~25 us job); the POISON scan.
+- **The game waiting**: the main thread kicks the chain, works ~3.5 ms, then
+  blocks until the list is done. On 4 processors it blocked on ~60 % of
+  fight frames, 1.3 ms at the median, 2.8 ms at p90, its processor idle
+  meanwhile. The SPU threads themselves sleep properly (no spinning: the
+  sound core waits on its event queue, the job threads on events/condition
+  variables); kick -> first job 0.03-0.5 ms.
+
+### What changed
+
+| change | switch | effect |
+|---|---|---|
+| x86 forms of the byte permutes: `rotqby`, `rotqbyi`, `shlqby`, `shlqbyi`, `rotqbybi`, `shlqbybi`, `rotqmby`, `rotqmbyi`, `rotqmbybi` are one `pshufb` with an index built from the SPU byte arithmetic; `cbd/chd/cwd/cdd` and the x forms a compare + blend; `fsm/fsmh/fsmb` a compare; `shufb` without its three byte swaps (16 -> 6 instructions) | compile-time (`SPU_SCALAR_HELPERS` = the loops) | skinning job ~25 -> ~10 us |
+| SPU_NEAR_FLOAT ops in about half the instructions: exponent tests on `abs(x)` as signed compares; no test of the operands for exponent 255 (an Inf/NaN operand always gives an Inf/NaN result, which sends the vector to the exact path as before); the exact path a cold call that returns in a register | -- | sound core -30 % |
+| Lifted images are compiled with `SPU_LS_NO_HOOKS`: no debug hooks in `spu_ls_read128/write128` (the runtime's own accessors keep them) | CMake / `build_game_dll.py` define | the compiler keeps SPU registers in host registers across loads |
+| The per-transfer hooks inline: with none of their diagnostics armed they are the stack-reset check (only with entries registered), the step count and the LS-0 job end | `SPU_LOCKSTEP`, `SPU_EXITTRACE`, ... arm the old path | sound core ~-8 % |
+| The halt landing pad's `longjmp` does not unwind (the jmp_buf's Frame set to 0; the unwinding jump stays when user shadow stacks (CET) are on) | `PS3_SPU_HALT_UNWIND=1` | ~0.8 us per job |
+| The POISON-DMA scan of every PUT is off | `SPU_POISON_DMA=1` | ~3 % of a job |
+| **The waiting PPU thread runs jobs**: a thread about to block in `sys_event_queue_receive` on a queue SPURS attached first takes jobs from the open job list, like one more worker, and blocks only for the jobs still running elsewhere; a batch is opened without workers too (2-3 processors) | `SPURS_JOB_HELP=0` | on 4 processors the main thread ran ~3 jobs per frame and blocked 0.00-0.01 ms (was 0.65-1.2 ms per frame) |
+| Diagnostics: `SPU_PROF=1` (per job binary jobs/time per walk, list wall time, kick -> start, the waiting thread's jobs and blocked time, every 600 walks), `SPURS_JOB_HASH=1` (FNV hash of every byte the jobs PUT, one `[spu-hash]` line per walk), `SPU_SELFCHECK` (compile the lifted SPU code with it: every rewritten helper also runs the code it replaced and counts differences) | off | -- |
+
+Thread counts are unchanged (they come from 0027/0047: on 4 processors the
+walker and one worker, 8 job threads from 16); with the waiting game thread
+helping, a third thread takes jobs exactly when the game would otherwise sit
+idle. Priorities unchanged.
+
+### Results
+
+Paired runs, `tools/fight_bench.py --polite` (Lili vs Asuka, stage 20,
+window fight start +24..42 s), before = main's series plus the `SPU_PROF`/
+`SPURS_JOB_HASH` instrumentation with `SPURS_JOB_HELP=0`, after = 0064,
+started together on two halves (4 processors: 8-11 / 12-15, 16: 0-15 /
+16-31), the halves swapped every round. Other agents' games kept 16-26
+processors busy, so the fps are this PC under load -- a weaker PC -- not a
+quiet 7950X. Median (range) over the rounds:
+
+| | runs | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU ms per frame | sound core: share of a processor (ms per 5.33 ms tick) | skinning: CPU ms per frame (threads) | main thread ms per frame |
+|---|---|---|---|---|---|---|---|---|
+| 4 processors, before | 4 | 38.5 (37.3-45.1) | 893 | 37.6 | 47.5 | 64 % (3.39) | 8.79 (2) | 8.8 |
+| 4 processors, after | 4 | **55.6** (46.9-57.4) | 378 | 32.6 | **31.5** | **36 %** (1.92) | **3.32** (2) | 8.8 |
+| 4, power saving (`PS3_LAPTOP=1`), before | 2 | 50.4 (41.5-59.2) | 525 | 34.0 | 43.1 | 58 % (3.10) | 9.24 (2) | 8.4 |
+| 4, power saving, after | 2 | **58.0** (57.1-58.8) | 330 | 30.5 | **30.9** | **35 %** (1.86) | **3.22** (2) | 8.3 |
+| 16 processors, before | 2 | 59.96 | 182 | 19.0 | 35.7 | 52 % (2.78) | 8.84 (8) | 6.9 |
+| 16 processors, after | 2 | 59.95 | 185 | 18.9 | **28.6** | **33 %** (1.76) | **3.93** (8) | 7.3 |
+
+**The pool stage (stage id 30: the poolside with the crowd dancing round the
+pool; a player on a 4-core i5-7300HQ laptop: "55-60 fps, but on stages with
+lots of 3D models like the pool stage it drops considerably").** The crowd is
+skinned in the same job list: ~420 jobs a fight frame against ~390 on stage
+20, so 7 % more skinning, and the list ran longer than the game's own work
+before it waited -- on 4 processors it blocked 1.0-1.6 ms a frame (2.3 ms in
+one earlier run) where stage 20 blocked 0.65-1.2. Same paired setup, `--fight
+lil,ask,30,3`, 27-30 other processors busy (so these fps are a much weaker
+PC than this one):
+
+| pool stage, 4 processors | runs | fps | frames > 17.5 ms per 1000 | p99 ms | game CPU ms per frame | sound core | skinning CPU ms per frame | skinning job (us) | list wall time | game thread blocked per frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| before | 4 + 2 | 31.9 (20.8-42.2); 37.4 with `SPU_PROF` | 975; 903 | 53.4; 44.3 | 55.1; 48.7 | 65 % | 10.8 | 28.2-30.2 | 6.0-6.8 ms | 1.0-1.6 ms |
+| after | 4 + 2 | **41.0** (38.3-44.6); **52.9** with `SPU_PROF` | 754; 437 | 46.1; 35.7 | **34.4; 30.9** | **36 %** | **3.9** | **10.0-11.4** | **2.3-2.4 ms** | **0.01 ms** (ran 2-5 jobs itself) |
+
+On a CPU with half this one's speed per core the before list would take
+~12 ms of the frame on two threads (24 ms of CPU) while the game's own work
+before the wait is ~7 ms: ~5 ms of every pool frame spent waiting -- and the sound core alone
+would need ~1.3 processors (more than its 5.33 ms tick). After: ~8 ms of CPU
+over three threads, done before the game needs it, and the sound core ~0.7
+of a processor.
+
+Per job and per frame (`SPU_PROF=1`, one 600-walk window per run):
+
+| | skinning job (us) | jobs per frame | skinning CPU per frame | list wall time | game thread: jobs run / blocked per frame |
+|---|---|---|---|---|---|
+| 4 processors, before | 26.4-26.7 | 391 | 10.3-10.5 ms | 5.6 ms | 0 / 0.65-1.22 ms (0.4-0.7 waits) |
+| 4 processors, after | 9.9-10.6 | 390 | 3.9-4.2 ms | 2.3-2.6 ms | 2.6-3.1 / 0.00-0.01 ms |
+| 16 processors, before | 24.2-24.4 | 390 | 9.4-9.5 ms | 1.3-1.6 ms | 0 / 0 |
+| 16 processors, after | 9.5-10.0 | 390 | 3.7-3.9 ms | 0.7-0.8 ms | 0 / 0 |
+
+The `jcsignal` job is 20-28 us either way (its time is the event it sends).
+The SPU threads' context switches fell from ~1,050 to ~750 a second (4
+processors). One "after" run in ~36 had the sound core at 95 % of a processor
+from its boot on (late audio blocks during the title, none in the fight); it
+did not come back in 16 further runs and no "before" run (~22) showed it --
+watch for it.
+
+### The same results, bit for bit
+
+- The helpers against the code they replace, exactly: `tests/run_ps3recomp_tests.py`
+  `spu_int_sse` (every shift count and position, every fsm selector, shufb
+  with and without special selectors: 3.9 M checks) and `spu_near_float_sse`
+  (the 0041 code copied in; every pair of operand exponents plus 3 M random
+  vectors biased to zero/denormal/overflow/cancellation: 19.3 M checks).
+- In the game: a `SPU_SELFCHECK` build ran boot, title, select and a fight --
+  **5.86 billion** helper calls on real data (sound core fa/fs/fm/fma/fnms
+  2.8 G, shufb 2.0 G, rotqby 0.57 G, ...), **0 differences**.
+- Lockstep pairs, new host against a before joiner (two pairs, three
+  `T5_NET_SHOT` frame dumps each, all six surfaces): 0 mismatching frames
+  and the same result hash; 3 of the 6 shots byte-identical in every surface,
+  one more identical except Lili's hair strands (secondary motion). The
+  others differ the way two games of the *same* build differ: the fight
+  camera is not kept equal between two games (two same-build pairs, old/old
+  and new/new: 0 of 6 shots identical). Likewise `SPURS_JOB_HASH`: 4,498 of
+  6,792 and 3,957 of 6,854 skinning walks gave the same hash on both sides
+  (~3.2 M jobs' output byte-identical); the same-build pairs, whose cameras
+  had drifted apart, matched 0 walks.
+- Rollback pairs (RTT 150, 3 % loss, 500-570 rollbacks a side): new/new,
+  new host/before joiner and before host/new joiner, 0 mismatching frames,
+  the same result hash both sides; lockstep new/new the same.
+- Nothing here reaches game state: the skinned vertices are only drawn, and
+  the sound core's samples and replies are the same bits; the game thread
+  running jobs changes which thread computes them, not what.
+- Smoke quick PASS (audio PASS: 0 % silent blocks in fights); `tests/` OK.
+
+### Not done
+
+- The SPU_NEAR_FLOAT operand tests (zero for a denormal operand) are still
+  done on every operand; values that come straight from another float op
+  are already flushed. Knowing that needs the lifter (~10 % of the sound core
+  at most: an experiment without them took 10-15 % off).
+- Job staging (copying the 17 KB binary and clearing the job's regions per
+  job, ~12 % of a job) and the 8-byte guest-memory copy loops (~5 %).
+- Not tried on a real 4-core laptop or an APU.

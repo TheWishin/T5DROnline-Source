@@ -18,13 +18,17 @@ punches and pings until it is closed, so both sides can finish their checks.
 On the relay path between two clients that both speak "nat2" the socket stays
 here instead: RelayBridge carries the game's packets (the game talks to it on
 127.0.0.1) to the relay, keeps trying the direct path in the background, and
-moves the match onto it as soon as it works both ways.
+moves the match onto it as soon as it works both ways. The game's packets themselves never wait for the
+lobby client's event loop: a thread of the bridge's own forwards them (RelayBridge, "The pump").
 """
 import asyncio
 import ipaddress
 import os
+import select
 import socket
 import statistics
+import sys
+import threading
 import time
 
 from . import proto
@@ -164,6 +168,9 @@ class GameSocket(asyncio.DatagramProtocol):
         self.seq = 0
         self.dup = None
         self.stats = {"rx": 0, "tx": 0, "pongs": 0}
+        # a low-TTL punch sets the socket's TTL around its one send: a relay bridge's pump thread sending the game's
+        # packets on the same socket takes this lock too, so none of them leaves with the punch's TTL (and dies)
+        self.ttl_lock = threading.Lock()
 
     @classmethod
     async def open(cls, port, *args, keep_dup=False, **kw):
@@ -205,11 +212,12 @@ class GameSocket(asyncio.DatagramProtocol):
             # On the socket itself, not through the transport: a packet the transport queued would leave
             # later with the TTL already put back.
             try:
-                self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
-                try:
-                    self.sock.sendto(data, addr)
-                finally:
-                    self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl0)
+                with self.ttl_lock:
+                    self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+                    try:
+                        self.sock.sendto(data, addr)
+                    finally:
+                        self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, self.ttl0)
             except OSError:
                 return
         self.stats["tx"] += 1
@@ -472,7 +480,19 @@ class RelayBridge(asyncio.DatagramProtocol):
     punch phase) every 40 s, both launchers at the same server time (the match's start time + 35 s, then
     every 40 s). The silence in between matters: what made the punch phase fail on many routers -- a
     connection entry left by an early punch, a flood block -- lasts 30 s from the last packet and would
-    never end under a steady trickle."""
+    never end under a steady trickle.
+
+    The pump (relay-smooth, 1.1.4). The game's packets used to be forwarded by the lobby client's event loop,
+    one per loop pass, behind whatever else that loop did (the lobby's messages, timers), on a thread of normal
+    priority -- next to a game whose threads run above normal and keep a 4-core PC busy, a packet could wait a
+    whole time slice before the launcher forwarded it, on both PCs of a relayed match, and arrive bunched with
+    the next ones: deeper rollbacks, more stalls and time-sync sleeps on exactly the matches that already have
+    the longest round trip. Now a thread of the bridge's own, at the priority of the game's own network thread
+    (src/netplay rx_thread: THREAD_PRIORITY_HIGHEST), waits on both sockets and forwards every game packet the
+    moment it arrives; everything else that arrives on the game socket (punches, pings, the relay's answers)
+    goes to the event loop as before. While a bridge pumps, the interpreter hands the GIL over after 1 ms
+    instead of 5 (sys.setswitchinterval), so a launcher thread busy in Python holds the pump up 1 ms at most.
+    T5_RELAY_PUMP=0: the old way (tests, comparisons)."""
 
     SWITCH_FRESH = 2.0
     DIRECT_QUIET = 2.5
@@ -500,6 +520,8 @@ class RelayBridge(asyncio.DatagramProtocol):
         self.closed = False
         self.switches = []           # (time.time(), "direct" | "relay", addr)
         self.stats = {"to_game": 0, "from_game": 0, "direct_in": 0, "relay_in": 0, "strangers": 0}
+        self.sock = None             # the socket the game talks to (127.0.0.1)
+        self.pump = None             # _Pump while it forwards the game's packets
 
     @classmethod
     async def open(cls, gs, relay, on_switch=None, game_port=0, first_burst=None):
@@ -513,8 +535,11 @@ class RelayBridge(asyncio.DatagramProtocol):
         proto.disable_udp_connreset(s)
         s.setblocking(False)
         await loop.create_datagram_endpoint(lambda: self, sock=s)
+        self.sock = s
         self.port = s.getsockname()[1]
         gs.on_game = self._from_net
+        if os.environ.get("T5_RELAY_PUMP", "1") != "0":
+            _Pump.start_for(self, loop)
         self.task = asyncio.ensure_future(self._run())
         return self
 
@@ -535,6 +560,35 @@ class RelayBridge(asyncio.DatagramProtocol):
         self.stats["from_game"] += 1
         self.gs.send(data, self.upstream)
 
+    def _game_to_net(self, data, addr):
+        """The pump: a packet from the game's side, out on the game socket at once."""
+        if addr != self.game or data[:4] != proto.GAME_MAGIC:
+            return
+        self.stats["from_game"] += 1
+        gs = self.gs
+        up = self.upstream
+        if gs.inbound is not None:
+            gs.inbound.sent_to(up)
+        try:
+            with gs.ttl_lock:
+                gs.sock.sendto(data, up)
+        except OSError:
+            return                    # (a full send buffer, an unreachable address: lost, like on the wire)
+        gs.stats["tx"] += 1
+
+    def _net_in(self, data, addr):
+        """The pump: a packet on the game socket. The opponent's game packets go to the game at once (and count
+        for the path's liveness like before); anything else is the event loop's (GameSocket.datagram_received)."""
+        gs = self.gs
+        if data[:4] != proto.GAME_MAGIC or proto.udp_type(data) is not None:
+            self.pump.loop.call_soon_threadsafe(gs.datagram_received, data, addr)
+            return
+        if gs.inbound is not None and not gs.inbound.passes(addr):
+            return
+        gs.stats["rx"] += 1
+        gs.last_rx[addr] = time.monotonic()
+        self._from_net(data, addr)
+
     # ------------------------------------------------------------- the network's side (game socket)
     def _from_net(self, data, addr):
         if addr == self.relay:
@@ -544,7 +598,13 @@ class RelayBridge(asyncio.DatagramProtocol):
         else:
             self.stats["strangers"] += 1          # only the opponent's endpoints; the game checks the key too
             return
-        if self.transport is not None and not self.transport.is_closing():
+        if self.pump is not None:
+            try:
+                self.sock.sendto(data, self.game)
+            except OSError:
+                return
+            self.stats["to_game"] += 1
+        elif self.transport is not None and not self.transport.is_closing():
             self.transport.sendto(data, self.game)
             self.stats["to_game"] += 1
 
@@ -600,6 +660,8 @@ class RelayBridge(asyncio.DatagramProtocol):
         if self.closed:
             return
         self.closed = True
+        if self.pump is not None:
+            await asyncio.get_running_loop().run_in_executor(None, self.pump.finish)
         if self.task is not None:
             self.task.cancel()
             try:
@@ -613,6 +675,118 @@ class RelayBridge(asyncio.DatagramProtocol):
             await self.gs.close()
         except (asyncio.TimeoutError, OSError):
             pass
+
+
+def raise_thread_priority(level=2):
+    """The calling thread to THREAD_PRIORITY_HIGHEST (2) inside its process's class (Windows; elsewhere a no-op).
+    -> True when Windows took it. (Through a kernel32 of its own with the handle typed: windll.kernel32's
+    GetCurrentThread() comes back as a 32-bit int and the call fails with "invalid handle".)"""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentThread.restype = ctypes.c_void_p
+        k32.SetThreadPriority.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        return bool(k32.SetThreadPriority(k32.GetCurrentThread(), level))
+    except (OSError, AttributeError):
+        return False
+
+
+class _Pump(threading.Thread):
+    """RelayBridge's packet pump (see "The pump" there): both of the bridge's sockets, taken off the event loop
+    (pause_reading), read by this thread alone."""
+
+    WAIT = 0.05                  # the longest select() -- how soon finish() is noticed
+    SWITCH_INTERVAL = 0.001
+    _active = 0                  # pumps running in this process (the switch interval is the process's)
+    _saved_interval = None
+    _lock = threading.Lock()
+
+    def __init__(self, bridge, loop):
+        super().__init__(daemon=True, name="relay-bridge pump")
+        self.bridge, self.loop = bridge, loop
+        self.stop = False
+        self.raised = False
+        self.counted = False
+        self.ready = threading.Event()
+
+    @classmethod
+    def start_for(cls, bridge, loop):
+        """Start a pump for `bridge` (bridge.pump), or leave the forwarding to the event loop: a transport that
+        cannot pause its reading (another event loop). -> the pump or None."""
+        trs = [bridge.transport, bridge.gs.transport]
+        if bridge.gs.sock is None or not all(tr is not None and hasattr(tr, "pause_reading") for tr in trs):
+            return None
+        paused = []
+        try:
+            for tr in trs:
+                tr.pause_reading()
+                paused.append(tr)
+        except (AttributeError, RuntimeError, NotImplementedError):
+            for tr in paused:
+                try:
+                    tr.resume_reading()
+                except Exception:      # noqa: BLE001
+                    pass
+            return None
+        self = cls(bridge, loop)
+        bridge.pump = self
+        with cls._lock:
+            if cls._active == 0:
+                cls._saved_interval = sys.getswitchinterval()
+                sys.setswitchinterval(min(cls._saved_interval, cls.SWITCH_INTERVAL))
+            cls._active += 1
+            self.counted = True
+        self.start()
+        self.ready.wait(1.0)         # (its priority is set from the thread itself, first thing)
+        return self
+
+    def _raise_priority(self):
+        if os.name != "nt":
+            return
+        self.raised = raise_thread_priority()
+
+    def run(self):
+        self._raise_priority()
+        self.ready.set()
+        b = self.bridge
+        game, net = b.sock, b.gs.sock
+        socks = [game, net]
+        while not self.stop:
+            try:
+                ready, _, _ = select.select(socks, [], [], self.WAIT)
+            except (OSError, ValueError):
+                break                # a socket closed under us: the bridge is going away
+            for s in ready:
+                for _ in range(64):  # what came in meanwhile, then the other socket
+                    try:
+                        data, addr = s.recvfrom(65535)
+                    except (BlockingIOError, InterruptedError):
+                        break
+                    except OSError:
+                        break        # (ICMP errors are off on both sockets; a closed one ends the loop above)
+                    try:
+                        if s is game:
+                            b._game_to_net(data, addr)
+                        else:
+                            b._net_in(data, addr)
+                    except RuntimeError:
+                        return       # the event loop is closed: so is the bridge
+                    except Exception:      # noqa: BLE001 -- one bad packet must not stop the match's traffic
+                        pass
+
+    def finish(self):
+        """Stop and wait (from any thread but this one); the switch interval goes back with the last pump."""
+        self.stop = True
+        if self.is_alive() and threading.current_thread() is not self:
+            self.join(1.0)
+        with _Pump._lock:
+            if self.counted:
+                self.counted = False
+                _Pump._active -= 1
+                if _Pump._active == 0 and _Pump._saved_interval is not None:
+                    sys.setswitchinterval(_Pump._saved_interval)
 
 
 async def server_rtt(server, n=5, timeout=0.5, inbound=None):

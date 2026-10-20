@@ -1028,7 +1028,8 @@ def net_mixed_fallback(ctx):
 
 # ------------------------------------------------------------------ relayed vs direct at the same network (1.1.4)
 # (round trip ms, jitter +- ms, loss %) of the whole path; E2E_SMOOTH_CASES="60/0/0,120/8/2" picks others,
-# E2E_SMOOTH_PATHS="relay" (or "direct") only one path; E2E_SMOOTH_CPUS=N: a busy PC -- the launchers (this runner) and
+# E2E_SMOOTH_PATHS="relay" (or "direct") only one path, "relay-old" the relay with the launcher's bridge forwarding on
+# its event loop (T5_RELAY_PUMP=0, 1.1.3's way: interleaved before/after in one run); E2E_SMOOTH_CPUS=N: a busy PC -- the launchers (this runner) and
 # both games on the last N processors only (the lobby server and the relay node, other machines, stay off them)
 SMOOTH_CASES = [(60, 0, 0), (60, 8, 2), (120, 0, 0), (120, 8, 2), (200, 0, 0), (200, 8, 2)]
 RE_RB_WIN = re.compile(r"rbnet: (\d+) frames in ([0-9.]+) s \([0-9.]+ fps\), (\d+) rollbacks \((\d+) frames re-simulated, "
@@ -1105,7 +1106,8 @@ def smooth_stats(lines):
 def _smooth_cases():
     spec = os.environ.get("E2E_SMOOTH_CASES", "").strip()
     cases = [tuple(float(x) for x in c.split("/")) for c in spec.split(",") if c] if spec else SMOOTH_CASES
-    paths = [p for p in os.environ.get("E2E_SMOOTH_PATHS", "direct,relay").split(",") if p in ("direct", "relay")]
+    paths = [p for p in os.environ.get("E2E_SMOOTH_PATHS", "direct,relay").split(",") if p in ("direct", "relay",
+                                                                                                  "relay-old")]
     return cases, paths
 
 
@@ -1150,7 +1152,11 @@ def _relay_smooth_cases(ctx, leg):
     for rtt, jitter, loss in cases:
         for path in paths:
             label = f"{path} RTT {rtt:g}, jitter +-{jitter:g}, loss {loss:g}%"
-            relay = path == "relay"
+            relay = path.startswith("relay")
+            if path == "relay-old":
+                os.environ["T5_RELAY_PUMP"] = "0"         # (read by the bridge when it opens: in this process)
+            else:
+                os.environ.pop("T5_RELAY_PUMP", None)
             ctx.shaper.set(rtt, jitter, loss, on=not relay)
             leg.set_total(rtt, jitter, loss)
             for p in (a, b):
@@ -1162,6 +1168,7 @@ def _relay_smooth_cases(ctx, leg):
                           all(e.get("path") in ("lan", "direct") for e in evs), [e.get("path") for e in evs])
                 if not wait_fight(ctx, mid, (a, b), timeout=150):
                     raise Abort("no fight")
+                pumped = [getattr(getattr(p.client, "_bridge", None), "pump", None) is not None for p in (a, b)]
                 wait_results(ctx, mid, (a, b))
                 row = match_row(ctx, mid, (a, b), "confirmed", label)
                 ups = [e for p in (a, b) for e in p.events_of("nat_upgrade", 0) if e.get("match") == mid]
@@ -1171,7 +1178,7 @@ def _relay_smooth_cases(ctx, leg):
                 out = {"case": [rtt, jitter, loss], "path": path, "match": mid, "netcode": ctx.run.netcode,
                        "lobby_rtt": evs[0].get("rtt_ms"), "lobby_jitter": evs[0].get("jitter_ms"),
                        "lobby_delay": evs[0].get("delay"), "rb_delay": row[host.name]["pick"],
-                       "rb_why": row[host.name]["pick_why"], "ls_delay": None}
+                       "rb_why": row[host.name]["pick_why"], "ls_delay": None, "pump": pumped}
                 for role, p in (("host", host), ("join", join)):
                     st = smooth_stats(p.log_segment(mid))
                     rf = row[p.name]["result_file"]
@@ -1192,6 +1199,7 @@ def _relay_smooth_cases(ctx, leg):
             for p in (a, b):
                 p.client.block_direct = False
                 leave(ctx, p)
+            os.environ.pop("T5_RELAY_PUMP", None)
             ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
             ctx.sleep(1.0)
     with open(os.path.join(ctx.dir, "smooth.json"), "w", encoding="utf-8") as f:

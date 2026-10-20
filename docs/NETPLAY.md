@@ -400,9 +400,13 @@ In the game (build/nopause/runs; two games on this PC, minimized, muted, below-n
 | ffA_rb | rollback, persistent game, new session + 2 rematches, first to 3 rounds, both players mash (every ~8th input START), Lili/Dragunov, Jin/Xiaoyu, Kazuya/Heihachi | 3/3 confirmed, same winner and hash (d0dc4cf2.., 89c5ef7a.., 2b7d413a..), 0 mismatching frames through 23,399; menu opened 0 times; START out 1129 + 1130 / 3211 + 2754 frames (predictions included), kept 55 / 74 (round replays, match ends) |
 | ffB_ls | the same in lockstep (`T5_RB_MODE=off`), Bryan/Steve, King/Christie, Asuka/Law | 3/3, hashes 4387a2b6.., c120376c.., 1024092d.., 0 mismatching frames through 17,399; menu 0; START out 818 + 842 and kept 51 -- the same numbers on both PCs |
 | pfA_rb_ranked | rollback, in-game select (Jin RP vs Lili LK picked on the select screen), then games 2 and 3 locked: a best-of-3 ranked set (2-1), mashing START, 2 rounds | 3/3, 0 mismatching frames through 12,599; menu 0; START out 691 + 775 / 657 + 679, kept 44 / 43 |
+| pfB_ls_picks | lockstep, in-game select in every match: Jin vs Lili, then two rematches picked again (random vs Kazuya LP: Anna; Asuka vs Xiaoyu), the lockstep paused at each select screen and resumed, mashing START, 2 rounds | 3/3, 0 mismatching frames through 11,999; menu 0; START out 581 + 572 and kept 43 on both PCs |
+| ffC_rb_merged | rollback after merging main 06adda9 (loopback bind), new session + rematch, first to 3, Yoshimitsu/Feng, Steve/Hwoarang, START every ~6th input | 2/2, 0 mismatching frames through 12,599; menu 0 |
+| replays of pfA | both players' recordings of the ranked set played back (`tools/replay_play.py --press 8:START,13:START`: the viewer's own pause) | both IDENTICAL: 217 hashes, 3 results, 6/6 sync points each; "paused ... going on (paused 5.0 s)" |
 | dev2 | local lockstep, this PC's "pad" (PS3_PAD_FILE, the device path) pressing START + CROSS 1,007 times | CROSS in P1's input on 3,350 of 6,642 frames, START on none, menu 0 |
 | s1760 / s1900 (main's code) | START in a round's KO slow motion / in its replay | nothing / the replay skipped 5 frames later; no menu either time |
 | off1 | offline direct fight (no netplay), START in the fight | the PAUSE menu opens (0x10092EA0 -> 2 at the press; screenshot) |
+| smoke quick | offline menus, arcade, VS with two pads, practice, title twice | PASS (81 checks) with up to 10 other games running; an earlier run beside 16-20 other games failed `practice` (black frames, no fight HUD) -- main's exe failed it the same way at that load |
 
 ## Connection problems
 

@@ -815,34 +815,47 @@ class OwnSetTest(TourBase):
 
 
 class DrainTest(TourBase):
-    server_cfg = {"tour_noshow": 2.0}
+    server_cfg = {"tour_noshow": 5.0}
 
     def drain(self, on):
-        self.s.call(lambda: self.s.srv.set_draining(on))
+        # as `admin drain` / `drain --off` does it: the flag in the database (the admin poll reads it back every
+        # T5L_ADMIN_POLL seconds), and at once
+        def go():
+            self.s.srv.store.set_flag("drain", time.time() if on else None)
+            self.s.srv.set_draining(on)
+        self.s.call(go)
 
     def test_a_drain_holds_the_start_and_the_no_show_clock(self):
-        # `admin drain` (before a restart): no new match -- a tournament neither starts nor starts a set, and nobody is
-        # disqualified as a no-show for the drain (the clocks stand still); drain off: the tournament goes on
+        # `admin drain` (before a restart): no new match -- a tournament neither starts nor calls or starts a set, and
+        # nobody is disqualified as a no-show for the drain (the clocks stand still); drain off: the tournament goes on
         self.f.accept = {n: False for n in self.names}
         self.drain(True)
         tid = self.create(start_in=0.3, wait=False)
         time.sleep(1.0)
         self.assertEqual(self.tour(tid).state, "signup")                      # its start time passed: held
-        self.drain(False)
-        self.wait_state(tid, "running")
-        self.f.run(lambda: self.f.last("Ann", "tour_call") is not None)
+        self.org.tour_admin(tid, "start")                                     # the organizer starts it: no calls
+        self.assertEqual([self.bset(tid, x).data.get("live") for x in ("W1-1", "W1-2")], [None, None])
+        self.drain(False)                                                     # drain off: the sets are called
+        self.f.run(lambda: all(self.bset(tid, x).data.get("live") == "called" for x in ("W1-1", "W1-2")))
         self.drain(True)
-        self.f.accept = {n: True for n in self.names}                         # all accept during the drain ...
-        self.f.run(lambda: self.bset(tid, "W1-1").data.get("accepted") == [True, True], 10)
-        time.sleep(3.0)                                                      # ... longer than the no-show time
-        self.f.pump()
-        for sid in ("W1-1", "W1-2"):
-            s = self.bset(tid, sid)
-            self.assertEqual((s.state, s.data.get("live")), ("open", "called"), sid)   # no set started, no no-show
+        t = self.tour(tid)
+        due = {}
+        for x in ("W1-1", "W1-2"):
+            for aid in self.bset(tid, x).p:                                   # all accept during the drain ...
+                self.f.c[t.name_of(aid)].tour_accept(tid, x)
+            due[x] = self.bset(tid, x).data["deadline"]
+        time.sleep(6.0)                                                      # ... longer than the no-show time
+        for x in ("W1-1", "W1-2"):
+            s = self.bset(tid, x)
+            self.assertEqual((s.state, s.data.get("live"), s.data.get("accepted")), ("open", "called", [True, True]))
         self.assertEqual([e.dq for e in self.tour(tid).entrants.values()], [None] * 4)
+        t0 = time.time()
+        self.f.accept = {n: True for n in self.names}                         # (the final: the field accepts again)
         self.drain(False)                                                     # the clocks go on: the sets start
+        self.f.run(lambda: all(self.bset(tid, x).data.get("live") != "called" for x in ("W1-1", "W1-2")))
         self.wait_state(tid, "finished")
         self.assertEqual([e.dq for e in self.tour(tid).entrants.values()], [None] * 4)
+        self.assertGreater(t0, max(due.values()))                             # (the drain outlasted the no-show time)
 
     def test_a_set_being_played_finishes_during_a_drain(self):
         tid = self.create(players=("Ann", "Ben"))

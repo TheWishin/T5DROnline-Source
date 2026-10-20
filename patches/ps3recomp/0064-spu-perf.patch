@@ -324,7 +324,7 @@ index d5ad4e5..64ba52a 100644
  }
  
 diff --git a/runtime/spu/spu_context.h b/runtime/spu/spu_context.h
-index 97b4b7e..157794e 100644
+index 97b4b7e..9e99bab 100644
 --- a/runtime/spu/spu_context.h
 +++ b/runtime/spu/spu_context.h
 @@ -580,14 +580,23 @@ static __attribute__((noinline, cold)) void spu_ls_read_probe(const spu_context*
@@ -384,7 +384,7 @@ index 97b4b7e..157794e 100644
 + * called yz_lockstep_tick and spu_task_launch_check -- two calls, a third inside, and
 + * half a dozen getenv-cached switches -- about 8 % of the sound core's time. With
 + * none of their diagnostics armed (SPU_LOCKSTEP, SPU_NO_LS0_END, SPU_EXITTRACE,
-+ * SPU_STEPTRACE, SPU_JOBDRAIN, SPURS_PM_FLOW: spu_hop_decide, spu_drain.c) all they
++ * SPU_STEPTRACE, SPU_JOBDRAIN, SPURS_PM_FLOW, SPU_PCHIST: spu_hop_decide, spu_drain.c) all they
 + * do is the stack-reset check (only with entries registered), count the step, and
 + * end a SPURS job that branched back to LS 0; that is done here inline, the rest
 + * as before. g_spu_hop_slow is -1 until the first hook call decides. */
@@ -407,7 +407,7 @@ index 97b4b7e..157794e 100644
  /* Drain the pending trampoline chain: run each queued transfer target until
   * none remain. The one central hook site for the faithful execution model. */
  #define SPU_DRAIN(ctx) do {                                    \
-@@ -1007,8 +1044,7 @@ static inline void spu_pchist_tick(const spu_context* ctx)
+@@ -1007,12 +1044,12 @@ static inline void spu_pchist_tick(const spu_context* ctx)
              }                                                              \
              void (*_tf)(spu_context*) = g_spu_trampoline_fn;    \
              g_spu_trampoline_fn = 0;                            \
@@ -417,6 +417,12 @@ index 97b4b7e..157794e 100644
              if ((ctx)->int_enable &&                            \
                  (spu_ev_get((ctx)) & (ctx)->event_mask))      \
                  _tf = spu_take_interrupt((ctx), _tf);          \
+-            spu_pchist_tick(ctx);                              \
++            if (__builtin_expect(g_spu_hop_slow != 0, 0))      \
++                spu_pchist_tick(ctx);   /* SPU_PCHIST: slow path */ \
+             (ctx)->pch[(ctx)->pch_n++ & 7u] =                  \
+                 (uint32_t)((ctx)->pc & SPU_LS_MASK);           \
+             _tf(ctx);                                          \
 diff --git a/runtime/spu/spu_dma.h b/runtime/spu/spu_dma.h
 index bb58b77..1080da0 100644
 --- a/runtime/spu/spu_dma.h
@@ -452,10 +458,10 @@ index bb58b77..1080da0 100644
            int haspoison = 0;
            for (uint32_t o = 0; o + 4 <= size; o += 4) {
 diff --git a/runtime/spu/spu_drain.c b/runtime/spu/spu_drain.c
-index 7c1089c..8d115dd 100644
+index 7c1089c..0ca158d 100644
 --- a/runtime/spu/spu_drain.c
 +++ b/runtime/spu/spu_drain.c
-@@ -45,8 +45,18 @@ void* volatile    g_pm_flow_ctx = 0;
+@@ -45,8 +45,19 @@ void* volatile    g_pm_flow_ctx = 0;
  extern void spu_halt(spu_context*);
  /* Last 32 drain steps on this host thread (pc), for post-mortems of a run that
   * ended where it should not have (spurs_policy.c, [pm-end]). */
@@ -464,7 +470,8 @@ index 7c1089c..8d115dd 100644
 +{
 +    extern int yz_lockstep_enabled(void);
 +    const int slow = getenv("SPU_NO_LS0_END") || getenv("SPU_EXITTRACE") || getenv("SPU_STEPTRACE") ||
-+                     getenv("SPU_JOBDRAIN") || getenv("SPURS_PM_FLOW") || yz_lockstep_enabled() > 0;
++                     getenv("SPU_JOBDRAIN") || getenv("SPURS_PM_FLOW") || getenv("SPU_PCHIST") ||
++                     yz_lockstep_enabled() > 0;
 +    __atomic_store_n(&g_spu_hop_slow, slow, __ATOMIC_RELEASE);
 +}
 +
@@ -474,7 +481,7 @@ index 7c1089c..8d115dd 100644
      extern void spu_check_stack_reset(spu_context*, void (*)(spu_context*));
      spu_check_stack_reset(ctx, (void (*)(spu_context*))fn);
      /* A SPURS job returning to LS 0 is finished -- its crt tail-jumps to the
-@@ -423,8 +433,7 @@ void spu_drain_call(spu_context* ctx, uint32_t return_pc)
+@@ -423,8 +434,7 @@ void spu_drain_call(spu_context* ctx, uint32_t return_pc)
              void (*fn)(spu_context*) = g_spu_trampoline_fn;
              g_spu_trampoline_fn = 0;
              ctx->drain_ret_pc = return_pc & SPU_LS_MASK;   /* re-set: a nested drain changed it */

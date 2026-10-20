@@ -886,6 +886,108 @@ first needs the relay with a blocked firewall. Two symmetric NATs with both fire
 the fallback (a consistent choice of the punched pair would avoid it: the other side would have to say in its
 F_HEARD where it saw this side -- a punch format change).
 
+## Relayed matches (branch relay-smooth, 1.1.4)
+
+The request: "make rollback over the relay smoother". What a relayed match does differently from a direct one,
+measured, and the one cause that was real.
+
+**Measured: relayed against direct at the same network.** e2e scenario `net_relay_smooth` (docs/SMOKE.md): the
+direct path through the shaper's proxy; the relayed path through a relay node (`run.py relay`) with each player's
+leg shaped (half the round trip and half the jitter each, the loss that compounds to the total), the launchers'
+relay bridges in between as on players' PCs; per case direct, relay with 1.1.3's bridge (`relay-old`) and relay
+with the pump (below), interleaved in one run, one match of one round each, the same game build. Rollback
+(rollbacks/s, mean and p95 depth: both games; stall ms outside the lockstep windows; time-sync sleeps; fps
+host/joiner):
+
+| RTT / jitter / loss | direct | relay, 1.1.3 bridge | relay, pump |
+|---|---|---|---|
+| 60 / 0 / 0 % | 3.98/s, 1.09, p95 2; 2 ms; 8; 58.3/58.3 | 3.42/s, 1.02, p95 1; 11 ms; 10; 58.7/59.0 | 2.90/s, 1.04, p95 1; 10 ms; 24; 58.9/58.8 |
+| 60 / +-8 / 2 % | 7.78/s, 1.35, p95 2; 26 ms; 2; 59.3/59.3 (delay 1) | 3.13/s, 1.00, p95 1; 14 ms; 1; 59.3/59.3 | 2.63/s, 1.02, p95 1; 3 ms; 2; 59.0/59.0 |
+| 120 / 0 / 0 % | 6.49/s, 2.01, p95 3; 52 ms; 25; 53.9/54.2 | 7.69/s, 2.02, p95 3; 54 ms; 15; 56.9/57.0 | 6.31/s, 2.06, p95 3; 16 ms; 30; 53.8/53.6 |
+| 120 / +-8 / 2 % | 5.05/s, 1.82, p95 3; 48 ms; 50; 47.6/47.6 | 7.94/s, 2.06, p95 3; 47 ms; 7; 55.8/55.6 | 6.61/s, 2.01, p95 3; 56 ms; 10; 55.2/55.2 |
+| 200 / 0 / 0 % | 6.61/s, 3.73, p95 5; 134 ms; 25; 50.1/50.3 | 8.09/s, 4.33, p95 6; 136 ms; 46; 57.0/57.1 | 7.66/s, 4.35, p95 6; 135 ms; 19; 55.9/55.9 |
+| 200 / +-8 / 2 % | 7.62/s, 4.52, p95 6; 142 ms; 23; 58.2/58.0 | 6.84/s, 4.20, p95 6; 138 ms; 27; 55.0/55.1 | 7.00/s, 4.23, p95 6; 134 ms; 28; 54.4/54.4 |
+
+The fps column moves with the other games on this PC (47-59 on any path), not with the path. Lockstep (`--netcode
+lockstep`, the lobby's delay; time the frames waited for the peer, host/joiner; fps):
+
+| RTT / jitter / loss | direct | relay, 1.1.3 bridge | relay, pump |
+|---|---|---|---|
+| 60 / +-8 / 2 % | delay 4; 1.0 / 2.2 %; 58.7/57.7 | delay 4; 0.0 / 4.5 %; 59.0/58.1 | delay 4; 0.0 / 2.3 %; 59.2/58.0 |
+| 120 / +-8 / 2 % | delay 6; 0.2 / 2.4 %; 59.0/58.3 | delay 6; 0.5 / 2.2 %; 59.0/58.0 | delay 6; 0.5 / 2.8 %; 58.3/56.8 |
+| 200 / +-8 / 2 % | delay 8; 0.2 / 3.4 %; 58.7/57.9 | delay 8; 0.0 / 1.0 %; 58.8/58.4 | delay 8; 0.0 / 1.6 %; 58.3/57.9 |
+
+So at the same network a relayed match is as smooth as a direct one, and these were ruled out with numbers:
+*the delay* -- the games measure the round trip themselves through whatever path they have (section "Input
+delay"; relayed 120 ms: the game's 122 ms, the lobby's relay measurement 122.6 ms, direct 121 ms; the lockstep delay
+from the lobby's measurement through the relay, 4/6/8, the same as direct); *lost packets* -- every INPUT carries
+all inputs the peer has not acknowledged (at least the last 8 frames) and the ack: a lost packet costs the next
+packet's 16.7 ms, no rollback of its own (2 % loss changes nothing above); *time sync* -- sleeps per minute the
+same on both paths (17/min each in the first trial at 120/8/2); *the relay's choice* -- the smallest sum of both
+players' round trips since 1.1.1 (`relay_regional` PASS); *the relay node* -- forwards each datagram in its
+receive callback, no batching. The one threshold effect: the auto rollback delay switches from 1 to 2 frames at
+60 ms, and a relay's few extra milliseconds can cross it (60/8/2 above: direct 59 ms -> 1 frame, relayed 62 ms ->
+2 frames: fewer rollbacks, one frame more input lag).
+
+**What was real: the launcher's hop.** On a relayed match between 1.1.1+ launchers every game packet passes
+through the launcher's relay bridge on both PCs (so the match can move onto a direct path while it runs:
+docs/ONLINE.md). The bridge forwarded on the lobby client's event loop -- one packet per loop pass, behind the
+lobby's messages and timers -- on a thread of normal priority, while the game's own threads run at
+THREAD_PRIORITY_HIGHEST (ps3recomp 0065; the game's network thread too, for this very reason: section "Thread
+placement" in docs/RENDER_PERF.md). On a PC whose processors the game keeps busy, Windows let that thread wait a
+time slice now and then. `lobby/tools/bridge_latency.py`: a stand-in game (its own process) sends 60 packets/s
+through a real RelayBridge to a stand-in relay that echoes them -- two bridge passes per sample, as on a relayed
+match; `--hog 4 --cpus 2`: the launcher on two processors kept busy by four threads at the game's priority (14 of
+every 16.7 ms):
+
+| extra round trip (ms) | p50 | p95 | p99 | max | > 5 ms |
+|---|---|---|---|---|---|
+| 1.1.3 bridge (event loop), run 1 / 2 | 5.66 / 5.86 | 13.31 / 13.12 | 14.12 / 14.02 | 23.49 / 26.47 | 499 / 502 of 900 |
+| pump, run 1 / 2 | 0.12 / 0.19 | 0.21 / 0.29 | 0.26 / 0.38 | 0.47 / 1.86 | 0 / 0 of 900 |
+| + a launcher thread busy in Python half the time (`--hog 2 --cpus 2 --py-load`): 1.1.3 / pump | 6.06 / 0.31 | 16.95 / 9.47 | 28.79 / 12.25 | 47.72 / 23.17 | 410 / 80 of 720 |
+| a free processor left (`--hog 3 --cpus 4`): 1.1.3 / pump | 0.20 / 0.20 | 0.28 / 0.27 | 0.33 / 0.32 | 0.88 / 0.38 | 0 / 0 |
+
+Late, bunched packets are what a rollback loop feels most: the peer's inputs arrive later (deeper rollbacks), in
+bursts (the frame-advantage estimate jumps: time-sync sleeps), and in lockstep a frame waits. That is why the
+relayed matches of busy PCs (4 cores, a browser, streaming) were worse than their round trip says.
+
+**The fix (launcher only, `nat.RelayBridge` "The pump").** A thread of the bridge's own waits on both of its
+sockets (the event loop's reading of them paused) and forwards every game packet the moment it arrives, at
+THREAD_PRIORITY_HIGHEST like the game's network thread; whatever else arrives on the game socket (punches, the
+lobby's peer pings, the relay's answers) is handed to the event loop as before, so the direct-path upgrade, the
+keepalive and the measurements work unchanged. While a bridge pumps, the interpreter switches threads every 1 ms
+instead of 5 (`sys.setswitchinterval`; put back with the last bridge), so another launcher thread busy in Python
+holds a packet 1 ms, not 5. A low-TTL punch (the bridge's burst toward the direct path) sets the socket's TTL around
+its send; the pump takes the same lock (`GameSocket.ttl_lock`) so no game packet leaves with that TTL.
+`T5_RELAY_PUMP=0` is 1.1.3's way. Nothing on the wire changed: the relay server, the game and the netplay
+protocol see the same packets; a 1.1.3 lobby/relay server needs nothing.
+(`ctypes.windll.kernel32.SetThreadPriority(GetCurrentThread(), ...)` fails in Python -- the pseudo-handle comes
+back as a 32-bit int, "invalid handle" -- so the pump types the handle; the e2e harness's own `_raise_this_thread`
+has always failed that way, which keeps the runner's launcher threads two levels below the games' threads, the
+same gap as on a player's PC.)
+
+**Proof.** Sync: every match of the grids above (18 rollback, 9 lockstep, 6 more with launchers and games pinned
+to 6 processors) and of `net_relay_upgrade`, `net_firewall` (the relay fallback), `net_mixed_fallback`,
+`relay_regional` (all PASS, the pump on): 0 mismatching frames, the same result hash on both PCs; their 18
+recorded sessions played back identical (`--replays`). With processors to spare the e2e numbers do not move
+(the tables above, and pinned to 6 processors at 120 and 200 ms: relay 1.1.3 / pump 7.53 / 8.07 and 8.36 / 7.83
+rollbacks/s, fps 59 everywhere -- two games and the runner did not saturate 6 processors); the gain is where the
+processors are busy (the bridge table). Direct matches do not use the bridge. lobby/tests/test_nat2.py
+`RelayBridgeTest`: the pump forwards both ways and is raised, lobby packets still reach the event loop (a peer
+ping through the relay), the switch interval comes back, the TTL lock, `T5_RELAY_PUMP=0`; the whole lobby suite
+(30 modules) passes.
+
+**The rig itself** (tools/e2e): `net_rollback`'s "relay path" case had never shaped the relayed path (RTT 0,
+unshaped), and the shaper's proxies waited in `select()` timeouts that Windows rounds to its 15.6 ms tick in a
+process without `timeBeginPeriod(1)` -- up to 15 ms of jitter of the emulated network's own per hop, two hops on
+a relayed path. The runner now asks for 1 ms and raises the proxy threads for real.
+
+**Not done (choices for the owner).** At 200 ms the rollbacks are 4-5 frames deep on average (p95 6) on either
+path with the auto delay of 2 frames; an auto delay of 3 above ~150 ms (as some games do) would take a frame off
+every rollback for a frame more of input lag -- a feel decision, not a relay one. The lobby server's own relay
+forwards in the server's event loop, behind the lobby's work (regional relay nodes do nothing else); moving it to a
+thread like the pump would need a server deploy and was not measured as a problem.
+
 ## What had to be made deterministic
 
 Found by running two instances with identical scripted input, comparing the

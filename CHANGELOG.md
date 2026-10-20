@@ -42,6 +42,15 @@ part is in the README's status table.
   its functions out of date), so it is used as it is.
 
 ### Online
+- **Smoother matches through a relay server.** When two PCs cannot connect directly, every packet of the game
+  passes through the launcher on both PCs on its way to the relay. The launcher passed them on in between its other
+  work and at a lower priority than the game: on a PC the game keeps busy, packets now and then waited there for
+  Windows to let the launcher run (in our test 6 ms more round trip typically, up to 26 ms), and arrived late and
+  in bunches -- deeper rollbacks, more hitches than the ping explains. Now the launcher forwards the game's packets
+  the moment they arrive, on a thread of their own at the game's network priority (0.2 ms typically, under 2 ms at
+  worst in the same test). Tested in rollback and lockstep at 60/120/200 ms ping with loss and jitter: relayed
+  matches play like direct ones at the same ping, every match in sync. Only the launcher changed: it works with
+  every lobby and relay server. docs/NETPLAY.md "Relayed matches".
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
   although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'

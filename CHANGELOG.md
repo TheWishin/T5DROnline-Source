@@ -3,7 +3,7 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.2 (not released yet)
+## v1.1.2 (2026-10-20)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2
 (the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047, 0048,

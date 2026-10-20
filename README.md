@@ -6,8 +6,8 @@ launcher's own lobby, like Tekken 6 Native Online.
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in docs/README.de.md. -->
-**Release 1.1.1 (2026-10-19).** Download
-`T5DR-Online-1.1.1.zip` from https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.2 (2026-10-20).** Download
+`T5DR-Online-1.1.2.zip` from https://github.com/TheWishin/T5DROnline/releases
 
 **Offline play is ready:** all modes, 60 fps, Xbox pad and arcade stick tested.
 **Online works:** tested between two players' PCs over the internet (direct

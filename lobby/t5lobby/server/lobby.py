@@ -4029,7 +4029,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             self.registrations.prune()
             self.pw_ops.prune()
             self.chat_rate.prune()
-            for b in (self.room_guess, self.room_guess_addr, self.room_guess_room):
+            for b in (self.room_guess, self.room_guess_addr, self.room_guess_room, self.room_pw_addr):
                 b.prune()
             self.bans.prune()
             self.udp.ctl_buckets.prune()

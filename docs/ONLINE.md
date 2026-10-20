@@ -471,7 +471,8 @@ launcher (the one that made it) and launchers that joined with it know it.
   one per 10 s, for guesses from many addresses together; a friend's invite still works then). A guess is counted
   before the slow check and given back when it was right, so parallel tries on several connections cannot all pass
   while the first is hashed. The refusal says how long to wait (`rate_limited` "... try again in N s" with `retry`
-  N, like a held-back invite). Setting a password costs a hash: limited like a password change.
+  N, like a held-back invite). Setting a password costs a hash: limited like a password change (per player), and
+  to 10, then one per 6 s, per address.
 - Passwords: Unicode NFC (the same password however it was typed), printable characters only (no control, format or
   surrogate code points), 4-64 characters, at most 256 bytes of UTF-8. The launcher checks the same rules
   (`proto.clean_room_password`) before it sends anything.

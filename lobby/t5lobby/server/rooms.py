@@ -37,7 +37,7 @@ Security (security-review patterns of lobby.py):
     (`retry`, whole seconds, like a held-back invite);
   * passwords: 4-64 characters after Unicode NFC, any script, printable only (no control or format characters, no
     space at either end), at most 256 bytes of UTF-8;
-  * setting a password costs a hash: counted like a password change (pw_ops, per player).
+  * setting a password costs a hash: counted like a password change (pw_ops, per player), and per address.
 
 Older launchers (no "private_rooms" cap) never see a private room: the lobby list they get leaves them out; a join
 by id is refused with a text they show ("update the launcher"); a friend's invite still brings them in (it is the
@@ -135,6 +135,8 @@ class RoomsMixin:
         self.room_guess = KeyedBuckets(rate=1.0 / per, burst=g)               # per player (account / guest name)
         self.room_guess_addr = KeyedBuckets(rate=2.0 / per, burst=2 * g)      # per internet address
         self.room_guess_room = KeyedBuckets(rate=3.0 / per, burst=4 * g)      # per room, everybody together
+        # new room passwords hashed per internet address (a guest's own budget starts again with every new name)
+        self.room_pw_addr = KeyedBuckets(rate=1.0 / 6.0, burst=10)
 
     # ------------------------------------------------------------------ helpers
     def _can_private(self, p_or_conn):
@@ -178,7 +180,8 @@ class RoomsMixin:
 
     async def _room_hash(self, p, pw):
         """Hash a new room password (scrypt on a worker thread); counted like a password change."""
-        if not self.pw_ops.take("room:" + self._block_key(p)):
+        akey = getattr(p.conn, "akey", None)
+        if not self.pw_ops.take("room:" + self._block_key(p)) or (akey and not self.room_pw_addr.take(akey)):
             raise LobbyError(proto.E_RATE, "too many password changes; wait a minute")
         return await self._pw(hash_password, pw, self.cfg.scrypt_n)
 

@@ -2123,6 +2123,8 @@ MESSAGES = {
         "Die Matchdaten waren beschädigt.",
     "You stopped watching.":
         "Du schaust nicht mehr zu.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "Ein Freund der Spieler hat deinen Platz bekommen: Das Match hat so viele Zuschauer, wie es aufnehmen kann.",
     "this launcher cannot watch matches; update it":
         "Dieser Launcher kann keine Matches ansehen; aktualisiere ihn",
     "that match is not being played right now":
@@ -2143,6 +2145,12 @@ MESSAGES = {
         "Dieses Match hat schon {count} Zuschauer",
     "the server cannot show more matches right now":
         "Der Server kann gerade keine weiteren Matches zeigen",
+    "too many matches are watched from your network; stop watching one first":
+        "Aus deinem Netz werden schon zu viele Matches angeschaut; hör erst bei einem auf",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "Die Plätze für Gäste bei diesem Match sind belegt; melde dich mit einem Konto an, um zuzuschauen",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "Der Server kann Gästen gerade keine weiteren Matches zeigen; melde dich mit einem Konto an, um zuzuschauen",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "Firewall",
@@ -2183,6 +2191,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "Private und Community-Räume sind casual (nicht ranked)",
     "you are in that room": "Du bist in diesem Raum",
     "the room's host removed you from this room": "Der Gastgeber hat dich aus diesem Raum entfernt",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "Der Gastgeber des Raums hat Passwort-Versuche aus deinem Netz abgewiesen; bitte ihn um eine Einladung",
+    "only a room with a password counts wrong guesses": "Nur ein Raum mit Passwort zählt falsche Versuche",
     "that player is not in your room": "Dieser Spieler ist nicht in deinem Raum",
     "you cannot remove yourself; leave the room instead":
         "Du kannst dich nicht selbst entfernen; verlasse den Raum stattdessen",
@@ -2218,6 +2229,11 @@ MESSAGES = {
     "Remove {name} from the room? They cannot come back into it.":
         "{name} aus dem Raum entfernen? Er kann nicht wieder hinein.",
     "Removed {name} from the room.": "{name} wurde aus dem Raum entfernt.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "Falsche Passwörter in den letzten 10 Minuten: {count} (Netze: {networks})",
+    "Turn away the guessers": "Passwort-Rater abweisen",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "Abgewiesene Netze: {count}. Von dort kann niemand mehr Passwörter für diesen Raum ausprobieren.",
     "Room created.": "Raum erstellt.",
     "Room created. Press Copy invite code to see the code you can share.":
         "Raum erstellt. Drücke Einladungscode kopieren, um den Code zum Weitergeben zu sehen.",

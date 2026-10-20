@@ -2,7 +2,8 @@
 password or an invite code, hidden from the list), joining a locked room (it asks for the password or the code; Join
 room with no room selected asks for an invite code), and this player's room under the rooms list: who is in it, who
 plays, who is next, Sit out / Back in line, the host's Room settings (lock, password, new invite code, hidden, remove
-a player) and Copy invite code.
+a player, turn away the networks that typed wrong passwords) and Copy invite code. The host of a password room sees
+how many wrong passwords came in the last 10 minutes and from how many networks (the server never says who or where).
 
 Copy invite code puts the code into the launcher's own field next to the button and selects it there -- nothing goes
 to the system clipboard by itself (the player presses Ctrl+C when they want it); the field does not export its
@@ -156,6 +157,10 @@ class RoomsUI:
             secs = max(0, int(round(float(nxt.get("at") or 0) - (time.time() + off))))
             lines.append(t("Next: {p1} vs {p2} in {seconds} s", p1=name(nxt["players"][0]), p2=name(nxt["players"][1]),
                            seconds=secs))
+        g = r.get("guesses") if self._host(r) else None
+        if isinstance(g, dict) and g.get("wrong"):
+            lines.append(t("Wrong passwords in the last 10 minutes: {count} (networks: {networks})",
+                           count=int(g.get("wrong") or 0), networks=int(g.get("networks") or 0)))
         if r.get("size", 2) > 2:
             names = []
             for pid in r.get("line") or ():
@@ -256,6 +261,12 @@ class RoomsUI:
             return
         self.close_window()
         self.window = settings_window(self, r)
+
+    def bar_guessers(self):
+        """The host turns away the networks that typed wrong passwords into the room in the last 10 minutes."""
+        tab = self.tab
+        tab.call(tab.client.room_bar, then=lambda res: tab.status(
+            t("Networks turned away: {count}. They cannot try passwords on this room any more.", count=res[1])))
 
     def kick(self, pid, name):
         tab = self.tab
@@ -451,5 +462,16 @@ def settings_window(ui, r):
     b_kick.grid(row=8, column=0, sticky="w", pady=(px(8), 0))
     ttk.Button(card, text=t("Close"), style="Card.TButton", command=ui.close_window).grid(
         row=8, column=1, sticky="e", pady=(px(8), 0))
+    g = r.get("guesses")
+    b_bar = None
+    if isinstance(g, dict):                       # (a password room on a server that counts wrong guesses)
+        ttk.Label(card, text=t("Wrong passwords in the last 10 minutes: {count} (networks: {networks})",
+                               count=int(g.get("wrong") or 0), networks=int(g.get("networks") or 0)),
+                  style="Card.Muted.TLabel", wraplength=px(360), justify="left").grid(
+            row=9, column=0, columnspan=2, sticky="w", pady=(px(14), px(4)))
+        b_bar = ttk.Button(card, text=t("Turn away the guessers"), style="Card.TButton", command=ui.bar_guessers,
+                           state="normal" if g.get("wrong") else "disabled")
+        b_bar.grid(row=10, column=0, sticky="w")
     w.vars, w.err, w.players, w.save_button, w.code_button, w.kick_button = v, err, lb, b_save, b_code, b_kick
+    w.bar_button = b_bar
     return w

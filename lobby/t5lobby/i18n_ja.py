@@ -2015,6 +2015,8 @@ MESSAGES = {
         "対戦データが壊れていました。",
     "You stopped watching.":
         "観戦をやめました。",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "プレイヤーのフレンドにあなたの観戦枠が譲られました。この対戦の観戦枠はいっぱいです。",
     "this launcher cannot watch matches; update it":
         "このランチャーは対戦を観戦できません。更新してください",
     "that match is not being played right now":
@@ -2035,6 +2037,12 @@ MESSAGES = {
         "この対戦にはすでに {count} 人の観戦者がいます",
     "the server cannot show more matches right now":
         "サーバーは今これ以上の対戦を表示できません",
+    "too many matches are watched from your network; stop watching one first":
+        "あなたのネットワークから観戦している対戦が多すぎます。先にどれかの観戦をやめてください",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "この対戦のゲスト用の観戦枠は埋まっています。観戦するにはアカウントでログインしてください",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "サーバーは今、ゲストにこれ以上の対戦を表示できません。観戦するにはアカウントでログインしてください",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "ファイアウォール",
@@ -2072,6 +2080,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "非公開ルームとコミュニティルームはカジュアルです（Ranked ではありません）",
     "you are in that room": "すでにそのルームにいます",
     "the room's host removed you from this room": "ホストによってこのルームから外されました",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "ルームのホストがあなたのネットワークからのパスワード入力を締め出しました。ホストに招待を頼んでください",
+    "only a room with a password counts wrong guesses": "間違った入力を数えるのはパスワード付きのルームだけです",
     "that player is not in your room": "そのプレイヤーはあなたのルームにいません",
     "you cannot remove yourself; leave the room instead": "自分は外せません。ルームから出てください",
     "you can remove that player after their match": "そのプレイヤーは対戦が終わってから外せます",
@@ -2103,6 +2114,11 @@ MESSAGES = {
     "Remove player": "プレイヤーを外す",
     "Remove {name} from the room? They cannot come back into it.": "{name} さんをルームから外しますか？ もう戻れなくなります。",
     "Removed {name} from the room.": "{name} さんをルームから外しました。",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "直近10分間の間違ったパスワード：{count} 件（ネットワーク：{networks}）",
+    "Turn away the guessers": "推測している人を締め出す",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "締め出したネットワーク：{count}。そこからはこのルームのパスワードをもう試せません。",
     "Room created.": "ルームを作成しました。",
     "Room created. Press Copy invite code to see the code you can share.": "ルームを作成しました。共有できるコードは「招待コードをコピー」で表示されます。",
     "Room name (optional):": "ルーム名（省略可）：",

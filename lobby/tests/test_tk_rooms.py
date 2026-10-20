@@ -3,7 +3,8 @@ other clients (nothing is shown: the windows are withdrawn, questions are answer
 memory and must stay empty): the Create room window with a password, an invite code or several players; joining a
 locked room (the password asked in a masked field, a wrong one refused); Join room with nothing selected takes an
 invite code; Copy invite code fills the launcher's own field and never the clipboard; the room row (who plays, the
-line, Sit out / Back in line); the host's Room settings (a new password, removing a player)."""
+line, Sit out / Back in line); the host's Room settings (a new password, removing a player, the wrong passwords and
+turning their networks away)."""
 import time
 import unittest
 
@@ -191,6 +192,32 @@ class TkRoomsTest(TkBase):
         ev = expect(x, "notice")
         while ev.get("code") != "room_kicked":
             ev = expect(x, "notice")
+
+    def test_host_sees_wrong_passwords_and_turns_them_away(self):
+        """Hardening 1.1.4: the host of a password room sees how many wrong passwords came (never who or from where)
+        and turns those networks away; a guess from there is refused before it is checked."""
+        tab = self.tab
+        self.login()
+        self.create(size="3", access="Private (password)", password=PW)
+        self.pump(lambda: tab.client.my_room is not None)
+        rid = tab.client.my_room["id"]
+        g = self.peer("Gus")
+        for _ in range(2):
+            with self.assertRaises(Exception):
+                g.join_room(rid, password="not it")
+        self.pump(lambda: "Wrong passwords in the last 10 minutes: 2 (networks: 1)" in tab.rooms_ui.text.get())
+        self.assertNotIn("Gus", tab.rooms_ui.text.get())
+        tab.actions["room_settings"].invoke()
+        w = tab.rooms_ui.window
+        self.assertEqual(str(w.bar_button.cget("state")), "normal")
+        w.bar_button.invoke()
+        self.pump(lambda: "Networks turned away: 1." in tab.status_var.get())
+        self.pump(lambda: "Wrong passwords" not in tab.rooms_ui.text.get())
+        with self.assertRaises(Exception) as e:
+            g.join_room(rid, password=PW)
+        self.assertIn("turned away", str(e.exception))
+        # a member who joined before is not touched; an open room has nothing to count
+        tab.rooms_ui.close_window()
 
     def test_classic_without_private_rooms_on_the_server(self):
         """A server without the feature: Create room makes a room at once, as before (no window)."""

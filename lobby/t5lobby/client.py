@@ -1336,6 +1336,12 @@ class LobbyClient(TourCalls, SpectateClientMixin):
         """The room's host removes a member (not while they play); they cannot come back into this room."""
         return self._call({"t": "room_kick", "player": player_id})["room"]
 
+    def room_bar(self):
+        """The room's host (a password room): turn away every network that typed a wrong password in the last 10
+        minutes (the room view's `guesses` counts them). -> (the room, how many networks were turned away now)."""
+        r = self._call({"t": "room_bar"})
+        return r["room"], int(r.get("barred") or 0)
+
     def room_line(self, back=True):
         """Community rooms: back=False sits out (stay in the room, skip your turns), True puts you back in line."""
         return self._call({"t": "room_line", "in": bool(back)})["room"]

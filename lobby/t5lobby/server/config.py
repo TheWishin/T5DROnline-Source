@@ -82,7 +82,10 @@ class Config:
     room_next_seconds: float = 8.0  # T5L_ROOM_NEXT_SECONDS: a community room's pause between a result and its next match
     room_guesses: int = 5           # T5L_ROOM_GUESSES: wrong room passwords / invite codes a player may try (twice that
     room_guess_seconds: float = 30.0  # per address, 4x per room), then one more per T5L_ROOM_GUESS_SECONDS (address 2x,
-                                    # room 3x as often)
+                                    # room 3x as often; IPv6 /56 and /48 4x and 8x the player's)
+    room_lane_guesses: int = 3      # T5L_ROOM_LANE_GUESSES: wrong passwords one network (IPv4 address, IPv6 /48) may try at
+    room_lane_seconds: float = 1200.0  # one room out of its own lane, then one more per T5L_ROOM_LANE_SECONDS; spent
+                                    # before the room's shared budget, which guessers elsewhere cannot touch
     rounds: int = 3                 # T5L_ROUNDS: rounds to win a match (first to 3, like Tekken 6 online)
     ingame_pick: int = 30           # T5L_INGAME_PICK: seconds to pick the character on the game's own select screen
                                     # (when both players' launchers and games can; 0 = off: the launcher's character)
@@ -131,6 +134,13 @@ class Config:
     # spectating live matches (docs/SPECTATE.md)
     max_spectators: int = 8         # T5L_MAX_SPECTATORS: spectators per match
     max_streams: int = 50           # T5L_MAX_STREAMS: matches being watched at the same time, the whole server
+    spec_per_address: int = 2       # T5L_SPEC_PER_ADDRESS: matches watched at once from one internet address (IPv4, IPv6 /64)
+    spec_per_net: int = 4           # T5L_SPEC_PER_NET: ... from one IPv6 /56 (a /48: twice this); 0 = no limit. Friends of
+                                    # the players, members of the match's room and of its tournament do not count against them
+    spec_guest_share: float = 0.5   # T5L_SPEC_GUEST_SHARE: share of a match's places guests may hold, and of T5L_MAX_STREAMS
+                                    # below which a guest may start a stream
+    spec_reserved_streams: int = 10  # T5L_SPEC_RESERVED_STREAMS: the last stream slots, for friends of the players and
+                                    # members of the match's room or tournament only
     spectate_buffer_kb: int = 2048  # T5L_SPECTATE_BUFFER_KB: a session's stream kept from its start (compressed; ~3 h)
     spectate_rate_kb: int = 16      # T5L_SPECTATE_RATE_KB: KB/s a streamer may upload (a match needs well under 1)
     spectate_idle: float = 90.0     # T5L_SPECTATE_IDLE: a stream with no new data this long, its match over, ends

@@ -222,15 +222,29 @@ def list_replays(folder):
     return out
 
 
+def _by_age(folder):
+    """The replay files in folder, newest first. A file that goes between the listing and its time (deleted by the
+    Replays tab or another launcher pruning at the same moment) is left out: prune() runs while the launcher starts,
+    and a FileNotFoundError there kept the launcher from opening."""
+    out = []
+    for p in glob.glob(os.path.join(folder, "*" + EXT)):
+        try:
+            out.append((os.path.getmtime(p), p))
+        except OSError:
+            continue
+    out.sort(reverse=True)
+    return [p for _t, p in out]
+
+
 def newest(folder):
     """The newest replay file in folder, or None."""
-    files = glob.glob(os.path.join(folder, "*" + EXT))
-    return max(files, key=os.path.getmtime) if files else None
+    files = _by_age(folder)
+    return files[0] if files else None
 
 
 def prune(folder, keep=DEFAULT_KEEP):
     """Delete all but the newest `keep` replay files; returns how many went."""
-    files = sorted(glob.glob(os.path.join(folder, "*" + EXT)), key=os.path.getmtime, reverse=True)
+    files = _by_age(folder)
     gone = 0
     for p in files[keep:]:
         try:

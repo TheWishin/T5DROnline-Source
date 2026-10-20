@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 import zlib
 
@@ -165,6 +166,21 @@ class PythonSideTest(unittest.TestCase):
         rows = replays.list_replays(self.tmp)
         self.assertEqual(sorted(os.path.basename(e.path) for e in rows), ["good" + replays.EXT, "old" + replays.EXT])
         self.assertIsNone([e for e in rows if e.path.endswith("old" + replays.EXT)][0].when)
+
+    def test_prune_and_newest_survive_a_file_that_goes_meanwhile(self):
+        """review-112: prune() (run while the launcher starts) and newest() took each file's time after listing the
+        folder; a file deleted in between (the Replays tab's Delete, a second launcher pruning at the same moment)
+        raised FileNotFoundError -- and the launcher did not open."""
+        for k in range(3):
+            make_file(os.path.join(self.tmp, f"r{k}" + replays.EXT), sample_inputs(10),
+                      [{"start": 0, "end": 5, "p1": 1, "p2": 2, "stage": 20, "winner": 0}])
+            os.utime(os.path.join(self.tmp, f"r{k}" + replays.EXT), (1000 + k, 1000 + k))
+        real = replays.glob.glob
+        gone = os.path.join(self.tmp, "gone" + replays.EXT)
+        with mock.patch.object(replays.glob, "glob", lambda pat: real(pat) + [gone]):
+            self.assertEqual(os.path.basename(replays.newest(self.tmp)), "r2" + replays.EXT)
+            self.assertEqual(replays.prune(self.tmp, keep=2), 1)
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["r1" + replays.EXT, "r2" + replays.EXT])
 
     def test_playback_env(self):
         p = os.path.join(self.tmp, "a" + replays.EXT)

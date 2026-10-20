@@ -55,6 +55,16 @@ class KeyedBuckets:
         now = time.monotonic()
         return min(bucket.burst, bucket.tokens + (now - bucket.t) * bucket.rate) >= n
 
+    def wait(self, key, n=1.0):
+        """Seconds until take() would succeed (0: now) -- for a refusal that says when to try again."""
+        bucket = self.b.get(key)
+        if bucket is None:
+            return 0.0
+        have = min(bucket.burst, bucket.tokens + (time.monotonic() - bucket.t) * bucket.rate)
+        if have >= n:
+            return 0.0
+        return (n - have) / bucket.rate if bucket.rate > 0 else float("inf")
+
     def prune(self, now=None):
         now = time.monotonic() if now is None else now
         dead = [k for k, bk in self.b.items() if bk.tokens + (now - bk.t) * bk.rate >= bk.burst]

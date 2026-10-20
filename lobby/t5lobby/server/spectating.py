@@ -7,7 +7,8 @@ here can make them wait.
 
 Who may watch a match that is being played:
     friends     a friend of either player (accounts)
-    rooms       anybody in the lobby, for a room's match (a room is public)
+    rooms       anybody in the lobby, for a room's match (a room is public) -- a private room's (locked or
+                hidden, rooms.py): its members only
     tournaments the tournaments branch decides (_spec_tournament_may_watch, a hook)
 and only if both players allow it (spec_prefs: "allow spectators", default on in the launcher;
 "also in ranked matches", default off), neither player has blocked the viewer, and the match has
@@ -107,11 +108,17 @@ class SpectateMixin:
             return LobbyError(proto.E_BUSY, "you are in a match yourself")
         if viewer.build_id != m.build_id:      # (another build plays the stream differently)
             return LobbyError(proto.E_VERSION, "that player runs a different build of the game")
-        may = (m.room is not None
-               or (viewer.account_id is not None and any(q.account_id in viewer.friends for q in m.players))
-               or self._spec_tournament_may_watch(viewer, m))
-        if not may:
-            return LobbyError(proto.E_NOT_ALLOWED, "only friends of a player can watch this match")
+        r = m.room
+        if r is not None and r.private:
+            # a private room (locked or hidden, rooms.py): its members only -- not the players' friends either
+            if viewer not in r.members:
+                return LobbyError(proto.E_NOT_ALLOWED, "only the room's players can watch its match")
+        else:
+            may = (r is not None
+                   or (viewer.account_id is not None and any(q.account_id in viewer.friends for q in m.players))
+                   or self._spec_tournament_may_watch(viewer, m))
+            if not may:
+                return LobbyError(proto.E_NOT_ALLOWED, "only friends of a player can watch this match")
         if any(self._is_blocked(viewer, q) for q in m.players) or \
                 not all(self._spec_allowed_by(q, m) for q in m.players):
             return LobbyError(proto.E_NOT_ALLOWED, "the players do not allow spectators")

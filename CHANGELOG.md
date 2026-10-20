@@ -3,6 +3,17 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Picture and speed
+- **Less GPU work at 1080p, 1440p and 4K** (ps3recomp patch 0051). The stages with a blur or a glow
+  filter a PS3-size copy of the picture (1.1.2); making that copy and shrinking a large picture
+  into a smaller window are now done with fewer texture reads, with exactly the same result.
+  On integrated graphics this cut 17-40 % of the GPU time around the 3D scene at 1440p and 4K.
+  With power saving on (on by itself with integrated graphics) the shadow map and the sun's glow
+  keep the PS3's size above Native as well. The log can show where the GPU time of a frame goes
+  (`RSX_GPU_PASSES=1`).
+
 ## v1.1.2 (2026-10-20)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2

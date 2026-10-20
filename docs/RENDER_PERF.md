@@ -895,3 +895,146 @@ joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
 Not tried: a real laptop, handheld or APU (this PC has none), the game's
 fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
 none here; `system.txt` then says so).
+
+## GPU time on integrated graphics (patch 0051, branch `igpu-perf`)
+
+The 780M player (Zen 4 APU, 65 W mini PC) stayed slower than RPCS3 at 1080p
+and 4K after the CPU pass (patch 0047). On an APU the graphics share the
+processor's memory, so what costs memory bandwidth and shader time on the GPU
+also costs the CPU. This pass measures where the GPU time of a fight goes and
+makes the expensive parts cheaper without changing the picture.
+
+### Measuring: GPU time per pass
+
+`RSX_GPU_PASSES=1` puts a GPU timestamp at every boundary of GPU work in a
+command list -- a draw pass (render target and zeta bound), a clear, a copy,
+the depth snapshot of the shadow map, the stage filter's guest-size view, the
+present -- labelled with what starts there, and every 600 frames prints
+
+    [gpu-pass] 600 frames, 21.66 ms GPU per frame in 1.0 lists; per frame: | pass 0x017F0000
+    6144x4320 rgba8 z 0x02330000: 15.92 ms (3.0x, 599 draws) | guest view 0x017F0000 2048x1440
+    rgba8: 2.42 ms (1.0x) | pass 0x003A0000 3840x2160 rgba8 z 0x00740000: 1.20 ms ...
+
+(no CPU wait: the results are read once their fence has passed; off by
+default). Measured on this PC's integrated graphics -- the Ryzen 9 7950X's
+Radeon (RDNA2, 2 compute units, the 780M's driver family and memory model,
+about a sixth of a 780M's shader throughput) with `RSX_ADAPTER=radeon`, while
+the screen hangs off the RTX 3090 -- in a direct fight (Lili vs Asuka, P1
+pressing buttons, `tools/fight_bench.py --polite`), the last two 600-frame
+windows after FIGHT START. The GPU's own clock moves with its temperature and
+the load of the PC (16-31 of 32 processors busy with other agents' games), so
+the unchanged 3D pass varies by ~10 % between runs; the column in brackets is
+everything but the 3D pass, which is what changed.
+
+Where it went before (ms of GPU per frame):
+
+| stage | step | whole frame | 3D pass (2048 x 1440 x scale^2) | guest-size view (0043) | display buffers (downsample + HUD) | present to a 1280 x 720 window | shadow map + its depth snapshot | glow (stage 20) |
+|---|---|---|---|---|---|---|---|---|
+| 20 | Native | 2.42 | 1.81 | -- | 0.29 | 0.13 | 0.06 | 0.09 |
+| 20 | 1080p | 6.98 | 3.98 | 1.36 | 0.62 | 0.47 | 0.13 | 0.31 |
+| 20 | 1440p | 10.13 | 6.58 | 1.43 | 0.99 | 0.43 | 0.23 | 0.36 |
+| 20 | 4K | 25.05 | 14.67 | 4.44 | 2.74 | 1.84 | 0.43 | 0.74 |
+| 34 | 1080p | 6.60 | 3.99 | 1.26 | 0.68 | 0.43 | 0.13 | -- |
+| 34 | 4K | 24.32 | 14.88 | 4.67 | 2.41 | 1.68 | 0.49 | -- |
+| 27 | 4K | 21.44 | 18.20 | -- | 1.11 | 1.48 | 0.47 | -- |
+
+- **The 3D pass is 60-85 % of every frame**: the game's own shading of its
+  supersampled 2048 x 1440 picture (600 draws), times the scale squared. It is
+  what Internal resolution buys; nothing outside the game's shaders makes it
+  cheaper without drawing fewer pixels.
+- **The guest-size view of patch 0043** (the stage blur and glow kernels read
+  the scaled 3D target box-filtered to the PS3's size) was the next item: 19-20 %
+  of a 1080p-4K frame on the blur and glow stages. Its loop with per-texel
+  bounds and weights was shader-bound, not bandwidth-bound.
+- **The present** filters a picture larger than the window with n x n taps
+  (patch 0038): 1.5-1.8 ms at 4K into a 1280 x 720 window.
+- Small: the shadow map pass and the compute copy of its depth (0.06 ms at
+  Native, 0.4-0.5 ms at 4K, where the map is 1536 x 1536), the glow buffers,
+  clears (fast clears, 0.01-0.1 ms). The display-buffer passes (the game's
+  downsample of the 3D picture plus 14-17 HUD draws) cost their pixels; the HUD's
+  overdraw is a few draws. Not there at all in a fight: feedback copies (a draw
+  sampling its own target), texture uploads, surface copies.
+- Formats: every target of a fight is RGBA8 (no FP16 target is drawn), depth is
+  `D32_FLOAT_S8X24` -- on AMD a 32-bit depth plane and a separate stencil plane,
+  so a narrower format would save nothing there.
+
+### What changed
+
+| change | picture | switch |
+|---|---|---|
+| Guest-size view: its own unrolled path per Internal resolution step instead of the loop -- 1.5x (1080p): the loop's 2 x 2 texels and weights in the loop's order; 2x, 3x, 4x: the whole host texels unrolled (bit-identical everywhere), or on AMD pairs of texels with one bilinear tap halfway between their centres: 2x one tap instead of 4, 3x four taps weighted 4:2:2:1 instead of 9, 4x four instead of 16 | identical: max difference 0 on AMD and NVIDIA (below) | `RSX_GVIEW_FAST=0` (the loop) / `1` (unrolled) / `2` (pairs) |
+| Present at an exact integer ratio (4K or 1440p internal in a window or screen of a half or a third): the same pairs on AMD -- 2x one tap instead of 4, 3x four instead of 9, 4x four instead of 16. Any other ratio, and other GPUs: the n x n taps as before | identical on AMD at 2x and 3x; 4x within one level in 0.005 % of the pixels | `RSX_PRESENT_FAST=1/0` |
+| **With power saving** (patch 0047; on by itself on integrated graphics): above native, targets smaller than the canvas -- the 512 x 512 shadow map and the 128 x 128 glow buffers -- keep their guest size, as they do below native; the glow then needs no guest-size view | shadow edges as at Native; glow as at Native | `RSX_SMALL_TARGETS_NATIVE=1/0` |
+| `RSX_GPU_PASSES=1` per-pass timestamps; `RSX_FAST_SELFCHECK=1` makes every guest-size view and the present twice from the same input at a frame-exact surface dump (`LD_SURF_DUMP`), the new path and the old, and writes both; the surface dump also writes the frame's backbuffer | -- | -- |
+
+Bilinear pairs are exact in arithmetic (tests/test_igpu_filters.py checks every
+tap layout against the box on random textures) and were bit-identical on AMD's
+texture units, but NVIDIA's rounded 0.1-4.5 % of the pixels one level
+differently (max 1 of 255), so the pairs are AMD's default and other GPUs get
+the unrolled loads, which do the loop's arithmetic.
+
+**Same picture.** `RSX_FAST_SELFCHECK=1` in fights on stages 20 and 34 at
+1080p, 1440p and 4K (into 1280 x 720 and 960 x 540 windows: present ratios 1.5,
+2, 3 and 4), every guest-size view of the frame (3D target, display buffers,
+glow buffers, shadow map) and the backbuffer, new path against old on the same
+input: **max difference 0, SSIM 1.000000** in every image, on the integrated
+Radeon (pairs) and on the RTX 3090 (unrolled loads). Smoke quick passes.
+
+### Results
+
+The same runs after the change (power saving off: what a desktop GPU gets; and
+the default on integrated graphics, where power saving turns itself on), ms of
+GPU per frame, everything but the 3D pass in brackets:
+
+| stage | step | before | after, power saving off | after, integrated graphics default (power saving on) |
+|---|---|---|---|---|
+| 20 | 1080p | 6.98 (3.00) | 6.47 (2.68) | 5.98 (2.28) |
+| 20 | 1440p | 10.13 (3.41) | 10.00 (2.82) | 9.20 (2.37) |
+| 20 | 4K | 25.05 (10.18) | 22.19 (6.91) | 21.66 (5.74) |
+| 34 | 1080p | 6.60 (2.61) | 6.30 (2.32) | 5.53 (2.17) |
+| 34 | 1440p | 9.75 (3.08) | 9.86 (2.33) | 8.63 (2.17) |
+| 34 | 4K | 24.32 (9.22) | 19.25 (5.50) | 19.35 (4.71) |
+| 27 | 1440p | 8.08 (0.90) | 7.37 (0.92) | 7.97 (0.70) |
+| 27 | 4K | 21.44 (3.02) | (load-bound run) | 18.38 (1.31) |
+| 20 / 34 / 27 | Native | 2.42 / 2.43 / 2.35 | (no change: nothing is scaled) | 2.63 / 2.45 / 2.35 |
+
+Per pass at 4K: the guest-size view 4.4-4.7 -> 1.7-2.4 ms, the present into a
+1280 x 720 window 1.5-1.8 -> 0.4-0.7 ms, with power saving the shadow map and
+its snapshot 0.4-0.5 -> 0.06 ms and the glow 0.74 -> 0.10 ms. At 1440p the view
+1.3-1.4 -> 0.6-0.9 ms and the present 0.4 -> 0.2-0.3 ms; at 1080p the view
+1.3 -> 1.0 ms. Everything around the 3D pass now costs 17-40 % less GPU time
+at 1440p and 4K (30-49 % with power saving), the whole frame 8-21 % at 4K.
+
+**What this means for a 780M.** Its 12 RDNA3 compute units do about six times
+this GPU's work, so a fight frame takes it roughly 0.4 ms at Native, 1 ms at
+1080p, 1.5 ms at 1440p and 3.5 ms at 4K (estimated from these runs, not
+measured on a 780M): the GPU was not what held that PC below 60 -- the CPU side
+was (patch 0047). What this pass saves there is memory traffic the GPU no longer
+puts on the shared bus at 1440p and 4K. For integrated graphics Native or 1080p
+stays the sensible step.
+
+**Online**: host pixels only, nothing the game reads changes, so the two PCs
+of a match may differ. Rollback pair (default settings, one match of two rounds), host at 4K on the RTX 3090 with per-pass timestamps and the AMD paths forced on (`RSX_GVIEW_FAST=2 RSX_PRESENT_FAST=1`), joiner at 1080p with power saving (shadow map and glow at guest size), the joiner's game suspended for 60 ms every 0.2-0.6 s (`--stutter 60`: deep rollbacks), a direct connection (after this PC's restart the test proxy got no replies from the games): sync through frame 4199 0 mismatching on both sides, the same result hash `40ab59479a3c405c`, 158 / 277 rollbacks (605 / 1,474 frames re-simulated), no decode error or abort. Before the restart a pair through the proxy (RTT 50 ms, 3 % loss) with the joiner rendering on the integrated Radeon at 1440p stayed in sync through frame 2999 (0 mismatching) before the overloaded PC slowed the host to 1-2 fps.
+
+**A GPU hang on the integrated Radeon, not this patch.** After this PC was
+restarted, with 16-18 other games running and only 3.6 of its 31 GB free, a
+game rendering on the integrated Radeon at 1080p stopped twice with
+`DXGI_ERROR_DEVICE_HUNG` near the title screen. DRED (`[dred]` lines in the
+log) puts both hangs in one of the game's own command lists, at its first
+clear (`last=0`: not even the clear finished) or among its indexed draws
+(`last=8`), neither one of this patch's passes (those are non-indexed draws and
+copies at the end of a frame). An A/B on that GPU at 1080p, same build, same
+load, interleaved, two games at a time at below-normal priority, boot -> title
+-> direct fight -> 40 s of fighting, stages 20 and 26:
+
+| build | runs | reached the fight | hung | other games running | free memory |
+|---|---|---|---|---|---|
+| 0051, every path off (`RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`) | 24 | 24 | 0 | 3-10 | 9.0-15.7 GB |
+| 0051, default | 24 | 24 | 0 | 2-10 | 9.3-17.3 GB |
+| main without 0051 | 24 | 24 | 0 | 1-10 | 9.4-17.1 GB |
+
+So the hang did not come back in 72 runs, with or without the patch; with
+the GPU stopping at a frame's first clear under heavy memory pressure it looks
+like the integrated GPU's memory being paged out by Windows, not anything the
+game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
+still turns every change of this patch off.

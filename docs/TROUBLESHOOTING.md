@@ -877,6 +877,12 @@ not (on every PC, power saving or not).
   power a lot.
 - **Internal resolution Lower or Lowest** on integrated graphics: less work
   for the graphics leaves more of the shared power budget to the processor.
+  Above Native the graphics work grows with the pixels: on integrated graphics
+  1080p takes about 2.6 times Native's GPU time per frame, 1440p 4 times, 4K
+  8-9 times (docs/RENDER_PERF.md "GPU time on integrated graphics"); Native or
+  1080p is the sensible choice there. With power saving on (on by itself with
+  integrated graphics), the shadow map and the sun's glow stay at their PS3
+  size above Native -- shadow edges then look as they do at Native.
 - **Two graphics chips** (NVIDIA Optimus, AMD switchable graphics): the game
   picks the fast chip. The screen is still driven by the integrated chip and
   every picture is copied across; the log says `[gpu] display: ... hybrid

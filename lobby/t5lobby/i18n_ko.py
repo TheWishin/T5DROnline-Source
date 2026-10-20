@@ -1740,4 +1740,19 @@ MESSAGES = {
         "리플레이 종료.",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "이 리플레이 파일을 삭제할까요? 같은 상대와의 대전 {n}개가 들어 있습니다.",
+    # patch 0063 (igpu-4k-stall): Internal resolution Auto, integrated-graphics and GPU-bound hints
+    "Auto (matches the screen)":
+        "자동 (화면에 맞춤)",
+    "The game picks the step that matches your screen when it starts, at most 1080p on integrated graphics (they share the processor's memory and power).":
+        "게임이 시작할 때 화면에 맞는 단계를 고릅니다. 내장 그래픽에서는 최대 1080p (프로세서와 메모리, 전력을 함께 쓰기 때문).",
+    "On this PC: {step}.":
+        "이 PC에서: {step}.",
+    "{step} on integrated graphics: try {better} for 60 fps.":
+        "내장 그래픽에서 {step}: 60 fps를 위해 {better}를 써 보세요.",
+    "Extra settings below set {setting}: that wins over this choice.":
+        "아래 추가 설정이 {setting}을(를) 정합니다: 이 선택보다 우선합니다.",
+    "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
+        "그래픽 때문에 대전이 60 fps보다 느렸습니다 (GPU 한계): 설정에서 내부 해상도를 낮추세요.",
+    "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
+        "대전이 60 fps보다 느렸습니다: 내장 그래픽이 바빠서 프로세서도 느려졌습니다. 설정에서 내부 해상도를 낮추면 도움이 됩니다.",
 }

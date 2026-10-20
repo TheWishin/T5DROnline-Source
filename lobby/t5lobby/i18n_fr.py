@@ -1806,4 +1806,19 @@ MESSAGES = {
         "Replay terminé.",
     "Delete this replay file? It holds {n} match(es) against the same opponent.":
         "Supprimer ce fichier de replay ? Il contient {n} match(s) contre le même adversaire.",
+    # patch 0063 (igpu-4k-stall): Internal resolution Auto, integrated-graphics and GPU-bound hints
+    "Auto (matches the screen)":
+        "Auto (selon l'écran)",
+    "The game picks the step that matches your screen when it starts, at most 1080p on integrated graphics (they share the processor's memory and power).":
+        "Le jeu choisit au démarrage le niveau qui correspond à ton écran, au plus 1080p avec une puce graphique intégrée (elle partage la mémoire et l'énergie du processeur).",
+    "On this PC: {step}.":
+        "Sur ce PC : {step}.",
+    "{step} on integrated graphics: try {better} for 60 fps.":
+        "{step} avec une puce graphique intégrée : essaie {better} pour 60 fps.",
+    "Extra settings below set {setting}: that wins over this choice.":
+        "Les réglages supplémentaires ci-dessous mettent {setting} : cela l'emporte sur ce choix.",
+    "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
+        "Les combats étaient sous 60 fps à cause du graphisme (limité par le GPU) : choisis une résolution interne plus basse dans Réglages.",
+    "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
+        "Les combats étaient sous 60 fps : la puce graphique intégrée était occupée et a aussi ralenti le processeur. Une résolution interne plus basse dans Réglages aide.",
 }

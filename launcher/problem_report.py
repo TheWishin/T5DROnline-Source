@@ -752,14 +752,14 @@ def _gb(n):
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
                             r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
-                            r"power saving|on AC|on battery|power source)")
+                            r"power saving|on AC|on battery|power source|internal resolution|frames in flight)")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
 # late frames; online, the match's speed against this PC's own -- a slow opponent's PC makes both
 # games slow, docs/WEAK_PC.md); the last few of each kind go into system.txt.
 GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches|netplay\] speed:)")
 
 
-def facts_from_log(path, limit=12):
+def facts_from_log(path, limit=16):
     """The few start-up lines of a game log that say what the game found on this PC."""
     out = []
     try:
@@ -787,10 +787,52 @@ def run_lines_from_log(path, keep=4, limit=64 * 1024 * 1024):
                 m = GAME_LOG_RUN.match(line)
                 if m:
                     q = last.setdefault(m.group(0), collections.deque(maxlen=keep))
-                    q.append(line.rstrip()[:900])
+                    q.append(line.rstrip()[:1800])     # patch 0063 made [slow-frames] longer (split, GPU, verdict)
     except OSError:
         pass
     return [ln for q in last.values() for ln in q]
+
+
+# Patch 0063: what the [slow-frames] lines and the start-up facts say about speed, in one or two plain lines for
+# whoever reads the report (docs/RENDER_PERF.md "4K on integrated graphics").
+SLOW_VERDICT_GPU = re.compile(r"\| GPU-bound: the graphics need ([0-9.]+) ms a frame")
+SLOW_VERDICT_IGPU = re.compile(r"\| integrated graphics busy ([0-9]+) % of the time")
+FACT_GPU = re.compile(r"^\[gpu\] adapter: (.+?) \(vendor [0-9A-Fa-f]+, .*?\b(integrated|dedicated)\)")
+FACT_RES = re.compile(r"^\[display\] internal resolution (.+?) \(([0-9.]+)x\)")
+
+
+def speed_diagnosis(run_lines, facts, screens=()):
+    """Plain lines: GPU-bound windows, integrated graphics slowing the processor, an internal resolution above the
+    screen on integrated graphics. [] when none applies."""
+    slow = [ln for ln in run_lines if ln.startswith("[slow-frames]")]
+    gpu = [SLOW_VERDICT_GPU.search(ln) for ln in slow]
+    igpu = [SLOW_VERDICT_IGPU.search(ln) for ln in slow]
+    out = []
+    n_gpu, n_igpu = sum(1 for m in gpu if m), sum(1 for m in igpu if m)
+    if n_gpu:
+        need = max(float(m.group(1)) for m in gpu if m)
+        out.append(f"GPU-bound in {n_gpu} of the last {len(slow)} [slow-frames] windows (the graphics needed up to "
+                   f"{need:.1f} ms a frame): a lower Internal resolution is what helps.")
+    if n_igpu:
+        busy = max(int(m.group(1)) for m in igpu if m)
+        out.append(f"Integrated graphics busy up to {busy} % of the time in {n_igpu} of the last {len(slow)} windows: "
+                   "they share the processor's memory and power, so the game's own work (the 'game' part) slows "
+                   "down too; a lower Internal resolution helps.")
+    integrated = res = None
+    for ln in facts:
+        m = FACT_GPU.match(ln)
+        if m:
+            integrated = m.group(2) == "integrated"
+        m = FACT_RES.match(ln)
+        if m:
+            res = (m.group(1), float(m.group(2)))
+    if integrated and res and screens:
+        w, h = max(screens)
+        if 1280 * res[1] > w + 8 or 720 * res[1] > h + 8:
+            better = "1080p" if w >= 1912 and h >= 1072 else "Native (720p)"
+            out.append(f"Internal resolution {res[0]} on integrated graphics with a {w} x {h} screen: the picture is "
+                       f"larger than the screen; {better} would match it.")
+    return out
 
 
 def system_text(ctx, now=None, game_log=None):
@@ -844,6 +886,9 @@ def system_text(ctx, now=None, game_log=None):
         run = run_lines_from_log(game_log)
         if run:
             L += ["", f"== How the game ran ({os.path.basename(game_log)}) ==", *run]
+        diag = speed_diagnosis(run, facts or [], [(d["width"], d["height"]) for d in (display_info() or [])])
+        if diag:
+            L += ["", "== What the log says about speed ==", *diag]
     return "\n".join(L) + "\n"
 
 

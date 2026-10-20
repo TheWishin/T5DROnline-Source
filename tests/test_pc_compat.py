@@ -299,6 +299,10 @@ class InternalResolution(unittest.TestCase):
     def test_runtime_understands_every_launcher_step(self):
         patch = text("patches", "ps3recomp", "0038-internal-resolution.patch")
         for key, (_label, factor) in core.INTERNAL_RES.items():
+            if key == "auto":       # patch 0063 (PS3_INTERNAL_RES=auto)
+                self.assertIn('_stricmp(e, "auto") == 0',
+                              text("patches", "ps3recomp", "0063-igpu-4k-stall.patch"))
+                continue
             self.assertRegex(patch, r'\{"%s", %sf\}' % (re.escape(key), re.escape(repr(factor))), key)
         for alias in ("PS3_RES_SCALE", "PS3_RENDER_SCALE"):
             self.assertIn('getenv("%s")' % alias, patch)
@@ -367,7 +371,8 @@ class VSync(unittest.TestCase):
 
 
 class PowerSaving(unittest.TestCase):
-    """Launcher Settings -> Power saving: Auto (default: the game decides, PS3_LAPTOP unset), On (1), Off (0)."""
+    """Launcher Settings -> Power saving: Auto (default: the game decides, PS3_LAPTOP=auto -- explicit since 1.1.3, so
+    a PS3_LAPTOP in Windows' environment cannot overrule it), On (1), Off (0)."""
 
     def path(self, saved=None):
         d = tempfile.mkdtemp(prefix="t5dr-power")
@@ -377,10 +382,13 @@ class PowerSaving(unittest.TestCase):
                 json.dump(saved, f)
         return p
 
-    def test_auto_by_default_sets_nothing(self):
+    def test_auto_by_default_lets_the_game_decide(self):
         s = core.Settings(self.path())
         self.assertEqual(s["power_saving"], "auto")
-        self.assertNotIn("PS3_LAPTOP", s.env_overrides())
+        self.assertEqual(s.env_overrides()["PS3_LAPTOP"], "auto")
+        with mock.patch.dict(os.environ, {"PS3_LAPTOP": "0"}):     # a stale Windows variable loses to the setting
+            _cmd, game_env, _cwd = core.run_game.game_command(tempfile.mkdtemp(), s.env_overrides())
+        self.assertEqual(game_env["PS3_LAPTOP"], "auto")
         old = core.Settings(self.path({"display": "window1080"}))     # launcher.json of an older version
         self.assertEqual(old["power_saving"], "auto")
 
@@ -395,7 +403,18 @@ class PowerSaving(unittest.TestCase):
         for bad in ("maybe", "", None, True, 1, "ON", []):
             s = core.Settings(self.path({"power_saving": bad}))
             self.assertEqual(s["power_saving"], "auto", bad)
-            self.assertNotIn("PS3_LAPTOP", s.env_overrides())
+            self.assertEqual(s.env_overrides()["PS3_LAPTOP"], "auto")
+
+    def test_extra_settings_win_and_are_named(self):
+        s = core.Settings(self.path({"power_saving": "auto", "extra_env": "# note\nPS3_LAPTOP = 0\n"}))
+        self.assertEqual(s.env_overrides()["PS3_LAPTOP"], "0")
+        self.assertEqual(core.extra_env_override(s, "power_saving"), "PS3_LAPTOP=0")
+        self.assertIsNone(core.extra_env_override(core.Settings(self.path({"extra_env": "PS3_VSYNC=0"})),
+                                                  "power_saving"))
+
+    def test_runtime_reads_auto(self):
+        patch = text("patches", "ps3recomp", "0047-laptop-power-saving.patch")
+        self.assertIn('!strcmp(e, "auto") ? 2', patch)
 
     def test_mobile_processor_names(self):
         mobile = ["AMD Ryzen Z1 Extreme", "AMD Ryzen Z1", "AMD Ryzen 7 7840U w/ Radeon 780M Graphics",

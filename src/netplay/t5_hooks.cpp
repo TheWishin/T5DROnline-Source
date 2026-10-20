@@ -349,7 +349,26 @@ const char* kDefaultHashSkip =
      * more often under rollback (7 of 9 at RTT 50; 0 of 2 with
      * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
      * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
-    "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
+    "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8,"
+    /* The renderer's current projection (0x24 bytes from 0x100996B4: type,
+     * near, far, aspect, then left/right/top/bottom of an off-centre one):
+     * render state, not match state. Only the projection setters write it
+     * (0x80A94 perspective, 0x80C94 off-centre, from render passes); during a
+     * fight the last one before the frame boundary is the stage-27 shadow
+     * pass (0x268418 -> 0x15A974 -> 0x80C94), which sizes the fighters'
+     * shadow box from their bone positions. No game code reads it: an access
+     * trace of the record over 40 fight frames (T5_RB_RFT, rb_rft.cpp) found
+     * reads only inside the two setters themselves (of +0x0..+0x10) and by our
+     * own hash; the frustum words +0x14..+0x20 are never read.
+     * The 1.1.2 e2e gate voided a stage-27 rollback match for 10 frames of
+     * 0x100996C8..D4 alone (+-0.05 of +-600..1050) at the fight's start,
+     * frames 226-235. The first of them, the state after frame 225, no
+     * rollback can reach (every input up to frame 225 is the intro's neutral
+     * one on both PCs; the first press took effect in frame 226): not
+     * rollback-made. The fight, the camera, the side flags and the result
+     * stayed identical (docs/NETPLAY.md "Stage 27: the shadow box at the
+     * fight's start"). */
+    "100996B4:24";
 /* The fighters' side flags stay IN the hash: +0x1C2/+0x1C3 of the blocks at
  * 0x10090040 and 0x10090910 (bytes 0x10090202/03, 0x10090AD2/D3), written by
  * 0x808D8 from the camera-projected screen x above (+0x6C8, left out): which

@@ -102,6 +102,10 @@ bool     wft_enabled();
 void     wft_arm();
 void     wft_arm_pages(const uint32_t* pages, size_t n);   /* T5_RB_WFT=diff: trace these pages */
 void     wft_disarm(const char* tag);
+/* access tracer (rb_rft.cpp, diagnostics): T5_RB_RFT=addr:len, armed by the netplay loop (T5_RB_RFT_NET=from:frames) */
+bool     rft_install();
+void     rft_arm();
+void     rft_disarm(const char* tag);
 
 /* kernel-side state across rollbacks (rb_ktrace.cpp, T5_RB_KTRACE=1|2) */
 void     ktrace_install();

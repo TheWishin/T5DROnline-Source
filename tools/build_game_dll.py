@@ -16,6 +16,7 @@ redistributable (Apache-2.0 WITH LLVM-exception).
 """
 import argparse
 import glob
+import hashlib
 import os
 import subprocess
 import sys
@@ -58,6 +59,21 @@ def host_cpu_level(cl, scratch):
     return "none", ["avx2 (not detected)"]
 
 
+def pgo_gen_libs(llvm):
+    """What an instrumented (--pgo-gen) DLL links besides the usual: LLVM's profile runtime and, for the C
+    functions and Windows calls it makes, the Windows SDK's ucrt.lib and kernel32.lib. Developer PCs only --
+    a player's build never instruments."""
+    rt = glob.glob(os.path.join(llvm, "..", "lib", "clang", "*", "lib", "windows", "clang_rt.profile-x86_64.lib"))
+    if not rt:
+        sys.exit("--pgo-gen: clang_rt.profile-x86_64.lib not found next to " + llvm)
+    sdk = sorted(glob.glob(os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                                        "Windows Kits", "10", "Lib", "10.*")))
+    if not sdk:
+        sys.exit("--pgo-gen needs the Windows SDK (ucrt.lib, kernel32.lib)")
+    return [os.path.abspath(rt[0]), os.path.join(sdk[-1], "ucrt", "x64", "ucrt.lib"),
+            os.path.join(sdk[-1], "um", "x64", "kernel32.lib")]
+
+
 def find_llvm(arg):
     for d in ([arg] if arg else []) + [os.path.join(ROOT, "toolchain", "llvm", "bin"),
                                        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "LLVM", "bin")]:
@@ -80,6 +96,15 @@ def main():
     ap.add_argument("--march", default="auto",
                     help="target CPU of the lifted PPU code: auto (x86-64-v3 when this PC's CPU and Windows "
                          "support it, else none), x86-64-v3, native, none")
+    ap.add_argument("--copt", action="append", default=[],
+                    help="extra compile option for every lifted source (experiments; repeat for more)")
+    ap.add_argument("--lto", choices=["", "thin"], default="", help="ThinLTO across the lifted sources")
+    ap.add_argument("--pgo-gen", action="store_true",
+                    help="developer only: instrumented training DLL (clang_rt.profile + the Windows SDK's ucrt/kernel32 "
+                         "import libraries); see tools/pgo_train.py")
+    ap.add_argument("--profile", default="",
+                    help="profile (.profdata) for the lifted code: 'none', a file, or empty = the shipped "
+                         "tools/gamedll/t5dr_lifted.profdata when present")
     a = ap.parse_args()
 
     llvm = find_llvm(a.llvm)
@@ -116,6 +141,22 @@ def main():
                " (baseline x86-64: this processor or Windows lacks " + ", ".join(missing) + ")")
     ppu_opts = ["/clang:-ffp-contract=off"] + ([] if march == "none" else [f"/clang:-march={march}"])
     print(f"lifted PPU code: -march={march}{why}", flush=True)
+    profile = a.profile
+    if not profile:
+        shipped = os.path.join(GDIR, "t5dr_lifted.profdata")
+        profile = shipped if os.path.exists(shipped) else "none"
+    opt_opts = list(a.copt)
+    if a.pgo_gen:
+        # counters only: no value profiling (indirect-call targets, sizes), so the profile holds nothing else
+        opt_opts += ["/clang:-fprofile-instr-generate", "-mllvm", "-enable-value-profiling=false"]
+    elif profile != "none":
+        profile = os.path.abspath(profile)
+        opt_opts += [f"/clang:-fprofile-instr-use={profile}", "-Wno-profile-instr-unprofiled",
+                     "-Wno-profile-instr-out-of-date", "-Wno-profile-instr-missing"]
+    if a.lto:
+        opt_opts += ["-flto=thin"]
+    if opt_opts:
+        print("lifted code options: " + " ".join(opt_opts), flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -123,15 +164,22 @@ def main():
     if c_srcs:
         c_srcs.append(os.path.join(ps3, "runtime", "spu", "spu_dispatch_mt.c"))
     c_srcs.append(os.path.join(GDIR, "t5dr_game_dll.c"))
+    if a.pgo_gen:
+        c_srcs.append(os.path.join(GDIR, "pgo_train.c"))
     if not srcs:
         sys.exit(f"no lifted sources in {a.recomp}")
 
     # an object is current when it is newer than its source and than everything it was compiled with
     # objects remember the target CPU they were compiled for (a native folder moved to another PC,
     # or a forced --march): any change recompiles everything
+    # (the options and the profile's content count too: a new profile recompiles everything)
     stamp_path = os.path.join(obj, "march.txt")
+    stamp_key = " ".join([march] + opt_opts)
+    if not a.pgo_gen and profile != "none":
+        with open(profile, "rb") as f:
+            stamp_key += " profile-sha1=" + hashlib.sha1(f.read()).hexdigest()
     try:
-        stamp_ok = open(stamp_path).read().strip() == march
+        stamp_ok = open(stamp_path).read().strip() == stamp_key
     except OSError:
         stamp_ok = False
     newest_dep = max(os.path.getmtime(p) for p in
@@ -158,6 +206,8 @@ def main():
             cmd += ["-std:c++20", "-TP", "/EHs-c-", "/Zc:tlsGuards-"] + ppu_opts
         if os.path.basename(src) == "t5dr_game_dll.c":
             cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
+        elif os.path.basename(src) != "pgo_train.c":
+            cmd += opt_opts
         cmd += ["-c", src, "/Fo" + o]
         t = time.time()
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -183,7 +233,7 @@ def main():
     if any(rc for rc, _ in res):
         sys.exit("compile failed")
     with open(stamp_path, "w") as f:
-        f.write(march + "\n")
+        f.write(stamp_key + "\n")
     t1 = time.time()
 
     ucrt = os.path.join(obj, "ucrt_min.lib")
@@ -193,6 +243,10 @@ def main():
             "/OUT:" + a.out, "/IMPLIB:" + os.path.join(obj, "t5dr_game.lib"),
             "/EXPORT:function_table,DATA", "/EXPORT:function_table_count,DATA"]
     link += [o for _, o in res] + [os.path.abspath(a.host_lib), ucrt]
+    if a.lto:
+        link += [f"/opt:lldltojobs={a.jobs}"]
+    if a.pgo_gen:
+        link += pgo_gen_libs(llvm)
     r = subprocess.run(link, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        creationflags=NO_WINDOW)
     if r.returncode:

@@ -1868,12 +1868,13 @@ line bit), every load two gates; the VMX float helpers are out-of-line calls.
     touches no guest memory (the title's own `b .` hang among them) never
     ends; again with an event counted at every label: 5,000 inputs each,
     210,000 runs, **0 differences**.
-- **Random lifted-style functions** (`tools/test_ppu_regpromo.py`, new): 150
+- **Random lifted-style functions** (`tools/test_ppu_regpromo.py`, new; its
+  default run is 150 functions x 1,500 inputs, the final one 400 x 2,000):
   random functions built from every line shape the lifter emits for this
   game (loops forward and back, calls direct/indirect/syscall/conditional,
   conditional returns and trampolines, jump-table switches, callee-save
   snapshots, carry, record forms, FP and vector lines, store-conditional)
-  times 1,500 inputs, x86-64-v3 and baseline: **0 differences**; plus 28
+  x86-64-v3 and baseline: **0 differences** (1.6 M runs); plus 28
   checks of what is written back where. (It found a bug in the pass on the
   way: `a & ctx->gpr[n]`, a binary AND, was taken for an address-of -- only
   an extra store, but now exact.)

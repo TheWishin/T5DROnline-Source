@@ -197,6 +197,10 @@ class Spectating:
                       "end": None, "delay": None}
             names = [p.get("name", "?") for p in r.get("players") or ()] + ["?", "?"]
             tab.status(t("Watching {p1} vs {p2}.", p1=names[0], p2=names[1]))
+            # the game starts now: it boots while the players' games load the fight, and waits for the data
+            path = (getattr(tab.client, "spec_watch", None) or {}).get("path")
+            if path and self.w["stream"] == (tab.client.spec_watch or {}).get("stream"):
+                self._start_game(path)
             tab._set_actions()
         tab.call(tab.client.watch, name, room, then=done)
 

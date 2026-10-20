@@ -314,7 +314,7 @@ struct Store : InputSource {
     uint32_t live_n = 0, live_last = 0;            /* g_live_mu: inputs / last frame written */
     np::PadInput live_prev[2] = { np::kNeutral, np::kNeutral };
     uint64_t live_bytes = 0;
-    bool live_started = false;                     /* mu: the SESSION record is out (rec_start) */
+    bool live_started = false;                     /* mu: the SESSION record is out (the handshake, or rec_start) */
     std::vector<uint8_t> live_pend;                /* mu: records waiting for the writer */
     Store() { chunks.reserve(kMaxChunks); }
     np::PadInput get(int p, uint32_t f) const override { return chunks[f / kChunk]->in[p][f % kChunk]; }
@@ -600,7 +600,7 @@ struct Play {
     uint32_t buffer = 120, poll_tick = 0, stalls = 0, live_bad = 0;
     double stall_s = 0;
     ULONGLONG grew_ms = 0;                     /* when the file last grew */
-    uint32_t timeout_s = 45;
+    uint32_t timeout_s = 300;                  /* (between matches nothing comes while the players decide) */
     std::vector<std::pair<uint32_t, uint64_t>> pend_hash;    /* the playback's hashes whose recorded one has not come yet */
     std::vector<std::pair<uint32_t, uint64_t>> clock;        /* LAST records: (frame, wall clock ms), the last few */
     double delay_sum = 0, delay_max = 0; uint32_t delay_n = 0; double delay_now = -1;
@@ -651,11 +651,21 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
     switch (type) {
     case L_SESSION: {
         if (r.u32() != 1) return false;
-        d.rollback = (r.u32() & 1) != 0;
-        d.slot = (int)r.u32(); d.delay = (int)r.u32(); d.rb_delay = (int)r.u32();
-        d.session_seed = r.u32(); d.match_seed = r.u32(); d.hash_every = r.u32();
+        const bool rb = (r.u32() & 1) != 0;
+        const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
+        const uint32_t sseed = r.u32(), mseed = r.u32(), every = r.u32();
+        if (r.bad) return false;
+        if (p.on && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed || mseed != d.match_seed)) {
+            /* the playback runs with what the first SESSION said (the handshake's): the players' games
+             * changed it later (a reconnect before frame 0) -- this playback cannot follow */
+            p.model_bad++;
+            note("live stream: the session changed after the playback began (%s, delay %d, seeds %08X/%08X -> %s, delay %d, "
+                 "seeds %08X/%08X)", d.rollback ? "rollback" : "lockstep", d.delay, d.session_seed, d.match_seed,
+                 rb ? "rollback" : "lockstep", delay, sseed, mseed);
+        }
+        d.rollback = rb; d.slot = slot; d.delay = delay; d.rb_delay = rb_delay;
+        d.session_seed = sseed; d.match_seed = mseed; d.hash_every = every ? every : 60;
         d.build = r.str(); d.created = r.str();
-        if (!d.hash_every) d.hash_every = 60;
         p.have_session = true;
         break;
     }
@@ -923,6 +933,23 @@ void rec_session_end(const char* why)
     end_locked_then_write(lk, why);
 }
 
+/* The session's parameters as soon as the two games have shaken hands (netplay_core connect_locked):
+ * the same values rec_start() records at frame 0 -- the seeds and the delay are the host's, rollback is
+ * what both offered. The live stream's SESSION goes out now, so a spectator's game can boot while the
+ * players' games still load the fight (it then waits at the select screen for the first fight). */
+void rec_session_known(uint32_t match_seed, bool rollback, int delay)
+{
+    Rec& r = R();
+    std::lock_guard<std::mutex> lk(r.mu);
+    if (!r.on || r.cur->live_path.empty() || r.cur->live_started) return;
+    r.cur->d.match_seed = match_seed;
+    r.cur->d.rollback = rollback;
+    r.cur->d.delay = delay;
+    r.cur->live_started = true;
+    live_queue_locked(*r.cur, L_SESSION, session_payload(r.cur->d));
+    note("live stream: the session is known at the handshake (%s, delay %d)", rollback ? "rollback" : "lockstep", delay);
+}
+
 void rec_start(uint32_t match_seed, bool rollback, int delay)
 {
     Rec& r = R();
@@ -1083,9 +1110,13 @@ bool peek_rollback(const char* path)
     const size_t n = fread(buf, 1, sizeof buf - 1, fp);
     fclose(fp);
     buf[n] = 0;
-    if (n > sizeof kLiveMagic - 1 + 13 && !memcmp(buf, kLiveMagic, sizeof kLiveMagic - 1)) {
-        /* a live stream: its first record is the SESSION (u32 version, u32 flags) */
+    if (n >= sizeof kLiveMagic - 1 && !memcmp(buf, kLiveMagic, sizeof kLiveMagic - 1)) {
+        /* a live stream: its first record is the SESSION (u32 version, u32 flags). Not there yet (the
+         * spectator's game starts before the players' handshake): rollback, the lobby's netcode -- this
+         * only turns the write watch on during static initialisation; a lockstep session plays fine
+         * with it (rb_net.cpp asks the file again once it is loaded) */
         const unsigned char* q = (const unsigned char*)buf + sizeof kLiveMagic - 1;
+        if (n < sizeof kLiveMagic - 1 + 13) return true;
         return q[0] == L_SESSION && (q[9] & 1) != 0;
     }
     if (strncmp(buf, kMagic, sizeof kMagic - 1)) return false;
@@ -1106,12 +1137,15 @@ bool live_load(const char* path)
     if (const char* b = env("T5_REPLAY_LIVE_BUFFER")) { const int v = atoi(b); if (v >= 0 && v <= 3600) p.buffer = (uint32_t)v; }
     if (const char* t = env("T5_REPLAY_LIVE_TIMEOUT")) { const int v = atoi(t); if (v >= 5 && v <= 3600) p.timeout_s = (uint32_t)v; }
     if (const char* st = env("T5_REPLAY_STATUS")) p.status_path = st;
-    uint32_t wait_s = 60;
-    if (const char* w = env("T5_REPLAY_LIVE_WAIT")) { const int v = atoi(w); if (v >= 1 && v <= 600) wait_s = (uint32_t)v; }
+    /* the game may start before the players' games have shaken hands (a spectator who watches from the
+     * start): the session's parameters are all it needs now; the first fight comes later (the select
+     * screen waits for it) */
+    uint32_t wait_s = 300;
+    if (const char* w = env("T5_REPLAY_LIVE_WAIT")) { const int v = atoi(w); if (v >= 1 && v <= 3600) wait_s = (uint32_t)v; }
     const ULONGLONG t0 = GetTickCount64();
     for (;;) {
         live_poll(p);
-        if (p.have_session && !p.d.matches.empty()) break;
+        if (p.have_session) break;
         if (p.live_end || GetTickCount64() - t0 > (ULONGLONG)wait_s * 1000) {
             p.error = p.live_bad ? "the live data is damaged" : "the live match has not started";
             return false;

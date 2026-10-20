@@ -232,6 +232,9 @@ class Receiver:
     def __init__(self, path):
         self.path = path
         self.f = open(path, "wb")
+        # the magic at once: the game may start on the file before the first piece came (it waits for the session)
+        self.f.write(MAGIC)
+        self.f.flush()
         self.z = zlib.decompressobj()
         self.expect = 0
         self.raw = 0
@@ -252,7 +255,10 @@ class Receiver:
         if self.raw > MAX_RAW or self.z.unconsumed_tail:
             self.parser.bad = "too much data"
             return False
+        first = not self.parser.started
         whole = self.parser.feed(raw)
+        if first and self.parser.started:
+            whole = whole[len(MAGIC):]           # (written when the file was made)
         if whole:
             self.f.write(whole)
             self.f.flush()
@@ -271,7 +277,7 @@ class Receiver:
             return
         self.closed = True
         try:
-            if not self.parser.ended and self.parser.started:
+            if not self.parser.ended:
                 self.f.write(end_record(why or "the stream stopped"))
             self.f.close()
         except OSError:

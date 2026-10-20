@@ -52,6 +52,7 @@ bool recording();                                   /* this session is being rec
 void rec_session_begin(int slot, const char* build, uint32_t session_seed);   /* netplay_core configure() (host/join) */
 void rec_session_end(const char* why);              /* the session is over: the file is written now (this thread) */
 void rec_start(uint32_t match_seed, bool rollback, int delay);   /* lockstep frame 0 (t5_hooks) */
+void rec_session_known(uint32_t match_seed, bool rollback, int delay);   /* the handshake (netplay_core): the live SESSION */
 void rec_rollback_delay(int d);                     /* the rollback loop's input delay for the session */
 void rec_input(uint32_t f, const np::PadInput& p1, const np::PadInput& p2);   /* frames in order, from 0 */
 void rec_hash(uint32_t f, uint64_t h);              /* the state hash the peers compare for frame f */

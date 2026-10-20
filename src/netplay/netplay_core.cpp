@@ -673,6 +673,13 @@ void connect_locked()
     s.last_rx_ms = GetTickCount64();
     note("connected (%s), delay %d, peer %s%s", s.mode == Mode::Host ? "host, P1" : "join, P2", s.delay,
          addr_str(s.peer).c_str(), s.keyed ? ", packets authenticated" : "");
+    if (rp::recording()) {
+        /* the live stream's SESSION (spectators): what frame 0 will record (t5_hooks rec_start) -- the host's
+         * seed and delay, rollback when both offer it (rb_net.cpp enabled(): offered, negotiated, from frame <= 1) */
+        uint32_t rb_start = 0;
+        if (const char* v = getenv("T5_RB_NET_START")) rb_start = (uint32_t)atoi(!strncmp(v, "frame:", 6) ? v + 6 : v);
+        rp::rec_session_known(s.seed ? s.seed : s.session, s.rb_offer && s.rb_peer && rb_start <= 1, s.delay);
+    }
     SetEvent(s.rx_event);
 }
 

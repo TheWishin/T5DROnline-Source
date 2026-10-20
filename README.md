@@ -58,7 +58,7 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. Matches connect even when a firewall blocks the game: through the relay when nothing else gets through (1.1.3). |
 | Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. |
 | Rooms | Lobby rooms for 2, or community rooms for up to 8 who take turns (winner stays, or everyone in turn); open, with a password or an invite code, or hidden (1.1.3). |
-| Tournaments | Accounts create and join tournaments on the Online tab: single or double elimination, sets of best of 3 or 5, up to 64 players; the server calls each set and the game starts by itself (1.1.3). |
+| Tournaments | Accounts join tournaments on the Online tab (tournament hosts create them; for one of the 20 host slots, DM wishin): single or double elimination, sets of best of 3 or 5, up to 64 players; the server calls each set and the game starts by itself (1.1.3). |
 | Replays | Every online match is saved (a few KB). The **Replays** tab plays it again in the game and checks that it is identical to the live match. |
 | Spectating | **Watch** a friend's match, a room's match or a tournament set live in your own game, a few seconds behind and checked frame by frame; only when both players allow it (Settings -> Spectators) (1.1.3). |
 | Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Updates itself. |
@@ -336,8 +336,9 @@ Good to know:
   and when your set is ready the tab shows "Your tournament set is ready":
   **Accept** within 5 minutes and the game starts by itself. Sets are best of 3
   or 5, played like casual sets with the in-game select; the bracket (single or
-  double elimination) fills in by itself. Anyone with an account can organize
-  one with **Create...**. See [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
+  double elimination) fills in by itself. Tournament hosts create them with
+  **Create...**. There are 20 host slots: if you want to host tournaments, DM
+  **wishin**. See [docs/TOURNAMENTS.md](docs/TOURNAMENTS.md).
 - **Private and community rooms** (from 1.1.3): **Create room** asks how many
   players (2 to 8) and who can join: anybody, a password or an invite code; it
   can also hide the room from the list. Others select it and press **Join

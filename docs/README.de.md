@@ -56,7 +56,7 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. Matches kommen auch zustande, wenn eine Firewall das Spiel blockiert: über das Relay, wenn sonst nichts durchkommt (1.1.3). |
 | Freunde, Einladungen | Mit Konto fügst du auf der Seite **Freunde** im Online-Reiter Freunde mit ihrem Namen hinzu und siehst, wer online ist, sucht oder im Match ist. **Einladen** zu einem lockeren Match oder in deinen Raum: ein Klick auf Annehmen startet es. |
 | Räume | Lobby-Räume für 2 oder Community-Räume für bis zu 8, die sich abwechseln (der Sieger bleibt, oder jeder der Reihe nach); offen, mit Passwort oder Einladungscode, oder versteckt (1.1.3). |
-| Turniere | Mit Konto im Online-Reiter Turniere anlegen und mitspielen: Single oder Double Elimination, Sets bis 2 oder 3 Siege, bis zu 64 Spieler; der Server ruft jedes Set auf, und das Spiel startet von selbst (1.1.3). |
+| Turniere | Mit Konto im Online-Reiter bei Turnieren mitspielen (Turnier-Hosts legen sie an; für einen der 20 Host-Plätze eine DM an wishin): Single oder Double Elimination, Sets bis 2 oder 3 Siege, bis zu 64 Spieler; der Server ruft jedes Set auf, und das Spiel startet von selbst (1.1.3). |
 | Replays | Jedes Online-Match wird gespeichert (ein paar KB). Der Reiter **Replays** spielt es im Spiel noch einmal ab und prüft, dass es mit dem Live-Match identisch ist. |
 | Zuschauen | **Zuschauen** beim Match eines Freundes, eines Raums oder einem Turnier-Set, live im eigenen Spiel, ein paar Sekunden dahinter und Bild für Bild geprüft; nur wenn beide Spieler es erlauben (Settings -> Spectators) (1.1.3). |
 | Launcher | Englisch und sechs Übersetzungen: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, ohne abgeschnittene Texte bei 100 % und 150 % Anzeige-Skalierung. Der Einstellungen-Reiter scrollt. Aktualisiert sich selbst. |
@@ -362,7 +362,8 @@ Gut zu wissen:
   ist bereit“: **Annehmen** innerhalb von 5 Minuten, dann startet das Spiel von
   selbst. Sets gehen über Best of 3 oder 5 und laufen wie lockere Sets mit der
   Auswahl im Spiel; der Turnierbaum (Single oder Double Elimination) füllt sich
-  von selbst. Jeder mit Konto kann mit **Anlegen...** ein Turnier ausrichten.
+  von selbst. Turnier-Hosts legen Turniere mit **Anlegen...** an. Es gibt 20
+  Host-Plätze: Wer Turniere ausrichten will, schreibt **wishin** eine DM.
   Mehr in [TOURNAMENTS.md](TOURNAMENTS.md) (auf Englisch).
 - **Private Räume und Community-Räume** (ab 1.1.3): **Raum erstellen** fragt,
   wie viele Spieler (2 bis 8) und wer beitreten darf: alle, mit Passwort oder

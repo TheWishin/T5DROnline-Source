@@ -13,9 +13,10 @@ update itself; after it, press **BUILD GAME** once. Tournaments, rooms, spectati
 the lobby server updated; older launchers keep working with it and see nothing new.
 
 ### Online
-- **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments. Anyone with
-  an account can create one: single or double elimination, sets of best of 3 or 5, a start time, a player limit of
-  8, 16, 32 or 64, an optional check-in, seeding at random or by rating. Sign up (and check in); when your set is
+- **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments. Tournament
+  hosts create them: single or double elimination, sets of best of 3 or 5, a start time, a player limit of 8, 16, 32
+  or 64, an optional check-in, seeding at random or by rating. **There are 20 host slots: if you want to host
+  tournaments, DM wishin.** Sign up (and check in); when your set is
   ready the tab says "Your tournament set is ready": **Accept** within 5 minutes and the game starts by itself. Who
   does not accept in time is out. Sets play like casual sets with the in-game select, and leaving one loses it. The
   bracket fills in by itself; the organizer can correct a result, reset a set or disqualify a player. Tournament

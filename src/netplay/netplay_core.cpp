@@ -31,6 +31,8 @@
  *                   pressed for that many frames (default 6), then emptied.
  *   T5_NET_SCRIPT2  local mode only: scripted input for P2.
  *   T5_NET_LOG      per-frame log file: frame, both inputs, state hash.
+ *   T5_NET_TEST_INBOUND  tests only: stateful | block -- Windows Firewall blocking t5dr.exe,
+ *                   emulated on the session's socket (test_inbound_pass below)
  */
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -47,6 +49,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -275,6 +278,7 @@ struct State : Session {
     std::once_flag once;
     std::mutex mu;                     /* guards the session fields and the socket */
     std::atomic<SOCKET> sock{ INVALID_SOCKET };   /* closed and replaced between sessions (rx_thread follows) */
+    std::atomic<uint64_t> rx_datagrams{ 0 };      /* datagrams the session's socket got, valid or not (no_peer's line) */
     bool rb_offer = false;             /* this side offers rollback (HELLO flag); set by the rollback loop */
     /* T5_NET_LOCAL_LAG=n (local mode, tests: tools/rb_equiv_test.py --lag): the
      * second player's input of frame t is known only from the live boundary
@@ -448,6 +452,73 @@ bool same_addr(const sockaddr_in& a, const sockaddr_in& b)
     return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
 }
 
+/* T5_NET_TEST_INBOUND (tests only; docs/NETPLAY.md "When Windows Firewall blocks the game"): Windows
+ * Firewall emulated on this socket, so a blocked t5dr.exe can be tested without touching the real one.
+ *   stateful  a datagram from an address:port this socket has not sent anything to is dropped. That is
+ *             what Windows does for a program it blocks (Cancel on its question, or a block rule): the
+ *             program's own packets go out, and only the replies to them get in (UDP flows are stateful).
+ *   block     every datagram not from 127.0.0.1 is dropped, replies too (stricter than Windows: a firewall
+ *             that blocks the program completely; the launcher's relay bridge on 127.0.0.1 still gets
+ *             through). Local tests put their "internet" on other loopback addresses (natsim 127.x.y.1,
+ *             the e2e shaper 127.0.0.2).
+ * Read when a session's socket opens (a persistent game: for every opponent); the drops are counted (the
+ * session's end line) and the first ones from each address are logged. */
+struct TestInbound {
+    std::mutex mu;
+    SOCKET sock = INVALID_SOCKET;      /* the socket this state belongs to: a new session's socket starts empty */
+    int mode = 0;                      /* 0 off, 1 stateful, 2 block */
+    std::set<uint64_t> sent;           /* address:port this socket sent to */
+    std::set<uint64_t> logged;         /* sources whose drop was logged */
+    uint64_t dropped = 0;
+};
+TestInbound& TI() { static TestInbound t; return t; }
+
+uint64_t ti_key(const sockaddr_in& a) { return ((uint64_t)a.sin_addr.s_addr << 16) | a.sin_port; }
+
+void test_inbound_open(SOCKET sk)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    t.sock = sk; t.sent.clear(); t.logged.clear(); t.dropped = 0; t.mode = 0;
+    const char* v = env("T5_NET_TEST_INBOUND");
+    if (!v || !_stricmp(v, "off") || !strcmp(v, "0")) return;
+    if (!_stricmp(v, "stateful")) t.mode = 1;
+    else if (!_stricmp(v, "block")) t.mode = 2;
+    else { note("T5_NET_TEST_INBOUND=%s: expected stateful or block -- ignored", v); return; }
+    note("TEST: inbound firewall emulated (%s): %s", v, t.mode == 1
+         ? "only replies to this socket's own packets get in (Windows Firewall blocking t5dr.exe)"
+         : "nothing but 127.0.0.1 gets in");
+}
+
+void test_inbound_sent(SOCKET sk, const sockaddr_in& to)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    if (t.mode == 1 && sk == t.sock) t.sent.insert(ti_key(to));
+}
+
+/* false: the emulated firewall drops this datagram (it never reaches the netplay) */
+bool test_inbound_pass(SOCKET sk, const sockaddr_in& from)
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    if (t.mode == 0 || sk != t.sock) return true;
+    const bool ok = t.mode == 1 ? t.sent.count(ti_key(from)) != 0 : from.sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    if (ok) return true;
+    t.dropped++;
+    if (t.logged.size() < 8 && t.logged.insert(ti_key(from)).second)
+        note("TEST: inbound firewall dropped a packet from %s (%s)", addr_str(from).c_str(),
+             t.mode == 1 ? "this socket never sent there" : "not 127.0.0.1");
+    return false;
+}
+
+uint64_t test_inbound_dropped()
+{
+    TestInbound& t = TI();
+    std::lock_guard<std::mutex> lk(t.mu);
+    return t.dropped;
+}
+
 /* Send to `to` (default: the peer). Appends the authentication tag when keyed. */
 void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
 {
@@ -471,7 +542,9 @@ void send_to(const void* p, int n, const sockaddr_in* to = nullptr)
         memcpy(buf + n, &t, kTag);
         n += kTag;
     }
-    sendto(s.sock, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
+    const SOCKET sk = s.sock.load();
+    test_inbound_sent(sk, *to);
+    sendto(sk, (const char*)buf, n, 0, (const sockaddr*)to, sizeof *to);
     s.packets_out++;
 }
 void send_raw(const void* p, int n) { send_to(p, n); }
@@ -973,7 +1046,11 @@ DWORD WINAPI rx_thread(LPVOID)
         sockaddr_in from{}; int fl = sizeof from;
         int n = recvfrom(sk, (char*)buf, sizeof buf, 0, (sockaddr*)&from, &fl);
         if (n > 0) {
-            if (sk == s.sock.load()) handle_packet(buf, n, from);   /* not a late packet of a closed session */
+            if (!test_inbound_pass(sk, from)) continue;          /* T5_NET_TEST_INBOUND: the "firewall" took it */
+            if (sk == s.sock.load()) {                           /* not a late packet of a closed session */
+                s.rx_datagrams++;
+                handle_packet(buf, n, from);
+            }
             continue;
         }
         if (n == SOCKET_ERROR) {
@@ -1016,9 +1093,14 @@ DWORD WINAPI tick_thread(LPVOID)
                     if (now - s.init_ms >= 4000)
                         note("waiting for the opponent's game to answer (%llus)...", (now - s.init_ms) / 1000);
                 }
-                if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000)
-                    fail_locked("no_peer", "no answer from the opponent's game within %d s (%s)", s.connect_timeout_s,
-                                s.peer_known ? addr_str(s.peer).c_str() : "its address is not known");
+                if (s.connect_timeout_s > 0 && now - s.init_ms >= (ULONGLONG)s.connect_timeout_s * 1000) {
+                    /* "nothing arrived": not one datagram on this port, from anybody -- the opponent's packets
+                     * were dropped before the game (a firewall blocking t5dr.exe completely), or it never sent */
+                    const uint64_t got = s.rx_datagrams.load();
+                    fail_locked("no_peer", "no answer from the opponent's game within %d s (%s; %s)", s.connect_timeout_s,
+                                s.peer_known ? addr_str(s.peer).c_str() : "its address is not known",
+                                got ? "packets arrived, none completed the handshake" : "nothing arrived");
+                }
             } else {
                 if (now - s.last_send_ms >= kPingMs) send_ping_locked();
                 if (((s.pick_key && s.pick_acked != s.pick_key) || s.pick_acks_owed > 0) && now - s.pick_sent_ms >= 100) {
@@ -1187,6 +1269,8 @@ void configure()
         closesocket(sk);
         return;
     }
+    s.rx_datagrams = 0;
+    test_inbound_open(sk);
     s.sock = sk;
     if (s.mode == Mode::Join) {
         const char* peer = env("T5_NET_PEER");
@@ -1821,6 +1905,8 @@ void session_end(const char* why)
     rp::rec_session_end(why);
     note("session %u ends (%s): %llu packets in, %llu out, %u mismatching frame(s)", s.sessions, why ? why : "",
          (unsigned long long)s.packets_in, (unsigned long long)s.packets_out, s.mismatches);
+    if (const uint64_t dropped = test_inbound_dropped())
+        note("TEST: the emulated inbound firewall dropped %llu datagram(s) in this session", (unsigned long long)dropped);
     const SOCKET sk = s.sock.exchange(INVALID_SOCKET);
     if (sk != INVALID_SOCKET) closesocket(sk);         /* frees the UDP port for the launcher's next punch */
     static const Session kFresh{};

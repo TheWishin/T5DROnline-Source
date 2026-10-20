@@ -30,6 +30,53 @@ from . import proto
 
 KIND_RANK = {"local": 0, "mapped": 1, "public": 1, "reflexive": 2, "predicted": 2, "relay": 3}
 
+# T5_NET_TEST_INBOUND (tests only; docs/NETPLAY.md "When Windows Firewall blocks the game"): Windows Firewall
+# blocking this program, emulated on its UDP sockets -- the game has the same switch (src/netplay/netplay_core.cpp
+# test_inbound_pass). The real firewall is never touched.
+TEST_INBOUND_MODES = ("stateful", "block")
+
+
+def test_inbound_mode(value=None):
+    """'stateful' / 'block' / None (off) from `value`, or from T5_NET_TEST_INBOUND when value is None."""
+    v = os.environ.get("T5_NET_TEST_INBOUND", "") if value is None else (value or "")
+    v = str(v).strip().lower()
+    return v if v in TEST_INBOUND_MODES else None
+
+
+class InboundFilter:
+    """What reaches one UDP socket of a program the firewall blocks (tests only).
+
+    stateful: only datagrams from an address:port this socket has sent to get in -- Windows Firewall for a
+    blocked program (Cancel on its question, or a block rule): its own packets go out and the replies to them
+    come back, anything unsolicited is dropped. block: nothing gets in but datagrams from `local` (127.0.0.1;
+    stricter than Windows: a firewall that blocks the program completely). The NAT simulator, where every
+    datagram comes from its simulated internet, sets `local` empty."""
+
+    def __init__(self, mode, local=("127.0.0.1",)):
+        self.mode = mode
+        self.local = frozenset(local)
+        self.sent = set()
+        self.dropped = 0
+        self.first_drops = []            # (address, port) of the first few dropped senders, for logs and tests
+
+    def sent_to(self, addr):
+        if self.mode == "stateful":
+            self.sent.add((str(addr[0]), int(addr[1])))
+
+    def passes(self, addr):
+        a = (str(addr[0]), int(addr[1]))
+        ok = a in self.sent if self.mode == "stateful" else a[0] in self.local
+        if not ok:
+            self.dropped += 1
+            if len(self.first_drops) < 8 and a not in self.first_drops:
+                self.first_drops.append(a)
+        return ok
+
+
+def make_inbound_filter(mode):
+    mode = test_inbound_mode(mode) if mode is not None else test_inbound_mode()
+    return InboundFilter(mode) if mode else None
+
 
 def local_ipv4s(target_ip):
     """This PC's IPv4 addresses worth offering to a peer behind the same router."""
@@ -73,13 +120,15 @@ def open_udp_socket(port=0):
 
 
 class GameSocket(asyncio.DatagramProtocol):
-    def __init__(self, server, port2, token, tag, side, block_direct=False):
+    def __init__(self, server, port2, token, tag, side, block_direct=False, inbound=None):
         self.server = server                 # (ip, udp_port)
         self.server2 = (server[0], port2) if port2 else None
         self.token = token
         self.tag = tag
         self.side = side
         self.block_direct = block_direct     # testing: ignore the peer unless it comes through the relay
+        # testing: T5_NET_TEST_INBOUND -- this program blocked by the firewall (InboundFilter; None = off)
+        self.inbound = inbound if isinstance(inbound, InboundFilter) else make_inbound_filter(inbound)
         self.relay = None                    # the relay this socket bound to (the lobby server's, or a regional one)
         self.relay_token = None              # ... and the token it bound with (a regional relay has its own)
         self.transport = None
@@ -130,6 +179,8 @@ class GameSocket(asyncio.DatagramProtocol):
         hop or two later, before it reaches the peer's router (see punch(), ttl_open)."""
         if self.transport is None or self.transport.is_closing():
             return
+        if self.inbound is not None:
+            self.inbound.sent_to(addr)
         if ttl is None:
             self.transport.sendto(data, addr)
         else:
@@ -161,6 +212,8 @@ class GameSocket(asyncio.DatagramProtocol):
             fut.set_result(value)
 
     def datagram_received(self, data, addr):
+        if self.inbound is not None and not self.inbound.passes(addr):
+            return                           # (the emulated firewall dropped it: this program never sees it)
         self.stats["rx"] += 1
         self.last_rx[addr] = time.monotonic()
         kind = proto.udp_type(data)
@@ -544,14 +597,17 @@ class RelayBridge(asyncio.DatagramProtocol):
             pass
 
 
-async def server_rtt(server, n=5, timeout=0.5):
-    """UDP round trip to the lobby server in ms (median of n), or None."""
+async def server_rtt(server, n=5, timeout=0.5, inbound=None):
+    """UDP round trip to the lobby server in ms (median of n), or None. inbound: T5_NET_TEST_INBOUND (tests)."""
     loop = asyncio.get_running_loop()
     got = {}
     waiters = {}
+    fw = make_inbound_filter(inbound)
 
     class P(asyncio.DatagramProtocol):
         def datagram_received(self, data, addr):
+            if fw is not None and not fw.passes(addr):
+                return
             if proto.udp_type(data) == proto.U_SPONG and len(data) == proto.PING.size:
                 _m, _k, _v, seq, t = proto.PING.unpack(data)
                 got[seq] = (time.perf_counter() - t) * 1000.0
@@ -566,6 +622,8 @@ async def server_rtt(server, n=5, timeout=0.5):
         for i in range(n):
             seq = base + i
             waiters[seq] = loop.create_future()
+            if fw is not None:
+                fw.sent_to(server)
             tr.sendto(proto.pk_ping(proto.U_SPING, seq, time.perf_counter()), server)
             try:
                 await asyncio.wait_for(asyncio.shield(waiters[seq]), timeout)

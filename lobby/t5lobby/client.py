@@ -61,7 +61,7 @@ import time
 from . import proto
 from .handover import MatchTicket
 from .i18n import t
-from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
+from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt, test_inbound_mode
 from .proto import LobbyError
 
 CLIENT_NAME = "t5lobby-client/0.1"
@@ -79,7 +79,8 @@ class LobbyClient:
     def __init__(self, server, build, on_event=None, tls=False, tls_fingerprint=None, game_port=0,
                  auto_ready=False, handover="port", block_direct=False, request_timeout=10.0,
                  reconnect=60.0, plain_passwords=False, blind_ready=False, ingame_pick=False, sets=False,
-                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True):
+                 port_mapping=False, nat2=True, relay_bridge=True, relays=True, friends=True, old_stages=True,
+                 test_inbound=None):
         """server: "host[:port]". build: BuildInfo. on_event: optional callable(event) run on the
         client thread (use the `events` queue from a UI). game_port: local UDP port for the game
         (0 = any free one; set it when the player forwarded a port on the router).
@@ -111,7 +112,10 @@ class LobbyClient:
         invites (docs/ONLINE.md "Friends and invites") with a server that has them; False behaves like a 1.1.1 client (the
         server then sends none of their messages). old_stages: this client knows the Tekken 5 stage keys
         (data/fighters.json "t5"), so a server with T5L_OLD_STAGES may draw them for its matches; False behaves like a
-        1.1.1 client (tests)."""
+        1.1.1 client (tests).
+        test_inbound: testing only -- "stateful" / "block": this launcher's UDP sockets behave as if Windows
+        Firewall blocked the launcher (nat.InboundFilter; docs/NETPLAY.md "When Windows Firewall blocks the
+        game"). None: T5_NET_TEST_INBOUND from the environment; "" off."""
         self.host, self.port = proto.parse_hostport(server)
         self.build = build
         self.on_event = on_event
@@ -121,6 +125,7 @@ class LobbyClient:
         self.auto_ready = auto_ready
         self.handover = handover
         self.block_direct = block_direct
+        self.test_inbound = test_inbound_mode(test_inbound) or ""
         self.request_timeout = request_timeout
         self.reconnect_window = reconnect
         self.plain_passwords = plain_passwords
@@ -641,7 +646,8 @@ class LobbyClient:
         gs = await GameSocket.open(self.game_port, (self.server_ip, int(msg["udp_port"])),
                                    int(msg.get("udp_port2") or 0), bytes.fromhex(msg["token"]),
                                    bytes.fromhex(msg["tag"]), int(msg["side"]),
-                                   block_direct=self.block_direct, keep_dup=self.handover == "share")
+                                   block_direct=self.block_direct, keep_dup=self.handover == "share",
+                                   inbound=self.test_inbound)
         self._gs = gs
         v2 = self.nat2 and bool(msg.get("nat2"))
         self.match["peer_open"] = asyncio.Event()    # set by nat_peer_punching (the opponent started)
@@ -845,7 +851,8 @@ class LobbyClient:
             return
         try:
             rtt = await server_rtt(self.relay_address({"id": "main", "host": self.server_ip,
-                                                       "port": int(self.welcome["udp_port"])}))
+                                                       "port": int(self.welcome["udp_port"])}),
+                                   **({"inbound": self.test_inbound} if self.test_inbound else {}))
         except OSError:
             rtt = None
         if rtt is not None:
@@ -870,7 +877,8 @@ class LobbyClient:
 
         async def one(r):
             try:
-                return r["id"], await server_rtt(self.relay_address(r))
+                return r["id"], await server_rtt(self.relay_address(r),
+                                                 **({"inbound": self.test_inbound} if self.test_inbound else {}))
             except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 return r.get("id"), None
         got = await asyncio.gather(*(one(r) for r in lst[:32]))

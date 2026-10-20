@@ -25,8 +25,15 @@ NAT types (RFC 4787 terms):
 A home may also have a router that answers UPnP/NAT-PMP/PCP (mapping=True): the client's mapping
 request then makes a static port forward on the NAT (endpoint-independent filtering for that port).
 
+A home's PC may also have a firewall that blocks the game and/or the launcher (--fw-a / --fw-b, docs/NETPLAY.md
+"When Windows Firewall blocks the game"): "stateful" lets in only what comes from an address:port that
+program's socket sent to (Windows Firewall for a blocked program), "block" lets in nothing from the network
+(the relay bridge's 127.0.0.1 still works). The launcher side is t5lobby's own test switch
+(LobbyClient(test_inbound=...), nat.InboundFilter); the stub game filters the same way.
+
 Usage (from lobby/):
     python tools/natsim.py --trials 50 --parallel 8                     # every pair of types, this tree
+    python tools/natsim.py --fw-a stateful --fw-b stateful:game         # firewalls: both programs at A, the game at B
     python tools/natsim.py --base ../../base/lobby --server base --a base --b base   # an older tree
     python tools/natsim.py --pairs port:symmetric,full:port --trials 10 -v
 
@@ -114,6 +121,8 @@ class Tree:
             gs._sim_home = home
             if home is not None:
                 home.nat.attach(gs.port, gs.datagram_received)
+                if getattr(gs, "inbound", None) is not None:
+                    gs.inbound.local = frozenset()     # (here every datagram comes from the simulated internet)
             return gs
         GS.open = classmethod(sim_open)
 
@@ -123,6 +132,8 @@ class Tree:
                 return orig_send(self, data, addr, *a, **kw)
             if self.transport is None or self.transport.is_closing():
                 return
+            if getattr(self, "inbound", None) is not None:
+                self.inbound.sent_to(addr)
             home.nat.outbound(self.port, data, addr, ttl=kw.get("ttl"))
             self.stats["tx"] += 1
         GS.send = sim_send
@@ -614,18 +625,63 @@ class TcpDelayProxy:
 
 
 # ============================================================================ stub game
+class SimFirewall:
+    """A firewall on the home's PC for one program's socket (the stub game's; the launcher's is t5lobby's own
+    nat.InboundFilter): "stateful" lets in only datagrams from where this socket sent to (Windows Firewall
+    blocking the program), "block" nothing from the network. The same rule as the game's T5_NET_TEST_INBOUND."""
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.sent = set()
+        self.dropped = 0
+
+    def sent_to(self, addr):
+        self.sent.add((str(addr[0]), int(addr[1])))
+
+    def passes(self, addr):
+        ok = self.mode == "stateful" and (str(addr[0]), int(addr[1])) in self.sent
+        if not ok:
+            self.dropped += 1
+        return ok
+
+
+def fw_spec(text):
+    """'stateful' / 'block' / 'stateful:game' / 'block:launcher' -> {"mode", "game", "launcher"} or None."""
+    if not text:
+        return None
+    mode, _c, who = str(text).partition(":")
+    if mode not in ("stateful", "block") or who not in ("", "game", "launcher", "both"):
+        raise ValueError(f"firewall {text!r}: expected stateful|block[:game|launcher|both]")
+    return {"mode": mode, "game": who in ("", "game", "both"), "launcher": who in ("", "launcher", "both")}
+
+
+def fw_label(spec):
+    if not spec:
+        return ""
+    who = "" if spec["game"] and spec["launcher"] else ("game" if spec["game"] else "launcher")
+    return "[fw " + spec["mode"] + (" " + who if who else "") + "]"
+
+
 class StubGame:
     """What the netplay layer does with the ticket, as far as addresses go: binds T5_NET_PORT (here: takes
     the internal port over at the NAT), sends to T5_NET_PEER every 30 ms, accepts the opponent's packets
-    from any address (they carry the match id) and follows the opponent to a new address."""
+    from any address (they carry the match id) and follows the opponent to a new address. fw: the home PC's
+    firewall blocks the game ("stateful" / "block"; packets from the relay bridge on 127.0.0.1 always pass)."""
 
-    def __init__(self, home, ticket, tag, relay_port):
+    def __init__(self, home, ticket, tag, relay_port, fw=None):
         self.home, self.ticket, self.tag = home, ticket, tag
         self.relay_port = relay_port
         self.peer = tuple(ticket.peer)
         self.rx = 0
         self.srcs = collections.Counter()
         self.sock = None
+        self.fw = SimFirewall(fw) if fw else None
+
+    def receive_net(self, data, src):
+        """A datagram from the network (through the home's NAT): the PC's firewall first."""
+        if self.fw is not None and not self.fw.passes(src):
+            return
+        self.receive(data, src)
 
     def receive(self, data, src):
         if data[:4] != b"T5NP" or data[4:12] != self.tag or data[12] == self.ticket.slot:
@@ -654,7 +710,7 @@ class StubGame:
                     self.receive(d, a)
             loop.add_reader(s.fileno(), readable)
         else:
-            self.home.nat.attach(self.ticket.local_port, self.receive)
+            self.home.nat.attach(self.ticket.local_port, self.receive_net)
         seq = 0
         t_end = loop.time() + seconds
         try:
@@ -664,6 +720,8 @@ class StubGame:
                 if self.sock is not None:
                     self.sock.sendto(pkt, self.peer)
                 else:
+                    if self.fw is not None:
+                        self.fw.sent_to(self.peer)
                     self.home.nat.outbound(self.ticket.local_port, pkt, self.peer)
                 await asyncio.sleep(0.03)
         finally:
@@ -732,7 +790,7 @@ class Sim:
         self.srv_loop.call_soon_threadsafe(self.srv_loop.stop)
 
     # -------------------------------------------------------------- homes
-    async def make_home(self, tree_name, nat_type, mapping_router=False):
+    async def make_home(self, tree_name, nat_type, mapping_router=False, fw=None):
         tree = self.trees[tree_name]
         n = next(self.ip_seq)
         public_ip = f"127.{10 + n // 250}.{n % 250}.1"
@@ -742,10 +800,16 @@ class Sim:
         kw = {}
         if mapping_router is not None and _accepts(tree.client.LobbyClient, "port_mapping"):
             kw["port_mapping"] = bool(mapping_router)
+        if _accepts(tree.client.LobbyClient, "test_inbound"):
+            kw["test_inbound"] = fw["mode"] if fw and fw["launcher"] else ""
+        elif fw and fw["launcher"]:
+            raise RuntimeError(f"tree {tree_name}: no T5_NET_TEST_INBOUND in its lobby client (a firewall on the "
+                               "launcher cannot be simulated)")
         c = tree.client.LobbyClient(f"127.0.0.1:{proxy.port}", self.build, auto_ready=True, **kw)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(self.pool, c.connect)
         home = Home(tree, c, None, private_ip)
+        home.fw = fw
         spec = dict(TYPES[nat_type])
         home.nat = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(
             _make_nat(c._loop, net, public_ip, private_ip, spec), c._loop))
@@ -773,13 +837,14 @@ class Sim:
         await home.proxy.close()
 
     # -------------------------------------------------------------- the trial
-    async def trial(self, type_a, type_b, tree_a, tree_b, map_a=False, map_b=False):
+    async def trial(self, type_a, type_b, tree_a, tree_b, map_a=False, map_b=False, fw_a=None, fw_b=None):
         loop = asyncio.get_running_loop()
-        res = {"a": type_a, "b": type_b, "tree_a": tree_a, "tree_b": tree_b, "path": None, "game": False}
+        res = {"a": type_a + fw_label(fw_a), "b": type_b + fw_label(fw_b), "tree_a": tree_a, "tree_b": tree_b,
+               "path": None, "game": False}
         a = b = None
         try:
-            a = await self.make_home(tree_a, type_a, map_a)
-            b = await self.make_home(tree_b, type_b, map_b)
+            a = await self.make_home(tree_a, type_a, map_a, fw_a)
+            b = await self.make_home(tree_b, type_b, map_b, fw_b)
             t0 = time.monotonic()
             cid = await loop.run_in_executor(self.pool, a.client.challenge, b.client.me["id"])
             ev = await loop.run_in_executor(self.pool, b.client.next_event, 15, ("challenged",))
@@ -803,13 +868,18 @@ class Sim:
                               else round(1000 * h.client.clock_offset, 1) for h in (a, b)]
             tag = hashlib.sha1(ta.match_id.encode()).digest()[:8]
             await asyncio.sleep(0.05 + self.rng.random() * 0.6)       # the game takes over the port
-            ga, gb = StubGame(a, ta, tag, self.srv.udp.port), StubGame(b, tb, tag, self.srv.udp.port)
+            gfw = [h.fw["mode"] if h.fw and h.fw["game"] else None for h in (a, b)]
+            ga, gb = (StubGame(a, ta, tag, self.srv.udp.port, gfw[0]),
+                      StubGame(b, tb, tag, self.srv.udp.port, gfw[1]))
             secs = self.play_seconds if ta.path == "relay" else 2.0
             fa = asyncio.run_coroutine_threadsafe(ga.run(secs), a.loop)
             fb = asyncio.run_coroutine_threadsafe(gb.run(secs), b.loop)
             ok = await asyncio.gather(asyncio.wrap_future(fa), asyncio.wrap_future(fb))
             res["game"] = all(ok)
             res["rx"] = [ga.rx, gb.rx]
+            res["bridge"] = [getattr(h.client, "_bridge", None) is not None for h in (a, b)]
+            if ga.fw or gb.fw:
+                res["fw_dropped"] = [g.fw.dropped if g.fw else 0 for g in (ga, gb)]
             srcs = set(ga.srcs) | set(gb.srcs)
             res["game_via"] = "relay" if any(s[0] == SERVER_IP for s in srcs) and not any(
                 s[0] != SERVER_IP for s in srcs) else ("direct" if srcs else "-")
@@ -887,7 +957,8 @@ def print_table(rows, title=""):
               f"{d['failed']:5d} {d['game']:8d} {st:8.1f}")
 
 
-async def run_matrix(sim, pairs, trials, parallel, tree_a, tree_b, maps=(False, False), progress=True):
+async def run_matrix(sim, pairs, trials, parallel, tree_a, tree_b, maps=(False, False), progress=True,
+                     fws=(None, None)):
     sem = asyncio.Semaphore(parallel)
     results = []
     done = [0]
@@ -895,7 +966,7 @@ async def run_matrix(sim, pairs, trials, parallel, tree_a, tree_b, maps=(False, 
 
     async def one(a, b):
         async with sem:
-            r = await sim.trial(a, b, tree_a, tree_b, *maps)
+            r = await sim.trial(a, b, tree_a, tree_b, *maps, *fws)
             results.append(r)
             done[0] += 1
             if progress and done[0] % 10 == 0:
@@ -920,6 +991,10 @@ def main(argv=None):
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--map-a", action="store_true", help="home A's router answers UPnP/NAT-PMP/PCP")
     ap.add_argument("--map-b", action="store_true")
+    ap.add_argument("--fw-a", default="", help="home A's PC has a firewall that blocks the game and the launcher: "
+                    "stateful (Windows Firewall: replies only) or block (nothing from the network); "
+                    "MODE:game or MODE:launcher blocks only that program")
+    ap.add_argument("--fw-b", default="")
     ap.add_argument("--loss", type=float, default=0.02, help="UDP loss on every leg")
     ap.add_argument("--tcp-rto", type=float, default=0.03, help="share of control messages delayed by a TCP resend")
     ap.add_argument("--seed", type=int, default=1)
@@ -944,7 +1019,7 @@ def main(argv=None):
     t0 = time.monotonic()
     try:
         results = loop.run_until_complete(run_matrix(sim, pairs, a.trials, a.parallel, a.a, a.b,
-                                                     (a.map_a, a.map_b)))
+                                                     (a.map_a, a.map_b), fws=(fw_spec(a.fw_a), fw_spec(a.fw_b))))
     finally:
         sim.stop_server()
     rows = summarize(results)

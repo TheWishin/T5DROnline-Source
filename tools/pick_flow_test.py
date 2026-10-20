@@ -744,7 +744,7 @@ def main():
                 report[f"pause{g.idx}"] = {"menu_opened": opens, "start_cut_p1": tally[0], "start_cut_p2": tally[1],
                                            "start_kept": tally[2]}
                 log(f"game {g.idx}: pause menu opened {opens} time(s); START taken out on {tally[0]} (P1) + "
-                    f"{tally[1]} (P2) frames, kept on {tally[2]} (where START skips: a round's replay, the match end)")
+                    f"{tally[1]} (P2) frames, kept on {tally[2]} (the post-match skip)")
                 if opens:
                     ok_all = False
         if report.get("aborts"):

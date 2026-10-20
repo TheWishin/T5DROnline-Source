@@ -28,6 +28,8 @@ EXT = ".t5live"
 R_SESSION, R_INPUTS, R_HASH, R_BARRIER, R_MATCH, R_LAST, R_END = 1, 2, 3, 4, 5, 6, 7
 MAX_RECORD = 1 << 24
 MAX_RAW = 64 << 20          # a spectator never unpacks more than this (a stream is a few KB a minute)
+HASH_BACK = 3600            # a HASH record at most this many frames before the newest one (a rollback redoes a few)
+WATCH_ASKED = 30.0          # seconds a watch request waits for its `watching` (anything else is not this client's)
 CHUNK = 4096                # compressed bytes per upload message (base64 ~5.5 KB: under the 8 KB line limit)
 
 
@@ -92,6 +94,7 @@ class LiveParser:
         self.end_why = None
         self.bad = None
         self.records = 0
+        self.hash_max = -1
 
     @property
     def ready(self):
@@ -158,6 +161,14 @@ class LiveParser:
                 self.matches.append(m)
             else:
                 self.matches[k] = m
+        elif t == R_HASH:
+            # The game keeps its hashes sorted and puts an older one into its place (a rollback records a frame again,
+            # a few frames back): one far behind the newest would only come from a hand-made stream -- millions of
+            # them, each older than the last, kept the spectator's game sorting for hours (security review 3).
+            f = _u32(b, 0)
+            if f + HASH_BACK < self.hash_max:
+                raise LiveError("a state hash far out of order")
+            self.hash_max = max(self.hash_max, f)
         elif t == R_LAST:
             self.last = max(self.last, _u32(b, 0))
         elif t == R_END:
@@ -363,6 +374,7 @@ class ClientMixin:
         `tournament` being played (docs/TOURNAMENTS.md). -> the `watching` reply {stream, match, players, ranked,
         began, spectators[, tournament]}; then spec_ready / spec_end events."""
         msg = {"t": "watch"}
+        self._spec_asked = time.monotonic()     # (_on_watching: only the answer to this request makes a file)
         if tournament is not None:
             msg.update(tournament=tournament, set=set_id)
         elif room is not None:
@@ -387,6 +399,12 @@ class ClientMixin:
             w["receiver"].close(why)
 
     async def _on_watching(self, msg):
+        # Only the answer to this client's own watch request: a server -- any server a player adds -- sending `watching`
+        # by itself made a new file of up to MAX_RAW (64 MB) unpacked from a few KB each time (security review 3).
+        asked = getattr(self, "_spec_asked", None)
+        if msg.get("re") is None or asked is None or time.monotonic() - asked > WATCH_ASKED:
+            return False
+        self._spec_asked = None
         sid = msg.get("stream")
         if not valid_match_id(sid) or not self.watch_dir:
             return False

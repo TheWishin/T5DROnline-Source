@@ -471,6 +471,8 @@ class RoomsMixin:
             r.match = None
 
     def _room_next_pair(self, r):
+        """The first two free players of the line who have not blocked one another (a block made in the room makes
+        the blocker leave it; this only keeps a pair that got in some other way apart -- security review 3)."""
         free = []
         for q in r.line:
             if not q.online or q.match is not None or q.status != "room" or q.room is not r:
@@ -480,8 +482,10 @@ class RoomsMixin:
             except LobbyError:
                 continue
             free.append(q)
-            if len(free) == 2:
-                return free
+        for i, a in enumerate(free):
+            for b in free[i + 1:]:
+                if not self._is_blocked(a, b):
+                    return [a, b]
         return None
 
     def _room_schedule(self, r, delay=None):

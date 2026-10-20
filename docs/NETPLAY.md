@@ -538,6 +538,8 @@ per-frame hashes, per-region hashes and memory dumps (`T5_NET_DUMP`,
 | Async loading (ZsAread thread, sem 8, feeding the file manager; "decoder", sem 10) | scene changes 1-20 frames apart (logo, char select, fight loading) | main thread waits at frame start until those loaders are parked with nothing queued (usually 0 ms; a few hundred ms on loading screens) |
 | Anything left that moves a scene change | frame offset | scene change = sync point: both continue from the later frame, game frame clock (0x106D4D88) moved along on the other side, RNGs reseeded |
 | Wall-clock vblank counters (0x106D4D90, the vblank list object +0xC0/+0xC8), key-repeat timestamps | none seen in game logic | not synced; frame clock 0x106D4D88 (used by key repeat) is per main-loop frame and is |
+| The player's own save: unlocks (Jinpachi's and the random cell in the select grid, the Tekken 5 stages in the stage lists and random pickers) | a lockstep rematch put the same presses on another costume on the two PCs (run ctrl_ls: Devil Jin 0x43 vs 0x45, 1,327 mismatching frames) | an online game answers the game's unlock check 0x2A732C as a fresh save does (1.1.2; DIRECTFIGHT.md "Unlocks") |
+| The player's own save: the game's OPTIONS (Difficulty, Round Time, +7) copied into the battle state 0x1008F094/9C/98, Difficulty again by 0x1CC28 | every compared frame mismatching (run c2), a different round timer | an online game keeps a save of its own (patch 0044 `PS3_SAVEDATA_DIR`, the launcher's `gamedata-online`): both PCs start from the same fresh save (1.1.2) |
 
 Things that still differ between the two PCs and do not matter: the penguin
 crowd and similar stage props, two secondary-motion points (0x1008FF00 and
@@ -558,6 +560,48 @@ generator states, and the fight block 0x1008E000-0x10091FFF: round state at
 decided), round timer 0x1008F054 (frames left), the fighters at roughly
 0x1008F800 and 0x100900D0 (0x8D0 apart), plus 0x10099600-0x10099BFF,
 0x100A0900-0x100A0AFF and 0x100A3B00-0x100A3DFF. About 25 KB per frame.
+
+## One save for online play, and the unlocks (branch unlock-stages, 1.1.2)
+
+Everything two netplay games must agree on has to be the same at FIGHT START
+on both PCs. Pair tests with **different saves** (`fight_flow_test.py
+--gamedata1`), which no test had used before, found two ways a player's own
+save reaches the match (details and runs: DIRECTFIGHT.md "Unlocks"):
+
+- **Unlocks.** The select grid (Jinpachi's and the random cell), the stage
+  lists and the random stage pickers follow the save's unlock byte. In a
+  lockstep rematch the peer replays this PC's cursor presses on its own grid:
+  another costume, a desync (run ctrl_ls). Launcher Settings -> Unlocks
+  (`T5_UNLOCK_STAGES`, `T5_UNLOCK_ITEMS`) would make it common. Rule: a game
+  started for online play (`T5_NET_MODE`, `T5_CTL_DIR`, `T5_FIGHT`,
+  `T5_FIGHT_FILE`) answers the unlock check as a fresh save does, whatever its
+  save and settings (`src/directfight/df_unlock.cpp`). The item prices are
+  only changed offline.
+- **The game's own options.** Difficulty, Round Time and save +7 go into the
+  hashed battle state (and the round timer), Difficulty again during the
+  match: a player with other options desynced every match (run c2). Rule: an
+  online game keeps a save of its own. ps3recomp patch 0044 adds
+  `PS3_SAVEDATA_DIR`; the launcher sets it to `<game folder>/gamedata-online`
+  for every online game. Both PCs start from the same fresh save; the
+  player's own save is never read or written by online play. The game's own
+  button layout, round time and volumes are therefore offline-only settings;
+  the launcher's controls (controls.ini) work online as before.
+
+Proof (two games on this PC, persistent game, both mashing with motion
+inputs, 1 round; the host with a save that has every unlock, free-bought
+items, both settings on and -- for the second pair -- EASY / 1-round options;
+the joiner a fresh save and both settings off):
+
+| run | mode | what | result |
+|---|---|---|---|
+| rule_rb / rule_ls | rollback / lockstep | NRRNR: two lockstep rematches crossing the top row, stages 0, 13, 15, 5, 9 (Tekken 5 stages) | 5/5 and 5/5, 0 mismatching frames, the same hash |
+| ctrl_ls | lockstep | the same with `T5_UNLOCK_ONLINE=save` on the host (the old behaviour) | match 2 apart: 1,327 mismatching frames |
+| c2 | lockstep | the EASY save as the host's save, no `PS3_SAVEDATA_DIR` | every compared frame mismatching |
+| osave_rb / osave_ls | rollback / lockstep | the EASY save as the host's own save, its online save fresh (`PS3_SAVEDATA_DIR`) | 3/3 and 3/3, 0 mismatching frames |
+
+The Tekken 5 stages (ids 0-13 and 15) online, every one in both modes: see
+DIRECTFIGHT.md "Unlocks" (sweep runs old_rb / old_ls) and docs/RANKED.md
+"Characters and stages" (the server's `T5L_OLD_STAGES`).
 
 ## Same game state on every CPU
 

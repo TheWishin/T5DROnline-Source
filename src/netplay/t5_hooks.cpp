@@ -76,6 +76,7 @@
 
 #include "ppu_recomp.h"   /* ppu_context, vm_base -- from the lifter output */
 #include "netplay.h"
+#include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
@@ -89,11 +90,14 @@ extern "C" void t5_training_frame(ppu_context* ctx);   /* src/training/training.
 extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
 namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
+extern "C" void t5_unlock_install(void);   /* src/directfight/df_unlock.cpp: unlocks (docs/DIRECTFIGHT.md "Unlocks") */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
+struct np_host_pad { int32_t len; uint16_t button[64]; };
+int32_t cellPad_sample_local(uint32_t port_no, np_host_pad* out);   /* patch 0009: this PC's input on a port (replay controls) */
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 typedef int64_t (*np_lv2_fn)(ppu_context*);
@@ -769,8 +773,12 @@ std::string json_id(const std::string& id)
 }
 
 void write_result(const char* winner, unsigned w1, unsigned w2, const char* reason, uint32_t frames,
-                  bool have_hash, uint64_t hash)
+                  bool have_hash, uint64_t hash, uint32_t at)
 {
+    /* the replay (docs/REPLAYS.md): the result goes into the recording, or a
+     * playback compares it with the recorded one */
+    if (np::replaying()) { if (!reason) rp::play_result(winner, w1, w2, frames, have_hash, hash, at); }
+    else rp::rec_result(winner, w1, w2, reason, frames, have_hash, hash, np::match_mismatches(), at);
     EnterCriticalSection(&g_result_cs);
     const std::string id = g_match_id;
     g_last_result_match = id;
@@ -802,6 +810,8 @@ void match_begins(uint32_t f)
     g_match_running = true;
     g_pending.on = false;
     np::match_begin(f);
+    if (np::replaying()) rp::play_match_begin(f);
+    else rp::rec_match_begin(f);
 }
 
 void flush_result(bool now)
@@ -813,7 +823,7 @@ void flush_result(bool now)
     const char* winner = p.w1 > p.w2 ? "0" : p.w2 > p.w1 ? "1" : "null";
     uint64_t h = p.hash; bool have = p.have_hash;
     if (!have && rb::net::active()) have = rb::net::final_hash(p.f, &h);   /* rollback: the deciding frame's gameplay hash, final */
-    write_result(winner, p.w1, p.w2, nullptr, p.f - g_match_f0, have, h);
+    write_result(winner, p.w1, p.w2, nullptr, p.f - g_match_f0, have, h, p.f);
 }
 
 void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
@@ -872,7 +882,7 @@ void write_end_result(const char* reason)
     LeaveCriticalSection(&g_result_cs);
     if (already) return;               /* this match's result is out; nothing to add */
     const uint32_t frames = g_frame > g_match_f0 ? g_frame - g_match_f0 : 0;
-    write_result("null", rd8(kWinsP1), rd8(kWinsP2), reason, frames, false, 0);
+    write_result("null", rd8(kWinsP1), rd8(kWinsP2), reason, frames, false, 0, g_frame);
 }
 
 void end_session(const char* reason, bool from_network_thread = false)
@@ -883,6 +893,8 @@ void end_session(const char* reason, bool from_network_thread = false)
         return;
     }
     write_end_result(reason);
+    np::rec_pump();
+    rp::rec_session_end(reason);     /* the replay so far, before the process ends */
     const int code = exit_code_for(reason);
     np::note("the session cannot go on (%s): the game closes (exit code %d)", reason, code);
     np::bye();
@@ -905,9 +917,13 @@ void on_window_closed()
         Sleep(5000);                 /* a session end in progress: it ends the process with its own code */
         return;
     }
-    const bool online = g_persistent ? np::enabled() : (np::enabled() && !g_offline);
+    /* (local mode -- tests, a replay being watched -- is not online: no quit, no question) */
+    const bool online = np::enabled() && np::mode() != np::Mode::Local && (g_persistent || !g_offline);
+    if (np::replaying()) rp::play_finish("the game window was closed");
     if (online) {
         write_end_result("quit");
+        np::rec_pump();
+        rp::rec_session_end("quit");
         np::note("the game window was closed: this player leaves the session (quit); the peer is told (exit code 7)");
         np::bye();
     }
@@ -916,7 +932,7 @@ void on_window_closed()
     TerminateProcess(GetCurrentProcess(), online ? 7u : 0u);
 }
 /* Esc closes the game only on a second press while a session is set up. */
-int close_guard() { return np::enabled() && !g_offline ? 1 : 0; }
+int close_guard() { return np::enabled() && np::mode() != np::Mode::Local && !g_offline ? 1 : 0; }
 
 /* The network thread's fallback when the main thread does not get to
  * check_session() (blocked outside the lockstep waits). */
@@ -1002,6 +1018,123 @@ void reseed(uint32_t seed)
     wr32(0x1008F0C4u, seed ^ 0x00003039u);   /* the scene's LCG (x -> 5x + 3, rb_rand.cpp) */
 }
 
+/* ---- replays: what happens at a sync point (docs/REPLAYS.md) -----------------
+ * A recording keeps every sync point: its kind, the frame this game reached it
+ * at and the frame both games went on from, the seed the random generators got
+ * and the game's frame counters after it. A playback reaches the same sync
+ * points in the same order (they follow the game state and the driver, both
+ * the same as live); np::scene_barrier() has told it where the recorded session
+ * went on, and here it takes the recorded seed and counters -- the frame its own
+ * loading ended at may differ (a fresh game loads the fight slower than one that
+ * has played), the state after the sync point may not. */
+uint32_t sync_seed(uint32_t kind, uint32_t computed)
+{
+    if (!np::replaying()) return computed;
+    return rp::play_barrier_seed(np::barriers() - 1, kind, computed);
+}
+void sync_counters()
+{
+    if (!np::replaying()) return;
+    uint64_t clock; uint32_t c[3];
+    if (!rp::play_barrier_state(np::barriers() - 1, &clock, c)) return;
+    wr64(kFrameClock, clock);
+    wr32(0x1008EB9Cu, c[0]); wr32(0x1008F07Cu, c[1]); wr32(0x1009442Cu, c[2]);
+}
+void sync_record(uint32_t kind, uint32_t f, uint32_t nf, uint32_t seed)
+{
+    if (!rp::recording()) return;
+    rp::Barrier b;
+    b.kind = kind; b.f = f; b.nf = nf; b.seed = seed;
+    b.has_state = kind != rp::kPause;
+    if (b.has_state) {
+        b.clock = rd64(kFrameClock);
+        b.c[0] = rd32(0x1008EB9Cu); b.c[1] = rd32(0x1008F07Cu); b.c[2] = rd32(0x1009442Cu);
+    }
+    rp::rec_barrier(b);
+}
+
+/* ---- replays: the playback's controls (docs/REPLAYS.md "Watching") ------------
+ * The local pad (keyboard or controller) is not a player in a playback; it
+ * steers it: START pauses and goes on, SELECT ends the replay. The playback runs
+ * at the game's own pace: the frame waits for its vblank tick as always. (Faster
+ * was tried -- 2x and the earlier matches of a session as fast as possible, with
+ * the frame semaphore not waited for: the game still shows one picture per
+ * vblank, its flip waits for it, and such a playback ran at 30-44 frames a
+ * second, slower than normal; so there is no faster pace.) */
+struct ReplayPace {
+    bool inited = false, quit = false;
+    uint16_t prev = 0;
+    LARGE_INTEGER qf = {};
+} g_rp;
+constexpr uint16_t kPadSelect = 0x0001, kPadStart = 0x0008;
+
+uint16_t replay_pad()
+{
+    static int on = -1;   /* T5_REPLAY_CONTROLS=0: the pad does not steer the playback (tests on a PC in use) */
+    if (on < 0) { const char* e = getenv("T5_REPLAY_CONTROLS"); on = !(e && *e == '0'); }
+    if (!on) return 0;
+    np_host_pad d = {};
+    if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
+    return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+}
+
+/* the frame semaphore's tokens, taken without waiting (they piled up during a pause) */
+void replay_take_tokens(ppu_context* ctx)
+{
+    np_lv2_fn tw = g_lv2_syscalls[SC_SEM_TRYWAIT];
+    if (!tw) return;
+    const uint64_t r3 = ctx->gpr[3], r4 = ctx->gpr[4];
+    for (int i = 0; i < 64; i++) {
+        ctx->gpr[3] = rd32(kFrameSemPtr); ctx->gpr[4] = 0;
+        if (tw(ctx) != 0 || (int32_t)ctx->gpr[3] != 0) break;
+    }
+    ctx->gpr[3] = r3; ctx->gpr[4] = r4;
+}
+
+void replay_end(const char* why)
+{
+    rp::play_finish(why);
+    static int keep = -1;
+    if (keep < 0) { const char* e = getenv("T5_REPLAY_EXIT"); keep = e && *e == '0'; }
+    if (keep) return;
+    np::note("replay: %s -- the game closes", why);
+    fflush(stdout); fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 0);
+}
+
+/* The playback's frame wait (main thread, once the lockstep runs): the end, the
+ * viewer's buttons, then the frame semaphore wait as always (the direct-fight
+ * driver's frame hook runs inside it). */
+int64_t replay_frame_wait(ppu_context* ctx)
+{
+    ReplayPace& r = g_rp;
+    if (!r.inited) {
+        r.inited = true;
+        QueryPerformanceFrequency(&r.qf);
+        np::note("replay: START pauses, SELECT ends the replay");
+    }
+    if (!rp::play_frame(g_frame)) { replay_end("the replay is over"); return g_orig_wait(ctx); }
+    const uint16_t b = replay_pad(), press = (uint16_t)(b & ~r.prev);
+    r.prev = b;
+    if (press & kPadSelect) r.quit = true;
+    if ((press & kPadStart) && !r.quit) {
+        np::note("replay: paused at frame %u", g_frame);
+        LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+        while (!r.quit) {
+            Sleep(15);
+            const uint16_t b2 = replay_pad(), p2 = (uint16_t)(b2 & ~r.prev);
+            r.prev = b2;
+            if (p2 & kPadSelect) r.quit = true;
+            if (p2 & kPadStart) break;
+        }
+        QueryPerformanceCounter(&t1);
+        np::note("replay: going on (paused %.1f s)", (double)(t1.QuadPart - t0.QuadPart) / (double)r.qf.QuadPart);
+        replay_take_tokens(ctx);   /* no burst of frames to catch up */
+    }
+    if (r.quit) { replay_end("ended by the viewer (SELECT)"); return g_orig_wait(ctx); }
+    return g_orig_wait(ctx);
+}
+
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034 (runtime/platform/lat_log.h) */
 extern "C" volatile int g_lat_log_on;
 
@@ -1041,6 +1174,7 @@ void on_frame_start(ppu_context* ctx)
 {
     if (!rb::net::bypass()) t5_training_frame(ctx);   /* src/training: reads the frame that just ran (read only) */
     rb::rand_install();   /* the game-DLL build: once the lifted table is out (no-op after the first time) */
+    t5_unlock_install();  /* likewise */
     if (!g_main_tls && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) && ctx->gpr[13] >= 0x7000)
         g_main_tls = (uint32_t)ctx->gpr[13] - 0x7000u;   /* the main thread's TLS block (the TLS generator's state) */
     /* Direct fight with a session: while the select mode runs, the TLS generator
@@ -1149,12 +1283,16 @@ void on_frame_start(ppu_context* ctx)
          * ring and random seeds -- as at a fresh start -- and the next match's
          * mismatch count starts here. The rollback loop, stopped at the pause,
          * starts again from this frame below. */
+        const uint32_t f_was = f;
         const uint32_t nf = np::scene_barrier(f);
         f = nf;
         g_frame = f;
         g_scenes++;
         equal_counters();
-        reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+        sync_counters();
+        const uint32_t seed = sync_seed(rp::kResume, np::match_seed() + g_scenes * 0x9E3779B9u);
+        reseed(seed);
+        sync_record(rp::kResume, f_was, nf, seed);
         apply_rounds();
         match_begins(f);
         g_await_load = g_directfight;
@@ -1201,18 +1339,24 @@ void on_frame_start(ppu_context* ctx)
         if (load_ms >= 0) rb::net::load_seen(f, load_ms);
         if (run == f && scene) {
             const uint32_t nf = np::scene_barrier(f);
+            const uint32_t kind = pause ? rp::kPause : resync ? rp::kResync : rp::kLoad;
             if (pause) {
                 /* every input before f is confirmed and both games are at nf:
                  * the loop stops (its undo logs go), the select screens run on
                  * their own until the next fight */
+                sync_seed(kind, 0);
+                sync_record(kind, f, nf, 0);
                 rb::net::session_reset();
                 go_paused(nf);
                 keyread_tick();
                 return;
             }
             if (nf > f) skip_frames(nf - f);
+            sync_counters();
             g_scenes++;
-            reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+            const uint32_t seed = sync_seed(kind, np::match_seed() + g_scenes * 0x9E3779B9u);
+            reseed(seed);
+            sync_record(kind, f, nf, seed);
             apply_rounds();
             if (resync) { match_begins(nf); g_await_load = g_directfight; }
             else if (load_end) { g_await_load = false; np::note("frame %u: the fight is loaded (scene barrier, continuing at %u)", f, nf); }
@@ -1223,9 +1367,11 @@ void on_frame_start(ppu_context* ctx)
             if (nf > f) run = rb::net::on_boundary(nf, false, in);
         }
         g_frame = run + 1;
+        if (np::replaying()) rp::play_inputs(run, in);   /* (a sync point may have renumbered the frames: the recorded frame's inputs) */
         g_cur[0] = in[0];
         g_cur[1] = in[1];
         keyread_tick();
+        rp::rec_frame(run);
         if (run == f) {
             watch_match(run);
             shot(run);
@@ -1242,15 +1388,22 @@ void on_frame_start(ppu_context* ctx)
          * with the game's frame clock moved along on the side that skipped,
          * and the random generator reseeded the same way on both. */
         const uint32_t nf = np::scene_barrier(f);
+        const uint32_t kind = pause ? rp::kPause : resync ? rp::kResync : load_end ? rp::kLoad : rp::kRing;
         if (pause) {   /* in-game select: both games at nf, the lockstep stops there */
+            sync_seed(kind, 0);
+            sync_record(kind, f, nf, 0);
             go_paused(nf);
             keyread_tick();
             return;
         }
         if (nf > f) skip_frames(nf - f);   /* the game's counters move along by the frames this side skipped */
+        sync_counters();
+        const uint32_t f_was = f;
         f = nf;
         g_scenes++;
-        reseed(np::match_seed() + g_scenes * 0x9E3779B9u);
+        const uint32_t seed = sync_seed(kind, np::match_seed() + g_scenes * 0x9E3779B9u);
+        reseed(seed);
+        sync_record(kind, f_was, nf, seed);
         apply_rounds();
         if (resync) { match_begins(f); g_await_load = g_directfight; }   /* the next match in the same process: its desync count starts here */
         else if (load_end) { g_await_load = false; np::note("frame %u: the fight is loaded (scene barrier)", f); }
@@ -1269,6 +1422,8 @@ void on_frame_start(ppu_context* ctx)
         const uint32_t seed = np::match_seed();
         reseed(seed);
         np::note("game RNGs reseeded with 0x%08X", seed);
+        /* the replay: the seed, and whether the rollback loop takes over at frame 1 */
+        rp::rec_start(seed, rb::net::enabled() && rb::net::start_frame() <= 1, np::delay());
         apply_rounds();
         match_begins(0);
     }
@@ -1302,6 +1457,7 @@ void on_frame_start(ppu_context* ctx)
     g_cur[0] = in[0];
     g_cur[1] = in[1];
     keyread_tick();
+    rp::rec_frame(f);   /* (before the match watch: a result written at this frame must find the frame counted) */
     watch_match(f, true, h);
     check_session();   /* the peer may have been lost while we waited for its input */
     char extra[128];
@@ -1414,6 +1570,12 @@ int64_t w_sem_wait(ppu_context* ctx)
         on_frame_start(ctx);
         return 0;
     }
+    if (fs && id == fs && ctx->thread_id == g_main_tid && g_active && np::replaying()) {
+        /* a replay being watched: its end, pause and SELECT */
+        const int64_t r = replay_frame_wait(ctx);
+        if (r == 0) on_frame_start(ctx);
+        return r;
+    }
     if (fs && id == fs && ctx->thread_id == g_main_tid && rb::net::early_pending()) {
         /* early rollback (rb_net.cpp early_check): the boundary runs now and
          * waits for this frame's tick itself (frame_tick_wait) */
@@ -1515,7 +1677,7 @@ void read_session_env()
     g_match_id = m ? m : "";
     LeaveCriticalSection(&g_result_cs);
     { const char* f1 = t5_env("T5_FIGHT"); const char* f2 = t5_env("T5_FIGHT_FILE");
-      g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent; }
+      g_directfight = (f1 && *f1) || (f2 && *f2) || g_persistent || np::replaying(); }   /* (a replay is a direct fight) */
     g_rounds = 0;
     if (const char* r = t5_env("T5_NET_ROUNDS")) {
         g_rounds = atoi(r);
@@ -1524,7 +1686,7 @@ void read_session_env()
     }
     { const char* r = t5_env("T5_NET_RESULT_FILE"); g_result_file = r ? r : ""; }
     { const char* o = t5_env("T5_NET_ON_LOST"); g_on_lost_idle = o && !_stricmp(o, "idle"); }
-    g_start_mode = g_persistent ? StartMode::External : StartMode::Boot;
+    g_start_mode = g_persistent || np::replaying() ? StartMode::External : StartMode::Boot;   /* (a replay starts at its fight, as live) */
     if (const char* st = t5_env("T5_NET_START")) {
         if (!_stricmp(st, "external")) g_start_mode = StartMode::External;
         else if (!_strnicmp(st, "frame:", 6)) { g_start_mode = StartMode::Frame; g_start_frame = (uint32_t)atoi(st + 6); }

@@ -12,6 +12,7 @@
 #include "rb.h"
 #include "rb_state.h"
 #include "rb_net.h"
+#include "../netplay/replay.h"   /* a replay plays back with the loop it was recorded with */
 
 extern "C" uint8_t* vm_base;
 extern "C" void lat_log_(char kind, const char* fmt, ...);   /* ps3recomp patch 0034: PS3_LATENCY_LOG */
@@ -354,6 +355,13 @@ bool offered_by_env()
     const char* m = getenv("T5_RB_MODE");
     const char* nm = getenv("T5_NET_MODE");
     const char* ctl = getenv("T5_CTL_DIR");
+    /* a replay being watched (docs/REPLAYS.md): the loop the recorded session ran */
+    if (nm && !_stricmp(nm, "replay")) {
+        if (np::replaying()) return rp::play_rollback();
+        /* (rb_hooks.cpp asks during static initialisation, before the netplay core has read the
+         * file: then its header line says it) */
+        return rp::peek_rollback(getenv("T5_REPLAY_FILE"));
+    }
     if (ctl && *ctl) return !m || !*m || !strcmp(m, "net");   /* a persistent game: every session is a direct fight */
     if (!nm || !*nm) return false;
     /* The default online mode (rollback10, docs/ROLLBACK.md section 20: two
@@ -401,7 +409,7 @@ bool enabled()
             if (const char* s = getenv("T5_RB_NET_PHASE_LOCK")) g_phase_lock = (uint32_t)atoi(s);
             if (const char* s = getenv("T5_RB_NET_LOAD_LOCK")) g_load_lock = (uint32_t)atoi(s);
             g_intro_rule = (getenv("T5_FIGHT") && *getenv("T5_FIGHT")) || (getenv("T5_FIGHT_FILE") && *getenv("T5_FIGHT_FILE")) ||
-                           (getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR"));
+                           (getenv("T5_CTL_DIR") && *getenv("T5_CTL_DIR")) || np::replaying();   /* (a replay is a direct fight) */
             if (const char* s = getenv("T5_RB_NET_INTRO")) g_intro_rule = g_intro_rule && *s != '0';
             if (const char* s = getenv("T5_RB_NET_POSTMATCH")) g_post_rule = *s != '0';
             if (const char* s = getenv("T5_RB_NET_SELECT_LOCK")) g_select_lock = *s != '0';
@@ -451,6 +459,7 @@ void start(uint32_t f)
     sound_install();   /* no-op when static init could install it; the game-DLL build gets it here */
     dcut_install();
     g_delay = np::rb_apply_delay();
+    rp::rec_rollback_delay(g_delay);   /* (the replay notes it; a playback needs no delay) */
     np::rb_begin(f);
     if (g_skipsound && sound_word()) state_add_mask(sound_word(), 4);
     {   /* the full-state page hash is the test mode's; the peers compare the gameplay hash */

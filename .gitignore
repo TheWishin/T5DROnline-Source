@@ -53,6 +53,7 @@ scratch/
 
 # Launcher: the player's build output, settings, and release staging
 native/
+*.t5replay
 launcher.json
 dist/
 # Online tab: per-user settings and saved logins (normally in %APPDATA%\T5DROnline, never commit)

@@ -53,7 +53,7 @@ log = logging.getLogger("t5lobby")
 
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
-CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends"))
+CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -477,6 +477,9 @@ class LobbyServer:
         self.by_name = {}          # lower name -> Player
         self.by_account = {}       # account id -> Player (online or resumable)
         self.invites = {}          # invite id -> Invite (friends)
+        self.retry_after = {}      # (kind, asker, asked) -> monotonic time a new invite / challenge may go again
+        self.friend_req_addr = KeyedBuckets(rate=max(1, self.cfg.friend_requests_address) / DAY,
+                                            burst=max(1, self.cfg.friend_requests_address))   # per internet address
         self._presence = {}        # account id -> (status, activity, name, build, cap): what the friends were last told
         self.sessions = {}         # resume token -> Player
         self.rooms = {}
@@ -1416,7 +1419,7 @@ class LobbyServer:
              "rating": round(rt.r), "rd": round(rt.rd), "record": [row["wins"], row["losses"], row["draws"]],
              "ranked_games": row["ranked_games"], "games": row["games"],
              "peak": rank.peak, "peak_rank": ranks.name(rank.peak), "place": self.store.place(aid),
-             "member_since": row["created"], "last_seen": row["last_seen"],
+             "member_since": row["created"],
              "chars": self.store.char_usage(aid), "main": self.store.main_char(aid),
              "voids_24h": self.store.strikes(aid, time.time() - DAY),
              "history": self.store.history(aid, max(0, min(50, n_history))),
@@ -1425,6 +1428,10 @@ class LobbyServer:
         if online is not None:
             d["status"] = online.status
         d["self"] = me is not None and me.account_id == aid
+        if d["self"] or (me is not None and aid in me.friends):
+            # When an account was last online is for its friends (their list says "last seen") and itself: since
+            # 1.1.2 the Friends page makes that a friends-only thing, so a profile no longer tells it to everyone.
+            d["last_seen"] = row["last_seen"]
         if d["self"]:
             d["recovery_codes_left"] = self.store.recovery_left(aid)
         elif me is not None and me.account_id is not None and me.conn is not None and "friends" in me.conn.caps:
@@ -1732,6 +1739,9 @@ class LobbyServer:
             raise LobbyError(proto.E_RATE, "one challenge at a time")
         if sum(1 for c in self.challenges.values() if c.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has challenges pending")
+        wait = self._retry_left(("challenge", self._block_key(p), self._block_key(q)))
+        if wait:
+            raise LobbyError(proto.E_RATE, f"your last challenge to that player ended a moment ago; try again in {wait} s")
         p.last_challenge = now
         c = Challenge(p, q)
         self.challenges[c.id] = c
@@ -1745,6 +1755,8 @@ class LobbyServer:
         if c is None or c.dst is not p:
             raise LobbyError(proto.E_NOT_FOUND, "no such challenge")
         if not msg.get("accept") or self.draining:
+            if not self.draining:
+                self._retry_later(("challenge", self._block_key(c.src), self._block_key(p)))
             self._end_challenge(c, "declined")
             self._refuse_draining()
             return None
@@ -1764,6 +1776,7 @@ class LobbyServer:
         c = self.challenges.get(msg.get("challenge"))
         if c is None or c.src is not conn.player:
             raise LobbyError(proto.E_NOT_FOUND, "no such challenge")
+        self._retry_later(("challenge", self._block_key(c.src), self._block_key(c.dst)))
         self._end_challenge(c, "cancelled")
 
     def _end_challenge(self, c, state):
@@ -2441,7 +2454,7 @@ class LobbyServer:
         seed = int.from_bytes(m.tag[:4], "big")
         m.pick = self._pick_seconds(m)
         m.chars = list(self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[:2])
-        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed)[2]
+        m.stage = self.table.resolve(m.picks[0], m.picks[1], fighters.RANDOM, seed, old_stages=self._old_stages(m))[2]
         for side, p in enumerate(m.players):
             p.status = "playing"
             self._send_match_start(m, side)
@@ -2476,6 +2489,11 @@ class LobbyServer:
                 "continue": m.continued, "rematch_of": m.rematch_of,
                 "min_seconds": self.cfg.min_match_seconds,
                 "set": m.set.info() if m.set is not None else None})
+
+    def _old_stages(self, m):
+        """May this match's stage be a Tekken 5 one? The server's choice (T5L_OLD_STAGES), and only when both clients
+        know those stage keys (cap "old_stages"; an older launcher could not start the fight)."""
+        return bool(self.cfg.old_stages) and all("old_stages" in getattr(p.conn, "caps", ()) for p in m.players)
 
     def _pick_seconds(self, m):
         """In-game select (docs/RANKED.md "Character select in the game"): both players pick on their
@@ -3190,11 +3208,20 @@ class LobbyServer:
                                                   f"{days} day(s)")
         if not hidden and len(self.store.incoming_requests(tid, since)) >= self.cfg.friend_pending:
             raise LobbyError(proto.E_BUSY, "that player has too many friend requests waiting")
+        if self.cfg.friend_requests_address > 0 and not self.friend_req_addr.take(conn.akey):
+            # (the per-account limits times as many accounts as one address makes: T5L_FRIEND_REQUESTS_ADDRESS a day
+            # from one internet address, all its accounts together)
+            raise LobbyError(proto.E_RATE, "too many friend requests from this internet address today; try again "
+                                           "tomorrow")
+        # Asked again within a day of taking a request back: it waits in their list as before, but it does not pop up
+        # again -- "add, take back, add ..." put "X wants to be your friend" on their screen 20 times a day.
+        quiet = self.store.cancelled_request_since(p.account_id, tid, now - DAY)
         self.store.add_friend_request(p.account_id, tid, now)
         self._count("friend_requests")
-        log.info("%s asked %s to be friends%s", p.name, name, " (not shown: blocked)" if hidden else "")
+        log.info("%s asked %s to be friends%s", p.name, name, " (not shown: blocked)" if hidden else
+                 " (again today: not announced)" if quiet else "")
         q = self.by_account.get(tid)
-        if not hidden and self._can(q, "friends"):
+        if not hidden and not quiet and self._can(q, "friends"):
             q.send({"t": "friend_request", "name": p.name, "time": now})
         self._send_friends_soon(p.account_id, *(() if hidden else (tid,)))
         return {"t": "friend_added", "name": name, "state": "pending"}
@@ -3346,6 +3373,9 @@ class LobbyServer:
         now = time.monotonic()
         if now - p.last_invite < 2.0 or any(i.src is p for i in self.invites.values()):
             raise LobbyError(proto.E_RATE, "one invite at a time")
+        wait = self._retry_left(("invite", p.account_id, q.account_id))
+        if wait:
+            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s")
         if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
             raise LobbyError(proto.E_BUSY, "that player has invites pending")
         p.last_invite = now
@@ -3362,12 +3392,14 @@ class LobbyServer:
 
     async def h_invite_answer(self, conn, msg):
         """One click: `accept` true starts the casual match (no ready check) or joins the inviter's room (its match
-        starts at once); false declines."""
+        starts at once -- a ranked room's with the ready check, which says it is ranked); false declines."""
         p = conn.player
         inv = self.invites.get(msg.get("invite"))
         if inv is None or inv.dst is not p:
             raise LobbyError(proto.E_NOT_FOUND, "that invite is over")
         if not msg.get("accept") or self.draining:
+            if not self.draining:
+                self._retry_later(("invite", inv.src.account_id, p.account_id))     # (no invite spam after a no)
             self._end_invite(inv, "declined")
             self._refuse_draining()
             return None
@@ -3401,14 +3433,35 @@ class LobbyServer:
         p.room, p.status = r, "room"
         self.dirty = True
         self._count("invites_accepted")
-        asyncio.get_running_loop().call_soon(self._room_start, r, True)
+        # A ranked room keeps its ready check: the invite only named the room (its name is the owner's free text),
+        # and a ranked room's match is rated -- with ranked sets a best of 3 that is lost by leaving it. The ready
+        # check says "ranked" and needs a second yes (security review 2).
+        asyncio.get_running_loop().call_soon(self._room_start, r, not r.ranked)
         return {"t": "room", "room": r.public()}
 
     async def h_invite_cancel(self, conn, msg):
         inv = self.invites.get(msg.get("invite"))
         if inv is None or inv.src is not conn.player:
             raise LobbyError(proto.E_NOT_FOUND, "that invite is over")
+        self._retry_later(("invite", inv.src.account_id, inv.dst.account_id))     # (no invite / cancel popup loop)
         self._end_invite(inv, "cancelled")
+
+    # A no (or the asker's own cancel) holds back the next invite / challenge between the same two for
+    # T5L_INVITE_RETRY_SECONDS: before, a friend (an invite) or anybody (a challenge) could put the question up on the
+    # other's screen every 2 s -- with a controller's A as its answer. Keyed by account id (guests: name), so logging
+    # in again does not reset it.
+    def _retry_later(self, key):
+        if self.cfg.invite_retry_seconds <= 0:
+            return
+        now = time.monotonic()
+        if len(self.retry_after) > 4096:
+            self.retry_after = {k: v for k, v in self.retry_after.items() if v > now}
+        self.retry_after[key] = now + self.cfg.invite_retry_seconds
+
+    def _retry_left(self, key):
+        """Whole seconds until the same two may ask again (0: now)."""
+        left = self.retry_after.get(key, 0.0) - time.monotonic()
+        return math.ceil(left) if left > 0 else 0
 
     def _end_invite(self, inv, state):
         """accepted | declined | cancelled | expired: both sides are told (invite_update)."""

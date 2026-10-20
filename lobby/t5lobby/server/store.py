@@ -844,6 +844,11 @@ class Store:
         return self._x("SELECT COUNT(*) FROM friend_requests WHERE from_id = ? AND created >= ?",
                        (from_id, since)).fetchone()[0]
 
+    def cancelled_request_since(self, from_id, to_id, since):
+        """Did `from_id` take back (or a block cancel) a request to `to_id` after `since`?"""
+        return self._x("SELECT 1 FROM friend_requests WHERE from_id = ? AND to_id = ? AND state = 'cancelled' AND "
+                       "answered >= ? LIMIT 1", (from_id, to_id, since)).fetchone() is not None
+
     def last_declined(self, from_id, to_id):
         """When `to_id` last declined a request of `from_id` (unix time), or None."""
         r = self._x("SELECT MAX(answered) FROM friend_requests WHERE from_id = ? AND to_id = ? AND "

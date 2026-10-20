@@ -42,7 +42,7 @@ index c1c45cd..4fe1941 100644
      }
 diff --git a/runtime/ppu/tests/test_storepath_race.c b/runtime/ppu/tests/test_storepath_race.c
 new file mode 100644
-index 0000000..4b39292
+index 0000000..553ccd5
 --- /dev/null
 +++ b/runtime/ppu/tests/test_storepath_race.c
 @@ -0,0 +1,336 @@
@@ -119,7 +119,7 @@ index 0000000..4b39292
 +
 +/* ---- guest memory and the gates (the runtime publishes these, vm_gates_publish) */
 +#define GMEM (16u << 20)
-+static uint8_t g_mem[GMEM + 256];
++static __declspec(align(64)) uint8_t g_mem[GMEM + 256];
 +uint8_t* vm_base = g_mem;
 +uint8_t* const vm_base_k = g_mem;
 +const uint32_t vm_ld_lim_k = GMEM - 0x10000u - 8u, vm_st_lim_k = GMEM - 0x10000u - 8u, vm_refpoll_k = 0xFFFFFFFFu;
@@ -138,8 +138,8 @@ index 0000000..4b39292
 +}
 +static void st_raw(uint32_t a, const void* p, int n)
 +{
-+    if (n == 4 && !(a & 3)) __atomic_store_n((uint32_t*)(g_mem + a), *(const uint32_t*)p, __ATOMIC_RELAXED);
-+    else if (n == 8 && !(a & 7)) __atomic_store_n((uint64_t*)(g_mem + a), *(const uint64_t*)p, __ATOMIC_RELAXED);
++    if (n == 4 && !(a & 3)) __atomic_store_n((uint32_t*)(vm_base + a), *(const uint32_t*)p, __ATOMIC_RELAXED);
++    else if (n == 8 && !(a & 7)) __atomic_store_n((uint64_t*)(vm_base + a), *(const uint64_t*)p, __ATOMIC_RELAXED);
 +    else memcpy(g_mem + a, p, (size_t)n);
 +}
 +static void ool_store(uint32_t a, const void* p, int n)
@@ -175,7 +175,7 @@ index 0000000..4b39292
 +    spu_coh_notify_write_from_ppu(ea);
 +    spu_lockline_unlock();
 +}
-+static uint32_t ld32(uint32_t a) { return __builtin_bswap32(__atomic_load_n((uint32_t*)(g_mem + a), __ATOMIC_RELAXED)); }
++static uint32_t ld32(uint32_t a) { return __builtin_bswap32(__atomic_load_n((uint32_t*)(vm_base + a), __ATOMIC_RELAXED)); }
 +
 +/* ---- the SPU: GETLLAR and PUTLLC as spu_channels.c does them */
 +static spu_context* g_spu;
@@ -463,7 +463,7 @@ index 0ced5b0..c97ada4 100644
  #define VM_ST_INL(T, BSWAP, a, v, slow) do { \\
 diff --git a/tools/storepath_diff.py b/tools/storepath_diff.py
 new file mode 100644
-index 0000000..cbd75df
+index 0000000..cfb1661
 --- /dev/null
 +++ b/tools/storepath_diff.py
 @@ -0,0 +1,296 @@
@@ -665,9 +665,9 @@ index 0000000..cbd75df
 +    out.append(f"#define NFN {len(funcs)}")
 +    drv = rd.DRIVER
 +    for old, new in (("if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;",
-+                      "g_var = 0; if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;"),
++                      "g_var = 0; g_stub = 0; if (setjmp(g_jb) == 0) g_fns[fi].o(&g_a); else ab_a = 1;"),
 +                     ("if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;",
-+                      "g_var = 1; if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;")):
++                      "g_var = 1; g_stub = 0; if (setjmp(g_jb) == 0) g_fns[fi].n(&g_b); else ab_b = 1;")):
 +        if old not in drv:
 +            sys.exit("regpromo_diff.DRIVER has another shape")
 +        drv = drv.replace(old, new)
@@ -763,3 +763,101 @@ index 0000000..cbd75df
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tools/test_ppu_storepath.py b/tools/test_ppu_storepath.py
+new file mode 100644
+index 0000000..d85c9a6
+--- /dev/null
++++ b/tools/test_ppu_storepath.py
+@@ -0,0 +1,92 @@
++#!/usr/bin/env python3
++"""Thread test of the lifted code's inline guest store against the SPU reservation protocol (patch 0069).
++
++    python tools/test_ppu_storepath.py [--turns N] [--ms N] [--delay N] [--work DIR]
++
++Writes the lifter's generated header (ppu_lifter.HEADER_PREAMBLE) with a random
++spin between the store's check and the store (HARN_DELAY: the window the
++protocol has to get right, widened), and builds runtime/ppu/tests/
++test_storepath_race.c against it and the real runtime/spu/spu_coherency.c in
++four variants:
++
++  new         PPU_COH_LOCAL (0069): the 1 KB block byte through vm_coh_bm_k   -> must PASS
++  old         PPU_NO_COH_LOCAL: the 1.1.4 check (vm_coh_bitmap, NULL test, bit) -> must PASS
++  break_post  new without the re-check after the store                        -> must FAIL (phase B)
++  break_pre   new without the check before the store                          -> must FAIL (phase A)
++
++The two broken variants show the test sees the two races the protocol closes.
++Windows only (clang-cl, FlushProcessWriteBuffers); exit status 0 = as expected.
++"""
++import argparse
++import os
++import subprocess
++import sys
++
++TOOLS = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.dirname(TOOLS)
++sys.path.insert(0, TOOLS)
++
++from ppu_lifter import HEADER_PREAMBLE  # noqa: E402
++
++PRE = "if (vm_st_ok(_ea, sizeof(T)) && !vm_st_reserved(_ea)) { \\"
++POST = "if (__builtin_expect(vm_st_reserved(_ea), 0)) vm_store_coh_notify(_ea); \\"
++
++
++def header(variant):
++    h = HEADER_PREAMBLE
++    if h.count(PRE) != 1 or h.count(POST) != 1:
++        sys.exit("ppu_lifter.HEADER_PREAMBLE: VM_ST_INL has another shape")
++    pre = PRE.replace(" && !vm_st_reserved(_ea)", "") if variant == "break_pre" else PRE
++    h = h.replace(PRE, pre + "\n        HARN_DELAY(); \\")
++    if variant == "break_post":
++        h = h.replace(POST, "/* (break_post: no re-check) */ \\")
++    return h
++
++
++def find_clang():
++    for d in (os.environ.get("T5DR_LLVM_BIN"), r"C:\Program Files\LLVM\bin"):
++        if d and os.path.exists(os.path.join(d, "clang-cl.exe")):
++            return os.path.join(d, "clang-cl.exe")
++    return "clang-cl"
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--turns", type=int, default=20000, help="phase B: first reservations raced")
++    ap.add_argument("--ms", type=int, default=3000, help="phase A: milliseconds of GETLLAR/PUTLLC against stores")
++    ap.add_argument("--delay", type=int, default=256, help="most pause instructions between the check and the store")
++    ap.add_argument("--work", default=os.path.join(ROOT, "scratch", "test_ppu_storepath"))
++    a = ap.parse_args()
++    if os.name != "nt":
++        print("skipped: Windows only")
++        return 0
++    from msvc_env import environ
++    want = {"new": True, "old": True, "break_post": False, "break_pre": False}
++    bad = []
++    for v, should_pass in want.items():
++        d = os.path.join(a.work, v)
++        os.makedirs(d, exist_ok=True)
++        with open(os.path.join(d, "ppu_recomp.h"), "w", newline="\n") as f:
++            f.write(header(v))
++        exe = os.path.join(d, "test_storepath_race.exe")
++        cmd = [find_clang(), "/nologo", "/O2", "-TC", "/std:c17", "/clang:-march=x86-64-v3", "-Wno-unused-function",
++               "-Wno-deprecated-declarations", "-I" + d, "-I" + os.path.join(ROOT, "runtime", "spu"),
++               "-I" + os.path.join(ROOT, "include"), os.path.join(ROOT, "runtime", "ppu", "tests", "test_storepath_race.c"),
++               "/Fe:" + exe, "/Fo:" + os.path.join(d, "t.obj")] + (["/DPPU_NO_COH_LOCAL"] if v == "old" else [])
++        r = subprocess.run(cmd, env=environ(), capture_output=True, text=True, errors="replace")
++        if r.returncode:
++            print(r.stdout[-4000:], r.stderr[-2000:])
++            sys.exit(f"{v}: compile failed")
++        r = subprocess.run([exe, str(a.turns), str(a.ms), str(a.delay)], capture_output=True, text=True, errors="replace",
++                           timeout=600)
++        passed = r.returncode == 0
++        print(f"== {v} (must {'PASS' if should_pass else 'FAIL'}): {'PASS' if passed else 'FAIL'}")
++        print("   " + r.stdout.strip().replace("\n", "\n   "))
++        if passed != should_pass:
++            bad.append(v)
++    print("RESULT:", "as expected" if not bad else "UNEXPECTED: " + ", ".join(bad))
++    return 1 if bad else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

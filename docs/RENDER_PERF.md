@@ -2422,3 +2422,196 @@ hang.
   source, in one process.
 - Not tried on a real 4-core laptop; the fps here are of this PC with 27-31
   of its 32 processors busy elsewhere.
+
+## Lifted code: the guest store's reservation check (patch 0069, branch `store-path-114`)
+
+After register promotion (0066) the guest memory path was most of what the
+lifted code spends on its own. Every inline guest store (`ppu_recomp.h`
+`VM_ST_INL`) checks the SPU/PPU reserved-line bitmap twice: before the store
+(a reserved line takes the runtime's locked store and notify) and after it
+(the half of `spu_coh_reserve`'s barrier handshake that catches a line being
+reserved for the first time while the store is under way). In the game DLL
+each check was: load the import slot of `vm_coh_bitmap`, load the pointer,
+test it for NULL, compute the line and byte index, load the byte, `and 7`,
+`bt`, branch -- 13.2 instructions on average, 132,898 such sequences in
+`t5dr_game.dll`, 26 of a byte store's ~33 instructions.
+
+### How much, how often
+
+- **How often** (a counting build of the same code, pool stage, fight
+  window): the main thread runs **538 k inline stores and 626 k inline loads
+  per frame**, the draw thread (`NU::Draw::RequestManager`) 441 k and 389 k.
+  Of the main thread's stores 45 per frame (0.008 %) go to a reserved line,
+  57 to a 1 KB block that holds one; the check after the store never found a
+  line reserved that the check before it had not; no store or load fell
+  outside the inline window.
+- **What it costs** (`build/storepath/micro`: the check variants compiled
+  like the lifted code, four store shapes, TSC cycles per store on one core):
+
+  | check | struct fill | byte copy | scattered read-modify-write | float stores |
+  |---|---|---|---|---|
+  | 1.1.4: import slot, pointer, NULL test, bit | 5.2 | 7.3 | 14.6 | 5.8 |
+  | DLL-local pointer, bit | 3.9 | 6.4 | 13.8 | 4.6 |
+  | DLL-local pointer, 32-bit word + `bt` | 3.3 | 5.7 | 12.8 | 3.7 |
+  | **0069: DLL-local pointer, the 1 KB block's byte** | **2.4** | **4.8** | **11.6** | **3.0** |
+  | (a byte per line, 32 MB map) | 2.4 | 4.8 | 11.5 | 3.0 |
+  | (no check at all: the floor, not correct) | 1.5 | 2.7 | 10.9 | 3.0 |
+
+- **Where the threads spend it** (`thread_sampler.py`, raw RVAs of the DLL
+  against its disassembly, one fight per build): the check instructions held
+  **21 % of the main thread's and 48 % of the draw thread's samples** in the
+  lifted code; with 0069 9 % and 24 %.
+- A "no reservation active" fast path would not help this game: SPURS
+  reserves lines from boot on, so the bitmap is armed in every frame, and
+  with 0069 the check is a single load already.
+
+### What changed (ps3recomp patch 0069)
+
+- The runtime hands the game DLL the bitmap's address once, with the other
+  gates, before any lifted code runs (`vm_gates_publish` ->
+  `ppu_game_set_coh`; `vm_coh_bm_k`, DLL-local and treated as a constant like
+  `vm_base_k`). The bitmap is a fixed array, all zero until a line is
+  reserved, so there is no NULL test and no import slot.
+- The check tests the bitmap **byte** that holds the line's bit as a whole:
+  `bm[ea >> 10] != 0`, "some line of this 1 KB block is reserved" -- one
+  shift, one load, one compare (4.9 instructions with the address; the
+  re-check reuses the index). A store that finds its block non-zero goes out
+  of line, to the runtime's `vm_write*`, which checks the line's own bit
+  exactly as before (locked store and notify, or plain store and re-check).
+  So a store to one of the seven other lines of a reserved line's block pays
+  a call -- 12 a frame on the main thread -- and nothing else changes.
+- Both checks stay, in the same order (check, store, compiler fence,
+  re-check). `t5dr_game.dll`: 9.00 M -> 7.86 M instructions, 39.2 -> 35.2 MB.
+- Switches: `PS3_COH_LOCAL=0` hands the DLL no bitmap; the DLL then keeps its
+  store window shut and every lifted store goes out of line through the
+  runtime's exact path (correct, slower: a diagnostic fallback). A DLL built
+  with `build_game_dll.py --copt /DPPU_NO_COH_LOCAL` has exactly the 1.1.4
+  inline code. An older runtime (no `ppu_game_set_coh` call) with a new DLL
+  also gets every store out of line; a new runtime runs an older DLL as before.
+- The PGO profile still fits: 15 of 22,796 profiled functions are out of
+  date -- the check helper, one copy per chunk, which has no branch left.
+
+### Why it stays correct
+
+- **The same memory.** The byte the new check loads is the byte the old one
+  loaded (bit `line & 7` of byte `line >> 3`, line = ea >> 7, so the byte is
+  ea >> 10); bits are set under the lock-line lock and never cleared. "Byte
+  non-zero" holds whenever "the line's bit is set" holds.
+- **Before the store.** The new check stores inline only when the byte is
+  zero, which implies the line's bit was zero: exactly when the old check
+  stored inline. Otherwise the runtime's exact protocol runs, a few
+  instructions later -- the old protocol at a slightly later moment, at which
+  it is correct too. A line reserved before the store is therefore always
+  written under the lock-line lock and cannot land inside a PUTLLC's compare
+  and commit.
+- **After the store.** `coh_mark_line` sets the bit (seq_cst), publishes the
+  pointer, then runs `FlushProcessWriteBuffers`; every PPU thread then either
+  has its store visible to the SPU's snapshot or loads the byte after the
+  barrier -- the same byte, so the new re-check sees the mark whenever the
+  old one did (and no longer depends on the pointer being published). An
+  extra notify (the block is marked, the line is not) acts only on
+  reservations of the store's own line -- SPU contexts whose `resv_ea` is in
+  it and PPU lwarx records of it -- and there are none, since a reservation
+  marks its line first, under the same lock. No SPU is woken and no
+  reservation is taken by a store to a neighbouring line (the "a notify that
+  fires too eagerly is a livelock" rule of `test_spu_coherency.c`).
+- **Untouched:** the store-conditionals (`ppu_stwcx32`, other threads writing
+  `reserve_addr`), the SPU side (GETLLAR, PUTLLC, DMA through
+  `spu_coh_is_reserved`), the HLE stores (`ppu_memory.h`), the loads.
+- **Not changed, not widened:** the protocol's one known window -- a PPU
+  thread stalled between its check and its store for a whole GETLLAR ..
+  PUTLLC of a line reserved for the first time ever -- is the same in both
+  (the inline path has the old window, the out-of-line path the runtime's).
+
+### Proof
+
+- **Function by function** (`tools/storepath_diff.py`, new): every lifted
+  function compiled twice into one harness from the same text, with the
+  1.1.4 check and with 0069's, inline loads and stores on (folded into a
+  64 KB sandbox), a bitmap with a reserved line in a quarter of the 1 KB
+  blocks and all eight in some; compared after every run: the context,
+  memory, and the trace of every guest store (inline or not: address, width,
+  value), every store that reached the runtime's exact path on a reserved
+  line and every post-store notify, besides every load, call and
+  store-conditional with the context hash at each call. Every
+  function of the game (23,059), 300 inputs each: **6.9 M runs, 0
+  differences**; again with no line reserved (the 1.1.4 check's NULL pointer
+  against an all-zero bitmap), 100 each: 2.3 M runs, 0; the 167 hottest
+  functions of the main and draw threads, 5,000 inputs each: 835,000 runs,
+  0; built for the x86-64 baseline, 1,000 each: 167,000 runs, 0. In the
+  armed runs 0069 sent 117 M of 640 M guest stores out of line (the
+  harness reserves far more than the game: 25 % of the blocks), 36 M of them
+  coherent -- the same stores in both builds. With the new check made blind
+  on purpose (`--self-check`) 1,438 of 25,200 runs differ.
+- **Under threads** (`tools/test_ppu_storepath.py` with `runtime/ppu/tests/
+  test_storepath_race.c`, new): the generated header with a random spin
+  between the check and the store (up to 256 pauses, widening the window the
+  protocol has to get right), the real `spu_coherency.c`, an SPU thread doing
+  GETLLAR/PUTLLC like `spu_channels.c`, PPU threads storing. Must pass and passes for 0069 and for the
+  1.1.4 check; two deliberately broken variants must fail and do, which shows
+  the test sees both races: without the re-check after the store 3,750 of
+  20,000 first reservations ended with the store neither in the SPU's
+  snapshot nor taking its reservation; without the check before it 23,304
+  stores were undone by a PUTLLC commit. 0069: 20,000 first reservations
+  (15,657 stores in the snapshot, 4,343 took the reservation, 5,605
+  re-check notifies), 32.9 M stores against 0.68 M PUTLLC commits on
+  reserved lines and their neighbours with no store undone and no line
+  changed under a live reservation; stores to the seven neighbours of a
+  reserved line left the SPU's reservation, its events and a PPU lwarx
+  reservation alone, one store into the line took them.
+- **Online, the integration-114 build against this one:** `tools/cross_build_test.py`, integration-114 host against
+  this joiner, RTT 100 +-5 ms, 3 % loss, Asuka vs Lili on the pool stage, then
+  stage 20: rollback 9,036 frames compared, **0 differ**; lockstep 9,023
+  frames, **0 differ**; the built-in sync check 0 mismatching, the same
+  result hashes. The e2e runner's `cross_build_pair` (this build against
+  the integration-114 build, one code ID, lobby, rollback, a match and two
+  rematches): 2,897 + 2,380 + 2,411 frames, 0 mismatching, PASS (72 checks).
+  `fight_flow_test.py` pairs on this build (a new session and a rematch,
+  mashing, custom costumes): rollback ALL OK, lockstep ALL OK, desync 0.
+  `PS3_COH_LOCAL=0`: a whole fight, every lifted store out of line (main
+  thread 6.2 ms per frame instead of 2.7).
+- Smoke quick: exit 0 -- boot_menu, arcade_fight, vs_two_pads, title_twice PASS;
+  practice WARN (fps 55.4 with 8 other games and 10 compilers running).
+
+### Results
+
+Paired runs as in "Combined 1.1.3 vs 1.1.2" (`fight_bench.py --polite`,
+Lili vs Asuka, window fight start +24..42 s, warm shader cache per build):
+integration-114 (A) and this branch (B), the same lift, built the BUILD GAME
+way with the shipped profile, started together on two halves of the second
+CCD -- 4 cores without SMT each, `0x550000` / `0x55000000` -- swapped every
+round; the four conditions took turns round by round. Other programs used
+4-9 processors. "Slowed" = `slow_core.py --busy 50` on both groups (it took
+44 % of their time). Medians of the rounds; in brackets the geometric mean of
+the per-round ratios B/A and the rounds in which B was better:
+
+| | rounds | fps A / B | game thread CPU p50 ms | game part p50 ms | critical path p50 ms | draw thread ms | game CPU ms |
+|---|---|---|---|---|---|---|---|
+| pool stage (30) | 5 | 59.8 / 59.8 | 2.83 -> **2.67** (0.954, 4/5) | 3.32 -> **3.03** (0.912, 4/5) | 5.01 -> **4.67** (0.945, 4/5) | 1.35 -> **1.03** (0.752, 5/5) | 14.8 -> 14.3 (0.987) |
+| pool stage, slowed | 5 | 59.8 / 59.8 | 2.94 -> **2.69** (0.929, 4/5) | 5.28 -> **4.85** (0.883, 5/5) | 8.62 -> **8.21** (0.921, 5/5) | 1.38 -> **0.94** (0.766, 5/5) | 14.3 -> 13.4 (0.963) |
+| stage 20 | 6 | 59.9 / 60.0 | 2.92 -> **2.77** (0.940, 6/6) | 3.28 -> **3.01** (0.914, 6/6) | 5.01 -> **4.72** (0.943, 6/6) | 1.43 -> **1.13** (0.778, 6/6) | 15.2 -> 14.6 (0.959) |
+| stage 20, slowed | 6 | 60.0 / 60.0 | 3.23 -> **2.90** (0.931, 5/6) | 5.60 -> **5.31** (0.903, 6/6) | 9.06 -> **8.68** (0.935, 6/6) | 1.43 -> **1.27** (0.847, 5/6) | 14.7 -> 14.2 (0.966) |
+
+- The main thread needs **5-7 % less CPU per frame**, the draw thread
+  **15-25 % less** (it is mostly stores: command copies), the game part --
+  the main thread's work plus its waits for the draw thread -- **9-12 %
+  less**, the frame's critical path (game part + translation) **5-8 %
+  shorter**.
+- fps: 60 for both on this PC (quieter than in the sections above); in the
+  slowed pool-stage runs the p99 frame 22.6 -> 21.2 ms.
+- **The i5-7300HQ** (`estimate.py`, the replay model of "The i5-7300HQ"; these
+  test cores had idle SMT siblings, so e = 0.9-1.0, s = 0.55-0.60): both
+  builds 59.9 fps on both stages without late frames; on the pool stage the
+  laptop's critical path is 9.1 -> 8.5 ms median (e = 1.0, s = 0.55) -- 0069
+  adds ~0.6 ms to the margin a locked 60 needs; its 4 cores 40 -> 39 % busy.
+
+### What is left
+
+- Loads: every inline load still has two gates (`ea - 0x10000 < lim` and
+  `ea != vm_refpoll_k`). Only `vm_read32` polls the GCM ref word, so the
+  second compare could go for 8-, 16- and 64-bit loads without any change.
+- Vector and byte-reversed stores go through `VM_RAW_ST` without a
+  reservation check (unchanged; they never had one).
+
+Local evidence: `build/storepath/` (git-ignored: `micro/`, `ana/` for the
+disassembly and sampler attribution, `bench/` + `runs/` for the rounds).

@@ -2218,3 +2218,207 @@ The next steps, by size:
 Local evidence: `build/perfcomb/` (git-ignored: `runs/`, `scripts/bench.py`
 for the rounds, `scripts/estimate.py` for the replay model,
 `scripts/summ.py` / `mdtable.py` for the tables).
+
+## Lifted code: register promotion (patch 0066, branch `lifter-regpromo`)
+
+The game's main thread is ~83 % lifted code ("The game thread's own time"
+above) and its profile is flat: no single function to fix, so the lever is
+the quality of everything the lifter emits. The lifted code kept every guest
+register in the context struct -- `ctx->gpr[n]`, `ctx->fpr[n]`, `ctx->cr`,
+`ctx->xer`, `ctx->ctr` -- and `ctx` is memory the compiler must assume any
+guest store, fence or call can change: the inline guest store ends in a
+compiler fence, the inline load is an atomic access. So every register a
+function wrote was stored, and every register it read after a guest memory
+access was loaded again. The hottest function of a fight (the 16-byte packet
+copy: a byte loop) loaded its two pointers and its counter from the context
+and stored them back on every byte it moved.
+
+### What changed (ps3recomp patch 0066)
+
+`ppu_lifter.py --regpromo on|off` (on by default; `tools/build_game.py` lifts
+with it, `T5DR_LIFT_REGPROMO=0` without -- the lift's stamp records it, so a
+switch lifts again). A post-pass over each function's final C body:
+
+- The GPRs, FPRs, CR, XER and CTR the function uses become C locals of the
+  field's own type (`uint64_t`, `double`, `uint32_t`), loaded from the
+  context at entry. The compiler keeps them in host registers; nothing can
+  change a local behind its back.
+- They go back into the context only where something outside the function
+  can look: before every **escape** -- a line that hands `ctx` to a function
+  (a direct or indirect call, `ps3_hle_call`, `lv2_syscall`, the trampoline
+  drain, `ppu_mtfsf`; kept verbatim), every `return`, every trampoline hand-off,
+  the jump-table dispatch and the end of the body. Only what may differ from
+  the context is written back: a may-"dirty" dataflow over the body's labels
+  and gotos (a register written on any path since the context was last up to
+  date). After a call every local is loaded again (the callee may have changed
+  anything); the compiler drops the loads nobody uses.
+- LR, the vector registers, VSCR, FPSCR and the reservation stay in the
+  context everywhere. Other threads write a thread's `reserve_addr` (a
+  store-conditional breaks the others' reservations) and `ppu_stwcx32` reads
+  it through `g_active_ctx`; nothing else reads or writes the promoted fields
+  of a running thread's context except at those escapes (crash dumps and
+  stuck-thread diagnostics may now show a register a few instructions old).
+- The pass is a strict recognizer of the lifter's own line shapes: a function
+  with any line it does not understand (an unknown context field or callee,
+  control flow it does not model) keeps its unpromoted body. In Tekken 5 DR
+  21,942 of 23,059 functions are promoted; the other 1,117 touch no guest
+  register (import stubs, bare trampolines). `--regpromo-skip FILE` keeps listed functions unpromoted (not
+  needed: every function the runtime's entry detours patch -- rollback sound,
+  heap, random, the direct-call cut, unlocks -- still has a prologue
+  `rb_detour.cpp` accepts, and the detours install on both builds).
+- Not done: `__restrict` on `ctx`. It is not provably valid -- the HLE
+  handlers and `ppu_stwcx32` reach the same context through `g_active_ctx`,
+  other threads write `reserve_addr` -- and after promotion the hot code
+  hardly touches `ctx` anyway. CR stays one 32-bit local: splitting it into
+  fields saves little, since a written field goes back to the context at the
+  next exit anyway.
+
+Guest memory accesses, their order and their values are unchanged: the pass
+only moves where register values live between two escapes. Build cost
+(`build_game.py`'s player-side steps, this PC under load): the lift 18 ->
+~45 s (the pass runs while the lifter writes the source, in one process);
+the DLL compile (`build_game_dll.py --jobs 8`, interleaved runs) 63.7 / 66.0 s
+before, 66.2 / 62.2 s after -- the same wall time, 17 chunks instead of 15,
+compiler CPU +7 % (436-456 -> 468-497 s summed); `t5dr_game.dll` 44.3 ->
+47.7 MB.
+
+### Results
+
+Paired runs (`fight_bench.py --polite`, Lili vs Asuka, window fight start
++24..42 s; old and new build started together on two halves of the second
+CCD, 4 cores without SMT each -- `0x55000000` / `0x00550000` -- swapped every
+round; 6 rounds per row). Other agents kept 27-31 of the 32 processors busy
+the whole time, so the fps are those of a much weaker, loaded PC and move a
+lot between rounds; the CPU time per frame of the game thread (its thread
+cycles between two flip requests, `PS3_GAME_THREAD_LOG`) is the steady
+number. "slow core" = `tools/slow_core.py --cpus 0x55550000 --busy 50` from
+the sched-perf branch: TIME_CRITICAL busy loops took ~40 % of every one of
+those processors (the game had them ~60 % of the time: a slower CPU).
+Medians of the rounds:
+
+| | build | fps | game thread CPU ms/frame p50 / p99 | main thread ms/frame | draw thread ms/frame | game part p50 |
+|---|---|---|---|---|---|---|
+| pool stage (30), 4 cores | before | 39.9 | 6.23 / 7.95 | 6.27 | 3.08 | 14.7 |
+| | after | **41.8** | **5.83 / 7.69** | **5.96** | **2.57** | 14.2 |
+| stage 20, 4 cores | before | 39.8 | 6.70 / 8.08 | 6.56 | 3.21 | 15.6 |
+| | after | **44.0** | **6.29 / 7.54** | **6.34** | **2.71** | 14.8 |
+| pool stage, 4 cores, slow core | before | 29.4 | 6.15 / 7.68 | 6.27 | 3.08 | 19.7 |
+| | after | **32.5** | **5.77 / 7.18** | **5.92** | **2.45** | 18.4 |
+| stage 20, 4 cores, slow core | before | 49.4 | 5.74 / 7.29 | 5.85 | 2.97 | 14.6 |
+| | after | 48.5 | **5.36 / 6.83** | **5.34** | **2.45** | 14.9 |
+
+- Game thread CPU per frame: -6 to -7 % (paired median ratio 0.928-0.935),
+  lower in 23 of 24 rounds.
+- The draw thread (`NU::Draw::RequestManager`, lifted code too, the main
+  thread's next wait): -16 to -20 % CPU per frame.
+- fps: paired median ratio +3 to +13 %, higher in 20 of 24 rounds. Under this
+  load the processor half a game got moved its fps more than the build did
+  (two rounds of the stage-20 slow-core row: the new build on the half that
+  was busier then, -20 and -15 fps).
+
+Profile of the main thread on the pool stage (`thread_sampler.py` on the
+DLL, RVAs resolved with an lld-link map; one run per build): still flat; the
+packet copy went from 9.3 % to 8.0 % of the lifted samples and runs in host
+registers. What is
+left per guest access is the memory model, not the registers: every inline
+store checks the SPU coherence bitmap twice (pointer through the DLL's import,
+line bit), every load two gates; the VMX float helpers are out-of-line calls.
+
+### The same results, bit for bit
+
+- **Function by function, old lift against new lift** (`tools/regpromo_diff.py`,
+  new): both lifts' versions of the same function compiled into one harness
+  with the lifted code's options (`/O2 /Ob2`, `-ffp-contract=off`,
+  `-march=x86-64-v3`), run on the same random inputs -- registers drawn from
+  zero, -1, small, 32-bit sign/zero-extended, sandbox pointers and random
+  64-bit values; FPRs normal, denormal, +-0, +-Inf and NaNs; random CR, XER,
+  CTR, vector registers and guest memory (a 64 KB sandbox every guest address
+  folds into). Compared after every run: the whole context, guest memory, and
+  a trace of every guest load and store (address and value), every
+  store-conditional and every call out of the function together with a hash
+  of the **whole context at that call** -- a register not written back before
+  a call, or not reloaded after it, shows up at that call. The callee stubs
+  change volatile and non-volatile registers, CR/XER/CTR/LR, a vector
+  register and a memory word as a function of everything seen so far, and
+  sometimes leave a trampoline to drain. A run that passes 20,000 events (a
+  loop on a random counter) is stopped and compared by trace and memory.
+  - the **100 hottest functions** of a pool-stage fight (main-thread profile):
+    100,000 inputs each, **10 M runs, 0 differences**; again built for the
+    x86-64 baseline: 10,000 inputs each, 1 M runs, 0 differences;
+  - **every function of the game** (23,059): 300 inputs each, 6.9 M runs,
+    **0 differences**; 42 functions first could not be judged -- a loop that
+    touches no guest memory (the title's own `b .` hang among them) never
+    ends; again with an event counted at every label: 5,000 inputs each,
+    210,000 runs, **0 differences**.
+- **Random lifted-style functions** (`tools/test_ppu_regpromo.py`, new; its
+  default run is 150 functions x 1,500 inputs, the final one 400 x 2,000):
+  random functions built from every line shape the lifter emits for this
+  game (loops forward and back, calls direct/indirect/syscall/conditional,
+  conditional returns and trampolines, jump-table switches, callee-save
+  snapshots, carry, record forms, FP and vector lines, store-conditional)
+  x86-64-v3 and baseline: **0 differences** (1.6 M runs); plus 28
+  checks of what is written back where. (It found a bug in the pass on the
+  way: `a & ctx->gpr[n]`, a binary AND, was taken for an address-of -- only
+  an extra store, but now exact.)
+- **Instruction by instruction** (`tools/test_ppu_lift.py --regpromo`): every
+  conformance case runs as a promoted function of its own (1,174 of 1,202
+  cases; 28 vector-only cases touch no promoted register): 1,533 checks, 0
+  failed, as without. The suite runs again: it compiles with clang-cl and
+  gets the raw access macros it was missing (plain `cl` cannot compile the
+  lifter's FP helpers since patch 0032, so it had been compiling nothing),
+  and its 5 FPSCR/VRSAVE decode checks expect the lowering the lifter has
+  emitted since it models those registers (they expected no-ops).
+- **Online, old build against new build** (`tools/cross_build_test.py`, RTT
+  100 +-5 ms, 3 % loss, three matches per mode, the pool stage first; final
+  state hash of every frame compared, built-in sync check, result files):
+
+  | pair (host / joiner) | mode | frames compared | rollbacks per side | result |
+  |---|---|---|---|---|
+  | old / new: Asuka vs Lili stage 30, Lili vs Dragunov stage 20 + rematch | rollback | 16,197 | 1,464 / 1,789 | 0 differ, same 3 result hashes |
+  | | lockstep | 13,681 | -- | 0 differ, same 3 result hashes |
+  | new / old: Lili vs Asuka stage 30, Dragunov vs Lili stage 24 + rematch | rollback | 17,865 | 2,137 / 2,047 | 0 differ, same 3 result hashes |
+  | | lockstep | 17,841 | -- | 0 differ, same 3 result hashes |
+  | new x86-64-v3 / new baseline with the software fma (`PS3_FP_SOFT_FMA=1`: a PC without AVX2/FMA3): Dragunov vs Asuka stage 30, Asuka vs Dragunov stage 20 + rematch | rollback | 13,197 | 1,545 / 1,462 | 0 differ, same 3 result hashes |
+  | | lockstep | 13,222 | -- | 0 differ, same 3 result hashes |
+
+  The detours the runtime installs on lifted functions (direct-call cut, sound
+  hooks, sound heap, random generators) went in on both builds; their
+  prologues are push/sub sequences `rb_detour.cpp` accepts in both lifts
+  (checked statically for all 55 targets, the diagnostics' too).
+  `tools/fp_audit.py --strict` (`--audit`): no estimate instructions, no
+  x87, no MXCSR writes, no C runtime math in either DLL.
+- **One known difference class, never seen in the game**: a single-precision
+  *signalling* NaN loaded by `lfs` and stored again by `stfs`. The lifter
+  lowers them as C float/double conversions, and LLVM may fold
+  `fptrunc(fpext(x))` to `x` (keeping the NaN signalling, as the PPU does)
+  or not (quieting it): which, depends on what the optimizer can see, so it
+  already differed from site to site in the old lift (an `lfs`/`stfs` pair
+  with no guest access between them folded) and can differ between the two
+  lifts. The harness quiets such values in its data for that reason (it
+  found only this class before). A probe build (every `lfs` checked) loaded
+  **0** signalling NaNs through boot and four fights (stages 30, 20, 24, 34).
+- FP code is unchanged (`ppu_fp_det.h`): `test_fp_det` PASS.
+- Smoke quick on the new build: exit 0 (boot_menu, arcade_fight, title_twice PASS; vs_two_pads and practice
+  fps WARN at 54.6/55.4 with 8-9 other games and 8-10 compilers running). `tests/` 780 OK.
+
+Found on the way, not from this patch: the guest's deliberate hang (`b .`,
+an empty infinite loop) is undefined behaviour in C++ (forward progress), and
+clang compiles what leads to it as unreachable -- in the old lift too, e.g.
+func_0001084C's trampoline drain before its `b .` became an unconditional
+call through a possibly-null pointer. Harmless while the title never takes
+that path; compiling the lifted code with `-fno-finite-loops` would keep it a
+hang.
+
+### What is left
+
+- The guest memory path is now most of what the lifted code spends on its
+  own: every inline store checks the SPU coherence bitmap before and after
+  the store (the bitmap pointer through the DLL's import, then the line's
+  bit), every load two gates. Making that cheaper needs proof work on the
+  SPU reservation protocol, not register work.
+- Vector registers stay in the context: the VMX helpers take them by pointer
+  and are out-of-line calls (forcing them inline was slower, 0061).
+- The lift takes ~25 s longer: the pass runs while the lifter writes the
+  source, in one process.
+- Not tried on a real 4-core laptop; the fps here are of this PC with 27-31
+  of its 32 processors busy elsewhere.

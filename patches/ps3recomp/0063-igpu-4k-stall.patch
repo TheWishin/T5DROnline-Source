@@ -65,10 +65,18 @@ index b34bdc2..f706a50 100644
  }
  
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 2fe417b..22fe00c 100644
+index 2fe417b..8a40400 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -88,6 +88,7 @@ void rsx_pf_guest_flip(void)
+@@ -55,6 +55,7 @@ void rsx_pf_stamp(int slot)
+ void rsx_pf_guest_flip(void)
+ {
+     rsx_pf_stamp(RSX_PF_GUEST_FLIP_QPC);
++    host_sched_main_flip_requested();   /* patch 0063: the game part ends */
+     static int state = -1;
+     static FILE* f;
+     if (state < 0) {
+@@ -88,6 +89,7 @@ void rsx_pf_guest_flip(void)
  void rsx_pf_stamp(int slot) { (void)slot; }
  void rsx_pf_guest_flip(void) {}
  void rsx_live_draw_wait_totals(long long* g, long long* p) { *g = 0; *p = 0; }
@@ -76,7 +84,7 @@ index 2fe417b..22fe00c 100644
  int  rsx_live_draw_display_hybrid(void) { return -1; }
  #endif
  
-@@ -2089,6 +2090,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+@@ -2089,6 +2091,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
  static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
  static void ld_tex_release(ID3D12Resource* r);   /* texture pool, below */
  
@@ -202,7 +210,7 @@ index 2fe417b..22fe00c 100644
  /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
   * flip-model chain with a frame-latency waitable object, max frame latency 1
   * by default: at most one presented frame waits for the display, so a flip
-@@ -2418,6 +2538,14 @@ static void ld_check_display_adapter(HWND hwnd)
+@@ -2418,6 +2539,14 @@ static void ld_check_display_adapter(HWND hwnd)
          fprintf(stderr, "[gpu] display: no adapter output found for the window's screen (a remote or virtual display?)\n");
  }
  int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
@@ -217,7 +225,7 @@ index 2fe417b..22fe00c 100644
  void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
  {
      *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
-@@ -2587,9 +2715,11 @@ static void ld_gt_init(void)
+@@ -2587,9 +2716,11 @@ static void ld_gt_init(void)
  {
      if (g_gt.on >= 0) return;
      g_gt.on = 0;
@@ -231,7 +239,7 @@ index 2fe417b..22fe00c 100644
      UINT64 freq = 0;
      if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
      D3D12_QUERY_HEAP_DESC qd = {0};
-@@ -2873,6 +3003,30 @@ static void ld_begin_recording(void)
+@@ -2873,6 +3004,30 @@ static void ld_begin_recording(void)
  {
      if (!g_ld_lazy_reset) return;
      g_ld_lazy_reset = 0;
@@ -262,7 +270,7 @@ index 2fe417b..22fe00c 100644
      const u64 v = g.fence_value;
      if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
          const LONGLONG w0 = ld_pf_qpc();
-@@ -2882,6 +3036,7 @@ static void ld_begin_recording(void)
+@@ -2882,6 +3037,7 @@ static void ld_begin_recording(void)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
@@ -270,7 +278,7 @@ index 2fe417b..22fe00c 100644
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
      ld_gt_begin();
-@@ -2922,6 +3077,7 @@ static void ld_flush(ld_flush_reason reason)
+@@ -2922,6 +3078,7 @@ static void ld_flush(ld_flush_reason reason)
      ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
      g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
      const u64 v = ++g.fence_value;
@@ -278,7 +286,7 @@ index 2fe417b..22fe00c 100644
      ld_gt_submitted(gt_slot, v);
      ld_gp_submitted(gp_slot, v);
      const HRESULT signal_hr =
-@@ -2963,6 +3119,7 @@ static void ld_flush(ld_flush_reason reason)
+@@ -2963,6 +3120,7 @@ static void ld_flush(ld_flush_reason reason)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
@@ -286,7 +294,7 @@ index 2fe417b..22fe00c 100644
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
      ld_gt_begin();
-@@ -7575,9 +7732,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+@@ -7575,9 +7733,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
      if (!n_idx) return -2;
      const u64 vb_bytes = n * layout->stride;
      const u64 ib_bytes = n_idx * sizeof(u32);
@@ -299,7 +307,7 @@ index 2fe417b..22fe00c 100644
          ld_flush(LD_FLUSH_VERTEX_RING);       /* drains the jobs first */
          g.vb_used = 0;
          g.ib_used = 0;
-@@ -9757,14 +9914,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -9757,14 +9915,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          ? (const void*)dc.compact_verts : (const void*)dc.verts;
      draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
      draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
@@ -317,7 +325,7 @@ index 2fe417b..22fe00c 100644
          /*
           * The replay-proven renderer recycles this upload ring mid-frame.
           * Live used to drop every remaining draw instead, which discarded
-@@ -10896,9 +11053,12 @@ static int make_depth_snapshot_pipeline(void)
+@@ -10896,9 +11054,12 @@ static int make_depth_snapshot_pipeline(void)
   * PC display: a swap chain that follows the window's client size, a scaled and
   * letterboxed present blit, vsync on/off and exclusive fullscreen.
   *   PS3_INTERNAL_RES=<step>   internal resolution, rsx_internal_res_scale()
@@ -333,7 +341,7 @@ index 2fe417b..22fe00c 100644
   *   PS3_VSYNC=0               present without waiting for vblank (tearing
   *                             allowed when the OS supports it)
   *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
-@@ -10935,6 +11095,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+@@ -10935,6 +11096,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
   *   PS3_INTERNAL_RES = lowest | lower | native | 1080p | 1440p | 4k
   *                      (0.5x / 0.75x / 1x = 720p / 1.5x / 2x / 3x)
   *                      or a factor 0.25..4, or an output height (360..2880)
@@ -343,7 +351,7 @@ index 2fe417b..22fe00c 100644
   *
   * The launcher's Settings -> Internal resolution writes it. The two older
   * switches are aliases read the same way: PS3_RES_SCALE (patch 0010, higher
-@@ -10963,6 +11126,37 @@ static float ld_res_parse(const char* e, int* ok)
+@@ -10963,6 +11127,37 @@ static float ld_res_parse(const char* e, int* ok)
  }
  
  static const char* g_ld_res_source = "default";
@@ -381,7 +389,7 @@ index 2fe417b..22fe00c 100644
  
  float rsx_internal_res_scale(void)
  {
-@@ -10971,7 +11165,12 @@ float rsx_internal_res_scale(void)
+@@ -10971,7 +11166,12 @@ float rsx_internal_res_scale(void)
      float s = 1.0f;
      int ok = 0;
      const char* e = getenv("PS3_INTERNAL_RES");
@@ -395,7 +403,7 @@ index 2fe417b..22fe00c 100644
          s = ld_res_parse(e, &ok);
          g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
          if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
-@@ -10995,8 +11194,10 @@ float rsx_internal_res_scale(void)
+@@ -10995,8 +11195,10 @@ float rsx_internal_res_scale(void)
  const char* rsx_internal_res_label(void)
  {
      static char label[48];
@@ -407,7 +415,7 @@ index 2fe417b..22fe00c 100644
          if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
          else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
          else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
-@@ -11707,12 +11908,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11707,12 +11909,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
      D3D12_RANGE rr = {0, 0};
      g.upload->lpVtbl->Map(g.upload, 0, &rr, (void**)&g.upload_mapped);
  
@@ -426,7 +434,7 @@ index 2fe417b..22fe00c 100644
      g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
          D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.ib);
      g.ib->lpVtbl->Map(g.ib, 0, &rr, (void**)&g.ib_mapped);
-@@ -11766,6 +11971,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -11766,6 +11972,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          def.MaxLOD = D3D12_FLOAT32_MAX; def.MaxAnisotropy = 1;
          g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
      }
@@ -434,7 +442,7 @@ index 2fe417b..22fe00c 100644
  
      /* depth */
      D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
-@@ -12161,6 +12367,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -12161,6 +12368,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          return;
      }
  
@@ -459,7 +467,7 @@ index 5560090..a8c2d66 100644
  
  #ifdef __cplusplus
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index b36e3fb..dab2ab2 100644
+index b36e3fb..f8da20c 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -57,6 +57,7 @@
@@ -470,13 +478,15 @@ index b36e3fb..dab2ab2 100644
   *   PS3_SCHED_KICK=0          (cellGcmSys.c) do not wake the present thread
   *                             when cellGcmSetUserCommand advances put [wake]
   *   PS3_SCHED_FLIPWAIT=0      (cellGcmSys.c) cellGcmSetWaitFlip polls with
-@@ -153,6 +154,15 @@ const char* host_sched_laptop_why(void)
+@@ -153,6 +154,17 @@ const char* host_sched_laptop_why(void)
  #ifndef _WIN32
  static int hs_lap_detect(char* why, unsigned n) { if (n) why[0] = 0; return 0; }
  void host_sched_note_gpu(int integrated, const char* name) { (void)integrated; (void)name; }
 +int (*volatile g_host_sched_rsx_busy)(void) = 0;
 +int64_t host_sched_main_wait_begin(void) { return 0; }
 +void    host_sched_main_wait_end(int kind, int64_t t0) { (void)kind; (void)t0; }
++void    host_sched_main_released(void) {}
++void    host_sched_main_flip_requested(void) {}
 +void    host_sched_main_waits(int64_t out[HS_WAIT_KINDS]) { for (int i = 0; i < HS_WAIT_KINDS; i++) out[i] = 0; }
 +int     host_sched_main_cpu(uint64_t* t100ns) { (void)t100ns; return 0; }
 +void    host_sched_gcm_handler(int enter) { (void)enter; }
@@ -486,7 +496,7 @@ index b36e3fb..dab2ab2 100644
  #include <unistd.h>
  
  void    host_sched_thread_name(const char* name) { (void)name; }
-@@ -381,6 +391,8 @@ static hs_rec* s_tr;
+@@ -381,6 +393,8 @@ static hs_rec* s_tr;
  static volatile LONG s_tr_head;
  static FILE* s_tr_file;
  static __declspec(thread) uint16_t t_tag;    /* guest tid, or 0x100 + role */
@@ -495,7 +505,7 @@ index b36e3fb..dab2ab2 100644
  
  static DWORD WINAPI hs_trace_flusher(LPVOID unused)
  {
-@@ -589,7 +601,9 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -589,7 +603,9 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
                  host_sched_laptop_why());
      else
          fprintf(stderr, "[sched] power saving off (%s)\n",
@@ -506,7 +516,7 @@ index b36e3fb..dab2ab2 100644
      { char pw[256]; int thr = 0;
        if (host_sched_power_text(pw, sizeof pw, &thr)) fprintf(stderr, "[power] %s\n", pw); }
      fprintf(stderr, "[sched] %d logical processors, fast cache group %u, best cores (LP):",
-@@ -627,6 +641,11 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -627,6 +643,11 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
      host_sched_process_init();
      if (role < 0 || role >= HS_ROLE_COUNT) role = HS_ROLE_BACKGROUND;
      t_tag = (role == HS_ROLE_PPU || role == HS_ROLE_MAIN) ? 0 : (uint16_t)(0x100 + role);
@@ -518,7 +528,7 @@ index b36e3fb..dab2ab2 100644
  
      if (p_SetThreadDescription && name && *name) {
          wchar_t w[64];
-@@ -961,11 +980,92 @@ int host_sched_load_text(char* buf, int len)
+@@ -961,11 +982,105 @@ int host_sched_load_text(char* buf, int len)
      return ok;
  }
  
@@ -526,6 +536,7 @@ index b36e3fb..dab2ab2 100644
 +/* ---- the game's main thread (patch 0063, host_sched.h) ------------------------ */
 +static __declspec(thread) int t_in_gcm_handler;
 +static volatile LONG64 s_main_wait[HS_WAIT_KINDS];
++static volatile LONG64 s_release_qpc;   /* the frame's release; 0 after its flip request */
 +static volatile int s_gpu_integrated = -1;
 +int (*volatile g_host_sched_rsx_busy)(void) = 0;
 +
@@ -541,8 +552,20 @@ index b36e3fb..dab2ab2 100644
 +    if (!t0 || kind < 0 || kind >= HS_WAIT_KINDS) return;
 +    LARGE_INTEGER q;
 +    QueryPerformanceCounter(&q);
++    if (kind != HS_WAIT_FLIP) {           /* only inside the game part (release -> flip request) */
++        const int64_t r = InterlockedCompareExchange64(&s_release_qpc, 0, 0);
++        if (!r) return;
++        if (t0 < r) t0 = r;
++    }
 +    if (q.QuadPart > t0) InterlockedExchangeAdd64(&s_main_wait[kind], q.QuadPart - t0);
 +}
++void host_sched_main_released(void)
++{
++    LARGE_INTEGER q;
++    QueryPerformanceCounter(&q);
++    InterlockedExchange64(&s_release_qpc, q.QuadPart);
++}
++void host_sched_main_flip_requested(void) { InterlockedExchange64(&s_release_qpc, 0); }
 +void host_sched_main_waits(int64_t out[HS_WAIT_KINDS])
 +{
 +    for (int i = 0; i < HS_WAIT_KINDS; i++) out[i] = InterlockedCompareExchange64(&s_main_wait[i], 0, 0);
@@ -612,10 +635,10 @@ index b36e3fb..dab2ab2 100644
      if (!integrated || s_lap || s_lap_cfg != 2) return;
      snprintf(s_lap_why, sizeof s_lap_why, "integrated graphics (%s) share the processor's power budget",
 diff --git a/runtime/platform/host_sched.h b/runtime/platform/host_sched.h
-index 31b7a69..a3d79a4 100644
+index 31b7a69..2aca3c2 100644
 --- a/runtime/platform/host_sched.h
 +++ b/runtime/platform/host_sched.h
-@@ -148,6 +148,41 @@ int64_t host_sched_qpc(void);
+@@ -148,6 +148,46 @@ int64_t host_sched_qpc(void);
   * the previous call (GetSystemTimes / GetProcessTimes); 0 on the first call. */
  int host_sched_load_text(char* buf, int len);
  
@@ -638,6 +661,11 @@ index 31b7a69..a3d79a4 100644
 +enum { HS_WAIT_RSX = 0, HS_WAIT_GAME, HS_WAIT_FLIP, HS_WAIT_KINDS };
 +int64_t host_sched_main_wait_begin(void);
 +void    host_sched_main_wait_end(int kind, int64_t t0);
++/* Only the part of a wait inside the game part counts (the rollback netcode
++ * polls the flip with plain usleeps after its flip request): the ticker marks
++ * the release, the main thread its flip request. */
++void    host_sched_main_released(void);
++void    host_sched_main_flip_requested(void);
 +void    host_sched_main_waits(int64_t out[HS_WAIT_KINDS]);   /* totals, QPC ticks */
 +/* The main thread's processor time (user + kernel, 100 ns units); 0 = unknown. */
 +int     host_sched_main_cpu(uint64_t* t100ns);
@@ -658,10 +686,10 @@ index 31b7a69..a3d79a4 100644
  }
  #endif
 diff --git a/runtime/ppu/tests/boot_main.cpp b/runtime/ppu/tests/boot_main.cpp
-index e755453..56d2483 100644
+index e755453..4dc7b56 100644
 --- a/runtime/ppu/tests/boot_main.cpp
 +++ b/runtime/ppu/tests/boot_main.cpp
-@@ -441,8 +441,24 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
+@@ -441,8 +441,25 @@ extern "C" unsigned ppu_boot_frames_presented(void) { return (unsigned)g_frames_
   * waiting for GPU fences or the frame-latency queue), or the present (the
   * present call itself: a display path through another GPU, a compositor).
   * The vblank clock's rate is in the line too: above 60 Hz the game would run
@@ -669,8 +697,9 @@ index e755453..56d2483 100644
 + * fast. The power part is host_sched_power_text. PS3_SLOW_FRAMES=0: no lines.
 + *
 + * Patch 0063 adds (docs/RENDER_PERF.md "4K on integrated graphics"):
-+ *   ...; game part 14.1 ms on average: main thread running 13.5 (processor
-+ *   time 12.9), waiting for the renderer 0.0, for other game threads 0.6;
++ *   ...; game part 14.1 ms on average: main thread running 13.5, waiting
++ *   for the renderer 0.0, for other game threads 0.6 (its processor time
++ *   12.9 ms a frame);
 + *   GPU busy 17.2 ms a frame (62 % of the time, integrated graphics); ...;
 + *   processors at 3.42 GHz on average (76 % of their 4.50) | ... | verdict
 + * -- the game part split by the main thread's own waits (host_sched.h
@@ -687,7 +716,7 @@ index e755453..56d2483 100644
  extern "C" volatile long long g_rsx_pf[];
  extern "C" volatile long long g_rsx_next_tick_qpc;   /* rsx_live_draw.c: the present's waits end before it */
  enum { PF_GUEST_FLIP_QPC = 16 };   /* rsx_live_draw.h RSX_PF_GUEST_FLIP_QPC */
-@@ -455,6 +471,14 @@ struct SlowFrames {
+@@ -455,6 +472,14 @@ struct SlowFrames {
      long long gpu0 = 0, pres0 = 0;
      unsigned frames = 0, slow = 0, n_game = 0, n_xlat = 0, n_tick = 0, n_gpu = 0, n_pres = 0, ticks = 0;
      unsigned n_late = 0;   /* patch 0059: frames released at once after missing their vblank */
@@ -702,7 +731,7 @@ index e755453..56d2483 100644
      double worst = 0; const char* worst_why = "";
      float c_game[CAP], c_xlat[CAP], c_gpu[CAP], c_pres[CAP];
      double t_window = 0;
-@@ -485,7 +509,32 @@ struct SlowFrames {
+@@ -485,7 +510,32 @@ struct SlowFrames {
          const double xlat = flip > 0 && t0 > flip ? (t0 - flip) * ms : 0.0;
          const double iv = t_prev > 0 ? (t1 - t_prev) * ms : 0.0;
          t_prev = t1;
@@ -736,7 +765,7 @@ index e755453..56d2483 100644
          if (frames < CAP) {
              c_game[frames] = (float)game; c_xlat[frames] = (float)xlat;
              c_gpu[frames] = (float)gpu; c_pres[frames] = (float)pres;
-@@ -495,7 +544,14 @@ struct SlowFrames {
+@@ -495,7 +545,14 @@ struct SlowFrames {
          if (iv > 1.25 * per_ms && iv < 1000.0) {
              slow++;
              const char* why;
@@ -751,7 +780,7 @@ index e755453..56d2483 100644
              else if (pres >= 4.0)                   { n_pres++; why = "present"; }
              else if (late_release * ms > 2.0)       { n_tick++; why = "CPU, vblank thread late"; }
              else if (game >= xlat)                  { n_game++; why = "CPU, game"; }
-@@ -512,16 +568,58 @@ struct SlowFrames {
+@@ -512,16 +569,58 @@ struct SlowFrames {
           * frames that missed their vblank but were released when translated (PS3_LATE_FLIP) */
          char ld[96] = "";
          host_sched_load_text(ld, sizeof ld);
@@ -769,9 +798,9 @@ index e755453..56d2483 100644
 +            if (gp > 0) {
 +                const double run = gp - w_rsx - w_game > 0 ? gp - w_rsx - w_game : 0.0;
 +                if (cpu_ok)
-+                    snprintf(split, sizeof split, "; game part %.1f ms on average: main thread running %.1f "
-+                             "(processor time %.1f), waiting for the renderer %.1f, for other game threads %.1f",
-+                             gp, run, (double)(mcpu - mcpu0) / 1e4 / fr, w_rsx, w_game);
++                    snprintf(split, sizeof split, "; game part %.1f ms on average: main thread running %.1f, "
++                             "waiting for the renderer %.1f, for other game threads %.1f (its processor time "
++                             "%.1f ms a frame)", gp, run, w_rsx, w_game, (double)(mcpu - mcpu0) / 1e4 / fr);
 +                else
 +                    snprintf(split, sizeof split, "; game part %.1f ms on average: main thread running %.1f, "
 +                             "waiting for the renderer %.1f, for other game threads %.1f", gp, run, w_rsx, w_game);
@@ -815,6 +844,14 @@ index e755453..56d2483 100644
          worst = 0; worst_why = ""; t_window = t1;
      }
  };
+@@ -933,6 +1032,7 @@ static DWORD WINAPI vblank_ticker(LPVOID)
+                     const double due = (double)g_rsx_pf[PF_FLIP_QPC] > next_tick ? (double)g_rsx_pf[PF_FLIP_QPC] : next_tick;
+                     lock.on_release(now);
+                     s_slow.on_release(now, now > due ? now - due : 0.0);
++                    host_sched_main_released();   /* patch 0063: the game part's waits from here */
+                 }
+                 if (present_due) present_guest_frame();
+             }
 diff --git a/runtime/syscalls/sys_cond.c b/runtime/syscalls/sys_cond.c
 index 3661d02..23474a6 100644
 --- a/runtime/syscalls/sys_cond.c

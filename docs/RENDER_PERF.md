@@ -1181,7 +1181,7 @@ PC's screen hangs off the RTX 3090, and test windows stay minimised).
 
 | change | why | switch |
 |---|---|---|
-| `[slow-frames]` splits the game part: `game part 14.1 ms on average: main thread running 13.5 (processor time 12.9), waiting for the renderer 0.0, for other game threads 0.6` -- every blocking lv2 call and the flip wait time themselves on the main thread (one thread-local test elsewhere); a semaphore posted from a GCM handler, or a sleep while the walker has commands left (a label/fence poll), is a wait for the renderer | the 780M log said "CPU, game" and could not say whether that was work or waiting. A renderer wait inside the game part now counts as GPU for the slow frame | -- |
+| `[slow-frames]` splits the game part: `game part 14.1 ms on average: main thread running 13.5, waiting for the renderer 0.0, for other game threads 0.6 (its processor time 12.9 ms a frame)` -- every blocking lv2 call and the flip wait time themselves on the main thread (one thread-local test elsewhere), counted only between the release and the flip request; a semaphore posted from a GCM handler, or a sleep while the walker has commands left (a label/fence poll), is a wait for the renderer | the 780M log said "CPU, game" and could not say whether that was work or waiting. A renderer wait inside the game part now counts as GPU for the slow frame | -- |
 | `GPU busy 17.2 ms a frame (62 % of the time, integrated graphics)`: GPU timestamps (two per command list, read after their fence: no wait) are on by default | GPU time without `PS3_FRAMELOG` | `RSX_GPU_TIME=0` |
 | `processors at 3.42 GHz on average (76 % of their 4.50)` (PDH "% Processor Performance", English counter names) | on an APU the clock drops while the GPU is busy; the old "clock limit" only says what the power plan allows | `PS3_CLOCK_SAMPLE=0` |
 | verdict at the end of the line: `GPU-bound: the graphics need 22.9 ms a frame ...` (GPU busy >= 85 % or most slow frames GPU) or `integrated graphics busy 64 % of the time: they share the processor's power and memory ...` (>= 50 %); a present that blocked while the GPU was >= 85 % busy is a GPU frame | the launcher and the problem report read it | -- |
@@ -1227,8 +1227,8 @@ the iGPU runs are GPU-bound. Medians per frame over the last 15 s:
   in both builds (8.2 / 7.8, 9.0 / 8.9 ms), so the wait accounting costs
   nothing measurable.
 - The new line on the integrated Radeon at 4K (one window): `game part 9.1 ms
-  on average: main thread running 8.6 (processor time 8.3), waiting for the
-  renderer 0.0, for other game threads 0.6; GPU busy 22.9 ms a frame (84 % of
+  on average: main thread running 8.6, waiting for the renderer 0.0, for
+  other game threads 0.6 (its processor time 8.3 ms a frame); GPU busy 22.9 ms a frame (84 % of
   the time, integrated graphics) ... | GPU-bound: the graphics need 22.9 ms a
   frame (integrated graphics) -- a lower Internal resolution is what helps`.
 

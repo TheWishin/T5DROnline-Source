@@ -939,9 +939,8 @@ line like
   bit slower than 60 instead of dropping to 30-45.
 - "other programs X of Y logical processors busy" (1.1.3): what the rest of
   the PC used at the same time. A large X: close programs.
-- "game part ... main thread running A (processor time B), waiting for the
-  renderer C, for other game threads D" (1.1.3): what the game's own frame
-  was made of. C large: the game waited for the graphics (counted as GPU).
+- "game part ... main thread running A, waiting for the renderer C, for
+  other game threads D" (1.1.3): what the game's own frame was made of. C large: the game waited for the graphics (counted as GPU).
   A large with C near 0: the processor's work itself was slow.
 - "GPU busy X ms a frame (Y % of the time)" (1.1.3): the graphics' own time.
   Near 100 %: the line ends with "GPU-bound" -- a lower Internal resolution

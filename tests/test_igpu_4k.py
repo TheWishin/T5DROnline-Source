@@ -30,8 +30,8 @@ GPU_3090 = ("[gpu] adapter: NVIDIA GeForce RTX 3090 (vendor 10DE, 24322 MB, feat
             "tier 3, heap tier 2, dedicated) -- the high-performance GPU")
 SLOW_BOUND = ("[slow-frames] last 30 s: 1104 frames, 1088 slow (over 20.9 ms): CPU 22 (game 16, render translation 5, "
               "vblank thread late 1), GPU 1061, present 5; median per frame: game 9.0 ms, translation 17.6, GPU wait "
-              "13.9, present 0.3; game part 9.1 ms on average: main thread running 8.6 (processor time 8.3), waiting "
-              "for the renderer 0.0, for other game threads 0.6; GPU busy 22.9 ms a frame (84 % of the time, "
+              "13.9, present 0.3; game part 9.1 ms on average: main thread running 8.6, waiting for the renderer "
+              "0.0, for other game threads 0.6 (its processor time 8.3 ms a frame); GPU busy 22.9 ms a frame (84 % of the time, "
               "integrated graphics) | on AC power | GPU-bound: the graphics need 22.9 ms a frame (integrated "
               "graphics) -- a lower Internal resolution is what helps")
 SLOW_IGPU = ("[slow-frames] last 30 s: 1220 frames, 768 slow (over 20.9 ms): ... | on AC power | integrated graphics "

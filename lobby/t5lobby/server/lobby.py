@@ -1529,7 +1529,9 @@ class LobbyServer:
                             continue
                         if (a.strict or b.strict) and dr > self.cfg.strict_range:
                             continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
-                        score = dr / window + (ping / limit if limit < math.inf else ping / 1000.0)
+                        # (max: T5L_PING_START 0 makes a window of 0 ms at first -- a pair with an estimate of 0 fits it,
+                        # and 0 / 0 stopped the whole matchmaker every tick while that pair waited)
+                        score = dr / window + (ping / max(limit, 1.0) if limit < math.inf else ping / 1000.0)
                     else:
                         score = ping                     # quick: the closest one within the window
                     if best_score is None or score < best_score:

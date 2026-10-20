@@ -543,7 +543,7 @@ class RuntimeAgreementTest(unittest.TestCase):
     def test_runtime_has_every_preset_name_the_screen_writes(self):
         found = {(m.group(1).lower(), m.group(2)) for m in re.finditer(r'\{\s*"(\w+)",\s*(CLS_\w+),\s*k_\w+\s*\}',
                                                                      self.src)}
-        cls_of = {XINPUT: "CLS_XINPUT", DINPUT: "CLS_DINPUT"}
+        cls_of = {XINPUT: "CLS_XINPUT", DINPUT: "CLS_DINPUT", "keys1": "CLS_KEYS", "keys2": "CLS_KEYS"}
         for r in ce.RECIPES:
             for kind, spec in r.specs.items():
                 self.assertIn((spec.preset, cls_of[kind]), found, f"{r.id}: preset {spec.preset}")
@@ -1140,7 +1140,9 @@ class DialogTest(DialogBase):
         self.assertIn("4 (Right Kick)", shown[3])
         self.assertEqual([self.values(k)[0] for k in ("1", "2", "3", "4")], ["B9", "B4", "-", "B12"])
         self.assertIn("1+2", d.prompt_var.get())
-        self.assertIn("5 of 11", d.prompt_hint.get())
+        self.assertIn(f"5 of {len(ce.GUIDED_BUTTONS)}", d.prompt_hint.get())
+        # every PS3 button is asked for: the shoulder buttons and stick clicks too, not only the Tekken ones
+        self.assertTrue({"L1", "R1", "L2", "R2", "L3", "R3", "START", "SELECT"} <= set(ce.GUIDED_BUTTONS))
         d.cap_stop()
         self.assertIsNone(d.capture)
         self.assertFalse(d.prompt.winfo_manager())

@@ -503,8 +503,10 @@ not focused. The keyboard works only while the game window has the focus.
 ### The buttons are wrong, or I want other buttons
 
 Use the launcher: **Settings** -> **Set up controllers...** (see the README,
-"Controls"). It writes `native\controls.ini` for you and keeps what is already in
-that file. The rest of this section is for editing the file by hand.
+"Controls"), for pads, sticks and the keyboard (click the keyboard's row). Every
+PS3 button (L1 R1 L2 R2 L3 R3 Start Select) and every Tekken combo can have a key
+or button of its own. It writes `native\controls.ini` for you and keeps what is
+already in that file. The rest of this section is for editing the file by hand.
 
 Make `native\controls.ini` (the sample with every default and all key names is
 [controls.ini](controls.ini)) and restart the game. To see the raw button names
@@ -568,12 +570,14 @@ or DS4Windows used the pad before. The log shows it:
   virtual Xbox pad. Nothing to do.
 - **No vibration and no light bar** for these pads (the game never sends anything
   to them; through DirectInput there was none either).
-- **The launcher's Controls screen does not see a Bluetooth pad** that Steam or
-  DS4Windows switched over: the screen reads pads through the Windows joystick
-  API, which has the same blind spot as DirectInput. The game itself reads it.
-  Turn the pad off and on again (hold PS for 10 seconds, then press PS) while
-  Steam is closed, set the buttons, and save. The B-numbers it writes are the
-  ones the game uses.
+- **The launcher sees these pads too since 1.1.2** (the Online tab's A/B
+  buttons and Settings -> Set up controllers...): it reads them the way the game
+  does, in every mode, only while the launcher is in front, and never sends
+  anything to them. In 1.1.1 the launcher read them through the Windows joystick
+  API, which has DirectInput's blind spot: a Bluetooth pad that Steam or
+  DS4Windows switched over did nothing in the launcher (it did in the game). With
+  1.1.1, turn the pad off and on again (hold PS for 10 seconds, then press PS)
+  while Steam is closed, or use the mouse.
 - **Back to the old way:** `hid = 0` under `[general]` in `native\controls.ini`
   (or `PS3_PAD_HID=0` under "extra settings") reads these pads through DirectInput
   again, as up to 1.1.0.
@@ -584,6 +588,38 @@ or DS4Windows used the pad before. The log shows it:
   say which pad and how it is connected. A different PlayStation-compatible pad
   (other vendor, or the DualShock 4 USB wireless adaptor) is read through
   DirectInput as before.
+
+### My pad works offline but not online
+
+Offline the game reads every player port, so a pad that got port 2 still plays
+(as player 2, or in the menus). Online there is one player on your PC, and up to
+1.1.1 the game took it from **port 1 only**. A pad lands on port 2 when another
+controller was found first: a virtual Xbox pad (DS4Windows, DSX, other ViGEm
+tools), the built-in pad of a handheld (ROG Ally, Legion Go, ...), a second pad
+or a wheel that is plugged in. Xbox-type pads are given their ports first. The
+game log says which pad got which port:
+
+```
+[pad] port 1 (player 1): XInput #0 (gamepad), layout standard
+[pad] port 2 (player 2): HID 'DualSense Wireless Controller' 054C:0CE6 (DualSense, Bluetooth), layout ps
+```
+
+**Since 1.1.2** online play follows the controller you press: whatever port it
+has, the first press on it makes it yours (the log says `[netplay] local player:
+port 2 now`). A controller that is plugged in but not used never takes over.
+
+**With 1.1.1**, either make the other controller go away (close DS4Windows / DSX,
+unplug the other pad) or put your pad on port 1 in `native\controls.ini`:
+
+```
+[port1]
+device = dinput:054C:0CE6
+```
+
+(`054C:0CE6` = DualSense, `054C:0DF2` = DualSense Edge, `054C:09CC` or
+`054C:05C4` = DualShock 4; the `[pad] found HID` line shows yours.) If the other
+controller is an Xbox-type one you never use, `xinput = 0` under `[general]`
+does the same. A pinned port 1 stays the only online player in 1.1.2 too.
 
 ### The Controls screen (Settings -> Set up controllers...)
 

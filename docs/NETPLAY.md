@@ -259,6 +259,44 @@ stage 20, 2 rounds), 8 logical processors per game:
 | D0a | 0 / auto, RTT 0 | 3 ms | 1 (auto: the settings differ) | 0 | same |
 | K0, K50, K150 | lockstep (`T5_RB_MODE=off`), RTT 0/50/150 | -- | lockstep delay 6 | 0 | same |
 
+## Which controller plays online (1.1.2)
+
+Player report on 1.1.1: "my DualSense works only offline; the launcher doesn't see it at all". The runtime
+(patch 0009) gives every controller a port in the order it finds them -- XInput pads first, then the
+PlayStation pads it reads as HID devices (0042), then DirectInput -- and the keyboard joins port 1 while the
+game window has the focus. Offline the title reads every port, so a pad on port 2 plays (player 2, and the
+menus take either). Netplay took the local player from port 1 only (`sample_local` -> `device_input(0)`), so a
+DualSense behind any other controller -- a virtual Xbox pad (DS4Windows, DSX, ViGEm), a handheld's built-in
+pad, a second pad or a wheel -- did nothing online. The in-game select (`df_pick.cpp`) and the replay controls
+read port 1 too.
+
+Now (`src/netplay/local_pad.cpp`, `local_pad.h`): online the local player is **the controller pressed last**.
+Every local port with something on it is read at every live sample (`cellPad_sample_local`, each with its
+own tap latch); a port whose buttons, or a stick pushed past half way (with hysteresis), went down becomes the
+player at once, that press included. A port that never changes (an idle pad, a virtual pad nobody uses, a
+pedal resting at one end, a button held since it was plugged in) never takes over; while the player's port
+was pressed in the last 100 ms another port cannot take over, so one pad seen twice (DS4Windows' virtual pad
+and the real one) never makes the input jump. Port 1 only, as before: `[port1] device = ...` pinned in
+`controls.ini` (read once with the runtime's rules), local mode (two players at one PC), netplay off, or
+`T5_NET_PADPORT=N` (that port only; `1` = 1.1.1's behaviour). The log names the rule and every switch:
+`[netplay] local player: port 2 now (pressed there; ...)`.
+
+Why not merge all ports: a controller resting with something held (a pedal, a stick's drift past half, a
+stuck button on a cheap pad) would then hold that input for the player all match. Why not "the first port
+with a device": a virtual pad or a handheld's own pad is that port. Sync is untouched: only this PC's sample
+changes, and it is exchanged like any input; rollback re-simulation replays exchanged inputs and never reads
+devices (`sample_local` runs at live boundaries only). Reading the pads does not depend on the focus (XInput,
+the HID reader, DirectInput with `background = 1`); only the keyboard does, by design -- the launcher now
+brings the game window forward when a match starts while the launcher is in front (docs/ONLINE.md).
+
+Test: `tools/e2e/run.py --only net_dualsense [--netcode lockstep]` -- the launcher's own Online tab and game
+start (persistent game, window minimized and never in front), one player with a fake DualSense on Bluetooth in
+its extended mode (`PS3_PAD_HID_FAKE`, reports from `tools/ps_hid_reports.py`) that the runtime puts on port 2
+(port 1: the picker's pad file, plus the keyboard), mashing through the fake pad; two matches (two sessions,
+picks with the pad file in between). Checks: the presses are in the other PC's frame log, 0 mismatching
+frames, the same result hash. On 1.1.1's code: 695 presses sent, 0 frames with them on the other PC.
+`tests/test_local_pad.py` (tests/c/local_pad_test.cpp) checks the rule with fake ports.
+
 ## Design
 
 **Lockstep core** (`netplay_core.cpp`, game-independent). Frame f uses the
@@ -473,6 +511,8 @@ How a session starts, survives trouble, and ends when it cannot go on
 | Peer silent for `T5_NET_TIMEOUT` | `peer_timeout` (keepalives every 200 ms; a frozen process is silent) |
 | Peer alive but no input for `T5_NET_TIMEOUT` mid-match | `peer_stalled` |
 | Match start, peer alive but still loading | Waits up to `T5_NET_START_TIMEOUT` (default 120 s), then `start_timeout` |
+| This PC's loads are slow (slow disk, busy PC) | The frame waits for them, however long ("Slow loading" below); after 1 s every PING says so (`PING_LOADING`) and the peer's stall limits leave that time out |
+| One frame's loads take longer than `T5_NET_LOAD_TIMEOUT` (default 120 s) | This side ends the match: `load_timeout` (BYE with the reason: the peer gets `peer_load_timeout` at once) |
 | Peer closed its game | BYE -> `peer_quit` at once |
 | This player closes the game window (Alt+F4, the X button, Esc) | The game ends (ps3recomp patch 0035; before it ran on without its window at about one frame a second, still in the session -- the opponent stalled and went out of sync, the match was voided as a desync). With a session set up: the result file gets `"reason": "quit"` (unless this match's result is out: a game closed after the KO keeps its result), BYE, exit code **7**; the launcher reports the match as this player's quit (a loss, docs/RANKED.md), the opponent's game sees `peer_quit`. Esc asks for a second press within 3 s while a session is set up (the window caption says so); Alt+F4 and X close at once |
 | Peer's game restarted | A HELLO from a new process of the peer: before any lockstep input was exchanged it simply takes the old one's place; mid-match the session cannot be resumed (the new game knows nothing of it): the old side ends with `peer_restarted`, the new one is refused (REJECT -> `rejected`) instead of hanging in the handshake |
@@ -481,7 +521,7 @@ How a session starts, survives trouble, and ends when it cannot go on
 ends there, nobody plays on against an idle opponent: the result file gets
 `"winner": null` and the reason (unless this match's result was already
 written -- an opponent leaving after the match does not undo it), the peer is
-told (BYE), and the game closes with exit code **3** (peer lost: `peer_quit`,
+told (BYE), and the game closes with exit code **3** (peer lost: `peer_quit`, `load_timeout`, `peer_load_timeout`,
 `peer_timeout`, `peer_stalled`, `peer_restarted`), **4** (no session:
 `no_peer`, `rejected`, `start_timeout`, `bind_failed`) or **5**
 (`build_mismatch`). The log line the launcher looks for is `peer lost
@@ -854,7 +894,7 @@ per-frame hashes, per-region hashes and memory dumps (`T5_NET_DUMP`,
 | Pad sampling on the vblank thread | input landed in different frames | keyread tick run by the main thread, once per frame |
 | Mersenne Twister seeded from the clock at boot (0xAE6C8: `sys_time_get_current_time` -> init_by_array, state 0x10095168) | different random streams | reseeded with the shared seed at frame 0 and at every scene change |
 | C library `rand()` (0x369228, state 0x1074F218; 91 callers) consumed at load-dependent times | **different random stage** on the two PCs, fights then diverged | reseeded with the MT at the same points; state hashed |
-| Async loading (ZsAread thread, sem 8, feeding the file manager; "decoder", sem 10) | scene changes 1-20 frames apart (logo, char select, fight loading) | main thread waits at frame start until those loaders are parked with nothing queued (usually 0 ms; a few hundred ms on loading screens) |
+| Async loading (ZsAread thread, sem 8, feeding the file manager; "decoder", sem 10) | scene changes 1-20 frames apart (logo, char select, fight loading) | main thread waits at frame start until those loaders are parked with nothing queued (usually 0 ms; a few hundred ms on loading screens) -- however long that takes (until 1.1.2 at most 2 s: see "Slow loading") |
 | Anything left that moves a scene change | frame offset | scene change = sync point: both continue from the later frame, game frame clock (0x106D4D88) moved along on the other side, RNGs reseeded |
 | Wall-clock vblank counters (0x106D4D90, the vblank list object +0xC0/+0xC8), key-repeat timestamps | none seen in game logic | not synced; frame clock 0x106D4D88 (used by key repeat) is per main-loop frame and is |
 | The player's own save: unlocks (Jinpachi's and the random cell in the select grid, the Tekken 5 stages in the stage lists and random pickers) | a lockstep rematch put the same presses on another costume on the two PCs (run ctrl_ls: Devil Jin 0x43 vs 0x45, 1,327 mismatching frames) | an online game answers the game's unlock check 0x2A732C as a fresh save does (1.1.2; DIRECTFIGHT.md "Unlocks") |
@@ -1498,7 +1538,116 @@ threads still busy after 2 s, going on", `t5_hooks.cpp drain_wait`), so loads
 finished in frames that differed between the two PCs before the fight-loaded
 barrier; the other game had no such timeout. That needs its own fix (the
 drain's 2 s limit during a session's loading); the record has nothing to do
-with it.
+with it. (Fixed on branch load-drain-sync: "Slow loading" below.)
+
+## Slow loading (branch load-drain-sync, 1.1.2)
+
+**The bug** (e2e firewall run, Asuka vs Wang on stage 26, rollback; above). One game
+ran at about 0.5 fps on an overloaded PC; its loader drain gave up again and again
+("loader threads still busy after 2 s, going on" -- ten such lines, the log's cap,
+then more without a line: that session's drains took 41.8 s in 53 frames, every one
+of them cut at 2 s), the other game never. From frame 231 on the phase word was 17
+on one PC and 12 on the other: the whole fight ran a frame apart (1,619 of 1,620
+frames mismatching), the final hashes differed, the match was voided.
+
+**Why.** The drain (`t5_hooks.cpp drain_wait`) is what makes a load finish in the
+same frame on both PCs: at the top of every frame the main thread waits until the
+loader threads it feeds (ZsAread, semaphore 8: the async reads; "decoder",
+semaphore 10) are parked with nothing queued, so a load started in frame f is
+always done, as far as the game can tell, when frame f + 1 starts. The intro rule
+of the rollback loop and the fight-loaded sync point rely on it: from the loading's
+end the intros run a fixed number of frames on both PCs. The drain gave up after
+2 s of wall-clock time; on a PC that needed longer, frames started with their loads
+still running, the game saw them done a frame or more later than the other PC did,
+the loading took more frames there (203 against 196) -- which the fight-loaded sync
+point put back together -- and the state the intros started from was not the same:
+here the slow game left the intro one frame earlier. The 2 s limit was never needed
+for anything but a loader that hangs.
+
+Reproduced on demand with the old build: a persistent pair, the joiner on two
+logical processors (`--cpus2 0xC0000000`) with a slow disk (`PS3_TEST_FS_DELAY=20:3000`:
+20 ms per open/read + 3 s per MB), Asuka vs Wang on stage 26: its drain gave up
+from frame 1 on (49 drains, 52.7 s), both games continued at frame 204 after the
+fight-loaded sync point, the host's intro ended at 233, the joiner's at 237 -- 1,601 /
+2,575 mismatching frames, different final hashes (run `repro1`).
+
+**The rule now: no wall-clock time decides when a load is done.**
+
+- The drain waits as long as the loads take while a session runs. A frame never
+  starts with its loads running, however slow the disk or the CPU. After 2 s, 5 s,
+  ... the log says so ("loader threads still busy after N s -- the frame waits for
+  them"), and once the frame goes on, how long it took.
+- The peer waits for that frame's input meanwhile. So that its stall limits do not
+  end the match for a PC that is only slow, every PING says the sender is loading
+  (`PING_LOADING`, set after 1 s in the drain; our inputs ride along every 200 ms so
+  a lost packet costs nothing extra), and the peer's `T5_NET_TIMEOUT` /
+  `T5_NET_START_TIMEOUT` clocks in its waits for our input or our scene change do
+  not run while it says so (`StallClock` in netplay_core.cpp). A wait for one frame's
+  input also starts its clock again whenever the peer shows progress (new inputs, or
+  its lockstep beginning): a peer that took 60 s to start used to count as stalled
+  for 60 s at once when its start switched the limit from 120 s to 20 s.
+- A load that really hangs ends the match cleanly: one frame waiting longer than
+  `T5_NET_LOAD_TIMEOUT` (default 120 s, 0 = never) -> this game ends the session with
+  `load_timeout` ("LOADING TOOK TOO LONG" in the log, result file reason, BYE with the
+  reason), the peer gets `peer_load_timeout` at once; the launcher shows "Loading the
+  fight took too long on this PC / on your opponent's PC" (all catalogs). A session
+  lost meanwhile (the peer left, timed out) stops the wait too: nothing is compared
+  any more.
+- `T5_TEST_DRAIN_HOLD=ms[:frame]` (tests): the drain also holds frame `frame`
+  (default 5) of each session for at least `ms`.
+
+**Other wall-clock limits between the select screen and the fight** (grep for
+GetTickCount, timeouts, "going on" in src/netplay, src/rollback, src/directfight):
+
+| where | what | could the two PCs diverge? | now |
+|---|---|---|---|
+| `t5_hooks.cpp drain_wait` | loaders busy 2 s -> the frame went on | yes (this bug) | waits; `T5_NET_LOAD_TIMEOUT` ends the match |
+| `rb_net.cpp boundary` | lockstep windows (a scene change, 60 frames after a load, a rematch's select screen) and the end of the prediction window: 2 s for the peer's input, then the frame ran on a prediction | yes: a slow peer (now: one that waits for its loads) let the other side predict past the 8-frame window -- deeper than the undo log can reach after long stalls ("cannot be rolled back -- DESYNC likely") -- and inside the windows that keep rollbacks off loads and the select screen | `np::rb_wait_input`: waits like the lockstep's begin_frame until the input comes or the session is lost (silence, BYE, or `T5_NET_TIMEOUT` without progress and without a loading report: `peer_stalled`; before the peer started `T5_NET_START_TIMEOUT`: `start_timeout`) |
+| `df_fight.cpp` Title | start VS waited for the title's savedata autosave at most 10 s | yes: start VS beside the autosave puts the fight heap 1 MB apart (reset-fix's whole-match desync); a disk slower than 10 s would bring it back | waits for the autosave; one that never ends is the stuck check's (60 s: exit 6, the launcher starts a fresh game) |
+| `df_fight.cpp take_peer_pick` | no opponent pick 75 s after this select screen came up -> this PC took the line's character for the opponent | yes: an opponent whose select screen came up more than 45 s later (a slow PC loading it) could pick another fighter on its own screen | waits; nothing after 120 s -> the session ends (`peer_stalled`), never a guessed fighter. A select screen comes up within the stuck check's 60 s or that game ends itself |
+| `t5_hooks.cpp side_drain` | the geometry request manager not parked after 2 s -> the boundary went on | no: a busy count in a snapshot, not frame timing (a rollback to it could hang the present; never seen: busy at most 2 ms in every log) | unchanged |
+| `t5_hooks.cpp ensure_keyread_parked` | 5 s, then the take-over is postponed a frame | no: an offset before lockstep frame 0, which the fight-loaded sync point evens out (as for a persistent vs a fresh game) | unchanged |
+| `netplay_core.cpp` handshake, `begin_frame`, `scene_barrier`, tick thread | `T5_NET_CONNECT_TIMEOUT`, `T5_NET_START_TIMEOUT`, `T5_NET_TIMEOUT` | no: they end the session (`no_peer`, `start_timeout`, `peer_stalled`, `peer_timeout`), never play on | the peer's loading no longer counts as a stall |
+| `t5_hooks.cpp flush_result` | the result waits up to 3 s for the deciding frame's hash comparison | no: what is reported, not the game | unchanged |
+| `rb_net.cpp` time sync, early rollback | sleeps, when a rollback runs | no: pacing only | unchanged |
+| `df_fight.cpp` pick clock (30 s), Select = random | this player's own pick | no: decided on one PC and sent to the other | unchanged |
+
+**What was tested** (this PC, 32 logical processors, other agents' games running; two games of
+one pair at a time, below-normal, persistent games, both players mashing with motion inputs,
+1 round, `--net-timeout 20` as the lobby; runs in build/drain). The slow side ran on two logical
+processors (`--cpus1/2 0xC0000000`) with one of: a slow disk, harsh (`PS3_TEST_FS_DELAY=20:3000`)
+or moderate (`10:1500`); or starved loaders -- three busy processes on its two processors and its
+low-priority guest threads (ZsAread 1002, decoder 1003) at `THREAD_PRIORITY_IDLE`
+(`PS3_SCHED_PRIO_PPULO=-15`), so they run on Windows' starvation boosts only: the e2e run's
+pattern (1-3 fps while loading, the decoder busy, "going on" from frame 8 on). Matches after the
+first are rematches (`--pattern NRRR`): a new session re-enters the select screen from the title,
+which on such a PC can stall at phase 1 (the select-stall bug, its own branch).
+
+| run | build | mode | slow side | what | matches | result |
+|---|---|---|---|---|---|---|
+| repro1 | old (main df72a78) | rollback | joiner, harsh disk | Asuka vs Wang 26 | 1 | **DESYNC**: drain gave up from frame 1 on (49 frames, 52.7 s), loads ended at 194 / 204, intros 233 / 237, 2,575 / 1,601 mismatching frames, different final hashes |
+| G1c | old | rollback | joiner, starved loaders | Asuka vs Wang 26 | 1 | drain gave up on the slow side only (22 frames, 25.7 s; the other side's longest wait 152 ms), loads ended at 194 / 196; this match happened to stay in sync -- with a final hash different from the fixed build's same match (2,205 frames against 1,948): when the loading ended still depended on the clock |
+| fix2 | fixed | rollback | joiner, harsh disk | Nina vs Law 27; Steve vs Hwoarang 25 | 1 + 1 | match 1 in sync (frame 1 waited 20.9 s for the loads, the peer waited with "its game is loading"); match 2 never started: the joiner's select screen from the title stalled at phase 1 (select-stall), the host ended after 120 s -- no desync |
+| A | fixed | rollback | joiner, harsh disk | stages 26, 32, 18, 27 | 4 | 4/4, 0 mismatching frames, same hashes; 16 frames waited >= 2 s for loads (longest 47.5 s) |
+| C | fixed | rollback | host, moderate disk | stages 23, 34, 20, 17 | 4 | 4/4, 0 mismatching, same hashes; 14 long waits (longest 24.2 s) |
+| E | fixed | rollback | joiner, moderate disk | stages 30, 21, 26, 31 | 4 | 4/4, 0 mismatching, same hashes; 13 long waits (longest 23.9 s) |
+| G2c | fixed | rollback | joiner, starved loaders | stages 26, 32, 18, 27 | 4 | 4/4, 0 mismatching; 29 long waits (longest 5.3 s); the same four final hashes, frame counts, winners and load-end frames (194, 2449, 4614, 6687) as run A |
+| B | fixed | lockstep | host, harsh disk | stages 26, 28, 31, 34 | 4 | 4/4, 0 mismatching, same hashes; 16 long waits (longest 47.5 s) |
+| D | fixed | lockstep | joiner, moderate disk | stages 28, 20, 17, 25 | 4 | 4/4, 0 mismatching, same hashes; 16 long waits (longest 23.9 s) |
+| F | fixed | lockstep | host, moderate disk | stages 26, 22, 32, 19 | 4 | 4/4, 0 mismatching, same hashes; 13 long waits (longest 23.8 s) |
+| G3c | fixed | lockstep | host, starved loaders | stages 26, 28, 31, 34 | 4 | 4/4, 0 mismatching; the same final hashes and load-end frames as run B |
+| hold_rb / hold_ls | fixed | rollback / lockstep | joiner / host: `T5_TEST_DRAIN_HOLD=35000` (frame 5 held 35 s, longer than `T5_NET_TIMEOUT` 20) | 2 + 2 | all in sync; the peer waited 35 s ("its game is loading") instead of ending with `peer_stalled` |
+| lto_rb / lto_ls | fixed | rollback / lockstep | joiner / host: frame 5 held 40 s, `T5_NET_LOAD_TIMEOUT=25` | 1 + 1 | the match ends cleanly after 25 s: "LOADING TOOK TOO LONG", result `load_timeout` there, `peer_load_timeout` on the other side at once (BYE), 0 mismatching frames |
+
+In total on the fixed build: rollback 17 fought matches (34,098 frames per side), lockstep 16
+(31,574), on 15 different stages, the slow side as host and as joiner in both modes: 0 mismatching
+frames, every result (winner, score, frames, hash) the same on both PCs, and in every match the
+loading ended in the same frame on both PCs (no "scene change ... here at frame X, peer at Y"
+line). Two different kinds of slow PC gave the identical match, frame for frame (A = G2c,
+B = G3c). Also: smoke quick PASS (82 checks, 2 fps WARN with 8 other games running),
+tests/ 634 OK (9 skipped), lobby/tests 571 OK, the game-data guard (index and
+`--history df72a78..HEAD`) exit 0; tests/c/netplay_fuzz.cpp checks PING_LOADING, the BYE
+reasons, give_up() and the stall clock (a mutation of the clock's restart fails it).
 
 ## Limits and next steps
 

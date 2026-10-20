@@ -292,7 +292,7 @@ class ReaderTest(unittest.TestCase):
 
     def test_default_sources_honour_the_test_hook(self):
         kinds = lambda env: [type(s).__name__ for s in padnav.default_sources(env)]       # noqa: E731
-        real = ["XInputSource", "WinMMSource"] if os.name == "nt" else []
+        real = ["XInputSource", "HidSource", "WinMMSource"] if os.name == "nt" else []
         self.assertEqual(kinds({}), real)
         self.assertEqual(kinds({"T5_PAD_FILE": "x"}), ["FileSource"])
         self.assertEqual(kinds({"T5_PAD_FILE": "x", "T5_PAD_DEVICES": "1"}), ["FileSource"] + real)

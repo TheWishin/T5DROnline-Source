@@ -19,6 +19,9 @@
  *     exactly; pieces that do not add up to their hash, malformed pieces (size, offset, length, more
  *     than the packet holds) and a table larger than the bound are never taken; the peer's
  *     acknowledgement with our table's hash stops our resends; a restarted peer starts both over;
+ *   - slow loading: a PING_LOADING (only a correctly tagged one) holds the peer's stall clocks,
+ *     a BYE says why the sender ended the match (load timeout or a quit), give_up() ends the
+ *     session from this side once;
  *   - random and mutated packets -- also correctly tagged ones, i.e. a hostile opponent -- in every
  *     mode and phase: no crash, no out-of-bounds access (ASan), the receive state only moves forward.
  *
@@ -40,6 +43,8 @@ unsigned char* rp_zlib_decompress(const unsigned char*, int, int* n) { *n = 0; r
 #define stderr (__acrt_iob_func(2))
 
 extern "C" int32_t cellPad_sample_local(uint32_t, HostPadData* out) { out->len = 0; return 0; }
+/* src/netplay/local_pad.cpp (which controller is this PC's player): no controller here */
+int np::local_player_sample(HostPadData* out) { memset(out, 0, sizeof *out); return 0; }
 
 using namespace np;
 
@@ -196,6 +201,75 @@ static void check_replays_do_not_move_the_session()
         feed(packet(PKT_BYE, nullptr, 0, keyed != 0), A);
         CHECK(s.peer_lost && s.lost_reason == "peer_quit", "the peer's BYE (keyed %d)", keyed);
     }
+}
+
+/* Slow loading (docs/NETPLAY.md "Slow loading"): PING_LOADING keeps a peer that waits for its
+ * loaders from counting as stalled, a BYE says why the sender ended the match, give_up() ends it
+ * from this side. */
+static void check_loading_and_bye_reasons()
+{
+    State& s = S();
+    reset(Mode::Host, true);
+    HelloExt x = { 0, 0, 0 };
+    feed(packet(PKT_HELLO, &x, sizeof x, true), A);
+    CHECK(s.connected, "handshake (loading)");
+    feed(ping(1000, true), A);
+    CHECK(!peer_loading_locked(GetTickCount64()), "a plain PING said the peer is loading");
+    PingExt lx = { PING_LOADING, 0, 2000, 0, 0, 0xFF };
+    feed(packet(PKT_PING, &lx, sizeof lx, true), A);
+    CHECK(peer_loading_locked(GetTickCount64()), "a PING_LOADING PING was not taken");
+    PingExt bad = lx; bad.t_us = 3000;
+    std::vector<uint8_t> v = packet(PKT_PING, &bad, sizeof bad, true);
+    v[v.size() - 1] ^= 0x40;                                        /* wrong tag: nobody else can say it */
+    s.peer_loading_ms = 0;
+    feed(v, A);
+    CHECK(!peer_loading_locked(GetTickCount64()), "a badly tagged PING_LOADING was taken");
+
+    /* the stall clock leaves out the time the peer says it is loading, and only that */
+    const ULONGLONG t0 = 1000000;
+    StallClock c(t0);
+    s.peer_loading_ms = 0;
+    CHECK(c.ms_locked(t0 + 3000) == 3000, "stall clock without loading");
+    s.peer_loading_ms = t0 + 3000;                                  /* loading reports from here ... */
+    CHECK(c.ms_locked(t0 + 4000) == 3000, "a second of the peer's loading was counted as a stall");
+    s.peer_loading_ms = t0 + 9000;
+    CHECK(c.ms_locked(t0 + 9500) == 3000, "the peer's loading was counted as a stall");
+    CHECK(c.ms_locked(t0 + 12000) == 5500, "stall clock after the loading ended: %llu", c.ms_locked(t0 + 12000));
+    /* ... and starts again when the peer shows progress (a wait for one frame's input) */
+    s.peer_loading_ms = 0;
+    s.peer_started = false;
+    StallClock w(t0);
+    w.progress_locked(s, t0);
+    CHECK(w.ms_locked(t0 + 60000) == 60000, "wait clock before the peer's start");
+    s.peer_started = true;                                          /* its lockstep began after 60 s */
+    w.progress_locked(s, t0 + 60000);
+    CHECK(w.ms_locked(t0 + 61000) == 1000, "the peer's start did not restart the wait clock");
+    s.remote_contig += 3;                                           /* new inputs */
+    w.progress_locked(s, t0 + 70000);
+    CHECK(w.ms_locked(t0 + 70500) == 500, "new inputs did not restart the wait clock");
+    w.progress_locked(s, t0 + 90000);
+    CHECK(w.ms_locked(t0 + 90000) == 20000, "the wait clock restarted without progress");
+
+    /* BYE reasons */
+    const uint8_t why_load = BYE_LOAD_TIMEOUT, why_odd = 7;
+    feed(packet(PKT_BYE, &why_load, 1, true), A);
+    CHECK(s.peer_lost && s.lost_reason == "peer_load_timeout", "BYE + load timeout gave '%s'", s.lost_reason.c_str());
+    CHECK(lost_reason() && !strcmp(lost_reason(), "peer_load_timeout"), "lost_reason() for a load-timeout BYE");
+    reset(Mode::Host, true);
+    feed(packet(PKT_HELLO, &x, sizeof x, true), A);
+    feed(packet(PKT_BYE, &why_odd, 1, true), A);                     /* a reason this build does not know: a quit */
+    CHECK(s.peer_lost && s.lost_reason == "peer_quit", "BYE with an unknown reason gave '%s'", s.lost_reason.c_str());
+
+    /* this side ends it */
+    reset(Mode::Join, true);
+    feed(packet(PKT_HELLO, &x, sizeof x, true, kVersion, kHostSession, kPeerNonce, 2), A);
+    give_up("load_timeout", "test: %d s", 60);
+    CHECK(s.peer_lost && lost_reason() && !strcmp(lost_reason(), "load_timeout"), "give_up(load_timeout)");
+    give_up("peer_stalled", "test: a second end");
+    CHECK(!strcmp(lost_reason(), "load_timeout"), "a second give_up() changed the reason");
+    reset(Mode::Off, false);
+    give_up("load_timeout", "test: no session");
+    CHECK(!s.peer_lost, "give_up() without a session ended something");
 }
 
 static void check_join_delay_is_clamped()
@@ -394,6 +468,7 @@ int main(int argc, char** argv)
     check_replays_do_not_move_the_session();
     check_join_delay_is_clamped();
     check_costume_tables();
+    check_loading_and_bye_reasons();
     const int unit = g_checks;
     fuzz(iterations);
     printf("unit checks %d, fuzz iterations %u\n", unit, iterations);

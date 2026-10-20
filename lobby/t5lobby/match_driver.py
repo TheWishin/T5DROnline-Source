@@ -106,6 +106,10 @@ REASON_TEXT = {         # English; word(REASON_TEXT, key) where it is shown
     "peer_stalled": N_("Your opponent's game stopped responding."),
     "start_timeout": N_("Your opponent's game did not get to the fight."),
     "peer_restarted": N_("Your opponent's game was restarted; the match cannot go on."),
+    # the game held a frame for its loaders longer than T5_NET_LOAD_TIMEOUT (docs/NETPLAY.md "Slow loading")
+    "load_timeout": N_("Loading the fight took too long on this PC (slow disk or a busy PC?); the match was "
+                       "stopped."),
+    "peer_load_timeout": N_("Loading the fight took too long on your opponent's PC; the match was stopped."),
     "peer_lost": N_("The connection to your opponent's game was lost."),
     "no_peer": N_("Your opponent's game could not be reached (firewall or router?)."),
     "build_mismatch": N_("Your opponent's game is a different build."),

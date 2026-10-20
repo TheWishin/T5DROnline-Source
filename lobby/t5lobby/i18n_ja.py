@@ -73,6 +73,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "DirectInputコントローラー",
     "Xbox pad (XInput)": "Xboxパッド（XInput）",
+    "PlayStation pad, read directly": "PlayStationパッド（直接読み取り）",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "矢印キーで移動。上の A S が 1 2、下の Z X が 3 4。Q W が L1 R1、1 2 が L2 R2、Enter が Start、Tab が Select。",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "矢印キーで移動。テンキー 4 5 が 1 2、1 2 が 3 4、6 が 1+2、3 が 3+4（NumLock オン）。",
+    "Esc (leaves the game)": "Esc（ゲームを終了）",
+    "F11 (fullscreen)": "F11（フルスクリーン）",
+    "F2 (training overlay)": "F2（トレーニング表示）",
+    "Keyboard, second player": "キーボード（2人目）",
+    "Keyboard: WASD and U I J K": "キーボード: WASD と U I J K",
+    "Keyboard: arrows and A S Z X": "キーボード: 矢印キーと A S Z X",
+    "Keyboard: arrows and number pad": "キーボード: 矢印キーとテンキー",
+    "Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.": "キーボード: ゲームのボタンを選び、「選択したボタンを設定」（またはダブルクリック）を押してからキーを押してください。Esc で中止。ゲームはウィンドウにフォーカスがある間キーボードを読みます。",
+    "Press only that one key. Esc stops.": "そのキーだけを押してください。Esc で中止。",
+    "Press the key for {button}...": "{button} に使うキーを押してください...",
+    "The keyboard ([{section}] in controls.ini)": "キーボード（controls.ini の [{section}]）",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D で移動。U I が 1 2、J K が 3 4、O が 1+2、L が 3+4。Y P が L1 R1、H と ; が L2 R2、Enter が Start、Backspace が Select。",
+    "{key} is the game's own key; press another one.": '{key} はゲーム自体が使うキーです。別のキーを押してください。',
+    "{source} is also {other} for the second keyboard player.": "{source} は2人目のキーボードプレイヤーでは {other} でもあります。",
     "Controls - T5DR Online": "操作設定 - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -1099,6 +1116,10 @@ MESSAGES = {
     "Your opponent's game did not get to the fight.": "相手のゲームが対戦開始までたどり着けませんでした。",
     "Your opponent's game was restarted; the match cannot go on.":
         "相手のゲームが再起動されたため、対戦を続けられません。",
+    "Loading the fight took too long on this PC (slow disk or a busy PC?); the match was stopped.":
+        "このPCで対戦の読み込みに時間がかかりすぎました（ディスクが遅いか、PCの負荷が高い？）。対戦は中止されました。",
+    "Loading the fight took too long on your opponent's PC; the match was stopped.":
+        "相手のPCで対戦の読み込みに時間がかかりすぎました。対戦は中止されました。",
     "Your opponent's game could not be reached (firewall or router?).":
         "相手のゲームに接続できませんでした（ファイアウォールかルーター？）。",
     "Your opponent's game is a different build.": "相手のゲームは別のビルドです。",

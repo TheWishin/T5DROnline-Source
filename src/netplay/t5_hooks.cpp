@@ -99,8 +99,6 @@ void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_cont
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
-struct np_host_pad { int32_t len; uint16_t button[64]; };
-int32_t cellPad_sample_local(uint32_t port_no, np_host_pad* out);   /* patch 0009: this PC's input on a port (replay controls) */
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 typedef int64_t (*np_lv2_fn)(ppu_context*);
@@ -275,12 +273,17 @@ void persistent_lost(const char* reason);
  * the game can tell, when frame f+1 starts -- on both PCs. Without it the
  * frame a load completes in depends on the disk and the OS scheduler.
  * Semaphores 1 and 11 themselves are not drained: the sound streamer feeds
- * them all the time, and waiting for it cost whole seconds per frame. */
+ * them all the time, and waiting for it cost whole seconds per frame.
+ * The wait has no time limit while a session runs (drain_wait): a frame that
+ * started with its loads still running -- the old 2 s limit -- put the loading
+ * and the fight's intros a frame or more apart on the two PCs. */
 constexpr int kMaxSem = 64;
 bool g_drain[kMaxSem] = {};
 std::atomic<bool> g_drain_seen[kMaxSem];   /* a thread has waited on it since our hooks went in */
 HANDLE g_drain_event = nullptr;
-uint32_t g_drain_timeouts = 0;
+uint32_t g_drain_notes = 0;                 /* "still busy" lines written (capped) */
+uint32_t g_drain_test_ms = 0;               /* T5_TEST_DRAIN_HOLD (tests): see drain_wait */
+uint32_t g_drain_test_frame = 0;
 
 std::vector<Range> g_hash_ranges, g_hash_skip, g_dump_ranges;
 std::vector<uint32_t> g_dump_frames;
@@ -716,31 +719,77 @@ void drain_stats(uint32_t f)
     g_drain_us = g_drain_max_us = g_drain_waits = 0;
 }
 
+std::string drain_sems()
+{
+    std::string st;
+    for (int i = 0; i < kMaxSem; i++)
+        if (g_drain[i]) { char b[48]; snprintf(b, sizeof b, " sem%d:value%d/waiters%d", i,
+                           g_sys_semaphores[i - 1].value, g_sys_semaphores[i - 1].waiters); st += b; }
+    return st;
+}
+
 /* Wait until the loader threads are parked. Returns the time it waited (ms),
- * or -1 when they were idle already. */
+ * or -1 when they were idle already.
+ *
+ * No time limit (docs/NETPLAY.md "Slow loading"). The frame a load is seen done
+ * in must be the same on both PCs, so a frame never starts with its loads still
+ * running, however slow this PC's disk or CPU: it used to after 2 s ("loader
+ * threads still busy after 2 s, going on"), and on a PC at 0.5 fps that moved
+ * the loading's last frames -- the fight-loaded sync point put the frame numbers
+ * back together, but the fight's intro then ended a frame earlier on one PC and
+ * the whole match ran a frame apart (e2e firewall run, Asuka vs Wang on stage 26:
+ * 1,619 of 1,620 frames mismatching, the match voided). The peer waits for this
+ * frame's input meanwhile (our PINGs say we are loading, so its stall limits do
+ * not count it). Only three things end the wait:
+ *   - the loaders are parked (the normal case);
+ *   - the session is over (lost, failed, ended): nothing is compared any more;
+ *   - one frame waited T5_NET_LOAD_TIMEOUT (default 120 s): a load that hangs.
+ *     This side then ends the match with "load_timeout" (the peer is told:
+ *     "peer_load_timeout") -- a clean end, never a match played out of step.
+ * T5_TEST_DRAIN_HOLD=ms[:frame] (tests): the wait also lasts at least ms at frame
+ * `frame` (default 5) of each session -- a loader that is slow at one moment on
+ * one PC, for the load-timeout test. */
 double drain_wait(uint32_t f)
 {
     drain_stats(f);
-    if (workers_idle()) return -1.0;
+    const bool hold = g_drain_test_ms && f == g_drain_test_frame;
+    if (workers_idle() && !hold) return -1.0;
     LARGE_INTEGER q0, q1, qf;
     QueryPerformanceCounter(&q0);
     const ULONGLONG t0 = GetTickCount64();
-    while (!workers_idle()) {
+    const ULONGLONG limit_ms = (ULONGLONG)np::load_timeout_s() * 1000;
+    ULONGLONG next_note = 2000;
+    bool told = false;
+    for (;;) {
+        const ULONGLONG ms = GetTickCount64() - t0;
+        if (workers_idle() && !(hold && ms < g_drain_test_ms)) break;
         WaitForSingleObject(g_drain_event, 1);
-        if (GetTickCount64() - t0 > 2000) {
-            if (g_drain_timeouts++ < 10) {
-                std::string st;
-                for (int i = 0; i < kMaxSem; i++)
-                    if (g_drain[i]) { char b[48]; snprintf(b, sizeof b, " sem%d:value%d/waiters%d", i,
-                                       g_sys_semaphores[i - 1].value, g_sys_semaphores[i - 1].waiters); st += b; }
-                np::note("frame %u: loader threads still busy after 2 s, going on (%s)", f, st.c_str());
-            }
+        if (ms < 1000) continue;
+        if (!told) { np::set_loading(true); told = true; }   /* the peer waits for us: our PINGs say why */
+        if (np::failure() || np::lost_reason()) {
+            np::note("frame %u: the session is over -- stopped waiting for the loaders after %.1f s", f, ms / 1000.0);
+            break;
+        }
+        if (ms >= next_note) {
+            next_note += next_note < 10000 ? 3000 : 10000;
+            if (g_drain_notes++ < 60)
+                np::note("frame %u: loader threads still busy after %.0f s -- the frame waits for them (%s)", f, ms / 1000.0,
+                         drain_sems().c_str());
+        }
+        if (limit_ms && ms >= limit_ms) {
+            np::note("frame %u: LOADING TOOK TOO LONG: the loader threads are still busy after %llu s (%s) -- "
+                     "this game ends the match (T5_NET_LOAD_TIMEOUT)", f, limit_ms / 1000, drain_sems().c_str());
+            np::give_up("load_timeout", "loading took too long on this PC (%llu s for one frame) -- the match ends",
+                        limit_ms / 1000);
             break;
         }
     }
+    if (told) np::set_loading(false);
     QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&qf);
     const uint64_t us = (uint64_t)((q1.QuadPart - q0.QuadPart) * 1000000 / qf.QuadPart);
     g_drain_us += us; g_drain_waits++; if (us > g_drain_max_us) g_drain_max_us = us;
+    if (us >= 2000000 && g_drain_notes++ < 60)
+        np::note("frame %u: the loaders were busy for %.1f s; the frame went on once they were done", f, us / 1e6);
     return us / 1000.0;
 }
 
@@ -1159,8 +1208,9 @@ uint16_t replay_pad()
     static int on = -1;   /* T5_REPLAY_CONTROLS=0: the pad does not steer the playback (tests on a PC in use) */
     if (on < 0) { const char* e = getenv("T5_REPLAY_CONTROLS"); on = !(e && *e == '0'); }
     if (!on) return 0;
-    np_host_pad d = {};
-    if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
+    HostPadData d = {};
+    np::local_player_sample(&d);           /* any of this PC's controllers (local_pad.cpp) */
+    if (d.len == 0) return 0;
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
 }
 
@@ -1863,7 +1913,14 @@ void h_cellPadInit(ppu_context* ctx)
             p = e; while (*p == ',' || *p == ' ') p++;
         }
         g_drain_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
-        np::note("draining loader semaphores at each frame: %s", *spec ? spec : "(none)");
+        np::note("draining loader semaphores at each frame: %s (no time limit; T5_NET_LOAD_TIMEOUT ends the match)",
+                 *spec ? spec : "(none)");
+        if (const char* t = getenv("T5_TEST_DRAIN_HOLD")) {
+            unsigned ms = 0, fr = 5;
+            sscanf(t, "%u:%u", &ms, &fr);
+            g_drain_test_ms = ms; g_drain_test_frame = fr;
+            if (ms) np::note("TEST: the loader drain holds frame %u of each session for at least %u ms (T5_TEST_DRAIN_HOLD)", fr, ms);
+        }
         if (const char* s = getenv("T5_RB_SIDE_DRAIN")) g_side_drain = *s != '0';
     }
     if (g_passive) { np::note("passive reference mode: %d pad(s), keyread left alone", g_pads); return; }
@@ -1977,6 +2034,10 @@ extern "C" const char* t5_netplay_take_session_lost(void)
 }
 
 extern "C" int t5_netplay_persistent(void) { return g_persistent ? 1 : 0; }
+
+/* The direct-fight driver ends the session from this side (a pick that never
+ * came): the next frame's check_session() acts on it like on a lost peer. */
+extern "C" void t5_netplay_give_up(const char* reason, const char* text) { np::give_up(reason, "%s", text); }
 
 /* A kernel semaphore's count, for the rollback loop (rb_net.cpp: the reader's
  * completion semaphore is part of the state it saves at every boundary and

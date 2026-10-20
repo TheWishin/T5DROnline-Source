@@ -1553,6 +1553,391 @@ def log_lines(p):
     return out
 
 
+# ------------------------------------------------------------------ this PC's controller online (1.1.2)
+# A player's report on 1.1.1: "my DualSense works only offline". The runtime gives each controller a port in the
+# order it finds them (XInput pads first); a DualSense behind another source -- a virtual Xbox pad (DS4Windows,
+# DSX), a handheld's own pad, an idle pad -- lands on port 2, which offline is player 2 (it still plays), while
+# netplay took the online player from port 1 only. docs/NETPLAY.md "Which controller plays online".
+DS_BITS = {"square": 0x8000, "cross": 0x4000, "circle": 0x2000, "triangle": 0x1000}
+DS_HAT_BITS = {2: 0x0020, 6: 0x0080, 4: 0x0040}          # hat right / left / down -> RIGHT LEFT DOWN
+DS_MASK = sum(DS_BITS.values()) | sum(DS_HAT_BITS.values())
+RE_FRAME = re.compile(r"^(\d+) I ([0-9A-Fa-f]{4})[0-9A-Fa-f]{8} ([0-9A-Fa-f]{4})[0-9A-Fa-f]{8} [0-9a-fA-F]{16}"
+                      r"(?: ([RP]))?")
+
+
+class HidMasher:
+    """A DualSense on Bluetooth in its extended mode (what Steam / DS4Windows leave it in), as the runtime's
+    PS3_PAD_HID_FAKE reads it: every press and release is one input report (0x31, CRC filled in) appended to
+    the file. start() mashes face buttons and the d-pad like a person (40-90 ms presses, 60-160 ms apart)."""
+
+    def __init__(self, path, seed=7):
+        import random
+        import ps_hid_reports as phr     # tools/
+        self.phr, self.path, self.rnd = phr, path, random.Random(seed)
+        self.n = 0
+        self.presses = 0
+        self.stop_ev = None
+        self.thread = None
+        self._write(phr.PadState(), new=True)          # plugged in from the start, nothing held
+
+    def _write(self, state, new=False):
+        self.n += 1
+        rep = self.phr.padded("dualsense", "bt-ext", self.phr.report("dualsense", "bt-ext", state, counter=self.n))
+        with open(self.path, "w" if new else "a") as f:
+            f.write(rep.hex() + "\n")
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.06, 0.16)):
+            face = rnd.choice(sorted(DS_BITS))
+            hat = rnd.choice([None, None, 2, 6, 4])
+            self._write(self.phr.PadState(buttons={face}, hat=hat))
+            self.presses += 1
+            if self.stop_ev.wait(rnd.uniform(0.04, 0.09)):
+                break
+            self._write(self.phr.PadState())
+        self._write(self.phr.PadState())
+
+    def start(self):
+        import threading
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="hid-masher", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        if self.thread is not None:
+            self.stop_ev.set()
+            self.thread.join(2)
+            self.thread = None
+
+
+class ForegroundWatch:
+    """Samples the foreground window's process 5x a second: was the player's game ever in front?"""
+
+    def __init__(self, pid):
+        import threading
+        self.pid, self.samples, self.front = pid, 0, 0
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="fg-watch", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        import ctypes
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        while not self.stop_ev.wait(0.2):
+            pid = ctypes.c_ulong(0)
+            hwnd = user32.GetForegroundWindow()
+            if hwnd:
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            self.samples += 1
+            self.front += pid.value == self.pid
+
+    def stop(self):
+        self.stop_ev.set()
+        self.thread.join(2)
+
+
+def frames_pressed(path, col, mask, confirmed_only=True):
+    """Frames of a netplay frame log (T5_NET_LOG) whose input in column `col` (0 = P1, 1 = P2) holds any of
+    `mask`; under rollback only lines whose remote input was confirmed (R) when logged."""
+    n = total = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = RE_FRAME.match(ln)
+                if not m or (confirmed_only and m.group(4) == "P"):
+                    continue
+                total += 1
+                n += (int(m.group(2 + col), 16) & mask) != 0
+    except OSError:
+        pass
+    return n, total
+
+
+@scenario("net_dualsense", "6 netcode", game=True, suites=("game", "net"),
+          desc="one player plays with a DualSense on Bluetooth (fake HID pad, extended reports) that the runtime "
+               "put on port 2 (port 1: the picker's pad file and the keyboard), its game window never in front: "
+               "the DualSense's presses reach the other PC, in sync; two matches (two sessions of the running game, "
+               "picks made with the pad file in between) (1.1.1 read the online player from port 1 only)")
+def net_dualsense(ctx):
+    game_server(ctx)
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    masher = HidMasher(hid, seed=ctx.run.seed)
+    logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("pad", "rival")}
+    for _f in logs.values():               # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
+    a = ctx.player("E2E Pad", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}", "T5_NET_LOG": logs["pad"],
+                                                 "PS3_PAD_READ_LOG": os.path.join(ctx.dir, "reads-pad.log")})
+    b = ctx.player("E2E Rival", env={"T5_NET_LOG": logs["rival"]})
+    login(ctx, a)
+    login(ctx, b)
+    ds_port = 0
+    for k in range(2):
+        label = f"DualSense behind port 1, match {k + 1}"
+        if k:
+            for p in (a, b):
+                leave(ctx, p)
+            ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, "both can search again")
+        mid = queue_match(ctx, *((a, b) if k == 0 else (b, a)), "quick")
+        if not wait_fight(ctx, mid, (a, b), timeout=300):          # (a busy PC boots slowly)
+            raise Abort(f"{label}: no fight")
+        col = 0 if a.matches[mid].get("slot") == 0 else 1
+        peer0 = frames_pressed(logs["rival"], col, DS_MASK)
+        own0 = frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False)
+        g = a.game()
+        fg = ForegroundWatch(g.proc.pid if g is not None and g.proc is not None else -1)
+        presses0 = masher.presses
+        masher.start()
+        try:
+            wait_results(ctx, mid, (a, b))
+        finally:
+            masher.stop()
+            fg.stop()
+        match_row(ctx, mid, (a, b), "confirmed", label)
+        if k == 0:
+            # port 1 is the picker's pad file's; a controller plugged into this PC (an XInput pad) comes before it
+            port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'") or ""
+            m = re.search(r"port (\d) \(player", port_line)
+            ds_port = int(m.group(1)) if m else 0
+            ctx.check("the runtime put the DualSense (Bluetooth, extended reports) behind port 1: another source "
+                      "has port 1", ds_port >= 2 and "Bluetooth" in port_line, port_line)
+            kb = log_line(a, r"\[pad\] keyboard -> port 1")
+            ctx.check("the keyboard is there too (port 1)", bool(kb), kb)
+        ctx.check(f"{label}: the DualSense player's game window was never the foreground window during the fight",
+                  fg.samples >= 10 and fg.front == 0, f"{fg.front} of {fg.samples} samples in front")
+        ctx.check(f"{label}: netplay took the online player from the DualSense's port {ds_port}",
+                  log_has(a, rf"\[netplay\] local player: port {ds_port} now", mid))
+        peer = [x - y for x, y in zip(frames_pressed(logs["rival"], col, DS_MASK), peer0)]
+        own = [x - y for x, y in zip(frames_pressed(logs["pad"], col, DS_MASK, confirmed_only=False), own0)]
+        sent = masher.presses - presses0
+        ctx.check(f"{label}: the DualSense's presses reached the other PC", peer[0] >= 30 and sent >= 10,
+                  f"{sent} presses sent; on the other PC {peer[0]} of {peer[1]} confirmed frames hold them "
+                  f"(player {col + 1}); on this PC {own[0]} of {own[1]} frames")
+        ctx.note(f"{label}: DualSense player = P{col + 1} ({'host' if col == 0 else 'joiner'}); {sent} presses; "
+                 f"frames with them: other PC {peer[0]}/{peer[1]}, own {own[0]}/{own[1]}; foreground samples "
+                 f"{fg.front}/{fg.samples}")
+
+
+# ------------------------------------------------------------------ own buttons for L2, R2 and the combos (1.1.2)
+# Owner: "keybinds must work, also in online gameplay -- R2 and L2 should have their own binds too". One player on
+# a remapped keyboard (the launcher's Controls editor writes [keys1]: L2 = Q, R2 = E, 1+2 = O; Q was L1), one on a
+# remapped DualSense ([dinput.054C:0CE6]: its L1 button is L2, R1 is R2, the touchpad click is 1+2). The keys come
+# from PS3_KEYS_FAKE (patch 0052: the game window is never in front here), the pad from PS3_PAD_HID_FAKE.
+BIT = {"L1": 0x0400, "R1": 0x0800, "L2": 0x0100, "R2": 0x0200, "1+2": 0x9000}
+REBIND_KEYS = (("L2", "Q"), ("R2", "E"), ("1+2", "O"))
+REBIND_PAD = (("L2", "B5"), ("R2", "B6"), ("1+2", "B14"))           # the pad's L1, R1, touchpad click
+PAD_PRESS = {"L2": {"l1"}, "R2": {"r1"}, "1+2": {"touchpad"}}
+
+
+def write_rebinds(p, keys=False, pad=False):
+    """The player's controls.ini, written by the launcher's own editor (launcher/controls_edit.py) where the game
+    reads it; XInput off (a pad plugged into this PC must not play along)."""
+    import controls_edit as ce
+    from t5lobby.padmap import DINPUT, KEYS1
+    path = ce.controls_path(p.out, {})
+    ed = ce.ControlsEditor.load(path)
+    if keys:
+        kb = ce.DeviceRef(KEYS1, 0, 0, 0)
+        for key, src in REBIND_KEYS:
+            ed.bind(kb, ce.SCOPE_KIND, key, [src])
+    if pad:
+        ds = ce.DeviceRef(DINPUT, 1, 0x054C, 0x0CE6)
+        for key, src in REBIND_PAD:
+            ed.bind(ds, ce.SCOPE_MODEL, key, [src])
+    ed.doc.set_value("general", "xinput", "0")
+    ed.save()
+    return path
+
+
+class KeyMasher:
+    """Presses the bound keys in turn by rewriting the PS3_KEYS_FAKE file (60-120 ms each, 80-160 ms apart)."""
+
+    def __init__(self, path, seed=3):
+        import random
+        self.path, self.rnd = path, random.Random(seed)
+        self.presses = {k: 0 for k, _ in REBIND_KEYS}
+        self.stop_ev = self.thread = None
+        self._write("")
+
+    def _write(self, text):
+        with open(self.path, "w") as f:
+            f.write(text)
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.08, 0.16)):
+            key, src = rnd.choice(REBIND_KEYS)
+            self._write(src + (" RIGHT" if rnd.random() < 0.3 else ""))
+            self.presses[key] += 1
+            if self.stop_ev.wait(rnd.uniform(0.06, 0.12)):
+                break
+            self._write("")
+        self._write("")
+
+    def start(self):
+        import threading
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="key-masher", daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        if self.thread is not None:
+            self.stop_ev.set()
+            self.thread.join(2)
+            self.thread = None
+
+
+class PadRebindMasher(HidMasher):
+    """The DualSense presses its L1, R1 and touchpad click in turn (the remapped buttons)."""
+
+    def __init__(self, path, seed=5):
+        super().__init__(path, seed)
+        self.counts = {k: 0 for k in PAD_PRESS}
+
+    def _run(self):
+        rnd = self.rnd
+        while not self.stop_ev.wait(rnd.uniform(0.08, 0.16)):
+            key = rnd.choice(sorted(PAD_PRESS))
+            self._write(self.phr.PadState(buttons=PAD_PRESS[key], hat=2 if rnd.random() < 0.3 else None))
+            self.counts[key] += 1
+            self.presses += 1
+            if self.stop_ev.wait(rnd.uniform(0.06, 0.12)):
+                break
+            self._write(self.phr.PadState())
+        self._write(self.phr.PadState())
+
+
+def frames_with_mask(path, col, mask, confirmed_only=True):
+    """Frames whose input in `col` holds all of `mask`."""
+    n = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                m = RE_FRAME.match(ln)
+                if m and not (confirmed_only and m.group(4) == "P") and (int(m.group(2 + col), 16) & mask) == mask:
+                    n += 1
+    except OSError:
+        pass
+    return n
+
+
+def _rebind_counts(path, col, confirmed_only=True):
+    return {k: frames_with_mask(path, col, b, confirmed_only) for k, b in BIT.items()}
+
+
+@scenario("net_rebind", "6 netcode", game=True, suites=("game", "net"),
+          desc="own buttons for L2, R2 and the 1+2 combo, set in the launcher's Controls editor: one player on a "
+               "remapped keyboard, the other on a remapped DualSense; the bound buttons reach the other PC as L2, R2 "
+               "and 1+2 (and never as what those keys and buttons were before), in sync")
+def net_rebind(ctx):
+    game_server(ctx)
+    keys_file = os.path.join(ctx.dir, "keys.txt")
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    km = KeyMasher(keys_file, seed=ctx.run.seed)
+    pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
+    logs = {n: os.path.join(ctx.dir, f"frames-{n}.log") for n in ("keys", "pad")}
+    for _f in logs.values():               # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
+    a = ctx.player("E2E Keys", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_DEVICES": "0",
+                                                  "T5_NET_LOG": logs["keys"]})
+    b = ctx.player("E2E PadMap", devices=True, env={"PS3_PAD_HID_FAKE": f"dualsense,bt,{hid}",
+                                                    "T5_NET_LOG": logs["pad"]})
+    ini_a, ini_b = write_rebinds(a, keys=True), write_rebinds(b, pad=True)
+    ctx.note(f"{a.name}: {ini_a}: " + " | ".join(l for l in open(ini_a).read().splitlines() if "=" in l))
+    ctx.note(f"{b.name}: {ini_b}: " + " | ".join(l for l in open(ini_b).read().splitlines() if "=" in l))
+    login(ctx, a)
+    login(ctx, b)
+    mid = queue_match(ctx, a, b, "quick")
+    if not wait_fight(ctx, mid, (a, b), timeout=300):          # (a busy PC boots slowly)
+        raise Abort("no fight")
+    km.start()
+    pm.start()
+    try:
+        wait_results(ctx, mid, (a, b))
+    finally:
+        km.stop()
+        pm.stop()
+    match_row(ctx, mid, (a, b), "confirmed", "remapped keyboard vs remapped pad")
+    ctx.check("the keyboard player's game reads the keys from PS3_KEYS_FAKE",
+              bool(log_line(a, r"PS3_KEYS_FAKE")), log_line(a, r"\[pad\] keyboard"))
+    ca = 0 if a.matches[mid].get("slot") == 0 else 1
+    for who, peer, col, sent, label in ((a, b, ca, km.presses, "keyboard (Q E O)"),
+                                        (b, a, 1 - ca, pm.counts, "DualSense (L1 R1 touchpad)")):
+        theirs = _rebind_counts(logs["pad" if who is a else "keys"], col)
+        own = _rebind_counts(logs["keys" if who is a else "pad"], col, confirmed_only=False)
+        ctx.check(f"{who.name}'s {label}: L2, R2 and 1+2 arrive on the other PC",
+                  all(theirs[k] >= 5 for k in ("L2", "R2", "1+2")) and all(sent[k] >= 3 for k in sent),
+                  f"sent {sent}; frames on the other PC {theirs}; on this PC {own}")
+        ctx.check(f"{who.name}'s {label}: never what those buttons were before (L1 / R1)",
+                  theirs["L1"] == 0 and theirs["R1"] == 0, f"frames with L1 {theirs['L1']}, R1 {theirs['R1']}")
+        ctx.note(f"{who.name} (P{col + 1}): sent {sent}; other PC frames {theirs}; own frames {own}")
+
+
+@scenario("offline_rebind", "8 launcher", game=True, suites=("game",),
+          desc="offline: the same remapped keyboard (Q E O = L2 R2 1+2) and DualSense (L1 R1 touchpad = L2 R2 1+2), "
+               "set in the launcher's Controls editor: the game's own pad reads get L2, R2 and 1+2")
+def offline_rebind(ctx):
+    keys_file = os.path.join(ctx.dir, "keys.txt")
+    hid = os.path.join(ctx.dir, "dualsense-bt.txt")
+    reads = os.path.join(ctx.dir, "reads.log")
+    for _f in (keys_file, hid, reads):           # (a run folder used before)
+        if os.path.exists(_f):
+            os.remove(_f)
+    km = KeyMasher(keys_file, seed=ctx.run.seed)
+    pm = PadRebindMasher(hid, seed=ctx.run.seed + 1)
+    a = ctx.player("E2E Offline", devices=True, env={"PS3_KEYS_FAKE": keys_file, "PS3_PAD_HID_FAKE":
+                                                     f"dualsense,bt,{hid}", "PS3_PAD_READ_LOG": reads,
+                                                     "PS3_PAD_FILE": ""})
+    write_rebinds(a, keys=True, pad=True)
+    g = a.app.start_game({})                        # Play offline: the launcher's own start, no netplay
+    if g is None:
+        raise Abort("the game did not start")
+
+    def title_reads():
+        try:
+            with open(reads, encoding="utf-8", errors="replace") as f:
+                return sum(1 for ln in f if ln.rstrip().endswith(" G"))
+        except OSError:
+            return 0
+    if not ctx.wait(lambda: title_reads() > 100, 120, "the game reads its pads (title)"):
+        raise Abort("no pad reads")
+    port_line = log_line(a, r"\[pad\] port \d \(player \d\): HID 'Fake DualSense'") or ""
+    ctx.check("offline, the DualSense is player 1 (nothing else on port 1)", "port 1 (player 1)" in port_line,
+              port_line)
+    t0 = time.perf_counter_ns()
+    km.start()
+    ctx.sleep(6)
+    km.stop()
+    t1 = time.perf_counter_ns()
+    pm.start()
+    ctx.sleep(6)
+    pm.stop()
+    t2 = time.perf_counter_ns()
+    ctx.sleep(1)
+    got = {"keys": {k: 0 for k in BIT}, "pad": {k: 0 for k in BIT}}
+    with open(reads, encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            parts = ln.split()
+            if len(parts) != 5 or parts[4] != "G" or parts[1] != "1":
+                continue
+            t, b = int(parts[0]), int(parts[2], 16)
+            who = "keys" if t0 <= t < t1 else "pad" if t1 <= t < t2 else None
+            if who:
+                for k, m in BIT.items():
+                    got[who][k] += (b & m) == m
+    for who, sent in (("keys", km.presses), ("pad", pm.counts)):
+        ctx.check(f"offline {who}: the game reads L2, R2 and 1+2", all(got[who][k] >= 3 for k in ("L2", "R2", "1+2")),
+                  f"sent {sent}; reads holding them {got[who]}")
+        ctx.check(f"offline {who}: never L1 / R1 (what the keys and buttons were before)",
+                  got[who]["L1"] == 0 and got[who]["R1"] == 0, got[who])
+    ctx.note(f"offline reads: keyboard {got['keys']} (sent {km.presses}), pad {got['pad']} (sent {pm.counts})")
+    g.stop()
+
+
 # ============================================================================== 7. failures
 def _two(ctx, n1, n2, **kw):
     game_server(ctx, **kw)

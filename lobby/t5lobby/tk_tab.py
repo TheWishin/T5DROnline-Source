@@ -207,6 +207,8 @@ class OnlineTab:
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
         self.bring_forward = winfront.raise_window    # the launcher's window to the front (tests replace it)
         self._fronted = None                          # what it last came forward for (once per match / question)
+        self.bring_game_forward = winfront.raise_game_window   # the game's window to the front (tests replace it)
+        self._game_fronted = None                     # the match the game's window last came forward for
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -1599,6 +1601,8 @@ class OnlineTab:
         elif k == "firewall_suspect":
             self._fw_saw(n.get("reason") or "no_peer")    # the game heard nothing at all from its opponent
         elif k == "game_state":
+            if n.get("state") in ("pick", "loading", "fight"):
+                self._game_forward(n.get("match"))
             # the fight started: show who fights (with the in-game select, what the players picked)
             if n.get("state") == "fight" and n.get("chars") and self._match_info is not None:
                 self._match_info["fight"] = tuple(n["chars"])
@@ -1644,6 +1648,30 @@ class OnlineTab:
             self.bring_forward(self.parent)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
+
+    def _game_forward(self, key):
+        """A match starts in the game (its in-game select, else its loading): if the launcher's window is the
+        foreground window -- the player just clicked Accept / Rematch / Next game here, the game behind it --
+        the game's window goes to the front, as it does when the launcher starts the game. The game reads the
+        keyboard only while its own window has the focus (pads work either way). Once per match; never while
+        another program is in front, never with Settings "start minimized" (tests)."""
+        if key is None or key == self._game_fronted:
+            return
+        self._game_fronted = key
+        try:
+            if self.app.settings.get("background") or not self.launcher_in_front():
+                return
+            game = getattr(self.app, "game", None)
+            proc = getattr(game, "proc", None)
+            if proc is not None and game.running():
+                self.bring_game_forward(proc.pid)
+        except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
+            pass
+
+    def launcher_in_front(self):
+        """Is the launcher's window the foreground window? (Tk thread; tests replace it.)"""
+        hwnd = padnav.toplevel_hwnd(self.parent.winfo_toplevel())
+        return bool(hwnd) and padnav.window_foreground_check(hwnd)()
 
     def _answer_result(self, what):
         self.hide_bar()

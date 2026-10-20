@@ -8,8 +8,8 @@ English: [../README.md](../README.md)
 
 <!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
 (docs/RELEASING.md "Cutting a release", step 2); the same lines are in README.md. -->
-**Release 1.1.1 (2026-10-19).** Lade
-`T5DR-Online-1.1.1.zip` von https://github.com/TheWishin/T5DROnline/releases
+**Release 1.1.2 (2026-10-20).** Lade
+`T5DR-Online-1.1.2.zip` von https://github.com/TheWishin/T5DROnline/releases
 
 **Offline ist spielbereit:** alle Modi, 60 fps, Xbox-Pad und Arcade-Stick getestet.
 **Online funktioniert:** getestet zwischen den PCs von zwei Spielern über das
@@ -234,7 +234,9 @@ Tastatur (Standard) und Xbox-Controller:
 
 - Die Tastatur geht nur, solange das Spielfenster den Fokus hat. Pads gehen auch
   ohne Fokus.
-- Tastatur und das erste Pad steuern beide Spieler 1.
+- Tastatur und das erste Pad steuern beide Spieler 1. Online ist der Controller,
+  den du drückst, dein Spieler, egal an welchem Port (ein in der `controls.ini`
+  festgelegtes `[port1] device` bleibt der einzige).
 - PlayStation-Pads (DualShock 4, DualSense) liest das Spiel direkt, über USB und
   Bluetooth, auch nachdem Steam oder DS4Windows sie benutzt haben (Steam ist nicht
   nötig; startet Steam das Spiel mit Steam Input, nimmt das Spiel das virtuelle
@@ -242,14 +244,17 @@ Tastatur (Standard) und Xbox-Controller:
   musst nichts installieren. Ein Arcade-Stick wurde mit echter Hardware getestet:
   alle Eingaben kamen an.
 - Pads kannst du im laufenden Spiel ein- und ausstecken.
-- **Pad, Arcade-Stick oder Hitbox: die Knöpfe stellst du im Launcher ein.**
+- **Pad, Arcade-Stick, Hitbox oder Tastatur: die Knöpfe stellst du im Launcher ein.**
   Öffne **Settings** und klicke **Set up controllers...** (Controller
-  einrichten). Das Fenster zeigt die Controller, die Windows sieht, eine Zeile
-  pro Spieler, und die Zeile leuchtet, wenn du einen Knopf drückst (sie nennt
-  auch den Spielknopf dazu). Wähle einen Controller (oder drücke einfach einen
-  Knopf darauf) und klicke **Set up all buttons** (alle Knöpfe einrichten): Es
-  fragt "Press the button for 1 (Left Punch)..." (Drücke den Knopf für ...) und
-  macht weiter mit 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, Start und Select.
+  einrichten). Das Fenster zeigt die Controller, die Windows sieht, und die
+  Tastatur, eine Zeile pro Spieler, und die Zeile leuchtet, wenn du einen Knopf
+  drückst (sie nennt auch den Spielknopf dazu). Wähle einen Controller (oder
+  drücke einfach einen Knopf darauf; die Tastatur: klicke ihre Zeile) und klicke
+  **Set up all buttons** (alle Knöpfe einrichten): Es fragt "Press the button for
+  1 (Left Punch)..." (Drücke den Knopf für ...) und macht weiter mit 2, 3, 4,
+  1+2, 3+4, 1+3, 2+4, 1+2+3+4, L1, R1, L2, R2, L3, R3, Start und Select -- jeder
+  Knopf des PS3-Pads und jede Tekken-Kombination kann eine eigene Taste oder
+  einen eigenen Knopf haben, auch online.
   **Skip** (Überspringen) lässt einen Knopf, wie er ist, **Clear** (Löschen)
   gibt ihm keinen Knopf. **Set selected** (Ausgewählten setzen) stellt eine
   Zeile ein, auch die anderen Makros (1+4, 2+3, 1+2+3 usw.), **Set up
@@ -267,7 +272,7 @@ Tastatur (Standard) und Xbox-Controller:
   des Controllers, wie deine `controls.ini` sie hat). Das geht nur, solange
   dieses Fenster vorne ist; nimm das Häkchen bei "Move through this window with
   the controller" weg, wenn du Knöpfe nur testen willst.
-- Die Tastatur und alles andere stellst du in der `controls.ini` ein. Die
+- Alles andere stellst du in der `controls.ini` ein. Die
   dokumentierte Vorlage mit allen Standardwerten ist [controls.ini](controls.ini).
   Lege deine Datei als `native\controls.ini` ab und starte das Spiel neu.
   Beispiele (aus der Vorlage):

@@ -1,5 +1,5 @@
 diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
-index b34bdc2..f706a50 100644
+index 4b55d7a..505fd4d 100644
 --- a/libs/video/cellGcmSys.c
 +++ b/libs/video/cellGcmSys.c
 @@ -669,8 +669,10 @@ void cellGcmSetWaitFlip(void)
@@ -65,7 +65,7 @@ index b34bdc2..f706a50 100644
  }
  
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 2fe417b..8a40400 100644
+index 7dfb28b..c16661b 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -55,6 +55,7 @@ void rsx_pf_stamp(int slot)
@@ -84,7 +84,7 @@ index 2fe417b..8a40400 100644
  int  rsx_live_draw_display_hybrid(void) { return -1; }
  #endif
  
-@@ -2089,6 +2091,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
+@@ -2269,6 +2271,125 @@ static D3D12_GPU_DESCRIPTOR_HANDLE sampler_table(const u32 slots[SMP_TABLE_SIZE]
  static int g_ld_lazy_reset = 0;   /* list submitted at present, not yet reset */
  static void ld_tex_release(ID3D12Resource* r);   /* texture pool, below */
  
@@ -210,7 +210,7 @@ index 2fe417b..8a40400 100644
  /* Present latency (RSX_PRESENT_MODE, RSX_FRAME_LATENCY). The swap chain is a
   * flip-model chain with a frame-latency waitable object, max frame latency 1
   * by default: at most one presented frame waits for the display, so a flip
-@@ -2418,6 +2539,14 @@ static void ld_check_display_adapter(HWND hwnd)
+@@ -2598,6 +2719,14 @@ static void ld_check_display_adapter(HWND hwnd)
          fprintf(stderr, "[gpu] display: no adapter output found for the window's screen (a remote or virtual display?)\n");
  }
  int rsx_live_draw_display_hybrid(void) { return g_ld_display_hybrid; }
@@ -225,7 +225,7 @@ index 2fe417b..8a40400 100644
  void rsx_live_draw_wait_totals(long long* gpu_wait_ticks, long long* present_ticks)
  {
      *gpu_wait_ticks = (long long)g_pf.flush_wait_ticks;          /* the CPU waiting for GPU fences */
-@@ -2587,9 +2716,11 @@ static void ld_gt_init(void)
+@@ -2767,9 +2896,11 @@ static void ld_gt_init(void)
  {
      if (g_gt.on >= 0) return;
      g_gt.on = 0;
@@ -239,7 +239,7 @@ index 2fe417b..8a40400 100644
      UINT64 freq = 0;
      if (!g.queue || FAILED(g.queue->lpVtbl->GetTimestampFrequency(g.queue, &freq)) || !freq) return;
      D3D12_QUERY_HEAP_DESC qd = {0};
-@@ -2873,6 +3004,30 @@ static void ld_begin_recording(void)
+@@ -3053,6 +3184,30 @@ static void ld_begin_recording(void)
  {
      if (!g_ld_lazy_reset) return;
      g_ld_lazy_reset = 0;
@@ -270,15 +270,15 @@ index 2fe417b..8a40400 100644
      const u64 v = g.fence_value;
      if (g.fence->lpVtbl->GetCompletedValue(g.fence) < v) {
          const LONGLONG w0 = ld_pf_qpc();
-@@ -2882,6 +3037,7 @@ static void ld_begin_recording(void)
+@@ -3062,6 +3217,7 @@ static void ld_begin_recording(void)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
 +    }
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
-     ld_gt_begin();
-@@ -2922,6 +3078,7 @@ static void ld_flush(ld_flush_reason reason)
+     ld_bound_invalidate();
+@@ -3103,6 +3259,7 @@ static void ld_flush(ld_flush_reason reason)
      ID3D12CommandList* lists[] = {(ID3D12CommandList*)g.list};
      g.queue->lpVtbl->ExecuteCommandLists(g.queue, 1, lists);
      const u64 v = ++g.fence_value;
@@ -286,28 +286,29 @@ index 2fe417b..8a40400 100644
      ld_gt_submitted(gt_slot, v);
      ld_gp_submitted(gp_slot, v);
      const HRESULT signal_hr =
-@@ -2963,6 +3120,7 @@ static void ld_flush(ld_flush_reason reason)
+@@ -3144,6 +3301,7 @@ static void ld_flush(ld_flush_reason reason)
      for (u32 i = 0; i < g.n_retired_textures; i++)
          ld_tex_release(g.retired_textures[i]);
      g.n_retired_textures = 0;
 +    ld_slots_release_all();   /* patch 0063: the wait above covered every slot */
      g.alloc->lpVtbl->Reset(g.alloc);
      g.list->lpVtbl->Reset(g.list, g.alloc, NULL);
-     ld_gt_begin();
-@@ -7575,9 +7733,9 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
+     ld_bound_invalidate();
+@@ -7828,10 +7986,10 @@ static int ld_vjob_submit(u32 prim, const rsx_vertex_layout_plan* layout,
      if (!n_idx) return -2;
      const u64 vb_bytes = n * layout->stride;
      const u64 ib_bytes = n_idx * sizeof(u32);
 -    if (vb_bytes > VERT_BUFFER_SIZE || ib_bytes > INDEX_BUFFER_SIZE) return -3;
++    if (vb_bytes > g_ld_vb_cap || ib_bytes > g_ld_ib_cap) return -3;
+     ld_vb_align(layout->stride);
 -    if ((u64)g.vb_used + vb_bytes > VERT_BUFFER_SIZE ||
 -        (u64)g.ib_used + ib_bytes > INDEX_BUFFER_SIZE) {
-+    if (vb_bytes > g_ld_vb_cap || ib_bytes > g_ld_ib_cap) return -3;
 +    if ((u64)g.vb_used + vb_bytes > g_ld_vb_cap ||
 +        (u64)g.ib_used + ib_bytes > g_ld_ib_cap) {
          ld_flush(LD_FLUSH_VERTEX_RING);       /* drains the jobs first */
          g.vb_used = 0;
          g.ib_used = 0;
-@@ -9757,14 +9915,14 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10013,15 +10171,15 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          ? (const void*)dc.compact_verts : (const void*)dc.verts;
      draw_vb_bytes = (u64)uploaded_vertices * vertex_stride;
      draw_ib_bytes = indexed ? (u64)n_tri * sizeof(u32) : 0;
@@ -319,13 +320,32 @@ index 2fe417b..8a40400 100644
          g_ld_stats.group_drop_ring++;
          return;
      }
+     ld_vb_align(vertex_stride);
      if ((u64)g.vb_used + draw_vb_bytes > vb_capacity ||
 -        (u64)g.ib_used + draw_ib_bytes > INDEX_BUFFER_SIZE) {
 +        (u64)g.ib_used + draw_ib_bytes > g_ld_ib_cap) {
          /*
           * The replay-proven renderer recycles this upload ring mid-frame.
           * Live used to drop every remaining draw instead, which discarded
-@@ -10896,9 +11054,12 @@ static int make_depth_snapshot_pipeline(void)
+@@ -10787,7 +10945,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+     const INT base_vertex = ring_vb ? (INT)(g.vb_used / vertex_stride) : 0;
+     vbv.BufferLocation = ld_gpu_va(g.vb, &g_ld_va_vb) + (ring_vb ? 0 : g.vb_used);
+     vbv.StrideInBytes = vertex_stride;
+-    vbv.SizeInBytes = ring_vb ? VERT_BUFFER_SIZE : (u32)draw_vb_bytes;
++    vbv.SizeInBytes = ring_vb ? (u32)g_ld_vb_cap : (u32)draw_vb_bytes;   /* (0063: the slot's ring) */
+     if (vertex_stride && (!cache || !B->vbv_valid || memcmp(&B->vbv, &vbv, sizeof(vbv)) != 0)) {
+         g.list->lpVtbl->IASetVertexBuffers(g.list, 0, 1, &vbv);
+         B->vbv = vbv; g_ld_api_set++; g_ld_api_by[12]++; B->vbv_valid = 1;
+@@ -10833,7 +10991,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+         D3D12_INDEX_BUFFER_VIEW ibv;
+         const int ring_ib = ld_ring_views_on() && (g.ib_used & 3u) == 0;
+         ibv.BufferLocation = ld_gpu_va(g.ib, &g_ld_va_ib) + (ring_ib ? 0 : g.ib_used);
+-        ibv.SizeInBytes = ring_ib ? INDEX_BUFFER_SIZE : (u32)draw_ib_bytes;
++        ibv.SizeInBytes = ring_ib ? (u32)g_ld_ib_cap : (u32)draw_ib_bytes;   /* (0063: the slot's ring) */
+         ibv.Format = DXGI_FORMAT_R32_UINT;
+         if (!cache || !B->ibv_valid || memcmp(&B->ibv, &ibv, sizeof(ibv)) != 0) {
+             g.list->lpVtbl->IASetIndexBuffer(g.list, &ibv);
+@@ -11218,9 +11376,12 @@ static int make_depth_snapshot_pipeline(void)
   * PC display: a swap chain that follows the window's client size, a scaled and
   * letterboxed present blit, vsync on/off and exclusive fullscreen.
   *   PS3_INTERNAL_RES=<step>   internal resolution, rsx_internal_res_scale()
@@ -341,7 +361,7 @@ index 2fe417b..8a40400 100644
   *   PS3_VSYNC=0               present without waiting for vblank (tearing
   *                             allowed when the OS supports it)
   *   PS3_FULLSCREEN=exclusive  Alt+Enter/F11 (and startup) use DXGI exclusive
-@@ -10935,6 +11096,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
+@@ -11257,6 +11418,9 @@ static int ld_fs_exclusive_now(void) { return g_ldp.fs_exclusive; }
   *   PS3_INTERNAL_RES = lowest | lower | native | 1080p | 1440p | 4k
   *                      (0.5x / 0.75x / 1x = 720p / 1.5x / 2x / 3x)
   *                      or a factor 0.25..4, or an output height (360..2880)
@@ -351,7 +371,7 @@ index 2fe417b..8a40400 100644
   *
   * The launcher's Settings -> Internal resolution writes it. The two older
   * switches are aliases read the same way: PS3_RES_SCALE (patch 0010, higher
-@@ -10963,6 +11127,37 @@ static float ld_res_parse(const char* e, int* ok)
+@@ -11285,6 +11449,37 @@ static float ld_res_parse(const char* e, int* ok)
  }
  
  static const char* g_ld_res_source = "default";
@@ -389,7 +409,7 @@ index 2fe417b..8a40400 100644
  
  float rsx_internal_res_scale(void)
  {
-@@ -10971,7 +11166,12 @@ float rsx_internal_res_scale(void)
+@@ -11293,7 +11488,12 @@ float rsx_internal_res_scale(void)
      float s = 1.0f;
      int ok = 0;
      const char* e = getenv("PS3_INTERNAL_RES");
@@ -403,7 +423,7 @@ index 2fe417b..8a40400 100644
          s = ld_res_parse(e, &ok);
          g_ld_res_source = ok ? "PS3_INTERNAL_RES" : "default (PS3_INTERNAL_RES not understood)";
          if (!ok) fprintf(stderr, "[display] PS3_INTERNAL_RES=%s not understood; native\n", e);
-@@ -10995,8 +11195,10 @@ float rsx_internal_res_scale(void)
+@@ -11317,8 +11517,10 @@ float rsx_internal_res_scale(void)
  const char* rsx_internal_res_label(void)
  {
      static char label[48];
@@ -415,7 +435,7 @@ index 2fe417b..8a40400 100644
          if (s == 0.5f)        snprintf(label, sizeof label, "Lowest (0.5x)");
          else if (s == 0.75f)  snprintf(label, sizeof label, "Lower (0.75x)");
          else if (s == 1.0f)   snprintf(label, sizeof label, "Native (720p)");
-@@ -11707,12 +11909,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -12030,12 +12232,16 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
      D3D12_RANGE rr = {0, 0};
      g.upload->lpVtbl->Map(g.upload, 0, &rr, (void**)&g.upload_mapped);
  
@@ -434,7 +454,7 @@ index 2fe417b..8a40400 100644
      g.dev->lpVtbl->CreateCommittedResource(g.dev, &hp, D3D12_HEAP_FLAG_NONE, &bd,
          D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&g.ib);
      g.ib->lpVtbl->Map(g.ib, 0, &rr, (void**)&g.ib_mapped);
-@@ -11766,6 +11972,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
+@@ -12089,6 +12295,7 @@ int rsx_live_draw_init(void* hwnd, u32 width, u32 height,
          def.MaxLOD = D3D12_FLOAT32_MAX; def.MaxAnisotropy = 1;
          g.dev->lpVtbl->CreateSampler(g.dev, &def, smp_cpu(SMP_DEFAULT));
      }
@@ -442,7 +462,7 @@ index 2fe417b..8a40400 100644
  
      /* depth */
      D3D12_DESCRIPTOR_HEAP_DESC dhd = {0};
-@@ -12161,6 +12368,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
+@@ -12484,6 +12691,10 @@ void rsx_live_draw_present_rgba(const uint8_t* rgba, u32 w, u32 h)
          return;
      }
  

@@ -12,7 +12,8 @@ at the end can be pasted to players as it is.
   renderer would save perhaps 0.3 ms of that (0.6-0.7 ms on a slow CPU): a
   few percent, for weeks of work and a second renderer to keep correct. The
   same few percent can be had in the D3D12 path (see [D3D12 or
-  Vulkan](#d3d12-or-vulkan)).
+  Vulkan](#d3d12-or-vulkan)), and patch 0062 took them: the D3D12 recording
+  halved, the whole translation a quarter shorter.
 - **What limits those players is the speed of one CPU core.** The game's
   main thread (Namco's code, recompiled) needs 5-6 ms per fight frame on this
   PC's fast cores, 8-10 ms on 2-4 slower or shared cores. Add the render
@@ -208,15 +209,15 @@ game part (5-6 ms here) is the larger share of the critical path everywhere.
   Optimistically that halves the recording part: **~0.3 ms per frame here,
   ~0.6-0.7 ms on a CPU with half the per-core speed** -- 3 % of a 20 ms
   frame. The game part, the walk, the texture hashing and the GPU work stay.
-- The same saving is open in D3D12: copy the 16-entry SRV table only when it
-  changed (today every draw copies one), and skip state that did not change
-  since the previous draw (descriptor heaps, root signature, render targets,
-  viewport, scissor, stencil reference). Estimated 0.2-0.3 ms per frame here.
-  Not done in 0059: every pass that binds its own state (copies, the stage
-  filter's guest view, depth snapshots, present filters, the overlay) would
-  have to invalidate the cache, and a missed one draws wrong; it is worth it
-  only with a frame-exact picture comparison of every stage, for ~2 % of a
-  frame.
+- The same saving was open in D3D12, and patch 0062 (branch `xlat-cpu`)
+  took it: a descriptor table is copied only when no earlier table holds the
+  same descriptors, state is recorded only when it differs from what the
+  command list already has bound (every pass that binds its own state forgets
+  the cache), one vertex and index buffer view serves the whole upload ring.
+  D3D12 recording 0.78 -> 0.39 ms per frame (median, paired runs on a loaded
+  PC), and with a cheaper command walk and PSO key the whole translation
+  3.23 -> 2.47 ms; lockstep pairs, old build against new, dump byte-identical
+  surfaces of the same frames. Details: docs/RENDER_PERF.md "Translation CPU".
 - Cost of a Vulkan backend: `rsx_live_draw.c` is 13,600 lines of D3D12
   (surfaces with scale factors, depth snapshots, texture pool, PSO library
   and prewarm, filters, the overlay, DRED). A second backend means writing

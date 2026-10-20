@@ -183,6 +183,8 @@ class OnlineTab:
         self.new_window = tk.Toplevel                # the tab's own windows (tests make hidden ones)
         self.bring_forward = winfront.raise_window    # the launcher's window to the front (tests replace it)
         self._fronted = None                          # what it last came forward for (once per match / question)
+        self.bring_game_forward = winfront.raise_game_window   # the game's window to the front (tests replace it)
+        self._game_fronted = None                     # the match the game's window last came forward for
         self.codes_window = None
         self.ready_deadline = None       # monotonic time the ready check ends (accepting is still possible)
         self.ready_sent = False          # we accepted: waiting for the opponent
@@ -461,6 +463,7 @@ class OnlineTab:
                 self.on_driver(n)
         self._tick_ready()
         self._tick_set()
+        self._invite_wait_tick()
         self._relogin_tick()
         self._presence_tick()
         self._show_notice()
@@ -990,6 +993,11 @@ class OnlineTab:
         my_room = next((r for r in getattr(self.client, "rooms", None) or [] if me.get("id") in (r.get("members") or [])),
                        None)
         pending = self.outgoing_invite is not None
+        # after a no (or a take-back) the server holds the next invite to this friend back: both invite buttons
+        # off, one counting down the seconds the server said (_invite_wait_tick redraws it every second)
+        wait = 0 if pending else self._invite_wait(f)
+        self._invite_wait_shown = (f.get("name") if f else None, wait)
+        free = free and not wait
         kind, _name = self._selected_request() if ok else (None, None)
         on = {"add": ok, "remove": f is not None,
               "invite": ok and (pending or (free and me.get("status") in ("idle", "queue"))),
@@ -1001,12 +1009,40 @@ class OnlineTab:
                 b.configure(state="normal" if on.get(key) else "disabled")
             except tk.TclError:
                 pass
-        text = t("Cancel the invite") if pending else t("Invite to a match")
+        texts = {"invite": t("Cancel the invite") if pending else t("Invite to a match"),
+                 "invite_room": t("Invite to my room")}
+        if wait:
+            # the seconds go on the button this player would use now: the room's while in a room, else the match's
+            # (only one of the two can be on; the short text keeps the page as wide as before in every language)
+            texts["invite_room" if me.get("status") == "room" else "invite"] = t("Invite in {seconds} s",
+                                                                                 seconds=wait)
+        for key, text in texts.items():
+            try:
+                if key in acts and str(acts[key].cget("text")) != text:
+                    acts[key].configure(text=text)
+            except tk.TclError:
+                pass
+
+    def _invite_wait(self, f):
+        """Seconds until the server takes an invite to friend `f` again (0: now) -- the server's number, counted
+        down by the client (LobbyClient.invite_wait); never a guess of ours."""
+        c = self.client
+        fn = getattr(c, "invite_wait", None) if c is not None else None
+        if f is None or fn is None:
+            return 0
         try:
-            if str(acts["invite"].cget("text")) != text:
-                acts["invite"].configure(text=text)
-        except tk.TclError:
-            pass
+            return int(fn(f.get("name")) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _invite_wait_tick(self):
+        """Every poll: redraw the invite buttons when the selected friend's wait shows another second (or ends)."""
+        if not getattr(self, "friend_actions", None):
+            return
+        f = self._selected_friend() if self._friends_ok() else None
+        wait = 0 if self.outgoing_invite is not None else self._invite_wait(f)
+        if (f.get("name") if f else None, wait) != getattr(self, "_invite_wait_shown", None):
+            self._set_friend_actions()
 
     def do_add_friend(self):
         name = self.friend_name_var.get().strip()
@@ -1425,6 +1461,8 @@ class OnlineTab:
         if k == "status":
             self.status(n["text"])
         elif k == "game_state":
+            if n.get("state") in ("pick", "loading", "fight"):
+                self._game_forward(n.get("match"))
             # the fight started: show who fights (with the in-game select, what the players picked)
             if n.get("state") == "fight" and n.get("chars") and self._match_info is not None:
                 self._match_info["fight"] = tuple(n["chars"])
@@ -1470,6 +1508,30 @@ class OnlineTab:
             self.bring_forward(self.parent)
         except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
             pass
+
+    def _game_forward(self, key):
+        """A match starts in the game (its in-game select, else its loading): if the launcher's window is the
+        foreground window -- the player just clicked Accept / Rematch / Next game here, the game behind it --
+        the game's window goes to the front, as it does when the launcher starts the game. The game reads the
+        keyboard only while its own window has the focus (pads work either way). Once per match; never while
+        another program is in front, never with Settings "start minimized" (tests)."""
+        if key is None or key == self._game_fronted:
+            return
+        self._game_fronted = key
+        try:
+            if self.app.settings.get("background") or not self.launcher_in_front():
+                return
+            game = getattr(self.app, "game", None)
+            proc = getattr(game, "proc", None)
+            if proc is not None and game.running():
+                self.bring_game_forward(proc.pid)
+        except Exception:                           # noqa: BLE001 -- a window that cannot come forward is no error
+            pass
+
+    def launcher_in_front(self):
+        """Is the launcher's window the foreground window? (Tk thread; tests replace it.)"""
+        hwnd = padnav.toplevel_hwnd(self.parent.winfo_toplevel())
+        return bool(hwnd) and padnav.window_foreground_check(hwnd)()
 
     def _answer_result(self, what):
         self.hide_bar()

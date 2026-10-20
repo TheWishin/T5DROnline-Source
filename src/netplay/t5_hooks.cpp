@@ -78,6 +78,7 @@
 #include "netplay.h"
 #include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
+#include "match_score.h"  /* a decided match's score: the fighters' round counts (docs/NETPLAY.md "Match result") */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
@@ -98,8 +99,6 @@ void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_cont
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
 int32_t cellPadGetInfo(void* info_guest);
 int32_t cellPadGetData(uint32_t port, void* data_guest);
-struct np_host_pad { int32_t len; uint16_t button[64]; };
-int32_t cellPad_sample_local(uint32_t port_no, np_host_pad* out);   /* patch 0009: this PC's input on a port (replay controls) */
 uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc, uint64_t a0, uint64_t a1, uint64_t a2,
                            uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7);
 typedef int64_t (*np_lv2_fn)(ppu_context*);
@@ -133,8 +132,8 @@ constexpr uint32_t kRingReadIdx   = 0x104CCE40;
 constexpr uint32_t kFrameClock    = 0x106D4D88;  /* u64 read by the pad repeat logic; +8: vblank count */
 constexpr uint32_t kTOC           = 0x470540;    /* main TOC (r2) */
 constexpr uint32_t kMatchOver     = 0x1008EBD5;  /* u8: 0 during a match, set when it is decided */
-constexpr uint32_t kWinsP1        = 0x1008EBDA;  /* u8: rounds won by P1 in this match */
-constexpr uint32_t kWinsP2        = 0x1008EBDB;  /* u8: rounds won by P2 */
+constexpr uint32_t kWinsP1        = np::MatchScore::kRoundWinsP1;  /* u8: rounds won by P1 in this match (match_score.h) */
+constexpr uint32_t kWinsP2        = np::MatchScore::kRoundWinsP2;  /* u8: rounds won by P2 */
 constexpr uint32_t kWinnerIdx     = 0x1008EBD6;  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 constexpr uint32_t kFnTickCounter = 0x09A204;
 constexpr uint32_t kFnPadUpdate   = 0x08F3A4;
@@ -815,11 +814,11 @@ void drain_workers(uint32_t f)
     if (ms >= 0) rb::net::load_seen(f, ms);
 }
 
-/* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). From the
- * round state block at 0x1008EBD0: +0xA/+0xB count the rounds P1/P2 won; +0x5
- * stays 0 through every round of a match and turns non-zero when the match is
- * over (and back to 0 when the next one starts). Found by dumping a whole
- * two-round match every 300 frames.
+/* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). The round
+ * state block at 0x1008EBD0: +0x5 stays 0 through every round of a match and
+ * turns 1 / 2 / 3 (P1 won, P2 won, a draw) when the match is over (back to 0
+ * when the next one starts). The rounds each player won: the fighters' counts
+ * (match_score.h; before 1.1.3 the block's +0xA/+0xB, which are not that).
  *
  *   {"match": "<lobby match id>", "winner": 0|1|null, "score": [p1, p2],
  *    "desync": <mismatching frames since this match's sync point>, "frames": <played>,
@@ -908,11 +907,8 @@ void flush_result(bool now)
 void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
 {
     const uint8_t over = rd8(kMatchOver);
-    uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
-    if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 in direct fights: use the winner byte */
-        const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
-        if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
-    }
+    const np::MatchScore sc = np::MatchScore::of(rd8(kWinsP1), rd8(kWinsP2), rd8(kMatchOver), rd8(kWinnerIdx), rd8(kRoundsToWin));
+    const uint8_t w1 = over ? (uint8_t)sc.p1 : 0, w2 = over ? (uint8_t)sc.p2 : 0;
     if (!over && g_pending.on && rb::net::active() && f < g_pending.f + 600) {
         /* rollback: the match end was seen on a predicted frame and the
          * correction undid it -- not a result */
@@ -932,6 +928,10 @@ void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
     g_matches++;
     np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
              w1 == w2 ? "none (draw)" : (w1 > w2 ? "P1" : "P2"));
+    if (!sc.counted)
+        np::note("frame %u: the fighters' round counts (%u, %u) do not fit the match (rounds to win %u, decided byte %u, "
+                 "winner byte %u): score from the decided byte", f, rd8(kWinsP1), rd8(kWinsP2), rd8(kRoundsToWin),
+                 rd8(kMatchOver), rd8(kWinnerIdx));
     no_pause_report(f, "the match");
     g_pending = { true, f, w1, w2, hash, have_hash, GetTickCount64() };
     flush_result(false);
@@ -962,7 +962,10 @@ void write_end_result(const char* reason)
     LeaveCriticalSection(&g_result_cs);
     if (already) return;               /* this match's result is out; nothing to add */
     const uint32_t frames = g_frame > g_match_f0 ? g_frame - g_match_f0 : 0;
-    write_result("null", rd8(kWinsP1), rd8(kWinsP2), reason, frames, false, 0, g_frame);
+    /* the rounds won so far; none while the last match's decided byte is still up (its counts, until this
+     * match's game mode clears them) */
+    const bool stale = rd8(kMatchOver) != 0;
+    write_result("null", stale ? 0 : rd8(kWinsP1), stale ? 0 : rd8(kWinsP2), reason, frames, false, 0, g_frame);
 }
 
 void end_session(const char* reason, bool from_network_thread = false)
@@ -1154,8 +1157,9 @@ uint16_t replay_pad()
     static int on = -1;   /* T5_REPLAY_CONTROLS=0: the pad does not steer the playback (tests on a PC in use) */
     if (on < 0) { const char* e = getenv("T5_REPLAY_CONTROLS"); on = !(e && *e == '0'); }
     if (!on) return 0;
-    np_host_pad d = {};
-    if (cellPad_sample_local(0, &d) != 0 || d.len == 0) return 0;
+    HostPadData d = {};
+    np::local_player_sample(&d);           /* any of this PC's controllers (local_pad.cpp) */
+    if (d.len == 0) return 0;
     return (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
 }
 

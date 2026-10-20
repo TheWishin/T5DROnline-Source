@@ -73,6 +73,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "DirectInput 컨트롤러",
     "Xbox pad (XInput)": "Xbox 패드 (XInput)",
+    "PlayStation pad, read directly": "PlayStation 패드 (직접 읽기)",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "화살표로 이동. 위의 A S가 1 2, 아래 Z X가 3 4. Q W가 L1 R1, 1 2가 L2 R2, Enter가 Start, Tab이 Select.",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "화살표로 이동. 숫자 패드 4 5가 1 2, 1 2가 3 4, 6이 1+2, 3이 3+4 (Num Lock 켜기).",
+    "Esc (leaves the game)": "Esc (게임 종료)",
+    "F11 (fullscreen)": "F11 (전체 화면)",
+    "F2 (training overlay)": "F2 (트레이닝 표시)",
+    "Keyboard, second player": "키보드, 두 번째 플레이어",
+    "Keyboard: WASD and U I J K": "키보드: WASD와 U I J K",
+    "Keyboard: arrows and A S Z X": "키보드: 화살표와 A S Z X",
+    "Keyboard: arrows and number pad": "키보드: 화살표와 숫자 패드",
+    'Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.': '키보드: 게임 버튼을 고른 뒤 "선택한 버튼 설정"(또는 더블 클릭)을 누르고 키를 누르세요. Esc로 중지합니다. 게임은 창에 포커스가 있을 때 키보드를 읽습니다.',
+    "Press only that one key. Esc stops.": "그 키 하나만 누르세요. Esc로 중지합니다.",
+    "Press the key for {button}...": "{button}에 쓸 키를 누르세요...",
+    "The keyboard ([{section}] in controls.ini)": "키보드 (controls.ini의 [{section}])",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D로 이동. U I가 1 2, J K가 3 4, O가 1+2, L이 3+4. Y P가 L1 R1, H와 ;가 L2 R2, Enter가 Start, Backspace가 Select.",
+    "{key} is the game's own key; press another one.": '{key}은(는) 게임 자체가 쓰는 키입니다. 다른 키를 누르세요.',
+    "{source} is also {other} for the second keyboard player.": "{source}은(는) 두 번째 키보드 플레이어에게는 {other}이기도 합니다.",
     "Controls - T5DR Online": "조작 설정 - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -376,8 +393,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "'로비에서 대기 중', 'Ranked 검색 중' 또는 내 매치(캐릭터, Ranked 세트 점수)를 시간과 함께 이 PC의 Discord "
         "앱으로 표시합니다. Discord가 실행 중이 아니면 아무 일도 일어나지 않습니다.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "이 사본에는 아직 Discord 애플리케이션 ID가 없어 지금은 아무 효과가 없습니다.",
     "Power saving (laptops, handhelds)": "절전 (노트북, 휴대용 PC)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -808,6 +823,7 @@ MESSAGES = {
     "create a room first, then invite": "먼저 방을 만든 뒤 초대하세요",
     "that friend is busy right now": "그 친구는 지금 바쁩니다",
     "one invite at a time": "초대는 한 번에 하나만",
+    "wait a moment before inviting again": "잠시 기다린 뒤 다시 초대하세요",
     "that player has invites pending": "그 플레이어에게 대기 중인 초대가 있습니다",
     "that invite is over": "그 초대는 끝났습니다",
     "the invite is no longer possible": "더 이상 초대할 수 없습니다",
@@ -1600,6 +1616,7 @@ MESSAGES = {
     "Friends": "친구",
     "Invite to a match": "매치에 초대",
     "Invite to my room": "내 방에 초대",
+    "Invite in {seconds} s": "{seconds}초 후 초대",
     "Remove": "삭제",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "접속 중인 친구를 초대하세요: 상대가 한 번 클릭하면 일반 매치가 시작되거나 내 방으로 들어옵니다.",

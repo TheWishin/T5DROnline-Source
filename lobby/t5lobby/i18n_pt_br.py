@@ -73,6 +73,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "Controle DirectInput",
     "Xbox pad (XInput)": "Controle Xbox (XInput)",
+    "PlayStation pad, read directly": "Controle PlayStation, lido diretamente",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "As setas movem; A S em cima são 1 2, Z X embaixo são 3 4. Q W são L1 R1, 1 2 são L2 R2, Enter é Start, Tab é Select.",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "As setas movem; teclado numérico 4 5 são 1 2, 1 2 são 3 4, 6 é 1+2, 3 é 3+4 (Num Lock ligado).",
+    "Esc (leaves the game)": "Esc (sai do jogo)",
+    "F11 (fullscreen)": "F11 (tela cheia)",
+    "F2 (training overlay)": "F2 (painel de treino)",
+    "Keyboard, second player": "Teclado, segundo jogador",
+    "Keyboard: WASD and U I J K": "Teclado: WASD e U I J K",
+    "Keyboard: arrows and A S Z X": "Teclado: setas e A S Z X",
+    "Keyboard: arrows and number pad": "Teclado: setas e teclado numérico",
+    'Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.': 'Teclado: escolha um botão do jogo, depois "Configurar selecionado" (ou clique duplo) e aperte a tecla. Esc para. O jogo lê o teclado enquanto a janela dele tem o foco.',
+    "Press only that one key. Esc stops.": "Aperte só essa tecla. Esc para.",
+    "Press the key for {button}...": "Aperte a tecla para {button}...",
+    "The keyboard ([{section}] in controls.ini)": "O teclado ([{section}] no controls.ini)",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D movem; U I são 1 2, J K são 3 4, O é 1+2, L é 3+4. Y P são L1 R1, H e ; são L2 R2, Enter é Start, Backspace é Select.",
+    "{key} is the game's own key; press another one.": '{key} é uma tecla do próprio jogo; aperte outra.',
+    "{source} is also {other} for the second keyboard player.": "{source} também é {other} para o segundo jogador do teclado.",
     "Controls - T5DR Online": "Controles - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -384,8 +401,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "“No lobby”, “Procurando Ranked” ou sua partida (lutadores, placar do set Ranked) com um cronômetro, pelo "
         "app do Discord neste PC. Sem o Discord aberto, nada acontece.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Esta cópia ainda não tem um ID de aplicativo do Discord, então por enquanto isto não faz nada.",
     "Power saving (laptops, handhelds)": "Economia de energia (notebooks, portáteis)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -824,6 +839,7 @@ MESSAGES = {
     "create a room first, then invite": "primeiro crie uma sala, depois convide",
     "that friend is busy right now": "esse amigo está ocupado agora",
     "one invite at a time": "um convite por vez",
+    "wait a moment before inviting again": "espere um momento antes de convidar de novo",
     "that player has invites pending": "esse jogador tem convites pendentes",
     "that invite is over": "esse convite acabou",
     "the invite is no longer possible": "o convite não é mais possível",
@@ -1628,6 +1644,7 @@ MESSAGES = {
     "Friends": "Amigos",
     "Invite to a match": "Convidar para uma partida",
     "Invite to my room": "Convidar para minha sala",
+    "Invite in {seconds} s": "Convidar em {seconds} s",
     "Remove": "Remover",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Convide um amigo que está online: um clique do lado dele começa uma partida casual ou o traz para a sua "

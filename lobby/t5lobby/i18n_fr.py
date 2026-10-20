@@ -73,6 +73,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "Manette DirectInput",
     "Xbox pad (XInput)": "Manette Xbox (XInput)",
+    "PlayStation pad, read directly": "Manette PlayStation, lue directement",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "Les flèches déplacent ; A S en haut sont 1 2, Z X en dessous 3 4. Q W sont L1 R1, 1 2 sont L2 R2, Entrée est Start, Tab est Select.",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "Les flèches déplacent ; pavé numérique 4 5 sont 1 2, 1 2 sont 3 4, 6 est 1+2, 3 est 3+4 (Verr Num actif).",
+    "Esc (leaves the game)": "Échap (quitte le jeu)",
+    "F11 (fullscreen)": "F11 (plein écran)",
+    'F2 (training overlay)': "F2 (affichage d'entraînement)",
+    "Keyboard, second player": "Clavier, second joueur",
+    "Keyboard: WASD and U I J K": "Clavier : WASD et U I J K",
+    "Keyboard: arrows and A S Z X": "Clavier : flèches et A S Z X",
+    "Keyboard: arrows and number pad": "Clavier : flèches et pavé numérique",
+    "Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.": "Clavier : choisis un bouton du jeu, puis « Régler la sélection » (ou double-clic) et appuie sur la touche. Échap arrête. Le jeu lit le clavier tant que sa fenêtre a le focus.",
+    "Press only that one key. Esc stops.": "Appuie sur cette seule touche. Échap arrête.",
+    "Press the key for {button}...": "Appuie sur la touche pour {button}...",
+    "The keyboard ([{section}] in controls.ini)": "Le clavier ([{section}] dans controls.ini)",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D déplacent ; U I sont 1 2, J K sont 3 4, O est 1+2, L est 3+4. Y P sont L1 R1, H et ; sont L2 R2, Entrée est Start, Retour arrière est Select.",
+    "{key} is the game's own key; press another one.": '{key} est une touche du jeu lui-même ; appuie sur une autre.',
+    "{source} is also {other} for the second keyboard player.": "{source} est aussi {other} pour le second joueur au clavier.",
     "Controls - T5DR Online": "Commandes - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -391,8 +408,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "« Dans le lobby », « Recherche Ranked » ou ton match (personnages, score du set Ranked) avec un chrono, via "
         "l'appli Discord de ce PC. Sans Discord lancé, rien ne se passe.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Cette copie n'a pas encore d'ID d'application Discord, donc ça ne fait rien pour l'instant.",
     "Power saving (laptops, handhelds)": "Économie d'énergie (portables, handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -839,6 +854,7 @@ MESSAGES = {
     "create a room first, then invite": "crée d'abord un salon, puis invite",
     "that friend is busy right now": "cet ami est occupé en ce moment",
     "one invite at a time": "une invitation à la fois",
+    "wait a moment before inviting again": "attends un instant avant d'inviter à nouveau",
     "that player has invites pending": "ce joueur a des invitations en attente",
     "that invite is over": "cette invitation est terminée",
     "the invite is no longer possible": "l'invitation n'est plus possible",
@@ -1664,6 +1680,7 @@ MESSAGES = {
     "Friends": "Amis",
     "Invite to a match": "Inviter à un match",
     "Invite to my room": "Inviter dans mon salon",
+    "Invite in {seconds} s": "Inviter dans {seconds} s",
     "Remove": "Supprimer",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Invite un ami en ligne : un clic de son côté lance un match amical, ou le fait entrer dans ton salon.",

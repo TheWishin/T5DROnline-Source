@@ -73,6 +73,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "DirectInputコントローラー",
     "Xbox pad (XInput)": "Xboxパッド（XInput）",
+    "PlayStation pad, read directly": "PlayStationパッド（直接読み取り）",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "矢印キーで移動。上の A S が 1 2、下の Z X が 3 4。Q W が L1 R1、1 2 が L2 R2、Enter が Start、Tab が Select。",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "矢印キーで移動。テンキー 4 5 が 1 2、1 2 が 3 4、6 が 1+2、3 が 3+4（NumLock オン）。",
+    "Esc (leaves the game)": "Esc（ゲームを終了）",
+    "F11 (fullscreen)": "F11（フルスクリーン）",
+    "F2 (training overlay)": "F2（トレーニング表示）",
+    "Keyboard, second player": "キーボード（2人目）",
+    "Keyboard: WASD and U I J K": "キーボード: WASD と U I J K",
+    "Keyboard: arrows and A S Z X": "キーボード: 矢印キーと A S Z X",
+    "Keyboard: arrows and number pad": "キーボード: 矢印キーとテンキー",
+    "Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.": "キーボード: ゲームのボタンを選び、「選択したボタンを設定」（またはダブルクリック）を押してからキーを押してください。Esc で中止。ゲームはウィンドウにフォーカスがある間キーボードを読みます。",
+    "Press only that one key. Esc stops.": "そのキーだけを押してください。Esc で中止。",
+    "Press the key for {button}...": "{button} に使うキーを押してください...",
+    "The keyboard ([{section}] in controls.ini)": "キーボード（controls.ini の [{section}]）",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D で移動。U I が 1 2、J K が 3 4、O が 1+2、L が 3+4。Y P が L1 R1、H と ; が L2 R2、Enter が Start、Backspace が Select。",
+    "{key} is the game's own key; press another one.": '{key} はゲーム自体が使うキーです。別のキーを押してください。',
+    "{source} is also {other} for the second keyboard player.": "{source} は2人目のキーボードプレイヤーでは {other} でもあります。",
     "Controls - T5DR Online": "操作設定 - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -379,8 +396,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "「ロビーで待機中」「Ranked 検索中」、または対戦（キャラクター、Ranked セットのスコア）を経過時間つきで、この"
         "PCの Discord アプリを通じて表示します。Discord が起動していなければ何も起きません。",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "このコピーにはまだ Discord のアプリケーションIDがないため、今は何も起きません。",
     "Power saving (laptops, handhelds)": "省電力（ノートPC、携帯型PC）",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -818,6 +833,7 @@ MESSAGES = {
     "create a room first, then invite": "先にルームを作成してから招待してください",
     "that friend is busy right now": "そのフレンドは今取り込み中です",
     "one invite at a time": "招待は一度に1つだけです",
+    "wait a moment before inviting again": "少し待ってから、もう一度招待してください",
     "that player has invites pending": "そのプレイヤーには保留中の招待があります",
     "that invite is over": "その招待は終了しています",
     "the invite is no longer possible": "この招待はもうできません",
@@ -1628,6 +1644,7 @@ MESSAGES = {
     "Friends": "フレンド",
     "Invite to a match": "対戦に招待",
     "Invite to my room": "自分のルームに招待",
+    "Invite in {seconds} s": "招待まであと {seconds} 秒",
     "Remove": "削除",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "オンラインのフレンドを招待しましょう：相手のワンクリックでカジュアル対戦が始まるか、あなたのルームに入ります"

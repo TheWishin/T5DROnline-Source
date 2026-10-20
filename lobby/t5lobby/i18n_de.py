@@ -81,6 +81,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "DirectInput-Controller",
     "Xbox pad (XInput)": "Xbox-Pad (XInput)",
+    "PlayStation pad, read directly": "PlayStation-Pad, direkt gelesen",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "Pfeiltasten bewegen; A S oben sind 1 2, Z X darunter 3 4. Q W sind L1 R1, 1 2 sind L2 R2, Enter ist Start, Tab ist Select.",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "Pfeiltasten bewegen; Ziffernblock 4 5 sind 1 2, 1 2 sind 3 4, 6 ist 1+2, 3 ist 3+4 (Num-Taste an).",
+    "Esc (leaves the game)": "Esc (verlässt das Spiel)",
+    "F11 (fullscreen)": "F11 (Vollbild)",
+    "F2 (training overlay)": "F2 (Trainingsanzeige)",
+    "Keyboard, second player": "Tastatur, zweiter Spieler",
+    "Keyboard: WASD and U I J K": "Tastatur: WASD und U I J K",
+    "Keyboard: arrows and A S Z X": "Tastatur: Pfeiltasten und A S Z X",
+    "Keyboard: arrows and number pad": "Tastatur: Pfeiltasten und Ziffernblock",
+    'Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.': 'Tastatur: wähle eine Spieltaste, dann "Ausgewählte einstellen" (oder Doppelklick) und drücke die Taste. Esc bricht ab. Das Spiel liest die Tastatur, solange sein Fenster den Fokus hat.',
+    "Press only that one key. Esc stops.": "Drücke nur diese eine Taste. Esc bricht ab.",
+    "Press the key for {button}...": "Drücke die Taste für {button}...",
+    "The keyboard ([{section}] in controls.ini)": "Die Tastatur ([{section}] in der controls.ini)",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D bewegen; U I sind 1 2, J K sind 3 4, O ist 1+2, L ist 3+4. Y P sind L1 R1, H und ; sind L2 R2, Enter ist Start, Rücktaste ist Select.",
+    "{key} is the game's own key; press another one.": '{key} ist eine Taste des Spiels selbst; drücke eine andere.',
+    "{source} is also {other} for the second keyboard player.": "{source} ist für den zweiten Tastatur-Spieler auch {other}.",
     "Controls - T5DR Online": "Steuerung - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -415,8 +432,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "„In der Lobby“, „Sucht ein Ranked-Match“ oder dein Match (Kämpfer, Stand im Ranked-Set) mit Zeit, über die "
         "Discord-App auf diesem PC. Läuft Discord nicht, passiert nichts.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Diese Kopie hat noch keine Discord-Application-ID, daher tut das vorerst nichts.",
     "Power saving (laptops, handhelds)": "Stromsparen (Laptops, Handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -883,6 +898,7 @@ MESSAGES = {
     "create a room first, then invite": "Erstelle zuerst einen Raum, dann lade ein",
     "that friend is busy right now": "Dieser Freund ist gerade beschäftigt",
     "one invite at a time": "Immer nur eine Einladung",
+    "wait a moment before inviting again": "Warte einen Moment, bevor du wieder einlädst",
     "that player has invites pending": "Dieser Spieler hat noch offene Einladungen",
     "that invite is over": "Diese Einladung ist vorbei",
     "the invite is no longer possible": "Die Einladung ist nicht mehr möglich",
@@ -1749,6 +1765,7 @@ MESSAGES = {
     "Friends": "Freunde",
     "Invite to a match": "Zum Match einladen",
     "Invite to my room": "In den Raum einladen",
+    "Invite in {seconds} s": "Einladen in {seconds} s",
     "Remove": "Entfernen",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Lade einen Freund ein, der online ist: Ein Klick auf seiner Seite startet ein Casual-Match oder holt ihn "

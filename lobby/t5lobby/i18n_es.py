@@ -74,6 +74,23 @@ MESSAGES = {
     # ---- launcher/controls_ui.py
     "DirectInput controller": "Control DirectInput",
     "Xbox pad (XInput)": "Control Xbox (XInput)",
+    "PlayStation pad, read directly": "Control PlayStation, leído directamente",
+    "Arrows move; A S on top are 1 2, Z X below are 3 4. Q W are L1 R1, 1 2 are L2 R2, Enter is Start, Tab is Select.": "Las flechas mueven; A S arriba son 1 2, Z X abajo son 3 4. Q W son L1 R1, 1 2 son L2 R2, Enter es Start, Tab es Select.",
+    "Arrows move; number pad 4 5 are 1 2, 1 2 are 3 4, 6 is 1+2, 3 is 3+4 (Num Lock on).": "Las flechas mueven; teclado numérico 4 5 son 1 2, 1 2 son 3 4, 6 es 1+2, 3 es 3+4 (Bloq Num activado).",
+    "Esc (leaves the game)": "Esc (sale del juego)",
+    "F11 (fullscreen)": "F11 (pantalla completa)",
+    "F2 (training overlay)": "F2 (panel de entrenamiento)",
+    "Keyboard, second player": "Teclado, segundo jugador",
+    "Keyboard: WASD and U I J K": "Teclado: WASD y U I J K",
+    "Keyboard: arrows and A S Z X": "Teclado: flechas y A S Z X",
+    "Keyboard: arrows and number pad": "Teclado: flechas y teclado numérico",
+    'Keyboard: pick a game button, then Set selected (or double-click it) and press the key. Esc stops. The game reads the keyboard while its window has the focus.': 'Teclado: elige un botón del juego, luego "Asignar seleccionado" (o doble clic) y presiona la tecla. Esc detiene. El juego lee el teclado mientras su ventana tiene el foco.',
+    "Press only that one key. Esc stops.": "Presiona solo esa tecla. Esc detiene.",
+    "Press the key for {button}...": "Presiona la tecla para {button}...",
+    "The keyboard ([{section}] in controls.ini)": "El teclado ([{section}] en controls.ini)",
+    "W A S D move; U I are 1 2, J K are 3 4, O is 1+2, L is 3+4. Y P are L1 R1, H and ; are L2 R2, Enter is Start, Backspace is Select.": "W A S D mueven; U I son 1 2, J K son 3 4, O es 1+2, L es 3+4. Y P son L1 R1, H y ; son L2 R2, Enter es Start, Retroceso es Select.",
+    "{key} is the game's own key; press another one.": '{key} es una tecla del propio juego; presiona otra.',
+    "{source} is also {other} for the second keyboard player.": "{source} también es {other} para el segundo jugador del teclado.",
     "Controls - T5DR Online": "Controles - T5DR Online",
     "Press a button on a controller to pick it, then set its buttons. The game reads the "
     "file when it starts.":
@@ -388,8 +405,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "“En el lobby”, “Buscando Ranked” o tu partida (personajes, marcador del set Ranked) con un temporizador, a "
         "través de la app de Discord en esta PC. Sin Discord abierto no pasa nada.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Esta copia aún no tiene un ID de aplicación de Discord, así que por ahora no hace nada.",
     "Power saving (laptops, handhelds)": "Ahorro de energía (laptops, handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -835,6 +850,7 @@ MESSAGES = {
     "create a room first, then invite": "primero crea una sala y luego invita",
     "that friend is busy right now": "ese amigo está ocupado ahora",
     "one invite at a time": "una invitación a la vez",
+    "wait a moment before inviting again": "espera un momento antes de volver a invitar",
     "that player has invites pending": "ese jugador tiene invitaciones pendientes",
     "that invite is over": "esa invitación terminó",
     "the invite is no longer possible": "la invitación ya no es posible",
@@ -1644,6 +1660,7 @@ MESSAGES = {
     "Friends": "Amigos",
     "Invite to a match": "Invitar a una partida",
     "Invite to my room": "Invitar a mi sala",
+    "Invite in {seconds} s": "Invitar en {seconds} s",
     "Remove": "Quitar",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Invita a un amigo conectado: con un clic de su lado empieza una partida casual o entra a tu sala.",

@@ -50,7 +50,8 @@ lobby/
     tk_tab.py     the launcher's Online tab (tkinter): its logic and state; launcher/online.py imports it
     tk_views.py   the Online tab's screens: login, lobby, searching, match found, in match, result, errors
     theme.py      the launcher's dark look: ttk theme, fonts, drawn badges / ping bars / countdown ring
-    padnav.py     controller buttons for the tab: XInput + WinMM readers, the polling thread and its rules
+    padnav.py     controller buttons for the tab: XInput, PlayStation (HID) and WinMM readers, the polling
+                  thread and its rules
     padmap.py     the game's controls.ini (Cross / Circle / Triangle of each pad) for padnav
     cli.py        python -m t5lobby.cli: the same from a console
     servers.py    servers.json: the launcher's server list, typed addresses (host:port#fingerprint)
@@ -418,7 +419,12 @@ seconds, then runs out; your button reads **Cancel the invite** meanwhile. An in
 another match, leaves, or logs out. Only casual matches: ranked comes from the ranked queue (or a ranked room, which
 a room invite can be -- then the room's match keeps its ready check, which says "ranked": the invite named only the
 room, and a ranked room's match is rated). After a **Decline** (or when you take your own invite back) you can invite
-that friend again after 30 seconds; challenges work the same way. Friend requests: asking again within a day of
+that friend again after 30 seconds; challenges work the same way. Meanwhile both invite buttons are off for that
+friend and the one you would use (in a room: **Invite to my room**) counts the seconds down -- "Invite in 27 s"
+(1.1.3). The seconds are the server's (`retry` in `invite_update`, in the friends list and `friend_status`, and with
+the refusal of an invite sent anyway); the launcher only counts them down, and the server still refuses an invite
+it holds back. An older server says the wait only in its refusal, so there the countdown starts after a refused try.
+Friend requests: asking again within a day of
 taking a request back puts it in their list without the "wants to be your friend" message.
 
 **Limits** (against spam, all in `server/config.py`):
@@ -458,7 +464,9 @@ server still opens an upgraded database (tested), so going back to an older rele
 
 ## Discord Rich Presence
 
-Optional, **off by default**: launcher **Settings -> Discord -> "Show what I play in my Discord status"**. Then the
+Optional, **off by default**, and offered only by a launcher that has a Discord application id (see "The application
+id" below; the 1.1.2 release has none yet, so its Settings show no Discord box): launcher **Settings -> Discord ->
+"Show what I play in my Discord status"**. Then the
 player's Discord status reads "Playing T5DR Online" with one of
 
 | State | Discord shows |
@@ -480,8 +488,8 @@ When Discord starts later, or restarts, the status appears by itself.
 
 **The application id.** Discord names the game after a Discord *application*, which the person who ships the launcher
 creates once. The id is a config value: `application_id` in `lobby/t5lobby/data/discord.json` (shipped with the
-release; empty = Rich Presence does nothing and Settings says so), overridden per player by `"discord_app_id"` in
-launcher.json, and by the environment variable `T5_DISCORD_APP_ID`.
+release; empty = no Rich Presence, and Settings does not show the Discord box at all), overridden per player by
+`"discord_app_id"` in launcher.json, and by the environment variable `T5_DISCORD_APP_ID` (either one shows the box).
 
 Creating the application (the owner, once, about 5 minutes; nobody else can do this for you):
 
@@ -539,11 +547,11 @@ Client to server:
 | `lag` | `match`, `frames`, `waited_ms`, `pc_fps`, `fps` | after a match; both players then get `lag_check` |
 | `nat_punching` | `match` (nat2, `plan.wait_peer`) | none: this side's planned punch has started; the other side gets `nat_peer_punching` |
 | `nat_upgrade` | `match`, `path: direct\|relay`, `rtt_ms` (nat2) | none: a relayed match moved onto the direct path (or back), for the log and the `relay_upgrades` counter |
-| `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}` |
+| `friends` | (`friends` cap, accounts) | `friends {friends [{name, status: online\|in_match\|offline, activity, invite: ok\|busy\|offline\|update\|version, retry, since, last_seen, rating, rank, tier, ...}], incoming [{name, time}], outgoing [{name, time}], max, requests_left}`; `retry` (1.1.3): whole seconds until this player may invite that friend again (0 = now) |
 | `friend_add` | `name` (an account) | `friend_added {name, state: pending\|friends}`; the other side gets `friend_request {name, time}` |
 | `friend_answer` | `name`, `accept` | `ok`; the asker gets `friend_update {name, state: accepted\|declined}` |
 | `friend_cancel` / `friend_remove` | `name` | `ok` (take back a request / end a friendship) |
-| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited` |
+| `invite` | `name` (a friend online), `kind: casual\|room` | `invite_sent {invite, name, kind, expires}`; the friend gets `invited`. Held back after a no or a take-back (`T5L_INVITE_RETRY_SECONDS`): `error` `rate_limited` "... try again in N s" with `retry` N (1.1.3) |
 | `invite_answer` | `invite`, `accept` | accepted: casual -> `match_found` (origin `invite`, no ready check) for both; room -> `room {room}` and the room's match starts (origin `invite`, no ready check) |
 | `invite_cancel` | `invite` | `ok`; both get `invite_update` |
 | `logout` | | `bye`, connection closed |
@@ -572,10 +580,10 @@ Server to client (pushed):
 | `server_notice` | `id`, `text`, `expires`, `cleared` -- a message from the admin tool (clients without the `notices` cap get a `notice` instead) |
 | `notice` | `code`, `msg` (never contains an IP address) |
 | `friends` | clients with the `friends` cap: the whole list (as the `friends` reply) after login and whenever it changed |
-| `friend_status` | `name`, `status`, `activity`, `invite`: a friend came online, went into a match, went offline ... |
+| `friend_status` | `name`, `status`, `activity`, `invite`, `retry` (1.1.3, as in `friends`): a friend came online, went into a match, went offline ... |
 | `friend_request` / `friend_update` | someone asks you; the answer to your request (`state: accepted\|declined`) |
 | `invited` | `invite`, `from` (brief), `kind: casual\|room`, `room {id, name, ranked}`, `expires` |
-| `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind` |
+| `invite_update` | `invite`, `state: accepted\|declined\|cancelled\|expired`, `name` (the other side), `kind`; to the inviter also `retry` (1.1.3): whole seconds until the next invite to that friend (30 after a no or a take-back, else 0) |
 | `kicked` | `reason` |
 
 Error codes: `bad_request`, `proto_mismatch`, `version_mismatch`,
@@ -899,14 +907,27 @@ The Online tab runs with a pad or an arcade stick, no mouse or keyboard needed o
   launcher and in the game. A button bound to two PS3 buttons at once (a macro such as `3+4 = B8`) is
   neither Cross nor Circle here. `tests/test_padmap_sync.py` fails when the game's presets change and
   `lobby/t5lobby/padmap.py` was not updated.
-- Xbox pads and XInput-mode sticks are read with XInput. Everything else (PS3/PS4-mode sticks and hitboxes,
-  DualShock 4, DualSense, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
-  numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through both
-  is read once, through XInput. (The game reads DualShock 4 / DualSense as HID devices since ps3recomp patch
-  0042; WinMM, like DirectInput, gets nothing from a Bluetooth pad that Steam or DS4Windows switched to its
-  extended report, so the launcher does not see such a pad until it is turned off and on.) Plain `ctypes`, one thread, 60 polls a second while the launcher is in front
-  (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while it is
-  not (0.01%).
+- Xbox pads and XInput-mode sticks are read with XInput. DualShock 4, DualSense and DualSense Edge (since
+  1.1.2) as HID devices, exactly as the game reads them (ps3recomp patch 0042): USB, Bluetooth short and full
+  ("extended") report -- the one Steam and DS4Windows switch a Bluetooth pad to, which the Windows joystick
+  API and DirectInput cannot read -- with the same parser rules (`tests/test_ps_hid.py` compares the two on
+  2,000 reports) and the names DirectInput gives these pads (B2 = Cross). Opened for reading only, shared (the
+  game and other programs read it at the same time), closed again whenever the launcher leaves the front;
+  nothing is ever sent to the pad (no output or feature report, which would switch its mode). A pad Steam
+  Input hands out as a virtual Xbox pad (Steam started the launcher, the pad is in Steam's list) is left to
+  that virtual pad while there is one, as in the game (`steam_input = 0` reads it anyway); `hid = 0` in
+  `controls.ini` leaves these pads to the joystick API, as the game then does. Everything else (PS3/PS4-mode
+  sticks and hitboxes, generic pads) with the Windows joystick API (WinMM, `joyGetPosEx`): the same button
+  numbers as the game's DirectInput side (B1..B32, the hat), no packages. A pad that Windows shows through
+  more than one is read once (XInput, else HID). Devices get the ports in the game's order (XInput, the
+  PlayStation pads, the rest), so `[portN.dinput]` layers match. Test hook: the game's `PS3_PAD_HID_FAKE`
+  (`lobby/tests/test_padnav_hid.py`). Plain `ctypes`, one thread, 60 polls a second while the launcher is in
+  front (measured with a real XInput pad: 0.7% of one core), 20 looks at the foreground window a second while
+  it is not (0.01%).
+- **The game's window comes forward when a match starts** in a game that is already running (a rematch, the
+  next opponent) if the launcher is the window in front at that moment -- you just clicked Accept or Rematch
+  there. The game reads the keyboard only while its own window has the focus (pads work either way). Never
+  while another program is in front, once per match.
 - Switch: **Use a controller here** at the bottom of the tab (saved as `pad` in `online.json`).
   `T5_PAD_NAV=0` in the environment turns the feature off.
 - With `background = 1` in `controls.ini` (the default) a running game reads the pad too, also while the

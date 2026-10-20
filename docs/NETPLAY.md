@@ -62,6 +62,36 @@ of the deciding frame (equal on both PCs when they agree); `fps` is this PC's
 own speed in the match (time waiting for the peer left out). A match that could
 not be played to the end has `"winner": null` and a `reason` (next section).
 
+**Match result** (`src/netplay/match_score.h`, 1.1.3). `score` is the rounds
+each player won: the u8 at +0xA1 of each fighter's block (P1 0x10090030 ->
+0x100900D1, P2 0x10090900 -> 0x100909A1; +0xA2 is an i16 with the fighter's
+last round, 1 won / -1 lost). The game counts a round there on its KO frame --
+the last one on the very frame the decided byte 0x1008EBD5 rises -- and clears
+both counts when the next match's game mode starts, ~230 frames after its FIGHT
+START (the decided byte goes back to 0 on the same frame). `winner` is the one
+with more rounds (equal = a draw, `null`). The decided byte itself says how the
+match ended: 1 P1 won, 2 P2 won, 3 a draw (a time-out with equal health or a
+double KO in the deciding round counts the round for both: a no-input pair,
+first to 1, ended 1-1). Before 1.1.3 the score came from the
+battle config's bytes 0x1008EBDA/DB, which a menu-driven VS game was thought to
+count rounds in: they stay 0 in direct fights, so the score was made up from
+the winner byte 0x1008EBD6 as rounds-to-win : 0 (every 3-2 and 3-1 read 3-0),
+and the few times one of them was 1 at the end (mashing rollback pairs) that was
+the score: `[0, 1]` for a match P2 won 3-0, `[1, 0]` for P1's. A drawn match
+was P1's win (the winner byte is 0 in a draw). The winner was right otherwise
+(it decides ratings and sets), but the lobby also decides on
+the score: a result whose opponent reports a lost connection stands only with a
+full score -- the winner at the rounds to win (docs/RANKED.md "Results") -- so
+`[0, 1]` turned a won match into a void there; history, result cards and the
+admin's match list showed the made-up score. Found by dumping guest memory at
+every round's replay of a rollback pair and watching the words frame by frame
+(`T5_DF_WATCH`): 3-2, 3-1, 0-3 and 3-0 matches. When the counts cannot be the
+match's (both 0, above the rounds to win, or another verdict than the decided
+byte's) the decided byte decides with rounds-to-win : 0 and the log says so
+("do not fit the match"). A
+session that ends mid-match writes the rounds won so far (0-0 while the last
+match's decided byte is still up: its counts are still there).
+
 **Starting at the fight (direct-fight mode).** Lockstep does not have to run
 from boot. With `T5_NET_START=external` both games boot, load and do whatever
 they do at their own pace with both pads neutral; when the game side calls
@@ -224,6 +254,44 @@ stage 20, 2 rounds), 8 logical processors per game:
 | D11 | 1 / 1, RTT 150 | -- | 1 (both set 1) | 0 | same |
 | D0a | 0 / auto, RTT 0 | 3 ms | 1 (auto: the settings differ) | 0 | same |
 | K0, K50, K150 | lockstep (`T5_RB_MODE=off`), RTT 0/50/150 | -- | lockstep delay 6 | 0 | same |
+
+## Which controller plays online (1.1.2)
+
+Player report on 1.1.1: "my DualSense works only offline; the launcher doesn't see it at all". The runtime
+(patch 0009) gives every controller a port in the order it finds them -- XInput pads first, then the
+PlayStation pads it reads as HID devices (0042), then DirectInput -- and the keyboard joins port 1 while the
+game window has the focus. Offline the title reads every port, so a pad on port 2 plays (player 2, and the
+menus take either). Netplay took the local player from port 1 only (`sample_local` -> `device_input(0)`), so a
+DualSense behind any other controller -- a virtual Xbox pad (DS4Windows, DSX, ViGEm), a handheld's built-in
+pad, a second pad or a wheel -- did nothing online. The in-game select (`df_pick.cpp`) and the replay controls
+read port 1 too.
+
+Now (`src/netplay/local_pad.cpp`, `local_pad.h`): online the local player is **the controller pressed last**.
+Every local port with something on it is read at every live sample (`cellPad_sample_local`, each with its
+own tap latch); a port whose buttons, or a stick pushed past half way (with hysteresis), went down becomes the
+player at once, that press included. A port that never changes (an idle pad, a virtual pad nobody uses, a
+pedal resting at one end, a button held since it was plugged in) never takes over; while the player's port
+was pressed in the last 100 ms another port cannot take over, so one pad seen twice (DS4Windows' virtual pad
+and the real one) never makes the input jump. Port 1 only, as before: `[port1] device = ...` pinned in
+`controls.ini` (read once with the runtime's rules), local mode (two players at one PC), netplay off, or
+`T5_NET_PADPORT=N` (that port only; `1` = 1.1.1's behaviour). The log names the rule and every switch:
+`[netplay] local player: port 2 now (pressed there; ...)`.
+
+Why not merge all ports: a controller resting with something held (a pedal, a stick's drift past half, a
+stuck button on a cheap pad) would then hold that input for the player all match. Why not "the first port
+with a device": a virtual pad or a handheld's own pad is that port. Sync is untouched: only this PC's sample
+changes, and it is exchanged like any input; rollback re-simulation replays exchanged inputs and never reads
+devices (`sample_local` runs at live boundaries only). Reading the pads does not depend on the focus (XInput,
+the HID reader, DirectInput with `background = 1`); only the keyboard does, by design -- the launcher now
+brings the game window forward when a match starts while the launcher is in front (docs/ONLINE.md).
+
+Test: `tools/e2e/run.py --only net_dualsense [--netcode lockstep]` -- the launcher's own Online tab and game
+start (persistent game, window minimized and never in front), one player with a fake DualSense on Bluetooth in
+its extended mode (`PS3_PAD_HID_FAKE`, reports from `tools/ps_hid_reports.py`) that the runtime puts on port 2
+(port 1: the picker's pad file, plus the keyboard), mashing through the fake pad; two matches (two sessions,
+picks with the pad file in between). Checks: the presses are in the other PC's frame log, 0 mismatching
+frames, the same result hash. On 1.1.1's code: 695 presses sent, 0 frames with them on the other PC.
+`tests/test_local_pad.py` (tests/c/local_pad_test.cpp) checks the rule with fake ports.
 
 ## Design
 
@@ -677,9 +745,9 @@ the second match's intro, nothing else: docs/ROLLBACK.md section 21).
 **Match state** (what the detector hashes, `kDefaultHash`): the two pad state
 blocks (0x10099F24), the input ring, the game frame clock, all random
 generator states, and the fight block 0x1008E000-0x10091FFF: round state at
-0x1008EBD0 (+0xA/+0xB rounds won by P1/P2, +0x5 non-zero once the match is
-decided), round timer 0x1008F054 (frames left), the fighters at roughly
-0x1008F800 and 0x100900D0 (0x8D0 apart), plus 0x10099600-0x10099BFF,
+0x1008EBD0 (+0x5 non-zero once the match is decided), round timer 0x1008F054
+(frames left), the fighters at roughly 0x1008F800 and 0x100900D0 (0x8D0 apart;
+each one's rounds won at +0xA1 of its block, "Match result" above), plus 0x10099600-0x10099BFF,
 0x100A0900-0x100A0AFF and 0x100A3B00-0x100A3DFF. About 25 KB per frame.
 
 ## One save for online play, and the unlocks (branch unlock-stages, 1.1.2)

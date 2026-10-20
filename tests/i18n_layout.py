@@ -470,6 +470,19 @@ class Walk:
         tab.nb.select(tab.friends_page)
         tab.on_event({"t": "friends"})
         self.screen("online friends")
+        # after a no: the invite button counts the server's wait down (three digits: a server may hold longer) --
+        # the match's, or in a room the room's
+        tab.client.invite_wait = lambda name: 120 if name == "Rival_Long_Name" else 0
+        tab.tv_friends.selection_set("f:Rival_Long_Name")
+        tab._set_friend_actions()
+        self.screen("online friends, invite held back")
+        tab.client.me["status"] = "room"
+        tab._set_friend_actions()
+        self.screen("online friends, room invite held back")
+        tab.client.me["status"] = "idle"
+        tab.client.invite_wait = lambda name: 0
+        tab.tv_friends.selection_remove(*tab.tv_friends.selection())
+        tab._set_friend_actions()
         tab.on_event({"t": "invited", "invite": "i1", "kind": "room", "from": RIVAL, "room": {"name": "Room of Rival"}})
         self.screen("online friend's invite")
         tab.hide_bar()
@@ -484,6 +497,20 @@ class Walk:
         dlg.top.withdraw()
         self.screen("controls window", dlg.top)
         self.cut[("controls window", "width", "", "")] = (dlg.top.winfo_reqwidth(), self.px(1040), "")
+        dlg.editor.saved_text = dlg.editor.doc.render()
+        dlg.close()
+        # the keyboard chosen, a key being asked for (its own texts: layouts, scope, prompt, hint)
+        kb = tc.FakePad(kind="keys1", key="keys1", name=i18n.t("Keyboard"), vid=0, pid=0)
+        dlg = tc.cu.ControlsDialog(app, tc.FakeSettings(d), sources=[tc.FakePad(), kb], foreground=lambda: True,
+                                   clock=tc.Clock(), thread=False, ask=lambda *a: True, game_running=lambda: False)
+        dlg.top.withdraw()
+        dlg.poller.step(dlg.poller.clock())
+        dlg.pump()
+        dlg._choose("keys1")
+        dlg.begin(["1+2"])
+        self.screen("controls window, keyboard", dlg.top)
+        self.cut[("controls window, keyboard", "width", "", "")] = (dlg.top.winfo_reqwidth(), self.px(1040), "")
+        dlg.cap_stop()
         dlg.editor.saved_text = dlg.editor.doc.render()
         dlg.close()
         from test_problem_report import fake_context

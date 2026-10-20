@@ -23,7 +23,20 @@ PRESETS = {
     "k_dinput_xbox": padmap.PRESETS[(padmap.DINPUT, "xbox")],
     "k_macros_tekken_xinput": padmap.MACROS_TEKKEN[padmap.XINPUT],
     "k_macros_tekken_dinput": padmap.MACROS_TEKKEN[padmap.DINPUT],
+    "k_keys_classic": padmap.KEY_PRESETS["classic"],
+    "k_keys_tekken": padmap.KEY_PRESETS["tekken"],
+    "k_keys_numpad": padmap.KEY_PRESETS["numpad"],
 }
+# the Windows virtual-key constants the runtime's k_keys table uses
+VK = {"VK_UP": 0x26, "VK_DOWN": 0x28, "VK_LEFT": 0x25, "VK_RIGHT": 0x27, "VK_SPACE": 0x20, "VK_RETURN": 0x0D,
+      "VK_TAB": 0x09, "VK_ESCAPE": 0x1B, "VK_BACK": 0x08, "VK_LSHIFT": 0xA0, "VK_RSHIFT": 0xA1, "VK_SHIFT": 0x10,
+      "VK_LCONTROL": 0xA2, "VK_RCONTROL": 0xA3, "VK_CONTROL": 0x11, "VK_LMENU": 0xA4, "VK_RMENU": 0xA5,
+      "VK_MENU": 0x12, "VK_CAPITAL": 0x14, "VK_INSERT": 0x2D, "VK_DELETE": 0x2E, "VK_HOME": 0x24, "VK_END": 0x23,
+      "VK_PRIOR": 0x21, "VK_NEXT": 0x22, "VK_ADD": 0x6B, "VK_SUBTRACT": 0x6D, "VK_MULTIPLY": 0x6A, "VK_DIVIDE": 0x6F,
+      "VK_DECIMAL": 0x6E, "VK_OEM_1": 0xBA, "VK_OEM_PLUS": 0xBB, "VK_OEM_COMMA": 0xBC, "VK_OEM_MINUS": 0xBD,
+      "VK_OEM_PERIOD": 0xBE, "VK_OEM_2": 0xBF, "VK_OEM_3": 0xC0, "VK_OEM_4": 0xDB, "VK_OEM_5": 0xDC,
+      "VK_OEM_6": 0xDD, "VK_OEM_7": 0xDE}
+VK.update({f"VK_NUMPAD{i}": 0x60 + i for i in range(10)})
 
 
 def read_patch(path):
@@ -58,6 +71,19 @@ class PresetSyncTest(unittest.TestCase):
         for name, ours in PRESETS.items():
             self.assertEqual(list(ours), self.arrays[name],
                              f"lobby/t5lobby/padmap.py is out of date: {name} differs from the runtime's table")
+
+    def test_keyboard_names_are_the_games(self):
+        # k_keys in the patch: the keyboard's names, in order (the first name of a key is the one the game uses)
+        src = re.sub(r"/\*.*?\*/", "", added_text(read_patch(CONTROLS_PATCH)), flags=re.S)
+        m = re.search(r"static const NameVal k_keys\[\]\s*=\s*\{(.*?)\};", src, flags=re.S)
+        self.assertIsNotNone(m, "k_keys not found in the patch")
+        theirs = [(n, VK[v]) for n, v in re.findall(r'\{"(\w+)",\s*(VK_\w+)\}', m.group(1))]
+        self.assertEqual(theirs, list(padmap.KEY_NAMES), "lobby/t5lobby/padmap.py KEY_NAMES differs from k_keys")
+        # the keyboard players' defaults: [keys1] classic, [keys2] none
+        self.assertIn('pname = name_eq(keys_sec, "keys1") ? "classic" : "none"', src)
+        self.assertEqual((padmap.default_preset(padmap.KEYS1), padmap.default_preset(padmap.KEYS2)), ("classic", "none"))
+        for name in ("classic", "tekken", "wasd", "numpad"):
+            self.assertRegex(src, rf'\{{ "{name}",\s+CLS_KEYS,')
 
     def test_default_presets_per_device(self):
         # build_table() in the patch: XInput -> standard; Nintendo -> switch; Microsoft HID -> xbox; else ps

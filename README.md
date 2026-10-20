@@ -1,9 +1,11 @@
 # Tekken 5: Dark Resurrection Online — native Windows port
 
 Tekken 5: Dark Resurrection (PS3, PlayStation Network release) running natively
-on Windows. It is recompiled, not emulated. Online play between friends is
-being built.
+on Windows. It is recompiled, not emulated. Online play runs through the
+launcher's own lobby, like Tekken 6 Native Online.
 
+<!-- RELEASE LINE: the version and date in the next two lines change with every release, when it is tagged
+(docs/RELEASING.md "Cutting a release", step 2); the same lines are in docs/README.de.md. -->
 **Release 1.1.1 (2026-10-19).** Download
 `T5DR-Online-1.1.1.zip` from https://github.com/TheWishin/T5DROnline/releases
 
@@ -33,7 +35,7 @@ and Français (**Settings** -> **Language**).
   play as a guest) in the launcher's Online tab, find an opponent, and the game
   starts directly in the fight. See "Online".
 
-## Status (2026-10-17)
+## Status (2026-10-19)
 
 Tested on one development PC (Windows 11, 16-core Ryzen 9, RTX 3090). Online play was
 tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
@@ -41,9 +43,11 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Area | State |
 |---|---|
 | Start-up | Works. Boots, opens the window, reaches the title, menus, character select and fights. |
-| Menus, fights | 60 fps, also with other programs busy on the PC. Weaker PCs are not measured yet. |
+| Menus, fights | 60 fps, also with other programs busy on the PC. The game no longer busy-waits around its frames: about 30 % less CPU on 8 cores / 16 threads. Weaker PCs are not measured yet. |
+| Laptops, handhelds | **Power saving** (launcher Settings; Auto turns it on with a battery, a power-saving plan, a mobile processor or integrated graphics): fewer helper threads, no busy waiting, the same game online. Not tried on a real laptop or handheld yet. |
 | Game modes | Arcade, Ghost, Versus (two players on one PC), Survival and Practice work. Gallery and the game's own Online menu need Namco's and Sony's servers (gone) and say so. |
-| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. |
+| Fighters, stages | All fighters and stages render correctly, including faces, floor shadows and background figures. Stage blur and the sun's glow look as on the PS3 at every internal resolution (Settings -> Stage blur / glow switches them off). |
+| Unlocks | Offline, in launcher Settings -> Unlocks (both off by default): all stages without the fights they normally take, and every customization item for 0 Fight Money (your save is backed up first). Online games always use a fresh save of their own, the same on both PCs. |
 | Display | Resizable window, borderless fullscreen (Alt+Enter or F11). **Internal resolution** from Lowest (0.5x) over Native (720p) to 1080p, 1440p and 4K (launcher Settings, `PS3_INTERNAL_RES`); every step checked in fights, menus, movies and character select. |
 | Music, sound effects, movies | Work. |
 | Controls | Keyboard, Xbox pads (XInput), DualShock 4 and DualSense over USB and Bluetooth (read directly, no Steam needed), arcade sticks and hitboxes (DirectInput), two local players, buttons set in the launcher (Settings -> Set up controllers) or in `controls.ini`. Short taps are never lost. Tried by a person: an Xbox pad and an arcade stick, every input came through, smooth. |
@@ -51,8 +55,11 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). |
-| Build from your copy | Works on the development PC. |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. |
+| Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. |
+| Replays | Every online match is saved (a few KB). The **Replays** tab plays it again in the game and checks that it is identical to the live match. |
+| Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Updates itself. |
+| Build from your copy | Works on the development PC. A stopped helper process no longer hangs the build at "Translate code". |
 
 ## Requirements
 
@@ -136,6 +143,8 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   corrections are welcome.
 - The game opens in its own window and scales its picture to the window.
   **Settings** has window sizes, maximized, borderless fullscreen and mute.
+  The Settings tab is taller than the window: scroll it with the mouse wheel
+  or the scrollbar.
 - **Settings** -> **Internal resolution** sets how sharp the picture is, like
   in an emulator: Native is the PS3's 1280 x 720; 1080p, 1440p and 4K draw the
   game larger (sharp on big screens, more work for the graphics card: the
@@ -151,6 +160,14 @@ It is game data. Do not share it. To uninstall, delete the whole folder.
   (the misty swamp, and three more) or let the sun glow (the scrapyard). On
   (default) looks as on the PS3, at every internal resolution; Off shows those
   stages sharp, without the glow. Online, each player can choose their own.
+- **Settings** -> **Power saving (laptops, handhelds)**: Auto (default) turns
+  it on with a battery, battery saver or the Power saver plan, a mobile
+  processor or integrated graphics; On and Off decide yourself. The game then
+  uses fewer helper threads and never busy-waits, so the processor stays
+  cooler and keeps its clock; the window title says "power saving". The game
+  itself is the same, so online the other player does not need the same
+  setting. Not tried on a real laptop or handheld yet; see
+  [Troubleshooting](docs/TROUBLESHOOTING.md#game-speeds-up-or-slows-down-on-a-laptop-or-handheld).
 - **Settings** -> **Training overlay**: in Practice the game shows your last
   inputs (directions as arrows, 1 2 3 4 for the buttons, with how many frames
   each was held) and, after each exchange, the startup of the move (`i10`) and
@@ -199,7 +216,9 @@ Keyboard (default) and Xbox controller:
 
 - The keyboard works only while the game window has the focus. Pads work even
   when it does not.
-- Keyboard and the first pad both drive player 1.
+- Keyboard and the first pad both drive player 1. Online, the controller you
+  press is your player, whichever port it has (a pinned `[port1] device` in
+  `controls.ini` stays the only one).
 - PlayStation pads (DualShock 4, DualSense) are read directly, over USB and
   Bluetooth, also after Steam or DS4Windows used them (no Steam needed; started
   through Steam with Steam Input on, the game uses Steam's virtual pad instead).
@@ -208,15 +227,18 @@ Keyboard (default) and Xbox controller:
 - Pads can be plugged in or out while the game runs.
 - In the launcher's Online tab a pad or stick runs the lobby without mouse or
   keyboard: A / Cross accepts, rematches and searches, B / Circle declines and
-  stops. Only while the launcher is in front. See "Controller in the launcher"
+  stops (DualShock 4 and DualSense too, also over Bluetooth after Steam or
+  DS4Windows used them). Only while the launcher is in front. See "Controller in the launcher"
   in https://github.com/TheWishin/T5DROnline/blob/main/docs/ONLINE.md
-- **Pad, arcade stick or hitbox: set the buttons in the launcher.** Open
+- **Pad, arcade stick, hitbox or keyboard: set the buttons in the launcher.** Open
   **Settings** and click **Set up controllers...**. The window lists the
-  controllers Windows sees, one row per player, and lights the row when you
-  press a button (the row also names the game button it is). Pick a controller
-  (or just press a button on it), then click **Set up all buttons**: it asks
-  "Press the button for 1 (Left Punch)..." and goes on with 2, 3, 4, 1+2, 3+4,
-  1+3, 2+4, 1+2+3+4, Start and Select. **Skip** keeps a button as it is,
+  controllers Windows sees and the keyboard, one row per player, and lights the
+  row when you press a button (the row also names the game button it is). Pick a
+  controller (or just press a button on it; the keyboard: click its row), then
+  click **Set up all buttons**: it asks "Press the button for 1 (Left Punch)..."
+  and goes on with 2, 3, 4, 1+2, 3+4, 1+3, 2+4, 1+2+3+4, L1, R1, L2, R2, L3, R3,
+  Start and Select -- every button of the PS3 pad and every Tekken combo can
+  have a key or button of its own, also online. **Skip** keeps a button as it is,
   **Clear** gives it no button. **Set selected** sets one row (also the other
   macros: 1+4, 2+3, 1+2+3 and so on), **Set up directions** is for sticks that
   send their directions as buttons. **Layout** starts from a ready layout: Xbox,
@@ -230,7 +252,7 @@ Keyboard (default) and Xbox controller:
   Triangle clears it, Start saves, Circle closes (the controller's buttons as
   your `controls.ini` has them). This works only while that window is in front;
   untick "Move through this window with the controller" to only test buttons.
-- The keyboard and everything else is set in `controls.ini`. The documented
+- Everything else is set in `controls.ini`. The documented
   sample with every default is `docs\controls.ini` in this folder.
   Put your file at `native\controls.ini` and restart the game.
   Examples (from the sample):
@@ -265,8 +287,12 @@ Keyboard (default) and Xbox controller:
 Good to know:
 
 - The two PCs send each other the controller inputs directly. If their routers
-  don't allow that, the lobby server relays them. With a direct connection each
-  PC learns the other's IP address.
+  don't allow that, a relay server passes them on (the lobby picks the one
+  nearest to both of you). With a direct connection each PC learns the other's
+  IP address.
+- Quick and ranked search look for an opponent with a low ping first and widen
+  the search while you wait: any ping after 30 seconds (quick) or 60 seconds
+  (ranked). The ping shown for a found match counts the nearest relay server.
 - A cable is better than Wi-Fi.
 - The first time, Windows Firewall asks whether the game and Python may use the
   network. Allow it for **private networks**.
@@ -292,9 +318,6 @@ Good to know:
   searching or in a match. **Invite to a match** (or to your room) asks them;
   one click on **Accept** on their side starts it. Blocking a player ends the
   friendship.
-- **Discord** (optional, off by default): Settings -> Discord shows "In lobby",
-  "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
-  with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 ### Replays

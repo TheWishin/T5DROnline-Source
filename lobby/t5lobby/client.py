@@ -22,15 +22,18 @@ notice, ...) plus the client's own:
     {"t": "set_end", "set", "reason", "by"} the games in a row with one opponent are over (characters unlock);
                                            a ranked set (sets=True, below) adds its result and the rating change
     {"t": "friends", ...}                  the friends list changed (friends=True, a server with "friends"):
-                                           friends [{name, status online|in_match|offline, activity, invite, ...}],
-                                           incoming / outgoing requests; also in .friend_list
-    {"t": "friend_status", "name", "status", "activity", "invite"}   a friend came online, went into a match,
-                                           left ... (already merged into .friend_list)
+                                           friends [{name, status online|in_match|offline, activity, invite,
+                                           retry, ...}], incoming / outgoing requests; also in .friend_list
+    {"t": "friend_status", "name", "status", "activity", "invite", "retry"}   a friend came online, went into a
+                                           match, left ... (already merged into .friend_list)
     {"t": "friend_request", "name"}        someone asks to be friends (answer_friend)
     {"t": "friend_update", "name", "state": "accepted"|"declined"}   the answer to this player's request
     {"t": "invited", "invite", "from", "kind": "casual"|"room", "room", "expires"}   a friend invites this player
                                            (answer_invite: one call starts the match or joins the room)
-    {"t": "invite_update", "invite", "state": "accepted"|"declined"|"cancelled"|"expired", "name", "kind"}
+    {"t": "invite_update", "invite", "state": "accepted"|"declined"|"cancelled"|"expired", "name", "kind", "retry"}
+                                           "retry" (to the inviter; servers from 1.1.3): whole seconds until this
+                                           player may invite that friend again (a no or a take-back holds the next
+                                           invite back T5L_INVITE_RETRY_SECONDS); see invite_wait()
 
 Texts that reach a player (notice, nat_status, disconnected, ...) never contain an IP address:
 proto.scrub_addresses is applied to them here, and the server does the same before it sends them.
@@ -52,7 +55,9 @@ Usage:
 import asyncio
 import hashlib
 import ipaddress
+import math
 import queue
+import re
 import socket
 import ssl
 import threading
@@ -65,6 +70,14 @@ from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt
 from .proto import LobbyError
 
 CLIENT_NAME = "t5lobby-client/0.1"
+_RETRY_TEXT = re.compile(r"your last invite to that friend ended a moment ago; try again in (\d{1,5}) s")
+
+
+def _seconds(v):
+    """A server's `retry` (whole seconds) or None when it is not one; at most a day (a button, not a ban)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v < 0:
+        return None
+    return int(math.ceil(min(v, 86400)))
 
 
 def _ip_literal(host):
@@ -132,6 +145,7 @@ class LobbyClient:
         self.friends = friends
         self.friend_list = None      # the last `friends` message (friend_status merged in), None before the first
         self.invites = {}            # invite id -> the `invited` event: invites waiting for this player's answer
+        self.invite_waits = {}       # friend's name (lower case) -> monotonic time this player may invite them again
 
         self.events = queue.Queue()
         self.session = None          # "remember me" token from a password login (store it, not the password)
@@ -377,7 +391,10 @@ class LobbyClient:
             fut = self._pending.get(rid)
             if not fut.done():
                 if t == "error":
-                    fut.set_exception(LobbyError(msg.get("code", "error"), proto.scrub_addresses(msg.get("msg", ""))))
+                    sec = _seconds(msg.get("retry"))
+                    extra = {"retry": sec} if sec is not None else {}
+                    fut.set_exception(LobbyError(msg.get("code", "error"), proto.scrub_addresses(msg.get("msg", "")),
+                                                 **extra))
                 else:
                     fut.set_result(msg)
             if t in ("error", "ok", "welcome", "login_ok", "queued", "result_ack", "pong", "challenge",
@@ -451,17 +468,49 @@ class LobbyClient:
 
     async def _on_friends(self, msg):
         self.friend_list = {k: msg.get(k) for k in ("friends", "incoming", "outgoing", "max", "requests_left")}
+        for f in self.friend_list.get("friends") or ():
+            if isinstance(f, dict) and "retry" in f:
+                self._note_invite_wait(f.get("name"), f.get("retry"))
 
     async def _on_friend_status(self, msg):
         for f in (self.friend_list or {}).get("friends") or ():
             if f.get("name") == msg.get("name"):
                 f.update({k: msg.get(k) for k in ("status", "activity", "invite")})
+        if "retry" in msg:
+            self._note_invite_wait(msg.get("name"), msg.get("retry"))
 
     async def _on_invited(self, msg):
         self.invites[msg.get("invite")] = msg
 
     async def _on_invite_update(self, msg):
         self.invites.pop(msg.get("invite"), None)
+        if "retry" in msg:
+            self._note_invite_wait(msg.get("name"), msg.get("retry"))
+
+    # A no (or this player's own take-back) holds the next invite to the same friend back for a while
+    # (T5L_INVITE_RETRY_SECONDS). The server says for how long -- `retry` in invite_update, in the friends list and
+    # friend_status, and with the refusal of an invite sent anyway -- and stays the authority (it refuses an invite
+    # it holds back); the launcher only counts that number down on its invite buttons. Nothing is guessed: a server
+    # that never says (older than 1.1.3) leaves the buttons as they were.
+    def _note_invite_wait(self, name, seconds):
+        sec = _seconds(seconds)
+        if not isinstance(name, str) or not name or sec is None:
+            return
+        if sec > 0:
+            self.invite_waits[name.lower()] = time.monotonic() + sec
+        else:
+            self.invite_waits.pop(name.lower(), None)
+
+    def invite_wait(self, name):
+        """Whole seconds until this player may invite friend `name` again, as the server said (0: now)."""
+        until = self.invite_waits.get(str(name or "").lower())
+        if until is None:
+            return 0
+        left = until - time.monotonic()
+        if left <= 0:
+            self.invite_waits.pop(str(name).lower(), None)
+            return 0
+        return math.ceil(left)
 
     async def _on_relays(self, msg):
         """The server's list of regional relays changed: measure the new list."""
@@ -1059,8 +1108,21 @@ class LobbyClient:
 
     def invite(self, name, kind="casual"):
         """Invite a friend who is online: kind "casual" (a casual match) or "room" (this player's room).
-        -> {"invite", "name", "kind", "expires"}"""
-        return self._call({"t": "invite", "name": name, "kind": kind})
+        -> {"invite", "name", "kind", "expires"}. Refused while a no holds the next invite back: LobbyError with
+        .extra["retry"] (the seconds left; also noted for invite_wait())."""
+        try:
+            return self._call({"t": "invite", "name": name, "kind": kind})
+        except LobbyError as e:
+            sec = e.extra.get("retry") if getattr(e, "extra", None) else None
+            if sec is None and e.code == proto.E_RATE:
+                # a server older than 1.1.3 says it in the text only: "... try again in N s"
+                m = _RETRY_TEXT.search(e.msg or "")
+                sec = int(m.group(1)) if m else None
+                if sec is not None:
+                    e.extra["retry"] = sec
+            if sec is not None:
+                self._note_invite_wait(name, sec)
+            raise
 
     def answer_invite(self, invite_id, accept=True):
         """Accepting starts the match (casual) or joins the friend's room, where the match starts at once."""

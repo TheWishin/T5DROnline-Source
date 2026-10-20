@@ -77,7 +77,13 @@ void shadowtrace_boundary(uint32_t f, bool resim)
         const uint32_t sk = r32(fb + 0x8A4), bones = sk ? r32(sk + 0x10) : 0;
         fprintf(g_log, " | P%d %016llx b %016llx", i + 1, (unsigned long long)fnv(fb, 0x8D0), bones ? (unsigned long long)fnv(bones, 0xD00) : 0ull);
     }
-    fprintf(g_log, " | prj %016llx\n", (unsigned long long)fnv(0x10627500u, 0xB0));
+    /* words the hashes leave out that the fighters' moves and poses may use: the fight's LCG 0x1008F0D0,
+     * the scene's LCG, each fighter's move random number (+0x174), the secondary-motion points */
+    fprintf(g_log, " | w %08X %08X %08X %08X %08X %08X %08X", r32(0x1008F0D0u), r32(0x1008F0C4u), r32(0x100901B4u), r32(0x10090A84u),
+            r32(0x1008FF00u), r32(0x1008FFB0u), r32(0x1008FFF0u));
+    fprintf(g_log, " | prj %016llx", (unsigned long long)fnv(0x10627500u, 0xB0));
+    for (uint32_t o = 0; o < 0xB0; o += 4) fprintf(g_log, " %08X", r32(0x10627500u + o));
+    fprintf(g_log, "\n");
     fflush(g_log);
 }
 

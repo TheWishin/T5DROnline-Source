@@ -824,6 +824,12 @@ static uint32_t boundary(uint32_t f, bool scene_flag, np::PadInput out[2])
             if (f == g_wft_from) { wft_arm(); note("rbnet: write-fault trace armed at frame %u for %u frame(s)", f, g_wft_frames); }
             if (f == g_wft_from + g_wft_frames) wft_disarm("net");
         }
+        {   /* T5_RB_RFT=addr:len + T5_RB_RFT_NET=from:frames (diagnostics, rb_rft.cpp): who reads those bytes */
+            static uint32_t r_from = 0, r_frames = 0; static bool r_init = false;
+            if (!r_init) { r_init = true; if (const char* s = getenv("T5_RB_RFT_NET")) { unsigned a = 0, n = 1; sscanf(s, "%u:%u", &a, &n); if (rft_install()) { r_from = a; r_frames = n; } } }
+            if (r_frames && f == r_from) { rft_arm(); note("rbnet: access trace armed at frame %u for %u frame(s)", f, r_frames); }
+            if (r_frames && f == r_from + r_frames) rft_disarm("net");
+        }
         if (!(g_early_f == f && !g_tick_waited)) live_tick_part(f);
     }
     /* Early rollback (T5_RB_NET_EARLY, docs/ROLLBACK.md section 26): this

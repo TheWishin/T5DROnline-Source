@@ -3288,18 +3288,19 @@ def _spectator_verdict(ctx, label, v, n_matches=None):
     return vd
 
 
-def _tour_watch_case(ctx, lockstep=False):
+def _tour_watch_case(ctx, lockstep=False, slow=None):
     """A two-player single-elimination tournament (best of 3): Ava (Kazuya, her customized save) vs Bo (Lili, his),
     both in their custom costumes; Vi watches the set from the Tournaments page (bracket -> the set -> Watch) and
     her game shows the whole set with both costumes, identical to the players' games. lockstep: T5_RB_MODE=off on
-    every game (3 games at once)."""
+    every game (3 games at once). slow: Bo's game made slower ({PS3_TEST_SLOW_GAME_US, PS3_TEST_SLOW_XLAT_US}, patch
+    0059's test hooks, docs/WEAK_PC.md): its late frames are shown when ready -- the spectator must stay identical."""
     if not {"tournaments", "spectate"} <= features():
         raise Skip("this tree has no tournaments or no spectating")
     sa, sb = _costume_saves()
     game_server(ctx, T5L_TOUR_NOSHOW=300, T5L_TOUR_TICK=0.2)
     env = {"T5_RB_MODE": "off"} if lockstep else {}
     a = ctx.player("E2E Ava", char="kazuya", password="ava-pw-1", env=dict(env, T5_COSTUME_SAVE=sa))
-    b = ctx.player("E2E Bo", char="lili", password="bo-pw-1", env=dict(env, T5_COSTUME_SAVE=sb))
+    b = ctx.player("E2E Bo", char="lili", password="bo-pw-1", env=dict(env, T5_COSTUME_SAVE=sb, **(slow or {})))
     v = ctx.player("E2E Vi", password="vi-pw-1", env=env)
     for p in (a, b, v):
         login(ctx, p, "register")
@@ -3370,6 +3371,16 @@ def _tour_watch_case(ctx, lockstep=False):
     ctx.wait(lambda: (tab.spec.w or {}).get("state") == "over", 600, "Vi's game ends at the end of the stream")
     _spectator_verdict(ctx, "tournament set", v, n_matches=len(mids))
     _costume_checks(ctx, "tournament set", a, b, (v,), n_matches=len(mids))
+    if slow:
+        from e2e_flows import _whole
+        lines = _whole(b)
+        late = [int(m.group(1)) for m in (re.search(r"\[slow-frames\].* (\d+) late for their vblank", ln) for ln in lines)
+                if m]
+        ctx.check("Bo's slowed game showed frames late for their vblank when ready (patch 0059)",
+                  any(n > 0 for n in late) and any("PS3_TEST_SLOW_GAME_US" in ln for ln in lines), late)
+        fps = [r[n]["result_file"].get("fps") for r in rows for n in r if n == "E2E Bo" and isinstance(r[n], dict)
+               and "result_file" in r[n]]
+        ctx.note(f"Bo's game slowed by {slow}: late frames per [slow-frames] window {late}; fps per game {fps}")
     for r in rows:
         ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
                                                 f"{r[n]['result_file'].get('desync')}, hash "
@@ -3390,6 +3401,14 @@ def int_tour_watch(ctx):
           desc="int_tour_watch in lockstep (T5_RB_MODE=off on every game)")
 def int_tour_watch_ls(ctx):
     _tour_watch_case(ctx, lockstep=True)
+
+
+@scenario("int_tour_watch_slow", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="int_tour_watch (rollback) with one player's game slowed (PS3_TEST_SLOW_GAME_US=10000, "
+               "PS3_TEST_SLOW_XLAT_US=2000): its late frames are shown when ready (patch 0059); every game in sync, the "
+               "spectator identical with both costumes")
+def int_tour_watch_slow(ctx):
+    _tour_watch_case(ctx, slow={"PS3_TEST_SLOW_GAME_US": "10000", "PS3_TEST_SLOW_XLAT_US": "2000"})
 
 
 @scenario("int_fw_costumes", "13 integration 1.1.3", game=True, suites=("game", "net"),

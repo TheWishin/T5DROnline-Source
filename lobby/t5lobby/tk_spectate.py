@@ -262,9 +262,11 @@ class Spectating:
                 w["end"] = ev.get("reason") or "over"
                 if w["game"] is None:
                     w["state"] = "over"           # (the game never started: nothing to watch)
-                elif w["end"] in ("your_match", "not_allowed"):
+                elif w["end"] in ("your_match", "not_allowed") or (w["state"] == "starting" and not ev.get("ready")):
+                    # privacy and the player's own match: at once; a game still waiting for a first fight
+                    # that never came has nothing to show (with a fight in the file it plays to its end)
                     if w["game"].running():
-                        w["game"].stop()          # privacy and the player's own match: at once
+                        w["game"].stop()
                     w["state"] = "over"
             return True
         if kind in ("match_found", "disconnected") and w is not None and w["state"] != "over":

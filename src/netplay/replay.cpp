@@ -592,6 +592,7 @@ struct Play {
     uint32_t model_bad = 0;
     /* a live stream (spectating): the file grows while it plays */
     bool live = false, live_end = false, have_session = false, buffering = true;
+    bool session_new = false;                  /* the SESSION came after the netplay core was set up: tell it */
     HANDLE lh = INVALID_HANDLE_VALUE;
     std::vector<uint8_t> lbuf;                 /* bytes read, not yet a whole record */
     np::PadInput lprev[2] = { np::kNeutral, np::kNeutral };
@@ -655,7 +656,9 @@ bool live_record(Play& p, uint8_t type, const uint8_t* b, uint32_t n)
         const int slot = (int)r.u32(), delay = (int)r.u32(), rb_delay = (int)r.u32();
         const uint32_t sseed = r.u32(), mseed = r.u32(), every = r.u32();
         if (r.bad) return false;
-        if (p.on && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed || mseed != d.match_seed)) {
+        if (!p.have_session && p.on) p.session_new = true;
+        if (p.have_session && (rb != d.rollback || slot != d.slot || delay != d.delay || sseed != d.session_seed ||
+                               mseed != d.match_seed)) {
             /* the playback runs with what the first SESSION said (the handshake's): the players' games
              * changed it later (a reconnect before frame 0) -- this playback cannot follow */
             p.model_bad++;
@@ -1094,7 +1097,9 @@ void rec_frame(uint32_t f)
 bool playing() { return P().on; }
 int  play_slot() { return P().d.slot; }
 int  play_delay() { return P().d.delay; }
-bool play_rollback() { return P().d.rollback; }
+/* a live stream whose SESSION has not come yet: rollback, the lobby's netcode (rb_net.cpp offers it at the
+ * game's start; netplay_core replay_session_known() takes the offer back for a lockstep session) */
+bool play_rollback() { const Play& p = P(); return p.live && !p.have_session ? true : p.d.rollback; }
 uint32_t play_session_seed() { return P().d.session_seed; }
 uint32_t play_match_seed() { return P().d.match_seed; }
 uint32_t play_target() { return P().target; }
@@ -1137,21 +1142,12 @@ bool live_load(const char* path)
     if (const char* b = env("T5_REPLAY_LIVE_BUFFER")) { const int v = atoi(b); if (v >= 0 && v <= 3600) p.buffer = (uint32_t)v; }
     if (const char* t = env("T5_REPLAY_LIVE_TIMEOUT")) { const int v = atoi(t); if (v >= 5 && v <= 3600) p.timeout_s = (uint32_t)v; }
     if (const char* st = env("T5_REPLAY_STATUS")) p.status_path = st;
-    /* the game may start before the players' games have shaken hands (a spectator who watches from the
-     * start): the session's parameters are all it needs now; the first fight comes later (the select
-     * screen waits for it) */
-    uint32_t wait_s = 300;
-    if (const char* w = env("T5_REPLAY_LIVE_WAIT")) { const int v = atoi(w); if (v >= 1 && v <= 3600) wait_s = (uint32_t)v; }
-    const ULONGLONG t0 = GetTickCount64();
-    for (;;) {
-        live_poll(p);
-        if (p.have_session) break;
-        if (p.live_end || GetTickCount64() - t0 > (ULONGLONG)wait_s * 1000) {
-            p.error = p.live_bad ? "the live data is damaged" : "the live match has not started";
-            return false;
-        }
-        Sleep(50);
-    }
+    /* The game starts at Watch, usually before the players' games have shaken hands: it boots to the
+     * select screen meanwhile (like theirs) and waits there for the first fight's line. The session's
+     * parameters come before that line (the handshake): netplay_core takes them then
+     * (replay_session_known); until then rollback is assumed (play_rollback). */
+    live_poll(p);
+    if (p.live_bad) { p.error = "the live data is damaged"; return false; }
     if (p.mc.size() < p.d.matches.size()) p.mc.resize(p.d.matches.size());
     p.target = UINT32_MAX;     /* every match the stream brings */
     p.tail = 0;
@@ -1345,6 +1341,10 @@ bool play_fight_line(uint32_t match, std::string* line)
     /* live: the direct fight asks at the select screen (every 15 frames) until the players' games got to
      * that fight -- nothing else reads the file there */
     if (p.on && p.live && match > p.d.matches.size()) live_poll(p);
+    if (p.session_new) {   /* (before the fight's line: the select's TLS pin and frame 0 use what it says) */
+        p.session_new = false;
+        np::replay_session_known();
+    }
     if (!p.on || match < 1 || match > p.d.matches.size()) return false;
     const Fight& f = p.d.matches[match - 1].ft;
     char b[256];

@@ -1856,6 +1856,24 @@ bool session_begin()
 uint32_t sessions() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.sessions; }
 
 bool replaying() { return S().replay; }
+
+/* Spectating (replay.cpp live_load): the game started before the players' handshake, so configure() set up
+ * the playback without the session; its parameters now, before the first fight's select screen. A
+ * lockstep session takes back the rollback offer the game made at its start (play_rollback() said
+ * rollback while it was unknown). */
+void replay_session_known()
+{
+    State& s = S();
+    std::lock_guard<std::mutex> lk(s.mu);
+    if (!s.replay) return;
+    s.slot = rp::play_slot();
+    s.delay = rp::play_delay();
+    s.seed = rp::play_session_seed();
+    s.session = rp::play_match_seed();
+    if (!rp::play_rollback()) s.rb_offer = false;
+    note("replay: the live session: playing back as P%d, delay %d, %s", s.slot + 1, s.delay,
+         rp::play_rollback() ? "rollback" : "lockstep");
+}
 uint32_t barriers() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); return s.nbar; }
 void rec_pump() { State& s = S(); std::lock_guard<std::mutex> lk(s.mu); rec_pump_locked(); }
 

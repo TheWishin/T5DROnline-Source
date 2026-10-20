@@ -150,9 +150,10 @@ param)`; the factory is `func_0025E6AC`.
    0x1008F088 (the stage confirm writes the panel's pick there; the game-mode
    loader copies it to 0x10053A08 later, so the overwrite wins), then
    `t5_netplay_start()`. This frame is "FIGHT START" in the log/status.
-4. Match over: 0x1008EBD5 != 0 with wins at 0x1008EBDA/0x1008EBDB (per
-   netplay's finding; 0x1008EBD0 is the round counter next to them; the
-   tallies stay 0 in direct fights, the winner index 0x1008EBD6 decides).
+4. Match over: 0x1008EBD5 != 0; the rounds each player won are the fighters'
+   counts at 0x100900D1 / 0x100909A1 (1.1.3, docs/NETPLAY.md "Match result";
+   before, the battle config's 0x1008EBDA/DB, which stay 0 in direct fights, and
+   the winner index 0x1008EBD6 made the score rounds-to-win : 0).
    Result file, state `over`; from here the pads are held neutral and the
    driver skips the replay and win pose (next section); the game returns to
    character select; when the select screen is live again (mode 6, state 3,

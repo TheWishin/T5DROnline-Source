@@ -828,7 +828,7 @@ class LobbyServer:
                 raise LobbyError(proto.E_RATE, "slow down")
             reply = await fn(conn, msg)
         except LobbyError as e:
-            conn.send({"t": "error", "code": e.code, "msg": e.msg, "re": rid})
+            conn.send(dict(e.extra, t="error", code=e.code, msg=e.msg, re=rid))
             if e.code in (proto.E_PROTO, proto.E_VERSION) and t == "hello":
                 return False
             return True
@@ -3139,7 +3139,8 @@ class LobbyServer:
         q = self.by_account.get(row["id"])
         status, activity = self._presence_of(q)
         d = {"name": row["name"], "status": status, "activity": activity, "since": row["since"],
-             "last_seen": row["last_seen"], "invite": self._invitable(viewer, q)}
+             "last_seen": row["last_seen"], "invite": self._invitable(viewer, q),
+             "retry": self._invite_retry_left(viewer, row["id"])}
         if q is not None:
             d["rating"] = round(q.rating.r)
             d.update(q.rank_info())
@@ -3336,7 +3337,7 @@ class LobbyServer:
             for w in watchers:
                 if aid in w.friends:
                     w.send({"t": "friend_status", "name": name, "status": st, "activity": act,
-                            "invite": self._invitable(w, q)})
+                            "invite": self._invitable(w, q), "retry": self._invite_retry_left(w, aid)})
 
     # ------------------------------------------------------------------ invites (friends)
     async def h_invite(self, conn, msg):
@@ -3377,7 +3378,9 @@ class LobbyServer:
             raise LobbyError(proto.E_RATE, "one invite at a time")
         wait = self._retry_left(("invite", p.account_id, q.account_id))
         if wait:
-            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s")
+            # (retry: the launcher shows the wait on its invite buttons, counting down from the server's number)
+            raise LobbyError(proto.E_RATE, f"your last invite to that friend ended a moment ago; try again in {wait} s",
+                             retry=wait)
         if now - p.last_invite < 2.0:           # the last one ended already: only too soon (any friend)
             raise LobbyError(proto.E_RATE, "wait a moment before inviting again")
         if sum(1 for i in self.invites.values() if i.dst is q) >= 3:
@@ -3467,6 +3470,15 @@ class LobbyServer:
         left = self.retry_after.get(key, 0.0) - time.monotonic()
         return math.ceil(left) if left > 0 else 0
 
+    def _invite_retry_left(self, viewer, friend):
+        """Whole seconds until `viewer` may invite `friend` (a player, or an account id) again (0: now). Sent as
+        `retry` in friends / friend_status / invite_update and with the refusal: the server is the authority, the
+        launcher only counts its number down."""
+        if viewer is None or viewer.account_id is None:
+            return 0
+        aid = friend.account_id if isinstance(friend, Player) else friend
+        return self._retry_left(("invite", viewer.account_id, aid)) if aid is not None else 0
+
     def _end_invite(self, inv, state):
         """accepted | declined | cancelled | expired: both sides are told (invite_update)."""
         if self.invites.pop(inv.id, None) is None:
@@ -3475,8 +3487,12 @@ class LobbyServer:
             inv.timer.cancel()
         for q, other in ((inv.src, inv.dst), (inv.dst, inv.src)):
             if self._can(q, "friends"):
-                q.send({"t": "invite_update", "invite": inv.id, "state": state, "name": other.name,
-                        "kind": inv.kind})
+                ev = {"t": "invite_update", "invite": inv.id, "state": state, "name": other.name, "kind": inv.kind}
+                if q is inv.src:
+                    # a no or a take-back holds the inviter's next invite to this friend back (_retry_later): say
+                    # for how long, so the launcher can count it down on its invite buttons
+                    ev["retry"] = self._invite_retry_left(q, other)
+                q.send(ev)
 
     # ------------------------------------------------------------------ sets
     def _end_set(self, gs, reason, by=None):

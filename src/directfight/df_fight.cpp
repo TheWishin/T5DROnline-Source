@@ -38,7 +38,7 @@
  *   3. game mode (4): rounds to win -> 0x1008EBD4, stage -> 0x1008F088, then
  *      t5_netplay_start() (lockstep frame 0 on both PCs; no-op without netplay).
  *      "fight start" = the first frame in mode 4.
- *   4. match over: 0x1008EBD5 != 0 with wins at 0x1008EBDA/DB -> result file.
+ *   4. match over: 0x1008EBD5 != 0, rounds won by each fighter (match_score.h) -> result file.
  *      The game returns to character select on its own: that is the neutral
  *      point; the next fight comes from T5_FIGHT_FILE.
  */
@@ -49,6 +49,7 @@
 #include <string>
 #include <vector>
 #include "df.h"
+#include "../netplay/match_score.h"   /* a decided match's score: the fighters' round counts */
 
 extern "C" void t5_netplay_start(void);
 extern "C" int  t5_netplay_lockstep_active(void);
@@ -81,8 +82,8 @@ constexpr uint32_t kFnStartGame  = 0x0004E9DC;   /* (game_type, player_mask) -> 
 constexpr uint32_t kConfig       = 0x1008EBAC;   /* battle config: +0 game type (4 = VS) */
 constexpr uint32_t kRoundsToWin  = 0x1008EBD4;   /* u8 */
 constexpr uint32_t kMatchOver    = 0x1008EBD5;   /* u8: non-zero once the match is decided */
-constexpr uint32_t kWinsP1       = 0x1008EBDA;   /* u8 */
-constexpr uint32_t kWinsP2       = 0x1008EBDB;   /* u8 */
+constexpr uint32_t kWinsP1       = np::MatchScore::kRoundWinsP1;   /* u8: rounds P1 won (fighter block +0xA1) */
+constexpr uint32_t kWinsP2       = np::MatchScore::kRoundWinsP2;   /* u8: rounds P2 won */
 constexpr uint32_t kWinnerIdx    = 0x1008EBD6;   /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 constexpr uint32_t kSelectState  = 0x1008F070;   /* select mode: 1,2,3 (choosing), 4 (stage confirmed), 5 (leaving); fight phases after */
 constexpr uint32_t kStageId      = 0x1008F088;   /* chosen stage, written at the stage confirm, read by the game-mode loader */
@@ -1547,14 +1548,11 @@ void fight_on_frame(uint32_t f)
         if (over && g_over_wait) { g_over_wait = false; note("frame %u: the match end is confirmed", f); }
         if (over && !g_held) hold_pads(f, "the match is decided");
         post_match_skip(f);
-        uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
-        if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 here: use the winner byte */
-            const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
-            if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
-        }
+        const np::MatchScore sc = np::MatchScore::of(rd8(kWinsP1), rd8(kWinsP2), rd8(kMatchOver), rd8(kWinnerIdx), rd8(kRoundsToWin));
+        const uint8_t w1 = (uint8_t)sc.p1, w2 = (uint8_t)sc.p2;
         if (over && (w1 || w2) && !g_result_done) {
             g_result_done = true;
-            const int winner = w1 > w2 ? 0 : w2 > w1 ? 1 : -1;
+            const int winner = sc.winner();
             g_last_winner = winner; g_last_score[0] = w1; g_last_score[1] = w2;
             g_after_match = true;
             note("frame %u: MATCH OVER match %u after %u frames: P1 %u - P2 %u, winner %s", f, g_match, f - g_fight_frame, w1, w2,

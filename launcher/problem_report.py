@@ -739,13 +739,16 @@ def _gb(n):
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
                             r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
-                            r"power saving|on AC|on battery|power source)")
+                            r"power saving|on AC|on battery|power source|"
+                            # patch 0065: where the game's threads run (processors, placement, the three
+                            # threads of the frame's critical path)
+                            r"processors:|placement:|game thread '|translation '|sound core ')")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
 # late frames); the last few of each kind go into system.txt.
 GAME_LOG_RUN = re.compile(r"^\[(?:slow-frames|pacing\] display lock:|cellAudio\] sound glitches)")
 
 
-def facts_from_log(path, limit=12):
+def facts_from_log(path, limit=16):
     """The few start-up lines of a game log that say what the game found on this PC."""
     out = []
     try:

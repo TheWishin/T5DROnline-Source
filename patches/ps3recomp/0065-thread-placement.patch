@@ -105,7 +105,7 @@ index 25ac5a9..2c1c38c 100644
      g_vj_drain_base = g_vj_published;
      g_vj_arena_used = 0;
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index 0ee0df5..6707a04 100644
+index 0ee0df5..edfbd4e 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -27,9 +27,15 @@
@@ -382,62 +382,62 @@ index 0ee0df5..6707a04 100644
 +}
 +
 +/* "[sched] processors:" and "[sched] placement:" (patch 0065): what the game
-+ * found and where its threads go -- the lines a problem report carries. */
++ * found and where its threads go -- the lines a problem report carries (it
++ * keeps 200 characters of each). */
 +static void hs_plan_log(void)
 +{
 +    const hsp_plan* p = hs_plan();
-+    char kinds[160], groups[200], m1[96], m2[96], m3[96];
++    char kinds[96], groups[128], m1[96], m2[96];
 +    if (p->hybrid)
-+        snprintf(kinds, sizeof kinds, "hybrid: %d performance core(s) (%d logical, class %d) + %d efficiency core(s)",
++        snprintf(kinds, sizeof kinds, "hybrid: %d P-cores (%d logical, class %d) + %d E-cores",
 +                 p->p_cores, p->p_lps, p->top_eff, p->e_cores);
 +    else
 +        snprintf(kinds, sizeof kinds, "one core type");
 +    if (p->groups <= 1)
 +        snprintf(groups, sizeof groups, "one cache group");
 +    else if (p->hot >= 0) {
-+        char why[48];
-+        if (p->hot_by_l3) snprintf(why, sizeof why, "the larger L3, %u MB", (unsigned)(p->hot_l3_kb / 1024u));
-+        else snprintf(why, sizeof why, "holds the best-ranked core");
-+        snprintf(groups, sizeof groups, "%d cache groups: the game stays in group %d (LP %s, %d cores; %s)",
++        char why[40];
++        if (p->hot_by_l3) snprintf(why, sizeof why, "largest L3, %u MB", (unsigned)(p->hot_l3_kb / 1024u));
++        else snprintf(why, sizeof why, "best-ranked core");
++        snprintf(groups, sizeof groups, "%d cache groups, the game in group %d (LP %s, %d cores: %s)",
 +                 p->groups, p->hot, hsp_mask_text(p->group, m1, sizeof m1), p->hot_cores, why);
 +    } else
-+        snprintf(groups, sizeof groups, "%d cache groups, none with %d+ cores: all of them", p->groups,
-+                 HSP_HOT_MIN_CORES);
-+    fprintf(stderr, "[sched] processors: %d logical / %d cores in the affinity mask (of %d in the PC), %s; %s; %s%s\n",
-+            p->lps, p->cores, s_ncpu, p->smt ? "SMT" : "no SMT", kinds, groups,
-+            p->small ? "; a small CPU" : "");
++        snprintf(groups, sizeof groups, "%d cache groups, none of %d+ cores", p->groups, HSP_HOT_MIN_CORES);
++    fprintf(stderr, "[sched] processors: %d logical, %d cores (of %d), %s%s; %s; %s\n",
++            p->lps, p->cores, s_ncpu, p->smt ? "SMT" : "no SMT", p->small ? ", small" : "", kinds, groups);
 +    const hsp_plan q = hs_pools_now();
 +    char pr[6][16];
 +    if (!s_place) {
-+        fprintf(stderr, "[sched] placement: off (PS3_SCHED_PLACE=0); SPURS %d job(s) at a time, vertex workers %d\n",
++        fprintf(stderr, "[sched] placement: off (PS3_SCHED_PLACE=0); SPURS %d at a time, vertex workers %d\n",
 +                q.spurs_threads, q.vertex_threads);
 +        return;
 +    }
-+    char crit[160], work[200], ideal[128];
++    char crit[96], ideal[96];
 +    if (p->set[HSP_MAIN])
-+        snprintf(crit, sizeof crit, "game thread, translation, sound core and the game's threads on LP %s (%s)",
-+                 hsp_mask_text(p->set[HSP_MAIN], m2, sizeof m2),
-+                 p->hybrid ? "performance cores, CPU sets" : "CPU sets");
++        snprintf(crit, sizeof crit, "on LP %s (%s)", hsp_mask_text(p->set[HSP_MAIN], m1, sizeof m1),
++                 p->hybrid ? "P-cores" : "one cache group");
 +    else
-+        snprintf(crit, sizeof crit, "game thread, translation, sound core and the game's threads on any processor");
++        snprintf(crit, sizeof crit, "on any processor");
 +    if (s_ideal && p->ideal[HSP_MAIN] >= 0)
-+        snprintf(ideal, sizeof ideal, "ideal processors: game thread LP %d, translation LP %d, sound core LP %d",
-+                 p->ideal[HSP_MAIN], p->ideal[HSP_TICKER], p->ideal[HSP_SPU]);
++        snprintf(ideal, sizeof ideal, "ideal LP %d / %d / %d", p->ideal[HSP_MAIN], p->ideal[HSP_TICKER], p->ideal[HSP_SPU]);
 +    else
 +        snprintf(ideal, sizeof ideal, "no ideal processors");
-+    if (p->reserved)
-+        snprintf(work, sizeof work, "workers on LP %s (off LP %s: the game thread's and translation's cores)",
-+                 hsp_mask_text(p->set[HSP_SPURS], m3, sizeof m3), hsp_mask_text(p->reserved, m1, sizeof m1));
-+    else if (p->set[HSP_SPURS])
-+        snprintf(work, sizeof work, "workers on LP %s", hsp_mask_text(p->set[HSP_SPURS], m3, sizeof m3));
++    fprintf(stderr, "[sched] placement: game thread, translation, sound core %s, %s; game's other threads %s\n",
++            crit, ideal, p->set[HSP_GAME] ? "the same" : "anywhere");
++    char work[128];
++    if (p->set[HSP_SPURS])
++        snprintf(work, sizeof work, "on LP %s%s%s%s", hsp_mask_text(p->set[HSP_SPURS], m1, sizeof m1),
++                 p->reserved ? " (not LP " : "", p->reserved ? hsp_mask_text(p->reserved, m2, sizeof m2) : "",
++                 p->reserved ? ": the game thread's and translation's cores)" : "");
 +    else
-+        snprintf(work, sizeof work, "workers on any processor");
-+    fprintf(stderr, "[sched] placement: %s; %s; %s; SPURS %d job(s) at a time, vertex workers %d (idle spin %d); "
-+                    "priorities: game thread %s, translation %s, sound core %s, game threads %s, SPURS %s, vertex %s\n",
-+            crit, ideal, work, q.spurs_threads, q.vertex_threads, q.vertex_spin,
++        snprintf(work, sizeof work, "anywhere");
++    fprintf(stderr, "[sched] placement: workers %s; SPURS %d at a time, vertex workers %d; priorities: game %s, "
++                    "translation %s, sound %s, workers %s/%s\n",
++            work, q.spurs_threads, q.vertex_threads,
 +            hs_prio_text(s_prio[HS_ROLE_MAIN], pr[0], 16), hs_prio_text(s_prio[HS_ROLE_TICKER], pr[1], 16),
-+            hs_prio_text(s_prio[HS_ROLE_SPU], pr[2], 16), hs_prio_text(s_prio_ppu, pr[3], 16),
++            hs_prio_text(s_prio[HS_ROLE_SPU], pr[2], 16),
 +            hs_prio_text(s_prio[HS_ROLE_SPURS], pr[4], 16), hs_prio_text(s_prio[HS_ROLE_VERTEX], pr[5], 16));
++    (void)pr[3];
 +}
 +
  static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)

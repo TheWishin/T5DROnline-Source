@@ -3,7 +3,7 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
-## v1.1.3 (not released yet)
+## v1.1.3 (2026-10-20)
 
 **Tournaments, private rooms, watching live matches, your custom costumes online, matches that connect through a blocking firewall, and more speed on slower PCs.** Both players need 1.1.3
 (the lobby pairs equal game builds, and 1.1.3 changes the game: its netplay speaks protocol 4 for the costumes, and

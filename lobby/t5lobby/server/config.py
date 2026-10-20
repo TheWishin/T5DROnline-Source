@@ -94,6 +94,10 @@ class Config:
     tour_organizers: str = "any"    # T5L_TOUR_ORGANIZERS: who may create one: any (every account), none, or a comma list
                                     # of account names
     tour_admins: list = field(default_factory=list)   # T5L_TOUR_ADMINS: account names that may run every tournament
+                                    # (both on top of the hosts and admins added with `t5lobby-admin tour-host`)
+    tour_max_hosts: int = 20        # T5L_TOUR_MAX_HOSTS: hosts `t5lobby-admin tour-host add` accepts (admins: no limit)
+    tour_host_hint: str = ""        # T5L_TOUR_HOST_HINT: what the launcher shows a player who may not create
+                                    # tournaments (how to become a host here); empty: the launcher's own text
     tour_rated: bool = False        # T5L_TOUR_RATED: tournament sets change the rating (once per set, like a ranked set)
     tour_noshow: float = 300.0      # T5L_TOUR_NOSHOW: seconds to accept a called set; who has not is a no-show (out)
     tour_retries: int = 2           # T5L_TOUR_RETRIES: a set that ended without a result is called again this often

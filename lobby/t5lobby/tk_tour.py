@@ -64,6 +64,8 @@ class TourController:
         self.tab = tab
         self.rows = []              # tour_list rows (summaries)
         self.can_create = False
+        self.create_hint = ""       # the server's line for a player who may not create (T5L_TOUR_HOST_HINT), if any
+        self.listed = False         # the server said whether this player may create (tour_list / tour_access)
         self.selected = None        # id of the tournament on the page
         self.detail = None          # its full view (tour_get)
         self.sel_set = None         # the bracket set the organizer clicked
@@ -112,7 +114,7 @@ class TourController:
         def done(r):
             self._list_busy = False
             self.rows = r.get("rows") or []
-            self.can_create = bool(r.get("can_create"))
+            self._access(r)
             if self.selected is None and self.rows:
                 self.selected = self.rows[0]["id"]
                 self.want_detail(now=True)
@@ -180,6 +182,13 @@ class TourController:
                 self.want_list()
             if ev.get("id") == self.selected and (self.page_shown or self.call is not None):
                 self.want_detail()
+        elif kind == "tour_access":                # the server's owner made this player a host, or took it back
+            self._access(ev)
+            self.render_list()
+            if self.page_shown:
+                self.want_list(now=True)
+            if self.selected:
+                self.want_detail(now=True)             # (an admin manages every tournament)
         elif kind == "tour_notice":
             tab.status(tour_text.notice_text(ev))
             if (ev.get("tournament") or {}).get("id") == self.selected:
@@ -209,8 +218,26 @@ class TourController:
         """Is the tab's question bar showing the call right now (not another question that came after it)?"""
         return self.call is not None and self._bar_line is not None and self.tab.bar_text.get() == self._bar_line
 
+    def _access(self, d):
+        """can_create and create_hint of a tour_list or a tour_access (create_hint: servers from 1.1.3 on, optional)."""
+        self.can_create = bool(d.get("can_create"))
+        hint = d.get("create_hint")
+        self.create_hint = "".join(ch for ch in hint if ch.isprintable()).strip()[:200] if isinstance(hint, str) else ""
+        self.listed = True
+
+    def create_hint_text(self):
+        """The line shown in place of Create... when this player may not create tournaments here: the server's own
+        text as it is, else ours. None: no line (may create, a guest, not known yet)."""
+        c = self.client()
+        if self.can_create or not self.listed or c is None or (c.me or {}).get("guest"):
+            return None
+        return self.create_hint or t("Only tournament hosts can create tournaments. Ask the server's owner for a host "
+                                     "slot.")
+
     def reset(self):
         """Logged out / disconnected."""
+        self.can_create = self.listed = False
+        self.create_hint = ""
         self.rows = []
         self.detail = None
         self.selected = None
@@ -420,6 +447,15 @@ class TourController:
             self.count_var.set(str(len(self.rows)) if self.rows else t("none yet"))
         state = "normal" if self.can_create else "disabled"
         pg["create"].configure(state=state)
+        hint = self.create_hint_text()
+        if hint:                                    # (instead of a Create button that can never be used)
+            pg["create"].pack_forget()
+            pg["hint"].configure(text=hint)
+            pg["hint"].grid()
+        else:
+            pg["hint"].grid_remove()
+            if not pg["create"].winfo_manager():
+                pg["create"].pack(side="left", before=pg["refresh"])
         self.render_detail()
 
     def render_detail(self, redraw=True):
@@ -535,16 +571,20 @@ def build_page(view, page):
     lc = view.card(page, pad=12)
     lc.grid(row=0, column=0, sticky="nsew", padx=(0, px(10)))
     lc.columnconfigure(0, weight=1)
-    lc.rowconfigure(1, weight=1)
+    lc.rowconfigure(2, weight=1)
     head, tools = view.section_head(lc, t("Tournaments").upper(), ctl.count_var)
     head.grid(row=0, column=0, sticky="we", pady=(0, px(6)))
     pg["create"] = ttk.Button(tools, text=t("Create..."), style="Card.Small.TButton", state="disabled",
                               command=ctl.do_create)
     pg["create"].pack(side="left")
-    ttk.Button(tools, text=t("Refresh"), style="Card.Small.TButton", command=lambda: ctl.shown()).pack(
-        side="left", padx=(px(6), 0))
+    pg["refresh"] = ttk.Button(tools, text=t("Refresh"), style="Card.Small.TButton", command=lambda: ctl.shown())
+    pg["refresh"].pack(side="left", padx=(px(6), 0))
+    # who may not create tournaments here reads why (and how to become a host) where Create... would be
+    pg["hint"] = view.wrap(ttk.Label(lc, text="", style="Card.Muted.TLabel", justify="left"), lc, 30)
+    pg["hint"].grid(row=1, column=0, sticky="w", pady=(0, px(6)))
+    pg["hint"].grid_remove()
     fr = view.body(lc)
-    fr.grid(row=1, column=0, sticky="nsew")
+    fr.grid(row=2, column=0, sticky="nsew")
     fr.columnconfigure(0, weight=1)
     fr.rowconfigure(0, weight=1)
     tv = ttk.Treeview(fr, columns=[c for c, _h, _w in LIST_COLUMNS], show="headings", height=6,

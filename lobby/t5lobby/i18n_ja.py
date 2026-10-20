@@ -1228,6 +1228,8 @@ MESSAGES = {
     "NEEDS THE ORGANIZER": "主催者の対応待ち",
     "No check-in": "チェックインなし",
     "No tournament selected": "トーナメントが選ばれていません",
+    "Only tournament hosts can create tournaments. Ask the server's owner for a host slot.":
+        "トーナメントを作成できるのはトーナメントホストだけです。ホストの枠はサーバーの管理者に頼んでください。",
     "Pick a tournament to see its bracket.": "トーナメントを選ぶとトーナメント表が表示されます。",
     "Pick one in the list, or create one.": "リストから選ぶか、新しく作成してください。",
     "Players": "人数",

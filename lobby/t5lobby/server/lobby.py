@@ -4089,6 +4089,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
                         self.kick(p, "banned from this server")
                 for c in [c for c in self.conns if c.player is None and self.ip_banned(c.ip)]:
                     c.close()
+                self.tours.reload_hosts()           # (`admin tour-host`: tournament hosts and admins)
             except Exception:
                 log.exception("admin poll")
 

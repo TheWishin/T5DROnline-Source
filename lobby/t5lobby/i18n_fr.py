@@ -1257,6 +1257,8 @@ MESSAGES = {
     "NEEDS THE ORGANIZER": "ATTEND L'ORGANISATEUR",
     "No check-in": "Sans check-in",
     "No tournament selected": "Aucun tournoi sélectionné",
+    "Only tournament hosts can create tournaments. Ask the server's owner for a host slot.":
+        "Seuls les hôtes de tournoi peuvent créer des tournois. Demande une place d'hôte au propriétaire du serveur.",
     "Pick a tournament to see its bracket.": "Choisis un tournoi pour voir son bracket.",
     "Pick one in the list, or create one.": "Choisis-en un dans la liste, ou crées-en un.",
     "Players": "Joueurs",

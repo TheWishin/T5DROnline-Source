@@ -21,8 +21,9 @@ part is in the README's status table.
   Older launchers do not see private rooms (and keep working as before in open ones). Texts in all languages.
   docs/ONLINE.md "Rooms".
 - **Tournaments** (accounts): the Online tab's new **Tournaments** page lists the server's tournaments (running,
-  open for sign-up, finished). Anyone with an account can create one: single or double elimination, sets of best
-  of 3 or 5, a start time, 8 to 64 players, an optional check-in window, random seeding or by rating. Players sign
+  open for sign-up, finished). Tournament hosts create them (on a server that allows it, every account; elsewhere
+  the page says how to become a host): single or double elimination, sets of best of 3 or 5, a start time, 8 to 64
+  players, an optional check-in window, random seeding or by rating. Players sign
   up (and check in); at the start the server draws the bracket and calls each set: "Your tournament set is ready",
   **Accept** within 5 minutes, and the game starts by itself. A set plays like a casual set with the in-game select,
   and its results come from the games with all the lobby's rules (quitting or leaving loses the set, desynced games
@@ -140,6 +141,11 @@ part is in the README's status table.
   account does); a second crash of one player's game in a set loses the set (`T5L_TOUR_BLAMED_VOIDS`); the
   organizer limit counts per internet address too and spares the admins; tournament names cannot pass for the
   server; a player disqualified before the start stays out; `tour_get` has its own rate limit.
+- Tournament hosts from the console: `t5lobby-admin tour-host add NAME [--admin]`, `tour-host remove NAME`,
+  `tour-hosts` -- who may create tournaments (`T5L_TOUR_MAX_HOSTS` slots, default 20) and who runs every tournament,
+  on top of `T5L_TOUR_ORGANIZERS` / `T5L_TOUR_ADMINS`, without a restart; an online player's launcher shows Create at
+  once. `T5L_TOUR_HOST_HINT`: the line a player who may not create sees instead (docs/TOURNAMENTS.md "Who may create
+  tournaments"). Its table `tour_hosts` is tournament schema step 2; lobby 1.1.2 starts on the database as before.
 - `admin drain` holds the tournaments as well: no tournament starts and no new set starts before the restart, and the
   no-show times stand still (nobody is disqualified for the drain); the sets being played finish.
 

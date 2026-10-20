@@ -934,6 +934,19 @@ not (on every PC, power saving or not).
   1080p is the sensible choice there. With power saving on (on by itself with
   integrated graphics), the shadow map and the sun's glow stay at their PS3
   size above Native -- shadow edges then look as they do at Native.
+- **4K (or 1440p) on integrated graphics** with a 1080p screen: this game's
+  3D scene at 4K is 6144 x 4320 pixels, and on an APU the graphics share the
+  processor's memory and power -- so the busy graphics also slow the game's
+  own work (a long "game" time in `[slow-frames]`, not the graphics' own
+  time). Choose **1080p**, or **Auto (matches the screen)**, which picks
+  1080p there (since 1.1.3; Settings also says "4K (3x) on integrated
+  graphics: try 1080p (1.5x) for 60 fps."). On a 1080p screen 1080p still
+  looks sharp. docs/RENDER_PERF.md "4K on integrated graphics".
+- **The log says `power saving off (PS3_LAPTOP=0 ...)` although Settings
+  shows Auto**: a `PS3_LAPTOP=0` line in Settings -> "Advanced: extra
+  settings" (it wins over the choice; since 1.1.3 Settings says so), or a
+  `PS3_LAPTOP` variable in Windows' environment (since 1.1.3 Auto overrules
+  that one).
 - **Two graphics chips** (NVIDIA Optimus, AMD switchable graphics): the game
   picks the fast chip. The screen is still driven by the integrated chip and
   every picture is copied across; the log says `[gpu] display: ... hybrid
@@ -968,6 +981,16 @@ line like
   bit slower than 60 instead of dropping to 30-45.
 - "other programs X of Y logical processors busy" (1.1.3): what the rest of
   the PC used at the same time. A large X: close programs.
+- "game part ... main thread running A, waiting for the renderer C, for
+  other game threads D" (1.1.3): what the game's own frame was made of. C large: the game waited for the graphics (counted as GPU).
+  A large with C near 0: the processor's work itself was slow.
+- "GPU busy X ms a frame (Y % of the time)" (1.1.3): the graphics' own time.
+  Near 100 %: the line ends with "GPU-bound" -- a lower Internal resolution
+  helps. On integrated graphics already 50 % and more slow the processor
+  ("integrated graphics busy ..." at the end of the line).
+- "processors at X GHz on average (Y % of their Z)" (1.1.3): the real clock
+  while playing; well below 100 % on an APU while the graphics are busy, or
+  on a laptop that is hot or on battery.
 
 **Report a problem** (launcher) puts the power source, power plan, power
 mode, processor clock limit and (where Windows has one) the temperature

@@ -54,7 +54,7 @@ index ad0fa13..b34bdc2 100644
              { LARGE_INTEGER q; QueryPerformanceCounter(&q);
                g_rsx_pf[RSX_PF_FLIP_QPC] = q.QuadPart;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index f47bcfb..d38f892 100644
+index f47bcfb..2fe417b 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -791,6 +791,11 @@ typedef struct {
@@ -116,14 +116,14 @@ index f47bcfb..d38f892 100644
  
      g.list->lpVtbl->SetPipelineState(g.list, pso);
      g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x);
-@@ -10512,6 +10523,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
-     } else {
+@@ -10513,6 +10524,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          g.list->lpVtbl->DrawInstanced(g.list, n_tri, 1, 0, 0);
      }
-+    LD_PF_PHASE(ph_api_ticks);
      ld_gp_note_draw();
++    LD_PF_PHASE(ph_api_ticks);
      ld_surface_note_write(target, LD_SURFACE_WRITE_DRAW);
      for (u32 r = 1; r < n_mrt; r++)
+         ld_surface_note_write(mrt[r], LD_SURFACE_WRITE_DRAW);
 @@ -10588,6 +10600,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
      g.vb_used += (u32)draw_vb_bytes;
      g.ib_used += (u32)draw_ib_bytes;

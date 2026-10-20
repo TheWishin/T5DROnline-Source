@@ -2046,4 +2046,19 @@ MESSAGES = {
         "mas algumas só por um relay, com mais lag.",
     "A firewall seems to block T5DR Online's network traffic on this PC.":
         "Parece que um firewall bloqueia o tráfego de rede do T5DR Online neste PC.",
+    # patch 0063 (igpu-4k-stall): Internal resolution Auto, integrated-graphics and GPU-bound hints
+    "Auto (matches the screen)":
+        "Auto (conforme a tela)",
+    "The game picks the step that matches your screen when it starts, at most 1080p on integrated graphics (they share the processor's memory and power).":
+        "O jogo escolhe ao iniciar o nível que combina com a sua tela, no máximo 1080p com gráficos integrados (eles dividem a memória e a energia do processador).",
+    "On this PC: {step}.":
+        "Neste PC: {step}.",
+    "{step} on integrated graphics: try {better} for 60 fps.":
+        "{step} com gráficos integrados: tente {better} para 60 fps.",
+    "Extra settings below set {setting}: that wins over this choice.":
+        "As configurações extras abaixo definem {setting}: isso vale no lugar desta escolha.",
+    "Fights were slower than 60 fps because of the graphics (GPU-bound): choose a lower Internal resolution in Settings.":
+        "As lutas ficaram abaixo de 60 fps por causa dos gráficos (limitado pela GPU): escolha uma resolução interna menor em Configurações.",
+    "Fights were slower than 60 fps: the integrated graphics were busy and slowed the processor too. A lower Internal resolution in Settings helps.":
+        "As lutas ficaram abaixo de 60 fps: os gráficos integrados estavam ocupados e deixaram o processador mais lento também. Uma resolução interna menor em Configurações ajuda.",
 }

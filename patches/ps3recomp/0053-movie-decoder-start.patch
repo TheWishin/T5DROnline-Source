@@ -1,5 +1,5 @@
 diff --git a/libs/codec/cellVdec.c b/libs/codec/cellVdec.c
-index 6831e44..b4d2ff6 100644
+index 6831e44..d97d349 100644
 --- a/libs/codec/cellVdec.c
 +++ b/libs/codec/cellVdec.c
 @@ -22,6 +22,31 @@
@@ -14,7 +14,7 @@ index 6831e44..b4d2ff6 100644
 + * stayed white and START did nothing (smoke reach.title, 4 of ~1,400 boots,
 + * all on a PC short of memory and processors). Now:
 + *  - the decoder is made ahead of time (mfh264_prewarm, when the title loads
-+ *    the VDEC module ~17 s before the first movie), with 2 decoding threads;
++ *    the VDEC module ~17 s before the first movie), with 4 decoding threads;
 + *  - every Media Foundation call of the decoder thread is timed; one that
 + *    takes PS3_VDEC_STALL_MS [5000] (0 = never) is abandoned by a watchdog: a
 + *    new decoder thread finishes the AU it was on with a blank picture and
@@ -478,7 +478,7 @@ index ac24ce9..ea5713f 100644
  #define CELL_VDEC_ERROR_SEQ            0x80610102
  #define CELL_VDEC_ERROR_BUSY           0x80610103
 diff --git a/libs/codec/mf_h264.cpp b/libs/codec/mf_h264.cpp
-index 7a1c824..37305a9 100644
+index 7a1c824..fa769be 100644
 --- a/libs/codec/mf_h264.cpp
 +++ b/libs/codec/mf_h264.cpp
 @@ -39,6 +39,25 @@ static const GUID kClsidH264Dec =
@@ -486,10 +486,10 @@ index 7a1c824..37305a9 100644
      { 0x9C27891A, 0xED7A, 0x40E1, { 0x88, 0xE8, 0xB2, 0x27, 0x27, 0xA0, 0x24, 0xEE } };
  
 +/* CODECAPI_AVDecNumWorkerThreads (codecapi.h). By default the decoder starts
-+ * a worker per processor (16 on a 32-thread PC) in BEGIN_STREAMING; a 720p
-+ * movie at 30 pictures/s needs one or two (decode 1-7 ms per picture). Fewer
-+ * threads make the decoder's start cheaper and leave the game its processors
-+ * (patch 0053). PS3_VDEC_THREADS=n (0 = the decoder's own choice) [2]. */
++ * a worker per processor (16 on a 32-thread PC) in BEGIN_STREAMING for a 720p
++ * movie at 30 pictures/s. Fewer threads leave the game its processors (patch
++ * 0053); with 2 a picture took 9-43 ms on a PC at 100% (median 12 ms, 33 ms
++ * is the budget), so 4. PS3_VDEC_THREADS=n (0 = the decoder's own choice) [4]. */
 +static const GUID kNumWorkerThreads =
 +    { 0x9561C3E8, 0xEA9E, 0x4435, { 0x9B, 0x1E, 0xA9, 0x3E, 0x69, 0x18, 0x94, 0xD8 } };
 +
@@ -498,7 +498,7 @@ index 7a1c824..37305a9 100644
 +    static int n = -1;
 +    if (n < 0) {
 +        const char* e = getenv("PS3_VDEC_THREADS");
-+        n = e && *e ? atoi(e) : 2;
++        n = e && *e ? atoi(e) : 4;
 +        if (n < 0) n = 0;
 +    }
 +    return n;

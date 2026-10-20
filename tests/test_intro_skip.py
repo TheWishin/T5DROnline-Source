@@ -119,7 +119,7 @@ class Patch0053(unittest.TestCase):
                      "PS3_VDEC_TEST_STALL", "PS3_VDEC_TEST_NOPIC"):
             self.assertIn('"%s"' % knob, p, knob)
         self.assertIn("ms = e && *e ? atoi(e) : 5000;", p)            # stall limit 5 s
-        self.assertIn("n = e && *e ? atoi(e) : 2;", p)                 # 2 decoding threads
+        self.assertIn("n = e && *e ? atoi(e) : 4;", p)                 # 4 decoding threads
         self.assertIn("if (id == CELL_SYSMODULE_VDEC) cellVdec_module_loaded();", p)
         self.assertIn("CoIncrementMTAUsage", p)                        # the MTA outlives the prewarm thread
         # a full picture queue does not hold AUDONE back once the title stopped taking pictures

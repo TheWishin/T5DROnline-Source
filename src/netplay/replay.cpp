@@ -1342,6 +1342,9 @@ void play_fight(const Fight& ft, uint32_t match)
 bool play_fight_line(uint32_t match, std::string* line)
 {
     Play& p = P();
+    /* live: the direct fight asks at the select screen (every 15 frames) until the players' games got to
+     * that fight -- nothing else reads the file there */
+    if (p.on && p.live && match > p.d.matches.size()) live_poll(p);
     if (!p.on || match < 1 || match > p.d.matches.size()) return false;
     const Fight& f = p.d.matches[match - 1].ft;
     char b[256];

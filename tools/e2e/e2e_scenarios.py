@@ -2834,3 +2834,251 @@ def spectate_baseline(ctx):
                "the players' stream byte for byte")
 def spectate_stream(ctx):
     _spectate_case(ctx, True, games=False)
+
+
+# ============================================================================== 13. 1.1.3 together
+# Tournaments + custom costumes + spectating + the relay fallback in one run (the 1.1.3 integration): a tournament
+# set with both players in their custom costumes and a spectator watching it from the bracket, in rollback and in
+# lockstep; a match whose one game hears nothing (T5_NET_TEST_INBOUND=block) moving onto the relay, with costumes
+# and a spectator who was already watching.
+RE_COSTUMES = re.compile(r"\[df\] frame \d+: costumes written: (.*); blocks hash ([0-9A-F]{16})")
+
+
+def _costume_saves():
+    """Two offline saves with custom costumes (the system save's SYS-DATA; game data -- never in the repository):
+    E2E_COSTUME_A (Kazuya and Lili customized) and E2E_COSTUME_B (Heihachi and Lili)."""
+    a, b = os.environ.get("E2E_COSTUME_A"), os.environ.get("E2E_COSTUME_B")
+    if not (a and b and os.path.isfile(a) and os.path.isfile(b)):
+        raise Skip("no costume saves: E2E_COSTUME_A / E2E_COSTUME_B name two SYS-DATA files with customizations")
+    return a, b
+
+
+def _costume_lines(p):
+    """Every "costumes written" line of p's games, in order: [(what each side got, blocks hash)]."""
+    from e2e_flows import _whole
+    out = []
+    for ln in _whole(p):
+        m = RE_COSTUMES.search(ln)
+        if m:
+            out.append((re.sub(r" \(fighter 0x[0-9A-F]+\)", "", m.group(1)), m.group(2)))
+    return out
+
+
+def _costume_checks(ctx, label, a, b, spectators=(), n_matches=None):
+    """Both players' games wrote the same costume blocks at every FIGHT START, both sides custom; every spectator's
+    game wrote the very same blocks (from the stream) for every match it played."""
+    la, lb = _costume_lines(a), _costume_lines(b)
+    ctx.check(f"{label}: both PCs wrote the same costume blocks at every FIGHT START", bool(la) and la == lb,
+              f"{a.name}: {la} / {b.name}: {lb}")
+    if n_matches is not None:
+        ctx.check(f"{label}: costumes written for each of the {n_matches} match(es)", len(la) == n_matches, len(la))
+    ctx.check(f"{label}: both fighters in their own custom costumes", bool(la) and
+              all(t.count(": custom") == 2 for t, _h in la), [t for t, _h in la])
+    for v in spectators:
+        lv = _costume_lines(v)
+        ctx.check(f"{label}: {v.name}'s game wrote the players' costume blocks for every match (from the stream)",
+                  bool(lv) and [h for _t, h in lv] == [h for _t, h in la], f"{[h for _t, h in lv]} / "
+                                                                            f"{[h for _t, h in la]}")
+        ctx.check(f"{label}: {v.name} sees both custom costumes", bool(lv) and
+                  all(t.count("custom (replay)") == 2 for t, _h in lv), [t for t, _h in lv])
+    ctx.note(f"{label}: costumes {la}")
+    return la
+
+
+def _spectator_verdict(ctx, label, v, n_matches=None):
+    vd = _verdict(v) or {}
+    ms = vd.get("matches") or []
+    ctx.check(f"{label}: {v.name}'s game identical to the live games", vd.get("identical") is True,
+              f"{vd.get('hashes_compared')} hashes compared, {vd.get('hash_mismatches')} different, "
+              f"{vd.get('uncompared')} uncompared, sync points {vd.get('sync_points')}/{vd.get('sync_points_recorded')}, "
+              f"setup problems {vd.get('setup_problems')}")
+    ctx.check(f"{label}: {v.name}: every match played, the same results", bool(ms) and all(m.get("same") for m in ms)
+              and (n_matches is None or len(ms) == n_matches), [(m.get("winner"), m.get("hash"), m.get("same"))
+                                                                for m in ms])
+    ctx.check(f"{label}: {v.name}: no setup problem (fighters, stage, costume blocks)", vd.get("setup_problems") == 0,
+              vd.get("setup_problems"))
+    ctx.note(f"{label}: {v.name}: {vd.get('hashes_compared')} hashes, delay avg {vd.get('delay_avg')} s, max "
+             f"{vd.get('delay_max')} s, {vd.get('received_frames')} frames, end {vd.get('end')!r} / "
+             f"{vd.get('stream_end')!r}")
+    return vd
+
+
+def _tour_watch_case(ctx, lockstep=False):
+    """A two-player single-elimination tournament (best of 3): Ava (Kazuya, her customized save) vs Bo (Lili, his),
+    both in their custom costumes; Vi watches the set from the Tournaments page (bracket -> the set -> Watch) and
+    her game shows the whole set with both costumes, identical to the players' games. lockstep: T5_RB_MODE=off on
+    every game (3 games at once)."""
+    if not {"tournaments", "spectate"} <= features():
+        raise Skip("this tree has no tournaments or no spectating")
+    sa, sb = _costume_saves()
+    game_server(ctx, T5L_TOUR_NOSHOW=300, T5L_TOUR_TICK=0.2)
+    env = {"T5_RB_MODE": "off"} if lockstep else {}
+    a = ctx.player("E2E Ava", char="kazuya", password="ava-pw-1", env=dict(env, T5_COSTUME_SAVE=sa))
+    b = ctx.player("E2E Bo", char="lili", password="bo-pw-1", env=dict(env, T5_COSTUME_SAVE=sb))
+    v = ctx.player("E2E Vi", password="vi-pw-1", env=env)
+    for p in (a, b, v):
+        login(ctx, p, "register")
+    a.set_char("kazuya")
+    b.set_char("lili")
+    t = a.client.tour_create("E2E Cup", fmt="single", set_wins=2, start=time.time() + 600, max_players=8)
+    tid = t["id"]
+    for p in (a, b):
+        p.client.tour_join(tid)
+    since = time.time()
+    a.client.tour_admin(tid, "start")
+    for p in (a, b):
+        ctx.wait(lambda p=p: p.bar_button("Accept") is not None, 30, f"{p.name}: the set is called (Accept)")
+        p.click("Accept")
+    if not ctx.wait(lambda: latest(a, "match_start", since) and latest(b, "match_start", since), 90,
+                    "the set's first game starts on both PCs"):
+        raise Abort("the tournament set did not start")
+    ev = latest(a, "match_start", since)
+    mid = ev["match"]
+    tset = (ev.get("set") or {}).get("tournament") or {}
+    ctx.check("game 1 is the tournament set's", tset.get("id") == tid, tset)
+    sid = tset.get("set")
+    # Vi: Online tab -> Tournaments -> E2E Cup -> the set in the bracket -> Watch
+    tab = v.tab
+    tab.nb.select(tab.tours_page)
+    tab._on_subtab()
+    tab.tours.select(tid)
+    ctx.wait(lambda: sid in getattr(tab.tours.bracket, "boxes", {}), 30, "Vi sees the bracket")
+    tab.tours.select_set(sid)
+    if not ctx.wait(lambda: str(tab.tours.page["watch"].cget("state")) == "normal", 60,
+                    "Vi's Watch button for the set is on (its game is being played, both allow spectators)"):
+        raise Abort("the set cannot be watched")
+    tab.tours.page["watch"].invoke()
+    t_v = time.time()
+    ctx.wait(lambda: (tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts at once (it waits for the data)")
+    ctx.check("the Spectating card says TOURNAMENT", (tab.spec.w or {}).get("tournament", {}).get("set") == sid,
+              (tab.spec.w or {}).get("tournament"))
+    ctx.wait(lambda: a.events_of("spectators", t_v), 20, "Ava is told somebody watches")
+    rows, mids = [], [mid]
+    for k in range(3):
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            raise Abort(f"game {k + 1}: no fight")
+        wait_results(ctx, mid, (a, b))
+        rows.append(match_row(ctx, mid, (a, b), "confirmed", f"game {k + 1}"))
+        t_res = max(p.matches[mid].get("result") or 0 for p in (a, b))
+        ended = ctx.wait(lambda: a.events_of("set_end", since) or (latest(a, "match_start", t_res - 0.5) and
+                                                                   latest(b, "match_start", t_res - 0.5)), 60,
+                         f"game {k + 1}: the set ends or its next game starts", fail=False)
+        if not ended:
+            raise Abort("neither the end of the set nor its next game")
+        if a.events_of("set_end", since):
+            break
+        nxt = latest(a, "match_start", t_res - 0.5)["match"]
+        ctx.check(f"game {k + 2}: continues in the running games (the same session, the same stream)",
+                  a.matches[nxt].get("cont"), a.matches[nxt].get("cont"))
+        mid = nxt
+        mids.append(mid)
+    ctx.wait(lambda: a.events_of("set_end", since) and b.events_of("set_end", since), 30, "the set ends on both PCs")
+    se = latest(a, "set_end", since) or {}
+    ctx.note(f"set: {se.get('wins')} in {se.get('games')} game(s), {se.get('status')}")
+    full = {}
+    ok = ctx.wait(lambda: (full.update(a.client.tour_get(tid)) or True) and full.get("state") == "finished", 60,
+                  "the tournament is finished", fail=False)
+    row = next((s for s in (full.get("bracket") or {}).get("sets") or () if s["id"] == sid), {})
+    ctx.check("the bracket has the set's result from its games", ok and row.get("state") == "done" and
+              row.get("reason") is None and full.get("champion") in ("E2E Ava", "E2E Bo"),
+              f"{row.get('state')} {row.get('score')} {row.get('reason')}, champion {full.get('champion')}")
+    ctx.wait(lambda: (tab.spec.w or {}).get("state") == "over", 600, "Vi's game ends at the end of the stream")
+    _spectator_verdict(ctx, "tournament set", v, n_matches=len(mids))
+    _costume_checks(ctx, "tournament set", a, b, (v,), n_matches=len(mids))
+    for r in rows:
+        ctx.note(f"{r['label']}: " + ", ".join(f"{n}: fps {r[n]['result_file'].get('fps')}, desync "
+                                                f"{r[n]['result_file'].get('desync')}, hash "
+                                                f"{r[n]['result_file'].get('hash')}" for n in r
+                                                if isinstance(r[n], dict) and "result_file" in r[n]))
+        ctx.matches.append(r)
+
+
+@scenario("int_tour_watch", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="a tournament set (best of 3, rollback) with both players in their custom costumes, watched from the "
+               "bracket (Tournaments: Watch): every game confirmed in sync, the spectator's game identical and showing "
+               "both costumes")
+def int_tour_watch(ctx):
+    _tour_watch_case(ctx)
+
+
+@scenario("int_tour_watch_ls", "13 integration 1.1.3", game=True, suites=("game",),
+          desc="int_tour_watch in lockstep (T5_RB_MODE=off on every game)")
+def int_tour_watch_ls(ctx):
+    _tour_watch_case(ctx, lockstep=True)
+
+
+@scenario("int_fw_costumes", "13 integration 1.1.3", game=True, suites=("game", "net"),
+          desc="one game blocked completely (T5_NET_TEST_INBOUND=block), the lobby found the direct path: after 15 s of "
+               "silence the match moves onto the relay; both costume tables go through the relay, a spectator who "
+               "watched from the start gets the session started again on the same stream")
+def int_fw_costumes(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter") or "spectate" not in features():
+        raise Skip("this tree has no firewall fallback or no spectating")
+    sa, sb = _costume_saves()
+    game_server(ctx)
+    a = ctx.player("E2E FwAva", char="kazuya", password="fwava-pw-1", env={"T5_COSTUME_SAVE": sa})
+    b = ctx.player("E2E FwBo", char="lili", env={"T5_COSTUME_SAVE": sb})
+    v = ctx.player("E2E FwVi", password="fwvi-pw-1")
+    login(ctx, a, "register")
+    login(ctx, b)
+    login(ctx, v, "register")
+    a.set_char("kazuya")
+    b.set_char("lili")
+    a.call(a.client.add_friend, "E2E FwVi")
+    ctx.wait(lambda: any(r["name"] == "E2E FwAva" for r in (v.client.friend_list or {}).get("incoming") or ()), 15,
+             "Vi gets Ava's friend request")
+    v.call(v.client.answer_friend, "E2E FwAva", True)
+    ctx.wait(lambda: any(f["name"] == "E2E FwAva" for f in (v.client.friend_list or {}).get("friends") or ()), 15,
+             "Vi and Ava are friends")
+    ctx.shaper.set(0, 0, 0, on=True, ip="127.0.0.2")       # the "internet" between the games: not 127.0.0.1
+    a.set_firewall("block", None)                          # Ava's game hears nothing but 127.0.0.1
+    since = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    first = latest(a, "match_start", since) or {}
+    ctx.check("the lobby found the direct path first", first.get("path") in ("direct", "lan"), first.get("path"))
+    # Vi watches at once: Friends -> Ava -> Watch (before the fallback)
+    ctx.wait(lambda: _friend_watch(v, "E2E FwAva"), 30, "Vi's friends list: Ava can be watched")
+    v.tab._fill_friends()
+    v.tab.tv_friends.selection_set("f:E2E FwAva")
+    v.tab._set_friend_actions()
+    if str(v.tab.friend_actions["watch"].cget("state")) == "normal":
+        v.tab.friend_actions["watch"].invoke()
+        ctx.wait(lambda: (v.tab.spec.w or {}).get("game") is not None, 30, "Vi's game starts (it waits for the data)")
+        t_watch = time.time()
+    else:
+        t_watch = None
+        ctx.check("Vi could watch before the fallback", False, "the Watch button stayed off")
+    ok = ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2,
+                  120, "the match moves onto the relay (a second match_start on both PCs)")
+    if not ok:
+        for p in (a, b):
+            ctx.note(f"{p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-8:]}")
+        raise Abort("no relay fallback")
+    second = a.events_of("match_start", since)[-1]
+    ctx.check("relay after the fallback, the same match and stream", second.get("path") == "relay" and
+              second.get("match") == mid and second.get("stream") == first.get("stream"),
+              f"{second.get('path')} {second.get('match')} {second.get('stream')}")
+    ctx.check("Ava's launcher shows the firewall hint", bool(a.tab.fw_hint_var.get()), repr(a.tab.fw_hint_var.get()))
+    if not wait_fight(ctx, mid, (a, b), timeout=240):
+        raise Abort("no fight after the fallback")
+    wait_results(ctx, mid, (a, b))
+    row = match_row(ctx, mid, (a, b), "confirmed", "fallback match")
+    ctx.matches.append(row)
+    ctx.check("Ava's game ran with the emulated firewall (block)", _fw_count(a, RE_FW_EMULATED) >= 1,
+              _fw_count(a, RE_FW_EMULATED))
+    for p in (a, b):
+        ctx.check(f"{p.name} never saw \"could not be reached\"", not p.saw_status(r"could not be reached", since),
+                  [x for ts, x in p.statuses if ts >= since][-3:])
+    # the costume tables went through the relay: the same blocks on both PCs, both custom
+    _costume_checks(ctx, "fallback match", a, b, (v,) if t_watch else (), n_matches=1)
+    for p in (a, b):
+        lines = [ln for ln in log_lines(p) if "costume table" in ln or "live stream" in ln]
+        ctx.note(f"{p.name}: {lines[-8:]}")
+    leave(ctx, a)
+    leave(ctx, b)
+    if t_watch:
+        ctx.wait(lambda: (v.tab.spec.w or {}).get("state") == "over", 600, "Vi's game ends at the end of the stream")
+        _spectator_verdict(ctx, "fallback match", v, n_matches=1)
+    a.set_firewall(None, None)
+    ctx.shaper.set(0, 0, 0, on=False)

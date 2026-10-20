@@ -325,6 +325,10 @@ class MatchTest(Base):
         b.answer_challenge(cid, accept=False)
         self.assertEqual(expect(a, "challenge_update")["state"], "declined")
         time.sleep(2.1)                                # one challenge per 2 s
+        with self.assertRaises(LobbyError) as e:       # ... and after a no, not the same player for a while
+            a.challenge(bob_id)
+        self.assertIn("try again in", e.exception.msg)
+        self.s.call(lambda: self.s.srv.retry_after.clear())     # (T5L_INVITE_RETRY_SECONDS later)
         cid = a.challenge(bob_id)
         expect(b, "challenged")
         b.answer_challenge(cid, accept=True)
@@ -333,6 +337,23 @@ class MatchTest(Base):
         self.assertEqual(fa["role"], "host")
         expect(a, "match_start")
         expect(b, "match_start")
+
+    def test_no_challenge_spam(self):
+        # (security review 2) challenge, take it back, challenge ... put "X challenges you" (with A as its answer) up
+        # on anybody's screen every 2 s: the challenger's own cancel holds the next one to that player back too
+        a = self.c("Alice")
+        b = self.c("Bob")
+        c = self.c("Cid")
+        cid = a.challenge(b.me["id"])
+        expect(b, "challenged")
+        a.cancel_challenge(cid)
+        self.assertEqual(expect(b, "challenge_update")["state"], "cancelled")
+        time.sleep(2.1)
+        with self.assertRaises(LobbyError) as e:
+            a.challenge(b.me["id"])
+        self.assertEqual(e.exception.code, proto.E_RATE)
+        cid = a.challenge(c.me["id"])                  # someone else: fine
+        expect(c, "challenged")
 
     def test_share_socket_handover(self):
         if os.name != "nt":

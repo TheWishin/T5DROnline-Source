@@ -1106,6 +1106,89 @@ def last_build_failed(out_dir):
 
 
 COMPILE_LOGS = 4                 # at most this many compiler outputs (one per failed file)
+COMPILE_LOG_LIMIT = 512 << 10    # bytes of one compiler output read for the report
+DIAG_MAX = 400                   # characters of one diagnostic line kept
+
+# The compiler's output can quote the lifted code it complains about: clang prints the source line under a diagnostic,
+# with a caret line below it (tools/build_game_dll.py now compiles with -fno-caret-diagnostics; builds made before that,
+# and a crash dump, can still have them). That code is the game's own, translated -- it never goes into a report, not
+# even a private one (security review 3). So of a compile log only these lines go in: our own header lines, the
+# diagnostics (file(line,col): error|warning|note: text, or file:line:col: ...) and the tools' own error lines; of
+# build.log the excerpt lines ("    | ") that are such lines, and nothing that sits above or below a caret.
+_DIAG = re.compile(r"^\s*(?:\S.*?\(\d+(?:,\d+)?\)\s*:|(?:[A-Za-z]:)?[^:\s][^:]*?:\d+(?::\d+)?:)\s*"
+                   r"(?:fatal error|error|warning|note|remark)\b", re.I)
+_TOOL_LINE = re.compile(r"^\s*(?:(?:clang-cl|clang\+\+|clang|lld-link|ld\.lld|lld)(?:\.exe)?:\s*(?:fatal error|error|"
+                        r"warning|note)\b|LLVM ERROR\b|(?:fatal )?error:|warning:|PLEASE submit a bug report|"
+                        r"Exception Code\b|\d+ (?:warnings?|errors?)(?: and \d+ errors?)? generated\.|"
+                        r">>> (?:referenced by|defined at)\b)", re.I)
+_SYS_LINE = re.compile(r"^\s*(?:\S+:\s*)?(?:out of memory|Access is denied|Permission denied|.*\bbad_alloc\b|"
+                       r"Allocation failed|.*failed due to signal|stack overflow)", re.I)
+_CARET = re.compile(r"^\s*\|?\s*[\^~][\^~ ]*$")
+_COMPILE_HEAD = re.compile(r"^# [\w.+-]+, attempt \d+\b")
+
+
+def diagnostic_line(line):
+    """A compiler or linker line that names a problem (and holds no source code): file(line,col): error|warning|note,
+    file:line:col: ..., clang-cl: error: ..., LLVM ERROR, out of memory, N errors generated, lld's >>> lines."""
+    if len(line) > 2000 or _CARET.match(line):
+        return False
+    return bool(_DIAG.match(line) or _TOOL_LINE.match(line) or _SYS_LINE.match(line))
+
+
+def compile_log_text(path, limit=COMPILE_LOG_LIMIT):
+    """One compiler output (build_game_dll.py's <file>.log) for the report: per attempt our three header lines (the file,
+    the exit code, the command), then only the diagnostic lines -- never a line of the game's code (above)."""
+    data, _removed = read_capped(path, limit)
+    keep, dropped, head = [], 0, 0
+    for ln in data.decode("utf-8", "replace").splitlines():
+        if _COMPILE_HEAD.match(ln):
+            head = 3
+        if head and ln.startswith("# "):
+            head -= 1
+            keep.append(ln[:DIAG_MAX * 4])
+            continue
+        head = 0
+        if diagnostic_line(ln):
+            keep.append(ln[:DIAG_MAX])
+        elif ln.strip():
+            dropped += 1
+    if dropped:
+        keep.append(f"# T5DR report: {dropped} other line(s) of the compiler's output left out (they can quote the "
+                    "game's translated code)")
+    return "\n".join(keep) + "\n"
+
+
+def build_log_text(path, limit=4 << 20):
+    """build.log for the report: as it is, but of the compiler output it quotes (the "    | " lines of a failed
+    compile) only diagnostic lines, and never a source line a compiler quoted above a caret (^~~) or the caret itself."""
+    data, _removed = read_capped(path, limit)
+    lines = data.decode("utf-8", "replace").splitlines()
+    out, dropped = [], 0
+    for i, ln in enumerate(lines):
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        prev = lines[i - 1] if i else ""
+        quoted = ln.startswith("    | ")             # a line of a failed compile's output (build_game_dll.py)
+        body = ln[6:] if quoted else ln
+        keep = body.strip() in ("", "...") or diagnostic_line(body)
+        if _CARET.match(ln) or (_CARET.match(nxt) and not keep) or \
+                (_CARET.match(prev) and body[:1].isspace() and not keep):
+            dropped += 1                         # a quoted source line, its caret, a fix-it under it
+            continue
+        if quoted and not keep:
+            dropped += 1                         # the compiler's output: diagnostics only
+            continue
+        out.append(ln)
+    if dropped:
+        out.append(f"[T5DR report: {dropped} line(s) of compiler output left out: they can quote the game's translated "
+                   "code]")
+    return "\n".join(out) + "\n"
+
+
+def _size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
 
 
 def compile_logs(out_dir, n=COMPILE_LOGS):
@@ -1164,9 +1247,11 @@ def discover(ctx, note="", now=None):
     bl = os.path.join(out, "build.log")
     if os.path.isfile(bl):
         failed = ctx.build_problem if ctx.build_problem is not None else last_build_failed(out)
-        items = [Item("build.log", bl, limit=4 << 20)]
+        # (both through their filters: no line of the game's translated code that a compiler quoted -- above)
+        items = [Item("build.log", text=lambda bl=bl: build_log_text(bl), limit=4 << 20, size=_size(bl))]
         if failed:          # the compiler's own words: build.log shows only an excerpt of them
-            items += [Item("compile/" + os.path.basename(p), p, limit=512 << 10) for p in compile_logs(out)]
+            items += [Item("compile/" + os.path.basename(p), text=lambda p=p: compile_log_text(p), limit=COMPILE_LOG_LIMIT,
+                           size=_size(p)) for p in compile_logs(out)]
         groups.append(Group("build", "Build log" + ("" if failed else " (the last build went fine)"),
                             items, default_on=bool(failed)))
     on = online_files(out)

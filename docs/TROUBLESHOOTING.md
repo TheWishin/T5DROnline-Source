@@ -169,7 +169,9 @@ What the log shows:
 
 If it fails twice, close other programs and press **BUILD GAME** again. If it
 fails again, press **Report a problem...**: the report includes the compiler's
-full output of the files that failed.
+messages for the files that failed (`file(line,col): error: ...`, never a line of
+the game's code: the compiler does not quote it, and the report keeps only those
+message lines of the compiler's output and of build.log).
 
 ### Which folder? (a warning in the Build tab)
 

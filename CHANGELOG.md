@@ -67,6 +67,10 @@ part is in the README's status table.
 - **Blocks hold in community rooms.** A friend's invite into a room for 3-8 players brought in a player whom
   another member had blocked (or who had blocked them), and the room's line could pair the two. The invite and its
   accept check every member, and the line never pairs two who blocked one another.
+- **No game code in problem reports.** The compiler quoted the lifted source line under each of its messages, and
+  a failed build's log and the report's copy of the compiler's output kept them. The game's code is now compiled
+  with `-fno-caret-diagnostics` (the objects are byte for byte the same), and the report keeps only the compiler's
+  message lines (`file(line,col): error: ...`) of the compile logs and of build.log -- also from builds made before.
 - **A spectator's launcher takes only what it asked for**: a lobby server sending "watching" by itself no longer
   makes it unpack up to 64 MB into a new file, and a stream of state hashes far out of order (which kept the
   spectator's game busy for hours) ends the watch as damaged.

@@ -394,7 +394,11 @@ def main():
     env = {k: v for k, v in os.environ.items()
            if k.upper() not in ("INCLUDE", "LIB", "LIBPATH", "EXTERNAL_INCLUDE", "VCINSTALLDIR", "VCTOOLSINSTALLDIR",
                                 "WINDOWSSDKDIR", "UCRTVERSION", "UNIVERSALCRTSDKDIR")}
+    # /clang:-fno-caret-diagnostics: a diagnostic is file(line,col): message only -- clang does not quote the source line
+    # under it. The lifted code is the game's own code, translated: it must never reach the build log, the compile logs
+    # or a problem report made from them (security review 3). Diagnostics only: the objects are byte for byte the same.
     common = ["/nologo", "/X",                      # /X: no system include paths, only clang's own headers
+              "/clang:-fno-caret-diagnostics",
               "-fms-compatibility-version=19.44", "/O2", "/Ob2", "/DNDEBUG", "/DWIN32", "/D_WINDOWS",
               "/GS-", "/Zl",                        # no stack cookies, no default-library directives
               "/FI" + os.path.join(GDIR, "include", "t5dr_dll_prefix.h"),

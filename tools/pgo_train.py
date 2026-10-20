@@ -28,8 +28,10 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# fighters and stages that cover different move sets, stage effects (soft focus 24/26/28/34, glow 20)
-DEFAULT_FIGHTS = ["lil,ask,20,3", "kaz,jin,24,3", "pau,kin,33,3", "xia,bry,34,3", "hwo,ste,26,3", "dvj,yos,28,3"]
+# fighters and stages that cover different move sets, stage effects (soft focus 24/26/28/34, glow 20) and the
+# heaviest stage for the CPU: 30, the pool at night with its crowd of 3D bystanders (players' worst case)
+DEFAULT_FIGHTS = ["lil,ask,20,3", "kaz,jin,24,3", "pau,kin,33,3", "xia,bry,34,3", "hwo,ste,26,3", "dvj,yos,28,3",
+                  "cha,rav,30,3"]
 
 BUTTONS = ["SQUARE", "TRIANGLE", "CROSS", "CIRCLE", "SQUARE TRIANGLE", "CROSS CIRCLE", "SQUARE CROSS",
            "TRIANGLE CIRCLE"]

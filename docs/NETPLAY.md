@@ -346,7 +346,10 @@ they watch that word (`T5_DF_WATCH`) and fail the run if the menu ever opens, an
 START frames the rule took out of each player's input and kept (the post-match skip) from the
 games' `no pause online` log lines. `--net-timeout S` gives the games more slack on a PC busy with
 other games. The log says `frame N: START taken out of P1's input (no pause online; ...)` once
-per match and the tally at its end.
+per match and the tally at its end and at the next sync point (`no pause online, the match: ...`,
+`after the last match: ...`). The tally counts live frames; under rollback those include
+predicted inputs (the last input repeats, START too), so the two PCs' tallies differ -- what has
+to agree is the state hash, and it does.
 
 **Tests.** `tests/test_no_pause.py`: `tests/c/no_pause_test.cpp` runs the rule against a model of
 the game (rounds with KO, replay and the next round's intro; the pause menu in every round state

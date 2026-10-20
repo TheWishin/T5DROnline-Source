@@ -72,8 +72,10 @@ class Patch(unittest.TestCase):
         self.assertNotIn("static u64 fnv1a(", add)
 
     def test_series_order(self):
+        # (name order is apply order: 0062 comes after 0059 -- and before later patches such as 0063, which are made
+        # to apply on top of it; tools/prepare_ps3recomp.py checks the whole series)
         names = sorted(n for n in os.listdir(os.path.join(ROOT, "patches", "ps3recomp")) if n.endswith(".patch"))
-        self.assertEqual(names[-1], "0062-xlat-cpu.patch")
+        self.assertIn("0062-xlat-cpu.patch", names)
         self.assertGreater(names.index("0062-xlat-cpu.patch"), names.index("0059-weak-pc-fps.patch"))
 
 

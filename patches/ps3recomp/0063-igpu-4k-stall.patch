@@ -65,7 +65,7 @@ index 4b55d7a..505fd4d 100644
  }
  
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 7dfb28b..c16661b 100644
+index 924e2ee..77ae549 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
 @@ -55,6 +55,7 @@ void rsx_pf_stamp(int slot)

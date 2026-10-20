@@ -2017,6 +2017,8 @@ MESSAGES = {
         "Os dados da partida estavam danificados.",
     "You stopped watching.":
         "Você parou de assistir.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "Um amigo dos jogadores ficou com o seu lugar: a partida já tem todos os espectadores que aceita.",
     "this launcher cannot watch matches; update it":
         "este launcher não pode assistir partidas; atualize-o",
     "that match is not being played right now":
@@ -2037,6 +2039,12 @@ MESSAGES = {
         "esta partida já tem {count} espectadores",
     "the server cannot show more matches right now":
         "o servidor não pode mostrar mais partidas agora",
+    "too many matches are watched from your network; stop watching one first":
+        "partidas demais estão sendo assistidas da sua rede; pare de assistir uma primeiro",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "os lugares para convidados nesta partida estão ocupados; entre com uma conta para assistir",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "o servidor não pode mostrar mais partidas a convidados agora; entre com uma conta para assistir",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "Firewall",
@@ -2077,6 +2085,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "salas privadas e de comunidade são casuais (sem Ranked)",
     "you are in that room": "você já está nessa sala",
     "the room's host removed you from this room": "o anfitrião removeu você desta sala",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "o anfitrião da sala bloqueou as tentativas de senha da sua rede; peça um convite a ele",
+    "only a room with a password counts wrong guesses": "só uma sala com senha conta as tentativas erradas",
     "that player is not in your room": "esse jogador não está na sua sala",
     "you cannot remove yourself; leave the room instead": "você não pode remover a si mesmo; saia da sala",
     "you can remove that player after their match": "você pode remover esse jogador depois da partida dele",
@@ -2110,6 +2121,11 @@ MESSAGES = {
     "Remove player": "Remover jogador",
     "Remove {name} from the room? They cannot come back into it.": "Remover {name} da sala? Não vai poder voltar.",
     "Removed {name} from the room.": "{name} foi removido da sala.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "Senhas erradas nos últimos 10 minutos: {count} (redes: {networks})",
+    "Turn away the guessers": "Bloquear quem tenta adivinhar",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "Redes bloqueadas: {count}. De lá ninguém pode mais tentar senhas nesta sala.",
     "Room created.": "Sala criada.",
     "Room created. Press Copy invite code to see the code you can share.":
         "Sala criada. Aperte Copiar código de convite para ver o código que você pode compartilhar.",

@@ -1185,12 +1185,42 @@ on both PCs, under rollback and lockstep.
 
 **The check** (`costume::block_valid`, the same code and data on both PCs):
 every bought part an item of that character (the game's own price table
-*(0x10076724)[c], static data), a compact list without repeats; every worn
-part none or bought; every worn colour none or one bought (index < 32); the
-spare byte 0. One failure anywhere and the whole block is not used: that
-character fights in the default costume, on both PCs. So a damaged or forged
-save cannot make one PC load something the other does not, nor send the
-game's model code an item id the character does not have.
+*(0x10076724)[c], static data) and one of that costume's parts, a compact list
+without repeats; every worn part none, or one bought that goes in that place
+(HEAD, FACE, BODY up, BODY down); the bought colours only colours the costume
+has, every worn colour none or one bought; the spare byte 0. One failure
+anywhere and the whole block is not used: that character fights in the
+default costume, on both PCs. So a damaged or forged save cannot make one PC
+load something the other does not, nor send the game's model code an item id
+the character does not have, a part in another part's place or a colour the
+costume does not have.
+
+**The item shop's tables** (hardening 1.1.4; security review 3: the check in
+1.1.3 took any worn colour up to 31 and a part in any place -- the Lace
+Hairband as Lili's lower body). Per costume model the shop knows the parts of
+each place and the colours of COLOR1..3 (12 each where a costume has colours;
+most third costumes have none). That data is a pack in the game's
+T55DATA1.BIN, which the shop loads only while it is open (0x152014, resource
+0x25 -> *(0x10538F68)); online it is never in memory. So each PC reads it once
+from the game's own file, the way the game decodes its data, and logs the
+tables' hash (`costume tables: read from the game's data (585040 bytes), hash
+3F8DCD46AB3A752A`): entry 208 of the game's data table (0x10053FB0, 28-byte
+records {sector, stored, size, sum, flag, key, ptr}), XOR-decoded (little-endian
+words, k = key at every 0x800 bytes, then 5k + 3), its sum checked, inflated;
+the pack's 0x56 models, PAC nodes (named or not, the directory XOR-coded or not:
+the game's walker 0x1489E8), each model's parts (child 2: four places, the item
+id at +8 of each record) and its colour file (child 3: 03 01, then per place
+{default, count, prices, names}). Costume k of item character c is model
+`models[k]` of the game's table at 0x10052F04 (0x58FD0); a costume the
+character does not have wears nothing. Only these offsets and the logic are in
+the repository (`costume_logic.h` has the format; tests/c/costume_test.cpp builds
+made-up packs). When the tables cannot be read, every customized block is
+refused -- the default costume, the same on both PCs, which run the same game
+data. Checked against the game itself: with the decoded pack placed in guest
+memory, the game's own shop functions (0x15213C counts, 0x152470 item ids)
+gave the same parts per place and colour counts for all 81 costumes (1,570
+part entries, 0 different). The int113 test saves are still custom on both
+PCs; the review's two forged Lili saves now fall back to the default.
 
 **Why it cannot desync.** The blocks are written before lockstep frame 0 and
 never change during the fight; both PCs write the same bytes for both sides

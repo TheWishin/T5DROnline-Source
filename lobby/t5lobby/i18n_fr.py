@@ -2054,6 +2054,8 @@ MESSAGES = {
         "Les données du match étaient endommagées.",
     "You stopped watching.":
         "Tu as arrêté de regarder.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "Un ami des joueurs a pris ta place : le match a autant de spectateurs qu'il peut en accueillir.",
     "this launcher cannot watch matches; update it":
         "ce launcher ne peut pas regarder de matchs ; mets-le à jour",
     "that match is not being played right now":
@@ -2074,6 +2076,12 @@ MESSAGES = {
         "ce match a déjà {count} spectateurs",
     "the server cannot show more matches right now":
         "le serveur ne peut pas montrer plus de matchs pour l'instant",
+    "too many matches are watched from your network; stop watching one first":
+        "trop de matchs sont regardés depuis ton réseau ; arrête d'abord d'en regarder un",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "les places pour les invités de ce match sont prises ; connecte-toi avec un compte pour regarder",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "le serveur ne peut pas montrer plus de matchs aux invités pour l'instant ; connecte-toi avec un compte pour regarder",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "Pare-feu",
@@ -2116,6 +2124,9 @@ MESSAGES = {
         "les salons privés et communautaires sont amicaux (pas de Ranked)",
     "you are in that room": "tu es déjà dans ce salon",
     "the room's host removed you from this room": "l'hôte t'a retiré de ce salon",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "l'hôte du salon a refoulé les essais de mot de passe venant de ton réseau ; demande-lui une invitation",
+    "only a room with a password counts wrong guesses": "seul un salon avec mot de passe compte les essais faux",
     "that player is not in your room": "ce joueur n'est pas dans ton salon",
     "you cannot remove yourself; leave the room instead": "tu ne peux pas te retirer toi-même ; quitte plutôt le salon",
     "you can remove that player after their match": "tu pourras retirer ce joueur après son match",
@@ -2150,6 +2161,11 @@ MESSAGES = {
     "Remove {name} from the room? They cannot come back into it.":
         "Retirer {name} du salon ? Il ne pourra pas revenir.",
     "Removed {name} from the room.": "{name} a été retiré du salon.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "Mots de passe faux ces 10 dernières minutes : {count} (réseaux : {networks})",
+    "Turn away the guessers": "Refouler ceux qui devinent",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "Réseaux refoulés : {count}. Ils ne peuvent plus essayer de mots de passe sur ce salon.",
     "Room created.": "Salon créé.",
     "Room created. Press Copy invite code to see the code you can share.":
         "Salon créé. Appuie sur Copier le code d'invitation pour voir le code à partager.",

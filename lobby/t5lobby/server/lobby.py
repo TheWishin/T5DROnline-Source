@@ -791,7 +791,7 @@ class LobbyServer(SpectateMixin, RoomsMixin):
     PRE_LOGIN = ("hello", "login", "ping", "logout", "recover")
     HEAVY = frozenset(("leaderboard", "profile", "history", "lobby", "friends"))
     STATE = frozenset(("queue", "unqueue", "room_create", "room_join", "room_leave", "room_lock", "room_kick",
-                       "room_line", "set_char", "udp_rtt", "perf",
+                       "room_line", "room_bar", "set_char", "udp_rtt", "perf",
                        "relay_rtt",
                        "challenge", "challenge_cancel", "block", "unblock", "leave_set",
                        "friend_add", "friend_answer", "friend_cancel", "friend_remove", "invite", "invite_answer",

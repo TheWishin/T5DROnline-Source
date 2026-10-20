@@ -121,9 +121,24 @@ stream is hidden from either player (it is what both screens show), and it comes
 |---|---|---|
 | spectators per match | 8 | `T5L_MAX_SPECTATORS` |
 | streams watched at once (server) | 50 | `T5L_MAX_STREAMS` |
+| matches watched at once per internet address (IPv4, IPv6 /64) | 2 | `T5L_SPEC_PER_ADDRESS` |
+| ... per IPv6 /56 (a /48: twice that) | 4 | `T5L_SPEC_PER_NET` |
+| guests' share of a match's places, and of the streams below which a guest may start one | half | `T5L_SPEC_GUEST_SHARE` |
+| stream slots kept for close viewers | the last 10 | `T5L_SPEC_RESERVED_STREAMS` |
 | a session's stream kept (compressed) | 2048 KB | `T5L_SPECTATE_BUFFER_KB` |
 | a streamer's upload | 16 KB/s, burst 256 KB | `T5L_SPECTATE_RATE_KB` |
 | a stream with nothing new, its match over | ends after 90 s | `T5L_SPECTATE_IDLE` |
+
+**Who comes first** (hardening 1.1.4; security review 3 found that about 50 guest connections from about 7
+addresses took every stream slot of the server, so nobody else could watch anything). *Close viewers* -- a friend
+of either player, a member of the match's room, the organizer or a player of its tournament -- come first: at a full
+match a close viewer takes the place of the newest guest (else the newest other account), who gets `spec_end`
+`bumped` ("A friend of the players took your place ..."); the last 10 stream slots of the server are theirs only;
+the limits per address neither apply to them nor count them (there are only so many of them per match). Everybody
+else watches at most 2 matches at once per internet address (IPv6: per /64, 4 per /56, 8 per /48); guests hold at
+most half of a match's places and start a stream only while the server shows fewer than half of its maximum. 52
+guest connections from 7 addresses now get at most 14 watches and 10 streams; a stranger with an account and a
+friend still find a slot (lobby/tests/test_spectate_limits.py).
 
 A match needs a few hundred bytes a second compressed (the measurement below); the client sends at
 most 16 KB/s, the server ends a stream that sends more, a piece out of order or over 5 KB. A

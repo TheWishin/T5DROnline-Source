@@ -16,6 +16,18 @@ fewer than T5L_MAX_SPECTATORS of them. Clients without the "spectate" cap never 
 so a match with an older launcher on either side cannot be watched, and they never get any of
 these messages.
 
+Limits (hardening 1.1.4; before, ~50 guest connections from ~7 addresses took every stream slot of the
+server and every place at a match):
+    close viewers   a friend of either player, a member of the match's room, the organizer or a player of
+                    its tournament -- they come first: a close viewer at a full match takes the place of the
+                    newest guest (else the newest other account), who gets spec_end "bumped"; the last
+                    T5L_SPEC_RESERVED_STREAMS stream slots of the server are theirs only; the limits per
+                    address neither apply to them nor count them (there are only so many of them per match)
+    per address     everybody else watches at most T5L_SPEC_PER_ADDRESS matches at once per internet address
+                    (IPv4 address, IPv6 /64), T5L_SPEC_PER_NET per IPv6 /56 and twice that per /48
+    guests          hold at most T5L_SPEC_GUEST_SHARE of a match's places and start a stream only while the
+                    server shows fewer than that share of T5L_MAX_STREAMS
+
 Messages (client -> server):
     spec_prefs {allow, ranked}             a player's privacy setting (sent after login and on change)
     watch {name} | {room} | {tournament, set}   watch the match a friend plays / a room's match / the game
@@ -28,7 +40,8 @@ server -> client:
     spec_want {stream, match, from}        streamer: send from this offset (the server has what is before it)
     spec_stop {stream}                     streamer: nobody watches any more (keep the place)
     spec_data {stream, off, data}          spectator: the next piece
-    spec_end {stream, reason}              spectator: no more (over | stopped | not_allowed | too_long | left | ...)
+    spec_end {stream, reason}              spectator: no more (over | stopped | not_allowed | too_long | left | bumped
+                                           (a close viewer took the place) | ...)
     spectators {match, count}              players: how many watch them
 """
 import asyncio
@@ -75,6 +88,74 @@ class SpectateMixin:
         (both players allow it, blocks, the limit) still apply."""
         tours = getattr(self, "tours", None)
         return bool(tours is not None and tours.may_watch(viewer, m))
+
+    def _spec_close(self, viewer, m):
+        """A close viewer of m: a friend of either player, a member of its room, the organizer or a player of its
+        tournament. They come first (the module's "Limits")."""
+        aid = viewer.account_id
+        if aid is not None and any(q.account_id is not None and q.account_id in viewer.friends for q in m.players):
+            return True
+        r = m.room
+        if r is not None and viewer in r.members:
+            return True
+        tours = getattr(self, "tours", None)
+        return bool(tours is not None and tours.member(viewer, m))
+
+    def _spec_rank(self, viewer, m):
+        """2 close viewer, 1 another account, 0 a guest: who keeps a place at a full match."""
+        return 2 if self._spec_close(viewer, m) else (0 if viewer.guest else 1)
+
+    def _spec_bump_target(self, st, m, rank):
+        """At a full match: the spectator a viewer of `rank` would take the place of -- the newest of the lowest rank
+        below it (guests first), or None."""
+        best = None
+        for v in st.viewers:                     # (in the order they came: the newest is the last)
+            r = self._spec_rank(v, m)
+            if r < rank and (best is None or r <= best[0]):
+                best = (r, v)
+        return best[1] if best is not None else None
+
+    def _spec_nets(self, p):
+        """The (limit, key) pairs a viewer's watches count under: the address (IPv4, IPv6 /64), and for IPv6 the /56
+        and /48 around it."""
+        c = p.conn
+        ip = getattr(c, "ip", None) if c is not None else None
+        if ip is None:
+            return []
+        cached = getattr(c, "spec_nets", None)
+        if cached is not None and cached[0] == ip:
+            return cached[1]
+        akey = self.akey(ip)
+        out = [(self.cfg.spec_per_address, "a:" + akey)]
+        for prefix, limit in ((56, self.cfg.spec_per_net), (48, 2 * self.cfg.spec_per_net)):
+            k = proto.address_key(ip, prefix)
+            if k != akey:
+                out.append((limit, f"n{prefix}:{k}"))
+        c.spec_nets = (ip, out)                  # (parsed once per connection)
+        return out
+
+    def _spec_net_refusal(self, viewer):
+        """Per address / network: how many matches it watches now (close viewers do not count: there are only so many
+        of them per match)."""
+        mine = self._spec_nets(viewer)
+        if not mine:
+            return None
+        count = dict.fromkeys((k for _l, k in mine), 0)
+        for st in self.streams.values():
+            for v in st.viewers:
+                if v is viewer or self._spec_close(v, st.match):
+                    continue
+                for _l, k in self._spec_nets(v):
+                    if k in count:
+                        count[k] += 1
+        for limit, k in mine:
+            if limit > 0 and count[k] >= limit:
+                return LobbyError(proto.E_RATE, "too many matches are watched from your network; stop watching one "
+                                                "first")
+        return None
+
+    def _spec_guest_cap(self, total):
+        return int(total * max(0.0, min(1.0, self.cfg.spec_guest_share)))
 
     @staticmethod
     def _spec_allowed_by(q, m):
@@ -127,10 +208,27 @@ class SpectateMixin:
         st = self.streams.get(m.stream_id)
         if st is not None and st.ended is not None:
             return LobbyError(proto.E_STATE, "this match cannot be watched any more")
-        if st is not None and viewer not in st.viewers and len(st.viewers) >= self.cfg.max_spectators:
+        if st is not None and viewer in st.viewers:
+            return None                          # (watching it already)
+        rank = self._spec_rank(viewer, m)
+        if st is not None and len(st.viewers) >= self.cfg.max_spectators and \
+                (rank < 2 or self._spec_bump_target(st, m, rank) is None):
             return LobbyError(proto.E_FULL, f"this match has {self.cfg.max_spectators} spectators already")
-        if st is None and len(self.streams) >= self.cfg.max_streams:
-            return LobbyError(proto.E_FULL, "the server cannot show more matches right now")
+        if rank < 2:
+            why = self._spec_net_refusal(viewer)
+            if why is not None:
+                return why
+        if rank == 0 and st is not None and \
+                sum(1 for v in st.viewers if self._spec_rank(v, m) == 0) >= self._spec_guest_cap(self.cfg.max_spectators):
+            return LobbyError(proto.E_FULL, "the places for guests at this match are taken; log in with an account "
+                                            "to watch")
+        if st is None:
+            n = len(self.streams)
+            if n >= self.cfg.max_streams or (rank < 2 and n >= self.cfg.max_streams - self.cfg.spec_reserved_streams):
+                return LobbyError(proto.E_FULL, "the server cannot show more matches right now")
+            if rank == 0 and n >= self._spec_guest_cap(self.cfg.max_streams):
+                return LobbyError(proto.E_FULL, "the server cannot show guests more matches right now; log in with "
+                                                "an account to watch")
         return None
 
     def _spec_watch_flag(self, viewer, q):
@@ -185,6 +283,11 @@ class SpectateMixin:
         if p.watching is not None:
             self._spec_unwatch(p, "switched")
         st = self.streams.get(m.stream_id)
+        if st is not None and p not in st.viewers and len(st.viewers) >= self.cfg.max_spectators:
+            out = self._spec_bump_target(st, m, self._spec_rank(p, m))      # (_spec_refusal made sure there is one)
+            if out is not None:
+                self._count("spectate_bumped")
+                self._spec_unwatch(out, "bumped")
         if st is None:
             first = self.matches.get(m.stream_id) or self.recent.get(m.stream_id) or m
             st = self.streams[m.stream_id] = Stream(m.stream_id, m, self._spec_streamer_for(m),

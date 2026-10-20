@@ -3,6 +3,28 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.4 (not released yet)
+
+### Security (hardening)
+- **Friends with the right password always get into a private room.** Somebody guessing a room's password from
+  many internet addresses (a home connection with IPv6 has 256 of them) could keep the room's guess budget used up,
+  and friends who typed the right password were told "try again in N s". Now every network has its own few tries
+  at a room, used before the room's shared budget; guessers elsewhere cannot use them up. Guessing stays as slow as
+  before: a few tries per network and 20 minutes, plus the room's shared budget. The host of a password room sees
+  how many wrong passwords came in the last 10 minutes (never who or from where) and **Room settings -> Turn away
+  the guessers** refuses those networks from then on. Texts in all languages.
+- **Spectator places go to friends and room members first.** About 50 guest connections from a handful of
+  addresses could take every match the server can show. Now one internet address watches at most 2 matches at once
+  (an IPv6 home network 4), guests hold at most half the places of a match and of the server, the last places are
+  kept for friends of the players and members of the match's room or tournament, and at a full match a friend takes
+  the place of the newest guest ("A friend of the players took your place"). Texts in all languages.
+- **Custom costumes are checked against the game's own item shop.** The check of the opponent's costume took any
+  colour number up to 31 and a part in any place. Now both PCs read the item shop's own tables from the game's data
+  (which parts go in HEAD, FACE, BODY up and BODY down for each costume, and how many colours it has) and refuse
+  anything else -- that character then fights in the default costume, on both PCs. Tested in rollback and lockstep
+  with real customizations on both sides, a forged block from one side (default on both PCs) and against a 1.1.3
+  build: both PCs showed the same costumes, 0 desyncs. Both players need 1.1.4 (the lobby pairs equal builds only).
+
 ## v1.1.3 (2026-10-20)
 
 **Tournaments, private rooms, watching live matches, your custom costumes online, matches that connect through a blocking firewall, and more speed on slower PCs.** Both players need 1.1.3

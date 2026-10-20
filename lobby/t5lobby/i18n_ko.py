@@ -1987,6 +1987,8 @@ MESSAGES = {
         "매치 데이터가 손상되었습니다.",
     "You stopped watching.":
         "관전을 그만두었습니다.",
+    "A friend of the players took your place: the match has as many spectators as it can take.":
+        "플레이어의 친구가 당신의 자리를 차지했습니다. 이 매치는 관전자 수가 가득 찼습니다.",
     "this launcher cannot watch matches; update it":
         "이 런처는 매치를 관전할 수 없습니다. 업데이트하세요",
     "that match is not being played right now":
@@ -2007,6 +2009,12 @@ MESSAGES = {
         "이 매치에는 이미 관전자가 {count}명 있습니다",
     "the server cannot show more matches right now":
         "서버가 지금은 더 많은 매치를 보여줄 수 없습니다",
+    "too many matches are watched from your network; stop watching one first":
+        "당신의 네트워크에서 관전 중인 매치가 너무 많습니다. 먼저 하나를 그만 보세요",
+    "the places for guests at this match are taken; log in with an account to watch":
+        "이 매치의 게스트 관전 자리가 찼습니다. 관전하려면 계정으로 로그인하세요",
+    "the server cannot show guests more matches right now; log in with an account to watch":
+        "서버가 지금은 게스트에게 더 많은 매치를 보여줄 수 없습니다. 관전하려면 계정으로 로그인하세요",
     # firewall hint on the Online tab (t5lobby.fwcheck, tk_tab.fw_hint_text)
     "Firewall":
         "방화벽",
@@ -2044,6 +2052,9 @@ MESSAGES = {
     "private and community rooms are casual (unranked)": "비공개 방과 커뮤니티 방은 일반 매치입니다 (Ranked 아님)",
     "you are in that room": "이미 그 방에 있습니다",
     "the room's host removed you from this room": "방장이 당신을 이 방에서 내보냈습니다",
+    "the room's host turned away password guesses from your network; ask the host for an invite":
+        "방장이 당신의 네트워크에서 오는 비밀번호 시도를 차단했습니다. 방장에게 초대를 요청하세요",
+    "only a room with a password counts wrong guesses": "틀린 시도는 비밀번호가 있는 방에서만 집계됩니다",
     "that player is not in your room": "그 플레이어는 내 방에 없습니다",
     "you cannot remove yourself; leave the room instead": "자기 자신은 내보낼 수 없습니다. 대신 방을 나가세요",
     "you can remove that player after their match": "그 플레이어는 매치가 끝난 뒤에 내보낼 수 있습니다",
@@ -2075,6 +2086,11 @@ MESSAGES = {
     "Remove player": "플레이어 내보내기",
     "Remove {name} from the room? They cannot come back into it.": "{name}님을 방에서 내보낼까요? 다시 들어올 수 없습니다.",
     "Removed {name} from the room.": "{name}님을 방에서 내보냈습니다.",
+    "Wrong passwords in the last 10 minutes: {count} (networks: {networks})":
+        "최근 10분간 틀린 비밀번호: {count}번 (네트워크: {networks})",
+    "Turn away the guessers": "추측하는 사람 차단",
+    "Networks turned away: {count}. They cannot try passwords on this room any more.":
+        "차단한 네트워크: {count}. 그곳에서는 이 방의 비밀번호를 더 이상 시도할 수 없습니다.",
     "Room created.": "방을 만들었습니다.",
     "Room created. Press Copy invite code to see the code you can share.": "방을 만들었습니다. 공유할 코드를 보려면 초대 코드 복사를 누르세요.",
     "Room name (optional):": "방 이름 (선택):",

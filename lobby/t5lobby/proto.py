@@ -216,6 +216,16 @@ def address_key(ip, v6_prefix=64):
     return str(a)
 
 
+NET_V6_PREFIX = 48       # IPv6: what one network is for a room's guess lanes and the spectator limits (a /48 is the most
+                         # one customer gets -- a tunnel broker hands out a /48 for free; a home connection gets a /56)
+
+
+def address_net(ip, v6_prefix=NET_V6_PREFIX):
+    """The network an address belongs to for the limits that must hold however many addresses one person has: the
+    address itself for IPv4, the /48 for IPv6 (docs/ONLINE.md "Rooms", docs/SPECTATE.md "Limits")."""
+    return address_key(ip, v6_prefix)
+
+
 def parse_hostport(spec, default_port=DEFAULT_PORT):
     """'host', 'host:port', '[v6]:port' -> (host, port)."""
     spec = spec.strip()

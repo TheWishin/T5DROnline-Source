@@ -1,0 +1,653 @@
+diff --git a/libs/codec/cellVdec.c b/libs/codec/cellVdec.c
+index 6831e44..d97d349 100644
+--- a/libs/codec/cellVdec.c
++++ b/libs/codec/cellVdec.c
+@@ -22,6 +22,31 @@
+  * Guest memory: the title's work memory (CellVdecResource.memAddr) holds a
+  * ring of picture items, 0x200 bytes each: the CellVdecPicItem at +0 and the
+  * CellVdecAvcInfo / Mpeg2Info its picInfo points to at +0x80.
++ *
++ * A decoder that does not answer must not freeze a movie (patch 0053). Tekken
++ * 5 DR submits one AU at a time -- the first from the demuxer's AU_FOUND, each
++ * next one from inside AUDONE -- so a decoder thread that never comes back
++ * from Media Foundation leaves the game waiting for ever: the intro movie
++ * stayed white and START did nothing (smoke reach.title, 4 of ~1,400 boots,
++ * all on a PC short of memory and processors). Now:
++ *  - the decoder is made ahead of time (mfh264_prewarm, when the title loads
++ *    the VDEC module ~17 s before the first movie), with 4 decoding threads;
++ *  - every Media Foundation call of the decoder thread is timed; one that
++ *    takes PS3_VDEC_STALL_MS [5000] (0 = never) is abandoned by a watchdog: a
++ *    new decoder thread finishes the AU it was on with a blank picture and
++ *    AUDONE, and the rest of the sequence gets blank pictures -- the movie goes
++ *    on black with its sound, START skips it, its end leads on as usual. The
++ *    old thread, should it ever return, frees its decoder and ends. The next
++ *    sequence tries Media Foundation again (a fresh decoder is made ahead);
++ *  - a decoder that answers but gives no picture for PS3_VDEC_STALL_MS after
++ *    the sequence's first AU (2+ AUs in) is treated the same way;
++ *  - the decoder no longer waits for a full picture queue (8) to drain when the
++ *    title has not taken a picture for 250 ms: it decodes on, up to 16. START
++ *    pressed while the decoder was 8 pictures ahead hung the movie -- the
++ *    title's skip waits for the AUDONE of its last AU before it takes the
++ *    pictures (a decoder made ahead of time is ahead right away).
++ * Test hooks: PS3_VDEC_TEST_STALL=ms (the first AU's decoder call sleeps that
++ * long), PS3_VDEC_TEST_NOPIC=1 (the decoder's pictures are dropped).
+  */
+ 
+ #include "cellVdec.h"
+@@ -39,6 +64,8 @@
+ #define VDEC_MAX         4
+ #define VDEC_CMDS        64        /* queued AUs before DecodeAu answers BUSY */
+ #define VDEC_PICS        8         /* pictures held before the decoder stalls */
++#define VDEC_PICS_MAX    16        /* ... unless the title stopped taking them (patch 0053) */
++#define VDEC_TAKE_STALL_MS 250
+ #define VDEC_ITEMS       16
+ #define VDEC_ITEM_BYTES  0x200
+ #define VDEC_MEM_SIZE    0x100000
+@@ -68,7 +95,7 @@ typedef struct {
+     int seq;                   /* 0 dormant, 1 running, 2 ending */
+     VdecCmd cmds[VDEC_CMDS];
+     int c_head, c_count;
+-    VdecPic pics[VDEC_PICS];
++    VdecPic pics[VDEC_PICS_MAX];
+     int p_head, p_count;
+     u32 item_next;
+     u32 frc;                   /* CELL_VDEC_AVC_FRC_* */
+@@ -90,6 +117,16 @@ typedef struct {
+     u32 aus, pics_out, pics_taken;
+     u64 t_first;
+     double dec_ms, conv_ms;
++    /* patch 0053: a stalled decoder must not freeze the movie */
++    unsigned epoch;            /* bumped when the watchdog replaces the worker */
++    u64 mf_since;              /* ms the worker's current Media Foundation call began, 0 outside one */
++    VdecCmd cur;               /* the command that call belongs to (data not owned) */
++    int cur_gen;
++    int resume;                /* the replacement worker finishes `cur` first */
++    int stalled;               /* this sequence: blank pictures, no Media Foundation */
++    u64 t_first_dec;           /* ms this sequence's first AU reached the worker */
++    u64 t_last_take;           /* ms the title last took a picture (or the sequence began) */
++    u32 seq_aus, seq_pics;     /* this sequence's AUs done and pictures out */
+ } Vdec;
+ 
+ static SRWLOCK g_lock = SRWLOCK_INIT;
+@@ -105,6 +142,10 @@ static Vdec* get(u32 h) { return (h < VDEC_MAX && s_vdec[h].in_use && !s_vdec[h]
+ 
+ static u64 now_ms(void) { return (u64)GetTickCount64(); }
+ 
++/* A time stamp that is never 0 (0 = none) and an age that never wraps. */
++static u64 stamp_ms(void) { const u64 t = now_ms(); return t ? t : 1; }
++static u64 age_ms(u64 now, u64 since) { return now > since ? now - since : 0; }
++
+ static double now_hp_ms(void)
+ {
+     LARGE_INTEGER f, c;
+@@ -115,6 +156,23 @@ static double now_hp_ms(void)
+ 
+ static void convert(const u8* nv12, u32 w, u32 h, u32 fmt, u32 matrix, u8 alpha, u8* dst);
+ 
++static unsigned stall_ms(void)
++{
++    static int ms = -1;
++    if (ms < 0) {
++        const char* e = getenv("PS3_VDEC_STALL_MS");
++        ms = e && *e ? atoi(e) : 5000;
++        if (ms < 0) ms = 0;
++    }
++    return (unsigned)ms;
++}
++
++static unsigned test_env(const char* name)
++{
++    const char* e = getenv(name);
++    return e && *e ? (unsigned)atoi(e) : 0u;
++}
++
+ static u32 pic_bytes(u32 fmt, u32 w, u32 h)
+ {
+     return fmt <= 1 ? w * h * 4 : fmt == 2 ? w * h * 2 : w * h * 3 / 2;
+@@ -151,6 +209,9 @@ static void piclist_add(PicList* l, u8* nv12, u32 w, u32 h, u64 pts, u64 dts, u6
+ 
+ static void on_mf_frame(void* user, const MfH264Frame* f)
+ {
++    static int nopic = -1;
++    if (nopic < 0) nopic = test_env("PS3_VDEC_TEST_NOPIC") != 0;
++    if (nopic) return;
+     PicList* l = (PicList*)user;
+     const u32 w = f->width & ~1u, h = f->height & ~1u;
+     u8* buf = (u8*)malloc((size_t)w * h * 3 / 2);
+@@ -193,16 +254,26 @@ static void deliver(Vdec* v, PicList* l, int gen)
+             v->conv_ms += now_hp_ms() - t0;
+         }
+         lock();
+-        while (v->in_use && !v->closing && v->gen == gen && v->p_count >= VDEC_PICS) wait_cv(50);
++        /* VDEC_PICS pace the decoder to the title. But when the title has not
++         * taken a picture for VDEC_TAKE_STALL_MS, decode on, up to
++         * VDEC_PICS_MAX (patch 0053): skipping a movie, Tekken 5 DR stops
++         * taking pictures and waits for the AUDONE of the AU it submitted
++         * last -- a decoder held here by a full queue never sends it and the
++         * movie hung on its first frames (START pressed while the decoder was
++         * 8 pictures ahead). */
++        while (v->in_use && !v->closing && v->gen == gen && v->p_count >= VDEC_PICS &&
++               (v->p_count >= VDEC_PICS_MAX || age_ms(now_ms(), v->t_last_take) < VDEC_TAKE_STALL_MS))
++            wait_cv(50);
+         if (!v->in_use || v->closing || v->gen != gen) {
+             unlock();
+             for (int j = i; j < l->n; j++) free_pic(&l->list[j]);
+             l->n = 0;
+             return;
+         }
+-        v->pics[(v->p_head + v->p_count) % VDEC_PICS] = *p;
++        v->pics[(v->p_head + v->p_count) % VDEC_PICS_MAX] = *p;
+         v->p_count++;
+         v->pics_out++;
++        v->seq_pics++;
+         v->last_w = p->w; v->last_h = p->h;
+         const u32 n = v->pics_out;
+         unlock();
+@@ -218,50 +289,149 @@ static void deliver(Vdec* v, PicList* l, int gen)
+     l->n = 0;
+ }
+ 
++/* Around every Media Foundation call of the worker (patch 0053): the
++ * watchdog sees how long it takes. mf_leave returns 0 when the worker was
++ * replaced meanwhile -- it then owns nothing in the slot any more. */
++static void mf_enter(Vdec* v, const VdecCmd* c, int gen)
++{
++    lock();
++    v->cur = *c;
++    v->cur.data = NULL;
++    v->cur_gen = gen;
++    v->mf_since = stamp_ms();
++    unlock();
++}
++
++static int mf_leave(Vdec* v, unsigned epoch)
++{
++    lock();
++    const int mine = v->epoch == epoch;
++    if (mine) v->mf_since = 0;
++    unlock();
++    return mine;
++}
++
++/* A replaced worker came back from Media Foundation: free what it holds, end. */
++static DWORD retire(Vdec* v, MfH264* mf, VdecCmd* c, PicList* pl)
++{
++    if (mf) mfh264_destroy(mf);
++    free(c->data);
++    for (int j = 0; j < pl->n; j++) free_pic(&pl->list[j]);
++    free(pl->list);
++    printf("[cellVdec] handle %u: the stalled decoder thread came back; it ends\n", v->handle);
++    return 0;
++}
++
++/* The replacement worker finishes the command the stalled one was on. */
++static void finish_without_mf(Vdec* v, PicList* pl, const VdecCmd* c, int gen)
++{
++    if (c->type == CMD_DECODE) {
++        blank_picture(pl, v->last_w ? v->last_w : 1280, v->last_h ? v->last_h : 720, c->pts, c->dts, c->ud);
++        lock();
++        v->seq_aus++;
++        unlock();
++        notify(v, CELL_VDEC_MSG_TYPE_AUDONE, CELL_OK);
++        deliver(v, pl, gen);
++    } else if (c->type == CMD_ENDSEQ) {
++        deliver(v, pl, gen);
++        lock();
++        if (v->seq == 2) v->seq = 0;
++        unlock();
++        printf("[cellVdec] handle %u: sequence done, %u AUs -> %u pictures\n", v->handle, v->aus, v->pics_out);
++        notify(v, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK);
++    }
++}
++
++/* arg = slot | epoch << 8 */
+ static DWORD WINAPI vdec_worker(LPVOID arg)
+ {
+     host_sched_thread_start(HS_ROLE_DECODER, 0, "vdec");
+-    Vdec* v = &s_vdec[(int)(intptr_t)arg];
++    const int si = (int)((uintptr_t)arg & 0xFF);
++    const unsigned epoch = (unsigned)((uintptr_t)arg >> 8);
++    Vdec* v = &s_vdec[si];
+     PicList pl = { NULL, 0, 0, v };
+     lock();
++    if (v->resume && v->epoch == epoch) {
++        const VdecCmd c = v->cur;
++        const int gen = v->cur_gen;
++        v->resume = 0;
++        unlock();
++        finish_without_mf(v, &pl, &c, gen);
++        lock();
++        if (v->epoch == epoch) v->busy = 0;
++        wake();
++    }
+     for (;;) {
+-        while (!v->in_use || v->c_count == 0) wait_cv(INFINITE);
++        while (v->epoch == epoch && (!v->in_use || v->c_count == 0)) wait_cv(INFINITE);
++        if (v->epoch != epoch) break;
+         VdecCmd c = v->cmds[v->c_head];
+         v->c_head = (v->c_head + 1) % VDEC_CMDS;
+         v->c_count--;
+         v->busy = 1;
+         const int gen = v->gen;
++        MfH264* mf = v->mf;
++        const int use_mf = v->codec == CELL_VDEC_CODEC_TYPE_AVC && !v->mf_failed && !v->stalled;
++        if (c.type == CMD_DECODE && !v->t_first_dec) v->t_first_dec = stamp_ms();
+         unlock();
+ 
+         switch (c.type) {
+         case CMD_START:
+-            if (v->mf) mfh264_flush(v->mf);
++        case CMD_CLOSE:
++            /* CLOSE keeps the decoder for the slot's next user (the next
++             * movie): flushing is all a new sequence needs. */
++            if (mf) {
++                mf_enter(v, &c, gen);
++                mfh264_flush(mf);
++                if (!mf_leave(v, epoch)) return retire(v, mf, &c, &pl);
++            }
+             break;
+-        case CMD_DECODE:
+-            if (v->codec == CELL_VDEC_CODEC_TYPE_AVC && !v->mf && !v->mf_failed) {
+-                v->mf = mfh264_create();
+-                if (!v->mf) {
+-                    v->mf_failed = 1;
+-                    fprintf(stderr, "[cellVdec] no H.264 decoder available, pictures will be blank\n");
++        case CMD_DECODE: {
++            int decoded = 0;
++            if (use_mf) {
++                mf_enter(v, &c, gen);
++                static volatile LONG test_stall_done = 0;
++                const unsigned ts = test_env("PS3_VDEC_TEST_STALL");
++                if (ts && InterlockedExchange(&test_stall_done, 1) == 0) {
++                    Sleep(ts);
++                    if (!mf_leave(v, epoch)) return retire(v, NULL, &c, &pl);
++                    mf_enter(v, &c, gen);
++                }
++                if (!mf) {
++                    mf = mfh264_take_prewarmed(2000);
++                    if (!mf) mf = mfh264_create();
+                 }
++                if (mf) {
++                    const int slot = (int)(v->ts_next % TS_SLOTS);
++                    v->ts_pts[slot] = c.pts; v->ts_dts[slot] = c.dts; v->ts_ud[slot] = c.ud;
++                    const double t0 = now_hp_ms();
++                    mfh264_decode(mf, c.data, c.size, v->ts_next * 10000, on_mf_frame, &pl);
++                    v->dec_ms += now_hp_ms() - t0;
++                    v->ts_next++;
++                }
++                if (!mf_leave(v, epoch)) return retire(v, mf, &c, &pl);
++                lock();
++                if (mf) v->mf = mf; else v->mf_failed = 1;
++                unlock();
++                if (!mf) fprintf(stderr, "[cellVdec] no H.264 decoder available, pictures will be blank\n");
++                decoded = mf != NULL;
+             }
+-            if (v->mf) {
+-                const int slot = (int)(v->ts_next % TS_SLOTS);
+-                v->ts_pts[slot] = c.pts; v->ts_dts[slot] = c.dts; v->ts_ud[slot] = c.ud;
+-                const double t0 = now_hp_ms();
+-                mfh264_decode(v->mf, c.data, c.size, v->ts_next * 10000, on_mf_frame, &pl);
+-                v->dec_ms += now_hp_ms() - t0;
+-                v->ts_next++;
+-            } else {
++            if (!decoded)
+                 blank_picture(&pl, v->last_w ? v->last_w : 1280, v->last_h ? v->last_h : 720,
+                               c.pts, c.dts, c.ud);
+-            }
+             free(c.data);
++            lock();
++            v->seq_aus++;
++            unlock();
+             notify(v, CELL_VDEC_MSG_TYPE_AUDONE, CELL_OK);
+             deliver(v, &pl, gen);
+             break;
++        }
+         case CMD_ENDSEQ:
+-            if (v->mf) mfh264_drain(v->mf, on_mf_frame, &pl);
++            if (mf && use_mf) {
++                mf_enter(v, &c, gen);
++                mfh264_drain(mf, on_mf_frame, &pl);
++                if (!mf_leave(v, epoch)) return retire(v, mf, &c, &pl);
++            }
+             deliver(v, &pl, gen);
+             lock();
+             if (v->seq == 2) v->seq = 0;
+@@ -270,17 +440,76 @@ static DWORD WINAPI vdec_worker(LPVOID arg)
+                    v->handle, v->aus, v->pics_out);
+             notify(v, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK);
+             break;
+-        case CMD_CLOSE:
+-            /* Keep the decoder for the slot's next user (the next movie):
+-             * flushing is all a new sequence needs. */
+-            if (v->mf) mfh264_flush(v->mf);
+-            break;
+         }
+ 
+         lock();
++        if (v->epoch != epoch) break;   /* replaced while in a callback: the new worker owns the slot */
+         v->busy = 0;
+         wake();
+     }
++    unlock();
++    free(pl.list);
++    return 0;
++}
++
++/* The watchdog (patch 0053), lock held: the worker has been inside one Media
++ * Foundation call for too long. A new worker takes the slot over. */
++static void replace_worker(Vdec* v, int si, u64 waited)
++{
++    const int was_decode = v->cur.type == CMD_DECODE;
++    v->epoch++;
++    v->mf = NULL;              /* the stalled thread keeps it and frees it if it ever returns */
++    v->mf_since = 0;
++    v->stalled = 1;
++    if (v->thread) CloseHandle(v->thread);
++    v->thread = NULL;
++    v->thread_id = 0;
++    v->resume = 0;
++    v->busy = 0;
++    if (v->in_use && !v->closing) {
++        v->resume = 1;         /* finish the command it was on */
++        v->busy = 1;
++        v->thread = CreateThread(NULL, 1u << 20, vdec_worker, (LPVOID)(uintptr_t)((unsigned)si | (v->epoch << 8)),
++                                 0, &v->thread_id);
++        if (!v->thread) { v->resume = 0; v->busy = 0; }
++    }
++    wake();
++    printf("[cellVdec] handle %u: the H.264 decoder has not answered for %llu ms (%s) -- the rest of this "
++           "movie has no pictures (its sound plays, START skips it); a new decoder is made for the next one\n",
++           v->handle, (unsigned long long)waited, was_decode ? "decoding" : "flush/drain");
++    mfh264_prewarm();
++}
++
++static DWORD WINAPI vdec_watchdog(LPVOID unused)
++{
++    (void)unused;
++    host_sched_thread_start(HS_ROLE_DECODER, 0, "vdec-watchdog");   /* sleeps 250 ms at a time; must not starve */
++    for (;;) {
++        Sleep(250);
++        const unsigned lim = stall_ms();
++        if (!lim) continue;
++        lock();
++        const u64 now = now_ms();
++        for (int i = 0; i < VDEC_MAX; i++) {
++            Vdec* v = &s_vdec[i];
++            if (v->mf_since && age_ms(now, v->mf_since) >= lim) {
++                replace_worker(v, i, age_ms(now, v->mf_since));
++            } else if (v->in_use && !v->closing && v->seq == 1 && !v->stalled && !v->mf_failed &&
++                       v->codec == CELL_VDEC_CODEC_TYPE_AVC && v->t_first_dec && v->seq_aus >= 2 &&
++                       v->seq_pics == 0 && age_ms(now, v->t_first_dec) >= lim) {
++                v->stalled = 1;
++                printf("[cellVdec] handle %u: %u AUs in %llu ms and no picture from the H.264 decoder -- "
++                       "the rest of this movie has no pictures (its sound plays, START skips it)\n",
++                       v->handle, v->seq_aus, (unsigned long long)age_ms(now, v->t_first_dec));
++            }
++        }
++        unlock();
++    }
++}
++
++void cellVdec_module_loaded(void)
++{
++    mfh264_prewarm();
+ }
+ 
+ /* ---------------------------------------------------------------------------
+@@ -315,9 +544,11 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+     Vdec* v = &s_vdec[i];
+     HANDLE th = v->thread; DWORD tid = v->thread_id; int gen = v->gen;
+     MfH264* mf = v->mf; const int mf_failed = v->mf_failed;
++    const unsigned epoch = v->epoch;
+     memset(v, 0, sizeof *v);
+     v->thread = th; v->thread_id = tid; v->gen = gen + 1;
+     v->mf = mf; v->mf_failed = mf_failed;
++    v->epoch = epoch;
+     v->in_use = 1;
+     v->handle = (u32)i;
+     v->codec = codec;
+@@ -329,9 +560,15 @@ s64 cellVdecOpen(u32 type, u32 res, u32 cb, u32 handle)
+     v->frc = 3;   /* 30000/1001 until told otherwise */
+     v->t_first = now_ms();
+     if (!v->thread) {
+-        v->thread = CreateThread(NULL, 1u << 20, vdec_worker, (LPVOID)(intptr_t)i, 0, &v->thread_id);
++        v->thread = CreateThread(NULL, 1u << 20, vdec_worker, (LPVOID)(uintptr_t)((unsigned)i | (v->epoch << 8)),
++                                 0, &v->thread_id);
+         if (!v->thread) { v->in_use = 0; unlock(); return VERR(CELL_VDEC_ERROR_FATAL); }
+     }
++    static int watchdog_started = 0;
++    if (!watchdog_started && stall_ms()) {
++        HANDLE wd = CreateThread(NULL, 0, vdec_watchdog, NULL, 0, NULL);
++        if (wd) { CloseHandle(wd); watchdog_started = 1; }
++    }
+     unlock();
+     vm_write32(handle, (u32)i);
+     printf("[cellVdec] Open(codec %u, profile 0x%X, mem 0x%08X+0x%X) -> handle %d\n",
+@@ -343,7 +580,7 @@ s64 cellVdecOpenEx(u32 type, u32 res, u32 cb, u32 handle) { return cellVdecOpen(
+ 
+ static void drop_pictures(Vdec* v)
+ {
+-    for (int i = 0; i < v->p_count; i++) free_pic(&v->pics[(v->p_head + i) % VDEC_PICS]);
++    for (int i = 0; i < v->p_count; i++) free_pic(&v->pics[(v->p_head + i) % VDEC_PICS_MAX]);
+     v->p_head = v->p_count = 0;
+ }
+ 
+@@ -390,6 +627,10 @@ s64 cellVdecStartSeq(u32 handle)
+     v->gen++;
+     drop_pictures(v);
+     v->seq = 1;
++    v->stalled = 0;
++    v->t_first_dec = 0;
++    v->t_last_take = now_ms();
++    v->seq_aus = v->seq_pics = 0;
+     push_cmd(v, CMD_START, NULL, 0, 0, 0, 0);
+     unlock();
+     printf("[cellVdec] StartSeq(%u)\n", handle);
+@@ -489,7 +730,7 @@ s64 cellVdecGetPicItem(u32 handle, u32 picItem)
+     if (!v) { unlock(); return VERR(CELL_VDEC_ERROR_ARG); }
+     VdecPic* p = NULL;
+     for (int i = 0; i < v->p_count; i++) {
+-        VdecPic* q = &v->pics[(v->p_head + i) % VDEC_PICS];
++        VdecPic* q = &v->pics[(v->p_head + i) % VDEC_PICS_MAX];
+         if (!q->item_given) { p = q; break; }
+     }
+     if (!p) { unlock(); return VERR(CELL_VDEC_ERROR_EMPTY); }
+@@ -571,7 +812,8 @@ s64 cellVdecGetPicture(u32 handle, u32 format, u32 outBuff)
+     if (!v) { unlock(); return VERR(CELL_VDEC_ERROR_ARG); }
+     if (v->p_count == 0) { unlock(); return VERR(CELL_VDEC_ERROR_EMPTY); }
+     VdecPic p = v->pics[v->p_head];
+-    v->p_head = (v->p_head + 1) % VDEC_PICS;
++    v->p_head = (v->p_head + 1) % VDEC_PICS_MAX;
++    v->t_last_take = now_ms();
+     v->p_count--;
+     v->pics_taken++;
+     v->pref_valid = 1;
+diff --git a/libs/codec/cellVdec.h b/libs/codec/cellVdec.h
+index ac24ce9..ea5713f 100644
+--- a/libs/codec/cellVdec.h
++++ b/libs/codec/cellVdec.h
+@@ -32,6 +32,10 @@
+ extern "C" {
+ #endif
+ 
++/* The title loaded CELL_SYSMODULE_VDEC (cellSysmodule.c): start the H.264
++ * decoder ahead of the first movie (patch 0053). */
++void cellVdec_module_loaded(void);
++
+ #define CELL_VDEC_ERROR_ARG            0x80610101
+ #define CELL_VDEC_ERROR_SEQ            0x80610102
+ #define CELL_VDEC_ERROR_BUSY           0x80610103
+diff --git a/libs/codec/mf_h264.cpp b/libs/codec/mf_h264.cpp
+index 7a1c824..fa769be 100644
+--- a/libs/codec/mf_h264.cpp
++++ b/libs/codec/mf_h264.cpp
+@@ -39,6 +39,25 @@ static const GUID kClsidH264Dec =
+ static const GUID kLowLatency =
+     { 0x9C27891A, 0xED7A, 0x40E1, { 0x88, 0xE8, 0xB2, 0x27, 0x27, 0xA0, 0x24, 0xEE } };
+ 
++/* CODECAPI_AVDecNumWorkerThreads (codecapi.h). By default the decoder starts
++ * a worker per processor (16 on a 32-thread PC) in BEGIN_STREAMING for a 720p
++ * movie at 30 pictures/s. Fewer threads leave the game its processors (patch
++ * 0053); with 2 a picture took 9-43 ms on a PC at 100% (median 12 ms, 33 ms
++ * is the budget), so 4. PS3_VDEC_THREADS=n (0 = the decoder's own choice) [4]. */
++static const GUID kNumWorkerThreads =
++    { 0x9561C3E8, 0xEA9E, 0x4435, { 0x9B, 0x1E, 0xA9, 0x3E, 0x69, 0x18, 0x94, 0xD8 } };
++
++static int worker_threads(void)
++{
++    static int n = -1;
++    if (n < 0) {
++        const char* e = getenv("PS3_VDEC_THREADS");
++        n = e && *e ? atoi(e) : 4;
++        if (n < 0) n = 0;
++    }
++    return n;
++}
++
+ struct MfH264 {
+     IMFTransform* mft;
+     DWORD out_size;          /* cbSize from GetOutputStreamInfo */
+@@ -81,6 +100,10 @@ static bool mf_startup(void)
+             InterlockedExchange(&s_mf_started, 0);
+             return false;
+         }
++        /* The MTA must outlive the thread that made a decoder ahead of time
++         * (patch 0053): it ends right after, before any decoder thread joins. */
++        CO_MTA_USAGE_COOKIE cookie;
++        (void)CoIncrementMTAUsage(&cookie);
+     }
+     return true;
+ }
+@@ -147,6 +170,7 @@ extern "C" MfH264* mfh264_create(void)
+     IMFAttributes* attrs = NULL;
+     if (SUCCEEDED(d->mft->GetAttributes(&attrs)) && attrs) {
+         attrs->SetUINT32(kLowLatency, TRUE);
++        if (worker_threads() > 0) attrs->SetUINT32(kNumWorkerThreads, (UINT32)worker_threads());
+         attrs->Release();
+     }
+ 
+@@ -323,6 +347,72 @@ extern "C" void mfh264_flush(MfH264* d)
+     d->mft->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
+ }
+ 
++/* ---- a decoder made ahead of time (patch 0053) ------------------------------
++ * One background thread makes one decoder; the first movie takes it. States:
++ * 0 none, 1 being made, 2 ready (s_pw_dec), 3 failed. Taking a ready one sets
++ * the state back to 0, so mfh264_prewarm can make the next one. */
++static SRWLOCK s_pw_lock = SRWLOCK_INIT;
++static CONDITION_VARIABLE s_pw_cv = CONDITION_VARIABLE_INIT;
++static int s_pw_state = 0;
++static MfH264* s_pw_dec = NULL;
++
++static DWORD WINAPI prewarm_thread(LPVOID)
++{
++    /* normal priority: below normal it took up to 10 s on a busy PC */
++    LARGE_INTEGER f, t0, t1;
++    QueryPerformanceFrequency(&f);
++    QueryPerformanceCounter(&t0);
++    MfH264* d = mfh264_create();
++    QueryPerformanceCounter(&t1);
++    AcquireSRWLockExclusive(&s_pw_lock);
++    s_pw_dec = d;
++    s_pw_state = d ? 2 : 3;
++    WakeAllConditionVariable(&s_pw_cv);
++    ReleaseSRWLockExclusive(&s_pw_lock);
++    if (d)
++        fprintf(stderr, "[mf_h264] decoder ready ahead of the movie (%.0f ms, %d decoding thread(s))\n",
++                (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)f.QuadPart, worker_threads());
++    return 0;
++}
++
++extern "C" void mfh264_prewarm(void)
++{
++    const char* e = getenv("PS3_VDEC_PREWARM");
++    if (e && *e == '0') return;
++    if (!mf_present()) return;
++    AcquireSRWLockExclusive(&s_pw_lock);
++    const int start = s_pw_state == 0;
++    if (start) s_pw_state = 1;
++    ReleaseSRWLockExclusive(&s_pw_lock);
++    if (!start) return;
++    HANDLE th = CreateThread(NULL, 1u << 20, prewarm_thread, NULL, 0, NULL);
++    if (th) { CloseHandle(th); return; }
++    AcquireSRWLockExclusive(&s_pw_lock);
++    s_pw_state = 3;
++    WakeAllConditionVariable(&s_pw_cv);
++    ReleaseSRWLockExclusive(&s_pw_lock);
++}
++
++extern "C" MfH264* mfh264_take_prewarmed(uint32_t wait_ms)
++{
++    if (!mf_startup()) return NULL;   /* this thread joins the MTA the decoder lives in */
++    const ULONGLONG end = GetTickCount64() + wait_ms;
++    MfH264* d = NULL;
++    AcquireSRWLockExclusive(&s_pw_lock);
++    while (s_pw_state == 1) {
++        const ULONGLONG now = GetTickCount64();
++        if (now >= end) break;
++        SleepConditionVariableSRW(&s_pw_cv, &s_pw_lock, (DWORD)(end - now), 0);
++    }
++    if (s_pw_state == 2) {
++        d = s_pw_dec;
++        s_pw_dec = NULL;
++        s_pw_state = 0;
++    }
++    ReleaseSRWLockExclusive(&s_pw_lock);
++    return d;
++}
++
+ #else  /* !_WIN32: no Media Foundation */
+ 
+ extern "C" MfH264* mfh264_create(void) { return 0; }
+@@ -333,5 +423,7 @@ extern "C" int mfh264_decode(MfH264* d, const uint8_t* au, uint32_t size, int64_
+ extern "C" int mfh264_drain(MfH264* d, MfH264FrameCb cb, void* user)
+ { (void)d; (void)cb; (void)user; return -1; }
+ extern "C" void mfh264_flush(MfH264* d) { (void)d; }
++extern "C" void mfh264_prewarm(void) {}
++extern "C" MfH264* mfh264_take_prewarmed(uint32_t wait_ms) { (void)wait_ms; return 0; }
+ 
+ #endif
+diff --git a/libs/codec/mf_h264.h b/libs/codec/mf_h264.h
+index 7294000..38db4ee 100644
+--- a/libs/codec/mf_h264.h
++++ b/libs/codec/mf_h264.h
+@@ -42,6 +42,17 @@ int     mfh264_drain(MfH264* d, MfH264FrameCb cb, void* user);
+ /* Discard everything buffered (seek / new sequence). */
+ void    mfh264_flush(MfH264* d);
+ 
++/* Patch 0053: start one decoder ahead of time on a background thread (the
++ * title loads its video decoder module long before the first movie). Setting
++ * the decoder up -- loading it, BEGIN_STREAMING with its worker threads and
++ * buffers -- took 120-680 ms here, on the movie's critical path. Does nothing
++ * when one is ready or being made. PS3_VDEC_PREWARM=0: off. */
++void    mfh264_prewarm(void);
++/* The decoder mfh264_prewarm made, or NULL (none started, it failed, or it is
++ * not ready within wait_ms -- it stays parked for a later call then). The
++ * caller owns the result. */
++MfH264* mfh264_take_prewarmed(uint32_t wait_ms);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/libs/system/cellSysmodule.c b/libs/system/cellSysmodule.c
+index 24b7deb..a4ea90c 100644
+--- a/libs/system/cellSysmodule.c
++++ b/libs/system/cellSysmodule.c
+@@ -3,6 +3,7 @@
+  */
+ 
+ #include "cellSysmodule.h"
++#include "../codec/cellVdec.h"
+ #include <stdio.h>
+ 
+ /* ---------------------------------------------------------------------------
+@@ -97,6 +98,9 @@ s32 cellSysmoduleLoadModule(u16 id)
+         return CELL_OK;  /* Already loaded — return success (some games treat DUPLICATED as fatal) */
+ 
+     s_module_loaded[slot] = 1;
++    /* Patch 0053: the video decoder takes 0.1-0.7 s to start; Tekken 5 DR loads
++     * this module ~17 s before its first movie, so start it now. */
++    if (id == CELL_SYSMODULE_VDEC) cellVdec_module_loaded();
+     return CELL_OK;
+ }
+ 

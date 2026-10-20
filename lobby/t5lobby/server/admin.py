@@ -440,6 +440,29 @@ def cmd_notices(a):
     return 0
 
 
+def cmd_release(a):
+    """The newest published release: launchers that report an older one get a notice to update (lobby.py
+    "update your launcher"). Only after the owner has published it -- never announce a draft."""
+    st = _open(a)
+    from .lobby import LobbyServer
+    if a.clear:
+        st.set_flag("release", None)
+        print("release notice off: older launchers are no longer told to update (within a few seconds)")
+        return 0
+    if not a.version:
+        cur = st.get_flag("release")
+        print(f"newest release: {cur}  (older launchers are told to update)" if cur else
+              "no release set: nobody is told to update  (release X.Y.Z once it is published)")
+        return 0
+    v = a.version.strip().lstrip("v")
+    if LobbyServer.release_key(v) is None or not v[:1].isdigit():
+        sys.exit(f"{a.version!r} is not a release number like 1.1.2")
+    st.set_flag("release", v)
+    print(f"newest release {v}: launchers of an older release online now (within a few seconds) and at every login "
+          "see \"T5DR Online " + v + " is out ... update the launcher\" until it is cleared (release --clear)")
+    return 0
+
+
 def cmd_drain(a):
     st = _open(a)
     st.set_flag("drain", None if a.off else time.time())
@@ -460,14 +483,21 @@ def cmd_drain(a):
         except (OSError, ValueError, KeyError) as e:
             print(f"server not reachable at {_status_url(a)} ({e})")
             return 1
-        if s.get("draining") and n == 0:
+        # A ranked set goes on during a drain (its next game starts by itself), but between two of its games no
+        # match runs: a restart then voids the set and the game already won. The database says which sets are
+        # still being played (also for a server older than this tool).
+        sets = st.open_set_count()
+        if s.get("draining") and n == 0 and sets == 0:
             print("no match running: restart now")
             return 0
-        if n != last:
-            print(f"{n} match(es) still running ...", flush=True)
-            last = n
+        if (n, sets) != last:
+            print(f"{n} match(es) still running" + (f", {sets} ranked set(s) not finished" if sets else "") + " ...",
+                  flush=True)
+            last = (n, sets)
         time.sleep(2.0)
-    print(f"still {last} match(es) running after {a.wait:.0f} s")
+    n, sets = last or ("?", 0)
+    print(f"still {n} match(es) running" + (f", {sets} ranked set(s) not finished" if sets else "")
+          + f" after {a.wait:.0f} s")
     return 1
 
 
@@ -576,6 +606,9 @@ def main(argv=None):
     g.add_argument("--clear", action="store_true", help="take the showing notice(s) down")
     p = add("notices", cmd_notices, "the latest notices")
     p.add_argument("--limit", type=int, default=10)
+    p = add("release", cmd_release, "tell launchers of an older release to update (after publishing)")
+    p.add_argument("version", nargs="?", help="the newest published release, e.g. 1.1.2 (none: show it)")
+    p.add_argument("--clear", action="store_true", help="nobody is told to update any more")
     p = add("drain", cmd_drain, "no new matches before a restart")
     p.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="wait until no match runs")
     p.add_argument("--off", action="store_true", help="take new matches again")

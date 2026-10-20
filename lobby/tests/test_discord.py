@@ -257,7 +257,7 @@ class PresenceTest(unittest.TestCase):
 
     def test_at_most_one_update_per_interval(self):
         p = self.presence()
-        p.MIN_INTERVAL = 0.6
+        p.MIN_INTERVAL = 3.0        # long enough that a burst on a busy PC still falls inside one interval
         p.update(activity_for("lobby", start=1))
         self.fake.wait(lambda: len(self.fake.activities) == 1)
         for i in range(10):                                         # a burst of changes
@@ -266,7 +266,7 @@ class PresenceTest(unittest.TestCase):
         time.sleep(0.2)
         self.assertEqual(len(self.fake.activities), 1)              # held back ...
         last = activity_for("search", mode="ranked", start=11)
-        self.fake.wait(lambda: self.fake.activities[-1] == last, 3)  # ... then only the newest one
+        self.fake.wait(lambda: self.fake.activities[-1] == last, 6)  # ... then only the newest one
         self.assertEqual(len(self.fake.activities), 2)
 
     def test_ping_gets_a_pong(self):

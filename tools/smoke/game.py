@@ -475,31 +475,75 @@ class Game:
             self.wait(0.25)
         return False
 
-    def wait_title(self, timeout=90.0):
+    # The intro movie, as the log shows it: the decoder opens, gives its first
+    # picture (or patch 0053 says it gave none and the movie goes on black),
+    # START skips it (the decoder closes), the title background movie opens a
+    # second decoder.
+    MOVIE_OPEN = b"[cellVdec] Open("
+    MOVIE_PICTURE = re.compile(rb"\[cellVdec\] handle \d+: picture #1 |no picture from the H\.264 decoder|"
+                               rb"the H\.264 decoder has not answered")
+    MOVIE_CLOSE = b"[cellVdec] Close("
+
+    def wait_title(self, timeout=90.0, picture_timeout=12.0, skip_timeout=30.0):
         """Boot -> title menu. With movie support (patch 0006) the intro
         movie opens cellVdec; START skips it and the title background movie
         opens a second decoder. Builds without movies skip them: the PAMF
-        reader opens and closes twice right before the title fades in."""
+        reader opens and closes twice right before the title fades in.
+
+        START is pressed only once the movie shows (its first picture, or
+        patch 0053's word that it plays without pictures) -- the game ignores
+        it before -- and then until the movie has closed, for up to
+        skip_timeout s. The 'title' event says what happened, so a failure
+        tells a decoder that gave no picture (the old 1.1.x hang, fixed by
+        0053) from presses that did not skip."""
         end = time.perf_counter() + timeout
         ok = False
+        detail = "timeout before the intro movie"
         while time.perf_counter() < end:
             self.check()
             txt = self.log_bytes()
-            if txt.count(b"[cellVdec] Open(") >= 1:
-                self.wait(1.5)
-                for _ in range(12):
-                    self.press("START", gap=900)
-                    if self.log_bytes().count(b"[cellVdec] Open(") >= 2:
-                        ok = True
-                        break
+            if txt.count(self.MOVIE_OPEN) >= 1:
+                ok, detail = self._skip_intro(txt.find(self.MOVIE_OPEN), picture_timeout, skip_timeout)
                 break
-            if txt.count(b"[cellDmux] Close") >= 2 and b"[cellVdec] Open(" not in txt:
-                ok = True
+            if txt.count(b"[cellDmux] Close") >= 2 and self.MOVIE_OPEN not in txt:
+                ok, detail = True, "no movies in this build"
                 break
             _sleep(0.25)
         self.wait(3.0)
-        self.event("title", "reached" if ok else "NOT reached (timeout)")
+        self.title_detail = detail
+        self.event("title", ("reached: " if ok else "NOT reached: ") + detail)
         return ok
+
+    def _skip_intro(self, open_at, picture_timeout, skip_timeout):
+        t_open = self.now()
+        t_pic = None
+        while self.now() - t_open < picture_timeout:
+            if self.MOVIE_PICTURE.search(self.log_bytes(), open_at):
+                t_pic = self.now()
+                break
+            self.wait(0.2)
+        if t_pic is None:
+            self.event("movie", f"intro movie: no picture {picture_timeout:.0f}s after the decoder opened "
+                                "(decoder stalled) -- pressing START anyway")
+        presses = 0
+        t_first = self.now()
+        while self.now() - t_first < skip_timeout:
+            txt = self.log_bytes()
+            closed = txt.find(self.MOVIE_CLOSE, open_at) >= 0
+            if txt.count(self.MOVIE_OPEN) >= 2:
+                how = f"{presses} START press(es)" if presses else "the movie ended"
+                pic = f"first picture {t_pic - t_open:.1f}s after open" if t_pic is not None else "no picture"
+                return True, f"intro skipped ({pic}, {how}, title movie {self.now() - t_open:.1f}s after open)"
+            if not closed:
+                self.press("START", gap=900)
+                presses += 1
+            else:
+                self.wait(0.3)          # closed: the title movie opens next
+        closed = self.log_bytes().find(self.MOVIE_CLOSE, open_at) >= 0
+        return False, (f"intro movie {'closed but no title movie' if closed else 'not skipped'} after "
+                       f"{presses} START press(es) in {skip_timeout:.0f}s; "
+                       + ("first picture %.1fs after open" % (t_pic - t_open) if t_pic is not None
+                          else "the decoder gave no picture"))
 
     # ------------------------------------------------------------ input
     def _write_pad(self, text, path):

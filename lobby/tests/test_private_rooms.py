@@ -486,18 +486,18 @@ class CommunityTest(Base):
         a, b, c = (self.c(n, auto_ready=True) for n in ("Alice", "Bob", "Cid"))
         d = self.c("Dee")                                             # answers its ready checks by hand
         room = a.create_room("Turns", size=4, rotation="queue", private="code")
-        for x in (b, c, d):
+        for x in (b, d, c):
             x.join_room(code=a.room_code)
-        self.play("Alice", a, b)                                      # both go to the back
-        self.assertEqual(self.line(room["id"]), ["Cid", "Dee", "Alice", "Bob"])
-        ev = expect(d, "match_found", 15)                             # Cid vs Dee: Dee declines
+        self.play("Alice", a, b)                                      # Alice (first at the table) to the back
+        self.assertEqual(self.line(room["id"]), ["Bob", "Dee", "Cid", "Alice"])
+        ev = expect(d, "match_found", 15)                             # Bob vs Dee: Dee declines
         self.assertTrue(ev["ready_check"])
         d.ready(False, ev["match"])
         n = expect(d, "notice", 10)
         while n.get("code") != "room_away":
             n = expect(d, "notice", 10)
         self.assertNotIn("Dee", self.line(room["id"]))
-        self.wait(lambda: self.players(room["id"]) == ["Cid", "Alice"], what="Cid vs Alice next")
+        self.wait(lambda: self.players(room["id"]) == ["Bob", "Cid"], what="Bob vs Cid next")
         self.wait(lambda: any(p["name"] == "Dee" and p["state"] == "away" for p in (d.my_room or {}).get("players", [])),
                   what="Dee shows as sitting out")
         d.room_line(True)                                             # back in line, at its end

@@ -13,7 +13,8 @@ members who take turns. The room keeps a line (the turn order); the first two in
 their match is over the line moves on by the room's rule --
     winner   winner stays: the loser goes to the back of the line, the next one plays the winner (no winner -- a
              void, a draw -- both go to the back)
-    queue    everyone in turn: both players go to the back
+    queue    everyone in turn: whoever wins, the player who was at the table longer goes to the back and the other
+             plays the next one in line -- everyone plays two in a row (with three players everyone meets everyone)
 -- and the next match starts by itself after T5L_ROOM_NEXT_SECONDS (nobody votes for a rematch; with only two in
 the line it is the same two again). Whoever declines the ready check or lets it run out sits out (leaves the line,
 stays in the room, is told so) until they press Back in line (`room_line`); a member can also sit out on purpose.
@@ -530,9 +531,14 @@ class RoomsMixin:
         match after T5L_ROOM_NEXT_SECONDS."""
         if r is None or not r.community or r.id not in self.rooms:
             return
-        stay = None
-        if r.rotation == "winner" and status in COUNTED and winner is not None:
-            stay = m.players[winner]
+        if r.rotation == "winner":
+            # winner stays; the loser to the back (no winner: both, P1 first)
+            stay = m.players[winner] if status in COUNTED and winner is not None else None
+        else:
+            # everyone in turn: the one who was at the table longer (P1: first in line) goes to the back, the other
+            # stays for one more match -- every member plays two in a row, against both neighbours in the line,
+            # whoever wins (with three, everyone meets everyone)
+            stay = m.players[1]
         for q in m.players:
             if q is not stay and q in r.line:
                 r.line.remove(q)

@@ -189,7 +189,9 @@ class RuntimeParserTest(unittest.TestCase):
     def test_the_launcher_parses_like_the_game(self):
         # lobby/t5lobby/padnav.py reads these pads too (the Online tab's and the Controls window's controller
         # navigation, 1.1.2): the same reports must give the same buttons, hat, stick directions and CRC verdict.
-        sys.path.insert(0, os.path.join(ROOT, "lobby"))
+        lobby = os.path.join(ROOT, "lobby")
+        if lobby not in sys.path:
+            sys.path.append(lobby)          # (appended: lobby/run.py must not shadow tools/smoke/run.py, test_smoke)
         from t5lobby import padnav
         names = ("X", "Y", "Z", "RX", "RY", "RZ", "S0", "S1")
         modes = {0: None, 1: "usb", 2: "bt-simple", 3: "bt-ext", 4: "usb", 5: "bt-simple", 6: "bt-ext"}

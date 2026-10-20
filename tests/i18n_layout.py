@@ -486,6 +486,20 @@ class Walk:
         self.cut[("controls window", "width", "", "")] = (dlg.top.winfo_reqwidth(), self.px(1040), "")
         dlg.editor.saved_text = dlg.editor.doc.render()
         dlg.close()
+        # the keyboard chosen, a key being asked for (its own texts: layouts, scope, prompt, hint)
+        kb = tc.FakePad(kind="keys1", key="keys1", name=i18n.t("Keyboard"), vid=0, pid=0)
+        dlg = tc.cu.ControlsDialog(app, tc.FakeSettings(d), sources=[tc.FakePad(), kb], foreground=lambda: True,
+                                   clock=tc.Clock(), thread=False, ask=lambda *a: True, game_running=lambda: False)
+        dlg.top.withdraw()
+        dlg.poller.step(dlg.poller.clock())
+        dlg.pump()
+        dlg._choose("keys1")
+        dlg.begin(["1+2"])
+        self.screen("controls window, keyboard", dlg.top)
+        self.cut[("controls window, keyboard", "width", "", "")] = (dlg.top.winfo_reqwidth(), self.px(1040), "")
+        dlg.cap_stop()
+        dlg.editor.saved_text = dlg.editor.doc.render()
+        dlg.close()
         from test_problem_report import fake_context
         import problem_report_ui as report_ui
         ctx = fake_context(d, build_exit=0)

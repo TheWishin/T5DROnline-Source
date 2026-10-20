@@ -546,8 +546,8 @@ class RoomsMixin:
         if stay is not None and stay in r.line:
             r.line.remove(stay)
             r.line.insert(0, stay)
-        # the two played their game: no rematch vote in a community room (the room picks the next match)
-        self.recent.pop(m.id, None)
+        # the two played their game: no rematch vote in a community room (the room picks the next match; h_rematch
+        # refuses one) -- the match stays in `recent` for the post-game lag check
         gs = m.set
         if gs is not None and gs.state == "active" and gs.current is None and not gs.rated:
             self._end_set(gs, "expired")

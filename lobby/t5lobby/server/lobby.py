@@ -1617,7 +1617,9 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             raise LobbyError(proto.E_NOT_FOUND, "that match is over; find a new opponent")
         side = prev.side(p)
         other = prev.players[1 - side]
-        if prev.room is not None and prev.room.community and msg.get("accept", True):
+        if prev.room is not None and prev.room.community:
+            if not msg.get("accept", True):
+                return None                      # (nothing was offered: the room starts its next match itself)
             raise LobbyError(proto.E_STATE, "the room picks the next match by itself")
         gs = prev.set
         if gs is not None and gs.rated and gs.state == "active":

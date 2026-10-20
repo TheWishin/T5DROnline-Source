@@ -1126,11 +1126,12 @@ CPU work than the 35 fps iGPU game). Game A's processor time per frame
 next door, while the processors' clock stayed at 4.6 GHz (`processors at ...`
 in `[slow-frames]`). The 780M has six times the compute units on the same
 kind of memory; at 4K -- whose 3D pass in this game is **6144 x 4320**, the
-supersampled 2048 x 1440 target times three -- it is bandwidth-bound, and its
-65 W are shared with the cores. That is the 780M's long game part: the game's
-own work, slowed by the GPU's load, not a wait. It also explains the window
-sizes: whatever the output costs the GPU (the downscale, the compositor) adds
-to that load. The player's logs agree: `GPU wait` 0.0 in the median but up to
+supersampled 2048 x 1440 target times three -- it can take far more of the
+memory's bandwidth, and its 65 W are shared with the cores. That is the most
+likely reading of the 780M's long game part (no 780M here to measure it on):
+the game's own work, slowed by the GPU's load, not a wait. It would also
+explain the window sizes: whatever the output costs the GPU (the downscale,
+the compositor) adds to that load. The player's logs agree: `GPU wait` 0.0 in the median but up to
 199 GPU-classed frames per 30 s, i.e. the GPU needed about as long as the
 whole CPU frame.
 

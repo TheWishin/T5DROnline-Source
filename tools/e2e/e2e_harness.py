@@ -771,8 +771,8 @@ class Player:
             self.tab.client.test_inbound = launcher or ""
 
     def client_made(self, c):
-        if hasattr(c, "test_inbound"):
-            c.test_inbound = self.fw_launcher or ""
+        if self.fw_launcher is not None and hasattr(c, "test_inbound"):
+            c.test_inbound = self.fw_launcher       # (else T5_NET_TEST_INBOUND of the run's environment, if any)
         if self.ctx.block_direct.get(self.name):
             c.block_direct = True
         routes = self.ctx.relay_routes.get(self.name)

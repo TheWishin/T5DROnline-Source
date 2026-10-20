@@ -53,8 +53,12 @@ the same netcode playback path while it grows.
    it (16 KB pieces, never more than 192 KB unsent). It checks who may watch, counts spectators and
    tells the players.
 4. **Spectator.** The launcher unpacks the pieces into a file of whole records
-   (`spectate.Receiver`; a stream that stops gets an END record) and starts its game once the file
-   has the session and its first match: `T5_NET_MODE=replay T5_REPLAY_FILE=<that file>`. The
+   (`spectate.Receiver`; a stream that stops gets an END record) and starts its game at once:
+   `T5_NET_MODE=replay T5_REPLAY_FILE=<that file>`. The game boots while the players' games still
+   load: the SESSION record goes out at the players' handshake (`rec_session_known`, from
+   `connect_locked`: the host's seed and delay, rollback when both offer it -- what frame 0 records),
+   the netplay core waits for it (`T5_REPLAY_LIVE_WAIT`, 300 s), the title starts VS and the select
+   screen waits for the first fight's line like a persistent game waits for its command. The
    playback sees the `T5LIVE` magic and reads the file as it grows: everything is the replay path
    (the recorder's slot, its sync points, seeds and counters, the direct fight's lines, the rollback
    or lockstep loop), plus:
@@ -66,7 +70,10 @@ the same netcode playback path while it grows.
    - hashes and results are compared when the recorded ones come (the playback can be ahead of the
      live game's final hash by a few frames);
    - the end of the stream (END) ends the playback at the live game's last frame; nothing new for
-     45 s ends it too (`T5_REPLAY_LIVE_TIMEOUT`).
+     300 s ends it too (`T5_REPLAY_LIVE_TIMEOUT`; between matches nothing comes while the players
+     decide on the rematch);
+   - a SESSION that disagrees with the one the playback started with (the players' games
+     reconnected before frame 0) counts as a setup problem: the verdict is not identical.
    The verdict (`T5_REPLAY_RESULT`) is a replay's plus `live`, `stalls`, `stall_seconds`,
    `delay_avg` / `delay_max` (seconds behind the live game, from the LAST records' clock),
    `uncompared`; `T5_REPLAY_STATUS` gets the frame, the delay and the state once a second (the

@@ -3,6 +3,20 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Spectating
+- **Watch a live match**: a friend in a match (Friends page: **Watch**, below the list) or any room's match
+  (Rooms: **Watch**). Your own game shows it a few seconds behind, exactly as it is played -- the replay's
+  data, sent while the players play, checked frame by frame while it plays. Whenever you join, it plays
+  the players' session from its start (a rematch depends on the matches before it). The Spectating card
+  on the Online tab says how far behind you are; **Stop watching** closes the game.
+- **Privacy**: Settings -> Spectators. "Friends and room visitors may watch my online matches" is on, "Also
+  my ranked matches" is off; a match can be watched only when both players allow it, and switching it off
+  stops the spectators at once. The players see how many watch. Their games never wait for spectators.
+- At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
+  matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
+
 ## v1.1.2 (not released yet)
 
 **Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new

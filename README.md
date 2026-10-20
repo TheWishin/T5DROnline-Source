@@ -307,6 +307,17 @@ The tab can switch recording off or leave the players' names out. A
 replay plays only with the game version that recorded it. Details:
 [docs/REPLAYS.md](docs/REPLAYS.md).
 
+### Spectating
+
+A friend in a match, or any room's match, can be watched live: **Watch** on the
+Friends page (below the list) or in the Rooms list. Your game shows the match a
+few seconds behind, exactly as it is played (the same inputs, checked while it
+plays). Whenever you join, it plays the players' session from its start (a
+rematch depends on the matches before it). Settings -> Spectators: "Friends and
+room visitors may watch my online matches" (on) and "Also my ranked matches"
+(off); a match is watched only when both players allow it. Details:
+[docs/SPECTATE.md](docs/SPECTATE.md).
+
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
 the terms screen it says "A network error occurred" and goes back to the title.
 

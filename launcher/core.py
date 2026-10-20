@@ -973,18 +973,17 @@ def last_gpu(out_dir, logs=None):
     return None
 
 
-def igpu_res_hint(key, screen, integrated):
+def igpu_res_better(key, screen, integrated):
     """Settings -> Internal resolution: on integrated graphics, a step whose picture is larger than the screen
     costs the GPU work nobody sees and -- with one memory for processor and GPU -- slows the game's own work
-    too (docs/RENDER_PERF.md "4K on integrated graphics"). A short hint, or None."""
+    too (docs/RENDER_PERF.md "4K on integrated graphics"). The step to suggest instead (the Settings tab says
+    "4K on integrated graphics: try 1080p for 60 fps"), or None."""
     if not integrated or not screen or key not in INTERNAL_RES or not INTERNAL_RES[key][1]:
         return None
     f = INTERNAL_RES[key][1]
     if 1280 * f <= screen[0] + 8 and 720 * f <= screen[1] + 8:
         return None
-    better = internal_res_auto(screen[0], screen[1], True)
-    return t("{step} on integrated graphics: try {better} for 60 fps.", step=t(INTERNAL_RES[key][0]),
-             better=t(INTERNAL_RES[better][0]))
+    return internal_res_auto(screen[0], screen[1], True)
 
 
 # [slow-frames] (ps3recomp patches 0047, 0059, 0063) ends with a verdict when a 30 s window was GPU-bound, or the

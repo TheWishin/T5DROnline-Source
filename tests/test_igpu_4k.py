@@ -62,17 +62,16 @@ class Launcher(unittest.TestCase):
         self.assertTrue(report.SLOW_VERDICT_IGPU.search(SLOW_IGPU))
 
     def test_hint_on_integrated_graphics_above_the_screen(self):
-        hint = core.igpu_res_hint("4k", (1920, 1080), True)
-        self.assertIn(core.t(core.INTERNAL_RES["4k"][0]), hint)
-        self.assertIn(core.t(core.INTERNAL_RES["1080p"][0]), hint)
-        self.assertIn("1080p", core.igpu_res_hint("4k", (2560, 1440), True) or "")    # 1440p screen: 1080p cap
-        self.assertIn("Native", core.igpu_res_hint("1080p", (1366, 768), True))
+        self.assertEqual(core.igpu_res_better("4k", (1920, 1080), True), "1080p")
+        self.assertEqual(core.igpu_res_better("4k", (2560, 1440), True), "1080p")      # 1440p screen: 1080p cap
+        self.assertEqual(core.igpu_res_better("1440p", (1920, 1080), True), "1080p")
+        self.assertEqual(core.igpu_res_better("1080p", (1366, 768), True), "native")
         for key, screen, igpu in (("4k", (1920, 1080), False),      # a discrete card: no hint
                                   ("1080p", (1920, 1080), True),    # matches the screen
                                   ("native", (1280, 720), True),
                                   ("auto", (1920, 1080), True),     # Auto never goes above the screen
                                   ("4k", None, True)):
-            self.assertIsNone(core.igpu_res_hint(key, screen, igpu), (key, screen, igpu))
+            self.assertIsNone(core.igpu_res_better(key, screen, igpu), (key, screen, igpu))
 
     def test_auto_step(self):
         cases = {((1920, 1080), True): "1080p", ((2560, 1440), True): "1080p", ((3840, 2160), True): "1080p",

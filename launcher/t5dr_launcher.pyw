@@ -1048,9 +1048,10 @@ class App(tk.Tk):
             if key == "auto" and gpu:
                 text += "\n" + t("On this PC: {step}.", step=t(core.INTERNAL_RES[core.internal_res_auto(
                     size[0], size[1], gpu[1])][0]))
-            hint = core.igpu_res_hint(key, size, bool(gpu and gpu[1]))
-            if hint:
-                text += "\n" + hint
+            better = core.igpu_res_better(key, size, bool(gpu and gpu[1]))
+            if better:
+                text += "\n" + t("{step} on integrated graphics: try {better} for 60 fps.",
+                                 step=t(core.INTERNAL_RES[key][0]), better=t(core.INTERNAL_RES[better][0]))
         self.internal_res_hint.configure(text=text)
         if save:
             self.save_settings()

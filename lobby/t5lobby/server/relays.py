@@ -60,6 +60,10 @@ class RelayNodeRef:
         self.stats = {}                # the last status answer
         self.ctl_rtt = None            # ms, the control channel's round trip
         self.error = None              # why it is down, when it said ("clock", ...)
+        # The node's clock minus this server's, from its last (authentic) answer. Requests are stamped in the node's
+        # time: it refuses a stamp from before its own start (relayctl RESTART_MARGIN), and with this server's clock
+        # behind the node's that refused every request for a while after each node restart (review-112).
+        self.clock_offset = 0.0
         self.checking = False
         self.warned_plain = False      # logged once: an older node gets the bind tokens readable
         self.opened = 0
@@ -344,6 +348,9 @@ class RelayPool:
             msg = got[1]
             hit = self.pending.get(msg.get("re"))
             if hit is not None and hit[0] is node and not hit[1].done():
+                ts = msg.get("ts")
+                if isinstance(ts, (int, float)) and not isinstance(ts, bool) and abs(ts) < 1e11:
+                    node.clock_offset = float(ts) - time.time()     # (the answer's own way back is in it: < 1 s)
                 hit[1].set_result(msg)
             return
 
@@ -358,6 +365,7 @@ class RelayPool:
         try:
             for _ in range(max(1, tries)):
                 msg = relayctl.request(op, node.id, **fields)
+                msg["ts"] = round(time.time() + node.clock_offset, 3)       # in the node's time (clock_offset)
                 if bind_tokens is not None:
                     if "etokens" in (node.stats.get("caps") or ()):
                         msg["etokens"] = relayctl.seal_tokens(node.secret, msg["id"], bind_tokens)
@@ -413,7 +421,12 @@ class RelayPool:
         n.checking = True
         try:
             t0 = time.monotonic()
+            guess = n.clock_offset
             r = await self.request(n, "status", timeout=min(2.0, max(0.2, self.cfg.relay_check_seconds)), tries=2)
+            if r is not None and r.get("error") == "clock" and abs(n.clock_offset - guess) > 1.0:
+                # stamped with an old guess of the node's time (this server or the node just started): the refusal
+                # carried the node's time, so ask again at once in it instead of calling the node down
+                r = await self.request(n, "status", timeout=min(2.0, max(0.2, self.cfg.relay_check_seconds)), tries=2)
             now = time.monotonic()
             if r is not None and r.get("ok"):
                 n.ctl_rtt = (now - t0) * 1000.0

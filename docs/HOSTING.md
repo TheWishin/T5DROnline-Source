@@ -573,7 +573,8 @@ the SQLite file directly, which is safe while the server runs. The server polls 
 | `purge-inactive --days N [--include-played] --yes` | deletes accounts not seen for N days (by default only accounts that never finished a game: name squatters) |
 | `backup [DIR] [--keep N]`, `restore FILE --yes` | see Backups |
 | `notice TEXT [--minutes N \| --hours H]`, `notice --clear`, `notices` | a message for every connected player, for example `notice "server restart in 20 min"`. It shows in the launcher's status bar until it ends (default 60 minutes) or is cleared. The server picks it up within 5 s. Players who log in while it shows get it too. At most 200 characters |
-| `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
+| `drain [--wait SECONDS] [--off]` | before a restart: no new matches (queues, rooms, challenges, rematches are refused with "the server restarts for an update in a moment"), the running ones and the ranked sets finish. `--wait` returns 0 when none is left (1 on timeout). A restart ends the drain. See Updates and restarts |
+| `release [X.Y.Z] [--clear]` | after the owner has published a release: launchers that report an older one see "T5DR Online X.Y.Z is out ... update the launcher" in their status bar (now and at every login) until `--clear`. Without an argument: what is set |
 | `gen-cert`, `fingerprint`, `server-entry` | see TLS and servers.json |
 
 ### Status, health, metrics
@@ -634,21 +635,32 @@ if you used an IP address.
 
 ### Updates and restarts
 
-A restart drops every lobby connection. The launchers log in again by themselves only with a
-remembered login (guests log in again by hand), and a match that was running cannot be reported
-any more: the server marks it **void (`server_restart`)** when it starts again -- no rating change,
-no blame for anybody. To restart without voiding matches:
+A restart drops every lobby connection; the server forgets who was online, so the launchers cannot resume
+their sessions. Launchers from 1.1.2 on log in again by themselves with a remembered login (a few seconds after the
+server is back; guests and accounts without one log in again by hand). Launchers up to 1.1.1 show "Lost the lobby
+connection": the player logs in again by hand (with the password) or restarts the launcher, which uses the
+remembered login. A match that was running cannot be reported any more: the server marks it **void
+(`server_restart`)** when it starts again -- no rating change, no blame for anybody -- and so is a ranked set that
+was not finished (its games changed no rating yet). To restart without voiding anything:
 
     sudo t5lobby-admin drain --wait 600 && sudo systemctl restart t5lobby
 
 `drain` stops new matches at once (players get a notice), `--wait` returns when the last running
-match has its result (a first-to-3 match takes 2-7 minutes). The restart ends the drain.
+match has its result (a first-to-3 match takes 2-7 minutes) and the last ranked set is over. A ranked set goes on
+during a drain: its next game starts by itself, so a best-of-3 can take up to three games. (Before 1.1.2 the admin
+tool did not wait for a set between two of its games, when no match runs; with an older server, check as in
+docs/DEPLOY_1.1.2.md step C3.) The restart ends the drain.
 
 **Database upgrades.** A new release may add tables: the server does it by itself at its first start (numbered
 schema migrations, `PRAGMA user_version`; 1.1.2 adds the friends tables). Each step is one transaction together with
 its version number, so a crash in the middle leaves the old version and the step runs again. Take a backup before
 an update all the same (`t5lobby-admin backup`). Going back to the previous release after an upgrade works: an older
-server leaves the tables it does not know alone.
+server leaves the tables it does not know alone. (An account the older server deletes keeps its friends rows; the
+newer server drops them, and those of an account whose id SQLite gave to a newer account, when it starts again.)
+
+**After a release is published**, `sudo t5lobby-admin release 1.1.2` (the new version) tells every launcher that
+reports an older release, in its status bar, that the new version is out and that players on it cannot play against
+it (different builds are never paired). Only after the owner has published the release; `release --clear` ends it.
 
 What a crash (or `kill -9`, or a power cut) can and cannot do to the data:
 

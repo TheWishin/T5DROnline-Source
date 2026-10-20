@@ -66,7 +66,7 @@ index 25ac5a9..24e7e31 100644
      g_vj_threads = started;
      fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors%s; "
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index 0ee0df5..4488b0c 100644
+index 0ee0df5..9a234d6 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
 @@ -11,10 +11,11 @@
@@ -96,10 +96,10 @@ index 0ee0df5..4488b0c 100644
 + *                             thread, the translation and the sound core each
 + *                             on their own core, the best-ranked first]
 + *   PS3_SCHED_PLACE=0         no thread placement from host_sched_plan.h (CPU
-+ *                             sets for performance cores / one CCD, ideal
-+ *                             processors, workers off the game's cores, pool
-+ *                             sizes from the CCD) -- patch 0047's behaviour
-+ *                             [on]
++ *                             sets for the performance cores / one CCD, ideal
++ *                             processors, "never EcoQoS" per thread, the pool
++ *                             sizes of patch 0065) -- patch 0047's behaviour;
++ *                             the priorities have their own switches [on]
 + *   PS3_SCHED_PRIO_VERTEX=n   the vertex-fetch workers' priority [1]
   *   PS3_SCHED_THROTTLE=0      leave Windows power throttling (EcoQoS, and the
   *                             Windows 11 rule that drops the 1 ms timer of a
@@ -249,7 +249,7 @@ index 0ee0df5..4488b0c 100644
  /* Resolve a CPU-set spec to CPU set ids. Returns the count; 0 = no constraint. */
  static ULONG hs_cpus(const char* spec, ULONG* ids)
  {
-@@ -373,6 +439,106 @@ int host_sched_cores(void)
+@@ -373,6 +439,104 @@ int host_sched_cores(void)
      return s_bud_cores;
  }
  
@@ -308,8 +308,6 @@ index 0ee0df5..4488b0c 100644
 +    hsp_plan p = *hs_plan();
 +    const char* e = getenv("PS3_SCHED_PLACE");
 +    if (e && *e == '0') {
-+        p.hot = -1;
-+        p.set[HSP_SPURS] = p.set[HSP_VERTEX] = 0;
 +        hsp_pools(&p, host_sched_cpus(), host_sched_cores(), host_sched_laptop());
 +        const int cpus = host_sched_cpus();
 +        int s = cpus / 2;                       /* patch 0047: half the budget */
@@ -356,7 +354,7 @@ index 0ee0df5..4488b0c 100644
  /* ---- trace ----------------------------------------------------------------- */
  typedef struct { volatile LONG64 qpc; uint16_t kind, tid; uint32_t arg; } hs_rec;
  #define HS_TRACE_CAP (1u << 22)              /* 4M records, 64 MB */
-@@ -452,6 +618,73 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
+@@ -452,6 +616,72 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
      snprintf(out, cap, "%s", e ? e : def);
  }
  
@@ -394,7 +392,7 @@ index 0ee0df5..4488b0c 100644
 +    fprintf(stderr, "[sched] processors: %d logical, %d cores (of %d), %s%s; %s; %s\n",
 +            p->lps, p->cores, s_ncpu, p->smt ? "SMT" : "no SMT", p->small ? ", small" : "", kinds, groups);
 +    const hsp_plan q = hs_pools_now();
-+    char pr[6][16];
++    char pr[5][16];
 +    if (!s_place) {
 +        fprintf(stderr, "[sched] placement: off (PS3_SCHED_PLACE=0); SPURS %d at a time, vertex workers %d\n",
 +                q.spurs_threads, q.vertex_threads);
@@ -423,14 +421,13 @@ index 0ee0df5..4488b0c 100644
 +            work, q.spurs_threads, q.vertex_threads,
 +            hs_prio_text(s_prio[HS_ROLE_MAIN], pr[0], 16), hs_prio_text(s_prio[HS_ROLE_TICKER], pr[1], 16),
 +            hs_prio_text(s_prio[HS_ROLE_SPU], pr[2], 16),
-+            hs_prio_text(s_prio[HS_ROLE_SPURS], pr[4], 16), hs_prio_text(s_prio[HS_ROLE_VERTEX], pr[5], 16));
-+    (void)pr[3];
++            hs_prio_text(s_prio[HS_ROLE_SPURS], pr[3], 16), hs_prio_text(s_prio[HS_ROLE_VERTEX], pr[4], 16));
 +}
 +
  static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  {
      (void)once; (void)param; (void)ctx;
-@@ -486,7 +719,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -486,7 +716,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  
      s_timer  = env_int("PS3_SCHED_TIMER", 1) != 0;
      s_ppu_lo = env_int("PS3_SCHED_PPU_LO", 1002);
@@ -440,7 +437,7 @@ index 0ee0df5..4488b0c 100644
      /* Sub-millisecond usleep: the main thread polls the flip with usleep(100)
       * for the rest of every frame, and the SwitchToThread spin keeps it
       * runnable all that time -- free with 32 processors, a whole one taken
-@@ -512,9 +746,20 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -512,9 +743,21 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
       * FIFO drain -- so every link of it goes up one step, the ticker (which
       * drains a whole frame of commands in one go) and the SPU sound core (a
       * 5.33 ms deadline, ~85% of a core) two, the audio mixer (a few us every
@@ -452,7 +449,8 @@ index 0ee0df5..4488b0c 100644
 +     * the PS3's) -- one step more, above the SPURS and vertex workers, which
 +     * only shorten parts of the frame: on 4 processors made slower
 +     * (tools/slow_core.py) +3.5 % fps over 6 paired rounds and 9x fewer late
-+     * audio blocks (917 -> 102). The main thread alone one step up did
++     * audio blocks (917 -> 102); with the third skinning thread +8.6 % (8 of
++     * 8 rounds). The main thread alone one step up did
 +     * nothing (it waits for those threads); the workers one or two steps
 +     * down instead lost 6-15 % (they then lose to every other program, and
 +     * the main thread waits for the skinning). docs/RENDER_PERF.md "Thread
@@ -463,7 +461,7 @@ index 0ee0df5..4488b0c 100644
      s_prio[HS_ROLE_TICKER]     = env_int("PS3_SCHED_PRIO_TICKER",  THREAD_PRIORITY_HIGHEST);
      s_prio[HS_ROLE_SPU]        = env_int("PS3_SCHED_PRIO_SPU",     THREAD_PRIORITY_HIGHEST);
      s_prio[HS_ROLE_SPURS]      = env_int("PS3_SCHED_PRIO_SPURS",   THREAD_PRIORITY_ABOVE_NORMAL);
-@@ -522,8 +767,14 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -522,8 +765,14 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
      s_prio[HS_ROLE_DECODER]    = env_int("PS3_SCHED_PRIO_DECODER", HS_KEEP);
      s_prio[HS_ROLE_TIMER]      = env_int("PS3_SCHED_PRIO_TIMER",   HS_KEEP);
      s_prio[HS_ROLE_BACKGROUND] = env_int("PS3_SCHED_PRIO_BG",      THREAD_PRIORITY_BELOW_NORMAL);
@@ -471,7 +469,7 @@ index 0ee0df5..4488b0c 100644
 -    s_prio_ppu   = env_int("PS3_SCHED_PRIO_PPU",   THREAD_PRIORITY_ABOVE_NORMAL);
 +    /* Patch 0065: the vertex-fetch workers through here too (rsx_live_draw.c
 +     * set ABOVE_NORMAL itself). The workers keep their level: below normal
-+     * they lost 13 % fps on 4 processors next to other programs (the main
++     * they lost 15 % fps on 4 processors next to other programs (the main
 +     * thread waits for the skinning jobs; docs/RENDER_PERF.md "Thread
 +     * placement"). */
 +    s_prio[HS_ROLE_VERTEX]     = env_int("PS3_SCHED_PRIO_VERTEX",  THREAD_PRIORITY_ABOVE_NORMAL);
@@ -480,7 +478,7 @@ index 0ee0df5..4488b0c 100644
      s_prio_ppulo = env_int("PS3_SCHED_PRIO_PPULO", HS_KEEP);
      for (int r = 0; r < HS_ROLE_COUNT; r++) {
          char k[48];
-@@ -595,6 +846,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -595,6 +844,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
              s_ncpu, (unsigned)s_fast_llc);
      for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
      fprintf(stderr, "%c", 10);
@@ -488,7 +486,7 @@ index 0ee0df5..4488b0c 100644
      return TRUE;
  }
  
-@@ -616,8 +868,6 @@ int64_t host_sched_spin_ticks(void)
+@@ -616,8 +866,6 @@ int64_t host_sched_spin_ticks(void)
  }
  
  /* ---- per thread ---------------------------------------------------------------- */
@@ -497,13 +495,13 @@ index 0ee0df5..4488b0c 100644
  void host_sched_thread_start(int role, int guest_prio, const char* name)
  {
      /* Every runtime thread that may run guest code starts here: the same SSE
-@@ -654,43 +904,70 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -654,43 +902,71 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
          mm_ok = p_AvSetMmThreadCharacteristicsA(mm, &idx) != NULL;
      }
  
-+    /* Where it runs (patch 0065, host_sched_plan.h): a CPU set (performance
-+     * cores, the CCD the frame stays in, workers off the game's cores), an
-+     * ideal processor for the game thread, the translation and the sound core.
++    /* Where it runs (patch 0065, host_sched_plan.h): a CPU set (the
++     * performance cores of a hybrid, the CCD the frame stays in), an ideal
++     * processor for the game thread, the translation and the sound core.
 +     * PS3_SCHED_CPUS_<ROLE> still wins for its role. */
 +    const int kind = s_place ? hs_kind(role, guest_prio) : -1;
 +    const hsp_plan* pl = hs_plan();
@@ -565,7 +563,9 @@ index 0ee0df5..4488b0c 100644
 +        }
      }
  
-+    char sp[96], pt[16];
++    char sp[96], pt[16], id[24];
++    if (ideal >= 0) snprintf(id, sizeof id, "LP %d (%s)", ideal, ideal_ok ? "ok" : "FAILED");
++    else snprintf(id, sizeof id, "none");
      if (s_log)
          fprintf(stderr, "[sched] thread '%s' role=%s guest_prio=%d -> host prio %d%s%s%s cpus=%s%s ideal=%d\n",
                  name ? name : "?", k_role_name[role], guest_prio, GetThreadPriority(GetCurrentThread()),
@@ -577,9 +577,8 @@ index 0ee0df5..4488b0c 100644
 +    else if (kind == HSP_MAIN || kind == HSP_TICKER || kind == HSP_SPU) {
 +        /* the three threads of the frame's critical path, always (problem reports) */
 +        static const char* const what[] = { "game thread", "translation", "sound core" };
-+        fprintf(stderr, "[sched] %s '%s': priority %s, ideal processor %s%d%s, CPU set %s%s, EcoQoS %s\n",
-+                what[kind], name ? name : "?", hs_prio_text(prio, pt, sizeof pt),
-+                ideal >= 0 ? "LP " : "", ideal, ideal >= 0 ? (ideal_ok ? " (ok)" : " (FAILED)") : "",
++        fprintf(stderr, "[sched] %s '%s': priority %s, ideal processor %s, CPU set %s%s, EcoQoS %s\n",
++                what[kind], name ? name : "?", hs_prio_text(prio, pt, sizeof pt), id,
 +                s_cpus_role[role][0] ? s_cpus_role[role] : set ? hsp_mask_text(set, sp, sizeof sp) : "none",
 +                n ? (cpus_ok ? " (ok)" : " (FAILED)") : "",
 +                qos_ok < 0 ? "not set" : qos_ok ? "never (ok)" : "never (FAILED)");

@@ -157,6 +157,49 @@ hook that lets a tournament's people watch its matches; the rest of the rules ap
 - `lobby/tests/test_spectate.py`: who may watch, privacy, ranked, rooms, the limit, bounds, older
   launchers, the stream byte for byte through the server, the parser, uploader and receiver.
 
-## Proof
+## Proof (2026-10-20, branch spectate on main 06adda9)
 
-(measurements: see the section below, filled by the proof runs)
+The PC ran 15-20 games of other test runs at 100 % CPU the whole time (the players' games ran at
+35-50 fps): absolute frame times are that PC's, the comparisons are what counts.
+
+**The whole path** (`tools/e2e/run.py --only spectate_live`, run fin_live: a local lobby server, four
+launchers' Online tabs, real games in persistent mode, rollback). Ava's room, Bo joins: a match and a
+rematch in the running games (stages 34 and 25, in-game picks). Vi, Ava's friend, presses Watch on the
+Friends page as the match starts; Wu, a guest, presses Watch on Ava's room 60 s later.
+
+| spectator | joined | hashes compared | different | results | final hashes | behind the live game |
+|---|---|---|---|---|---|---|
+| Vi (friend) | at the start | 90 | 0 | 2 of 2 the same | a1ed461a284718ef, ae870d51b572510e | 3.3 s on average, 5.3 s at most |
+| Wu (room) | 60 s later | 90 | 0 | 2 of 2 the same | a1ed461a284718ef, ae870d51b572510e | 63 s (the session from its start) |
+
+Both played every frame the live session played (5,377), 0 different hashes, 0 setup problems; the
+stream ended "over" when Ava left the set. The session was 81 KB as records, 13 KB compressed through the
+server (about 6:1; ~150 bytes a second of play). An earlier run (e2eD) the same: 88 hashes, 0
+different, Vi 4.5 s behind.
+
+**The players are not affected.** The same two players and the same scripted fights, one run at a time,
+alternating: without spectators and without any live stream (launchers without the cap), and watched by
+two spectators whose launchers receive the stream (their games would be on other PCs):
+
+| run | spectators | frame times while fighting p50 / p95 / p99 (ms), Ava -- Bo | fps match 1 -- rematch | recording on the frame, avg / max (us) |
+|---|---|---|---|---|
+| base 1 | none, no stream | 26.0/36.5/50.5 -- 25.5/36.5/51.5 | 40.9 -- 38.5 | 2.15 / 2341, 1.22 / 970 |
+| stream 1 | 2 | 28.5/39.5/52.5 -- 28.5/39.0/55.0 | 41.2 -- 34.1 | 1.29 / 1133, 0.93 / 433 |
+| base 2 | none, no stream | 31.0/38.0/51.0 -- 30.5/39.0/55.0 | 36.4 -- 33.5 | 0.97 / 614, 0.68 / 74 |
+| stream 2 | 2 | 18.0/35.0/49.5 -- 17.5/37.0/69.0 | 44.1 -- 46.7 | 0.91 / 117, 0.96 / 941 |
+| live (fin_live) | 2, their games on this PC too | 17.0/34.0/49.5 -- 17.0/34.0/50.0 | 47.7 -- 49.4 | 0.88 / 33, 0.97 / 154 |
+
+Every match: 0 mismatching frames, the same winner and final hash on both PCs. The spread between runs
+(p50 17-31 ms) is the other games' load; runs with and without spectators overlap. What recording costs
+the frame stays about 1 us with or without the live stream (the frame queues a few small records; the
+writer thread appends the file); the spikes of a millisecond or two are there without any stream too
+(a full CPU preempting the main thread). In both stream runs the files both receivers got were the
+players' live stream byte for byte (75,582 and 96,398 bytes, plus the END record the launcher adds).
+
+**Lockstep** (game level, `tools/spectate_test.py` beside `tools/fight_flow_test.py --flow rematch
+--env T5_RB_MODE=off`, run fin_ls: process mode, 2 matches on stages 27 and 31): spectator 1 started with
+the stream (its game booted before the session was known), spectator 2 60 s later -- both identical, 70
+hashes, 20 of 20 sync points, both results the same.
+
+Tests: `lobby/tests/test_spectate.py` (13), `tests/test_replays.py`
+`test_live_stream_plays_like_the_file` (the game's writer and reader against Python's parser).

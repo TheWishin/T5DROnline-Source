@@ -16,6 +16,9 @@ What counts as game-derived (see docs/CI.md):
   magic    ELF, SCE (SELF/SPRX), PKG, NPD (EDAT/SDAT), PSF (PARAM.SFO), PAMF,
            RIFF (AT3/WAV), TRP (trophies)
   binary   anything that is not UTF-8 text (none of our sources are binary; see ALLOW)
+  profile  tools/gamedll/t5dr_lifted.proftext, the lifted code's PGO profile, is checked by
+           tools/profile_check.py instead of the size and content checks: function names,
+           hashes and execution counts only, nothing else
   content  the lifters' "generated" headers, dense lifted-function names, a
            GIT binary patch, long hex or base64 runs (embedded binaries), and a
            decryption key name next to a long hex value or byte list
@@ -34,6 +37,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = ROOT         # --repo
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import profile_check  # noqa: E402 -- the one exempt path: the lifted code's PGO profile (names and counts)
 LIMIT = 1 << 20     # 1 MiB
 
 # Paths exempt from the binary / magic checks -- only for fixtures we made
@@ -195,6 +200,11 @@ def check_path(path):
 def check_content(path, b):
     found = []
     clean = path.split(" @")[0]
+    if clean == profile_check.PROFILE_PATH:
+        # The lifted code's PGO profile (docs/BUILD_PERF.md): 7,000+ lifted
+        # function names and over 1 MiB, so the generic checks below would refuse it. It is accepted at this
+        # one path only when it is nothing but function names, structural hashes and execution counts.
+        return ["PGO profile: " + p for p in profile_check.check(b)]
     if len(b) > LIMIT:
         found.append(f"{len(b):,} bytes is over the 1 MiB limit")
     if clean not in ALLOW:

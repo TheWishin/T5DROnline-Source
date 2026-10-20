@@ -8,6 +8,9 @@ fits in a vblank only when `game CPU + translation + present` stays under
 16.7 ms. Patch 0023 cuts the translation and removes the first-fight hitch.
 Every change has a switch; all are on by default.
 
+(Compiler settings for the game's own CPU per frame -- profile-guided
+optimisation of the lifted code, and what else was tried: docs/BUILD_PERF.md.)
+
 ## What changed
 
 | Change | Switch (default on) | Effect per fight frame |

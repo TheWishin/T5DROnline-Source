@@ -6,9 +6,8 @@ part is in the README's status table.
 ## v1.1.2 (not released yet)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2
-(the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047 and
-0048<!-- PENDING select-stall: add its patch number here if it brings one -->). The launcher offers the update
-itself; after it, press **BUILD GAME** once.
+(the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047, 0048 and
+0053). The launcher offers the update itself; after it, press **BUILD GAME** once.
 
 ### Online
 - **Friends and invites** (accounts): add friends by account name on the Online tab's new **Friends** page. The
@@ -26,17 +25,28 @@ itself; after it, press **BUILD GAME** once.
 - **Replays.** Every online match is saved (a few KB, in `native\replays`). The new **Replays** tab lists them;
   **Watch** plays a match again in the game exactly as it happened and checks it against the live match. START
   pauses, SELECT ends it. Recording and the players' names can be switched off there. A replay needs the game
-  version that recorded it. **Report a problem** adds your newest replay, without names.
+  version that recorded it; a damaged or odd replay file is refused with a reason and leaves the rest of the list
+  alone. **Report a problem** adds your newest replay, without names.
+- **No pausing online.** START in an online fight opened the pause menu in both games, so one player could freeze
+  the other in the middle of a combo. Now nobody can pause an online fight; START still skips the replay after a
+  round, and offline it pauses as before. To leave a match, close the game (counts as a loss, as before).
+- **No more frozen character select before the next match.** On a busy PC the select screen for a rematch or a
+  new opponent could stay frozen while loading until the game was closed. Fixed; and should a select screen ever
+  stop loading anyway, the game closes itself after 10 seconds and the launcher starts a fresh one for the match.
 - **No more broken game after cancelled matches.** When four to eleven matches in a row ended at the character
   select without a fight (the opponent left during the pick, or the lobby cancelled), the open game broke. Now 60
   in a row are fine.
+- **No more voided matches at the start of a fight on stage 27** (the crowd of fighters behind the ring): in about
+  one match in 30 the desync check saw a value that only belongs to the picture (the box the shadows are drawn in)
+  differ for a few frames, and the match was voided although the fight was the same on both PCs. That value is no
+  longer compared; everything the fight depends on still is.
 - **Different saves no longer desync.** Another round time or unlocks in one player's save could make a match go
   apart and be voided. Online games now use a fresh save of their own (`gamedata-online`), the same on both PCs.
   Your own save is never touched online; the game's own OPTIONS (button layout, round time) apply offline only, so
   set your buttons in the launcher.
-<!-- PENDING online-no-pause (branch online-no-pause): its entry here -->
-<!-- PENDING select-stall (branch select-stall): its entry here -->
-<!-- PENDING s27 fix: its entry here -->
+- **You stay logged in when the lobby server restarts.** A saved login was forgotten whenever the server could not
+  be reached (an update, an outage). Now the launcher keeps it and logs you in again by itself once the server is
+  back (not during a fight, and not after you logged out).
 
 <!-- PENDING DualSense/binds (branch pad-online: DualSense in the launcher and the Online tab, binds): its entry
 here, with the heading:
@@ -53,10 +63,6 @@ here, with the heading:
   stays in your save, which the launcher backs up once first (`save-backups`).
 - **The Settings tab scrolls** (mouse wheel, scrollbar), so every setting is reachable at 133 % display scaling
   and more.
-- **Discord status** (optional, off by default; **Settings -> Discord**): "In lobby", "Searching ranked" or "In
-  match: Jin vs Kazuya" with a timer, through the Discord app on your PC.
-  <!-- RELEASE: keep this entry only if lobby/t5lobby/data/discord.json has the application_id (docs/ONLINE.md
-  "Discord Rich Presence"); without it the setting does nothing. -->
 
 ### Game
 - **Training overlay** (**Settings -> Training overlay**, on by default in Practice): your inputs with how long each
@@ -78,20 +84,20 @@ here, with the heading:
 - **The build no longer stops at "Translate code".** When a helper process stopped (an antivirus or low memory can
   do that), the build waited forever at about 68 %. Now it translates that part itself and finishes with the same
   result; if the step stays silent for 3 minutes, the Build tab says what to do.
-<!-- PENDING intro-skip (branch intro-skip): its entry here -->
+- **The intro movie no longer freezes on a white screen.** On a busy PC the video decoder sometimes never
+  answered, and the intro stayed white with START doing nothing. The decoder now starts while the game boots; if
+  it still does not answer within 5 seconds, the movie goes on in black with its sound (START skips it).
 
 ### Security
-- **Signed updates.** The launcher's self-update checks the owner's signature on a release (`SHA256SUMS.sig`) and
-  refuses one that somebody else put on GitHub. Updating from 1.1.1 to 1.1.2 works as before.
-  <!-- RELEASE: keep this entry only if RELEASE_PUBLIC_KEYS in launcher/updater.py has the owner's key
-  (docs/RELEASING.md "Release signature"); without it updates are not checked yet. -->
 - **A lobby server has less say over your launcher:** a match name could make it write or delete files outside its
-  folder, a relay list could make it send pings anywhere and as often as the server liked, and any text could reach
-  your Discord status. Match names, relay addresses and Discord texts are checked now.
+  folder, and a relay list could make it send pings anywhere and as often as the server liked. Match names and
+  relay addresses are checked now.
 - **Matches are harder to disturb:** a stranger who found your game's port can no longer end a match before it
   starts, and recorded match traffic can no longer send your game's packets elsewhere.
 - When an account was last online is shown only to its friends; problem reports also remove lobby recovery codes.
-<!-- PENDING review fixes: their entries here, or in the subsection each belongs to -->
+- Prepared, not active yet: the launcher can check a signature on each update (`SHA256SUMS.sig`, made with the
+  project's release key) and refuse a release somebody else put on GitHub, once that key is set up. 1.1.2 has no
+  key yet, so updates are checked as before, against the release's SHA-256 checksums.
 
 ### Servers
 - Friends, invites and the ping estimate need the updated lobby server; 1.1.0 and 1.1.1 launchers keep working
@@ -102,7 +108,12 @@ here, with the heading:
 - Hardening: relay tokens are sealed on the way to regional relays, relay nodes refuse requests recorded before
   their restart, a flood of pings no longer blocks match setup, password changes are rate-limited, and the database
   is readable only by the server's user (docs/HOSTING.md).
-<!-- PENDING deploy-rehearsal lobby fixes: their entries here -->
+- **Update notice:** `t5lobby-admin release 1.1.2` (only once the release is published) tells every launcher on an
+  older release, in its status bar, that the new version is out.
+- `t5lobby-admin drain --wait` also waits for ranked sets between two games: a restart no longer voids a set and
+  the game already won. Friends entries left behind by accounts an older server deleted are dropped at start.
+- A ranked queue with `T5L_PING_START=0` no longer stalls, and a relay node whose clock runs ahead of the lobby
+  server's stays up after a restart.
 
 ## v1.1.1 (2026-10-19)
 

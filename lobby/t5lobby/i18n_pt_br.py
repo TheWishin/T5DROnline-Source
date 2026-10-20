@@ -384,8 +384,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "“No lobby”, “Procurando Ranked” ou sua partida (lutadores, placar do set Ranked) com um cronômetro, pelo "
         "app do Discord neste PC. Sem o Discord aberto, nada acontece.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Esta cópia ainda não tem um ID de aplicativo do Discord, então por enquanto isto não faz nada.",
     "Power saving (laptops, handhelds)": "Economia de energia (notebooks, portáteis)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -1505,6 +1503,8 @@ MESSAGES = {
     "The game opens straight into the fight.": "O jogo abre direto na luta.",
     "The result comes back here: rematch or next game.": "O resultado volta para cá: Rematch ou próxima partida.",
     "With a controller: A accepts, B declines.": "Com controle: A aceita, B recusa.",
+    "Online nobody can pause the fight: Start does not open the pause menu.":
+        "Online ninguém pode pausar a luta: Start não abre o menu de pausa.",
     "Lobby": "Lobby",
     "Leaderboard": "Ranking",
     "Profile": "Perfil",

@@ -129,6 +129,16 @@ class Checks(unittest.TestCase):
         late = make_run(fps=[[70.0, 60.0, 5.0, "x"]], duration=75.0)
         self.assertIn("first [fps] line only at 70s", by_id(checks.evaluate(late))["no-hang"]["detail"])
 
+    def test_slow_kill_is_no_hang(self):
+        # the harness stopped the game 1 s after the last [fps] line and the kill took 24 s
+        run = make_run()
+        last = max(f[0] for f in run["fps"])
+        run["duration"] = last + 25.0
+        run["events"] = list(run.get("events", [])) + [[last + 1.0, "title", "stop", "alive=True"]]
+        self.assertEqual(by_id(checks.evaluate(run))["no-hang"]["status"], "pass")
+        run["events"] = []                                   # no stop event: the old end
+        self.assertEqual(by_id(checks.evaluate(run))["no-hang"]["status"], "fail")
+
     def test_menu_fps_threshold_and_contention(self):
         run = make_run()
         for f in run["fps"]:

@@ -315,6 +315,13 @@ def main():
     entries, problems = servers.load(None)          # lobby/servers.json of the install
     log(f"servers.json: {[(e.name, e.address, e.tls) for e in entries]} problems={problems}")
     entry = servers.resolve(a.server, entries) if a.server else servers.default_entry(entries)
+    host = (entry.address if entry else "").rsplit(":", 1)[0].strip("[]").lower()
+    if host == "localhost" or host.startswith("127."):
+        # A lobby on this PC: both players and their games stay on 127.0.0.1 (the lobby client's game socket
+        # and the game bind there -- no Windows Firewall prompt; docs/NETPLAY.md "Bind address"). Through a
+        # real server the games bind every interface, as for players.
+        os.environ.setdefault("T5_NET_BIND", "127.0.0.1")
+        log(f"local lobby: T5_NET_BIND={os.environ['T5_NET_BIND']}")
     st = core.game_state(NATIVE)
     log(f"game_state: ok={st.get('ok')} {st.get('text')}")
     if not st.get("ok"):

@@ -55,8 +55,8 @@ tested between two real PCs over the internet (AMD/60 Hz vs Intel/240 Hz).
 | Input lag | A jab shows on screen about 35-40 ms after the press in fullscreen (the PS3 on a TV: ~42 ms plus the TV), a frame less than before. In a window add one frame (Windows draws the window). |
 | Saving | Works. The in-game clock shows the real date. |
 | Long sessions | The old memory bug (white screen after a few trips through the title) is fixed. |
-| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. |
-| Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. Optional Discord status (Settings -> Discord). |
+| Online play | Works on one PC and through the public lobby server. Rollback netcode: 1 frame of input delay up to ~60 ms ping, 2 above (Settings -> Online input delay; ranked: always 2), about 60 fps at 150 ms ping on an 8-thread PC (now and then a picture is shown twice), tested at 0/50/150 ms ping with packet loss. Played between two real PCs over the internet (2026-10-18). Quick and ranked search prefer opponents with a low ping (estimated through the nearest relay server) and widen the search while you wait. Many cancelled matches in a row no longer break the open game. Nobody can pause an online fight. |
+| Friends, invites | Accounts add friends by name on the Online tab's **Friends** page and see who is online, searching or in a match. **Invite** a friend to a casual match or your room: one click on Accept starts it. |
 | Replays | Every online match is saved (a few KB). The **Replays** tab plays it again in the game and checks that it is identical to the live match. |
 | Launcher | English plus six translations: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, with nothing cut off at 100 % and 150 % display scaling. The Settings tab scrolls. Updates itself. |
 | Build from your copy | Works on the development PC. A stopped helper process no longer hangs the build at "Translate code". |
@@ -303,6 +303,9 @@ Good to know:
   offline only, so both players always play the same game. Set your buttons in
   the launcher (Settings -> Set up controllers); they work online too. Your own
   save is never touched by online play.
+- Nobody can pause an online fight (from 1.1.2): **Start** does not open the
+  pause menu there, for either player. It still skips the replay after a round.
+  To quit a match, close the game (Esc twice): that counts as a loss, as before.
 - Ranked uses a Glicko-2 rating shown with Tekken 5's own rank names. Leaving or
   disconnecting counts as a loss. A desync voids the match.
 - **Friends** (accounts, from 1.1.2): add a friend by account name on the Online
@@ -310,9 +313,6 @@ Good to know:
   searching or in a match. **Invite to a match** (or to your room) asks them;
   one click on **Accept** on their side starts it. Blocking a player ends the
   friendship.
-- **Discord** (optional, off by default): Settings -> Discord shows "In lobby",
-  "Searching ranked" or your match ("In match: Jin vs Kazuya (Ranked, Set 1-0)")
-  with a timer in your Discord status, through the Discord app on your PC.
 - More in [docs/ONLINE.md](docs/ONLINE.md) and [docs/RANKED.md](docs/RANKED.md).
 
 ### Replays

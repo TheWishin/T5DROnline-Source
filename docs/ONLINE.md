@@ -141,6 +141,11 @@ lobby/
    the launcher. A rematch goes back to the select screen the same way; in a
    ranked set only the first game is picked, the rest keep those fighters
    (docs/RANKED.md "Character select in the game").
+   **No pause** (1.1.2): neither player can pause the fight -- both games take START out of
+   both players' inputs (docs/NETPLAY.md "No pause online"). START still skips the replay
+   after a round, and the games skip the last replay and the win pose by themselves. Quitting a
+   match is closing the game (Esc twice, Alt+F4, the window's X), which counts as a loss
+   (forfeit) as before; the launcher's Leave / Leave set after a game works as before.
 9. **Result.** After the game both launchers report the winner (from the
    game's result file, or the player answers "I won / I lost") and, after an
    in-game pick, the fighters. The server reconciles the two reports and
@@ -453,7 +458,9 @@ server still opens an upgraded database (tested), so going back to an older rele
 
 ## Discord Rich Presence
 
-Optional, **off by default**: launcher **Settings -> Discord -> "Show what I play in my Discord status"**. Then the
+Optional, **off by default**, and offered only by a launcher that has a Discord application id (see "The application
+id" below; the 1.1.2 release has none yet, so its Settings show no Discord box): launcher **Settings -> Discord ->
+"Show what I play in my Discord status"**. Then the
 player's Discord status reads "Playing T5DR Online" with one of
 
 | State | Discord shows |
@@ -475,8 +482,8 @@ When Discord starts later, or restarts, the status appears by itself.
 
 **The application id.** Discord names the game after a Discord *application*, which the person who ships the launcher
 creates once. The id is a config value: `application_id` in `lobby/t5lobby/data/discord.json` (shipped with the
-release; empty = Rich Presence does nothing and Settings says so), overridden per player by `"discord_app_id"` in
-launcher.json, and by the environment variable `T5_DISCORD_APP_ID`.
+release; empty = no Rich Presence, and Settings does not show the Discord box at all), overridden per player by
+`"discord_app_id"` in launcher.json, and by the environment variable `T5_DISCORD_APP_ID` (either one shows the box).
 
 Creating the application (the owner, once, about 5 minutes; nobody else can do this for you):
 

@@ -400,7 +400,7 @@ def game_link(t_host, t_join, timeout=5.0):
     try:
         for t in (t_host, t_join):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.bind(("0.0.0.0", t.local_port))
+            s.bind((util.GAME_IP, t.local_port))
             proto.disable_udp_connreset(s)
             s.settimeout(0.1)
             socks.append(s)
@@ -791,6 +791,48 @@ class FullNodeTest(Regional):
         self.assertTrue(self.s.call(lambda: self.s.srv.relays.nodes["usc"].alive))     # full is not dead
 
 
+class NodeClockAheadTest(Regional):
+    """review-112: a node refuses requests stamped before its own start (a recording played back after a restart).
+    With this server's clock behind the node's by more than RESTART_MARGIN that refused every request -- the health
+    check too, so the node was "down" -- for as long as the difference after each node restart. The server now stamps
+    its requests in the node's time (learned from the node's answers)."""
+    node_cfgs = {"usw": {}}
+
+    def node_clock(self, ahead):
+        import t5lobby.server.relaynode as relaynode
+        real = time.time
+
+        class Clock:
+            monotonic = staticmethod(time.monotonic)
+
+            @staticmethod
+            def time():
+                return real() + ahead
+        return mock.patch.object(relaynode, "time", Clock)
+
+    def stays_up(self, seconds=1.5):
+        ref = lambda: self.s.srv.relays.nodes["usw"]      # noqa: E731
+        t_end = time.monotonic() + seconds
+        while time.monotonic() < t_end:
+            self.assertTrue(self.s.call(lambda: ref().alive), self.s.call(lambda: ref().error))
+            time.sleep(0.05)
+        self.assertIsNone(self.s.call(lambda: ref().error))
+
+    def restart_node(self):
+        import t5lobby.server.relaynode as relaynode
+        n = self.nodes["usw"]
+        n.call(lambda: setattr(n.node, "started", relaynode.time.time()))     # (the node's own, skewed clock)
+
+    def test_a_node_restart_with_its_clock_ahead(self):
+        with self.node_clock(30.0):
+            time.sleep(0.6)                 # a few health checks: the server learns the node's time
+            self.restart_node()             # (the node "starts" now, in its own time)
+            self.stays_up()
+            self.s.call(lambda: setattr(self.s.srv.relays.nodes["usw"], "clock_offset", 0.0))
+            self.restart_node()             # both just started: the first answer says "clock" and tells the time
+            self.stays_up()
+
+
 class UpgradeFromRegionalTest(Regional):
     server_cfg = {}                     # punching first (blocked below), then the relay
 
@@ -812,7 +854,7 @@ class UpgradeFromRegionalTest(Regional):
             socks = []
             for t_ in (host, join):
                 k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                k.bind(("0.0.0.0", t_.local_port))
+                k.bind((util.GAME_IP, t_.local_port))
                 k.settimeout(0.05)
                 socks.append(k)
             relayed_before = None

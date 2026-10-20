@@ -113,7 +113,8 @@ job asks for `contents: write` itself; the build job only reads.
    `--release`, the binary checks, the zip smoke test, unit tests) on this PC, and last checks
    that the changelog section is ready for players: a date in its heading and no HTML comments
    (placeholders for branches still to merge, notes for the release; the launcher's update offer
-   shows the notes as plain text, comments included). Tag only when it prints `PREFLIGHT OK`. (0.1.5-preview's first run failed on the runner at the
+   shows the notes as plain text, comments included), and that the release line of README.md and
+   docs/README.de.md names the version. Tag only when it prints `PREFLIGHT OK`. (0.1.5-preview's first run failed on the runner at the
    binary check; the preflight finds that in ~4 minutes locally.)
 
 5. **Push `main`** and wait for CI to be green.

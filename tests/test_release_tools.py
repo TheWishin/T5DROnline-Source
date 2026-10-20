@@ -92,6 +92,23 @@ class ChangelogReadyForPlayers(unittest.TestCase):
                                     "comment: <!-- unclosed -->"])
         self.assertEqual(pf.changelog_leftovers("1.1.0", text), ["comment: <!-- not this section -->"])
 
+    def test_readme_release_lines(self):
+        pf = load_tool("release_preflight")
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "docs"))
+            put(os.path.join(d, "README.md"), "# T\n\n**Release 1.1.1 (2026-10-19).** Download\n"
+                                              "`T5DR-Online-1.1.1.zip` from https://example.invalid\n\n"
+                                              "1. Download `T5DR-Online-<version>.zip`.\n")
+            put(os.path.join(d, "docs", "README.de.md"), "**Release 1.2.0 (2026-11-01).** Lade\n"
+                                                         "`T5DR-Online-1.2.0.zip` von ...\n")
+            self.assertEqual(pf.readme_leftovers("1.2.0", d),
+                             ["README.md: the release line names 1.1.1, not 1.2.0"])
+            self.assertEqual(pf.readme_leftovers("1.1.1", d),
+                             ["docs/README.de.md: the release line names 1.2.0, not 1.1.1"])
+            put(os.path.join(d, "README.md"), "**Release 1.2.0 (2026-11-01).** `T5DR-Online-1.1.9.zip`\n")
+            self.assertEqual(pf.readme_leftovers("1.2.0", d),
+                             ["README.md: the release line names 1.1.9, not 1.2.0"])     # the zip name too
+
 
 class DisplayPath(unittest.TestCase):
     def test_inside_the_repo(self):

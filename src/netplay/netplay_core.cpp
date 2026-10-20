@@ -8,6 +8,9 @@
  *   T5_NET_PORT     local UDP port (host default 7000, join default 0 = any)
  *   T5_NET_PEER     ip:port of the host (join). A host given one calls it while waiting (lobby
  *                   punch / relay); either way it takes the first authenticated HELLO as its peer
+ *   T5_NET_BIND     IPv4 address the socket binds (tests: 127.0.0.1, no Windows Firewall prompt).
+ *                   Unset: 127.0.0.1 for a loopback T5_NET_PEER outside a lobby match, else every
+ *                   interface (net_bind.h)
  *   T5_NET_DELAY    input delay in frames (host decides, join adopts; default 3)
  *   T5_NET_TIMEOUT  seconds the peer may be silent, or stall the match, before it counts
  *                   as lost (default 30; the lobby passes 20)
@@ -50,6 +53,7 @@
 #include <string>
 #include <vector>
 
+#include "net_bind.h"
 #include "netplay.h"
 #include "replay.h"
 
@@ -385,13 +389,21 @@ uint16_t script_mask(const std::vector<ScriptEvent>& ev, uint32_t f)
     return m;
 }
 
+/* No pause online (set_no_start): in a direct-fight session START never leaves
+ * this PC's devices -- whatever the controls map to it (the pad's START, the
+ * keyboard's Enter, a remap or macro in controls.ini) arrives here as the START
+ * bit. */
+std::atomic<bool> g_no_start{ false };
+
 /* This PC's devices on local port `port`, through the runtime's own pad layer
  * (cellPad_sample_local: controls.ini mapping, sticks, keyboard, PS3_PAD_FILE). */
 void device_input(uint32_t port, PadInput* in)
 {
     HostPadData d;
     if (cellPad_sample_local(port, &d) != 0 || d.len == 0) return;
-    in->buttons |= (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    uint16_t b = (uint16_t)((d.button[2] & 0xFF) | ((d.button[3] & 0xFF) << 8));
+    if (g_no_start.load(std::memory_order_relaxed)) b &= (uint16_t)~B_START;
+    in->buttons |= b;
     in->rx = (uint8_t)d.button[4]; in->ry = (uint8_t)d.button[5];
     in->lx = (uint8_t)d.button[6]; in->ly = (uint8_t)d.button[7];
 }
@@ -1176,17 +1188,25 @@ void configure()
       WSAIoctl(sk, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof off, nullptr, 0, &ret, nullptr, nullptr); }
     int port = s.mode == Mode::Host ? 7000 : 0;
     if (const char* v = env("T5_NET_PORT")) port = atoi(v);
+    /* Test pairs on 127.0.0.1 bind loopback: no Windows Firewall prompt per build folder. A player's
+     * game binds every interface, as always (net_bind.h). */
+    const BindChoice bc = choose_bind(env("T5_NET_BIND"), env("T5_NET_PEER"), env("T5_NET_MATCH"));
+    if (bc.bad_value) note("T5_NET_BIND=%s is not an IPv4 address -- binding every interface", env("T5_NET_BIND"));
+    char bind_ip[16];
+    format_ipv4(bc.addr, bind_ip, sizeof bind_ip);
     sockaddr_in local{}; local.sin_family = AF_INET; local.sin_port = htons((u_short)port);
-    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    local.sin_addr.s_addr = htonl(bc.addr);
     if (bind(sk, (sockaddr*)&local, sizeof local) != 0) {
         /* The lobby handed us exactly this port: without it there is no match. */
         s.fail_reason = "bind_failed";
         s.peer_lost = true;
         s.trouble_ms = GetTickCount64();
-        note("cannot connect (bind_failed): UDP port %d is not free (%d)", port, WSAGetLastError());
+        note("cannot connect (bind_failed): UDP %s:%d is not free (%d)", bind_ip, port, WSAGetLastError());
         closesocket(sk);
         return;
     }
+    { sockaddr_in got{}; int len = sizeof got;
+      if (getsockname(sk, (sockaddr*)&got, &len) == 0) port = ntohs(got.sin_port); }
     s.sock = sk;
     if (s.mode == Mode::Join) {
         const char* peer = env("T5_NET_PEER");
@@ -1197,9 +1217,9 @@ void configure()
         }
         s.peer_known = true;
         s.env_peer = true; s.env_peer_ip = s.peer.sin_addr;
-        note("joining %s", peer);
+        note("joining %s from UDP %s:%d (bind: %s)", peer, bind_ip, port, bc.why);
     } else {
-        note("hosting on UDP port %d", port);
+        note("hosting on UDP %s:%d (bind: %s)", bind_ip, port, bc.why);
         const char* peer = env("T5_NET_PEER");
         if (peer && parse_addr(peer, &s.peer)) {
             s.peer_known = true;
@@ -1805,6 +1825,7 @@ bool pick_peer(uint32_t key, uint32_t* val)
     return true;
 }
 void set_script_gate(bool on) { g_script_gate = on; }
+void set_no_start(bool on) { g_no_start = on; }
 
 /* ---- sessions in a persistent game (T5_CTL_DIR) -------------------------- */
 

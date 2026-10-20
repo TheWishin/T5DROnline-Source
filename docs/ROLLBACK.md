@@ -1322,6 +1322,13 @@ With the sound side fixed nothing else differed in any later pair: the other
 phase-9 words (stage re-roll, `+0x830` of P1/P2, the effect record) stay
 skipped as before; no new word was needed.
 
+1.1.2 (branch s27-start-desync): the renderer's current projection record
+0x100996B4 (0x24 bytes; on stage 27 the fighters' shadow box) is left out
+too -- render state that no game code reads, apart for 10 frames at the
+start of one e2e match without any rollback before it (docs/NETPLAY.md
+"Stage 27: the shadow box at the fight's start"). tests/test_hash_skip_sync.py
+checks that `kDefaultHashSkip` and `kGameSkip` leave out the same words.
+
 Also found on the way: after a re-simulation with the draw cut, ~210 pages of
 render bookkeeping (linked lists at `0x1042B000..0x10434FFF` among them)
 differ from the uninterrupted run (now listed in full by the test mode's

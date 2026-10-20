@@ -504,6 +504,7 @@ class LobbyServer:
         self.recent = {}           # match id -> finished Match, kept rematch_window seconds for a rematch
         self.pair_last = {}        # frozenset of two player keys -> monotonic time their last ranked game ended
         self.notices_by_id = {}    # active server notices (admin tool): id -> row
+        self.latest_release = ""   # `admin release X.Y.Z`: launchers of an older release are told to update
         self.table = fighters.table()
         self.rules = ranks.RankRules(placement=self.cfg.placement, placement_cap=self.cfg.placement_cap,
                                      hysteresis=self.cfg.hysteresis, shield=self.cfg.shield,
@@ -560,6 +561,7 @@ class LobbyServer:
         self.store.defer_commits(loop.call_soon)
         self.reload_bans()
         self.notices_by_id = {n["id"]: n for n in self.store.active_notices()}
+        self.latest_release = self.store.get_flag("release") or ""
         # TLS: on Python 3.11+ the handshake starts only after the address checks in _accept (bans, rate,
         # per-address and pre-login caps), with its own timeout. Before, every connection got a 60 s
         # handshake that no limit counted: a slowloris could hold any number of sockets that way.
@@ -1527,7 +1529,9 @@ class LobbyServer:
                             continue
                         if (a.strict or b.strict) and dr > self.cfg.strict_range:
                             continue                     # strict matchmaking: +-T5L_STRICT_RANGE rating points, however long it takes
-                        score = dr / window + (ping / limit if limit < math.inf else ping / 1000.0)
+                        # (max: T5L_PING_START 0 makes a window of 0 ms at first -- a pair with an estimate of 0 fits it,
+                        # and 0 / 0 stopped the whole matchmaker every tick while that pair waited)
+                        score = dr / window + (ping / max(limit, 1.0) if limit < math.inf else ping / 1000.0)
                     else:
                         score = ping                     # quick: the closest one within the window
                     if best_score is None or score < best_score:
@@ -3830,6 +3834,56 @@ class LobbyServer:
             msg = self._notice_msg(n, p.conn)
             if msg:
                 p.conn.send(msg)
+        if self._outdated(p, self.latest_release):
+            p.conn.send(self._update_msg(p, self.latest_release))
+
+    # ------------------------------------------------------------------ "update your launcher" (admin release)
+    # Players on different game builds are never paired (queue, rooms, challenges, invites): after a release, an
+    # older launcher waits in a queue nobody it can play is in. Once the owner has published a release, `admin
+    # release X.Y.Z` says so (never before: an unpublished release must not be announced), and every launcher
+    # that says it is an older release gets a notice of its own that stays in its status bar -- a message every
+    # launcher since 1.0 shows (server_notice; a plain notice for the oldest). `admin release --clear` takes it
+    # down. The release a launcher reports is informational (the build id decides pairing): no trust needed.
+    UPDATE_NOTICE_ID = -1          # admin notices count up from 1; launchers sort their notices by id
+
+    @staticmethod
+    def release_key(text):
+        """'1.1.2' / 'v1.1.2-rc1' -> (1, 1, 2, 0); anything else (dev builds, nothing) -> None."""
+        head = str(text or "").strip().lower().lstrip("v").split("-")[0].split("+")[0]
+        parts = head.split(".")
+        if not 1 <= len(parts) <= 4 or not all(x.isdigit() and len(x) <= 6 for x in parts):
+            return None
+        return tuple(int(x) for x in parts) + (0,) * (4 - len(parts))
+
+    def _outdated(self, p, latest):
+        new, mine = self.release_key(latest), self.release_key(getattr(p, "release", ""))
+        return new is not None and mine is not None and mine < new
+
+    def _update_msg(self, p, latest, cleared=False):
+        text = (f"T5DR Online {latest} is out. Players on it cannot play against your {p.release}: update the "
+                "launcher (it offers the update when it starts, or press \"Check for updates\").")
+        if "notices" in p.conn.caps:
+            return {"t": "server_notice", "id": self.UPDATE_NOTICE_ID, "text": text, "expires": 0,
+                    "cleared": cleared}
+        return None if cleared else {"t": "notice", "code": "update", "msg": text}
+
+    def poll_release(self):
+        """`admin release` changed the newest release: tell the launchers online that are older now (or that the
+        notice is over)."""
+        rel = self.store.get_flag("release") or ""
+        if rel == self.latest_release:
+            return
+        before, self.latest_release = self.latest_release, rel
+        log.info("newest release: %s", rel or "(none)")
+        for p in self.players.values():
+            if p.conn is None or p.conn.closed:
+                continue
+            if self._outdated(p, rel):
+                p.conn.send(self._update_msg(p, rel))
+            elif self._outdated(p, before):
+                msg = self._update_msg(p, before, cleared=True)
+                if msg:
+                    p.conn.send(msg)
 
     def poll_notices(self):
         """A notice made with `admin notice` is picked up within T5L_ADMIN_POLL seconds and sent to
@@ -3985,6 +4039,7 @@ class LobbyServer:
             await asyncio.sleep(self.cfg.admin_poll)
             try:
                 self.poll_notices()
+                self.poll_release()
                 self.reload_bans()
                 self.set_draining(bool(self.store.get_flag("drain")))
                 banned = self.store.banned_account_ids()

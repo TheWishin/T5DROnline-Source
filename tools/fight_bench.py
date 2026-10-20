@@ -4,6 +4,8 @@
     python tools/fight_bench.py [--exe build/cmake/t5dr.exe] [--cpus N|0xMASK]
                                 [--fight lil,ask,20,3] [--secs 42] [--skip 24]
                                 [--out build/fight-bench/NAME] [--polite]
+                                [--priority normal|below|idle] [--ecoqos]
+                                [--hog N [--hog-cpus MASK] [--hog-priority P]]
                                 [--json FILE] [NAME=VALUE ...]
 
 Boots the game in direct-fight mode (T5_FIGHT, docs/DIRECTFIGHT.md) with the
@@ -28,6 +30,15 @@ that wakes thousands of times a second keeps a laptop's cores out of their
 sleep states, docs/RENDER_PERF.md "Laptops"). --polite mutes the game
 (PS3_AUDIO_MUTE=1) and starts it at below-normal priority, for a PC someone
 is using. --json writes every number to a file.
+
+Weaker PCs without touching the system (docs/WEAK_PC.md): --priority starts
+the game at another priority class (--polite: below normal); --hog N runs N
+busy-loop processes of our own -- background programs -- on --hog-cpus (default
+the game's processors) at --hog-priority (default below normal); --ecoqos puts
+the game under EcoQoS (Windows' efficiency mode: lower clocks, like a slower
+or power-limited processor) for the whole run. The renderer's split per frame
+(draws, walker CPU, translation, D3D12 recording, present, GPU) comes from the
+frame log.
 """
 import argparse
 import csv
@@ -74,6 +85,7 @@ if IS_WIN:
     k32.CloseHandle.argtypes = [W.HANDLE]
     k32.GetThreadDescription.argtypes = [W.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
     k32.LocalFree.argtypes = [ctypes.c_void_p]
+    k32.SetProcessInformation.argtypes = [W.HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD]
 
     class THREADENTRY32(ctypes.Structure):
         _fields_ = [("dwSize", W.DWORD), ("cntUsage", W.DWORD), ("th32ThreadID", W.DWORD),
@@ -198,6 +210,70 @@ if IS_WIN:
         return ft(i), ft(k) + ft(u)          # kernel time includes idle
 
 
+def start_hogs(n, mask, prio):
+    """n busy-loop processes pinned to mask (None: anywhere) at priority class prio; ended
+    with the game, and by Windows if this script dies (kill-on-close job)."""
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "tools", "smoke"))
+        import procs as _procs
+    except Exception:       # noqa: BLE001
+        _procs = None
+    hogs = []
+    for _ in range(n):
+        h = subprocess.Popen([sys.executable, "-c", "while True: pass"], creationflags=prio if IS_WIN else 0)
+        if IS_WIN and mask:
+            k32.SetProcessAffinityMask(W.HANDLE(int(h._handle)), mask)
+        if _procs is not None:
+            h._t5_job = _procs.kill_on_close_job(h.pid)
+        hogs.append(h)
+    return hogs
+
+
+def set_ecoqos(pid):
+    """EcoQoS for the whole process (PROCESS_POWER_THROTTLING_EXECUTION_SPEED on)."""
+    h = k32.OpenProcess(0x0200, False, pid)          # PROCESS_SET_INFORMATION
+    if not h:
+        return False
+    st = (ctypes.c_ulong * 3)(1, 1, 1)               # Version, ControlMask, StateMask
+    ok = bool(k32.SetProcessInformation(h, 4, ctypes.byref(st), ctypes.sizeof(st)))
+    k32.CloseHandle(h)
+    return ok
+
+
+def renderer_split(rows):
+    """Medians per frame (ms) of the frame log's renderer columns, or {} without them."""
+    if not rows or "fifo_cpu_us" not in rows[0]:
+        return {}
+    ph = ["ph_layout_us", "ph_fetch_us", "ph_upload_us", "ph_pso_us", "ph_const_us", "ph_texbind_us"]
+
+    def med(f):
+        xs = []
+        for r in rows:
+            try:
+                xs.append(f(r))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return statistics.median(xs) if xs else float("nan")
+
+    def num(k):
+        return lambda r: float(r[k])
+    out = {"draws": med(num("draws")),
+           "fifo_cpu_ms": med(num("fifo_cpu_us")) / 1000.0,
+           "xlat_ms": med(num("xlat_us")) / 1000.0,
+           "draw_ms": med(num("draw_us")) / 1000.0,
+           "d3d_ms": med(lambda r: float(r["draw_us"]) - sum(float(r[k]) for k in ph)) / 1000.0,
+           "texbind_ms": med(num("ph_texbind_us")) / 1000.0,
+           "pso_ms": med(num("ph_pso_us")) / 1000.0,
+           "vertex_ms": med(lambda r: sum(float(r[k]) for k in ("ph_layout_us", "ph_fetch_us", "ph_upload_us"))) / 1000.0,
+           "texhash_ms": med(num("texhash_us")) / 1000.0,
+           "submit_ms": med(num("present_flush_us")) / 1000.0,
+           "present_ms": med(num("present_call_us")) / 1000.0,
+           "flush_wait_ms": med(num("flush_wait_us")) / 1000.0}
+    if rows[0].get("game_us") not in (None, ""):
+        out["game_ms"] = med(num("game_us")) / 1000.0
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", default=os.path.join(ROOT, "build", "cmake", "t5dr.exe"))
@@ -210,6 +286,13 @@ def main():
     ap.add_argument("--polite", action="store_true",
                     help="someone uses this PC: the game muted (PS3_AUDIO_MUTE=1) at below-normal priority")
     ap.add_argument("--json", default="", help="also write the results to this file")
+    ap.add_argument("--priority", choices=["", "normal", "below", "idle"], default="",
+                    help="the game's priority class (default: below with --polite, else normal)")
+    ap.add_argument("--hog", type=int, default=0, help="N busy-loop processes next to the game (background programs)")
+    ap.add_argument("--hog-cpus", default="", help="their processors: N (0..N-1) or 0xMASK (default: the game's)")
+    ap.add_argument("--hog-priority", choices=["normal", "below", "idle"], default="below")
+    ap.add_argument("--ecoqos", action="store_true",
+                    help="run the game under EcoQoS (lower clocks): a slower-processor stand-in")
     ap.add_argument("env", nargs="*", help="extra NAME=VALUE for the game")
     a = ap.parse_args()
 
@@ -234,9 +317,15 @@ def main():
         env[k] = v
     open(env["PS3_PAD_FILE"], "w").close()
 
+    def parse_mask(v):
+        return int(v, 16) if v.lower().startswith("0x") else (1 << int(v)) - 1
+
     mask = None
     if a.cpus:
-        mask = int(a.cpus, 16) if a.cpus.lower().startswith("0x") else (1 << int(a.cpus)) - 1
+        mask = parse_mask(a.cpus)
+    prio_flag = {"normal": 0x20, "below": 0x4000, "idle": 0x40}
+    hogs = start_hogs(a.hog, parse_mask(a.hog_cpus) if a.hog_cpus else mask,
+                      prio_flag[a.hog_priority]) if a.hog else []
     me = old = None
     if mask and IS_WIN:
         me = k32.GetCurrentProcess()
@@ -248,6 +337,8 @@ def main():
     log = open(os.path.join(out, "game.log"), "w")
     try:
         flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if (IS_WIN and a.polite) else 0
+        if IS_WIN and a.priority:
+            flags = prio_flag[a.priority]
         p = subprocess.Popen([os.path.abspath(a.exe), os.path.join(vfs, "PS3_GAME", "USRDIR", "EBOOT.elf")],
                              env=env, cwd=out, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
     finally:
@@ -274,12 +365,17 @@ def main():
                 time.sleep(0.002)
 
     t0 = time.time()
+    eco_t = 0.0
     fight_qpc = fight_t = None
     tt = []
     pad = list(PAD)
     try:
         while p.poll() is None:
             now = time.time()
+            if a.ecoqos and IS_WIN and now - eco_t > 1.0:
+                # the runtime turns power throttling off at start (host_sched.c); ours wins afterwards
+                set_ecoqos(p.pid)
+                eco_t = now
             if fight_t is None:
                 if now - t0 > 150:
                     sys.exit("no fight after 150 s (see %s)" % os.path.join(out, "game.log"))
@@ -305,6 +401,10 @@ def main():
         if p.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
             p.wait()
+        for h in hogs:
+            if h.poll() is None:
+                h.kill()
+                h.wait()
         log.close()
 
     # frames in the window (the frame log's qpc is QueryPerformanceCounter, like perf_counter)
@@ -317,10 +417,23 @@ def main():
     gpu = [float(r["gpu_us"]) / 1000.0 for r in w if r.get("gpu_us") and float(r["gpu_us"]) > 0]
     fps = len(dts) / (sum(dts) / 1000.0) if dts else 0.0
     res = {"cpus": hex(mask) if mask else "all", "frames": len(dts), "fps": fps,
+           "priority": a.priority or ("below" if a.polite else "normal"), "ecoqos": a.ecoqos,
+           "hog": a.hog, "hog_cpus": a.hog_cpus, "hog_priority": a.hog_priority if a.hog else "",
            "p50": pct(dts, 50), "p95": pct(dts, 95), "p99": pct(dts, 99), "max": max(dts) if dts else 0.0,
            "over_17_5": sum(d > 17.5 for d in dts), "env": a.env, "exe": os.path.abspath(a.exe), "out": out}
     print("cpus=%s frames=%d fps=%.2f frame ms p50=%.2f p95=%.2f p99=%.2f max=%.1f, over 17.5 ms: %d" % (
         res["cpus"], len(dts), fps, res["p50"], res["p95"], res["p99"], res["max"], res["over_17_5"]))
+    split = renderer_split(w)
+    if split:
+        res["renderer"] = split
+        print("renderer per frame (median): %(draws).0f draws; walker CPU %(fifo_cpu_ms).2f ms, translation "
+              "%(xlat_ms).2f ms (draw recording %(draw_ms).2f: D3D12 calls + constant copies %(d3d_ms).2f, "
+              "texture/sampler binding %(texbind_ms).2f, PSO lookup %(pso_ms).2f, vertex %(vertex_ms).2f), "
+              "submit %(submit_ms).2f, present call %(present_ms).2f%(game)s" % dict(
+                  split, game=", game (release -> flip) %.2f ms" % split["game_ms"] if "game_ms" in split else ""))
+    slow = [ln.strip() for ln in open(os.path.join(out, "game.log"), errors="replace") if ln.startswith("[slow-frames]")]
+    if slow:
+        res["slow_frames"] = slow
     if gpu:
         res["gpu_p10"], res["gpu_median"] = pct(gpu, 10), statistics.median(gpu)
         print("GPU ms per frame: p10 %.3f median %.3f (timestamps; other programs on the GPU inflate them)" % (

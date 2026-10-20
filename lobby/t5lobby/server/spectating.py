@@ -360,14 +360,17 @@ class SpectateMixin:
         for st in list(self.streams.values()):
             idle = now - st.t_data
             m = st.match
-            set_over = m.state != "playing" and (m.set is None or m.set.state != "active")
+            # (a match moving onto the relay -- the relay fallback, docs/NETPLAY.md "When Windows Firewall blocks the
+            # game" -- is still the one being played: its games start the session again, on this same stream)
+            moving = bool(getattr(m, "fallback", False)) and m.state == "relay"
+            set_over = m.state != "playing" and not moving and (m.set is None or m.set.state != "active")
             if st.ended is None and not st.eof and idle > 10 and set_over:
                 # the set is over (no rematch in these games any more): the session's stream is complete; a
                 # persistent game keeps its netplay session open until the next one, so no END would come
                 self._spec_end(st, "over", flush=True)
             elif st.ended is None and not st.eof and idle > self.cfg.spectate_idle:
                 m = st.match
-                gone = m.state != "playing" or st.streamer.conn is None
+                gone = (m.state != "playing" and not moving) or st.streamer.conn is None
                 if gone or idle > 4 * self.cfg.spectate_idle:
                     self._spec_end(st, "stopped", flush=True)
             elif (st.eof or st.ended is not None) and not st.viewers:

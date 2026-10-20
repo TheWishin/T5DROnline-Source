@@ -33,11 +33,14 @@ def session_rec(rollback=True):
                + s16("build") + s16("2026-10-19T00:00:00Z"))
 
 
-def match_rec(k, p1=17, p2=6, stage=27, winner=-1):
+def match_rec(k, p1=17, p2=6, stage=27, winner=-1, costumes=None):
+    """A MATCH record as this build's game writes it (replay format 3: costume flags, then the two custom costume
+    blocks when there are any -- docs/DIRECTFIGHT.md "Custom costumes online")."""
     flags = 0 if winner < 0 else 5
+    tail = struct.pack("<I", 0) if costumes is None else struct.pack("<I", 1) + costumes[0] + costumes[1]
     return rec(spectate.R_MATCH, struct.pack("<I6I", k, 0, 0, 0, 0, 0, flags)
                + struct.pack("<12i", p1, p2, 0, 0, 1, 2, stage, 1, 0, winner, 1 if winner == 0 else 0,
-                             1 if winner == 1 else 0) + struct.pack("<Q", 0) + s16("Alice") + s16("Bob"))
+                             1 if winner == 1 else 0) + struct.pack("<Q", 0) + s16("Alice") + s16("Bob") + tail)
 
 
 def inputs_rec(first, n, seed=0):
@@ -200,6 +203,53 @@ class WatchTest(Base):
         self.assertEqual(self.s.call(lambda: self.s.srv.streams[sid].match.id), sa2["match"])
 
 
+    def test_the_relay_fallback_keeps_the_stream(self):
+        """docs/NETPLAY.md "When Windows Firewall blocks the game": a game that heard nothing moves the match onto
+        the relay and both games start the session again -- the same match, the same stream id, the same live file.
+        The first session never shook hands (its file holds the magic and nothing else), so the spectators already
+        watching get the new session through the same stream; the server keeps the stream while the match is on
+        its way to the relay."""
+        from unittest import mock
+        a = self.acc("Alice", relay_bridge=True)
+        b = self.acc("Bob", relay_bridge=True)
+        v = self.acc("Vic")
+        self.befriend(v, a)
+        with mock.patch("t5lobby.client.local_ipv4s", lambda ip: []):
+            sa, _sb = self.play(a, b)
+            self.assertEqual(sa["path"], "direct")
+            sid = sa["stream"]
+            live = spectate.live_path(a.live_dir, sid)
+            self.feed(live, spectate.MAGIC)                  # the host's game: no handshake yet, nothing but the magic
+            r = v.watch(name="Alice")
+            self.assertEqual(r["stream"], sid)
+            self.assertTrue(self.s.wait_for(lambda: len(self.s.srv.streams[sid].buf) > 0, 15))
+            # the server ticks while the match moves onto the relay (no data for a while): the stream stays
+            def tick_while_moving():
+                m = self.s.srv.by_name["alice"].match
+                st = self.s.srv.streams[sid]
+                old_state, old_fb = m.state, m.fallback
+                m.state, m.fallback = "relay", True
+                st.t_data -= 30
+                self.s.srv._spec_tick()
+                ended = st.ended
+                m.state, m.fallback = old_state, old_fb
+                return ended
+            self.assertIsNone(self.s.call(tick_while_moving))
+            self.assertTrue(a.nat_fallback(sa["match"]))
+            sa2 = expect(a, "match_start", 20)
+            self.assertEqual((sa2["match"], sa2["path"], sa2["stream"]), (sa["match"], "relay", sid))
+        # the game started again for the match writes the same file anew (CREATE_ALWAYS + the magic), then its session
+        blk = (bytes(range(256)) + bytes(8), bytes(0x108))
+        with open(live, "wb") as f:
+            f.write(spectate.MAGIC)
+        body = session_rec() + match_rec(0, costumes=blk) + inputs_rec(0, 120)
+        self.feed(live, body)
+        ready = expect(v, "spec_ready", 20)
+        self.wait_file(ready["path"], spectate.MAGIC + body)
+        self.assertEqual(ready["matches"][0]["costumes"], [blk[0].hex(), blk[1].hex()])
+        self.assertIsNone(self.s.call(lambda: self.s.srv.streams[sid].ended))
+
+
 class RulesTest(Base):
     def test_who_may_watch(self):
         a, b = self.acc("Alice"), self.acc("Bob")
@@ -357,6 +407,17 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(out, data)
         self.assertTrue(p.ready and p.ended)
         self.assertEqual((p.frames, p.end_why, p.session["rollback"]), (100, "x", True))
+
+    def test_costume_blocks_in_the_match_record(self):
+        blk = (bytes((i * 7) & 0xFF for i in range(0x108)), bytes((i * 3 + 1) & 0xFF for i in range(0x108)))
+        p = spectate.LiveParser()
+        p.feed(spectate.MAGIC + session_rec() + match_rec(0, costumes=blk) + match_rec(1))
+        self.assertIsNone(p.bad)
+        self.assertEqual(p.matches[0]["costumes"], [blk[0].hex(), blk[1].hex()])
+        self.assertIsNone(p.matches[1]["costumes"])
+        p = spectate.LiveParser()                               # blocks announced but cut short: damaged
+        p.feed(spectate.MAGIC + session_rec() + match_rec(0, costumes=(blk[0][:0x10], b"")))
+        self.assertIn("costume", p.bad or "")
 
     def test_bad_streams(self):
         p = spectate.LiveParser()

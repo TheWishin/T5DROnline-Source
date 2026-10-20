@@ -66,10 +66,26 @@ index 25ac5a9..68bca88 100644
      g_vj_threads = started;
      fprintf(stderr, "[rsx-vertex] async fetch: %d worker thread(s) (%d logical processors%s; "
 diff --git a/runtime/platform/host_sched.c b/runtime/platform/host_sched.c
-index 0ee0df5..c8b5121 100644
+index 0ee0df5..b7ee60e 100644
 --- a/runtime/platform/host_sched.c
 +++ b/runtime/platform/host_sched.c
-@@ -27,9 +27,15 @@
+@@ -11,10 +11,11 @@
+  *                             chain kick
+  *   PS3_SCHED_LOG=1           one line per thread with what it was given
+  *   PS3_SCHED_PRIO_<ROLE>=n   host priority level for a role: -2..2, 15 =
+- *                             TIME_CRITICAL, x = leave alone. Roles: MAIN [1]
+- *                             TICKER [2] SPU [2] SPURS [1] AUDIO [15]
+- *                             DECODER [x] TIMER [x] BG [-1], and PPUHI [1] /
+- *                             PPU [1] / PPULO [x] for guest threads by lv2
++ *                             TIME_CRITICAL, x = leave alone. Roles: MAIN [2]
++ *                             TICKER [2] SPU [2] SPURS [1] VERTEX [1]
++ *                             AUDIO [15] DECODER [x] TIMER [x] BG [-1], and
++ *                             PPUHI [2] / PPU [2] / PPULO [x] (patch 0065: the
++ *                             game's threads were 1) for guest threads by lv2
+  *                             priority (< 256 / < PS3_SCHED_PPU_LO / rest)
+  *   PS3_SCHED_PPU_LO=n        first lv2 priority that counts as background
+  *                             [1002: Tekken's loaders, decoder, http]
+@@ -27,9 +28,15 @@
   *                             cores the firmware ranks fastest, i.e. CCD0 on a
   *                             Ryzen 7950X; slow = every other group)
   *   PS3_SCHED_CPUS_<ROLE>=g   same, for one role's threads [all]
@@ -88,7 +104,7 @@ index 0ee0df5..c8b5121 100644
   *   PS3_SCHED_THROTTLE=0      leave Windows power throttling (EcoQoS, and the
   *                             Windows 11 rule that drops the 1 ms timer of a
   *                             minimized or occluded window) in charge [opted out]
-@@ -43,10 +49,13 @@
+@@ -43,10 +50,13 @@
   *                             0047), else timer; timer with power saving]
   *   PS3_CPUS=n                pretend the process may use n logical
   *                             processors (the pools below size from the
@@ -106,7 +122,7 @@ index 0ee0df5..c8b5121 100644
   *   PS3_LAPTOP=1|0|auto       power saving (patch 0047, host_sched.h) [auto:
   *                             on with a battery, battery saver, the Power
   *                             saver plan, a mobile processor or integrated
-@@ -103,6 +112,7 @@
+@@ -103,6 +113,7 @@
   *   and post -> wake is 8-9 us at the median.
   */
  #include "host_sched.h"
@@ -114,7 +130,7 @@ index 0ee0df5..c8b5121 100644
  #include "../ppu/ppu_fp_det.h"   /* ppu_fp_thread_init: the guest threads' MXCSR (fp_env.c) */
  #include <stdlib.h>
  #include <stdio.h>
-@@ -173,6 +183,25 @@ int host_sched_cpus(void)
+@@ -173,6 +184,25 @@ int host_sched_cpus(void)
      return n > 0 ? (int)n : 1;
  }
  int host_sched_cores(void) { return host_sched_cpus(); }
@@ -140,7 +156,7 @@ index 0ee0df5..c8b5121 100644
  void    host_sched_trace_(int kind, uint32_t arg) { (void)kind; (void)arg; }
  void    host_sched_trace_tid(int kind, uint32_t arg, uint32_t tid) { (void)kind; (void)arg; (void)tid; }
  void host_sched_trace_tag(uint32_t tid) { (void)tid; }
-@@ -191,7 +220,7 @@ int64_t host_sched_qpc(void) { return 0; }
+@@ -191,7 +221,7 @@ int64_t host_sched_qpc(void) { return 0; }
  #include <string.h>
  
  static const char* const k_role_name[HS_ROLE_COUNT] = {
@@ -149,7 +165,7 @@ index 0ee0df5..c8b5121 100644
  };
  
  /* ---- configuration --------------------------------------------------------- */
-@@ -202,7 +231,8 @@ static int  s_on = 1;              /* PS3_SCHED */
+@@ -202,7 +232,8 @@ static int  s_on = 1;              /* PS3_SCHED */
  static int  s_log = 0;
  static int  s_timer = 1;
  static int  s_ppu_lo = 1002;
@@ -159,7 +175,7 @@ index 0ee0df5..c8b5121 100644
  static volatile int s_subms = 0;   /* PS3_SCHED_SUBMS: 0 spin, 1 pause, 2 timer */
  static int  s_subms_env = 0;       /* ... set by the environment (power saving leaves it alone) */
  static int64_t s_spin_ticks = 0;
-@@ -240,6 +270,7 @@ static int    s_ncpu = 0;
+@@ -240,6 +271,7 @@ static int    s_ncpu = 0;
  static BYTE   s_fast_llc = 0xFF;
  static int    s_ranked_lp[HS_MAX_CPUS];   /* first LP of each core, fastest first */
  static int    s_nranked = 0;
@@ -167,7 +183,7 @@ index 0ee0df5..c8b5121 100644
  
  typedef BOOL (WINAPI *pfn_GetSystemCpuSetInformation)(void*, ULONG, PULONG, HANDLE, ULONG);
  typedef BOOL (WINAPI *pfn_SetThreadSelectedCpuSets)(HANDLE, const ULONG*, ULONG);
-@@ -252,7 +283,7 @@ static pfn_SetProcessDefaultCpuSets      p_SetProcessDefaultCpuSets;
+@@ -252,7 +284,7 @@ static pfn_SetProcessDefaultCpuSets      p_SetProcessDefaultCpuSets;
  static pfn_SetThreadDescription          p_SetThreadDescription;
  static pfn_AvSetMmThreadCharacteristicsA p_AvSetMmThreadCharacteristicsA;
  
@@ -176,7 +192,7 @@ index 0ee0df5..c8b5121 100644
  {
      HMODULE k32 = GetModuleHandleA("kernel32.dll");
      pfn_GetSystemCpuSetInformation get = (pfn_GetSystemCpuSetInformation)(void*)
-@@ -268,15 +299,40 @@ static void hs_topology(void)
+@@ -268,15 +300,40 @@ static void hs_topology(void)
              const hs_cpuset_info* c = (const hs_cpuset_info*)(buf + off);
              if (!c->Size) break;
              if (c->Type == 0 && c->Group == 0) {          /* CpuSetInformation, group 0 */
@@ -217,7 +233,7 @@ index 0ee0df5..c8b5121 100644
      /* The fast cache group: the one holding the best-ranked core. Ties (a CPU
       * that ranks nothing) fall to the group of logical processor 0. Hybrid
       * parts rank by efficiency class first. */
-@@ -306,6 +362,17 @@ static void hs_topology(void)
+@@ -306,6 +363,17 @@ static void hs_topology(void)
      }
  }
  
@@ -235,7 +251,7 @@ index 0ee0df5..c8b5121 100644
  /* Resolve a CPU-set spec to CPU set ids. Returns the count; 0 = no constraint. */
  static ULONG hs_cpus(const char* spec, ULONG* ids)
  {
-@@ -373,6 +440,111 @@ int host_sched_cores(void)
+@@ -373,6 +441,111 @@ int host_sched_cores(void)
      return s_bud_cores;
  }
  
@@ -347,7 +363,7 @@ index 0ee0df5..c8b5121 100644
  /* ---- trace ----------------------------------------------------------------- */
  typedef struct { volatile LONG64 qpc; uint16_t kind, tid; uint32_t arg; } hs_rec;
  #define HS_TRACE_CAP (1u << 22)              /* 4M records, 64 MB */
-@@ -452,6 +624,74 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
+@@ -452,6 +625,74 @@ static void env_str(const char* name, char* out, size_t cap, const char* def)
      snprintf(out, cap, "%s", e ? e : def);
  }
  
@@ -422,7 +438,7 @@ index 0ee0df5..c8b5121 100644
  static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  {
      (void)once; (void)param; (void)ctx;
-@@ -486,7 +726,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -486,7 +727,8 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
  
      s_timer  = env_int("PS3_SCHED_TIMER", 1) != 0;
      s_ppu_lo = env_int("PS3_SCHED_PPU_LO", 1002);
@@ -432,7 +448,7 @@ index 0ee0df5..c8b5121 100644
      /* Sub-millisecond usleep: the main thread polls the flip with usleep(100)
       * for the rest of every frame, and the SwitchToThread spin keeps it
       * runnable all that time -- free with 32 processors, a whole one taken
-@@ -500,8 +741,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -500,8 +742,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
       * up, where it is free (the 0027 measurements at 32); power saving never
       * spins. */
      s_subms_env = getenv("PS3_SCHED_SUBMS") != NULL;
@@ -446,20 +462,47 @@ index 0ee0df5..c8b5121 100644
        s_subms = !strcmp(sm, "pause") ? 1 : !strcmp(sm, "timer") ? 2 : 0; }
      s_spin_ticks = (int64_t)env_int("PS3_SCHED_SPIN_US", 0) * s_qpf.QuadPart / 1000000;
      if (s_spin_ticks < 0) s_spin_ticks = 0;
-@@ -522,6 +767,12 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+@@ -512,9 +758,20 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+      * FIFO drain -- so every link of it goes up one step, the ticker (which
+      * drains a whole frame of commands in one go) and the SPU sound core (a
+      * 5.33 ms deadline, ~85% of a core) two, the audio mixer (a few us every
+-     * 250 us) to TIME_CRITICAL. Loaders (lv2 prio >= 1002) stay NORMAL. */
++     * 250 us) to TIME_CRITICAL. Loaders (lv2 prio >= 1002) stay NORMAL.
++     * Patch 0065: the game's own threads -- the main thread and the guest
++     * threads it hands the frame to (draw request managers, sound threads;
++     * lv2 prio < 1002, all of them, so their order among themselves stays
++     * the PS3's) -- one step more, above the SPURS and vertex workers, which
++     * only shorten parts of the frame: on 4 processors made slower
++     * (tools/slow_core.py) +3.5 % fps over 6 paired rounds and 9x fewer late
++     * audio blocks (917 -> 102). The main thread alone one step up did
++     * nothing (it waits for those threads); the workers one or two steps
++     * down instead lost 6-15 % (they then lose to every other program, and
++     * the main thread waits for the skinning). docs/RENDER_PERF.md "Thread
++     * placement". */
+     s_prio[HS_ROLE_PPU]        = 0;
+-    s_prio[HS_ROLE_MAIN]       = env_int("PS3_SCHED_PRIO_MAIN",    THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio[HS_ROLE_MAIN]       = env_int("PS3_SCHED_PRIO_MAIN",    THREAD_PRIORITY_HIGHEST);
+     s_prio[HS_ROLE_TICKER]     = env_int("PS3_SCHED_PRIO_TICKER",  THREAD_PRIORITY_HIGHEST);
+     s_prio[HS_ROLE_SPU]        = env_int("PS3_SCHED_PRIO_SPU",     THREAD_PRIORITY_HIGHEST);
+     s_prio[HS_ROLE_SPURS]      = env_int("PS3_SCHED_PRIO_SPURS",   THREAD_PRIORITY_ABOVE_NORMAL);
+@@ -522,8 +779,14 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
      s_prio[HS_ROLE_DECODER]    = env_int("PS3_SCHED_PRIO_DECODER", HS_KEEP);
      s_prio[HS_ROLE_TIMER]      = env_int("PS3_SCHED_PRIO_TIMER",   HS_KEEP);
      s_prio[HS_ROLE_BACKGROUND] = env_int("PS3_SCHED_PRIO_BG",      THREAD_PRIORITY_BELOW_NORMAL);
+-    s_prio_ppuhi = env_int("PS3_SCHED_PRIO_PPUHI", THREAD_PRIORITY_ABOVE_NORMAL);
+-    s_prio_ppu   = env_int("PS3_SCHED_PRIO_PPU",   THREAD_PRIORITY_ABOVE_NORMAL);
 +    /* Patch 0065: the vertex-fetch workers through here too (rsx_live_draw.c
 +     * set ABOVE_NORMAL itself). The workers keep their level: below normal
 +     * they lost 13 % fps on 4 processors next to other programs (the main
 +     * thread waits for the skinning jobs; docs/RENDER_PERF.md "Thread
 +     * placement"). */
 +    s_prio[HS_ROLE_VERTEX]     = env_int("PS3_SCHED_PRIO_VERTEX",  THREAD_PRIORITY_ABOVE_NORMAL);
-     s_prio_ppuhi = env_int("PS3_SCHED_PRIO_PPUHI", THREAD_PRIORITY_ABOVE_NORMAL);
-     s_prio_ppu   = env_int("PS3_SCHED_PRIO_PPU",   THREAD_PRIORITY_ABOVE_NORMAL);
++    s_prio_ppuhi = env_int("PS3_SCHED_PRIO_PPUHI", THREAD_PRIORITY_HIGHEST);
++    s_prio_ppu   = env_int("PS3_SCHED_PRIO_PPU",   THREAD_PRIORITY_HIGHEST);
      s_prio_ppulo = env_int("PS3_SCHED_PRIO_PPULO", HS_KEEP);
-@@ -595,6 +846,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
+     for (int r = 0; r < HS_ROLE_COUNT; r++) {
+         char k[48];
+@@ -595,6 +858,7 @@ static BOOL CALLBACK hs_init_once(PINIT_ONCE once, PVOID param, PVOID* ctx)
              s_ncpu, (unsigned)s_fast_llc);
      for (int i = 0; i < s_nranked && i < 8; i++) fprintf(stderr, " %u", s_cpu[s_ranked_lp[i]].lp);
      fprintf(stderr, "%c", 10);
@@ -467,7 +510,7 @@ index 0ee0df5..c8b5121 100644
      return TRUE;
  }
  
-@@ -616,8 +868,6 @@ int64_t host_sched_spin_ticks(void)
+@@ -616,8 +880,6 @@ int64_t host_sched_spin_ticks(void)
  }
  
  /* ---- per thread ---------------------------------------------------------------- */
@@ -476,7 +519,7 @@ index 0ee0df5..c8b5121 100644
  void host_sched_thread_start(int role, int guest_prio, const char* name)
  {
      /* Every runtime thread that may run guest code starts here: the same SSE
-@@ -654,43 +904,70 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
+@@ -654,43 +916,70 @@ void host_sched_thread_start(int role, int guest_prio, const char* name)
          mm_ok = p_AvSetMmThreadCharacteristicsA(mm, &idx) != NULL;
      }
  

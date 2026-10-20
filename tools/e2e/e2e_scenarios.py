@@ -3533,7 +3533,9 @@ def _spectate_case(ctx, watched, games=True):
     (At most 4 games at once.)"""
     if "spectate" not in features():
         raise Skip("this tree has no spectating")
-    game_server(ctx)
+    # (two rounds to win: the guest joins 60 s after the first spectator, and a one-round match -- in lockstep 54 s
+    # from start to result once -- may be over by then, with nothing live to watch)
+    game_server(ctx, T5L_ROUNDS=max(2, ctx.run.rounds))
     a = ctx.player("E2E Ava", char="steve", password="ava-pw-1")
     b = ctx.player("E2E Bo", char="hwoarang")
     v = w = None

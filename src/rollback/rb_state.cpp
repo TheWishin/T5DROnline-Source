@@ -263,6 +263,11 @@ static const Range kGameSkip[] = {
      * lockstep too, more often under rollback); the fight unchanged
      * (t5_hooks.cpp kDefaultHashSkip) */
     { 0x10099730u, 0x1F0 }, { 0x10099920u, 0x1F0 }, { 0x10090708u, 8 }, { 0x10090FD8u, 8 },
+    /* the renderer's current projection record (type, near, far, aspect,
+     * off-centre frustum): written only by the projection setters in render
+     * passes -- in a fight last by the stage-27 shadow pass -- and read by no
+     * game code (access trace; t5_hooks.cpp kDefaultHashSkip) */
+    { 0x100996B4u, 0x24 },
     /* (the fighters' side flags 0x10090202/03 and 0x10090AD2/D3, decided from
      * the camera words above, stay in: they are gameplay -- t5_hooks.cpp) */
 };

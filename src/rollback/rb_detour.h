@@ -22,4 +22,8 @@ bool detour(uint32_t guest, GuestFn hook, GuestFn* orig);
 /* T5_RB_CALLTRACE=addr,...|@file: log every call of those functions (rb_calls.log) */
 void calltrace_install();
 
+/* T5_RB_SHADOW_TRACE=1: the fighters' shadow box fit, per frame (rb_shadow.log; rb_shadowtrace.cpp) */
+void shadowtrace_install();
+void shadowtrace_boundary(uint32_t f, bool resim);   /* rb_net.cpp boundary(): the state at boundary f */
+
 } // namespace rb

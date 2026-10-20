@@ -26,12 +26,15 @@ MAX_LINE_FROM_SERVER = 1 << 20
 # ---------------------------------------------------------------------------- errors
 
 class LobbyError(Exception):
-    """A request the server refused, or a connection problem. .code is machine readable."""
+    """A request the server refused, or a connection problem. .code is machine readable; .extra holds the
+    error's machine-readable fields beyond code and msg (the server sends them in the error message), e.g.
+    retry: whole seconds until the same request may go again (an invite held back after a no)."""
 
-    def __init__(self, code, msg=""):
+    def __init__(self, code, msg="", **extra):
         super().__init__(f"{code}: {msg}" if msg else code)
         self.code = code
         self.msg = msg
+        self.extra = extra
 
 
 # Error codes the server sends ({"t":"error","code":...}).

@@ -391,8 +391,6 @@ MESSAGES = {
     "Discord app on this PC. Without Discord running nothing happens.":
         "« Dans le lobby », « Recherche Ranked » ou ton match (personnages, score du set Ranked) avec un chrono, via "
         "l'appli Discord de ce PC. Sans Discord lancé, rien ne se passe.",
-    "This copy has no Discord application id yet, so this does nothing for now.":
-        "Cette copie n'a pas encore d'ID d'application Discord, donc ça ne fait rien pour l'instant.",
     "Power saving (laptops, handhelds)": "Économie d'énergie (portables, handhelds)",
     "No busy waiting and fewer worker threads: the processor stays cooler and keeps its speed, so the game "
     "holds 60 fps longer. The game itself is the same, online too.":
@@ -839,6 +837,7 @@ MESSAGES = {
     "create a room first, then invite": "crée d'abord un salon, puis invite",
     "that friend is busy right now": "cet ami est occupé en ce moment",
     "one invite at a time": "une invitation à la fois",
+    "wait a moment before inviting again": "attends un instant avant d'inviter à nouveau",
     "that player has invites pending": "ce joueur a des invitations en attente",
     "that invite is over": "cette invitation est terminée",
     "the invite is no longer possible": "l'invitation n'est plus possible",
@@ -1867,6 +1866,7 @@ MESSAGES = {
     "Friends": "Amis",
     "Invite to a match": "Inviter à un match",
     "Invite to my room": "Inviter dans mon salon",
+    "Invite in {seconds} s": "Inviter dans {seconds} s",
     "Remove": "Supprimer",
     "Invite a friend who is online: one click on their side starts a casual match, or brings them into your room.":
         "Invite un ami en ligne : un clic de son côté lance un match amical, ou le fait entrer dans ton salon.",

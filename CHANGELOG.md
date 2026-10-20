@@ -72,177 +72,129 @@ part is in the README's status table.
 - `admin drain` holds the tournaments as well: no tournament starts and no new set starts before the restart, and the
   no-show times stand still (nobody is disqualified for the drain); the sets being played finish.
 
-### Fixes
-- **The intro movie can no longer freeze on a white screen.** On a busy PC the video decoder
-  sometimes never answered, and the intro stayed white with START doing nothing. The decoder
-  now starts while the game boots, uses 4 threads instead of one per processor, and if it
-  still does not answer within 5 seconds the movie goes on black with its sound (START skips
-  it). Later movies try the decoder again.
-
 ## v1.1.2 (not released yet)
 
-**Opponents nearby first, friends, invites, training overlay, sharper stages at high resolution, every stage and item unlocked offline.** The new
-lobby features need the lobby server updated; older launchers keep working with it and see nothing new.
-
-### Replays
-- **Every online match is saved as a replay** (a few KB each, in `native\replays`): both players'
-  inputs frame by frame, the random seeds and sync points of the netcode, each match's fighters,
-  costumes, stage and result. The new **Replays** tab lists them (date, fighters, result,
-  opponent); **Watch** plays the match again in the game exactly as it happened and checks it
-  against the live match while it plays (the tab says "identical to the live match" at the end).
-  START pauses, SELECT ends the replay. A rematch is shown after the matches before it in the same
-  session (it starts from what they left). Recording can be switched off, and the players' names can be
-  left out. **Report a problem** adds the newest replay, without names. docs/REPLAYS.md.
+**Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2
+(the lobby pairs equal game builds, and 1.1.2 changes the game: ps3recomp patches 0043, 0044, 0045, 0047, 0048 and
+0053). The launcher offers the update itself; after it, press **BUILD GAME** once.
 
 ### Online
-- **No more pausing online.** Pressing Start in an online fight opened the pause menu in both
-  games, so one player could freeze the other in the middle of a combo. Now neither player can
-  pause an online fight -- also not with a changed game: both games take Start out of both
-  players' inputs, the same way on both PCs, so the match stays in sync. Start still skips the
-  replay after a round, the games still skip the replay and win pose at the end of a match, and
-  offline Start pauses as before. To quit a match, close the game (counts as a loss, as before).
-- **Opponents nearby first.** The ping shown when a match is found is now the best path the
-  two of you can get, through the nearest relay server: two players in California see about
-  50 ms instead of about 300 ms through Germany. Quick and ranked search look for opponents
-  with a low ping first and widen the search while you wait (any opponent after 30 s in quick,
-  60 s in ranked), so a search never gets stuck. Players with older launchers see the ping as
-  before.
-- **Friends** (accounts): add a friend by account name on the Online tab's new **Friends** page; they accept or
-  decline. The list shows who is online, searching, in a match or offline, and changes by itself. Remove a friend
-  there too. Blocking a player ends the friendship.
-- **Invites**: invite a friend who is online to a casual match, or into your room. They get the question like a
-  challenge, and **one click on Accept** starts it (no second ready check). A controller's A button accepts too.
-- Limits against spam: 20 friend requests a day, 30 waiting, 100 friends, one invite at a time; a declined request
-  can be repeated after a week.
-- **No more broken game after several cancelled matches.** When a match ended at the character
-  select without a fight -- the opponent left during the pick, or the lobby cancelled the match --
-  four to eleven times in a row, the open game broke and stayed stuck until it was closed. Each
-  time, the game built a second select screen on top of the old one, which kept running until
-  memory ran out. The select screen is now closed and opened again the way the game itself does
-  it: 60 cancelled matches in a row, then fights and rematches, offline and online in rollback and
-  lockstep, all in sync (docs/DIRECTFIGHT.md "Select restarts").
-- **Different saves no longer desync.** The game copies its own OPTIONS (round time, difficulty)
-  and its unlocks into the match, so two players whose saves differed -- another round time, a
-  stage or Jinpachi unlocked -- could fight apart (another round timer, or another fighter after a
-  rematch) and the match was voided as a desync. Online games now keep a save of their own
-  (`gamedata-online` in the game's folder, the same fresh save on both PCs; patch 0044), and the
-  unlocks always count as on a fresh save online. Your own save is never touched by online play;
-  the game's own OPTIONS (button layout, round time, volumes) apply offline only -- set the
-  buttons in the launcher, they work online as before.
-- **The Tekken 5 stages online** (server setting `T5L_OLD_STAGES`, off by default): when a lobby
-  turns it on, matches between two 1.1.2 launchers may also be fought on the 15 Tekken 5 stages;
-  each was played in sync in both netcode modes.
-- **No more frozen character select before the next match.** On a busy PC the select screen
-  for a new opponent or a character change could stay frozen while loading, for good, until the
-  game was closed ("Rematch / character select hangs"). When the game started, it noted its
-  state at the title screen while the title was still reading a file, and after a fight it put
-  that note back, so the game's file reader waited for a read that never came. The note now
-  leaves the file reader out and is taken only once the title has finished loading. If a select
-  screen ever stops loading anyway, the game closes itself after 10 seconds and the launcher
-  starts a fresh one for the match, instead of a frozen screen (docs/DIRECTFIGHT.md "Select
-  stall after a fight").
+- **Match scores are the real round counts.** The game reported the winner right, but the
+  score was made up: a 3-2 or 3-1 showed as 3-0, and now and then a 3-0 showed as 0-1. A
+  drawn match (time-out with equal health, or a double KO, in the deciding round) was counted
+  as Player 1's win. The game now reads the rounds each fighter won and reports draws as
+  draws. This matters beyond the result card: when the opponent's connection broke after the
+  last round, only a full score lets the lobby keep the win (a wrong score voided the match).
+  docs/NETPLAY.md "Match result".
+- **Invite buttons show the wait after a no.** When a friend declines your invite (or you take
+  it back), the lobby holds the next invite to that friend back for 30 seconds. The invite
+  buttons are now off for that friend during the wait, and the one you would use counts the
+  seconds down ("Invite in 27 s"), for match and room invites alike. The seconds come from the
+  server, which still has the last word.
+- **Friends and invites** (accounts): add friends by account name on the Online tab's new **Friends** page. The
+  list shows who is online, searching, in a match or offline, as it changes. **Invite** a friend to a casual match
+  or into your room: one click on **Accept** (or A / Cross on a pad) starts it, no ready check (a ranked room keeps
+  its ready check, which says it is ranked). Blocking a player ends the friendship. Limits against spam: 20 friend
+  requests a day (60 per internet address), 100 friends, one invite at a time; after a no, the same player can
+  invite or challenge you again only after 30 seconds, and a friend request taken back and sent again does not pop
+  up again.
+- **No accepting a question by accident:** a challenge or invite only takes a controller press made after it came
+  up (the A for the search button could accept one that popped up in that same moment).
+- **Opponents nearby first.** Quick and ranked search try opponents with a low ping first and widen the search
+  while you wait (any ping after 30 s in quick, 60 s in ranked). The ping shown for a found match now counts the
+  nearest relay server: two players in California see about 50 ms instead of about 300 ms through Germany.
+- **Replays.** Every online match is saved (a few KB, in `native\replays`). The new **Replays** tab lists them;
+  **Watch** plays a match again in the game exactly as it happened and checks it against the live match. START
+  pauses, SELECT ends it. Recording and the players' names can be switched off there. A replay needs the game
+  version that recorded it; a damaged or odd replay file is refused with a reason and leaves the rest of the list
+  alone. **Report a problem** adds your newest replay, without names.
+- **No pausing online.** START in an online fight opened the pause menu in both games, so one player could freeze
+  the other in the middle of a combo. Now nobody can pause an online fight; START still skips the replay after a
+  round, and offline it pauses as before. To leave a match, close the game (counts as a loss, as before).
+- **No more frozen character select before the next match.** On a busy PC the select screen for a rematch or a
+  new opponent could stay frozen while loading until the game was closed. Fixed; and should a select screen ever
+  stop loading anyway, the game closes itself after 10 seconds and the launcher starts a fresh one for the match.
+- **No more broken game after cancelled matches.** When four to eleven matches in a row ended at the character
+  select without a fight (the opponent left during the pick, or the lobby cancelled), the open game broke. Now 60
+  in a row are fine.
+- **No more voided matches at the start of a fight on stage 27** (the crowd of fighters behind the ring): in about
+  one match in 30 the desync check saw a value that only belongs to the picture (the box the shadows are drawn in)
+  differ for a few frames, and the match was voided although the fight was the same on both PCs. That value is no
+  longer compared; everything the fight depends on still is.
+- **Different saves no longer desync.** Another round time or unlocks in one player's save could make a match go
+  apart and be voided. Online games now use a fresh save of their own (`gamedata-online`), the same on both PCs.
+  Your own save is never touched online; the game's own OPTIONS (button layout, round time) apply offline only, so
+  set your buttons in the launcher.
+- **You stay logged in when the lobby server restarts.** A saved login was forgotten whenever the server could not
+  be reached (an update, an outage). Now the launcher keeps it and logs you in again by itself once the server is
+  back (not during a fight, and not after you logged out).
 
-### Training
-- **Training overlay**: your inputs with how long each was held, in Tekken notation, and the frame data of the
-  last move: startup (i10), then +/- frames on block, hit or counter hit, or the whole move on a whiff. On by
-  default in Practice; **Settings -> Training overlay** chooses Off / Inputs / Inputs + frame data and whether it
-  also shows in other offline modes or online (there only your own side). **F2** switches it in the game. The
-  numbers are measured in this game, not copied from tables (docs/TRAINING.md, ps3recomp patch 0045).
+<!-- PENDING DualSense/binds (branch pad-online: DualSense in the launcher and the Online tab, binds): its entry
+here, with the heading:
+### Controllers
+-->
 
 ### Launcher
-- **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français,
-  besides English and Deutsch. **Settings** -> **Language** lists every language in its own name;
-  Auto picks the language of Windows when the launcher has it, else English. Korean and Japanese get
-  a font made for them. The new translations were made with machine help: corrections from players
-  are welcome. The Settings tab, the Controls window and the Online tab's lists got room for the
-  longer texts (at 100 % and 150 % display scaling); a player or friend on another version (or an
-  older launcher) shows that in the status column instead of what they are doing.
-- **The Settings tab scrolls.** It had grown taller than the window (at 133 % display scaling and
-  more the bottom, with Unlocks and the Controls table, could not be reached). Now the mouse wheel
-  anywhere over it scrolls it, there is a scrollbar, and a control you reach with Tab is scrolled
-  into view. Still two columns, never sideways.
-- **Unlock all stages** (player request): launcher **Settings -> Unlocks**. The Tekken 5 stages,
-  normally earned after about 50 fights, are there in Arcade, VS, Practice and the rest from the
-  start. Your save is not changed; switched off, the game is as before.
-- **Unlock all customization items** (same place): everything in **ITEM SHOP & EQUIP** costs 0
-  Fight Money. What you take stays in your save like a bought item; the launcher backs the save up
-  once before the first game with it (`save-backups` in the game's folder).
-- **Discord Rich Presence** (optional, off by default; Settings -> Discord): your Discord status shows "In lobby",
-  "Searching ranked" or "In match: Jin vs Kazuya (Ranked, Set 1-0)" with a timer. The launcher talks only to the
-  Discord app on your own PC; without Discord running nothing happens. Needs the release's Discord application id
-  (docs/ONLINE.md "Discord Rich Presence").
+- **Five more languages:** Español, 한국어 (Korean), 日本語 (Japanese), Português (Brasil) and Français, besides
+  English and Deutsch. **Settings -> Language**; Auto follows Windows. The new translations were made with machine
+  help: corrections are welcome.
+- **Unlocks** (**Settings -> Unlocks**, offline only, both off by default): **Unlock all stages** gives you the
+  Tekken 5 stages without the roughly 50 fights they normally take; your save is not changed.
+  **Unlock all customization items** makes everything in ITEM SHOP & EQUIP cost 0 Fight Money; what you take
+  stays in your save, which the launcher backs up once first (`save-backups`).
+- **The Settings tab scrolls** (mouse wheel, scrollbar), so every setting is reachable at 133 % display scaling
+  and more.
 
-### Picture
-- **Stage blur / glow at higher internal resolutions.** Five stages filter the whole picture: a
-  soft focus on the misty swamp and three other stages, a glow around the sun on the scrapyard.
-  The filter's taps are placed for the PS3's resolution; at 1080p, 1440p and 4K they no longer
-  overlapped, so instead of a soft picture every edge showed two or three sharp copies of
-  itself, and the sun's glow turned blotchy. Now those stages look at every internal resolution
-  as they do at Native (the HUD stays sharp). New setting **Settings -> Stage blur / glow**: Off
-  shows those stages sharp and without the glow. It only changes your picture; online, both
-  players can choose differently (ps3recomp patch 0043, docs/RENDER_PERF.md "Stage blur and glow").
+### Game
+- **Training overlay** (**Settings -> Training overlay**, on by default in Practice): your inputs with how long each
+  was held, and the frame data of the last move: startup (`i10`) and who can act first on block, hit or counter hit
+  (`+3`, `-12`). It can also show in the other offline modes, and online (your own inputs only). **F2** switches it
+  in the game.
+- **Stage blur and glow look right at every internal resolution.** At 1080p, 1440p and 4K the soft focus of the
+  misty swamp and three other stages showed two or three sharp copies of every edge, and the sun's glow on the
+  scrapyard was blotchy. New: **Settings -> Stage blur / glow** Off shows those stages sharp; online each player
+  chooses for themselves.
+- **Less CPU, and power saving for laptops and handhelds.** The game no longer busy-waits around its frames: on 8
+  cores / 16 threads a fight needs about 30 % less CPU for the same 60 fps. **Settings -> Power saving** (Auto: on
+  with a battery, a power-saving plan, a mobile processor or integrated graphics) also uses fewer helper threads,
+  so the processor stays cooler and keeps its clock; the window title then says "power saving". Online, the other
+  player does not need the same setting. Not tried on a real laptop or handheld yet.
+- On a display whose timing is off, the game keeps its own clock, and it never runs faster than 60 fps.
+- **The log and Report a problem say why frames are slow:** processor, graphics or showing the picture, with the
+  power plan, clock limit and temperatures.
+- **The build no longer stops at "Translate code".** When a helper process stopped (an antivirus or low memory can
+  do that), the build waited forever at about 68 %. Now it translates that part itself and finishes with the same
+  result; if the step stays silent for 3 minutes, the Build tab says what to do.
+- **The intro movie no longer freezes on a white screen.** On a busy PC the video decoder sometimes never
+  answered, and the intro stayed white with START doing nothing. The decoder now starts while the game boots; if
+  it still does not answer within 5 seconds, the movie goes on in black with its sound (START skips it).
 
 ### Security
-- **Signed updates.** The launcher's self-update now checks an Ed25519 signature of the release
-  (`SHA256SUMS.sig`) made with the owner's key, once the owner has set it up (docs/RELEASING.md
-  "Release signature"): a release that somebody else managed to put on GitHub is refused. Updating
-  from 1.1.1 to 1.1.2 works as before.
-- **Lobby servers cannot touch your files.** A lobby server (any server you add) could send a match
-  name that made the launcher delete or write files outside its own folder. Match names are now
-  checked.
-- **Matches are harder to disturb from outside.** A stranger who found your game's port could end a
-  match before it started with one packet, and somebody who recorded the match's traffic could make
-  your game send its packets elsewhere. Both are refused now (docs/NETPLAY.md "Connection problems").
-- Lobby servers: regional relays get the players' relay tokens sealed, a relay node refuses requests
-  recorded before its restart, a flood of pings no longer blocks match setup, password changes are
-  rate-limited, and the database is private to the server's user (docs/HOSTING.md).
-- Problem reports also remove lobby recovery codes.
-- **No more answering a question you did not see.** With a controller, the A press you made for the search
-  button could accept a challenge or a friend's invite that popped up in that same moment. Now a question's
-  buttons only take a press made after it came up.
-- **An invite into a ranked room asks again.** A friend's invite names only the room, so accepting it could put you
-  straight into a ranked match (with ranked sets: a best of 3 that leaving loses). A ranked room's match now keeps
-  its ready check, which says it is ranked.
-- **No invite or challenge spam.** After you decline (or the other player takes it back), the same player can ask you
-  again only after 30 seconds; asking for friendship again right after taking a request back no longer pops up
-  "wants to be your friend" every time; one internet address sends at most 60 friend requests a day, however many
-  accounts it makes.
-- When an account was last online is shown to its friends only (profiles showed it to everybody).
-- A lobby server can no longer make the launcher send pings to addresses of its choosing as often as it likes (the
-  relay measurement runs once at a time and skips anything that is not an IP address).
-- Your Discord status shows only fighter names the launcher knows and plain set scores: a lobby server could put any
-  text of its choosing there.
+- **A lobby server has less say over your launcher:** a match name could make it write or delete files outside its
+  folder, and a relay list could make it send pings anywhere and as often as the server liked. Match names and
+  relay addresses are checked now.
+- **Matches are harder to disturb:** a stranger who found your game's port can no longer end a match before it
+  starts, and recorded match traffic can no longer send your game's packets elsewhere.
+- When an account was last online is shown only to its friends; problem reports also remove lobby recovery codes.
+- Prepared, not active yet: the launcher can check a signature on each update (`SHA256SUMS.sig`, made with the
+  project's release key) and refuse a release somebody else put on GitHub, once that key is set up. 1.1.2 has no
+  key yet, so updates are checked as before, against the release's SHA-256 checksums.
 
 ### Servers
-- The lobby database gets numbered schema upgrades; the first adds the friends tables at the first start. Going
-  back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
-
-### Laptops, handhelds and 8-core APUs (laptop-perf, ps3recomp patch 0047)
-- **Less CPU around the same game.** The main thread no longer polls for the end of its frame (it
-  waited in a busy loop or woke up 50-100 times a frame), the vblank thread no longer polls the
-  last millisecond before every frame, the sound mixer wakes once per audio block instead of 20
-  times, and on processors with 8-23 threads (8 cores with SMT, the common gaming CPU) nothing
-  spins next to the game's main thread any more. On 8 cores / 16 threads a fight needs 30 % less
-  CPU for the same 60 fps (on a busy test PC it went from 54 to 59 fps).
-- **Power saving** (Settings, default Auto): on laptops, handhelds (ROG Ally, Legion Go and
-  similar), mobile processors and integrated graphics the game also uses fewer helper threads and
-  never busy-waits, so the processor stays cooler and keeps its clock. The game itself is the
-  same, online too; the window title says "power saving" when it is on.
-- **The log says why frames are slow.** Every 30 s with slow frames: how many, and whether the
-  processor (the game, the render translation), the graphics or showing the picture took the time,
-  next to the power source, power plan and the processor's clock limit. "Report a problem" adds
-  the power plan, power mode, clock limit and temperature sensors to system.txt, and which
-  graphics chip drives each screen (laptops with two GPUs).
-- The game's clock follows a 59/60 Hz display only while that display's timing makes sense, and
-  never faster than 60 Hz.
-
-### Building the game
-- **The build no longer stops at "Translate code".** A player's build sat at 68% for good: when one of the
-  helper processes that translate the code side by side stopped (an antivirus or too little free memory can do
-  that), the build waited for it forever. Now it notices, translates that part itself and goes on, with the same
-  result. It also writes a line about every 30 seconds while it works and starts fewer helpers when little memory
-  is free. Should the step still print nothing for 3 minutes, the Build tab says so and what to do (ps3recomp patch
-  0048, docs/TROUBLESHOOTING.md "The build stops at "Translate code"").
+- Friends, invites and the ping estimate need the updated lobby server; 1.1.0 and 1.1.1 launchers keep working
+  with it and see nothing new. Its database gets numbered schema upgrades (the first adds the friends tables);
+  going back to 1.1.1 or 1.1.0 still works (docs/HOSTING.md "Updates and restarts").
+- **Tekken 5 stages online** (`T5L_OLD_STAGES`, off by default): matches between two 1.1.2 launchers may also be
+  drawn on the 15 Tekken 5 stages (each played in sync in both netcode modes).
+- Hardening: relay tokens are sealed on the way to regional relays, relay nodes refuse requests recorded before
+  their restart, a flood of pings no longer blocks match setup, password changes are rate-limited, and the database
+  is readable only by the server's user (docs/HOSTING.md).
+- **Update notice:** `t5lobby-admin release 1.1.2` (only once the release is published) tells every launcher on an
+  older release, in its status bar, that the new version is out.
+- `t5lobby-admin drain --wait` also waits for ranked sets between two games: a restart no longer voids a set and
+  the game already won. Friends entries left behind by accounts an older server deleted are dropped at start.
+- A ranked queue with `T5L_PING_START=0` no longer stalls, and a relay node whose clock runs ahead of the lobby
+  server's stays up after a restart.
 
 ## v1.1.1 (2026-10-19)
 

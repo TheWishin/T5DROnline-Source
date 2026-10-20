@@ -78,6 +78,7 @@
 #include "netplay.h"
 #include "replay.h"       /* replays: recording and playback (docs/REPLAYS.md) */
 #include "no_pause.h"     /* no pause online: the rule (docs/NETPLAY.md "No pause online") */
+#include "match_score.h"  /* a decided match's score: the fighters' round counts (docs/NETPLAY.md "Match result") */
 #include "../rollback/rb_net.h"   /* T5_RB_MODE=net: the rollback loop takes the per-frame decisions */
 namespace rb { void rand_install(); void tls_rand_reseed(uint32_t tls_base, uint32_t seed, bool streams); }   /* rb_rand.cpp: the TLS random generator */
 
@@ -133,8 +134,8 @@ constexpr uint32_t kRingReadIdx   = 0x104CCE40;
 constexpr uint32_t kFrameClock    = 0x106D4D88;  /* u64 read by the pad repeat logic; +8: vblank count */
 constexpr uint32_t kTOC           = 0x470540;    /* main TOC (r2) */
 constexpr uint32_t kMatchOver     = 0x1008EBD5;  /* u8: 0 during a match, set when it is decided */
-constexpr uint32_t kWinsP1        = 0x1008EBDA;  /* u8: rounds won by P1 in this match */
-constexpr uint32_t kWinsP2        = 0x1008EBDB;  /* u8: rounds won by P2 */
+constexpr uint32_t kWinsP1        = np::MatchScore::kRoundWinsP1;  /* u8: rounds won by P1 in this match (match_score.h) */
+constexpr uint32_t kWinsP2        = np::MatchScore::kRoundWinsP2;  /* u8: rounds won by P2 */
 constexpr uint32_t kWinnerIdx     = 0x1008EBD6;  /* u8: 0 = P1, 1 = P2, set together with kMatchOver (seen in the dry run) */
 constexpr uint32_t kFnTickCounter = 0x09A204;
 constexpr uint32_t kFnPadUpdate   = 0x08F3A4;
@@ -349,7 +350,26 @@ const char* kDefaultHashSkip =
      * more often under rollback (7 of 9 at RTT 50; 0 of 2 with
      * T5_RB_CUT=none, so the draw cut adds to it). Camera state that follows
      * timing, not input (docs/NETPLAY.md, "Same game state on every CPU"). */
-    "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8";
+    "10099730:1F0,10099920:1F0,10090708:8,10090FD8:8,"
+    /* The renderer's current projection (0x24 bytes from 0x100996B4: type,
+     * near, far, aspect, then left/right/top/bottom of an off-centre one):
+     * render state, not match state. Only the projection setters write it
+     * (0x80A94 perspective, 0x80C94 off-centre, from render passes); during a
+     * fight the last one before the frame boundary is the stage-27 shadow
+     * pass (0x268418 -> 0x15A974 -> 0x80C94), which sizes the fighters'
+     * shadow box from their bone positions. No game code reads it: an access
+     * trace of the record over 40 fight frames (T5_RB_RFT, rb_rft.cpp) found
+     * reads only inside the two setters themselves (of +0x0..+0x10) and by our
+     * own hash; the frustum words +0x14..+0x20 are never read.
+     * The 1.1.2 e2e gate voided a stage-27 rollback match for 10 frames of
+     * 0x100996C8..D4 alone (+-0.05 of +-600..1050) at the fight's start,
+     * frames 226-235. The first of them, the state after frame 225, no
+     * rollback can reach (every input up to frame 225 is the intro's neutral
+     * one on both PCs; the first press took effect in frame 226): not
+     * rollback-made. The fight, the camera, the side flags and the result
+     * stayed identical (docs/NETPLAY.md "Stage 27: the shadow box at the
+     * fight's start"). */
+    "100996B4:24";
 /* The fighters' side flags stay IN the hash: +0x1C2/+0x1C3 of the blocks at
  * 0x10090040 and 0x10090910 (bytes 0x10090202/03, 0x10090AD2/D3), written by
  * 0x808D8 from the camera-projected screen x above (+0x6C8, left out): which
@@ -796,11 +816,11 @@ void drain_workers(uint32_t f)
     if (ms >= 0) rb::net::load_seen(f, ms);
 }
 
-/* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). From the
- * round state block at 0x1008EBD0: +0xA/+0xB count the rounds P1/P2 won; +0x5
- * stays 0 through every round of a match and turns non-zero when the match is
- * over (and back to 0 when the next one starts). Found by dumping a whole
- * two-round match every 300 frames.
+/* T5_NET_RESULT_FILE, once a match is decided (the lobby reports it). The round
+ * state block at 0x1008EBD0: +0x5 stays 0 through every round of a match and
+ * turns 1 / 2 / 3 (P1 won, P2 won, a draw) when the match is over (back to 0
+ * when the next one starts). The rounds each player won: the fighters' counts
+ * (match_score.h; before 1.1.3 the block's +0xA/+0xB, which are not that).
  *
  *   {"match": "<lobby match id>", "winner": 0|1|null, "score": [p1, p2],
  *    "desync": <mismatching frames since this match's sync point>, "frames": <played>,
@@ -889,11 +909,8 @@ void flush_result(bool now)
 void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
 {
     const uint8_t over = rd8(kMatchOver);
-    uint8_t w1 = rd8(kWinsP1), w2 = rd8(kWinsP2);
-    if (over && w1 == 0 && w2 == 0 && rd8(kWinnerIdx) <= 1) {   /* the tallies stay 0 in direct fights: use the winner byte */
-        const uint8_t r = rd8(kRoundsToWin) ? rd8(kRoundsToWin) : 1;
-        if (rd8(kWinnerIdx) == 0) w1 = r; else w2 = r;
-    }
+    const np::MatchScore sc = np::MatchScore::of(rd8(kWinsP1), rd8(kWinsP2), rd8(kMatchOver), rd8(kWinnerIdx), rd8(kRoundsToWin));
+    const uint8_t w1 = over ? (uint8_t)sc.p1 : 0, w2 = over ? (uint8_t)sc.p2 : 0;
     if (!over && g_pending.on && rb::net::active() && f < g_pending.f + 600) {
         /* rollback: the match end was seen on a predicted frame and the
          * correction undid it -- not a result */
@@ -913,6 +930,10 @@ void watch_match(uint32_t f, bool have_hash = false, uint64_t hash = 0)
     g_matches++;
     np::note("frame %u: match %u over, P1 %u - P2 %u, winner %s", f, g_matches, w1, w2,
              w1 == w2 ? "none (draw)" : (w1 > w2 ? "P1" : "P2"));
+    if (!sc.counted)
+        np::note("frame %u: the fighters' round counts (%u, %u) do not fit the match (rounds to win %u, decided byte %u, "
+                 "winner byte %u): score from the decided byte", f, rd8(kWinsP1), rd8(kWinsP2), rd8(kRoundsToWin),
+                 rd8(kMatchOver), rd8(kWinnerIdx));
     no_pause_report(f, "the match");
     g_pending = { true, f, w1, w2, hash, have_hash, GetTickCount64() };
     flush_result(false);
@@ -943,7 +964,10 @@ void write_end_result(const char* reason)
     LeaveCriticalSection(&g_result_cs);
     if (already) return;               /* this match's result is out; nothing to add */
     const uint32_t frames = g_frame > g_match_f0 ? g_frame - g_match_f0 : 0;
-    write_result("null", rd8(kWinsP1), rd8(kWinsP2), reason, frames, false, 0, g_frame);
+    /* the rounds won so far; none while the last match's decided byte is still up (its counts, until this
+     * match's game mode clears them) */
+    const bool stale = rd8(kMatchOver) != 0;
+    write_result("null", stale ? 0 : rd8(kWinsP1), stale ? 0 : rd8(kWinsP2), reason, frames, false, 0, g_frame);
 }
 
 void end_session(const char* reason, bool from_network_thread = false)

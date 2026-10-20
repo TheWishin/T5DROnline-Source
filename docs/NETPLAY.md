@@ -62,6 +62,36 @@ of the deciding frame (equal on both PCs when they agree); `fps` is this PC's
 own speed in the match (time waiting for the peer left out). A match that could
 not be played to the end has `"winner": null` and a `reason` (next section).
 
+**Match result** (`src/netplay/match_score.h`, 1.1.3). `score` is the rounds
+each player won: the u8 at +0xA1 of each fighter's block (P1 0x10090030 ->
+0x100900D1, P2 0x10090900 -> 0x100909A1; +0xA2 is an i16 with the fighter's
+last round, 1 won / -1 lost). The game counts a round there on its KO frame --
+the last one on the very frame the decided byte 0x1008EBD5 rises -- and clears
+both counts when the next match's game mode starts, ~230 frames after its FIGHT
+START (the decided byte goes back to 0 on the same frame). `winner` is the one
+with more rounds (equal = a draw, `null`). The decided byte itself says how the
+match ended: 1 P1 won, 2 P2 won, 3 a draw (a time-out with equal health or a
+double KO in the deciding round counts the round for both: a no-input pair,
+first to 1, ended 1-1). Before 1.1.3 the score came from the
+battle config's bytes 0x1008EBDA/DB, which a menu-driven VS game was thought to
+count rounds in: they stay 0 in direct fights, so the score was made up from
+the winner byte 0x1008EBD6 as rounds-to-win : 0 (every 3-2 and 3-1 read 3-0),
+and the few times one of them was 1 at the end (mashing rollback pairs) that was
+the score: `[0, 1]` for a match P2 won 3-0, `[1, 0]` for P1's. A drawn match
+was P1's win (the winner byte is 0 in a draw). The winner was right otherwise
+(it decides ratings and sets), but the lobby also decides on
+the score: a result whose opponent reports a lost connection stands only with a
+full score -- the winner at the rounds to win (docs/RANKED.md "Results") -- so
+`[0, 1]` turned a won match into a void there; history, result cards and the
+admin's match list showed the made-up score. Found by dumping guest memory at
+every round's replay of a rollback pair and watching the words frame by frame
+(`T5_DF_WATCH`): 3-2, 3-1, 0-3 and 3-0 matches. When the counts cannot be the
+match's (both 0, above the rounds to win, or another verdict than the decided
+byte's) the decided byte decides with rounds-to-win : 0 and the log says so
+("do not fit the match"). A
+session that ends mid-match writes the rounds won so far (0-0 while the last
+match's decided byte is still up: its counts are still there).
+
 **Starting at the fight (direct-fight mode).** Lockstep does not have to run
 from boot. With `T5_NET_START=external` both games boot, load and do whatever
 they do at their own pace with both pads neutral; when the game side calls
@@ -845,9 +875,9 @@ the second match's intro, nothing else: docs/ROLLBACK.md section 21).
 **Match state** (what the detector hashes, `kDefaultHash`): the two pad state
 blocks (0x10099F24), the input ring, the game frame clock, all random
 generator states, and the fight block 0x1008E000-0x10091FFF: round state at
-0x1008EBD0 (+0xA/+0xB rounds won by P1/P2, +0x5 non-zero once the match is
-decided), round timer 0x1008F054 (frames left), the fighters at roughly
-0x1008F800 and 0x100900D0 (0x8D0 apart), plus 0x10099600-0x10099BFF,
+0x1008EBD0 (+0x5 non-zero once the match is decided), round timer 0x1008F054
+(frames left), the fighters at roughly 0x1008F800 and 0x100900D0 (0x8D0 apart;
+each one's rounds won at +0xA1 of its block, "Match result" above), plus 0x10099600-0x10099BFF,
 0x100A0900-0x100A0AFF and 0x100A3B00-0x100A3DFF. About 25 KB per frame.
 
 ## One save for online play, and the unlocks (branch unlock-stages, 1.1.2)
@@ -1340,6 +1370,135 @@ noted):
 Also run on main 2c7ed8a: tests/ (473, OK), the lobby's suite (15 modules, 455
 tests, OK), smoke quick (5/5 PASS), the game-data guard (`--keys` and
 `--history HEAD`: exit 0).
+
+## Stage 27: the shadow box at the fight's start (branch s27-start-desync, 1.1.2)
+
+The 1.1.2 e2e pre-gate (main 7486b0c, every real match forced onto stage 27)
+voided one rollback match in about 30: Roger Jr. vs Armor King, RTT 80 ms, 2 %
+loss, the eighth session of two persistent games. The two games disagreed for
+10 frames at the very start of the fight (session frames 226-235, about 3.8 s
+after FIGHT START), then agreed again; same final state, same winner. Only
+four words differed, as +- pairs: 0x100996C8/CC (+-561..644) and
+0x100996D0/D4 (+-990..1050), apart by 0.004-0.05 and less from frame to frame.
+
+**What the words are.** 0x100996B4 is the renderer's current projection
+(0x24 bytes): +0x0 its type, +0x4/+0x8 near and far, +0x10 the aspect, and
+for an off-centre projection (type 3) left/right/top/bottom at
++0x14..+0x20 -- the four words. Two setters write it: 0x80A94 (perspective)
+and 0x80C94 (off-centre, `-l, l, -t, t, near, far` in f1..f6, also handed to
+the NU renderer by 0x35D27C). On stage 27, during the fight, the last
+projection set before each frame boundary is the shadow pass's
+(write-fault and access traces: render pass 0x268418 -> 0x15A974 ->
+0x80C94, main thread, once per frame): 0x15A974 fits an orthographic box
+around both fighters for the shadow map (0x15A3A0, the shadow projector
+object 0x10627500) from six bone positions of each fighter's skeleton
+(`[[fighter + 0x8A4] + 0x10]`, 0x159310 -> 0x158B3C), and the half-widths of
+that box are the four words.
+
+**Not rollback-made.** The first differing hash is frame 226, the state
+after frame 225. Every input up to frame 225 was neutral on both PCs (the
+intro rule: phase 12 until boundary 223, input delay 2; the first scripted
+press took effect in frame 226), so no misprediction and no rollback can reach
+frame 225, and a rollback never recomputes the hash of the boundary it
+restores to. The box was computed differently on the two PCs from game state
+that hashed the same -- the fighters' bones are not in the hashed areas (the
+heap) -- and the difference faded within 10 frames as the fighters moved.
+The record follows the render passes, not the fight, in other ways too: in a
+traced pair it switched to the result screen's 2D projection (0, 1920, 0,
+1080) one and two frames apart on the two PCs after a match's deciding KO
+(frames no longer compared there).
+
+**Never read by the game.** `T5_RB_RFT=100996B4:24 T5_RB_RFT_NET=300:40`
+(rb_rft.cpp, below) watched every access to the record for 40 fight frames:
+writes only by the two setters from render passes, reads of +0x0..+0x10 only
+by the setters themselves, and of the four frustum words none by any game
+code (only our own hash and snapshot copies). The rest of the fight -- the
+camera matrix 0x100996E0 and its copies, the side flags, positions, health,
+timer -- matched on every frame of that match. So the record is render state,
+not match state: it is now left out of both state hashes
+(`kDefaultHashSkip` in t5_hooks.cpp, `kGameSkip` in rb_state.cpp,
+`100996B4:24`). The fighters' bones stay where they were (in the rollback
+state, restored with the frame, not hashed); what they decide in the fight
+(the camera-projected screen x and from it the side flags, hits) is hashed and
+would still report a real desync. tests/test_hash_skip_sync.py checks that the
+two skip lists are the same.
+
+**What the traces did show: the fighters' bone blocks before the fight.** A
+skeleton (`[fighter + 0x8A4]`) has two blocks of 27 x 0x90 bytes in the
+game's own heap: the bones now (`+0x10`) and last frame's copy (`+0x14`,
+copied by 0x28C17C every fight frame). The fight writes about two thirds of
+them from its first frame on; before that -- the loading and the intros, which
+the desync check does not compare -- they hold whatever that memory held
+(a fresh game: 172 of 972 words set, the rest zero; a persistent game: what
+its earlier matches left). In 6 of 30 traced e2e sessions one fighter's bone
+block differed between the PCs through the loading and the intro, and became
+equal on the first fight frame. The most likely origin of the gate's 10 frames
+is such a leftover that the first fight frames of that pairing still read.
+Clearing the blocks at the fight-loaded sync point would remove it, but which
+of those words the game's own set-up writes before the fight is not known (a
+fresh game's are not all zero), so it is left as a follow-up; the record that
+showed it is not game state either way.
+
+**Not reproduced on demand.** With the fighters' bones, the projector and the
+skipped words traced on both PCs (`T5_RB_SHADOW_TRACE`, below) the box and its
+inputs were identical on every frame in: 25 e2e net_rollback sessions on
+stage 27 (the gate's flow: persistent games, in-game select, RTT 20-250, loss,
+jitter, relay; old build), 3 + 7 pair matches Roger Jr. vs Armor King at RTT 80 /
+2 % loss, a persistent pair with a slow disk on the joiner
+(`PS3_TEST_FS_DELAY`), and one-process runs (`rb_equiv_test.py`, Roger Jr. vs
+Armor King, stage 27) with forced rollbacks (`--force 5:3`, 255 rollbacks),
+real mispredictions (`--lag 3`, 307), main-thread hitches and the SPURS job
+pages kept in the state: equal on every frame, the record too. Where the
+gate's bones came from is therefore not known; the words that showed it are
+not game state.
+
+**Diagnostics added** (off unless set):
+
+- `T5_RB_SHADOW_TRACE=1` (`rb_shadowtrace.cpp`): `rb_shadow.log` in the game's
+  folder. `S` lines, one per run of the shadow fit (0x15A3A0): frame,
+  re-simulated or not, phase, the box, eye, target, light direction, per
+  fighter the skeleton and bone block pointers, a hash of the bone block and
+  the six bone positions the fit reads, the record. `B` lines, one per frame
+  boundary up to `T5_RB_SHADOW_TRACE_TO` (default 400): hashes of the hashed
+  areas taken whole (no skip list), of each fighter block and bone block, the
+  skipped words that the moves use (0x1008F0D0, 0x1008F0C4, +0x174 of each
+  fighter, the secondary-motion points) and the projector's words. The last
+  line for a frame is its final state. Two PCs' logs diff per frame. With it,
+  `T5_RB_SHADOW_DUMP=f1,f2,...` writes each fighter's skeleton blocks at those
+  boundaries (`pose_f<f>_P<n>_{cur,prev,sk}.bin`).
+- `T5_RB_RFT=addr:len` + `T5_RB_RFT_NET=from:frames` (`rb_rft.cpp`): every read
+  and write of those bytes over those live frames, with the accessing guest
+  function and its callers (game log and rb_frames.log `R` lines). The page
+  is made inaccessible and each access single-stepped: slow, tests only.
+
+**What was tested** (this PC, other agents' games running; stage 27):
+
+| run | build | what | matches | result |
+|---|---|---|---|---|
+| e2e net_rollback `--stage s27`, traced (`T5_RB_SHADOW_TRACE`) | before the fix (record hashed) | the gate's flow: persistent games, in-game select, RTT 20-250, loss, jitter, relay | 30 | 0 mismatching frames; the box and its inputs identical in every fight frame on both PCs |
+| pairs, RTT 80 / 2 %, Roger Jr. vs Armor King, traced | before the fix | process mode, mash with motion inputs | 3 | 0 mismatching; box, bones identical |
+| rb_equiv, Roger Jr. vs Armor King, `--force 5:3` / `--lag 3` / `--lag 3` + `T5_RB_JOB_PAGES=keep` / `T5_TEST_HITCH=100:20:60` | before the fix | one process, a reference and a test run | 4 x 1 | equal on every frame (255 forced, 307 and 316 real rollbacks) |
+| pair, RTT 80 / 2 % loss, 20 stage-27 matches (Roger Jr. vs Armor King first and last, 18 other pairs), 1 round, mash with motion inputs, traced | fixed (main f5bed92 merged) | `rollback_net_test.py` (`build/s27b/scripts/rbpair.sh`) | 20 | 0 mismatching frames in 43,200 per side; 8,993 / 8,772 rollbacks (9,972 / 9,758 frames re-simulated); every result (winner, score, frames, hash) the same on both PCs; the shadow box and its inputs identical on all 43,262 traced frames |
+| the same, RTT 150 / 3 % loss | fixed | | 20 | 0 mismatching frames in 43,200 per side; 10,554 / 10,617 rollbacks (29,698 / 29,525 frames re-simulated); results the same; box and inputs identical on all 43,275 frames |
+| e2e net_rollback, a normal pass (the lobby's stages: 18, 19, 22, 23, 26, 28, 31, 32) | fixed | RTT 20/80/150/250, delay Auto/0/1/2, 2 % and 10 % loss, jitter, relay | 11 | PASS, 245 checks, 0 mismatching frames |
+| e2e net_lockstep `--stage s27` | fixed | RTT 20/150, 10 % loss with jitter, relay | 4 | PASS, 87 checks, 0 mismatching frames |
+| pair, lockstep (`T5_RB_MODE=off` both), RTT 80 / 2 %, 10 stage-27 matches | fixed | | 10 | 0 mismatching frames through frame 19,799 on both PCs (delay 5); every result the same |
+
+Also on the fixed build: smoke quick (3 PASS, 2 WARN: fps with 9 other games
+running; exit 0), tests/ (630, OK, 9 skipped), the game-data guard (index and
+`--history 760f8b0..HEAD`: exit 0).
+
+**Not the same bug: the firewall e2e run's Asuka vs Wang on stage 26** (frames
+231-1849 apart, the whole fight). There one game left the intro a frame
+earlier than the other: from frame 231 the phase word itself (0x1008F070, 17
+against 12), the round timer and the input ring differ -- the whole fight runs
+a frame apart, with another final hash. Its log shows the cause's neighbourhood:
+at 0.5 fps its loader drain gave up seven times ("frame 8..16, 31: loader
+threads still busy after 2 s, going on", `t5_hooks.cpp drain_wait`), so loads
+finished in frames that differed between the two PCs before the fight-loaded
+barrier; the other game had no such timeout. That needs its own fix (the
+drain's 2 s limit during a session's loading); the record has nothing to do
+with it.
 
 ## Limits and next steps
 

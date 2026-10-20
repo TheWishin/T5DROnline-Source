@@ -1016,14 +1016,25 @@ stays the sensible step.
 **Online**: host pixels only, nothing the game reads changes, so the two PCs
 of a match may differ. Rollback pair (default settings, one match of two rounds), host at 4K on the RTX 3090 with per-pass timestamps and the AMD paths forced on (`RSX_GVIEW_FAST=2 RSX_PRESENT_FAST=1`), joiner at 1080p with power saving (shadow map and glow at guest size), the joiner's game suspended for 60 ms every 0.2-0.6 s (`--stutter 60`: deep rollbacks), a direct connection (after this PC's restart the test proxy got no replies from the games): sync through frame 4199 0 mismatching on both sides, the same result hash `40ab59479a3c405c`, 158 / 277 rollbacks (605 / 1,474 frames re-simulated), no decode error or abort. Before the restart a pair through the proxy (RTT 50 ms, 3 % loss) with the joiner rendering on the integrated Radeon at 1440p stayed in sync through frame 2999 (0 mismatching) before the overloaded PC slowed the host to 1-2 fps.
 
-**Seen once, not explained.** After this PC was restarted, with 16-18 other
-games running and 3.6 GB of its 31 GB free, a game rendering on the integrated
-Radeon at 1080p stopped with `DXGI_ERROR_DEVICE_HUNG` at the title screen
-(twice, the same build); DRED put the hang in one of the game's own indexed
-draws, none of this patch's passes (those are non-indexed). Before the restart
-30+ runs of the same code on that GPU (every step, three stages, the
-self-checks) had none; after it, the PC was too loaded for a game on that GPU
-to reach a fight at all (1-6 fps), with or without the new paths, so it could
-not be bisected. Worth a look on a real 780M; `RSX_GVIEW_FAST=0
-RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0` turns every change of this patch
-off.
+**A GPU hang on the integrated Radeon, not this patch.** After this PC was
+restarted, with 16-18 other games running and only 3.6 of its 31 GB free, a
+game rendering on the integrated Radeon at 1080p stopped twice with
+`DXGI_ERROR_DEVICE_HUNG` near the title screen. DRED (`[dred]` lines in the
+log) puts both hangs in one of the game's own command lists, at its first
+clear (`last=0`: not even the clear finished) or among its indexed draws
+(`last=8`), neither one of this patch's passes (those are non-indexed draws and
+copies at the end of a frame). An A/B on that GPU at 1080p, same build, same
+load, interleaved, two games at a time at below-normal priority, boot -> title
+-> direct fight -> 40 s of fighting, stages 20 and 26:
+
+| build | runs | reached the fight | hung | other games running | free memory |
+|---|---|---|---|---|---|
+| 0051, every path off (`RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`) | 24 | 24 | 0 | 3-10 | 9.0-15.7 GB |
+| 0051, default | 24 | 24 | 0 | 2-10 | 9.3-17.3 GB |
+| main without 0051 | 24 | 24 | 0 | 1-10 | 9.4-17.1 GB |
+
+So the hang did not come back in 72 runs, with or without the patch; with
+the GPU stopping at a frame's first clear under heavy memory pressure it looks
+like the integrated GPU's memory being paged out by Windows, not anything the
+game draws. `RSX_GVIEW_FAST=0 RSX_PRESENT_FAST=0 RSX_SMALL_TARGETS_NATIVE=0`
+still turns every change of this patch off.

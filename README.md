@@ -294,6 +294,8 @@ Good to know:
   searching or in a match. **Invite to a match** (or to your room) asks them;
   one click on **Accept** on their side starts it. Blocking a player ends the
   friendship.
+- **Your custom costumes online** (from 1.1.3): what you bought and put on in
+  the item shop offline shows in online matches, for you and your opponent.
 - **Tournaments** (accounts, from 1.1.3): the Online tab's **Tournaments** page
   lists the server's tournaments. **Sign up** (and **Check in** when it asks),
   and when your set is ready the tab shows "Your tournament set is ready":
@@ -321,14 +323,15 @@ replay plays only with the game version that recorded it. Details:
 
 ### Spectating
 
-A friend in a match, or any room's match, can be watched live: **Watch** on the
-Friends page (below the list) or in the Rooms list. Your game shows the match a
+A friend in a match, any room's match or a tournament set can be watched live:
+**Watch** on the Friends page (below the list), in the Rooms list, or above a
+tournament's bracket (click the set first). Your game shows the match a
 few seconds behind, exactly as it is played (the same inputs, checked while it
 plays). Whenever you join, it plays the players' session from its start (a
 rematch depends on the matches before it). Settings -> Spectators: "Friends and
 room visitors may watch my online matches" (on) and "Also my ranked matches"
-(off); a match is watched only when both players allow it. Details:
-[docs/SPECTATE.md](docs/SPECTATE.md).
+(off); a match is watched only when both players allow it. Both players' custom
+costumes show for the spectators too. Details: [docs/SPECTATE.md](docs/SPECTATE.md).
 
 The game's own **Online** menu entry needs Sony's servers, which are gone: after
 the terms screen it says "A network error occurred" and goes back to the title.

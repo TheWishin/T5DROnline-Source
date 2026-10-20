@@ -429,6 +429,9 @@ class TourController:
         s = self._summary()
         try:
             self._render_info(pg, s)
+            spec = getattr(self.tab, "spec", None)
+            if spec is not None:
+                spec.set_actions()             # (the Watch button: the selected set's game, if it can be watched)
             if redraw and self.bracket is not None:
                 self.bracket.draw(self.detail if s is not None and self.detail is not None else None, self.sel_set)
         except tk.TclError:
@@ -518,9 +521,6 @@ class TourController:
             pg["set_tools"]["win1"].configure(text=t("Side 2 wins"))
             pg["set_label"].configure(text=t("Click a set in the bracket.") if s.get("can_manage") and
                                       st == "running" else "")
-        spec = getattr(self.tab, "spec", None)
-        if spec is not None:
-            spec.set_actions()                 # (the Watch button: the selected set's game, if it can be watched)
 
 
 # ====================================================================== the page

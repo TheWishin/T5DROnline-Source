@@ -305,6 +305,8 @@ Gut zu wissen:
   einladen** (oder in deinen Raum) fragt ihn; ein Klick auf **Annehmen** auf
   seiner Seite startet es. Wer einen Spieler blockiert, beendet die
   Freundschaft.
+- **Deine eigenen Kostüme online** (ab 1.1.3): was du offline im Item-Shop
+  gekauft und angezogen hast, sehen du und dein Gegner auch im Online-Match.
 - **Turniere** (mit Konto, ab 1.1.3): Die Seite **Turniere** im Online-Reiter
   zeigt die Turniere des Servers. **Anmelden** (und **Einchecken**, wenn das
   Turnier danach fragt); ist dein Set dran, zeigt der Reiter „Dein Turnier-Set
@@ -334,15 +336,16 @@ Mehr in [REPLAYS.md](REPLAYS.md) (auf Englisch).
 
 ### Zuschauen
 
-Ein Freund im Match oder das Match eines Raums lässt sich live ansehen:
-**Zuschauen** auf der Freunde-Seite (unter der Liste) oder in der Raumliste.
+Ein Freund im Match, das Match eines Raums oder ein Turnier-Set lässt sich live
+ansehen: **Zuschauen** auf der Freunde-Seite (unter der Liste), in der Raumliste
+oder über dem Turnierbaum (vorher das Set anklicken).
 Dein Spiel zeigt das Match ein paar Sekunden später, genau so, wie es gespielt
 wird (dieselben Eingaben, beim Abspielen geprüft). Wann immer du dazukommst,
 läuft die Session der Spieler von ihrem Anfang an (ein Rematch hängt von den
 Matches davor ab). Settings -> Zuschauer: „Freunde und Raumbesucher dürfen meine
 Online-Matches ansehen“ (an) und „Auch meine Ranked-Matches“ (aus); ein Match
-wird nur angesehen, wenn beide Spieler es erlauben. Mehr in
-[SPECTATE.md](SPECTATE.md) (auf Englisch).
+wird nur angesehen, wenn beide Spieler es erlauben. Die eigenen Kostüme beider
+Spieler sehen auch die Zuschauer. Mehr in [SPECTATE.md](SPECTATE.md) (auf Englisch).
 
 Der Menüpunkt **Online** des Spiels braucht Sonys Server, die es nicht mehr
 gibt: nach dem Nutzungsbedingungs-Bildschirm meldet das Spiel "A network error

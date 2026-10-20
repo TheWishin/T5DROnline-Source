@@ -822,6 +822,15 @@ Menus run at 60 fps. Fights ran at 59.7-59.9 fps in the release dry run of
 2026-10-17 (two games on one PC with other test programs running). Earlier notes
 said 30-45 fps; that was fixed by later work. On a weaker PC:
 
+- **Fights at 40-50 fps** on an older or slower processor, or a laptop: the
+  game needs one fast processor core for its own frame. Until 1.1.2 a frame
+  that was a little too slow also waited for the next screen refresh, so a
+  PC that could do 50-55 fps showed 30-45; since 1.1.3 such a frame is shown
+  as soon as it is ready (`PS3_LATE_FLIP=0` in the extra settings brings back
+  the old way). What to check, in a list you can follow step by step:
+  [docs/WEAK_PC.md "Player checklist"](WEAK_PC.md#player-checklist). A
+  Vulkan renderer would not help here: the graphics calls are about 5 % of a
+  frame ([why](WEAK_PC.md#d3d12-or-vulkan)).
 - **Weak graphics card** (laptop, integrated graphics): in the launcher,
   **Settings** -> **Internal resolution** -> **Lower**, or **Lowest** if that
   is not enough. The 3D scene gets softer, the HUD stays sharp; the game
@@ -890,8 +899,10 @@ not (on every PC, power saving or not).
 line like
 
     [slow-frames] last 30 s: 1702 frames, 214 slow (over 20.9 ms): CPU 201 (game 187, render translation 9,
-    vblank thread late 5), GPU 9, present 4; ... vblank clock 59.94 Hz | on battery (battery 61 %),
-    power plan "Balanced", processor clock limit 2100 of 3800 MHz (held back: heat or the power plan)
+    vblank thread late 5), GPU 9, present 4; 380 late for their vblank, shown when translated; ...
+    vblank clock 54.10 Hz; other programs 3.1 of 8 logical processors busy, the game 2.4 (of 8 it may
+    use) | on battery (battery 61 %), power plan "Balanced", processor clock limit 2100 of 3800 MHz
+    (held back: heat or the power plan)
 
 - **CPU** slow frames: the processor was too slow for the frame -- power
   saving, the charger, the power mode, closing programs.
@@ -903,6 +914,12 @@ line like
 - "processor clock limit ... (held back ...)" means Windows says the
   processor may not run at its full speed right now: heat, the power plan, or
   the battery.
+- "late for their vblank, shown when translated" (1.1.3): frames that took
+  longer than one screen refresh and were shown as soon as they were ready;
+  with many of them the `vblank clock` goes below 59.9 Hz -- the game ran a
+  bit slower than 60 instead of dropping to 30-45.
+- "other programs X of Y logical processors busy" (1.1.3): what the rest of
+  the PC used at the same time. A large X: close programs.
 
 **Report a problem** (launcher) puts the power source, power plan, power
 mode, processor clock limit and (where Windows has one) the temperature

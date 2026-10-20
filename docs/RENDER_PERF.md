@@ -895,3 +895,17 @@ joiner with): 0 mismatching, the same hash `56c3b7de99c1dee9`.
 Not tried: a real laptop, handheld or APU (this PC has none), the game's
 fps at such a CPU's own clocks, a battery, a thermal sensor (Windows reports
 none here; `system.txt` then says so).
+
+## Late frames shown when ready (patch 0059, branch `weakpc-fps`)
+
+Why some players had 40-50 fps, and whether a Vulkan renderer would help:
+[WEAK_PC.md](WEAK_PC.md). In short: the limit is the speed of the core that
+runs the game's main thread, and a frame whose game part ran past its vblank
+used to wait for the next one (33.4 ms for a frame of 18-20). Now the first
+tick a frame misses waits for it, up to one period, and fires as soon as the
+walker has translated the frame (`PS3_LATE_FLIP=0` = the old way): a slowed
+game went from 40 to 49-50 fps and from 30 to 43-44 fps, a rollback pair with
+one slow PC from 32 to 46 fps, in sync; a 60 fps PC is unchanged. The D3D12
+calls are 0.7-1.0 ms of a frame (frame log columns `ph_desc_us`,
+`ph_cbcopy_us`, `ph_api_us`, `ph_post_us`), the same on NVIDIA and on the
+integrated Radeon.

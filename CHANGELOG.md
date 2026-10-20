@@ -3,6 +3,24 @@
 All notable changes, newest first. The project is a test release. Short commit hashes are in parentheses. The state of each
 part is in the README's status table.
 
+## v1.1.3 (not released yet)
+
+### Picture and speed
+- **A PC that is a bit too slow for 60 fps now runs fights at 45-55 instead of 30-45**
+  (ps3recomp patch 0059). The game shows a frame on a screen refresh, as on the PS3; a
+  frame that took a little longer than one refresh waited for the next one, so a fight
+  frame of 18-20 ms took 33 ms. Now that frame is shown as soon as it is ready. A slowed
+  test game went from 40 to 49-50 fps and from 30 to 43-44 fps; online, a match against
+  such a PC from 32 to 46 fps, in sync. PCs that make 60 already see no change; the game
+  still never runs faster than 60. `PS3_LATE_FLIP=0` (extra settings) is the old way.
+  Why those PCs are slow (one processor core's speed, not the graphics API -- no Vulkan
+  needed) and a checklist for players: docs/WEAK_PC.md.
+- **Problem reports say more about slow fights.** The game log's `[slow-frames]` lines name
+  the frames shown late and what other programs used of the processor; a frame that only
+  waited for its own translation is no longer blamed on the vblank thread. `system.txt`
+  adds Windows' Game Mode and GPU scheduling settings and the online match's speed
+  against this PC's own.
+
 ## v1.1.2 (2026-10-20)
 
 **Friends and invites, replays of every online match, opponents nearby first, a training overlay, five more languages, all stages and items unlocked offline, less CPU on laptops.** Both players need 1.1.2

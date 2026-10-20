@@ -477,7 +477,8 @@ class App(tk.Tk):
         self.stop_btn = ttk.Button(row, text=t("Stop game"), command=self.stop_game, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
         self.run_var = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.run_var, style="H2.TLabel").pack(anchor="w", pady=(14, 4))
+        ttk.Label(box, textvariable=self.run_var, style="H2.TLabel", wraplength=820, justify="left").pack(
+            anchor="w", pady=(14, 4))   # wraps: an exit reason or the speed note (patch 0063) is a sentence
         links = ttk.Frame(box)
         links.pack(anchor="w", pady=(4, 0))
         ttk.Button(links, text=t("Open newest game log"), command=self.open_game_log).pack(side="left")

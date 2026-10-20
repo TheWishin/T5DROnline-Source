@@ -1232,4 +1232,16 @@ the iGPU runs are GPU-bound. Medians per frame over the last 15 s:
   the time, integrated graphics) ... | GPU-bound: the graphics need 22.9 ms a
   frame (integrated graphics) -- a lower Internal resolution is what helps`.
 
-**Online**: picture only; the two PCs of a match may differ (rollback pair below).
+**Online and the picture.** Only timing and host pixels change, so the two PCs of a match
+may differ. Rollback pair (RTT 50 +-5 ms, 3 % loss, delay 1, one match of two rounds, Lili vs
+Asuka on stage 20): host on the RTX 3090 at 4K with two frames in flight, joiner on the
+integrated Radeon with Auto (-> 1080p) and power saving: `sync through frame 6599: 0
+mismatching` on both sides, the same result hash `6921d865e3a4381f`, 57.2 fps (an earlier
+build of the branch: 0 mismatching, hash `dcb35942ae7c6184`). Lockstep pair, both on the RTX
+3090 at Native, host two frames in flight, joiner one, frame-exact surface dumps at netplay
+frames 300/900/1500 (`T5_NET_SHOT` + `LD_SURF_DUMP`): the shadow maps identical, the 3D target
+and the display buffers different only in the background crowd and the water splashes -- a
+control pair with the same settings on both sides differs there as well (those effects are
+not part of the state a pair keeps equal). The default, one frame in flight, records the same
+commands as before; patch 0063 adds two timestamps to each command list. Smoke quick: PASS
+(80 checks; 3 fps WARN from the other games on the PC).

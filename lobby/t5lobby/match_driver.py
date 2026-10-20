@@ -144,6 +144,9 @@ class GameLog:
         self.fail_reason = None      # "cannot connect (<reason>)"
         self.fail_nothing = False    # ... and not one packet arrived on the game's port: a firewall blocking the game?
         self.nothing_s = 0           # the session's handshake has waited this long with nothing arriving at all
+        self.nothing_line = 0        # ... said on this line of the log (lines: netplay lines read so far)
+        self.connected_line = 0      # the line of the last "connected"
+        self.lines = 0
         self.connected = False
         self.crashed = False
         self.build_mismatch = False
@@ -178,6 +181,7 @@ class GameLog:
             return
         if "[netplay]" not in ln:
             return
+        self.lines += 1
         m = RE_SYNC.search(ln)
         if m:
             self.last_frame = max(self.last_frame, int(m.group(1)))
@@ -221,9 +225,11 @@ class GameLog:
             return
         if RE_CONNECTED.search(ln):
             self.connected = True
+            self.connected_line = self.lines
         m = RE_NOTHING.search(ln)
         if m:
             self.nothing_s = int(m.group(1))
+            self.nothing_line = self.lines
         if RE_BUILD.search(ln):
             self.build_mismatch = True
         m = RE_FAIL.search(ln)
@@ -408,6 +414,7 @@ class MatchDriver:
         self.need_session = None     # persistent game, a new session: its netplay session number (lines before it
                                      # in the log -- the last session's "peer lost" -- are not this match's)
         self.fallback_asked = set()  # matches whose game heard nothing on the direct path: the relay was asked for
+        self.watch_from = 0          # netplay log lines (GameLog.lines) before this match's session began
         self.fallback_wait = None    # (match, until): nothing of that game is reported while the server answers
 
     # ------------------------------------------------------------------ helpers
@@ -578,9 +585,13 @@ class MatchDriver:
                           name=ev["opponent"]["name"]))
             self._call(self.client.game_started, mid)
             return
-        if self.fallback_wait is not None and self.fallback_wait[0] == mid:
-            # the same match once more, on the relay (_watch_direct): its game session starts again through the bridge
+        # The same match once more, on the relay (_watch_direct here or on the other PC; LobbyClient.nat_fallback): its
+        # game session starts again through the relay bridge. Whatever the first session writes from now on (its
+        # handshake failing, the opponent lost) is not this match's result: the new one gets a file of its own.
+        again = getattr(self.session_ticket, "match_id", None) == mid and isinstance(self.session_ticket, MatchTicket)
+        if again:
             self._discard_result("fallback")
+            self.fallback_asked.add(mid)
         self.fallback_wait = None
         self.ticket = ticket
         self.session_ticket = ticket
@@ -598,13 +609,15 @@ class MatchDriver:
             if self.glog is not None:
                 self.glog.poll()
                 self.need_session = self.glog.sessions + 1
+            if again:
+                self.result_path = os.path.join(self.workdir, f"result-{proto.file_safe(mid)}-relay.json")
             self._send_fight(mid, self.match_env(ev, ticket))
         else:
             self.stop_game()
             self.session = mid
             self.df_status, self.df_base = None, 0           # a new game counts its fights from 1
             fmid = proto.file_safe(mid)               # (the client already refuses other ids; a file name stays one)
-            self.result_path = os.path.join(self.workdir, f"result-{fmid}.json")
+            self.result_path = os.path.join(self.workdir, f"result-{fmid}{'-relay' if again else ''}.json")
             self.fight_path = os.path.join(self.workdir, f"fight-{fmid}.txt")
             self.status_path = os.path.join(self.workdir, f"status-{fmid}.json")
             self.game_state = None
@@ -633,6 +646,7 @@ class MatchDriver:
             self.game = game
             self.glog = GameLog(getattr(game, "log_path", None))
         self.mark = self.glog.mark() if self.glog else (0, 0, 0, 0)
+        self.watch_from = self.glog.lines if self.glog else 0
         self.status(t("Playing against {summary}", summary=ticket.summary()))
         self._call(self.client.game_started, mid)
 
@@ -907,10 +921,8 @@ class MatchDriver:
         if mid in self.fallback_asked or not self.game_running():
             return
         g.poll()
-        if g.connected or g.nothing_s < FALLBACK_NOTHING_SECONDS:
-            return
-        if self.need_session is not None and g.sessions < self.need_session:
-            return                       # (a persistent game: those lines were the last session's)
+        if g.nothing_s < FALLBACK_NOTHING_SECONDS or g.nothing_line <= max(self.watch_from, g.connected_line):
+            return                       # (connected since, or the lines were another session's)
         fn = getattr(self.client, "nat_fallback", None)
         if fn is None:
             return

@@ -740,6 +740,7 @@ class Sim:
         self.verbose = verbose
         self.server_cfg = server_cfg or {}
         self.play_seconds = 2.0              # how long the stub games play a relayed match (a bridge may upgrade)
+        self.fallback = True                 # a game that heard nothing on the direct path asks for the relay
         self.net_cfg = net_cfg or {}
         self.ip_seq = itertools.count(1)
         self.name_seq = itertools.count(1)
@@ -875,6 +876,28 @@ class Sim:
             fa = asyncio.run_coroutine_threadsafe(ga.run(secs), a.loop)
             fb = asyncio.run_coroutine_threadsafe(gb.run(secs), b.loop)
             ok = await asyncio.gather(asyncio.wrap_future(fa), asyncio.wrap_future(fb))
+            if not all(ok) and ta.path in ("direct", "lan") and self.fallback:
+                # A game heard nothing on the direct path (a firewall blocks it): what the match driver does
+                # (match_driver._watch_direct) -- the side whose game heard nothing asks for the relay, both launchers
+                # get a second match_start (a new ticket through the relay bridge) and the games start again.
+                deaf = [h for h, g in ((a, ga), (b, gb)) if g.rx == 0] or [a]
+                fn = getattr(deaf[0].client, "nat_fallback", None)
+                agreed = fn is not None and await loop.run_in_executor(self.pool, fn, ta.match_id)
+                res["fallback"] = bool(agreed)
+                if agreed:
+                    evs = await asyncio.gather(*(loop.run_in_executor(self.pool, h.client.next_event, 20,
+                                                                      ("match_start", "match_cancel")) for h in (a, b)))
+                    if any(e is None or e["t"] != "match_start" for e in evs):
+                        res["error"] = "fallback: " + ",".join(str(e and (e.get("reason") or e["t"])) for e in evs)
+                        return res
+                    ta, tb = evs[0]["ticket"], evs[1]["ticket"]
+                    res["path"] = "fallback/" + (ta.path if ta.path == tb.path else f"{ta.path}/{tb.path}")
+                    res["setup_s"] = round(time.monotonic() - t0, 2)
+                    ga, gb = (StubGame(a, ta, tag, self.srv.udp.port, gfw[0]),
+                              StubGame(b, tb, tag, self.srv.udp.port, gfw[1]))
+                    fa = asyncio.run_coroutine_threadsafe(ga.run(self.play_seconds), a.loop)
+                    fb = asyncio.run_coroutine_threadsafe(gb.run(self.play_seconds), b.loop)
+                    ok = await asyncio.gather(asyncio.wrap_future(fa), asyncio.wrap_future(fb))
             res["game"] = all(ok)
             res["rx"] = [ga.rx, gb.rx]
             res["bridge"] = [getattr(h.client, "_bridge", None) is not None for h in (a, b)]
@@ -933,6 +956,8 @@ def summarize(results):
             d["direct"] += 1
         elif p == "relay":
             d["relay"] += 1
+        elif str(p).startswith("fallback/"):
+            d["fallback"] += 1                 # direct first, then the relay: the game heard nothing directly
         else:
             d["failed"] += 1
         if r.get("game"):
@@ -948,13 +973,13 @@ def summarize(results):
 def print_table(rows, title=""):
     if title:
         print(title)
-    print(f"{'pair':28s} {'n':>4s} {'direct':>8s} {'relay':>6s} {'upgr':>5s} {'fail':>5s} {'game ok':>8s} "
-          f"{'setup s':>8s}")
+    print(f"{'pair':28s} {'n':>4s} {'direct':>8s} {'relay':>6s} {'upgr':>5s} {'fallbk':>6s} {'fail':>5s} "
+          f"{'game ok':>8s} {'setup s':>8s}")
     for (a, b), d in rows.items():
         n = d["n"]
         st = statistics.median(d["setup"]) if d["setup"] else float("nan")
         print(f"{a + ' + ' + b:28s} {n:4d} {100.0 * d['direct'] / n:7.0f}% {d['relay']:6d} {d['upgraded']:5d} "
-              f"{d['failed']:5d} {d['game']:8d} {st:8.1f}")
+              f"{d['fallback']:6d} {d['failed']:5d} {d['game']:8d} {st:8.1f}")
 
 
 async def run_matrix(sim, pairs, trials, parallel, tree_a, tree_b, maps=(False, False), progress=True,
@@ -995,6 +1020,8 @@ def main(argv=None):
                     "stateful (Windows Firewall: replies only) or block (nothing from the network); "
                     "MODE:game or MODE:launcher blocks only that program")
     ap.add_argument("--fw-b", default="")
+    ap.add_argument("--no-fallback", action="store_true", help="a game that hears nothing on the direct path does not "
+                    "ask for the relay (the 1.1.2 behaviour)")
     ap.add_argument("--loss", type=float, default=0.02, help="UDP loss on every leg")
     ap.add_argument("--tcp-rto", type=float, default=0.03, help="share of control messages delayed by a TCP resend")
     ap.add_argument("--seed", type=int, default=1)
@@ -1013,6 +1040,7 @@ def main(argv=None):
         pairs = [(x, y) for i, x in enumerate(types) for y in types[i:]]
     sim = Sim(trees, a.server, rng_seed=a.seed, verbose=a.verbose, net_cfg={"loss": a.loss, "tcp_rto": a.tcp_rto})
     sim.play_seconds = a.play
+    sim.fallback = not a.no_fallback
     sim.start_server()
     loop = trees["new"].proto.new_event_loop()
     asyncio.set_event_loop(loop)

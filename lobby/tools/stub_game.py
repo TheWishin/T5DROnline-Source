@@ -226,8 +226,10 @@ class Session:
                         self.mismatches += 1
                         if self.mismatches <= 10:
                             log(f"DESYNC at frame {rf}: local state hash {self.hash(rf):016x}, peer {rh:016x}")
-                elif data[:4] == MAGIC and data[4] == HELLO and self.mode == "host":
-                    self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
+                elif data[:4] == MAGIC and data[4] == HELLO:
+                    last_heard = time.time()      # (the opponent's game is there, still in its handshake: like the
+                    if self.mode == "host":      # real game, a live peer is waited for, not counted as lost)
+                        self.sock.sendto(MAGIC + bytes([HELLO, 1, self.delay, 0]) + b"\0" * 4, self.peer)
                 elif data[:4] == MAGIC and data[4] == BYE:
                     log("peer lost (peer_quit): the opponent left (its game was closed)")
                     return "peer_quit"

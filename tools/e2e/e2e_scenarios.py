@@ -1150,6 +1150,157 @@ def relay_upgrade_stub(ctx):
     relay_upgrade_case(ctx, c, b, "stub: 1.1.0 client on the relay", expect=False, real=False)
 
 
+# ------------------------------------------------------------------ the firewall blocks the game (1.1.3)
+# Windows Firewall emulated, never touched (T5_NET_TEST_INBOUND in the game, LobbyClient.test_inbound in the launcher;
+# docs/NETPLAY.md "When Windows Firewall blocks the game"). "stateful" is what Windows does for a program it blocks
+# (Cancel on its question): its own packets go out, only the replies get in. "block" lets nothing in but 127.0.0.1 --
+# stricter than Windows (some third-party firewalls); the proxy then sits on 127.0.0.2 so the games' opponent is "not
+# this PC". A punch blocked on both launchers (block_direct) stands in for two NATs no punch gets through
+# (symmetric with random ports): the natsim matrix has the real NAT types (lobby/tools/natsim.py --fw-a/--fw-b).
+FW_CASES = [
+    # label, A (game, launcher), B (game, launcher), punch fails, proxy address, path the match must play on
+    ("one side blocked", ("stateful", "stateful"), (None, None), False, "127.0.0.1", "direct"),
+    ("both sides blocked", ("stateful", "stateful"), ("stateful", "stateful"), False, "127.0.0.1", "direct"),
+    ("both blocked, no direct path (symmetric NATs)", ("stateful", "stateful"), ("stateful", "stateful"), True,
+     "127.0.0.1", "relay"),
+    ("one game blocked completely, no direct path", ("block", None), (None, None), True, "127.0.0.2", "relay"),
+    ("one game blocked completely, direct path found", ("block", None), (None, None), False, "127.0.0.2",
+     "fallback"),
+]
+RE_FW_EMULATED = r"TEST: inbound firewall emulated \((stateful|block)\)"
+RE_FW_DROP = r"TEST: inbound firewall dropped"
+
+
+def _fw_count(p, pattern):
+    rx = re.compile(pattern)
+    n = 0
+    for g in p.games:
+        try:
+            with open(g.log_path, encoding="utf-8", errors="replace") as f:
+                n += sum(1 for ln in f if rx.search(ln))
+        except (OSError, TypeError):
+            pass
+    return n
+
+
+def fw_case(ctx, a, b, label, fa, fb, punch_fails, ip, expect, real=True):
+    """One match with the emulated firewall(s): it must play on `expect` ("direct", "relay", or "fallback": the
+    direct path first, then -- the game hears nothing -- the relay), confirmed on both PCs, in sync, and never end
+    with "could not be reached"."""
+    ctx.shaper.set(0, 0, 0, on=True, ip=ip)
+    a.set_firewall(*fa)
+    b.set_firewall(*fb)
+    for p in (a, b):
+        p.client.block_direct = punch_fails
+    since = time.time()
+    emu0 = {p.name: _fw_count(p, RE_FW_EMULATED) for p in (a, b)}
+    drop0 = {p.name: _fw_count(p, RE_FW_DROP) for p in (a, b)}
+    t0 = time.time()
+    mid = queue_match(ctx, a, b, "quick")
+    first_path = a.matches[mid].get("path")
+    if expect == "fallback":
+        ctx.check(f"{label}: the lobby found the direct path", first_path in ("direct", "lan"), first_path)
+        ok = ctx.wait(lambda: len(a.events_of("match_start", since)) >= 2 and len(b.events_of("match_start", since)) >= 2,
+                      90, f"{label}: the match moves onto the relay (a second match_start on both PCs)")
+        if not ok:
+            for p in (a, b):
+                ctx.note(f"{label}: {p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-6:]}")
+        path = a.events_of("match_start", since)[-1].get("path") if ok else first_path
+        ctx.check(f"{label}: relay after the fallback", path == "relay", path)
+        ctx.check(f"{label}: the launcher whose game heard nothing showed the firewall hint",
+                  bool(a.tab.fw_hint_var.get()), repr(a.tab.fw_hint_var.get()))
+    else:
+        path = first_path
+        ok = path == expect or (expect == "direct" and path == "lan")
+        ctx.check(f"{label}: path {expect}", ok, path)
+    if real:
+        if not wait_fight(ctx, mid, (a, b), timeout=180):
+            for p in (a, b):
+                ctx.note(f"{label}: {p.name}: statuses {[x for ts, x in p.statuses if ts >= since][-8:]}")
+            raise Abort("no fight")
+        wait_results(ctx, mid, (a, b))
+        row = match_row(ctx, mid, (a, b), "confirmed", label)
+        fps_check(ctx, row, (a, b), floor=45.0)
+    else:
+        wait_results(ctx, mid, (a, b), timeout=120)
+        st = [p.matches.get(mid, {}).get("status") for p in (a, b)]
+        ctx.check(f"{label}: lobby result confirmed", st == ["confirmed", "confirmed"], st)
+        rf = [p.result_file(mid) or {} for p in (a, b)]
+        ctx.check(f"{label}: both stub games: same winner, 0 mismatching frames",
+                  rf[0].get("winner") == rf[1].get("winner") and not rf[0].get("desync") and not rf[1].get("desync"),
+                  f"winner {rf[0].get('winner')}/{rf[1].get('winner')}, desync {rf[0].get('desync')}/{rf[1].get('desync')}")
+        row = {"match": mid, "label": label, "status": st[0], "path": path}
+    secs = round(time.time() - t0, 1)
+    for p, fw in ((a, fa), (b, fb)):
+        if fw[0]:
+            n = _fw_count(p, RE_FW_EMULATED) - emu0[p.name]
+            ctx.check(f"{label}: {p.name}'s game ran with the emulated firewall ({fw[0]})", n >= 1, f"{n} session(s)")
+        if fw[1]:
+            ctx.check(f"{label}: {p.name}'s launcher ran with the emulated firewall ({fw[1]})",
+                      getattr(p.client, "test_inbound", None) == fw[1], getattr(p.client, "test_inbound", None))
+    drops = {p.name: _fw_count(p, RE_FW_DROP) - drop0[p.name] for p in (a, b)}
+    for p in (a, b):
+        ctx.check(f"{label}: {p.name} never saw \"could not be reached\"",
+                  not p.saw_status(r"could not be reached", since), [x for ts, x in p.statuses if ts >= since][-3:])
+    ctx.note(f"FWROW | {label} | A {fa} B {fb} | punch {'blocked' if punch_fails else 'ok'} | first path {first_path} "
+             f"| played on {path} | {row.get('status')} | {secs} s from queue to result | game drop lines {drops}")
+    ctx.matches.append(dict(row, firewall={"a": fa, "b": fb, "punch_fails": punch_fails, "played_on": path,
+                                           "first_path": first_path, "seconds": secs, "drop_lines": drops}))
+    for p in (a, b):
+        p.set_firewall(None, None)
+        p.client.block_direct = False
+        leave(ctx, p)
+    ctx.shaper.set(0, 0, 0, on=False)
+    ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 60, f"{label}: free for the next pairing")
+    ctx.sleep(1.0)
+    return row
+
+
+def _fw_cases(ctx, a, b, real):
+    only = os.environ.get("E2E_FW_CASES")              # (a subset: "1,3,5")
+    picked = [c for i, c in enumerate(FW_CASES, 1) if not only or str(i) in only.split(",")]
+    for c in picked:
+        try:
+            fw_case(ctx, a, b, *c, real=real)
+        except Abort as e:
+            ctx.check(f"{c[0]}: completed", False, str(e))
+            for p in (a, b):
+                p.set_firewall(None, None)
+                p.client.block_direct = False
+                leave(ctx, p)
+            ctx.shaper.set(0, 0, 0, on=False)
+            ctx.sleep(5)
+
+
+@scenario("net_firewall", "6 netcode", game=True, suites=("game", "net"),
+          desc="Windows Firewall blocking the game (emulated, T5_NET_TEST_INBOUND): one side, both sides, both without a "
+               "direct path (relay), a game blocked completely (relay bridge; the fallback when the direct path was found)")
+def net_firewall(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    game_server(ctx)
+    a = ctx.player("E2E FwA")
+    b = ctx.player("E2E FwB")
+    login(ctx, a)
+    login(ctx, b)
+    _fw_cases(ctx, a, b, real=True)
+
+
+@scenario("firewall_stub", "6 netcode", suites=("lobby", "net"),
+          desc="the net_firewall cases with stub games (the same emulated firewall in lobby/tools/stub_game.py)")
+def firewall_stub(ctx):
+    from t5lobby import nat as _nat
+    if not hasattr(_nat, "InboundFilter"):
+        raise Skip("no T5_NET_TEST_INBOUND in this tree (firewall-fallback, 1.1.3)")
+    stub_server(ctx)
+    a = ctx.player("E2E FwsA", kind="stub", env={"T5_STUB_SECONDS": 3})
+    b = ctx.player("E2E FwsB", kind="stub", env={"T5_STUB_SECONDS": 3})
+    login(ctx, a)
+    login(ctx, b)
+    _fw_cases(ctx, a, b, real=False)
+
+
 # ------------------------------------------------------------------ regional relays (1.1.1)
 def _regional_world(ctx, real, rtt=None):
     """Lobby server with two regional relay nodes (RelayNodes: usw, usc) behind simulated round trips."""

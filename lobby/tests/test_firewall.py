@@ -191,6 +191,99 @@ class FirewallCheckTest(unittest.TestCase):
             self.assertEqual(st.programs["launcher"], "ask")
 
 
+    def test_only_reads(self):
+        """Nothing in the check can change a rule: netsh is only ever asked to "show", the registry only opened."""
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(list(argv))
+            return mock.Mock(stdout=b"")
+        with mock.patch.object(fwcheck.subprocess, "run", run):
+            fwcheck.current_profiles()
+        self.assertTrue(calls)
+        self.assertTrue(all(c[:3] == ["netsh", "advfirewall", "show"] for c in calls), calls)
+        with open(fwcheck.__file__, encoding="utf-8") as f:
+            src = f.read()
+        for word in ("SetValue", "CreateKey", "DeleteValue", "DeleteKey", "runas", "add rule", "set rule", "delete rule"):
+            self.assertNotIn(word, src)
+
+
+try:
+    import tkinter as tk
+    from tkinter import ttk
+    from t5lobby import tk_tab
+except ImportError:      # pragma: no cover
+    tk = None
+
+
+@unittest.skipIf(tk is None, "no tkinter")
+class FirewallHintTest(unittest.TestCase):
+    def setUp(self):
+        from test_tk_tab import FakeApp
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as e:
+            self.skipTest(f"no display: {e}")
+        self.root.withdraw()
+        self.dir = tempfile.mkdtemp()
+        os.environ["T5_ONLINE_DIR"] = os.path.join(self.dir, "user")
+        self.app = FakeApp(self.dir)
+        frame = ttk.Frame(self.root)
+        frame.pack()
+        self.tab = tk_tab.OnlineTab(frame, self.app)
+        self.seen = []
+        self.tab.fw_check = lambda exe: (self.seen.append(exe), self.status)[1]
+
+    def tearDown(self):
+        self.tab.on_close()
+        self.root.destroy()
+
+    def settle(self, cond, timeout=5.0):
+        t_end = time.monotonic() + timeout
+        while time.monotonic() < t_end:
+            self.root.update()
+            if cond():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_blocked_game_shows_the_hint_with_how_to_fix(self):
+        self.status = fwcheck.Status("blocked", ["game"], {"game": "blocked", "launcher": "allowed"}, ["public"])
+        self.tab.check_firewall(force=True)
+        self.assertTrue(self.settle(lambda: self.tab.fw_hint_var.get()))
+        text = self.tab.fw_hint_var.get()
+        self.assertIn("t5dr.exe", text)
+        self.assertEqual(self.seen, [os.path.join(self.dir, "build", "cmake", "t5dr.exe")])   # the path the app runs
+        self.assertTrue(self.settle(lambda: self.tab.view.fw_frame.winfo_manager() == "grid"))
+        with mock.patch("webbrowser.open") as wb:
+            self.tab.fw_fix_btn.invoke()
+        wb.assert_called_once_with(tk_tab.FW_HELP_URL)
+        self.assertTrue(tk_tab.FW_HELP_URL.endswith("TROUBLESHOOTING.md#the-firewall-blocks-the-game"))
+        self.tab.dismiss_fw_hint()
+        self.assertEqual(self.tab.fw_hint_var.get(), "")
+        self.assertTrue(self.settle(lambda: self.tab.view.fw_frame.winfo_manager() == ""))
+        self.assertIn("Windows Firewall: blocked, blocks game", self.tab.report_info())
+
+    def test_allowed_or_off_shows_nothing(self):
+        for st in ("allowed", "off", "ask", "unknown"):
+            self.status = fwcheck.Status(st)
+            self.tab._fw_checked = -1e9
+            self.tab.check_firewall()
+            self.settle(lambda: not self.tab._fw_busy)
+            self.assertEqual(self.tab.fw_hint_var.get(), "", st)
+
+    def test_what_a_match_showed(self):
+        self.status = fwcheck.Status("off")
+        self.tab.on_event({"t": "match_cancel", "match": "m1", "reason": "udp_unreachable", "you": True})
+        self.assertEqual(self.tab.fw_seen, "udp")
+        self.assertIn("firewall seems to block", self.tab.fw_hint_var.get())
+        self.tab.fw_seen = None
+        self.tab._fw_update()
+        self.tab.on_driver({"t": "driver", "kind": "firewall_suspect", "reason": "no_peer", "path": "direct"})
+        self.assertEqual(self.tab.fw_seen, "no_peer")
+        self.assertIn("firewall seems to block", self.tab.fw_hint_var.get())
+
+
 # ============================================================================== the relay fallback
 class FallbackTest(unittest.TestCase):
     server_cfg = {}

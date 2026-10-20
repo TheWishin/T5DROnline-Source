@@ -33,7 +33,7 @@ nicht mit Alt+F4.
   Online-Reiter des Launchers anmelden (oder als Gast spielen), Gegner finden,
   und das Spiel startet direkt im Kampf. Siehe "Online".
 
-## Stand (2026-10-19)
+## Stand (2026-10-20)
 
 Getestet auf einem Entwicklungs-PC (Windows 11, Ryzen 9 mit 16 Kernen, RTX 3090).
 Online wurde zwischen zwei echten PCs über das Internet getestet
@@ -42,22 +42,25 @@ Online wurde zwischen zwei echten PCs über das Internet getestet
 | Bereich | Stand |
 |---|---|
 | Start | Funktioniert. Startet, öffnet das Fenster, erreicht Titel, Menüs, Charakterwahl und Kämpfe. |
-| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Schwächere PCs sind noch nicht gemessen. |
+| Menüs, Kämpfe | 60 fps, auch wenn andere Programme den PC auslasten. Das Spiel wartet nicht mehr aktiv auf seine Frames: etwa 30 % weniger CPU bei 8 Kernen / 16 Threads. Seit 1.1.3 brauchen die eigene Arbeit des Spiels und das Übersetzen seiner Zeichenbefehle etwa ein Viertel weniger Prozessorzeit pro Kampf-Frame, und ein PC, der knapp zu langsam für 60 fps ist, schafft in Kämpfen 45-55 statt 30-45 fps (gemessen mit gebremsten Test-Spielen; echte schwache PCs sind noch nicht gemessen). |
 | Laptops, Handhelds | **Stromsparen** (Launcher-Einstellungen; Auto schaltet es ein bei Akku, Energiesparplan, mobilem Prozessor oder integrierter Grafik): weniger Hilfs-Threads, kein aktives Warten, online dasselbe Spiel. Noch nicht auf einem echten Laptop oder Handheld ausprobiert. |
 | Spielmodi | Arcade, Ghost, Versus (zwei Spieler an einem PC), Survival und Practice laufen. Gallery und das Online-Menü des Spiels brauchen die Server von Namco und Sony (abgeschaltet) und sagen das. |
 | Kämpfer, Stages | Alle Kämpfer und Stages werden richtig dargestellt, auch Gesichter, Bodenschatten und Figuren im Hintergrund. Stage-Unschärfe und das Leuchten der Sonne sehen bei jeder internen Auflösung aus wie auf der PS3 (Settings -> Stage blur / glow schaltet sie aus). |
-| Freischaltungen | Offline, in den Launcher-Einstellungen -> Unlocks (beides anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben immer einen eigenen frischen Spielstand, auf beiden PCs derselbe. |
-| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. |
+| Freischaltungen, Kostüme | Offline, in den Launcher-Einstellungen -> Unlocks (beides anfangs aus): alle Stages ohne die Kämpfe, die sie sonst kosten, und alle Customize-Items für 0 Fight Money (dein Spielstand wird vorher gesichert). Online-Spiele haben einen eigenen frischen Spielstand, auf beiden PCs derselbe; nur dein eigenes Kostüm kommt aus deinem Spielstand, und beide Spieler sehen beide Kostüme (1.1.3). |
+| Anzeige | Fenster in jeder Größe, randloses Vollbild (Alt+Enter oder F11). **Interne Auflösung** von Lowest (0,5x) über Native (720p) bis 1080p, 1440p und 4K, oder Auto (die Stufe des Bildschirms, mit integrierter Grafik höchstens 1080p) (Launcher-Einstellungen, `PS3_INTERNAL_RES`); jede Stufe in Kämpfen, Menüs, Videos und Charakterwahl geprüft. Weniger Arbeit für die Grafikkarte ab 1080p (1.1.3). |
 | Musik, Soundeffekte, Videos | Funktionieren. |
 | Steuerung | Tastatur, Xbox-Controller (XInput), DualShock 4 und DualSense über USB und Bluetooth (direkt gelesen, ohne Steam), Arcade-Sticks und Hitboxen (DirectInput), zwei Spieler an einem PC, Knöpfe im Launcher einstellbar (Settings -> Set up controllers) oder in der `controls.ini`. Kurze Taps gehen nie verloren. Von einem Menschen ausprobiert: Xbox-Pad und Arcade-Stick, alle Eingaben kamen an, flüssig. |
 | Trainings-Werkzeuge | Im Practice-Modus: eine Eingabe-Anzeige (die letzten Eingaben jedes Spielers, jede mit der Zahl der Frames, die sie gehalten wurde) und Framedaten nach jedem Schlagabtausch (Startup und wer zuerst wieder handeln kann: `+3`, `-12`), scharf über das Bild gezeichnet, bei jeder Auflösung. Launcher: Settings -> Trainings-Anzeige (Aus / Eingaben / Eingaben + Framedaten, auch in den anderen Offline-Modi, online nur die eigenen Eingaben), F2 schaltet sie im Spiel um. Siehe [TRAINING.md](TRAINING.md) (englisch). |
 | Speichern | Funktioniert. Die Uhr im Spiel zeigt das echte Datum. |
 | Lange Sitzungen | Der alte Speicherfehler (weißes Bild nach ein paar Besuchen des Titels) ist behoben. |
-| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. |
+| Online-Spiel | Funktioniert auf einem PC und über den öffentlichen Lobby-Server. Rollback-Netcode: 1 Frame Input-Delay bis ~60 ms Ping, darüber 2 (Settings -> Online input delay; Ranked: immer 2), getestet bei 0/50/150 ms Ping mit Paketverlust. Zwischen zwei echten PCs über das Internet gespielt (18.10.2026). Quick- und Ranked-Suche nehmen zuerst Gegner mit niedrigem Ping (geschätzt über den nächsten Relay-Server) und erweitern die Suche, während du wartest. Viele abgebrochene Matches hintereinander machen das offene Spiel nicht mehr kaputt. Einen Online-Kampf kann niemand pausieren. Matches kommen auch zustande, wenn eine Firewall das Spiel blockiert: über das Relay, wenn sonst nichts durchkommt (1.1.3). |
 | Freunde, Einladungen | Mit Konto fügst du auf der Seite **Freunde** im Online-Reiter Freunde mit ihrem Namen hinzu und siehst, wer online ist, sucht oder im Match ist. **Einladen** zu einem lockeren Match oder in deinen Raum: ein Klick auf Annehmen startet es. |
+| Räume | Lobby-Räume für 2 oder Community-Räume für bis zu 8, die sich abwechseln (der Sieger bleibt, oder jeder der Reihe nach); offen, mit Passwort oder Einladungscode, oder versteckt (1.1.3). |
+| Turniere | Mit Konto im Online-Reiter bei Turnieren mitspielen (Turnier-Hosts legen sie an; für einen der 20 Host-Plätze eine DM an wishin): Single oder Double Elimination, Sets bis 2 oder 3 Siege, bis zu 64 Spieler; der Server ruft jedes Set auf, und das Spiel startet von selbst (1.1.3). |
 | Replays | Jedes Online-Match wird gespeichert (ein paar KB). Der Reiter **Replays** spielt es im Spiel noch einmal ab und prüft, dass es mit dem Live-Match identisch ist. |
+| Zuschauen | **Zuschauen** beim Match eines Freundes, eines Raums oder einem Turnier-Set, live im eigenen Spiel, ein paar Sekunden dahinter und Bild für Bild geprüft; nur wenn beide Spieler es erlauben (Settings -> Spectators) (1.1.3). |
 | Launcher | Englisch und sechs Übersetzungen: Deutsch, Español, 한국어, 日本語, Português (Brasil), Français, ohne abgeschnittene Texte bei 100 % und 150 % Anzeige-Skalierung. Der Einstellungen-Reiter scrollt. Aktualisiert sich selbst. |
-| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. Ein stehengebliebener Hilfsprozess hält das Bauen nicht mehr bei "Translate code" an. |
+| Bauen aus deiner Kopie | Funktioniert auf dem Entwicklungs-PC. Ein stehengebliebener Hilfsprozess hält das Bauen nicht mehr bei "Translate code" an; eine Datei, die beim Kompilieren scheitert, bekommt einen zweiten Versuch (1.1.3). |
 
 ## Voraussetzungen
 
@@ -160,8 +163,11 @@ Sprachen gleich.
   Bildschirmen, mehr Arbeit für die Grafikkarte: der Launcher nennt die Stufe,
   die zu deinem Bildschirm passt); Lower und Lowest zeichnen die 3D-Szene
   kleiner für schwache Grafikkarten (Laptops, integrierte Grafik), das HUD
-  bleibt scharf. Es ändert nur das Bild, der andere Spieler online braucht
-  also nicht dieselbe Einstellung. Fallen Kämpfe unter 60 fps, geh eine Stufe
+  bleibt scharf. **Auto** nimmt die Stufe, die zu deinem Bildschirm passt,
+  mit integrierter Grafik höchstens 1080p (sie teilt sich Speicher und Strom
+  mit dem Prozessor, ein größeres Bild bremst dort das ganze Spiel). Es
+  ändert nur das Bild, der andere Spieler online braucht also nicht dieselbe
+  Einstellung. Fallen Kämpfe unter 60 fps, geh eine Stufe
   herunter. Mehr in [TROUBLESHOOTING.md](TROUBLESHOOTING.md#low-frame-rate)
   (englisch).
 - **Settings** -> **VSync**: An (flüssig, Standard) oder Aus (geringste
@@ -203,9 +209,10 @@ Sprachen gleich.
     dem Ausschalten; der Launcher sichert deinen Spielstand vor dem ersten Spiel
     damit einmal (im Ordner `save-backups` im Spielordner; zum Rückgängigmachen
     zurückkopieren).
-  - Online wird beides nicht benutzt: Dort haben beide Spieler immer dieselben
-    Stages zur Wahl und die Standard-Kostüme, egal was in ihren Spielständen
-    und Einstellungen steht (die Stage wählt die Lobby).
+  - Online wird die Stage-Freischaltung nicht benutzt: Dort haben beide Spieler
+    immer dieselben Stages zur Wahl (die Stage wählt die Lobby). Was du im
+    Item-Shop genommen und angezogen hast, zeigt sich online aber als dein
+    eigenes Kostüm (ab 1.1.3; siehe "Online").
 - **Esc** beendet das Spiel. Der Knopf **Stop game** auch. In einem
   Online-Match zweimal Esc drücken: Wer dort das Spiel schließt (Esc, Alt+F4,
   das X des Fensters), verliert das Match.
@@ -332,7 +339,8 @@ Gut zu wissen:
   Freischaltungen gelten nur offline, damit beide Spieler immer dasselbe Spiel
   spielen. Stell deine Tasten im Launcher ein (Settings -> Set up
   controllers); die gelten auch online. Dein eigener Spielstand wird beim
-  Online-Spielen nie angefasst.
+  Online-Spielen nie angefasst. Nur dein eigenes Kostüm wird daraus gelesen
+  (siehe unten).
 - Einen Online-Kampf kann niemand pausieren (ab 1.1.2): **Start** öffnet dort
   für keinen der beiden Spieler das Pausenmenü. Das Replay nach einer Runde
   überspringt Start weiterhin. Wer ein Match abbrechen will, schließt das Spiel
@@ -354,7 +362,8 @@ Gut zu wissen:
   ist bereit“: **Annehmen** innerhalb von 5 Minuten, dann startet das Spiel von
   selbst. Sets gehen über Best of 3 oder 5 und laufen wie lockere Sets mit der
   Auswahl im Spiel; der Turnierbaum (Single oder Double Elimination) füllt sich
-  von selbst. Jeder mit Konto kann mit **Anlegen...** ein Turnier ausrichten.
+  von selbst. Turnier-Hosts legen Turniere mit **Anlegen...** an. Es gibt 20
+  Host-Plätze: Wer Turniere ausrichten will, schreibt **wishin** eine DM.
   Mehr in [TOURNAMENTS.md](TOURNAMENTS.md) (auf Englisch).
 - **Private Räume und Community-Räume** (ab 1.1.3): **Raum erstellen** fragt,
   wie viele Spieler (2 bis 8) und wer beitreten darf: alle, mit Passwort oder

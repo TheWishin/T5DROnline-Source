@@ -599,6 +599,12 @@ class Walk:
         self.screen("online tournament call")
         tab.tours.call = None
         tab.hide_bar()
+        # a player who may not create tournaments: the launcher's own line where Create... would be
+        tab.tours.can_create, tab.tours.listed, tab.tours.create_hint = False, True, ""
+        tab.tours.render_list()
+        self.screen("online tournaments, not a host")
+        tab.tours.can_create = True
+        tab.tours.render_list()
 
     def _windows(self, d):
         """The Controls window (fake controllers), the problem report and the update offer: windows of their own,

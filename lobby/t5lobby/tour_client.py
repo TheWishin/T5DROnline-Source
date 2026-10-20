@@ -17,6 +17,8 @@ Events (pushed by the server, emitted as they come):
     tour_changed    {id, rev, state}: fetch the tournament again if it is on screen
     tour_notice     {code, tournament {id, name}, ...}: started, checkin_open, no_checkin, dq, eliminated, finished,
                      cancelled, attention (the organizer)
+    tour_access     {can_create, create_hint}: the server's owner made this player a tournament host or admin, or
+                    took it back (`t5lobby-admin tour-host`)
 """
 
 
@@ -24,7 +26,8 @@ class TourCalls:
     """Needs self._call(msg) (LobbyClient)."""
 
     def tour_list(self):
-        """-> {"rows": [summary ...], "can_create": bool, "rated": bool}"""
+        """-> {"rows": [summary ...], "can_create": bool, "rated": bool, "create_hint": text (optional: how to become a
+        tournament host on this server, T5L_TOUR_HOST_HINT)}"""
         return self._call({"t": "tour_list"})
 
     def tour_get(self, tid):

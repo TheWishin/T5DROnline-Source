@@ -16,11 +16,13 @@ shorter: the installed admin tool now waits for ranked sets itself, and the rela
 ## In short
 
 1. Copy the 1.1.3 `lobby/` to the central server and check it there, including the database upgrade on a copy.
-2. Decide the tournament settings (below) and put them into `/etc/t5lobby/t5lobby.env` if they differ from the defaults.
+2. Put the owner's tournament settings (below: decided) into `/etc/t5lobby/t5lobby.env` (S1).
 3. Notice, then **`drain --wait`** (the installed 1.1.2 tool waits for running matches and ranked sets: no hand check).
 4. `install.sh` on the central server (it restarts the service: a few seconds).
-5. Checks. Players log in again (1.1.2 launchers by themselves with a saved login, 1.1.1 by hand).
+5. Checks, including `t5lobby-admin tour-hosts`. Players log in again (1.1.2 launchers by themselves with a saved
+   login, 1.1.1 by hand).
 6. Only after the owner has **published** 1.1.3: `sudo t5lobby-admin release 1.1.3`.
+7. From then on, whenever a player asks for a host slot: `sudo t5lobby-admin tour-host add NAME` (H1).
 
 The relay node runs the same relay code in 1.1.2 and 1.1.3 (`relaynode.py`, `relayctl.py`, `udp.py`, `relays.py`
 unchanged): it may stay on 1.1.2. Every mix was rehearsed (central 1.1.2/1.1.3 x node 1.1.2/1.1.3).
@@ -30,9 +32,16 @@ Time: 10-20 minutes, most of it the drain. Downtime: the central restart, a few 
 ## What 1.1.3 changes on the servers
 
 - **Database**: the community tournaments' tables `tournaments`, `tour_entrants`, `tour_sets` and the index
-  `tournaments_state`, created at the first start, with their **own schema version** (`kv` key `schema.tournaments` =
-  1; `PRAGMA user_version` stays 1). Nothing else in the database changes (rehearsed: every other table identical).
-  1.1.2 opens the upgraded database (rehearsed) and ignores the new tables.
+  `tournaments_state`, and `tour_hosts` (the tournament hosts and admins of the admin tool), created at the first
+  start, with their **own schema version** (`kv` key `schema.tournaments` = 2: step 1 the tournaments, step 2
+  `tour_hosts`; `PRAGMA user_version` stays 1). Nothing else in the database changes (rehearsed: every other table
+  identical). 1.1.2 opens the upgraded database (rehearsed; with `tour_hosts`: `lobby/tests/test_deploy.py` starts
+  the v1.1.2 server on it) and ignores the new tables.
+- **Tournament hosts** (docs/TOURNAMENTS.md "Who may create tournaments"): `t5lobby-admin tour-host add NAME
+  [--admin]`, `tour-host remove NAME`, `tour-hosts` -- who may create tournaments (20 host slots,
+  `T5L_TOUR_MAX_HOSTS`) and who runs every tournament, without editing the env file and without a restart (the
+  server reads them every 5 s and tells an online player's launcher at once). A player who may not create sees
+  `T5L_TOUR_HOST_HINT` where the Create button would be.
 - **Community tournaments** (docs/TOURNAMENTS.md): organizers create single/double elimination brackets, the server
   calls the sets, players accept within `T5L_TOUR_NOSHOW` (or are out), sets are best-of sets like ranked sets
   (unrated by default). Kept in the database: a restart resumes them. The status port also serves the brackets as
@@ -54,14 +63,24 @@ Time: 10-20 minutes, most of it the drain. Downtime: the central restart, a few 
 
 ## Settings (`/etc/t5lobby/t5lobby.env`)
 
-`install.sh` keeps the env file, the certificate and the relay secret. **Nothing has to be set for 1.1.3**; the
-defaults below apply. Decide the first block before the deploy (owner):
+`install.sh` keeps the env file, the certificate and the relay secret. The owner has decided the first block
+(2026-10-20): only admins and the hosts the owner adds create tournaments; the owner's lobby account `wishin` is the
+tournament admin; players who want to host DM the owner, who adds them from the console (`tour-host add`, H1). Step
+S1 puts these lines into the env file; everything else keeps its default:
 
-| Setting | Default | Decide / what |
+```
+T5L_TOUR_ORGANIZERS=none
+T5L_TOUR_ADMINS=wishin
+T5L_TOUR_HOST_HINT=Tournament hosts only: DM wishin for one of the 20 host slots.
+```
+
+| Setting | Default | Production / what |
 |---|---|---|
-| `T5L_TOUR_ORGANIZERS` | `any` | **owner**: who may create tournaments: `any` (every account), `none`, or a comma list of account names. With `any`, throw-away accounts can fill the server's 20 open tournaments (limits below); a list (the owner, trusted community organizers) is the cautious start |
-| `T5L_TOUR_ADMINS` | (none) | **owner**: account names that may run every tournament (start, cancel, report, override, reset, disqualify) and are not held by the limits -- at least the owner's account |
-| `T5L_TOUR_RATED` | `0` | **owner**: 1 = tournament sets change the rating (once per set, like a ranked set) |
+| `T5L_TOUR_ORGANIZERS` | `any` | **`none`** (decided): nobody creates tournaments by this rule; the admins and the hosts of `tour-host add` do |
+| `T5L_TOUR_ADMINS` | (none) | **`wishin`** (decided): runs every tournament (start, cancel, report, override, reset, disqualify), not held by the limits. More admins without a restart: `tour-host add NAME --admin` |
+| `T5L_TOUR_RATED` | `0` | **stays `0`** (decided, not set): tournament sets do not change the rating |
+| `T5L_TOUR_HOST_HINT` | (none) | **`Tournament hosts only: DM wishin for one of the 20 host slots.`** (decided): what a player who may not create tournaments sees in place of the Create button; no quotes in the env file |
+| `T5L_TOUR_MAX_HOSTS` | `20` | host slots `tour-host add` gives out (admins not counted); 20 is the decided number: not set |
 | `T5L_TOUR_NOSHOW` | `300` | seconds to accept a called set; who has not is a no-show (out) |
 | `T5L_TOUR_RETRIES` | `2` | a set that ended without a result is called again this often, then waits for the organizer |
 | `T5L_TOUR_MAX_OPEN` / `T5L_TOUR_PER_ORGANIZER` | `20` / `2` | open tournaments on the server / per organizer and per internet address |
@@ -81,7 +100,8 @@ defaults below apply. Decide the first block before the deploy (owner):
 | `T5L_RELAY_TIMEOUT` | `10` | seconds to set up the relay path (1.1.2: 6) |
 
 Keep everything that is there (`T5L_RELAYS`, the TLS paths, `T5L_OLD_STAGES` if set). A setting goes into the env
-file as `NAME=value` on its own line; the server reads it at its start (C2 below restarts it anyway).
+file as `NAME=value` on its own line, without quotes; the server reads it at its start (C2 below restarts it anyway).
+The hosts and admins of `tour-host` live in the database, not in the env file: the server reads them every 5 s.
 
 ## Step by step
 
@@ -118,8 +138,32 @@ EOF
 rm -f /root/precheck.db /root/precheck.db-wal /root/precheck.db-shm
 ```
 
-Expect `schema 1 | tournaments [1] | accounts <N> | matches <M> | integrity ok` (rehearsal: `schema 1 |
-tournaments [1] | accounts 109 | matches 412 | integrity ok`). Anything else: stop here.
+Expect `schema 1 | tournaments [1, 2] | accounts <N> | matches <M> | integrity ok` (rehearsal, before `tour_hosts`:
+`schema 1 | tournaments [1] | accounts 109 | matches 412 | integrity ok`). Anything else: stop here.
+
+The admin account must exist before its name goes into `T5L_TOUR_ADMINS` (a name nobody has could be registered by
+anybody):
+
+```sh
+sudo t5lobby-admin user wishin                    # "name      wishin (id ...)": the owner's account
+```
+
+### S1. The tournament settings (central; the running 1.1.2 server does not read them)
+
+```sh
+cp -p /etc/t5lobby/t5lobby.env /root/t5lobby.env.before-113
+grep -n "^T5L_TOUR_" /etc/t5lobby/t5lobby.env     # nothing yet (1.1.2 has no tournaments)
+cat >> /etc/t5lobby/t5lobby.env <<'EOF'
+
+# community tournaments (1.1.3): only admins and the hosts added with `t5lobby-admin tour-host add NAME`
+T5L_TOUR_ORGANIZERS=none
+T5L_TOUR_ADMINS=wishin
+T5L_TOUR_HOST_HINT=Tournament hosts only: DM wishin for one of the 20 host slots.
+EOF
+grep -n "^T5L_TOUR_" /etc/t5lobby/t5lobby.env     # the three lines, once each
+```
+
+If a line was there already, edit it instead of adding a second one. The 1.1.3 server reads them at its start in C2.
 
 ### C1. Notice, 10-15 minutes ahead (central)
 
@@ -151,14 +195,18 @@ sudo runuser -u t5lobby -- python3 -c "import sqlite3; c = sqlite3.connect('/var
 stat -c '%a %U:%G %n' /var/lib/t5lobby/t5lobby.db*
 ```
 
-- The log: `database: tournament schema 1 (tournaments, entrants, bracket sets)` once, `listening: TCP 0.0.0.0:7781
-  (TLS)`, `relay usw ... is up`, no ERROR or Traceback.
+- The log: `database: tournament schema 1 (tournaments, entrants, bracket sets)` and `database: tournament schema 2
+  (tournament hosts and admins)` once, `listening: TCP 0.0.0.0:7781 (TLS)`, `relay usw ... is up`, no ERROR or
+  Traceback.
 - `status`: a new line `tournaments 0 running, 0 open for sign-up, 0 sets being played`; `relay usw ... up`;
   accounts as in P2.
 - `/tournaments`: `{"tournaments": [], ...}`.
-- The database line: `schema 1 tournaments ('1',) accounts <N> matches <M> friends <as before> integrity ok`;
+- The database line: `schema 1 tournaments ('2',) accounts <N> matches <M> friends <as before> integrity ok`;
   files `600` (or `640`) `t5lobby:t5lobby`.
-- A real login with the owner's launcher (1.1.2: by itself with the saved login).
+- `sudo t5lobby-admin tour-hosts`: `admin  wishin  T5L_TOUR_ADMINS (env file)` and `0 of 20 host slots used;
+  T5L_TOUR_ORGANIZERS=none` (the settings of S1 arrived).
+- A real login with the owner's launcher (1.1.2: by itself with the saved login). With a 1.1.3 launcher: `wishin`
+  has **Create...** on the Tournaments page; another account sees "Tournament hosts only: DM wishin for one of the 20 host slots." there instead.
 
 ### N1. The relay node (optional)
 
@@ -172,6 +220,21 @@ bash /opt/src/t5dr-lobby-1.1.3/lobby/deploy/linux/install.sh --relay-only --rela
 ```
 
 (copy `lobby_113.tgz` there first as in P1/P2.) Checks as in DEPLOY_1.1.2.md N1.
+
+### H1. Tournament hosts (central, any time after C2)
+
+A player DMs the owner for a host slot; the owner (or whoever runs the console) adds them:
+
+```sh
+sudo t5lobby-admin tour-host add NAME            # "NAME is now a tournament host ... N of 20 host slots used"
+sudo t5lobby-admin tour-host add NAME --admin    # a tournament admin like wishin (no host slot)
+sudo t5lobby-admin tour-host remove NAME         # the slot is free again
+sudo t5lobby-admin tour-hosts                    # the list
+```
+
+No restart and no new login: within 5 s the player's launcher shows **Create...** (or takes it away). When all 20
+slots are used, `add` refuses and says to remove one first. The account must exist (the name as in the launcher;
+case does not matter).
 
 ### C4. After the owner has published 1.1.3 (central)
 
@@ -221,7 +284,10 @@ journalctl -u t5lobby -n 20 --no-pager
 - Rehearsed without a drain, in the middle of a tournament final: 1.1.2 started on the 1.1.3 database (tournament
   tables untouched), voided the 8 running matches and 4 open sets (the tournament set among them); 1.1.1, 1.1.2 and
   1.1.3 launchers logged in and played, relayed through a 1.1.3 node too. Back on 1.1.3: the tournament resumed.
-- While 1.1.2 runs there are no tournaments, spectators or private rooms; a 1.1.3 launcher says so.
+- While 1.1.2 runs there are no tournaments, spectators or private rooms; a 1.1.3 launcher says so. The `T5L_TOUR_*`
+  lines of S1 can stay in the env file (1.1.2 ignores settings it does not know), and so does `tour_hosts`; the
+  installed 1.1.2 admin tool has no `tour-host` (the hosts are back with 1.1.3). A host row whose account id 1.1.2
+  gives to a new account does not count (the row is older than that account).
 - **Tournaments that should start while 1.1.2 runs start at once when 1.1.3 is back**, with whoever is online then
   (the others become no-shows after 5 minutes). Before a long rollback, tell the organizers (or cancel/re-create
   those tournaments with a T5L_TOUR_ADMINS account once 1.1.3 is back).
@@ -237,8 +303,9 @@ journalctl -u t5lobby -n 20 --no-pager
    and the organizer rights of its tournaments (start, cancel, report results). Now the highest id ever used is
    kept (`kv` `accounts.max_id`); tests in `lobby/tests/test_deploy.py`. Still possible while rolled back to 1.1.2
    (see Rollback).
-2. **Tournament organizers**: `T5L_TOUR_ORGANIZERS=any` lets every account create tournaments (limits: 20 open, 2
-   per organizer and per address). Decide before the deploy (Settings).
+2. **Tournament organizers** (decided): `T5L_TOUR_ORGANIZERS=none`, `T5L_TOUR_ADMINS=wishin`, hosts added with
+   `tour-host add` (20 slots; each host: 2 open tournaments, 20 on the server). If S1 is skipped, the default `any`
+   lets every account create tournaments: check `tour-hosts` in C3.
 3. **Restarts during tournaments** (above): plan updates outside announced tournament times; always drain.
 4. **Rooms and invite codes end at every restart** (memory only, unchanged since 1.0; more noticeable now that
    codes are shared).

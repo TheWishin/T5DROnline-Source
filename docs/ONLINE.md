@@ -315,6 +315,12 @@ bridge): the game talks to it on 127.0.0.1, the launcher carries its packets
 to the relay and tries the direct path in 3-second bursts every 40 s (both at
 the same server time); once it works both ways the match leaves the relay
 (`nat_upgrade`), and goes back to it if the direct path goes quiet.
+The game's packets cross the bridge on a thread of its own (1.1.4, "the pump": `nat.RelayBridge`), raised to
+the priority of the game's own network thread, not on the lobby client's event loop at normal priority: on a
+PC whose processors the game keeps busy the old way held a packet for a whole time slice now and then (two
+passes per round trip: p50 5.7 ms, p95 13 ms, max 26 ms added; with the pump 0.2 / 0.3 / 1.9 ms --
+`lobby/tools/bridge_latency.py --hog 4 --cpus 2`), on both PCs of every relayed match. Launcher only: the
+relay server sees the same packets as before (docs/NETPLAY.md "Relayed matches").
 
 If a NAT re-maps the game's port between the launcher's bind and the game's
 first packet, game traffic (`T5NP` magic) from the same IP is accepted for the

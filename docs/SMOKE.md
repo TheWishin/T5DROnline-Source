@@ -310,7 +310,10 @@ it stops -- `relay_regional` with real games, `relay_regional_stub`, and
 `relay_e2e_tool` / `relay_e2e_tool_game` run `lobby/tools/relay_e2e.py` as
 it is; `relay_old_client` plays the real 1.1.0 Online tab, client and match
 driver from the git tag `v1.1.0` against 1.1.1 on the lobby server's own
-relay; `net_vsync_off`: VSync off in one game of the match, in sync), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
+relay; `net_relay_smooth` (suite net, 1.1.4): relayed against direct at the same emulated network -- the
+relayed path as two shaped legs through a relay node, `E2E_SMOOTH_CASES` / `E2E_SMOOTH_PATHS` (`relay-old` =
+1.1.3's bridge) / `E2E_SMOOTH_CPUS` (a busy PC), rollbacks/s, depth, stalls, time-sync sleeps and fps per match in
+`smooth.json` (docs/NETPLAY.md "Relayed matches"); `net_vsync_off`: VSync off in one game of the match, in sync), failures (Alt+F4 = forfeit, a killed game = crash, a cut network
 = disconnect, a game restarted between matches, another build refused),
 launcher extras (Report a problem without names/IPs/tokens, the update check
 against mocked GitHub answers, settings that survive a restart), the in-game

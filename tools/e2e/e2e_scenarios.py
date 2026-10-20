@@ -1026,6 +1026,187 @@ def net_mixed_fallback(ctx):
     net_case(ctx, a, b, "mixed: one side lockstep only, RTT 40", 40, 0, 0, "auto", False, None, mode="lockstep")
 
 
+# ------------------------------------------------------------------ relayed vs direct at the same network (1.1.4)
+# (round trip ms, jitter +- ms, loss %) of the whole path; E2E_SMOOTH_CASES="60/0/0,120/8/2" picks others,
+# E2E_SMOOTH_PATHS="relay" (or "direct") only one path, "relay-old" the relay with the launcher's bridge forwarding on
+# its event loop (T5_RELAY_PUMP=0, 1.1.3's way: interleaved before/after in one run); E2E_SMOOTH_CPUS=N: a busy PC -- the launchers (this runner) and
+# both games on the last N processors only (the lobby server and the relay node, other machines, stay off them)
+SMOOTH_CASES = [(60, 0, 0), (60, 8, 2), (120, 0, 0), (120, 8, 2), (200, 0, 0), (200, 8, 2)]
+RE_RB_WIN = re.compile(r"rbnet: (\d+) frames in ([0-9.]+) s \([0-9.]+ fps\), (\d+) rollbacks \((\d+) frames re-simulated, "
+                       r"max depth (\d+), depth histogram((?: \d+:\d+)+| -)\).*?(\d+) stalls \(([0-9.]+) ms, ([0-9.]+) ms of them "
+                       r"in lockstep windows\), (\d+) frames ran on predicted input, (\d+) time-sync sleeps \(([0-9.]+) ms\), "
+                       r"avg advantage ([-0-9.]+)")
+RE_RB_FT = re.compile(r"rbnet: frame times \(displayed frames\) this window p50 ([0-9.]+) ms p99 ([0-9.]+) ms")
+RE_LS_SPEED = re.compile(r"\[netplay\] speed: ([\d.]+) fps, this PC ([\d.]+) fps without the waits for the peer "
+                         r"\(waited ([\d.]+) s of ([\d.]+) s\)")
+RE_RB_RTT = re.compile(r"auto: round trip (\d+) ms")
+
+
+def smooth_stats(lines):
+    """How smooth one game's match was, from its part of the log: the rollback loop's 300-frame windows
+    (rollbacks, depth, stalls outside the lockstep windows, time-sync sleeps, fps, p99 frame time) or, in
+    lockstep, the 600-frame speed lines (fps, time waited for the peer)."""
+    st = {"frames": 0, "secs": 0.0, "rollbacks": 0, "resim": 0, "hist": {}, "stalls": 0, "stall_ms": 0.0,
+          "lock_ms": 0.0, "predicted": 0, "sleeps": 0, "sleep_ms": 0.0, "win_fps": [], "win_p99": [],
+          "ls_frames_s": 0.0, "ls_wait_s": 0.0, "ls_fps": [], "rtt_game": None}
+    for ln in lines:
+        m = RE_RB_WIN.search(ln)
+        if m:
+            g = m.groups()
+            st["frames"] += int(g[0])
+            st["secs"] += float(g[1])
+            st["rollbacks"] += int(g[2])
+            st["resim"] += int(g[3])
+            for part in g[5].split():
+                if ":" in part:
+                    d, n = part.split(":")
+                    st["hist"][int(d)] = st["hist"].get(int(d), 0) + int(n)
+            st["stalls"] += int(g[6])
+            st["stall_ms"] += float(g[7])
+            st["lock_ms"] += float(g[8])
+            st["predicted"] += int(g[9])
+            st["sleeps"] += int(g[10])
+            st["sleep_ms"] += float(g[11])
+            if float(g[1]) > 0:
+                st["win_fps"].append(int(g[0]) / float(g[1]))
+            continue
+        m = RE_RB_FT.search(ln)
+        if m:
+            st["win_p99"].append(float(m.group(2)))
+            continue
+        m = RE_LS_SPEED.search(ln)
+        if m:
+            st["ls_fps"].append(float(m.group(1)))
+            st["ls_wait_s"] += float(m.group(3))
+            st["ls_frames_s"] += float(m.group(4))
+            continue
+        m = RE_RB_RTT.search(ln)
+        if m and st["rtt_game"] is None:
+            st["rtt_game"] = int(m.group(1))
+    n = sum(st["hist"].values())
+    p95 = None
+    if n:
+        acc = 0
+        for d in sorted(st["hist"]):
+            acc += st["hist"][d]
+            if acc >= 0.95 * n:
+                p95 = d
+                break
+    st["rb_per_s"] = round(st["rollbacks"] / st["secs"], 2) if st["secs"] else None
+    st["depth_mean"] = round(st["resim"] / st["rollbacks"], 2) if st["rollbacks"] else 0.0
+    st["depth_p95"] = p95 or 0
+    st["fps"] = round(st["frames"] / st["secs"], 1) if st["secs"] else (
+        round(sum(st["ls_fps"]) / len(st["ls_fps"]), 1) if st["ls_fps"] else None)
+    st["stall_ms_play"] = round(st["stall_ms"] - st["lock_ms"], 1)
+    st["p99_med"] = sorted(st["win_p99"])[len(st["win_p99"]) // 2] if st["win_p99"] else None
+    st["ls_wait_pct"] = round(100.0 * st["ls_wait_s"] / st["ls_frames_s"], 1) if st["ls_frames_s"] else None
+    return st
+
+
+def _smooth_cases():
+    spec = os.environ.get("E2E_SMOOTH_CASES", "").strip()
+    cases = [tuple(float(x) for x in c.split("/")) for c in spec.split(",") if c] if spec else SMOOTH_CASES
+    paths = [p for p in os.environ.get("E2E_SMOOTH_PATHS", "direct,relay").split(",") if p in ("direct", "relay",
+                                                                                                  "relay-old")]
+    return cases, paths
+
+
+@scenario("net_relay_smooth", "6 netcode", game=True, suites=("net",),
+          desc="relayed vs direct at the same emulated network (round trip, jitter, loss of the whole path; relayed: "
+               "two legs through a regional relay node): rollbacks/s, rollback depth, stalls, time-sync sleeps, fps; "
+               "every match in sync (relay-smooth, 1.1.4; E2E_SMOOTH_CASES / E2E_SMOOTH_PATHS)")
+def net_relay_smooth(ctx):
+    from e2e_harness import LegShaper, RelayNodes
+    try:
+        import t5lobby.relayctl  # noqa: F401
+    except ImportError:
+        raise Skip("no regional relays in this tree")
+    leg = LegShaper()
+    # the lobby server's own relay far away (never chosen); "usc" is the node both play through, its legs shaped
+    ctx.relays = RelayNodes(ctx, {"main": (400, 400), "usc": (0, 0)}, shaped={"usc": leg})
+    game_server(ctx, **ctx.relays.server_env())
+    if not ctx.wait(lambda: all(ctx.relays.alive().get(r) for r in ctx.relays.nodes), 25, "relay node up"):
+        raise Abort("relay node not up")
+    from e2e_harness import pin_process
+    cpus = int(os.environ.get("E2E_SMOOTH_CPUS", "0") or 0)
+    if cpus:
+        ctx.note(f"busy PC: launchers and games on processors {hex(pin_process(cpus))}")
+    try:
+        _relay_smooth_cases(ctx, leg)
+    finally:
+        if cpus:
+            pin_process(0)
+
+
+def _relay_smooth_cases(ctx, leg):
+    a = ctx.player("E2E Smooth1")
+    b = ctx.player("E2E Smooth2")
+    _routed(ctx, a, 0)
+    _routed(ctx, b, 1)
+    login(ctx, a)
+    login(ctx, b)
+    ctx.wait(lambda: all(len(p.client.relay_rtts or {}) >= 2 for p in (a, b)), 45, "both measured both relays",
+             fail=False)
+    cases, paths = _smooth_cases()
+    rows = []
+    for rtt, jitter, loss in cases:
+        for path in paths:
+            label = f"{path} RTT {rtt:g}, jitter +-{jitter:g}, loss {loss:g}%"
+            relay = path.startswith("relay")
+            if path == "relay-old":
+                os.environ["T5_RELAY_PUMP"] = "0"         # (read by the bridge when it opens: in this process)
+            else:
+                os.environ.pop("T5_RELAY_PUMP", None)
+            ctx.shaper.set(rtt, jitter, loss, on=not relay)
+            leg.set_total(rtt, jitter, loss)
+            for p in (a, b):
+                p.client.block_direct = relay
+            try:
+                mid = queue_match(ctx, a, b, "quick")
+                evs = [_start_ev(p, mid) for p in (a, b)]
+                ctx.check(f"{label}: path", all(e.get("path") == "relay" for e in evs) if relay else
+                          all(e.get("path") in ("lan", "direct") for e in evs), [e.get("path") for e in evs])
+                if not wait_fight(ctx, mid, (a, b), timeout=150):
+                    raise Abort("no fight")
+                pumped = [getattr(getattr(p.client, "_bridge", None), "pump", None) is not None for p in (a, b)]
+                wait_results(ctx, mid, (a, b))
+                row = match_row(ctx, mid, (a, b), "confirmed", label)
+                ups = [e for p in (a, b) for e in p.events_of("nat_upgrade", 0) if e.get("match") == mid]
+                if relay:
+                    ctx.check(f"{label}: stayed on the relay", not ups, f"{len(ups)} switches")
+                host, join = (a, b) if a.matches[mid].get("slot") == 0 else (b, a)
+                out = {"case": [rtt, jitter, loss], "path": path, "match": mid, "netcode": ctx.run.netcode,
+                       "lobby_rtt": evs[0].get("rtt_ms"), "lobby_jitter": evs[0].get("jitter_ms"),
+                       "lobby_delay": evs[0].get("delay"), "rb_delay": row[host.name]["pick"],
+                       "rb_why": row[host.name]["pick_why"], "ls_delay": None, "pump": pumped}
+                for role, p in (("host", host), ("join", join)):
+                    st = smooth_stats(p.log_segment(mid))
+                    rf = row[p.name]["result_file"]
+                    st["desync"] = rf.get("desync")
+                    st["hash"] = rf.get("hash")
+                    st["result_fps"] = rf.get("fps")
+                    seg = parse_segment(p.log_segment(mid))
+                    st["ls_delay"] = seg["ls_delay"] if seg["ls_delay"] is not None else (seg["connected"] or (0, 0, None))[2]
+                    out[role] = st
+                ctx.note(f"{label}: " + json.dumps({k: (v if k not in ("host", "join") else
+                                                        {x: v[x] for x in ("rb_per_s", "depth_mean", "depth_p95", "stalls",
+                                                                           "stall_ms_play", "sleeps", "fps", "p99_med",
+                                                                           "ls_wait_pct", "ls_delay", "rtt_game", "desync")})
+                                                    for k, v in out.items()}))
+                rows.append(out)
+            except Abort as e:
+                ctx.check(f"{label}: completed", False, str(e))
+            for p in (a, b):
+                p.client.block_direct = False
+                leave(ctx, p)
+            os.environ.pop("T5_RELAY_PUMP", None)
+            ctx.wait(lambda: a.action_on("quick") and b.action_on("quick"), 30, f"{label}: free for the next pairing")
+            ctx.sleep(1.0)
+    with open(os.path.join(ctx.dir, "smooth.json"), "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=1)
+    ctx.note(f"numbers of every match: {os.path.join(ctx.dir, 'smooth.json')} (legs: {leg.stats})")
+
+
 # ------------------------------------------------------------------ relay -> direct while the match runs (1.1.1)
 def _relay_bridge():
     """nat.RelayBridge in this tree (nat-robust, 1.1.1), or None."""

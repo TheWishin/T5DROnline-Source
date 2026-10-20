@@ -1199,6 +1199,11 @@ the costume a player fights in is still the confirm button (and, in a mirror
 of one costume, the game's rule that P2 gets the other costume): a
 customization shows when the player customized that costume offline.
 
+**Spectators** (docs/SPECTATE.md "Custom costumes in the stream"): the live stream's MATCH records are the
+replay's matches with the blocks, so a spectator's game writes them at its FIGHT START like a replay (`custom
+(replay)`, the players' blocks hash); a playback that wrote other blocks counts a setup problem. **The relay
+fallback** (docs/NETPLAY.md): the session started again exchanges both tables again.
+
 **Test hooks:** offline direct fight reads `T5_COSTUME_SAVE` for P1 and
 `T5_COSTUME_SAVE2` for P2; `T5_DF_SHOT=++n` takes a picture n frames after
 every FIGHT START (each match of a session; `+n` stays the first match only).

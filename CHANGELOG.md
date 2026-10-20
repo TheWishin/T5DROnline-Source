@@ -35,7 +35,8 @@ part is in the README's status table.
   both games start the match again -- about 20 seconds later the fight begins. The same happens for two players
   behind "symmetric" routers who both blocked the game: the punch could hand the two games different paths, and
   each dropped the other's packets. Needs the new lobby server and 1.1.3 launchers on both sides; older ones behave
-  as before.
+  as before. It works the same in a tournament set (the same game, played on the relay), with custom costumes (both
+  are sent again) and with spectators (they keep watching the match on the relay).
 - **Firewall hint on the Online tab.** When Windows Firewall blocks `t5dr.exe` (or the launcher) on your
   network, or a match showed that a firewall drops its packets, the Online tab says so in one line, with a
   **How to fix** link (TROUBLESHOOTING.md, "The firewall blocks the game"). The launcher only reads the
@@ -53,6 +54,10 @@ part is in the README's status table.
 - **Privacy**: Settings -> Spectators. "Friends and room visitors may watch my online matches" is on, "Also
   my ranked matches" is off; a match can be watched only when both players allow it, and switching it off
   stops the spectators at once. The players see how many watch. Their games never wait for spectators.
+- **Watch a tournament set**: on the Tournaments page click a set in the bracket while it is played, then
+  **Watch** -- the whole set, game after game, when both its players allow spectators.
+- **Spectators see the custom costumes**: the players' customizations come with the match data, and the
+  spectator's game shows both (checked like a replay: a different costume counts as "not identical").
 - At most 8 spectators per match (server setting). Launchers before 1.1.3 never see any of it, and their
   matches cannot be watched. Needs the lobby server updated. docs/SPECTATE.md.
 

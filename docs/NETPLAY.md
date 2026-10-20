@@ -775,6 +775,15 @@ match's result). The games then talk only to 127.0.0.1; the bridge still tries t
 launcher. In the e2e run the fight began ~25 s later than on a working path. Older clients never get a second
 `match_start`; a 1.1.3 client against an older server does not ask.
 
+**With the other 1.1.3 features.** Custom costumes: the new session exchanges both costume tables again (COSTUME
+packets, at most 1,064 bytes with the tag, through the relay's 2,048-byte limit; the first session's tables are
+gone with it), so the fight after the move has both customizations. Tournament sets: the same game of the set,
+played again on the relay (the set's game count is not raised; `_start_match`'s `again`). Spectators: the same
+stream id, so the same live file -- a session that never shook hands leaves nothing but the magic in it, the new
+one goes on from there, and the server keeps the stream while the match is on its way to the relay
+(docs/SPECTATE.md "When the match moves onto the relay"). e2e `int_fw_costumes`: one game blocked completely,
+costumes on both sides, a spectator watching from the start.
+
 **The hint** (`lobby/t5lobby/fwcheck.py`, `tk_tab.fw_hint_text`): the Online tab reads Windows Firewall's rules for the
 exact `t5dr.exe` the launcher starts (`core.game_exe` = `run_game.game_command`) and for its own process
 (`GetModuleFileNameW`: `pythonw.exe`, or `T5DR Online.exe` with the in-process stub), when the tab is shown and after

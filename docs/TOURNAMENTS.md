@@ -50,6 +50,15 @@ when your next set is called, finish or leave that match within the no-show time
 **Withdraw** (on the tournament's page while it runs) takes you out of the tournament: a set you are in goes to
 your opponent.
 
+**Watch a set** (1.1.3, docs/SPECTATE.md "Tournaments"): click a set in the bracket while its game is being played,
+then **Watch** above the bracket -- your game shows it live, a few seconds behind, the whole set from its first
+game. Only when both its players allow spectators (launcher Settings -> Spectators; the sets of a rated tournament
+need "Also my ranked matches"). A set's players never wait for spectators.
+
+A set's game whose games cannot reach each other directly (a firewall that drops everything for the game) moves onto
+the relay after 15 s (docs/NETPLAY.md "When Windows Firewall blocks the game"): it is the same game of the set
+played again on the relay -- not counted twice, the set and the bracket go on as before.
+
 ## For organizers
 
 Any account can organize, unless the server's owner narrowed it (`T5L_TOUR_ORGANIZERS`, below). On the Tournaments
@@ -237,6 +246,7 @@ may read the list.
 | `tour_join` / `tour_leave` / `tour_checkin` `tournament` | `tour` |
 | `tour_accept` `tournament, set` | `ok` (then `tour_call` with the new state to both) |
 | `tour_admin` `tournament, op: start\|cancel\|report\|override\|reset\|dq`, `set`, `winner` (0/1), `score`, `player` | `tour` |
+| `watch` `tournament, set` (cap `spectate`, docs/SPECTATE.md) | `watching {..., tournament {id, name, set}}`: the set's game being played |
 
 A summary: `id, name, organizer, format, set_wins, best_of, start, starts_in, checkin_minutes, checkin_opens,
 max_players, seeding, rated, state (signup|checkin|running|finished|cancelled), players, checked_in, created,
@@ -247,7 +257,7 @@ and `can_manage`.
 |---|---|
 | `tour_call` | `tournament {id, name}`, `set {id, bracket, round, index, format, rounds, losers_rounds}`, `best_of`, `wins_needed`, `side`, `score [you, opponent]` (a set called again goes on there), `replay`, `opponent` (brief), `opponent_online`, `deadline` (seconds), `noshow`, `accepted [you, opponent]` |
 | `tour_call_end` | `tournament`, `set`, `reason: started \| no_show \| opponent_out \| decided \| reset \| attention \| cancelled` |
-| `tour_changed` | `id, rev, state`: fetch it again if it is on screen (sent at most every `T5L_TOUR_TICK`) |
+| `tour_changed` | `id, rev, state`: fetch it again if it is on screen (sent at most every `T5L_TOUR_TICK`; also when a set's game starts or ends: its live score and `watch`) |
 | `tour_notice` | `code: started (seed, players) \| checkin_open \| no_checkin \| dq (reason) \| eliminated (place) \| finished (champion, place) \| cancelled (reason) \| attention (set, why; to the organizer)`, `tournament {id, name}` |
 
 The set's games are ordinary `match_found` (origin `tournament`, then `set`; no ready check), `match_start`,
@@ -286,7 +296,7 @@ python ../../tests/ci_unittest.py test_tournaments test_tk_tour
   the tools).
 - Blocks between players do not keep them apart in a bracket (a bracket cannot choose); the organizer can
   disqualify a player who misbehaves.
-- No spectating of a set (the JSON endpoint shows the score as it happens).
+- Spectating a set: docs/SPECTATE.md "Tournaments" (bracket rows of sets being played have `watch`).
 - Not tried with several real players over the internet yet (below: real games, but all on one PC).
 
 ## Measured with the real game

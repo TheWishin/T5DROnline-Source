@@ -12,6 +12,12 @@ the same netcode playback path while it grows.
   **Watch**. Your game starts and shows the match; the Spectating card at the top of the tab says
   how far behind the live match it is. **Stop watching** closes the game. In the game START pauses
   (you fall further behind), SELECT ends it.
+- **Watch a tournament set**: Online tab -> Tournaments -> the tournament -> click the set in the
+  bracket -> **Watch** (above the bracket). Any set whose game is being played, when both its players
+  allow spectators (docs/TOURNAMENTS.md; a rated tournament's sets count as ranked for "Also my ranked
+  matches"). The Spectating card says TOURNAMENT.
+- **The players' custom costumes** (1.1.3, docs/DIRECTFIGHT.md "Custom costumes online") are in the
+  stream: your game shows both players in the customization they fight in.
 - **From the start of the session.** Whenever you join, the game plays the players' session from its
   start (see "Late join" below), so a friend who joins 2 minutes into a match watches it from its
   first frame, 2 minutes behind. Joining before or right at the start: a few seconds behind.
@@ -127,7 +133,7 @@ count and index is checked (a broken record is skipped or ends the stream).
 | message | from | fields |
 |---|---|---|
 | `spec_prefs` | client | `allow`, `ranked` -- after every login and when changed |
-| `watch` | client | `name` (a friend) or `room` -> `watching` {stream, match, players, ranked, room, began, spectators} |
+| `watch` | client | `name` (a friend), `room`, or `tournament` + `set` (a tournament set's game) -> `watching` {stream, match, players, ranked, room, began, spectators[, tournament {id, name, set}]} |
 | `unwatch` | client | |
 | `spec_data` | streamer | `stream`, `off`, `data` (base64), `eof` |
 | `spec_fail` | streamer | `stream`, `why` |
@@ -143,8 +149,36 @@ Refusals (`watch`): not_allowed (not a friend, not a room, the players do not al
 bad_state (not playing, a player of it), busy (in a match), version_mismatch (another build),
 server_full (the limits). A spectator who gets a match of their own stops watching (`your_match`).
 
-Tournaments (branch `tournaments`): `SpectateMixin._spec_tournament_may_watch(viewer, m)` is the
-hook that lets a tournament's people watch its matches; the rest of the rules apply.
+### Tournaments
+
+A tournament's sets are public (anybody's launcher lists them, the bracket is on the status port), so
+anybody whose launcher shows tournaments (cap `tournaments`) may watch a set's game being played
+(`SpectateMixin._spec_tournament_may_watch` -> `TourManager.may_watch`); the rest of the rules apply (both
+players allow it -- the set counts as ranked when the tournament is rated --, blocks, the limit, not a
+player of it). `watch {tournament, set}` finds the set's current game (`TourManager.set_match`; between two
+games: bad_state). `tour_get`'s bracket rows of sets being played have `watch` (their game can be watched
+now); the bracket's revision moves when a set's game starts or ends (`TourManager.match_live`, a
+`tour_changed`), so a shown Tournaments page turns its Watch button on at once. A set's next games in the
+running games keep the session, so they keep the stream: a spectator sees the whole set.
+
+### Custom costumes in the stream
+
+The MATCH records are the replay binary's matches of this build -- format 3, with the custom costume
+blocks both sides fought in (src/netplay/replay.cpp `put_match` / `get_match`). The spectator's game
+writes them at its FIGHT START like a replay does (`df_costume.cpp`, `CostumeMode::Replay`), checked again;
+a playback whose written blocks differ from the recorded ones counts a setup problem (`play_fight`), so
+"identical" includes the costumes. The launcher's parser (`spectate.parse_match`) reads them too.
+
+### When the match moves onto the relay
+
+A game that hears nothing on the direct path moves its match onto the relay (docs/NETPLAY.md "When
+Windows Firewall blocks the game"): both games start the session again, for the same match -- the same
+stream id, so the same live file. A session that ends before its handshake writes nothing but the magic
+(no LAST, no END; `live_append`), so the new session's file (`CREATE_ALWAYS`, the magic again) continues
+the stream byte for byte where the uploader stands, and a spectator already watching gets the new
+session (its game was waiting for the first SESSION record anyway). The server keeps the stream while the
+match is on its way to the relay (`_spec_tick`: `fallback` and state `relay` count as being played).
+A stream that never gets a session is ended by the server as before.
 
 ## Tools and tests
 
@@ -155,7 +189,14 @@ hook that lets a tournament's people watch its matches; the rest of the rules ap
   a local lobby server and real games (a room match and its rematch, a friend watching from the start,
   a guest 60 s late, a baseline pair without spectators at the same time).
 - `lobby/tests/test_spectate.py`: who may watch, privacy, ranked, rooms, the limit, bounds, older
-  launchers, the stream byte for byte through the server, the parser, uploader and receiver.
+  launchers, the stream byte for byte through the server, the parser, uploader and receiver; the relay
+  fallback keeping the stream; costume blocks in MATCH records.
+- `lobby/tests/test_tournaments.py` `SpectateSetTest`, `lobby/tests/test_tk_tour.py` `TkTourWatchTest`: a
+  tournament set watched (the bracket's `watch`, the Tournaments page's Watch, the refusals).
+- `tests/test_replays.py`: the live stream's costume blocks played back, a restarted session's stream.
+- `tools/e2e/run.py --only int_tour_watch,int_tour_watch_ls,int_fw_costumes`: a tournament set with both
+  players in custom costumes watched from the bracket (rollback, lockstep); a match moving onto the relay
+  with costumes and a spectator who watched before the move.
 
 ## Proof (2026-10-20, branch spectate on main 06adda9)
 

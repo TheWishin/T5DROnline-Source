@@ -54,10 +54,10 @@ index ad0fa13..b34bdc2 100644
              { LARGE_INTEGER q; QueryPerformanceCounter(&q);
                g_rsx_pf[RSX_PF_FLIP_QPC] = q.QuadPart;
 diff --git a/libs/video/rsx_live_draw.c b/libs/video/rsx_live_draw.c
-index 25ac5a9..0959079 100644
+index f47bcfb..2fe417b 100644
 --- a/libs/video/rsx_live_draw.c
 +++ b/libs/video/rsx_live_draw.c
-@@ -749,6 +749,11 @@ typedef struct {
+@@ -791,6 +791,11 @@ typedef struct {
      LONGLONG ph_texbind_ticks; /* texture/sampler resolution incl. refresh    */
      LONGLONG clear_ticks;      /* sink_clear                                  */
      LONGLONG texhash_ticks;    /* texture_content_hash                        */
@@ -69,7 +69,7 @@ index 25ac5a9..0959079 100644
      u32 draws, pso_miss, compiles, creates, tex, flushes;
  } ld_pf_counts;
  static int g_pf_phases = -1;       /* per-draw phase timers on (PS3_FRAMELOG) */
-@@ -818,7 +823,8 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+@@ -860,7 +865,8 @@ static void ld_pf_frame_log(LONGLONG present_begin)
                          "shown_call_to_present_us,xlat_us,"
                          "ph_layout_us,ph_fetch_us,ph_upload_us,ph_pso_us,"
                          "ph_const_us,ph_texbind_us,clear_us,texhash_us,"
@@ -79,7 +79,7 @@ index 25ac5a9..0959079 100644
                          (long long)f.QuadPart);
                  g_pf_log_state = 1;
                  g_pf_phases = 1;
-@@ -864,7 +870,8 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+@@ -906,7 +912,8 @@ static void ld_pf_frame_log(LONGLONG present_begin)
              "%u,%lld,%.0f,%lld,%lld,%.0f,%lld,%.0f,%.0f,%.0f,"
              "%u,%.0f,%u,%.0f,%u,%.0f,%u,%.0f,%u,%u,%.0f,%u,%.0f,%.0f,%.0f,"
              "%u,%u,%u,%lld,%u,%.0f,%.0f,"
@@ -89,7 +89,7 @@ index 25ac5a9..0959079 100644
              g_ld_frames, (long long)present_begin,
              g_pf_prev_present_qpc
                  ? (double)(present_begin - g_pf_prev_present_qpc) * us : 0.0,
-@@ -892,7 +899,9 @@ static void ld_pf_frame_log(LONGLONG present_begin)
+@@ -934,7 +941,9 @@ static void ld_pf_frame_log(LONGLONG present_begin)
              (double)PFC(ph_upload_ticks) * us, (double)PFC(ph_pso_ticks) * us,
              (double)PFC(ph_const_ticks) * us, (double)PFC(ph_texbind_ticks) * us,
              (double)PFC(clear_ticks) * us, (double)PFC(texhash_ticks) * us,
@@ -100,7 +100,7 @@ index 25ac5a9..0959079 100644
  #undef PFD
  #undef PFC
      if ((g_ld_frames & 63u) == 0)
-@@ -9976,6 +9985,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10350,6 +10359,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
      if (vtex_mask)
          descriptor_signature =
              fnv1a(vtex_slots, sizeof(vtex_slots), descriptor_signature);
@@ -108,7 +108,7 @@ index 25ac5a9..0959079 100644
  
      const float W = sf.clip_w ? (float)sf.clip_w : (float)g.width;
      const float H = sf.clip_h ? (float)sf.clip_h : (float)g.height;
-@@ -10006,6 +10016,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10380,6 +10390,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          memcpy(cbdst, g.rsx.constants, RSX_DSP_NUM_CONSTANTS * 16);
          memcpy(cbdst + 512 * 16, xf, sizeof(xf));
      }
@@ -116,15 +116,15 @@ index 25ac5a9..0959079 100644
  
      g.list->lpVtbl->SetPipelineState(g.list, pso);
      g.list->lpVtbl->SetGraphicsRootSignature(g.list, g.rootsig_x);
-@@ -10138,6 +10149,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
-     } else {
+@@ -10513,6 +10524,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
          g.list->lpVtbl->DrawInstanced(g.list, n_tri, 1, 0, 0);
      }
+     ld_gp_note_draw();
 +    LD_PF_PHASE(ph_api_ticks);
      ld_surface_note_write(target, LD_SURFACE_WRITE_DRAW);
      for (u32 r = 1; r < n_mrt; r++)
          ld_surface_note_write(mrt[r], LD_SURFACE_WRITE_DRAW);
-@@ -10213,6 +10225,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
+@@ -10588,6 +10600,7 @@ static void sink_end_impl(void* user, const rsx_dispatch* r)
      g.vb_used += (u32)draw_vb_bytes;
      g.ib_used += (u32)draw_ib_bytes;
      ld_profile_note_ring_highwater();

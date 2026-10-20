@@ -1408,6 +1408,8 @@ class OnlineTab:
             self._show_notice()
         elif kind in ("nat_status", "nat_upgrade"):
             self.status(ev["text"])
+            if ev.get("udp_blocked"):
+                self._fw_saw("udp")          # no answer from the lobby server over UDP: a firewall on this PC?
         elif kind == "match_cancel":
             self.match = None
             self.ready_deadline = None

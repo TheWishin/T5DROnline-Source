@@ -8,6 +8,7 @@ notice, ...) plus the client's own:
 
     {"t": "match_start", "ticket": MatchTicket, ...}   both players are connected: start the game
     {"t": "nat_status", "match": id, "phase": "register"|"punch"|"relay"|"measure", "text": ...}
+                                           (udp_blocked: true -- the server never answered this PC's UDP)
     {"t": "nat_fallback", "match": id, "ok": bool}   the answer to nat_fallback() (the relay's own events follow)
     {"t": "nat_upgrade", "match": id, "path": "direct"|"relay", "text": ...}   a relayed match moved onto
                                            the direct path (or back to the relay); see RelayBridge
@@ -635,8 +636,8 @@ class LobbyClient:
         except (LobbyError, ConnectionError, OSError):
             pass
 
-    def _status(self, mid, phase, text):
-        self._emit({"t": "nat_status", "match": mid, "phase": phase, "text": text})
+    def _status(self, mid, phase, text, **extra):
+        self._emit(dict({"t": "nat_status", "match": mid, "phase": phase, "text": text}, **extra))
 
     def _server_nat2(self):
         return bool(self.nat2 and self.welcome and "nat2" in (self.welcome.get("caps") or ()))
@@ -681,7 +682,8 @@ class LobbyClient:
         mapped = await self._map_port(gs.port) if v2 or self.port_mapping else None
         reg = await gs.register()
         if reg is None:
-            self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"))
+            # (udp_blocked: nothing came back from the server -- the Online tab's firewall hint)
+            self._status(mid, "register", t("UDP to the lobby server is blocked (firewall?)"), udp_blocked=True)
             return
         public, probe = reg
         nat = "unknown" if probe is None else ("eim" if probe[1] == public[1] else "symmetric")

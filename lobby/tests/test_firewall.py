@@ -279,6 +279,10 @@ class FirewallHintTest(unittest.TestCase):
         self.assertIn("firewall seems to block", self.tab.fw_hint_var.get())
         self.tab.fw_seen = None
         self.tab._fw_update()
+        self.tab.on_event({"t": "nat_status", "match": "m2", "phase": "register", "text": "x", "udp_blocked": True})
+        self.assertEqual(self.tab.fw_seen, "udp")              # (the server never answered: the cancel says no_connection)
+        self.tab.fw_seen = None
+        self.tab._fw_update()
         self.tab.on_driver({"t": "driver", "kind": "firewall_suspect", "reason": "no_peer", "path": "direct"})
         self.assertEqual(self.tab.fw_seen, "no_peer")
         self.assertIn("firewall seems to block", self.tab.fw_hint_var.get())

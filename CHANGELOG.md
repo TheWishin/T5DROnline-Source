@@ -15,8 +15,10 @@ part is in the README's status table.
   firewalls drop even the replies), the lobby used to find a direct connection that only the launchers could
   use, and the game gave up after a minute: "Your opponent's game could not be reached". Now, after 15 seconds of
   silence, the launcher moves the match onto the relay through itself (the game then only talks to this PC) and
-  both games start the match again -- about 20 seconds later the fight begins. Needs the new lobby server and
-  1.1.3 launchers on both sides; older ones behave as before.
+  both games start the match again -- about 20 seconds later the fight begins. The same happens for two players
+  behind "symmetric" routers who both blocked the game: the punch could hand the two games different paths, and
+  each dropped the other's packets. Needs the new lobby server and 1.1.3 launchers on both sides; older ones behave
+  as before.
 - **Firewall hint on the Online tab.** When Windows Firewall blocks `t5dr.exe` (or the launcher) on your
   network, or a match showed that a firewall drops its packets, the Online tab says so in one line, with a
   **How to fix** link (TROUBLESHOOTING.md, "The firewall blocks the game"). The launcher only reads the

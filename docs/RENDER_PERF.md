@@ -2692,3 +2692,154 @@ the per-round ratios B/A and the rounds in which B was better:
 
 Local evidence: `build/storepath/` (git-ignored: `micro/`, `ana/` for the
 disassembly and sampler attribution, `bench/` + `runs/` for the rounds).
+
+## Overlap: the present and the D3D12 calls off the critical path (patch 0067, branch `xlat-overlap`)
+
+The goal is 60 fps on weak 4-core / 4-thread PCs (the i5-7300HQ report), the pool stage (id 30) included. A fight
+frame there is three things in a row: the game's own part (its release -> its flip request), the translation of
+its commands (the walker, on the ticker thread) and the walk from the translated flip to the next release. This
+branch looked for every part of the translation and the present that can run beside the game's next frame
+without changing anything the game sees.
+
+### Where the game and the translation serialize
+
+`PS3_LATENCY_LOG` stamps every frame: F (the game asked for its flip), X (the walker reached it), P (Present
+returned), K (the next frame released). `build/xlatov/scripts/latsplit.py` turns them into a per-frame split.
+Four processors (0x55 / 0x5500: four cores of CCD0, one thread each), `tools/slow_core.py --busy 40` on them,
+Lili vs Asuka on the pool stage, the series to 0065 (medians, p99 in brackets; the PC was busy with other agents'
+games, 14-30 of 32 processors):
+
+| | game part | translation (F -> X) | X -> release | frame |
+|---|---|---|---|---|
+| all frames | 12.0 (37.7) | 4.5 (8.8) | 0.6 (7.7) | 17.8 (51.1) |
+| frames that missed their vblank | 20.6 | 4.9 | 2.5 | |
+
+- **The game flushes once.** A `PS3_SCHED_TRACE` of the pool stage (three frames alike): release -> the
+  skinning kick at +5.7-6.4 ms -> `cellGcmSetUserCommand` at +9.4-12.2 ms and the flip request 5 us later (the
+  only two moves of `put` in the frame) -> the walk +9.4 -> +13.6 ms -> the present -> the user handler -> the
+  release at the vblank, +16.0 ms. The walker cannot start before; walking past `put` -- the "translate while the
+  game builds" idea -- would read words the RSX never sees, and the game rewrites and rewinds them before its
+  flush (above, "Is the handover wait necessary?").
+- **The game waits for the RSX itself.** After its flip request it polls the flip status, and its next frame
+  starts with the semaphores the flip and user handlers post; the user command is the last command of the frame,
+  so on a PS3 its handler runs when the RSX has executed every draw. Releasing the game into its next frame while
+  the translation still reads the frame's vertex buffers (the skinning rewrites them in the next frame),
+  textures, fragment programs and index buffers would need a guard on the game's stores. The lifted code stores
+  straight into guest memory, so the only guard is page protection -- and with it a file read into a protected
+  page fails in the kernel, and a game thread stopped on a page while it holds an lwmutex a GCM handler needs
+  (the handlers run on the walker's thread) would wait for ever. Not done: the flip still completes only after
+  the translation has read and written everything of the frame.
+- **What can move** is everything after the frame's last read of guest memory. That is the queued vertex
+  fetches (drained when the walker reaches the flip) -- after them come the present (present copy, overlay,
+  command list Close + ExecuteCommandLists, DXGI Present: 0.5 ms at the median, 1.4-1.9 ms at p90-p99, and for a
+  late frame it sat between the translation and the release: X -> release 2.5 ms on average) and, during the
+  walk, the D3D12 calls themselves (only host values).
+
+### What changed
+
+| change | switch | effect |
+|---|---|---|
+| **The present on the renderer thread.** When the walker reaches a flip it drains the frame's vertex jobs (the last guest-memory reads), follows a window resize or fullscreen switch (DXGI wants the window's own thread for those) and hands the frame to the new `rsx-render` thread: present copy, overlay, submit, Present, frame log run there while the flip completes and the game starts its next frame. Exclusive fullscreen presents on the walker as before | `RSX_XLAT_OVERLAP=1` (0 = off) | a late frame's X -> release from ~2 ms to ~0.2 ms |
+| **The command-list calls on the renderer thread.** The walker records into an object with the command list's own interface (`libs/video/rsx_record_ring.h`): each call of the 30 methods the translation uses is copied with its arrays into a 4 MB ring, the renderer thread makes the real call while the walker goes on. Close, ExecuteCommandLists, fence waits and Reset (`ld_flush`, `ld_begin_recording`) and a present made on the walker take the real list over first (`ld_own_enter`: the ring is empty, every call made). The renderer thread sleeps whenever the ring is empty; the walker wakes it every 256 calls (~10 times a fight frame), at a present and before it waits for it | `RSX_XLAT_OVERLAP=2`, the default (1: the present only) | translation and walker CPU -0.1..0.5 ms; the renderer thread ~0.5 ms of processor time a frame |
+| The next walk waits for the present (`rsx_live_draw_sync` in `cellGcm_rsx_process_fifo`); a display-buffer registration, a mid-frame flush, shutdown wait for the renderer thread themselves | -- | in fights the walk never waited (1-2 waits per 600 frames) |
+| `[slow-frames]`: the present column is the walker's hand-off plus its waits for the renderer thread; the display lock pairs a handed-off present with the release of its own frame | -- | |
+| `RSX_XLAT_OVERLAP_AB=N`: frames alternate every N between the mode and "everything on the walker"; every 1,000 frames of each kind a line compares the walker's processor time, the translation, the frame time and the frames over 17.5 ms -- the same game under the same load. `RSX_HITCH_LOG=1`: an `[xlat-overlap]` line every 600 presents | measurements only | |
+
+The guest sees nothing new: the walker still writes every label, report, reference and `get` of the frame when it
+walks them, before the flip; the flip completes when the walker reached it and the frame's guest reads are done,
+as before; the command list gets the same calls in the same order.
+
+### Results
+
+**Interleaved A/B (the cleanest measure on a busy PC).** One game, `RSX_XLAT_OVERLAP_AB=8`: the frames switch
+every 8 between the patch and "everything on the walker" (exactly the old path), so both kinds share the game, the
+stage, the load and the processors; each line compares 1,000 fight frames of each kind. Four processors (four
+cores, one thread each), Lili vs Asuka. "slow_core 72" (`tools/slow_core.py --busy 72`) is the weak-PC stand-in:
+every thread of the game slowed alike to 37-52 fps, the 4 processors saturated (every thread competes, like the
+i5-7300HQ's, whose cores are ~2.2-2.5 times slower than this 7950X's). Medians of the windows, before -> after, ms:
+
+| build, run | windows | walker CPU per frame | translation | frame time, median | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| **1.1.4 (with 0066)**, pool stage, slow_core 72 (39 fps) | 2 | 2.73 -> 2.43, 2.48 -> 2.25 | 7.94 -> 7.60, 7.63 -> 7.35 | 24.56 -> **23.53**, 24.32 -> **23.41** | 978 -> 950, 924 -> 878 |
+| **1.1.4**, stage 20, slow_core 72 (51 fps) | 3 | -0.32..-0.36 | -0.32..-0.36 | 20.06 -> **19.09**, 19.02 -> **16.91**, 20.31 -> **19.64** | 766 -> 604, 585 -> 434, 779 -> 686 |
+| 1.1.3 base, pool stage, slow_core 72 (46 fps), two masks | 4 | -0.19..-0.26 | -0.2..-2.3 | 23.85 -> 23.01, 20.55 -> 19.97, 24.08 -> 23.27, 19.96 -> 19.37 | -2..-21 % |
+| 1.1.3 base, stage 20, slow_core 72 (46 fps), two masks | 4 | -0.21..-0.30 | -0.5..-2.3 | 23.88 -> 23.05, 20.96 -> 20.10, 24.17 -> 23.43, 20.08 -> 19.36 | -1..-23 % |
+| 1.1.3 base, pool / stage 20 without slow_core (60 fps) | 6 | -0.14..-0.21 | -0.14..-0.21 | 16.68 = 16.68 (every frame on time either way) | 0-9 -> 0-8 |
+
+- The frame median is 0.6-1.0 ms shorter (up to 2.1) wherever frames miss their vblank, 3-26 % fewer frames over
+  17.5 ms; at 60 fps nothing changes but the headroom (translation -0.15-0.2 ms).
+- Two parts: the present on the renderer thread (mode 1) leaves the translation as it was and releases a late
+  frame ~0.2 ms after it was translated instead of ~2 ms (A/B mode 1 against 0, pool stage slowed: frame median
+  24.40 -> 23.62 and 21.60 -> 20.58, frames over 17.5 ms 983 -> 960 and 927 -> 887); recording the calls through the
+  renderer thread (mode 2) takes 0.2-0.4 ms more off the walker -- the display driver's time for ~2,000-2,700 calls
+  a frame, less the packets' (A/B mode 2 against 1: translation 4.30 -> 4.10, 4.26 -> 4.06, 6.03 -> 5.61 ms).
+- The renderer thread's processor time: ~0.3 ms a frame with mode 1, ~0.5 ms with mode 2 (~150 context switches a
+  second). The first version of mode 2 woke the thread every 16 calls and let it spin 300 pauses between them:
+  ~2 ms a frame and 700-1,400 switches a second, and on saturated 4 processors (slow_core 60) paired runs lost what
+  the walk gained (pool stage 53.9 -> 52.4 fps); woken every 256 calls with no spin it gains there (rows above).
+
+**Paired runs against integration-114** (the same `t5dr_game.dll` with 0066 for both runtimes; `tools/fight_bench.py`
+on 0x55 / 0x5500, masks swapped every round, slow_core 72 on each; the PC was busy with other agents' games -- up to
+5 others and 2 compilers -- so the stand-in ran at 17-48 fps and the mask moved fps by up to 30 %; fps geometric mean
+over the rounds, p99 median of the rounds):
+
+| stage | rounds | integration-114 | + 0067 | faster in | frames over 17.5 ms |
+|---|---|---|---|---|---|
+| pool (30), slow_core 72 | 4 | 27.2 fps, p99 101.9 ms | **27.4 fps, p99 81.7 ms** | 3 of 4 | 1,903 -> 1,965 |
+| 20, slow_core 72 | 4 | 36.0 fps, p99 42.8 ms | **37.5 fps (+4.4 %), p99 35.4 ms** | 2 of 4 | 2,306 -> 2,522 |
+| pool, no slow_core | 2 | 59.85 fps, p99 22.8 ms | 59.91 fps, p99 22.4 ms | 2 of 2 | 588 -> 564 |
+
+Earlier paired sets on the 1.1.3 base (quieter PC): pool stage slow_core 40 56.1 -> 57.6 fps (+2.8 %, 3 of 4), slow_core
+72 42.5 -> 45.4 (+6.8 %, 3 of 4, p99 32.1 -> 27.9 ms); stage 20 slow_core 72 40.2 -> 42.5 (+5.6 %, p99 31.2 -> 28.2).
+Paired runs on this PC cannot resolve a 3 % change against the other programs' load; the A/B above can.
+
+### Same picture, same game
+
+**Pictures.** Lockstep pairs (`tools/rollback_net_test.py --mode1 off --mode2 off`, Jack-5 vs Bryan, Native): the
+old runtime as host and this branch as joiner run the same game frames, and at lockstep frames 300, 900 and 1500
+both dump every live surface and the backbuffer (`T5_NET_SHOT` + `LD_SURF_DUMP`), compared byte for byte
+(`build/xlatov/scripts/paircmp.py`). As in 0062's check, the stages' animated parts follow the frames each game ran
+since it started, so only pairs whose two renderer frame counters matched can be identical; a pair whose counters
+differed was run again:
+
+| base | stage | pair (host / joiner) | counters | result |
+|---|---|---|---|---|
+| **1.1.4** (integration-114, same game DLL) | 30 (pool) | old / new | equal | **15 of 15 identical** (3 shots x 4 surfaces + backbuffer) |
+| **1.1.4** | 20 (glow) | old / new | equal on the 7th try | **21 of 21 identical** (6 surfaces + backbuffer x 3) |
+| 1.1.4 | 20 | old / new, 6 tries | 1-6 apart | 9 of 21: shadow map and glow buffers identical, the animated puddles apart |
+| 1.1.3 | 30 | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 34 (stage blur, depth snapshot, compute) | old / new, old / old | equal | 15 of 15 identical, both |
+| 1.1.3 | 20 | old / old | equal | 21 of 21 identical |
+| 1.1.3 | 30 | new / new | 1 apart | 3 of 15: shadow maps identical, the pool's water apart -- as any two games a frame apart |
+
+**Same game.** Rollback pairs (RTT 150 +-5 ms, 3 % loss, delay 6, two matches: Asuka vs Lili on stage 20, then
+on the pool stage; host on 0x00FF0000, joiner on 0x55000000) and lockstep pairs (RTT 30, 1 % loss); "old" = the
+integration-114 runtime with the same `t5dr_game.dll` (the same code ID):
+
+| base | pair (host / joiner) | mode | frames compared per side | rollbacks per side | result |
+|---|---|---|---|---|---|
+| **1.1.4** | new / new | rollback | 10,800 | 1,277-1,370 | 0 mismatching, the same two result hashes on both PCs |
+| **1.1.4** | old / new | rollback | 10,800 | 1,306-1,375 | the same |
+| **1.1.4** | new / new, new / old | lockstep | 10,800-11,400 | -- | 0 mismatching, the same hashes |
+| **1.1.4** | e2e `cross_build_pair` (lobby, a match + 2 rematches, this build / integration-114) | rollback, lockstep | -- | -- | PASS, 72 checks each, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | rollback | 10,800 | 1,316-1,378 | 0 mismatching, the same hashes |
+| 1.1.3 | new / new, old / new, new / old | lockstep | 10,800-11,400 | -- | the same |
+
+Nothing the patch adds writes guest memory (`tests/test_xlat_overlap.py` checks the patch): what the game computes
+cannot change, so the code ID stays (no CODE_VERSION bump) and two players may run either build.
+`tests/c/xlat_ring_test.c` (built against the patched source by the test): 300,000 random calls of all 30 recorded
+methods with every array size the translation passes, NULL pointers, render-target ranges, clears with and without
+rects, plus presents and both syncs, through a 16 KB ring (it wraps thousands of times and fills); every call
+reaches the replaying thread once, in order, with its arguments (the two logs byte-identical); copies of the ring
+with a lost root constant, a render-target list recorded as one handle and a lost copy box fail it, one that never
+publishes hangs (the test's timeout reports it). Smoke quick on the final build: exit 0 (81 PASS, two fps WARNs with
+7 other games running). `tests/` 809 OK; `tools/prepare_ps3recomp.py` applies all 50 patches.
+
+### Not done
+
+- Overlapping the translation with the game's own frame: see above -- the game's single flush and its wait for
+  the user command leave no room without lying to it about the RSX's progress.
+- A second translation thread: the walk, the dispatch and each draw's translation share the register file and the
+  renderer's caches; the D3D12 calls were the separable part, and they are cheap after 0062 (recording them
+  through the ring saves only 0.15-0.4 ms of a 3-4.5 ms translation).
+- Not tried on a real 4-core laptop.

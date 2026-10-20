@@ -176,6 +176,15 @@ class QueueTest(Base):
         self.assertEqual(self.srv._ping_limit(10000.0, "quick"), 80.0 + 20.0 * 10000.0)
 
 
+    async def test_a_window_that_starts_at_zero(self):
+        """review-112: T5L_PING_START=0 (a window of 0 ms at first) and a ranked pair whose estimate is 0 (both on the
+        server's LAN): ping / limit was 0 / 0 -- ZeroDivisionError out of match_queue on every tick, nobody paired."""
+        self.srv.cfg.ping_start = 0.0
+        a = self.player("A", 0.0, caps=())
+        b = self.player("B", 0.0, caps=(), r=1520)
+        now = self.queue(a, b, mode="ranked")
+        self.assertEqual(self.names(self.srv.match_queue(now)), [{"A", "B"}])
+
 # ============================================================================== end to end
 class FoundPingEndToEnd(Regional):
     """Real clients: two players in "California" -- 150 ms to the central server, 25 to a relay in "Oregon"."""

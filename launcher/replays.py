@@ -166,7 +166,7 @@ def _local_time(iso):
     try:
         dt = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         return dt.astimezone()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, OSError):     # (Windows: OSError before 1970)
         return None
 
 
@@ -210,23 +210,41 @@ def list_replays(folder):
     for path in glob.glob(os.path.join(folder, "*" + EXT)):
         try:
             h = read_header(path)
-        except ReplayError:
+            # a header line that is JSON but not what the game writes (a damaged or hand-made file: a side other
+            # than 0/1, a match that is not an object, ...) skips this file, not the whole list
+            rows = [Entry(path, h, k) for k in range(1, len(h["matches"]) + 1)]
+            for e in rows:
+                e.key()
+        except (ReplayError, LookupError, TypeError, ValueError, AttributeError, OverflowError, OSError):
             continue
-        for k in range(1, len(h["matches"]) + 1):
-            out.append(Entry(path, h, k))
+        out += rows
     out.sort(key=lambda e: e.key(), reverse=True)
     return out
 
 
+def _by_age(folder):
+    """The replay files in folder, newest first. A file that goes between the listing and its time (deleted by the
+    Replays tab or another launcher pruning at the same moment) is left out: prune() runs while the launcher starts,
+    and a FileNotFoundError there kept the launcher from opening."""
+    out = []
+    for p in glob.glob(os.path.join(folder, "*" + EXT)):
+        try:
+            out.append((os.path.getmtime(p), p))
+        except OSError:
+            continue
+    out.sort(reverse=True)
+    return [p for _t, p in out]
+
+
 def newest(folder):
     """The newest replay file in folder, or None."""
-    files = glob.glob(os.path.join(folder, "*" + EXT))
-    return max(files, key=os.path.getmtime) if files else None
+    files = _by_age(folder)
+    return files[0] if files else None
 
 
 def prune(folder, keep=DEFAULT_KEEP):
     """Delete all but the newest `keep` replay files; returns how many went."""
-    files = sorted(glob.glob(os.path.join(folder, "*" + EXT)), key=os.path.getmtime, reverse=True)
+    files = _by_age(folder)
     gone = 0
     for p in files[keep:]:
         try:

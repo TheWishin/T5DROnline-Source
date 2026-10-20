@@ -27,8 +27,10 @@ def profile(n_ppu=3, extra=""):
              record("t5job_skin1x_spu_recomp_register", [1]),
              record("t5dr_spu_register_all", [1]),
              record("ppu_recomp_003.cpp:?vm_read32_inl@@YAI_K@Z", [10, 9, 1]),
-             record("spu_recomp.c:spu__nf_be", [300]),
-             record("spu_recomp.c:spu__nf_be", [7], h=999)]       # same helper name, other hash
+             record("bnuscore_spu_recomp.c:spu__nf_be", [300]),
+             record("bnuscore_spu_recomp.c:spu__nf_be", [7], h=999),     # same helper name, other hash
+             record("skin1x_spu_recomp.c:spu_fma", [40]),
+             record("jcsignal_spu_recomp.c:spu_ai", [2])]
     return ("\n".join(recs) + extra).encode()
 
 
@@ -125,12 +127,39 @@ class Guards(unittest.TestCase):
 
 
 class Split(unittest.TestCase):
-    def test_spu_records(self):
-        for n in ("bnuscore_spu_func_0000B1E8", "t5job_skin4x_spu_recomp_register", "t5dr_spu_register_all",
-                  "spu_recomp.c:spu__nf_be", "spu_dispatch_mt.c:x", "spu_workloads.c:y", "t5dr_game_dll.c:z"):
-            self.assertTrue(bgd.is_spu_record(n), n)
-        for n in ("?func_00010200@@YAXPEAUppu_context@@@Z", "ppu_recomp_003.cpp:?vm_read32_inl@@YAI_K@Z"):
-            self.assertFalse(bgd.is_spu_record(n), n)
+    def test_parts(self):
+        cases = {"?func_00010200@@YAXPEAUppu_context@@@Z": "ppu",
+                 "ppu_recomp_003.cpp:?vm_read32_inl@@YAI_K@Z": "ppu",
+                 "bnuscore_spu_func_0000B1E8": "snd", "bnuscore_spu_recomp.c:spu__nf_be": "snd",
+                 "bnuscore_spu_recomp_register": "snd",
+                 "t5job_skin1x_spu_func_00000040": "skin", "skin4x_spu_recomp.c:spu_fma": "skin",
+                 "t5job_skin4x_spu_recomp_register": "skin",
+                 "t5job_jcsignal_spu_func_00000000": "spu", "jcsignal_spu_recomp.c:spu_ai": "spu",
+                 "t5dr_spu_register_all": "spu", "spu_dispatch_mt.c:x": "spu", "spu_workloads.c:y": "spu",
+                 "spu_recomp.c:spu__nf_be": "spu"}
+        for name, part in cases.items():
+            self.assertEqual(bgd.profile_part(name), part, name)
+        src = {os.path.join("r", "ppu_recomp_003.cpp"): "ppu",
+               os.path.join("s", "lifted", "bnuscore", "spu_recomp.c"): "snd",
+               os.path.join("s", "lifted", "skin1x", "spu_recomp.c"): "skin",
+               os.path.join("s", "lifted", "skin4x", "spu_recomp.c"): "skin",
+               os.path.join("s", "lifted", "jcsignal", "spu_recomp.c"): "spu",
+               os.path.join("s", "spu_workloads.c"): "spu", os.path.join("d", "spu_dispatch_mt.c"): "spu"}
+        for path, part in src.items():
+            self.assertEqual(bgd.source_part(path), part, path)
+
+    def test_split_keeps_every_record_once(self):
+        data = b":fe\n" + profile()
+        parts = bgd.split_profile(data)
+        self.assertEqual(sorted(parts), ["ppu", "skin", "snd", "spu"])
+        for body in parts.values():
+            self.assertTrue(body.startswith(":fe\n"))
+            self.assertEqual(pc.check(body.encode()), [], body[:200])
+        joined = "".join(parts.values())
+        self.assertEqual(joined.count("# Func Hash:"), data.count(b"# Func Hash:"))
+        self.assertIn("bnuscore_spu_func_0000B1E8", parts["snd"])
+        self.assertIn("t5job_skin1x_spu_func_00000040", parts["skin"])
+        self.assertNotIn("spu_func", parts["ppu"])
 
     @unittest.skipUnless(os.path.exists(PROFDATA), "needs LLVM's llvm-profdata.exe")
     def test_prepare_profiles(self):
@@ -139,7 +168,7 @@ class Split(unittest.TestCase):
             with open(src, "wb") as f:
                 f.write(profile())
             out = bgd.prepare_profiles(src, d, os.path.dirname(PROFDATA))
-            self.assertEqual(sorted(out), ["ppu", "spu"])
+            self.assertEqual(sorted(out), ["ppu", "skin", "snd", "spu"])
             names = {}
             for kind, p in out.items():
                 r = subprocess.run([PROFDATA, "show", "--all-functions", p], capture_output=True, text=True)
@@ -147,7 +176,7 @@ class Split(unittest.TestCase):
                                ln.rstrip().endswith(":") and not ln.startswith("    ")]
             self.assertEqual(len(names["ppu"]), 4, names)     # 3 lifted functions + the PPU helper
             self.assertTrue(all("ppu_context" in n or n.startswith("ppu_recomp_") for n in names["ppu"]), names)
-            self.assertIn("bnuscore_spu_func_0000B1E8", names["spu"])
+            self.assertIn("bnuscore_spu_func_0000B1E8", names["snd"])
             # an unusable profile is skipped, never half used
             with open(src, "ab") as f:
                 f.write(b"\nfree text\n")

@@ -74,19 +74,55 @@ def pgo_gen_libs(llvm):
             os.path.join(sdk[-1], "um", "x64", "kernel32.lib")]
 
 
-def is_spu_record(name):
-    """Profile records of the lifted SPU code (and the other C sources of the DLL)."""
-    return ("_spu_func_" in name or name.endswith("_spu_recomp_register") or name == "t5dr_spu_register_all"
-            or name.split(":", 1)[0] in ("spu_recomp.c", "spu_dispatch_mt.c", "spu_workloads.c", "t5dr_game_dll.c"))
+# The lifted code is profiled in four parts, each compiled with its own profile: LLVM sorts counts into hot and
+# cold against the whole profile it is given, and the SPU sound core's inner loops (some 10^11 counts in a
+# training run) would make nearly all of the game's PPU code and the skinning jobs "cold" -- optimised for
+# size, the guest-memory helpers no longer inlined.
+PGO_PARTS = ("ppu", "snd", "skin", "spu")
+
+
+def profile_part(name):
+    """The part a profile record belongs to: ppu (the lifted PPU code), snd (the SPU sound core), skin (the
+    SPU skinning jobs) or spu (the other SPU images and C sources of the DLL)."""
+    head = name.split(":", 1)[0]
+    if "bnuscore" in head:
+        return "snd"
+    if "skin" in head:
+        return "skin"
+    if ("_spu_func_" in name or name.endswith("_spu_recomp_register") or name == "t5dr_spu_register_all"
+            or head.endswith(".c")):
+        return "spu"
+    return "ppu"
+
+
+def source_part(src):
+    """The part a source of the DLL is compiled as (see profile_part)."""
+    if not src.endswith(".c"):
+        return "ppu"
+    image = os.path.basename(os.path.dirname(src)) if os.path.basename(src) == "spu_recomp.c" else ""
+    return "snd" if image == "bnuscore" else "skin" if image.startswith("skin") else "spu"
+
+
+def split_profile(data):
+    """{part: profile text} from the shipped profile's text (records in the order they came)."""
+    lines = data.decode("ascii").replace("\r\n", "\n").split("\n")
+    head, recs, i = [], {}, 0
+    while i < len(lines) and (lines[i].startswith((":", "#")) or not lines[i]):
+        head.append(lines[i])
+        i += 1
+    while i < len(lines):
+        if not lines[i]:
+            i += 1
+            continue
+        n = int(lines[i + 4])
+        recs.setdefault(profile_part(lines[i]), []).append("\n".join(lines[i:i + 6 + n]))
+        i += 6 + n
+    return {part: "\n".join(head + [r + "\n" for r in rs]) for part, rs in recs.items()}
 
 
 def prepare_profiles(profile, obj, llvm):
-    """{"ppu": .profdata, "spu": .profdata} for clang from the profile's text form (tools/gamedll/
-    t5dr_lifted.proftext; an indexed .profdata is turned into text first), or {} when it cannot be used.
-
-    The lifted PPU code and the lifted SPU code get a profile each: LLVM sorts counts into hot and cold
-    against the whole profile, and the sound core's inner loops (some 10^11 counts) would make most of
-    the game's PPU code "cold" -- optimised for size, with the guest-memory helpers no longer inlined."""
+    """{part: .profdata} for clang from the profile's text form (tools/gamedll/t5dr_lifted.proftext; an
+    indexed .profdata is turned into text first), or {} when it cannot be used (see PGO_PARTS)."""
     pd = os.path.join(llvm, "llvm-profdata.exe")
     if not os.path.exists(pd):
         print(f"no llvm-profdata.exe in {llvm}: building without the profile (same game, a little slower)", flush=True)
@@ -103,28 +139,14 @@ def prepare_profiles(profile, obj, llvm):
     if problems:
         print(f"the profile {profile} is not usable ({problems[0]}): building without it", flush=True)
         return {}
-    lines = data.decode("ascii").replace("\r\n", "\n").split("\n")
-    head, recs, i = [], {"ppu": [], "spu": []}, 0
-    while i < len(lines) and (lines[i].startswith((":", "#")) or not lines[i]):
-        head.append(lines[i])
-        i += 1
-    while i < len(lines):
-        if not lines[i]:
-            i += 1
-            continue
-        n = int(lines[i + 4])
-        recs["spu" if is_spu_record(lines[i]) else "ppu"].append("\n".join(lines[i:i + 6 + n]))
-        i += 6 + n
     out = {}
     tag = hashlib.sha1(data).hexdigest()[:10]    # a new profile is a new file name: CMake rebuilds what uses it
-    for kind, rs in recs.items():
-        if not rs:
-            continue
-        t = os.path.join(obj, f"pgo_{kind}_{tag}.proftext")
+    for part, body in split_profile(data).items():
+        t = os.path.join(obj, f"pgo_{part}_{tag}.proftext")
         with open(t, "w", newline="\n") as f:
-            f.write("\n".join(head + [r + "\n" for r in rs]))
-        out[kind] = os.path.join(obj, f"pgo_{kind}_{tag}.profdata")
-        subprocess.run([pd, "merge", "-o", out[kind], t], check=True, creationflags=NO_WINDOW)
+            f.write(body)
+        out[part] = os.path.join(obj, f"pgo_{part}_{tag}.profdata")
+        subprocess.run([pd, "merge", "-o", out[part], t], check=True, creationflags=NO_WINDOW)
     return out
 
 
@@ -202,7 +224,7 @@ def main():
         shipped = os.path.join(GDIR, "t5dr_lifted.proftext")
         profile = shipped if os.path.exists(shipped) else "none"
     opt_opts = list(a.copt)
-    use_opts = {"ppu": [], "spu": []}
+    use_opts = {part: [] for part in PGO_PARTS}
     if a.pgo_gen:
         # counters only: no value profiling (indirect-call targets, sizes), so the profile holds nothing else
         if a.pgo_gen == "ir":
@@ -217,8 +239,9 @@ def main():
         opt_opts += ["-flto=thin"]
     if opt_opts:
         print("lifted code options: " + " ".join(opt_opts), flush=True)
-    if use_opts["ppu"] or use_opts["spu"]:
-        print("profile-guided optimisation: " + profile, flush=True)
+    if any(use_opts.values()):
+        print("profile-guided optimisation: %s (%s)" % (profile, ", ".join(p for p in PGO_PARTS if use_opts[p])),
+              flush=True)
     srcs = sorted(glob.glob(os.path.join(a.recomp, "*.cpp")))
     spu_c = sorted(glob.glob(os.path.join(a.spu, "lifted", "*", "spu_recomp.c")))
     spu_w = os.path.join(a.spu, "spu_workloads.c")
@@ -237,7 +260,7 @@ def main():
     # (the options and the profile's content count too: a new profile recompiles everything)
     stamp_path = os.path.join(obj, "march.txt")
     stamp_key = " ".join([march] + opt_opts)
-    if use_opts["ppu"] or use_opts["spu"]:
+    if any(use_opts.values()):
         with open(profile, "rb") as f:
             stamp_key += " profile-sha1=" + hashlib.sha1(f.read()).hexdigest()
     try:
@@ -269,7 +292,11 @@ def main():
         if os.path.basename(src) == "t5dr_game_dll.c":
             cmd += [f'/DT5DR_GAME_MARCH="{march}"']   # t5dr_game_march: checked by the runtime at load
         elif os.path.basename(src) != "pgo_train.c":
-            cmd += opt_opts + use_opts["spu" if is_c else "ppu"]
+            cmd += opt_opts + use_opts[source_part(src)]
+        if is_c and os.path.basename(src) == "spu_recomp.c":
+            # every SPU image's source is called spu_recomp.c: give each its own name, so the profile keeps
+            # the static helpers of the sound core and of the skinning jobs apart
+            cmd += ["-Xclang", "-main-file-name", "-Xclang", os.path.basename(os.path.dirname(src)) + "_spu_recomp.c"]
         cmd += ["-c", src, "/Fo" + o]
         t = time.time()
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",

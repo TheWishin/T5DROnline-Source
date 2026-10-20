@@ -173,13 +173,24 @@ if(SPU_SOURCES)
     set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS ${_lifted_opts} ${T5DR_SPU_COPTS})
 endif()
 # Profile-guided optimisation of the lifted code (clang front-end profiles, docs/RENDER_PERF.md
-# "Profile-guided optimisation"): T5DR_PGO=<file.profdata> for the lifted PPU code and T5DR_PGO_SPU for
-# the lifted SPU code -- tools/build_game.py makes both from the shipped tools/gamedll/t5dr_lifted.proftext
+# "Profile-guided optimisation"): one .profdata per part -- T5DR_PGO for the lifted PPU code,
+# T5DR_PGO_SND for the SPU sound core, T5DR_PGO_SKIN for the skinning jobs, T5DR_PGO_SPU for the other
+# SPU sources. tools/build_game.py makes them from the shipped tools/gamedll/t5dr_lifted.proftext
 # (build_game_dll.prepare_profiles). T5DR_PGO=gen builds an instrumented t5dr.exe (T5_PERF_LOG=...
 # T5_PGO_WRITE_AT=<frames> writes default.profraw at that flip; merge with llvm-profdata); the
 # supported way to train is the game DLL (tools/pgo_train.py).
 set(T5DR_PGO "" CACHE STRING "gen, or a .profdata for the lifted PPU code")
-set(T5DR_PGO_SPU "" CACHE STRING ".profdata for the lifted SPU code")
+set(T5DR_PGO_SND "" CACHE STRING ".profdata for the lifted SPU sound core")
+set(T5DR_PGO_SKIN "" CACHE STRING ".profdata for the lifted SPU skinning jobs")
+set(T5DR_PGO_SPU "" CACHE STRING ".profdata for the other lifted SPU sources")
+# Every SPU image's source is called spu_recomp.c: each gets its own name for the profile's static
+# helpers (<image>_spu_recomp.c:<helper>), as tools/build_game_dll.py compiles them.
+foreach(_spu_src ${SPU_LIFTED})
+    get_filename_component(_spu_img "${_spu_src}" DIRECTORY)
+    get_filename_component(_spu_img "${_spu_img}" NAME)
+    set_property(SOURCE "${_spu_src}" APPEND PROPERTY COMPILE_OPTIONS
+        "SHELL:-Xclang -main-file-name" "SHELL:-Xclang ${_spu_img}_spu_recomp.c")
+endforeach()
 if(T5DR_PGO STREQUAL "gen")
     set_property(SOURCE ${RECOMP_SOURCES} APPEND PROPERTY COMPILE_OPTIONS /clang:-fprofile-instr-generate)
     get_filename_component(_llvm_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -191,10 +202,21 @@ elseif(T5DR_PGO)
         "/clang:-fprofile-instr-use=${T5DR_PGO}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
         -Wno-profile-instr-missing)
 endif()
-if(T5DR_PGO_SPU AND SPU_SOURCES AND NOT T5DR_PGO STREQUAL "gen")
-    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
-        "/clang:-fprofile-instr-use=${T5DR_PGO_SPU}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
-        -Wno-profile-instr-missing)
+if(SPU_SOURCES AND NOT T5DR_PGO STREQUAL "gen")
+    foreach(_spu_src ${SPU_SOURCES})
+        get_filename_component(_spu_img "${_spu_src}" DIRECTORY)
+        get_filename_component(_spu_img "${_spu_img}" NAME)
+        set(_spu_prof "${T5DR_PGO_SPU}")
+        if(_spu_src MATCHES "/lifted/bnuscore/")
+            set(_spu_prof "${T5DR_PGO_SND}")
+        elseif(_spu_src MATCHES "/lifted/skin[^/]*/")
+            set(_spu_prof "${T5DR_PGO_SKIN}")
+        endif()
+        if(_spu_prof)
+            set_property(SOURCE "${_spu_src}" APPEND PROPERTY COMPILE_OPTIONS "/clang:-fprofile-instr-use=${_spu_prof}"
+                -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-missing)
+        endif()
+    endforeach()
 endif()
 
 add_executable(t5dr

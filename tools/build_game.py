@@ -533,15 +533,16 @@ def step_compile(a):
     if not (cmake and ninja):
         fail("CMake and Ninja were not found. Install the Visual Studio component 'C++ CMake tools for Windows'.")
     compiler = [f'-DCMAKE_C_COMPILER="{clang[0]}"', f'-DCMAKE_CXX_COMPILER="{clang[0]}"']
-    # the PGO profile, split for the lifted PPU and SPU code (build_game_dll.prepare_profiles); without
-    # llvm-profdata.exe next to clang-cl the build goes on without it (same game, a little slower)
+    # the PGO profile, split into its parts (build_game_dll.prepare_profiles); without llvm-profdata.exe
+    # next to clang-cl the build goes on without it (same game, a little slower)
     pgo = []
     if os.path.exists(PGO_PROFILE):
         import build_game_dll
         os.makedirs(P.cmake, exist_ok=True)
         prof = build_game_dll.prepare_profiles(PGO_PROFILE, P.cmake, os.path.dirname(clang[0]))
-        pgo = [f'-DT5DR_PGO="{prof["ppu"]}"' if "ppu" in prof else '-DT5DR_PGO=""',
-               f'-DT5DR_PGO_SPU="{prof["spu"]}"' if "spu" in prof else '-DT5DR_PGO_SPU=""']
+        for part, var in (("ppu", "T5DR_PGO"), ("snd", "T5DR_PGO_SND"), ("skin", "T5DR_PGO_SKIN"),
+                          ("spu", "T5DR_PGO_SPU")):
+            pgo.append(f'-D{var}="{prof.get(part, "")}"')
     configure = " ".join([f'"{cmake}"', "-S", f'"{ROOT}"', "-B", f'"{P.cmake}"', "-G", "Ninja",
                           f'-DCMAKE_MAKE_PROGRAM="{ninja}"',
                           "-DCMAKE_BUILD_TYPE=Release", f'-DPS3RECOMP_DIR="{P.deps}"',

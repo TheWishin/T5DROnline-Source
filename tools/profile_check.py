@@ -36,7 +36,8 @@ NAME = re.compile(
     r"\?func_[0-9A-F]{8}@@YAXPEAUppu_context@@@Z"                     # lifted PPU function (C++ name)
     r"|[a-z][a-z0-9_]{0,40}_spu_func_[0-9A-F]{8}"                      # lifted SPU function
     r"|[a-z][a-z0-9_]{0,40}_spu_recomp_register|t5dr_spu_register_all"  # SPU image registration
-    r"|(?:ppu_recomp_\d{3}\.cpp|spu_recomp\.c|spu_dispatch_mt\.c|spu_workloads\.c|t5dr_game_dll\.c)"
+    r"|(?:ppu_recomp_\d{3}\.cpp|(?:[a-z0-9]{1,40}_)?spu_recomp\.c|spu_dispatch_mt\.c|spu_workloads\.c"
+    r"|t5dr_game_dll\.c)"
     r":[A-Za-z_?][A-Za-z0-9_?@$]{0,160}")                              # static helper: <file>:<name>
 INT = re.compile(r"0|[1-9][0-9]{0,19}")
 

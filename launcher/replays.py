@@ -119,7 +119,12 @@ def read_payload(path):
     r = _R(b)
     r.i = 4
     out = {"version": r.u32()}
-    out["rollback"] = bool(r.u32() & 1)
+    hf = r.u32()
+    out["rollback"] = bool(hf & 1)
+    # format 4: bit 1 the select screen's generator mixes the match number (older: one seed per session),
+    # bit 2 Jinpachi and the random cell were offered (T5_NET_UNLOCKS=open)
+    out["select_mix"] = out["version"] >= 4 and bool(hf & 2)
+    out["unlocks"] = "open" if out["version"] >= 4 and hf & 4 else "closed"
     out["slot"], out["delay"], out["rb_delay"] = r.u32(), r.u32(), r.i32()
     out["seed"], out["match_seed"], frames, out["hash_every"] = r.u32(), r.u32(), r.u32(), r.u32()
     if out["version"] >= 2:

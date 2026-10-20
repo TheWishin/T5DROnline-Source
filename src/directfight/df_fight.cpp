@@ -72,6 +72,11 @@ extern "C" void t5_replay_fight_start(unsigned match, const int chr[2], const in
                                       int rounds, int pick, const char* name1, const char* name2,
                                       const unsigned char* costumes);
 extern "C" int  t5_replay_fight_line(unsigned match, char* buf, int size);
+/* unlocks (df_unlock.cpp, docs/DIRECTFIGHT.md "Unlocks"): Jinpachi's and the random cell on the select grid
+ * (online: the match kind T5_NET_UNLOCKS, a playback: its file); a persistent game's session sets its kind */
+extern "C" int  t5_unlock_grid_open(void);
+extern "C" int  t5_unlock_online_open(void);
+extern "C" int  t5_unlock_set_open(int open);
 
 namespace df {
 
@@ -115,7 +120,12 @@ const char* const kName[36] = {
  * bottom row, 24-34 the top row (column = cell - 24). The cursor cycles the
  * rows top -> middle -> bottom with DOWN (UP the other way) and skips a row
  * that has no cell in that column; in the top row it cycles cells 25..34 only
- * (cell 24, Jinpachi's slot, is skipped). Measured by walking the cursor
+ * (cell 24 is skipped) -- unless Jinpachi is offered (the save, or online a
+ * match of the "open" kind, df_unlock.cpp): then the top row has 12 cells, the
+ * random cell at 24 (column 0) and Jinpachi at 35 (column 11), and every column
+ * reaches it. The random cell draws a fighter and costume at its confirm (the
+ * record's model is the drawn one; runs off5, off6), Jinpachi's models are
+ * 0x52 / 0x53 (runs off3, pair_rb). Measured by walking the cursor
  * (build/df runs p9/p10) and checked against the screen. -1 = not reachable.
  * Cells 28 and 31 are Devil Jin and Feng: the first table had them the other
  * way round, so T5_FIGHT Devil Jin (29) gave Feng and Feng (31) Devil Jin
@@ -125,11 +135,21 @@ const int kGrid[36] = {
     22, 2, 5, 17, 15, 7, 9, 16, 10, 4, 13, 11,       /* bottom: Roger Lei Nina Steve Kazuya Xiaoyu Jin Lee Julia Yoshimitsu Bryan Kuma */
     -1, 20, 28, 19, 29, 30, 26, 31, 25, 24, 32,      /* top: (Jinpachi) Eddy Baek Mokujin DevilJin Raven Asuka Feng Ganryu Wang ArmorKing */
     -1 };
+constexpr int kRandomCell = 24, kJinpachiCell = 35;   /* the open grid's two extra top-row cells (probe runs off3, off5) */
+bool grid_open() { return t5_unlock_grid_open() != 0; }
 int cell_of(int chr)
 {
+    if (chr == 35) return grid_open() ? kJinpachiCell : -1;
     for (int c = 0; c < 35; c++) if (kGrid[c] == chr) return c;
     if (chr == 12) return cell_of(11);      /* Panda shares Kuma's cell (a kick button confirms Panda) */
     return -1;
+}
+/* the character of a cell: -1 none / not on this grid, -2 the random cell */
+int char_at(int cell)
+{
+    if (cell == kJinpachiCell) return grid_open() ? 35 : -1;
+    if (cell == kRandomCell) return grid_open() ? -2 : -1;
+    return cell >= 0 && cell < 35 ? kGrid[cell] : -1;
 }
 int cell_row(int c) { return c >= 24 ? 0 : c >= 12 ? 2 : 1; }         /* 0 top, 1 middle, 2 bottom */
 int cell_col(int c) { return c >= 24 ? c - 24 : c >= 12 ? c - 12 : c; }
@@ -537,12 +557,14 @@ bool navigate(int p, int target, uint32_t f)
          * DOWN, DOWN, ... between the middle and bottom rows for a top-row
          * fighter until the driver gave up ("cannot reach cell 30 from 23",
          * RTT 250 batch R250a; in-game select run final_rb match 12). */
-        if (tr == 0 && c == 0) b = B_RIGHT;
-        else if (tr == 0 && c == 11) b = B_LEFT;
+        const bool open = grid_open();   /* the open grid's top row has columns 0 and 11 too */
+        if (!open && tr == 0 && c == 0) b = B_RIGHT;
+        else if (!open && tr == 0 && c == 11) b = B_LEFT;
         else b = ((tr - r + 3) % 3 == 1) ? B_DOWN : B_UP;
     } else {
-        /* the top row cycles its 10 cells (columns 1..10), the others 12 */
-        const int n = r == 0 ? 10 : 12, cc = r == 0 ? c - 1 : c, tcc = r == 0 ? tc - 1 : tc;
+        /* the top row cycles its 10 cells (columns 1..10; the open grid's 12), the others 12 */
+        const bool top10 = r == 0 && !grid_open();
+        const int n = top10 ? 10 : 12, cc = top10 ? c - 1 : c, tcc = top10 ? tc - 1 : tc;
         const int fwd = (tcc - cc + n) % n, back = (cc - tcc + n) % n;
         b = fwd <= back ? B_RIGHT : B_LEFT;
     }
@@ -852,9 +874,19 @@ void persistent_frame(uint32_t f)
         key += x + '|';
     }
     g_cmd_rematch = g_session && (c.rematch || key == g_session_key) && (g_ph == Ph::Over || g_ph == Ph::Neutral);
+    /* A new session's match kind (T5_NET_UNLOCKS=open: Jinpachi and the random cell
+     * on the grid, df_unlock.cpp), set now -- before the select screen it is picked
+     * on is built. A fresh select screen built with the other answer is built
+     * again (a select restart), so both PCs pick on the same grid. */
+    bool regrid = false;
+    if (!g_cmd_rematch) {
+        std::string u;
+        for (const auto& kv : c.env) if (!_stricmp(kv.first.c_str(), "T5_NET_UNLOCKS")) u = kv.second;
+        regrid = t5_unlock_set_open(!_stricmp(u.c_str(), "open")) != 0;
+    }
     if (!g_cmd_rematch) {
         if (g_session) end_session(f, "a new opponent", false);
-        else if (g_ph != Ph::Neutral || !g_fresh) go_reset(f);
+        else if (g_ph != Ph::Neutral || !g_fresh || regrid) go_reset(f);
     }
     ctl_report(f);
 }
@@ -1120,8 +1152,8 @@ void pick_frame(uint32_t f)
         write_hud(g_cfg, f);   /* the players' names under the portraits already (written again at FIGHT START) */
         plates_save();
         const uint32_t cell = rd32(rec(me) + kRecCell);
-        note("frame %u: in-game select: the select screen is live, player %d's cursor at cell %u (%s)", f, me + 1, cell,
-             cell < 35 && kGrid[cell] >= 0 ? kName[kGrid[cell]] : "?");
+        note("frame %u: in-game select: the select screen is live, player %d's cursor at cell %u (%s)%s", f, me + 1, cell,
+             char_at((int)cell) >= 0 ? kName[char_at((int)cell)] : "?", grid_open() ? " -- Jinpachi and the random cell offered" : "");
     }
     const ULONGLONG ms = GetTickCount64() - k.t0;
     if (st != k.last_st) {   /* every state of this player's record (3 choosing, 9 handicap, done) */
@@ -1201,8 +1233,9 @@ void pick_frame(uint32_t f)
             LARGE_INTEGER q; QueryPerformanceCounter(&q);
             uint32_t x = (uint32_t)q.QuadPart ^ (uint32_t)(q.QuadPart >> 32) ^ (GetCurrentProcessId() * 0x9E3779B9u) ^ f;
             x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
-            k.auto_chr = (int)(x % 35);                      /* 0..34: every selectable character (not Jinpachi) */
-            const uint32_t y = x / 35;
+            const uint32_t n = grid_open() ? 36u : 35u;      /* 0..34: every selectable character; Jinpachi when offered */
+            k.auto_chr = (int)(x % n);
+            const uint32_t y = x / n;
             k.auto_btn = k.auto_chr == 11 ? 1 + (int)(y % 2)  /* Kuma: a punch button */
                        : k.auto_chr == 12 ? 3 + (int)(y % 2)  /* Panda: a kick button */
                        : 1 + (int)(y % 4);
@@ -1235,7 +1268,8 @@ void pick_frame(uint32_t f)
             plate_text(me, "READY");
             const int cell = (int)rd32(rec(me) + kRecCell);
             note("frame %u: in-game select: player 2 chose cell %d (%s) with %s -- confirmed once P1's pick is in", f, cell,
-                 cell >= 0 && cell < 35 && kGrid[cell] >= 0 ? kName[kGrid[cell]] : "?", btn_name(btn_index(k.hold)));
+                 char_at(cell) >= 0 ? kName[char_at(cell)] : char_at(cell) == -2 ? "the random cell" : "?",
+                 btn_name(btn_index(k.hold)));
             return;
         }
         inject(me, true, (uint16_t)((raw & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) | k.face));
@@ -1250,10 +1284,23 @@ void pick_frame(uint32_t f)
         k.model = (int)rd32(rec(me) + kRecModel);
         k.btn = btn_index(k.confirm);
         if (!k.btn) k.btn = 3;
-        int chr = k.cell >= 0 && k.cell < 35 ? kGrid[k.cell] : -1;
+        int chr = char_at(k.cell);
+        const bool random_cell = chr == -2;
         if (chr == 11 && (k.btn == 3 || k.btn == 4)) chr = 12;   /* Kuma's cell with a kick button: Panda */
         const int by_model = model_char(k.model);
         if (chr < 0) chr = by_model >= 0 ? by_model : g_cfg.chr[me];
+        if (random_cell) {
+            /* The random cell drew a fighter and costume at the confirm (it follows
+             * the frame it is pressed on); the record has the drawn model. What goes
+             * to the peer is that fighter on its own cell with the button that gives
+             * the model there (pick_button_for), so the peer's driver confirms the
+             * same model -- and so does a playback of the replay. */
+            const int b = pick_button_for(chr, k.model);
+            note("frame %u: in-game select: the random cell gave %s (model 0x%X): sent as cell %d with %s", f, kName[chr],
+                 k.model, cell_of(chr), btn_name(b ? b : k.btn));
+            if (b) k.btn = b;
+            k.cell = cell_of(chr);
+        }
         if (by_model != chr)
             note("frame %u: in-game select: cell %d gives %s, model 0x%X says %s (model table?) -- the cell counts", f, k.cell,
                  kName[chr], k.model, by_model >= 0 ? kName[by_model] : "?");
@@ -1289,7 +1336,7 @@ bool take_peer_pick(uint32_t f)
     unsigned v = 0;
     if (k.net && t5_netplay_pick_peer(k.key, &v)) {
         int chr, cell, btn, model;
-        if (pick_unpack(v, &chr, &cell, &btn, &model) && chr < 35 && cell_of(chr) == cell) {
+        if (pick_unpack(v, &chr, &cell, &btn, &model) && chr < (grid_open() ? 36 : 35) && cell_of(chr) == cell) {
             g_cfg.chr[other] = chr;
             g_cfg.btn[other] = btn;
             k.peer = true;
@@ -1341,12 +1388,30 @@ void pick_wait_frame(uint32_t f)
 
 /* FIGHT START: what both sides fight with (the same on both PCs, or the pick
  * went wrong somewhere) */
+/* What each fighter block plays (+0x4C of the blocks 0x10090030 and 0x10090900):
+ * the fighter in the low byte (the select's character id for most, not all: Lili
+ * 0x1E, Jinpachi 0x22; bit 16 is set on P2's block) -- for Mokujin the fighter he
+ * copies, which the game mode's set-up drew
+ * (0x121E0C <- 0x5A304 <- 0x53C88, phase 2) from the select screen's pinned
+ * generator; logged at FIGHT START as "plays". */
+std::string fighter_words()
+{
+    std::string o;
+    for (int p = 0; p < 2; p++) {
+        const uint32_t w = rd32(0x1009007Cu + (uint32_t)p * 0x8D0u);
+        char b[64];
+        snprintf(b, sizeof b, "%sP%d plays 0x%X%s", p ? ", " : "", p + 1, w, g_cfg.chr[p] == 19 ? " (Mokujin's copy)" : "");
+        o += b;
+    }
+    return o;
+}
+
 void pick_fight_start(uint32_t f)
 {
     for (int p = 0; p < 2; p++) g_models[p] = (int)rd32(rec(p) + kRecModel);
-    note("frame %u: fighters: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)%s", f, kName[g_cfg.chr[0]],
+    note("frame %u: fighters: P1 %s with %s (model 0x%X), P2 %s with %s (model 0x%X)%s; %s", f, kName[g_cfg.chr[0]],
          btn_name(g_cfg.btn[0]), g_models[0], kName[g_cfg.chr[1]], btn_name(g_cfg.btn[1]), g_models[1],
-         g_pick.on ? " (in-game select)" : "");
+         g_pick.on ? " (in-game select)" : "", fighter_words().c_str());
     if (!g_pick.on) return;
     g_pick.on = false;
     const int me = g_pick.me, other = 1 - me;
@@ -1755,6 +1820,10 @@ bool fight_configured() { return g_configured; }
 
 /* tests (T5_NET_SCRIPT_FIGHT): the scripted fight input applies only in a fight */
 extern "C" int t5_df_in_fight(void) { return df::g_ph == df::Ph::Fight ? 1 : 0; }
+/* Fights started in this netplay session (FIGHT START counts; a new session starts at 0): the same on
+ * both PCs at their select screens and in a playback -- t5_hooks.cpp mixes it into the select screen's
+ * random seed (Mokujin's copy). */
+extern "C" uint32_t t5_df_session_matches(void) { return df::g_session_matches; }
 
 /* The game window was closed (netplay's handler, on the runtime's ticker
  * thread, right before the process ends): a persistent game tells its launcher

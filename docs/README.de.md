@@ -146,7 +146,7 @@ heißen. Im deutschen Launcher heißen sie:
 | Mute sound | Ton aus |
 | Stage blur / glow | Stage-Unschärfe / Leuchten |
 | Power saving (laptops, handhelds) | Stromsparen (Laptops, Handhelds) |
-| Unlocks, Unlock all stages, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Alle Customize-Items freischalten |
+| Unlocks, Unlock all stages, Unlock Jinpachi and Random select, Unlock all customization items | Freischaltungen, Alle Stages freischalten, Jinpachi und die Random-Auswahl freischalten, Alle Customize-Items freischalten |
 
 **BUILD GAME**, **Quick Match** und **Ranked-Match** heißen in beiden
 Sprachen gleich.
@@ -201,12 +201,17 @@ Sprachen gleich.
   den anderen Offline-Modi und online (dort nur deine eigenen Eingaben). **F2**
   im Spiel schaltet sie um. Sie liest das Spiel nur und ändert nie ein Match.
   Mehr in [TRAINING.md](TRAINING.md) (englisch).
-- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; beides
+- **Settings** -> **Unlocks** (Freischaltungen, für das Spiel offline; alles
   ist anfangs aus):
   - **Alle Stages freischalten**: Die Tekken-5-Stages (die alten, sonst nach
     etwa 50 Kämpfen verdient, ein paar Arcade-Durchgängen) gibt es in Arcade,
     VS, Practice und den anderen Modi, ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird
     nicht verändert: Ausgeschaltet ist das Spiel wie vorher.
+  - **Jinpachi und die Random-Auswahl freischalten**: Die Charakterauswahl hat
+    Jinpachi (obere Reihe, rechts außen) und das Zufallsfeld (obere Reihe, links
+    außen), ohne den Arcade-Modus durchzuspielen. Dein Spielstand wird nicht
+    verändert. Online brauchst du es nicht: Casual-Matches und Räume haben
+    immer beide, Ranked nie.
   - **Alle Customize-Items freischalten**: Alles im **ITEM SHOP & EQUIP** (nach
     der Kämpferwahl in Arcade, Ghost oder Survival) kostet 0 Fight Money. Was du
     dir nimmst, bleibt in deinem Spielstand wie ein gekauftes Item, auch nach
@@ -308,8 +313,12 @@ Tastatur (Standard) und Xbox-Controller:
 4. Das Spiel zeigt seine eigene Charakterauswahl. Wähle deinen Kämpfer mit
    Pad, Stick oder Tastatur innerhalb von 30 Sekunden: Die Taste, mit der du
    bestätigst, wählt das Kostüm, **Select** (Tab auf der Tastatur, Back am
-   Xbox-Pad) wählt zufällig. Wählst du nichts, bekommst du den Charakter aus
-   dem Launcher. Haben beide gewählt, startet der Kampf: wer zuerst 3 Runden
+   Xbox-Pad) wählt zufällig. In Quick-Matches, Räumen und Einladungen hat die
+   obere Reihe für beide auch **Jinpachi** (rechts außen) und das
+   **Zufallsfeld** des Spiels (links außen); Ranked-Matches und Turniere haben
+   beides nicht. Mokujins kopierter Kämpfer und das Zufallsfeld werden in
+   jedem Match neu gezogen (auf beiden PCs gleich). Wählst du nichts,
+   bekommst du den Charakter aus dem Launcher. Haben beide gewählt, startet der Kampf: wer zuerst 3 Runden
    gewinnt. Der Name unter deinem Kämpfer zählt die Sekunden herunter;
    "PICKING..." beim Gegner heißt, du wartest auf seine Wahl.
 5. Danach **Rematch** oder **Next game**. Ein Rematch führt wieder zur

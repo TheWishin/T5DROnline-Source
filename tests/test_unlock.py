@@ -1,5 +1,6 @@
 """Launcher Settings -> Unlocks (docs/DIRECTFIGHT.md "Unlocks"): "Unlock all stages" (T5_UNLOCK_STAGES) and
-"Unlock all customization items" (T5_UNLOCK_ITEMS), off by default, offline only; a game started for online play
+"Unlock all customization items" (T5_UNLOCK_ITEMS) and "Unlock Jinpachi and Random select" (T5_UNLOCK_JINPACHI),
+off by default, offline only; a game started for online play
 never gets them and keeps a save of its own (PS3_SAVEDATA_DIR, ps3recomp patch 0044), so both PCs start from the
 same fresh save. The free items stay in the save, so the launcher backs the save folder up once first. No game."""
 import json
@@ -36,9 +37,11 @@ class Settings(unittest.TestCase):
         s = core.Settings(self.path())
         self.assertFalse(s["unlock_stages"])
         self.assertFalse(s["unlock_items"])
+        self.assertFalse(s["unlock_jinpachi"])
         env = s.env_overrides()
         self.assertNotIn("T5_UNLOCK_STAGES", env)
         self.assertNotIn("T5_UNLOCK_ITEMS", env)
+        self.assertNotIn("T5_UNLOCK_JINPACHI", env)
         # a launcher.json of an older version has neither key
         old = core.Settings(self.path({"display": "window1080"}))
         self.assertFalse(old["unlock_stages"] or old["unlock_items"])
@@ -55,6 +58,9 @@ class Settings(unittest.TestCase):
         self.assertEqual((env["T5_UNLOCK_STAGES"], env["T5_UNLOCK_ITEMS"]), ("1", "1"))
         s2["unlock_items"] = False
         self.assertNotIn("T5_UNLOCK_ITEMS", s2.env_overrides())
+        s2["unlock_jinpachi"] = True
+        s2.save()
+        self.assertEqual(core.Settings(p).env_overrides()["T5_UNLOCK_JINPACHI"], "1")
 
 
 class GameStart(unittest.TestCase):
@@ -65,7 +71,7 @@ class GameStart(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.out, True)
         p = os.path.join(self.out, "launcher.json")
         with open(p, "w", encoding="utf-8") as f:
-            json.dump({"unlock_stages": True, "unlock_items": True}, f)
+            json.dump({"unlock_stages": True, "unlock_items": True, "unlock_jinpachi": True}, f)
         self.settings = core.Settings(p)
 
     def env_of_start(self, extra):
@@ -81,7 +87,8 @@ class GameStart(unittest.TestCase):
 
     def test_offline_play_gets_the_unlocks_and_the_own_save(self):
         env = self.env_of_start({})
-        self.assertEqual((env.get("T5_UNLOCK_STAGES"), env.get("T5_UNLOCK_ITEMS")), ("1", "1"))
+        self.assertEqual((env.get("T5_UNLOCK_STAGES"), env.get("T5_UNLOCK_ITEMS"), env.get("T5_UNLOCK_JINPACHI")),
+                         ("1", "1", "1"))
         self.assertNotIn("PS3_SAVEDATA_DIR", env)
 
     def test_online_games_get_neither_and_a_save_of_their_own(self):
@@ -89,6 +96,7 @@ class GameStart(unittest.TestCase):
             env = self.env_of_start(extra)
             self.assertNotIn("T5_UNLOCK_STAGES", env, extra)
             self.assertNotIn("T5_UNLOCK_ITEMS", env, extra)
+            self.assertNotIn("T5_UNLOCK_JINPACHI", env, extra)
             self.assertEqual(env["PS3_SAVEDATA_DIR"], core.online_saves_dir(self.out))
             self.assertNotEqual(os.path.normcase(env["PS3_SAVEDATA_DIR"]), os.path.normcase(core.saves_dir(self.out)))
         self.assertTrue(core.online_saves_dir(self.out).replace("\\", "/").endswith(
@@ -146,8 +154,10 @@ class GameSide(unittest.TestCase):
         src = text("src", "directfight", "df_unlock.cpp")
         for addr in ("0x002A732C", "0x00152918", "0x001522C8"):
             self.assertIn(addr, src)
-        # online: every unlock check answers as a fresh save (0), and the item prices are left alone
-        self.assertRegex(src, r"if \(g_mode == Mode::Fixed\) r = 0;")
+        # online: every unlock check answers as a fresh save (0) -- but Jinpachi and the random cell (0x20) as the
+        # match kind says (T5_NET_UNLOCKS=open) -- and the item prices are left alone
+        self.assertRegex(src, r"if \(g_mode == Mode::Fixed\) r = \(mask & kFlagJinpachi\) && online_open\(\) \? 1 : 0;")
+        self.assertIn('if (g_jinpachi && (mask & kFlagJinpachi)) r = 1;', src)
         self.assertRegex(src, r"if \(g_mode == Mode::Save && \(g_items \|\| g_trace\)\)")
 
     def test_patch_0044(self):

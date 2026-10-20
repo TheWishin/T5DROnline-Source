@@ -96,6 +96,7 @@ void play_finish(const char* why);                  /* write T5_REPLAY_RESULT, l
 void play_fail(const char* path, const char* why);  /* the file could not be played: T5_REPLAY_RESULT says why */
 uint32_t play_target();                             /* the match being watched (1-based) */
 uint32_t play_match_index();                        /* matches begun so far in the playback */
+bool play_select_mix();                             /* the select seed mixes the match number (format 4; older: per session) */
 
 /* ---- spectating (docs/SPECTATE.md) ----------------------------------------
  * Players: T5_REPLAY_LIVE=<file> (the session's environment) appends the session

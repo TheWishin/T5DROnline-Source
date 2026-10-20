@@ -660,22 +660,28 @@ class App(tk.Tk):
             "They see the match a few seconds late, in their own game. Only when both players allow it; a ranked "
             "match only when both allow ranked too.")).pack(anchor="w", pady=(4, 0))
 
-        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS, docs/DIRECTFIGHT.md "Unlocks"): offline only; the game
-        # never changes the save for them. An online game answers as a fresh save does, on both PCs.
+        # Unlocks (T5_UNLOCK_STAGES / T5_UNLOCK_ITEMS / T5_UNLOCK_JINPACHI, docs/DIRECTFIGHT.md "Unlocks"): offline
+        # only; the game never changes the save for them. An online game answers as a fresh save does, on both PCs
+        # (Jinpachi and Random: by the match kind, casual yes, ranked no -- T5_NET_UNLOCKS from the lobby).
         unl = ttk.LabelFrame(right, text="  " + t("Unlocks") + "  ", padding=(12, 6))
         unl.pack(fill="x", pady=(6, 0))
         self.unlock_stages_var = tk.BooleanVar(value=bool(self.settings.get("unlock_stages")))
         self.unlock_items_var = tk.BooleanVar(value=bool(self.settings.get("unlock_items")))
+        self.unlock_jinpachi_var = tk.BooleanVar(value=bool(self.settings.get("unlock_jinpachi")))
         ttk.Checkbutton(unl, text=t("Unlock all stages (the Tekken 5 stages, without clearing Arcade)"),
                         variable=self.unlock_stages_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w")
+        ttk.Checkbutton(unl, text=t("Unlock Jinpachi and Random select (without clearing Arcade)"),
+                        variable=self.unlock_jinpachi_var, style=self.wrap_style("TCheckbutton", 440),
+                        command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(unl, text=t("Unlock all customization items (free in the item shop)"),
                         variable=self.unlock_items_var, style=self.wrap_style("TCheckbutton", 440),
                         command=self.save_settings).pack(anchor="w", pady=(4, 0))
         ttk.Label(unl, style="Muted.TLabel", wraplength=300, justify="left", text=t(
             "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
             "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-            "same stages and the default costumes.")).pack(anchor="w", pady=(4, 0))
+            "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.")).pack(
+            anchor="w", pady=(4, 0))
 
         ctl = ttk.LabelFrame(box, text="  " + t("Controls") + "  ", padding=(12, 6))
         ctl.grid(row=1, column=0, columnspan=2, sticky="nwe", pady=(14, 0))
@@ -1148,6 +1154,7 @@ class App(tk.Tk):
         if hasattr(self, "unlock_stages_var"):
             self.settings["unlock_stages"] = bool(self.unlock_stages_var.get())
             self.settings["unlock_items"] = bool(self.unlock_items_var.get())
+            self.settings["unlock_jinpachi"] = bool(self.unlock_jinpachi_var.get())
         if hasattr(self, "language_var"):
             self.settings["language"] = self.language_var.get()
         self.settings.save()

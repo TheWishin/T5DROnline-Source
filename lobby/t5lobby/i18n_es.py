@@ -506,14 +506,17 @@ MESSAGES = {
     "Unlocks": "Desbloqueos",
     "Unlock all stages (the Tekken 5 stages, without clearing Arcade)":
         "Desbloquear todos los escenarios (los de Tekken 5, sin completar Arcade)",
+    "Unlock Jinpachi and Random select (without clearing Arcade)":
+        "Desbloquear a Jinpachi y la selección Random (sin completar Arcade)",
     "Unlock all customization items (free in the item shop)":
         "Desbloquear todos los ítems de personalización (gratis en la ITEM SHOP)",
     "Offline only (Arcade, VS, Practice and the rest). Your save is not changed; items you take for free "
     "stay yours (the save is backed up first, in save-backups). Online, both players always get the "
-    "same stages and the default costumes.":
-        "Solo offline (Arcade, VS, Practice y los demás). Tu partida guardada no cambia; los ítems que "
-        "tomes gratis se quedan contigo (antes se hace una copia de la partida guardada, en save-backups). "
-        "Online, ambos jugadores siempre tienen los mismos escenarios y los trajes predeterminados.",
+    "same stages; Jinpachi and Random are there in casual matches and rooms, not in ranked.":
+        "Solo offline (Arcade, VS, Practice y los demás). Tu partida guardada no cambia; los ítems que tomes "
+        "gratis se quedan contigo (antes se hace una copia de la partida guardada, en save-backups). Online, "
+        "ambos jugadores siempre tienen los mismos escenarios; Jinpachi y Random están en las partidas "
+        "casuales y en las salas, no en Ranked.",
     "Sound and start": "Sonido e inicio",
     "Mute sound": "Silenciar sonido",
     "Start minimized, without taking focus (for testing)": "Iniciar minimizado, sin tomar el foco (para pruebas)",

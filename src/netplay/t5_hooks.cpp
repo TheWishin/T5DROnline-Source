@@ -67,6 +67,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <stdlib.h>
 #include <atomic>
 #include <cstdio>
@@ -94,6 +95,9 @@ extern "C" void ps3_set_window_closed_handler(void (*fn)(void));
 extern "C" void ps3_set_window_close_guard(int (*fn)(void));
 namespace rb { void sndheap_install(); }   /* src/rollback/rb_sndheap.cpp */
 extern "C" void t5_unlock_install(void);   /* src/directfight/df_unlock.cpp: unlocks (docs/DIRECTFIGHT.md "Unlocks") */
+extern "C" void t5_select_trace(void);     /* src/directfight/df_unlock.cpp: T5_SELECT_TRACE=1 (diagnostics) */
+extern "C" uint32_t t5_df_session_matches(void);   /* src/directfight/df_fight.cpp: fights started in this netplay session */
+extern "C" uint32_t t5_df_find_mode(uint32_t f);    /* src/directfight/df_hooks.cpp: the mode manager's mode (offline tests) */
 extern "C" {
 void    ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
 int32_t cellPadInit(uint32_t max_connect);           /* ps3recomp libs/input/cellPad.c */
@@ -1145,6 +1149,76 @@ void go_paused(uint32_t f)
  * a game that had played other opponents began each fight from a different
  * state than one just started -- docs/NETPLAY.md "Desync hunt"). */
 uint32_t g_main_tls = 0;   /* the main thread's TLS block (its r13 - 0x7000), from its frame waits */
+
+/* The seed the TLS generator is pinned to while the select mode runs (below,
+ * on_frame_start): the session's seed mixed with the number of fights this
+ * session has started (the direct-fight driver counts them at FIGHT START, the
+ * same on both PCs and in a playback of the session). Mokujin's copy is drawn
+ * from it at the game mode's set-up: the same on both PCs, another one in every
+ * rematch, and other sessions draw others again. (The random cell draws at its
+ * confirm and follows the frame it is pressed on; its pick travels as the
+ * fighter it gave, df_fight.cpp.) A replay recorded before
+ * the mix (format 3 and older) plays back with one seed for the whole session,
+ * as it was recorded (rp::play_select_mix). */
+uint32_t select_seed(uint32_t* match_no)
+{
+    uint32_t k = t5_df_session_matches();
+    if (np::replaying() && !rp::play_select_mix()) k = 0;
+    *match_no = k;
+    return (np::session_seed() ^ 0x7E1EC7EDu) + k * 0x9E3779B9u;
+}
+
+/* Offline (no netplay, no direct fight, no replay): the TLS generator starts
+ * from the game's own fixed state word at every boot, and nothing that depends
+ * on timing moves it any more (rb_rand.cpp isolates it from the effect and
+ * stage draws), so Mokujin's copies and the other scene draws could come out
+ * the same after every start (runs off2: twice the same copy; only the players'
+ * timing made them differ). It is seeded once at the
+ * first frame boundary from the OS's random numbers (the game seeds its
+ * Mersenne Twister from the clock, 0xAE6C8, but not this one).
+ * T5_OFFLINE_SEED=<n> (tests): that seed, and while a select screen runs every
+ * generator (the TLS one, the Twister, rand(), the scene's LCG: reseed()) is
+ * pinned to n mixed with the number of select screens left so far (as online,
+ * select_seed()): how long the players took no longer counts, so the same picks
+ * give the same Mokujin copies at every start.
+ * =0: not seeded (as before). */
+void reseed(uint32_t seed);         /* (below) */
+bool g_offline_seeded = false;
+uint32_t g_offline_fixed = 0;       /* T5_OFFLINE_SEED=<n> */
+void offline_pin()
+{
+    static uint32_t f = 0, k = 0, was = 0, noted = 0;
+    const uint32_t m = t5_df_find_mode(f++);
+    if (was == 6 && m != 6) k++;
+    was = m;
+    if (m != 6) return;
+    const uint32_t seed = (g_offline_fixed ^ 0x7E1EC7EDu) + k * 0x9E3779B9u;
+    reseed(seed);   /* every generator, as at an online sync point (the Twister is seeded from the clock at boot) */
+    if (seed != noted) { noted = seed; np::note("offline: select screen %u, TLS generator pinned to 0x%08X (T5_OFFLINE_SEED)", k + 1, seed); }
+}
+void offline_seed()
+{
+    g_offline_seeded = true;
+    for (const char* k : { "T5_FIGHT", "T5_FIGHT_FILE", "T5_REPLAY_FILE" }) {
+        const char* v = getenv(k);
+        if (v && *v) return;      /* a direct fight or a playback: the driver's own seeds */
+    }
+    uint32_t seed = 0;
+    const char* e = getenv("T5_OFFLINE_SEED");
+    if (e && *e) {
+        seed = (uint32_t)strtoul(e, nullptr, 0);
+        if (!seed) { np::note("offline: the scene's random generator starts as the game sets it (T5_OFFLINE_SEED=0)"); return; }
+        g_offline_fixed = seed;
+    } else {
+        LARGE_INTEGER q; QueryPerformanceCounter(&q);
+        BCryptGenRandom(nullptr, (PUCHAR)&seed, sizeof seed, BCRYPT_USE_SYSTEM_PREFERRED_RNG);   /* (bcrypt: linked already) */
+        seed ^= (uint32_t)q.QuadPart ^ (uint32_t)(q.QuadPart >> 32) ^ (GetCurrentProcessId() * 0x9E3779B9u);
+        if (!seed) seed = 0x2545F491u;
+    }
+    rb::tls_rand_reseed(g_main_tls, seed, true);
+    np::note("offline: the scene's random generator seeded with 0x%08X (%s): Mokujin's copies and random picks differ "
+             "from start to start", seed, e && *e ? "T5_OFFLINE_SEED" : "this start's");
+}
 void reseed(uint32_t seed)
 {
     gcall(kFnMtSeed, seed);
@@ -1335,10 +1409,23 @@ void on_frame_start(ppu_context* ctx)
      * depended on how long each PC took there; Mokujin copied Feng on one PC
      * and Kazuya on the other (desync hunt runs v1c/v5: 0x1009094C 0x1001F vs
      * 0x1000F from the first frame). Pinned, the set-up draws the same on both. */
+    /* (and since 1.1.4 mixed with the session's match number -- select_seed() --
+     * so Mokujin and the random cell draw anew in every rematch) */
     if (g_main_tls && (g_directfight || g_persistent) && np::enabled() && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1) &&
-        t5_df_mode_cur() == 6)
-        rb::tls_rand_reseed(g_main_tls, np::session_seed() ^ 0x7E1EC7EDu, false);   /* the private streams run on (the select's emitters) */
-    if (g_offline) { offline_frame(ctx); return; }
+        t5_df_mode_cur() == 6) {
+        static uint32_t noted = 0;
+        uint32_t k;
+        const uint32_t seed = select_seed(&k);
+        rb::tls_rand_reseed(g_main_tls, seed, false);   /* the private streams run on (the select's emitters) */
+        if (seed != noted) { noted = seed; np::note("select screen: TLS generator pinned to 0x%08X (session %u, match %u of it)", seed, np::sessions(), k + 1); }
+    }
+    t5_select_trace();
+    if (g_offline) {
+        if (!g_offline_seeded && g_main_tls) offline_seed();
+        if (g_offline_fixed && ctx->thread_id == (g_main_tid != ~0ull ? g_main_tid : 1)) offline_pin();
+        offline_frame(ctx);
+        return;
+    }
     bool fresh_start = false, resume = false;
     check_session();   /* a failed handshake / lost peer ends the match here (before and during lockstep) */
     if (!g_active) {

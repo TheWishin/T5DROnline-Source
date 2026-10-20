@@ -62,7 +62,7 @@ log = logging.getLogger("t5lobby")
 SERVER_NAME = "t5lobby/0.2"
 # optional protocol features a client may announce in hello
 CAPS = frozenset(("delta", "blind_ready", "notices", "sets", "ingame_pick", "nat2", "relays", "friends", "old_stages",
-                  "tournaments", "spectate", "game_fallback", "private_rooms"))
+                  "tournaments", "spectate", "game_fallback", "private_rooms", "boss_chars"))
 QUEUE_MODES = ("quick", "ranked")
 # What this server supports beyond protocol 1's base (the client checks before using them).
 FEATURES = ["ranks", "sessions", "recovery", "passwd", "profile", "history", "chars", "integrity", "rematch",
@@ -2592,10 +2592,13 @@ class LobbyServer(SpectateMixin, RoomsMixin):
             # the fighters the game fought with (in-game select): keys, or the game's ids
             ok = isinstance(chars, list) and len(chars) == 2
             keys = []
+            # Jinpachi (a boss) only where the games offer him: casual matches (T5_NET_UNLOCKS=open,
+            # handover.match_unlocks) -- never in ranked matches or tournament sets (cap "boss_chars")
+            boss_ok = not m.ranked and not (m.set is not None and "tournament" in m.set.info())
             for c in chars if ok else ():
                 f = self.table.fighter(c) if isinstance(c, str) else (
                     self.table.fighter_by_id(c) if isinstance(c, int) and not isinstance(c, bool) else None)
-                if f is None or f.get("boss"):
+                if f is None or (f.get("boss") and not boss_ok):
                     ok = False
                     break
                 keys.append(f["key"])

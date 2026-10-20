@@ -114,6 +114,7 @@ DEFAULTS = {
     "power_saving": "auto",    # auto | on | off: PS3_LAPTOP (POWER_SAVING)
     "unlock_stages": False,    # offline: the Tekken 5 stages without clearing Arcade (T5_UNLOCK_STAGES, docs/DIRECTFIGHT.md "Unlocks")
     "unlock_items": False,     # offline: every customization item free in the item shop (T5_UNLOCK_ITEMS)
+    "unlock_jinpachi": False,  # offline: Jinpachi and the random cell on the select screen (T5_UNLOCK_JINPACHI)
 }
 
 
@@ -245,9 +246,12 @@ class Settings(dict):
                     env["T5_TRAINING_ONLINE"] = "1"
                 env["T5_TRAINING_LANG"] = i18n.resolve(self["language"]) if I18N else "en"
         # Unlocks count offline only: a game started for online play answers as a fresh save does,
-        # whatever it is given (both PCs must build the same select screens and stage lists).
+        # whatever it is given (both PCs must build the same select screens and stage lists); online, Jinpachi
+        # and the random cell come with the match kind instead (T5_NET_UNLOCKS from the lobby's match event).
         if self["unlock_stages"]:
             env["T5_UNLOCK_STAGES"] = "1"
+        if self["unlock_jinpachi"]:
+            env["T5_UNLOCK_JINPACHI"] = "1"
         if self["unlock_items"]:
             env["T5_UNLOCK_ITEMS"] = "1"
         for line in self["extra_env"].splitlines():
@@ -666,7 +670,7 @@ def explain_exit(code, lines):
     return t("The game stopped (exit code {code}). The game log has the details.", code=code)
 
 
-UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS")
+UNLOCK_ENV = ("T5_UNLOCK_STAGES", "T5_UNLOCK_ITEMS", "T5_UNLOCK_JINPACHI")
 ONLINE_ENV = ("T5_CTL_DIR", "T5_NET_MODE", "T5_FIGHT", "T5_FIGHT_FILE")
 
 

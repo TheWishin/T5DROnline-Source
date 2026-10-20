@@ -70,7 +70,7 @@ import threading
 import time
 
 from . import proto
-from .handover import MatchTicket
+from .handover import MatchTicket, match_unlocks
 from .i18n import t
 from .nat import GameSocket, RelayBridge, local_ipv4s, server_rtt, test_inbound_mode
 from .proto import LobbyError
@@ -310,7 +310,8 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                                                 + (["tournaments"] if self.tournaments else [])
                                                 + (["spectate"] if self.spectate else [])
                                                 + (["private_rooms"] if self.private_rooms else [])
-                                                + (["game_fallback"] if self._can_fallback() else [])})
+                                                + (["game_fallback"] if self._can_fallback() else [])
+                                                + ["boss_chars"]})
         except LobbyError:
             # Refused (version) or no answer (e.g. TLS on one side only): leave nothing half open.
             closing, self._closing = self._closing, True
@@ -698,7 +699,7 @@ class LobbyClient(TourCalls, SpectateClientMixin):
                              rounds=msg.get("rounds", 3), ranked=msg.get("ranked", False),
                              opponent=msg.get("opponent", {}), build=msg.get("build", ""), seed=msg.get("seed", 0),
                              key=str(msg.get("key") or ""), input_delay=msg.get("input_delay"),
-                             relay_name=relay_name)
+                             relay_name=relay_name, unlocks=match_unlocks(msg))
         if self.handover == "share" and gs is not None and gs.dup is not None:
             ticket._dup_socket = gs.dup
             gs.dup = None

@@ -25,6 +25,12 @@ part is in the README's status table.
   with real customizations on both sides, a forged block from one side (default on both PCs) and against a 1.1.3
   build: both PCs showed the same costumes, 0 desyncs. Both players need 1.1.4 (the lobby pairs equal builds only).
 
+### Offline
+- **Random is random at every start.** Mokujin's copied fighter and the random cell could come out the same after
+  every start of the game. Now the game draws them anew from the start.
+- **New setting: Unlock Jinpachi and Random select** (Settings -> Unlocks): Jinpachi and the random cell on the
+  character select without clearing Arcade. Off by default; your save is not changed. Texts in all languages.
+
 ### Speed
 - **Faster game code, the same game.** The build now translates the game's code so that the PS3's registers stay
   in the PC's registers between calls instead of being written to memory and read back after almost every step.
@@ -81,6 +87,12 @@ part is in the README's status table.
   worst in the same test). Tested in rollback and lockstep at 60/120/200 ms ping with loss and jitter: relayed
   matches play like direct ones at the same ping, every match in sync. Only the launcher changed: it works with
   every lobby and relay server. docs/NETPLAY.md "Relayed matches".
+- **Jinpachi and Random in casual matches.** In quick matches, rooms and friend invites the character select now has
+  Jinpachi (top row, right end) and the game's random cell (top row, left end), for both players -- no Arcade
+  clearing needed. Ranked matches and tournament sets stay without them, as before. Both players need 1.1.4.
+- **Mokujin and the random cell draw anew in every match.** In a rematch Mokujin used to copy the same fighter as in
+  the match before (and every match of the session the same one). Now every match draws again, still the same on
+  both PCs and in the replay. Replays from 1.1.3 play back as they were recorded.
 - **A room stays watchable between a match and its rematch.** The Rooms list took the Watch button away from a
   room as soon as its match ended, so whoever came by while the players chose their rematch could not watch,
   although the spectators already watching went on into the rematch. Now the room keeps Watch while its players'

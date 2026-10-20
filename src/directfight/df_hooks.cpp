@@ -525,6 +525,13 @@ int64_t w_sem_wait(ppu_context* ctx)
 /* The netplay hooks' early rollback (rb_net.cpp) does not wait on the frame
  * semaphore when the vblank tick already came during its re-simulation; the
  * driver's frame work runs here then, once per live frame as always. */
+/* Offline tests with T5_OFFLINE_SEED (t5_hooks.cpp): the mode manager, found as the driver finds it
+ * (every 30th frame until found); its current mode, 0xFFFFFFFF while unknown. */
+extern "C" uint32_t t5_df_find_mode(uint32_t f)
+{
+    df::find_manager(f);
+    return df::mode_cur();
+}
 extern "C" void t5_df_frame_tick(ppu_context* ctx)
 {
     if (!df::g_installed.load() || ctx->thread_id != df::g_main_tid) return;

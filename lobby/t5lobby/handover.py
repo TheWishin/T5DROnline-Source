@@ -13,6 +13,9 @@ branch `netplay`) reads it. Read by netplay today:
     T5_RB_NET_DELAY auto | 0 | 1 | 2    rollback input delay: a ranked match's fixed value (the server's
                                         T5L_RANKED_INPUT_DELAY); otherwise the player's setting (launcher)
     T5_NET_TIMEOUT  seconds             give up when the peer is silent this long
+    T5_NET_UNLOCKS  open | closed       Jinpachi and the random cell on both select grids: "open" for casual
+                                        matches (quick, rooms, invites), "closed" for ranked matches and
+                                        tournament sets (match_unlocks(); docs/DIRECTFIGHT.md "Unlocks")
 
 Passed for the game side to pick up (not read yet; see docs/ONLINE.md):
 
@@ -43,6 +46,16 @@ from dataclasses import dataclass, field
 from .i18n import N_, t
 
 
+def match_unlocks(msg):
+    """The match kind's unlocks for both games (T5_NET_UNLOCKS), from the lobby's match_start event -- the same
+    on both PCs, never one player's setting. Competitive matches (ranked, a tournament set's games) stay as a
+    fresh save: "closed" -- change it here to offer Jinpachi and the random cell there too. Everything else
+    (casual quick matches, rooms, friend invites, their rematches): "open"."""
+    if not isinstance(msg, dict) or msg.get("ranked") or ((msg.get("set") or {}).get("tournament")):
+        return "closed"
+    return "open"
+
+
 @dataclass
 class MatchTicket:
     match_id: str
@@ -64,6 +77,7 @@ class MatchTicket:
     key: str = field(default="", repr=False)
     input_delay: object = None   # ranked: the server's fixed rollback input delay (frames); None = the player's setting
     relay_name: str = ""         # path relay through a regional relay node: its name (the lobby server's own relay: "")
+    unlocks: str = "closed"      # T5_NET_UNLOCKS: match_unlocks() of the match_start event
     _dup_socket: object = field(default=None, repr=False)
 
     def game_env(self, result_file=None):
@@ -79,6 +93,7 @@ class MatchTicket:
             "T5_NET_RTT_MS": f"{self.rtt_ms:.1f}",
             "T5_NET_SEED": str(self.seed),
             "T5_NET_BUILD": self.build,
+            "T5_NET_UNLOCKS": "open" if self.unlocks == "open" else "closed",
         }
         if self.key:
             env["T5_NET_KEY"] = self.key

@@ -132,6 +132,20 @@ class PickedTest(Base):
         b.rematch(rb["match"], True, keep=True)
         self.assertEqual(expect(a, "match_start")["fight"]["pick"], 30)
 
+    def test_jinpachi_in_a_casual_match_only(self):
+        """1.1.4: casual matches offer Jinpachi on the select grid (T5_NET_UNLOCKS=open), so his result counts
+        (cap boss_chars) and the history shows him; ranked refuses him (test_bad_chars_are_refused)."""
+        a, b = self.acc("Alice"), self.acc("Bob")
+        self.assertIn("boss_chars", a.welcome.get("caps") or ())
+        a.quick_match("jin")
+        b.quick_match("paul")
+        ea, eb = expect(a, "match_start"), expect(b, "match_start")
+        self.assertFalse(ea["ranked"])
+        ra, rb = self.report(a, b, ea, [35, "jin"], [35, "jin"])
+        self.assertEqual((ra["fight"]["p1"], ra["fight"]["p2"]), ("jinpachi", "jin"))
+        hist = a.profile("Alice", 5)["history"]
+        self.assertIn("jinpachi", (hist[0]["you_char"], hist[0]["opp_char"]))
+
     def test_bad_chars_are_refused(self):
         a, b = self.acc("Alice"), self.acc("Bob")
         ea, eb = self.ranked(a, b)

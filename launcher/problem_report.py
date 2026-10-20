@@ -754,7 +754,10 @@ def _gb(n):
 
 GAME_LOG_FACTS = re.compile(r"^\[(?:gpu|display|pacing|cpu|sched|game-dll|netplay|power)\] "
                             r"(?:adapter|res_scale|window on|display|stage blur|FATAL|CPU budget|built for|mode |lobby match|"
-                            r"power saving|on AC|on battery|power source|internal resolution|frames in flight)")
+                            r"power saving|on AC|on battery|power source|internal resolution|frames in flight|"
+                            # patch 0065: where the game's threads run (processors, placement, the three
+                            # threads of the frame's critical path)
+                            r"processors:|placement:|game thread '|translation '|sound core ')")
 # Lines that sum up how the game ran (patch 0047: slow frames with their reason, the display lock's
 # late frames; online, the match's speed against this PC's own -- a slow opponent's PC makes both
 # games slow, docs/WEAK_PC.md); the last few of each kind go into system.txt.

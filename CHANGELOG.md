@@ -131,6 +131,23 @@ part is in the README's status table.
   in one line. Power saving **Auto** now always reaches the game: a `PS3_LAPTOP` left in
   Windows' environment no longer overrules it, and Settings names an Extra-settings line
   that does.
+- **Fights on 4-core processors run about 9 % faster, and the game's threads are placed
+  for the processor it runs on** (ps3recomp patch 0065). On 4 cores without
+  Hyper-Threading/SMT (laptops like the i5-7300HQ) one more thread skins the fighters and
+  the game's own threads now run above its helper threads: on a slowed 4-core stand-in
+  fights went from 40 to 43 fps (faster in 8 of 8 paired runs), on the pool stage with its
+  crowd 22 % faster (8 of 8), and the sound had fewer late blocks. On Intel processors with performance and efficiency cores (12th gen
+  and newer, Core Ultra) the game's main thread, its helper threads, the picture
+  translation and the sound now stay on the performance cores (efficiency cores are 2-3
+  times slower for them). On Ryzen processors with two core groups (7900X, 7950X, 5900X,
+  ...) those threads stay in one group, the one with the bigger cache on an X3D. The main
+  thread and the translation always get two different cores, processor 0's only when
+  there is no other (it handles most of the PC's interrupts). The game log (and Report a problem) now says where
+  the threads run (`[sched] processors:` / `[sched] placement:` lines).
+  `PS3_SCHED_PLACE=0` (extra settings) is the old placement, `PS3_SCHED_PRIO_MAIN=1
+  PS3_SCHED_PRIO_PPU=1 PS3_SCHED_PRIO_PPUHI=1` the old priorities.
+- **Online: incoming inputs are handled at once** even when the game keeps every
+  processor busy (the receive thread runs above the game's threads).
 
 ### Servers
 - New settings `T5L_TOUR_*` (who may organize, the no-show time, limits, rated or not) and a read-only JSON of the

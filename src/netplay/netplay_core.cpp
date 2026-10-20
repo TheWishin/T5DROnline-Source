@@ -1251,8 +1251,23 @@ void handle_packet(const uint8_t* p, int n, const sockaddr_in& from)
     SetEvent(s.rx_event);
 }
 
+/* Name a thread (debuggers, tools/fight_bench.py's per-thread table); SetThreadDescription is
+ * Windows 10 1607+, looked up so an older Windows only goes without the name. */
+void name_thread(const wchar_t* name)
+{
+    typedef HRESULT(WINAPI* fn_t)(HANDLE, PCWSTR);
+    static fn_t fn = (fn_t)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadDescription");
+    if (fn) fn(GetCurrentThread(), name);
+}
+
+/* The receive thread runs above the game's own threads (ps3recomp patch 0065, docs/RENDER_PERF.md
+ * "Thread placement"): it sleeps in recvfrom and works a few microseconds per packet, but at normal
+ * priority on a PC whose processors the game keeps busy (4 cores) an input packet could wait a
+ * whole time slice for one -- more and deeper rollbacks, longer lockstep waits. */
 DWORD WINAPI rx_thread(LPVOID)
 {
+    name_thread(L"netplay-rx");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     State& s = S();
     uint8_t buf[2048];
     for (;;) {
@@ -1284,6 +1299,8 @@ DWORD WINAPI rx_thread(LPVOID)
  * or not the main thread is in a lockstep wait. */
 DWORD WINAPI tick_thread(LPVOID)
 {
+    name_thread(L"netplay-tick");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);   /* keepalives, stall checks */
     State& s = S();
     for (;;) {
         Sleep(50);
